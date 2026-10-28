@@ -114,7 +114,7 @@ func (c *compiler) validateVarListDefaults(w *Workflow) {
 			}
 			c.warnfAt(DiagVarListDefaultRouting, nodeID, edge,
 				"%s reads var %q (%s), whose default the run reads as %s with no value supplied, where the source text read as %q — %s. Supply the var at launch, write the site against the value, or declare the var `string` when the text is what is wanted.",
-				loc, name, s.vt, s.now, s.was, shiftConsequence(site, s))
+				loc, expr.Excerpt(name), s.vt, expr.Excerpt(s.now), expr.Excerpt(s.was), shiftConsequence(site, s))
 		}
 	}
 
@@ -126,7 +126,7 @@ func (c *compiler) validateVarListDefaults(w *Workflow) {
 		// A loop cap in EXPRESSION form is read as a number; the template
 		// form (`as retry("{{vars.n}}")`) needs an integer either way and
 		// was broken before as it is now, so it is not a change.
-		if loop := w.Loops[e.LoopName]; loop != nil && loop.MaxIterationsAST != nil {
+		if loop := w.Loops[e.LoopName]; loop != nil && loop.MaxIterationsAST != nil && !c.capRefused[e] {
 			collectShiftedVars(loop.MaxIterationsAST, shifts, names)
 		}
 		report(siteExpression, e.From, edgeID(e.From, e.To), fmt.Sprintf("edge %s -> %s", e.From, e.To), names)
@@ -158,13 +158,16 @@ func (c *compiler) validateVarListDefaults(w *Workflow) {
 		if !ok {
 			continue
 		}
-		for _, fb := range nn.GetFallbacks() {
+		for i, fb := range nn.GetFallbacks() {
 			if fb.When == "" {
 				continue
 			}
-			parsed, err := expr.Parse(fb.When)
-			if err != nil {
-				continue // checkFallbackWhen already refused it
+			// The reading checkFallbackWhen made on the bot's budget
+			// (validateFallbacks runs first); nil is a `when:` it refused,
+			// said there — never read again here.
+			parsed := c.fallbackWhens[fallbackWhenKey(nn.NodeID(), i)]
+			if parsed == nil {
+				continue
 			}
 			names := map[string]bool{}
 			collectShiftedVars(parsed, shifts, names)

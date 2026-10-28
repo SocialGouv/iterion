@@ -1619,6 +1619,10 @@ type Loop struct {
 	MaxIterationsExpr     string
 	MaxIterationsExprRefs []*Ref
 	MaxIterationsAST      *expr.AST // expression form, evaluated at each crossing
+	// capRecords is what reading the cap's expression spent of the bot's
+	// read budget: every further edge that carries the loop spends it again
+	// (compileEdges), since the validators read the cap once per edge.
+	capRecords int
 	// Unbounded marks `as <name>(unbounded)`: the loop has no user iteration
 	// cap. It still terminates — the runtime bounds it by FuelCap (the
 	// effective fuel ceiling) and by a liveness monitor (no-progress halt).

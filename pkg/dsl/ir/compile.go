@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
+	"github.com/SocialGouv/iterion/pkg/dsl/readbudget"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -80,9 +83,9 @@ type Diagnostic struct {
 	// File, Line and Column locate the declaration the diagnostic is
 	// attributed to — the node named by NodeID, or the edge named by
 	// EdgeID — in the source that was compiled. Best-effort: a global
-	// diagnostic (no workflow, duplicate loop) has no position and keeps
-	// the zero values, and a group-expanded node points at the group
-	// member it was cloned from.
+	// diagnostic (no workflow) has no position and keeps the zero values,
+	// and a group-expanded node points at the group member it was cloned
+	// from. Message and Hint are held to expr.MaxDiagnosticText (emit).
 	File   string
 	Line   int // 1-based; 0 = no position
 	Column int // 1-based
@@ -154,6 +157,20 @@ type compiler struct {
 	withSpans map[*DataMapping]ast.Span
 
 	capabilities CompileCapabilities
+
+	// exprBudget is the read budget the expressions of the bot are parsed
+	// on together (expr.ParseOn): an expression lives inside one string the
+	// lexer counted as a single record, so the compiler holds the bot's
+	// expressions to the count the lexer held its files to.
+	exprBudget *expr.Budget
+	// fallbackWhens are the fallback `when:` readings, by node id and route
+	// index (fallbackWhenKey): parsed once on exprBudget by
+	// checkFallbackWhen, nil when the reading was refused, and read again
+	// by validateVarListDefaults — never re-parsed.
+	fallbackWhens map[string]*expr.AST
+	// capRefused marks the edges whose loop cap, read again for them, ran
+	// out the budget (compileEdges): the validators skip the cap for them.
+	capRefused map[*Edge]bool
 }
 
 // workflowInteractionDefault returns the workflow-level interaction default,
@@ -176,13 +193,15 @@ func (c *compiler) emit(sev Severity, code DiagCode, nodeID, edgeID string, sp a
 	if hint == "" {
 		hint = HintFor(code)
 	}
+	// Held to expr.MaxDiagnosticText here, whatever the site composed: the
+	// one bound no quoting site can undo.
 	c.diags = append(c.diags, Diagnostic{
 		Code:     code,
 		Severity: sev,
-		Message:  fmt.Sprintf(format, args...),
+		Message:  expr.Clip(fmt.Sprintf(format, args...), expr.MaxDiagnosticText),
 		NodeID:   nodeID,
 		EdgeID:   edgeID,
-		Hint:     hint,
+		Hint:     expr.Clip(hint, expr.MaxDiagnosticText),
 		File:     sp.Start.File,
 		Line:     sp.Start.Line,
 		Column:   sp.Start.Column,
@@ -548,6 +567,7 @@ func CompileWithCapabilities(file *ast.File, capabilities CompileCapabilities) *
 		prompts:      make(map[string]*Prompt),
 		mcp:          make(map[string]*MCPServer),
 		capabilities: capabilities,
+		exprBudget:   expr.NewBudget(readbudget.Read()),
 	}
 	// A file that still carries `import` lines was handed over alone: its
 	// fragments were never merged in, and compiling it would be compiling a
@@ -1649,11 +1669,63 @@ func (c *compiler) compileTools() {
 // distinction is what tells an operator "this bot needs a newer engine"
 // apart from "this expression is malformed".
 func exprDiagCode(err error) DiagCode {
+	if pastReadBudget(err) {
+		return DiagExprPastReadBudget
+	}
 	var arity *expr.ArityError
 	if errors.As(err, &arity) {
 		return DiagBuiltinArity
 	}
 	return DiagBadExpr
+}
+
+// pastReadBudget reports whether err is the expression parser's refusal of
+// an expression past the read budget (expr.BudgetError). A site that
+// reports one leaves the expression's text out of its message: it is the
+// one text no diagnostic should echo.
+func pastReadBudget(err error) bool {
+	var past *expr.BudgetError
+	return errors.As(err, &past)
+}
+
+// enumListed is how many members of an enum a diagnostic names; the rest
+// are counted.
+const enumListed = 16
+
+// enumList names an enum's members for a diagnostic — each quoted by
+// excerpt, the first enumListed by name and the rest by count — so an enum
+// of any size reads in a few lines and no member is cut short of itself
+// (the author's typo is next to the member it misspells).
+func enumList(values []string) string {
+	named := values
+	if len(named) > enumListed {
+		named = named[:enumListed]
+	}
+	parts := make([]string, 0, len(named)+1)
+	for _, v := range named {
+		parts = append(parts, strconv.Quote(expr.Excerpt(v)))
+	}
+	if more := len(values) - len(named); more > 0 {
+		parts = append(parts, fmt.Sprintf("and %d more", more))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// excerptPair quotes two texts a diagnostic says conflict: by excerpt, and
+// around their first difference when their excerpts would read the same.
+func excerptPair(a, b string) (string, string) {
+	ea, eb := expr.Excerpt(a), expr.Excerpt(b)
+	if a == b || ea != eb {
+		return ea, eb
+	}
+	i := 0
+	for i < len(a) && i < len(b) && a[i] == b[i] {
+		i++
+	}
+	for i > 0 && i < len(a) && !utf8.RuneStart(a[i]) {
+		i--
+	}
+	return expr.ExcerptAt(a, i), expr.ExcerptAt(b, i)
 }
 
 func (c *compiler) compileComputes() {
@@ -1674,10 +1746,15 @@ func (c *compiler) compileComputes() {
 		}
 		exprs := make([]*ComputeExpr, 0, len(cd.Expr))
 		for _, e := range cd.Expr {
-			ast, err := expr.Parse(e.Expr)
+			ast, err := expr.ParseOn(e.Expr, c.exprBudget)
 			if err != nil {
-				c.errorfAt(exprDiagCode(err), cd.Name, "",
-					"compute %q field %q: invalid expression %q: %v", cd.Name, e.Key, e.Expr, err)
+				if code := exprDiagCode(err); code == DiagExprPastReadBudget {
+					c.errorfAt(code, cd.Name, "",
+						"compute %q field %q: %v", cd.Name, e.Key, err)
+				} else {
+					c.errorfAt(code, cd.Name, "",
+						"compute %q field %q: invalid expression %q: %v", cd.Name, e.Key, expr.Excerpt(e.Expr), err)
+				}
 				continue
 			}
 			exprs = append(exprs, &ComputeExpr{
@@ -1925,11 +2002,18 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 		// Condition: either a simple field name (legacy) or a parsed expression.
 		if ae.When != nil {
 			if ae.When.Expr != "" {
-				ast, err := expr.Parse(ae.When.Expr)
+				ast, err := expr.ParseOn(ae.When.Expr, c.exprBudget)
 				if err != nil {
-					c.errorfAt(exprDiagCode(err), "", edgeID(ae.From, ae.To),
-						"edge %s -> %s: invalid `when` expression %q: %v",
-						ae.From, ae.To, ae.When.Expr, err)
+					// On the edge's own line: two edges may share their
+					// endpoints, and the id alone would name the first.
+					if code := exprDiagCode(err); code == DiagExprPastReadBudget {
+						c.errorfOnEdge(code, ae,
+							"edge %s -> %s: `when` expression: %v", ae.From, ae.To, err)
+					} else {
+						c.errorfOnEdge(code, ae,
+							"edge %s -> %s: invalid `when` expression %q: %v",
+							ae.From, ae.To, expr.Excerpt(ae.When.Expr), err)
+					}
 				} else {
 					e.Expression = ast
 					e.ExpressionSrc = ae.When.Expr
@@ -1950,11 +2034,28 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 				if existing.MaxIterations != ae.Loop.MaxIterations ||
 					existing.MaxIterationsExpr != ae.Loop.MaxIterationsExpr ||
 					existing.Unbounded != ae.Loop.Unbounded {
-					c.errorf(DiagDuplicateLoop,
+					// On the edge that re-declares the loop, the two caps
+					// quoted around their first difference.
+					was, now := excerptPair(existing.MaxIterationsExpr, ae.Loop.MaxIterationsExpr)
+					c.errorfOnEdge(DiagDuplicateLoop, ae,
 						"loop %q has conflicting max_iterations: %d/%q vs %d/%q",
 						ae.Loop.Name,
-						existing.MaxIterations, existing.MaxIterationsExpr,
-						ae.Loop.MaxIterations, ae.Loop.MaxIterationsExpr)
+						existing.MaxIterations, was,
+						ae.Loop.MaxIterations, now)
+				}
+				if existing.MaxIterationsAST != nil && existing.capRecords > 0 {
+					// Every edge that carries the loop reads its cap again
+					// (validateLoopCapExpressions walks it per edge), so each
+					// spends it: a cap the bot reads N times costs it N
+					// readings, and the edge the count runs out on is refused
+					// as the first reading would have been.
+					if err := c.exprBudget.Spend(existing.capRecords); err != nil {
+						c.errorfOnEdge(DiagExprPastReadBudget, ae, "edge %s -> %s: loop %q cap, read again for this edge: %v", ae.From, ae.To, ae.Loop.Name, err)
+						if c.capRefused == nil {
+							c.capRefused = map[*Edge]bool{}
+						}
+						c.capRefused[e] = true
+					}
 				}
 			} else {
 				loop := &Loop{
@@ -1983,9 +2084,11 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 				// edge walked a collection its author never wrote, with no
 				// diagnostic. The loop arm above refuses the same shape.
 				if existing.Item != ae.Foreach.Item || existing.CollectionRaw != ae.Foreach.Collection {
+					was, now := excerptPair(existing.CollectionRaw, ae.Foreach.Collection)
+					wasItem, nowItem := excerptPair(existing.Item, ae.Foreach.Item)
 					c.errorfOnEdge(DiagDuplicateForeach, ae,
 						"foreach %q is declared twice over different iteration: %q in %q, then %q in %q",
-						ae.Foreach.Name, existing.Item, existing.CollectionRaw, ae.Foreach.Item, ae.Foreach.Collection)
+						ae.Foreach.Name, wasItem, was, nowItem, now)
 				}
 			} else {
 				fe := &Foreach{
@@ -2787,7 +2890,7 @@ func (c *compiler) checkQuotedCommandRefs(node, where, command string) {
 			c.warnfAt(DiagQuotedCommandRef, node, "",
 				"tool %q %s: %s is raw (`!`) inside quotes you wrote — the runtime does not escape a raw reference, so your quotes are its only containment, and a value carrying a quote breaks out of them. "+
 					"Drop the `!` to let the runtime escape the value, or keep the quotes knowing where the value comes from.",
-				node, where, ref)
+				node, where, expr.Excerpt(ref))
 			continue
 		}
 		switch quotedRefNamespace(ref) {
@@ -2797,12 +2900,12 @@ func (c *compiler) checkQuotedCommandRefs(node, where, command string) {
 					"a value that reaches the shell from an artifact, an attachment or a loop counter is then command execution "+
 					"(this shape rendered its braces literally before these namespaces resolved in a tool body; it is refused rather than armed). "+
 					"Remove the surrounding quotes — `iterion fix` does.",
-				node, where, ref)
+				node, where, expr.Excerpt(ref))
 		default:
 			c.warnfAt(DiagQuotedCommandRef, node, "",
 				"tool %q %s: %s sits inside quotes you wrote — the runtime already shell-quotes a ref, and the two CANCEL "+
 					"(the value then lands as shell syntax; on a forge-controlled value that is command execution). Remove the surrounding quotes.",
-				node, where, ref)
+				node, where, expr.Excerpt(ref))
 		}
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/bundlelint"
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/fix"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -858,7 +859,7 @@ func annotateEdits(result *ValidateResult, u *unit.Unit, diags []ir.Diagnostic, 
 						vd := &result.Diagnostics[j]
 						if vd.Source == "compile" && vd.Edit == nil && vd.Code == string(e.Code) && vd.File == f.Name &&
 							vd.NodeID == node &&
-							strings.Contains(vd.Message, e.Property+": "+ref+" sits inside quotes") {
+							strings.Contains(vd.Message, e.Property+": "+expr.Excerpt(ref)+" sits inside quotes") {
 							vd.Edit = &e
 							break
 						}

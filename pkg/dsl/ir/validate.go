@@ -28,7 +28,6 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateImplicitCollectorMigration(w)
 	c.validateConditionFields(w)
 	c.validateExprTypes(w)
-	c.validateVarListDefaults(w)
 	c.validateDuplicateWithKeys(w)
 	c.validateReachability(w)
 	c.validateHistoryRefs(w)
@@ -54,6 +53,8 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateGatewayRoutes(w)
 	c.validateCommand(w)
 	c.validateFallbacks(w)
+	// After validateFallbacks: it takes the fallback `when:` readings made there.
+	c.validateVarListDefaults(w)
 	c.validateCursorInvocations(w)
 	c.validateReviewGates(w)
 	c.validateCompress(w)

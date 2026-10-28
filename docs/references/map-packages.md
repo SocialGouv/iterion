@@ -143,6 +143,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/dsl/migrate` | rewrites a `.bot` file from syntax profile 1 to profile 2 (ADR-098) surgically: only the bytes whose MEANING changes between the two profiles are… | — |
 | `pkg/dsl/parser` | — | — |
 | `pkg/dsl/parser/parsertest` | how a test outside pkg/dsl/parser reads a source in one value: the strict reading (parser.Parse). | — |
+| `pkg/dsl/readbudget` | resolves the read budget: how much one bot may ask its readers to record. | — |
 | `pkg/dsl/spec` | the declarative registry of the `.bot` DSL's property surface: for every declaration kind, node kind and anonymous block, the properties it accepts,… | — |
 | `pkg/dsl/types` | defines shared enum types used by both the AST and IR packages. | — |
 | `pkg/dsl/unit` | loads a bot's compilation unit: its main file and the fragments the file imports, transitively, merged into one ast.File (ADR-098 §3). | — |

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
@@ -99,7 +100,16 @@ const codexBackendName = backendcaps.Codex
 //
 // Everything else is a warning: the run proceeds, degraded but visible.
 func (c *compiler) validateFallbacks(w *Workflow) {
-	for _, n := range w.Nodes {
+	// In id order: the nodes' fallback `when:` readings spend the bot's
+	// budget as they are read, so the node a refusal falls on is the same
+	// from one compile to the next, never the one a map yields last.
+	ids := make([]string, 0, len(w.Nodes))
+	for id := range w.Nodes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		n := w.Nodes[id]
 		nn, ok := n.(LLMNode)
 		if !ok {
 			continue
@@ -137,7 +147,7 @@ func (c *compiler) validateFallbacks(w *Workflow) {
 		for i, fb := range fbs {
 			c.checkFallbackShape(kind, id, fb, seen)
 			c.checkFallbackAction(kind, id, fb, i == len(fbs)-1)
-			c.checkFallbackWhen(w, kind, id, fb)
+			c.checkFallbackWhen(w, kind, id, i, fb)
 			c.checkFallbackTriggers(kind, id, fb)
 			c.checkFallbackCrossing(kind, id, fb, nn, nodeBackend, w.Permission, EffectiveAskRules(nn, w))
 		}
@@ -262,12 +272,23 @@ func (c *compiler) checkFallbackAction(kind, id string, fb Fallback, isLast bool
 // gate is evaluated (a route has no node input or outputs of its own) —
 // and only DECLARED vars: at runtime an absent var evaluates to nil →
 // false, so a typo would silently disarm the policy the route encodes.
-func (c *compiler) checkFallbackWhen(w *Workflow, kind, id string, fb Fallback) {
+func (c *compiler) checkFallbackWhen(w *Workflow, kind, id string, i int, fb Fallback) {
 	if fb.When == "" {
 		return
 	}
-	astExpr, err := expr.Parse(fb.When)
+	astExpr, err := expr.ParseOn(fb.When, c.exprBudget)
+	// Read once, on the bot's budget: validateVarListDefaults reads the
+	// same text later and takes this reading (nil when refused), so a bot
+	// accepted here is never refused — nor read again — there.
+	if c.fallbackWhens == nil {
+		c.fallbackWhens = map[string]*expr.AST{}
+	}
+	c.fallbackWhens[fallbackWhenKey(id, i)] = astExpr
 	if err != nil {
+		if pastReadBudget(err) {
+			c.errorfAt(DiagExprPastReadBudget, id, "", "%s %q: fallback %s when: %v", kind, id, fallbackLabel(fb), err)
+			return
+		}
 		c.errorfAt(DiagFallbackMalformed, id, "",
 			"%s %q: fallback %s has an unparseable when: expression (note: string literals use single quotes, e.g. vars.policy == 'skip'): %v",
 			kind, id, fallbackLabel(fb), err)
@@ -814,6 +835,12 @@ func SourceNodeBackendName(nodeBackend, workflowDefault string) string {
 // inherits `default_backend:`.
 func effectiveNodeBackend(nodeBackend, workflowDefault string) string {
 	return sourceBackend.effective(nodeBackend, workflowDefault)
+}
+
+// fallbackWhenKey names one fallback route's `when:` reading in
+// compiler.fallbackWhens: the node and the route's position in its block.
+func fallbackWhenKey(id string, i int) string {
+	return fmt.Sprintf("%s\x00%d", id, i)
 }
 
 // fallbackLabel renders a route for a diagnostic message.

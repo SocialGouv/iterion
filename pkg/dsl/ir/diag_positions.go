@@ -14,7 +14,7 @@ import (
 // an agent or `iterion validate` can jump to.
 //
 // Best-effort by design: a diagnostic that already carries a position keeps
-// it, a global one (no workflow, duplicate loop name) has none, and a
+// it, a global one (no workflow) has none, and a
 // group-expanded node (`<prefix>.<name>`) points at the group member it was
 // cloned from.
 func (c *compiler) attachPositions() {

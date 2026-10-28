@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -272,7 +273,17 @@ func (p *parser) parseLoopClause() *ast.LoopClause {
 		} else if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
 			lc.MaxIterations = n
 		} else if _, err := expr.Parse(s); err != nil {
-			p.addError(DiagExpectedToken, nt, fmt.Sprintf("loop %q cap %q: invalid expression: %v", lc.Name, s, err))
+			var past *expr.BudgetError
+			if errors.As(err, &past) {
+				// A cap past the read budget is the compiler's to refuse
+				// (C320, on the bot's budget, at the edge): the text is kept
+				// and nothing is said here, where the budget is the cap's
+				// own — a refusal here would drop the cap and draw a false
+				// "no cap" on the loop.
+				lc.MaxIterationsExpr = s
+			} else {
+				p.addError(DiagExpectedToken, nt, fmt.Sprintf("loop %q cap %q: invalid expression: %v", lc.Name, expr.Excerpt(s), err))
+			}
 		} else {
 			lc.MaxIterationsExpr = s
 		}

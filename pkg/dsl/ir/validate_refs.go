@@ -150,7 +150,7 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 				out = append(out, refContext{
 					Ref:      ref,
 					NodeID:   e.From,
-					Location: fmt.Sprintf("edge %s -> %s, when %q", e.From, e.To, e.ExpressionSrc),
+					Location: fmt.Sprintf("edge %s -> %s, when %q", e.From, e.To, expr.Excerpt(e.ExpressionSrc)),
 					Span:     edgeSpans[e],
 				})
 			}
@@ -538,14 +538,14 @@ func (c *compiler) validateLoopRef(w *Workflow, rc refContext) {
 	if len(rc.Ref.Path) < 2 {
 		c.refWarnf(rc, DiagUnknownLoopRef,
 			"%s: reference %s is incomplete (expected loop.<name>.iteration, .max or .previous_output)",
-			rc.Location, rc.Ref.Raw)
+			rc.Location, expr.Excerpt(rc.Ref.Raw))
 		return
 	}
 	name, field := rc.Ref.Path[0], rc.Ref.Path[1]
 	if w.Loops[name] == nil {
 		c.refWarnf(rc, DiagUnknownLoopRef,
 			"%s: reference %s targets undeclared loop %q",
-			rc.Location, rc.Ref.Raw, name)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(name))
 		return
 	}
 	switch field {
@@ -553,13 +553,13 @@ func (c *compiler) validateLoopRef(w *Workflow, rc refContext) {
 		if len(rc.Ref.Path) > 2 {
 			c.refWarnf(rc, DiagUnknownLoopRef,
 				"%s: reference %s: loop.%s.%s has no sub-field",
-				rc.Location, rc.Ref.Raw, name, field)
+				rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(name), expr.Excerpt(field))
 		}
 	case "previous_output":
 	default:
 		c.refWarnf(rc, DiagUnknownLoopRef,
 			"%s: reference %s uses unknown loop field %q (expected: iteration, max, previous_output)",
-			rc.Location, rc.Ref.Raw, field)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(field))
 	}
 }
 
@@ -581,14 +581,14 @@ func (c *compiler) validateRunRef(w *Workflow, rc refContext) {
 			if len(rc.Ref.Path) > 1 {
 				c.refWarnf(rc, DiagUnknownRunMember,
 					"%s: reference %s has no sub-field — run.%s is a scalar value",
-					rc.Location, rc.Ref.Raw, member)
+					rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(member))
 			}
 			return
 		}
 	}
 	c.refWarnf(rc, DiagUnknownRunMember,
 		"%s: reference %s uses unknown run member %q (known: %s)",
-		rc.Location, rc.Ref.Raw, member, strings.Join(RunMembers, ", "))
+		rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(member), strings.Join(RunMembers, ", "))
 }
 
 // validateSecretsRef flags a {{secrets.X}} reference whose secret X is
@@ -610,20 +610,20 @@ func (c *compiler) validateSecretsRef(w *Workflow, rc refContext) {
 	if rc.InWith {
 		c.refErrorf(rc, DiagWithSecretRef,
 			"%s: reference %s cannot travel through a data mapping — a `with:` value or a fail `message:` resolves it to nil; move the reference to the execution sink that uses the secret (a tool's `command:`/`script:`/`postcondition:`, a tool action's `params:` value, or a prompt body), the only places the runtime materialises it",
-			rc.Location, rc.Ref.Raw)
+			rc.Location, expr.Excerpt(rc.Ref.Raw))
 		return
 	}
 	if rc.InComputeExpr {
 		c.refErrorf(rc, DiagWithSecretRef,
 			"%s: reference %s cannot be resolved in a compute expression — `pkg/dsl/expr` has no secrets resolver (evalNamespaces excludes it), so the reference renders nil at evaluation; move the secret to an execution sink that materialises it (a tool's `command:`/`script:`/`postcondition:`, a tool action's `params:` value, or a prompt body)",
-			rc.Location, rc.Ref.Raw)
+			rc.Location, expr.Excerpt(rc.Ref.Raw))
 		return
 	}
 	secret, ok := w.Secrets[name]
 	if !ok {
 		c.refErrorf(rc, DiagUnknownSecret,
 			"%s: reference %s targets undeclared secret %q",
-			rc.Location, rc.Ref.Raw, name)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(name))
 		return
 	}
 	if len(rc.Ref.Path) == 1 {
@@ -633,13 +633,13 @@ func (c *compiler) validateSecretsRef(w *Workflow, rc refContext) {
 	if sub != "path" {
 		c.refErrorf(rc, DiagSecretSubfield,
 			"%s: reference %s uses unknown secret sub-field %q (expected: path)",
-			rc.Location, rc.Ref.Raw, sub)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(sub))
 		return
 	}
 	if !secret.IsFile() {
 		c.refErrorf(rc, DiagSecretSubfield,
 			"%s: reference %s uses .path on non-file secret %q",
-			rc.Location, rc.Ref.Raw, name)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(name))
 	}
 }
 
@@ -658,19 +658,19 @@ func (c *compiler) validateAttachmentsRef(w *Workflow, rc refContext) {
 	if rc.InWith {
 		c.refErrorf(rc, DiagWithAttachmentRef,
 			"%s: reference %s cannot travel through a data mapping — a `with:` value or a fail `message:` resolves it to nil; move the reference to the execution sink that uses the attachment (a tool's `command:`/`script:`/`postcondition:`, a tool action's `params:` value, or a prompt body), the only places the runtime materialises it",
-			rc.Location, rc.Ref.Raw)
+			rc.Location, expr.Excerpt(rc.Ref.Raw))
 		return
 	}
 	if rc.InComputeExpr {
 		c.refErrorf(rc, DiagWithAttachmentRef,
 			"%s: reference %s cannot be resolved in a compute expression — `pkg/dsl/expr` has no attachments resolver (evalNamespaces excludes it), so the reference renders nil at evaluation; move the attachment reference to an execution sink (a tool's `command:`/`script:`/`postcondition:`, a tool action's `params:` value, or a prompt body)",
-			rc.Location, rc.Ref.Raw)
+			rc.Location, expr.Excerpt(rc.Ref.Raw))
 		return
 	}
 	if _, ok := w.Attachments[name]; !ok {
 		c.refErrorf(rc, DiagUnknownAttachment,
 			"%s: reference %s targets undeclared attachment %q",
-			rc.Location, rc.Ref.Raw, name)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(name))
 		return
 	}
 	if len(rc.Ref.Path) >= 2 {
@@ -678,7 +678,7 @@ func (c *compiler) validateAttachmentsRef(w *Workflow, rc refContext) {
 		if _, ok := AttachmentSubFields[sub]; !ok {
 			c.refErrorf(rc, DiagAttachmentSubfieldUnknown,
 				"%s: reference %s uses unknown sub-field %q (expected one of: path, url, mime, size, sha256)",
-				rc.Location, rc.Ref.Raw, sub)
+				rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(sub))
 		}
 	}
 }
@@ -694,7 +694,7 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 	if targetNode == nil {
 		c.refErrorf(rc, DiagUnknownRefNode,
 			"%s: reference %s targets unknown node %q",
-			rc.Location, rc.Ref.Raw, targetNodeID)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(targetNodeID))
 		return
 	}
 
@@ -702,7 +702,7 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 	if !checkReachable(rc, predecessors, targetNodeID) {
 		c.refErrorf(rc, DiagRefNodeNotReachable,
 			"%s: reference %s targets node %q which is not reachable before %q",
-			rc.Location, rc.Ref.Raw, targetNodeID, rc.NodeID)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(targetNodeID), rc.NodeID)
 		return
 	}
 
@@ -728,7 +728,7 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 		if !slices.Contains(implicit, fieldName) {
 			c.refErrorf(rc, DiagRefFieldNotInSchema,
 				"%s: reference %s accesses field %q on %s node %q — its only output field(s): %s",
-				rc.Location, rc.Ref.Raw, fieldName, targetNode.NodeKind(), targetNodeID, strings.Join(implicit, ", "))
+				rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(fieldName), targetNode.NodeKind(), expr.Excerpt(targetNodeID), strings.Join(implicit, ", "))
 		}
 		return
 	}
@@ -758,7 +758,7 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 		}
 		c.refWarnf(rc, DiagRefNodeNoSchema,
 			"%s: reference %s accesses field %q on node %q which has no output schema; cannot verify",
-			rc.Location, rc.Ref.Raw, fieldName, targetNodeID)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(fieldName), expr.Excerpt(targetNodeID))
 		return
 	}
 
@@ -770,7 +770,7 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 	if findField(schema, fieldName) == nil {
 		c.refErrorf(rc, DiagRefFieldNotInSchema,
 			"%s: reference %s accesses field %q not found in output schema %q of node %q",
-			rc.Location, rc.Ref.Raw, fieldName, outSchema, targetNodeID)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(fieldName), expr.Excerpt(outSchema), expr.Excerpt(targetNodeID))
 	}
 }
 
@@ -782,7 +782,7 @@ func (c *compiler) validateVarsRef(w *Workflow, rc refContext) {
 	if _, ok := w.Vars[varName]; !ok {
 		c.refErrorf(rc, DiagUndeclaredVar,
 			"%s: reference %s targets undeclared variable %q",
-			rc.Location, rc.Ref.Raw, varName)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(varName))
 	}
 }
 
@@ -853,7 +853,8 @@ func interactionPromptOnly(n Node, name string) bool {
 // field no edge maps is empty on every path, the certain defect the dry run
 // could only name after a full pass. A warning, not an error: the fix is one
 // `with` mapping (or `{{outputs.<producer>.X}}`), and the diagnostic names
-// every incoming edge so the mapping has a place to land.
+// the first incoming edges by name and the rest by count, so the mapping
+// has a place to land.
 //
 // The claim holds only where the text IS resolved against that input, so the
 // surfaces the runtime resolves elsewhere are out: a mapping value (a
@@ -908,16 +909,32 @@ func (c *compiler) validateNodeBodyInputMapped(w *Workflow, rc refContext, node 
 	if mapped {
 		return
 	}
-	quoted := make([]string, len(incoming))
-	for i, name := range incoming {
-		quoted[i] = "`" + name + "`"
+	// The first few edges by name, the rest by count: the warning is said
+	// once per unmapped reference, so naming every edge every time grew as
+	// references × edges — a megabyte of input references into a node of a
+	// thousand edges was a hundred megabytes of warnings.
+	named := incoming
+	if len(named) > maxIncomingNamed {
+		named = named[:maxIncomingNamed]
 	}
+	quoted := make([]string, 0, len(named)+1)
+	for _, name := range named {
+		quoted = append(quoted, "`"+name+"`")
+	}
+	if more := len(incoming) - len(named); more > 0 {
+		quoted = append(quoted, fmt.Sprintf("and %d more", more))
+	}
+	list := strings.Join(quoted, ", ")
 	hint := fmt.Sprintf("map the field on an incoming edge (%s with { %s: \"{{outputs.<producer>.%s}}\" }) or read the producer's output directly ({{outputs.<producer>.%s}}); the incoming edges of %q: %s",
-		quoted[0], fieldName, fieldName, fieldName, rc.NodeID, strings.Join(quoted, ", "))
+		quoted[0], expr.Excerpt(fieldName), expr.Excerpt(fieldName), expr.Excerpt(fieldName), rc.NodeID, list)
 	c.emit(SeverityWarning, DiagInputFieldNeverMapped, rc.NodeID, rc.EdgeID, rc.Span, hint,
 		"%s: reference %s reads a field %q that none of the node's incoming edges maps — empty on every path (incoming: %s)",
-		rc.Location, rc.Ref.Raw, fieldName, strings.Join(quoted, ", "))
+		rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(fieldName), list)
 }
+
+// maxIncomingNamed is how many of a node's incoming edges C308 names; the
+// rest are counted.
+const maxIncomingNamed = 5
 
 // incomingEdgeName is how a diagnostic names an edge: from -> to, with the
 // condition that guards it — two parallel edges between one pair of nodes
@@ -926,13 +943,13 @@ func incomingEdgeName(e *Edge) string {
 	name := e.From + " -> " + e.To
 	switch {
 	case e.Condition != "":
-		cond := e.Condition
+		cond := expr.Excerpt(e.Condition)
 		if e.Negated {
 			cond = "not " + cond
 		}
 		name += " (when " + cond + ")"
 	case e.ExpressionSrc != "":
-		name += " (when " + e.ExpressionSrc + ")"
+		name += " (when " + expr.Excerpt(e.ExpressionSrc) + ")"
 	case e.IsElse:
 		name += " (else)"
 	}
@@ -974,12 +991,12 @@ func (c *compiler) validateNodeInputRef(w *Workflow, rc refContext, node Node, f
 			case *FailNode:
 				c.refWarnf(rc, DiagWithInputRefNoSchema,
 					"%s: reference %s resolves against the RUN's inputs — the launch payload — not against this node's input: a fail `message:` is rendered at fail time through the same resolver as a `with:` mapping, and a `fail` node has no `input:` surface, so no incoming edge can carry %q into it. If the value is declared in this workflow's `vars:`, use `{{vars.%s}}` (checked at compile time, and it carries the var's default); otherwise keep it and be aware that a launch that omits the key renders the empty string.",
-					rc.Location, rc.Ref.Raw, fieldName, fieldName)
+					rc.Location, expr.Excerpt(rc.Ref.Raw), fieldName, fieldName)
 				return
 			case *SubbotNode, *EmitNode:
 				c.refWarnf(rc, DiagWithInputRefNoSchema,
 					"%s: reference %s cannot be verified — a `%s` node has no `input:` surface, so `{{input.*}}` in its `with:` resolves against the parent's run inputs at run time. If the key is a launch-time value declared in `vars:` here, use `{{vars.%s}}` (checked at compile time); if it is forwarded from an undeclared parent payload key, keep it and be aware that a typo lands nil silently at run time (suppressing the child's declared default for the mapped key).",
-					rc.Location, rc.Ref.Raw, node.NodeKind(), fieldName)
+					rc.Location, expr.Excerpt(rc.Ref.Raw), node.NodeKind(), fieldName)
 				return
 			}
 		}
@@ -994,7 +1011,7 @@ func (c *compiler) validateNodeInputRef(w *Workflow, rc refContext, node Node, f
 	if findField(schema, fieldName) == nil {
 		c.refErrorf(rc, DiagInputFieldNotInSchema,
 			"%s: reference %s accesses field %q not found in input schema %q of node %q",
-			rc.Location, rc.Ref.Raw, fieldName, inSchema, rc.NodeID)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(fieldName), expr.Excerpt(inSchema), rc.NodeID)
 	}
 }
 
@@ -1016,7 +1033,7 @@ func (c *compiler) validateEdgeInputRef(w *Workflow, rc refContext, node Node, f
 		if !slices.Contains(implicit, fieldName) {
 			c.refErrorf(rc, DiagInputFieldNotInSchema,
 				"%s: reference %s accesses field %q on %s node %q — its only output field(s): %s (edge with-mappings resolve {{input.*}} against the source node's output)",
-				rc.Location, rc.Ref.Raw, fieldName, node.NodeKind(), rc.NodeID, strings.Join(implicit, ", "))
+				rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(fieldName), node.NodeKind(), rc.NodeID, strings.Join(implicit, ", "))
 		}
 		return
 	}
@@ -1028,9 +1045,9 @@ func (c *compiler) validateEdgeInputRef(w *Workflow, rc refContext, node Node, f
 			return
 		}
 		msg := fmt.Sprintf("%s: reference %s accesses field %q on node %q which has no output schema; cannot verify (edge with-mappings resolve {{input.*}} against the source node's output, not run inputs)",
-			rc.Location, rc.Ref.Raw, fieldName, rc.NodeID)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(fieldName), rc.NodeID)
 		if _, isVar := w.Vars[fieldName]; isVar {
-			msg += fmt.Sprintf("; use {{vars.%s}} for a workflow variable", fieldName)
+			msg += fmt.Sprintf("; use {{vars.%s}} for a workflow variable", expr.Excerpt(fieldName))
 		}
 		c.refWarnf(rc, DiagRefNodeNoSchema, "%s", msg)
 		return
@@ -1044,13 +1061,13 @@ func (c *compiler) validateEdgeInputRef(w *Workflow, rc refContext, node Node, f
 	}
 
 	msg := fmt.Sprintf("%s: reference %s accesses field %q not found in output schema %q of source node %q (edge with-mappings resolve {{input.*}} against the source node's output)",
-		rc.Location, rc.Ref.Raw, fieldName, outSchema, rc.NodeID)
+		rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(fieldName), expr.Excerpt(outSchema), rc.NodeID)
 	if _, isVar := w.Vars[fieldName]; isVar {
-		msg += fmt.Sprintf("; use {{vars.%s}} for a workflow variable", fieldName)
+		msg += fmt.Sprintf("; use {{vars.%s}} for a workflow variable", expr.Excerpt(fieldName))
 	}
 	if inSchema := NodeInputSchema(node); inSchema != "" {
 		if s, ok := w.Schemas[inSchema]; ok && findField(s, fieldName) != nil {
-			msg += fmt.Sprintf("; field %q is on the source node's input schema, not its output", fieldName)
+			msg += fmt.Sprintf("; field %q is on the source node's input schema, not its output", expr.Excerpt(fieldName))
 		}
 	}
 	c.refErrorf(rc, DiagInputFieldNotInSchema, "%s", msg)
@@ -1069,15 +1086,15 @@ func (c *compiler) validateRouterEdgeInput(w *Workflow, rc refContext, r *Router
 		return
 	}
 	msg := fmt.Sprintf("%s: reference %s accesses field %q on router %q which does not pass it through (not supplied by an incoming with-mapping); edge with-mappings resolve {{input.*}} against the source node's output, not run inputs",
-		rc.Location, rc.Ref.Raw, fieldName, rc.NodeID)
+		rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(fieldName), rc.NodeID)
 	if _, isVar := w.Vars[fieldName]; isVar {
-		msg += fmt.Sprintf("; use {{vars.%s}} for a workflow variable", fieldName)
+		msg += fmt.Sprintf("; use {{vars.%s}} for a workflow variable", expr.Excerpt(fieldName))
 	}
 	// The catalogue fix for C032 ("add an output: schema") cannot be
 	// followed on a router, which has no output of its own: the remedy
 	// here is to map the field onto the router or read a var.
 	c.emit(SeverityWarning, DiagRefNodeNoSchema, rc.NodeID, rc.EdgeID, rc.Span,
-		fmt.Sprintf("A router has no `output:` of its own — map the field onto it through an incoming edge (`… -> %s with { %s: \"…\" }`), or read `{{vars.%s}}` for a launch-time value.", rc.NodeID, fieldName, fieldName),
+		fmt.Sprintf("A router has no `output:` of its own — map the field onto it through an incoming edge (`… -> %s with { %s: \"…\" }`), or read `{{vars.%s}}` for a launch-time value.", rc.NodeID, expr.Excerpt(fieldName), expr.Excerpt(fieldName)),
 		"%s", msg)
 }
 
@@ -1158,7 +1175,7 @@ func (c *compiler) validateArtifactsRef(w *Workflow, rc refContext, predecessors
 	if !ok {
 		c.refErrorf(rc, DiagUnknownArtifact,
 			"%s: reference %s targets artifact %q which is not published by any node",
-			rc.Location, rc.Ref.Raw, artifactName)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(artifactName))
 		return
 	}
 
@@ -1166,7 +1183,7 @@ func (c *compiler) validateArtifactsRef(w *Workflow, rc refContext, predecessors
 	if !checkReachable(rc, predecessors, producerID) {
 		c.refErrorf(rc, DiagRefNodeNotReachable,
 			"%s: reference %s targets artifact %q published by node %q which is not reachable before %q",
-			rc.Location, rc.Ref.Raw, artifactName, producerID, rc.NodeID)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(artifactName), expr.Excerpt(producerID), rc.NodeID)
 	}
 }
 

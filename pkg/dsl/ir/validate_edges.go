@@ -3,6 +3,8 @@ package ir
 import (
 	"fmt"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 )
 
 // ---------------------------------------------------------------------------
@@ -1013,7 +1015,7 @@ func (c *compiler) validateConditionFields(w *Workflow) {
 			if field == nil {
 				c.errorfAt(DiagConditionFieldNotFound, e.From, edgeID(e.From, e.To),
 					"edge %s -> %s: condition field %q not found in output schema %q of node %q",
-					e.From, e.To, e.Condition, outSchema, e.From)
+					e.From, e.To, expr.Excerpt(e.Condition), expr.Excerpt(outSchema), e.From)
 				continue
 			}
 			if field.Type != FieldTypeBool {
@@ -1044,7 +1046,7 @@ func (c *compiler) validateConditionFields(w *Workflow) {
 				if findField(schema, r.Path[1]) == nil {
 					c.errorfAt(DiagConditionFieldNotFound, e.From, edgeID(e.From, e.To),
 						"edge %s -> %s: expression references field %q not found in output schema %q of node %q",
-						e.From, e.To, r.Path[1], outSchema, e.From)
+						e.From, e.To, expr.Excerpt(r.Path[1]), expr.Excerpt(outSchema), e.From)
 				}
 			}
 		}

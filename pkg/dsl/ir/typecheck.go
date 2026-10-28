@@ -148,8 +148,8 @@ func (c *compiler) checkEnumMembership(w *Workflow, cn *ComputeNode, ce *Compute
 			continue
 		}
 		c.warnfAt(DiagComputeEnumLiteral, cn.ID, "",
-			"compute %q field %q is the literal %q, not a member of its enum %v — the value fails schema validation at run time (SCHEMA_VALIDATION); fix the literal or widen the enum",
-			cn.ID, ce.Key, lit, field.EnumValues)
+			"compute %q field %q is the literal %q, not a member of its enum %s — the value fails schema validation at run time (SCHEMA_VALIDATION); fix the literal or widen the enum",
+			cn.ID, expr.Excerpt(ce.Key), expr.Excerpt(lit), enumList(field.EnumValues))
 	}
 }
 
@@ -362,8 +362,8 @@ func (c *compiler) checkEnumPair(pathSide, litSide *expr.Snapshot, env exprEnv, 
 		}
 	}
 	c.errorfAt(DiagEnumLiteralMismatch, nodeID, eid,
-		"%s: literal %q is compared against field %q whose enum is %v — not a member, so the comparison can never match (typo?)",
-		loc, litSide.Str, strings.Join(pathSide.Path, "."), f.EnumValues)
+		"%s: literal %q is compared against field %q whose enum is %s — not a member, so the comparison can never match (typo?)",
+		loc, expr.Excerpt(litSide.Str), expr.Excerpt(strings.Join(pathSide.Path, ".")), enumList(f.EnumValues))
 }
 
 // checkOperandCompat flags a comparison whose two operands have statically

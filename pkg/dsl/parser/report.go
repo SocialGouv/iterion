@@ -3,6 +3,8 @@ package parser
 import (
 	"fmt"
 	"math"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 )
 
 // MaxReported is how many diagnostics of one code, errors and warnings
@@ -60,8 +62,12 @@ func reportLimits() (perCode, perSeverity int) {
 	return MaxReported, MaxReportedOfASeverity
 }
 
-// Add records d and reports whether it was kept.
+// Add records d and reports whether it was kept. The message and the hint
+// are held to expr.MaxDiagnosticText here — the one door every reader of a
+// source records through (the parser, the YAML twin's speller and guard,
+// the unit loader) — whatever the site composed.
 func (r *Report) Add(d Diagnostic) bool {
+	d.Message, d.Hint = expr.Clip(d.Message, expr.MaxDiagnosticText), expr.Clip(d.Hint, expr.MaxDiagnosticText)
 	if r.codes == nil {
 		r.codes = map[reportKey]*codeCount{}
 		r.limit, r.total = reportLimits()

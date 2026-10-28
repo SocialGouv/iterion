@@ -52,6 +52,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/readbudget"
 )
 
 // AST is the parsed form of an expression. It is opaque outside the package.
@@ -63,18 +66,166 @@ type AST struct {
 // Source returns the original source string for debugging.
 func (a *AST) Source() string { return a.src }
 
-// Parse parses an expression string and returns its AST. Returns an error on
-// malformed input. The returned AST can be evaluated many times against
-// different contexts.
+// A Budget is a read budget and what the expressions parsed on it spent:
+// one expression's own (Parse), or the one the expressions of a bot share
+// (ParseOn — the compiler reads every expression of a bot on one). An
+// expression lives inside one string, which the .bot lexer counts as a
+// single record, so the expression parser counts its tokens on its own: a
+// name, a value, an operator or a bracket is one, the end of the expression
+// one — and a reading past the count is refused at the token the count ran
+// out on, the tree it would have grown never built (#2627).
+type Budget struct {
+	limit, spent int
+}
+
+// NewBudget is a budget of limit records; readbudget.Read is the count in
+// force wherever a bot is read.
+func NewBudget(limit int) *Budget {
+	return &Budget{limit: limit}
+}
+
+// Spent is what the expressions parsed on b took of it.
+func (b *Budget) Spent() int { return b.spent }
+
+// Limit is b's count of records.
+func (b *Budget) Limit() int { return b.limit }
+
+// BudgetError is the refusal of an expression past the read budget: the
+// reading stopped at the token the count ran out on. Before is what the
+// readings before this one spent of the same budget — 0 on a budget of the
+// expression's own — so the refusal names the expressions that used the
+// count up, not only the one it fell on.
+type BudgetError struct {
+	Limit  int
+	Before int
+}
+
+func (e *BudgetError) Error() string {
+	s := fmt.Sprintf("expr: the expression is past the read budget of %d — every token (a name, a value, an operator, a bracket, a punctuation mark) spends one, the end of the expression one: the reader stops here", e.Limit)
+	if e.Before > 0 {
+		s += fmt.Sprintf("; the expressions read before it on the same budget spent %d of the count", e.Before)
+	}
+	return s
+}
+
+// BudgetHint is the remedy of an expression past the read budget, the
+// wording every reader of the budget gives beside its own cause. The
+// expressions of a bot are counted together, so the remedy is to shorten
+// them or to raise the count.
+const BudgetHint = "Shorten the bot's expressions — the budget counts them together, a loop cap once per edge that carries it — or raise the budget: it is " + readbudget.Env + " wherever a bot is read, a larger count raises it, 0 removes it."
+
+// ExcerptRunes is how much of an expression's text a diagnostic quotes.
+const ExcerptRunes = 64
+
+// MaxDiagnosticText is the bound every diagnostic's message and hint are
+// held to where they are recorded — the compiler's emit, the parser's
+// Report.Add — whatever the site wrote: a message that quoted an author's
+// text whole grew with it, and no enumeration of sites proves the last one
+// was found. Past the bound the text is cut and marked (Clip). Four
+// kibibytes: the catalogue's longest fix line is under 1.5 KiB.
+const MaxDiagnosticText = 4096
+
+// Clip is s held to at most max bytes, cut on a rune boundary and marked
+// with an ellipsis when it was longer.
+func Clip(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
+}
+
+// Excerpt is an expression's text as a diagnostic quotes it: whole when
+// short, its first ExcerptRunes runes and an ellipsis otherwise. A string, a
+// name or a reference of any length is one token, so a message that quoted
+// it whole — once per reference it holds, once per edge that carries it —
+// grew as references × bytes, far under every budget; the span positions the
+// expression, the excerpt only names it.
+func Excerpt(src string) string {
+	n := 0
+	for i := range src {
+		if n == ExcerptRunes {
+			return src[:i] + "…"
+		}
+		n++
+	}
+	return src
+}
+
+// ExcerptAt is the excerpt of src around the byte offset at: the
+// ExcerptRunes-rune window that starts sixteen runes before it, an ellipsis
+// on each side it does not reach. A diagnostic that compares two texts
+// quotes each around their first difference, where Excerpt alone would show
+// two identical prefixes as "conflicting".
+func ExcerptAt(src string, at int) string {
+	if at <= 0 || at > len(src) {
+		return Excerpt(src)
+	}
+	start := at
+	for back := 0; back < 16 && start > 0; back++ {
+		_, size := utf8.DecodeLastRuneInString(src[:start])
+		start -= size
+	}
+	if start == 0 {
+		return Excerpt(src)
+	}
+	n := 0
+	for i := range src[start:] {
+		if n == ExcerptRunes {
+			return "…" + src[start:start+i] + "…"
+		}
+		n++
+	}
+	return "…" + src[start:]
+}
+
+// Spend takes n records of b for a reading the parser already did — a text
+// read again for another site — and refuses when fewer are left, the
+// count then spent whole, as a refused reading leaves it. A count of none,
+// or a negative one, takes nothing.
+func (b *Budget) Spend(n int) error {
+	if n <= 0 {
+		return nil
+	}
+	if n > b.limit-b.spent {
+		before := b.spent
+		b.spent = b.limit
+		return &BudgetError{Limit: b.limit, Before: before}
+	}
+	b.spent += n
+	return nil
+}
+
+// Parse parses an expression string and returns its AST, read on a budget of
+// its own (readbudget.Read). Returns an error on malformed input, a
+// *BudgetError on an expression past the budget. The returned AST can be
+// evaluated many times against different contexts.
 func Parse(src string) (*AST, error) {
-	p := &parser{lex: newLexer(src)}
+	return ParseOn(src, NewBudget(readbudget.Read()))
+}
+
+// ParseOn is Parse on a budget the expressions of one reading share: the
+// compiler parses every expression of a bot on one, so the bot is held to
+// the count whole, however it splits its expressions.
+func ParseOn(src string, b *Budget) (*AST, error) {
+	p := &parser{lex: newLexer(src), budget: b, began: b.spent}
 	p.advance()
 	root, err := p.parseExpr()
+	if p.err != nil {
+		// The cause outranks what the cut reading parsed as: a lexer's
+		// diagnosis or the budget's refusal names the token the reading
+		// stopped on, where the shape error it caused names one that never
+		// came.
+		return nil, p.err
+	}
 	if err != nil {
 		return nil, err
 	}
 	if p.cur.kind != tokEOF {
-		return nil, fmt.Errorf("expr: unexpected trailing %s", p.cur.value)
+		return nil, fmt.Errorf("expr: unexpected trailing %s", Excerpt(p.cur.value))
 	}
 	return &AST{root: root, src: src}, nil
 }
@@ -658,6 +809,10 @@ type parser struct {
 	cur   token
 	err   error
 	depth int
+	// budget is what the reading spends a record of per token (advance),
+	// and began what the budget had spent when the reading started.
+	budget *Budget
+	began  int
 }
 
 // maxExprDepth caps recursive descent depth so a pathologically nested
@@ -683,11 +838,18 @@ func (p *parser) advance() {
 	if p.err != nil {
 		return
 	}
+	if p.budget.spent >= p.budget.limit {
+		// The next token is one past the budget: the reading stops here,
+		// the tree it would have grown never built.
+		p.err = &BudgetError{Limit: p.budget.limit, Before: p.began}
+		return
+	}
 	t, err := p.lex.next()
 	if err != nil {
 		p.err = err
 		return
 	}
+	p.budget.spent++
 	p.cur = t
 }
 
@@ -834,7 +996,7 @@ func (p *parser) parsePostfix() (node, error) {
 			p.advance() // consume '.'
 			if p.cur.kind != tokIdent {
 				p.leave()
-				return nil, fmt.Errorf("expr: expected identifier after '.', got %s", p.cur.value)
+				return nil, fmt.Errorf("expr: expected identifier after '.', got %s", Excerpt(p.cur.value))
 			}
 			n = &indexNode{recv: n, index: litString{v: p.cur.value}}
 			p.advance() // consume IDENT
@@ -849,7 +1011,7 @@ func (p *parser) parsePostfix() (node, error) {
 		}
 		if p.cur.kind != tokRBracket {
 			p.leave()
-			return nil, fmt.Errorf("expr: expected ']' got %s", p.cur.value)
+			return nil, fmt.Errorf("expr: expected ']' got %s", Excerpt(p.cur.value))
 		}
 		p.advance() // consume ']'
 		p.leave()
@@ -866,14 +1028,14 @@ func (p *parser) parsePrimary() (node, error) {
 	case tokInt:
 		v, err := strconv.ParseInt(p.cur.value, 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("expr: invalid integer %q", p.cur.value)
+			return nil, fmt.Errorf("expr: invalid integer %q", Excerpt(p.cur.value))
 		}
 		p.advance()
 		return litInt{v: v}, nil
 	case tokFloat:
 		v, err := strconv.ParseFloat(p.cur.value, 64)
 		if err != nil {
-			return nil, fmt.Errorf("expr: invalid float %q", p.cur.value)
+			return nil, fmt.Errorf("expr: invalid float %q", Excerpt(p.cur.value))
 		}
 		p.advance()
 		return litFloat{v: v}, nil
@@ -894,7 +1056,7 @@ func (p *parser) parsePrimary() (node, error) {
 			return nil, err
 		}
 		if p.cur.kind != tokRParen {
-			return nil, fmt.Errorf("expr: expected ')' got %s", p.cur.value)
+			return nil, fmt.Errorf("expr: expected ')' got %s", Excerpt(p.cur.value))
 		}
 		p.advance()
 		return inner, nil
@@ -912,7 +1074,7 @@ func (p *parser) parsePrimary() (node, error) {
 				return p.parseLambdaComb(ns)
 			}
 			if _, ok := builtins[ns]; !ok {
-				return nil, fmt.Errorf("expr: unknown function %q", ns)
+				return nil, fmt.Errorf("expr: unknown function %q", Excerpt(ns))
 			}
 			return p.parseFuncCallArgs(ns)
 		}
@@ -920,14 +1082,14 @@ func (p *parser) parsePrimary() (node, error) {
 		for p.cur.kind == tokDot {
 			p.advance()
 			if p.cur.kind != tokIdent {
-				return nil, fmt.Errorf("expr: expected identifier after '.', got %s", p.cur.value)
+				return nil, fmt.Errorf("expr: expected identifier after '.', got %s", Excerpt(p.cur.value))
 			}
 			path = append(path, p.cur.value)
 			p.advance()
 		}
 		return pathNode{namespace: ns, path: path}, nil
 	}
-	return nil, fmt.Errorf("expr: unexpected token %s", p.cur.value)
+	return nil, fmt.Errorf("expr: unexpected token %s", Excerpt(p.cur.value))
 }
 
 // parseListLit parses `[expr, ...]`, invoked with cur on the opening '['.
@@ -957,7 +1119,7 @@ func (p *parser) parseListLit() (node, error) {
 		}
 	}
 	if p.cur.kind != tokRBracket {
-		return nil, fmt.Errorf("expr: expected ',' or ']' in a list literal, got %s", p.cur.value)
+		return nil, fmt.Errorf("expr: expected ',' or ']' in a list literal, got %s", Excerpt(p.cur.value))
 	}
 	p.advance() // consume ']'
 	return &listLit{elems: elems}, nil
@@ -985,10 +1147,10 @@ func (p *parser) parseObjectLit() (node, error) {
 				key = p.cur.value
 				p.advance()
 			default:
-				return nil, fmt.Errorf("expr: object literal keys are identifiers or quoted strings, got %s", p.cur.value)
+				return nil, fmt.Errorf("expr: object literal keys are identifiers or quoted strings, got %s", Excerpt(p.cur.value))
 			}
 			if p.cur.kind != tokColon {
-				return nil, fmt.Errorf("expr: expected ':' after object literal key %q, got %s", key, p.cur.value)
+				return nil, fmt.Errorf("expr: expected ':' after object literal key %q, got %s", Excerpt(key), Excerpt(p.cur.value))
 			}
 			p.advance() // consume ':'
 			val, err := p.parseExpr()
@@ -996,7 +1158,7 @@ func (p *parser) parseObjectLit() (node, error) {
 				return nil, err
 			}
 			if seen[key] {
-				return nil, fmt.Errorf("expr: object literal repeats key %q", key)
+				return nil, fmt.Errorf("expr: object literal repeats key %q", Excerpt(key))
 			}
 			seen[key] = true
 			keys = append(keys, key)
@@ -1009,7 +1171,7 @@ func (p *parser) parseObjectLit() (node, error) {
 		}
 	}
 	if p.cur.kind != tokRBrace {
-		return nil, fmt.Errorf("expr: expected ',' or '}' in an object literal, got %s", p.cur.value)
+		return nil, fmt.Errorf("expr: expected ',' or '}' in an object literal, got %s", Excerpt(p.cur.value))
 	}
 	p.advance() // consume '}'
 	return &objectLit{keys: keys, vals: vals}, nil
@@ -1035,7 +1197,7 @@ func (p *parser) parseFuncCallArgs(name string) (node, error) {
 		}
 	}
 	if p.cur.kind != tokRParen {
-		return nil, fmt.Errorf("expr: expected ')' or ',' in call to %s, got %s", name, p.cur.value)
+		return nil, fmt.Errorf("expr: expected ')' or ',' in call to %s, got %s", name, Excerpt(p.cur.value))
 	}
 	p.advance() // consume ')'
 	// Arity is an authoring error like an unknown name, and belongs at the
@@ -1066,7 +1228,7 @@ func (p *parser) parseLambdaComb(name string) (node, error) {
 		return nil, err
 	}
 	if p.cur.kind != tokComma {
-		return nil, fmt.Errorf("expr: %s() expects a comma after the collection, got %s", name, p.cur.value)
+		return nil, fmt.Errorf("expr: %s() expects a comma after the collection, got %s", name, Excerpt(p.cur.value))
 	}
 	p.advance()
 	var initNode node
@@ -1076,7 +1238,7 @@ func (p *parser) parseLambdaComb(name string) (node, error) {
 			return nil, err
 		}
 		if p.cur.kind != tokComma {
-			return nil, fmt.Errorf("expr: reduce() expects a comma after the initial value, got %s", p.cur.value)
+			return nil, fmt.Errorf("expr: reduce() expects a comma after the initial value, got %s", Excerpt(p.cur.value))
 		}
 		p.advance()
 	}
@@ -1092,7 +1254,7 @@ func (p *parser) parseLambdaComb(name string) (node, error) {
 		return nil, fmt.Errorf("expr: %s() lambda takes %d parameter(s), got %d", name, want, len(params))
 	}
 	if p.cur.kind != tokRParen {
-		return nil, fmt.Errorf("expr: expected ')' to close %s(), got %s", name, p.cur.value)
+		return nil, fmt.Errorf("expr: expected ')' to close %s(), got %s", name, Excerpt(p.cur.value))
 	}
 	p.advance() // consume ')'
 	return &lambdaCombNode{name: name, coll: coll, init: initNode, params: params, body: body}, nil
@@ -1116,17 +1278,17 @@ func (p *parser) parseLambda(ctxName string) ([]string, node, error) {
 			break
 		}
 		if p.cur.kind != tokRParen {
-			return nil, nil, fmt.Errorf("expr: expected ')' after %s() lambda parameters, got %s", ctxName, p.cur.value)
+			return nil, nil, fmt.Errorf("expr: expected ')' after %s() lambda parameters, got %s", ctxName, Excerpt(p.cur.value))
 		}
 		p.advance()
 	case tokIdent:
 		params = append(params, p.cur.value)
 		p.advance()
 	default:
-		return nil, nil, fmt.Errorf("expr: %s() expects a lambda (e.g. x => x.field), got %s", ctxName, p.cur.value)
+		return nil, nil, fmt.Errorf("expr: %s() expects a lambda (e.g. x => x.field), got %s", ctxName, Excerpt(p.cur.value))
 	}
 	if p.cur.kind != tokArrow {
-		return nil, nil, fmt.Errorf("expr: %s() lambda expects '=>' after parameters, got %s", ctxName, p.cur.value)
+		return nil, nil, fmt.Errorf("expr: %s() lambda expects '=>' after parameters, got %s", ctxName, Excerpt(p.cur.value))
 	}
 	p.advance()
 	for _, pm := range params {

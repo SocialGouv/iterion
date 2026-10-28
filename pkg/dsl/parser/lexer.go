@@ -2,15 +2,11 @@ package parser
 
 import (
 	"fmt"
-	"math"
-	"os"
-	"strconv"
 	"strings"
-	"sync"
 	"unicode"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/readbudget"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
-	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // Safety limits to prevent DoS from malicious .bot files.
@@ -19,22 +15,25 @@ const (
 	maxNestingDepth = 100              // max indentation nesting levels
 )
 
-// ReadBudgetEnv names the operator's override of the read budget.
-const ReadBudgetEnv = "ITERION_DSL_READ_BUDGET"
+// ReadBudgetEnv names the operator's override of the read budget
+// (readbudget.Env).
+const ReadBudgetEnv = readbudget.Env
 
-// DefaultReadBudget is how much one bot may ask the reader to record:
-// 2^20 records of its .bot files together — every word, value, punctuation
-// mark, prompt line (blank or not), line end, indentation step and the end
-// of each file is one, a comment two (commentRecords) — and 2^20 of a
-// YAML twin's reading, a value one and a comment line two (pkg/dsl/author).
-// The size cap bounds each file's bytes; the
-// budget bounds what they turn into, which a dense shape makes hundreds of
-// bytes of memory per byte of source (one flat list of one-letter names, a
-// line of commas, a run of comment lines). The lexer spends it as it reads,
+// DefaultReadBudget is how much one bot may ask the reader to record
+// (readbudget.Default): 2^20 records of its .bot files together — every
+// word, value, punctuation mark, prompt line (blank or not), line end,
+// indentation step and the end of each file is one, a comment two
+// (commentRecords) — and 2^20 of a YAML twin's reading, a value one and a
+// comment line two (pkg/dsl/author). The size cap bounds each file's bytes;
+// the budget bounds what they turn into, which a dense shape makes hundreds
+// of bytes of memory per byte of source (one flat list of one-letter names,
+// a line of commas, a run of comment lines). The lexer spends it as it reads,
 // so a bot past it is refused before the work it asks for, not after; the
 // files of one bot share it (NewUnitBudget), so splitting a bot into
-// fragments does not multiply what one load of it costs.
-const DefaultReadBudget = 1 << 20
+// fragments does not multiply what one load of it costs. An expression lives
+// inside one string, which the lexer counts as a single record: the
+// expression parser spends the same budget on its tokens (pkg/dsl/expr).
+const DefaultReadBudget = readbudget.Default
 
 // commentRecords is what a comment spends of the read budget. A token the
 // parser reads and drops costs the readers its token; a comment is
@@ -44,34 +43,14 @@ const DefaultReadBudget = 1 << 20
 // peak memory on /api/parse's work, 826 against 407 on the canonical form.
 const commentRecords = 2
 
-// ReadBudget is the budget in force: DefaultReadBudget, or the count the
-// operator sets in ITERION_DSL_READ_BUDGET where the source is read — 0
-// removes the budget. A value that is not a count (a sign, a unit, a
-// number past the int range) keeps the default, and the process says so
-// once on stderr, naming the value and the budget it applied — as an
-// error, which no ITERION_LOG_LEVEL silences: the operator meant
-// something, and silence would replace it unseen.
+// ReadBudget is the budget in force (readbudget.Read): DefaultReadBudget, or
+// the count the operator sets in ITERION_DSL_READ_BUDGET where the source is
+// read — 0 removes the budget. Every reader of a bot resolves it there, the
+// YAML twin and the expression parser included, so one knob governs them all
+// and a level added to the resolver reaches each at once.
 func ReadBudget() int {
-	v := strings.TrimSpace(os.Getenv(ReadBudgetEnv))
-	if v == "" {
-		return DefaultReadBudget
-	}
-	n, err := strconv.Atoi(v)
-	switch {
-	case err != nil || n < 0:
-		if _, warned := readBudgetWarned.LoadOrStore(v, true); !warned {
-			iterlog.NewFromEnv(os.Stderr).Error("dsl: invalid %s=%q (a count of records, 0 for none); using the default %d", ReadBudgetEnv, v, DefaultReadBudget)
-		}
-		return DefaultReadBudget
-	case n == 0:
-		return math.MaxInt
-	}
-	return n
+	return readbudget.Read()
 }
-
-// readBudgetWarned holds the invalid values already said, once each per
-// process: every source read would otherwise say it again.
-var readBudgetWarned sync.Map
 
 // ReadBudgetMessage is the refusal of a source past budget, the wording
 // every reader of the budget gives (the lexer, the YAML twin's speller).

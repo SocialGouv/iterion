@@ -405,4 +405,11 @@ const (
 	// super-admin run's authority reaches the engine (philosophy #1: warn
 	// rather than reject, and never remove a capability to close a hole).
 	DiagMemoryGlobalWriteGated DiagCode = "C319" // memory: visibility: "global" with write: true — memory_write is NOT installed for a run (warning)
+	// An expression lives inside one string, which the lexer counts as a
+	// single record of the read budget: a 10 MiB `a+a+…` passed the budget
+	// unseen and built millions of nodes at compile time (#2627). The
+	// expression parser spends the same budget on its tokens, the
+	// expressions of a bot together (expr.ParseOn), and refuses the one
+	// the count runs out on — before the tree it would have built.
+	DiagExprPastReadBudget DiagCode = "C320" // an expression past the read budget (ITERION_DSL_READ_BUDGET): its tokens, with the bot's other expressions, exceed the count (error)
 )

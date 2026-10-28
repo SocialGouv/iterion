@@ -236,6 +236,7 @@ func (p *parser) addErrorHint(code DiagCode, t Token, msg, hint string) {
 	if hint == "" {
 		hint = HintFor(code)
 	}
+	// Report.Add holds the message and the hint to expr.MaxDiagnosticText.
 	p.report.Add(Diagnostic{
 		Code:     code,
 		Severity: SeverityError,
