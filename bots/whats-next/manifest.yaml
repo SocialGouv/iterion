@@ -1,7 +1,8 @@
 name: whats-next
 display_name: Nexie
 icon: 🧭
-version: 0.3.7
+version: 0.3.8
+## 0.3.8 — an empty seed asks Nexie to open; supplied messages stay verbatim.
 ## 0.3.4 — the bundled DSL cheatsheet is regenerated: a var declaration can
 ## carry a `[matching: "<re>"]` pattern constraint (#1350).
 ## 0.3.3 — the DSL cheatsheet's template table gains the `contract` shape

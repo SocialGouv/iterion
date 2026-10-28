@@ -379,12 +379,13 @@ human chat:
 
 ## Entry projection: turn 1's operator_message comes from
 ## vars.initial_message so nexie has ONE input contract for entry and
-## loop alike. Deterministic, never blocks.
+## loop alike. An empty seed asks Nexie to open the session; supplied
+## messages stay verbatim, including native slash commands.
 compute seed:
   input: seed_input
   output: turn_input
   expr:
-    operator_message: "vars.initial_message"
+    operator_message: "if(vars.initial_message == '', 'Open the session with the board state and a recommendation, following the conversation contract.', vars.initial_message)"
 
 ## Deterministic projection for the when-clauses + reply passthrough
 ## (the chat node's input references outputs.gate so it never has to
