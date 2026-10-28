@@ -1,13 +1,22 @@
 package runtime
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/internal/shellquote"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/devcontainer"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // Every program iterion starts INSIDE the container runs under that
@@ -63,81 +72,217 @@ func TestDeniedEnvClassCoversTheCommandsIterionRunsInTheContainer(t *testing.T) 
 	}
 }
 
-// The table above is a claim about THIS tree: the commands it names must
-// still be the ones iterion starts in a container. A command that leaves
-// the tree takes its rows with it — and the hole this guards against is a
-// command that ARRIVES without them, so the inventory is read from the
-// code, not from memory.
-func TestTheInContainerCommandTableNamesCommandsThisTreeRuns(t *testing.T) {
-	// The argv heads of every Run.Exec / ExecOpts call site of the runtime,
-	// plus the generated post-create prologue: a literal first word.
-	execArgv := regexp.MustCompile(`\[\]string\{"([a-z][a-z0-9_-]*)"`)
-	seen := map[string]bool{}
-	for _, name := range []string{"scratch_bank.go", "sandbox.go", "sandbox_mounts.go", "sandbox_devbox.go", "sandbox_secret_files.go"} {
-		body, err := os.ReadFile(filepath.Join(".", name))
+// A table is a claim; the two tests below RUN two of its rows. The deny
+// class is what keeps a reviewed repository's containerEnv out of the steps
+// the operator started, and a row that nobody ever drove is a sentence, not a
+// guarantee: #2316's hole was found twice at a program the table did not
+// name, and the fix landed with no end-to-end witness at all (#2358). Each
+// test carries a CONTROL that keeps the planted value in the container
+// environment: the repository's program must then run, which proves the
+// scenario still has its premise — a quiet verdict is the class's doing, not
+// that of a tar or a devbox which ignores the variable.
+
+// containerEnvRun runs a sandbox's commands on the host the way the container
+// runs them: under the container's environment — the spec's Env, which the
+// drivers hand the container — plus the exec's own, and nothing of the host's
+// but the PATH its binaries are found on.
+type containerEnvRun struct {
+	*podRun
+	env map[string]string
+}
+
+func (r containerEnvRun) Command(ctx context.Context, argv []string, opts sandbox.ExecOpts) *exec.Cmd {
+	c := r.podRun.Command(ctx, argv, opts)
+	c.Env = make([]string, 0, len(r.env)+len(opts.Env)+1)
+	for k, v := range r.env {
+		c.Env = append(c.Env, k+"="+v)
+	}
+	for k, v := range opts.Env {
+		c.Env = append(c.Env, k+"="+v)
+	}
+	c.Env = append(c.Env, "PATH="+os.Getenv("PATH"))
+	return c
+}
+
+func (r containerEnvRun) Exec(ctx context.Context, argv []string, opts sandbox.ExecOpts) (sandbox.ExecResult, error) {
+	c := r.Command(ctx, argv, opts)
+	c.Stdin = opts.Stdin
+	return sandbox.ExecCmd(c, opts)
+}
+
+// resolveRepoContainerEnv resolves the run's sandbox for wf over a repository
+// whose devcontainer.json carries containerEnv, and returns the container's
+// environment with the names the run reports it removed.
+func resolveRepoContainerEnv(t *testing.T, wf *ir.Workflow, containerEnv map[string]string) (map[string]string, []string) {
+	t.Helper()
+	planted, err := json.Marshal(containerEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := writeRepoDevcontainer(t, `{"image":"alpine:3.20","containerEnv":`+string(planted)+`}`)
+	res, err := resolveSandboxSpecWithFallback(wf, repo, "", "", "ghcr.io/test/sandbox:v1", "")
+	if err != nil {
+		t.Fatalf("resolve the sandbox spec: %v", err)
+	}
+	return res.spec.Env, res.deniedEnv
+}
+
+// The table's tar row, run: a reviewed repository's devcontainer.json plants
+// TAR_OPTIONS with a checkpoint action, and the scratch bank's own tar steps
+// — bankScratch and restoreScratch, driven for real under GNU tar — run with
+// the container environment the run resolves from that repository.
+func TestTheScratchBankTarStepsNeverRunTheRepositorysProgram(t *testing.T) {
+	if out, err := exec.Command("tar", "--version").Output(); err != nil || !bytes.Contains(out, []byte("GNU tar")) {
+		t.Skip("TAR_OPTIONS is GNU tar's, and no GNU tar is on PATH")
+	}
+	marker := filepath.Join(t.TempDir(), "ran")
+	program := filepath.Join(t.TempDir(), "planted.sh")
+	// tar splits TAR_OPTIONS on blanks: the program's path is one word.
+	if strings.ContainsAny(program, " \t\n") {
+		t.Skipf("the test's temporary path %q holds a blank", program)
+	}
+	if err := os.WriteFile(program, []byte("#!/bin/sh\necho ran >> "+shellquote.Quote(marker)+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Whether the planted program CAN run here is the machine's business (a
+	// noexec temporary directory), and it is asked before the control, so
+	// the control's failure keeps one meaning: the program runs, and tar did
+	// not run it.
+	if err := exec.Command(program).Run(); err != nil {
+		t.Skipf("the planted program does not run from %s (%v): this scenario needs an executable temporary directory", filepath.Dir(program), err)
+	}
+	if err := os.Remove(marker); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	planted := "--checkpoint=1 --checkpoint-action=exec=" + program
+	env, denied := resolveRepoContainerEnv(t, &ir.Workflow{Sandbox: &ir.SandboxSpec{Mode: string(sandbox.ModeAuto)}},
+		map[string]string{"TAR_OPTIONS": planted})
+	if !slices.Contains(denied, "TAR_OPTIONS") {
+		t.Errorf("deniedEnv = %v, want TAR_OPTIONS named", denied)
+	}
+
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-scratch-tar-options"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	bs := store.AsScratchBankStore(s)
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "notes.txt"), []byte("kept across the park\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// runs counts the planted program's runs so far.
+	runs := func(t *testing.T) int {
+		t.Helper()
+		b, err := os.ReadFile(marker)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		return bytes.Count(b, []byte("ran\n"))
+	}
+	// steps banks src and restores the bank under env, the container's, and
+	// reports whether the planted program ran in each tar step.
+	steps := func(t *testing.T, env map[string]string) (inBank, inRestore bool) {
+		t.Helper()
+		before := runs(t)
+		if got := bankScratch(ctx, containerEnvRun{podRun: &podRun{scratch: src}, env: env}, sandboxScratchContainerPath, bs, runID, scratchBankMaxBytes); !got.banked {
+			t.Fatalf("not banked: %+v", got)
+		}
+		inBank = runs(t) > before
+		body, err := bs.OpenScratchBank(ctx, runID)
 		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
+			t.Fatal(err)
 		}
-		for _, m := range execArgv.FindAllStringSubmatch(string(body), -1) {
-			seen[m[1]] = true
+		defer body.Close()
+		dst := filepath.Join(t.TempDir(), "scratch")
+		before = runs(t)
+		if err := restoreScratch(ctx, containerEnvRun{podRun: &podRun{scratch: dst}, env: env}, sandboxScratchContainerPath, body); err != nil {
+			t.Fatalf("restore: %v", err)
 		}
-	}
-	// The commands the table claims iterion starts, which this file's own
-	// sites must still show. The rest of the table's commands (the CLIs,
-	// npx, go, kubectl, docker) are started by other packages or by an
-	// operator-authored node, so they are not greppable here.
-	for _, want := range []string{"sh", "tar"} {
-		if !seen[want] {
-			t.Errorf("the table claims iterion runs %q in the container, but no Run.Exec site of this package starts it any more: re-read the table against the tree", want)
+		inRestore = runs(t) > before
+		if b, err := os.ReadFile(filepath.Join(dst, "notes.txt")); err != nil || string(b) != "kept across the park\n" {
+			t.Fatalf("the scratch did not come back: %q %v", b, err)
 		}
+		return inBank, inRestore
 	}
-	if len(seen) == 0 {
-		t.Fatal("no in-container command found at all: the inventory regexp no longer matches this package")
+
+	if inBank, inRestore := steps(t, map[string]string{"TAR_OPTIONS": planted}); !inBank || !inRestore {
+		t.Fatalf("control: with TAR_OPTIONS=%q in the container, the planted program ran in the bank %v and the restore %v, want both — the GNU tar here no longer runs a TAR_OPTIONS checkpoint action, and this scenario lost its premise", planted, inBank, inRestore)
 	}
-	// A command this package starts that the table never mentions is the
-	// shape that cost two rounds of review: surface it rather than let it
-	// pass. Listed here are the ones reviewed as carrying no env-named
-	// options, program or configuration file.
-	reviewed := map[string]string{
-		"sh":       "in the table",
-		"tar":      "in the table",
-		"rm":       "coreutils reads no env for options",
-		"mkdir":    "coreutils reads no env for options",
-		"cp":       "coreutils reads no env for options",
-		"id":       "coreutils reads no env for options",
-		"test":     "a shell builtin",
-		"true":     "a no-op probe",
-		"cat":      "coreutils reads no env for options",
-		"printf":   "a shell builtin",
-		"env":      "started only to set names explicitly",
-		"getent":   "reads no env for options",
-		"devbox":   "its nix is in the table (NIX_CONFIG); DEVBOX_NO_PROMPT is set by the prologue itself",
-		"nix":      "in the table",
-		"git":      "in the table",
-		"iterion":  "in the table (the claw runner)",
-		"kubectl":  "in the table",
-		"docker":   "in the table",
-		"chmod":    "coreutils reads no env for options",
-		"chown":    "coreutils reads no env for options",
-		"ln":       "coreutils reads no env for options",
-		"mv":       "coreutils reads no env for options",
-		"sleep":    "coreutils reads no env for options",
-		"touch":    "coreutils reads no env for options",
-		"umask":    "a shell builtin",
-		"bash":     "in the table",
-		"readlink": "coreutils reads no env for options",
-		"stat":     "coreutils reads no env for options",
-		"uname":    "reads no env for options",
-		"whoami":   "coreutils reads no env for options",
+	if inBank, inRestore := steps(t, env); inBank || inRestore {
+		t.Errorf("the repository's program ran in iterion's own tar step (bank %v, restore %v): its TAR_OPTIONS reached the container environment %v", inBank, inRestore, env)
 	}
-	var unreviewed []string
-	for cmd := range seen {
-		if reviewed[cmd] == "" {
-			unreviewed = append(unreviewed, cmd)
+}
+
+// The table's nix row, run: a reviewed repository's devcontainer.json plants
+// NIX_CONFIG with a `plugin-files`, which nix dlopens on any invocation, and
+// the post-create prologue iterion generates runs under `sh -c` with the
+// container environment the run resolves from it — a `devbox` on PATH records
+// the NIX_CONFIG it, hence the nix it drives, starts under. The prologue
+// yields to a NIX_CONFIG already set (the control), so the class alone keeps
+// the repository's value out, and the workflow's `sandbox.env:` still decides.
+func TestTheDevboxInstallIterionRunsNeverTakesTheRepositorysNixConfig(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh on PATH")
+	}
+	const (
+		planted   = "plugin-files = /workspaces/repo/.devcontainer/planted.so"
+		operators = "substituters = https://cache.operator.example"
+		iterions  = "build-users-group ="
+	)
+	snippet := devboxInstallSnippet([]devboxProject{{label: "repo", dir: writeDevboxConfig(t, t.TempDir(), "jq@1.8")}})
+	// seen runs the prologue under env, the container's, and returns the
+	// NIX_CONFIG devbox was started under.
+	seen := func(t *testing.T, env map[string]string) string {
+		t.Helper()
+		bin := t.TempDir()
+		record := filepath.Join(t.TempDir(), "nix-config")
+		fakeDevbox := "#!/bin/sh\nprintf '%s' \"${NIX_CONFIG-unset}\" > " + shellquote.Quote(record) + "\n"
+		if err := os.WriteFile(filepath.Join(bin, "devbox"), []byte(fakeDevbox), 0o755); err != nil {
+			t.Fatal(err)
 		}
+		cmd := exec.Command(sh, "-c", snippet)
+		for k, v := range env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+		// HOME and TMPDIR are the test's own: the prologue keeps its scratch
+		// under $TMPDIR and may link a profile under $HOME.
+		cmd.Env = append(cmd.Env, "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "HOME="+t.TempDir(), "TMPDIR="+t.TempDir())
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("the prologue exited non-zero: %v\n%s", err, stderr.String())
+		}
+		got, err := os.ReadFile(record)
+		if err != nil {
+			t.Fatalf("the prologue never started devbox: %v\n%s", err, stderr.String())
+		}
+		return string(got)
 	}
-	if len(unreviewed) > 0 {
-		t.Errorf("this package starts %s in the container, and neither the table above nor its reviewed list mentions it: say what it reads from the environment, then deny it or write down why it is unreachable (%s)",
-			strings.Join(unreviewed, ", "), "#2316")
+
+	if got := seen(t, map[string]string{"NIX_CONFIG": planted}); got != planted {
+		t.Fatalf("control: with NIX_CONFIG=%q in the container, devbox started under %q — the prologue no longer yields to a NIX_CONFIG already set, and this scenario lost its premise", planted, got)
 	}
+	t.Run("the repository's devcontainer", func(t *testing.T) {
+		env, denied := resolveRepoContainerEnv(t, &ir.Workflow{Sandbox: &ir.SandboxSpec{Mode: string(sandbox.ModeAuto)}},
+			map[string]string{"NIX_CONFIG": planted})
+		if got := seen(t, env); got != iterions {
+			t.Errorf("devbox started under NIX_CONFIG %q, want iterion's own %q: the repository's devcontainer.json reached the nix iterion's provisioning drives", got, iterions)
+		}
+		if !slices.Contains(denied, "NIX_CONFIG") {
+			t.Errorf("deniedEnv = %v, want NIX_CONFIG named", denied)
+		}
+	})
+	t.Run("the workflow's sandbox.env", func(t *testing.T) {
+		wf := &ir.Workflow{Sandbox: &ir.SandboxSpec{
+			Mode: string(sandbox.ModeAuto),
+			Env:  map[string]string{"NIX_CONFIG": operators},
+		}}
+		env, _ := resolveRepoContainerEnv(t, wf, map[string]string{"NIX_CONFIG": planted})
+		if got := seen(t, env); got != operators {
+			t.Errorf("devbox started under NIX_CONFIG %q, want the workflow's %q: the operator's sandbox.env decides", got, operators)
+		}
+	})
 }
