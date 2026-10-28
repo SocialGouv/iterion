@@ -36,17 +36,29 @@ export function ClampText({
           : { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }
       }
       onFocus={(e) => {
-        (e.currentTarget as HTMLElement).style.whiteSpace = "normal";
-        (e.currentTarget as HTMLElement).style.overflow = "visible";
-        (e.currentTarget as HTMLElement).style.display = "block";
+        // The inline style is SNAPSHOT, not mirrored property by property:
+        // re-deriving it on blur means three places that must agree, and two
+        // of them drifted — a `display` left on a single-line clamp and a
+        // `white-space` left on a multi-line one, each surviving the blur for
+        // good and breaking the block's layout from then on.
+        const el = e.currentTarget as HTMLElement;
+        el.dataset.clampStyle = el.style.cssText;
+        // Only the property the clamp actually set: a multi-line clamp wraps
+        // already, and writing `normal` over an inherited `pre-wrap` would
+        // collapse the newlines of the very text the focus just revealed.
+        if (lines === 1) el.style.whiteSpace = "normal";
+        el.style.overflow = "visible";
+        el.style.display = "block";
+        // The clamp itself, not only the box model it was declared in:
+        // `-webkit-line-clamp` is no longer inert outside `-webkit-box`
+        // (Chromium maps it onto the standard line-clamp for block
+        // containers), so leaving it behind would reveal nothing.
+        el.style.webkitLineClamp = "";
+        el.style.webkitBoxOrient = "";
       }}
       onBlur={(e) => {
-        // Every property onFocus wrote is restored, `display` included: a
-        // single-line clamp has none of its own, and leaving the focused
-        // `block` behind breaks the line of an inline <span> for good.
-        (e.currentTarget as HTMLElement).style.whiteSpace = lines > 1 ? "normal" : "nowrap";
-        (e.currentTarget as HTMLElement).style.overflow = "hidden";
-        (e.currentTarget as HTMLElement).style.display = lines > 1 ? "-webkit-box" : "";
+        const el = e.currentTarget as HTMLElement;
+        el.style.cssText = el.dataset.clampStyle ?? "";
       }}
     >
       {text}

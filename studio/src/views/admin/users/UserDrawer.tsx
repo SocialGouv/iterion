@@ -328,7 +328,7 @@ function OrgsSection({
                     value={o.role}
                     roles={ORG_ROLES}
                     disabled={busy}
-                    ariaLabel={`Org role for ${o.org_name ?? o.org_id}`}
+                    ariaLabel={`Org role for ${o.org_slug ?? o.org_id}`}
                     confirmChangeFrom={o.role}
                     confirm={confirm}
                     onChange={(role) =>
@@ -434,6 +434,17 @@ function TeamsSection({
   confirm: Confirmer;
 }) {
   const userID = detail.user.id;
+  // What every control in a team row is qualified by: the pair the row SHOWS
+  // in its first two cells, so a voice-control user can read the qualifier
+  // off the screen. A team NAME repeats by design (it is per-org), but the
+  // slug cannot — `teams.slug` carries a global unique index (`slug_unique`,
+  // pkg/identity/mongo.go), which is why no position is needed here — and
+  // the fallback `team_id` is unique too. The organization is there to be
+  // read, not to disambiguate; the drift this console exists to show carries
+  // no org at all (both fields are omitempty on the wire) and says so rather
+  // than interpolating `undefined`.
+  const rowKeyOf = (t: AdminUserTeamView) =>
+    `${t.team_slug ?? t.team_id} in ${t.org_name ?? t.org_id ?? "—"}`;
   const [pickedOrgID, setPickedOrgID] = useState("");
   const [teamID, setTeamID] = useState("");
   const [role, setRole] = useState<Role>("member");
@@ -558,21 +569,18 @@ function TeamsSection({
                     value={t.role}
                     roles={TEAM_ROLES}
                     disabled={busy}
-                    ariaLabel={`Team role for ${t.team_name ?? t.team_id}`}
+                    ariaLabel={`Team role for ${rowKeyOf(t)}`}
                     confirmChangeFrom={t.role}
                     confirm={confirm}
                     onChange={(role) => run(() => updateMemberRole(t.team_id, userID, role))}
                   />
                 </Td>
                 <Td align="right">
-                  {/* Team names are per-organization, so the team alone
-                      still collides across two orgs — the pair the row
-                      displays in its first two cells is what cannot. */}
                   <Button
                     size="sm"
                     variant="danger"
                     disabled={busy}
-                    aria-label={`Revoke ${t.team_slug ?? t.team_id} in ${t.org_name ?? t.org_id}`}
+                    aria-label={`Revoke ${rowKeyOf(t)}`}
                     onClick={() => void removeFrom(t)}
                   >
                     Revoke

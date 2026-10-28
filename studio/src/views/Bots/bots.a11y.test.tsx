@@ -73,6 +73,12 @@ function mountGallery(): HTMLElement {
   ).container;
 }
 
+// Both stores are module singletons: what the seeding below overwrites is
+// put back, so the file cannot leave a no-op loader behind for a sibling
+// suite the day vitest's per-file isolation is turned off.
+const BOTS_STATE = useBotsStore.getState();
+const SERVER_STATE = useServerInfoStore.getState();
+
 beforeEach(() => {
   // Seeded, not fetched: the view's effect calls refetch() when bots are
   // already there, and the store's loader is the API's business, not this
@@ -96,7 +102,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  useBotsStore.setState({ bots: null, discoveryErrors: [] });
+  useBotsStore.setState(BOTS_STATE);
+  useServerInfoStore.setState(SERVER_STATE);
 });
 
 describe("a11y / Bots gallery", () => {
@@ -120,6 +127,12 @@ describe("a11y / Bots gallery", () => {
   it("has no violation on the empty catalog", async () => {
     useBotsStore.setState({ bots: [] });
     const container = mountGallery();
+    // Same rule as above: the empty state is what this entry is over, and a
+    // view that rendered nothing at all would pass without it. Awaited, so
+    // the trigger read cannot land while axe is walking the tree.
+    expect(
+      await screen.findByText("No bots discovered in this workspace"),
+    ).toBeTruthy();
     await expectNoViolationsStrict(container, "BotsView (empty)");
   });
 });

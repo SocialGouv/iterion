@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const getReviewScope = vi.hoisted(() => vi.fn());
@@ -99,6 +99,10 @@ describe("a11y / ReviewScopePanel", () => {
   // controls, and one row of one group cannot show whether their names say
   // which file they act on.
   it("has no violation over a populated scope", async () => {
+    // The response's own shape (ReviewScopeGroup + RunFile), and BOTH header
+    // branches: a group that records a node renders its id as code, and the
+    // trailing group — the one that collects work from node kinds recording
+    // no boundary — carries an empty node_id and renders its label instead.
     getReviewScope.mockResolvedValue({
       run_id: "run-1",
       gate_seq: 1,
@@ -107,17 +111,20 @@ describe("a11y / ReviewScopePanel", () => {
       available: true,
       groups: [
         {
-          kind: "modified",
+          node_id: "implement",
+          label: "Implement",
+          iteration: 2,
           files: [
-            { path: "pkg/server/auth.go", status: "modified", additions: 4, deletions: 1 },
-            { path: "pkg/server/routes.go", status: "modified", additions: 2, deletions: 0 },
+            { path: "pkg/server/auth.go", status: "M", added: 4, deleted: 1 },
+            { path: "pkg/server/routes.go", status: "M", added: 2, deleted: 0 },
           ],
         },
         {
-          kind: "added",
+          node_id: "",
+          label: "Other changes in range",
           files: [
-            { path: "docs/adr/0144-x.md", status: "added", additions: 30, deletions: 0 },
-            { path: "studio/src/new.ts", status: "added", additions: 7, deletions: 0 },
+            { path: "docs/adr/0144-x.md", status: "A", added: 30, deleted: 0 },
+            { path: "studio/src/new.ts", status: "A", added: 7, deleted: 0 },
           ],
         },
       ],
@@ -131,12 +138,20 @@ describe("a11y / ReviewScopePanel", () => {
     });
     // The groups live inside a COLLAPSED <details>, whose content axe treats
     // as hidden — auditing the panel as it arrives would judge the summary
-    // line and nothing else. Open it, and prove the rows are now in scope
-    // before asserting they are clean.
+    // line and nothing else. Opened the way the operator opens it (the
+    // summary, not the attribute), so the state this entry audits is one a
+    // click is proven to reach, and the rows are shown to be in scope before
+    // they are asserted clean.
     const details = container.querySelector("details");
-    expect(details).not.toBeNull();
-    details?.setAttribute("open", "");
+    const summary = container.querySelector("summary");
+    expect(summary).not.toBeNull();
+    fireEvent.click(summary as Element);
+    expect(details?.open).toBe(true);
     expect(within(container).getByRole("button", { name: /pkg\/server\/auth\.go/ })).toBeTruthy();
+    // Both header branches are in scope, not just the one this fixture
+    // happens to list first.
+    expect(within(container).getByText("implement")).toBeTruthy();
+    expect(within(container).getByText("Other changes in range")).toBeTruthy();
     await expectNoViolationsStrict(container, "ReviewScopePanel");
   });
 

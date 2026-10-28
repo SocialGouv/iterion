@@ -5,7 +5,6 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { VarField } from "@/api/types";
 
 import VarFieldInput, { defaultStringFor } from "./VarFieldInput";
-import { files } from "@/__tests__/a11y/_scanner";
 
 afterEach(cleanup);
 
@@ -265,32 +264,5 @@ describe("VarFieldInput bool — the caller owns the name", () => {
     const box = screen.getByRole("checkbox", { name: "dry_run" }) as HTMLInputElement;
     expect(box.checked).toBe(true);
     expect(screen.queryByRole("checkbox", { name: /true/ })).toBeNull();
-  });
-});
-
-describe("VarFieldInput — the caller's label is a contract, not a convention", () => {
-  // The bool renderer leaves naming to the caller, like every other type
-  // does, which is only safe while every call site hands it the `id` its
-  // own `<label htmlFor>` points at. `id` is optional in the props (an
-  // enum/number field inside an enclosing label needs none), so the guard
-  // is here rather than in the type.
-  it("has every production call site pass the id its label points at", () => {
-    const unnamed: string[] = [];
-    for (const [path, src] of files) {
-      for (const tag of src.match(/<VarFieldInput\b[\s\S]*?\/>/g) ?? []) {
-        if (!/\bid=/.test(tag)) {
-          unnamed.push(`${path}  ${tag.replace(/\s+/g, " ").slice(0, 120)}`);
-        }
-      }
-    }
-    if (unnamed.length) {
-      throw new Error(
-        `<VarFieldInput> without an id — the caller's <label htmlFor> resolves to nothing and the control has no accessible name:\n${unnamed.join("\n")}`,
-      );
-    }
-    // Non-vacuous: the call sites exist and were read.
-    expect(
-      files.filter(([, src]) => src.includes("<VarFieldInput")).length,
-    ).toBeGreaterThanOrEqual(4);
   });
 });

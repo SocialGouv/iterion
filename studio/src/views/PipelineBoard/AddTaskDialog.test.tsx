@@ -43,6 +43,10 @@ describe("a11y / AddTaskDialog", () => {
   // the collapsed form alone would judge an empty fieldset.
   it("has no violation as it opens", async () => {
     renderDialog({ advanced: false });
+    // The collapsed form is what this entry is over: a dialog that rendered
+    // a title and a footer would pass without this.
+    expect(screen.getByText("Pipeline")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Advanced parameters" })).toBeTruthy();
     await expectNoViolationsStrict(screen.getByRole("dialog"), "AddTaskDialog");
   });
 

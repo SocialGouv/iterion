@@ -308,10 +308,15 @@ export interface AxeWaiver {
 /**
  * ClampText's clamped block is a focus stop carrying no widget role on
  * purpose (RGAA 10.12: focusing it reveals what the clamp hides), so
- * `focus-order-semantics` is wrong about it on every surface that embeds one,
- * and right about anything else the surface makes focusable. Declared beside
- * the waiver type rather than copied per entry: the claim belongs to the
- * primitive, and the copies are where its reason drifts.
+ * `focus-order-semantics` is wrong about it where the block is the outermost
+ * focusable at that node — and right about anything else the surface makes
+ * focusable. Declared beside the waiver type rather than copied per entry:
+ * the claim belongs to the primitive, and the copies are where its reason
+ * drifts.
+ *
+ * NOT for a surface that nests the block inside a control: a focus stop
+ * inside a button is a second tab stop for one control, which is a defect
+ * and not a recovery mechanism (#2803).
  */
 export const CLAMP_TEXT_WAIVER: AxeWaiver = {
   rule: "focus-order-semantics",

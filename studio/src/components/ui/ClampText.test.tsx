@@ -19,32 +19,45 @@ describe("ClampText", () => {
     expect(clamped.getAttribute("role")).toBeNull();
   });
 
-  it("unclamps on focus and re-clamps on blur, display included", () => {
+  // The blur restores the WHOLE inline style it snapshot, so these two assert
+  // the property the clamp owns and then the bytes: a mirror maintained
+  // property by property is what let a `display` and a `white-space` survive
+  // a blur, each breaking the block's layout from then on.
+  it("unclamps on focus and restores the clamp verbatim on blur", () => {
     const { container } = render(<ClampText text={TEXT} className="block" />);
     const clamped = container.querySelector("[data-clamp-text]") as HTMLElement;
+    const before = clamped.style.cssText;
     expect(clamped.style.overflow).toBe("hidden");
-    const displayBefore = clamped.style.display;
+    expect(clamped.style.whiteSpace).toBe("nowrap");
+    expect(clamped.style.display).toBe("");
     fireEvent.focus(clamped);
     expect(clamped.style.overflow).toBe("visible");
     expect(clamped.style.whiteSpace).toBe("normal");
     expect(clamped.style.display).toBe("block");
     fireEvent.blur(clamped);
-    expect(clamped.style.overflow).toBe("hidden");
-    expect(clamped.style.whiteSpace).toBe("nowrap");
-    // A single-line clamp owns no display of its own, so the focused `block`
-    // must not survive the blur: one Tab past an inline clamp would break its
-    // line for the rest of the page's life.
-    expect(clamped.style.display).toBe(displayBefore);
+    expect(clamped.style.cssText).toBe(before);
   });
 
-  it("keeps a multi-line clamp a -webkit-box after blur, not a nowrap line", () => {
+  it("leaves a multi-line clamp exactly as it found it, white-space included", () => {
     const { container } = render(<ClampText text={TEXT} lines={2} />);
     const clamped = container.querySelector("[data-clamp-text]") as HTMLElement;
+    const before = clamped.style.cssText;
+    expect(clamped.style.display).toBe("-webkit-box");
+    expect(clamped.style.whiteSpace).toBe("");
+    expect(clamped.style.webkitLineClamp).toBe("2");
     fireEvent.focus(clamped);
     expect(clamped.style.display).toBe("block");
+    // The clamp itself is lifted, not just its display mode: a residual
+    // -webkit-line-clamp keeps the text at two lines in a browser that maps
+    // it onto the standard property, and the reveal shows nothing.
+    expect(clamped.style.webkitLineClamp).toBe("");
+    expect(clamped.style.webkitBoxOrient).toBe("");
+    // Untouched while focused: a multi-line clamp wraps already, and writing
+    // `normal` over an inherited `pre-wrap` would collapse the newlines of
+    // the text the focus just revealed.
+    expect(clamped.style.whiteSpace).toBe("");
     fireEvent.blur(clamped);
-    expect(clamped.style.display).toBe("-webkit-box");
-    expect(clamped.style.whiteSpace).toBe("normal");
+    expect(clamped.style.cssText).toBe(before);
   });
 
   // The half that makes the focus stop safe rather than a trap: an assistive

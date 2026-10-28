@@ -55,12 +55,21 @@ describe("FieldDialog", () => {
 
 describe("a11y / board FieldDialog", () => {
   // The enum shape renders the one control the text shape does not (the tag
-  // field and its removable values), so both are audited rather than one.
+  // field and its removable values), so both are audited rather than one —
+  // and each entry pins the control that tells the two shapes apart, so
+  // neither can pass over a dialog that rendered its chrome and nothing else.
   it("has no violation editing an enum field", async () => {
-    await expectNoViolationsStrict(mountDialog("enum"), "FieldDialog (enum)");
+    const dialog = mountDialog("enum");
+    expect(screen.getByLabelText("Enum values")).toBeTruthy();
+    await expectNoViolationsStrict(dialog, "FieldDialog (enum)");
   });
 
   it("has no violation editing a plain text field", async () => {
-    await expectNoViolationsStrict(mountDialog("text"), "FieldDialog (text)");
+    const dialog = mountDialog("text");
+    expect(
+      screen.getByLabelText("Machine name (renaming rewrites the key on every issue)"),
+    ).toBeTruthy();
+    expect(screen.queryByLabelText("Enum values")).toBeNull();
+    await expectNoViolationsStrict(dialog, "FieldDialog (text)");
   });
 });

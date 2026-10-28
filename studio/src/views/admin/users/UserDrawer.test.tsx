@@ -219,34 +219,61 @@ describe("UserDrawer", () => {
   });
 });
 
-// Two of each, and the names deliberately COLLIDE: a fixture with distinct
-// display names cannot show whether a repeated control's name is unique. Two
-// organizations share the display name "Platform"; the same team name — and
-// slug — exists in both, which is legal because a team name is per-org.
+// Every DISPLAY name deliberately collides, which is the shape a fixture with
+// distinct names cannot judge: the two organizations share the name
+// "Platform", and so do the two teams. What cannot repeat is each row's slug
+// (`teams.slug` and `orgs.slug` are globally unique at the store), so that is
+// what the names carry.
 const PLACED = detail({
   orgs: [
     { org_id: "o1", org_name: "Platform", org_slug: "sdpc", role: "member" },
     { org_id: "o2", org_name: "Platform", org_slug: "dnum", role: "owner" },
   ],
   teams: [
-    { team_id: "t1", team_name: "Core", team_slug: "core", org_id: "o1", org_name: "SDPC", role: "admin" },
-    { team_id: "t2", team_name: "Core", team_slug: "core", org_id: "o2", org_name: "DNUM", role: "member" },
+    { team_id: "t1", team_name: "Core", team_slug: "pic", org_id: "o1", org_name: "Platform", role: "admin" },
+    { team_id: "t2", team_name: "Core", team_slug: "acci", org_id: "o2", org_name: "Platform", role: "member" },
   ],
   sso_links: [{ provider: "github", subject: "1234567", email: "someone@externes.example.org" }],
 });
 
+// The ordinary shape: the names read straight off the rows.
+const DISTINCT = detail({
+  orgs: [
+    { org_id: "o1", org_name: "SDPC", org_slug: "sdpc", role: "member" },
+    { org_id: "o2", org_name: "DNUM", org_slug: "dnum", role: "owner" },
+  ],
+  teams: [
+    { team_id: "t1", team_name: "PIC", team_slug: "pic", org_id: "o1", org_name: "SDPC", role: "admin" },
+    { team_id: "t2", team_name: "Acci", team_slug: "acci", org_id: "o2", org_name: "DNUM", role: "member" },
+  ],
+});
+
 describe("UserDrawer — repeated row controls name the row they act on", () => {
-  // Every membership row carries the same verb. Without the row in the name,
-  // a screen-reader user hears "Remove, Remove" and has to count table rows
-  // to know which organization the second one revokes.
-  it("qualifies each membership's destructive control by its tenant", async () => {
+  // Every membership row carries the same verb and, in this fixture, the same
+  // display name. Without the row's own identity in the name, a screen-reader
+  // user hears "Remove, Remove" and has to count table rows to know which
+  // organization the second one revokes.
+  it("qualifies every control of a membership row by its tenant", async () => {
     getAdminUser.mockResolvedValue(PLACED);
     mountDrawer();
 
     expect(await screen.findByRole("button", { name: "Remove from sdpc" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove from dnum" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Revoke core in SDPC" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Revoke core in DNUM" })).toBeTruthy();
+    // Both team rows display the name "Core" and the organization
+    // "Platform": the slug is the only thing that separates them, and it is
+    // rendered right under the name.
+    expect(screen.getByRole("button", { name: "Revoke pic in Platform" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Revoke acci in Platform" })).toBeTruthy();
+    // The role pickers sit in the same rows and repeat the same way: a fix
+    // that stopped at the destructive button would leave the class open.
+    expect(screen.getByRole("combobox", { name: "Org role for sdpc" })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "Org role for dnum" })).toBeTruthy();
+    expect(
+      screen.getByRole("combobox", { name: "Team role for pic in Platform" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("combobox", { name: "Team role for acci in Platform" }),
+    ).toBeTruthy();
     // The visible words are untouched: the name CONTAINS them (SC 2.5.3).
     for (const [visible, count] of [
       ["Remove", 2],
@@ -254,6 +281,34 @@ describe("UserDrawer — repeated row controls name the row they act on", () => 
     ] as const) {
       expect(screen.getAllByText(visible)).toHaveLength(count);
     }
+  });
+
+  it("reads the organization each row displays, not an id", async () => {
+    getAdminUser.mockResolvedValue(DISTINCT);
+    mountDrawer();
+
+    expect(await screen.findByRole("button", { name: "Revoke pic in SDPC" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Revoke acci in DNUM" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /o1|o2/ })).toBeNull();
+  });
+
+  // The row this console exists for: a team grant whose org is gone carries
+  // neither org name nor org id (both omitempty on the wire), and a template
+  // that reads them straight announces "Revoke orphan in undefined".
+  it("says so rather than announcing `undefined` for a grant with no org at all", async () => {
+    getAdminUser.mockResolvedValue(
+      detail({
+        orgs: [],
+        teams: [
+          { team_id: "t9", team_name: "Orphan", team_slug: "orphan", role: "admin", orphan_grant: true },
+        ],
+      }),
+    );
+    mountDrawer();
+
+    expect(await screen.findByRole("button", { name: "Revoke orphan in —" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /undefined/ })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: /undefined/ })).toBeNull();
   });
 });
 
@@ -284,6 +339,12 @@ describe("a11y / UserDrawer", () => {
     // label on role=status), so it is asserted the way it is announced.
     await screen.findByRole("status", { name: "Loading account…" });
     await expectNoViolationsStrict(dialog, "UserDrawer (loading)");
+    // Settled inside the test: released as the last statement, the query
+    // resolves after cleanup has unmounted the drawer and react-query's
+    // setState lands outside act(), attributed to whichever test runs next.
     release(detail());
+    await waitFor(() =>
+      expect(screen.queryByRole("status", { name: "Loading account…" })).toBeNull(),
+    );
   });
 });
