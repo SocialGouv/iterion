@@ -3,6 +3,8 @@ package runview
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -32,6 +34,12 @@ type CredentialPreviewRequest struct {
 	// Launcher layer so the preview's whitelist answers the launch the
 	// operator shapes, not the launch the defaults would make. Optional.
 	LLMRouting *llmroute.Policy `json:"llm_routing,omitempty"`
+	// Vars is the launch's own --var-style map the caller is about to
+	// launch with — the personal lane's operator-owned values, read the
+	// way fill, restore and the gate read them (ir.LaunchVarsView under
+	// ADR-129 §4). The webhook lane resolves its vars from the config
+	// layers and the delivery payload, so it takes no caller values.
+	Vars map[string]string `json:"vars,omitempty"`
 }
 
 type CredentialPreviewContext struct {
@@ -151,6 +159,18 @@ func (s *Service) PreviewCredentials(ctx context.Context, spec CredentialPreview
 	if err != nil {
 		return CredentialPreview{}, err
 	}
+	// The SAME unknown-input refusal the launch funnel applies (#1757): a
+	// preview over a var no var of the workflow declares would answer for a
+	// launch that refuses itself. The operator's opt-out rides with a
+	// visible warning instead of silently reading the defaults.
+	var previewWarnings []string
+	if unknown := ir.UnknownInputNames(wf, spec.Launch.Vars); len(unknown) > 0 {
+		if !spec.Launch.AllowUnknownInputs {
+			return CredentialPreview{}, fmt.Errorf("credential preview input %s names no var of the workflow (declared: %s)",
+				strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+		}
+		previewWarnings = append(previewWarnings, fmt.Sprintf("Input %s name(s) no var of the workflow — riding on the operator's opt-out (declared: %s).", strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", ")))
+	}
 	// The resolved policy rides the spec's TOP-LEVEL field — the server
 	// resolves it exactly as the launch site would — while the fold reads
 	// the launch shape's own. The two carriers are normalized HERE, before
@@ -175,5 +195,10 @@ func (s *Service) PreviewCredentials(ctx context.Context, spec CredentialPreview
 	if err := foldAndScreen(wf, &spec.Launch); err != nil {
 		return CredentialPreview{}, err
 	}
-	return p.PreviewCredentials(ctx, spec, wf)
+	out, err := p.PreviewCredentials(ctx, spec, wf)
+	if err != nil {
+		return CredentialPreview{}, err
+	}
+	out.Warnings = append(out.Warnings, previewWarnings...)
+	return out, nil
 }

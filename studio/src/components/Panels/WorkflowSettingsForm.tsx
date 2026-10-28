@@ -240,7 +240,7 @@ export default function WorkflowSettingsForm() {
         {Object.entries(resources).length === 0 && (
           <p className="text-caption text-fg-subtle mb-2">No resources defined.</p>
         )}
-        {Object.entries(resources).map(([name, cap]) => (
+        {Object.entries(resources).map(([name, cap], i) => (
           <div key={name} className="flex items-end gap-2 mb-1">
             <div className="flex-1">
               <CommittedTextField
@@ -262,7 +262,9 @@ export default function WorkflowSettingsForm() {
             <IconButton
               variant="danger"
               size="sm"
-              label="Remove resource"
+              // Sibling rows repeat the visible ✕; the resource name is
+              // what a screen reader needs to tell them apart.
+              label={`Remove resource ${name || i + 1}`}
               onClick={() => {
                 const next = { ...resources };
                 delete next[name];

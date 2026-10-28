@@ -167,6 +167,14 @@ func (o *ModelOverrides) add(selector string, ov NodeModelOverride) {
 	o.rules = append(o.rules, modelOverrideRule{selector: selector, NodeModelOverride: ov})
 }
 
+// FieldSource names the rule that won a field for a node: the selector
+// the winning rule was written under. Zero value = the field stayed
+// unset. A caller matches it against the entries it folded to name where
+// a composed field came from.
+type FieldSource struct {
+	Selector string
+}
+
 // ForNode resolves the effective override for a node id + kind. Returns an
 // empty override when nothing matches (the caller then keeps the node's DSL
 // values). Resolution is per-field: the (rank, score) pair decides, compared
@@ -175,7 +183,17 @@ func (o *ModelOverrides) add(selector string, ov NodeModelOverride) {
 // beats a more specific rule of a lower one (the precedence line), while
 // rules of the same layer keep the specificity ordering.
 func (o ModelOverrides) ForNode(id string, kind ir.NodeKind) NodeModelOverride {
+	out, _, _ := o.ForNodeFieldSources(id, kind)
+	return out
+}
+
+// ForNodeFieldSources resolves exactly as ForNode and additionally names,
+// for the fields the composed-pair check reads (backend, provider), the
+// rule that won each. ONE walk: ForNode delegates here, so the pair's
+// provenance and the resolution it names cannot drift (#2637).
+func (o ModelOverrides) ForNodeFieldSources(id string, kind ir.NodeKind) (NodeModelOverride, FieldSource, FieldSource) {
 	var out NodeModelOverride
+	var backendSrc, providerSrc FieldSource
 	type best struct{ rank, score int }
 	// Seeded below every rank: a rule's rank is a layer, and a producer
 	// BELOW the DSL layer stamps -1 — a rule is never dropped for its
@@ -192,18 +210,20 @@ func (o ModelOverrides) ForNode(id string, kind ir.NodeKind) NodeModelOverride {
 		}
 		if r.Backend != "" && takes(r.rank, score, bb) {
 			out.Backend, bb = r.Backend, best{r.rank, score}
+			backendSrc = FieldSource{Selector: r.selector}
 		}
 		if r.Model != "" && takes(r.rank, score, bm) {
 			out.Model, bm = r.Model, best{r.rank, score}
 		}
 		if r.Provider != "" && takes(r.rank, score, bp) {
 			out.Provider, bp = r.Provider, best{r.rank, score}
+			providerSrc = FieldSource{Selector: r.selector}
 		}
 		if r.Effort != "" && takes(r.rank, score, be) {
 			out.Effort, be = r.Effort, best{r.rank, score}
 		}
 	}
-	return out
+	return out, backendSrc, providerSrc
 }
 
 // ConsumesProviderHint reports how a backend consumes the per-node provider

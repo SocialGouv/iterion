@@ -496,12 +496,15 @@ func assertCauseOnOneLine(t *testing.T, out, fragment string) {
 	}
 }
 
-// TestBotsSyncCmd_ARelayedCauseCannotForgeARow: the cause embeds the parse
-// error of a manifest the operator did not author (a pulled branch, a
-// contributor's PR), and a yaml error echoes its keys verbatim. Printed raw,
-// such a key writes a line byte-identical to a real `installed <name> <sha>`
-// row.
-func TestBotsSyncCmd_ARelayedCauseCannotForgeARow(t *testing.T) {
+// TestBotsSyncCmd_AForeignShapedManifestIsNeverRead: since ADR-140 the
+// claim reads the manifest's SHAPE, and a manifest of another tool's shape
+// is never opened — so a hostile key crafted to echo as an
+// `installed <name> <sha>` row (the forge the relayed-cause rendering once
+// had to survive; that discipline keeps its regeneration-cause holders in
+// TestBotsInstallCmd_SeveralBrokenOwnersStayOnOneLine) cannot reach any
+// output at all. The sync installs the pinned dependency and prints
+// nothing of the foreign file.
+func TestBotsSyncCmd_AForeignShapedManifestIsNeverRead(t *testing.T) {
 	workdir := t.TempDir()
 	healthyCatalogOwner(t, workdir)
 	forged := "installed  evil-bot  " + strings.Repeat("0", 64)
@@ -519,7 +522,9 @@ func TestBotsSyncCmd_ARelayedCauseCannotForgeARow(t *testing.T) {
 	if !strings.Contains(out, "installed  shared-planner") {
 		t.Fatalf("the materialization itself must still be reported as done:\n%s", out)
 	}
-	assertCauseOnOneLine(t, out, forged)
+	if strings.Contains(out, forged) || strings.Contains(out, "evil-bot") {
+		t.Fatalf("a foreign-shaped manifest's keys reached the output — the forge the claim was built to kill:\n%s", out)
+	}
 }
 
 // TestBotsInstallCmd_SeveralBrokenOwnersStayOnOneLine: the checkout ships

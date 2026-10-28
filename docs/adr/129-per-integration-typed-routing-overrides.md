@@ -310,8 +310,12 @@ Three provenance rules, each of which keeps the gate's conservatism where the dr
    `ResolveVarText(raw, vt, LookupEnv)` — **the publisher's own environment**. A bot declaring
    `llm_backend: string = "${ITERION_VIBE_BACKEND:-claude_code}"` and templating its nodes from it
    resolves to the gateway on the server pod and to `claude_code` on the runner Job: two container
-   specs, one var name. So `LaunchVarsView` returns the view **plus** the set of names whose raw text
-   contained `${` or which took the coercion-failure branch (:196-240), `RouteView.LateVars` carries
+   specs, one var name. So `LaunchVarsView` returns the view **plus** the set of names whose value
+   the reading process's own environment decided — `launchVarsView` (`fallback_apply.go:214`) probes
+   the text the way dispatch expands it (`consultsAnyEnvName`, a recording lookup, not a `${`
+   substring match: `${PROJECT_DIR2}` is not PROJECT_DIR), leaves the engine-supplied names
+   (`PROJECT_DIR`, …) to the engine, and marks a coercion failure late (the raw value is this
+   process's word) — `RouteView.LateVars` carries
    it, and a field resolved through a late var is treated exactly as a raw `${…}` is today —
    `envSeen = true`, `narrowSafe = false`. Without this rule, `OnlyEnvFunded()` becomes reachable
    through a var and the whole sovereign refusal is skipped (`publisher.go:613`, :1395), with no tier
@@ -401,7 +405,10 @@ for the next bot that carries a rescue route.
 - a non-empty allowlist makes readability **compulsory**: a route the walk cannot read refuses the
   launch, naming the node and the field. A lock that cannot be checked must not pass — and this is
   where §4 earns its cost, and where `overrides` earns its "values are literals" invariant: pinning a
-  slot is how an operator makes a route readable.
+  slot makes a FIELD readable, not the route — the walk still reads every field of it
+  (`provider_allowlist.go`'s `sortDedupUnreadable`, the launch naming the list's head
+  `FirstUnreadable`), so a resolving `anthropic` hint beside an unreadable `model` is still refused
+  on `model`.
 
 One statement per tenant instead of one var per bot; a provider vocabulary the write surface
 validates instead of a free string; a refusal that names provider, site and level; and no catalog bot
@@ -586,8 +593,10 @@ every selector (§6); and a local `iterion run` keeps its flags-only behaviour.
 
 **A literal field is worth more than an env dial now.** `bots/revi-converse/main.bot:241` keeps its
 `backend: "claude_code"` literal and gains no `${ITERION_VIBE_BACKEND_CONVERSE:-…}` dial, reversing
-the draft: an env-templated routing field is UNDECIDED at the gate by rule 1 of §4, so converting a
-readable literal into a dial would cost that slot its contribution to the lock. The deployment-wide
+the draft: an env-templated routing field is undecided on EVERY reader through the RouteView — the
+LATE set is provenance of the text alone, and fill, restore, preview and the launch gate answer one
+way (§7's parity) — so converting a readable literal into a dial would cost that slot its
+contribution to the lock on every reader, not only at the launch gate. The deployment-wide
 need the dial would serve is served better by the policy's **platform** level, which is typed,
 validated, visible to the gate and lockable. The platform level of `overrides` is the successor of
 the `${ITERION_VIBE_*}` dials, and nothing is removed to say so.
@@ -642,7 +651,9 @@ than re-polarized, so there is no string knob left to fail open.
 - **The four judge slots get the only routing contract they can have.** The policy ladder will never
   re-target them (`fallback_apply.go:71`, :398); a typed override honours judge-kind selectors by
   construction (#668). `Override.Effort` also makes the glance tier's effort selectable per
-  integration for the first time — `reasoning_effort:` is reachable by no var at all.
+  integration for the first time — the `reasoning_effort:` field itself takes a level or a quoted
+  `${VAR}` string (runtime-validated; C027 refuses the rest, `{{vars.*}}` included) and no var
+  reaches the slot directly, while a judge still receives an effort through a `with` mapping var.
 - **A tenancy lock is a statement about providers, enforced in one place, for every bot.** No catalog
   bot carries a per-tenant switch, and the next bot with a rescue route inherits the rule.
 - **`{{vars.…}}` routing fields stop being invisible at launch — for the vars whose value is the

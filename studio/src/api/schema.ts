@@ -6652,6 +6652,9 @@ export interface components {
             llm_routing?: components["schemas"]["Policy"];
             permission?: string;
             source: components["schemas"]["CredentialPreviewSource"];
+            vars?: {
+                [key: string]: string;
+            };
         };
         CredentialPreviewSource: {
             id?: string;

@@ -383,6 +383,12 @@ func regenerateCatalogs(workdir, onlyBundleDir string) (string, error) {
 	for _, d := range diags {
 		switch d.Kind {
 		case DiscoveryErrorFile:
+		case DiscoveryErrorUnopenable:
+			// A claimed-but-unopenable directory is skipped wholesale
+			// (ADR-140): nothing under it was ever listed, so no row can
+			// be lost. The diagnostic is loud at every listing and the
+			// localize refusal keeps new ones out — non-blocking by the
+			// ADR's own classification.
 		case DiscoveryErrorIdentity:
 			// A source listed without the identity its frontmatter declares:
 			// a loose .bot contributes no card either way, while a bundle's

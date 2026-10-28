@@ -3488,6 +3488,38 @@ func TestBackground_TheColdWatchdogGovernsAHungStart(t *testing.T) {
 func TestBackground_NoWrapUpInsideATurnTheCLIStarted(t *testing.T) {
 	// The wave budget is spent after the CLI started a turn (its init) and
 	// before the agent spoke in it: the wrap-up waits for that turn's close.
+	t.Run("the close owns an expired budget", func(t *testing.T) {
+		h := newLifecycleAt(t, backgroundLifecycleConfig{wait: time.Second}, 0)
+		t0 := time.Now()
+		h.feedAt(t0, launchAgent()...)
+		if act := h.close(t0, "WAITING"); act != bgReenter {
+			t.Fatalf("initial close: action %v, want a wait for held work", act)
+		}
+		h.l.reentries = 1
+		if d, kind, _ := h.l.timer(t0, false, false); kind != bgTimerWait || d != time.Second {
+			t.Fatalf("before the new turn: timer %v, remaining %s", kind, d)
+		}
+		h.feedAt(t0.Add(100*time.Millisecond), lnInit("2.1.280"))
+		for _, spoke := range []bool{false, true} {
+			at := t0.Add(2 * time.Second)
+			if spoke {
+				h.feedAt(at, lnAssistant("next", "", cText("work still in progress")))
+			}
+			if _, kind, _ := h.l.timer(at, false, true); kind != bgTimerNone {
+				t.Fatalf("inside the turn (spoke=%v): armed timer %v", spoke, kind)
+			}
+			if msg, send := h.l.waitExpired(at); send || h.l.wrapUpSent {
+				t.Fatalf("inside the turn (spoke=%v): sent wrap-up %q", spoke, msg)
+			}
+		}
+		if act := h.close(t0.Add(3*time.Second), "turn complete"); act != bgReenterAfterSend || !h.l.wrapUpSent {
+			t.Fatalf("closed turn past its budget: action %v, wrap-up sent %v", act, h.l.wrapUpSent)
+		}
+	})
+	// Keep the subprocess round trip too. Its sleep starts when the CLI
+	// writes, whereas WaitedFor starts when the driver consumes the result;
+	// reader scheduling can shorten that measured interval without an early
+	// wrap-up. The lifecycle assertions above prove the ordering directly.
 	shell := map[string]any{"task_id": "b1", "task_type": "local_bash", "description": "npm test"}
 	agent := map[string]any{"task_id": "t1", "task_type": "local_agent", "description": "sleeper t1"}
 	script := []string{
@@ -3521,10 +3553,8 @@ func TestBackground_NoWrapUpInsideATurnTheCLIStarted(t *testing.T) {
 	if run.err != nil || run.resultText() != "FINAL" {
 		t.Fatalf("err = %v, text = %q", run.err, run.resultText())
 	}
-	for _, e := range run.events {
-		if e.Phase == BackgroundFinalizing && e.WaitedFor < 1800*time.Millisecond {
-			t.Fatalf("the wrap-up was written %s after the first result — inside the turn the CLI started", e.WaitedFor)
-		}
+	if !slices.Contains(run.phases(), BackgroundFinalizing) || !strings.Contains(run.stdin, "background wait budget") {
+		t.Fatalf("the spent budget did not request a wrap-up: phases=%v, stdin=%s", run.phases(), run.stdin)
 	}
 }
 

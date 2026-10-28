@@ -1100,6 +1100,12 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			panic(fmt.Sprintf("server: the run resolver is required in cloud mode (ADR-103): %v", svcErr))
 		}
 		s.runs = svc
+		if s.cfg.CloudBoardFor != nil && s.cfg.IssueTenantResolver == nil {
+			// ADR-141: the board routes' by-id class must not exist
+			// without its resolver — a replica that answers 404 to its
+			// own members is the failure this refuses.
+			panic("server: the issue-tenant resolver is required in cloud mode (ADR-141)")
+		}
 	case storeDir != "":
 		svcOpts := []runview.ServiceOption{
 			runview.WithLogger(logger),

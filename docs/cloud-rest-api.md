@@ -737,6 +737,10 @@ team (ADR-103), not in their active one: reads take a viewer, actions a member
 caller the run's browser and terminal — and an admin/owner of the team's org
 who is not a member of that team enters as a viewer.
 
+The board issues join the class too (ADR-141): `/api/v1/native/issues/{id}…`
+and `/api/v1/pipeline-board/tasks/{id}…` are served from the issue's team
+through the issue-tenant resolver — reads for a viewer, mutations for a
+member — with the handlers' store resolution reading the re-scoped stamp.
 ### The id-addressed routes outside the by-id class
 
 Every route the mux serves under an id wildcard is either in the class above
@@ -750,7 +754,7 @@ so a new id-addressed route cannot land unclassified:
 | `/api/teams/{id}/…` | the path team IS the scope (`canViewTeam` / `canManageTeam`) |
 | `/api/admin/…` | super-admin over the platform sentinel tenant |
 | `/api/auth/…`, `/api/me/…`, `/api/orgs/…` | identity surfaces, user-scoped, org-scoped by path |
-| `/api/v1/native/issues/{id}…`, `/api/v1/pipeline-board/tasks/{id}…` | the board store resolves per ACTIVE team (cloud) or the one local store; a cross-team id answers `404` emergently — the ADR-103 by-id rule for issues is the pending #1849 slice |
+| `/api/v1/native/issues/{id}…`, `/api/v1/pipeline-board/tasks/{id}…` | IN the by-id class since ADR-141: served from the issue's team (the resolver reads the id across teams; reads take a viewer, mutations a member) — self-hosted's single store stays out of the class |
 | `/api/v1/native/labels/{label}`, `/api/v1/native/board/…` | board vocabulary and config of the active team's store |
 | `/api/v1/bots/{name}…` | the dispatch catalog: a tiered namespace by design (team > platform > baked), not an authored-resource id |
 | `/api/assistant-watches/{watchID}` | fixed compatibility sibling of the run-addressed `DELETE /api/runs/{id}/assistant-watches/{watchID}`: the stop resolves the watch's target run under the caller's active team |

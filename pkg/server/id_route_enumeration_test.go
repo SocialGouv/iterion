@@ -39,8 +39,6 @@ var idRouteExemptions = []struct{ prefix, reason string }{
 // that state. The pending #1849 issues slice (L) turns the board entries
 // into by-id class members.
 var idRouteReasons = []struct{ prefix, reason string }{
-	{"/api/v1/native/issues/", "board issue by id: the store resolves per ACTIVE team (cloud) or the one local store; a cross-team id answers 404 emergently — the ADR-103 by-id rule for issues is the pending #1849 slice"},
-	{"/api/v1/pipeline-board/tasks/", "pipeline board cards over the SAME native store: same active-team resolution, same pending #1849 slice"},
 	{"/api/v1/native/labels/", "board label vocabulary of the active team's store"},
 	{"/api/v1/native/board/", "board config (states/fields/views) of the active team's store"},
 	{"/api/v1/bots/", "the dispatch catalog: a tiered namespace by design (team > platform > baked over the shared FS catalog), not an authored-resource id"},
@@ -57,6 +55,41 @@ func hasWildcardSegment(pattern string) bool {
 	for _, seg := range strings.Split(strings.TrimPrefix(pattern, "/"), "/") {
 		if strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}") {
 			return true
+		}
+	}
+	return false
+}
+
+// idClassWildcard reports whether a REGISTERED pattern carries an id
+// wildcard under one of the by-id chains — the witness's own duplicate of
+// the production tables (a witness reading the table it witnesses is mute
+// on a table change): the runs chains (ADR-103) and, since ADR-141, the
+// board issue chains.
+func idClassWildcard(pattern string) bool {
+	if i := strings.Index(pattern, " "); i >= 0 && !strings.HasPrefix(pattern, "/") {
+		pattern = pattern[i+1:]
+	}
+	segs := strings.Split(strings.TrimPrefix(pattern, "/"), "/")
+	for _, w := range []struct {
+		fixed int
+		chain []string
+	}{
+		{2, []string{"api", "runs"}},
+		{3, []string{"api", "ws", "runs"}},
+		{4, []string{"api", "v1", "native", "issues"}},
+		{4, []string{"api", "v1", "pipeline-board", "tasks"}},
+	} {
+		if len(segs) > w.fixed && strings.HasPrefix(segs[w.fixed], "{") && strings.HasSuffix(segs[w.fixed], "}") {
+			match := true
+			for j, want := range w.chain {
+				if segs[j] != want {
+					match = false
+					break
+				}
+			}
+			if match {
+				return true
+			}
 		}
 	}
 	return false
@@ -89,6 +122,10 @@ func TestEveryIDWildcardRouteIsClassifiedOrReasoned(t *testing.T) {
 	seen := 0
 	for _, route := range table {
 		if !hasWildcardSegment(route.Pattern) {
+			continue
+		}
+		if idClassWildcard(route.Pattern) {
+			seen++
 			continue
 		}
 		if reason := idRouteClassification(route.Pattern); reason == "" {

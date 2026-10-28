@@ -227,6 +227,36 @@ func manifestVerdict(path string) (ok bool, reason string) {
 	return false, "carries top-level keys no iterion manifest has (" + strings.Join(unknown, ", ") + ") and none only ours have"
 }
 
+// DirClaim answers whether dir is a bundle directory by the ONE definition
+// this package owns (the markers above): claimed = it carries an iterion
+// manifest — either spelling, by the SHAPE verdict, never by existence
+// alone — or a skills/ directory; openable = main.bot sits beside the
+// claim. Discovery's walk and the localize path judge directories through
+// this verdict (ADR-140), so a directory cannot be a bundle on one surface
+// and a descent on another. reason, when the directory is not claimed but
+// carries a manifest, names why that manifest is not ours.
+func DirClaim(dir string) (claimed, openable bool, reason string) {
+	if _, err := os.Stat(filepath.Join(dir, DirSkills)); err == nil {
+		claimed = true
+	} else {
+		for _, marker := range []string{ManifestFile, ManifestFileAlt} {
+			ok, why := manifestVerdict(filepath.Join(dir, marker))
+			if ok {
+				claimed = true
+				break
+			}
+			if why != "" && reason == "" {
+				reason = marker + " " + why
+			}
+		}
+	}
+	if !claimed {
+		return false, false, reason
+	}
+	_, err := os.Stat(filepath.Join(dir, MainBotFile))
+	return true, err == nil, reason
+}
+
 // ForeignManifestBeside reports a file named like a manifest beside a
 // main.bot that DirForMainBot did NOT read as the bundle's manifest, and
 // why — the one outcome that would otherwise be silent: a typo in the only

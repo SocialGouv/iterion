@@ -223,6 +223,21 @@ func cloudBoardFor(st *mongostore.Store) func(string) native.BoardStore {
 	return func(tenantID string) native.BoardStore { return factory(tenantID) }
 }
 
+// issueTenantResolver exposes the cross-team issue-id lookup the board
+// routes' by-id class needs (ADR-141). An ambiguous prefix translates to
+// the server's sentinel, so the choke point falls back to the ambient
+// stamp instead of refusing.
+func issueTenantResolver(st *mongostore.Store) func(context.Context, string) (string, error) {
+	bm := boardmongo.New(st.DB(), "")
+	return func(_ context.Context, issueID string) (string, error) {
+		team, err := bm.ResolveIssueTenant(issueID)
+		if errors.Is(err, boardmongo.ErrAmbiguousIssue) {
+			return "", server.ErrAmbiguousIssueID
+		}
+		return team, err
+	}
+}
+
 func runServer(cmd *cobra.Command, _ []string) error {
 	cfg, err := iterconfig.Load(iterconfig.LoadOptions{
 		YAMLPath:         serverOpts.configPath,
@@ -610,6 +625,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		// real net is runtime: boardNow warns on any non-FS board without
 		// a server clock, so a wrapper degrades LOUDLY, never silently.
 		CloudBoardFor:         cloudBoardFor(st),
+		IssueTenantResolver:   issueTenantResolver(st),
 		CloudBoardCoordinator: boardmongo.NewCoordinator(st.DB()),
 		TriggerStore:          trigger.NewMongoSubscriptionStore(st.DB()),
 		ScheduledBots:         cloudsched.NewMongoStore(st.DB()),

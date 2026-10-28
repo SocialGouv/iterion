@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -975,6 +976,58 @@ func (s *Store) AddComment(id, author, body string) (*native.Issue, *native.Comm
 		return nil, nil, err
 	}
 	return iss, &c, nil
+}
+
+// ErrAmbiguousIssue marks an issue id PREFIX that names more than one
+// issue — the by-id resolver's caller decides what an ambiguous prefix
+// means (ADR-141: not an address, the ambient stamp decides).
+var ErrAmbiguousIssue = errors.New("boardmongo: ambiguous issue id prefix")
+
+// issueTenantDoc is the projection the cross-tenant resolve reads.
+type issueTenantDoc struct {
+	ID       string `bson:"_id"`
+	TenantID string `bson:"tenant_id"`
+}
+
+// ResolveIssueTenant resolves the team ONE issue lives in, across every
+// tenant of the deployment — the by-id capability the board routes' choke
+// point needs (ADR-141): an id-addressed issue is served from ITS team,
+// whatever team the credential is pinned to. The id may be a prefix (the
+// handlers resolve prefixes too); the lookup is the existence check, so a
+// deleted issue stops resolving at once. The _id-anchored filter rides the
+// same index the per-tenant reads ride.
+func (s *Store) ResolveIssueTenant(prefix string) (string, error) {
+	want := prefix
+	if !strings.HasPrefix(prefix, "native:") {
+		want = "native:" + prefix
+	}
+	ctx, cancel := ctxWithTimeout()
+	defer cancel()
+	cursor, err := s.issues.Find(ctx, bson.M{"_id": bson.M{"$regex": "^" + regexp.QuoteMeta(want)}})
+	if err != nil {
+		return "", fmt.Errorf("boardmongo: resolve issue tenant: %w", err)
+	}
+	defer cursor.Close(ctx)
+	tenant := ""
+	count := 0
+	for cursor.Next(ctx) {
+		var doc issueTenantDoc
+		if err := cursor.Decode(&doc); err != nil {
+			return "", fmt.Errorf("boardmongo: resolve issue tenant: %w", err)
+		}
+		count++
+		if count > 1 {
+			return "", ErrAmbiguousIssue
+		}
+		tenant = doc.TenantID
+	}
+	if err := cursor.Err(); err != nil {
+		return "", fmt.Errorf("boardmongo: resolve issue tenant: %w", err)
+	}
+	if count == 0 {
+		return "", tracker.ErrNotFound
+	}
+	return tenant, nil
 }
 
 func (s *Store) Resolve(prefix string) (string, error) {

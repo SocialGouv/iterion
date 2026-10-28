@@ -324,10 +324,12 @@ describe("WorkflowSettingsForm permission controls", () => {
 describe("WorkflowSettingsForm resource actions", () => {
   it("the resource remove button exposes an actionable aria-label (RGAA 11.1)", () => {
     mount({ resources: { db: 2 } } as Partial<WorkflowDecl>);
-    const btn = screen.getByRole("button", { name: "Remove resource" });
+    const btn = screen.getByRole("button", { name: "Remove resource db" });
     // The name comes from the IconButton chokepoint's aria-label — a
     // title attribute alone is hover-only and announced inconsistently.
-    expect(btn.getAttribute("aria-label")).toBe("Remove resource");
+    // It also names WHICH resource goes: sibling rows repeated the same
+    // bare "Remove resource" and none said what it deletes.
+    expect(btn.getAttribute("aria-label")).toBe("Remove resource db");
     expect(btn.textContent).toContain("✕");
   });
 });

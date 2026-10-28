@@ -343,7 +343,7 @@ func TestPipelineBoardReportsMalformedBotWithoutHidingHealthySiblings(t *testing
 	if err := os.MkdirAll(broken, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(broken, "manifest.yaml"), []byte("name: broken\nversion: [1.0.0\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(broken, "manifest.yaml"), []byte("schema_version: 1\nname: broken\nversion: [1.0.0\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(broken, "main.bot"), []byte(tierBakedBot), 0o600); err != nil {
