@@ -336,7 +336,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/dsl-whats-new.md`](../dsl-whats-new.md) | What's new in the `.bot` DSL — the authoring-first programme (2026-09) | Between v3.128.0 and v3.154.0 the DSL, its tooling and its documentation were | — |
 | [`docs/dsl.md`](../dsl.md) | 🧩 The `.bot` DSL | Source files end in `.bot`; deterministic bundles end in `.botz`. | — |
 | [`docs/e2e-coverage-matrix.md`](../e2e-coverage-matrix.md) | E2E coverage matrix | The **single** feature×coverage inventory for iterion. | — |
-| [`docs/e2e-stabilisation-plan.md`](../e2e-stabilisation-plan.md) | E2E stabilisation plan — DRAFT, per surface | enumerates, per core surface, what is already free, what must become | — |
+| [`docs/e2e-stabilisation-plan.md`](../e2e-stabilisation-plan.md) | E2E stabilisation plan — per surface | recorded below with the decision that settles each; the order is fixed and | — |
 | [`docs/e2e_coverage.md`](../e2e_coverage.md) | E2E coverage matrix | Where each iterion + claw-code-go feature is exercised. | — |
 | [`docs/environment-variables.md`](../environment-variables.md) | Environment variables | Operational `ITERION_*` environment variables read directly by the engine | — |
 | [`docs/examples.md`](../examples.md) | 🤖 Bots and examples | Iterion ships a maintained fleet of production bots — a co-CTO, a feature | — |
