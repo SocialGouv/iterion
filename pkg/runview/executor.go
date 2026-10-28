@@ -1137,6 +1137,15 @@ func recordingExpander(name string, server *ir.MCPServer, logger *iterlog.Logger
 // servers only. The engine replaces the prediction with the settled
 // fact — ClawExecutor.SetSandbox, called with the live sandbox or with
 // nil when the run settles without one.
+//
+// The sandbox answer here is the MODE's (WorkflowSandboxActive), not the
+// driver's (RunWillBeSandboxed) — on purpose (#2166). A `sandbox: auto` run
+// this host degrades to the pod predicts operator servers only and starts
+// its workflow-controlled servers once the engine settles: a few seconds of
+// fail-closed delay. The permissive prediction is the one that must never
+// be wrong, and asking the driver from the launch surface would need the
+// repository root and the driver registry for an answer the engine gives
+// anyway.
 func predictedStartPolicy(spec ExecutorSpec) mcp.StartPolicy {
 	if !spec.SandboxTiersKnown {
 		return mcp.StartPolicyUnknown

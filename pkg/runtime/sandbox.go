@@ -1487,6 +1487,12 @@ func pickMode(wf *ir.Workflow, cli, global string) (string, string) {
 // an active mode on a host with no container runtime degrades to an
 // unsandboxed run at engine start, and this predicate still answers
 // true for it (#1564).
+//
+// Two callers keep the mode-only reading on purpose and say why at their
+// site: the launch surface's MCP start prediction
+// (runview.predictedStartPolicy) and the usage cap's ladder escapes
+// (runner.ladderEscapes), both of which mirror a decision the mode alone
+// takes (#2166).
 func WorkflowSandboxActive(wf *ir.Workflow, cliOverride, globalDefault string) bool {
 	mode, _ := pickMode(wf, cliOverride, globalDefault)
 	return sandbox.Mode(mode).IsActive()

@@ -480,6 +480,12 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 	// a primary that rides nothing meterable) is delivery-1 deferred: the
 	// mid-run guard still covers claude_code stages in flight, and claw
 	// stages were never meterable.
+	// The MODE-only sandbox reading, on purpose (#2166): the materializing
+	// screen refuses a codex stage on a run whose mode sandboxes it, from
+	// the same two tiers, so the escape judgment agrees with the refusal it
+	// mirrors. A driver-aware answer here would un-park a degraded-auto run
+	// for a codex stage the screen still refuses, stranding it on the
+	// capped wire — the very outcome the park prevents.
 	escapable := ladderEscapes(wf, msg, runtime.WorkflowSandboxActive(wf, r.cfg.SandboxOverride, r.cfg.SandboxDefault))
 	if len(routes) == 0 && len(sups) == 0 {
 		if logger != nil {
