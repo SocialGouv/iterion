@@ -54,6 +54,43 @@ spec:
     {{- with .Values.networkPolicy.egress.extraAllow }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
+    {{- /* The release's OWN stores need no operator rule: the dev stores (devStack.*) and the nats sub-chart are pods of this release, dialed on known ports. */ -}}
+    {{- if or ((.Values.devStack).mongodb).enabled ((.Values.devStack).seaweedfs).enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "iterion.selectorLabels" . | nindent 14 }}
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values:
+                  {{- if ((.Values.devStack).mongodb).enabled }}
+                  - dev-mongodb
+                  {{- end }}
+                  {{- if ((.Values.devStack).seaweedfs).enabled }}
+                  - dev-seaweedfs
+                  {{- end }}
+      ports:
+        {{- if ((.Values.devStack).mongodb).enabled }}
+        - port: 27017
+          protocol: TCP
+        {{- end }}
+        {{- if ((.Values.devStack).seaweedfs).enabled }}
+        - port: 8333
+          protocol: TCP
+        {{- end }}
+    {{- end }}
+    {{- if (.Values.nats).enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nats
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: nats
+      ports:
+        - port: 4222
+          protocol: TCP
+    {{- end }}
 {{- if or ((.Values.devStack).mongodb).enabled ((.Values.devStack).seaweedfs).enabled }}
 ---
 # The dev stores answer unsigned on the pod IP (no auth on Mongo, the
@@ -81,16 +118,15 @@ spec:
   policyTypes:
     - Ingress
   ingress:
+    # Every pod of the release, the stores INCLUDED: Mongo initiates its
+    # replica set against its own Service name, a hairpin that re-enters
+    # the pod with its own IP as the source — excluded, the set never
+    # initiates and the pod never turns Ready on a CNI that enforces
+    # policies (kind's does).
     - from:
         - podSelector:
             matchLabels:
               {{- include "iterion.selectorLabels" . | nindent 14 }}
-            matchExpressions:
-              - key: app.kubernetes.io/component
-                operator: NotIn
-                values:
-                  - dev-mongodb
-                  - dev-seaweedfs
       ports:
         - port: 27017
           protocol: TCP

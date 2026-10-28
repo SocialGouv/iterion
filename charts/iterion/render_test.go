@@ -1022,8 +1022,10 @@ func TestChartRenderDevStack(t *testing.T) {
 			if !matches(storeSel, labels) {
 				t.Errorf("the stores policy must select the %s store", name)
 			}
-			if matches(fromSel, labels) {
-				t.Errorf("the stores policy admits the %s store as a client", name)
+			// The stores dial themselves: Mongo initiates its replica set
+			// against its own Service (a hairpin with its own IP as source).
+			if !matches(fromSel, labels) {
+				t.Errorf("the stores policy must admit the %s store itself (hairpin)", name)
 			}
 		}
 		for name, labels := range apps {
@@ -1046,9 +1048,44 @@ func TestChartRenderDevStack(t *testing.T) {
 		if len(ports) != 2 || !ports["27017"] || !ports["8333"] {
 			t.Errorf("the stores policy admits 27017 and 8333 only, got %v", ports)
 		}
+		// The app pods reach the release's own stores without an operator
+		// rule: an egress to the dev stores on their ports, one to the nats
+		// sub-chart's client port.
+		egressTo := func(policy map[string]any, labels map[string]string) map[string]bool {
+			ports := map[string]bool{}
+			rules, _ := dig(policy, "spec", "egress").([]any)
+			for _, r := range rules {
+				to, _ := dig(r, "to").([]any)
+				for _, peer := range to {
+					if sel := dig(peer, "podSelector"); sel != nil && matches(sel, labels) {
+						list, _ := dig(r, "ports").([]any)
+						for _, p := range list {
+							ports[fmt.Sprint(dig(p, "port"))] = true
+						}
+					}
+				}
+			}
+			return ports
+		}
+		app := must(t, docs, "NetworkPolicy", "iterion")
+		if ports := egressTo(app, stores["mongodb"]); !ports["27017"] {
+			t.Errorf("the app policy must let the app pods dial the dev Mongo on 27017, got %v", ports)
+		}
+		if ports := egressTo(app, stores["seaweedfs"]); !ports["8333"] {
+			t.Errorf("the app policy must let the app pods dial the dev SeaweedFS on 8333, got %v", ports)
+		}
+		nats := map[string]string{"app.kubernetes.io/name": "nats", "app.kubernetes.io/instance": "iterion", "app.kubernetes.io/component": "nats"}
+		if ports := egressTo(app, nats); !ports["4222"] {
+			t.Errorf("the app policy must let the app pods dial the nats sub-chart on 4222, got %v", ports)
+		}
 		prod := manifests(t, mustRender(t, "-f", "values-prod.yaml", "--set", "networkPolicy.enabled=true"))
 		if find(prod, "NetworkPolicy", "iterion-dev-stores") != nil {
 			t.Errorf("production renders a dev-stores policy")
+		}
+		for name, labels := range map[string]map[string]string{"mongodb": stores["mongodb"], "seaweedfs": stores["seaweedfs"], "nats": nats} {
+			if ports := egressTo(must(t, prod, "NetworkPolicy", "iterion"), labels); len(ports) != 0 {
+				t.Errorf("production has no %s of its own, yet its policy opens egress to one: %v", name, ports)
+			}
 		}
 	})
 
