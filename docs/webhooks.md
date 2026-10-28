@@ -113,8 +113,8 @@ Re-provisioning a repo is the gesture that applies it, and it is a
 alone" when omitted, so re-sending them is a chance to mistype
 `gate_context`, not a safety). It compares the address the forge *should* be
 calling against the one it is, and rewrites the hook in place when they
-differ — same hook id, same webhook id, and the fresh `iwh_` reaches both
-ends together. Where nothing has moved it touches the forge not at all, so
+differ — same hook id, same webhook id, and the same durable `iwh_` secret.
+A legacy hook without a recoverable secret migrates through a new webhook URL. Where nothing has moved it touches the forge not at all, so
 it is safe to re-run across a whole fleet.
 
 That comparison is what makes a public-URL change reachable at all: the
@@ -185,48 +185,38 @@ and it is one of four:
   refuses in turn is the common second mistake: the 422 is about the
   address, not about a pin being missing.
 
-**A refused re-provision leaves the working hook working.** A re-provision
-mints a fresh `iwh_` and stores the new webhook config *before* it touches
-the forge hook, since the two ends have to move together. What iterion does
-when that hook upsert fails follows what the failure proves about the forge:
+**A refused re-provision keeps its webhook identity.** Ordinary retries reuse
+one sealed secret for that webhook ID. A per-repo lease reduces overlapping
+work; optimistic config and integration versions reject stale local writes.
+Even a request that finishes after lease expiry sends the same epoch secret.
+A legacy hash-only hook migrates through a new URL without changing the old
+hook's secret. The integration selects the new active URL atomically after a
+confirmed write; inbound admission rejects pending and retired epochs.
 
-- **A failure the forge could not have applied** leaves the forge holding
-  the hook it already had, and the previous stored config goes back, so the
-  old URL and old secret keep authenticating the deliveries that are still
-  arriving. That is: a forge 4xx other than 408 and 499 (the 422 above, a
-  401/403 on the grant, a hook that is gone); a request that never left
-  (a DNS failure, a refused connection, a failed TLS certificate check); a
-  step that ended on a read — the probe that looks the hook up by its
-  delivery URL — when nothing before it was applied; a hook request that was
-  never sent, because the credential it goes with could not be minted (a
-  GitHub App's installation token); or no forge call at all (opening the
-  connection's admin client failed).
-- **A failure that proves nothing** may have been applied: the forge may
-  already sign with the new secret. That is a 408 or a 499 (a gateway may
-  have forwarded the write before giving up), a 5xx, a timeout or a reset
-  mid-flight, a cancelled request. Restoring the old config there is what
-  would break the hook, so the new one stays and the error says so, naming
-  the remedy — re-run the same request, provisioning converges. Such an
-  outcome is also logged at Warn with the webhook id, since it may need an
-  operator who is not the one watching the answer.
+- **A failure the forge could not have applied** — a forge 4xx other than
+  408 and 499, a request that never left (DNS, dial, TLS certificate), a step
+  that ended on a read with no preceding indeterminate write, a hook request
+  that was never sent, or no forge call at all — can restore the previous
+  **settings**, while keeping the immutable verification identity.
+- **A failure that proves nothing** keeps the attempted settings and durable
+  retry identity. That is a 408 or a 499, a 5xx, a timeout or a reset mid-flight,
+  a cancelled request, or a write redirect: the first write may have applied.
 
-The restore is a compare-and-set rather than a blind write: it re-reads the
-stored config and puts the previous one back only while the token hash is
-still the one this provision wrote. A concurrent provision that won the race
-is left alone — its secret is the one the forge now holds. A re-read or a
-write that fails in turn is returned with the hook failure instead of being
-swallowed: a hook nobody can authenticate is not something to learn from the
-delivery log. That answer is a 500 that tells the restore's story first; when
-the hook failure behind it was a refused address, it keeps the
-`hook_url_refused` code and the remedy above after it. A *fresh* provision has nothing to restore and keeps its own
-rollback, deleting the config it just created.
+The restore is a compare-and-set on the config version after checking the token
+hash. A concurrent provision that won the race is left alone. After correcting
+the reported cause, re-run the same request. A fresh failed attempt also retains
+its candidate and credential, without making it operational.
 
-**Known limit: concurrent re-provisions of the same repo are not
-serialised.** Two that overlap can interleave their config write and their
-hook write, and leave the stored config and the forge hook on different
-secrets — the compare-and-set bounds what a loser's restore can overwrite,
-it does not order the two provisions. Re-run the request if two raced: a
-re-provision reconciles both ends from the stored config.
+Forge writes never follow 301/302/303/307/308 redirects. The error names the
+status and sanitized target so the operator can correct the forge base URL;
+Go cannot silently turn an update into a successful GET. A redirect does not
+prove that the original write was unapplied. Reads keep their existing policy.
+
+Disable retains verification tombstones and retires the integration before
+cleanup. Re-enable reserves a new webhook ID and secret after cleanup finishes.
+A delayed old write cannot activate that retired endpoint. Pending attempts
+need a retry; automatic periodic reconciliation and late-orphan collection are
+specified, not implemented, in [ADR-138](adr/138-forge-provisioning-immutable-identities.md).
 
 ## Auth modes — token vs HMAC
 

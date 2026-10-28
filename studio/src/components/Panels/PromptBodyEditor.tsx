@@ -12,6 +12,11 @@ interface Props {
   autoFocus?: boolean;
   /** Render the studio at full available height instead of a fixed row count. */
   fillHeight?: boolean;
+  /** DOM id and accessible name forwarded to the textarea. The visible
+   *  caption lives in the consumer, so the association is theirs to wire
+   *  (label htmlFor) and ours to carry. */
+  id?: string;
+  "aria-label"?: string;
 }
 
 /**
@@ -33,6 +38,8 @@ export default function PromptBodyEditor({
   placeholder,
   autoFocus,
   fillHeight = false,
+  id,
+  "aria-label": ariaLabel,
 }: Props) {
   const lineCount = useMemo(() => value.split("\n").length, [value]);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -112,6 +119,8 @@ export default function PromptBodyEditor({
           onScroll={handleScroll}
           rows={fillHeight ? undefined : rows}
           placeholder={placeholder}
+          id={id}
+          aria-label={ariaLabel}
           spellCheck={false}
           autoFocus={autoFocus}
           refContext={refContext ?? { kind: "prompt-body" }}

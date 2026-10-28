@@ -40,6 +40,8 @@ type forgeSentinelFamily struct {
 // directory it lives in, so the completeness sweep below can compare it to
 // what pkg/forge actually declares.
 var forgeSentinelFamilies = map[string]forgeSentinelFamily{
+	"forge.ErrProvisionBusy":       {err: forge.ErrProvisionBusy, why: "local provisioning lease contention; provisioning answers 409"},
+	"forge.ErrIntegrationConflict": {err: forge.ErrIntegrationConflict, why: "local integration snapshot conflict; provisioning answers 409"},
 	"forge.ErrNotFound": {
 		err: forge.ErrNotFound, inNotFoundClass: true, wantStatus: http.StatusNotFound,
 		why: "the class itself",

@@ -3,6 +3,243 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [4.3.0](https://github.com/SocialGouv/iterion/compare/v4.2.0...v4.3.0) (2026-10-28)
+
+### Features
+
+* **deps:** closure metric task + ADR-140 (language stays Go, sidecars behind seams) ([#2743](https://github.com/SocialGouv/iterion/issues/2743)) ([4dfee64](https://github.com/SocialGouv/iterion/commit/4dfee6424c3e10a22906e7ffa4a5d0568a02d14a))
+
+    <details><summary>why</summary>
+
+    task deps:closure resolves the server binary's import closure and prints the non-stdlib, non-test source LOC with top contributors. Baseline on main 0b1de4062: 7,340,738 LOC across 847 packages; 68% is the modernc sqlite stack behind the codex SDK fork's session persistence.
+
+    </details>
+* **server,runview:** the credential preview takes the launch's vars ([28a51d1](https://github.com/SocialGouv/iterion/commit/28a51d1f2772fe27106684fe002e820bd274d9bb)), references [#2665](https://github.com/SocialGouv/iterion/issues/2665) [#1757](https://github.com/SocialGouv/iterion/issues/1757) [#2665](https://github.com/SocialGouv/iterion/issues/2665)
+
+    <details><summary>why</summary>
+
+    Item 3 of the #2665 residuals: CredentialPreviewRequest had no vars field, so no caller could preview a vars-carrying launch the way fill, restore and the gate read it. The request gains vars, honored on the personal source as the lane's own --var-style values (the operator owns them — ADR-129 §4 rule 2 trusts the CLI's --var names, so the preview trusts the same names for its routing pre-flights); the webhook source refuses caller values outright — its launch shape is the config layers plus…
+
+    </details>
+
+### Bug Fixes
+
+* **dispatch:** the catalogue check judges the committed tree, not the working copy ([b061d55](https://github.com/SocialGouv/iterion/commit/b061d5541b354066d3396cf42c96ef5e64b8ee10)), references [#2748](https://github.com/SocialGouv/iterion/issues/2748)
+
+    <details><summary>why</summary>
+
+    Since the zero-config dispatch mode the generated bot catalogue is a build artifact: git ships pkg/cli/templates/dispatch_bots/ empty (only .gitkeep, which keeps the all: embed pattern compilable on a clean checkout) and templates:dispatch-bots repopulates the working copy as a dep of build/test. The old check diffed a reconstructed catalogue against that working copy, so every clean checkout exited 201 before its first task check could say anything real.
+
+    </details>
+* **server,ci:** the watch-health test asserts the alarm channel; the mongo legs get runner headroom ([#2755](https://github.com/SocialGouv/iterion/issues/2755)) ([05c117d](https://github.com/SocialGouv/iterion/commit/05c117d7122f4afdc443e7816d1ddd40774705f1))
+
+    <details><summary>why</summary>
+
+    TestAssistantWatchHealth_AFreeLeaseIsAStateNotAnAlarm asserted the raw Stale flag, which honestly reads true while the first post-election sweep is in flight; the alarm channel is sweepStaleIsAttention, which forgives that window. Under a loaded runner the window widened and the test failed twice on main. The assertion now checks the alarm channel.
+
+    </details>
+* **studio:** every Panels control names itself to a screen reader (RGAA 11.1) ([70d7706](https://github.com/SocialGouv/iterion/commit/70d7706baf9fc63d813e9f33516fddef83d4bdd7)), references [#2591](https://github.com/SocialGouv/iterion/issues/2591) [#2591](https://github.com/SocialGouv/iterion/issues/2591)
+
+    <details><summary>why</summary>
+
+    The Panels slice of the #2591 surface triage (#2590's placeholder-only leads). Four controls had no accessible name at all: CommentsEditor's per-comment textarea, VarsEditor's bool Default select, and PromptEditor's non-compact body textarea whose visible sibling label was never associated — and axe 4.13 passes placeholder-only outright, so the render net could not see three of the four; VarsEditor's own axe entry was the one independent witness ([select-name], 3 nodes). The shared FormField…
+
+    </details>
+
+### Performance Improvements
+
+* **runtime:** fan-out boundary checkpoints coalesce into one durable write per window ([38b15e5](https://github.com/SocialGouv/iterion/commit/38b15e5f735dc62e8704a5d80e8d45f31c47bf50)), references [#561](https://github.com/SocialGouv/iterion/issues/561) [#561](https://github.com/SocialGouv/iterion/issues/561)
+
+    <details><summary>why</summary>
+
+    Routine fan-out boundaries (bounded-iteration crossings) persisted a full run record each: every save deep-cloned all branches under the invocation-wide save mutex and rewrote the run file — O(B²N) in branches and boundaries, serializing otherwise-parallel branch progress (#561).
+
+    </details>
+
+## [4.2.0](https://github.com/SocialGouv/iterion/compare/v4.1.0...v4.2.0) (2026-10-28)
+
+### Features
+
+* **bundle,botregistry:** discovery claims what the bundle package claims, and a nested bundle is nothing ([c538df1](https://github.com/SocialGouv/iterion/commit/c538df1325e536c1ded8fde5a9c7f168945c3bf2)), references [#2537](https://github.com/SocialGouv/iterion/issues/2537)
+
+    <details><summary>why</summary>
+
+    walk's private two-file test is retired — bundle.DirClaim answers the claim (an iterion-shaped manifest, either spelling, or a skills/ directory; main.bot beside it opens it) and the walk, the localize path and the catalogue read that one verdict. A claimed directory without its entrypoint is a loud skipped source (a new non-blocking diagnostic kind, classified in the same change) whose subtree stays private; a manifest.yml consumer is a bundle under its own name — the demotion to a loose…
+
+    </details>
+* **server,boardmongo:** board issues join the by-id class — an issue is served from its team ([c0b63c9](https://github.com/SocialGouv/iterion/commit/c0b63c9fcb0435643af8e91c19d74b4f7e577a44)), references [#1849](https://github.com/SocialGouv/iterion/issues/1849)
+
+    <details><summary>why</summary>
+
+    #1849's lane (ADR-141): the choke point classifies the two board issue chains by the route the mux matched and resolves the issue's team team-blind through a new IssueTenantResolver capability — a cross-tenant _id-prefix read over the board collection (boardmongo.ResolveIssueTenant; cloud wires it beside CloudBoardFor and panics without it, self-hosted's single store keeps the class out). The caller's standing in the issue's team authorizes — reads for a viewer, mutations for a member, the run…
+
+    </details>
+* **server:** the localize path refuses a consumer discovery does not claim ([72488ae](https://github.com/SocialGouv/iterion/commit/72488ae098384b9ea5e9a44cb2607ca4f892303c)), references [#2537](https://github.com/SocialGouv/iterion/issues/2537) [#2537](https://github.com/SocialGouv/iterion/issues/2537)
+
+    <details><summary>why</summary>
+
+    #2537 slice A: the landed copy goes under plugins/<name> INSIDE the consumer's directory, and discovery only skips the subtree of a directory it claims — manifest.yaml (exact spelling) AND main.bot. A consumer failing that test is not claimed: the walk descends it, the copy leaks into the routing namespace as a top-level bot, shadows the .botz materialization, and the consumer drops from the catalogue. The localize refuses before anything moves, naming the defect — the spelling or the missing…
+
+    </details>
+
+### Bug Fixes
+
+* **boardmongo:** the issue-tenant resolve owns its timeout, the caller's context is not read ([b8f04cb](https://github.com/SocialGouv/iterion/commit/b8f04cb95d6e64e595fa02fcdb09b78b1d8963e6))
+
+    <details><summary>why</summary>
+
+    The SA4009 the gate's lint leg caught on the working tree AFTER c0b63c9fc was cut from its staged state: ResolveIssueTenant overwrote its ctx argument before the first use — the store mints its own deadline (ctxWithTimeout), so the parameter is gone and the wiring closure ignores the caller's.
+
+    </details>
+* **routing:** the launch fold refuses the split backend-provider pin the per-field composition certifies ([7c331ee](https://github.com/SocialGouv/iterion/commit/7c331ee9ee093e16b351ff24035ca1375d324a50)), references [#2637](https://github.com/SocialGouv/iterion/issues/2637) [#2637](https://github.com/SocialGouv/iterion/issues/2637)
+
+    <details><summary>why</summary>
+
+    The per-entry write gate judges each override entry alone, while the launch resolves per field: {selector: X, backend: claw} in one entry and {selector: X, provider: zai} in another both validate, and the composed node override hands the dispatch exactly the pair the per-entry check exists to refuse — a pin certified at write time the harness ignores at dispatch, the spend following the default precedence (#2637).
+
+    </details>
+
+## [4.1.0](https://github.com/SocialGouv/iterion/compare/v4.0.0...v4.1.0) (2026-10-27)
+
+### Features
+
+* **admin:** one cross-org runs view for the instance super-admin ([#2148](https://github.com/SocialGouv/iterion/issues/2148)) ([feba834](https://github.com/SocialGouv/iterion/commit/feba8344a5eaf092284069a7ae8ac1fe196a7300))
+
+    <details><summary>why</summary>
+
+    GET /api/admin/runs: every org's runs in one super-admin listing — org/team/state filters combine server-side, pagination rides a keyset cursor across orgs ((created_at, id) descending, the tie-break that makes one token page deterministically), each row names its team and org server-side, and runs stamped to a sovereign runner pool carry the stamp the console marks visually (A19). Read-only by design: opening ONE run rides the existing ADR-103 choke point, whose super-admin cross-team grant…
+
+    </details>
+* **server:** re-scope a request to its X-Iterion-Team header at the auth choke point ([414e4c4](https://github.com/SocialGouv/iterion/commit/414e4c431acf0c89134659b19bad5f98b2c7e2e7)), references [#2662](https://github.com/SocialGouv/iterion/issues/2662)
+
+    <details><summary>why</summary>
+
+    #2662 slice 1 (server half): the access cookie stays the identity — a browser-wide artefact every studio tab shares — while the caller chooses the team a request acts on. The grant it costs is the standing a team switch would demand: identityInTeam recomputes the role in the named team, so the header never carries the active team's role across; a team without standing answers 403 naming the header (the resolveTenantScope contract); routes that scope by the team in their path ignore it; the…
+
+    </details>
+* **server:** the label door reads the catalogue's visibility switch ([aa14cb7](https://github.com/SocialGouv/iterion/commit/aa14cb7d32c9a6300654323fb2acbf5eaba72a0e)), references [#2676](https://github.com/SocialGouv/iterion/issues/2676)
+
+    <details><summary>why</summary>
+
+    #2676: a label-triggered launch joins the card door's visibility judgment. One shared resolver — botVisibleForLaunch, launch precedence team > platform > baked — answers for BOTH provider doors through one filtered refusal arm (gateLabelBotVisibility): a bot disabled in its manifest or by the workspace overlay does not start on its label, a refused overlay starts nothing (fail closed, the card door's rule), and a bot no tier describes is not started either. A stored row answers through its own…
+
+    </details>
+* **studio:** a tab scopes its requests to the team it displays ([b44001d](https://github.com/SocialGouv/iterion/commit/b44001dae9de21bce60d71c2ab162eb315b48ec5)), references [#2662](https://github.com/SocialGouv/iterion/issues/2662) [#2662](https://github.com/SocialGouv/iterion/issues/2662)
+
+    <details><summary>why</summary>
+
+    #2662 slice 2 (studio half — with the server choke point already on main, this closes the ticket): the auth context publishes the team the tab last adopted at every adoption point (bootstrap, switch, identity re-read) and clears it on sign-out; the api client carries it as X-Iterion-Team on tenant-scoped requests. A switch in one tab no longer re-scopes another tab's actions: the request rides the browser-wide cookie — the identity — while scoping to what the tab displays, and the server…
+
+    </details>
+* **studio:** the cost chart exposes its figures as a data table (RGAA 1.6) ([#2503](https://github.com/SocialGouv/iterion/issues/2503)) ([419e215](https://github.com/SocialGouv/iterion/commit/419e2150385496a66732ca0d4edca63cc7a55f3c))
+
+    <details><summary>why</summary>
+
+    The cost-per-day chart hid every figure in hover-only <title> elements: non-mouse users (and screen readers, which get role=img + aria-label only) had no way to read the per-day per-workflow costs. CostChart now renders an sr-only data table under the svg - one row per day, the per-workflow figures and the total as real text.
+
+    </details>
+* **studio:** the cost chart exposes its figures as a data table (RGAA 1.6) ([#2503](https://github.com/SocialGouv/iterion/issues/2503)) ([a1cba14](https://github.com/SocialGouv/iterion/commit/a1cba14d9561dc9fe0cad68fcb9b93b66c583127))
+
+    <details><summary>why</summary>
+
+    The cost-per-day chart hid every figure in hover-only <title> elements: non-mouse users (and screen readers, which get role=img + aria-label only) had no way to read the per-day per-workflow costs. CostChart now renders an sr-only data table under the svg — one row per day, the per-workflow figures and the total as real text.
+
+    </details>
+* **studio:** the plan-du-site page and the hoisted nav registry (RGAA 12.1) ([#2531](https://github.com/SocialGouv/iterion/issues/2531)) ([3102765](https://github.com/SocialGouv/iterion/commit/310276534d3aa6aed081f2e517ed8b25a504370d))
+
+    <details><summary>why</summary>
+
+    The studio had one navigation system (the sidebar) and no site map. NavLinks hoists its link registry (NAV_REGISTRY_LOCAL/CLOUD, the gates stay at render time - a flattened registry would leak admin hrefs into non-eligible users' sitemaps), and the new /sitemap page renders it under group headings plus the admin console sections. The sidebar footer links the page from every authenticated surface (the collapsed rail gets the icon).
+
+    </details>
+
+### Bug Fixes
+
+* **docs:** escape tag-looking changelog prose before the vue compile ([9460658](https://github.com/SocialGouv/iterion/commit/946065881107516590f7d48a0137bacbe06cef11)), references [#2509](https://github.com/SocialGouv/iterion/issues/2509)
+
+    <details><summary>why</summary>
+
+    An html_block that opens with <details swallows its body up to the next blank line, so the whole "why" prose rides inside one token and any tag-looking fragment in it (<tbody>, <run>, <Route ...>) reached the Vue compiler raw — a real tag name quoted in prose (the #2509 body's <tbody>) opens an element that never closes and aborts the docs build. The html rules now escape tag-by-tag and treat the changelog page (and any details block elsewhere) as prose: only details/summary stay markup,…
+
+    </details>
+* **dsl:** prompt bang refs render their value, the backend chain decides C018, stored siblings validate with their bundle, discovery parses each bot once ([11f9e2b](https://github.com/SocialGouv/iterion/commit/11f9e2b5733188b2721961792d5d7a5e53998904)), references [#1775](https://github.com/SocialGouv/iterion/issues/1775) [#1796](https://github.com/SocialGouv/iterion/issues/1796) [#2168](https://github.com/SocialGouv/iterion/issues/2168) [#1764](https://github.com/SocialGouv/iterion/issues/1764) [#1761](https://github.com/SocialGouv/iterion/issues/1761) [#1761](https://github.com/SocialGouv/iterion/issues/1761) [#1764](https://github.com/SocialGouv/iterion/issues/1764) [#1775](https://github.com/SocialGouv/iterion/issues/1775) [#1796](https://github.com/SocialGouv/iterion/issues/1796) [#2168](https://github.com/SocialGouv/iterion/issues/2168)
+
+    <details><summary>why</summary>
+
+    Adversarial-Rounds: 1 (witnesses reddened on their own assertion, then green) Adversarial-Model: claude-fable-5-1
+
+    </details>
+* **forge:** a provision's identity is minted once and durable, and a redirected write is refused, not read ([96b083c](https://github.com/SocialGouv/iterion/commit/96b083cac132c33371b57e641dbdebd745d412b1)), references [#2452](https://github.com/SocialGouv/iterion/issues/2452) [#2475](https://github.com/SocialGouv/iterion/issues/2475) [#2452](https://github.com/SocialGouv/iterion/issues/2452) [#2475](https://github.com/SocialGouv/iterion/issues/2475)
+
+    <details><summary>why</summary>
+
+    Two interleavings left a repo's webhook unable to verify its own deliveries. Two overlapping provisions of one repo each minted a fresh secret and wrote the forge-side hook and the stored config independently: whichever interleaving won decided the forge's secret, and the store could hold a different one, failing every delivery until a later provision succeeded alone (#2452). And a forge base that answers a write with a redirect turned a re-provision's hook update into a body-less GET: Go's…
+
+    </details>
+* **model,delegate:** a far-side log block is bounded on what the logger writes, and the claude_code thinking block asks the sink before it pays ([56dd508](https://github.com/SocialGouv/iterion/commit/56dd5089304055afb6fc4c820673001e3ef61231)), references [#2470](https://github.com/SocialGouv/iterion/issues/2470) [#2458](https://github.com/SocialGouv/iterion/issues/2458)
+
+    <details><summary>why</summary>
+
+    The five far-side block sites (#2470) rendered the relayed text with the logger's continuation prefix on every line: a 1 MiB body of single-byte lines wrote ~7.5 MiB of run log, and past that the log held the only copy of the thinking text. The four claw relay sites (response text, tool input, raw tool input at debug, thinking) already share one choke point, so the bound lands in storeHooks.logFarSideBlock: BlockPreviewRendered at maxFieldSize, redact first so a secret straddling the cut is…
+
+    </details>
+* **rgaa-audit:** migrer vers ultra11y 5.45.0 et exporter le bilan complet ([#2745](https://github.com/SocialGouv/iterion/issues/2745)) ([c24baf5](https://github.com/SocialGouv/iterion/commit/c24baf57e3bde451efbc08978d8f5b452ed27b66)), references [#2741](https://github.com/SocialGouv/iterion/issues/2741)
+
+    <details><summary>why</summary>
+
+    Consume the split business report and technical annex throughout draft review and final validation. Publish only files produced by each fresh report generation, including screenshots, both HTML entries and page grids. Keep lexical paths consistent through symlinked run roots while preserving canonical containment, engine fingerprints, audit hashes and replay guards.
+
+    </details>
+* **server:** a file past the journal's read budget saves, and a journal limit answers 413 naming its knob ([36636b0](https://github.com/SocialGouv/iterion/commit/36636b0df0d507233a3085416857497bac3aa0a7)), references [#480](https://github.com/SocialGouv/iterion/issues/480) [#2661](https://github.com/SocialGouv/iterion/issues/2661) [#2661](https://github.com/SocialGouv/iterion/issues/2661)
+
+    <details><summary>why</summary>
+
+    The unit save read the destination under ITERION_ASSISTANT_AUTHORING_MAX_TOTAL_BYTES (#480) to compare it against its Before: a file past the budget could never be compared whole, so every save of one answered 500 "authoring file exceeds the read limit" while the SAME file through the single-file door answered 200 — that door reads its destination whole (#2661). The budget is the journal's reading bound, not a save's: the unit save now reads its destination whole like the single-file door does,…
+
+    </details>
+* **server:** the binding-level locks 422 names every holder of the lock primitive ([95b38d2](https://github.com/SocialGouv/iterion/commit/95b38d2861b8c2f41a0959c98185f55632f0e512)), references [#2688](https://github.com/SocialGouv/iterion/issues/2688) [#2688](https://github.com/SocialGouv/iterion/issues/2688)
+
+    <details><summary>why</summary>
+
+    The 422 a binding surface (a schedule row, a forge integration) answers on routing.locks: sent the operator to two of the four holders — the author's manifest and the platform record — while the team and org routing records, the ones a team admin actually owns, went unnamed (#2688). The schedule decoder comment carried the same short list.
+
+    </details>
+* **studio:** clamped text keeps its full content recoverable (RGAA 10.12) ([#2526](https://github.com/SocialGouv/iterion/issues/2526)) ([0e00c76](https://github.com/SocialGouv/iterion/commit/0e00c767aa532710e82ba4da55458e612f90379f))
+
+    <details><summary>why</summary>
+
+    Clamped user-facing text (truncate, line-clamp) put descriptions and names permanently out of reach. ui/ClampText is the chokepoint: the clamp stays visual, the full text rides in an sr-only copy and the block reveals on keyboard focus. The four audited sites convert (RecentFilesPanel's descriptions, SidebarContext's search label, the bot name/id/description cards, the bot-catalog page button); the rest of the raw-truncate census (108 files) seeds the guard's drain allowlist - the canvas family…
+
+    </details>
+* **studio:** make the admin console pass its own studio leg ([6577dfe](https://github.com/SocialGouv/iterion/commit/6577dfe713dd2ada76b8e2e4c93eeb50c1d8c625))
+
+    <details><summary>why</summary>
+
+    The admin landing (feba8344a) left the studio leg red on main: the routes test mocked every console page except RunsAdminPage, so the real page rendered without an AuthProvider and crashed useAuth on the three /runs mounts; AdminNav's expected list lacked the Runs entry the route table declares; runsAdminPage.test.tsx called expectNoViolations without its label argument (tsc -b); and RunsAdminPage itself broke the a11y source guards — two raw <select> where the Select primitive is mandated,…
+
+    </details>
+* **studio:** the run-console links state their destination (RGAA 6.1) ([#2510](https://github.com/SocialGouv/iterion/issues/2510)) ([15475a2](https://github.com/SocialGouv/iterion/commit/15475a2ea92b14180d3f50a64741bc20d73b583a))
+
+    <details><summary>why</summary>
+
+    Two run-console links named themselves by a bare glyph: the browser pane's "open ↗" (the destination URL lived only in the tooltip) and the gate file's "Download" (which file, unclear when several gate files stack). Both carry aria-labels naming the action and the target (the current browser URL; the attachment's file name).
+
+    </details>
+* **studio:** the workflow switcher's Select carries an accessible name (RGAA 7.4) ([#2513](https://github.com/SocialGouv/iterion/issues/2513)) ([c9bfb16](https://github.com/SocialGouv/iterion/commit/c9bfb16c7593e3046d8a03dcf347d79eb4cdd553))
+
+    <details><summary>why</summary>
+
+    The toolbar's workflow Select swapped the canvas on change with no warning and no accessible name. It now announces itself (Active workflow - switching redraws the canvas) so assistive tech hears both the control and the consequence; the canvas redraw is the documented behaviour the label states.
+
+    </details>
+* **test:** the home guard fails a suite on test-key stores it gains, not on the operator's own writes ([19bec72](https://github.com/SocialGouv/iterion/commit/19bec72a0ff72b34f79db9790769cfeeef99e847)), references [#2011](https://github.com/SocialGouv/iterion/issues/2011) [#2714](https://github.com/SocialGouv/iterion/issues/2714) [#2011](https://github.com/SocialGouv/iterion/issues/2011) [#2714](https://github.com/SocialGouv/iterion/issues/2714)
+
+    <details><summary>why</summary>
+
+    The real-home guard #2011 promised was never written; a blind one would fail every suite the operator's live studio writes into while it runs — the home is shared (#2714). The guard lands with its key filter from the start: hometest.Isolate snapshots the test-key stores under the real home's projects directory before the run and scans again after; an entry the run GAINED fails the suite naming it. The keys are exact forms (#2011): "-tmp-Test*" for a workdir under the default temp root,…
+
+    </details>
+
 ## [4.0.0](https://github.com/SocialGouv/iterion/compare/v3.286.3...v4.0.0) (2026-10-27)
 
 ### ⚠ BREAKING CHANGES

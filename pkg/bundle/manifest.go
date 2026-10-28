@@ -1093,6 +1093,20 @@ func LoadManifest(path string) (*Manifest, error) {
 	return decodeManifest(body, path)
 }
 
+// LoadManifestForDir loads dir's manifest whichever spelling carries it —
+// the same both-spellings read OpenDir does. ADR-140: a bundle is a bundle
+// on every surface, so a reader of the literal manifest.yaml would hand
+// the .yml twin of one bundle two verdicts. A manifest.yaml that EXISTS
+// and fails keeps its own failure as the verdict; the .yml spelling is
+// only consulted when manifest.yaml is absent.
+func LoadManifestForDir(dir string) (*Manifest, error) {
+	m, err := LoadManifest(filepath.Join(dir, ManifestFile))
+	if _, statErr := os.Stat(filepath.Join(dir, ManifestFile)); statErr == nil {
+		return m, err
+	}
+	return LoadManifest(filepath.Join(dir, ManifestFileAlt))
+}
+
 // DecodeManifest parses + validates manifest bytes without touching the
 // filesystem — the seam generators (pkg/botscaffold) use to hold their
 // rendered manifest to the same bar as a loaded one before writing it.

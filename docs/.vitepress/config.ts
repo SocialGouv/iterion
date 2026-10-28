@@ -5,6 +5,7 @@ import { withMermaid } from 'vitepress-plugin-mermaid'
 import type MarkdownIt from 'markdown-it'
 import { githubSlug } from './github-slug.mjs'
 import { REPO, rewriteHref } from './rewrite-href.mjs'
+import { literalChangelogProse } from './changelog-prose.mjs'
 
 // Docs are authored to be read on github.com: hundreds of links escape /docs
 // (../pkg/*.go, ../README.md, ...) or point at raw in-repo source artifacts.
@@ -351,7 +352,7 @@ export default withMermaid(
       // to the bundled yaml grammar. (```ebnf isn't bundled either but has no
       // close bundled match; it falls back to plain text on its own.)
       languageAlias: { iter: 'yaml' },
-      config: (md) => md.use(escapeAngles).use(escapeBraces).use(githubLinks),
+      config: (md) => md.use(literalChangelogProse).use(escapeAngles).use(escapeBraces).use(githubLinks),
     },
     themeConfig: {
       logo: '/iterion-logo.png',

@@ -36,6 +36,9 @@ vi.mock("@/views/admin/settings/PlatformCredentialsPage", () => ({
 vi.mock("@/views/admin/spend/CredentialSpendPage", () => ({
   default: () => <div>page:/spend</div>,
 }));
+vi.mock("@/views/admin/RunsAdminPage", () => ({
+  default: () => <div>page:/runs</div>,
+}));
 
 import AdminConsoleRoutes from "./AdminConsoleRoutes";
 import { ADMIN_BASE, ADMIN_HOME, ADMIN_PATHS } from "./adminRoutes";

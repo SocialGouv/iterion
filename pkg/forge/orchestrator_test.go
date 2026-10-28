@@ -561,8 +561,8 @@ func TestDeprovision(t *testing.T) {
 	if fa.deletes != 1 || len(fa.hooks) != 0 {
 		t.Errorf("forge hook not deleted: deletes=%d hooks=%d", fa.deletes, len(fa.hooks))
 	}
-	if _, err := o.Webhooks.Get(ctx, res.WebhookID); !errors.Is(err, webhooks.ErrNotFound) {
-		t.Errorf("webhook config should be gone, got %v", err)
+	if cfg, err := o.Webhooks.Get(ctx, res.WebhookID); err != nil || cfg.Enabled {
+		t.Errorf("webhook config must remain a disabled tombstone, got %v", err)
 	}
 	if _, err := o.Integrations.Get(ctx, res.IntegrationID); !errors.Is(err, ErrIntegrationNotFound) {
 		t.Errorf("integration should be gone, got %v", err)

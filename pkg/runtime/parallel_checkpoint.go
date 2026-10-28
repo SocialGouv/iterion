@@ -3,12 +3,36 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// fallbackParallelSaveWindow is the coalescing window for routine fan-out
+// boundary checkpoints (#561). Branch nodes run for seconds to minutes, so a
+// window of this order merges the boundaries of siblings finishing together
+// (the wait_all burst) into one durable write while keeping the replay
+// window a crash can lose bounded to the same order. Zero disables
+// coalescing entirely.
+const fallbackParallelSaveWindow = 250 * time.Millisecond
+
+// defaultParallelSaveWindow resolves the operator's window at engine
+// construction: ITERION_PARALLEL_SAVE_WINDOW (a Go duration; "0" disables
+// coalescing outright) overrides the fallback when an operator chasing a
+// coalescing-related replay wants every boundary written inline without a
+// rebuild. An unparsable value keeps the fallback rather than guessing.
+func defaultParallelSaveWindow() time.Duration {
+	if v := os.Getenv("ITERION_PARALLEL_SAVE_WINDOW"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			return d
+		}
+	}
+	return fallbackParallelSaveWindow
+}
 
 func branchCounterPath(counters map[string]int) string {
 	if len(counters) == 0 {
@@ -106,6 +130,7 @@ func (e *Engine) ensureParallelInvocation(rs *runState, routerNodeID string, sta
 	key := e.parallelInvocationKey(routerNodeID, rs.loopCounters)
 	if rs.parallel != nil && rs.parallel.matches(routerNodeID, key, ids) {
 		rs.parallel.captureBase(rs)
+		e.startParallelSaver(rs, rs.parallel)
 		return rs.parallel, nil
 	}
 	if rs.parallel != nil {
@@ -124,6 +149,7 @@ func (e *Engine) ensureParallelInvocation(rs *runState, routerNodeID string, sta
 	if err := e.store.SaveCheckpoint(rs.ctx, rs.runID, cp); err != nil && e.logger != nil {
 		e.logger.Error("failed to initialize parallel checkpoint for %q: %v", routerNodeID, err)
 	}
+	e.startParallelSaver(rs, rs.parallel)
 	return rs.parallel, nil
 }
 
@@ -135,6 +161,24 @@ type parallelExecutionState struct {
 	saveMu  sync.Mutex // orders durable writes so an older snapshot cannot win last
 	cp      *store.ParallelCheckpoint
 	retired bool // collector returned; late abandoned branches may no longer persist
+	// saveWindow coalesces routine boundary checkpoints (#561): a boundary
+	// marks the invocation dirty and kicks the saver instead of writing
+	// inline, and siblings finishing together share one durable write.
+	// Immediate writes (completion, pause, spend, abandoned resume) bypass
+	// the window in both modes — they own durability contracts of their own.
+	// dirtyGen/writtenGen are mutated only under mu. saveWindow and the
+	// three channels are set once in startParallelSaver before any branch
+	// goroutine exists and read without mu afterwards (happens-before via
+	// that hand-off) — re-arming them later would race. Every durable
+	// write still serializes under saveMu, so an older snapshot can never
+	// win last.
+	saveWindow time.Duration
+	saveKick   chan struct{}
+	saveStop   chan struct{}
+	saveDone   chan struct{}
+	dirtyGen   int
+	writtenGen int
+	flush      func() // writes the current snapshot; holds saveMu (set with the saver)
 	// base is captured by the trunk before goroutines start. Branches clone
 	// this immutable snapshot instead of a live runState so they never race
 	// the trunk's unsynchronized maps.
@@ -145,15 +189,51 @@ type parallelExecutionState struct {
 	resumePending string
 }
 
+// retire marks the invocation finished and stops its coalescing saver. A
+// routine boundary still pending at this point flushes first, so the
+// collector never returns with a requested cursor undurable; the immediate
+// writes (completion, pause, spend, abandoned resume) already covered their
+// own. The saver stops before the flush: it may be parked inside a write
+// holding saveMu, and retire must never wait on a lock its own stop signal
+// is supposed to release.
 func (p *parallelExecutionState) retire() {
 	if p == nil {
 		return
 	}
+	p.mu.Lock()
+	already := p.retired
+	p.retired = true
+	stop, done := p.saveStop, p.saveDone
+	p.mu.Unlock()
+	if stop != nil && !already {
+		close(stop)
+		<-done
+	}
 	p.saveMu.Lock()
 	defer p.saveMu.Unlock()
+	p.flushIfDirty()
+}
+
+// markWritten records that the durable record carries every boundary
+// requested so far; a coalescing saver then skips a write nothing new asked
+// for. Callers hold saveMu and call it after a successful store write.
+func (p *parallelExecutionState) markWritten() {
 	p.mu.Lock()
-	p.retired = true
+	p.writtenGen = p.dirtyGen
 	p.mu.Unlock()
+}
+
+// flushIfDirty writes the current snapshot when a routine boundary is
+// pending. The saver calls it when its window closes and retire calls it
+// before it returns; the caller holds saveMu.
+func (p *parallelExecutionState) flushIfDirty() {
+	p.mu.Lock()
+	pending := p.dirtyGen > p.writtenGen
+	flush := p.flush
+	p.mu.Unlock()
+	if pending && flush != nil {
+		flush()
+	}
 }
 
 func (p *parallelExecutionState) isRetired() bool {
@@ -163,6 +243,115 @@ func (p *parallelExecutionState) isRetired() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.retired
+}
+
+// startParallelSaver arms the coalescing saver for one invocation (#561).
+// Both the fresh and the resumed path cross ensureParallelInvocation before
+// any branch goroutine starts, so the set-once here never races a branch.
+func (e *Engine) startParallelSaver(parent *runState, parallel *parallelExecutionState) {
+	if parallel == nil || parent == nil || e.parallelSaveWindow <= 0 {
+		return
+	}
+	parallel.mu.Lock()
+	defer parallel.mu.Unlock()
+	if parallel.saveKick != nil {
+		return
+	}
+	parallel.saveWindow = e.parallelSaveWindow
+	parallel.saveKick = make(chan struct{}, 1)
+	parallel.saveStop = make(chan struct{})
+	parallel.saveDone = make(chan struct{})
+	parallel.flush = func() { e.persistParallelSnapshotLocked(parent, parallel) }
+	go parallel.saverLoop(parent.ctx)
+}
+
+// saverLoop writes at most one durable record per window: a kick parks it
+// until the window closes, and the write then carries whatever the
+// invocation looks like at write time. Virtual-time tests drive the window
+// through testing/synctest; retire stops the loop before its own flush.
+//
+// The flushes ride parent.ctx: after a cancellation a ctx-honouring store
+// refuses them, so a cancelled run can lose the final window's boundaries —
+// bounded by the window, within the same best-effort contract as every
+// branch checkpoint. The window likewise bounds the spend gap: a branch's
+// CostUSD cursor becomes durable within one window of its booking instead
+// of at the boundary itself.
+func (p *parallelExecutionState) saverLoop(ctx context.Context) {
+	defer close(p.saveDone)
+	p.mu.Lock()
+	window := p.saveWindow
+	p.mu.Unlock()
+	for {
+		select {
+		case <-p.saveStop:
+			return
+		case <-ctx.Done():
+			return
+		case <-p.saveKick:
+		}
+		timer := time.NewTimer(window)
+		select {
+		case <-timer.C:
+		case <-p.saveStop:
+			timer.Stop()
+			return
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		}
+		p.saveMu.Lock()
+		p.flushIfDirty()
+		p.saveMu.Unlock()
+	}
+}
+
+// requestParallelSave records a routine branch boundary (#561). Under a
+// save window the boundary marks the invocation dirty and kicks the saver —
+// siblings finishing together share one durable write — without one it
+// degrades to the synchronous write the pre-coalescing code made. Ordering
+// is unchanged either way: every durable write serializes under saveMu and
+// carries the state current at write time, so an older boundary can never
+// overwrite a newer one.
+func (e *Engine) requestParallelSave(parent *runState, parallel *parallelExecutionState, branchID, nodeID string) {
+	if parallel == nil {
+		return
+	}
+	parallel.mu.Lock()
+	parallel.dirtyGen++
+	window := parallel.saveWindow
+	parallel.mu.Unlock()
+	if window <= 0 {
+		e.persistParallelCheckpointLocked(parent, parallel, branchID, nodeID)
+		return
+	}
+	select {
+	case parallel.saveKick <- struct{}{}:
+	default: // a kick is already parked; the saver writes the newest state
+	}
+}
+
+// persistParallelSnapshotLocked snapshots the invocation and writes the run
+// record. The caller holds parallel.saveMu and the invocation has a pending
+// boundary (flushIfDirty checked it); the saver and retire's flush both
+// come through here.
+func (e *Engine) persistParallelSnapshotLocked(parent *runState, parallel *parallelExecutionState) {
+	ps := parallel.snapshot()
+	if ps == nil {
+		return
+	}
+	cp := buildCheckpointWithoutParallel(parent, ps.RouterNodeID)
+	cp.Parallel = ps
+	if ps.PendingInteractionID != "" {
+		cp.InteractionID = ps.PendingInteractionID
+		cp.InteractionQuestions = deepCopyAnyMap(ps.PendingInteractionQuestions)
+	}
+	if err := e.store.SaveCheckpoint(parent.ctx, parent.runID, cp); err != nil {
+		if e.logger != nil {
+			e.logger.Error("failed to save coalesced parallel checkpoint: %v", err)
+		}
+		return
+	}
+	parallel.markWritten()
 }
 
 func (p *parallelExecutionState) captureBase(rs *runState) {

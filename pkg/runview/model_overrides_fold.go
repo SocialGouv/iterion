@@ -32,6 +32,25 @@ import "github.com/SocialGouv/iterion/pkg/store"
 // server records (ADR-129 §8, the stated limit) — so its overrides stay
 // flags-only and the helper is a no-op there (nil policy).
 
+// overrideOrigin names the layer that wrote a folded override entry —
+// the level half of the composed-pair refusal's naming (#2637).
+type overrideOrigin string
+
+const (
+	// originPolicy marks a cell the resolved routing policy pinned.
+	originPolicy overrideOrigin = "the routing policy's override cell"
+	// originLaunch marks a row the launch body itself carried.
+	originLaunch overrideOrigin = "the launch's own override row"
+)
+
+// sourcedOverrideEntry is one folded entry beside the layer that wrote
+// it. The flat []ModelOverrideEntry list stays every wire shape; the
+// origin lives only inside the launch's validation walk.
+type sourcedOverrideEntry struct {
+	ModelOverrideEntry
+	origin overrideOrigin
+}
+
 // EffectiveModelOverrides folds the resolved routing policy's override
 // cells under the launch's own rows and returns the ONE list a launch
 // carries onward: validated against, executed with, stamped on the run
@@ -40,6 +59,28 @@ func EffectiveModelOverrides(
 	launchRows []ModelOverrideEntry,
 	pol *store.RunLLMRoutePolicy,
 ) []ModelOverrideEntry {
+	return plainModelOverrideEntries(foldSourcedOverrides(launchRows, pol))
+}
+
+// plainModelOverrideEntries drops the origins: the wire shape the launch
+// carries onward.
+func plainModelOverrideEntries(sourced []sourcedOverrideEntry) []ModelOverrideEntry {
+	out := make([]ModelOverrideEntry, len(sourced))
+	for i, e := range sourced {
+		out[i] = e.ModelOverrideEntry
+	}
+	return out
+}
+
+// foldSourcedOverrides is EffectiveModelOverrides' single body, keeping
+// each folded entry's origin beside it. The composed-pair refusal names
+// the two entries (and their levels) that produced a pair, so the fold
+// must remember where each entry came from — one body, or the naming and
+// the fold would drift.
+func foldSourcedOverrides(
+	launchRows []ModelOverrideEntry,
+	pol *store.RunLLMRoutePolicy,
+) []sourcedOverrideEntry {
 	policy := policyOverrideEntries(pol)
 	// A launch row pinning a field on "*" shadows every policy cell on
 	// that field: the launcher's canonical gesture (a dropdown / bare flag
@@ -58,29 +99,30 @@ func EffectiveModelOverrides(
 		shadow.provider = shadow.provider || r.Provider != ""
 		shadow.effort = shadow.effort || r.Effort != ""
 	}
-	if shadow.backend || shadow.model || shadow.provider || shadow.effort {
-		kept := make([]ModelOverrideEntry, 0, len(policy)+len(launchRows))
-		for _, o := range policy {
-			if shadow.backend {
-				o.Backend = ""
-			}
-			if shadow.model {
-				o.Model = ""
-			}
-			if shadow.provider {
-				o.Provider = ""
-			}
-			if shadow.effort {
-				o.Effort = ""
-			}
-			if o.Backend == "" && o.Model == "" && o.Provider == "" && o.Effort == "" {
-				continue // the cell is fully shadowed
-			}
-			kept = append(kept, o)
+	hadShadow := shadow.backend || shadow.model || shadow.provider || shadow.effort
+	out := make([]sourcedOverrideEntry, 0, len(policy)+len(launchRows))
+	for _, o := range policy {
+		if shadow.backend {
+			o.Backend = ""
 		}
-		return append(kept, launchRows...)
+		if shadow.model {
+			o.Model = ""
+		}
+		if shadow.provider {
+			o.Provider = ""
+		}
+		if shadow.effort {
+			o.Effort = ""
+		}
+		if hadShadow && o.Backend == "" && o.Model == "" && o.Provider == "" && o.Effort == "" {
+			continue // the cell is fully shadowed
+		}
+		out = append(out, sourcedOverrideEntry{ModelOverrideEntry: o, origin: originPolicy})
 	}
-	return append(policy, launchRows...)
+	for _, r := range launchRows {
+		out = append(out, sourcedOverrideEntry{ModelOverrideEntry: r, origin: originLaunch})
+	}
+	return out
 }
 
 // policyOverrideEntries adapts the resolved snapshot's cells onto the

@@ -223,6 +223,15 @@ func WithWorkflowHash(hash string) EngineOption {
 	return func(e *Engine) { e.workflowHash = hash }
 }
 
+// WithParallelSaveWindow sets the coalescing window for routine fan-out
+// boundary checkpoints (#561). Within a window the boundaries of sibling
+// branches share one durable write; completion, pause, spend and abandoned
+// resume always write immediately. Zero or negative disables coalescing and
+// restores the legacy synchronous one-write-per-boundary behaviour.
+func WithParallelSaveWindow(d time.Duration) EngineOption {
+	return func(e *Engine) { e.parallelSaveWindow = d }
+}
+
 // WithWorkspaceTracker wires iterion's own workspace versioning, used to
 // capture and restore the files a run produces.
 //

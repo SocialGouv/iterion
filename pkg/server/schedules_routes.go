@@ -93,8 +93,8 @@ type updateScheduleReq struct {
 // decodeScheduleRouting decodes a schedule request's routing block through
 // the ONE routing decoder (routing_decode.go) under the binding surface's
 // lock posture: the binding level does not hold the lock primitive
-// (ADR-121 — the author's manifest and the platform record do; a schedule
-// lock would launder unset past the author).
+// (ADR-121 — routingLockHolders do; a schedule lock would launder unset
+// past the author).
 func decodeScheduleRouting(raw json.RawMessage) (*llmroute.Policy, bool, *routingRequestError) {
 	return decodeRoutingBlock(raw, routingLocksRefused)
 }

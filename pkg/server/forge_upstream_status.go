@@ -88,6 +88,8 @@ import (
 //	  forge.ErrProjectBotNotPermitted      0  the provisioning route answers 403 project_bot_not_permitted itself
 //	  forge.ErrProjectBotUnsupported       0  a configuration contradiction; the provisioning route answers 422
 //	  forge.ErrRepoNotEnabled              0  iterion's own state; the launch route and the board lane's writes answer 409
+//	  forge.ErrProvisionBusy               0  local lease contention; provisioning answers 409
+//	  forge.ErrIntegrationConflict         0  local snapshot conflict; provisioning answers 409
 func forgeUpstreamStatus(err error) (int, string) {
 	if err == nil {
 		return 0, ""

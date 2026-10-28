@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -841,7 +842,14 @@ func prepareAuthoringLocal(l *authoringLocalLock, p authoringPreviewFile, ignore
 	}
 	mode := os.FileMode(0o644)
 	if p.Operation != "create" {
-		body, info, err := l.parent.read(filepath.Base(l.path), int64(currentAuthoringLimits().maxTotalBytes))
+		// The destination is read WHOLE, like the single-file door reads
+		// its own: the read budget is the journal's reading bound (#480),
+		// not a save's. Bounded here, a file past the budget could never
+		// be compared against its Before — every save of it answered 500
+		// while the same file through the single-file door answered 200
+		// (#2661). The bot that results is still held to read whole by
+		// saveUnit's own check on the written result.
+		body, info, err := l.parent.read(filepath.Base(l.path), math.MaxInt64-1)
 		if err != nil {
 			return nil, err
 		}

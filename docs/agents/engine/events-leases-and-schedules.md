@@ -34,6 +34,7 @@ invariants. `iterion map find|impact|path` answer the exact questions.
 - `pkg/notify/` — Delivers run-completion webhooks to operator-supplied URLs behind an SSRF guard (http/https only; fails closed on loopback/link-local/RFC-1918/metadata hosts unless opted in)
 
 - `pkg/webhooks/` — Inbound-webhook spine: long-lived per-org `iwh_` tokens (token or HMAC mode) authenticating an external caller (forge/CI/script) to launch a configured set of bots, with per-provider parsers (GitLab/GitHub/Forgejo/generic). See [docs/webhooks.md](../../webhooks.md)
+- Forge provisioning uses immutable webhook epochs and versioned activation beyond its lease; [ADR-138](../../adr/138-forge-provisioning-immutable-identities.md) records the synchronous retry path and future reconciler boundary.
 
 - `pkg/alert/` — Run-observer detecting stall/budget/failure conditions off runtime events (`budget_warning`/`budget_exceeded`/`run_failed`) + a per-run liveness heartbeat, fanning alerts to webhooks and in-process sinks
 

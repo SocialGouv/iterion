@@ -223,6 +223,10 @@ var botVarsInfraExact = map[string]bool{
 	// a replayed refresh token still shares its successor. It tunes the
 	// session guard, never a bot's run.
 	"ITERION_REFRESH_REUSE_GRACE": true,
+	// The checkpoint coalescing window (#561): the ENGINE's own durability
+	// posture — how much replay a crash may lose on a fan-out. It
+	// configures the process, never a bot's run.
+	"ITERION_PARALLEL_SAVE_WINDOW": true,
 	"ITERION_BIN":                 true,
 	"ITERION_PI_BIN":              true,
 	"ITERION_OPENCODE_BIN":        true,

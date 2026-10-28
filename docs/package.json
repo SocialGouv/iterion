@@ -7,7 +7,7 @@
     "dev": "vitepress dev",
     "check:mermaid": "node scripts/check-mermaid.mjs",
     "check:links": "node scripts/check-links.mjs",
-    "build": "node scripts/check-mermaid.mjs && vitepress build && node scripts/check-links.mjs",
+    "build": "node --test scripts/changelog-prose.test.mjs && node scripts/check-mermaid.mjs && vitepress build && node scripts/check-links.mjs",
     "preview": "vitepress preview"
   },
   "devDependencies": {

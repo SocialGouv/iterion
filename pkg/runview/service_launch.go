@@ -301,15 +301,21 @@ func (s *Service) hookEventObservers(extra []func(store.Event)) []func(store.Eve
 }
 
 // foldAndScreen folds the resolved routing policy's override cells under
-// the launch's own rows and runs the permission screen on the FOLDED
-// list — one body for every launch-shaped entry (cloud, local,
-// preview), so the fold-before-screen order exists in exactly one place:
-// a cell folded in after the screen would reach past a guard the
-// launcher's own override cannot, and an entry that skipped the fold
-// would show the operator a preview of a launch shape that is not the
-// launch's.
+// the launch's own rows, refuses the (backend, provider) pair the
+// per-field composition can assemble from two entries (#2637), and runs
+// the permission screen on the FOLDED list — one body for every
+// launch-shaped entry (cloud, local, preview), so the fold-before-screen
+// order exists in exactly one place: a cell folded in after the screen
+// would reach past a guard the launcher's own override cannot, and an
+// entry that skipped the fold would show the operator a preview of a
+// launch shape that is not the launch's.
 func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec) error {
-	spec.ModelOverrides = EffectiveModelOverrides(spec.ModelOverrides, spec.LLMRoutePolicy)
+	sourced := foldSourcedOverrides(spec.ModelOverrides, spec.LLMRoutePolicy)
+	spec.ModelOverrides = plainModelOverrideEntries(sourced)
+	if findings := composedPairFindings(wf, sourced); len(findings) > 0 {
+		f := findings[0]
+		return fmt.Errorf("runview: model overrides for %s %q: %w", f.kind, f.id, f.err)
+	}
 	return ValidateModelOverridePermissions(wf, toModelOverrides(spec.ModelOverrides), spec.Permission)
 }
 

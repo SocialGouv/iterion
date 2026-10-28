@@ -251,6 +251,20 @@ func assistantDependencyBotsLocalize(ctx context.Context, target *authoringTarge
 	if !manifestDeclaresWorkflowDependency(target.manifest, req.Name) {
 		return assistantDependencyBotsLocalizeResponse{}, authoringConflictError{fmt.Sprintf("open bundle does not declare workflow dependency %q", req.Name)}
 	}
+	// The localize lands a real bundle under plugins/<name> INSIDE the
+	// consumer's directory, which discovery only skips while it CLAIMS the
+	// consumer. The claim is bundle.DirClaim's verdict — the same one the
+	// walk uses (ADR-140) — so a directory cannot be a bundle on one
+	// surface and a descent on another: an unclaimed or unopenable
+	// consumer is refused before anything moves
+	// (docs/agents/engine/bot-catalog-regeneration.md records the corner).
+	claimed, openable, _ := bundle.DirClaim(target.bundleDir)
+	if !claimed {
+		return assistantDependencyBotsLocalizeResponse{}, authoringConflictError{"consumer bundle is not one discovery claims (its manifest is not iterion's) — a localized dependency under an unclaimed consumer shadows the catalogue and drops the consumer from it"}
+	}
+	if !openable {
+		return assistantDependencyBotsLocalizeResponse{}, authoringConflictError{fmt.Sprintf("consumer bundle is claimed but carries no %s — discovery would skip it and the localized copy would shadow the catalogue", bundle.MainBotFile)}
+	}
 	gitRootOut, err := assistantDependencyGit(ctx, target.workDir, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return assistantDependencyBotsLocalizeResponse{}, err

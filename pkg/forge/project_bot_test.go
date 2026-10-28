@@ -301,7 +301,7 @@ func TestProvision_ProjectBot_ReprovisionReusesTheBot(t *testing.T) {
 	}
 }
 
-func TestProvision_ProjectBot_HookRefusalRevokesTheMint(t *testing.T) {
+func TestProvision_ProjectBot_HookRefusalKeepsDurableRetryMint(t *testing.T) {
 	o, f, conn := newProjectBotOrch(t)
 	ctx := context.Background()
 	f.createErr = errors.New("gitlab: create hook: HTTP 422: Invalid url given")
@@ -312,14 +312,14 @@ func TestProvision_ProjectBot_HookRefusalRevokesTheMint(t *testing.T) {
 	if len(f.mints) != 1 {
 		t.Fatalf("mints = %d", len(f.mints))
 	}
-	if live := f.live(); len(live) != 0 {
-		t.Errorf("the minted token survived the failed provision: %+v", live[0])
+	if live := f.live(); len(live) != 1 {
+		t.Errorf("durable retry must retain its project bot, got %d", len(live))
 	}
-	if f.tokens["101"].selfRevokes != 1 {
-		t.Errorf("self revokes = %d: the bot revokes itself with the token iterion holds", f.tokens["101"].selfRevokes)
+	if f.tokens["101"].selfRevokes != 0 {
+		t.Errorf("durable retry lost its project bot credential")
 	}
-	if list, _ := o.Secrets.ListByTeam(ctx, "t1", ""); len(list) != 0 {
-		t.Errorf("secrets left behind: %+v", list)
+	if list, _ := o.Secrets.ListByTeam(ctx, "t1", ""); len(list) != 1 {
+		t.Errorf("durable retry must retain one credential, got %d", len(list))
 	}
 	if _, gerr := o.Integrations.GetByConnRepo(ctx, "t1", conn.ID, "group/api"); !errors.Is(gerr, ErrIntegrationNotFound) {
 		t.Errorf("integration recorded despite the failure: %v", gerr)

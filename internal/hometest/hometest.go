@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,52 @@ const (
 	removeBackoff  = 100 * time.Millisecond
 )
 
+// inheritedRealIterionHome is the iterion home the binary inherited — the
+// operator's real one, captured before any TestMain replaces the
+// environment. Empty when none resolves. Patchable in tests: the guard's
+// witnesses point it at a directory they own, never at the real one.
+var inheritedRealIterionHome = inheritedRealHome()
+
+func inheritedRealHome() string {
+	if v := strings.TrimSpace(envtrust.Inherited("ITERION_HOME")); v != "" {
+		return filepath.Clean(v)
+	}
+	if h := strings.TrimSpace(envtrust.Inherited("HOME")); h != "" {
+		return filepath.Join(filepath.Clean(h), ".iterion")
+	}
+	return ""
+}
+
+// realHomeTestEntries names the test-key stores sitting in the real home's
+// projects directory. The keys are exact (#2011): "-tmp-Test*" for a
+// workdir under the default temp root, "-<temp-root-encoded>-Test*" for one
+// under the temp dir this process inherited. A blanket "-tmp-*" would name
+// real projects too — real ones live under /tmp as well. A home that does
+// not exist names nothing; an unreadable one is reported, not failed on —
+// an unreadable home is not a leak.
+func realHomeTestEntries() map[string]bool {
+	if inheritedRealIterionHome == "" {
+		return nil
+	}
+	projects := filepath.Join(inheritedRealIterionHome, "projects")
+	entries, err := os.ReadDir(projects)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			fmt.Fprintf(os.Stderr, "hometest: scan the real home's projects %s: %v\n", projects, err)
+		}
+		return nil
+	}
+	tmpPrefix := store.EncodeWorkDirKey(os.TempDir()) + "-Test"
+	out := make(map[string]bool)
+	for _, e := range entries {
+		n := e.Name()
+		if strings.HasPrefix(n, "-tmp-Test") || strings.HasPrefix(n, tmpPrefix) {
+			out[n] = true
+		}
+	}
+	return out
+}
+
 // Isolate points ITERION_HOME at a directory it creates for this test
 // process, runs run, then removes that directory and the one pkg/store
 // creates for a test that clears ITERION_HOME. It returns run's exit code,
@@ -43,7 +90,14 @@ const (
 // planted-names marker an iterion process above the test run may have exported
 // (internal/envtrust) is dropped too: it would make the home set here read as
 // one a project `.env` planted.
+//
+// After the run, the real home's projects directory is scanned again: a
+// test-key store that GAINED an entry over the run fails the suite — a
+// test pointed a workdir's store at the operator's data (#2714). Entries
+// the home already held fail nothing: the home is shared with the
+// operator's live studio, whose legitimate writes are not leaks.
 func Isolate(run func() int) int {
+	before := realHomeTestEntries()
 	code := isolateHome("ITERION_HOME", homePrefix, "test iterion home", func() int {
 		if err := os.Unsetenv(envtrust.EnvPlantedNames); err != nil {
 			fmt.Fprintf(os.Stderr, "hometest: drop %s: %v\n", envtrust.EnvPlantedNames, err)
@@ -53,6 +107,18 @@ func Isolate(run func() int) int {
 	})
 	if err := store.ReleaseTestIterionHomeForTests(); err != nil {
 		fmt.Fprintf(os.Stderr, "hometest: %v\n", err)
+		code = failed(code)
+	}
+	after := realHomeTestEntries()
+	leaked := make([]string, 0, len(after))
+	for n := range after {
+		if !before[n] {
+			leaked = append(leaked, n)
+		}
+	}
+	if len(leaked) > 0 {
+		sort.Strings(leaked)
+		fmt.Fprintf(os.Stderr, "hometest: the suite leaked %d test store(s) into the real iterion home %s: %s — a test pointed a workdir's store at the operator's data (#2714)\n", len(leaked), inheritedRealIterionHome, strings.Join(leaked, "; "))
 		code = failed(code)
 	}
 	return code

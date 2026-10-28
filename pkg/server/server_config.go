@@ -535,6 +535,12 @@ type Config struct {
 	// tracked kanban card on that tenant's board (in addition to launching the
 	// run). nil in self-hosted/local mode — board-mode then just launches.
 	CloudBoardFor func(tenantID string) native.BoardStore
+	// IssueTenantResolver resolves the team ONE board issue lives in,
+	// across teams — the by-id capability of the board routes (ADR-141).
+	// Cloud mode wires it beside CloudBoardFor; nil keeps the board routes
+	// OUT of the by-id class (self-hosted's single store has no tenancy to
+	// decouple).
+	IssueTenantResolver func(ctx context.Context, issueID string) (string, error)
 
 	// CloudBoardCoordinator, when set, activates the cloud board DISPATCHER:
 	// Serve starts a CAS-based loop (no leader election) that claims eligible

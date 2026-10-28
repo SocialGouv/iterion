@@ -16,27 +16,34 @@ import (
 // RepoIntegration without deciding which side it falls on now fails a test
 // instead of being discovered on a live repo.
 var provisionerOwnedIntegrationFields = map[string]string{
-	"ID":                   "identity",
-	"TenantID":             "identity",
-	"ConnectionID":         "from the request",
-	"Provider":             "from the connection",
-	"RepoFullName":         "from the request",
-	"BotIDs":               "the request's desired set",
-	"EventsNormalized":     "derived from the bots' manifests",
-	"WebhookID":            "the provisioner's own record",
-	"HookID":               "returned by the forge",
-	"HookURL":              "where the forge should deliver — the provisioner decides it",
-	"ManagedSecretID":      "the provisioner's own record",
-	"ProjectBot":           "the provisioner's own record: minted by the first enable on a project-bot connection and carried from the existing row on every rebuild there; absent by construction on every other connection",
-	"LaunchVars":           "operator override, explicitly re-resolved (nil request = keep)",
-	"Routing":              "operator override, explicitly re-resolved (a RoutingSet request replaces or clears; a silent one adopts the stored block — ADR-129)",
-	"Overlap":              "operator override, explicitly re-resolved",
-	"HoldLabels":           "operator override, explicitly re-resolved",
-	"LabelAllowlist":       "operator override, explicitly re-resolved",
-	"AutoFixOnGateFailure": "operator override, explicitly re-resolved",
-	"CreatedBy":            "identity",
-	"CreatedAt":            "identity",
-	"UpdatedAt":            "stamped every write",
+	"Version":               "atomic snapshot fence",
+	"Retired":               "durable lifecycle tombstone",
+	"RetireCleanupComplete": "retirement completed before reactivation",
+	"WebhookSecretSealed":   "immutable active epoch identity",
+	"CandidateWebhookID":    "durable migration reservation",
+	"CandidateSecretSealed": "immutable pending epoch identity",
+	"ProvisionPending":      "retryable provisioning state",
+	"ID":                    "identity",
+	"TenantID":              "identity",
+	"ConnectionID":          "from the request",
+	"Provider":              "from the connection",
+	"RepoFullName":          "from the request",
+	"BotIDs":                "the request's desired set",
+	"EventsNormalized":      "derived from the bots' manifests",
+	"WebhookID":             "the provisioner's own record",
+	"HookID":                "returned by the forge",
+	"HookURL":               "where the forge should deliver — the provisioner decides it",
+	"ManagedSecretID":       "the provisioner's own record",
+	"ProjectBot":            "the provisioner's own record: minted by the first enable on a project-bot connection and carried from the existing row on every rebuild there; absent by construction on every other connection",
+	"LaunchVars":            "operator override, explicitly re-resolved (nil request = keep)",
+	"Routing":               "operator override, explicitly re-resolved (a RoutingSet request replaces or clears; a silent one adopts the stored block — ADR-129)",
+	"Overlap":               "operator override, explicitly re-resolved",
+	"HoldLabels":            "operator override, explicitly re-resolved",
+	"LabelAllowlist":        "operator override, explicitly re-resolved",
+	"AutoFixOnGateFailure":  "operator override, explicitly re-resolved",
+	"CreatedBy":             "identity",
+	"CreatedAt":             "identity",
+	"UpdatedAt":             "stamped every write",
 }
 
 // TestReprovisionDropsNoIntegrationFieldItDoesNotOwn is the class guard.
@@ -74,6 +81,9 @@ func TestReprovisionDropsNoIntegrationFieldItDoesNotOwn(t *testing.T) {
 	v := reflect.ValueOf(&integ).Elem()
 	typ := v.Type()
 	for i := 0; i < v.NumField(); i++ {
+		if _, owned := provisionerOwnedIntegrationFields[typ.Field(i).Name]; owned {
+			continue
+		}
 		f := v.Field(i)
 		if !f.CanSet() || !f.IsZero() {
 			continue
@@ -99,6 +109,9 @@ func TestReprovisionDropsNoIntegrationFieldItDoesNotOwn(t *testing.T) {
 	// Keep the identity coherent so the re-provision finds this record.
 	integ.TenantID, integ.ConnectionID, integ.RepoFullName = "t1", "conn-1", "group/api"
 	if err := o.Integrations.Update(ctx, integ); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Integrations.StampSynced(ctx, integ.ID, integ.LastSyncedAt); err != nil {
 		t.Fatal(err)
 	}
 	// The sentinel fill created a launch_vars map the config does not carry;
@@ -172,6 +185,9 @@ func TestReprovisionKeepsIssueSyncAndItsTrustThreshold(t *testing.T) {
 	integ.LastSyncedAt = synced
 	integ.MinAuthorRole = "maintainer" // tightened above the "" default
 	if err := o.Integrations.Update(ctx, integ); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Integrations.StampSynced(ctx, integ.ID, synced); err != nil {
 		t.Fatal(err)
 	}
 

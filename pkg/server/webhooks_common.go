@@ -649,6 +649,28 @@ func (s *Server) checkBotPermitted(
 	return botID, true
 }
 
+// gateLabelBotVisibility is the label door's visibility arm (#2676): the
+// shared resolver's verdict, delivered as the family's filtered answer. It
+// records the filtered delivery, writes the 200 body and reports ok=false
+// when the bot is disabled — or when its visibility could not be read: a
+// refused overlay starts nothing, fail closed, the card door's rule.
+func (s *Server) gateLabelBotVisibility(ctx context.Context, w http.ResponseWriter, cfg webhooks.Config, meta webhookEventMeta, botID, payloadHash, srcIP string) bool {
+	visible, err := s.botVisibleForLaunch(ctx, cfg.TenantID, botID)
+	if err == nil && visible {
+		return true
+	}
+	reason := fmt.Sprintf("bot %q is disabled in the catalogue — a label does not start it", botID)
+	if err != nil {
+		reason = fmt.Sprintf("the visibility of bot %q could not be read: %v", botID, err)
+	}
+	s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
+	if s.logger != nil {
+		s.logger.Warn("webhooks: %s/%s label launch refused: %s", cfg.Provider, meta.ProjectPath, reason)
+	}
+	writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered, "reason": reason})
+	return false
+}
+
 // newWebhookDelivery builds the common fields of a delivery audit row.
 // Provider handlers layer the idempotency key + outcome-specific fields
 // (BotID, RunID, Error) on top.

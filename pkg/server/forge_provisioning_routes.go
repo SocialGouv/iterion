@@ -574,6 +574,8 @@ func (s *Server) writeForgeProvisionError(w http.ResponseWriter, err error) {
 			"error":  "hook_url_refused",
 			"detail": hookRefusedDetail(hookRefused),
 		})
+	case errors.Is(err, forge.ErrProvisionBusy), errors.Is(err, forge.ErrIntegrationConflict), errors.Is(err, webhooks.ErrConflict):
+		httpError(w, http.StatusConflict, "%v", err)
 	case errors.Is(err, forge.ErrLaunchVarsDrop):
 		// The operator's own request is inadmissible as sent: it would drop
 		// pins it did not name. 400, with the echo and the escape hatch in

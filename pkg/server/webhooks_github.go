@@ -477,6 +477,12 @@ func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request, cfg 
 	if !ok {
 		return
 	}
+	// The visibility gate (#2676): a label starts a bot the catalogue
+	// enables — a disabled bot no more launches by its label than by its
+	// card, and a refused overlay starts nothing.
+	if !s.gateLabelBotVisibility(ctx, w, cfg, meta, botID, payloadHash, srcIP) {
+		return
+	}
 
 	// Author-trust gate on the zero-touch lane ONLY: an opened issue launches
 	// a bot with no human in the loop, so the author must hold real repo

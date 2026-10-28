@@ -32,6 +32,12 @@ import (
 // (0 disables the guard).
 const defaultMaxConsecutiveToolErrors = 25
 
+// thinkingBlockPreviewMax bounds a thinking block on what the logger WRITES
+// ([iterlog.BlockPreviewRendered]), matching the model package's maxFieldSize
+// budget: the model chooses where its newlines fall, and every block line
+// carries the logger's continuation prefix.
+const thinkingBlockPreviewMax = 1 << 20
+
 // Stream-timeout tiers calibrated for the two failure shapes we
 // see in practice:
 //
@@ -1096,9 +1102,17 @@ func (b *ClaudeCodeBackend) handleAssistantMessage(m *claudesdk.AssistantMessage
 		meta.thinkingMs += ms
 		// LogBlock so the reasoning text folds under the header in the
 		// studio's run log (expand/collapse), like tool I/O and 💬 text.
-		b.Logger.LogBlock(iterlog.LevelInfo, "🧠",
-			fmt.Sprintf("[%s#%d/claude-code] thinking ~%d tok, %dms:", task.NodeID, task.Iteration, tokens, ms),
-			redactWith(task.RedactSecrets, turnThinking))
+		// The gate asks the sink before paying: redactWith runs the task's
+		// secret pass, and a body the level drops must not pay it — the
+		// rule storeHooks.logFarSideBlock owns on the claw side. The body
+		// is bounded on what the LOGGER WRITES, not on the bytes handed
+		// over: every block line carries the continuation prefix, so an
+		// unbounded 1 MiB body of single-byte lines is ~7.5 MiB of run log.
+		if b.Logger.IsEnabled(iterlog.LevelInfo) {
+			b.Logger.LogBlock(iterlog.LevelInfo, "🧠",
+				fmt.Sprintf("[%s#%d/claude-code] thinking ~%d tok, %dms:", task.NodeID, task.Iteration, tokens, ms),
+				iterlog.BlockPreviewRendered(redactWith(task.RedactSecrets, turnThinking), thinkingBlockPreviewMax))
+		}
 	} else if redactedThinking {
 		ms := int(time.Since(lastItemTime) / time.Millisecond)
 		meta.thinkingMs += ms

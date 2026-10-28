@@ -117,6 +117,21 @@ JWT layer.
 Source: [pkg/server/auth_routes.go](../pkg/server/auth_routes.go) +
 [pkg/server/password_routes.go](../pkg/server/password_routes.go).
 
+The active team rides the access credential, and the credential lives in a
+browser-wide cookie — every tab of a browser shares it. A caller that needs
+its requests to act on another team of its own standing — a second studio
+tab that kept its team while the cookie moved, a CLI whose base URL is
+assembled for it — sends `X-Iterion-Team: <team_id>` on any tenant-scoped
+route (where a route also reads `?team_id=`, the query keeps precedence).
+The header re-scopes the request to that team at the auth choke point: the
+standing it costs is the one a team switch would demand (the role is
+recomputed in the named team, so the header never carries the active team's
+role across), a team the caller has no standing in answers `403` naming the
+header, routes that scope by the team in their path ignore it (the path is
+the more local scope), run-addressed routes ignore it (ADR-103: a run by id
+is served from the run's team), and a credential without an active team is
+not rescued by one. Absent, it changes nothing.
+
 Every route that mints a credential — login, register, refresh, the
 password change and reset confirm, the desktop exchange, the team and org
 switches — answers the session alone (`AuthSessionResponse`: `user`, the
@@ -721,6 +736,32 @@ team (ADR-103), not in their active one: reads take a viewer, actions a member
 — the `browser/cdp` and `shell` GETs count as actions, since they hand the
 caller the run's browser and terminal — and an admin/owner of the team's org
 who is not a member of that team enters as a viewer.
+
+The board issues join the class too (ADR-141): `/api/v1/native/issues/{id}…`
+and `/api/v1/pipeline-board/tasks/{id}…` are served from the issue's team
+through the issue-tenant resolver — reads for a viewer, mutations for a
+member — with the handlers' store resolution reading the re-scoped stamp.
+### The id-addressed routes outside the by-id class
+
+Every route the mux serves under an id wildcard is either in the class above
+or governed by another stated rule — the enumeration is pinned by
+`TestEveryIDWildcardRouteIsClassifiedOrReasoned` in
+[pkg/server/id_route_enumeration_test.go](../pkg/server/id_route_enumeration_test.go),
+so a new id-addressed route cannot land unclassified:
+
+| Family | Rule |
+|---|---|
+| `/api/teams/{id}/…` | the path team IS the scope (`canViewTeam` / `canManageTeam`) |
+| `/api/admin/…` | super-admin over the platform sentinel tenant |
+| `/api/auth/…`, `/api/me/…`, `/api/orgs/…` | identity surfaces, user-scoped, org-scoped by path |
+| `/api/v1/native/issues/{id}…`, `/api/v1/pipeline-board/tasks/{id}…` | IN the by-id class since ADR-141: served from the issue's team (the resolver reads the id across teams; reads take a viewer, mutations a member) — self-hosted's single store stays out of the class |
+| `/api/v1/native/labels/{label}`, `/api/v1/native/board/…` | board vocabulary and config of the active team's store |
+| `/api/v1/bots/{name}…` | the dispatch catalog: a tiered namespace by design (team > platform > baked), not an authored-resource id |
+| `/api/assistant-watches/{watchID}` | fixed compatibility sibling of the run-addressed `DELETE /api/runs/{id}/assistant-watches/{watchID}`: the stop resolves the watch's target run under the caller's active team |
+| `/api/v1/marketplace/…` | public marketplace family (anonymous reads, repo-coordinate installs) |
+| `/api/v1/mcp/…` | per-run token over single-tenant store surfaces |
+| `/api/webhooks/…` | signature-authenticated deliveries |
+| `/api/examples/{name…}`, `/api/local/…`, `/api/projects/{id}`, `/api/v1/pipeline-board/workspace-images/{path…}`, `/api/v1/plugins/{name}…`, `/brand/{file}` | deployment-local or static surfaces with no tenant dimension (local registries, workdir files, the plugin tree, brand assets) |
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|

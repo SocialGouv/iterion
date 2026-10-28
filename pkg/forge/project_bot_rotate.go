@@ -79,14 +79,14 @@ func (o *Orchestrator) rotateProjectBot(ctx context.Context, ri RepoIntegration)
 	}
 	conn, err := o.Connections.Get(ctx, ri.ConnectionID)
 	if err != nil {
-		return false, o.recordProjectBotRotation(ctx, ri, nil, fmt.Errorf("resolve connection %s: %w", ri.ConnectionID, err))
+		return false, o.recordProjectBotRotation(ctx, ri, conn, nil, fmt.Errorf("resolve connection %s: %w", ri.ConnectionID, err))
 	}
 	if ri.ManagedSecretID == "" {
-		return false, o.recordProjectBotRotation(ctx, ri, nil, errors.New("the integration holds no project bot secret"))
+		return false, o.recordProjectBotRotation(ctx, ri, conn, nil, errors.New("the integration holds no project bot secret"))
 	}
 	gs, err := o.Secrets.Get(ctx, ri.ManagedSecretID)
 	if err != nil {
-		return false, o.recordProjectBotRotation(ctx, ri, nil, fmt.Errorf("load project bot secret: %w", err))
+		return false, o.recordProjectBotRotation(ctx, ri, conn, nil, fmt.Errorf("load project bot secret: %w", err))
 	}
 	expiresAt := now.Add(lifetime)
 
@@ -95,19 +95,19 @@ func (o *Orchestrator) rotateProjectBot(ctx context.Context, ri RepoIntegration)
 		cred, err = o.rotateProjectBotAdmin(ctx, conn, ri, expiresAt)
 	}
 	if err != nil {
-		return false, o.recordProjectBotRotation(ctx, ri, nil, err)
+		return false, o.recordProjectBotRotation(ctx, ri, conn, nil, err)
 	}
 
 	sealed, err := secrets.SealGenericSecret(o.Sealer, gs.ID, []byte(cred.Token))
 	if err != nil {
-		return false, o.recordProjectBotRotation(ctx, ri, &cred, fmt.Errorf("the forge rotated the token but it could not be sealed: %w", err))
+		return false, o.recordProjectBotRotation(ctx, ri, conn, &cred, fmt.Errorf("the forge rotated the token but it could not be sealed: %w", err))
 	}
 	gs.SealedSecret = sealed
 	gs.Last4 = secrets.Last4(cred.Token)
 	gs.Fingerprint = secrets.FingerprintSHA256(cred.Token)
 	gs.ForgeTokenProof = nil
 	if err := o.Secrets.Update(ctx, gs); err != nil {
-		return false, o.recordProjectBotRotation(ctx, ri, &cred, fmt.Errorf("the forge rotated the token but the secret rewrite failed, so the stored token is dead until the next sweep: %w", err))
+		return false, o.recordProjectBotRotation(ctx, ri, conn, &cred, fmt.Errorf("the forge rotated the token but the secret rewrite failed, so the stored token is dead until the next sweep: %w", err))
 	}
 
 	pb := *ri.ProjectBot
@@ -119,19 +119,10 @@ func (o *Orchestrator) rotateProjectBot(ctx context.Context, ri RepoIntegration)
 	}
 	pb.RotatedAt = &now
 	pb.RotationError = ""
-	ri.ProjectBot = &pb
-	ri.UpdatedAt = now
-	if err := o.Integrations.Update(ctx, ri); err != nil {
-		if errors.Is(err, ErrIntegrationNotFound) {
-			// A deprovision won the race: the row is gone, and the token this
-			// sweep just obtained is one nobody records — revoke it as the bot,
-			// with the plaintext still in hand.
-			if bot, berr := o.AdminForToken(conn.Provider, conn.BaseURL(), cred.Token); berr == nil {
-				if sr, ok := bot.(SelfRotator); ok {
-					if rerr := sr.RevokeSelf(ctx); rerr != nil && !errors.Is(rerr, ErrUnauthorized) && o.LogWarn != nil {
-						o.LogWarn("forge: %s: token %s rotated for a repository disabled meanwhile could not be revoked — revoke it on the forge: %v", ri.RepoFullName, cred.TokenID, rerr)
-					}
-				}
+	if err := o.Integrations.RecordProjectBot(ctx, ri.ID, ri.ManagedSecretID, ri.ProjectBot.TokenID, &pb, now); err != nil {
+		if errors.Is(err, ErrIntegrationNotFound) || errors.Is(err, ErrIntegrationConflict) {
+			if rerr := o.revokeUnrecordedRotation(ctx, ri, conn, cred); rerr != nil {
+				return false, rerr
 			}
 			return false, nil
 		}
@@ -146,18 +137,52 @@ func (o *Orchestrator) rotateProjectBot(ctx context.Context, ri RepoIntegration)
 // recorded while the expiry is left as it was: the row stays due, and the
 // next sweep — the stored token now dead — reaches the admin path with the
 // id the forge knows, instead of the revoked one.
-func (o *Orchestrator) recordProjectBotRotation(ctx context.Context, ri RepoIntegration, cred *ProjectBotCredential, cause error) error {
+func (o *Orchestrator) recordProjectBotRotation(ctx context.Context, ri RepoIntegration, conn Connection, cred *ProjectBotCredential, cause error) error {
 	pb := *ri.ProjectBot
 	if cred != nil {
 		pb.TokenID = cred.TokenID
 	}
 	pb.RotationError = cause.Error()
-	ri.ProjectBot = &pb
-	ri.UpdatedAt = o.clock()
-	if uerr := o.Integrations.Update(ctx, ri); uerr != nil {
+	if uerr := o.Integrations.RecordProjectBot(ctx, ri.ID, ri.ManagedSecretID, ri.ProjectBot.TokenID, &pb, o.clock()); uerr != nil {
+		if cred != nil && (errors.Is(uerr, ErrIntegrationNotFound) || errors.Is(uerr, ErrIntegrationConflict)) {
+			if rerr := o.revokeUnrecordedRotation(ctx, ri, conn, *cred); rerr != nil {
+				return errors.Join(cause, rerr)
+			}
+		}
 		return fmt.Errorf("forge: rotate project bot of %s: %w (and recording it failed: %v)", ri.RepoFullName, cause, uerr)
 	}
 	return fmt.Errorf("forge: rotate project bot of %s: %w", ri.RepoFullName, cause)
+}
+
+// Both successful and failed secret writes can race a retirement. The issued
+// credential belongs to the old identity unless the current record adopted it.
+func (o *Orchestrator) revokeUnrecordedRotation(ctx context.Context, ri RepoIntegration, conn Connection, cred ProjectBotCredential) error {
+	ctx, cancel := repairContext(ctx)
+	defer cancel()
+	current, err := o.Integrations.Get(ctx, ri.ID)
+	if err != nil && !errors.Is(err, ErrIntegrationNotFound) {
+		return err
+	}
+	if err == nil && current.ProjectBot != nil && current.ProjectBot.TokenID == cred.TokenID && current.ManagedSecretID == ri.ManagedSecretID {
+		return nil
+	}
+	// Use the connection captured before issuance: disconnect can delete its row
+	// while this request is still receiving the new credential from the forge.
+	if o.AdminForToken == nil {
+		return ErrProjectBotUnsupported
+	}
+	bot, err := o.AdminForToken(conn.Provider, conn.BaseURL(), cred.Token)
+	if err != nil {
+		return err
+	}
+	sr, ok := bot.(SelfRotator)
+	if !ok {
+		return ErrProjectBotUnsupported
+	}
+	if err := sr.RevokeSelf(ctx); err != nil && !errors.Is(err, ErrUnauthorized) {
+		return fmt.Errorf("forge: revoke unrecorded rotated token %s of %s: %w", cred.TokenID, ri.RepoFullName, err)
+	}
+	return nil
 }
 
 func (o *Orchestrator) rotateProjectBotSelf(ctx context.Context, conn Connection, ri RepoIntegration, expiresAt time.Time) (ProjectBotCredential, error) {

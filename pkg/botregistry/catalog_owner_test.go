@@ -312,18 +312,43 @@ func TestRegenerateCatalogForBundle_NothingToWriteIsQuiet(t *testing.T) {
 	})
 }
 
-// TestRegenerateCatalogForBundle_UndiscoveredOwnerIsAnError pins the
-// disagreement between what a bundle SHIPS and what discovery accepts as a
-// bundle: `manifest.yml` is a spelling bundle.OpenDir honours and discovery
-// does not, so such a bundle can back a run while owning no entry in the
-// write set. Refreshing the other owners instead would be the collateral
-// write, and refreshing nothing in silence would leave a caller believing
-// its own catalog is current.
-func TestRegenerateCatalogForBundle_UndiscoveredOwnerIsAnError(t *testing.T) {
+// TestRegenerateCatalogForBundle_YmlSpelledOwnerIsInTheWriteSet pins the
+// disagreement ADR-140 retired: `manifest.yml` used to be a spelling
+// bundle.OpenDir honoured and discovery did not, so such a bundle backed
+// runs while owning no entry in the write set. The claim reads both
+// spellings now — the owner is discovered, and its catalog refreshes in
+// place like any owner's.
+func TestRegenerateCatalogForBundle_YmlSpelledOwnerIsInTheWriteSet(t *testing.T) {
 	ws := twoOwnerWorkspace(t, map[string]string{"whats-next": bundle.ManifestFileAlt})
 	asking := filepath.Join(ws, "bots", "whats-next")
 	if _, err := bundle.OpenDir(asking); err != nil {
 		t.Fatalf("the fixture must be a bundle a run can carry: %v", err)
+	}
+
+	dest, err := RegenerateCatalogForBundle(ws, asking)
+	if err != nil {
+		t.Fatalf("RegenerateCatalogForBundle = (%q, %v), want the .yml-spelled owner refreshed in place", dest, err)
+	}
+	if dest == "" {
+		t.Errorf("dest = %q, want the owner's catalog written", dest)
+	}
+	got, err := os.ReadFile(generatedIn(ws, "whats-next"))
+	if err != nil || string(got) == catalogSentinel {
+		t.Fatalf("the .yml-spelled owner's catalog was not refreshed: %v", err)
+	}
+}
+
+// TestRegenerateCatalogForBundle_UndiscoveredOwnerIsAnError keeps its name
+// for the shape that still has the property: a directory the claim marks
+// but that carries no main.bot (ADR-140) is skipped by discovery — it owns
+// no entry in the write set. Refreshing its catalog would be a write no
+// listed bundle owns, and refreshing nothing in silence would leave a
+// caller believing its own catalog is current.
+func TestRegenerateCatalogForBundle_UndiscoveredOwnerIsAnError(t *testing.T) {
+	ws := twoOwnerWorkspace(t, nil)
+	asking := filepath.Join(ws, "bots", "whats-next")
+	if err := os.Remove(filepath.Join(asking, bundle.MainBotFile)); err != nil {
+		t.Fatal(err)
 	}
 	shipped, err := catalogTemplateShipped(asking)
 	if err != nil || !shipped {
