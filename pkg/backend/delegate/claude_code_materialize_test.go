@@ -681,6 +681,9 @@ func TestASessionsCLICarriesTheRunEnvWhateverTheMode(t *testing.T) {
 	script := `#!/bin/sh
 printf 'db=%s recall=%s\n' "${RTK_DB_PATH-unset}" "${RTK_RECALL-unset}" > "$ITERION_TEST_CAPTURE"
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{}","num_turns":1,"duration_ms":1,"duration_api_ms":1,"session_id":"env-test"}'
+# A real CLI reads its control channel until the parent half-closes it; a
+# fixture that exits first turns the one-shot hook registration into EPIPE.
+cat >/dev/null
 `
 	if err := os.WriteFile(cli, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
@@ -738,6 +741,9 @@ func TestTheFormattingPassCarriesTheRunEnv(t *testing.T) {
 	script := `#!/bin/sh
 printf 'db=%s recall=%s\n' "${RTK_DB_PATH-unset}" "${RTK_RECALL-unset}" > "$ITERION_TEST_CAPTURE"
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{}","num_turns":1,"duration_ms":1,"duration_api_ms":1,"session_id":"env-test"}'
+# A real CLI reads its control channel until the parent half-closes it; a
+# fixture that exits first turns the one-shot hook registration into EPIPE.
+cat >/dev/null
 `
 	if err := os.WriteFile(cli, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
