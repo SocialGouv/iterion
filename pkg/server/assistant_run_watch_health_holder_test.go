@@ -130,6 +130,16 @@ func TestAssistantWatchHealth_AnExpiredLeaseIsStaleWhereverItIsRead(t *testing.T
 func TestAssistantWatchHealth_AFreeLeaseIsAStateNotAnAlarm(t *testing.T) {
 	none := &scriptedHolderLeases{Store: lease.NewMemoryStore()}
 	s, rs, _ := electedWorker(t, none, "reader")
+	// The read must not land inside the term's first pass: until a pass has
+	// completed, the heartbeat reports Stale for the sweep this replica owes
+	// (the same grace the fresh-term test reads), so under CI load the answer
+	// flips with where the read catches the sweep. The first pass is completed
+	// and the worker stopped — the hand-over gap's own state, no replica
+	// elected: the answer below is the free lease's, race-free.
+	waitForCond(t, 10*time.Second, "the reader's first sweep completed", func() bool { return !s.assistantWatch.heartbeat().CompletedAt.IsZero() })
+	s.assistantWatchCancel(context.Background())
+	<-s.assistantWatchDone
+	s.assistantWatchCancel = nil
 	seedHealthRun(t, rs, "run-1")
 	out := watchHealthOf(t, s, "run-1")
 	if out.Coordinator.Holder != "" || out.Coordinator.HolderExpiresAt != nil || out.Coordinator.HolderState != assistantWatchHolderFree {
