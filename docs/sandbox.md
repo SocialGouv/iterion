@@ -444,7 +444,10 @@ which the proxy dials on the host's loopback.
 (`OPENAI_COMPATIBLE_BASE_URL`), the proxy resolves the gateway's host
 itself through iterion's SSRF guard and connects only to an address the
 guard validated — no loopback, private, link-local, multicast or
-cloud-metadata one, unless `ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1`. Every
+cloud-metadata one, unless the operator exports
+`ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1` — the switch is read as the process
+inherited it, so a project `.env` cannot lift it, in the host or in the
+runner of a sandboxed crossing alike. Every
 client of the run that reaches that name is held to it, through a CONNECT
 tunnel, a plain-HTTP forward or an inspected tunnel alike, so an answer the
 guard refuses is refused where the connection is made, whatever the
@@ -2095,7 +2098,8 @@ A reason starting `pinned host:` is the gateway's pin (see
 [Network policy](#network-policy)) refusing the address the gateway's
 name resolved to: a private answer for a gateway that should be public —
 a rebinding resolver, or a self-hosted gateway that needs
-`ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1` — or a name that did not resolve.
+`ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1` exported by the operator — or a name
+that did not resolve.
 
 A few claude-code endpoints (telemetry / MCP probes) are
 **silent-denied** by default — the connection is still refused, but

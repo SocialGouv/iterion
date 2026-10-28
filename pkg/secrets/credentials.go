@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // Credentials carries the resolved per-run BYOK plaintext keyed by
@@ -389,8 +391,15 @@ func ForbidSubscriptionOAuth() bool {
 // dial — the escape hatch for a self-hosted gateway on private
 // infrastructure. Off, the dial (and the pre-flight validation) refuse a
 // private, loopback or metadata address.
+//
+// The switch is the operator's alone: it is read as the process INHERITED
+// it (envtrust), so a value a project `.env` planted does not lift it. The
+// runner inside a sandboxed crossing auto-loads the workspace `.env`, and a
+// repository under review could otherwise make the runner lax where the run
+// proxy stays strict. Every reader — the gateway client, the claw backend's
+// pre-flight, the retry chain, the run proxy's pin — asks here.
 func LLMEndpointAllowPrivate() bool {
-	return strings.TrimSpace(os.Getenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE")) == "1"
+	return strings.TrimSpace(envtrust.Inherited("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE")) == "1"
 }
 
 // anthropicOAuthTokenPrefix is the shape Anthropic mints subscription OAuth

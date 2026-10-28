@@ -1209,7 +1209,8 @@ like `OPENAI_BASE_URL`:
   auth alone.
 
 The endpoint is the operator's choice, but the dial is guarded: a public
-address by default, and `ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1` for a
+address by default, and `ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1`, exported by
+the operator (a value a project `.env` plants does not count), for a
 self-hosted gateway on private infrastructure. When the sandbox's egress
 runs through the run's [network proxy](sandbox.md#network-policy), the call
 crosses it too, and the guard holds there: the runner checks the gateway's
