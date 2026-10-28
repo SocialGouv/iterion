@@ -133,7 +133,7 @@ func routeSites(w *Workflow) []routeSite {
 			// and it is a real dial: dep-update-guard escalates on
 			// `${VETTY_MODEL_ESCALATE:-…}` there.
 			add(id, "model:", t.Model)
-			add(id, "interaction_model:", t.InteractionFields.InteractionModel)
+			add(id, "interaction_model:", t.InteractionModel)
 		case *ToolNode:
 			// A verified action's rung-4 recovery agent is a route like any
 			// other (ADR-044).

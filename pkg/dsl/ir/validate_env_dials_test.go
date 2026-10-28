@@ -380,7 +380,7 @@ func seedRouteFields(t *testing.T, v reflect.Value, typeName, path string, want 
 			want[sentinel] = typeName + "." + f.Name
 		case f.Anonymous && f.Type.Kind() == reflect.Struct:
 			seedRouteFields(t, fv, typeName, path+"."+f.Name, want)
-		case f.Type.Kind() == reflect.Ptr && f.Type.Elem().Kind() == reflect.Struct && f.Type.Elem().Name() != "":
+		case f.Type.Kind() == reflect.Pointer && f.Type.Elem().Kind() == reflect.Struct && f.Type.Elem().Name() != "":
 			// A nil pointer group carries no field until a node declares it;
 			// allocating it is how the walk judges what the author may write.
 			if fv.IsNil() {
