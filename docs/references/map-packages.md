@@ -277,3 +277,5 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `third_party/codex-agent-sdk-go/internal/subprocess` | provides subprocess-based transport for the Codex CLI. | — |
 | `third_party/codex-agent-sdk-go/internal/userinput` | provides types for the item/tool/requestUserInput protocol. | — |
 | `third_party/codex-agent-sdk-go/internal/version` | — | — |
+| `third_party/tiktoken-go-tokenizer` | — | `Codec` |
+| `third_party/tiktoken-go-tokenizer/codec` | — | — |
