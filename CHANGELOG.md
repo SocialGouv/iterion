@@ -3,6 +3,59 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [4.3.0](https://github.com/SocialGouv/iterion/compare/v4.2.0...v4.3.0) (2026-10-28)
+
+### Features
+
+* **deps:** closure metric task + ADR-140 (language stays Go, sidecars behind seams) ([#2743](https://github.com/SocialGouv/iterion/issues/2743)) ([4dfee64](https://github.com/SocialGouv/iterion/commit/4dfee6424c3e10a22906e7ffa4a5d0568a02d14a))
+
+    <details><summary>why</summary>
+
+    task deps:closure resolves the server binary's import closure and prints the non-stdlib, non-test source LOC with top contributors. Baseline on main 0b1de4062: 7,340,738 LOC across 847 packages; 68% is the modernc sqlite stack behind the codex SDK fork's session persistence.
+
+    </details>
+* **server,runview:** the credential preview takes the launch's vars ([28a51d1](https://github.com/SocialGouv/iterion/commit/28a51d1f2772fe27106684fe002e820bd274d9bb)), references [#2665](https://github.com/SocialGouv/iterion/issues/2665) [#1757](https://github.com/SocialGouv/iterion/issues/1757) [#2665](https://github.com/SocialGouv/iterion/issues/2665)
+
+    <details><summary>why</summary>
+
+    Item 3 of the #2665 residuals: CredentialPreviewRequest had no vars field, so no caller could preview a vars-carrying launch the way fill, restore and the gate read it. The request gains vars, honored on the personal source as the lane's own --var-style values (the operator owns them — ADR-129 §4 rule 2 trusts the CLI's --var names, so the preview trusts the same names for its routing pre-flights); the webhook source refuses caller values outright — its launch shape is the config layers plus…
+
+    </details>
+
+### Bug Fixes
+
+* **dispatch:** the catalogue check judges the committed tree, not the working copy ([b061d55](https://github.com/SocialGouv/iterion/commit/b061d5541b354066d3396cf42c96ef5e64b8ee10)), references [#2748](https://github.com/SocialGouv/iterion/issues/2748)
+
+    <details><summary>why</summary>
+
+    Since the zero-config dispatch mode the generated bot catalogue is a build artifact: git ships pkg/cli/templates/dispatch_bots/ empty (only .gitkeep, which keeps the all: embed pattern compilable on a clean checkout) and templates:dispatch-bots repopulates the working copy as a dep of build/test. The old check diffed a reconstructed catalogue against that working copy, so every clean checkout exited 201 before its first task check could say anything real.
+
+    </details>
+* **server,ci:** the watch-health test asserts the alarm channel; the mongo legs get runner headroom ([#2755](https://github.com/SocialGouv/iterion/issues/2755)) ([05c117d](https://github.com/SocialGouv/iterion/commit/05c117d7122f4afdc443e7816d1ddd40774705f1))
+
+    <details><summary>why</summary>
+
+    TestAssistantWatchHealth_AFreeLeaseIsAStateNotAnAlarm asserted the raw Stale flag, which honestly reads true while the first post-election sweep is in flight; the alarm channel is sweepStaleIsAttention, which forgives that window. Under a loaded runner the window widened and the test failed twice on main. The assertion now checks the alarm channel.
+
+    </details>
+* **studio:** every Panels control names itself to a screen reader (RGAA 11.1) ([70d7706](https://github.com/SocialGouv/iterion/commit/70d7706baf9fc63d813e9f33516fddef83d4bdd7)), references [#2591](https://github.com/SocialGouv/iterion/issues/2591) [#2591](https://github.com/SocialGouv/iterion/issues/2591)
+
+    <details><summary>why</summary>
+
+    The Panels slice of the #2591 surface triage (#2590's placeholder-only leads). Four controls had no accessible name at all: CommentsEditor's per-comment textarea, VarsEditor's bool Default select, and PromptEditor's non-compact body textarea whose visible sibling label was never associated — and axe 4.13 passes placeholder-only outright, so the render net could not see three of the four; VarsEditor's own axe entry was the one independent witness ([select-name], 3 nodes). The shared FormField…
+
+    </details>
+
+### Performance Improvements
+
+* **runtime:** fan-out boundary checkpoints coalesce into one durable write per window ([38b15e5](https://github.com/SocialGouv/iterion/commit/38b15e5f735dc62e8704a5d80e8d45f31c47bf50)), references [#561](https://github.com/SocialGouv/iterion/issues/561) [#561](https://github.com/SocialGouv/iterion/issues/561)
+
+    <details><summary>why</summary>
+
+    Routine fan-out boundaries (bounded-iteration crossings) persisted a full run record each: every save deep-cloned all branches under the invocation-wide save mutex and rewrote the run file — O(B²N) in branches and boundaries, serializing otherwise-parallel branch progress (#561).
+
+    </details>
+
 ## [4.2.0](https://github.com/SocialGouv/iterion/compare/v4.1.0...v4.2.0) (2026-10-28)
 
 ### Features
