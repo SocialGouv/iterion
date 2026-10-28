@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
 // The action affordances of the run header derive from the caller's
-// EFFECTIVE standing for this run (ADR-139), not from guessing off the
+// EFFECTIVE standing for this run (ADR-142), not from guessing off the
 // run status: a viewer — a team viewer, an org-admin-lineage reader, an
 // org-shared reader — reads but never acts, so the header proposes no
 // command the run ladder will 403. No viewer named (auth-less local
@@ -61,7 +61,7 @@ import type { RunHeader as RunHeaderType } from "@/api/runs";
 import RunHeader from "./RunHeader";
 
 // A failed-resumable run lights the action affordances whose absence the
-// ADR-139 gate is about: resume, rename (cancel does not light on this
+// ADR-142 gate is about: resume, rename (cancel does not light on this
 // status for anyone — that conditional is not under test here).
 const run = {
   id: "run-1",

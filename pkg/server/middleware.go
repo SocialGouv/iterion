@@ -290,7 +290,7 @@ func (s *Server) applyExplicitTeamScope(w http.ResponseWriter, r *http.Request, 
 	// allowOrgShared=false: the axis grants reads BY ID at the choke
 	// point — the header re-scope costs what a team switch would demand,
 	// and a plain org member's switch into the team is refused (the
-	// ADR-139 review's R1141b0: letting the axis ride the header opened
+	// ADR-142 review's R1141b0: letting the axis ride the header opened
 	// the team's run lists and stats to it).
 	resolved, ok, err := s.identityInTeam(r.Context(), id, requested, false)
 	if err != nil {
