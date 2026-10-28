@@ -7,7 +7,7 @@ import "strings"
 // runs its built-in shell outside the SDK's per-name callbacks, so the list
 // picks a sandbox MODE and nothing else. The codex delegate picks the mode
 // from this very table, and every pre-run reader of a node's surface — the
-// compiler's C315, the shared-worktree admission in pkg/runtime — asks the
+// compiler's C316, the shared-worktree admission in pkg/runtime — asks the
 // same question here, so no reader can drift from the sandbox the task gets.
 //
 // The read-only set is CODEX's, and it OVERLAPS a reader's own read-only

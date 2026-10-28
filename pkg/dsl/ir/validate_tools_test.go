@@ -385,3 +385,57 @@ func TestRunFallbackNotRefusedOnUnrecognisedName(t *testing.T) {
 		t.Fatalf("an unrecognised name must not drop the operator's route, got %v", refusals)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// C316 — a codex node's tools: list buys the workspace-write sandbox
+// ---------------------------------------------------------------------------
+
+// codexListFires compiles a one-agent workflow with nodeBody and returns the
+// C316 messages it raised.
+func codexListFires(t *testing.T, nodeBody string) []string {
+	t.Helper()
+	return diagsFor(compileToolsSrc(t, toolsWorkflow(nodeBody)), DiagCodexToolsListBoundsNothing)
+}
+
+// A list codex reads as buying workspace-write bounds nothing, and the author
+// is told so wherever the node is routed to codex — as its primary backend,
+// through a fallbacks: route, or by an environment default.
+func TestCodexToolsListThatBuysWorkspaceWriteIsNamed(t *testing.T) {
+	for name, body := range map[string]string{
+		"primary":          "  backend: \"codex\"\n  model: \"openai/gpt-5\"\n  tools: [read_file, bash]\n",
+		"fallback route":   "  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n  tools: [read_file, bash]\n  fallbacks:\n    rescue:\n      model: \"openai/gpt-5\"\n      backend: \"codex\"\n",
+		"env default":      "  backend: \"${IT_BACKEND:-codex}\"\n  model: \"openai/gpt-5\"\n  tools: [bash]\n",
+		"a read elsewhere": "  backend: \"codex\"\n  model: \"openai/gpt-5\"\n  tools: [git_diff, tree]\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := codexListFires(t, body)
+			if len(got) != 1 {
+				t.Fatalf("want one C316, got %d: %v", len(got), got)
+			}
+			if !strings.Contains(got[0], "workspace-write") || !strings.Contains(got[0], "readonly: true") {
+				t.Errorf("the message names neither the effect nor the remedy: %s", got[0])
+			}
+		})
+	}
+}
+
+// What is not warned about: a list codex reads as read-only, the author's own
+// locks, an undeclared list (the native toolset by contract), a declared-empty
+// one (C270's), a route that is not codex, and a route nothing decides.
+func TestCodexToolsListStaysSilentWhereTheListBoundsOrTheAuthorLocked(t *testing.T) {
+	for name, body := range map[string]string{
+		"read-only names":  "  backend: \"codex\"\n  model: \"openai/gpt-5\"\n  tools: [read_file, grep, glob, web_search]\n",
+		"readonly lock":    "  backend: \"codex\"\n  model: \"openai/gpt-5\"\n  readonly: true\n  tools: [bash]\n",
+		"full_access lock": "  backend: \"codex\"\n  model: \"openai/gpt-5\"\n  full_access: true\n  tools: [bash]\n",
+		"undeclared list":  "  backend: \"codex\"\n  model: \"openai/gpt-5\"\n",
+		"declared empty":   "  backend: \"codex\"\n  model: \"openai/gpt-5\"\n  tools: []\n",
+		"not codex":        "  backend: \"claude_code\"\n  tools: [read_file, bash]\n",
+		"undecided route":  "  backend: \"${IT_BACKEND}\"\n  model: \"openai/gpt-5\"\n  tools: [bash]\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := codexListFires(t, body); len(got) != 0 {
+				t.Fatalf("want no C316, got %v", got)
+			}
+		})
+	}
+}

@@ -503,3 +503,47 @@ func quoteJoin(names []string) string {
 	}
 	return strings.Join(quoted, ", ")
 }
+
+// validateCodexToolsBound names a `tools:` list that bounds nothing on codex.
+//
+// Codex runs its built-in shell outside the SDK's per-name callbacks, so a
+// declared list buys a sandbox MODE and nothing else: read-only when every
+// name it carries reads, workspace-write otherwise — and then the list is a
+// comment. The author learned that only when the shared-worktree admission
+// refused a fan-out (#2427). The question is asked of the one classifier the
+// delegate runs (toolcatalog.CodexDeclaredListIsReadOnly), never of a copy of
+// its list. An undeclared list is the unrestricted native toolset by contract,
+// a declared-empty one is C270's, and `readonly:` / `full_access:` are the
+// author's own locks, read before any list. A warning: the node runs as
+// declared (philosophy: warn over reject).
+func (c *compiler) validateCodexToolsBound(w *Workflow) {
+	for _, n := range w.Nodes {
+		nn, ok := n.(LLMNode)
+		if !ok {
+			continue
+		}
+		f := nn.GetLLMFields()
+		tools := nn.GetTools()
+		if !toolcatalog.ToolsDeclared(tools) || len(tools) == 0 || f.Readonly || f.FullAccess {
+			continue
+		}
+		if toolcatalog.CodexDeclaredListIsReadOnly(tools, true) {
+			continue
+		}
+		kind, id := nn.NodeKind().String(), nn.NodeID()
+		const effect = "codex runs its built-in shell outside the SDK's per-name callbacks, so the list buys the workspace-write sandbox and bounds nothing; lock the node with `readonly: true`, or declare a list codex reads as read-only (`tools: [read_file]`)"
+		if effectiveNodeBackend(f.Backend, w.DefaultBackend) == codexBackendName {
+			c.warnfAt(DiagCodexToolsListBoundsNothing, id, "",
+				"%s %q declares `tools: %v` on codex — %s", kind, id, tools, effect)
+			continue
+		}
+		for _, fb := range nn.GetFallbacks() {
+			if sourceBackend.routeName(fb.Backend) != codexBackendName {
+				continue
+			}
+			c.warnfAt(DiagCodexToolsListBoundsNothing, id, "",
+				"%s %q declares `tools: %v`, and fallback %s runs on codex — %s", kind, id, tools, fallbackLabel(fb), effect)
+			break
+		}
+	}
+}

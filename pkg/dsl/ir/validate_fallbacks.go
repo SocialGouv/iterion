@@ -78,6 +78,7 @@ func EffortDialBackends() []string {
 
 // clawBackendName comes from the shared leaf; ir never imports delegate.
 const clawBackendName = backendcaps.Claw
+const codexBackendName = backendcaps.Codex
 
 // validateFallbacks checks every LLM node's `fallbacks:` block.
 //

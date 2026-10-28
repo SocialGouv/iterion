@@ -1954,6 +1954,14 @@ list uses `read-only` only when all declared tools are known readers, and
 `workspace-write` when it contains a writer/shell tool (both Iterion snake_case
 names and Claude-style names are recognised). Unknown/custom names conservatively
 select `workspace-write`; use `readonly: true` for an explicit lock-down.
+The compiler says so at authoring time: a node routed to codex — as its
+primary backend, through a `fallbacks:` route, or by a `${VAR:-codex}`
+default — whose declared list buys `workspace-write` gets the C316 warning,
+naming the effect (the list bounds nothing) and the two remedies
+(`readonly: true`, or a list codex reads as read-only, such as
+`tools: [read_file]`). The question is asked of the one table the delegate
+runs, `toolcatalog.CodexDeclaredListIsReadOnly`, so the warning and the
+sandbox the node gets cannot disagree.
 
 With Codex's default configuration neither `read-only` nor `workspace-write`
 allows **shell network egress** — so a codex shell cannot reach an external

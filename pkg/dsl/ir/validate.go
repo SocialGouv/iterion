@@ -48,6 +48,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateNodeTools(w)
 	c.validateRefusedClawTools(w)
 	c.validateEmptyToolsEnforced(w)
+	c.validateCodexToolsBound(w)
 	c.validateSkillRefs(w)
 	c.validateProviders(w)
 	c.validateGatewayRoutes(w)

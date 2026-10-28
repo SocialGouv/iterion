@@ -371,4 +371,12 @@ const (
 	// working while the catalogue is de-dialled; the hard catalogue floor
 	// arrives with the last de-dialled bot group.
 	DiagEnvDialInRunSetting DiagCode = "C315" // a run setting (route field, var default, tool body) reads the process environment instead of its authored literal and the levels above it (warning)
+
+	// On codex a `tools:` list is not an allowlist: codex runs its built-in
+	// shell outside the SDK's per-name callbacks, so the list buys a SANDBOX
+	// MODE and nothing else — read-only when every name it carries reads,
+	// workspace-write otherwise. A list that buys workspace-write bounds
+	// nothing, and the author learned it only when a fan-out refused the node
+	// (#2427). A warning: the node runs, and `readonly:` is the author's lock.
+	DiagCodexToolsListBoundsNothing DiagCode = "C316" // a node routed to codex (primary or fallback) declares a tools: list that buys the workspace-write sandbox — the list bounds nothing (warning)
 )
