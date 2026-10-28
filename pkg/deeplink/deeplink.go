@@ -50,6 +50,20 @@ func Runs(base string) string {
 	return Studio(base, "/runs")
 }
 
+// RunAttachment is the API route that serves one of a run's attachments
+// back to a reader: the stored bytes, with their MIME and a
+// Content-Disposition, behind the run's own team gate
+// (pkg/server/runs_uploads.go; `…/url` presigns the same name).
+//
+// An API address rather than a studio page, built HERE for the reason
+// every studio route is: the path is one decision. The engine publishes
+// a declared deliverable and announces where a human downloads it; the
+// server owns the route; nothing else concatenates the two.
+func RunAttachment(base, runID, name string) string {
+	return strings.TrimRight(base, "/") + "/api/runs/" + url.PathEscape(runID) +
+		"/attachments/" + url.PathEscape(name)
+}
+
 // PublicBaseEnv names the externally-reachable origin of the deployment
 // (`ITERION_PUBLIC_URL`, pkg/config Auth.PublicURL). The server and the
 // runner read the same configmap, so a process EXECUTING a run carries it
@@ -138,6 +152,26 @@ func RunFromEnv(runID string) string {
 		return ""
 	}
 	return Run(base, runID)
+}
+
+// RunAttachmentFromEnv is the absolute download address of one of a
+// run's attachments, built from PublicOrigin.
+//
+// Same policy as RunFromEnv, for a sharper reason: a root-relative path
+// would be worse than nothing. The studio reaches its own API through
+// apiBase() (studio/src/lib/scope.ts), which is "/x/<id>/api" inside a
+// scoped pane and an absolute origin in the desktop app, so a published
+// "/api/runs/…" would address the wrong server in both. Empty therefore
+// means "announce no link": the file is published either way and the run
+// carries run_attachment_published, which is the pointer a gate reads.
+// The REASON an origin was refused is reported where a logger exists
+// (pkg/runtime, once per engine).
+func RunAttachmentFromEnv(runID, name string) string {
+	base, err := PublicOrigin()
+	if err != nil || base == "" || strings.TrimSpace(runID) == "" || strings.TrimSpace(name) == "" {
+		return ""
+	}
+	return RunAttachment(base, runID, name)
 }
 
 // LegacyRun is the spelling Run had before the studio moved under StudioBase.

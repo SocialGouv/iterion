@@ -726,12 +726,17 @@ const (
 	// directly by the runtime/sandbox when it knows about a forwarded
 	// dev-server port. Data:
 	//   - url: the URL to render
-	//   - kind: optional hint ("dev-server", "deploy", "artifact-html")
+	//   - kind: optional hint ("dev-server", "deploy", "artifact-html",
+	//     "pr", "deliverable"). The last two are link-only: the studio
+	//     lists them in the run summary and never embeds them in the
+	//     Browser pane.
 	//   - scope: "internal" (route through /api/runs/:id/preview to
 	//     strip frame-ancestors / X-Frame-Options) or "external"
 	//     (load directly in iframe — only works if the target site
 	//     allows embedding). Defaults to "external" when unset.
-	//   - source: optional, "tool-stdout" or "runtime"
+	//   - source: optional, "tool-stdout", "runtime" or
+	//     "tool-attachment" (the ENGINE announcing a file it collected,
+	//     at its own download route — see EventRunAttachmentPublished)
 	EventPreviewURLAvailable EventType = "preview_url_available"
 	// EventBrowserScreenshot is emitted whenever the runtime captures
 	// a static screenshot of a preview URL — either via the tool-node
@@ -761,6 +766,11 @@ const (
 	//   - attachment_name: store.AttachmentRecord.Name of the file
 	//   - mime: the stored (already neutralised) media type
 	//   - source: "tool-stdout"
+	//
+	// It carries a handle, not an address, so it travels with a sibling
+	// EventPreviewURLAvailable of kind "deliverable" naming the download
+	// route — the run summary is where a reader looks for a run's
+	// product (#2690).
 	EventRunAttachmentPublished EventType = "run_attachment_published"
 	// EventRunAttachmentLost fires when a tool node DECLARED a file —
 	// `[iterion] attachment=<path>` or `[iterion] preview_screenshot=<path>`

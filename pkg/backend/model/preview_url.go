@@ -15,6 +15,29 @@ const previewURLDirective = "[iterion] preview_url="
 // the runtime will read it and persist it as a versioned attachment.
 const previewScreenshotDirective = "[iterion] preview_screenshot="
 
+// The preview_url vocabulary, spelled once. These values cross a
+// contract — the studio keys its presentation off them
+// (RESULT_LINK_KINDS and the Browser-pane branch in
+// studio/src/store/run/reducer.ts) — so the engine must not invent a
+// second spelling of a kind the UI already knows.
+const (
+	// previewKindDeliverable is what a run's own product carries: a
+	// report, bundle or document the workflow DECLARED. The studio
+	// lists it as a headline link beside the pull requests and never
+	// embeds it in the Browser pane.
+	previewKindDeliverable = "deliverable"
+	// previewScopeExternal loads the URL directly (the default);
+	// "internal" asks the studio to proxy it through
+	// /api/runs/:id/preview to strip frame-blocking headers, which only
+	// matters for a URL the pane embeds.
+	previewScopeExternal = "external"
+	// previewSourceToolStdout marks a URL a tool printed itself.
+	previewSourceToolStdout = "tool-stdout"
+	// previewSourceToolAttachment marks a link the ENGINE announced for
+	// a file it collected, so a consumer can tell the two apart.
+	previewSourceToolAttachment = "tool-attachment"
+)
+
 // scanDirectiveLines walks tool stdout and yields the token list of
 // each line that starts with directive. The first token is whatever
 // comes after `directive=`; subsequent tokens are space-separated
@@ -55,8 +78,8 @@ func scanPreviewURLs(output string) []map[string]any {
 	for _, tokens := range lines {
 		data := map[string]any{
 			"url":    tokens[0],
-			"source": "tool-stdout",
-			"scope":  "external",
+			"source": previewSourceToolStdout,
+			"scope":  previewScopeExternal,
 		}
 		for _, kv := range tokens[1:] {
 			eq := strings.IndexByte(kv, '=')

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/deeplink"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -418,6 +419,27 @@ func publishToolAttachment(
 		}, logger)
 	}
 
+	recordAttachmentPublished(ctx, emitter, runID, nodeID, name, rec.MIME, logger)
+	return nil
+}
+
+// recordAttachmentPublished says that a DECLARED file reached the run:
+// the pointer event a downstream gate reads, and the headline link that
+// puts the file in the run summary beside the pull requests (#2690).
+//
+// The twin of recordAttachmentLost, and one place for the same reason: a
+// verb added beside it inherits BOTH halves — the pointer and the way a
+// human finds the bytes — instead of whichever half its author
+// remembered. `preview_screenshot=` deliberately does not come through
+// here: a capture is a hint about work that happened elsewhere and
+// travels as EventBrowserScreenshot into the Browser pane's filmstrip,
+// where `attachment=` declares a deliverable the node owes.
+func recordAttachmentPublished(
+	ctx context.Context,
+	emitter EventEmitter,
+	runID, nodeID, name, mimeType string,
+	logger *iterlog.Logger,
+) {
 	_, _ = emitter.AppendEvent(ctx, runID, store.Event{
 		Type:   store.EventRunAttachmentPublished,
 		RunID:  runID,
@@ -425,9 +447,38 @@ func publishToolAttachment(
 		Data: map[string]any{
 			"attachment_name": name,
 			"source":          "tool-stdout",
-			"mime":            rec.MIME,
+			"mime":            mimeType,
 		},
 	})
+
+	// The run summary is where a reader looks for "what did this
+	// produce", and until now a published deliverable was reachable only
+	// by a gate that happened to render it: the pointer event names a
+	// handle, not an address. The link is the EXISTING team-gated
+	// download route, so the rights of the run's team are the rights of
+	// the link, and `.../url` presigns the same name for sharing.
+	//
+	// No usable public origin means no link at all — never a fabricated
+	// host, never a root-relative path the studio would resolve against
+	// the wrong server (deeplink.RunAttachmentFromEnv says why). The file
+	// is published regardless; the pointer event above carries it.
+	if link := deeplink.RunAttachmentFromEnv(runID, name); link != "" {
+		_, _ = emitter.AppendEvent(ctx, runID, store.Event{
+			Type:   store.EventPreviewURLAvailable,
+			RunID:  runID,
+			NodeID: nodeID,
+			Data: map[string]any{
+				"url":  link,
+				"kind": previewKindDeliverable,
+				// `scope` describes how the Browser pane WOULD load a
+				// URL; a deliverable never reaches it (the studio treats
+				// the kind as link-only), and a download is followed
+				// directly in a new tab, so the direct value is honest.
+				"scope":  previewScopeExternal,
+				"source": previewSourceToolAttachment,
+			},
+		})
+	}
+
 	logger.Logf(iterlog.LevelInfo, "📎", "Tool attachment [%s]: %s", nodeID, name)
-	return nil
 }

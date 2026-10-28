@@ -94,6 +94,35 @@ The runtime reads the bytes and persists them through the same
 attachment: same storage layout, same serving route, same presigning.
 One line per file; other stdout is left alone.
 
+### It shows up in the run summary
+
+A published file is also announced as a **headline result link**: the run
+summary lists `Deliverable → …/attachments/<name>` beside the pull
+requests the run opened, so a reader finds what it produced without
+opening a gate or the artifacts drawer. The engine emits one
+`preview_url_available` event per published file, carrying
+`kind=deliverable` — a link-only kind, never embedded in the Browser
+pane — plus `scope=external` and `source=tool-attachment`, which is what
+tells it apart from a `[iterion] preview_url=` line a tool printed
+itself.
+
+The address is the existing serving route, so the link grants exactly the
+rights the run does and no more: the route resolves the handle through
+the run document under the caller's own tenant, so a member of another
+team gets a 404 from the link just as from the run. The companion
+`/api/runs/{id}/attachments/{name}/url` mints an HMAC-signed URL instead
+— a bearer address any user agent can follow until it expires, which is
+a deliberate sharing gesture and not what the summary link is.
+
+It is **absolute**, built from `ITERION_PUBLIC_URL`, and when that origin
+is unset or unusable there is **no link at all** rather than a
+root-relative one: the studio reaches its own API through a base that is
+`/x/<id>/api` inside a scoped pane and a different origin in the desktop
+app, so a published `/api/runs/…` would address the wrong server. The
+file is published either way — `run_attachment_published` still carries
+its handle, which is what a gate reads — and the reason an origin was
+refused is logged once per run, the same place `run.url` reports it.
+
 Failures are **non-fatal by default** — a missing or unreadable file is
 skipped, never enough to fail the tool node. The tool's own output is
 its contract with the workflow; the directive is only how the bytes
