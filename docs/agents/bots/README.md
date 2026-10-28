@@ -7,7 +7,7 @@ touch names:
 | Leaf | Read it when |
 |---|---|
 | [rgaa-audit-run.md](rgaa-audit-run.md) | Running the RGAA audit demo yourself (one command, real LLM spend). |
-| [skills.md](skills.md) | Editing a bundle's `skills/`. |
+| [skills.md](skills.md) | Editing a bundle's `skills/`; a skill several bundles carry is declared in `internal/skillshare`, not duplicated. |
 | [run-link.md](run-link.md) | A bot posts anything on a forge — a body, a review, a comment, a reply. |
 | [convergence.md](convergence.md) | Writing a loop, campaign or reviewer bot. |
 | [untrusted-input.md](untrusted-input.md) | A prompt carrying untrusted text in an acting node. |

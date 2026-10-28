@@ -5,9 +5,6 @@ description: Canonical label namespaces for the iterion native kanban board. Bot
 
 # Iterion Label Vocabulary — for every bot that writes labels
 
-<!-- TODO: duplicated with bots/whats-next/skills/iterion-label-vocabulary.md
-     (iterion has no skill-sharing primitive yet). Keep copies in sync. -->
-
 ## Why this skill exists
 
 Labels accumulate from many sources: whats-next runs, sec-audit findings, manual operator triage, ad-hoc imports. Without a vocabulary, each session invents its own scheme — we ended up with `source:battle-tested-plan-2026-05-24` (a 35-character session-specific string) sitting next to `source:whats-next` (a clean per-bot tag) on the same board. The result: filters break, the operator can't tell at a glance whether two labels mean the same thing, and the studio's label picker becomes useless.

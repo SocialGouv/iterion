@@ -14,6 +14,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `cmd/iterion-desktop` | the Iterion Desktop binary. | — |
 | `cmd/iterion-live-status` | Command iterion-live-status is the entry point behind `task test:live:status`. | — |
 | `cmd/release-floors` | Command release-floors realigns the syntax-floor pins to the release being cut: release-it runs it with --apply from its before:git:beforeRelease… | — |
+| `cmd/skill-share` | Command skill-share writes, checks, or re-pins the shared skills of the bot catalogue. | — |
 | `contrib/mattermost-clarify` | Command mattermost-clarify is a chat channel adapter that wires a Mattermost bot ("@clarify-bot") to iterion's run-completion webhook (pkg/notify),… | `ChannelDriver`, `RelevanceFilter` |
 | `e2e/fixtures/feature-dev-go-service` | a small in-memory user service used as a realistic fixture for iterion's feature_dev bot live test. | — |
 | `e2e/fixtures/feature-dev-go-service/handlers` | wires HTTP handlers against a *store.Store. | — |
@@ -44,6 +45,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/proctest` | checks OS resources owned by a test binary. | — |
 | `internal/retryprobetest` | models the durable retry row the usage-window pull-forward probe acts on, so the real decision code of pkg/runner and pkg/server can be driven over… | — |
 | `internal/safepath` | turns a name taken from an archive — a string chosen by whoever wrote the archive — into a path that is safe to write under a root. | — |
+| `internal/skillshare` | the sharing primitive for skills a bundle does not own alone. | — |
 | `internal/subbottest` | shares source-level bundle fixtures across the four launch surfaces. | — |
 | `internal/testfs` | removes only scratch paths inside a test-owned root. | — |
 | `internal/treeskip` | names the trees this repository's generated artifacts never describe: vendored or installed third-party code, sibling worktrees, the engine's own run… | — |
