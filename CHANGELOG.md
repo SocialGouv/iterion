@@ -3,6 +3,49 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [4.2.0](https://github.com/SocialGouv/iterion/compare/v4.1.0...v4.2.0) (2026-10-28)
+
+### Features
+
+* **bundle,botregistry:** discovery claims what the bundle package claims, and a nested bundle is nothing ([c538df1](https://github.com/SocialGouv/iterion/commit/c538df1325e536c1ded8fde5a9c7f168945c3bf2)), references [#2537](https://github.com/SocialGouv/iterion/issues/2537)
+
+    <details><summary>why</summary>
+
+    walk's private two-file test is retired — bundle.DirClaim answers the claim (an iterion-shaped manifest, either spelling, or a skills/ directory; main.bot beside it opens it) and the walk, the localize path and the catalogue read that one verdict. A claimed directory without its entrypoint is a loud skipped source (a new non-blocking diagnostic kind, classified in the same change) whose subtree stays private; a manifest.yml consumer is a bundle under its own name — the demotion to a loose…
+
+    </details>
+* **server,boardmongo:** board issues join the by-id class — an issue is served from its team ([c0b63c9](https://github.com/SocialGouv/iterion/commit/c0b63c9fcb0435643af8e91c19d74b4f7e577a44)), references [#1849](https://github.com/SocialGouv/iterion/issues/1849)
+
+    <details><summary>why</summary>
+
+    #1849's lane (ADR-141): the choke point classifies the two board issue chains by the route the mux matched and resolves the issue's team team-blind through a new IssueTenantResolver capability — a cross-tenant _id-prefix read over the board collection (boardmongo.ResolveIssueTenant; cloud wires it beside CloudBoardFor and panics without it, self-hosted's single store keeps the class out). The caller's standing in the issue's team authorizes — reads for a viewer, mutations for a member, the run…
+
+    </details>
+* **server:** the localize path refuses a consumer discovery does not claim ([72488ae](https://github.com/SocialGouv/iterion/commit/72488ae098384b9ea5e9a44cb2607ca4f892303c)), references [#2537](https://github.com/SocialGouv/iterion/issues/2537) [#2537](https://github.com/SocialGouv/iterion/issues/2537)
+
+    <details><summary>why</summary>
+
+    #2537 slice A: the landed copy goes under plugins/<name> INSIDE the consumer's directory, and discovery only skips the subtree of a directory it claims — manifest.yaml (exact spelling) AND main.bot. A consumer failing that test is not claimed: the walk descends it, the copy leaks into the routing namespace as a top-level bot, shadows the .botz materialization, and the consumer drops from the catalogue. The localize refuses before anything moves, naming the defect — the spelling or the missing…
+
+    </details>
+
+### Bug Fixes
+
+* **boardmongo:** the issue-tenant resolve owns its timeout, the caller's context is not read ([b8f04cb](https://github.com/SocialGouv/iterion/commit/b8f04cb95d6e64e595fa02fcdb09b78b1d8963e6))
+
+    <details><summary>why</summary>
+
+    The SA4009 the gate's lint leg caught on the working tree AFTER c0b63c9fc was cut from its staged state: ResolveIssueTenant overwrote its ctx argument before the first use — the store mints its own deadline (ctxWithTimeout), so the parameter is gone and the wiring closure ignores the caller's.
+
+    </details>
+* **routing:** the launch fold refuses the split backend-provider pin the per-field composition certifies ([7c331ee](https://github.com/SocialGouv/iterion/commit/7c331ee9ee093e16b351ff24035ca1375d324a50)), references [#2637](https://github.com/SocialGouv/iterion/issues/2637) [#2637](https://github.com/SocialGouv/iterion/issues/2637)
+
+    <details><summary>why</summary>
+
+    The per-entry write gate judges each override entry alone, while the launch resolves per field: {selector: X, backend: claw} in one entry and {selector: X, provider: zai} in another both validate, and the composed node override hands the dispatch exactly the pair the per-entry check exists to refuse — a pin certified at write time the harness ignores at dispatch, the spend following the default precedence (#2637).
+
+    </details>
+
 ## [4.1.0](https://github.com/SocialGouv/iterion/compare/v4.0.0...v4.1.0) (2026-10-27)
 
 ### Features
