@@ -303,6 +303,8 @@ func TestEverySiteQuotesByExcerpt(t *testing.T) {
 		{"C137 a quoted reference", "tool t:\n  command: \"echo '{{vars." + long + "}}'\"\n\nworkflow w:\n  vars:\n    " + long + ": string = \"x\"\n  entry: t\n  t -> done\n", "sits inside quotes"},
 		{"C137 a raw quoted reference", "tool t:\n  command: \"echo '{{!vars." + long + "}}'\"\n\nworkflow w:\n  vars:\n    " + long + ": string = \"x\"\n  entry: t\n  t -> done\n", "is raw"},
 		{"C137 a quoted artifact reference", "tool t:\n  command: \"echo '{{artifacts." + long + "}}'\"\n\nworkflow w:\n  entry: t\n  t -> done\n", "command execution"},
+		{"C318 colliding deliverables", "agent a:\n  model: \"m\"\n  deliverables: [\"" + long + ".md\", \"out/" + long + ".md\"]\n\nworkflow w:\n  entry: a\n  a -> done\n", "served as"},
+		{"C317 a deliverable off the workspace", "agent a:\n  model: \"m\"\n  deliverables: [\"/" + long + ".md\"]\n\nworkflow w:\n  entry: a\n  a -> done\n", "not a workspace-relative file path"},
 	} {
 		cr := compileText(t, c.src)
 		found := false
@@ -504,4 +506,48 @@ func TestEnumListNamesSixteenAndCountsTheRest(t *testing.T) {
 	if got := enumList(members[:16]); strings.Contains(got, "more") {
 		t.Errorf("enumList(16) counts: %q", got)
 	}
+}
+
+// TestADeliverablesCollisionIsSaidOncePerNode: however many entries collide
+// under however many names, a node draws one C318 naming each shared name
+// with its entries — and two nodes draw one each, the handle being per node.
+func TestADeliverablesCollisionIsSaidOncePerNode(t *testing.T) {
+	t.Setenv(readbudget.Env, "")
+	src := "agent a:\n  model: \"m\"\n  deliverables: [\"a/r.md\", \"b/r.md\", \"c/r.md\", \"d/r.md\", \"x/o.md\", \"y/o.md\"]\n\nworkflow w:\n  entry: a\n  a -> done\n"
+	cr := compileText(t, src)
+	if got := countByCode(cr, string(DiagDeliverableNameCollision)); got != 1 {
+		t.Fatalf("C318 count = %d, want 1 (once per node)\ndiagnostics: %+v", got, cr.Diagnostics)
+	}
+	msg := messageOf(cr, DiagDeliverableNameCollision)
+	for _, want := range []string{`"a/r.md", "b/r.md", "c/r.md", "d/r.md" served as "r.md"`, `"x/o.md" and "y/o.md" served as "o.md"`} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("C318 does not say %s:\n%s", want, msg)
+		}
+	}
+	two := "agent a:\n  model: \"m\"\n  deliverables: [\"a/r.md\", \"b/r.md\"]\n\nagent b:\n  model: \"m\"\n  deliverables: [\"a/r.md\", \"b/r.md\"]\n\nworkflow w:\n  entry: a\n  a -> b\n  b -> done\n"
+	cr = compileText(t, two)
+	if got := countByCode(cr, string(DiagDeliverableNameCollision)); got != 2 {
+		t.Fatalf("C318 count = %d for two colliding nodes, want 2 (one each)\ndiagnostics: %+v", got, cr.Diagnostics)
+	}
+	// Twenty entries under one name: the first sixteen are quoted, the
+	// rest counted.
+	entries := make([]string, 0, 20)
+	for i := 0; i < 20; i++ {
+		entries = append(entries, fmt.Sprintf("\"e%d/r.md\"", i))
+	}
+	cr = compileText(t, "agent a:\n  model: \"m\"\n  deliverables: ["+strings.Join(entries, ", ")+"]\n\nworkflow w:\n  entry: a\n  a -> done\n")
+	if msg := messageOf(cr, DiagDeliverableNameCollision); !strings.Contains(msg, `"e15/r.md", and 4 more served as "r.md"`) {
+		t.Fatalf("C318 does not count the entries past the sixteen it quotes:\n%s", msg)
+	}
+}
+
+// messageOf is the message of the first diagnostic of code in cr, "" when
+// there is none.
+func messageOf(cr *CompileResult, code DiagCode) string {
+	for _, d := range cr.Diagnostics {
+		if d.Code == code {
+			return d.Message
+		}
+	}
+	return ""
 }

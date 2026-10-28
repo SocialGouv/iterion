@@ -1718,6 +1718,13 @@ func excerptPair(a, b string) (string, string) {
 	if a == b || ea != eb {
 		return ea, eb
 	}
+	i := differenceAt(a, b)
+	return expr.ExcerptAt(a, i), expr.ExcerptAt(b, i)
+}
+
+// differenceAt is the byte offset of the first rune where a and b differ —
+// the length of their common prefix, on a rune boundary of a.
+func differenceAt(a, b string) int {
 	i := 0
 	for i < len(a) && i < len(b) && a[i] == b[i] {
 		i++
@@ -1725,7 +1732,7 @@ func excerptPair(a, b string) (string, string) {
 	for i > 0 && i < len(a) && !utf8.RuneStart(a[i]) {
 		i--
 	}
-	return expr.ExcerptAt(a, i), expr.ExcerptAt(b, i)
+	return i
 }
 
 func (c *compiler) compileComputes() {

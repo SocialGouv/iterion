@@ -908,27 +908,40 @@ func DeliverableName(declared string) string {
 	return base
 }
 
-// DeliverableIsWorkspacePath answers whether a declared deliverable can be
-// resolved inside the node's workspace: non-empty, relative, naming a file
-// rather than a directory, and not escaping upwards. The collector reads
-// the file from the workspace, so a path outside it is a promise no run can
-// keep — C317 refuses it where it is written.
+// DeliverableRefusal is why a declared deliverable cannot be resolved inside
+// the node's workspace — empty when it can: non-empty, relative, naming a
+// file rather than a directory, and not escaping upwards. The collector
+// reads the file from the workspace, so a path outside it is a promise no
+// run can keep — C317 refuses it where it is written, with this reason.
 //
 // A template (`{{…}}`) or an environment form (`${…}`) is judged like any
 // other text: no rendering can make `/tmp/report.md` relative, so a
 // templated entry is held to the same shape. Only what a template renders
 // TO escapes this answer, and that is the collector's to refuse where it
 // resolves the path.
-func DeliverableIsWorkspacePath(declared string) bool {
+func DeliverableRefusal(declared string) string {
 	cleaned := strings.TrimSpace(declared)
-	if cleaned == "" || strings.HasPrefix(cleaned, "/") {
-		return false
+	switch {
+	case cleaned == "":
+		return "empty"
+	case strings.HasPrefix(cleaned, "/"):
+		return "absolute"
 	}
 	normalised := path.Clean(cleaned)
-	if normalised == "." || normalised == ".." || strings.HasPrefix(normalised, "../") {
-		return false
+	if normalised == ".." || strings.HasPrefix(normalised, "../") {
+		return "climbs out of the workspace"
 	}
-	return DeliverableName(cleaned) != ""
+	if normalised == "." || DeliverableName(cleaned) == "" {
+		return "a directory"
+	}
+	return ""
+}
+
+// DeliverableIsWorkspacePath answers whether a declared deliverable can be
+// resolved inside the node's workspace: DeliverableRefusal has nothing to
+// say against it.
+func DeliverableIsWorkspacePath(declared string) bool {
+	return DeliverableRefusal(declared) == ""
 }
 
 // NodeInteraction returns the Interaction field for nodes that support it, or InteractionNone.

@@ -1,9 +1,11 @@
 package ir
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"github.com/SocialGouv/iterion/pkg/dsl/spec"
@@ -281,6 +283,182 @@ func TestDeliverableNameIsTheBaseName(t *testing.T) {
 	for declared, want := range cases {
 		if got := DeliverableName(declared); got != want {
 			t.Errorf("DeliverableName(%q) = %q, want %q", declared, got, want)
+		}
+	}
+}
+
+// TestRefusedDeliverablesAreSaidOnceWithTheirReasons — C317 once per node,
+// however many entries it refuses: the first sixteen by excerpt with the
+// reason each is refused for, the rest by count. A diagnostic per entry grew
+// with the list (#2779): a 2.6 MB bot of refused entries ran the validator
+// out of memory.
+func TestRefusedDeliverablesAreSaidOnceWithTheirReasons(t *testing.T) {
+	entries := []string{`"/tmp/report.md"`, `"../report.md"`, `"out/"`, `""`}
+	for i := 0; i < 16; i++ {
+		entries = append(entries, `"/tmp/`+strings.Repeat("x", i+1)+`.md"`)
+	}
+	src := strings.Replace(nodeKindFixtures["tool"], "%s", "  deliverables: ["+strings.Join(entries, ", ")+"]", 1)
+	r := compileText(t, src)
+	if got := countByCode(r, string(DiagDeliverableNotWorkspacePath)); got != 1 {
+		t.Fatalf("C317 count = %d for 20 refused entries, want 1 (once per node)\n%+v", got, r.Diagnostics)
+	}
+	msg := messageOf(r, DiagDeliverableNotWorkspacePath)
+	for _, want := range []string{`"/tmp/report.md" (absolute)`, `"../report.md" (climbs out of the workspace)`, `"out/" (a directory)`, `"" (empty)`, "and 4 more"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("C317 does not say %s:\n%s", want, msg)
+		}
+	}
+}
+
+// TestAListOfRefusedDeliverablesDrawsOneDiagnostic: the count of a list is
+// what the read budget does not bound — a hundred thousand refused entries,
+// and as many names each served twice, draw one C317 and one C318, and the
+// messages stay under the diagnostic bound.
+func TestAListOfRefusedDeliverablesDrawsOneDiagnostic(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`  deliverables: [`)
+	for i := 0; i < 100000; i++ {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, `"/", "a/%d.md", "b/%d.md"`, i, i)
+	}
+	b.WriteString("]")
+	src := strings.Replace(nodeKindFixtures["tool"], "%s", b.String(), 1)
+	r := compileText(t, src)
+	for _, code := range []DiagCode{DiagDeliverableNotWorkspacePath, DiagDeliverableNameCollision} {
+		if got := countByCode(r, string(code)); got != 1 {
+			t.Fatalf("%s count = %d for a hundred thousand entries, want 1", code, got)
+		}
+		if msg := messageOf(r, code); len(msg) > expr.MaxDiagnosticText {
+			t.Fatalf("%s message is %d bytes, past the bound", code, len(msg))
+		}
+	}
+	// Sixteen quoted entries in all — eight names of two — then the count.
+	if msg := messageOf(r, DiagDeliverableNameCollision); !strings.Contains(msg, "and 99992 more names") || !strings.Contains(msg, "declares 200000 deliverables served under 100000 shared names:") {
+		t.Fatalf("C318 does not count the names past its quoted entries, or its totals:\n%s", msg)
+	}
+}
+
+// TestACollisionListStaysUnderTheBoundWithItsTotals: C318's quoted entries
+// are bounded across the whole message — not per name — so a few names with
+// many long entries still leave the counts and the remedy inside the
+// diagnostic bound rather than cut off by it.
+func TestACollisionListStaysUnderTheBoundWithItsTotals(t *testing.T) {
+	entries := make([]string, 0, 64)
+	for n := 0; n < 4; n++ {
+		for i := 0; i < 16; i++ {
+			entries = append(entries, fmt.Sprintf(`"%s/%d/n%d.md"`, strings.Repeat("directory-with-a-long-name/", 3), i, n))
+		}
+	}
+	src := strings.Replace(nodeKindFixtures["tool"], "%s", "  deliverables: ["+strings.Join(entries, ", ")+"]", 1)
+	msg := messageOf(compileText(t, src), DiagDeliverableNameCollision)
+	if len(msg) > expr.MaxDiagnosticText/2 {
+		t.Fatalf("C318 is %d bytes for 64 entries under 4 names", len(msg))
+	}
+	for _, want := range []string{"declares 64 deliverables served under 4 shared names:", "and 3 more names", "; rename all but one of the files under each name"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("C318 lost %q to the bound:\n%s", want, msg)
+		}
+	}
+	// One name, two entries: the plain shape reads as before.
+	src = strings.Replace(nodeKindFixtures["tool"], "%s", `  deliverables: ["out/report.md", "tmp/report.md"]`, 1)
+	if msg := messageOf(compileText(t, src), DiagDeliverableNameCollision); !strings.Contains(msg, `declares 2 deliverables served under one shared name: "out/report.md" and "tmp/report.md" served as "report.md"`) {
+		t.Fatalf("C318 plain shape:\n%s", msg)
+	}
+}
+
+// TestACleanNodeBesideACollidingOneDrawsNothing: the per-node state of the
+// two rules starts afresh at each node — a clean node declared after a
+// colliding one draws neither C317 nor C318.
+func TestACleanNodeBesideACollidingOneDrawsNothing(t *testing.T) {
+	src := deliverablesHead + `tool export:
+  command: "make report"
+  deliverables: ["/tmp/x.md", "out/report.md", "tmp/report.md"]
+
+tool export_again:
+  command: "make report"
+  deliverables: ["annex.html"]
+
+workflow demo:
+  entry: export
+  export -> export_again
+  export_again -> done
+`
+	r := compileText(t, src)
+	for _, d := range r.Diagnostics {
+		if (d.Code == DiagDeliverableNameCollision || d.Code == DiagDeliverableNotWorkspacePath) && d.NodeID != "export" {
+			t.Fatalf("%s on the clean node %q: %s", d.Code, d.NodeID, d.Message)
+		}
+	}
+	if countByCode(r, string(DiagDeliverableNameCollision)) != 1 || countByCode(r, string(DiagDeliverableNotWorkspacePath)) != 1 {
+		t.Fatalf("want one C317 and one C318 on the colliding node, got %+v", r.Diagnostics)
+	}
+}
+
+// TestEveryRefusedShapeIsSaidWithItsReason: each shape C317 refuses is named
+// by the word for it, the text trimmed first — a leading blank hides
+// neither an absolute path nor a climb.
+func TestEveryRefusedShapeIsSaidWithItsReason(t *testing.T) {
+	for entry, want := range map[string]string{
+		`"/tmp/report.md"`:  `"/tmp/report.md" (absolute)`,
+		`" /tmp/report.md"`: `" /tmp/report.md" (absolute)`,
+		`"../report.md"`:    `"../report.md" (climbs out of the workspace)`,
+		`".."`:              `".." (climbs out of the workspace)`,
+		`"out/"`:            `"out/" (a directory)`,
+		`"."`:               `"." (a directory)`,
+		`"out/.."`:          `"out/.." (a directory)`,
+		`""`:                `"" (empty)`,
+		`"  "`:              `"  " (empty)`,
+	} {
+		src := strings.Replace(nodeKindFixtures["tool"], "%s", "  deliverables: ["+entry+"]", 1)
+		msg := messageOf(compileText(t, src), DiagDeliverableNotWorkspacePath)
+		if !strings.Contains(msg, want) || !strings.Contains(msg, "declares a deliverable that is not a workspace-relative file path: ") {
+			t.Errorf("C317 for %s: want %s in:\n%s", entry, want, msg)
+		}
+	}
+}
+
+// TestARepeatedDeliverableIsSaidAsARepeat: two entries spelling the same
+// file collide on their name, and the remedy is to drop one, not to rename
+// it — C318 says so instead of asking for a rename that cannot happen.
+func TestARepeatedDeliverableIsSaidAsARepeat(t *testing.T) {
+	src := strings.Replace(nodeKindFixtures["tool"], "%s",
+		`  deliverables: ["report.md", "./report.md", "report.md"]`, 1)
+	r := compileText(t, src)
+	msg := messageOf(r, DiagDeliverableNameCollision)
+	if !strings.Contains(msg, `the file "report.md" is listed 3 times`) || strings.Contains(msg, "served as") || !strings.HasSuffix(msg, "; drop the repeated entries") {
+		t.Fatalf("C318 does not say the entry is repeated, with the remedy of a repeat:\n%s", msg)
+	}
+	// A file listed twice beside a real collision: both said, the remedy
+	// names both gestures.
+	src = strings.Replace(nodeKindFixtures["tool"], "%s",
+		`  deliverables: ["r.md", "./r.md", "a/r.md"]`, 1)
+	msg = messageOf(compileText(t, src), DiagDeliverableNameCollision)
+	if !strings.Contains(msg, `"r.md" and "a/r.md" (1 repeated) served as "r.md"`) || !strings.HasSuffix(msg, "rename all but one of the files under each name, and drop the repeated entries") {
+		t.Fatalf("C318 does not say the repeat beside the collision:\n%s", msg)
+	}
+	// A long repeated path is quoted by excerpt like every other entry.
+	long := strings.Repeat("d/", 50000) + "r.md"
+	src = strings.Replace(nodeKindFixtures["tool"], "%s",
+		`  deliverables: ["`+long+`", "`+long+`"]`, 1)
+	if msg = messageOf(compileText(t, src), DiagDeliverableNameCollision); len(msg) > 512 || !strings.Contains(msg, "is listed 2 times") {
+		t.Fatalf("C318 quotes a repeated path whole (%d bytes):\n%.200s", len(msg), msg)
+	}
+}
+
+// TestCollidingDeliverablesAreQuotedAroundTheirDifference: two long paths
+// that share their first seventy runes read alike by plain excerpt; C318
+// quotes them where they differ, so the author sees two paths.
+func TestCollidingDeliverablesAreQuotedAroundTheirDifference(t *testing.T) {
+	prefix := strings.Repeat("reports/2026-q3/security-and-compliance/", 2)
+	src := strings.Replace(nodeKindFixtures["tool"], "%s",
+		`  deliverables: ["`+prefix+`alpha/report.md", "`+prefix+`beta/report.md"]`, 1)
+	r := compileText(t, src)
+	msg := messageOf(r, DiagDeliverableNameCollision)
+	for _, want := range []string{"alpha/report.md", "beta/report.md"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("C318 does not quote the paths where they differ (%s):\n%s", want, msg)
 		}
 	}
 }

@@ -2,16 +2,19 @@ package ir
 
 import (
 	"fmt"
-	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"math"
 	"net/url"
 	"os"
+	"path"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 )
 
@@ -214,24 +217,191 @@ func (c *compiler) validateDeliverables(w *Workflow) {
 		if len(declared) == 0 {
 			continue
 		}
+		kind, id := n.NodeKind().String(), n.NodeID()
+		// Each rule is said once per node, the entries it refuses listed as
+		// an enum's members are — enumListed of them by excerpt, the rest
+		// by count: the length of a list is the one thing the read budget
+		// does not bound, and a diagnostic per entry would grow with it
+		// (#2779).
+		var refused []string
 		firstByName := make(map[string]string, len(declared))
+		// shared is every base name a later entry is served as too, in the
+		// order of its first collision; later holds those entries per name.
+		var shared []string
+		later := map[string][]string{}
 		for _, entry := range declared {
-			if !DeliverableIsWorkspacePath(entry) {
-				c.errorfAt(DiagDeliverableNotWorkspacePath, n.NodeID(), "",
-					"%s %q declares the deliverable %q, which is not a workspace-relative file path — the run collects a deliverable from the node's workspace and serves it under its base name",
-					n.NodeKind().String(), n.NodeID(), entry)
+			if DeliverableRefusal(entry) != "" {
+				refused = append(refused, entry)
 				continue
 			}
 			name := DeliverableName(entry)
-			if first, taken := firstByName[name]; taken {
-				c.errorfAt(DiagDeliverableNameCollision, n.NodeID(), "",
-					"%s %q declares the deliverables %q and %q, which are both served as %q — the run store refuses the second rather than overwrite the first; rename one of the files",
-					n.NodeKind().String(), n.NodeID(), first, entry, name)
+			if _, taken := firstByName[name]; !taken {
+				firstByName[name] = entry
 				continue
 			}
-			firstByName[name] = entry
+			if _, seen := later[name]; !seen {
+				shared = append(shared, name)
+			}
+			later[name] = append(later[name], entry)
+		}
+		if len(refused) > 0 {
+			c.errorfAt(DiagDeliverableNotWorkspacePath, id, "",
+				"%s %q declares %s not a workspace-relative file path: %s — the run collects a deliverable from the node's workspace and serves it under its base name, so none of these can be collected",
+				kind, id, countOf(len(refused), "a deliverable that is", "deliverables that are"), refusedDeliverables(refused))
+		}
+		if len(shared) > 0 {
+			cols := collisionsOf(shared, firstByName, later)
+			entries, remedy := 0, collisionRemedy(cols)
+			for _, col := range cols {
+				entries += len(col.files) + col.repeats
+			}
+			c.errorfAt(DiagDeliverableNameCollision, id, "",
+				"%s %q declares %d deliverables served under %s: %s — the run store refuses every one after the first rather than overwrite it; %s",
+				kind, id, entries, countOf(len(cols), "one shared name", "shared names"), collisionsText(cols), remedy)
 		}
 	}
+}
+
+// countOf words a count: the singular phrase for one, the plural with the
+// number for more.
+func countOf(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return fmt.Sprintf("%d %s", n, many)
+}
+
+// refusedDeliverables lists the entries C317 refuses, each by excerpt with
+// its reason, the first enumListed then the count of the rest.
+func refusedDeliverables(refused []string) string {
+	named := refused
+	if len(named) > enumListed {
+		named = named[:enumListed]
+	}
+	parts := make([]string, 0, len(named)+1)
+	for _, entry := range named {
+		parts = append(parts, fmt.Sprintf("%q (%s)", expr.Excerpt(entry), DeliverableRefusal(entry)))
+	}
+	if more := len(refused) - len(named); more > 0 {
+		parts = append(parts, fmt.Sprintf("and %d more", more))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// collision is one base name several deliverables are served as: the
+// distinct files among them, the served one first and the refused ones in
+// declaration order — two spellings of one path (`r.md`, `./r.md`) are one
+// file — and how many entries repeat a file already listed.
+type collision struct {
+	name    string
+	files   []string
+	repeats int
+}
+
+// collisionsOf reads the collisions of a node in first-collision order.
+func collisionsOf(shared []string, firstByName map[string]string, later map[string][]string) []collision {
+	out := make([]collision, 0, len(shared))
+	for _, name := range shared {
+		first := firstByName[name]
+		col := collision{name: name, files: []string{first}}
+		seen := map[string]bool{deliverableFile(first): true}
+		for _, entry := range later[name] {
+			if file := deliverableFile(entry); !seen[file] {
+				seen[file] = true
+				col.files = append(col.files, entry)
+			} else {
+				col.repeats++
+			}
+		}
+		out = append(out, col)
+	}
+	return out
+}
+
+// deliverableFile is the one spelling of a declared path two entries are
+// compared by.
+func deliverableFile(entry string) string {
+	return path.Clean(strings.TrimSpace(entry))
+}
+
+// collisionRemedy words what the author does: rename where several files
+// share a name, drop where one file is listed several times, both where
+// both occur.
+func collisionRemedy(cols []collision) string {
+	rename, drop := false, false
+	for _, col := range cols {
+		if len(col.files) > 1 {
+			rename = true
+		}
+		if col.repeats > 0 {
+			drop = true
+		}
+	}
+	switch {
+	case rename && drop:
+		return "rename all but one of the files under each name, and drop the repeated entries"
+	case drop:
+		return "drop the repeated entries"
+	}
+	return "rename all but one of the files under each name"
+}
+
+// collisionsText lists the collisions for C318 within one budget of
+// enumListed quoted entries across the whole list — the names past the
+// budget and the entries of a name past it are counted, so the message
+// keeps its totals and its remedy under the diagnostic bound whatever the
+// list holds. A file listed several times under one name is said as such.
+// The entries of a name are quoted around their difference from the
+// first where their plain excerpts would read alike (excerptPair), the
+// first around the earliest of those differences.
+func collisionsText(cols []collision) string {
+	budget := enumListed
+	parts := make([]string, 0, len(cols)+1)
+	for i, col := range cols {
+		if budget <= 0 {
+			parts = append(parts, "and "+countOf(len(cols)-i, "1 more name", "more names"))
+			break
+		}
+		if len(col.files) == 1 {
+			budget--
+			parts = append(parts, fmt.Sprintf("the file %q is listed %d times", expr.Excerpt(deliverableFile(col.files[0])), 1+col.repeats))
+			continue
+		}
+		first, rest := col.files[0], col.files[1:]
+		listed := rest
+		if len(listed) > budget-1 {
+			listed = listed[:budget-1]
+		}
+		budget -= 1 + len(listed)
+		firstText, at := expr.Excerpt(first), -1
+		for _, entry := range listed {
+			if expr.Excerpt(entry) == firstText {
+				if d := differenceAt(first, entry); at < 0 || d < at {
+					at = d
+				}
+			}
+		}
+		if at >= 0 {
+			firstText = expr.ExcerptAt(first, at)
+		}
+		quoted := []string{strconv.Quote(firstText)}
+		for _, entry := range listed {
+			_, b := excerptPair(first, entry)
+			quoted = append(quoted, strconv.Quote(b))
+		}
+		if more := len(rest) - len(listed); more > 0 {
+			quoted = append(quoted, fmt.Sprintf("and %d more", more))
+		}
+		entries := strings.Join(quoted, ", ")
+		if len(quoted) == 2 {
+			entries = quoted[0] + " and " + quoted[1]
+		}
+		if col.repeats > 0 {
+			entries += fmt.Sprintf(" (%d repeated)", col.repeats)
+		}
+		parts = append(parts, fmt.Sprintf("%s served as %q", entries, expr.Excerpt(col.name)))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // validateCompress enforces that every compress value (workflow-level + every

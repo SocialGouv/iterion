@@ -221,7 +221,7 @@ could keep the promise:
 | Code | What it refuses                                                      |
 | ---- | -------------------------------------------------------------------- |
 | C317 | An entry that is not a workspace-relative file path: absolute (`/tmp/report.md`), escaping upwards (`../report.md`), naming a directory (`out/`), or empty. A `{{…}}` reference or a `${…}` form does not excuse the shape — no rendering makes `/tmp/report.md` relative — so a templated entry is held to the same rules; what it renders TO is the collector's to refuse, where the path is resolved. |
-| C318 | Two entries of one node sharing a base name (`out/report.md` and `tmp/report.md`): both would be served as `report.md`, and the run store refuses the second rather than overwrite the first. The handle is per node, so two different nodes may each declare `report.md`. |
+| C318 | Two entries of one node sharing a base name (`out/report.md` and `tmp/report.md`): both would be served as `report.md`, and the run store refuses every one after the first rather than overwrite it. Said once per node, each shared name with its entries. The handle is per node, so two different nodes may each declare `report.md`. |
 
 The declaration has ONE reader, `ir.NodeDeliverables`, and the handle has
 one definition, `ir.DeliverableName`: the compiler that judges a

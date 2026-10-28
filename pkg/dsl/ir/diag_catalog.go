@@ -78,7 +78,7 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagMemoryMissingScope:          {"Memory missing scope", "Add `scope: <name>` to the `memory:` block."},
 	DiagArtifactLabelsNoPublish:     {"Artifact labels without publish", "Add `publish: <name>` so the labels have an artifact to attach to, or remove `artifact_labels:`."},
 	DiagDeliverableNotWorkspacePath: {"Deliverable is not a workspace path", "Write the path relative to the node's workspace (`report.md`, `out/annex.html`): the run collects the file from there and serves it under its base name."},
-	DiagDeliverableNameCollision:    {"Two deliverables share one name", "Rename one of the files: a deliverable is served under its base name, and the run store refuses the second rather than overwrite the first."},
+	DiagDeliverableNameCollision:    {"Two deliverables share one name", "Rename all but one of the files under each shared name, and drop a repeated entry: a deliverable is served under its base name, and the run store refuses every one after the first rather than overwrite it."},
 	DiagMemoryInvalidVisibility:     {"Invalid memory visibility", "Use one of `bot`, `project`, `cross_project`, `user`, `org`, `global`."},
 	DiagMemoryVisibilityConflict:    {"Memory visibility conflict", "Use `visibility:` alone; drop the legacy `project_root:`."},
 	DiagMemoryGlobalWriteGated:      {"Global memory space is not run-writable", "A run holds no platform authority: set `write: false`, or use a tenant-scoped visibility, and let an operator write the instance catalogue through the REST surface or `iterion memory import`."},

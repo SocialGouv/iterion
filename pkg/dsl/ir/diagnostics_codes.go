@@ -385,15 +385,17 @@ const (
 	// never resolve — absolute, escaping upwards, naming a directory, empty
 	// — is refused where it is written: the declaration IS the contract,
 	// and a promise no run can keep is worth less than a compile error.
-	// A value carrying a template or an environment form is not a literal
-	// path and is judged when it is rendered, not here.
+	// A value carrying a template or an environment form is judged on the
+	// text as written, like any other: no rendering makes an absolute path
+	// relative; only what it renders TO is the collector's to refuse.
 	DiagDeliverableNotWorkspacePath DiagCode = "C317" // a deliverables: entry is not a workspace-relative file path (absolute, `..` escape, directory, empty) (error)
 
 	// Two entries of one node with the same base name would be served
-	// under the same handle, and the run store refuses the second rather
-	// than overwrite the first (the `name_taken` loss): the reviewer of
-	// pass N-1 would otherwise read the bytes of pass N. Same doctrine as
-	// C314 — a collision that cannot be authored needs no runtime guard.
+	// under the same handle, and the run store refuses every one after the
+	// first rather than overwrite it (the `name_taken` loss): the reviewer
+	// of pass N-1 would otherwise read the bytes of pass N. Same doctrine
+	// as C314 — a collision that cannot be authored needs no runtime guard.
+	// Said once per node, each shared name with its entries.
 	DiagDeliverableNameCollision DiagCode = "C318" // two deliverables: entries of the same node are served under the same base name (error)
 
 	// The instance-wide `global` memory space is read by every org, so a
