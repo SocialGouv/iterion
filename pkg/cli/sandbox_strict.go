@@ -380,15 +380,7 @@ func runSpreadCoverageStrictCheck(ctx context.Context, report *SandboxStrictRepo
 		// a Forbidden is the chart's namespaced Role — the cluster's own word,
 		// checked first even when the probe also ran out of time — a deadline
 		// is the probe budget; anything else stays what kubectl said.
-		var cause string
-		switch {
-		case strings.Contains(err.Error(), "Forbidden"):
-			cause = "the chart's runner Role is namespace-scoped and grants no nodes/list on purpose; "
-		case errors.Is(probeCtx.Err(), context.DeadlineExceeded):
-			cause = "the node list did not answer within " + doctorProbeTimeout().String() + " (ITERION_SANDBOX_DOCTOR_TIMEOUT raises it); "
-		default:
-			cause = "could not list nodes; "
-		}
+		cause := spreadCoverageFailureCause(err, probeCtx.Err())
 		report.add("k8s spread key coverage", CheckWarn, err.Error(),
 			cause+"from an operator context run `kubectl get nodes -L "+key+"` and check every schedulable node carries the label")
 	case total == 0:
@@ -402,6 +394,19 @@ func runSpreadCoverageStrictCheck(ctx context.Context, report *SandboxStrictRepo
 			"nodes without the label are excluded from run pod scheduling; label them or use hostname")
 	default:
 		report.add("k8s spread key coverage", CheckPass, fmt.Sprintf("%d of %d nodes carry %s", labelled, total, key), "")
+	}
+}
+
+// spreadCoverageFailureCause gives the cluster's explicit refusal precedence
+// over an expired probe: both facts can be present in the same result.
+func spreadCoverageFailureCause(err, probeErr error) string {
+	switch {
+	case strings.Contains(err.Error(), "Forbidden"):
+		return "the chart's runner Role is namespace-scoped and grants no nodes/list on purpose; "
+	case errors.Is(probeErr, context.DeadlineExceeded):
+		return "the node list did not answer within " + doctorProbeTimeout().String() + " (ITERION_SANDBOX_DOCTOR_TIMEOUT raises it); "
+	default:
+		return "could not list nodes; "
 	}
 }
 

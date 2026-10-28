@@ -310,14 +310,16 @@ func TestRunSpreadCoverageStrictCheck(t *testing.T) {
 			t.Fatalf("a timed-out probe must be named as such, got %+v", c)
 		}
 	})
-	t.Run("a Forbidden written before the deadline still names the Role", func(t *testing.T) {
-		failingKubectl(t, "#!/bin/sh\necho 'Error from server (Forbidden): nodes is forbidden' >&2\nexec sleep 5\n")
-		t.Setenv("ITERION_SANDBOX_DOCTOR_TIMEOUT", "200ms")
-		r := &SandboxStrictReport{}
-		runSpreadCoverageStrictCheck(context.Background(), r, "example.com/rack")
-		c := oneWarning(t, r)
-		if !strings.Contains(c.Detail, "Forbidden") || !strings.Contains(c.Remediation, "namespace-scoped") || strings.Contains(c.Remediation, "did not answer") {
-			t.Fatalf("the cluster's own word must win over the inferred deadline, got %+v", c)
+	t.Run("a Forbidden plus an expired deadline still names the Role", func(t *testing.T) {
+		// The decision consumes two facts, not the time a shell takes to
+		// start. Stage both directly; the other rows retain the real kubectl
+		// transport for Forbidden, timeout, and successful node listings.
+		cause := spreadCoverageFailureCause(
+			errors.New("Error from server (Forbidden): nodes is forbidden"),
+			context.DeadlineExceeded,
+		)
+		if !strings.Contains(cause, "namespace-scoped") || strings.Contains(cause, "did not answer") {
+			t.Fatalf("the cluster's own word must win over the inferred deadline, got %q", cause)
 		}
 	})
 	t.Run("other list errors keep kubectl's reason and claim no cause", func(t *testing.T) {
