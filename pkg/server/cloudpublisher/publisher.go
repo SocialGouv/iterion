@@ -4248,6 +4248,26 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	if serr := p.store.SetRunCredStamp(secretsCtx, spec.RunID, creds.stamp()); serr != nil {
 		p.logger.Warn("cloudpublisher: re-stamp cred fingerprints on run %s: %v", spec.RunID, serr)
 	}
+	// The review family this run FROZE at launch, judged against the
+	// credentials THIS resume just re-sealed. A resume replays the frozen
+	// inputs and nothing else re-judges them, so a run whose family lost its
+	// credential since — deleted, rotated, capped — used to come back, start,
+	// and die at its first review node; on the forge lane that reads as a
+	// required check going dark on every pull request of the repo, and the
+	// 7-day cap on the runs listing hid the dead runs entirely (measured
+	// 2026-09-22, #1221). The judgement is read-only: the inputs stay the
+	// launch's, byte for byte.
+	//
+	// Only when the bundle resolved at least one participating credential,
+	// exactly like the launch above: an empty set means the run rides the
+	// runner's env fallback, which is unknowable from here, and refusing on
+	// "no family" facts about credentials we cannot see would ground every
+	// such resume.
+	if len(creds.families) > 0 {
+		if err := reviewtopology.RefuseFrozenPin(wf, prior.Inputs, creds.families); err != nil {
+			return fmt.Errorf("refusing to resume: %w", err)
+		}
+	}
 	// Re-resolved on resume too: the engine re-mirrors skills on every resume,
 	// so a resumed run must carry the same payload a fresh launch would.
 	contributions, contribErr := resolveContributionsFor(ctx, wf, "", prior.TenantID, spec.RunID, p.pluginSources, p.logger)

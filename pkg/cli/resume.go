@@ -8,9 +8,11 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
+	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
+	"github.com/SocialGouv/iterion/pkg/reviewtopology"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -272,6 +274,14 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 	if err != nil {
 		return err
+	}
+	// The review family this run froze at launch, judged against THIS host's
+	// credentials — the resume-side twin of run.go's injection, at the one
+	// other moment that can still refuse. Read-only: the run's inputs stay
+	// the launch's, byte for byte. Before the answer attachments and the
+	// budget writes below, so a refused resume persists nothing.
+	if err := reviewtopology.RefuseFrozenPin(wf, r.Inputs, reviewtopology.FamiliesFromReport(detect.Detect(ctx))); err != nil {
+		return fmt.Errorf("refusing to resume: %w", err)
 	}
 	// `--answer field=@./file.mp3` attaches a local file to the gate, the
 	// CLI counterpart of the studio's upload widget. Done after the

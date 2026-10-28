@@ -10,6 +10,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/retrycoord"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
+	"github.com/SocialGouv/iterion/pkg/reviewtopology"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -270,6 +271,18 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 			// fired — and ReleaseRun is a non-idempotent $inc (rva-2 F1).
 			s.abandonRetry(runCtx, retryStore, ref,
 				"auto-retry abandoned: the team's runner-pool mapping moved past the run's frozen pool — relaunch the run on the new pool")
+			return
+		}
+		// A review family nothing serves any more is permanent for the same
+		// reason: the run's inputs are frozen at launch, so every cycle
+		// replays the same pin against the same absent credential, flipping
+		// the doc queued→failed until the attempt budget burns. Abandon with
+		// the refusal's own text — it names the family, the available ones
+		// and the remedy, which is a fresh launch, not a retry. Leaves
+		// BEFORE any publish (RunMayHaveStarted is false), so the metered
+		// slot is already refunded above.
+		if errors.Is(err, reviewtopology.ErrUnservableFamily) {
+			s.abandonRetry(runCtx, retryStore, ref, fmt.Sprintf("auto-retry abandoned: %v", err))
 			return
 		}
 		s.reArmRetry(runCtx, retryStore, ref, err)

@@ -18,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/reviewtopology"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -762,5 +763,36 @@ func TestSweepDueRetries_AmbiguousRunIsDisarmedNotResumed(t *testing.T) {
 	reason, ok := st.abandoned["run-amb"]
 	if !ok || !strings.Contains(reason, "AMBIGUOUS_EFFECT") {
 		t.Fatalf("the stale retry was not disarmed naming the undecided effect: %q (%v)", reason, ok)
+	}
+}
+
+// A review family nothing serves any more is a PERMANENT refusal too, and
+// the auto-retry lane is the one the incident hit: the pin is frozen at
+// launch, so every cycle replays it against the same absent credential. The
+// sweeper abandons with the refusal's own text — which names the family, the
+// available ones and the remedy — instead of re-arming a queued→failed flap
+// until the attempt budget burns (#1221). Red when the
+// reviewtopology.ErrUnservableFamily branch is dropped.
+func TestSweepDueRetries_AnUnservableFamilyAbandonsInsteadOfReArming(t *testing.T) {
+	st := newFakeRetryStore()
+	st.claimWins["run-dead-pin"] = true
+	resumer := &fakeResumer{failing: fmt.Errorf("refusing to resume: %w", reviewtopology.RefusePinnedFamily(
+		reviewtopology.FamilyGPT, reviewtopology.FamilySet{reviewtopology.FamilyClaude: true}, reviewtopology.AtResume))}
+	s := newRetrySweeperServer(t, st, resumer)
+
+	at := time.Now().UTC().Add(-time.Minute)
+	s.sweepDueRetries(context.Background(), &fakeRetryLister{refs: []mongostore.RetryDueRef{dueRef("run-dead-pin", at)}}, resumer, time.Now().UTC())
+
+	reason, ok := st.abandoned["run-dead-pin"]
+	if !ok {
+		t.Fatalf("a resume refused for an unservable family must ABANDON the retry, got abandoned=%v re-armed=%v", st.abandoned, st.rearmed)
+	}
+	if len(st.rearmed) != 0 {
+		t.Fatalf("an unservable family must never be re-armed: %v", st.rearmed)
+	}
+	for _, want := range []string{`"gpt"`, "claude", "launch a fresh run"} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("the abandon reason does not carry %q — an operator reads this on the doc: %s", want, reason)
+		}
 	}
 }

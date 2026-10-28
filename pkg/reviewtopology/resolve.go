@@ -17,6 +17,7 @@
 package reviewtopology
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -280,9 +281,8 @@ func InjectIfDeclaredFamilies(wf *ir.Workflow, inputs map[string]any, fams Famil
 	mode, monoFamily = ResolveFamilies(fams, override)
 	if mode == ModeMono {
 		ov := inputOverride(inputs, VarMonoFamily)
-		if ov != "" && !fams[strings.ToLower(ov)] {
-			return mode, monoFamily, true, fmt.Errorf("mono_family %q is pinned but no credential serves that family on this launch (available: %s) — the review slot it routes to dies at its first node: remove the pin, or add the credential",
-				ov, familyList(fams))
+		if err := RefusePinnedFamily(ov, fams, AtLaunch); err != nil {
+			return mode, monoFamily, true, err
 		}
 		// An operator's explicit --var mono_family wins over the resolver's
 		// preference when it names an AVAILABLE family (never silently
@@ -313,7 +313,88 @@ func InjectIfDeclaredFamilies(wf *ir.Workflow, inputs map[string]any, fams Famil
 	return mode, monoFamily, true, nil
 }
 
-// familyList renders the credential-backed families for a launch refusal:
+// PinMoment names when a mono_family pin is judged and what an operator
+// does about a refusal. There are exactly two moments that can still
+// refuse, and the remedy is not the same at both: a launch is a request an
+// operator can restate, while a resumed attempt replays the inputs FROZEN
+// at launch (ADR-129 §5) and cannot be re-parameterised.
+type PinMoment struct {
+	clause string
+	fix    string
+}
+
+var (
+	// AtLaunch judges the pin before the run exists.
+	AtLaunch = PinMoment{
+		clause: "on this launch",
+		fix:    "remove the pin, or add the credential",
+	}
+	// AtResume judges the pin a run froze at launch. Changing it is not
+	// something a resume can do — the next resume replays the same value —
+	// so the remedy names the only two moves that work, and names them for
+	// both provenances: a fresh launch resolves the family from the
+	// credentials that exist NOW, whether the frozen one was an operator's
+	// pin or the resolver's own choice. Measured: five parked runs replayed
+	// a stale pin after the operator had removed it from the integration
+	// (#1221, 2026-09-22).
+	AtResume = PinMoment{
+		clause: "on this resume",
+		fix:    "this run's inputs are frozen at launch, so resuming can never change the family — launch a fresh run (which resolves the family from the credentials that exist now), or restore a credential for that family",
+	}
+)
+
+// ErrUnservableFamily is the class of both refusals: the configuration names
+// a review family no credential backs. Typed because a resume refused for it
+// is PERMANENT — no amount of retrying grows a credential — and the cloud
+// auto-retry sweeper must abandon such a run with its reason instead of
+// re-arming it every cycle until the attempt budget burns (the treatment
+// cloudpublisher.ErrPoolRemapped already has, for the same reason).
+var ErrUnservableFamily = errors.New("unservable review family")
+
+// RefusePinnedFamily is the judgement every moment shares: a mono_family
+// naming a family no credential backs cannot run, and the refusal names the
+// pinned family, the families that ARE backed, and the fix for that moment.
+// An empty family names nothing and is always served.
+//
+// Read-only, and that is the point: it writes nowhere, so the resume moment
+// can judge a run's FROZEN inputs — which it must not rewrite — with the
+// same predicate the launch applies.
+func RefusePinnedFamily(family string, fams FamilySet, when PinMoment) error {
+	name := strings.TrimSpace(family)
+	if name == "" || fams[strings.ToLower(name)] {
+		return nil
+	}
+	return fmt.Errorf("%w: mono_family %q is pinned but no credential serves that family %s (available: %s) — the review slot it routes to dies at its first node: %s",
+		ErrUnservableFamily, name, when.clause, familyList(fams), when.fix)
+}
+
+// RefuseFrozenPin judges the family a RESUMED run's frozen inputs name
+// against the credentials the resume itself re-resolved, and returns the
+// refusal when nothing serves it any more. It writes NOTHING: a resumed
+// attempt's inputs are the launch's, byte for byte, and this judgement is
+// the only thing a resume adds to them.
+//
+// Judged whatever the pin's PROVENANCE, unlike the launch. There a
+// resolver-chosen family never refuses — it came from the set by
+// construction — but by resume time the set has moved: the credential the
+// launch resolved can have been deleted, rotated or capped since, and a
+// family nothing serves is just as dead whether an operator named it or the
+// resolver did.
+//
+// Silent on a DUAL run: the router fans out to both families there and
+// mono_family is meaningless (a dual launch deletes it). Silent too when
+// the workflow declares no review_mode — the var is not that bot's.
+func RefuseFrozenPin(wf *ir.Workflow, frozen map[string]any, fams FamilySet) error {
+	if !declaresVar(wf, VarReviewMode) {
+		return nil
+	}
+	if strings.EqualFold(inputOverride(frozen, VarReviewMode), ModeDual) {
+		return nil
+	}
+	return RefusePinnedFamily(inputOverride(frozen, VarMonoFamily), fams, AtResume)
+}
+
+// familyList renders the credential-backed families for a refusal:
 // sorted, comma-joined, "(none)" when the set is empty.
 func familyList(fams FamilySet) string {
 	names := make([]string, 0, len(fams))

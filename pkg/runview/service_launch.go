@@ -832,6 +832,20 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		return &LaunchResult{RunID: spec.RunID, Done: closed}, nil
 	}
 
+	// The review family this run froze at launch, judged against THIS host's
+	// credentials — the same reading its launch took (InjectAll above, from
+	// detect.Detect), applied at the one other moment that can still refuse.
+	// Read-only: the run's inputs stay the launch's, byte for byte.
+	//
+	// Below the cloud branch on purpose. A queued run's credentials are the
+	// ones its bundle sealed, not this server's environment, so SubmitResume
+	// judges its own there; certifying a cloud resume against a host
+	// detection report would certify the wrong set entirely. And above every
+	// local write below, so a refused resume persists nothing.
+	if err := reviewtopology.RefuseFrozenPin(wf, r.Inputs, reviewtopology.FamiliesFromReport(detect.Detect(parent))); err != nil {
+		return nil, fmt.Errorf("refusing to resume: %w", err)
+	}
+
 	// Local paths (detached subprocess, in-process): a raised cap is
 	// persisted here twice over, the way SubmitResume does it on the
 	// cloud path — the MERGED ask as the replay source (so the next
