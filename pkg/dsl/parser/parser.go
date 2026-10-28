@@ -189,6 +189,9 @@ type parser struct {
 	// themselves are given to the AST once, with their addresses, by
 	// attachComments.
 	directives []Token
+	// blocks is the open-block stack the broken-list resync reads
+	// (openBlocks), kept current with the consumed stream.
+	blocks openBlockStack
 }
 
 // ---- helpers ----

@@ -237,7 +237,7 @@ func opensBracket(t Token) bool {
 // Two less-indented shapes are rescued too (#2081). A line at an ANCESTOR
 // block's column — a `rules:` broken under `network:` with `image:`
 // following under `sandbox:` — is landed on when the parser still has that
-// column open (openBlockColumns), and each block loop between the list and
+// column open (openBlocks), and each block loop between the list and
 // the ancestor is handed the one closing DEDENT it waits for, spliced ahead
 // of the ancestor line: the broken remainder's own dedents cannot be trusted
 // for the count, because a closer dedented to column 1 over-pops every
@@ -526,6 +526,11 @@ func (p *parser) spliceDedents(at, n, line int) {
 		dedents[k] = Token{Type: TokenDedent, Line: line, Column: 1}
 	}
 	p.lex.tokens = slices.Insert(p.lex.tokens, at, dedents...)
+	if at < p.blocks.ti {
+		// The open-block stack read past the splice point: what it read
+		// is no longer the stream, so it starts over (openBlocks).
+		p.blocks.reset()
+	}
 }
 
 // listBlockClosePoint scans past a rescued line (at peek index start) for
@@ -617,64 +622,135 @@ func (p *parser) listBlockClosePoint(start, col int, cols []int, hosts []string)
 	}
 }
 
-// openBlockColumns replays the consumed stream's INDENT/DEDENT pairs to list
-// the columns at which the parser's open blocks read their lines — the base
-// (top level, column 1) first, the innermost block last. It exists for the
-// broken-list resync, which must tell a line an ancestor owns from a line no
-// open block owns: the tokens carry no level, but the history does. The
-// INDENT carries no column, so the level it pushed is read off the first
-// real token of the line it opens (resync-spliced DEDENTs may sit between).
-// An earlier resync's consumed remainder held INDENT/DEDENT pairs the
-// parser's loops never saw, so the replay can drift from the loops a later
-// resync still has open — it then bails where it could have landed, never
-// the reverse.
+// openBlocks lists the columns at which the parser's open blocks read their
+// lines — the base (top level, column 1) first, the innermost block last —
+// and, beside each, the keyword of the declaration header that opened it
+// ("" for none). It exists for the broken-list resync, which must tell a
+// line an ancestor owns from a line no open block owns: the tokens carry no
+// level, but the history does, so the consumed stream's INDENT/DEDENT pairs
+// are replayed into a stack (openBlockStack). The replay is kept current
+// rather than rebuilt: a call reads the tokens consumed since the last one,
+// so a source leaving forty thousand lists open costs the resync one pass
+// over its tokens, not one per list (#2626); the stack starts over when the
+// cursor stands behind what it read (a lookahead's rewind) or a splice
+// landed inside it (spliceDedents). The INDENT carries no column, so the
+// level it pushed reads its column off the first real token of the line it
+// opens (resync-spliced DEDENTs may sit between); until that token is
+// consumed the level reads as column 1. An earlier resync's consumed
+// remainder held INDENT/DEDENT pairs the parser's loops never saw, so the
+// replay can drift from the loops a later resync still has open — it then
+// reads fewer levels than the loops hold, and the rescue bails, or lands
+// with too few DEDENTs and hands a later declaration to a loop that refuses
+// it (#2771 pins the shape); the kept stack keeps that drift exactly where
+// the replay had it, so no verdict moves here.
 func (p *parser) openBlocks() (cols []int, hosts []string) {
-	cols = []int{1}
-	hosts = []string{""}
-	toks := p.lex.tokens[:p.lex.ti]
-	var lineFirst, lineSecond, lineThird Token
-	prevHeader := "" // the keyword of the declaration header the previous line opened
-	flush := func() {
-		if lineFirst.Type != 0 && declStartsBlock(lineFirst) &&
-			tokenAsIdent(lineSecond) != "" && lineThird.Type == TokenColon {
-			prevHeader = lineFirst.Value
-		} else {
-			prevHeader = ""
-		}
-		lineFirst, lineSecond, lineThird = Token{}, Token{}, Token{}
+	s := &p.blocks
+	if s.cols == nil || s.ti > p.lex.ti {
+		s.reset()
 	}
-	for i := 0; i < len(toks); i++ {
-		switch toks[i].Type {
-		case TokenIndent:
-			col := 1
-			for j := i + 1; j < len(toks); j++ {
-				if toks[j].Type != TokenIndent && toks[j].Type != TokenDedent {
-					col = toks[j].Column
-					break
-				}
-			}
-			cols = append(cols, col)
-			hosts = append(hosts, prevHeader)
-			lineFirst, lineSecond, lineThird = Token{}, Token{}, Token{}
-		case TokenDedent:
-			if len(cols) > 1 {
-				cols = cols[:len(cols)-1]
-				hosts = hosts[:len(hosts)-1]
-			}
-		case TokenNewline:
-			flush()
-		default:
-			switch {
-			case lineFirst.Type == 0:
-				lineFirst = toks[i]
-			case lineSecond.Type == 0:
-				lineSecond = toks[i]
-			case lineThird.Type == 0:
-				lineThird = toks[i]
-			}
+	toks := p.lex.tokens[:p.lex.ti]
+	for ; s.ti < len(toks); s.ti++ {
+		s.read(toks[s.ti])
+	}
+	cols = slices.Clone(s.cols)
+	for i, c := range cols {
+		if c == 0 {
+			cols[i] = 1
 		}
+	}
+	hosts = slices.Clone(s.hosts)
+	if openBlocksCheck != nil {
+		openBlocksCheck(p, cols, hosts)
 	}
 	return cols, hosts
+}
+
+// openBlockStack is the open-block stack openBlocks reads: the replay of the
+// consumed stream's INDENT/DEDENT pairs, kept current token by token.
+type openBlockStack struct {
+	// ti is how far the stack has read: p.lex.tokens[:ti] are in it.
+	ti int
+	// cols and hosts are the stack, the top level first: the column each
+	// open block reads its lines at — 0 while the level's first real token
+	// is not consumed yet — and the keyword of the declaration header that
+	// opened it.
+	cols  []int
+	hosts []string
+	// unresolved counts the innermost levels whose column is still 0: the
+	// levels pushed since the last real token, which sit on top.
+	unresolved int
+	// lineFirst, lineSecond and lineThird are the first three tokens of the
+	// line being read, and prevHeader the keyword of the declaration header
+	// the previous line opened — "" when it opened none — which hosts the
+	// level the next INDENT pushes.
+	lineFirst, lineSecond, lineThird Token
+	prevHeader                       string
+	// replayed counts the tokens read into the stack over the whole
+	// reading, a start-over included; the witness of #2626 holds it to the
+	// stream's length — a token is read once, however many resyncs ask.
+	replayed int
+}
+
+// openBlocksCheck, when set, is handed every answer openBlocks gives; the
+// package's tests set it to hold the kept stack to a replay of the whole
+// consumed stream at each call. Nil outside tests.
+var openBlocksCheck func(p *parser, cols []int, hosts []string)
+
+// reset starts the stack over from the first token of the stream, keeping
+// the count of tokens read so far.
+func (s *openBlockStack) reset() {
+	*s = openBlockStack{cols: []int{1}, hosts: []string{""}, replayed: s.replayed}
+}
+
+// read is one more consumed token in the stack.
+func (s *openBlockStack) read(t Token) {
+	s.replayed++
+	switch t.Type {
+	case TokenIndent:
+		s.cols = append(s.cols, 0)
+		s.hosts = append(s.hosts, s.prevHeader)
+		s.unresolved++
+		s.lineFirst, s.lineSecond, s.lineThird = Token{}, Token{}, Token{}
+	case TokenDedent:
+		if len(s.cols) > 1 {
+			s.cols = s.cols[:len(s.cols)-1]
+			s.hosts = s.hosts[:len(s.hosts)-1]
+			if s.unresolved > 0 {
+				s.unresolved--
+			}
+		}
+	default:
+		// The first token that is neither INDENT nor DEDENT gives the
+		// levels pushed since the last one their column.
+		for i := len(s.cols) - s.unresolved; i < len(s.cols); i++ {
+			s.cols[i] = t.Column
+		}
+		s.unresolved = 0
+		if t.Type == TokenNewline {
+			s.endLine()
+			return
+		}
+		switch {
+		case s.lineFirst.Type == 0:
+			s.lineFirst = t
+		case s.lineSecond.Type == 0:
+			s.lineSecond = t
+		case s.lineThird.Type == 0:
+			s.lineThird = t
+		}
+	}
+}
+
+// endLine closes the line being read: a `<keyword> <name>:` header of a
+// block-opening declaration hosts the level the next INDENT pushes.
+func (s *openBlockStack) endLine() {
+	if s.lineFirst.Type != 0 && declStartsBlock(s.lineFirst) &&
+		tokenAsIdent(s.lineSecond) != "" && s.lineThird.Type == TokenColon {
+		s.prevHeader = s.lineFirst.Value
+	} else {
+		s.prevHeader = ""
+	}
+	s.lineFirst, s.lineSecond, s.lineThird = Token{}, Token{}, Token{}
 }
 
 // parseDashList parses the YAML-style form of a list: after the property's
