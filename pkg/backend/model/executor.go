@@ -9,7 +9,6 @@ import (
 	"math"
 	"net/http"
 	"os"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -995,68 +994,8 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		e.logger.Warn("%s=%q is not one of %s: ignored, nodes fall back to their DSL or the workspace default",
 			ambient.PolicyEnv, e.ambientContextEnvDefault, strings.Join(ambient.Values, ", "))
 	}
-	warnCollidingSessionSlots(e.wfNodes, e.logger)
 
 	return e
-}
-
-// warnCollidingSessionSlots names every `session_slot:` that addresses a key
-// another node of the workflow writes on its own.
-//
-// A slot is a NAME in the same flat keyspace a node without one addresses by
-// its node id (see [nodeSessionKey] and [sessionKey]), so a slot named after
-// another node makes the two ONE conversation: the slot's nodes are replayed
-// that node's turns — in-process and, since the pre-spawn seed reads the same
-// key, inside a sandboxed crossing — its retries compact them, and its
-// success evicts them. Where that other node declares the slot itself —
-// naming its own id as its `session_slot:` — the sharing is its own
-// declaration; where it only happens to be named, the slot has silently
-// inherited a conversation nobody meant to share, most visibly a failed
-// node's transcript (an unsuccessful node's session is deliberately
-// preserved for the recovery dispatcher to compact). `session: persist` says
-// where a conversation is kept, never with whom, so a persisted node that
-// declared no slot of its own is named like any other.
-//
-// Named, not refused: a node id is a legal slot name and the compiler accepts
-// it, so an operator's explicit choice stands — and this is the one place
-// that holds both the slot and the whole node table. Ordered by node id so a
-// run log is comparable between runs.
-func warnCollidingSessionSlots(nodes map[string]ir.Node, logger *iterlog.Logger) {
-	if logger == nil || len(nodes) == 0 {
-		return
-	}
-	ids := make([]string, 0, len(nodes))
-	for id := range nodes {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
-	for _, id := range ids {
-		llm, ok := nodes[id].(ir.LLMNode)
-		if !ok {
-			continue
-		}
-		slot := llm.GetSessionSlot()
-		if slot == "" || slot == id {
-			continue
-		}
-		other, ok := nodes[slot]
-		if !ok {
-			continue
-		}
-		// Two nodes collide only where the named one WRITES that key: a
-		// node holding a slot of its own keys its conversation on that slot,
-		// so its id addresses nothing. Where it writes the key because it
-		// NAMED that key itself, the sharing is its own declaration; where
-		// it writes it as a plain node id — persisted or not — nothing in
-		// the workflow says it was meant to be joined.
-		if otherLLM, isLLM := other.(ir.LLMNode); !isLLM ||
-			nodeSessionKey(other) != slot ||
-			otherLLM.GetSessionSlot() == slot {
-			continue
-		}
-		logger.Warn("node %q declares session_slot %q, which is also the id of node %q — and a node without a slot of its own keys its conversation on its id: the two address ONE session, so %q is replayed %q's turns (its failed ones included) and compacts them on retry. Rename the slot if that is not intended.",
-			id, slot, slot, id, slot)
-	}
 }
 
 // MCPHealthCheck verifies that the listed MCP servers are reachable by

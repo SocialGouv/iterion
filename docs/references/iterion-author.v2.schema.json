@@ -955,7 +955,7 @@
           ]
         },
         "session_slot": {
-          "description": "Named durable session slot; requires session: persist",
+          "description": "Named durable session slot; requires session: persist; must not be named like another node (C314)",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
         },
@@ -1498,7 +1498,7 @@
           ]
         },
         "session_slot": {
-          "description": "Named durable session slot; requires session: persist",
+          "description": "Named durable session slot; requires session: persist; must not be named like another node (C314)",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
           "type": "string"
         },

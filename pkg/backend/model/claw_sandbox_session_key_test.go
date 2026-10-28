@@ -13,7 +13,6 @@ import (
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // dispatchBound is how long a witness waits for a sandbox dispatch it drove
@@ -232,93 +231,5 @@ func TestClawExecutorCompact_NamesTheKeyItFoundEmpty(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `"assistant_conversation"`) {
 		t.Errorf("the reported gap does not name the key it found empty: %v — the operator cannot tell which address was consulted", err)
-	}
-}
-
-// A session_slot is a NAME in the same flat keyspace a node without one
-// addresses by its node id, so a slot named after another node makes the two
-// ONE conversation: the slot's nodes are replayed that node's turns — in
-// process and, since the pre-spawn seed reads the same key, inside a
-// sandboxed crossing — and compact them on retry. A node id is a legal slot
-// name and the compiler accepts it, so the collision is NAMED rather than
-// refused: silently inheriting a failed node's transcript is what this
-// keyspace cannot otherwise show.
-func TestNewClawExecutor_NamesASessionSlotThatCollidesWithANodeID(t *testing.T) {
-	clawNode := func(id, slot string, session ir.SessionMode) ir.Node {
-		return &ir.AgentNode{
-			BaseNode:  ir.BaseNode{ID: id},
-			LLMFields: ir.LLMFields{Backend: delegate.BackendClaw, Model: "openai/gpt-5"},
-			Session:   session, SessionSlot: slot,
-		}
-	}
-	for _, tc := range []struct {
-		name  string
-		nodes map[string]ir.Node
-		warn  bool
-	}{
-		{
-			name: "the slot is another node's id, and that node is not a member",
-			nodes: map[string]ir.Node{
-				"draft":  clawNode("draft", "", ir.SessionFresh),
-				"revise": clawNode("revise", "draft", ir.SessionPersist),
-			},
-			warn: true,
-		},
-		{
-			// `session: persist` says where a conversation is kept, never
-			// with whom: a node that declared no slot declared no sharing,
-			// and it is the one whose turns are also the durable blob.
-			name: "the slot is a persisted node's id, and that node named no slot",
-			nodes: map[string]ir.Node{
-				"draft":  clawNode("draft", "", ir.SessionPersist),
-				"revise": clawNode("revise", "draft", ir.SessionPersist),
-			},
-			warn: true,
-		},
-		{
-			name: "the named node declares that very slot: the sharing is its own declaration",
-			nodes: map[string]ir.Node{
-				"draft":  clawNode("draft", "draft", ir.SessionPersist),
-				"revise": clawNode("revise", "draft", ir.SessionPersist),
-			},
-			warn: false,
-		},
-		{
-			name: "the named node keys on a slot of its OWN: its id addresses nothing",
-			nodes: map[string]ir.Node{
-				"draft":  clawNode("draft", "chat", ir.SessionPersist),
-				"revise": clawNode("revise", "draft", ir.SessionPersist),
-			},
-			warn: false,
-		},
-		{
-			name: "the slot is no node's id",
-			nodes: map[string]ir.Node{
-				"draft":  clawNode("draft", "assistant_conversation", ir.SessionPersist),
-				"revise": clawNode("revise", "assistant_conversation", ir.SessionPersist),
-			},
-			warn: false,
-		},
-		{
-			name: "the slot names a node that holds no conversation at all",
-			nodes: map[string]ir.Node{
-				"draft":  &ir.ToolNode{BaseNode: ir.BaseNode{ID: "draft"}},
-				"revise": clawNode("revise", "draft", ir.SessionPersist),
-			},
-			warn: false,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var logs strings.Builder
-			NewClawExecutor(NewRegistry(), &ir.Workflow{Nodes: tc.nodes},
-				WithLogger(iterlog.New(iterlog.LevelInfo, &logs)))
-			named := strings.Contains(logs.String(), "also the id of node")
-			if named != tc.warn {
-				t.Fatalf("the collision is reported = %v, want %v: %q", named, tc.warn, logs.String())
-			}
-			if tc.warn && (!strings.Contains(logs.String(), `"revise"`) || !strings.Contains(logs.String(), `"draft"`)) {
-				t.Errorf("the report does not name both the slot and the node whose conversation it addresses: %q", logs.String())
-			}
-		})
 	}
 }

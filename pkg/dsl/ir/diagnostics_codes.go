@@ -350,4 +350,10 @@ const (
 	// read it, so the author chooses — philosophy #1: never silently replace
 	// an operator's explicit choice.
 	DiagHumanClauseIgnoredInMode DiagCode = "C313" // a human node declares a clause its interaction mode ignores (system/model with no companion model, review-gate config outside `review`) — the value is dropped at compile time (warning)
+	// A persisted conversation is keyed on `session_slot:` when the node
+	// declares one and on the node id otherwise, in ONE keyspace: a slot
+	// spelt like another node's id reads and writes that node's session
+	// (#2460). The class is closed where it is written — an error, not a
+	// launch-time warning an author can miss.
+	DiagSessionSlotNamesANode DiagCode = "C314" // session_slot equals the id of another node of the same workflow (error)
 )

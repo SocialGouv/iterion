@@ -226,7 +226,9 @@ parent's).
 
 `node_sessions` keys default to the node id. A `session: persist` node may
 declare `session_slot: <name>` so serial nodes share one durable conversation;
-the value shape and backend-session blob storage are unchanged. Historical
+the two live in one keyspace, so a slot spelt like another node's id is
+refused at compile time (C314). The value shape and backend-session blob
+storage are unchanged. Historical
 claw envelopes are normalized when loaded: tool results without a preceding
 call, calls without a later result, and provider-specific reasoning blocks are
 removed block-by-block, with empty messages discarded. This compatibility

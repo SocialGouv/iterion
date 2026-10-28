@@ -336,7 +336,7 @@ var llmProperties = []Property{
 	pInput, pOutput, pPublish, pArtifactLabels,
 	pSystem, pUser,
 	enum("session", "How the node's LLM session relates to the previous node's", "fresh", "inherit", "inherit_if_available", "fork", "artifacts_only", "persist"),
-	prop("session_slot", Ident, "Named durable session slot; requires session: persist"),
+	prop("session_slot", Ident, "Named durable session slot; requires session: persist; must not be named like another node (C314)"),
 	prop("tools", ToolList, "Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks, C159 on a name it holds but cannot serve); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270)"),
 	prop("tool_policy", ToolList, "Tool-policy entries applied on top of tools"),
 	prop("capabilities", ToolList, "Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081)"),

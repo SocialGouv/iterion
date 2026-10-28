@@ -75,6 +75,64 @@ workflow w:
 }
 
 // ---------------------------------------------------------------------------
+// C314 — session_slot named like another node of the workflow
+// ---------------------------------------------------------------------------
+
+// A persisted conversation is keyed on the slot when the node declares one
+// and on the node id otherwise, so a slot spelt like another node's id would
+// read and write that node's session: refused where it is written.
+func TestValidateSessionSlotNamingAnotherNodeIsRefused(t *testing.T) {
+	src := `
+schema s:
+  text: string
+prompt p:
+  hi
+agent draft:
+  input: s
+  output: s
+  system: p
+  user: p
+  session: persist
+agent revise:
+  input: s
+  output: s
+  system: p
+  user: p
+  session: persist
+  session_slot: draft
+workflow w:
+  entry: draft
+  draft -> revise
+  revise -> done
+`
+	expectDiag(t, compileFile(t, src), DiagSessionSlotNamesANode)
+}
+
+// A slot may carry its own node's id — the same key either way, nothing to
+// collide with — and a name no node carries is the ordinary case.
+func TestValidateSessionSlotMayNameItsOwnNode(t *testing.T) {
+	for _, slot := range []string{"draft", "conversation"} {
+		src := `
+schema s:
+  text: string
+prompt p:
+  hi
+agent draft:
+  input: s
+  output: s
+  system: p
+  user: p
+  session: persist
+  session_slot: ` + slot + `
+workflow w:
+  entry: draft
+  draft -> done
+`
+		expectNoDiag(t, compileFile(t, src), DiagSessionSlotNamesANode)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // C009 — session: inherit/fork at convergence point
 // ---------------------------------------------------------------------------
 
