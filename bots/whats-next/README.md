@@ -3,8 +3,8 @@
 ONE adaptive agent in a standing chat loop. You talk; Nexie reads the
 board and the repo, recommends (never raw dumps), proposes typed actions to
 create/curate/dispatch tickets, verifies whether issues are still relevant against
-the current code, and remembers the standing conversation through the inherited
-LLM session.
+the current code, and holds the standing conversation through the resumed LLM
+session for as long as the engine can resume it.
 
 ## Shape (v4)
 
@@ -24,8 +24,10 @@ seed (compute) → nexie (agent) → gate (compute) ── is_close ──▶ do
 - **chat** — a one-field human node: Nexie's `reply` renders as the
   chat bubble, the answer is the operator's next message. The pause is
   budget-free and can last days — this is the standby home base.
-- The loop edge carries `outputs.nexie._session_id` so every turn
-  resumes the same claude session: the conversation has real memory.
+- The loop edge carries `outputs.nexie._session_id` so a turn resumes
+  the claude session the previous one left. `inherit_if_available` is
+  best-effort: a turn whose backing session is gone runs fresh on the
+  operator's message alone, and the prompt says so.
 - Exit: only an explicit operator "close". Everything else loops.
 
 v1 (15 nodes: survey → priorities form → roadmap → review form → emit

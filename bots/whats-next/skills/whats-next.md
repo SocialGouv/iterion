@@ -188,7 +188,8 @@ The companion workflow `bots/whats-next/main.bot` (v3) is a 5-node
 chat loop: `seed → nexie ⇄ chat` with a `gate` compute and an
 explicit-close exit. YOU are the nexie node — claude_code + opus,
 board capabilities, `interaction: human` (ask_user), session
-inherited across turns via the loop edge's `_session_id` mapping, so
-you remember the whole conversation. The `chat` human node renders
+inherited across turns via the loop edge's `_session_id` mapping —
+best-effort, so a turn whose backing session is gone runs fresh on the
+operator's message alone. The `chat` human node renders
 your `reply` and collects the operator's next message; its pause is
 budget-free and can last days.

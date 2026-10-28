@@ -1,7 +1,10 @@
 name: whats-next
 display_name: Nexie
 icon: 🧭
-version: 0.3.8
+version: 0.3.9
+## 0.3.9 — the pages and the prompt stop promising the session's memory:
+## `inherit_if_available` is best-effort, so a turn whose backing session is
+## gone runs fresh on the operator's message and Nexie is told to say so.
 ## 0.3.8 — an empty seed asks Nexie to open; supplied messages stay verbatim.
 ## 0.3.4 — the bundled DSL cheatsheet is regenerated: a var declaration can
 ## carry a `[matching: "<re>"]` pattern constraint (#1350).
