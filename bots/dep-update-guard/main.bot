@@ -1993,11 +1993,24 @@ tool arm_automerge:
                "repository(owner: @owner, name: @name) { "
                "mergeQueue(branch: @branch) { id } "
                "} }").replace("@", at)
-    # The ARMING carries the pin too, and for a sharper reason than the merge
-    # does: an arming OUTLIVES this run. The forge keeps waiting for the checks,
+    # The ARMING carries the pin for the window this run can close: between the
+    # head read above and this mutation landing, a push can move the branch,
+    # and a PINNED enable is REFUSED there instead of arming a commit nobody
+    # audited (the behaviour witness is the forge that enforces the pin in
+    # bots/dep_update_guard_arming_pin_test.go, which asserts nothing is armed,
+    # merged or enqueued on the commit that arrived in the window).
+    # What the pin does NOT establish is the EVENTUAL merge:
+    # GitHub documents expectedHeadOid only as "the expected head OID of the
+    # pull request", and AutoMergeRequest exposes enabledAt, enabledBy,
+    # mergeMethod and the commit message - never expectedHeadOid - so a
+    # deferred pin has no visible place to live. An arming OUTLIVES this run,
     # and a push landing afterwards moves the head under it - GitHub cancels an
-    # arming only when the pusher LACKS write, which a dependency bot's App does
-    # not. Unpinned, the commit that finally merges is whichever arrived last.
+    # arming by itself only when the pusher LACKS write, which a dependency
+    # bot's App does not. What covers THAT push is the required gate re-landing
+    # on each new head (review_on_sync), not this pin; the gestures that ARE
+    # atomic are the pinned mergePullRequest and enqueuePullRequest below. The
+    # experiment that would settle the eventual-merge reading either way is
+    # filed on #1637, not assumed here - the manifest says the same.
     arm_mut = ("mutation(@id: ID!, @method: PullRequestMergeMethod!, @oid: GitObjectID!) { "
                "enablePullRequestAutoMerge(input: { pullRequestId: @id, mergeMethod: @method, "
                "expectedHeadOid: @oid }) { clientMutationId } }").replace("@", at)

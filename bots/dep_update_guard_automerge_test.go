@@ -130,13 +130,19 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 					"data": map[string]any{"disablePullRequestAutoMerge": map[string]any{"clientMutationId": nil}},
 				})
 			case strings.Contains(body.Query, "enablePullRequestAutoMerge"):
-				// The ARMING carries the same pin as the merge and the enqueue,
-				// and for a sharper reason: an arming outlives this run. The
-				// forge keeps waiting for the checks, and a push landing
-				// afterwards moves the head under it — GitHub only cancels an
-				// arming when the pusher LACKS write, which a dependency bot's
-				// App does not. Unpinned, the commit that finally merges is
-				// whichever one arrived last.
+				// The ARMING carries the same pin as the merge and the
+				// enqueue, for the window a run can close: a push landing
+				// between the head read and this mutation is refused instead
+				// of armed. The pin says nothing about the EVENTUAL merge —
+				// AutoMergeRequest exposes no expectedHeadOid, so a deferred
+				// pin has nowhere to live, and the experiment that would
+				// settle it is filed on #1637.
+				// The two assertions below are that pin's ORTHOGRAPHY, and
+				// this stub cannot be more: it answers success whatever it is
+				// sent, so dropping the pin from the mutation reddens them
+				// while changing no behaviour at all. The BEHAVIOUR — a forge
+				// that refuses a stale pin, and what the node does then — is
+				// TestDepUpdateGuardArmingPinIsEnforcedByTheForge.
 				if !regexp.MustCompile(`expectedHeadOid:\s*\$oid`).MatchString(body.Query) {
 					t.Errorf("arming mutation is not pinned to the oid variable: %s", body.Query)
 				}
