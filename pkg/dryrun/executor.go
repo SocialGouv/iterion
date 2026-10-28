@@ -48,6 +48,16 @@ const (
 	// only. A warning: Failing reads past it (the never-mapped case stays
 	// KindUnresolvedRef, and stays a --strict failure).
 	KindUnmappedOnPath Kind = "unmapped_on_path"
+	// KindEnvRead: the braced environment forms of a tool body, and what the
+	// preview answered each with — the `${NAME:-default}` reads it resolved
+	// to the author's default and the plain `${NAME}` reads it kept as
+	// written (ADR-130). The recall half of C188: the reads a compile-time
+	// check cannot judge without lying — a name only the engine's own
+	// environment supplies — are said here as a preview FACT instead of
+	// guessed at authoring time. An observation, never a defect: a
+	// deliberate dial read is the legitimate shape of exactly this fact, so
+	// Failing reads past it and a `--strict` gate stays green on it.
+	KindEnvRead Kind = "env_read"
 )
 
 // Finding is one thing the dry run met, at a node.
@@ -426,15 +436,18 @@ func (x *Executor) Execute(ctx context.Context, node ir.Node, input map[string]a
 			x.add(Finding{Node: id, Kind: KindUnchecked, Where: "action", Detail: fmt.Sprintf("connector action %s is not executed by a dry run: its output is a shape", n.Action)})
 		case n.Script != "":
 			body, reads := x.bodyEnv(n, n.Script)
+			x.envReading(id, "script", reads)
 			rendered := model.RenderScript(body, n.ScriptRefs, input, vars, td, runID, x.reporter(id, "script", input))
 			x.shellCheck(id, "script", n.Language, rendered, reads)
 		default:
 			body, reads := x.bodyEnv(n, n.Command)
+			x.envReading(id, "command", reads)
 			rendered := model.RenderCommand(body, n.CommandRefs, input, vars, td, runID, shapes, x.reporter(id, "command", input))
 			x.shellCheck(id, "command", "bash", rendered, reads)
 		}
 		if n.Postcondition != "" {
 			body, reads := x.bodyEnv(n, n.Postcondition)
+			x.envReading(id, "postcondition", reads)
 			rendered := model.RenderCommand(body, n.PostcondRefs, input, vars, td, runID, shapes, x.reporter(id, "postcondition", input))
 			x.shellCheck(id, "postcondition", "bash", rendered, reads)
 		}
@@ -678,18 +691,67 @@ func (x *Executor) shellCheck(id, where, interpreter, text string, reads []ir.Br
 // that parses as written. Empty where no `:-` arm was read: a plain `${NAME}`
 // is kept as written, so the preview's text is the author's there.
 func bracedDefaultAttribution(reads []ir.BracedEnvRead) string {
-	var names []string
-	seen := map[string]bool{}
-	for _, r := range reads {
-		if r.HasDefault && !seen[r.Name] {
-			seen[r.Name] = true
-			names = append(names, "${"+r.Name+":-…}")
-		}
-	}
+	names := bracedArmForms(reads, true)
 	if len(names) == 0 {
 		return ""
 	}
 	return fmt.Sprintf(" — the preview answered %s with the author's default: this is the text an engine whose environment does not carry the name hands the reader, and an engine that carries it runs its value instead", strings.Join(names, ", "))
+}
+
+// envReading reports, per body, what the preview answered the body's braced
+// environment forms with: the `${NAME:-default}` reads it resolved to the
+// author's default — which a run whose engine environment carries the name
+// answers with that value instead — and the plain `${NAME}` reads it kept as
+// written, which only the engine's own process decides. It is the decision
+// record ADR-130 asks the preview to REPORT rather than guess, and it is the
+// recall half of C188: the read a compile-time check cannot judge without
+// lying on a deliberate dial becomes a fact an author reads before paying for
+// a run.
+//
+// reads are the chokepoint's own record (model.ToolBodyEnv's second return
+// value), never a second scan of the body: a second reader would answer for
+// an environment the body never went through, and a node that DECLINED the
+// reading (`env_expansion: none`) hands back no read at all — so its body is
+// reported as having had nothing answered, because nothing was. Empty where
+// the body carries no form the engine consults: there is no decision to
+// report where none was made.
+func (x *Executor) envReading(id, where string, reads []ir.BracedEnvRead) {
+	if len(reads) == 0 {
+		return
+	}
+	var clauses []string
+	if forms := bracedArmForms(reads, true); len(forms) > 0 {
+		clauses = append(clauses, fmt.Sprintf("%s resolved to the author's default (a run whose engine environment carries the name runs its value instead)", strings.Join(forms, ", ")))
+	}
+	if forms := bracedArmForms(reads, false); len(forms) > 0 {
+		clauses = append(clauses, fmt.Sprintf("%s kept as written (only the engine's own process answers a plain read, and the validating process is not it)", strings.Join(forms, ", ")))
+	}
+	x.add(Finding{Node: id, Kind: KindEnvRead, Where: where, Detail: fmt.Sprintf(
+		"the engine reads this body's environment forms before any reader sees the text, and the preview read them under an environment that answers no name: %s. `env_expansion: none` on the node keeps every form verbatim",
+		strings.Join(clauses, "; "))})
+}
+
+// bracedArmForms are the forms of ONE arm of a body's reading, in body order,
+// each name once: `${NAME:-…}` for the arm the engine resolves
+// unconditionally (hasDefault), `${NAME}` for the one its own process
+// decides. A name read twice in the same arm is one form here — the report
+// names WHAT was answered, and the authored body is where the positions are
+// (ir.BracedEnvRead.At).
+func bracedArmForms(reads []ir.BracedEnvRead, hasDefault bool) []string {
+	var forms []string
+	seen := map[string]bool{}
+	for _, r := range reads {
+		if r.HasDefault != hasDefault || seen[r.Name] {
+			continue
+		}
+		seen[r.Name] = true
+		if hasDefault {
+			forms = append(forms, "${"+r.Name+":-…}")
+		} else {
+			forms = append(forms, "${"+r.Name+"}")
+		}
+	}
+	return forms
 }
 
 // candidates are the targets an llm router may select: its outgoing edges.

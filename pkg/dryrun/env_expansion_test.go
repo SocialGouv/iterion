@@ -222,6 +222,147 @@ workflow declined:
 	}
 }
 
+// A body that PARSES cleanly and reads the environment in BOTH arms the
+// engine answers, beside the same body on a node that declined the reading.
+// The parsing matters: the attribution clause of a syntax refusal never
+// speaks here, so a report owed on a body an interpreter accepts is owed by
+// something else.
+const envReportBot = `tool both:
+  command: "echo ${R4_REPORT_PLAIN} ${R4_REPORT_DIAL:-fallback}"
+  postcondition: "test -n ${R4_REPORT_PLAIN} ${R4_REPORT_DIAL:-fallback}"
+
+tool scripted:
+  language: sh
+  script: "printf %s ${R4_REPORT_PLAIN} ${R4_REPORT_DIAL:-fallback}"
+
+tool declined:
+  command: "echo ${R4_REPORT_PLAIN} ${R4_REPORT_DIAL:-fallback}"
+  env_expansion: none
+
+workflow reported:
+  worktree: none
+  sandbox: none
+  entry: both
+  both -> scripted
+  scripted -> declined
+  declined -> done
+`
+
+// envReportBodies are the three bodies the engine hands a reader, keyed as
+// the report keys them (`<node>/<where>`), with the body each is. The
+// reverse pin of the wiring: the three arms are sibling blocks of ONE
+// function, so a count alone reads a reverted arm as its neighbour's answer
+// — each is named here, and an arm that stops reporting is said.
+var envReportBodies = map[string]string{
+	"both/command":       "the `command:` body",
+	"both/postcondition": "the `postcondition:` body",
+	"scripted/script":    "the `script:` body",
+}
+
+// envReportFindings runs envReportBot under a checker that answers "parses"
+// — the report is owed on a body no interpreter refuses, and a witness of
+// the REPORT never depends on bash being on this PATH — and returns the
+// whole report beside its environment-reading findings, keyed `<node>/<where>`
+// so each of the three bodies is read on its own.
+func envReportFindings(t *testing.T) (*Report, map[string]Finding) {
+	t.Helper()
+	rep, err := Run(context.Background(), compileBot(t, envReportBot), Options{Shell: &bodyRecorder{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refused := findingsOf(rep, KindShellSyntax); len(refused) != 0 {
+		t.Fatalf("a body of this fixture was refused by the checker (%+v): the report asserted below would be the attribution clause of a refusal, not the reading's own", refused)
+	}
+	byBody := map[string]Finding{}
+	for _, f := range findingsOf(rep, KindEnvRead) {
+		key := f.Node + "/" + f.Where
+		if prev, dup := byBody[key]; dup {
+			t.Fatalf("%s reports its environment reading twice (%q, then %q) — one body, one decision record", key, prev.Detail, f.Detail)
+		}
+		byBody[key] = f
+	}
+	return rep, byBody
+}
+
+// The preview reports, per body, what it answered the body's environment
+// forms with: the `${NAME:-default}` arm it resolved to the author's default
+// and the plain `${NAME}` it kept as written — ADR-130's "the reads the
+// preview cannot answer are reported rather than guessed". The report is
+// owed on a body that PARSES: before this, the only place the preview said
+// what it had answered was the attribution clause of a syntax refusal, so a
+// body an interpreter accepts — every body of a working bot — said nothing
+// at all, and the half C188 declines to judge was reported nowhere.
+func TestTheReportNamesBothArmsOfABodysEnvironmentReading(t *testing.T) {
+	// The host carries both names: the report must still read the same here
+	// and in CI, and must never print a value it did not answer with.
+	t.Setenv("R4_REPORT_PLAIN", "laptop")
+	t.Setenv("R4_REPORT_DIAL", "laptop")
+	_, byBody := envReportFindings(t)
+	f, ok := byBody["both/command"]
+	if !ok {
+		t.Fatalf("the preview answered this body's environment forms and reported nothing: a body that parses says what it answered nowhere, so the read C188 leaves to the preview is reported by no one — findings were %+v", byBody)
+	}
+	// Each of the three bodies the engine hands a reader reports its OWN
+	// reading, against its own `where`: three sibling arms of one function,
+	// so an arm that stopped reporting — or reported under its neighbour's
+	// name — is named here rather than covered by the others.
+	for key, body := range envReportBodies {
+		if _, reported := byBody[key]; !reported {
+			t.Errorf("%s answered its environment forms and reported nothing under %s — an author cannot tell which of a node's bodies answered what, and the arm that stopped reporting hides behind its siblings; findings were %+v", body, key, byBody)
+		}
+	}
+	for _, want := range []string{
+		"${R4_REPORT_DIAL:-…} resolved to the author's default",
+		"${R4_REPORT_PLAIN} kept as written",
+		"`env_expansion: none` on the node keeps every form verbatim",
+	} {
+		if !strings.Contains(f.Detail, want) {
+			t.Errorf("the report does not say %q — it names a form without saying what the preview did with it, which is the whole decision record:\n%s", want, f.Detail)
+		}
+	}
+	if strings.Contains(f.Detail, "laptop") {
+		t.Errorf("the report printed this host's environment value — the preview answers no name, and a report that quotes the laptop makes the reading follow the machine:\n%s", f.Detail)
+	}
+}
+
+// A node that declined the reading (`env_expansion: none`) made no decision,
+// so there is none to report: the chokepoint hands back an empty record by
+// contract, and a report BUILT from that record says nothing here. A report
+// built from a second scan of the body would announce two reads the engine
+// never made, on the one node whose whole point is that it does not read.
+func TestADeclinedBodyReportsNoEnvironmentReading(t *testing.T) {
+	_, byBody := envReportFindings(t)
+	if _, ok := byBody["both/command"]; !ok {
+		t.Fatalf("the node that DOES read reported nothing, so the absence asserted below would hold on a preview that reports nothing at all — findings were %+v", byBody)
+	}
+	if f, ok := byBody["declined/command"]; ok {
+		t.Errorf("a node declaring `env_expansion: none` reports an environment reading it never had — the report is not the chokepoint's record but a second scan of the body, which disagrees with the engine exactly where the author asked it to stand back:\n%s", f.Detail)
+	}
+}
+
+// The reading is an observation, never a defect: a deliberate dial read
+// (`${ITERION_DISPATCHER_PORT:-4891}`) is the legitimate shape of precisely
+// this fact, so reporting it must leave `--strict` green and the verdict
+// clean. A gate that reddened on it would be a gate every bot with a dial
+// fails.
+func TestTheEnvironmentReadingIsNotAStrictFailure(t *testing.T) {
+	rep, byBody := envReportFindings(t)
+	if len(byBody) == 0 {
+		t.Fatal("the preview reported no environment reading at all: `--strict` would be asserted on a report that has nothing of the new kind in it")
+	}
+	for _, f := range rep.Findings {
+		if f.Kind != KindEnvRead {
+			t.Fatalf("this fixture met something else than an environment reading (%s) — the verdict asserted below would not be the reading's own: %+v", f.Kind, f)
+		}
+	}
+	if rep.Failing() {
+		t.Errorf("a report whose only finding is a body's environment reading is FAILING — `--strict` exits non-zero on every bot that reads a dial, and the fact ADR-130 asks the preview to report becomes a gate it breaks:\n%s", rep.Render())
+	}
+	if !rep.Clean() {
+		t.Errorf("a report whose only finding is a body's environment reading is not clean — the observation is held against the bot:\n%s", rep.Render())
+	}
+}
+
 // previewRenderAllowed lists the files that may render a tool body WITHOUT
 // reading its environment forms first, keyed by the path from the module
 // root, with the reason. The class is "sites that prepare a tool body for a
@@ -309,27 +450,20 @@ type renderSite struct {
 	read bool
 }
 
-// TestEveryPreviewOfABodyReadsItsEnvironmentFirst: every call to the model's
-// exported renderers, anywhere in the module, takes its body from the
-// chokepoint — `model.ToolBodyEnv` directly, or a `bodyEnv` helper that
-// wraps it — and the reading happens BEFORE the call. The sweep is
-// module-wide because the exported pair is the door a preview in ANY package
-// reaches a tool body through: a server-side settings preview or a new CLI
-// render would otherwise be pinned by nothing.
-//
-// A mention this sweep cannot read as a compliant call — a renderer taken as
-// a function VALUE, a body argument whose provenance is some other
-// expression, a reading handed an environment — is reported, not assumed
-// sound: the shapes it was not written for fall on the side that fails.
-func TestEveryPreviewOfABodyReadsItsEnvironmentFirst(t *testing.T) {
+// walkModuleGoFiles hands visit every non-test Go file of this module, with
+// its path from the module root and the shared file set its positions read
+// against, and asserts the WALK itself: a floor on the files parsed and a
+// per-directory anchor, so a walk that collapsed — or a skip rule that ate
+// ONE parent of the class — fails here instead of finding no offender and
+// reading exactly like a clean run. Every sweep in this file is module-wide
+// because the classes it holds are reachable from any package, so they share
+// one walk and one set of guarantees about it.
+func walkModuleGoFiles(t *testing.T, visit func(rel string, f *ast.File, fset *token.FileSet)) {
+	t.Helper()
 	root := filepath.Join("..", "..")
-	previewSite := filepath.Join("pkg", "dryrun", "executor.go")
 	skipNames := map[string]bool{"vendor": true, "node_modules": true, "studio": true}
 	parsed := 0
 	perDir := map[string]int{}
-	var sites []renderSite
-	var wrappers []wrapperDecl
-	authored := map[string]bool{}
 	fset := token.NewFileSet()
 	err := filepath.Walk(root, func(path string, info os.FileInfo, werr error) error {
 		if werr != nil {
@@ -358,13 +492,7 @@ func TestEveryPreviewOfABodyReadsItsEnvironmentFirst(t *testing.T) {
 		if perr != nil {
 			return perr
 		}
-		sites = append(sites, renderSitesIn(fset, f, rel)...)
-		wrappers = append(wrappers, chokepointWrappersIn(fset, f, rel)...)
-		if rel == previewSite {
-			for field := range authoredBodiesReadIn(f) {
-				authored[field] = true
-			}
-		}
+		visit(rel, f, fset)
 		return nil
 	})
 	if err != nil {
@@ -378,6 +506,34 @@ func TestEveryPreviewOfABodyReadsItsEnvironmentFirst(t *testing.T) {
 			t.Fatalf("the walk read no Go file under %s/ — a skip rule ate a parent of the class, which the total above cannot show", dir)
 		}
 	}
+}
+
+// TestEveryPreviewOfABodyReadsItsEnvironmentFirst: every call to the model's
+// exported renderers, anywhere in the module, takes its body from the
+// chokepoint — `model.ToolBodyEnv` directly, or a `bodyEnv` helper that
+// wraps it — and the reading happens BEFORE the call. The sweep is
+// module-wide because the exported pair is the door a preview in ANY package
+// reaches a tool body through: a server-side settings preview or a new CLI
+// render would otherwise be pinned by nothing.
+//
+// A mention this sweep cannot read as a compliant call — a renderer taken as
+// a function VALUE, a body argument whose provenance is some other
+// expression, a reading handed an environment — is reported, not assumed
+// sound: the shapes it was not written for fall on the side that fails.
+func TestEveryPreviewOfABodyReadsItsEnvironmentFirst(t *testing.T) {
+	previewSite := filepath.Join("pkg", "dryrun", "executor.go")
+	var sites []renderSite
+	var wrappers []wrapperDecl
+	authored := map[string]bool{}
+	walkModuleGoFiles(t, func(rel string, f *ast.File, fset *token.FileSet) {
+		sites = append(sites, renderSitesIn(fset, f, rel)...)
+		wrappers = append(wrappers, chokepointWrappersIn(fset, f, rel)...)
+		if rel == previewSite {
+			for field := range authoredBodiesReadIn(f) {
+				authored[field] = true
+			}
+		}
+	})
 	if len(sites) == 0 {
 		t.Fatalf("nothing in this module calls %s's exported renderers: the sweep's subject is gone and it proves nothing", modelImportPath)
 	}
@@ -857,4 +1013,110 @@ func exprName(e ast.Expr) string {
 		return "a function literal"
 	}
 	return "an expression this sweep does not read"
+}
+
+// bracedReadsName is the reader whose answer a report of a body's
+// environment reading must be built FROM: ir.BracedEnvReads, reached through
+// the chokepoint's second return value.
+const bracedReadsName = "BracedEnvReads"
+
+// bracedReadsOwner is the package that owns that reader and the
+// authoring-time lints that are its other half (C188, C315). Those judge the
+// AUTHORED text at compile time — there is no prepared body there to
+// disagree with, and no run's environment they could speak for — so they are
+// the reader's own business rather than a second reader of a reading. It is
+// the one DIRECTORY, never its subtree: a package nested under it would be
+// another package, and the reader's own business does not extend to it.
+var bracedReadsOwner = filepath.Join("pkg", "dsl", "ir")
+
+// bracedReadsAllowed lists the files OUTSIDE that package that may name the
+// reader, keyed by the path from the module root, with the reason. The class
+// is "code that says what the engine consulted in a body": its one honest
+// source is the record the reading itself returned, because the record is
+// empty by contract where the node declined the reading
+// (`env_expansion: none`) while a fresh scan of the same body still finds
+// two forms — so a second reader does not merely duplicate the first, it
+// contradicts it precisely where an author asked the engine to stand back.
+var bracedReadsAllowed = map[string]string{
+	filepath.Join("pkg", "backend", "model", "executor_tool.go"): "the chokepoint itself: ToolBodyEnv answers a body's environment forms and returns the record of what it consulted, which is what every consumer reads (ADR-130)",
+}
+
+// bracedReadsMention is one mention of the reader: where it is, and whether
+// the file it sits in is allowed to name it.
+type bracedReadsMention struct {
+	file string
+	line string
+}
+
+// TestOnlyTheChokepointReadsABodysEnvironmentForms: outside the package that
+// owns it, nothing in this module names ir.BracedEnvReads for itself. The
+// sweep is module-wide because a consumer of the reading can live in any
+// package — a dry-run report, a server-side preview, a future `iterion
+// explain` — and it reads MENTIONS rather than calls, so the reader taken as
+// a function value is held too.
+//
+// This is the guard under the dry run's environment report: that report must
+// be built from the chokepoint's record (model.ToolBodyEnv's second return
+// value) and from nothing else, or it says what the engine would have
+// consulted instead of what it did.
+//
+// Known miss, by construction: a consumer that re-derives the reads WITHOUT
+// naming the reader — its own scan for `${` — is invisible to a sweep that
+// reads identifiers. That half is held behaviourally instead, by
+// TestADeclinedBodyReportsNoEnvironmentReading: any re-derivation, however
+// spelled, announces reads on a node whose record is empty by contract.
+func TestOnlyTheChokepointReadsABodysEnvironmentForms(t *testing.T) {
+	var mentions []bracedReadsMention
+	walkModuleGoFiles(t, func(rel string, f *ast.File, fset *token.FileSet) {
+		if filepath.Dir(rel) == bracedReadsOwner {
+			return
+		}
+		// A selector's own Sel is visited again as an Ident at the same
+		// position, so the position carries the de-duplication rather than a
+		// pruned walk: pruning would stop the walk from reading whatever the
+		// qualifier itself holds.
+		at := map[token.Pos]bool{}
+		ast.Inspect(f, func(n ast.Node) bool {
+			var pos token.Pos
+			switch v := n.(type) {
+			case *ast.SelectorExpr:
+				if v.Sel == nil || v.Sel.Name != bracedReadsName {
+					return true
+				}
+				pos = v.Sel.Pos()
+			case *ast.Ident:
+				if v.Name != bracedReadsName {
+					return true
+				}
+				pos = v.Pos()
+			default:
+				return true
+			}
+			if at[pos] {
+				return true
+			}
+			at[pos] = true
+			mentions = append(mentions, bracedReadsMention{file: rel, line: strconv.Itoa(fset.Position(pos).Line)})
+			return true
+		})
+	})
+	// The sweep must SEE its subject: a reader renamed, or an import this
+	// walk no longer parses, would report no offender either and read
+	// exactly like a clean module.
+	if len(mentions) == 0 {
+		t.Fatalf("nothing outside %s/ names %s: the sweep's subject is gone and it proves nothing", bracedReadsOwner, bracedReadsName)
+	}
+	named := map[string]bool{}
+	for _, m := range mentions {
+		if _, ok := bracedReadsAllowed[m.file]; ok {
+			named[m.file] = true
+			continue
+		}
+		t.Errorf("%s:%s names %s for itself — a second reading of a body's environment forms speaks for an environment the body never went through, and contradicts the engine on a node that declined the reading (`env_expansion: none`, where the chokepoint's record is empty by contract): consume model.ToolBodyEnv's second return value, or add an allowlist entry with its reason", m.file, m.line, bracedReadsName)
+	}
+	for file, why := range bracedReadsAllowed {
+		if !named[file] {
+			t.Errorf("bracedReadsAllowed still names %s (%q) but it no longer names %s — drop the entry, so the list keeps saying what is true", file, why, bracedReadsName)
+		}
+	}
 }

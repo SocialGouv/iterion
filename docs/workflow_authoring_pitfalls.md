@@ -728,6 +728,14 @@ Rules that keep a body readable as what executes:
   self-assignment with a dial read fixes the warning at the price of the dial;
   the bare-`$NAME` rewrite above is the fix that keeps both. The `{{…}}`
   substitution is untouched either way: the decline is env-scoped.
+- Read what the engine answered before paying for a run: `iterion validate
+  --exec` reports each body's environment reading under its own finding kind
+  (`env_read`) — the `${NAME:-default}` forms the preview resolved to the
+  author's default, the plain `${NAME}` forms it kept as written, and nothing
+  at all on a node that declined — so the half C188 declines to judge
+  (a name only the engine's environment supplies) is read as a fact rather
+  than guessed. It never fails a gate: `--strict` reads past it, and the
+  preview answers no name, so the report is the same on a laptop and in CI.
 
 #### What C188 promises, and what it leaves out
 
