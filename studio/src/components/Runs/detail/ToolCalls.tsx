@@ -167,6 +167,7 @@ const FETCH_CHUNK_BYTES = 64 * 1024;
 // event cache lean.
 export function ToolPayloadBlock({
   label,
+  source,
   value,
   runId,
   toolUseID,
@@ -174,6 +175,10 @@ export function ToolPayloadBlock({
   totalSize,
 }: {
   label: string;
+  // The row this payload belongs to ("Bash seq 12"), for the copy button's
+  // accessible name: the same two blocks repeat for every tool call on the
+  // surface, so "copy" alone names dozens of buttons identically.
+  source: string;
   value: string;
   runId: string;
   toolUseID?: string;
@@ -242,68 +247,78 @@ export function ToolPayloadBlock({
   };
 
   return (
-    <details
-      className="mb-1"
-      onToggle={(e) => {
-        const next = (e.currentTarget as HTMLDetailsElement).open;
-        setOpen(next);
-        if (!next) {
-          setExpanded(false);
-          setExtra("");
-          setFetchErr(null);
-        }
-      }}
-    >
-      <summary className="cursor-pointer text-caption text-fg-muted px-1 py-0.5 rounded hover:bg-surface-2 flex items-center justify-between">
-        <span>
-          {label}
-          {totalSize !== undefined && totalSize > value.length && (
-            <span className="ml-1 text-fg-subtle">
-              ({formatBytes(loaded)} / {formatBytes(totalSize)})
-            </span>
-          )}
-        </span>
-        <CopyButton value={fullValue} />
-      </summary>
-      <pre
-        ref={preRef}
-        onScroll={handleScroll}
-        className={`mt-1 text-caption font-mono whitespace-pre-wrap break-words bg-surface-1 rounded p-1.5 ${
-          expanded ? "max-h-[60vh] overflow-auto" : "max-h-40 overflow-auto"
-        }`}
+    // The copy control sits BESIDE the disclosure rather than inside its
+    // <summary>: a <summary> is itself a control, and a button nested in one
+    // is nested-interactive (axe) — which is also why copying had to stop the
+    // click from toggling the block.
+    <div className="mb-1 flex items-start gap-1">
+      <details
+        className="min-w-0 flex-1"
+        onToggle={(e) => {
+          const next = (e.currentTarget as HTMLDetailsElement).open;
+          setOpen(next);
+          if (!next) {
+            setExpanded(false);
+            setExtra("");
+            setFetchErr(null);
+          }
+        }}
       >
-        {fullValue}
-      </pre>
-      {fetchErr && (
-        <div className="mt-1 text-caption text-danger-fg px-1">
-          fetch error: {fetchErr}
+        <summary className="cursor-pointer text-caption text-fg-muted px-1 py-0.5 rounded hover:bg-surface-2 flex items-center justify-between">
+          <span>
+            {label}
+            {totalSize !== undefined && totalSize > value.length && (
+              <span className="ml-1 text-fg-subtle">
+                ({formatBytes(loaded)} / {formatBytes(totalSize)})
+              </span>
+            )}
+          </span>
+        </summary>
+        <pre
+          ref={preRef}
+          onScroll={handleScroll}
+          className={`mt-1 text-caption font-mono whitespace-pre-wrap break-words bg-surface-1 rounded p-1.5 ${
+            expanded ? "max-h-[60vh] overflow-auto" : "max-h-40 overflow-auto"
+          }`}
+        >
+          {fullValue}
+        </pre>
+        {fetchErr && (
+          <div className="mt-1 text-caption text-danger-fg px-1">
+            fetch error: {fetchErr}
+          </div>
+        )}
+        <div className="mt-1 flex gap-1.5 items-center">
+          {(overflow || expanded) && (
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              aria-expanded={expanded}
+              // Every block on the surface repeats this control: the name
+              // carries the payload and the row it belongs to.
+              aria-label={`${expanded ? "collapse" : "expand"} ${label} of ${source}`}
+              className="text-caption text-fg-subtle hover:text-fg-default px-1 py-0.5 rounded hover:bg-surface-2"
+            >
+              {expanded ? "collapse" : "expand"}
+            </button>
+          )}
+          {hasMore && (
+            <button
+              type="button"
+              onClick={() => void loadMore()}
+              disabled={loading}
+              aria-label={`load more of ${label} of ${source}`}
+              className="text-caption text-fg-subtle hover:text-fg-default px-1 py-0.5 rounded hover:bg-surface-2 disabled:opacity-50"
+            >
+              {loading
+                ? "loading…"
+                : `load more (+${formatBytes(Math.min(FETCH_CHUNK_BYTES, (totalSize ?? loaded) - loaded))})`}
+            </button>
+          )}
         </div>
-      )}
-      <div className="mt-1 flex gap-1.5 items-center">
-        {(overflow || expanded) && (
-          <button
-            type="button"
-            onClick={() => setExpanded((v) => !v)}
-            aria-expanded={expanded}
-            className="text-caption text-fg-subtle hover:text-fg-default px-1 py-0.5 rounded hover:bg-surface-2"
-          >
-            {expanded ? "collapse" : "expand"}
-          </button>
-        )}
-        {hasMore && (
-          <button
-            type="button"
-            onClick={() => void loadMore()}
-            disabled={loading}
-            className="text-caption text-fg-subtle hover:text-fg-default px-1 py-0.5 rounded hover:bg-surface-2 disabled:opacity-50"
-          >
-            {loading
-              ? "loading…"
-              : `load more (+${formatBytes(Math.min(FETCH_CHUNK_BYTES, (totalSize ?? loaded) - loaded))})`}
-          </button>
-        )}
-      </div>
-    </details>
+      </details>
+      <CopyButton value={fullValue} describes={`${label} of ${source}`} />
+    </div>
   );
 }
 
@@ -392,6 +407,10 @@ function ToolFieldList({ fields }: { fields: ToolField[] }) {
 
 function ToolCallCard({ call, runId }: { call: ToolCall; runId: string }) {
   const [showRaw, setShowRaw] = useState(false);
+  // What the card's repeated controls name themselves after: the tool and
+  // the sequence number the card already shows, so two Bash calls in a row
+  // are two distinct buttons to a screen reader.
+  const source = `${call.toolName} seq ${call.seq}`;
   // The tool input lives on event.data.input — already on the
   // ToolCall via `input` (stringified). Parsers expect a parsable
   // shape, so we feed them the raw object from rawData first and
@@ -430,7 +449,10 @@ function ToolCallCard({ call, runId }: { call: ToolCall; runId: string }) {
         <div className="mb-1 rounded bg-danger-soft/40 px-1.5 py-1">
           <div className="flex items-center justify-between gap-2 mb-0.5">
             <span className="text-caption font-medium text-danger-fg">tool error</span>
-            <CopyButton value={call.errorMsg} />
+            <CopyButton
+              value={call.errorMsg}
+              describes={`the error of ${source}`}
+            />
           </div>
           <div className="text-caption font-mono text-danger-fg whitespace-pre-wrap break-words">
             {call.errorMsg}
@@ -440,6 +462,7 @@ function ToolCallCard({ call, runId }: { call: ToolCall; runId: string }) {
       {call.input && (
         <ToolPayloadBlock
           label="raw input"
+          source={source}
           value={call.input}
           runId={runId}
           toolUseID={call.inputRef}
@@ -450,6 +473,7 @@ function ToolCallCard({ call, runId }: { call: ToolCall; runId: string }) {
       {call.output && (
         <ToolPayloadBlock
           label="output"
+          source={source}
           value={call.output}
           runId={runId}
           toolUseID={call.outputRef}
@@ -462,12 +486,16 @@ function ToolCallCard({ call, runId }: { call: ToolCall; runId: string }) {
           type="button"
           onClick={() => setShowRaw((v) => !v)}
           aria-pressed={showRaw}
+          aria-label={`${showRaw ? "hide raw" : "show raw"} event of ${source}`}
           className="text-caption text-fg-muted hover:text-fg-default"
         >
           {showRaw ? "hide raw" : "show raw"}
         </button>
         {showRaw && call.rawData && (
-          <CopyButton value={JSON.stringify(call.rawData, null, 2)} />
+          <CopyButton
+            value={JSON.stringify(call.rawData, null, 2)}
+            describes={`the raw event of ${source}`}
+          />
         )}
       </div>
       {showRaw && call.rawData && (

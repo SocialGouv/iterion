@@ -111,7 +111,7 @@ export default function GateInboundFile({ runId, file }: Props) {
   if (textBody !== null && kind) {
     return (
       <div className="space-y-1">
-        <TextBody kind={kind} text={textBody} />
+        <TextBody kind={kind} text={textBody} name={label} />
         <div className="flex flex-wrap items-center gap-2">
           {meta}
           {download}
@@ -181,7 +181,17 @@ export default function GateInboundFile({ runId, file }: Props) {
   );
 }
 
-function TextBody({ kind, text }: { kind: NonNullable<ReturnType<typeof textPreviewKind>>; text: string }) {
+function TextBody({
+  kind,
+  text,
+  name,
+}: {
+  kind: NonNullable<ReturnType<typeof textPreviewKind>>;
+  text: string;
+  // The attachment this body belongs to: one Copy JSON per attachment, and
+  // a gate payload carries several.
+  name: string;
+}) {
   // Inlined bodies are already ≤ TEXT_PREVIEW_BYTE_BUDGET, so pretty-print
   // every JSON attachment — text.length cannot exceed the byte cap.
   const shown = useMemo(() => (kind === "json" ? prettyJSON(text) : text), [kind, text]);
@@ -218,7 +228,13 @@ function TextBody({ kind, text }: { kind: NonNullable<ReturnType<typeof textPrev
           )}
         </div>
         {kind === "json" && (
-          <CopyButton value={shown} variant="icon" label="Copy JSON" copiedLabel="Copied" />
+          <CopyButton
+            value={shown}
+            variant="icon"
+            label="Copy JSON"
+            describes={`of ${name}`}
+            copiedLabel="Copied"
+          />
         )}
       </div>
       {long && (

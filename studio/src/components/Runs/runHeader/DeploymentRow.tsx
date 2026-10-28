@@ -52,6 +52,9 @@ export default function DeploymentRow({
 
   return (
     <div
+      // A named row is a group: aria-label on a roleless div is prohibited
+      // (axe aria-prohibited-attr).
+      role="group"
       className="shrink-0 px-4 py-1.5 bg-surface-2/40 border-b border-border-default text-micro"
       aria-label="Deployment"
     >

@@ -100,7 +100,7 @@ function GateInboundValue({ runId, item }: { runId: string; item: GateInboundIte
         />
       ) : null;
     case "json":
-      return <JSONBlock value={item.value} />;
+      return <JSONBlock value={item.value} name={item.key} />;
     case "scalar":
       return <span className="break-words">{item.text}</span>;
     case "markdown":
@@ -151,7 +151,7 @@ function CollapsibleText({ text }: { text: string }) {
   );
 }
 
-function JSONBlock({ value }: { value: unknown }) {
+function JSONBlock({ value, name }: { value: unknown; name: string }) {
   const text = useMemo(() => formatJSONValue(value), [value]);
   const lines = text.split("\n");
   const long = lines.length > COLLAPSE_AFTER_LINES;
@@ -163,7 +163,13 @@ function JSONBlock({ value }: { value: unknown }) {
         <pre className="min-w-0 flex-1 overflow-x-auto whitespace-pre-wrap break-words rounded bg-surface-0 p-1.5 font-mono text-micro leading-relaxed">
           {shown}
         </pre>
-        <CopyButton value={text} variant="icon" label="Copy JSON" copiedLabel="Copied" />
+        <CopyButton
+          value={text}
+          variant="icon"
+          label="Copy JSON"
+          describes={`of ${name}`}
+          copiedLabel="Copied"
+        />
       </div>
       {long && (
         <Toggle

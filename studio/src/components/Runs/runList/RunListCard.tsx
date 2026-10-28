@@ -74,6 +74,9 @@ export const RunListCard = memo(function RunListCard({
             // Keep Enter/Space on the button from bubbling to the card's
             // clickableRowProps handler (which would navigate instead).
             onKeyDown={(e) => e.stopPropagation()}
+            // One Resume per card: the name carries the run it resumes, and
+            // keeps the visible word first (SC 2.5.3).
+            aria-label={`Resume ${friendlyLabel(run)}`}
             title="Resume from the last checkpoint"
           >
             Resume

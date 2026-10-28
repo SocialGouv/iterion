@@ -6,6 +6,11 @@ export interface CopyButtonProps {
   value: string;
   label?: string;
   copiedLabel?: string;
+  // What this button copies, for the accessible name only: a row of copy
+  // buttons all announcing "copy" is one control as far as a screen reader
+  // is concerned (RGAA 11.1 / WCAG 2.4.6). The visible label is untouched
+  // and stays the start of the name, which is what SC 2.5.3 asks for.
+  describes?: string;
   // Visual variant. "text" is the lightweight inline pill used in
   // headers/summaries; "icon" renders a small icon-only button; "share"
   // renders a share-arrow glyph (semantically a copy of a URL).
@@ -28,6 +33,7 @@ export function CopyButton({
   value,
   label = "copy",
   copiedLabel = "copied",
+  describes,
   variant = "text",
   className,
   onCopied,
@@ -60,12 +66,15 @@ export function CopyButton({
     inner = copied ? copiedLabel : label;
   }
 
+  const visible = copied ? copiedLabel : label;
+  const name = describes ? `${visible} ${describes}` : visible;
+
   return (
     <button
       type="button"
       onClick={handleClick}
-      title={copied ? copiedLabel : label}
-      aria-label={copied ? copiedLabel : label}
+      title={name}
+      aria-label={name}
       className={[baseClass, className ?? ""].join(" ")}
     >
       {inner}

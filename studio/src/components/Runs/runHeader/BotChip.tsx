@@ -63,6 +63,9 @@ export default function BotChip({
       >
         {personaName ? (
           <span
+            // A glyph with a text alternative — aria-label on a roleless
+            // span is prohibited (axe aria-prohibited-attr).
+            role="img"
             className="shrink-0 text-[0.95em] leading-none"
             aria-label="persona bot"
           >

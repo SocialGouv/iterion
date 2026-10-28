@@ -178,7 +178,10 @@ export function DetailHeader({
         <div className="mt-2 px-2 py-1.5 rounded bg-danger-soft text-danger-fg">
           <div className="flex items-center justify-between gap-2 mb-0.5">
             <span className="font-medium">Error</span>
-            <CopyButton value={exec.error} />
+            <CopyButton
+              value={exec.error}
+              describes={`the error of ${exec.ir_node_id}`}
+            />
           </div>
           <div className="font-mono text-micro whitespace-pre-wrap break-words">
             {exec.error}

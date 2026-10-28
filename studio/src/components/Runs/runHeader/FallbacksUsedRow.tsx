@@ -41,6 +41,9 @@ export default function FallbacksUsedRow({
   if (!fallbacks || fallbacks.length === 0) return null;
   return (
     <div
+      // A named set of chips is a group: aria-label on a roleless div is
+      // prohibited (axe aria-prohibited-attr).
+      role="group"
       className="flex items-center gap-2 text-micro flex-wrap"
       aria-label="Fallback routes used"
     >

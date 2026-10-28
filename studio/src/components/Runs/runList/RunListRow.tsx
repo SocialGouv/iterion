@@ -55,7 +55,11 @@ export const RunListRow = memo(function RunListRow({
       </td>
       <td className="px-4 py-2">
         <div className="flex items-center gap-2">
+          {/* role="img": ARIA in HTML prohibits aria-label on a roleless
+              span (axe aria-prohibited-attr), and the grip IS a glyph with
+              a text alternative — same shape as ui/HelpHint. */}
           <span
+            role="img"
             className="shrink-0 cursor-grab select-none text-fg-muted"
             aria-label={`Drag ${friendlyLabel(run)} onto the assistant`}
             title="Drag onto the assistant to ask about this run"
@@ -105,6 +109,9 @@ export const RunListRow = memo(function RunListRow({
                 e.stopPropagation();
                 onResume(run.id);
               }}
+              // One Resume per row: the name carries the run it resumes, and
+              // keeps the visible word first (SC 2.5.3).
+              aria-label={`Resume ${friendlyLabel(run)}`}
               title="Resume from the last checkpoint"
             >
               Resume

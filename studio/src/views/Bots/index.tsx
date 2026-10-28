@@ -499,6 +499,9 @@ function BotCard({
               selectable/copyable. The reference uses the workspace-relative
               path because that is what an assistant can actually read. */}
           <span
+            // The grip is a glyph with a text alternative — aria-label on a
+            // roleless span is prohibited (axe aria-prohibited-attr).
+            role="img"
             className="shrink-0 cursor-grab select-none text-fg-muted"
             aria-label={`Drag ${label} onto the assistant`}
             title="Drag onto the assistant to ask about this bot"

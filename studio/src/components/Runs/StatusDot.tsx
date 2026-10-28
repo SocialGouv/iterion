@@ -19,6 +19,9 @@ export function StatusDot({ status }: { status: RunFileStatus }) {
   const letter = status === "??" ? "U" : status;
   return (
     <span
+      // A glyph with a text alternative: aria-label on a roleless span is
+      // prohibited (axe aria-prohibited-attr), same shape as ui/HelpHint.
+      role="img"
       className={`inline-flex h-3 w-3 shrink-0 items-center justify-center text-caption font-bold leading-none ${cls}`}
       aria-label={`status ${status}`}
     >

@@ -19,6 +19,9 @@ export function TodoItems({ todos }: { todos: TodoItem[] }) {
             className="flex items-start gap-1.5 px-1 py-0.5 leading-snug"
           >
             <span
+              // A glyph with a text alternative — aria-label on a roleless
+              // span is prohibited (axe aria-prohibited-attr).
+              role="img"
               className={`${STATUS_COLOR[t.status]} flex-none mt-px`}
               aria-label={t.status}
             >
