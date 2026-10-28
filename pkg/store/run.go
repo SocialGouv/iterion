@@ -610,6 +610,18 @@ type RunLLMRoutePolicy struct {
 	Sources map[string]string `json:"sources,omitempty" bson:"sources,omitempty"`
 }
 
+// ProviderAllowlist is the run's frozen providers list (ADR-129 §5) exactly
+// as the launch stamped it — nil on a nil policy or one that named no list:
+// no allowlist is in force. Nil-safe, so every lane (the cloud publisher,
+// the cloud runner, the in-process lane and its resume) reads it through
+// the one method.
+func (p *RunLLMRoutePolicy) ProviderAllowlist() []string {
+	if p == nil {
+		return nil
+	}
+	return p.Providers
+}
+
 // RetryReasonUsageWindow is the failure class a usage-window park writes to
 // RunRetryState.Reason. One constant because it is a FILTER term in both
 // stores' probe scans and the discriminator every reader of a usage park

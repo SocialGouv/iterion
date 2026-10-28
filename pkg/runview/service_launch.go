@@ -365,6 +365,12 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	if err := foldAndScreen(wf, &spec); err != nil {
 		return nil, err
 	}
+	// The tenant's providers lock holds on this lane too (#2665 item 7):
+	// the publisher's gate, read before it seals, is read here before the
+	// executor is built.
+	if err := refuseOutsideAllowlist(wf, &spec); err != nil {
+		return nil, err
+	}
 
 	_, runLogger := s.prepareRunLog(runID)
 
@@ -409,6 +415,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		SandboxTiersKnown: true,
 		ModelOverrides:    toModelOverrides(spec.ModelOverrides),
 		RunFallback:       toRunFallback(spec.Fallback),
+		LLMProviders:      spec.LLMRoutePolicy.ProviderAllowlist(),
 		// Resolved, not taken raw: spec.BotID is empty whenever the caller
 		// launched by path (the studio's own file picker), and the executor
 		// would then fall back to the workflow name — while a RESUME of that
@@ -531,7 +538,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		spec.AttachmentPromote, spec.Preset, RunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
-		launchExtras{workDir: workDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, budgetAsk: spec.Budget, executionContext: ctxContract, permission: spec.Permission, worktreeBaseCommit: spec.WorktreeBaseCommit, botOrigin: spec.BotOrigin, delegation: spec.Delegation, budgetOverrides: rawBudget, compiled: cs},
+		launchExtras{workDir: workDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, routePolicy: spec.LLMRoutePolicy, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, budgetAsk: spec.Budget, executionContext: ctxContract, permission: spec.Permission, worktreeBaseCommit: spec.WorktreeBaseCommit, botOrigin: spec.BotOrigin, delegation: spec.Delegation, budgetOverrides: rawBudget, compiled: cs},
 		s.store,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
@@ -1137,6 +1144,7 @@ func (s *Service) resumeExecutorSpec(wf *ir.Workflow, r *store.Run, runLogger *i
 		spec.RunID = r.ID
 		spec.ModelOverrides = ModelOverridesFromRun(r.ModelOverrides)
 		spec.Permission = r.PermissionOverride
+		spec.LLMProviders = r.LLMRoutePolicy.ProviderAllowlist()
 	}
 	return spec
 }
@@ -1269,6 +1277,30 @@ func (s *Service) spawnRun(
 			_ = lock.Unlock()
 			s.dropRunLog(runID)
 			err := fmt.Errorf("runview: create run: %w", createErr)
+			if startedRun {
+				return nil, &RunPersistedError{RunID: runID, Err: err}
+			}
+			return nil, err
+		}
+	}
+
+	// Persist the launch's resolved routing policy on the run document, as
+	// the cloud publisher stamps its own (#2665 item 7): a local resume
+	// replays the frozen providers list from here (resumeExecutorSpec), the
+	// way the cloud runner replays RunMessage.LLMProviders. Nil on a resume
+	// and on a CLI launch, which resolved none: nothing to stamp.
+	if ex.routePolicy != nil {
+		doc, stampErr := s.store.LoadRun(context.Background(), runID)
+		if stampErr == nil {
+			lp := *ex.routePolicy // copy: never share the caller's pointer
+			doc.LLMRoutePolicy = &lp
+			stampErr = s.store.SaveRun(context.Background(), doc)
+		}
+		if stampErr != nil {
+			s.manager.Deregister(runID)
+			_ = lock.Unlock()
+			s.dropRunLog(runID)
+			err := fmt.Errorf("runview: persist routing policy: %w", stampErr)
 			if startedRun {
 				return nil, &RunPersistedError{RunID: runID, Err: err}
 			}
@@ -1540,6 +1572,11 @@ type launchExtras struct {
 	worktreeBaseCommit string
 	botOrigin          *store.BotOrigin
 	delegation         *store.RunDelegation
+	// routePolicy mirrors LaunchSpec.LLMRoutePolicy on a LAUNCH: the
+	// resolved adaptive-routing snapshot the in-process lane stamps on the
+	// run document (#2665 item 7), for a local resume to replay. Nil on a
+	// resume, whose document carries it already.
+	routePolicy *store.RunLLMRoutePolicy
 	// onOutcome mirrors LaunchSpec.OnOutcome: fired once in the run
 	// goroutine with the terminal body error before Done closes, so a
 	// blocking caller reads the same typed error engine.Run returned.

@@ -466,17 +466,7 @@ func New(cfg Config) (*Publisher, error) {
 // for every run. Providers without a configured key are simply
 // omitted from the bundle; the runner falls back to env or surfaces
 // "no credentials" at the LLM call site.
-var allKnownProviders = []secrets.Provider{
-	secrets.ProviderAnthropic,
-	secrets.ProviderOpenAI,
-	secrets.ProviderBedrock,
-	secrets.ProviderVertex,
-	secrets.ProviderAzure,
-	secrets.ProviderOpenRouter,
-	secrets.ProviderXAI,
-	secrets.ProviderZAI,
-	secrets.ProviderMoonshot,
-}
+var allKnownProviders = model.KnownRoutingProviders
 
 func genericSecretNamesForWorkflow(wf *ir.Workflow) []string {
 	if wf == nil || len(wf.Secrets) == 0 {
@@ -579,11 +569,8 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		view.AllowedProviders = policyProviders(routePolicy)
 		if view.Workflow != nil {
 			walk := model.EffectiveProviders(view, knownPoolProviders)
-			if u := model.FirstUnreadable(walk); u != nil {
-				return credResolution{}, &model.RouteUnreadableError{Site: u.Site, Field: u.Field, Hint: u.Hint}
-			}
-			if site, prov, ok := model.FirstForbiddenPrimary(walk); ok {
-				return credResolution{}, &model.ProviderOutsideError{Site: site, Provider: prov, Level: routePolicy.Sources[llmroute.FieldProviders]}
+			if err := model.AllowlistRefusal(walk, routePolicy.Sources[llmroute.FieldProviders]); err != nil {
+				return credResolution{}, err
 			}
 			// A pruned rescue is not a refusal: the launch proceeds without
 			// its second server, and the tenant's own statement took it away
@@ -2915,22 +2902,13 @@ func launchVarsAsStrings(inputs map[string]any) map[string]string {
 // knownPoolProviders is the provider vocabulary the wants derivation
 // resolves against — derived from allKnownProviders so the two cannot
 // drift. A hint outside it names a pin the pool cannot serve by name.
-var knownPoolProviders = func() map[string]bool {
-	m := make(map[string]bool, len(allKnownProviders))
-	for _, p := range allKnownProviders {
-		m[strings.ToLower(string(p))] = true
-	}
-	return m
-}()
+var knownPoolProviders = model.KnownProviderSet()
 
 // policyProviders is the run's frozen allowlist (ADR-129 §5) exactly as
 // the launch stamped it: nil when the launch carried no routing policy or
 // the policy named no providers list — no allowlist is in force.
 func policyProviders(policy *store.RunLLMRoutePolicy) []string {
-	if policy == nil {
-		return nil
-	}
-	return policy.Providers
+	return policy.ProviderAllowlist()
 }
 
 // sortedForbiddenProviders renders a walk's Forbidden map in a

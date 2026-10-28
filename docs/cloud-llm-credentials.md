@@ -966,9 +966,12 @@ policy's `overrides` share one Warn, conditional on one of them being
 non-empty (`detached.go:421-423`,
 `TestLaunchDetached_NamesTheDroppedOverrides`), while a policy whose only
 field is `providers:` is dropped WITHOUT a word: the allowlist reaches a
-runner on the queue message alone (`RunMessage.LLMProviders` →
-`ExecutorSpec.LLMProviders`, filled at `loop.go:3390` and nowhere else), and
-this lane sends none — the local-parity limit ADR-129 §8 states. The folded
+cloud runner on the queue message (`RunMessage.LLMProviders` →
+`ExecutorSpec.LLMProviders`, `loop.go`) and an in-process run through its
+launch spec (`startInProcess` refuses on it with the publisher's own gate,
+`model.AllowlistRefusal`, threads it to its executor and stamps the policy on
+the run document for a local resume to replay), and this lane sends none —
+the local-parity limit ADR-129 §8 states. The folded
 list is what the run document stamps, what the queue message carries, what
 every pre-flight reads and what a resume replays instead of re-folding
 (`TestResume_ReplaysTheFoldedRowsNotThePolicy`), so no reader re-derives a pin
