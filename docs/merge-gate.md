@@ -185,16 +185,22 @@ is engine-wide only), a genuinely new capability, filed as a follow-up
 rather than bundled into this preset. **Shipped since as `ambient_context:`
 (ADR-119)**: `ambient_context: none` on a review node is that lever.
 
-**The model-per-tier mechanism.** A node's `model:` (and `reasoning_effort:`)
-field resolves ONLY `${ENV_VAR:-default}` from the process environment,
-never `{{vars.x}}` — true on every backend, including `claw`'s in-process
-path, not just the CLI-delegated ones. So a `--var review_tier=glance`
-cannot retarget `reviewer_claude`'s/`reviewer_gpt`'s model directly; the
-bot instead declares two extra judge nodes, `reviewer_claude_glance` /
-`reviewer_gpt_glance`, pinned to the cheaper defaults, and the EXISTING
-`topology` condition router (ADR-052) picks between the full-strength and
-glance variant per family — the pattern to imitate for any future
-tier/variant knob that needs a different model, never a new engine branch.
+**The model-per-tier mechanism.** The two fields a tier moves do not read
+the same things. A node's `model:` (with `backend:`, `provider:` and
+`interaction_model:`) IS resolved against the run's vars on the dispatch
+path — `{{vars.x}}` first, then `${ENV_VAR:-default}`, on every backend
+including `claw`'s in-process path — while `reasoning_effort:` resolves the
+environment form ALONE (`ir.ResolveEffortLiteral`; its only dynamic input is
+an upstream `_reasoning_effort` edge mapping). So a `--var
+review_tier=glance` could retarget a model, but it could not carry the
+tier's effort floor with it, and a `backend:` spelled as a var stays
+UNDECIDED to the compiler, which disarms the C176/C177 screens that say what
+a node may DO (#1389: 92 refusals down to 23). The bot therefore declares
+two extra judge nodes, `reviewer_claude_glance` / `reviewer_gpt_glance`,
+pinned to the cheaper defaults, and the EXISTING `topology` condition router
+(ADR-052) picks between the full-strength and glance variant per family —
+the pattern to imitate for any future tier/variant knob that moves more than
+one route field, never a new engine branch.
 
 **Per-repo pin.** `review_tier` is an ordinary launch var, so it is
 pinned exactly like `gate_context` or `post_to_board` — through the

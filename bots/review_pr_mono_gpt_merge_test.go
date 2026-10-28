@@ -46,9 +46,11 @@ func TestMonoGptMeansNoClaudeCredential(t *testing.T) {
 }
 
 // #2467: `mono_family=gpt` is the family of the WHOLE review, the merge step
-// included. The GPT merge step is a TWIN of `converge` — a node's `model:`
-// resolves `${ENV:-default}` and never `{{vars.x}}`, so a runtime-selectable
-// family needs a second, differently pinned node picked by a guard — and a
+// included. The GPT merge step is a TWIN of `converge` — a routing field DOES
+// resolve `{{vars.x}}` on the dispatch path, but a `backend:` written as a
+// var stays UNDECIDED to the compiler and disarms the C176/C177 screens
+// (#1389: 92 refusals down to 23), so a runtime-selectable family still
+// needs a second, differently pinned node picked by a guard — and a
 // twin is only honest while it shares everything but its route: the same
 // prompts BY NAME (never a second copy of 450 lines of merge instructions),
 // the same output schema and the same effort dial, which the published run

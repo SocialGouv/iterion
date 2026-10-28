@@ -104,3 +104,31 @@ func TestRoutingFieldsResolveVarsTemplates(t *testing.T) {
 		}
 	}
 }
+
+// `reasoning_effort:` is NOT one of them, and the asymmetry is load-bearing
+// documentation: it resolves the environment form ALONE
+// (ir.ResolveEffortLiteral), so a tier that moves BOTH a model and an effort
+// floor cannot travel as launch vars — which is why review-pr declares
+// glance twin nodes behind a router instead of templating its route
+// (docs/merge-gate.md, "The model-per-tier mechanism"; #1221). A dynamic
+// `_reasoning_effort` edge mapping is the one dynamic input it has, and it
+// carries a VALUE, not a template.
+func TestReasoningEffortResolvesNoVarsTemplate(t *testing.T) {
+	t.Setenv("ROUTING_TEST_EFFORT", "")
+	e := &ClawExecutor{logger: iterlog.Nop(), vars: map[string]any{"effort": "high"}}
+	node := &ir.AgentNode{}
+	node.ID = "n"
+	node.ReasoningEffort = "{{vars.effort}}"
+	if got := e.effortForNode(node, node.ReasoningEffort, map[string]any{}); got == "high" {
+		t.Fatal("reasoning_effort resolved a {{vars.…}} template — then docs/merge-gate.md and review-pr's glance twins argue from a premise that no longer holds, and a tier could travel as a launch var")
+	}
+	// The environment form it DOES read, and the edge mapping that overrides
+	// it — the two inputs the doc names.
+	node.ReasoningEffort = "${ROUTING_TEST_EFFORT:-medium}"
+	if got := e.effortForNode(node, node.ReasoningEffort, map[string]any{}); got != "medium" {
+		t.Errorf("effortForNode(${…:-medium}) = %q, want medium", got)
+	}
+	if got := e.effortForNode(node, node.ReasoningEffort, map[string]any{"_reasoning_effort": "xhigh"}); got != "xhigh" {
+		t.Errorf("effortForNode with an edge mapping = %q, want xhigh", got)
+	}
+}

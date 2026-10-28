@@ -100,10 +100,15 @@ agent converge:
 ## (reviewtopology.monoPreference), so a run carrying it has NO Claude
 ## credential: a merge pinned to the Anthropic wire then dies after the
 ## reviewer has already spent, and the run never reaches `pr_gate` — the
-## merge gate stays dark on a PR nobody can see was reviewed. A node's
-## `model:`/`backend:` resolve `${ENV:-default}` and never `{{vars.x}}`, so
-## the family cannot be a var here: it is a second, differently pinned node
-## behind the same guard that picks the reviewer (the glance tiers' shape).
+## merge gate stays dark on a PR nobody can see was reviewed. The family
+## still cannot be a var here, for the compiler's reason rather than the
+## resolver's: `model:`/`backend:`/`provider:` DO resolve `{{vars.x}}` on
+## the dispatch path (the template reading runs before the `${ENV:-default}`
+## one), but a `backend:` written as a var stays UNDECIDED to the compiler,
+## which disarms the C176/C177 screens that say what the node may DO —
+## measured on this catalogue, 92 refusals down to 23 (#1389). So the merge
+## family is a second, differently pinned node behind the same guard that
+## picks the reviewer (the glance tiers' shape).
 ##
 ## Everything but the route is SHARED with `converge` by name — the same
 ## prompts, output schema, effort dial and capabilities — so the merge
