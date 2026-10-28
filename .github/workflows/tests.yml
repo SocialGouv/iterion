@@ -322,10 +322,12 @@ jobs:
         # is a budget a healthy run can reach, and did — ./bots carried the
         # whole job to the panic at 10m0s while the same commit passed on a
         # faster machine (measured: 521.8s on CI at one commit, a timeout at
-        # 10m0s on the next). The number bounds a HANG, not a slow machine; a
-        # package that genuinely needs 20 minutes of test time is a review
-        # finding either way.
-        run: go test -mod=vendor -count=1 -timeout 1200s $(go list -mod=vendor ./... | grep -v '/e2e$')
+        # 10m0s on the next). The same bots sources later passed in 1007s
+        # on the PR and reached the 1200s aggregate limit in its merge group
+        # while a test had run for only 9s (#2745). Allow 25m per package,
+        # still bounded by the job's 30m including setup and live compilation.
+        # Individual test deadlines and all assertions remain in force.
+        run: go test -mod=vendor -count=1 -timeout 1500s $(go list -mod=vendor ./... | grep -v '/e2e$')
 
       - name: Live e2e compile check
         # Builds every -tags=live test in the repo and runs NONE of them

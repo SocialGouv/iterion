@@ -1,6 +1,6 @@
 import { useRunStore } from "@/store/run";
 
-// The caller's effective standing for the open run (ADR-143), resolved
+// The caller's effective standing for the open run (ADR-144), resolved
 // server-side at the run-by-id choke point and shipped on every
 // snapshot. A viewer — a team viewer, an org-admin-lineage reader, an
 // org-shared reader — reads but never acts: every affordance that would

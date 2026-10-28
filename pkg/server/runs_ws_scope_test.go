@@ -13,7 +13,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// The passive stream's half of the standing rule (the ADR-143 review's
+// The passive stream's half of the standing rule (the ADR-144 review's
 // F1): subscribe/subscribe_logs carry no envelope of their own, so a
 // subscribed connection re-derives its standing on a tick. Closing the
 // run-visibility axis the reader leaned on ends the stream within one

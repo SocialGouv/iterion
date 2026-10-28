@@ -350,7 +350,7 @@ func (d failingOrgMembershipRead) GetOrgMembership(ctx context.Context, userID, 
 	return identity.OrgMembership{}, d.err
 }
 
-// The org-shared axis (ADR-143): a plain org member of the run team's
+// The org-shared axis (ADR-144): a plain org member of the run team's
 // parent org reads the team's runs by id as a viewer, and only as a
 // viewer, when — and only when — the team's run-visibility axis is
 // explicitly opened. Everything else about the call is unchanged: an
