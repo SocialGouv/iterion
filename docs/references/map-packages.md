@@ -14,6 +14,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `cmd/iterion-desktop` | the Iterion Desktop binary. | — |
 | `cmd/iterion-live-status` | Command iterion-live-status is the entry point behind `task test:live:status`. | — |
 | `cmd/release-floors` | Command release-floors realigns the syntax-floor pins to the release being cut: release-it runs it with --apply from its before:git:beforeRelease… | — |
+| `cmd/render-gate` | Command render-gate reads a rendered Kubernetes manifest stream (`helm template`, `kustomize build`, an Argo CD manifest dump) and refuses every… | — |
 | `cmd/skill-share` | Command skill-share writes, checks, or re-pins the shared skills of the bot catalogue. | — |
 | `contrib/mattermost-clarify` | Command mattermost-clarify is a chat channel adapter that wires a Mattermost bot ("@clarify-bot") to iterion's run-completion webhook (pkg/notify),… | `ChannelDriver`, `RelevanceFilter` |
 | `e2e/fixtures/feature-dev-go-service` | a small in-memory user service used as a realistic fixture for iterion's feature_dev bot live test. | — |
@@ -43,6 +44,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/modtypes` | type-checks this module's packages as the compiler sees them, for the guard tests that hold a rule over the whole tree: which code references a door,… | — |
 | `internal/pricingtest` | isolates a test binary from the host's live model prices. | — |
 | `internal/proctest` | checks OS resources owned by a test binary. | — |
+| `internal/rendergate` | judges a rendered Kubernetes manifest stream — the output of `helm template`, `kustomize build` or an Argo CD manifest dump — for selectors that… | — |
 | `internal/retryprobetest` | models the durable retry row the usage-window pull-forward probe acts on, so the real decision code of pkg/runner and pkg/server can be driven over… | — |
 | `internal/safepath` | turns a name taken from an archive — a string chosen by whoever wrote the archive — into a path that is safe to write under a root. | — |
 | `internal/skillshare` | the sharing primitive for skills a bundle does not own alone. | — |
