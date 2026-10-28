@@ -55,10 +55,11 @@ vars:
   ## The workspace Copi advises on. Defaults to the run's project dir;
   ## the engine resolves ${PROJECT_DIR} (and remaps it under sandbox).
   workspace_dir: string = "${PROJECT_DIR}"
-  ## Conversation posture. Carried on the loop edge so the operator can
-  ## switch mid-conversation ("passe en debug") without relaunching —
-  ## a preset chosen at launch could never do that (the launch preset
-  ## is frozen on the run and no resume surface can change it).
+  ## Conversation posture for turn 1, delivered to Terra on its input.
+  ## From turn 2 the register carries what Terra set in its own `mode`
+  ## output, which is how "passe en debug" mid-conversation takes effect
+  ## without relaunching: the launch preset is frozen on the run and no
+  ## resume surface can change it.
   mode: string [enum: "info", "design", "debug"] = "info"
   ## Seed for turn 1. Empty → Copi opens the conversation itself.
   initial_message: string = ""
@@ -121,7 +122,9 @@ prompt copi_system:
   message is empty, greet briefly and ask what they are working on; do not
   survey the repository without a request.
 
-  A posture is a bias, not a wall. Set mode for the next turn:
+  The posture in force for this turn arrives on your input; it is a bias, not
+  a wall, and the request in front of you still wins. Set mode for the next
+  turn:
     info    explain and orient from skills or evidence;
     design  design or modify a workflow using both authoring skills;
     debug   diagnose from run and repository evidence.
@@ -565,6 +568,11 @@ prompt copi_system:
   attachment request.
 
 prompt copi_user:
+  Posture in force for this turn — the launch choice on turn 1, then what you
+  set for the next one. Empty means none was chosen: read the request in
+  front of you.
+  {{input.mode}}
+
   Operator message:
   {{input.operator_message}}
 
@@ -779,6 +787,10 @@ schema copi_input:
   ## authority grant: Studio still checks the session, revision, paths and
   ## hashes before any proposal applies.
   authoring_context: string
+  ## The posture in force for THIS turn: the launch choice on turn 1, then
+  ## whatever Terra set for the next one. A bias the prompt renders, not a
+  ## wall — the request in front of Terra still wins.
+  mode: string
 
 ## Copi's structured turn output.
 ##   reply          — markdown addressed to the operator, rendered
@@ -786,8 +798,9 @@ schema copi_input:
 ##   close          — true ONLY on an explicit operator request to end
 ##                    the session. Never on Copi's own initiative.
 ##   mode           — the posture for the NEXT turn, chosen from the
-##                    operator's request and the conversation; the current
-##                    posture is not delivered as an input.
+##                    operator's request and the conversation. The posture
+##                    in force arrives on the input under the same name,
+##                    so this field moves it rather than inventing it.
 ##   context_brief  — the rolling memory. See the prompt contract.
 ##   quick_replies  — 0-4 typed suggested next messages. Each carries a label
 ##                    and message; `navigate_to` is an optional typed Studio
@@ -1793,10 +1806,11 @@ workflow copilot:
   ## anchors, the manager's raw exclusions, the scope-guard attempt, the
   ## clarification counters — stays on turn_state for the edges that
   ## read {{outputs.turn_state.*}}; none of it is echoed by Terra's prompts.
-  ## mode rides the same register though no edge reads it back — Terra
-  ## re-derives the posture from the conversation each turn.
+  ## `mode` is the one register Terra reads back: this is the ONLY edge into
+  ## copi, so dropping it here makes the field inert on every route.
   turn_state -> copi with {
     operator_message: "{{outputs.turn_state.operator_message}}",
+    mode: "{{outputs.turn_state.mode}}",
     host_event: "{{outputs.turn_state.host_event}}",
     fresh_operator_turn: "{{outputs.turn_state.fresh_operator_turn}}",
     conversation_history: "{{outputs.turn_state.conversation_history}}",
@@ -2105,7 +2119,9 @@ workflow copilot:
   ## the plan reaches an objective-level end.
   ##   operator_message     — the new turn's input.
   ##   context_brief        — the memory that survives everything.
-  ##   mode                 — lets the operator switch posture mid-chat.
+  ##   mode                 — the posture register: Terra's choice for the
+  ##                          next turn, delivered to it as that turn's
+  ##                          input.
   ##   authoring_context    — the editor attachment retained across turns.
   ##   _session_id / _fp    — same-Terra-session continuity.
   ## Underscore-prefixed keys are exempt from C031/C032, so a typo in

@@ -60,6 +60,18 @@ requires it back out of `plan_revise`'s channels on every incoming route, and
 `TestThePlanRevisePromptsAreOneText` holds the seven prompts to one text, so
 the block cannot be dropped from one bundle while six keep it.
 
+The reverse shape is a REGISTER the graph already carries from node to node
+and no prompt renders — copilot's `turn_state.mode`, the conversation posture.
+There the remedy is the input-schema field AND the edge mapping in the same
+change, because a key an edge maps onto a node the schema does not declare
+draws C034 on the reader and C031 on the edge: `copi_input` is copi's own
+schema precisely so that pair is possible (#2562).
+`TestCopilotTurnOnePostureReachesTheModel` walks the four stages a value
+crosses on the turn-1 path — the seed's expression, the register's, the edge's
+mapping, then the node's own prompts — each read from the compiled bundle and
+run by the engine's own evaluator and resolver, so dropping any one of them
+reddens.
+
 The third row is the one that bites. `{{vars.x}}` is the launch value for the
 whole run; a loop-back edge that maps `x` to something fresher (the operator's
 newest steering, a counter) is invisible to a prompt reading `{{vars.x}}`,

@@ -38,7 +38,8 @@ or read-back outranks the brief when they conflict.
 
 ## Postures
 
-mode is a bias for the next turn:
+The posture in force arrives on the turn input as `mode`; the `mode` you
+emit is a bias for the NEXT turn:
 
 - info: explain and orient from evidence or the concepts skill;
 - design: use both DSL and architecture skills before proposing a workflow;

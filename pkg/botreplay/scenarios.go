@@ -137,6 +137,9 @@ func Scenarios() []Scenario {
 				"mode":            "debug",
 			},
 			Input: map[string]any{
+				// The posture the launch chose, as the turn-1 edge delivers it
+				// (copi_input.mode, #2555): the next re-record renders it.
+				"mode":             "debug",
 				"operator_message": "[page context: run/run-failed]\n<resolved-assistant-context>{\"references\":[{\"reference\":\"run/run-failed\",\"resolved\":true,\"kind\":\"run\",\"run\":{\"id\":\"run-failed\",\"status\":\"failed_resumable\",\"failing_node\":\"seal_experience\",\"error_code\":\"EXECUTION_FAILED\",\"error\":\"candidate artifact missing\"}}]}</resolved-assistant-context>\n\nPourquoi ce run a échoué ?",
 				"context_brief":    "",
 			},
