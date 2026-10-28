@@ -1507,6 +1507,7 @@ func TestMongoStore_Conformance(t *testing.T) {
 	runOwnedFromSuite(t, boardmongo.New(db, "owned-from-tenant"))
 	runRenewAfterReleaseSuite(t, boardmongo.New(db, "late-renew-tenant"))
 	runAdjustLabelsSuite(t, boardmongo.New(db, "adjust-labels-tenant"))
+	runRunOutcomeSuite(t, boardmongo.New(db, "run-outcome-tenant"))
 	runEffectOutboxKindSuite(t, boardmongo.New(db, "effect-kind-tenant"), "effect-kind-tenant")
 	runLegacyEffectRowSuite(ctx, t, db)
 

@@ -64,6 +64,29 @@ func (m *MemorySubscriptionStore) MarkLaunchError(_ context.Context, id, lastErr
 	return nil
 }
 
+func (m *MemorySubscriptionStore) MarkRunOutcome(_ context.Context, id, runID, status, errMsg, errCode string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.items[id]
+	if !ok {
+		return ErrSubscriptionNotFound
+	}
+	// Monotonicity guard (twin of the mongo filter): an out-of-order
+	// delivery — overlapping runs of one subscription, or a redelivery
+	// racing a newer stamp — cannot move the health fields backwards.
+	if s.LastRunAt != nil && s.LastRunAt.After(at.UTC()) {
+		return nil
+	}
+	s.LastRunID = runID
+	s.LastRunStatus = status
+	s.LastRunError = errMsg
+	s.LastRunErrorCode = errCode
+	t := at.UTC()
+	s.LastRunAt = &t
+	m.items[id] = s
+	return nil
+}
+
 func (m *MemorySubscriptionStore) Delete(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

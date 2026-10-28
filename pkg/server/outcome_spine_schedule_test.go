@@ -13,7 +13,7 @@ import (
 )
 
 // TestScheduleOutcomeStampsBothOutcomesOnTheSchedule is the property test
-// for #1426: on a run-terminal event, the schedule's LastRun* fields are
+// for #1426, now riding the #1501 spine's fast path: on a run-terminal event, the schedule's LastRun* fields are
 // updated to reflect what the run did — not just that it was dispatched.
 // The pre-fix behaviour was `fired at T, that is all anyone can learn about
 // it`; the fix carries the outcome back.
@@ -117,7 +117,7 @@ func TestScheduleOutcomeStampsBothOutcomesOnTheSchedule(t *testing.T) {
 				Kind:    tc.wantOutcomeKind,
 				Subject: trigger.Subject{Type: "run", ID: tc.runID, State: tc.wantStatus},
 			}
-			if err := srv.handleScheduleOutcomeEvent(context.Background(), ev); err != nil {
+			if err := srv.handleRunOutcomeEvent(context.Background(), ev); err != nil {
 				t.Fatalf("handle: %v", err)
 			}
 			// Read back.
@@ -187,7 +187,7 @@ func TestScheduleOutcomeIgnoresNonScheduledRuns(t *testing.T) {
 		Source: trigger.SourceRun, Kind: trigger.KindRunFinished,
 		Subject: trigger.Subject{Type: "run", ID: "manual-run", State: string(store.RunStatusFinished)},
 	}
-	if err := srv.handleScheduleOutcomeEvent(context.Background(), ev); err != nil {
+	if err := srv.handleRunOutcomeEvent(context.Background(), ev); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
 	got, err := sched.Get(context.Background(), "sched-A")
@@ -215,7 +215,7 @@ func TestScheduleOutcomeHandlesMissingRun(t *testing.T) {
 		Source: trigger.SourceRun, Kind: trigger.KindRunFailed,
 		Subject: trigger.Subject{Type: "run", ID: "purged-run"},
 	}
-	if err := srv.handleScheduleOutcomeEvent(context.Background(), ev); err != nil {
+	if err := srv.handleRunOutcomeEvent(context.Background(), ev); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
 }

@@ -826,6 +826,37 @@ func (s *Store) SetLastRun(id, runID, workdir string) error {
 	return s.emit(native.Event{Type: native.EvtIssueLastRun, IssueID: id, Payload: map[string]any{"run_id": runID, "workdir": workdir}})
 }
 
+// SetRunOutcome stamps the terminal outcome of the card's run onto its
+// record. Mirrors the FS twin field for field, including the LastRunID
+// match key (see native.BoardStore.SetRunOutcome).
+func (s *Store) SetRunOutcome(id, runID, status, errMsg, errCode string, at time.Time) error {
+	ctx, cancel := ctxWithTimeout()
+	defer cancel()
+	iss, err := s.get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if iss.LastRunID == "" || iss.LastRunID != runID {
+		return nil
+	}
+	if iss.LastRunStatus == status && iss.LastRunError == errMsg && iss.LastRunErrorCode == errCode {
+		return nil
+	}
+	stamped := at.UTC()
+	iss.LastRunStatus = status
+	iss.LastRunError = errMsg
+	iss.LastRunErrorCode = errCode
+	iss.LastRunAt = &stamped
+	iss.UpdatedAt = time.Now().UTC()
+	if err := s.replace(ctx, iss, "lastrunstatus", "lastrunerror", "lastrunerrorcode", "lastrunat"); err != nil {
+		return err
+	}
+	return s.emit(native.Event{
+		Type: native.EvtIssueUpdated, IssueID: id,
+		Payload: map[string]any{"run_id": runID, "last_run_status": status},
+	})
+}
+
 // SetAwaitingInput denormalizes onto the issue whether its most recent
 // run parked awaiting human/operator input (see native.Issue.AwaitingInput).
 // Idempotent — setting the flag to its current value is a no-op. Mirrors

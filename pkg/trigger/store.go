@@ -28,6 +28,19 @@ type SubscriptionStore interface {
 	// edit to a health write.
 	MarkLaunchError(ctx context.Context, id, lastError string, at time.Time) error
 
+	// MarkRunOutcome stamps the OUTCOME of the last run this subscription
+	// launched — the run-terminal counterpart of MarkLaunchError, and the
+	// twin of cloudsched.Store.MarkRunOutcome. Called by the run-outcome
+	// spine, which holds no copy of the row, so it is a TARGETED field
+	// write for the same reason MarkLaunchError is.
+	//
+	// errMsg/errCode empty CLEAR the stored failure: a successful run must
+	// not leave the previous one's error on the record. `at` is the run's
+	// terminal instant and carries a MONOTONICITY GUARD — an out-of-order
+	// delivery is a silent no-op, never a backwards move. ErrSubscriptionNotFound
+	// when the row is gone.
+	MarkRunOutcome(ctx context.Context, id, runID, status, errMsg, errCode string, at time.Time) error
+
 	// ListByTenant returns every subscription owned by a tenant
 	// ("" tenant = the local single-host scope).
 	ListByTenant(ctx context.Context, tenantID string) ([]Subscription, error)

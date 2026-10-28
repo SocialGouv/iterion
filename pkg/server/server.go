@@ -562,10 +562,11 @@ type Server struct {
 	gateAutofixCancel func(context.Context)
 	// outcomeRouterCancel unsubscribes the outcome router lane at shutdown.
 	outcomeRouterCancel func(context.Context)
-	// scheduleOutcomeCancel unsubscribes the schedule-outcome back-writer
-	// (#1426) at shutdown. Nil unless BOTH ScheduledBots and the eventbus
-	// were wired at boot.
-	scheduleOutcomeCancel func(context.Context)
+	// runOutcomeSpineCancel unsubscribes the run-outcome spine's fast path
+	// (#1426, lifted to the four records by #1501) at shutdown. Nil unless
+	// a record store AND the eventbus were wired at boot; the spine's sweep
+	// net is stopped by the shutdown join, not by this.
+	runOutcomeSpineCancel func(context.Context)
 	// forgeProjSem bounds concurrent forge→board projection goroutines,
 	// held on the Server (not a package var) so tests spawning independent
 	// Server instances get independent semaphore state (#1477 follow-up Q4).

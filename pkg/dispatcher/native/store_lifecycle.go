@@ -246,6 +246,48 @@ func (s *Store) setLastRunLocked(iss *Issue, runID, workdir string) error {
 	})
 }
 
+// SetRunOutcome stamps the terminal outcome of the card's run onto its
+// record — the result half of SetLastRun, which only ever recorded the
+// dispatch (see BoardStore.SetRunOutcome and Issue.LastRunStatus).
+func (s *Store) SetRunOutcome(id, runID, status, errMsg, errCode string, at time.Time) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("SetRunOutcome", &err)
+	iss, err := s.readIssueLocked(id)
+	if err != nil {
+		return err
+	}
+	return s.setRunOutcomeLocked(iss, runID, status, errMsg, errCode, at)
+}
+
+func (s *Store) setRunOutcomeLocked(iss *Issue, runID, status, errMsg, errCode string, at time.Time) error {
+	// The card's own run pointer is the match key — the twin of the
+	// schedule/subscription records' monotonicity guard, and stricter: here
+	// the LAUNCHER writes LastRunID, so "which run does this card report"
+	// is a recorded fact rather than something inferred from timestamps.
+	if iss.LastRunID == "" || iss.LastRunID != runID {
+		return nil
+	}
+	if iss.LastRunStatus == status && iss.LastRunError == errMsg && iss.LastRunErrorCode == errCode {
+		return nil
+	}
+	stamped := at.UTC()
+	iss.LastRunStatus = status
+	iss.LastRunError = errMsg
+	iss.LastRunErrorCode = errCode
+	iss.LastRunAt = &stamped
+	iss.UpdatedAt = time.Now().UTC()
+	if err := s.writeIssueLocked(iss); err != nil {
+		return err
+	}
+	s.setIndexLocked(iss.ID, cloneIssue(iss))
+	return s.emitPostCommitEvent(Event{
+		Type:    EvtIssueUpdated,
+		IssueID: iss.ID,
+		Payload: map[string]any{"run_id": runID, "last_run_status": status},
+	})
+}
+
 // SetAwaitingInput denormalizes onto the issue whether its most recent
 // dispatcher-spawned run parked awaiting human/operator input (see
 // Issue.AwaitingInput). Idempotent — setting the flag to its current

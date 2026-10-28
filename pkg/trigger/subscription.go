@@ -164,6 +164,26 @@ type Subscription struct {
 	// living only in a replica's log.
 	LastError   string     `json:"last_error,omitempty" bson:"last_error,omitempty"`
 	LastErrorAt *time.Time `json:"last_error_at,omitempty" bson:"last_error_at,omitempty"`
+
+	// LastRun* proves what the LAUNCHED run did, where LastError only ever
+	// proved whether the launch itself went through (#1501). Without them a
+	// subscription that fired and whose run died reads exactly like a
+	// subscription that fired and worked — the decision, not the result.
+	// Written by the run-outcome spine (pkg/server/outcome_spine.go) from
+	// the run's terminal status: the event is the fast path, a store sweep
+	// the authority.
+	//
+	// LastRunErrorCode is the stable machine-readable classifier
+	// (store.FailureCode) beside the human message; both are CLEARED by a
+	// successful outcome. LastRunAt is the run's own terminal instant and
+	// the monotonicity key: an out-of-order stamp — overlapping runs of one
+	// subscription, a bus redelivery arriving after a newer outcome — can
+	// never move these fields backwards.
+	LastRunID        string     `json:"last_run_id,omitempty" bson:"last_run_id,omitempty"`
+	LastRunStatus    string     `json:"last_run_status,omitempty" bson:"last_run_status,omitempty"`
+	LastRunError     string     `json:"last_run_error,omitempty" bson:"last_run_error,omitempty"`
+	LastRunErrorCode string     `json:"last_run_error_code,omitempty" bson:"last_run_error_code,omitempty"`
+	LastRunAt        *time.Time `json:"last_run_at,omitempty" bson:"last_run_at,omitempty"`
 }
 
 // NextFire computes the subscription's next-fire instant after `after`,

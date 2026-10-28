@@ -6884,7 +6884,12 @@ export interface components {
             gave_up?: components["schemas"]["GiveUp"];
             id: string;
             labels?: string[];
+            /** Format: date-time */
+            last_run_at?: string;
+            last_run_error?: string;
+            last_run_error_code?: string;
             last_run_id?: string;
+            last_run_status?: string;
             last_workdir?: string;
             launch_refusal?: components["schemas"]["LaunchRefusal"];
             parent_id?: string;
