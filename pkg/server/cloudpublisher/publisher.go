@@ -1499,10 +1499,20 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// attribute may still be funded by the pod's env, so it is never
 	// refused. Returned WITH res: a pool grant acquired above must reach
 	// the caller's release.
+	// The ATTRIBUTED set, read once for both arms below and read AFTER the
+	// policy ladder landed its rungs: a rung the walk cannot attribute used
+	// to empty the set and disarm both refusals, where it now simply
+	// contributes no name of its own.
+	attributed, attributedSites := attributedRoutes(view)
 	if p.requireLLMCredential && wf != nil && wf.UsesLLM() {
-		if unfunded := unfundedPinnedProviders(spend, bundle); len(unfunded) > 0 {
-			return res, fmt.Errorf("cloudpublisher: %w: every LLM route of run %s pins %s and no tier (byok, oauth-forfait, pool, platform) holds a credential for any of them — provision one for tenant %s, or unset ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL to let the runner fall back to its env",
-				runview.ErrNoLLMCredential, runID, strings.Join(unfunded, ", "), tenantID)
+		unfunded := unfundedAmong(attributed, bundle)
+		// The deployment knob stays permissive: one funded provider lets the
+		// run start — the other route's failure is the run's to report. Only
+		// a run whose EVERY attributed provider is unfunded cannot start at
+		// all. What changed is the SET: computed on the attributed providers,
+		// an unattributable route no longer empties it.
+		if len(unfunded) > 0 && len(unfunded) == len(attributed) {
+			return res, newUnfundedProvidersError(tenantID, unfunded, attributedSites, false)
 		}
 	}
 	// The sovereign policy arms the same refusal STRICTLY, without the
@@ -1513,9 +1523,8 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// to no policy; an unattributable route stays unrefused (the same
 	// compromise the knob above makes).
 	if sovereign && !envFunded && wf != nil && wf.UsesLLM() {
-		if unfunded := pinnedUnfundedProviders(spend, bundle); len(unfunded) > 0 {
-			return res, fmt.Errorf("cloudpublisher: %w: tenant %s runs with llm_fallback=none — no shared tier (org, pool, platform) is consulted, so every pinned provider must hold a credential of the team's own; provision: %s",
-				runview.ErrNoLLMCredential, tenantID, strings.Join(unfunded, ", "))
+		if unfunded := unfundedAmong(attributed, bundle); len(unfunded) > 0 {
+			return res, newUnfundedProvidersError(tenantID, unfunded, attributedSites, true)
 		}
 		// The attribution compromise is narrower under the policy than under
 		// the knob: a workflow whose routes the walk cannot attribute still
@@ -1524,7 +1533,14 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		// policy exists to make impossible. A team that holds its own
 		// credentials keeps the knob's compromise: the run starts, and its
 		// routes spend the team's.
-		if spend.pinned == nil && noLLMCred {
+		// The attribution compromise, now stated on the attributed set: a
+		// workflow NO route of which the walk can read still refuses when the
+		// team holds nothing at all — the pod's platform env would be the
+		// only funding left, which is what the policy exists to make
+		// impossible. A team holding its own credentials keeps the knob's
+		// compromise for those routes; the ones the walk DID read are decided
+		// above, by name.
+		if len(attributed) == 0 && noLLMCred {
 			return res, fmt.Errorf("cloudpublisher: %w: tenant %s runs with llm_fallback=none and holds no credential of its own, and this workflow's model routes cannot be attributed to a provider — provision a team credential, or pin a model route the policy can check",
 				runview.ErrNoLLMCredential, tenantID)
 		}
@@ -1823,54 +1839,6 @@ func fundedAPIKeySlots(bundle secrets.RunBundle) []secrets.Provider {
 			out = append(out, prov)
 		}
 	}
-	return out
-}
-
-// unfundedPinnedProviders returns the run's pinned providers, sorted, when
-// NONE of them is funded by the bundle — an API key of that provider, or an
-// OAuth credential whose kind authenticates against it. Nil when the run has
-// an unattributable route (a nil spendable set allows everything) or when at
-// least one pinned provider is funded: such a run can start.
-func unfundedPinnedProviders(spend spendable, bundle secrets.RunBundle) []string {
-	strict := pinnedUnfundedProviders(spend, bundle)
-	// The deployment knob is permissive: one funded pinned provider lets the
-	// run start — the other route's failure is the run's to report. Only a
-	// run whose EVERY pinned provider is unfunded cannot start at all.
-	if len(strict) > 0 && len(strict) == len(spend.pinned) {
-		return strict
-	}
-	return nil
-}
-
-// pinnedUnfundedProviders lists every pinned provider the bundle funds
-// nothing of, sorted. Unlike unfundedPinnedProviders it does not stop at the
-// first funded provider: the sovereign policy needs the FULL list. Nil when
-// the run has an unattributable route (a nil spendable set allows
-// everything).
-func pinnedUnfundedProviders(spend spendable, bundle secrets.RunBundle) []string {
-	if spend.pinned == nil {
-		return nil
-	}
-	funded := make(map[string]bool, len(bundle.APIKeys)+len(bundle.OAuthCredentials))
-	// Both channels: a pinned key is exactly the case this gate must not
-	// refuse — every route pins one provider, a shared tier funded it for
-	// that pin, and reading APIKeys alone would fail the launch claiming no
-	// tier holds a credential for it while the key is sealed in this bundle.
-	for _, prov := range fundedAPIKeySlots(bundle) {
-		funded[strings.ToLower(string(prov))] = true
-	}
-	for kind := range bundle.OAuthCredentials {
-		if prov := providerOfOAuthKind(kind); prov != "" {
-			funded[prov] = true
-		}
-	}
-	out := make([]string, 0, len(spend.pinned))
-	for prov := range spend.pinned {
-		if !funded[prov] {
-			out = append(out, prov)
-		}
-	}
-	sort.Strings(out)
 	return out
 }
 

@@ -203,11 +203,13 @@ OpenAI's ChatGPT-forfait has never had an equivalent restriction.
   a launch refusal retried with the dispatcher's backoff
   ([dispatcher.md](dispatcher.md)). The rule is **per route**, read
   through the same walk the credential stamp uses: only a run whose
-  EVERY LLM route pins a provider the deployment knows (a `provider/`
-  model prefix or a `provider:` hint) and NONE of them is funded by any
-  tier is refused; one funded pinned provider is enough, and a route the
-  walk cannot attribute (a `claude_code` node with no `model:`, `auto`, a
-  hint outside the vocabulary such as `kimi-code/…`) is never refused,
+  EVERY ATTRIBUTED provider (a `provider/` model prefix or a `provider:`
+  hint the deployment knows, on any LLM route — an agent, a judge, an
+  `llm`-mode router, a human node's LLM half, a node `fallbacks:` route,
+  the run-level chain, a supervisor) is funded by no tier is refused; one
+  funded provider is enough, and a route the walk cannot attribute (a
+  `claude_code` node with no `model:`, `auto`, a hint outside the
+  vocabulary such as `kimi-code/…`) is never refused,
   because the runner may still fund it from its env. Turn it on when the
   runner deployment carries no ambient LLM env — then a credential-less
   run can never start, and refusing it early is free information.
@@ -844,6 +846,41 @@ team FRESH at every resolution, and a store error — or an unknown value —
 refuses naming it. A typo'd boundary field must not silently re-open the
 shared tiers. Env-funded runs (every route on the runner's gateway) and
 unattributable routes answer to no policy; a tool-only run spends nothing.
+
+**Both refusals read the ATTRIBUTED set, and a mixed workflow is refused
+by name (#2485).** Until 2026-10-28 the set came from the walk's NARROWING
+reading, which answers "may spend anything" as soon as one route cannot be
+attributed: a single unpinned `backend: claude_code` node emptied it, and
+the refusal was disarmed for every OTHER route — a `draft` on
+`anthropic/…` beside a `verify` on `openai/…` started on a team funding
+only Anthropic, and the `openai` route then spent the runner pod's
+environment, the one funding this posture exists to rule out. The same
+three shapes disarmed `ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL`: an
+unattributable node, a human gate's `model:`, and a routing-policy forfait
+rung folded in before the set was read.
+
+The refusals now read `ProviderResolution.Providers` — every provider some
+RESOLVED route names, a sound lower bound whatever the narrowing reading
+says — so:
+
+- a route the walk CANNOT read is still refused by no name (it contributes
+  none), and the sovereign posture still refuses a workflow NO route of
+  which is readable when the team holds nothing at all;
+- the message names the PROVIDER and the NODE that spends it
+  (`openai (named by verify)`), and the refusal is the typed
+  `*cloudpublisher.UnfundedProvidersError` (`errors.As`) carrying both —
+  no caller has to parse the sentence;
+- **behaviour change**: a launch that starts today is refused tomorrow if
+  it mixes an unattributable route with a provider-pinned route the team
+  (under `llm_fallback: none`) or the deployment (under the knob) funds
+  nothing of. Remedy: provision the named provider, route the named node
+  to a funded one, or unset the knob. A gateway route
+  (`openai_compatible/…`) is never named: it acquires no credential.
+
+One gap is NOT closed: a tool node's `recovery: model:` is read by no
+provider walk, so the provider it pins is invisible to both refusals (and
+to the allowlist). It is tracked, not hidden — the same class #2691 closed
+for human nodes.
 
 The setting is a boundary, not a preference: it is audited on every write
 (`team.llm_fallback_set`, tenant trail + org mirror), and survives the other
