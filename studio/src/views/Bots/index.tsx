@@ -500,7 +500,9 @@ function BotCard({
               path because that is what an assistant can actually read. */}
           <span
             // The grip is a glyph with a text alternative — aria-label on a
-            // roleless span is prohibited (axe aria-prohibited-attr).
+            // roleless span is prohibited (axe aria-prohibited-attr). It
+            // claims no operation: dragging a reference has no keyboard or
+            // single-pointer path yet (#2770).
             role="img"
             className="shrink-0 cursor-grab select-none text-fg-muted"
             aria-label={`Drag ${label} onto the assistant`}

@@ -3,6 +3,7 @@ import { cleanup, render } from "@testing-library/react";
 import axe from "axe-core";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { allFiles } from "./_scanner";
 import {
   AXE_BEST_PRACTICE_RULES,
   AXE_WCAG_TAGS,
@@ -112,13 +113,27 @@ describe("the declared rule scope", () => {
       (axeRunOptions().rules ?? {}) as Record<string, unknown>,
     );
     const bestPractice = axe.getRules(["best-practice"]).map((r) => r.ruleId);
+    const wcagScoped = new Set(
+      axe.getRules([...AXE_WCAG_TAGS]).map((r) => r.ruleId),
+    );
+    const bothHalves: string[] = [];
     for (const rule of bestPractice) {
       if (AXE_BEST_PRACTICE_RULES.includes(rule as never)) {
+        expect(off).not.toContain(rule);
+      } else if (wcagScoped.has(rule)) {
+        // Mirrors declaredBestPracticeRules()'s escape hatch: a WCAG tag
+        // already put the rule in scope, so it stays ON.
+        bothHalves.push(rule);
         expect(off).not.toContain(rule);
       } else {
         expect(off).toContain(rule);
       }
     }
+    // A deliberate tripwire, not a bug: no best-practice rule carries a
+    // declared WCAG tag today, so the branch above is unreachable. The day an
+    // axe release changes that, the rule is ON by design and this line says
+    // so — acknowledge the widening here rather than discover it in a diff.
+    expect(bothHalves).toEqual([]);
     // The registry has to have been read for any of this to mean anything.
     expect(bestPractice.length).toBeGreaterThan(20);
   });
@@ -156,6 +171,28 @@ describe("vendor sentinels", () => {
       expectNoViolationsStrict(container, "ours"),
     ).rejects.toThrow(/aria-hidden-focus/);
   });
+
+  it("still fails when the surface's own node CONTAINS a sentinel", async () => {
+    // The hostile shape, not the cooperative one: axe reports a node by its
+    // outerHTML, so a wrapper that merely contains the guard must not be
+    // mistaken for the guard. This is the real layout of the three
+    // document.body audits (Drawer, ChatDockShell, pipeline card drawer).
+    const { container } = render(
+      <div>
+        <div aria-hidden="true">
+          <span
+            data-radix-focus-guard=""
+            tabIndex={0}
+            style={{ outline: "none", opacity: 0, pointerEvents: "none" }}
+          />
+          <button type="button">unreachable, still in the tab order</button>
+        </div>
+      </div>,
+    );
+    await expect(
+      expectNoViolationsStrict(container, "ours, around a guard"),
+    ).rejects.toThrow(/aria-hidden-focus/);
+  });
 });
 
 // Every axe entry in the studio goes through this one helper: that is what
@@ -163,24 +200,17 @@ describe("vendor sentinels", () => {
 // of one file. A second, hand-rolled axe.run would reopen the hole in
 // silence — so the helper is the only place allowed to call it.
 describe("one net, no second one", () => {
-  const RAW = import.meta.glob("/src/**/*.{ts,tsx}", {
-    query: "?raw",
-    import: "default",
-    eager: true,
-  }) as Record<string, string>;
-
   it("scans a non-trivial number of source modules, test files included", () => {
-    // Guards against a glob-scope regression making the next assertion
+    // Guards against a glob-scope regression making the next assertions
     // vacuous — a lax net would live in a TEST file, so test files must be
     // in scope.
-    expect(Object.keys(RAW).length).toBeGreaterThan(300);
-    expect(Object.keys(RAW)).toContain("/src/__tests__/a11y/primitives.test.tsx");
-    // Vite's glob excludes the importing module, so this file is the one
-    // place the guard below structurally cannot see: it is allowlisted there
-    // too, so the guard keeps working if that ever changes.
-    expect(Object.keys(RAW)).not.toContain(
-      "/src/__tests__/a11y/axeHelpers.test.tsx",
-    );
+    const paths = allFiles.map(([path]) => path);
+    expect(paths.length).toBeGreaterThan(300);
+    expect(paths).toContain("/src/__tests__/a11y/primitives.test.tsx");
+    expect(paths).toContain("/src/__tests__/a11y/axeHelpers.test.tsx");
+    // Vite's glob excludes the module that declares it, so the scanner
+    // itself is the one file this list cannot see. It holds no axe call.
+    expect(paths).not.toContain("/src/__tests__/a11y/_scanner.ts");
   });
 
   it("calls axe.run() from axeHelpers.ts and nowhere else", () => {
@@ -190,7 +220,7 @@ describe("one net, no second one", () => {
       "/src/__tests__/a11y/axeHelpers.ts",
       "/src/__tests__/a11y/axeHelpers.test.tsx",
     ];
-    const hits = Object.entries(RAW)
+    const hits = allFiles
       .filter(([path]) => !NET.includes(path))
       .filter(([, src]) => /\baxe\.run\s*\(/.test(src))
       .map(([path]) => path);
@@ -203,14 +233,14 @@ describe("one net, no second one", () => {
   });
 
   it("is what the suites actually use — dozens of strict entries", () => {
-    const entries = Object.values(RAW).reduce(
-      (n, src) => n + (src.match(/expectNoViolationsStrict\(/g)?.length ?? 0),
+    const entries = allFiles.reduce(
+      (n, [, src]) => n + (src.match(/expectNoViolationsStrict\(/g)?.length ?? 0),
       0,
     );
     expect(entries).toBeGreaterThan(40);
     // No lax sibling survives: the hole was a helper that read
     // results.violations only.
-    const lax = Object.entries(RAW)
+    const lax = allFiles
       .filter(([, src]) => /\bexpectNoViolations\s*\(/.test(src))
       .map(([path]) => path);
     expect(lax).toHaveLength(0);

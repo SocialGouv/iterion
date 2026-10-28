@@ -80,11 +80,18 @@ describe("toolbar naming", () => {
 
   it("leaves no two controls sharing an accessible name", () => {
     mountToolbar();
-    const names = screen
-      .getAllByRole("button")
-      .map((b) => b.getAttribute("aria-label") ?? b.textContent ?? "");
-    expect(names.length).toBeGreaterThan(6);
-    expect(new Set(names).size).toBe(names.length);
+    const buttons = screen.getAllByRole("button");
+    expect(buttons.length).toBeGreaterThan(6);
+    // The toolbar is too wide to enumerate, so the candidate name is READ
+    // from the markup and then handed to the real accessible-name algorithm
+    // (getAllByRole's `name` option): a candidate the algorithm does not
+    // answer to is a reading error and throws here, and more than one answer
+    // is the collision this guards against. A name this test computed itself
+    // would prove nothing.
+    for (const button of buttons) {
+      const candidate = button.getAttribute("aria-label") ?? button.textContent ?? "";
+      expect(screen.getAllByRole("button", { name: candidate })).toHaveLength(1);
+    }
   });
 });
 

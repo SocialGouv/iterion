@@ -203,6 +203,10 @@ export function ToolPayloadBlock({
     value.length + extra.length < totalSize;
   const loaded = value.length + extra.length;
   const fullValue = extra ? value + extra : value;
+  // One string for the eye and for the name — see the button below.
+  const moreLabel = loading
+    ? "loading…"
+    : `load more (+${formatBytes(Math.min(FETCH_CHUNK_BYTES, (totalSize ?? loaded) - loaded))})`;
 
   useLayoutEffect(() => {
     if (!open || expanded) {
@@ -307,12 +311,13 @@ export function ToolPayloadBlock({
               type="button"
               onClick={() => void loadMore()}
               disabled={loading}
-              aria-label={`load more of ${label} of ${source}`}
+              // The name is built FROM the rendered string, byte figure and
+              // all: a name that drops what the eye reads fails SC 2.5.3 and
+              // takes the size with it.
+              aria-label={`${moreLabel} of ${label} of ${source}`}
               className="text-caption text-fg-subtle hover:text-fg-default px-1 py-0.5 rounded hover:bg-surface-2 disabled:opacity-50"
             >
-              {loading
-                ? "loading…"
-                : `load more (+${formatBytes(Math.min(FETCH_CHUNK_BYTES, (totalSize ?? loaded) - loaded))})`}
+              {moreLabel}
             </button>
           )}
         </div>

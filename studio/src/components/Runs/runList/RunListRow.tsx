@@ -56,8 +56,11 @@ export const RunListRow = memo(function RunListRow({
       <td className="px-4 py-2">
         <div className="flex items-center gap-2">
           {/* role="img": ARIA in HTML prohibits aria-label on a roleless
-              span (axe aria-prohibited-attr), and the grip IS a glyph with
-              a text alternative — same shape as ui/HelpHint. */}
+              span (axe aria-prohibited-attr), and the grip IS a glyph whose
+              text alternative says what the pointer can do with it — same
+              shape as ui/HelpHint. It claims no operation, because there is
+              none to claim: dragging a reference has no keyboard or
+              single-pointer path yet (#2770). */}
           <span
             role="img"
             className="shrink-0 cursor-grab select-none text-fg-muted"

@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { expectNoViolationsStrict } from "@/__tests__/a11y/axeHelpers";
 
-import { ToolCallList } from "./ToolCalls";
+import { ToolCallList, ToolPayloadBlock } from "./ToolCalls";
 
 afterEach(cleanup);
 
@@ -81,11 +81,86 @@ describe("tool calls naming", () => {
 
   it("leaves no two controls sharing an accessible name", () => {
     mountTools();
-    const names = screen
-      .getAllByRole("button")
-      .map((b) => b.getAttribute("aria-label") ?? b.textContent ?? "");
-    expect(names.length).toBeGreaterThan(4);
-    expect(new Set(names).size).toBe(names.length);
+    // Every name is matched by the REAL accessible-name algorithm (the
+    // `name` option of getAllByRole), one button each, and the surface holds
+    // no other button — so a collision cannot hide behind a name this test
+    // computed itself.
+    const expected = [
+      "copy raw input of Bash seq 1",
+      "copy output of Bash seq 1",
+      "show raw event of Bash seq 1",
+      "copy raw input of Bash seq 2",
+      "copy the error of Bash seq 2",
+      "show raw event of Bash seq 2",
+    ];
+    for (const name of expected) {
+      expect(screen.getAllByRole("button", { name })).toHaveLength(1);
+    }
+    expect(screen.getAllByRole("button")).toHaveLength(expected.length);
+  });
+});
+
+// The payload block's own two controls only exist when there is more to
+// fetch (`hasMore`) or more to show (`overflow`) — neither of which a fixture
+// gets for free: jsdom has no layout, so scrollHeight is stubbed, and the
+// sidecar-blob props have to be supplied. Without this they are unexercised,
+// and an unexercised control is where a name goes wrong unseen.
+describe("tool payload block naming", () => {
+  function mountBlock() {
+    const view = render(
+      <main>
+        <ToolPayloadBlock
+          label="output"
+          source="Bash seq 7"
+          value={"x".repeat(400)}
+          runId="run-1"
+          toolUseID="tu-1"
+          kind="output"
+          totalSize={200_000}
+        />
+      </main>,
+    );
+    const details = view.container.querySelector("details");
+    if (!details) throw new Error("the payload block renders a disclosure");
+    // jsdom queues <details>' own toggle event, so the open state is set the
+    // way the browser would and the component's onToggle is driven directly
+    // — the block's `overflow` measurement only runs while it is open.
+    (details as HTMLDetailsElement).open = true;
+    fireEvent(details, new Event("toggle"));
+    return view;
+  }
+
+  it("names load more after what it renders, figure included (SC 2.5.3)", () => {
+    mountBlock();
+    const more = screen.getByRole("button", { name: /^load more \(\+/ });
+    expect(more.textContent).toBe("load more (+64.0 KiB)");
+    expect(more.getAttribute("aria-label")).toBe(
+      "load more (+64.0 KiB) of output of Bash seq 7",
+    );
+  });
+
+  it("names expand after what it renders, qualified by its row", () => {
+    const pre = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "scrollHeight",
+    );
+    // jsdom measures everything 0, so `overflow` can never become true and
+    // the expand control never renders. Stubbed for this case only.
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get: () => 9999,
+    });
+    try {
+      mountBlock();
+      const expand = screen.getByRole("button", { name: /^expand / });
+      expect(expand.textContent).toBe("expand");
+      expect(expand.getAttribute("aria-label")).toBe(
+        "expand output of Bash seq 7",
+      );
+    } finally {
+      if (pre) Object.defineProperty(HTMLElement.prototype, "scrollHeight", pre);
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>)["scrollHeight"];
+    }
   });
 });
 

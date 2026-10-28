@@ -70,9 +70,10 @@ describe("a11y / composed surfaces", () => {
     // Mounted the way the console mounts it: inside the studio base and the
     // nested /admin route, which is what decides its hrefs.
     //
-    // axe only: it reports a dangling aria-labelledby as *incomplete* and
-    // expectNoViolationsStrict reads violations only, so the section naming and the
-    // current entry are pinned by AdminNav.test.tsx, not here.
+    // The dangling aria-labelledby axe reports as *incomplete* is the one
+    // this entry used to drop; the strict helper fails on it now. The
+    // section naming and the current entry stay pinned by AdminNav.test.tsx
+    // — by accessible name, which is more than an axe rule can say.
     const loc = memoryLocation({ path: `/studio${ADMIN_BASE}/users` });
     await expectNoViolationsStrict(
       mount(

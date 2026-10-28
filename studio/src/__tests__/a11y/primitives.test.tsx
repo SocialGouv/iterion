@@ -29,11 +29,12 @@ import { Drawer } from "@/components/ui/Drawer";
 import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
 import { setupMatchMedia, expectNoViolationsStrict } from "./axeHelpers";
 
-// Smoke a11y test for the shared UI primitives. Uses axe-core in
-// jsdom and focuses on WCAG 2.1 A + AA rules. The aim is to catch
-// regressions on the building blocks — full-page audits stay manual
-// (axe browser extension) because the canvas + WebSocket flows are
-// out of jsdom's reach.
+// Smoke a11y test for the shared UI primitives. Runs axe-core in jsdom over
+// the scope axeHelpers declares — WCAG 2.0/2.1/2.2 A + AA plus the named
+// best-practice rules — and fails on needs-review as well as on violations.
+// The aim is to catch regressions on the building blocks; full-page audits
+// stay manual (axe browser extension) because the canvas + WebSocket flows
+// are out of jsdom's reach.
 
 // jsdom lacks matchMedia (DesktopOnlyNotice + theme store read it on mount).
 setupMatchMedia();

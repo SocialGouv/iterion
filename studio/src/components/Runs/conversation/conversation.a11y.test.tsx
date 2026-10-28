@@ -38,11 +38,13 @@ describe("gate inbound payload naming", () => {
 
   it("leaves no two controls sharing an accessible name", () => {
     mountPayload();
-    const names = screen
-      .getAllByRole("button")
-      .map((b) => b.getAttribute("aria-label") ?? b.textContent ?? "");
-    expect(names.length).toBeGreaterThan(1);
-    expect(new Set(names).size).toBe(names.length);
+    // Matched by the real accessible-name algorithm, one button per name,
+    // and no other button on the surface.
+    const expected = ["Copy JSON of plan", "Copy JSON of budget"];
+    for (const name of expected) {
+      expect(screen.getAllByRole("button", { name })).toHaveLength(1);
+    }
+    expect(screen.getAllByRole("button")).toHaveLength(expected.length);
   });
 });
 

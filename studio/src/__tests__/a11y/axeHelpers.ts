@@ -168,6 +168,18 @@ const VENDOR_SENTINELS: { rule: string; marker: string; why: string }[] = [
   },
 ];
 
+/**
+ * The node's OWN opening tag. axe reports `html` as the node's outerHTML, so
+ * a marker searched in the whole string also matches a surface's own element
+ * that merely CONTAINS the library's sentinel — which is how a wrapper's real
+ * aria-hidden-focus violation gets dropped. The sentinel is identified by the
+ * attributes it carries, so the opening tag is the whole question.
+ */
+function openingTag(html: string): string {
+  const end = html.indexOf(">");
+  return end === -1 ? html : html.slice(0, end + 1);
+}
+
 function withoutVendorSentinels(results: axe.Result[]): axe.Result[] {
   return results
     .map((result) => {
@@ -176,7 +188,8 @@ function withoutVendorSentinels(results: axe.Result[]): axe.Result[] {
       return {
         ...result,
         nodes: result.nodes.filter(
-          (n) => !markers.some((s) => n.html.includes(s.marker)),
+          (n) =>
+            !markers.some((s) => openingTag(n.html).includes(s.marker)),
         ),
       };
     })

@@ -14,6 +14,16 @@ export const files: [string, string][] = Object.entries(RAW).filter(
   ([path]) => !path.includes("/__tests__/") && !/\.test\.tsx?$/.test(path),
 );
 
+/**
+ * Every source module, TEST FILES INCLUDED — the scope a guard needs when the
+ * pattern it hunts would live in a test (a second, lax axe net, say). `files`
+ * stays the production subset, which is what a discipline guard wants.
+ *
+ * Vite's glob excludes the module that declares it, so this file is this
+ * list's one blind spot; its consumers assert that.
+ */
+export const allFiles: [string, string][] = Object.entries(RAW);
+
 /** Per-line scan: collect `path:line  excerpt` for every line matching `re`. */
 export function scan(
   re: RegExp,
