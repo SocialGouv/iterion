@@ -449,9 +449,31 @@ func judgeTemplate(t podTemplate, all []podTemplate, report *Report) error {
 		if err != nil {
 			return fmt.Errorf("%s %s: %s: %w", t.kind, t.name, site, err)
 		}
+		foldMatchLabelKeys(t, constraint, &sel)
 		judgeOwn(t, all, site, sel, report)
 	}
 	return nil
+}
+
+// foldMatchLabelKeys folds a term's or constraint's matchLabelKeys into
+// its selector the way the API server does at admission: `key in (the
+// pod's own value)` for every key the template carries — an Exists for a
+// key the controller stamps at runtime, whose value no template knows.
+// Both sites that carry the field go through here: the pod (anti-)affinity
+// terms and the topologySpreadConstraints.
+func foldMatchLabelKeys(t podTemplate, holder map[string]any, sel *selector) {
+	keys, _ := holder["matchLabelKeys"].([]any)
+	if len(keys) == 0 || !sel.present {
+		return
+	}
+	for _, k := range keys {
+		key := fmt.Sprint(k)
+		if v, ok := t.labels[key]; ok {
+			sel.exprs = append(sel.exprs, requirement{key: key, operator: "In", values: []string{v}})
+		} else if t.assumed[key] {
+			sel.exprs = append(sel.exprs, requirement{key: key, operator: "Exists"})
+		}
+	}
 }
 
 // judgeTerm judges one podAffinityTerm. Anti-affinity terms are judged
@@ -483,16 +505,7 @@ func judgeTerm(t podTemplate, all []podTemplate, site string, raw any, anti bool
 		})
 		return nil
 	}
-	if keys, _ := term["matchLabelKeys"].([]any); len(keys) > 0 && sel.present {
-		for _, k := range keys {
-			key := fmt.Sprint(k)
-			if v, ok := t.labels[key]; ok {
-				sel.exprs = append(sel.exprs, requirement{key: key, operator: "In", values: []string{v}})
-			} else if t.assumed[key] {
-				sel.exprs = append(sel.exprs, requirement{key: key, operator: "Exists"})
-			}
-		}
-	}
+	foldMatchLabelKeys(t, term, &sel)
 	if anti {
 		judgeOwn(t, all, site, sel, report)
 		return nil

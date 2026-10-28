@@ -453,6 +453,15 @@ func TestMatchLabelKeysFollowTheAPIServer(t *testing.T) {
 	if report := judge(t, dead); len(report.Dead()) != 1 {
 		t.Fatalf("a dead selector stays dead whatever matchLabelKeys adds, got %+v", report.Findings)
 	}
+	// The same fold on a topologySpreadConstraint: a selector that matches
+	// only a PEER until matchLabelKeys adds `app in (a)` is dead, not
+	// cross-workload (the scheduler ANDs the keys into the spread selector).
+	spreadA := workload("Deployment", "a", "", map[string]string{"app": "a", "tier": "x"},
+		"topologySpreadConstraints:\n  - topologyKey: kubernetes.io/hostname\n    maxSkew: 1\n    whenUnsatisfiable: ScheduleAnyway\n    matchLabelKeys: [app]\n    labelSelector:\n      matchLabels:\n        tier: y\n")
+	peerB := workload("Deployment", "b", "", map[string]string{"app": "b", "tier": "y"}, "")
+	if report := judge(t, spreadA+"---\n"+peerB); len(report.Dead()) != 1 {
+		t.Fatalf("a spread whose folded selector matches no pod is dead, got %+v", report.Findings)
+	}
 	mismatch := workload("Deployment", "web", "", map[string]string{"app": "web"},
 		"affinity:\n  podAntiAffinity:\n    requiredDuringSchedulingIgnoredDuringExecution:\n      - topologyKey: kubernetes.io/hostname\n        mismatchLabelKeys: [app]\n        labelSelector:\n          matchLabels:\n            app: web\n")
 	report := judge(t, mismatch)

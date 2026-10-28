@@ -7,25 +7,43 @@
 # and their status come from `helm dependency list` (no network); undeclared
 # archives are removed, and a declared dependency that is missing or at the
 # wrong version is fetched with `helm dependency update` — the one network
-# step, skipped once the archives are right.
+# step, skipped once the archives are right. The one thing this check must
+# never do is remove a DECLARED archive: a listing it could not read is a
+# failure of the check, never an empty list.
 # Usage: scripts/chart-check-deps.sh <chart dir>
 set -eu
 chart=${1:?usage: chart-check-deps.sh <chart dir>}
 [ -f "$chart/Chart.yaml" ] || { echo "chart-check-deps: no Chart.yaml in $chart" >&2; exit 2; }
-# NAME VERSION REPOSITORY STATUS…: the status may be several words ("wrong version").
+command -v helm >/dev/null 2>&1 || { echo "chart-check-deps: helm is not on PATH (run under devbox)" >&2; exit 2; }
+# NAME, VERSION, REPOSITORY and STATUS are tab-separated and space-padded; an
+# empty REPOSITORY (a local dependency) is an empty cell, kept by -F'\t'.
+# helm's own WARNING lines (an unpacked directory not in Chart.yaml) are not
+# rows. A failing `helm dependency list` (a corrupt archive next to the
+# declared ones, helm itself broken) fails the check with its message.
 dependency_list() {
-  helm dependency list "$chart" | awk 'NR>1 && NF>=4 {status=$4; for (i=5; i<=NF; i++) status=status" "$i; print $1 "\t" status}'
+  out=$(helm dependency list "$chart") || { echo "chart-check-deps: helm dependency list failed — nothing was removed:" >&2; printf '%s\n' "$out" >&2; return 1; }
+  # The header is skipped by content, not by line number: helm prints its
+  # WARNING lines before it.
+  printf '%s\n' "$out" | tr -d '\r' | awk -F'\t' 'NF>=4 && $1 !~ /^WARNING/ {name=$1; status=$4; gsub(/^ +| +$/, "", name); gsub(/^ +| +$/, "", status); if (name != "" && name != "NAME") print name "\t" status}'
 }
-declared=$(dependency_list | cut -f1 | tr '\n' ' ')
+listing=$(dependency_list) || exit 1
+declared=$(printf '%s\n' "$listing" | cut -f1 | tr '\n' ' ')
+# An unpacked sub-chart DIRECTORY is rendered by helm too; this check removes
+# no directory — it refuses, and the operator decides.
+for dir in "$chart"/charts/*/; do
+  [ -d "$dir" ] || continue
+  echo "chart-check-deps: $dir is an unpacked sub-chart directory — helm renders it; remove or pack it by hand (this check never removes a directory)" >&2
+  exit 1
+done
 for archive in "$chart"/charts/*.tgz; do
   [ -e "$archive" ] || continue
-  entry=$(tar -tzf "$archive" | grep -E '^[^/]+/Chart\.yaml$' | head -1 || true)
+  entry=$(tar -tzf "$archive" 2>/dev/null | grep -E '^[^/]+/Chart\.yaml$' | head -1 || true)
   name=""
   # The chart's own `name:` is the column-0 key, never one nested under
   # maintainers: (the nats chart's first `name:` is "The NATS Authors").
-  [ -n "$entry" ] && name=$(tar -xzOf "$archive" "$entry" | awk '/^name:/{gsub(/["'"'"']/,"",$2); print $2; exit}')
+  [ -n "$entry" ] && name=$(tar -xzOf "$archive" "$entry" | tr -d '\r' | awk '/^name:/{gsub(/["'"'"']/,"",$2); print $2; exit}')
   if [ -z "$name" ]; then
-    echo "chart-check-deps: removing $archive — not a chart archive (no Chart.yaml inside)"
+    echo "chart-check-deps: removing $archive — not a chart archive (no readable Chart.yaml inside)"
     rm -v -- "$archive"
     continue
   fi
@@ -35,7 +53,8 @@ for archive in "$chart"/charts/*.tgz; do
   esac
 done
 # Statuses read AFTER the prune, so an archive this very run removed shows as missing.
-needs_update=$(dependency_list | awk -F'\t' '$2 != "ok" {print $1 " (" $2 ")"}' | tr '\n' ' ')
+listing=$(dependency_list) || exit 1
+needs_update=$(printf '%s\n' "$listing" | awk -F'\t' '$2 != "ok" {print $1 " (" $2 ")"}' | tr '\n' ' ')
 if [ -n "$needs_update" ]; then
   echo "chart-check-deps: dependencies not in place — ${needs_update}— helm dependency update (network)"
   helm dependency update "$chart"
