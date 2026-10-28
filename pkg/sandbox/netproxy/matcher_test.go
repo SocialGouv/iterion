@@ -261,6 +261,14 @@ func TestPresetIterionDefault(t *testing.T) {
 		"get.jetify.com",
 		"devbox.sh",
 		"docs.devbox.sh",
+		// Bedrock lives on regional endpoints (and their FIPS and control-plane
+		// forms); Vertex on aiplatform.googleapis.com and its regional hosts.
+		"bedrock-runtime.us-east-1.amazonaws.com",
+		"bedrock-runtime.eu-west-3.amazonaws.com",
+		"bedrock-runtime-fips.us-gov-west-1.amazonaws.com",
+		"bedrock.us-east-1.amazonaws.com",
+		"aiplatform.googleapis.com",
+		"us-central1-aiplatform.googleapis.com",
 	}
 	for _, h := range allowed {
 		if !p.Allow(h) {
@@ -270,6 +278,8 @@ func TestPresetIterionDefault(t *testing.T) {
 	denied := []string{
 		"evil.site",
 		"169.254.169.254",
+		"s3.us-east-1.amazonaws.com", // the rest of AWS stays shut
+		"evil.bedrock-runtime.us-east-1.amazonaws.com",
 	}
 	for _, h := range denied {
 		if p.Allow(h) {
@@ -318,6 +328,41 @@ func TestDefaultRulesAllowEveryOpenAIWireHost(t *testing.T) {
 	for _, host := range []string{"api.openai.com", "chatgpt.com"} {
 		if !p.Allow(host) {
 			t.Errorf("the iterion-default preset refuses %q — a sandboxed claw node spending its credential there fails on egress", host)
+		}
+	}
+}
+
+// A `*` between two fixed label runs matches exactly one label there — the
+// shape of a regional endpoint, `bedrock-runtime.<region>.amazonaws.com`,
+// which no leading wildcard can name without opening the whole domain.
+func TestAnInteriorStarMatchesExactlyOneLabel(t *testing.T) {
+	p, err := Compile(ModeAllowlist, []string{"bedrock-runtime.*.amazonaws.com"})
+	if err != nil {
+		t.Fatalf("an interior single-label wildcard must compile: %v", err)
+	}
+	cases := map[string]bool{
+		"bedrock-runtime.us-east-1.amazonaws.com":      true,
+		"bedrock-runtime.eu-west-3.amazonaws.com":      true,
+		"BEDROCK-RUNTIME.EU-WEST-3.AMAZONAWS.COM:443":  true,
+		"bedrock-runtime.amazonaws.com":                false, // zero labels
+		"bedrock-runtime.a.b.amazonaws.com":            false, // two labels
+		"evil.bedrock-runtime.us-east-1.amazonaws.com": false, // another prefix
+		"bedrock-runtime.us-east-1.amazonaws.com.evil": false, // another suffix
+		"s3.us-east-1.amazonaws.com":                   false, // another service
+	}
+	for host, want := range cases {
+		if got := p.Allow(host); got != want {
+			t.Errorf("Allow(%q) = %v, want %v", host, got, want)
+		}
+	}
+}
+
+// The wildcard grammar stays small: one `*` or `**` segment, a whole label,
+// `**` leading only. Everything else is refused at compile time, as before.
+func TestCompileRefusesEveryOtherWildcardShape(t *testing.T) {
+	for _, raw := range []string{"a*b.com", "github.com.*", "*.x.*.com", "bedrock.**.amazonaws.com", "**.x.*.com", "a.*"} {
+		if _, err := Compile(ModeAllowlist, []string{raw}); err == nil {
+			t.Errorf("Compile(%q) accepted a wildcard shape the grammar does not define", raw)
 		}
 	}
 }

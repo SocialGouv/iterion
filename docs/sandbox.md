@@ -412,6 +412,7 @@ Pattern syntax (last-match-wins evaluation):
 | `api.anthropic.com`  | exact case-insensitive host              |
 | `*.example.com`      | exactly one DNS label (`foo.example.com`) |
 | `**.example.com`     | one or more labels (`a.b.example.com`)   |
+| `api.*.example.com`  | exactly one label in the middle (`api.eu-west-3.example.com`) |
 | `**`                 | any host (the "open" sentinel)            |
 | `1.2.3.4`            | IPv4 literal exact match                  |
 | `10.0.0.0/8`         | CIDR range                                |

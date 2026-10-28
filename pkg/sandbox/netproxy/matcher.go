@@ -16,6 +16,7 @@
 //
 //	*.example.com    — exactly one DNS label
 //	**.example.com   — one or more labels (greedy, dots allowed)
+//	api.*.example.com — exactly one label in the middle (a regional endpoint)
 //	**               — any host (the "open" sentinel)
 //	literal          — exact case-insensitive host match
 //	!pattern         — exclusion (negation)
@@ -66,6 +67,9 @@ type rule struct {
 	// glob fields (compiled from literal):
 	suffix string // labels after the wildcard (e.g. "example.com")
 	star   string // "*" (single label) or "**" (multi-label) or ""
+	// prefix holds the labels before an interior `*` (`api.*.example.com`
+	// keeps "api"); empty for a leading wildcard.
+	prefix string
 }
 
 // Compile parses the rule list into a [Policy]. An empty Mode defaults
@@ -249,10 +253,17 @@ func compileRule(raw string) (rule, error) {
 		r.star = "*"
 		r.suffix = raw[len("*."):]
 	default:
-		// Wildcard not in the leading position. Reject — supporting
-		// arbitrary positions inflates the surface for little gain
-		// (every meaningful hostname pattern leads with the wildcard).
-		return r, &ErrInvalidRule{Raw: raw, Reason: "wildcard must be the leading label (e.g. *.example.com or **.example.com)"}
+		// An interior `*`: exactly one label between two fixed label runs —
+		// `bedrock-runtime.*.amazonaws.com`, the shape of a regional
+		// endpoint, which a leading wildcard could only name by opening the
+		// whole domain. `**` stays leading-only: a greedy run in the middle
+		// is bounded on neither side.
+		prefix, suffix, ok := strings.Cut(raw, ".*.")
+		if !ok || prefix == "" || suffix == "" || strings.ContainsAny(prefix+suffix, "*") {
+			return r, &ErrInvalidRule{Raw: raw, Reason: "a wildcard is a whole label: leading (*.example.com, **.example.com) or one interior label (api.*.example.com)"}
+		}
+		r.star, r.prefix, r.suffix = "*", prefix, suffix
+		return r, nil
 	}
 	if r.suffix == "" {
 		return r, &ErrInvalidRule{Raw: raw, Reason: "wildcard requires a suffix label"}
@@ -285,6 +296,15 @@ func (r rule) matches(host string) bool {
 		// match if host equals suffix OR ends with "."+suffix
 		return host == r.suffix || strings.HasSuffix(host, "."+r.suffix)
 	case "*":
+		if r.prefix != "" {
+			// `<prefix>.*.<suffix>`: exactly one label between the two.
+			head, ok := strings.CutPrefix(host, r.prefix+".")
+			if !ok || !strings.HasSuffix(head, "."+r.suffix) {
+				return false
+			}
+			mid := strings.TrimSuffix(head, "."+r.suffix)
+			return mid != "" && !strings.Contains(mid, ".")
+		}
 		if r.suffix == "" {
 			// "*" alone → exactly one label, no dot
 			return !strings.Contains(host, ".")

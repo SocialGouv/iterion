@@ -48,7 +48,13 @@ func iterionDefaultRules() []string {
 		// without it the CONNECT proxy blocks the upstream and the
 		// claw call fails before any token is produced.
 		"api.x.ai",
-		"**.bedrock.amazonaws.com",
+		// Bedrock lives on regional endpoints — bedrock-runtime.<region>, its
+		// FIPS twin and the bedrock.<region> control plane — never under a
+		// bedrock.amazonaws.com label: the old `**.bedrock.amazonaws.com`
+		// matched no real host, and a Bedrock node died at the egress.
+		"bedrock-runtime.*.amazonaws.com",
+		"bedrock-runtime-fips.*.amazonaws.com",
+		"bedrock.*.amazonaws.com",
 		"**.googleapis.com",
 		"**.openai.azure.com",
 		"api.mistral.ai",
