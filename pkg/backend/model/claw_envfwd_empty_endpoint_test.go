@@ -10,14 +10,16 @@ import (
 // The two lists must not drift apart: every endpoint-shaped name on the
 // forwarding list must appear in the explicit-empty list, or the next
 // endpoint added to providerCredentialEnvVars silently reopens the .env
-// road this fix closes.
-func TestProviderEndpointEnvVarsCoversEveryEndpointOnTheForwardList(t *testing.T) {
+// road this fix closes. The routing names that are not endpoint-shaped —
+// a deployment, a project, a region, an API version — are held to the same
+// rule by their own derivation (TestEveryVendoredProviderEnvNameIsDecided).
+func TestProviderRoutingEnvVarsCoversEveryEndpointOnTheForwardList(t *testing.T) {
 	for _, name := range providerCredentialEnvVars {
 		if !strings.HasSuffix(name, "_BASE_URL") && !strings.HasSuffix(name, "_ENDPOINT") {
 			continue
 		}
-		if !slices.Contains(providerEndpointEnvVars, name) {
-			t.Errorf("%s is on the forwarding list and endpoint-shaped, but not in providerEndpointEnvVars — a workspace .env picks where it dials", name)
+		if !slices.Contains(providerRoutingEnvVars, name) {
+			t.Errorf("%s is on the forwarding list and endpoint-shaped, but not in providerRoutingEnvVars — a workspace .env picks where it dials", name)
 		}
 	}
 }
@@ -28,7 +30,7 @@ func TestProviderEndpointEnvVarsCoversEveryEndpointOnTheForwardList(t *testing.T
 // absent name, or the repository under review picks which infrastructure a
 // forwarded credential dials.
 func TestForwardableProviderEnv_ForwardsEmptyEndpoints(t *testing.T) {
-	for _, name := range providerEndpointEnvVars {
+	for _, name := range providerRoutingEnvVars {
 		t.Setenv(name, "")
 	}
 	// Keys keep the skip: an empty key reads as "auth attempted, invalid",
@@ -41,7 +43,7 @@ func TestForwardableProviderEnv_ForwardsEmptyEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
-	for _, name := range providerEndpointEnvVars {
+	for _, name := range providerRoutingEnvVars {
 		v, ok := env[name]
 		if !ok {
 			t.Errorf("%s crossed ABSENT — the workspace .env fills it and picks the endpoint a forwarded credential dials", name)
@@ -61,7 +63,7 @@ func TestForwardableProviderEnv_ForwardsEmptyEndpoints(t *testing.T) {
 // A host-POSED endpoint crosses with its value: the explicit-empty path is
 // only for names the host left unset.
 func TestForwardableProviderEnv_HostSetEndpointStillCrosses(t *testing.T) {
-	for _, name := range providerEndpointEnvVars {
+	for _, name := range providerRoutingEnvVars {
 		t.Setenv(name, "")
 	}
 	t.Setenv("XAI_BASE_URL", "https://operator-proxy.example/v1")

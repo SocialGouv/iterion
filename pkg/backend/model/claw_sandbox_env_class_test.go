@@ -408,7 +408,7 @@ func assertRunnerHomeShape(t *testing.T, home, hostHome, workDir string) {
 // from envStateConsults would go unseen.
 var crossingSpellings = map[string]string{
 	"var providerCredentialEnvVars": "the forwarding list itself",
-	"var providerEndpointEnvVars":   "the endpoint subset, which forwardableProviderEnv forwards as explicit empties when the host leaves them unset",
+	"var providerRoutingEnvVars":    "the routing subset, which forwardableProviderEnv forwards as explicit empties when the host leaves them unset",
 	"forwardableProviderEnv":        "sets the crossing: a refusal, the run's own credentials, the host's resolved values",
 	"var byokEnvVar":                "the variable a run's own key crosses as, which forwardableProviderEnv sets",
 	"anthropicWireShadowEnv":        "the ambient keys the crossing blanks, so the run's forfait outranks them",

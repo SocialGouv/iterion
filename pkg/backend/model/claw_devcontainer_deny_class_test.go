@@ -21,7 +21,7 @@ import (
 func TestDevcontainerDenyClassCoversEveryNameTheRunnerIsHanded(t *testing.T) {
 	sources := map[string][]string{
 		"providerCredentialEnvVars": providerCredentialEnvVars,
-		"providerEndpointEnvVars":   providerEndpointEnvVars,
+		"providerRoutingEnvVars":    providerRoutingEnvVars,
 		"byokEnvVar":                slices.Sorted(maps.Values(byokEnvVar)),
 		"crossedByItsOwnBranch":     slices.Sorted(maps.Keys(crossedByItsOwnBranch)),
 	}

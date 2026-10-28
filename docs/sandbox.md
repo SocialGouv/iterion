@@ -1018,19 +1018,33 @@ binary in (subject to architecture matching) via `runArgs`:
 registry from the environment the launcher forwards, and from nothing
 else of the host's: the provider keys, the endpoints they are spent on
 (`OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `MOONSHOT_BASE_URL`,
-`XAI_BASE_URL`, …), the spend and client-identity settings, and the
-knobs its own loop reads (`ITERION_CLAW_STREAM_COLD_TIMEOUT` /
-`_IDLE_TIMEOUT`) — each when the host sets it. The endpoints on that
-list (`OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `MOONSHOT_BASE_URL`,
-`XAI_BASE_URL`, `AZURE_OPENAI_ENDPOINT`) cross as explicit EMPTIES when
-the host leaves them unset, and the exec env outranks the container's,
+`XAI_BASE_URL`, …), the routing settings that decide WHICH deployment,
+project, region or API contract a key is spent on
+(`AZURE_OPENAI_DEPLOYMENT`, `AZURE_OPENAI_API_VERSION`,
+`GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_REGION`), the spend and
+client-identity settings, and the knobs its own loop reads
+(`ITERION_CLAW_STREAM_COLD_TIMEOUT` / `_IDLE_TIMEOUT`) — each when the
+host sets it. Those routing names are read by claw's own provider
+packages rather than by a provider table, which is why they were missing
+until #1804; `TestEveryVendoredProviderEnvNameIsDecided` derives them
+from the vendored claw the registry imports, so a provider claw gains
+arrives forwarded or red. The whole routing list — the endpoints plus
+the four names above and `CLAW_OPENAI_REASONING_SUMMARY` — crosses as
+explicit EMPTIES when the host leaves them unset, and the exec env
+outranks the container's,
 so nothing inside — the image's `ENV`, the workflow's `sandbox.env:`,
 the workspace's `.env` — re-points a forwarded credential: the host env
 is the supported channel for them. Any OTHER name the host leaves unset
 is whatever the container's own environment says — its image, a
 `containerEnv` key the deny class above lets through, and the
 workspace's `.env`, which the runner loads at start as the CLI does —
-so set what you rely on, and keep the run on an allowlist. The retry budget the launcher
+so set what you rely on, and keep the run on an allowlist. What
+deliberately does NOT cross: the web-search credentials
+(`BRAVE_API_KEY`, `SEARXNG_URL`, `SEARXNG_ENDPOINT`). `web_search` is
+served on the LAUNCHER, with the launcher's credentials
+([pkg/backend/tool/sandbox_placement.go](../pkg/backend/tool/sandbox_placement.go)),
+so a key in the container would buy nothing and travel into a container a
+fork's agent runs in. The retry budget the launcher
 resolves from `ITERION_NODE_MAX_RETRIES` / `_TRANSIENT_RETRIES` rides the
 task envelope instead: it bounds billed attempts, so the container's own
 environment never sets it — a runner image older than that field keeps its built-in

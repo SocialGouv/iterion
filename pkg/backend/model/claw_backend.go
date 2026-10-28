@@ -2108,6 +2108,28 @@ var providerCredentialEnvVars = []string{
 	// sandboxed node, which must wait as long as the host's would.
 	"ITERION_CLAW_STREAM_COLD_TIMEOUT",
 	"ITERION_CLAW_STREAM_IDLE_TIMEOUT",
+	// The routing settings claw's own provider packages read, which no
+	// provider table carries — so the walk over the tables never saw them
+	// and the launcher's value stayed on the launcher (#1804). Each decides
+	// WHICH deployment, project, region or API contract the forwarded
+	// credential is spent on, and each is non-secret; they cross as explicit
+	// empties beside the endpoints for the same reason (providerRoutingEnvVars).
+	//
+	// foundry: the deployment is a fallback for a model id that names none,
+	// and the API version is the silent one — claw defaults it to a date,
+	// so a host talking to one API contract had a sandboxed twin talking to
+	// another with nothing said.
+	"AZURE_OPENAI_DEPLOYMENT",
+	"AZURE_OPENAI_API_VERSION",
+	// vertex: the project is refused loudly when unset, the region defaults
+	// to claw's. Both still cross: a node must spend the launcher's project,
+	// and the repository under review must not pick it.
+	"GOOGLE_CLOUD_PROJECT",
+	"GOOGLE_CLOUD_REGION",
+	// openai: the reasoning-summary kill switch, read on the runner's own
+	// provider path. Empty is claw's "auto", so the explicit empty is
+	// exactly "the launcher sets no override".
+	"CLAW_OPENAI_REASONING_SUMMARY",
 }
 
 // hostCodexVersion resolves the codex-cli version on the HOST side of the
@@ -2127,17 +2149,24 @@ var byokEnvVar = map[secrets.Provider]string{
 	secrets.ProviderXAI:       "XAI_API_KEY",
 }
 
-// providerEndpointEnvVars is the endpoint subset of providerCredentialEnvVars
-// — the names that decide WHICH infrastructure a forwarded credential is
-// spent on. Unlike keys, an empty endpoint value is safe downstream (every
-// registry reads empty as "use the published default"), so these may cross
-// as explicit empties.
-var providerEndpointEnvVars = []string{
+// providerRoutingEnvVars is the routing subset of providerCredentialEnvVars —
+// the names that decide WHICH infrastructure, deployment, project, region or
+// API contract a forwarded credential is spent on. Unlike keys, an empty
+// value is safe downstream (every provider reads empty as "use the published
+// default", or refuses by name), so these cross as explicit empties: an
+// ABSENT name is the one a workspace .env fills, which would let the
+// repository under review pick where the credential goes.
+var providerRoutingEnvVars = []string{
 	"AZURE_OPENAI_ENDPOINT",
+	"AZURE_OPENAI_DEPLOYMENT",
+	"AZURE_OPENAI_API_VERSION",
 	"MOONSHOT_BASE_URL",
 	"OPENAI_BASE_URL",
 	"XAI_BASE_URL",
 	"ANTHROPIC_BASE_URL",
+	"GOOGLE_CLOUD_PROJECT",
+	"GOOGLE_CLOUD_REGION",
+	"CLAW_OPENAI_REASONING_SUMMARY",
 }
 
 // sandboxProxyEnv returns the single engine-owned entry the in-container
@@ -2186,7 +2215,7 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 			env[name] = v
 		}
 	}
-	// Endpoint names the host leaves unset cross as EXPLICIT empties, not
+	// Routing names the host leaves unset cross as EXPLICIT empties, not
 	// absent names: the runner auto-loads the workspace .env, which only
 	// fills names missing from the process env (applyDotEnv honours
 	// LookupEnv), so an absent name lets the repository under review pick
@@ -2198,7 +2227,7 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	// every registry reads empty as "use the published default". Keys keep
 	// the skip above: an empty key reads as "auth attempted, invalid", not
 	// "no auth" (the endpoint twin of sandboxProxyEnv's explicit-unset).
-	for _, name := range providerEndpointEnvVars {
+	for _, name := range providerRoutingEnvVars {
 		if _, ok := env[name]; !ok {
 			env[name] = ""
 		}
