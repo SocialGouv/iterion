@@ -87,11 +87,23 @@ prompt does, with no exemption available (a supervisor declares no `tools:`):
 `TestEverySupervisorPolicyCarriesTheBoundary` holds every shipped supervisor to
 it ([untrusted input](agents/bots/untrusted-input.md)).
 
-A `model:` pin renders no template: a supervisor is spawned without the
-run's vars, so a `{{vars.…}}` there warns C148 at compile time and reaches
-the spawn as written (#1450); `${VAR}` / `${VAR:-default}` still expands.
-Only the `{{vars.<name>}}` step — which a node's routing fields take first —
-is missing here.
+A `model:` pin is a routing field like a node's: a whole `{{vars.<name>}}`
+reference resolves at spawn against the run's RESOLVED vars — defaults and
+coercions included, the same values the run's nodes see
+(`supervise.SpecsFromWorkflow` → `resolveModelVarsRefs`) — and `${VAR}` /
+`${VAR:-default}` expands after it, where the model spec is resolved
+(`supervise.ResolveModel`). The compiler reads the field with a node's own
+rule (`validateRoutingFieldRefs`): an undeclared name is the C033 ERROR as
+everywhere, and every OTHER span — a dotted path drilling a json var's
+document, another namespace, an unterminated `{{` — warns C148 and reaches
+the provider as written, leaving the supervisor on its provider hint. That
+warning is loud at compile time because the run is not: a reference the
+resolved map does not hold — a declared var the launch did not set and that
+declares no default — survives as written, the keep-literal a node's routing
+field honours, and that garbage pin makes every eval soft-fail, so the
+supervision parks, a declared supervisor silently inert. A pin that is
+nothing but a reference resolving EMPTY leaves no pin at all and falls
+through to the resolution below, as an unpinned supervisor does.
 
 **Model resolution** (unpinned supervisors): `model:` pin →
 `ITERION_DEFAULT_SUPERVISOR_MODEL` → **the provider family the watched
