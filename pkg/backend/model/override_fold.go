@@ -189,6 +189,18 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 	for _, n := range wf.Nodes {
 		fields, ok := llmFieldsOf(n)
 		if !ok {
+			if mdl, human := humanLLMModelOf(n); human {
+				// The human node's LLM half (#2691): a direct generation on
+				// node.Model, read as the interaction arm below reads an
+				// agent's — the spec's own prefix routes, no hint, no
+				// backend, and no override cell (executeHumanLLMWithSpend
+				// never consults ForNode).
+				seenAnyLLM = true
+				acc.backend = ""
+				acc.site = n.NodeID()
+				acc.resolveDirect(v.field(mdl), "")
+				continue
+			}
 			if ir.NodeUsesLLM(n) {
 				// Spends, but exposes nothing to resolve.
 				seenAnyLLM = true

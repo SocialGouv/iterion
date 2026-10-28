@@ -219,8 +219,9 @@ func TestEffectiveProviders_RouterAndHumanNodes(t *testing.T) {
 		t.Fatalf("llm router: got %+v, want [anthropic openai] narrow-safe", got)
 	}
 
-	// A human node answering with a model exposes no LLMFields: it
-	// spends on a provider the walk cannot name, so it widens.
+	// A human node answering with a model but naming no spec widens — a
+	// bare spec routes on nothing the walk can name (its prefixed twin
+	// narrows: human_route_test.go).
 	wf.Nodes["h"] = &ir.HumanNode{BaseNode: ir.BaseNode{ID: "h"}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionLLM}}
 	got = EffectiveProviders(RouteView{Workflow: wf, Overrides: ModelOverrides{}, RunFallbacks: nil}, knownForTest)
 	if got.NarrowSafe {

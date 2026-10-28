@@ -919,7 +919,12 @@ to that same policy:
   naming its sites, nothing re-routed, no credential
   sealed for it, and dispatch drops the element so it cannot burn a retry
   budget on a call the tenant forbade; and a route the walk cannot READ
-  refuses too, because a lock that cannot be checked must not pass. An
+  refuses too, because a lock that cannot be checked must not pass. A human
+  node's LLM half (`interaction: llm` / `llm_or_human`) is read as the
+  direct generation it is — its `model:` prefix names the provider, no
+  backend and no override cell applies, exactly as dispatch spends it — so
+  it narrows, is served or refused like any primary route; a subbot or an
+  agent recovery still exposes no field and refuses under any list. An
   explicitly empty list is refused at the write surface: a level that must
   forbid everything has no run to make, and the honest spelling refuses the
   bot.

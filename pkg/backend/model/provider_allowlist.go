@@ -41,8 +41,9 @@ type RouteUnreadableError struct {
 }
 
 // fieldlessSite marks the fieldless site class (a model-calling node with
-// no LLMFields — a subbot, a human answering with a model): the route
-// spends a model no field exposes.
+// no LLMFields — a subbot, an agent recovery): the route spends a model no
+// field exposes. A human node's LLM half is not of this class: its model
+// is read as the direct generation it is (humanLLMModelOf).
 const fieldlessSite = "\x00fieldless"
 
 func (e *RouteUnreadableError) Error() string {

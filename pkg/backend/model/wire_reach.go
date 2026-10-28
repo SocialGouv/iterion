@@ -43,8 +43,10 @@ func anthropicWireHints() map[string]bool {
 //   - claw or pi with a provider it cannot resolve (claw substitutes the
 //     first available provider, which may be anthropic);
 //   - any resolved hint that is anthropic or zai, on any backend;
-//   - a model-calling node that exposes no LLMFields (human answering
-//     with a model, subbot, agent-rung recovery), a nil workflow.
+//   - a model-calling node that exposes no LLMFields (subbot, agent-rung
+//     recovery), a nil workflow; a human node's LLM half is read on its
+//     model's prefix (humanLLMModelOf) — on the wire when the prefix is,
+//     armed when the prefix cannot be read.
 //
 // A `{{vars.*}}` span resolves against the view's vars (RouteView.field) —
 // the run's own reading — and a late name stays as written, undecided,
@@ -106,6 +108,17 @@ func AnthropicWireRoutes(v RouteView) []WireRoute {
 	for _, n := range wf.Nodes {
 		fields, ok := llmFieldsOf(n)
 		if !ok {
+			if mdl, human := humanLLMModelOf(n); human {
+				// The human node's LLM half (#2691): a direct generation on
+				// its model — the prefix is the route, no hint and no backend
+				// to pick a provider from. An anthropic-wire prefix is a
+				// readable route on the wire, another prefix no route, and a
+				// prefix the walk cannot read keeps the guard armed.
+				if r := directWireRoute(n.NodeID(), v.field(mdl)); !r.Readable || anthropicWireProviders[r.Hint] {
+					out = append(out, r)
+				}
+				continue
+			}
 			if ir.NodeUsesLLM(n) {
 				out = append(out, WireRoute{NodeID: n.NodeID()})
 			}
