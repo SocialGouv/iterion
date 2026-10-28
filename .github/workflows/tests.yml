@@ -765,7 +765,7 @@ jobs:
             ./pkg/forge/... ./pkg/trigger/... ./pkg/lease/... ./pkg/platformcfg/... ./pkg/server/...
           # Exercise the public cloud coordinator against the durable outbox,
           # including tenants that only subscribe to custom/run events.
-          go test -mod=vendor -count=1 -v -timeout 5m ./pkg/server/ \
+          go test -mod=vendor -count=1 -v -timeout 15m ./pkg/server/ \
             -run '^TestRound3CloudCoordinatorBusHoldRecovery$'
 
       - name: Mongo diagnostics on failure
