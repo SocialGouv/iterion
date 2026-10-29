@@ -122,17 +122,21 @@ func inferRunBotOrigin(run *store.Run) (*store.BotOrigin, error) {
 // (worktree, vars) before a delegated launch — the callers that validate
 // discard the result, so no run roots here and the {{workspace}}
 // placeholders stay unresolved (#1800).
-func compileDelegatedWorker(filePath, source, bundleDir string) (*ir.Workflow, error) {
+func compileDelegatedWorker(filePath, source, bundleDir, bundleEntry string) (*ir.Workflow, error) {
 	var (
 		wf  *ir.Workflow
 		err error
 	)
 	if bundleDir != "" {
-		b, openErr := bundle.OpenDir(bundleDir)
+		b, openErr := bundle.OpenDirEntry(bundleDir, bundleEntry)
 		if openErr != nil {
 			return nil, openErr
 		}
-		wf, _, err = runview.CompileBundleWorkflow(filepath.Join(bundleDir, "main.bot"), b, "")
+		main := bundle.MainBotFile
+		if bundleEntry != "" {
+			main = bundleEntry
+		}
+		wf, _, err = runview.CompileBundleWorkflow(filepath.Join(bundleDir, main), b, "")
 	} else if source != "" {
 		wf, _, err = runview.CompileWorkflowFromSource(filePath, source, "")
 	} else {

@@ -236,7 +236,7 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		Automatic: true,
 	}
 	if lb != nil {
-		retrySpec.BundleDir, retrySpec.BotBundle = lb.BundleDir, lb.Ref
+		lb.stampResumeBundle(&retrySpec)
 	}
 	// Narrow the race window: read the run right before the resume and refuse
 	// if it is no longer auto-resumable (cancelled by stop-on-close, moved

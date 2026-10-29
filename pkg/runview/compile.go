@@ -205,7 +205,8 @@ func CompileWorkflowFromSource(path, source, workspace string) (*ir.Workflow, st
 // — the same treatment a baked bundle gets through CompileBundleWorkflow —
 // so a stored bot's prompt references validate and hash identically. A
 // bundle dir that fails to open is an explicit error, never a silent
-// fall-through to a prompt-less compile.
+// fall-through to a prompt-less compile. bundleEntry is the entry the
+// launch named inside it (LaunchSpec.BundleEntry): empty for main.bot.
 //
 // A path alone is compiled the way every path-driven surface compiles it
 // (CompileWorkflowPath): a bundle's main.bot is promoted to its bundle —
@@ -225,14 +226,18 @@ func CompileWorkflowFromSource(path, source, workspace string) (*ir.Workflow, st
 // `{{workspace}}` placeholders expand against; the launch surface passes
 // the workdir its engine will be rooted at, and a check that executes
 // nothing passes "" (#1800).
-func compileForLaunch(path, source, bundleDir, workspace string) (*ir.Workflow, *CompiledSource, *bundle.Bundle, error) {
-	wf, cs, b, u, err := compileForLaunchUncut(path, source, bundleDir, workspace)
+func compileForLaunch(path, source, bundleDir, bundleEntry, workspace string) (*ir.Workflow, *CompiledSource, *bundle.Bundle, error) {
+	wf, cs, b, u, err := compileForLaunchUncut(path, source, bundleDir, bundleEntry, workspace)
 	return wf, cs, b, relLaunchError(path, bundleDir, u, err)
 }
 
-func compileForLaunchUncut(path, source, bundleDir, workspace string) (*ir.Workflow, *CompiledSource, *bundle.Bundle, *unit.Unit, error) {
+func compileForLaunchUncut(path, source, bundleDir, bundleEntry, workspace string) (*ir.Workflow, *CompiledSource, *bundle.Bundle, *unit.Unit, error) {
 	if bundleDir != "" {
-		b, err := bundle.OpenDir(bundleDir)
+		// The entry the launch named is the bundle's main: main.bot unless
+		// the launch named a promoted sibling entry or a loose catalogue
+		// file the snapshot froze without one (#1896) — opening for
+		// main.bot would refuse that dir.
+		b, err := bundle.OpenDirEntry(bundleDir, bundleEntry)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("open stored bot bundle: %w", err)
 		}

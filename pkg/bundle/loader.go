@@ -277,6 +277,20 @@ func OpenDir(path string) (*Bundle, error) {
 	return openDir(path, "", "")
 }
 
+// OpenDirEntry opens a bundle directory for the entry a launch named:
+// OpenDir when entry is empty or main.bot, the entry itself handed over as
+// the main otherwise — a promoted root-level sibling of the bundle's main
+// (the promotion DirForEntry makes on disk), or the loose catalogue file a
+// snapshot froze without a main.bot beside it (Snapshot.EntryPath, #1896).
+// The entry's base name is taken: it is a file of dir's root, and anything
+// else the caller derived is refused by OpenDirWithMain's root check.
+func OpenDirEntry(dir, entry string) (*Bundle, error) {
+	if base := filepath.Base(strings.TrimSpace(entry)); base != "." && base != MainBotFile {
+		return OpenDirWithMain(dir, filepath.Join(dir, base))
+	}
+	return OpenDir(dir)
+}
+
 // OpenDirWithMain is OpenDir for a bundle whose main is handed over rather
 // than found on disk: mainPath is the `.bot` at the root of dir the caller
 // compiles — written or not. An author document (`main.bot.yaml`) validated

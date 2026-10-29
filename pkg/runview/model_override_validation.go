@@ -49,13 +49,13 @@ func ValidateModelOverridePermissions(wf *ir.Workflow, overrides model.ModelOver
 // save time, not at the first delivery after it. NOT an enforcement — a
 // bot enabled after the write is never screened, and the launch refusal
 // above stays the gate.
-func ScreenPolicyOverrides(path, source, bundleDir string, pol *store.RunLLMRoutePolicy) ([]string, error) {
+func ScreenPolicyOverrides(path, source, bundleDir, bundleEntry string, pol *store.RunLLMRoutePolicy) ([]string, error) {
 	if pol == nil || len(pol.Overrides) == 0 {
 		return nil, nil
 	}
 	// A save-time screen that executes nothing: no run, no workspace — the
 	// plugin `{{workspace}}` placeholders stay unresolved (#1800).
-	wf, _, _, err := compileForLaunch(path, source, bundleDir, "")
+	wf, _, _, err := compileForLaunch(path, source, bundleDir, bundleEntry, "")
 	if err != nil {
 		return nil, err
 	}

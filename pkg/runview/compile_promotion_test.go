@@ -46,7 +46,7 @@ func TestCompileForLaunchPromotesABareMainBot(t *testing.T) {
 	if _, _, err := CompileWorkflowWithHash(mainBot, ""); err == nil || !strings.Contains(err.Error(), "C003") {
 		t.Fatalf("the bare compile did not fail on the prompt reference (err=%v); the fixture no longer arms the case", err)
 	}
-	wf, cs, b, err := compileForLaunch(mainBot, "", "", "")
+	wf, cs, b, err := compileForLaunch(mainBot, "", "", "", "")
 	if err != nil {
 		t.Fatalf("compileForLaunch on the bare main.bot: %v", err)
 	}
@@ -69,10 +69,10 @@ func TestCompileForLaunchPromotesABareMainBot(t *testing.T) {
 	}
 	// Inline source and a stored bundle dir keep their own paths: no
 	// promotion by path label, the bundle handed over is the one opened.
-	if _, _, ib, err := compileForLaunch(mainBot, "schema out:\n  ok: bool\n\nagent a:\n  backend: \"claude_code\"\n  model: \"anthropic/claude-opus-4-8\"\n  output: out\n\nworkflow w:\n  entry: a\n  a -> done\n", "", ""); err != nil || ib != nil {
+	if _, _, ib, err := compileForLaunch(mainBot, "schema out:\n  ok: bool\n\nagent a:\n  backend: \"claude_code\"\n  model: \"anthropic/claude-opus-4-8\"\n  output: out\n\nworkflow w:\n  entry: a\n  a -> done\n", "", "", ""); err != nil || ib != nil {
 		t.Fatalf("inline source: bundle=%+v err=%v, want no bundle and no error", ib, err)
 	}
-	if _, _, sb, err := compileForLaunch(mainBot, "", dir, ""); err != nil || sb == nil || filepath.Clean(sb.Dir) != filepath.Clean(dir) {
+	if _, _, sb, err := compileForLaunch(mainBot, "", dir, "", ""); err != nil || sb == nil || filepath.Clean(sb.Dir) != filepath.Clean(dir) {
 		t.Fatalf("stored bundle dir: bundle=%+v err=%v, want the bundle at %s", sb, err, dir)
 	}
 	// The studio's file picker: the file's source inline, materialised
@@ -84,10 +84,10 @@ func TestCompileForLaunchPromotesABareMainBot(t *testing.T) {
 		t.Fatal(err)
 	}
 	materialised := filepath.Join(t.TempDir(), "a1b2c3d4e5f6-main.bot")
-	if _, _, _, err := compileForLaunch(materialised, string(src), "", ""); err == nil {
+	if _, _, _, err := compileForLaunch(materialised, string(src), "", "", ""); err == nil {
 		t.Fatal("inline source with no bundle dir compiled the prompt reference; the fixture no longer arms the case")
 	}
-	if _, h, ib, err := compileForLaunch(materialised, string(src), dir, ""); err != nil || ib == nil || h.Hash != want {
+	if _, h, ib, err := compileForLaunch(materialised, string(src), dir, "", ""); err != nil || ib == nil || h.Hash != want {
 		t.Fatalf("inline source + bundle dir: hash=%v bundle=%+v err=%v, want the bundle's hash %s", h, ib, err, want)
 	}
 }
@@ -109,7 +109,7 @@ func TestCompileForLaunchRefusesABundleThatDoesNotOpen(t *testing.T) {
 	if b, err := ResolveBundleFromFilePath(mainBot); err == nil || b != nil || !strings.Contains(err.Error(), "manifest") {
 		t.Fatalf("ResolveBundleFromFilePath = (%+v, %v), want an error naming the manifest", b, err)
 	}
-	if _, _, _, err := compileForLaunch(mainBot, "", "", ""); err == nil || !strings.Contains(err.Error(), "does not open") {
+	if _, _, _, err := compileForLaunch(mainBot, "", "", "", ""); err == nil || !strings.Contains(err.Error(), "does not open") {
 		t.Fatalf("compileForLaunch = %v, want the bundle refused", err)
 	}
 	if _, _, _, err := CompileWorkflowPath(mainBot, ""); err == nil {
@@ -124,5 +124,38 @@ func TestCompileForLaunchRefusesABundleThatDoesNotOpen(t *testing.T) {
 	}
 	if b, err := ResolveBundleFromFilePath(loose); err != nil || b != nil {
 		t.Fatalf("a loose main.bot resolved to (%+v, %v), want (nil, nil)", b, err)
+	}
+}
+
+// #1896: a launch-materialized loose catalogue entry — the snapshot's
+// frozen dir holds the entry and its lib/ fragments, no main.bot — compiles
+// through the launch's bundle path when the launch names the entry. Naming
+// nothing asks for main.bot and is refused, which is the pre-fix verdict.
+func TestCompileForLaunchOpensAFrozenLooseEntry(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, body string) {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("lib/nodes.bot", "tool work:\n  command: `printf ok`\n  output: out\n\nschema out:\n  ok: bool\n")
+	write("board_smoke.bot", "import \"lib/nodes.bot\"\n\nworkflow board_smoke:\n  entry: work\n  work -> done\n")
+	src, err := os.ReadFile(filepath.Join(dir, "board_smoke.bot"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := compileForLaunch("bots/smoke/board_smoke.bot", string(src), dir, "", ""); err == nil || !strings.Contains(err.Error(), "main.bot") {
+		t.Fatalf("naming no entry must still refuse a main.bot-less dir: %v", err)
+	}
+	wf, _, b, err := compileForLaunch("bots/smoke/board_smoke.bot", string(src), dir, "board_smoke.bot", "")
+	if err != nil {
+		t.Fatalf("the frozen loose entry did not compile: %v", err)
+	}
+	if wf == nil || b == nil || filepath.Base(b.IterPath) != "board_smoke.bot" {
+		t.Fatalf("wf=%v bundle=%+v", wf, b)
 	}
 }

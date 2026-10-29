@@ -32,7 +32,7 @@ func (s *Server) resumeSourceFiller(ctx context.Context, run *store.Run, spec *r
 			if ok {
 				spec.FilePath = resolved
 				if lb != nil {
-					spec.BundleDir, spec.BotBundle = lb.BundleDir, lb.Ref
+					lb.stampResumeBundle(spec)
 				}
 				return lb.Cleanup, nil
 			}
@@ -49,7 +49,7 @@ func (s *Server) resumeSourceFiller(ctx context.Context, run *store.Run, spec *r
 	}
 	spec.FilePath, spec.Source = absPath, source
 	if lb != nil {
-		spec.BundleDir, spec.BotBundle = lb.BundleDir, lb.Ref
+		lb.stampResumeBundle(spec)
 	}
 	return lb.Cleanup, nil
 }

@@ -39,7 +39,7 @@ func TestPreflightResume_CompilesTheRecordedBundle(t *testing.T) {
 	if err := os.WriteFile(copyPath, src, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := compileForLaunch(copyPath, "", "", ""); err == nil || !strings.Contains(err.Error(), "C003") {
+	if _, _, _, err := compileForLaunch(copyPath, "", "", "", ""); err == nil || !strings.Contains(err.Error(), "C003") {
 		t.Fatalf("the materialised copy compiled alone (err=%v); the fixture no longer arms the case", err)
 	}
 

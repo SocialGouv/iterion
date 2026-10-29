@@ -31,10 +31,27 @@ func (s *Server) snapshotLaunchBot(ctx context.Context, teamID string, lb *launc
 	if dir == "" {
 		dir = filepath.Dir(lb.Path)
 	}
-	if err := snap.AddDir(root, dir); err != nil {
+	entry := root + "/" + filepath.Base(lb.Path)
+	// The snapshot's required file is the bundle's ENTRY — the file the
+	// launch names — not the literal main.bot (#1896). A loose catalogue
+	// file (bots/smoke/board_smoke.bot: no main.bot beside it, so no
+	// bundle's entry — DirForEntry answers "") is frozen ALONE with the
+	// fragments its imports reach: the directory it sits in is no bundle,
+	// and capturing it whole would hand the run whatever else it holds —
+	// an .env, a devbox.json, an unrelated skills/ the runner would then
+	// mirror. A promoted sibling entry (extend.bot beside a main.bot)
+	// freezes its whole bundle, as any bundle's launch does.
+	if base := filepath.Base(lb.Path); base != bundle.MainBotFile {
+		snap.Entry = entry
+		lb.BundleEntry = base
+	}
+	if snap.Entry != "" && !mainBotBeside(dir) {
+		if err := snap.AddLooseEntry(root, lb.Path, unit.FragmentDir); err != nil {
+			return nil, err
+		}
+	} else if err := snap.AddDir(root, dir); err != nil {
 		return nil, err
 	}
-	entry := root + "/" + filepath.Base(lb.Path)
 	if len(sourceOverride) > 0 && sourceOverride[0] != "" {
 		file := snap.Files[entry]
 		file.Content = []byte(sourceOverride[0])
@@ -130,4 +147,12 @@ func (s *Server) snapshotLaunchBot(ctx context.Context, teamID string, lb *launc
 	}
 	lb.Ref.Snapshot, lb.Ref.SnapshotDigest = body, digest
 	return lb, nil
+}
+
+// mainBotBeside reports whether dir holds a regular main.bot — the fact
+// that makes a sibling .bot a bundle's promoted entry (its bundle is
+// frozen whole) rather than a loose catalogue file (frozen alone).
+func mainBotBeside(dir string) bool {
+	info, err := os.Stat(filepath.Join(dir, bundle.MainBotFile))
+	return err == nil && info.Mode().IsRegular()
 }

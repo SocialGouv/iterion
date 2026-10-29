@@ -384,7 +384,7 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	// Pre-flight only: the spawned runner compiles its own copy and the
 	// engine it roots resolves its own cwd. The service's effective workdir
 	// is the launch surface's answer for the synchronous checks (#1800).
-	wf, _, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, s.effectiveWorkDir(spec.WorkDir))
+	wf, _, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, spec.BundleEntry, s.effectiveWorkDir(spec.WorkDir))
 	if err != nil {
 		return nil, err
 	}

@@ -41,7 +41,7 @@ func TestACopyOfTheMainOutsideItsBundleCompilesAsTheBundlesMain(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The launch: source inline + the bundle dir.
-	wf, cs, b, err := compileForLaunch(copyPath, copyUnitMain, dir, "")
+	wf, cs, b, err := compileForLaunch(copyPath, copyUnitMain, dir, "", "")
 	if err != nil || wf == nil || b == nil {
 		t.Fatalf("launch of the copy: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestACopyOfTheMainOutsideItsBundleCompilesAsTheBundlesMain(t *testing.T) {
 		t.Fatalf("the compile did not hand its files over: %+v", cs)
 	}
 	// The resume: the copy's path alone + the recorded bundle dir.
-	_, rcs, _, err := compileForLaunch(copyPath, "", dir, "")
+	_, rcs, _, err := compileForLaunch(copyPath, "", dir, "", "")
 	if err != nil {
 		t.Fatalf("resume from the copy: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestAFileWithItsOwnFragmentsIsItsOwnUnit(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(other, "lib", "nodes.bot"), []byte(foreign), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, cs, _, err := compileForLaunch(filepath.Join(other, "main.bot"), "", dir, "")
+	_, cs, _, err := compileForLaunch(filepath.Join(other, "main.bot"), "", dir, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

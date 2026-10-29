@@ -597,10 +597,12 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		bundleDir := ""
+		bundleEntry := ""
 		if launchLB != nil {
 			bundleDir = launchLB.BundleDir
+			bundleEntry = launchLB.BundleEntry
 		}
-		if _, err := compileDelegatedWorker(absPath, req.Source, bundleDir); err != nil {
+		if _, err := compileDelegatedWorker(absPath, req.Source, bundleDir, bundleEntry); err != nil {
 			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "delegated launch: %v", err)
 			return
 		}
@@ -1092,7 +1094,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 			AcceptScratchLoss: req.AcceptScratchLoss,
 		}
 		if resumeLB != nil {
-			pfSpec.BundleDir, pfSpec.BotBundle = resumeLB.BundleDir, resumeLB.Ref
+			resumeLB.stampResumeBundle(&pfSpec)
 		}
 		if pfErr := s.runs.PreflightResume(ctx, pfSpec); pfErr != nil {
 			s.writeResumeError(w, r, pfErr)
@@ -1133,7 +1135,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	}
 	resumeSpec.HostInputs = hostInputs
 	if resumeLB != nil {
-		resumeSpec.BundleDir, resumeSpec.BotBundle = resumeLB.BundleDir, resumeLB.Ref
+		resumeLB.stampResumeBundle(&resumeSpec)
 	}
 	// Past this statement the slot is spent unless the run service says
 	// otherwise — see handleLaunchRun. A resume publish can report an error

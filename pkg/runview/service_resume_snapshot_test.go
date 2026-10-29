@@ -22,7 +22,7 @@ import (
 // fillerBotSrc, with a checkpoint so a resume has somewhere to restart.
 func seedResumableRun(t *testing.T, st store.RunStore, runID string) {
 	t.Helper()
-	_, compiled, _, err := compileForLaunch("", fillerBotSrc, "", "")
+	_, compiled, _, err := compileForLaunch("", fillerBotSrc, "", "", "")
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}

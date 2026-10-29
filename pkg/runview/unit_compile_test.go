@@ -185,13 +185,13 @@ func TestAnInlineSourceThatImportsIsRefused(t *testing.T) {
 	if _, _, err := CompileWorkflowFromSource(label, unitMain, ""); !errors.Is(err, ErrInlineImport) {
 		t.Fatalf("CompileWorkflowFromSource: err = %v, want ErrInlineImport", err)
 	}
-	if _, _, _, err := compileForLaunch("", unitMain, "", ""); !errors.Is(err, ErrInlineImport) {
+	if _, _, _, err := compileForLaunch("", unitMain, "", "", ""); !errors.Is(err, ErrInlineImport) {
 		t.Fatalf("compileForLaunch without a bundle: err = %v, want ErrInlineImport", err)
 	}
 	// The same text, from its directory, is a program.
 	root := t.TempDir()
 	writeUnit(t, root, map[string]string{"main.bot": unitMain, "lib/nodes.bot": unitNodes})
-	if _, _, _, err := compileForLaunch(filepath.Join(root, "main.bot"), "", "", ""); err != nil {
+	if _, _, _, err := compileForLaunch(filepath.Join(root, "main.bot"), "", "", "", ""); err != nil {
 		t.Fatalf("the same unit from its directory: %v", err)
 	}
 }
@@ -208,7 +208,7 @@ func TestAnInlineDocumentWithItsBundleReadsTheFragmentsBesideTheMain(t *testing.
 	mainBot := filepath.Join(root, "main.bot")
 	copyPath := filepath.Join(t.TempDir(), "a1b2c3-main.bot")
 
-	wf, cs, b, err := compileForLaunch(copyPath, unitMain, root, "")
+	wf, cs, b, err := compileForLaunch(copyPath, unitMain, root, "", "")
 	if err != nil {
 		t.Fatalf("compileForLaunch(document, bundle): %v", err)
 	}
@@ -226,7 +226,7 @@ func TestAnInlineDocumentWithItsBundleReadsTheFragmentsBesideTheMain(t *testing.
 		t.Fatalf("the document's identity %s differs from the file's %s: a run launched from the studio would refuse a CLI resume", cs.Hash, fromPath)
 	}
 	// A document that differs from the file on disk is its own source.
-	_, doc, _, err := compileForLaunch(copyPath, unitMain+"\n## edited in the editor\n", root, "")
+	_, doc, _, err := compileForLaunch(copyPath, unitMain+"\n## edited in the editor\n", root, "", "")
 	if err != nil {
 		t.Fatalf("compileForLaunch(edited document, bundle): %v", err)
 	}

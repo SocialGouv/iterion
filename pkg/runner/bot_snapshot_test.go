@@ -86,3 +86,27 @@ func TestSnapshotRunnerFetchesAndChecksStoredBytes(t *testing.T) {
 		t.Fatalf("corrupted snapshot accepted: %v", err)
 	}
 }
+
+// #1896: a snapshot frozen from a loose catalogue entry — no main.bot, the
+// entry named — materializes and opens for the runner: the entry is the
+// bundle's main, and no phantom main.bot is required.
+func TestSnapshotRunnerOpensALooseEntry(t *testing.T) {
+	r, _ := subbotTestRunner(t)
+	snap := &bundle.Snapshot{Root: "smoke", Entry: "smoke/board_smoke.bot", Files: map[string]bundle.SnapshotFile{
+		"smoke/board_smoke.bot": {Content: []byte(subbotTestChild)},
+		"smoke/lib/frag.bot":    {Content: []byte("agent frag:\n  description: \"x\"\n")},
+	}}
+	body, digest, err := snap.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := &queue.BotBundleRef{Slug: "board_smoke", Snapshot: body, SnapshotDigest: digest}
+	b, cleanup, err := r.materializeBotBundle(context.Background(), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if filepath.Base(b.IterPath) != "board_smoke.bot" {
+		t.Fatalf("the loose entry is not the main: %q", b.IterPath)
+	}
+}

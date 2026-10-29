@@ -259,6 +259,12 @@ type LaunchSpec struct {
 	// dir, cleaned up by the launch surface after Launch returns; never
 	// persisted.
 	BundleDir string
+	// BundleEntry is the launched entry's base name inside BundleDir when it
+	// is not the canonical main.bot: a bundle's promoted sibling entry, or
+	// the loose catalogue file the snapshot froze without one (#1896). The
+	// compile opens BundleDir with it as the main (bundle.OpenDirEntry).
+	// Empty means main.bot.
+	BundleEntry string
 	// BotBundle carries the immutable collection and its origin to the cloud
 	// publisher. Nil for loose/inline launches that bypass bundle resolution.
 	BotBundle *BotBundleRef
@@ -455,10 +461,13 @@ type ResumeSpec struct {
 	// BundleDir / BotBundle mirror LaunchSpec's fields: a cloud resume of a
 	// stored bot re-resolves the bundle fresh (like credentials are
 	// re-sealed), so the compile merge and the runner-side materialization
-	// stay consistent with THIS resume's source.
-	BundleDir string
-	BotBundle *BotBundleRef
-	Answers   map[string]any // answers for human nodes; ignored for failed_resumable
+	// stay consistent with THIS resume's source. BundleEntry is
+	// LaunchSpec's entry of the same pair — the launched entry's base name
+	// inside BundleDir when it is not main.bot (#1896).
+	BundleDir   string
+	BundleEntry string
+	BotBundle   *BotBundleRef
+	Answers     map[string]any // answers for human nodes; ignored for failed_resumable
 	// HostInputs are host-attested, ephemeral fields merged into the paused
 	// human node output for downstream mappings. They are deliberately kept
 	// out of human_answers_recorded and published artifacts: this is a derived

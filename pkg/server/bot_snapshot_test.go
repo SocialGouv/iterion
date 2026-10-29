@@ -198,3 +198,68 @@ func snapshotKeys(snap *bundle.Snapshot) []string {
 	}
 	return keys
 }
+
+// #1896: a loose catalogue file — bots/smoke/board_smoke.bot, no main.bot
+// beside it — launches from the catalogue in cloud mode: the snapshot
+// freezes the entry and the fragments its imports reach, keyed on the
+// ENTRY, never on a main.bot the directory does not hold. The rest of the
+// parent directory is no bundle's and does not cross: an .env, a
+// devbox.json, another loose workflow beside the file stay out of the
+// snapshot (the alias fix this ticket's first candidate proposed
+// transported exactly those).
+func TestSnapshotLooseCatalogEntryFreezesTheUnitAlone(t *testing.T) {
+	s, root := snapshotFixture(t)
+	loose := filepath.Join(root, "smoke")
+	write := func(rel, body string) {
+		p := filepath.Join(loose, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("lib/frag.bot", "schema frag_out:\n  ok: bool\n")
+	write("board_smoke.bot", "import \"lib/frag.bot\"\n\n"+testBotMain)
+	// Canaries: the parent directory of a loose entry is no bundle, so
+	// nothing it holds may travel — the files the rejected candidate's
+	// whole-directory capture handed the runner.
+	write(".env", "PRIVATE_CANARY=1\n")
+	write("devbox.json", "{}\n")
+	write("notes.md", "unrelated\n")
+	write("other.bot", testBotMain)
+
+	lb, err := s.resolveBotSource(context.Background(), "", "board_smoke")
+	if err != nil {
+		t.Fatalf("loose catalogue entry does not launch: %v", err)
+	}
+	defer lb.Cleanup()
+	if lb.BundleEntry != "board_smoke.bot" {
+		t.Fatalf("BundleEntry = %q, want the entry's base name", lb.BundleEntry)
+	}
+	snap, err := bundle.DecodeSnapshot(lb.Ref.Snapshot, lb.Ref.SnapshotDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Entry != "smoke/board_smoke.bot" {
+		t.Fatalf("snapshot entry = %q, want the launched file", snap.Entry)
+	}
+	for _, want := range []string{"smoke/board_smoke.bot", "smoke/lib/frag.bot"} {
+		if _, ok := snap.Files[want]; !ok {
+			t.Errorf("%s was not frozen; files: %v", want, snapshotKeys(snap))
+		}
+	}
+	for _, never := range []string{"smoke/.env", "smoke/devbox.json", "smoke/notes.md", "smoke/other.bot"} {
+		if _, ok := snap.Files[never]; ok {
+			t.Errorf("%s crossed: the loose entry's parent directory is no bundle", never)
+		}
+	}
+	// The frozen collection compiles the way the launch compiles it: the
+	// entry as the bundle's main, its fragment in scope.
+	if _, err := bundle.OpenDirEntry(lb.BundleDir, snap.Entry); err != nil {
+		t.Fatalf("the frozen collection does not open for its entry: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(lb.BundleDir, ".env")); !os.IsNotExist(err) {
+		t.Fatalf("the canary materialized into the frozen collection: %v", err)
+	}
+}

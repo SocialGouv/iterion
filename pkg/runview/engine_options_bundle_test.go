@@ -23,7 +23,7 @@ func TestCompileForLaunchRejectsMissingBundleExport(t *testing.T) {
 		if inline {
 			src, bundleDir = string(source), dir
 		}
-		wf, _, b, err := compileForLaunch(path, src, bundleDir, "")
+		wf, _, b, err := compileForLaunch(path, src, bundleDir, "", "")
 		if err == nil || !strings.Contains(err.Error(), "gone.bot") || wf != nil || b != nil {
 			t.Fatalf("inline=%v: invalid bundle reached execution: wf=%v bundle=%v err=%v", inline, wf, b, err)
 		}

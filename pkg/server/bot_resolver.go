@@ -115,6 +115,12 @@ type launchBot struct {
 	// BundleDir is the server-side materialization used for compilation.
 	// Cloud catalog and stored bots both use it; Cleanup owns the collection.
 	BundleDir string
+	// BundleEntry is the launched entry's base name inside BundleDir when it
+	// is not the canonical main.bot: a bundle's promoted sibling entry, or
+	// the loose catalogue file the snapshot froze alone (#1896). The compile
+	// opens BundleDir WITH it (bundle.OpenDirEntry) — opening for main.bot
+	// would refuse the dir a loose entry froze.
+	BundleEntry string
 	// Ref carries the snapshot and, for stored origins, the row provenance.
 	Ref *runview.BotBundleRef
 	// sourceRowID is the botsource row id a STORED origin resolved from —
@@ -157,8 +163,18 @@ func (lb *launchBot) StampBundle(spec *runview.LaunchSpec) {
 		return
 	}
 	spec.BundleDir = lb.BundleDir
+	spec.BundleEntry = lb.BundleEntry
 	spec.BotBundle = lb.Ref
 	spec.BotSourceTier = lb.Tier()
+}
+
+// stampResumeBundle is StampBundle for a ResumeSpec: the same bundle facts,
+// from the same resolution, so a resume compiles against the entry the
+// launch named. Callers nil-check lb before calling.
+func (lb *launchBot) stampResumeBundle(spec *runview.ResumeSpec) {
+	spec.BundleDir = lb.BundleDir
+	spec.BundleEntry = lb.BundleEntry
+	spec.BotBundle = lb.Ref
 }
 
 // Cleanup removes the materialized bundle dir, if any. Safe on nil.

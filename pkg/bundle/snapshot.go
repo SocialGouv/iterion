@@ -16,8 +16,25 @@ import (
 // collection-relative bundle name, so sibling subbots retain their paths.
 // Bytes and executable bits survive transport; symlinks never cross it.
 type Snapshot struct {
-	Root  string                  `json:"root"`
+	Root string `json:"root"`
+	// Entry is the collection-relative path of the launched entry — the
+	// file the launch names: the root's main.bot, a promoted root-level
+	// sibling of it, or a loose catalogue file the snapshot froze alone
+	// (#1896). Empty means <Root>/main.bot, the only shape a snapshot
+	// carried before the entry travelled.
+	Entry string                  `json:"entry,omitempty"`
 	Files map[string]SnapshotFile `json:"files"`
+}
+
+// EntryPath is the collection-relative path of the launched entry: Entry
+// when set, else the root's main.bot. It is the one file a snapshot must
+// carry — Validate requires it — and the one a consumer of the
+// materialized root opens (OpenDirEntry), never a main.bot it assumes.
+func (s *Snapshot) EntryPath() string {
+	if s.Entry != "" {
+		return s.Entry
+	}
+	return s.Root + "/" + MainBotFile
 }
 
 type SnapshotFile struct {
@@ -47,6 +64,51 @@ func (s *Snapshot) AddDir(name, dir string) error {
 	if s.Files == nil {
 		s.Files = map[string]SnapshotFile{}
 	}
+	return s.addTree(name, dir, dir)
+}
+
+// AddLooseEntry captures a STANDALONE workflow file — a catalogue entry no
+// main.bot sits beside, so no bundle's entry (DirForEntry answers "") — as
+// the root's entry file, plus the fragment tree its imports may reach
+// (fragmentDir is the unit's lib/; the DSL owns that name and pkg/bundle
+// cannot import it back — unit→ir→bundle would cycle). The directory the
+// file sits in is NOT promoted to a bundle: freezing it whole would hand
+// the snapshot whatever else it holds — an .env, a devbox.json, an
+// unrelated skills/ the runner would then mirror — so nothing but the
+// entry and its fragments crosses (#1896). The guards are AddDir's: no
+// symlinks, no drafts, regular files only, the same limits.
+func (s *Snapshot) AddLooseEntry(name, file, fragmentDir string) error {
+	if !snapshotName(name) {
+		return fmt.Errorf("bundle snapshot: unsafe bundle name %q", name)
+	}
+	if s.Files == nil {
+		s.Files = map[string]SnapshotFile{}
+	}
+	info, err := os.Lstat(file)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("bundle snapshot: symlink %s is not portable", file)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("bundle snapshot: non-regular file %s", file)
+	}
+	if err := s.addFile(name+"/"+filepath.Base(file), file, info); err != nil {
+		return err
+	}
+	parent := filepath.Dir(file)
+	lib := filepath.Join(parent, fragmentDir)
+	if st, statErr := os.Stat(lib); statErr != nil || !st.IsDir() {
+		return nil
+	}
+	return s.addTree(name, parent, lib)
+}
+
+// addTree walks dir capturing every regular file, keyed from base: AddDir's
+// walk with the key root split out, so a partial capture (a loose entry's
+// fragment tree) lands under the same names the unit resolves.
+func (s *Snapshot) addTree(name, base, dir string) error {
 	return filepath.WalkDir(dir, func(p string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -84,27 +146,32 @@ func (s *Snapshot) AddDir(name, dir string) error {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("bundle snapshot: non-regular file %s", p)
 		}
-		if info.Size() > MaxSnapshotBytes {
-			return fmt.Errorf("bundle snapshot: oversized file %s", p)
-		}
-		rel, err := filepath.Rel(dir, p)
+		rel, err := filepath.Rel(base, p)
 		if err != nil {
 			return err
 		}
-		key := name + "/" + filepath.ToSlash(rel)
-		if !snapshotPath(key) {
-			return fmt.Errorf("bundle snapshot: unsafe path %q", key)
-		}
-		if _, exists := s.Files[key]; exists {
-			return fmt.Errorf("bundle snapshot: duplicate file %s", key)
-		}
-		content, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		s.Files[key] = SnapshotFile{Content: content, Executable: info.Mode()&0o111 != 0}
-		return s.checkLimits()
+		return s.addFile(name+"/"+filepath.ToSlash(rel), p, info)
 	})
+}
+
+// addFile captures one regular file under key, with the collection's
+// guards: a portable path, no duplicate key, the size and count limits.
+func (s *Snapshot) addFile(key, p string, info fs.FileInfo) error {
+	if info.Size() > MaxSnapshotBytes {
+		return fmt.Errorf("bundle snapshot: oversized file %s", p)
+	}
+	if !snapshotPath(key) {
+		return fmt.Errorf("bundle snapshot: unsafe path %q", key)
+	}
+	if _, exists := s.Files[key]; exists {
+		return fmt.Errorf("bundle snapshot: duplicate file %s", key)
+	}
+	content, err := os.ReadFile(p)
+	if err != nil {
+		return err
+	}
+	s.Files[key] = SnapshotFile{Content: content, Executable: info.Mode()&0o111 != 0}
+	return s.checkLimits()
 }
 
 func (s *Snapshot) checkLimits() error {
@@ -125,7 +192,18 @@ func (s *Snapshot) Validate() error {
 	if !snapshotName(s.Root) {
 		return fmt.Errorf("bundle snapshot: unsafe root %q", s.Root)
 	}
-	if len(s.Files[s.Root+"/main.bot"].Content) == 0 {
+	// The entry is the one file the launch needs. It sits at the root
+	// bundle's top level — the main.bot, a promoted sibling of it, or the
+	// loose file the snapshot froze alone (#1896); a child bundle's file
+	// is nobody's entry here.
+	if s.Entry != "" && (!snapshotPath(s.Entry) || path.Dir(s.Entry) != s.Root) {
+		return fmt.Errorf("bundle snapshot: unsafe entry %q", s.Entry)
+	}
+	entry := s.EntryPath()
+	if len(s.Files[entry].Content) == 0 {
+		if s.Entry != "" && s.Entry != s.Root+"/"+MainBotFile {
+			return fmt.Errorf("bundle snapshot: entry %s is missing", s.Entry)
+		}
 		return fmt.Errorf("bundle snapshot: parent main.bot is missing")
 	}
 	for p := range s.Files {
