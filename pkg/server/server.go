@@ -30,6 +30,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/budgetfloor"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/configshare"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
@@ -295,8 +296,12 @@ type Server struct {
 	configShareSvc *configshare.Service
 	// configShareFC overrides forge-client resolution in tests (nil in prod →
 	// shareFileClient resolves the team forge_token + builds a GitHub client).
-	configShareFC     func(context.Context, *configshare.Share) (forge.FileClient, error)
-	forgeConnections  forge.ConnectionStore
+	configShareFC    func(context.Context, *configshare.Share) (forge.FileClient, error)
+	forgeConnections forge.ConnectionStore
+	// connectionStore + connectorCatalog back /api/teams/:id/connections
+	// (pkg/connection). Nil in local mode — see Config.Connections.
+	connectionStore   connection.Store
+	connectorCatalog  connection.Catalog
 	forgeIntegrations forge.RepoIntegrationStore
 	// forgeAppClients is the per-connection GitHub-App client cache
 	// (githubAppClientFor): one client — hence one set of minted tokens — per
@@ -848,6 +853,8 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		queue:               cfg.Queue,
 		botBindings:         cfg.BotBindings,
 		forgeConnections:    cfg.ForgeConnections,
+		connectionStore:     cfg.Connections,
+		connectorCatalog:    cfg.ConnectorCatalog,
 		pluginSources:       cfg.PluginSources,
 		pluginSourceFetcher: cfg.PluginSourceFetcher,
 		botSources:          cfg.BotSources,

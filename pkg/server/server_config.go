@@ -19,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloud/orgsweep"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/configshare"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
@@ -242,6 +243,15 @@ type Config struct {
 	// and the OAuth callback to register.
 	ForgeConnections  forge.ConnectionStore
 	ForgeIntegrations forge.RepoIntegrationStore
+	// Connections + ConnectorCatalog wire the connector-connection CRUD
+	// (pkg/connection, ADR-098): /api/teams/:id/connections, tenant-scoped in
+	// the store's signature. The catalog resolves the package a credential is
+	// pinned against at creation; Sealer (above) seals it. All three plus the
+	// auth stack must be present for the routes to register — cloud wires the
+	// Mongo twin and the baked catalog; local mode leaves them nil, where
+	// `iterion connections` is the surface.
+	Connections      connection.Store
+	ConnectorCatalog connection.Catalog
 	// BoardBindings ties each team to one forge PROJECT board (ADR-097).
 	// Absent (local mode) self-disables the board endpoints and the periodic
 	// reconciliation worker.

@@ -284,6 +284,13 @@ func (s *Server) routes() {
 		s.registerBoardBindingRoutes()
 	}
 
+	// Connector connections (ADR-098, #2759): tenant-scoped CRUD over
+	// pkg/connection. Needs the store (Mongo twin in cloud), the catalog the
+	// credential is pinned against, the sealer, and the auth stack.
+	if s.connectionStore != nil && s.connectorCatalog != nil && s.sealer != nil && s.authSvc != nil {
+		s.registerConnectionRoutes()
+	}
+
 	// Per-tenant SSO providers (a tenant's own Keycloak + GitHub team-gating).
 	// Needs the auth stack + a sealer for the OIDC client secret.
 	if s.orgSSO != nil && s.authSvc != nil && s.sealer != nil {

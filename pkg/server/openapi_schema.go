@@ -274,6 +274,30 @@ func routeSchemas() map[string]routeOp {
 				Connections []forge.Connection `json:"connections"`
 			}{},
 		},
+		// Connector connections (ADR-098, #2759): a tenant's pkg/connection
+		// records. The response DTO never carries a credential.
+		"GET /api/teams/{id}/connections": {
+			response: struct {
+				Connections []connectionDTO `json:"connections"`
+			}{},
+			query: []queryParam{{
+				name:        "connector",
+				description: "Restrict the listing to one connector id (e.g. forgejo). Absent lists every connector's connections.",
+				schemaType:  "string",
+			}},
+		},
+		"POST /api/teams/{id}/connections": {request: connectionCreateReq{}, response: connectionDTO{}},
+		"GET /api/teams/{id}/connections/{conn_id}": {
+			response: connectionDTO{},
+			errors:   map[int]string{404: "connection not found (including another tenant's)"},
+		},
+		"PATCH /api/teams/{id}/connections/{conn_id}": {
+			request: connectionPatchReq{}, response: connectionDTO{}, requestOptional: true,
+			errors: map[int]string{404: "connection not found (including another tenant's)"},
+		},
+		"DELETE /api/teams/{id}/connections/{conn_id}": {
+			errors: map[int]string{404: "connection not found (including another tenant's)"},
+		},
 		"POST /api/teams/{id}/forge/connections": {request: forgeConnectReq{}, response: forgeConnectResp{}},
 		"GET /api/teams/{id}/forge/connections/{conn_id}/repos": {
 			response: struct {

@@ -32,6 +32,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	"github.com/SocialGouv/iterion/pkg/configshare"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
@@ -672,18 +673,23 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			}
 			return highWater, superseded, nil
 		},
-		AuthService:                 authStack.authSvc,
-		AuthSigner:                  authStack.signer,
-		OIDCRegistry:                registry,
-		OIDCStates:                  stores.oidcState,
-		DesktopTickets:              stores.desktopTickets,
-		WSTickets:                   stores.wsTickets,
-		OrgSSO:                      stores.orgSSO,
-		OrgDomains:                  stores.orgDomain,
-		ApiKeys:                     stores.apiKeys,
-		GenericSecrets:              stores.genericSecrets,
-		BotBindings:                 stores.botBindings,
-		ForgeConnections:            stores.forgeConn,
+		AuthService:      authStack.authSvc,
+		AuthSigner:       authStack.signer,
+		OIDCRegistry:     registry,
+		OIDCStates:       stores.oidcState,
+		DesktopTickets:   stores.desktopTickets,
+		WSTickets:        stores.wsTickets,
+		OrgSSO:           stores.orgSSO,
+		OrgDomains:       stores.orgDomain,
+		ApiKeys:          stores.apiKeys,
+		GenericSecrets:   stores.genericSecrets,
+		BotBindings:      stores.botBindings,
+		ForgeConnections: stores.forgeConn,
+		Connections:      stores.connections,
+		// The cloud resolves a credential's package against the packages
+		// compiled into this binary: the only tier a cloud plane serves until
+		// the team tier lands (ADR-098).
+		ConnectorCatalog:            connection.BakedCatalog(),
 		ForgeIntegrations:           stores.forgeIntegration,
 		BoardBindings:               stores.boardBinding,
 		ProvisionApprovals:          stores.forgeApprovals,
@@ -805,6 +811,7 @@ type cloudStores struct {
 	webhooks         *webhooks.MongoStores
 	configShares     *configshare.MongoStore
 	forgeConn        *forge.MongoConnectionStore
+	connections      *connection.MongoStore
 	forgeIntegration *forge.MongoRepoIntegrationStore
 	boardBinding     *forge.MongoBoardBindingStore
 	forgeApprovals   *forge.MongoProvisionApprovalStore
@@ -854,6 +861,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		webhooks:         webhooks.NewMongoStores(st.DB()),
 		configShares:     configshare.NewMongoStore(st.DB()),
 		forgeConn:        forge.NewMongoConnectionStore(st.DB()),
+		connections:      connection.NewMongoStore(st.DB()),
 		forgeIntegration: forge.NewMongoRepoIntegrationStore(st.DB()),
 		boardBinding:     forge.NewMongoBoardBindingStore(st.DB()),
 		forgeApprovals:   forge.NewMongoProvisionApprovalStore(st.DB()),
@@ -904,6 +912,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		{"bot_secret_bindings", s.botBindings.EnsureSchema},
 		{"webhooks", func(c context.Context) error { return webhooks.EnsureSchema(c, st.DB()) }},
 		{"forge_connections", s.forgeConn.EnsureSchema},
+		{"connections", s.connections.EnsureSchema},
 		{"repo_integrations", s.forgeIntegration.EnsureSchema},
 		{"forge_board_bindings", s.boardBinding.EnsureSchema},
 		{"forge_provision_approvals", s.forgeApprovals.EnsureSchema},
