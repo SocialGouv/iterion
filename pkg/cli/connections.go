@@ -283,36 +283,61 @@ func ConnectionsRemove(storeDir, connector, alias string, out io.Writer) error {
 	return nil
 }
 
+// localConnectorTiers builds the package tiers of this install: the SAME tier
+// construction a run uses, not a second copy of it.
+//
+// The two had drifted into one shared defect (an unreadable root read as an
+// absent one), and a command whose whole job is to answer what a run would
+// answer cannot read the disk its own way. Both local surfaces that resolve a
+// connector without running one — `connections add`, which refuses what a run
+// would refuse, and `validate --connectors`, which SAYS what a run would
+// refuse — come through here, with the roots they consulted so a caller can
+// name them.
+//
+// TRUST stated as the OPERATOR's own, which is the honest answer here and not
+// a default: there is no run to read it from, and the workspace these commands
+// read is the one the operator typed the command in. Answering TrustUnknown()
+// would close the project tier for the very case the grant exists for — an
+// operator who generated a connector into their own project — and would break
+// the invariant this function is written for, that a local surface refuses
+// exactly what a granted run refuses.
+func localConnectorTiers() ([]connection.Catalog, connection.LocalPaths, error) {
+	wd, _ := os.Getwd()
+	paths := connection.LocalCatalogPaths(wd, store.GlobalIterionDataDir())
+	tiers, err := connection.LocalCatalogs(paths, connection.TrustOfRun(store.RunTrustDefault))
+	if err != nil {
+		return nil, paths, err
+	}
+	return tiers, paths, nil
+}
+
+// noConnectorCatalogReason is the ONE sentence that says this install has no
+// connector catalog, and which roots it would have read.
+//
+// One sentence for every surface that has to say it — an error on
+// `connections add`, a line of the `validate --connectors` report — because
+// the two were a copy apart, and the copy named the project root
+// unconditionally: it sent an operator to create a directory this process
+// would then not consult. The project root is only half an expectation while
+// the grant is closed, so it is named as what it is.
+func noConnectorCatalogReason(paths connection.LocalPaths) string {
+	if paths.Project != "" && connection.ProjectCatalogGranted() {
+		return fmt.Sprintf("no connector catalog found — expected %s or %s", paths.Project, paths.Home)
+	}
+	return fmt.Sprintf("no connector catalog found — expected %s (a project catalog at %s is consulted only with %s=1)",
+		paths.Home, paths.Project, connection.ProjectCatalogEnv)
+}
+
 // localCatalog builds the same layered catalog a run uses, so `connections
 // add` refuses exactly what a run would refuse — a connector the run could not
 // have resolved either.
 func localCatalog(storeDir string) (connection.Catalog, error) {
-	wd, _ := os.Getwd()
-	paths := connection.LocalCatalogPaths(wd, store.GlobalIterionDataDir())
-	// The SAME tier construction a run uses, not a second copy of it: the two
-	// had drifted into one shared defect (an unreadable root read as an absent
-	// one), and a command whose whole job is to refuse what a run would refuse
-	// cannot answer that question from its own reading of the disk.
-	// TRUST stated as the OPERATOR's own, which is the honest answer here and
-	// not a default: there is no run to read it from, and the workspace this
-	// command reads is the one the operator typed the command in. Answering
-	// TrustUnknown() would close the project tier for the very case the grant
-	// exists for — an operator who generated a connector into their own
-	// project — and would break the invariant this function is written for,
-	// that `connections add` refuses exactly what a granted run refuses.
-	tiers, err := connection.LocalCatalogs(paths, connection.TrustOfRun(store.RunTrustDefault))
+	tiers, paths, err := localConnectorTiers()
 	if err != nil {
 		return nil, err
 	}
 	if len(tiers) == 0 {
-		// The project root is only half an expectation while the grant is
-		// closed: naming it unconditionally sent an operator to create a
-		// directory this process would then not consult.
-		if paths.Project != "" && connection.ProjectCatalogGranted() {
-			return nil, fmt.Errorf("no connector catalog found — expected %s or %s", paths.Project, paths.Home)
-		}
-		return nil, fmt.Errorf("no connector catalog found — expected %s (a project catalog at %s is consulted only with %s=1)",
-			paths.Home, paths.Project, connection.ProjectCatalogEnv)
+		return nil, errors.New(noConnectorCatalogReason(paths))
 	}
 	return connection.NewLayeredCatalog(tiers...), nil
 }

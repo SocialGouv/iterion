@@ -69,20 +69,16 @@ func (r *Resolver) ResolveAction(ctx context.Context, actionID, alias string) (*
 		return nil, zero, exec.Credential{}, "", errors.New("connection: resolver has no tenant, so it may read nobody's connections")
 	}
 
-	connectorID, _, ok := strings.Cut(actionID, ".")
-	if !ok || connectorID == "" {
-		return nil, zero, exec.Credential{}, "", fmt.Errorf("action %q is not an operation id — it must read `connector.resource.verb`", actionID)
-	}
-
-	pkg, err := r.Catalog.Package(connectorID)
+	// The CATALOGUE half, through the one function that answers it: a surface
+	// that resolves an action WITHOUT running it (`iterion validate
+	// --connectors`) has to refuse the same thing with the same sentence, and
+	// a second copy of "cut the id, ask the tier, ask the package" is how the
+	// two would drift.
+	pkg, op, err := ResolveOperation(r.Catalog, actionID)
 	if err != nil {
 		return nil, zero, exec.Credential{}, "", err
 	}
-	op, found := pkg.Operation(actionID)
-	if !found {
-		return nil, zero, exec.Credential{}, "", fmt.Errorf("connector %q (v%s) has no operation %q%s",
-			connectorID, pkg.Connector.Version, actionID, suggestOperation(pkg, actionID))
-	}
+	connectorID, _, _ := strings.Cut(actionID, ".")
 
 	// WHO WROTE THE CODE, before the connection is even looked up.
 	//
@@ -272,6 +268,46 @@ func (r *Resolver) suggestAlias(ctx context.Context, connector string) string {
 		names = append(names, c.Alias)
 	}
 	return " (it has: " + strings.Join(names, ", ") + ")"
+}
+
+// ResolveOperation answers the catalogue half of a resolution: the package a
+// tier serves for the action's connector, and the operation that package
+// declares.
+//
+// EXPORTED, and ResolveAction's own first steps, because resolution happens at
+// two surfaces that must agree. A run resolves to CALL; `iterion validate
+// --connectors` resolves to TELL, with no connection, no credential and no
+// trust verdict — and its whole value is that it refuses exactly what a run
+// would refuse, naming the same thing to fix. Each of the three failures below
+// is a different repair (a malformed action id in the `.bot`, a package to
+// install, an operation id to correct), and the layered catalog's per-tier
+// reasons are what send the reader to the right directory.
+//
+// It touches the local catalog only. Nothing here reads a connection record or
+// unseals a credential, which is what lets an authoring surface call it: a
+// misspelt operation id cannot cost a credential read, the ordering rule
+// ResolveAction's own doc states.
+func ResolveOperation(catalog Catalog, actionID string) (*spec.Package, spec.Operation, error) {
+	var zero spec.Operation
+	if catalog == nil {
+		// Refused rather than read as "no such connector": a caller with no
+		// catalog has an install to fix, not a `.bot` to correct.
+		return nil, zero, errors.New("connection: no connector catalog to resolve against")
+	}
+	connectorID, _, ok := strings.Cut(actionID, ".")
+	if !ok || connectorID == "" {
+		return nil, zero, fmt.Errorf("action %q is not an operation id — it must read `connector.resource.verb`", actionID)
+	}
+	pkg, err := catalog.Package(connectorID)
+	if err != nil {
+		return nil, zero, err
+	}
+	op, found := pkg.Operation(actionID)
+	if !found {
+		return nil, zero, fmt.Errorf("connector %q (v%s) has no operation %q%s",
+			connectorID, pkg.Connector.Version, actionID, suggestOperation(pkg, actionID))
+	}
+	return pkg, op, nil
 }
 
 // suggestOperation points at the nearest operation id, which for a mistyped

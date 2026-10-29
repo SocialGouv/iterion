@@ -33,7 +33,8 @@ func localTools() []Tool {
     "exec_timeout": {"type": "string", "description": "Bound of one pass of the dry run, simulated children included, as a Go duration (default 1m); a pass that runs out of time is said so in the report."},
     "exec_loop_crossings": {"type": "integer", "description": "How often a pass crosses one bounded loop before the dry run declines its back-edge (default 3); a loop cut short is said so in the report (loops_cut_short) and a death that follows is the bound's doing, never the program's; a negative value removes the bound."},
     "vars": {"type": "object", "description": "Launch values for the workflow's vars, keyed by name, as strings the var's type reads (what run --var sets, the key local_run uses): a bot that guards its entry on a var is otherwise refused at the gate on every pass; a var without a default and without a value is shaped; a name no var declares, or a value its type cannot read, is the dry run's error. Implies exec.", "additionalProperties": {"type": "string"}},
-    "preset": {"type": "string", "description": "An in-source named preset applied before inputs; implies exec."}
+    "preset": {"type": "string", "description": "An in-source named preset applied before inputs; implies exec."},
+    "connectors": {"type": "boolean", "description": "After a clean compile, resolve every action: node against the connector catalogue installed on THIS machine and return what it cannot serve as connectors: a connector no tier holds (the tiers consulted are named), or an operation the installed package does not declare. Opt-in, because the answer is a property of the install and not of the program: the default result is the same wherever it runs, and these findings never decide valid."}
   },
   "required": ["file_path"],
   "additionalProperties": false
@@ -221,6 +222,7 @@ func handleLocalValidate(ctx context.Context, s *Server, raw json.RawMessage) (s
 		ExecLoopCrossings int               `json:"exec_loop_crossings"`
 		Vars              map[string]string `json:"vars"`
 		Preset            string            `json:"preset"`
+		Connectors        bool              `json:"connectors"`
 	}
 	if err := s.unmarshalArgs("local_validate", raw, &args); err != nil {
 		return "", false, err
@@ -241,7 +243,7 @@ func handleLocalValidate(ctx context.Context, s *Server, raw json.RawMessage) (s
 		execTimeout = d
 	}
 	out, err := captureJSON(func(p *cli.Printer) error {
-		return cli.RunValidateWithContext(ctx, s.resolvePath(args.FilePath), p, cli.ValidateOptions{Exec: args.Exec, Fixtures: fixtures, ExecTimeout: execTimeout, ExecLoopCrossings: args.ExecLoopCrossings, Inputs: launchValues(args.Vars), Preset: args.Preset})
+		return cli.RunValidateWithContext(ctx, s.resolvePath(args.FilePath), p, cli.ValidateOptions{Exec: args.Exec, Fixtures: fixtures, ExecTimeout: execTimeout, ExecLoopCrossings: args.ExecLoopCrossings, Inputs: launchValues(args.Vars), Preset: args.Preset, Connectors: args.Connectors})
 	})
 	// RunValidate returns "validation failed" AFTER printing the result
 	// JSON — an invalid workflow is a normal answer for this tool, so

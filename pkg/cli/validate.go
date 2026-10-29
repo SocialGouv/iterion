@@ -68,6 +68,18 @@ type ValidateResult struct {
 	// ExecError says why the dry run asked for did not run — the fixtures
 	// could not be read, or the run failed; the compile verdict stands.
 	ExecError string `json:"exec_error,omitempty"`
+	// Connectors is what the catalogue INSTALLED ON THIS MACHINE answers for
+	// the program's `action:` nodes (`--connectors`, ADR-098) — present only
+	// when asked, and only for a program that compiles. Like Exec's, its
+	// findings are not diagnostics: what a tier serves is a property of the
+	// install, so it must not decide `valid` (validate_connectors.go holds
+	// the reasoning).
+	Connectors *ConnectorsReport `json:"connectors,omitempty"`
+	// ConnectorsError says why the resolution asked for did not happen — a
+	// catalog root that is there and cannot be read; the compile verdict
+	// stands. An install with no catalog at all is not this: it is an answer,
+	// and it is in the report.
+	ConnectorsError string `json:"connectors_error,omitempty"`
 }
 
 // ValidateOptions widen `iterion validate`. Exec runs the compiled program
@@ -104,6 +116,12 @@ type ValidateOptions struct {
 	Vars   []string
 	Preset string
 	Inputs map[string]any
+	// Connectors resolves every `action:` node against the installed
+	// connector catalogue once the program compiles (`--connectors`). OFF by
+	// default and never implied by another option: it is the one thing
+	// `validate` reads off the machine rather than out of the program, so a
+	// default invocation has to stay independent of what is installed.
+	Connectors bool
 }
 
 // ValidateDiagnostic is one finding of `iterion validate` in the shape a
@@ -689,6 +707,19 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 		}
 	}
 
+	// The connector resolution, on a program that compiles — the same rule as
+	// the dry run above, and for the same reason: the diagnostics are the
+	// remedy for a program that does not, and an action node of a program
+	// that failed to compile may not even be the node the author meant.
+	if opts.Connectors && result.Valid && cr.Workflow != nil {
+		report, err := resolveConnectorActions(cr.Workflow)
+		if err != nil {
+			result.ConnectorsError = err.Error()
+		} else {
+			result.Connectors = report
+		}
+	}
+
 	sortValidateDiagnostics(result.Diagnostics)
 	if p.Format == OutputJSON {
 		p.JSON(result)
@@ -719,6 +750,13 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 			p.Blank()
 			p.Line("  dry run: not run — " + result.ExecError)
 		}
+		if result.Connectors != nil {
+			renderConnectors(p, result.Connectors)
+		}
+		if result.ConnectorsError != "" {
+			p.Blank()
+			p.Line("  connectors: not resolved — " + result.ConnectorsError)
+		}
 		p.Blank()
 		if result.Valid {
 			p.Line("  result: OK")
@@ -732,6 +770,14 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	}
 	if result.ExecError != "" {
 		return dryRunFailed(p, result.ExecError)
+	}
+	// A catalogue that could not be read fails the command; a catalogue that
+	// cannot SERVE a node does not. The first is the operator's install
+	// answering nothing to a question they asked, the second is an answer —
+	// and one that is true on this machine only, so it must not become an
+	// exit code a CI gate reads as the program's verdict.
+	if result.ConnectorsError != "" {
+		return connectorsNotResolved(p, result.ConnectorsError)
 	}
 	if opts.Strict && result.Exec != nil && result.Exec.Failing() {
 		return dryRunNotClean(p, result.Exec)
@@ -764,6 +810,17 @@ func dryRunFailed(p *Printer, why string) error {
 		return fmt.Errorf("dry run failed: %w", ErrReported)
 	}
 	return fmt.Errorf("dry run failed: %s", why)
+}
+
+// connectorsNotResolved is the error of a `--connectors` resolution that could
+// not run — a catalog root that is there and unreadable — returned AFTER the
+// result was printed, like the dry run's: in JSON mode it is marked
+// ErrReported and the CLI prints nothing more.
+func connectorsNotResolved(p *Printer, why string) error {
+	if p.Format == OutputJSON {
+		return fmt.Errorf("connectors not resolved: %w", ErrReported)
+	}
+	return fmt.Errorf("connectors not resolved: %s", why)
 }
 
 // annotateEdits attaches to each compile diagnostic the mechanical remedy

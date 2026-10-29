@@ -19,7 +19,14 @@ every condition true, then false — without a model, a shell or the
 workspace: each node's prompts and commands are rendered and the references
 left unresolved named, shell text is held to bash -n, humans and waits are
 answered at once, and the report lists the nodes and edges no pass reached.
---fixtures answers the named nodes with recorded outputs instead of shapes.`,
+--fixtures answers the named nodes with recorded outputs instead of shapes.
+
+With --connectors, every action: node is then resolved against the connector
+catalogue installed on THIS machine (ADR-098): a connector no tier serves, or
+an operation its package does not declare, is named with the reason. Opt-in,
+because that answer is a property of the install and not of the program — the
+default invocation reads the program alone, so it says the same thing on every
+machine.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return cli.RunValidateWithContext(cmd.Context(), args[0], newPrinter(), validateOpts)
@@ -34,5 +41,6 @@ func init() {
 	validateCmd.Flags().IntVar(&validateOpts.ExecLoopCrossings, "exec-loop-crossings", 0, "with --exec: how often a pass crosses one bounded loop before the dry run declines its back-edge (default 3); a loop cut short is said so in the report, and a death that follows is the bound's, not the program's; a negative value removes the bound (loops run to their cap)")
 	validateCmd.Flags().StringArrayVar(&validateOpts.Vars, "var", nil, "with --exec: a launch value for a workflow var (key=value, repeatable), with the precedence `run` has; implies --exec")
 	validateCmd.Flags().StringVar(&validateOpts.Preset, "preset", "", "with --exec: an in-source named preset applied before --var; implies --exec")
+	validateCmd.Flags().BoolVar(&validateOpts.Connectors, "connectors", false, "after a clean compile, resolve every `action:` node against the connector catalogue installed on this machine and name what it cannot serve; the findings are the install's state, so they do not change the verdict or the exit code")
 	rootCmd.AddCommand(validateCmd)
 }
