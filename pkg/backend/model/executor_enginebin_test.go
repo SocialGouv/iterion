@@ -78,7 +78,7 @@ func TestToolNodeCommandsCarryTheEngineBinaryPath(t *testing.T) {
 		t.Fatalf("shell command %s = %q, want %q", sandbox.EngineBinaryEnvVar, got, bin)
 	}
 
-	sc := e.toolNodeScriptCommand(context.Background(), []string{"python3", "-I"}, "scope_check.py").cmd
+	sc := e.toolNodeScriptCommand(context.Background(), []string{"python3", "-I"}, "scope_check.py", nil).cmd
 	if got := envValue(sc.Env, sandbox.EngineBinaryEnvVar); got != bin {
 		t.Fatalf("script command %s = %q, want %q", sandbox.EngineBinaryEnvVar, got, bin)
 	}
@@ -94,7 +94,7 @@ func TestSandboxedToolNodeGetsTheContainerBinaryPath(t *testing.T) {
 	e.SetSandbox(fake)
 
 	e.toolNodeCommand(context.Background(), "true", nil)
-	e.toolNodeScriptCommand(context.Background(), []string{"python3", "-I"}, "scope_check.py")
+	e.toolNodeScriptCommand(context.Background(), []string{"python3", "-I"}, "scope_check.py", nil)
 	if len(fake.envs) != 2 {
 		t.Fatalf("recorded %d commands, want 2", len(fake.envs))
 	}
@@ -117,7 +117,7 @@ func TestSharedPidSandboxToolNodeStillGetsTheContainerBinaryPath(t *testing.T) {
 	e.SetSandbox(fake)
 
 	e.toolNodeCommand(context.Background(), "true", nil)
-	e.toolNodeScriptCommand(context.Background(), []string{"python3", "-I"}, "scope_check.py")
+	e.toolNodeScriptCommand(context.Background(), []string{"python3", "-I"}, "scope_check.py", nil)
 	if len(fake.envs) != 2 {
 		t.Fatalf("recorded %d commands, want 2", len(fake.envs))
 	}
@@ -139,7 +139,7 @@ func TestNoopSandboxToolNodeGetsTheHostBinaryPath(t *testing.T) {
 	e.SetSandbox(fake)
 
 	e.toolNodeCommand(context.Background(), "true", nil)
-	e.toolNodeScriptCommand(context.Background(), []string{"python3", "-I"}, "scope_check.py")
+	e.toolNodeScriptCommand(context.Background(), []string{"python3", "-I"}, "scope_check.py", nil)
 	if len(fake.envs) != 2 {
 		t.Fatalf("recorded %d commands, want 2", len(fake.envs))
 	}

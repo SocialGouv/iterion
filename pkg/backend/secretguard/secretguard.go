@@ -870,6 +870,34 @@ func (g *Guard) MaterializeAuthoredShellEnv(s string) (string, map[string]string
 	return out, env
 }
 
+// AuthoredEnvForBody returns the env-only values a body iterion does NOT
+// rewrite must read from its own environment: placeholder → value, for every
+// env-only secret whose placeholder the body names.
+//
+// It is the script counterpart of MaterializeAuthoredShellEnv. A `script:`
+// body is a program in its own language, so iterion cannot turn a reference
+// into a variable read for it — the AUTHOR names the variable, and the
+// placeholder is that name (it is a valid POSIX environment-variable name by
+// construction, which is what MaterializeShellEnv already relies on). Only a
+// body that names one receives it, so the value reaches the one node that
+// asked and not every tool process of the run. Nil-safe.
+func (g *Guard) AuthoredEnvForBody(s string) map[string]string {
+	if g == nil || s == "" || len(g.envOnlyValue) == 0 {
+		return nil
+	}
+	var env map[string]string
+	for ph, val := range g.envOnlyValue {
+		if !strings.Contains(s, ph) {
+			continue
+		}
+		if env == nil {
+			env = make(map[string]string, len(g.envOnlyValue))
+		}
+		env[ph] = val
+	}
+	return env
+}
+
 // AuthoredEnvPlaceholder returns the placeholder that stands for the env-only
 // secret registered under name, or "" when this guard holds none. The
 // template layer ASKS rather than deriving the placeholder from the name:

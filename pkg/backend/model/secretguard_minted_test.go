@@ -321,3 +321,85 @@ func TestTheMintedGrantIsScopedToItsEndpoints(t *testing.T) {
 		t.Error("a grant whose endpoints are unknown was scoped to nothing reachable")
 	}
 }
+
+// Item 2 of #2033: a `script:` body is written to a temp file — pushed into
+// the workspace by a copy-based sandbox — so an inlined bearer would sit in
+// clear on disk for the node's lifetime. The body names the variable itself
+// (iterion cannot rewrite a reference in someone else's language) and the
+// engine hands the value to the interpreter: the script's own source, read
+// back by the script, carries no grant.
+func TestAScriptBodyReadsTheMintedGrantFromItsEnvironment(t *testing.T) {
+	blankHostCredentials(t)
+	tok := randomToken(t)
+	ph := secretguard.PlaceholderForName(store.ForgePublishTokenVar)
+	script := "cat \"$0\" > body.txt\nprintf '%s' \"$" + ph + "\" > token.txt\n"
+	dir := t.TempDir()
+	wf := &ir.Workflow{Prompts: map[string]*ir.Prompt{}, Schemas: map[string]*ir.Schema{}}
+	guard := BuildSecretGuard(t.Context(), wf, map[string]string{store.ForgePublishTokenVar: tok}, nil)
+	e := newTestClawExecutor(NewRegistry(), wf, WithWorkDir(dir), WithSecretGuard(guard))
+	e.vars = map[string]any{store.ForgePublishTokenVar: tok}
+
+	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "publish"}, Script: script, Language: "sh"}
+	if _, err := e.Execute(context.Background(), node, nil); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "body.txt"))
+	if err != nil {
+		t.Fatalf("the script did not run: %v", err)
+	}
+	if strings.Contains(string(body), tok) {
+		t.Errorf("the script file on disk carries the grant: %q", body)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "token.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != tok {
+		t.Errorf("the script received %d bytes, want the grant: the publish would be skipped as ungranted", len(got))
+	}
+}
+
+// The catalog's call-site shape, unchanged by the fix: every bot writes
+// `NAME={{vars.forge_publish_token}} <program>` and reads NAME from its
+// environment. The three names the catalog uses must all still arrive — a
+// shape that stopped carrying the grant would turn the publish into a silent
+// "no grant" skip, which is exactly what the bots report when it is absent.
+func TestEveryCatalogCallSiteShapeStillCarriesTheGrant(t *testing.T) {
+	blankHostCredentials(t)
+	// PUB_TOKEN: review-pr, branch-improve-loop's emit, gitops-warden.
+	// CHECK_AUTH: the delivery preflights. PR_STATE_TOKEN: the PR-state post.
+	for _, name := range []string{"PUB_TOKEN", "CHECK_AUTH", "PR_STATE_TOKEN"} {
+		t.Run(name, func(t *testing.T) {
+			tok := randomToken(t)
+			command := name + `={{vars.forge_publish_token}} sh -c 'printf %s "$` + name + `" > token.txt'; cat /proc/$$/cmdline > cmdline.bin`
+			refs, err := ir.ParseRefs(command)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			wf := &ir.Workflow{Prompts: map[string]*ir.Prompt{}, Schemas: map[string]*ir.Schema{}}
+			guard := BuildSecretGuard(t.Context(), wf, map[string]string{store.ForgePublishTokenVar: tok}, nil)
+			e := newTestClawExecutor(NewRegistry(), wf, WithWorkDir(dir), WithSecretGuard(guard))
+			e.vars = map[string]any{store.ForgePublishTokenVar: tok}
+
+			node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "publish"}, Command: command, CommandRefs: refs}
+			if _, err := e.Execute(context.Background(), node, nil); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			got, err := os.ReadFile(filepath.Join(dir, "token.txt"))
+			if err != nil {
+				t.Fatalf("the call site did not run: %v", err)
+			}
+			if string(got) != tok {
+				t.Errorf("%s received %d bytes, want the grant", name, len(got))
+			}
+			cmdline, err := os.ReadFile(filepath.Join(dir, "cmdline.bin"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(strings.ReplaceAll(string(cmdline), "\x00", " "), tok) {
+				t.Errorf("%s's cmdline carries the grant", name)
+			}
+		})
+	}
+}

@@ -710,6 +710,13 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// only. `resolved` (placeholder form) stays the value passed to
 			// hooks/logs, so the real secret never reaches the event stream.
 			body := e.secretGuard.MaterializeShell(resolved)
+			// A script body is the author's own program: iterion cannot
+			// rewrite a reference into a variable read for it, so the author
+			// names the environment variable and the engine hands the value
+			// to the interpreter — instead of the body (and the temp file it
+			// is written to, which a copy-based sandbox pushes into the
+			// workspace) carrying the credential in clear.
+			scriptEnv := e.secretGuard.AuthoredEnvForBody(body)
 			if _, werr := tmpFile.WriteString(body); werr != nil {
 				_ = tmpFile.Close()
 				cleanup()
@@ -749,7 +756,7 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			}
 			// In the workspace, just the basename (the bind mount uses the same
 			// relative path); out of it, the absolute scratch path.
-			return e.toolNodeScriptCommand(ctx, interp, scriptArg), cleanup, nil
+			return e.toolNodeScriptCommand(ctx, interp, scriptArg, scriptEnv), cleanup, nil
 		}
 }
 
@@ -840,10 +847,11 @@ func (e *ClawExecutor) withEngineBinaryEnv(env map[string]string) map[string]str
 // argv (scriptInterpreter) on the script temp file. Mirrors toolNodeCommand
 // for the script-mode path: sandbox-routed if a sandbox is active and the
 // node has not opted out.
-func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []string, script string) toolCommand {
+func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []string, script string, env map[string]string) toolCommand {
 	argv := append(append([]string{}, interpreter...), script)
+	env = e.withRunEnv(env)
 	if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
-		return e.sandboxToolCommand(ctx, argv, sandbox.ExecOpts{Env: e.withEngineBinaryEnv(e.withRunEnv(nil))})
+		return e.sandboxToolCommand(ctx, argv, sandbox.ExecOpts{Env: e.withEngineBinaryEnv(env)})
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	// A script body backgrounds jobs as freely as a shell recipe does, so
@@ -862,11 +870,15 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []
 		}
 	}
 	cmd.Env = append(cmd.Env, e.chain.RunEnv()...)
+	// The values the body named, keyed by the variable it reads.
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
 	// The canonical tree-noise pathspecs, engine-owned: a run without a
 	// devbox.json carries them just the same (#1464) — but the operator,
 	// the run or the node wins when they set the variable themselves, as
 	// everywhere else (verdict 2 R05b122, verdict 3 R5478b3).
-	cmd.Env = append(cmd.Env, e.treeNoiseEnvAppend(nil)...)
+	cmd.Env = append(cmd.Env, e.treeNoiseEnvAppend(env)...)
 	// The engine's own binary path, engine-owned: appended last so no
 	// inherited or launch-surface value can forge the resolution a bot
 	// script trusts when it re-enters the CLI (#1799).

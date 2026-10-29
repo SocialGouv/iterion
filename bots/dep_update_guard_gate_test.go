@@ -10,8 +10,39 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// runPostFeedback runs the post_feedback script the way the engine runs it:
+// the publish grant in the interpreter's ENVIRONMENT, under the name the body
+// reads, never inlined into the script body (#2033). An empty grant is the
+// local-CLI case — the variable is not set at all.
+func runPostFeedback(t *testing.T, path, grant string) ([]byte, error) {
+	t.Helper()
+	cmd := exec.Command("python3", path)
+	cmd.Env = os.Environ()
+	if grant != "" {
+		cmd.Env = append(cmd.Env, secretguard.PlaceholderForName(store.ForgePublishTokenVar)+"="+grant)
+	}
+	return cmd.Output()
+}
+
+// The bot names the engine's variable literally — a .bot cannot compute it.
+// If the placeholder convention moved, post_feedback would read an unset
+// variable and publish nothing, reporting "no grant" on a run that had one:
+// this is the pin that refuses the drift.
+func TestDepUpdateGuardReadsTheGrantUnderTheEnginesName(t *testing.T) {
+	script := toolScript(t, "dep-update-guard/main.bot", "post_feedback")
+	name := secretguard.PlaceholderForName(store.ForgePublishTokenVar)
+	if !strings.Contains(script, `os.environ.get("`+name+`"`) {
+		t.Errorf("post_feedback does not read the grant under %s: the publish would go unauthenticated", name)
+	}
+	if strings.Contains(script, "{{vars."+store.ForgePublishTokenVar+"}}") {
+		t.Error("post_feedback inlines the grant into the script body, which is written to a temp file")
+	}
+}
 
 // TestDepUpdateGuardGateVerdict pins the merge gate Vetty posts. The gate is
 // the thing a repo can make a REQUIRED check, so two properties matter more
@@ -107,7 +138,6 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{input.audited_sha}}":        `"feedfacefeed"`,
 			"{{secrets.forge_token.path}}": `""`,
 			"{{vars.forge_publish_url}}":   `"` + srv.URL + `/api/v1/forge/publish-review"`,
-			"{{vars.forge_publish_token}}": `"run-token"`,
 			"{{run.url}}":                  runURLLit(runPage, runPageLit),
 			"{{run.id}}":                   `"` + runID + `"`,
 			"{{vars.gate_enabled}}":        boolLit(gateEnabled),
@@ -130,7 +160,7 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			t.Fatal(err)
 		}
 		f.Close()
-		out, err := exec.Command("python3", f.Name()).Output()
+		out, err := runPostFeedback(t, f.Name(), "run-token")
 		if err != nil {
 			t.Fatalf("post_feedback failed: %v (out %q)", err, out)
 		}
@@ -494,7 +524,6 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{input.audited_sha}}":        `"feedfacefeed"`,
 			"{{secrets.forge_token.path}}": `""`,
 			"{{vars.forge_publish_url}}":   `"` + redir.URL + `/api/v1/forge/publish-review"`,
-			"{{vars.forge_publish_token}}": `"run-token"`,
 			"{{run.url}}":                  runURLLit(runPage, runPageLit),
 			"{{run.id}}":                   `"` + runID + `"`,
 			"{{vars.gate_enabled}}":        `True`,
@@ -510,7 +539,7 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			t.Fatal(err)
 		}
 		f.Close()
-		out, err := exec.Command("python3", f.Name()).Output()
+		out, err := runPostFeedback(t, f.Name(), "run-token")
 		if err != nil {
 			t.Fatalf("post_feedback failed: %v (out %q)", err, out)
 		}
@@ -558,7 +587,6 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{input.audited_sha}}":        `"feedfacefeed"`,
 			"{{secrets.forge_token.path}}": `""`,
 			"{{vars.forge_publish_url}}":   `""`,
-			"{{vars.forge_publish_token}}": `""`,
 			"{{run.url}}":                  runURLLit(runPage, runPageLit),
 			"{{run.id}}":                   `"` + runID + `"`,
 			"{{vars.gate_enabled}}":        `True`,
@@ -574,7 +602,7 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			t.Fatal(err)
 		}
 		f.Close()
-		out, err := exec.Command("python3", f.Name()).Output()
+		out, err := runPostFeedback(t, f.Name(), "")
 		if err != nil {
 			t.Fatalf("post_feedback failed: %v (out %q)", err, out)
 		}

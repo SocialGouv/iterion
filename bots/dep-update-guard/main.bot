@@ -1542,7 +1542,11 @@ tool post_feedback:
     pub_url = {{vars.forge_publish_url}}
     run_url = {{run.url}}
     run_id = {{run.id}}
-    pub_token = {{vars.forge_publish_token}}
+    # The grant reaches this script through the interpreter's ENVIRONMENT,
+    # under the engine's placeholder for the var: a script body is written to
+    # a temp file (and pushed into the workspace by a copy-based sandbox), so
+    # an inlined bearer would sit in clear on disk for the node's lifetime.
+    pub_token = os.environ.get("__ITERION_SECRET_forge_publish_token__", "")
     gate_enabled = {{vars.gate_enabled}}
     gate_context = {{vars.gate_context}}
 

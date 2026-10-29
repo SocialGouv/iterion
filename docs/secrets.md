@@ -97,11 +97,16 @@ co-resident process reads from `/proc/<pid>/cmdline` for the whole life of the
 command and which Kubernetes copies into the `pods/exec` audit log. The
 distinction is provenance, not sink: a command a MODEL proposed (the
 self-repair rung) resolves nothing, and neither does an agent's tool input, a
-script body or an egress request. Two forms keep the value in the text, by the
-author's own choice: the raw `{{!vars.x}}` form, whose quoting is the
-author's, and a `script:` body, whose value is a language literal written
-into the script file. The grant is also scoped (Layer 2) to the endpoints the
-server bound it to, so the egress gate refuses it toward any other host.
+script body or an egress request. A `script:` body is a program in
+its own language, which iterion cannot rewrite a reference into a variable
+read for: there the AUTHOR names the variable — the placeholder doubles as the
+environment-variable name — and the engine hands the value to the interpreter
+of a body that names it, instead of writing the bearer into the script file
+(`pub_token = os.environ.get("__ITERION_SECRET_forge_publish_token__", "")`,
+as `bots/dep-update-guard` reads it). One form keeps the value in the text, by
+the author's own choice: the raw `{{!vars.x}}` form, whose quoting is theirs.
+The grant is also scoped (Layer 2) to the endpoints the server bound it to, so
+the egress gate refuses it toward any other host.
 
 ### Where a CLI backend's redaction stops (the hook-protocol limits)
 
