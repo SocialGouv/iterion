@@ -3,10 +3,12 @@ import { useLocation } from "wouter";
 
 import { useProjectInfo } from "@/hooks/useProjectInfo";
 import { desktop, isDesktop } from "@/lib/desktopBridge";
+import { routeTitleFor } from "@/lib/routeTitles";
 import { useRunStore } from "@/store/run";
 import { UNTITLED_TAB_LABEL, useTabsStore } from "@/store/tabs";
 import { useBotsStore } from "@/store/bots";
 import { botDisplayLabel } from "@/lib/botLabel";
+import { ADMIN_BASE, ADMIN_ITEMS } from "@/views/admin/adminRoutes";
 
 const APP = "iterion studio";
 
@@ -18,6 +20,11 @@ const APP = "iterion studio";
  *
  * Format: "<context> — <project> · iterion"  (or "<context> · iterion"
  * when no project is resolved, e.g. cloud mode).
+ *
+ * The per-route context comes from the route table (lib/routeTitles.ts):
+ * every page has its own entry — a static title, or a derivation here for
+ * the routes whose name is live state (the open run, the active editor
+ * tab, the bot named in the URL). RGAA 8.6: two pages never share a title.
  */
 export function useDocumentTitle() {
   const [location] = useLocation();
@@ -51,25 +58,14 @@ export function useDocumentTitle() {
   }, [location, bots, fetchBots]);
 
   useEffect(() => {
-    // Every branch below (including the final else) assigns context, so no
-    // initializer is needed — TS definite-assignment covers the use.
+    // The route table carries every page's context. The derivations below
+    // are the routes whose name is live state; each still has its table
+    // entry, whose static title (when it declares one) is the fallback
+    // until the state loads.
+    const entry = routeTitleFor(location);
     let context: string;
-    if (location.startsWith("/runs/new")) {
-      context = "Launch";
-    } else if (location.startsWith("/runs/") && runHeader) {
+    if (location.startsWith("/runs/") && location !== "/runs/new" && runHeader) {
       context = runHeader.name || runHeader.workflow_name || "Run";
-    } else if (location.startsWith("/runs/")) {
-      context = "Run";
-    } else if (location === "/runs") {
-      context = "Runs";
-    } else if (location.startsWith("/pipelines/cards/")) {
-      context = "Pipeline card";
-    } else if (location === "/pipelines" || location.startsWith("/pipelines/")) {
-      context = "Pipelines";
-    } else if (location === "/account") {
-      context = "Account";
-    } else if (location.startsWith("/teams/")) {
-      context = "Team";
     } else if (location === "/editor") {
       if (!activeEditorTabId) {
         // No tab open → the picker is showing, not a document.
@@ -84,15 +80,24 @@ export function useDocumentTitle() {
         // EditorTabHost's TabLabelSync.
         context = activeEditorTabLabel || UNTITLED_TAB_LABEL;
       }
+    } else if (entry?.title) {
+      context = entry.title;
+    } else if (entry?.pattern === "/bots/:name") {
+      // The catalog name is the URL's own segment — decode it for the title.
+      context = decodeURIComponent(location.slice("/bots/".length));
+    } else if (location === ADMIN_BASE || location.startsWith(`${ADMIN_BASE}/`)) {
+      // The console's route table (views/admin/adminRoutes) already names
+      // every screen; the title reuses it rather than duplicate it.
+      const item = ADMIN_ITEMS.find((i) => `${ADMIN_BASE}${i.path}` === location);
+      context = item ? `Admin — ${item.label}` : "Admin";
     } else {
-      // Home and any unmatched route: no per-page context, just the
-      // project name (or bare app name when no project is resolved).
-      context = "";
+      // An unmatched route renders HomeView through the catch-all.
+      context = "Home";
     }
 
     // Compose: "<context> — <project> · iterion", dropping any segment
-    // that's empty. context is "" on Home and unmatched routes; project
-    // is null in cloud mode.
+    // that's empty. The route table keeps context non-empty for every
+    // matched route; project is null in cloud mode.
     let title: string;
     if (context && projectName) {
       title = `${context} — ${projectName} · ${APP}`;
