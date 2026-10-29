@@ -103,8 +103,9 @@ Three facts bound any cache design:
     GitHub-hosted runner's `/home/runner/work/…`);
   - `go clean -testcache` before sealing;
   - an image pipeline whose publish job runs only on `main` and alone holds
-    `packages: write` (`ci-runner-image.yml` grants it at workflow level today,
-    pull-request runs included), with the source in its build context and a
+    `packages: write` (`ci-runner-image.yml` splits build-and-validate from
+    publish, the validated image crossing as an artefact, and that publish job
+    alone holds the scope — #2787), with the source in its build context and a
     rebuild-and-pin cadence under five days.
   And it is only as trustworthy as each node (fact 1): its advantage over a
   store is a blast radius of one node, not immunity.
