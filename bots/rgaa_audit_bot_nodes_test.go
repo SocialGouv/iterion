@@ -294,7 +294,7 @@ func TestRgaaAuditEngineDrivenNodes(t *testing.T) {
 			"input.run_dir": base, "input.workspace_dir": site, "input.standard": std, "run.id": runID,
 			"input.engine_version": pin.Version, "input.engine_sha256": pin.SHA256, "input.engine_size": fmt.Sprint(pin.Size),
 			"input.scope_globs": "", "input.exclude_globs": "**/node_modules/**,**/*.test.*", "input.max_files": "4000",
-			"input.force_jsx": "true", "input.rendered": "off", "input.ledger_path": "", "input.undecidable_path": "", "input.report_dir": "",
+			"input.force_jsx": "true", "input.rendered": "off", "input.browser_path": "", "input.ledger_path": "", "input.undecidable_path": "", "input.report_dir": "",
 		}
 		maps.Copy(v, extra)
 		return v
@@ -524,6 +524,42 @@ L.out({ ok: true, cases: out });
 		}
 	})
 
+	t.Run("prepare_hands_the_configured_browser_to_the_engine_probe_which_names_it", func(t *testing.T) {
+		// The rendered layer's browser is the operator's choice first (`browser_path`),
+		// the run's environment second ($ULTRA11Y_BROWSER_PATH), the engine's own
+		// Playwright last. The probe must answer about THAT executable: a path that is
+		// not on disk is refused by the engine naming it — never a silent fall-back on
+		// the Playwright binary the operator did not choose. Asserted on the engine's
+		// answer, not on the arguments the node built: the pinned engine has to honour
+		// `--browser-path` for this to hold.
+		for _, c := range []struct {
+			name string
+			env  func(missing string) []string
+			vars func(dir, missing string) map[string]any
+		}{
+			{"var", func(string) []string { return env }, func(dir, missing string) map[string]any {
+				return map[string]any{"input.run_dir": dir, "input.rendered": "auto", "input.browser_path": missing}
+			}},
+			{"env", func(missing string) []string {
+				return append(append([]string{}, env...), "ULTRA11Y_BROWSER_PATH="+missing)
+			}, func(dir, missing string) map[string]any {
+				return map[string]any{"input.run_dir": dir, "input.rendered": "auto"}
+			}},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				missing := filepath.Join(t.TempDir(), "no-such-chromium")
+				dir := filepath.Join(t.TempDir(), "scratch")
+				out := rgaaOK(t, "prepare", rgaaRunNode(t, scripts, "prepare", site, c.env(missing), prepareIn(c.vars(dir, missing))))
+				if out["browser_path"] != missing {
+					t.Fatalf("prepare resolved browser_path=%v, want the configured %s", out["browser_path"], missing)
+				}
+				if out["browser_ok"] != false || !strings.Contains(fmt.Sprint(out["browser_reason"]), missing) {
+					t.Fatalf("the probe answered ok=%v (%q): want the engine's refusal naming the configured executable %s", out["browser_ok"], out["browser_reason"], missing)
+				}
+			})
+		}
+	})
+
 	t.Run("render_fails_the_layer_on_a_refused_sample_lint_before_any_scan", func(t *testing.T) {
 		// A sample-less rc: the engine's lint refuses it. The layer is failed
 		// (required) or degraded (auto) on THAT refusal — never read as an
@@ -531,7 +567,7 @@ L.out({ ok: true, cases: out });
 		ws := rgaaCopyFixtureSite(t)
 		rgaaWriteJSON(t, filepath.Join(ws, ".ultra11yrc.json"), map[string]any{"standard": "rgaa"})
 		renderIn := func(dir, mode string) map[string]any {
-			return in(map[string]any{"input.run_dir": dir, "input.workspace_dir": ws, "input.rendered": mode, "input.engine_pkg_dir": prep["engine_pkg_dir"], "input.serve_command": "", "input.serve_ready_url": "", "input.serve_timeout_seconds": 5})
+			return in(map[string]any{"input.run_dir": dir, "input.workspace_dir": ws, "input.rendered": mode, "input.engine_pkg_dir": prep["engine_pkg_dir"], "input.browser_path": "", "input.serve_command": "", "input.serve_ready_url": "", "input.serve_timeout_seconds": 5})
 		}
 		req := rgaaRefused(t, "render", rgaaRunNode(t, scripts, "render", ws, env, renderIn(rgaaRunCopy(t, run), "required")), "RENDER_UNAVAILABLE")
 		if !strings.HasPrefix(fmt.Sprint(req["reason"]), "sample check exit 2") {

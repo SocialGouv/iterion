@@ -115,6 +115,7 @@ replay, which is `LEDGER_INVALID` with the engine's own message.
 | `standard` | `rgaa` | the RGAA 4.1.2 pack (the WCAG core report has no « Décidés » line and a different rate semantics: a follow-up) |
 | `scope_globs` / `exclude_globs` / `max_files` | whole workspace | what the engine audits |
 | `rendered` | `auto` | `off` / `auto` / `required` — the browser layer; the engine writes its captures under `.ultra11y/pages/` of the workspace (gitignore it) |
+| `browser_path` | — | browser executable the rendered layer launches (`--browser-path` of the engine's probe and scan), e.g. the sandbox image's `/usr/bin/chromium`; empty = `$ULTRA11Y_BROWSER_PATH`, else the engine's own Playwright |
 | `serve_command` / `serve_ready_url` | — | how to serve the site for the scan |
 | `ledger_path` | `.ultra11y/verdicts/<standard>.json` | the committed ledger to replay |
 | `batch_size` / `max_reask` | 8 / 1 | adjudication batches and re-asks |

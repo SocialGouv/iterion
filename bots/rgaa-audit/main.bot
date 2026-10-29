@@ -90,6 +90,13 @@ vars:
   ## The engine writes its captures under `.ultra11y/pages/` of the audited
   ## workspace — gitignore it there.
   rendered: string [enum: "off", "auto", "required"] = "auto"
+  ## Browser executable the rendered layer launches, handed to the engine's
+  ## `status --browser` probe and `scan` as `--browser-path`: a distribution's
+  ## Chromium such as the sandbox image's /usr/bin/chromium, which Playwright's
+  ## own resolution never finds. Empty = $ULTRA11Y_BROWSER_PATH of the run's
+  ## environment, else the engine's Playwright. An explicit path is launched
+  ## as given — the engine never replaces it by a fallback.
+  browser_path: string = ""
   ## Command that serves the audited site for the scan, started by the
   ## render node and stopped when it ends; empty = the sample's URLs are
   ## reachable already. `serve_ready_url` is polled until it answers.
@@ -377,6 +384,7 @@ schema prepare_input:
   max_files: int
   force_jsx: bool
   rendered: string
+  browser_path: string
   ledger_path: string
   undecidable_path: string
   report_dir: string
@@ -393,6 +401,7 @@ schema prepare_output:
   audit_args: string[]
   browser_ok: bool
   browser_reason: string
+  browser_path: string
   rc_present: bool
   ledger_present: bool
   ledger_path: string
@@ -447,6 +456,7 @@ schema render_input:
   standard: string
   rendered: string
   engine_pkg_dir: string
+  browser_path: string
   serve_command: string
   serve_ready_url: string
   serve_timeout_seconds: int
@@ -1136,7 +1146,7 @@ tool prepare:
     }
     fs.writeFileSync(path.join(RUN, "bin", "lib.js"), "module.exports = (" + helpers.toString() + ")();\n");
     const L = helpers().init(RUN);
-    const empty = { run_dir: RUN, engine_path: "", engine_source: "", engine_version: "", engine_pkg_dir: "", audit_args: [], browser_ok: false, browser_reason: "", rc_present: false, ledger_present: false, ledger_path: "", undecidable_present: false, undecidable_path: "" };
+    const empty = { run_dir: RUN, engine_path: "", engine_source: "", engine_version: "", engine_pkg_dir: "", audit_args: [], browser_ok: false, browser_reason: "", browser_path: "", rc_present: false, ledger_present: false, ledger_path: "", undecidable_present: false, undecidable_path: "" };
     if (reportDir && L.exists(reportDir) && !fs.statSync(reportDir).isDirectory()) L.die("report_dir " + reportDir + " exists and is not a directory");
 
     // Candidates, fingerprinted BEFORE anything of them runs.
@@ -1191,10 +1201,16 @@ tool prepare:
     if (maxFiles > 0) args.push("--max-files", String(maxFiles));
 
     // Browser probe BEFORE any LLM spend, only when the rendered layer may run.
+    // The browser is the operator's choice first (`browser_path`), the run's
+    // environment second ($ULTRA11Y_BROWSER_PATH — what a runner image sets once),
+    // the engine's own Playwright last; the same choice reaches `scan`, so the
+    // probe and the scan it precedes answer about the same executable.
     const rendered = asStr({{input.rendered}});
+    const browserPath = asStr({{input.browser_path}}) || asStr(process.env.ULTRA11Y_BROWSER_PATH);
+    const browserFlag = browserPath ? ["--browser-path=" + browserPath] : [];
     let browserOk = false, browserReason = "rendered layer off";
     if (rendered !== "off") {
-      const r = L.engineJSON(["status", "--browser", "--cwd", pkgDir, "--json"], { timeoutMs: 120000 });
+      const r = L.engineJSON(["status", "--browser", "--cwd", pkgDir].concat(browserFlag, ["--json"]), { timeoutMs: 120000 });
       browserOk = !!(r.json.browser && r.json.browser.ok);
       browserReason = browserOk ? "" : String((r.json.browser && r.json.browser.reason) || "no browser");
     }
@@ -1203,7 +1219,7 @@ tool prepare:
     const undecRel = asStr({{input.undecidable_path}}) || path.join(".ultra11y", "undecidable-" + STD + ".json");
     const ledgerAbs = path.resolve(WS, ledgerRel), undecAbs = path.resolve(WS, undecRel);
     L.layer("engine", { status: "ok", version: WANT, source: engine.source, entry: engine.entry });
-    L.out({ ok: true, fail_code: "", reason: "", run_dir: RUN, engine_path: engine.entry, engine_source: engine.source, engine_version: WANT, engine_pkg_dir: pkgDir, audit_args: args, browser_ok: browserOk, browser_reason: browserReason, rc_present: rcPresent, ledger_present: L.exists(ledgerAbs), ledger_path: ledgerAbs, undecidable_present: L.exists(undecAbs), undecidable_path: undecAbs });
+    L.out({ ok: true, fail_code: "", reason: "", run_dir: RUN, engine_path: engine.entry, engine_source: engine.source, engine_version: WANT, engine_pkg_dir: pkgDir, audit_args: args, browser_ok: browserOk, browser_reason: browserReason, browser_path: browserPath, rc_present: rcPresent, ledger_present: L.exists(ledgerAbs), ledger_path: ledgerAbs, undecidable_present: L.exists(undecAbs), undecidable_path: undecAbs });
   language: js
   input: prepare_input
   output: prepare_output
@@ -1311,7 +1327,8 @@ tool render:
       // missing block's refusal on stderr.
       if (check.code !== 0 || !check.json) return degrade("sample check exit " + check.code + ": " + ((check.json && Array.isArray(check.json.issues) && check.json.issues.length) ? check.json.issues.map((i) => (i && i.path ? i.path + ": " : "") + (i && i.message)).join("; ") : (check.stderr || "").slice(-800)));
       const missing = Array.isArray(check.json.missing) ? check.json.missing.map((m) => m.id || m) : [];
-      const scan = L.engine(["scan", "--sample", "--runtime", "local", "--cwd", {{input.engine_pkg_dir}}, "--standard", STD, "--merge", L.auditPath(), "--out", RUN, "--json"], { cwd: WS, timeoutMs: 2700000 });
+      const browserPath = String({{input.browser_path}} || "");
+      const scan = L.engine(["scan", "--sample", "--runtime", "local", "--cwd", {{input.engine_pkg_dir}}].concat(browserPath ? ["--browser-path=" + browserPath] : [], ["--standard", STD, "--merge", L.auditPath(), "--out", RUN, "--json"]), { cwd: WS, timeoutMs: 2700000 });
       if (scan.code !== 0 || !scan.json) return degrade("scan --sample exit " + scan.code + ": " + (scan.stderr || "").slice(-1500));
       sha = L.commitAudit();
       // The scan's JSON is the merged document; the captures it wrote are
@@ -2257,6 +2274,7 @@ workflow rgaa_audit:
     standard: "{{vars.standard}}",
     rendered: "{{vars.rendered}}",
     engine_pkg_dir: "{{outputs.prepare.engine_pkg_dir}}",
+    browser_path: "{{outputs.prepare.browser_path}}",
     serve_command: "{{vars.serve_command}}",
     serve_ready_url: "{{vars.serve_ready_url}}",
     serve_timeout_seconds: "{{vars.serve_timeout_seconds}}",
