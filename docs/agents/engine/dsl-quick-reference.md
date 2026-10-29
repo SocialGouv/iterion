@@ -57,13 +57,10 @@ dying mid-pass on `BUDGET_EXCEEDED` and stranding it on a clone that
 dies with the pod. A loop is priced from its own **entry** (and re-priced
 on re-entry), so a second-phase or nested loop is never charged for the
 work that preceded it; the prices ride the checkpoint. Visible as a
-`budget_warning` carrying `reason: loop_budget_guard` (its `detail` says
-the price is the last iteration's and names the escape hatches).
-Precedence mirrors
+`budget_warning` carrying `reason: loop_budget_guard`. Precedence mirrors
 `compress:` minus the node level (a loop is not a node): CLI
 `--loop-budget-guard` → the loop clause `as name(…) guard: off` (the
-shrinking-iteration opt-out, #2677 — one opted-out loop also refuses the
-run's exit grace) → workflow `loop_budget_guard:` →
+opt-out, detail in dsl.md) → workflow `loop_budget_guard:` →
 `ITERION_LOOP_BUDGET_GUARD` → on. Diagnostics C133 (workflow) and C178
 (clause). Like `auto_memory:` and
 unlike `compress:`, the run-level override **travels onto the cloud queue**
