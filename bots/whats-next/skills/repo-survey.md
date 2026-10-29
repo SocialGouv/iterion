@@ -91,7 +91,7 @@ You are a read-only audit sub-agent for a roadmap study.
 
 Area: <docs-adr | code-gaps | operational-state | …>
 Workspace: <absolute path>
-Baseline (read if present): <CONTEXT_BRIEF.md path> · <findings/ dir path>
+Baseline (read if present): <findings/ dir path>
 
 Tools: read_file, glob, grep. Bash is unavailable by design.
 NEVER write, commit, push, or mutate anything.
@@ -123,9 +123,11 @@ don't recommend; the synthesis is not your job.
   inline (`file:line`, sha) and keep the rest in your context.
 - Honour `## Gaps in scope` — they feed the blind-spots list, and your
   reply must be honest about what was NOT surveyed.
-- Cross-reference workspace memory (see `session-continuity`): open
-  threads in `CONTEXT_BRIEF.md` that a finding resolves get surfaced
-  ("le fil X est clos par <sha>"); findings that reopen a thread too.
+- Cross-reference the durable state you can actually read: a board
+  thread (epic, ticket, comment) or a `findings/` file that a finding
+  resolves gets surfaced ("le fil X est clos par <sha>"); findings that
+  reopen a thread too. This bundle keeps no brief of its own (see
+  `session-continuity`).
 
 ### Blind-spots checklist
 

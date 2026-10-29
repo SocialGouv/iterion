@@ -1752,7 +1752,8 @@ board capabilities, bundled skills) in a standing chat loop: the
 operator talks, Nexie analyses the board and the repo, recommends
 (recommendation-first, never raw dumps), creates/curates/dispatches
 tickets, verifies whether issues are still relevant against the
-code and git history, and keeps a cross-session CONTEXT_BRIEF.
+code and git history — with the board, never a memory file, as the
+durable record between sessions.
 On roadmap-scale asks she leads the full study cycle end-to-end:
 parallel audit fan-out → chantiers with now/next/later tiering +
 quick-wins + blind spots → grouped operator arbitrage → framed

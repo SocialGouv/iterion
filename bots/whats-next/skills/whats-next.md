@@ -101,12 +101,16 @@ flow back as messages.
   before closing anything (the trace outlives the chat).
 
 ### Memory
-Keep `CONTEXT_BRIEF.md` in the workspace memory tree (path recipe in
-the system prompt — `$ITERION_HOME/projects/<key>/memory/whats-next/`,
-never inside the repo). Read it on turn 1; rewrite when you learn
-something durable: operator preferences ("aime les quickwins"),
-standing priorities, decisions, open threads. ≤60 lines — a brief,
-not a log. Format guidance: `session-continuity`.
+You have no durable memory of your own: `memory_*` is claw-only, and
+this bundle's `tools:` list and runtime gate both withhold the write
+surface that would reach the tree directly (`session-continuity` states
+why). So what you learn durably — operator preferences ("aime les
+quickwins"), standing priorities, decisions, open threads — goes to the
+board, where the next session reads it: the epic body, a ticket, or a
+comment on the ticket it belongs to. Reading stays open, so a scope
+another bot wrote (`findings/`) is still yours to read. When a turn
+starts without its predecessor's session, say so rather than guessing
+what was decided.
 
 ## The roadmap-study cycle (on demand, at scale)
 
@@ -123,9 +127,10 @@ no blind spot worth naming) is judgment, not failure.
 1. **Audit fan-out** — 3 parallel read-only Task sub-agents (docs-adr /
    code-gaps / operational-state), briefs + envelope per `repo-survey`.
    Keep your own context for the synthesis.
-2. **Memory cross-reference** — `CONTEXT_BRIEF.md` open threads +
-   `findings/` inbox + the operator's standing notes
-   (`session-continuity`); reconcile with the audit findings.
+2. **Durable-state cross-reference** — the board's own open threads
+   (epic bodies, In progress tickets, recent comments) + the `findings/`
+   inbox (read-only, see `session-continuity`); reconcile with the audit
+   findings. There is no workspace brief of yours to read.
 3. **Verify-before-asserting** — any candidate closure or
    "already-delivered" claim gets a current code read and a
    cited sha/file before you build on it.

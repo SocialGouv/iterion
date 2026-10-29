@@ -15,21 +15,23 @@ Three tools, scoped to this bot's memory tree:
 - **memory_write(path, content)** — write/replace a file in the scope.
 - **memory_list(path)** — list files in a scope subdirectory.
 
-> **claude_code backend note.** The `memory_*` tools (and the
-> auto-index/autoload described below) are claw-only. On claude_code
-> you reach the SAME tree directly with bash/read/write — resolve the
-> directory exactly like iterion's store encoding:
->
-> ```sh
-> base="${ITERION_HOME:-$HOME/.iterion}"
-> key=$(printf '%s' "$WORKSPACE_DIR" | sed -e 's#[/:\\]#-#g')
-> case "$key" in -*) ;; *) key="-$key";; esac
-> dir="$base/projects/$key/memory/<scope>"   # e.g. …/memory/whats-next
-> ```
->
-> Read `CONTEXT_BRIEF.md` yourself at session start; `mkdir -p "$dir"`
-> before the first write. Everything else in this skill (file format,
-> frontmatter, brief discipline) applies unchanged.
+> **This bundle cannot write the tree.** The `memory_*` tools (and the
+> auto-index/autoload described below) are claw-only, and `whats-next`
+> runs its turn on `backend: "claude_code"` with no `memory:` block. The
+> write surface that would reach the tree directly is withheld twice
+> over: the node's `tools:` list does not name it, and a declaration
+> withholds every native tool it omits; the runtime permission gate
+> denies `Bash`, `Write` and `Edit` on top of that. So **do not keep a
+> `CONTEXT_BRIEF.md` here, and do not promise one** — the board is this
+> bundle's durable record. Reading stays open (`allow: ["Read(**)"]`):
+> a file another bot left in a scope is yours to read with `read_file`,
+> at an absolute path. The scope directory is iterion's store encoding
+> of the workspace path — every `/`, `:` and `\` becomes `-`, a leading
+> `-` is added if the result lacks one, e.g. workspace `/home/u/repo`
+> under `$ITERION_HOME` (default `~/.iterion`) is
+> `~/.iterion/projects/-home-u-repo/memory/<scope>/`. What follows is
+> the write contract for a bundle that DOES carry a `memory:` block on
+> `backend: "claw"`.
 
 The scope lives **outside the repo**, under
 `~/.iterion/projects/<encoded-workspace>/memory/<scope>/`. Iterion

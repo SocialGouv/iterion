@@ -1,7 +1,8 @@
 # ADR-060 — Conversational single-agent bots: the chat loop pattern
 
-Status: **accepted** (2026-07-07). Extends ADR-058 (minimal framing — lean on
-the agent) from code-writing campaign bots to **interactive** bots. Piloted by
+Status: **accepted** (2026-07-07, amended 2026-10-29 — the durable-brief half of the dialogue contract is withdrawn, see Amendment)
+Extends ADR-058 (minimal framing — lean on the agent) from code-writing
+campaign bots to **interactive** bots. Piloted by
 rewriting `whats-next` (Nexie) v1 (form state machine, 15 nodes / 21 edges /
 4 bespoke human forms + hardcoded studio form resolvers) → v2 (chat loop,
 5 nodes). First live session: run `019f3beb`, 2026-07-07 —
@@ -68,8 +69,9 @@ seed (compute) → nexie (agent) → gate (compute) ── close ──▶ done
   pick), operator-language mirroring, act-directly on targeted explicit
   instructions, dry-run + `ask_user` confirmation on bulk (≥3) or destructive
   mutations, evidence-grounded curation (verify an issue against `git log` +
-  code before calling it obsolete), cross-session memory via a
-  `CONTEXT_BRIEF.md` in the workspace memory tree.
+  code before calling it obsolete). The pilot also listed cross-session
+  memory via a `CONTEXT_BRIEF.md` in the workspace memory tree; that half
+  was never reachable and is withdrawn by the Amendment below.
 - **The engine provides what it uniquely adds**: the pause/resume substrate,
   session-resume plumbing, the structured turn envelope
   (`{reply, close, quick_replies, dispatched_ids}` — the last feeding the
@@ -115,3 +117,35 @@ and the pending-input nav badge.
   shape (mission + standing autonomy, no chat loop); the two patterns share
   the "lean on the agent" doctrine and differ only in what loops: work units
   there, conversation turns here.
+
+## Amendment (2026-10-29) — the durable brief was never reachable (iterion#2773)
+
+The dialogue contract above listed "cross-session memory via a
+`CONTEXT_BRIEF.md` in the workspace memory tree". Measured end to end, the
+pilot bundle never had a path to write one, and the engine it runs on never
+offered one:
+
+- `memory_read`/`memory_write`/`memory_list` and `memory:` autoload are
+  claw-only — a `memory:` block on another backend is diagnosed and ignored
+  ([`validate_nodes.go`](../../pkg/dsl/ir/validate_nodes.go)) — and the pilot
+  node is `backend: "claude_code"` with no `memory:` block.
+- On the CLI backends a node's `tools:` list is a visibility boundary, not
+  just an approval list: every native tool the list does not name goes onto
+  `--disallowedTools`
+  ([`claudeNativeDisallowedTools`](../../pkg/backend/delegate/claude_code.go)).
+  The pilot declares `tools: [read_file, glob, grep, skill]`, so `Bash`,
+  `Write` and `Edit` are withheld — and the runtime permission gate denies
+  the same three a second time.
+
+So the bundle shipped a promise its own prompt forbade, and the prohibition
+was the only true statement of the pair. **The promise is withdrawn, not the
+prohibition**: the board is the durable record of a conversational bot — a
+decision worth keeping across sessions becomes a ticket or a comment, which is
+already where the next session looks. The engine half is unchanged; nothing
+here says a conversational bot may NOT have durable memory. Granting one is a
+backend change on the bot (a claw turn with a `memory:` block, the shape
+`bots/evolve` carries) and it would make the promise true again — which is why
+the agreement is now a guard rather than a convention
+([`bots/durable_memory_promises_test.go`](../../bots/durable_memory_promises_test.go)):
+a bundle may sell a durable brief exactly where one of its nodes can write
+one.
