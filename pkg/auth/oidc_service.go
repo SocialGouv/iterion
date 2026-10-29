@@ -306,7 +306,14 @@ func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.External
 		if refusal := ssoRefusal(existing); refusal != nil {
 			return LoginResult{}, refusal
 		}
-		if !s.canAutoLink(ctx, row, existing, email) {
+		allowed, linkErr := s.canAutoLink(ctx, row, existing, email)
+		if linkErr != nil {
+			// A read that could not decide is not the policy's refusal: 409
+			// link_required is permanent for an account with no password,
+			// and its cause used to vanish unlogged.
+			return LoginResult{}, linkErr
+		}
+		if !allowed {
 			return LoginResult{}, ErrLinkRequiresConsent
 		}
 		if err := s.store.UpsertOIDCLink(ctx, identity.OIDCLink{
@@ -724,17 +731,28 @@ func (s *Service) applyGitHubGrants(ctx context.Context, userID string, gh githu
 // the org controls its own signing keys), and the target is not a privileged
 // account whose takeover would escalate beyond the org: never a super-admin,
 // and never an admin/owner of a non-personal org other than the linking one.
-func (s *Service) canAutoLink(ctx context.Context, row orgsso.OrgSSOProvider, target identity.User, email string) bool {
+//
+// (false, nil) is the POLICY's refusal, which the caller answers as
+// ErrLinkRequiresConsent — "sign in, then link". An error is a read that
+// could not decide: the caller owes it its own answer, because a 409 for a
+// failed read is permanent (the account the SSO login matched has no
+// password, so the "sign in, then link" remedy is a dead end) and the cause
+// used to disappear with nothing logged. Policy and failure answer apart.
+func (s *Service) canAutoLink(ctx context.Context, row orgsso.OrgSSOProvider, target identity.User, email string) (bool, error) {
 	if !row.AutoLinkOnEmail || s.domains == nil || target.IsSuperAdmin {
-		return false
+		return false, nil
 	}
 	ok, err := s.domains.IsVerifiedForTenant(ctx, row.TenantID, orgsso.EmailDomain(email))
-	if err != nil || !ok {
-		return false
+	if err != nil {
+		return false, fmt.Errorf("auth: read whether domain %s is verified for tenant %s: %w",
+			orgsso.EmailDomain(email), row.TenantID, err)
+	}
+	if !ok {
+		return false, nil
 	}
 	ms, err := s.store.ListMembershipsByUser(ctx, target.ID)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("auth: read the grants of account %s the auto-link would take over: %w", target.ID, err)
 	}
 	for _, m := range ms {
 		if m.TeamID == row.TenantID || !m.Role.AtLeast(identity.RoleAdmin) {
@@ -742,12 +760,19 @@ func (s *Service) canAutoLink(ctx context.Context, row orgsso.OrgSSOProvider, ta
 		}
 		// admin/owner of another team — allowed only if it's a personal team
 		// (every user owns theirs; that confers no cross-tenant power).
-		if t, terr := s.store.GetTeam(ctx, m.TeamID); terr == nil && t.Personal {
+		t, terr := s.store.GetTeam(ctx, m.TeamID)
+		if terr != nil {
+			// The team that decides whether this grant is privileged cannot
+			// be read: the refusal stands (the safe direction), and it says
+			// why instead of claiming the policy refused.
+			return false, fmt.Errorf("auth: read team %s to decide whether the grant of account %s is privileged: %w", m.TeamID, target.ID, terr)
+		}
+		if t.Personal {
 			continue
 		}
-		return false
+		return false, nil
 	}
-	return true
+	return true, nil
 }
 
 // ssoRefusal is the answer of an SSO sign-in for an account no session may be
