@@ -689,6 +689,11 @@ func buildNodeFinishedData(output map[string]any) map[string]any {
 // an OBSERVATIONAL sink (the node_finished event). It is Layer 0 of
 // iterion's secrets protection.
 //
+// The engine also runs a failure TEXT through it — the one the run document
+// records, which the engine itself builds and no executor ever sees
+// (recordedFailureText wraps the string in a one-key map, failure_record.go):
+// one matcher for both sinks, never a second one beside it.
+//
 // ScrubOutput MUST return a redacted deep copy and never mutate its
 // input: the live output map feeds downstream nodes (`{{outputs.X}}` /
 // `{{artifacts.X}}`) and the resume checkpoint, both of which must keep

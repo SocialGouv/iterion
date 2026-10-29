@@ -2110,7 +2110,7 @@ func (e *Engine) parkResumeSandboxFailure(ctx context.Context, runID string, cp 
 		if err := e.store.SaveCheckpoint(writeCtx, runID, cp); err != nil && e.logger != nil {
 			e.logger.Warn("runtime: resume: save checkpoint on cancel during sandbox start for run %s: %v", runID, err)
 		}
-		changed, err := e.store.UpdateRunStatusIfCoded(writeCtx, runID, store.RunStatusCancelled, msg, code,
+		changed, err := e.recordFailureStatusIf(writeCtx, runID, store.RunStatusCancelled, msg, code,
 			[]store.RunStatus{store.RunStatusRunning})
 		if changed {
 			// Only when THIS write landed: a declined CAS means a peer
@@ -2138,7 +2138,7 @@ func (e *Engine) parkResumeSandboxFailure(ctx context.Context, runID string, cp 
 		}
 		return fmt.Errorf("%w: sandbox start: %v", ErrRunCancelled, sbErr)
 	}
-	if err := e.store.FailRunResumable(writeCtx, runID, cp, remedy.Annotate(msg), code); err != nil {
+	if err := e.recordFailureResumable(writeCtx, runID, cp, remedy.Annotate(msg), code); err != nil {
 		// Fall back to a plain terminal status so the run does not linger
 		// as `running`. On its OWN short budget: the park's budget is what
 		// a wedged store has just consumed, and a fallback sharing it
@@ -2146,7 +2146,7 @@ func (e *Engine) parkResumeSandboxFailure(ctx context.Context, runID string, cp 
 		// fails too the run is stuck non-terminal until the runner's
 		// redelivery adopts the `running` doc under the lock, so say so.
 		fbCtx, cancelFb := context.WithTimeout(context.WithoutCancel(ctx), resumeParkFallbackBudget)
-		uerr := e.store.UpdateRunStatusCoded(fbCtx, runID, store.RunStatusFailed, remedy.Annotate(msg), code)
+		uerr := e.recordFailureStatus(fbCtx, runID, store.RunStatusFailed, remedy.Annotate(msg), code)
 		switch {
 		case uerr != nil:
 			if e.logger != nil {

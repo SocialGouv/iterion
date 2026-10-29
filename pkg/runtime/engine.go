@@ -713,10 +713,10 @@ func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, 
 // failed.
 func (e *Engine) recordSetupOutcome(ctx context.Context, runID string, status store.RunStatus, msg string, code store.FailureCode) (bool, error) {
 	if status == store.RunStatusCancelled {
-		return e.store.UpdateRunStatusIfCoded(ctx, runID, status, msg, code,
+		return e.recordFailureStatusIf(ctx, runID, status, msg, code,
 			[]store.RunStatus{store.RunStatusRunning})
 	}
-	if err := e.store.UpdateRunStatusCoded(ctx, runID, status, msg, code); err != nil {
+	if err := e.recordFailureStatus(ctx, runID, status, msg, code); err != nil {
 		return false, err
 	}
 	return true, nil

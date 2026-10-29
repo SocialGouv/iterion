@@ -66,7 +66,7 @@ func (e *Engine) failRunErr(ctx context.Context, runID, nodeID string, origErr e
 	if errors.As(origErr, &rtErr) {
 		rtErr.Code = recordedCode(rtErr, origErr)
 		remedy := RemedyOf(rtErr)
-		if storeErr := e.store.UpdateRunStatusCoded(ctx, runID, store.RunStatusFailed, remedy.Annotate(rtErr.Message), rtErr.Code); storeErr != nil {
+		if storeErr := e.recordFailureStatus(ctx, runID, store.RunStatusFailed, remedy.Annotate(rtErr.Message), rtErr.Code); storeErr != nil {
 			e.logger.Error("failed to persist run failure status: %v", storeErr)
 			return unpersisted(rtErr, nodeID, rtErr.Message, storeErr)
 		}
@@ -99,7 +99,7 @@ func (e *Engine) failRunWithCode(ctx context.Context, runID, nodeID, reason stri
 		Hint:    hint,
 	}
 	remedy := RemedyOf(rtErr)
-	if storeErr := e.store.UpdateRunStatusCoded(ctx, runID, store.RunStatusFailed, remedy.Annotate(reason), code); storeErr != nil {
+	if storeErr := e.recordFailureStatus(ctx, runID, store.RunStatusFailed, remedy.Annotate(reason), code); storeErr != nil {
 		e.logger.Error("failed to persist run failure status: %v", storeErr)
 		return unpersisted(rtErr, nodeID, reason, storeErr)
 	}
@@ -243,7 +243,7 @@ func (e *Engine) resumableFailAnchor(rs *runState, failNodeID string) (anchor, r
 // Falls back to a plain checkpoint-less failure if the write fails.
 func (e *Engine) failRunDeliberate(rs *runState, nodeID string, outcome failNodeOutcome) error {
 	anchor := nodeID
-	persist := e.store.FailRunTerminal
+	persist := e.recordFailureTerminal
 	if outcome.resumable {
 		guard, why := e.resumableFailAnchor(rs, nodeID)
 		if guard == "" {
@@ -256,7 +256,7 @@ func (e *Engine) failRunDeliberate(rs *runState, nodeID string, outcome failNode
 		} else {
 			anchor = guard
 			e.captureFailureBoundary(rs, nodeID)
-			persist = e.store.FailRunResumable
+			persist = e.recordFailureResumable
 		}
 	}
 	cp := buildCheckpoint(rs, anchor)
@@ -298,7 +298,7 @@ func (e *Engine) failRunDeliberate(rs *runState, nodeID string, outcome failNode
 func (e *Engine) failRunWithCheckpoint(rs *runState, nodeID, reason string) error {
 	e.captureFailureBoundary(rs, nodeID)
 	cp := buildCheckpoint(rs, nodeID)
-	if storeErr := e.store.FailRunResumable(rs.ctx, rs.runID, cp, reason, ErrCodeExecutionFailed); storeErr != nil {
+	if storeErr := e.recordFailureResumable(rs.ctx, rs.runID, cp, reason, ErrCodeExecutionFailed); storeErr != nil {
 		e.logger.Error("failed to persist resumable failure: %v", storeErr)
 		return e.failRun(rs.ctx, rs.runID, nodeID, reason)
 	}
@@ -317,7 +317,7 @@ func (e *Engine) failRunErrWithCheckpoint(rs *runState, nodeID string, origErr e
 		e.captureFailureBoundary(rs, nodeID)
 		cp := buildCheckpoint(rs, nodeID)
 		remedy := RemedyOf(rtErr)
-		if storeErr := e.store.FailRunResumable(ctx, rs.runID, cp, remedy.Annotate(rtErr.Message), rtErr.Code); storeErr != nil {
+		if storeErr := e.recordFailureResumable(ctx, rs.runID, cp, remedy.Annotate(rtErr.Message), rtErr.Code); storeErr != nil {
 			e.logger.Error("failed to persist resumable failure: %v", storeErr)
 			return e.failRunErr(ctx, rs.runID, nodeID, origErr)
 		}
@@ -372,7 +372,7 @@ func (e *Engine) handleContextDoneWithCheckpoint(rs *runState, nodeID string, ct
 		// CAS or event-suppression is needed.
 		if errors.Is(context.Cause(rs.ctx), ErrRunInterrupted) {
 			reason := fmt.Sprintf("interrupted at node %s (resumable)", nodeID)
-			if storeErr := e.store.FailRunResumable(storeCtx, rs.runID, cp, reason, store.FailureInterrupted); storeErr != nil {
+			if storeErr := e.recordFailureResumable(storeCtx, rs.runID, cp, reason, store.FailureInterrupted); storeErr != nil {
 				e.logger.Error("failed to persist resumable interruption: %v", storeErr)
 				return e.failRun(storeCtx, rs.runID, nodeID, reason)
 			}
@@ -403,7 +403,7 @@ func (e *Engine) handleContextDoneWithCheckpoint(rs *runState, nodeID string, ct
 			store.RunStatusPausedOperator,
 			store.RunStatusFailedResumable,
 		}
-		if changed, err := e.store.UpdateRunStatusIfCoded(storeCtx, rs.runID, store.RunStatusCancelled, "run cancelled", store.FailureCancelled, cancellable); err != nil {
+		if changed, err := e.recordFailureStatusIf(storeCtx, rs.runID, store.RunStatusCancelled, "run cancelled", store.FailureCancelled, cancellable); err != nil {
 			e.logger.Error("failed to persist cancellation status: %v", err)
 		} else if !changed {
 			e.logger.Debug("run %s already terminal — keeping the recorded cancellation reason", rs.runID)
@@ -420,7 +420,7 @@ func (e *Engine) handleContextDoneWithCheckpoint(rs *runState, nodeID string, ct
 	// the already-expired rs.ctx.
 	reason := fmt.Sprintf("timeout: %s", ctxErr.Error())
 	cp := buildCheckpoint(rs, nodeID)
-	if storeErr := e.store.FailRunResumable(storeCtx, rs.runID, cp, reason, ErrCodeTimeout); storeErr != nil {
+	if storeErr := e.recordFailureResumable(storeCtx, rs.runID, cp, reason, ErrCodeTimeout); storeErr != nil {
 		e.logger.Error("failed to persist resumable failure: %v", storeErr)
 		return e.failRun(storeCtx, rs.runID, nodeID, reason)
 	}

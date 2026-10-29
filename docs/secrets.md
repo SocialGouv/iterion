@@ -59,6 +59,18 @@ sink, before persistence:
   scrubbed where the executor returns it (`ClawExecutor.Execute`), for
   every node kind: a failing command's stdout and stderr, an MCP error
   echoing its input,
+- the failure text the ENGINE itself builds, which never passes through the
+  executor: a `fail:` node's rendered `message:` (it reads the live output map,
+  which keeps real values for the nodes downstream), a setup-phase refusal, the
+  pre-resume budget verdict, a child-resource restore failure. It reaches the
+  run **document** (`run.json` / the Mongo run doc's `.error` — what `iterion
+  inspect --json` prints, the run views and the merge gate's synthetic status
+  display, and `pkg/alert` fingerprints) through one chokepoint, the
+  `recordFailure*` writers of
+  [`pkg/runtime/failure_record.go`](../pkg/runtime/failure_record.go), and the
+  event path (hence `run.log`) through `Engine.emitBranch`. An executor whose
+  scrubber does not return the text gets a withheld marker on the record, never
+  the raw message,
 - the engine's events that carry model- or operator-written text: the
   whole `human_input_requested` payload of a question the run pauses on (a
   human node's rendered instructions, a fan-out branch's pause, an async

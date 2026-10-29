@@ -133,7 +133,7 @@ func (e *Engine) finalizeSpentBudgetBeforeResume(ctx context.Context, r *store.R
 	// its existing rich checkpoint while moving it back to failed_resumable,
 	// exactly like failRunErrWithCheckpoint does after an in-loop budget death.
 	remedy := RemedyOf(rtErr)
-	if err := e.store.FailRunResumable(ctx, r.ID, r.Checkpoint, remedy.Annotate(rtErr.Message), rtErr.Code); err != nil {
+	if err := e.recordFailureResumable(ctx, r.ID, r.Checkpoint, remedy.Annotate(rtErr.Message), rtErr.Code); err != nil {
 		if e.logger != nil {
 			e.logger.Error("failed to persist pre-resume budget failure: %v", err)
 		}
