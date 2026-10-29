@@ -31,7 +31,7 @@ func classifyProbe(t *testing.T, facts string) (verdict, because string, code in
 	if err := os.WriteFile(path, []byte(facts), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("bash", kindProbeScript, "--classify", path)
+	cmd := exec.Command("bash", scriptUnderTest(t, kindProbeScript), "--classify", path)
 	cmd.Env = scriptEnv(t)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout

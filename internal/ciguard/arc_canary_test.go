@@ -30,7 +30,7 @@ const (
 // verdict, the detail, the log it wrote to stderr and its exit code.
 func canaryVerdict(t *testing.T, facts map[string]string) (verdict, detail, log string, code int) {
 	t.Helper()
-	cmd := exec.Command("bash", canaryVerdictScript)
+	cmd := exec.Command("bash", scriptUnderTest(t, canaryVerdictScript))
 	cmd.Env = scriptEnv(t)
 	for k, v := range facts {
 		cmd.Env = append(cmd.Env, k+"="+v)

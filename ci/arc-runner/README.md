@@ -30,6 +30,60 @@ docker build -t iterion-ci-runner:test ci/arc-runner
 bash ci/arc-runner/verify.sh iterion-ci-runner:test
 ```
 
+It also bakes **the actions the workflows pin**, where the runner looks for
+them before it reaches the network. An ephemeral runner starts with an empty
+`_actions`, so every job downloads every action again from
+codeload.github.com — which answers `429` under load: on 2026-10-15
+`test-unit`, `vendor-check` and `fmt-check` failed before any step ran and the
+merge queue ejected the pull request, the fourth time (SocialGouv/iterion#2435),
+and a third party measured the same throttling with no ARC involved. Baking
+hardens against a service nobody here controls; a mirror or a shared mutable
+cache would not.
+
+The mechanism is the runner's own, not an entrypoint of ours:
+`ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE` (actions/runner 2.337.0,
+`src/Runner.Common/Constants.cs`, `src/Runner.Worker/ActionManager.cs`). For
+`uses: <owner>/<repo>/<path>@<sha>` the worker looks for
+`<cache>/<owner>_<repo>/<sha>.tar.gz`, copies it into the job's temp directory
+and extracts it exactly as it would a download — no symlink, nothing written
+into the cache, upstream's entrypoint and command untouched. The cache lives at
+`/opt/actions-archive-cache` for the same reason the tool cache lives in
+`/opt`: anything baked under `/home/runner/_work` is hidden by the volume ARC
+mounts over it. The key is the sha the Actions service resolves, which is the
+pin itself — every `uses:` in this repository is sha-pinned, so a tag would
+silently miss the cache and the generator refuses one.
+
+`baked-actions.txt` is **generated**, never hand-kept — an image baking a set
+the workflows no longer ask for looks healthy and quietly downloads again:
+
+```sh
+bash scripts/ci/baked-actions-manifest.sh > ci/arc-runner/baked-actions.txt
+```
+
+`internal/ciguard` runs that generator against `.github/workflows` and fails
+when the committed manifest differs, holds the cache out of `_work`, and drives
+`scripts/ci/verify-baked-actions.sh` over crafted caches. The verifier also
+runs inside the image, offline, as part of `verify.sh`: it proves every `uses:`
+of the tree resolves from the baked archives (the archive exists, unpacks to
+the one nested directory the runner requires, and carries the action's own
+manifest at that subpath) and that the image baked from the manifest this tree
+ships. The negative control is the README's usual kind: remove one archive, or
+one line of the manifest, and the verification fails naming the action. The
+whole set measured 27,515,970 bytes over 24 entries on 2026-10-29 — a rounding
+error next to the baked Go and Node.
+
+One honest residual: the image BUILD downloads those archives from the very
+host that throttles, so a build started during a codeload squall fails (with
+`curl --retry 5`) instead of shipping a cache with holes. That is the trade the
+baking makes — one failure per build, loudly, against one download per action
+per job, silently.
+
+**Rolling it out** is tracked as iterion#2820, and needs the same two external
+gestures as any change to this image, and `arc-runners` has no `syncPolicy.automated`: publish a validated
+version from main, pin that version AND its digest in infra-apps, then sync
+Argo by hand. Until that happens the jobs keep downloading their actions and
+nothing regresses.
+
 The verifier runs the image as UID 1001, with no network and a read-only root
 filesystem: it checks the tool cache (go.mod's Go and Node 24, their markers
 and versions, `RUNNER_TOOL_CACHE`, all of it owned by the runner so setup-go

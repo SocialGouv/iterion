@@ -63,7 +63,7 @@ func rebuildReport(t *testing.T, rows []buildRow) ([]string, string, int) {
 	if err := os.WriteFile(table, []byte(body.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("awk", "-f", rebuildCauseProgram, table)
+	cmd := exec.Command("awk", "-f", scriptUnderTest(t, rebuildCauseProgram), table)
 	cmd.Env = scriptEnv(t)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout

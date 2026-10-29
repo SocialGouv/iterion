@@ -119,7 +119,7 @@ func runTapCheck(t *testing.T, dir string, env map[string]string) tapCheckResult
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("bash", script)
+	cmd := exec.Command("bash", scriptUnderTest(t, script))
 	cmd.Dir = dir
 	cmd.Env = scriptEnv(t)
 	for k, v := range env {

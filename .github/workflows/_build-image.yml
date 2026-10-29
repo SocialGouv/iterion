@@ -127,7 +127,7 @@ jobs:
         # the client only adds --cache-to when buildd granted the export (s3CachePolicy
         # cadence/never) — the per-build S3 export cost disappears once the server side
         # runs >= v0.15 too.
-        uses: socialgouv/buildkit-operator@42071022f7c68070aeba92e8c30e95d8564eeb53 # v1
+        uses: SocialGouv/buildkit-operator@42071022f7c68070aeba92e8c30e95d8564eeb53 # v1
         with:
           buildd-url: ${{ vars.BUILDKIT_OPERATOR_BUILDD_URL }}
           gateway-host: ${{ vars.BUILDKIT_OPERATOR_GATEWAY_HOST || 'bkod.fabrique.social.gouv.fr' }}

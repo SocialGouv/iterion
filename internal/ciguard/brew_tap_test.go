@@ -130,7 +130,7 @@ func runTap(t *testing.T, w tapWorld, tag string) tapRun {
 	}
 	var out strings.Builder
 	step := func(args ...string) int {
-		cmd := exec.Command("bash", append([]string{script}, args...)...)
+		cmd := exec.Command("bash", append([]string{scriptUnderTest(t, script)}, args...)...)
 		cmd.Dir = work
 		cmd.Env = append(gittest.Env(),
 			"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),

@@ -114,7 +114,7 @@ func brewTapPREnv(t *testing.T, clone string, open []openPR, env []string, args 
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("bash", append([]string{script}, args...)...)
+	cmd := exec.Command("bash", append([]string{scriptUnderTest(t, script)}, args...)...)
 	cmd.Dir = clone
 	cmd.Env = scriptEnv(t)
 	for i, kv := range cmd.Env {

@@ -51,7 +51,7 @@ func tapTree(t *testing.T, formula, cask string) (root, artefacts string) {
 
 func updateTap(t *testing.T, root, artefacts, version string) string {
 	t.Helper()
-	cmd := exec.Command("bash", filepath.Join(root, "scripts", "update-brew-tap.sh"), version, artefacts)
+	cmd := exec.Command("bash", scriptUnderTest(t, filepath.Join(root, "scripts", "update-brew-tap.sh")), version, artefacts)
 	cmd.Dir = root
 	cmd.Env = scriptEnv(t)
 	out, err := cmd.CombinedOutput()
