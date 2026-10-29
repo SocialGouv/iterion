@@ -552,7 +552,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		spec.AttachmentPromote, spec.Preset, RunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
-		launchExtras{workDir: workDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, routePolicy: spec.LLMRoutePolicy, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, budgetAsk: spec.Budget, executionContext: ctxContract, permission: spec.Permission, worktreeBaseCommit: spec.WorktreeBaseCommit, botOrigin: spec.BotOrigin, delegation: spec.Delegation, budgetOverrides: rawBudget, compiled: cs},
+		launchExtras{workDir: workDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, routePolicy: spec.LLMRoutePolicy, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, budgetAsk: spec.Budget, executionContext: ctxContract, permission: spec.Permission, worktreeBaseCommit: spec.WorktreeBaseCommit, botOrigin: spec.BotOrigin, delegation: spec.Delegation, budgetOverrides: rawBudget, compiled: cs, botSourceTier: spec.BotSourceTier},
 		s.store,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
@@ -1421,6 +1421,16 @@ func (s *Service) spawnRun(
 	if parentRunID != "" {
 		opts = append(opts, runtime.WithParentRunID(parentRunID))
 	}
+	// The resolved tier must reach the DOCUMENT, not only the executor's
+	// predictions (ExecutorSpec.BotSourceTier): a resume rebuilds the engine
+	// from the run document, so a tier this lane never stamped reads as the
+	// operator's own and the floor hands the bot's `sandbox: none` back on
+	// the second attempt. The same trap WithTrust closed for trust — except
+	// that trust is REFUSED here because the lane cannot persist it, while
+	// the tier can be, so it is carried rather than refused.
+	if ex.botSourceTier != "" {
+		opts = append(opts, runtime.WithBotSourceTier(ex.botSourceTier))
+	}
 	// Persist launch-time model/backend overrides on the run record
 	// (display-only) so the studio Overview shows what it launched with.
 	// Empty on resume, leaving the original launch's value intact.
@@ -1613,6 +1623,10 @@ type launchExtras struct {
 	worktreeBaseCommit string
 	botOrigin          *store.BotOrigin
 	delegation         *store.RunDelegation
+	// botSourceTier mirrors LaunchSpec.BotSourceTier on a LAUNCH (#1959):
+	// the tier the bot resolver served, which the isolation floor judges.
+	// Empty on a resume, whose document carries it already.
+	botSourceTier string
 	// routePolicy mirrors LaunchSpec.LLMRoutePolicy on a LAUNCH: the
 	// resolved adaptive-routing snapshot the in-process lane stamps on the
 	// run document (#2665 item 7), for a local resume to replay. Nil on a

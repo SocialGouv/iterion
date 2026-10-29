@@ -1344,10 +1344,14 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			}
 			// The publisher's sandbox reading is the workflow's own block
 			// only — the runner's CLI override and deployment default are
-			// invisible here. A codex stage on a sandbox-default
-			// deployment therefore lands publisher-side and may be refused
-			// runner-side: the named asymmetry, said by the runner's
-			// run_fallback_refused event (the authoritative screen).
+			// invisible here, and so is the #1959 isolation floor: this
+			// screen has no resolved bot-source tier to judge (it is also
+			// reached from a credential PREVIEW, which runs before any
+			// source resolves). A team-authored `sandbox: none` therefore
+			// reads UNSANDBOXED here and sandboxed at the runner, which
+			// widens the same named asymmetry a CLI override already
+			// creates: this screen is advisory, and the runner's
+			// run_fallback_refused event is the authoritative one.
 			sandboxed := runtime.WorkflowSandboxActive(wf, "", "")
 			// The screens read the run's launch vars like the derivations
 			// read the view: one reading of the run, all of it — the
@@ -3315,6 +3319,10 @@ func doorWantsFor(routePolicy *store.RunLLMRoutePolicy, view model.RouteView, la
 	// a stage is dispatchable iff its single-stage probe leaves a Policy
 	// rung on some node, and the strip restores the program byte-exactly
 	// between probes.
+	// The workflow's own block, unfloored for the reason stated at the other
+	// screen: a door probe is reachable from a credential preview that has
+	// resolved no bot source, so there is no tier here to apply the #1959
+	// floor with. Advisory; the runner decides.
 	sandboxed := runtime.WorkflowSandboxActive(wf, "", "")
 	landed := map[string]bool{}
 	for _, st := range missing {
