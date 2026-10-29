@@ -204,6 +204,37 @@ func (d *Driver) Prepare(ctx context.Context, spec sandbox.Spec) (sandbox.Prepar
 	}, nil
 }
 
+// envArgs turns a spec's env map into the `--env k=v` pairs of a
+// `docker run` argv.
+//
+// Iterated in sorted key order so validation errors and the resulting argv
+// are deterministic — Go's map iteration randomises order, which produced
+// flaky tests when two env vars were both invalid (the error message would
+// refer to whichever happened to be visited first).
+//
+// An entry whose value is EMPTY is a pair of its own, `--env NAME=`, which
+// is how a name is OVERRIDDEN rather than inherited: docker resolves the
+// container's environment with the image's `ENV` below the flags, and the
+// last flag for a name wins, so an empty one leaves the name set and its
+// value empty. That is the mechanism the image env screen neutralises a
+// repository-authored image's planted credentials with (#2317).
+func envArgs(env map[string]string) ([]string, error) {
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	args := make([]string, 0, 2*len(keys))
+	for _, k := range keys {
+		v := env[k]
+		if err := validateEnvVar(k, v); err != nil {
+			return nil, fmt.Errorf("docker driver: env %s: %w", k, err)
+		}
+		args = append(args, "--env", k+"="+v)
+	}
+	return args, nil
+}
+
 // validateEnvVar rejects an env var whose name or value contains
 // control characters that would break docker's --env arg parser.
 // docker's parser tokenises by whitespace, so a value containing
@@ -361,18 +392,11 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	// iteration randomises order, which produced flaky tests when two
 	// env vars were both invalid (the error message would refer to
 	// whichever happened to be visited first).
-	envKeys := make([]string, 0, len(p.spec.Env))
-	for k := range p.spec.Env {
-		envKeys = append(envKeys, k)
+	specEnvArgs, err := envArgs(p.spec.Env)
+	if err != nil {
+		return nil, err
 	}
-	sort.Strings(envKeys)
-	for _, k := range envKeys {
-		v := p.spec.Env[k]
-		if err := validateEnvVar(k, v); err != nil {
-			return nil, fmt.Errorf("docker driver: env %s: %w", k, err)
-		}
-		args = append(args, "--env", k+"="+v)
-	}
+	args = append(args, specEnvArgs...)
 	args = append(args, hostNetworkArgs(info, p.spec.Env)...)
 
 	// Egress TLS-inspection CA (Layer 2 secret substitution): when the

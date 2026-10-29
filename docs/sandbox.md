@@ -692,6 +692,61 @@ devcontainer, or one the sandbox cannot use) keep the historical
 open-network default: nothing repo-authored survives into those
 specs.
 
+### The env an IMAGE bakes in
+
+The deny class above screens `containerEnv` / `remoteEnv`. It does not
+see the other channel into the same environment: the devcontainer always
+names an `image` or a `build`, and that image's `ENV` applies to every
+process iterion starts in the container, because the drivers pass
+`--env` for `spec.Env` alone. A repository that commits
+`{"image":"ghcr.io/planter/dev:1"}` whose Dockerfile carries
+`ENV CLAUDE_CODE_USE_BEDROCK=1` plus the planter's AWS keys redirects
+every prompt of the run with **zero `containerEnv` entries** (#2317).
+
+So the runtime screens the image too, once it is local — after the pull,
+after a `build:` has materialised it, before anything starts — and the
+two halves of the class get different answers:
+
+- the **credential and routing** sub-class is **neutralised**: the
+  container starts with `--env NAME=`, which overrides the image's `ENV`
+  with an empty value every one of those consumers reads as absent. It
+  is the suffix family (`*_BASE_URL`, `*_API_KEY`, `*_TOKEN`,
+  `*_SECRET`, `*_PROXY`), the provider and agent namespaces (`CLAUDE_`,
+  `ANTHROPIC_`, `AWS_`, `AZURE_`, `GOOGLE_`, `OPENCODE_`, `CCR_`,
+  `OTEL_`, `SENTRY_`, `GH_`, `GLAB_`, `CLAW_`, `CLAWD_`, `HOOK_`, …)
+  and the exact endpoint, region, project and managed-identity names
+  (`OPENAI_API_BASE`, `BEDROCK_REGION`, `IMDS_ENDPOINT`, …);
+- the **rest of the class is reported only, and keeps its value**.
+  Emptying `PATH`, `HOME`, `GOROOT`, a loader path or an `XDG_` dir
+  breaks an image doing its job — iterion's own `full` variant bakes
+  `PATH`, and its runner image bakes `ITERION_VERSION` — and emptying
+  `KUBECONFIG`, `DOCKER_HOST` or `DOCKER_CONFIG` would send the client
+  to its DEFAULT, which under `host_state` is the operator's own,
+  **worse** than the planted path. The TLS bundles and the names of
+  binaries a CLI spawns are reported for the same reason: an image may
+  legally bake them, and their consumers read presence as much as value.
+
+A name let through keeps its value and is still reported — the operator
+asked for the variable, not for silence. A variable the screen
+neutralises is **set and empty**, not absent: `docker inspect` shows it,
+and a consumer that reads presence rather than value still sees it. That
+is the accepted cost of not refusing an image that works.
+
+**Not screened, said out loud.** `image inspect` is a local-store read,
+so only a driver that resolves images locally can do it: the **docker**
+driver screens, the **kubernetes** driver (whose images the kubelet
+pulls) and the noop passthrough do not, and a run on them says
+`the env image X bakes in was NOT screened` with the reason. A failed
+read says the same. Nothing is ever inferred from a silence.
+
+**The escape hatch is the operator's, and host-side only.**
+`ITERION_SANDBOX_IMAGE_ENV_ALLOW=NAME1,NAME2` names the variables an
+image may contribute untouched — exact names, comma-separated,
+case-sensitive, no prefix matching. It is read from the runner's own
+process environment: never from the workspace, never from a stored bot
+var (`ITERION_SANDBOX_` is an infra prefix of the bot-var deny list),
+so **the repository under review can never allowlist itself**.
+
 Block form without `mode:` is treated as `mode: inline`. You may also
 write `mode: inline` explicitly. Inline mode must declare exactly one of
 `image:` or `build:`. `image:` uses a pre-built image reference;

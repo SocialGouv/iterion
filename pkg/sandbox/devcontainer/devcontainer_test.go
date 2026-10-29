@@ -663,13 +663,13 @@ func TestDeniedEnvKey(t *testing.T) {
 	// guard added without one is the shape that let three names in without
 	// a witness.
 	for _, guard := range deniedEnvSuffixes {
-		assertGuardHasItsOwnRow(t, "suffix "+guard, cases, func(key string) bool {
-			return strings.HasSuffix(strings.ToUpper(key), guard)
+		assertGuardHasItsOwnRow(t, "suffix "+guard.pattern, cases, func(key string) bool {
+			return strings.HasSuffix(strings.ToUpper(key), guard.pattern)
 		})
 	}
 	for _, guard := range deniedEnvNamespaces {
-		assertGuardHasItsOwnRow(t, "namespace "+guard, cases, func(key string) bool {
-			return strings.HasPrefix(strings.ToUpper(key), guard)
+		assertGuardHasItsOwnRow(t, "namespace "+guard.pattern, cases, func(key string) bool {
+			return strings.HasPrefix(strings.ToUpper(key), guard.pattern)
 		})
 	}
 	for name := range deniedEnvNames {
@@ -692,16 +692,16 @@ func assertGuardHasItsOwnRow(t *testing.T, guard string, cases []struct {
 		// Would the class still refuse it with this guard gone?
 		others := 0
 		for _, suffix := range deniedEnvSuffixes {
-			if strings.HasSuffix(strings.ToUpper(c.key), suffix) {
+			if strings.HasSuffix(strings.ToUpper(c.key), suffix.pattern) {
 				others++
 			}
 		}
 		for _, prefix := range deniedEnvNamespaces {
-			if strings.HasPrefix(strings.ToUpper(c.key), prefix) {
+			if strings.HasPrefix(strings.ToUpper(c.key), prefix.pattern) {
 				others++
 			}
 		}
-		if deniedEnvNames[c.key] {
+		if _, exact := deniedEnvNames[c.key]; exact {
 			others++
 		}
 		if others == 1 {

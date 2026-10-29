@@ -104,13 +104,26 @@ func ToSandboxSpec(f *File) (sandbox.Spec, []string) {
 // well-formed enough that every driver would have accepted it — the
 // same characters the docker --env guard refuses, plus an empty name.
 func usableRepoEnvEntry(name, value string) bool {
-	if name == "" || strings.ContainsAny(name, "=\n\r\x00") {
+	if !UsableEnvName(name) {
 		return false
 	}
 	if strings.ContainsAny(value, "\n\r\x00") {
 		return false
 	}
 	return !DeniedEnvKey(name)
+}
+
+// UsableEnvName reports whether name is one a driver could pass to a
+// container and a process inside it could resolve: non-empty, and free of
+// the characters that make it un-passable (`=` splits the pair, a newline
+// or a CR would inject a second `--env` flag, a NUL truncates it).
+//
+// It is the one predicate both readers of repository-authored env share:
+// the devcontainer seam, which refuses such an entry outright, and the
+// image env screen, which cannot neutralise a name no driver could name
+// and no process could read (#2317).
+func UsableEnvName(name string) bool {
+	return name != "" && !strings.ContainsAny(name, "=\n\r\x00")
 }
 
 // DeniedEnvKey reports whether an env key from a target repository's
@@ -186,83 +199,188 @@ func usableRepoEnvEntry(name, value string) bool {
 // A key outside the class still configures the repo's own sandbox — the
 // denylist removes trust, it does not review content.
 func DeniedEnvKey(name string) bool {
-	if deniedEnvNames[name] {
-		return true
+	return screenEnvName(name) != notDenied
+}
+
+// ScreenImageEnvName classifies a name an IMAGE bakes in: denied says it is
+// in the class above, neutralize says the runtime overrides it with an empty
+// value rather than only reporting it (#2317).
+//
+// It is the one reader of the class's disposition flag, so the screen of an
+// image reads the SAME inventory the devcontainer screen reads — a second
+// list of "the credential ones" would be a copy, and a copy drifts.
+//
+// PRECEDENCE, when a name is caught by more than one guard: the exact names
+// first, then the suffixes, then the namespaces. The order is the rule, not
+// an accident, and it tilts toward neutralising — `ITERION_SOMETHING_TOKEN`
+// is caught by the reported-only `ITERION_` namespace and by the
+// neutralised `_TOKEN` suffix, and the suffix answers.
+func ScreenImageEnvName(name string) (denied, neutralize bool) {
+	switch screenEnvName(name) {
+	case neutralizeInImage:
+		return true, true
+	case reportedOnly:
+		return true, false
+	default:
+		return false, false
+	}
+}
+
+// screenEnvName walks the three forms of the class and returns the
+// disposition of the first guard that catches name — the single walk both
+// [DeniedEnvKey] and [ScreenImageEnvName] answer from.
+func screenEnvName(name string) imageEnvDisposition {
+	if d, exact := deniedEnvNames[name]; exact {
+		return d
 	}
 	upper := strings.ToUpper(name)
-	for _, suffix := range deniedEnvSuffixes {
-		if strings.HasSuffix(upper, suffix) {
-			return true
+	for _, guard := range deniedEnvSuffixes {
+		if strings.HasSuffix(upper, guard.pattern) {
+			return guard.image
 		}
 	}
-	for _, prefix := range deniedEnvNamespaces {
-		if strings.HasPrefix(upper, prefix) {
-			return true
+	for _, guard := range deniedEnvNamespaces {
+		if strings.HasPrefix(upper, guard.pattern) {
+			return guard.image
 		}
 	}
-	return false
+	return notDenied
+}
+
+// imageEnvDisposition is what the runtime does about a name of this class
+// that an IMAGE bakes into its `ENV`. The question only arises for images: a
+// devcontainer.json entry is dropped in [ToSandboxSpec] before it ever
+// becomes spec.Env, while an image's ENV is already inside the artefact and
+// can only be OVERRIDDEN at start (`--env NAME=`) — ARB-112 on #2317.
+//
+// The zero value is [notDenied], so a map lookup that misses answers
+// "outside the class" instead of naming a disposition the class never gave.
+type imageEnvDisposition uint8
+
+const (
+	// notDenied is the zero value: the name is not in the class at all.
+	notDenied imageEnvDisposition = iota
+
+	// reportedOnly tells the operator and leaves the image's value in
+	// place. It is the answer wherever an EMPTY value would break an image
+	// doing its job, or would be read as presence rather than as a value:
+	// the command search path, the code loaders and runtimes, the shells
+	// and their startup files, the toolchains, the homes every
+	// configuration is resolved from, the TLS bundles an image may legally
+	// bake for its own tooling, and the names of binaries a CLI spawns.
+	// iterion's own published images set three of these on purpose (`PATH`,
+	// `GOFLAGS`, `ITERION_VERSION`/`_COMMIT`/`_BOTS_PATH`), which is the
+	// measurement that killed screening the class as a whole.
+	reportedOnly
+
+	// neutralizeInImage overrides the name with an EMPTY value in the
+	// container, and reports it. It is the answer for the sub-class that
+	// chooses WHERE a model call goes and WHAT credential it carries — the
+	// endpoint, region, project and identity names, the credential
+	// suffixes, and the provider/agent namespaces. Those consumers all read
+	// a value (a truthiness, a URL, a key), so an empty one is inert; none
+	// is set by an image iterion publishes, so no working image loses
+	// anything. The operator's own channels still win: the workflow's
+	// `sandbox.env:`, the launch environment and the driver's own flags are
+	// applied on top, and the host-side allow knob lets a named variable
+	// through (see pkg/runtime's image env screen).
+	neutralizeInImage
+)
+
+// envGuard is one pattern of the class — a suffix or a namespace prefix —
+// carrying the [imageEnvDisposition] every name it catches inherits. The
+// flag rides on the ENTRY so there is one inventory, not two.
+type envGuard struct {
+	pattern string
+	image   imageEnvDisposition
 }
 
 // deniedEnvSuffixes route a call or carry a credential under any prefix.
-var deniedEnvSuffixes = []string{"_BASE_URL", "_API_KEY", "_TOKEN", "_SECRET", "_PROXY"}
+// Every one of them is the credential/routing sub-class by definition, so
+// all five neutralise: an empty endpoint, key, token, secret or proxy is
+// inert, where the planted value is the whole attack.
+var deniedEnvSuffixes = []envGuard{
+	{"_BASE_URL", neutralizeInImage},
+	{"_API_KEY", neutralizeInImage},
+	{"_TOKEN", neutralizeInImage},
+	{"_SECRET", neutralizeInImage},
+	{"_PROXY", neutralizeInImage},
+}
 
 // deniedEnvNamespaces are the configuration namespaces of the agents
 // iterion runs for the operator, of the SDKs their providers
 // authenticate through, and of the code loaders that start them.
-var deniedEnvNamespaces = []string{
+//
+// The agent and provider namespaces neutralise: they name a route and a
+// credential, nothing iterion publishes bakes one, and an empty value is
+// inert to every consumer. The loader, toolchain and home namespaces are
+// reported only — `ITERION_` because iterion's own images set
+// `ITERION_VERSION`/`_COMMIT`/`_BOTS_PATH`, the rest because an empty
+// loader path, gitconfig or XDG dir breaks an image doing its job.
+var deniedEnvNamespaces = []envGuard{
 	// The in-container runner: every knob and switch it is forwarded; the
 	// HOOK_* payload its settings hooks — the permission gate among them —
 	// are told about; and claw-code-go's own CLAWD_ namespace, which CLAW_
 	// does not prefix: the payload a plugin tool is given (CLAWD_TOOL_NAME,
 	// CLAWD_TOOL_INPUT, CLAWD_PLUGIN_*) and its telemetry knobs.
-	"ITERION_", "CLAW_", "CLAWD_", "HOOK_",
+	{"ITERION_", reportedOnly},
+	{"CLAW_", neutralizeInImage},
+	{"CLAWD_", neutralizeInImage},
+	{"HOOK_", neutralizeInImage},
 	// The claude CLI: its cloud-provider switches and their auth skips,
 	// its shell override, session-environment script, config dir and
 	// certificate store, its telemetry switch; its remote mode's agent
 	// proxy and token file; the ANT_ twins of its telemetry variables.
-	"CLAUDE_", "CCR_", "ANT_OTEL_", "ANT_CLAUDE_CODE_",
+	{"CLAUDE_", neutralizeInImage},
+	{"CCR_", neutralizeInImage},
+	{"ANT_OTEL_", neutralizeInImage},
+	{"ANT_CLAUDE_CODE_", neutralizeInImage},
 	// The Anthropic client of the claude CLI: ANTHROPIC_UNIX_SOCKET, the
 	// Foundry resource and the Vertex project a call is spent in, and
 	// ANTHROPIC_CUSTOM_HEADERS, which claw applies too — last, so it rides
 	// a funded route.
-	"ANTHROPIC_",
+	{"ANTHROPIC_", neutralizeInImage},
 	// opencode: its config file, config dir, inline config, permissions.
 	// (Its credential STORE is under XDG_DATA_HOME, refused by XDG_ below.)
-	"OPENCODE_",
+	{"OPENCODE_", neutralizeInImage},
 	// The AWS SDK chain Bedrock authenticates through: credentials,
 	// profiles and their files, the container and instance credential
 	// endpoints, the region, AWS_ENDPOINT_URL_<SERVICE>.
-	"AWS_",
+	{"AWS_", neutralizeInImage},
 	// azidentity and Azure OpenAI: credentials, authority host, endpoint.
-	"AZURE_",
+	{"AZURE_", neutralizeInImage},
 	// Google ADC, which Vertex authenticates through: the service-account
 	// file, project and region, the metadata server, gcloud's credential
 	// dir — and the claude CLI's per-model Vertex region.
-	"GOOGLE_", "GCE_METADATA_", "CLOUDSDK_", "VERTEX_REGION_",
+	{"GOOGLE_", neutralizeInImage},
+	{"GCE_METADATA_", neutralizeInImage},
+	{"CLOUDSDK_", neutralizeInImage},
+	{"VERTEX_REGION_", neutralizeInImage},
 	// Where an OpenTelemetry exporter ships what it records: the claude
 	// CLI's telemetry carries the prompts once the operator opts in.
-	"OTEL_",
+	{"OTEL_", neutralizeInImage},
 	// Error tracking: the iterion binary is its own in-container runner and
 	// calls errtrack.Init for every command but the permission hook, so a
 	// planted SENTRY_DSN is not a redirection of the operator's reporting —
 	// it switches an outbound channel ON (pkg/errtrack).
-	"SENTRY_",
+	{"SENTRY_", neutralizeInImage},
 	// The forge CLIs a tool node runs for the operator: their config dir
 	// chooses the identity `gh`/`glab` speak with, GH_HOST the API they
 	// speak to.
-	"GH_", "GLAB_",
+	{"GH_", neutralizeInImage},
+	{"GLAB_", neutralizeInImage},
 	// nix, which iterion's own provisioning step drives (devbox install, run
 	// as the container's post-create): NIX_CONFIG carries a whole nix.conf,
 	// and a `plugin-files` in it makes nix dlopen the file it names on any
 	// invocation, before any build — the repository's shared object would
 	// load into iterion's own step. NIX_SSL_CERT_FILE (nix does not honour
 	// SSL_CERT_FILE) and the store's NIX_PATH/NIX_REMOTE ride along.
-	"NIX_",
+	{"NIX_", reportedOnly},
 	// git and its forge siblings: its config (GIT_CONFIG_*), transport (GIT_SSH_COMMAND,
 	// GIT_PROXY_COMMAND, GIT_EXEC_PATH, GIT_ALLOW_PROTOCOL), credential
 	// prompt (GIT_ASKPASS) and TLS trust, the repository and object store
 	// it acts on, its trace files, its identity.
-	"GIT_",
+	{"GIT_", reportedOnly},
 	// The dynamic loader (LD_PRELOAD, LD_AUDIT, LD_LIBRARY_PATH) loads the
 	// planter's shared object into every process, OpenSSL's configuration
 	// (a provider or engine module) into every OpenSSL-linked one; a
@@ -274,7 +392,11 @@ var deniedEnvNamespaces = []string{
 	// NPM_CONFIG_SCRIPT_SHELL into the options and the shell of every node
 	// child it spawns — `npx <server>`, the documented way an MCP server
 	// starts, runs the planter's module in that server's own process.
-	"LD_", "OPENSSL_", "BASH_FUNC_", "BUN_", "NPM_CONFIG_",
+	{"LD_", reportedOnly},
+	{"OPENSSL_", reportedOnly},
+	{"BASH_FUNC_", reportedOnly},
+	{"BUN_", reportedOnly},
+	{"NPM_CONFIG_", reportedOnly},
 	// The XDG base directories, which are where the configuration and the
 	// credential stores of the programs iterion runs there LIVE: git reads
 	// $XDG_CONFIG_HOME/git/config (every `insteadOf` and helper of the
@@ -282,30 +404,42 @@ var deniedEnvNamespaces = []string{
 	// under $XDG_DATA_HOME (pkg/backend/detect's openCodeAuthPath). The
 	// whole family, not the two names seen planted: a dir nobody reads
 	// today is a dir the next CLI release reads (#2318).
-	"XDG_",
+	{"XDG_", reportedOnly},
 }
 
-// deniedEnvNames are the exact names outside the families above.
-var deniedEnvNames = map[string]bool{
+// deniedEnvNames are the exact names outside the families above, each with
+// what the runtime does when an IMAGE bakes it in. Consulted FIRST, so an
+// exact name overrides the disposition its namespace would give it.
+//
+// The endpoint, region, project and managed-identity names neutralise. The
+// rest are reported only, and three groups earn that answer rather than
+// inherit it: `PATH`, `HOME`, `GOROOT` and the shells, where an empty value
+// breaks the container outright; `KUBECONFIG`, `DOCKER_HOST` and
+// `DOCKER_CONFIG`, where emptying would send the client to its DEFAULT —
+// the operator's own `~/.kube/config` and docker socket under `host_state`,
+// which is worse than the planted path; and the TLS bundles and
+// binary-path names, which an image may legally bake for its own tooling
+// and whose consumers read presence as much as value.
+var deniedEnvNames = map[string]imageEnvDisposition{
 	// The node runtime's options and module path, glibc's iconv modules,
 	// the shell the claude CLI picks, bash's startup file and options (in a
 	// non-root bash, SHELLOPTS=xtrace runs a planted PS4's command
 	// substitutions), sh's and zsh's startup files, the command search
 	// path, `go build -toolexec`, ssh's askpass helper.
-	"NODE_OPTIONS": true, "NODE_PATH": true, "GCONV_PATH": true,
-	"SHELL": true, "BASH_ENV": true, "SHELLOPTS": true, "BASHOPTS": true, "PS4": true,
-	"ENV": true, "ZDOTDIR": true, "PATH": true, "GOFLAGS": true,
-	"SSH_ASKPASS": true, "SSH_ASKPASS_REQUIRE": true,
+	"NODE_OPTIONS": reportedOnly, "NODE_PATH": reportedOnly, "GCONV_PATH": reportedOnly,
+	"SHELL": reportedOnly, "BASH_ENV": reportedOnly, "SHELLOPTS": reportedOnly, "BASHOPTS": reportedOnly, "PS4": reportedOnly,
+	"ENV": reportedOnly, "ZDOTDIR": reportedOnly, "PATH": reportedOnly, "GOFLAGS": reportedOnly,
+	"SSH_ASKPASS": reportedOnly, "SSH_ASKPASS_REQUIRE": reportedOnly,
 	// git's editor chain is GIT_EDITOR (denied by GIT_), core.editor,
 	// VISUAL, EDITOR: the last two run the planter's program in a `git
 	// commit` an agent makes with no message of its own.
-	"EDITOR": true, "VISUAL": true,
+	"EDITOR": reportedOnly, "VISUAL": reportedOnly,
 	// GNU tar prepends TAR_OPTIONS to its own arguments, and
 	// --checkpoint-action=exec= is one: the planter's program runs in each
 	// of the tar steps ITERION starts in the container — the kubernetes
 	// driver's workspace populate and export, the scratch bank and its
 	// restore.
-	"TAR_OPTIONS": true,
+	"TAR_OPTIONS": reportedOnly,
 	// The go command a bot's build step runs: GOENV names a file that sets
 	// every go variable the env leaves unset — GOFLAGS included, so it
 	// re-opens that one — GOTOOLCHAIN downloads and runs another toolchain,
@@ -313,53 +447,53 @@ var deniedEnvNames = map[string]bool{
 	// credentials. (GOPROXY and GOPRIVATE stay out: they point the
 	// repository's own dependency fetch, which a devcontainer legitimately
 	// configures.)
-	"GOENV": true, "GOTOOLCHAIN": true, "GOROOT": true, "GOAUTH": true,
+	"GOENV": reportedOnly, "GOTOOLCHAIN": reportedOnly, "GOROOT": reportedOnly, "GOAUTH": reportedOnly,
 	// The cluster and daemon an operator-authored deploy step talks to, and
 	// the credential programs they run: a kubeconfig's `exec` plugin runs on
 	// every kubectl invocation, a docker config's `credsStore` names a
 	// docker-credential-<name> binary.
-	"KUBECONFIG": true, "DOCKER_HOST": true, "DOCKER_CONFIG": true,
+	"KUBECONFIG": reportedOnly, "DOCKER_HOST": reportedOnly, "DOCKER_CONFIG": reportedOnly,
 	// The agents' config homes (CLAUDE_CONFIG_DIR rides CLAUDE_).
-	"CODEX_HOME": true, "KIMI_CODE_HOME": true, "PI_CODING_AGENT_DIR": true,
+	"CODEX_HOME": reportedOnly, "KIMI_CODE_HOME": reportedOnly, "PI_CODING_AGENT_DIR": reportedOnly,
 	// HOME itself: every file above is resolved from it when its own
 	// variable is unset — `~/.gitconfig` first. The EXACT name only: the
 	// *_HOME of a toolchain (JAVA_HOME, ANT_HOME) configures the
 	// repository's own build, which is a devcontainer doing its job.
-	"HOME": true,
+	"HOME": reportedOnly,
 	// Endpoints, projects and regions off the suffix rule; the claude
 	// CLI's agent proxy and beta tracing.
-	"OPENAI_API_BASE": true, "BEDROCK_REGION": true, "CLOUD_ML_REGION": true,
+	"OPENAI_API_BASE": neutralizeInImage, "BEDROCK_REGION": neutralizeInImage, "CLOUD_ML_REGION": neutralizeInImage,
 	// The claude CLI reads BOTH spellings of the gcloud project, and this
 	// table is case-SENSITIVE on purpose: lower-case `path` names no
 	// variable the container's processes read, and a repository may use it.
-	"GCLOUD_PROJECT": true, "gcloud_project": true,
-	"AGENT_PROXY_URL": true, "BETA_TRACING_ENDPOINT": true,
-	"ENABLE_BETA_TRACING_DETAILED": true, "ENABLE_ENHANCED_TELEMETRY_BETA": true,
+	"GCLOUD_PROJECT": neutralizeInImage, "gcloud_project": neutralizeInImage,
+	"AGENT_PROXY_URL": neutralizeInImage, "BETA_TRACING_ENDPOINT": neutralizeInImage,
+	"ENABLE_BETA_TRACING_DETAILED": neutralizeInImage, "ENABLE_ENHANCED_TELEMETRY_BETA": neutralizeInImage,
 	// The endpoint the claude CLI falls back to when no ANTHROPIC_BASE_URL
 	// is set — the usual case on a forfait run, where it then IS the API
 	// base — and reads first at its session-ingress origin check; and the
 	// binaries it spawns by a path env alone names: its guest-vitals
 	// emitter, the agent SDK's native binary, a skill's browser.
-	"SESSION_INGRESS_URL": true,
-	"VITALS_EMITTER_BIN":  true, "SDK_NATIVE_BIN": true, "DS_CHROMIUM_PATH": true,
+	"SESSION_INGRESS_URL": neutralizeInImage,
+	"VITALS_EMITTER_BIN":  reportedOnly, "SDK_NATIVE_BIN": reportedOnly, "DS_CHROMIUM_PATH": reportedOnly,
 	// Azure's managed-identity chain, which azidentity's
 	// DefaultAzureCredential authenticates a foundry node through when no
 	// Azure key is set: these name the server that mints its token, and
 	// the Arc leg reads a file that server's answer names. Off the AZURE_
 	// prefix, so one entry each.
-	"IDENTITY_ENDPOINT": true, "IDENTITY_HEADER": true, "IDENTITY_SERVER_THUMBPRINT": true,
-	"IMDS_ENDPOINT": true, "MSI_ENDPOINT": true, "DEFAULT_IDENTITY_CLIENT_ID": true,
-	"MSAL_FORCE_REGION": true,
+	"IDENTITY_ENDPOINT": neutralizeInImage, "IDENTITY_HEADER": neutralizeInImage, "IDENTITY_SERVER_THUMBPRINT": neutralizeInImage,
+	"IMDS_ENDPOINT": neutralizeInImage, "MSI_ENDPOINT": neutralizeInImage, "DEFAULT_IDENTITY_CLIENT_ID": neutralizeInImage,
+	"MSAL_FORCE_REGION": neutralizeInImage,
 	// The TLS trust of the connections that carry credentials: node for the
 	// CLIs, OpenSSL and Go's crypto/x509 for the runner, grpc-js (which
 	// REPLACES its root set, where NODE_EXTRA_CA_CERTS appends), and the
 	// bundles the drivers themselves point at the per-run CA in inspection
 	// mode (sandbox/docker caInjection) — that set, not every runtime's:
 	// another language's bundle configures the repository's own tooling.
-	"NODE_EXTRA_CA_CERTS": true, "NODE_TLS_REJECT_UNAUTHORIZED": true,
-	"SSL_CERT_FILE": true, "SSL_CERT_DIR": true,
-	"CURL_CA_BUNDLE": true, "REQUESTS_CA_BUNDLE": true,
+	"NODE_EXTRA_CA_CERTS": reportedOnly, "NODE_TLS_REJECT_UNAUTHORIZED": reportedOnly,
+	"SSL_CERT_FILE": reportedOnly, "SSL_CERT_DIR": reportedOnly,
+	"CURL_CA_BUNDLE": reportedOnly, "REQUESTS_CA_BUNDLE": reportedOnly,
 	// grpc-js REPLACES its root set from this one, where NODE_EXTRA_CA_CERTS
 	// only appends, and takes its cipher list from its twin.
-	"GRPC_DEFAULT_SSL_ROOTS_FILE_PATH": true, "GRPC_SSL_CIPHER_SUITES": true,
+	"GRPC_DEFAULT_SSL_ROOTS_FILE_PATH": reportedOnly, "GRPC_SSL_CIPHER_SUITES": reportedOnly,
 }

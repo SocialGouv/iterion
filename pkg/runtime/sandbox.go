@@ -806,6 +806,16 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		return nil, err
 	}
 
+	// The image is now LOCAL — pulled by Prepare, or built just above — so
+	// this is the first point its baked-in `ENV` can be read, and the last
+	// before a process sees it. The screen neutralises the credential and
+	// routing names a repository-authored image contributes below the
+	// devcontainer env seam, and reports the rest (#2317). Its findings
+	// reach the operator through the run's log here; the
+	// `sandbox_image_env_planted` event that carries them to the studio is
+	// the visible half of the same seam (unit 2317.2).
+	prepared, _ = screenSandboxImageEnv(ctx, driver, prepared, logger)
+
 	run, err := driver.Start(ctx, prepared, info)
 	if err != nil {
 		if proxy != nil {

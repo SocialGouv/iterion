@@ -343,6 +343,49 @@ type Builder interface {
 	Build(ctx context.Context, prepared PreparedSpec, info RunInfo) (PreparedSpec, error)
 }
 
+// ImageEnvScreener is an optional interface a [Driver] may implement so the
+// runtime can screen the `ENV` an image bakes into every process started
+// from it, and neutralise the names it must not contribute (#2317).
+//
+// It exists because a repository-authored `devcontainer.json` always names
+// an image or a build, and that image's `ENV` reaches every process iterion
+// runs in the container through a channel no env screen sees: the drivers
+// pass `--env` for [Spec.Env] only, so a `ENV CLAUDE_CODE_USE_BEDROCK=1`
+// plus the planter's cloud keys redirects every prompt of the run with ZERO
+// `containerEnv` entries.
+//
+// The engine probes for it by type assertion between [Driver.Prepare] (and
+// [Builder.Build], where there is one) and [Driver.Start] — AFTER the image
+// is pulled or built, which is the only point an inspection can be honest,
+// and before anything is started, so the neutralisation still reaches the
+// container's own environment and not just the commands run in it.
+//
+// A driver that does not implement it is NOT screened, and the runtime says
+// so rather than implying a guard it does not have: the kubernetes driver
+// (whose images are resolved by the kubelet, not by a local client) and the
+// noop passthrough (no container at all) deliberately stay out.
+type ImageEnvScreener interface {
+	// ImageConfigEnv returns the `KEY=value` entries the prepared spec's
+	// image sets for every process started from it, in the image's own
+	// order. A nil slice with a nil error means the image sets none.
+	//
+	// The error is the honest answer for "could not be read" — an image
+	// absent from the local store, a daemon that refused — and the caller
+	// reports it as not screened. It must never be swallowed into an empty
+	// list, which would read as a clean image.
+	ImageConfigEnv(ctx context.Context, prepared PreparedSpec) ([]string, error)
+
+	// NeutralizeImageEnv returns a [PreparedSpec] whose sandbox starts with
+	// each named variable overridden by an EMPTY value, consumed by
+	// [Driver.Start] in place of the original. Names already carried by the
+	// spec's own env — the workflow's `sandbox.env:`, the operator's
+	// overlay — are left alone: the operator's reviewed channel outranks
+	// the screen.
+	//
+	// Implementations must not mutate the PreparedSpec they are handed.
+	NeutralizeImageEnv(prepared PreparedSpec, names []string) (PreparedSpec, error)
+}
+
 // SchedulingPolicyReporter is implemented by drivers that stamp a
 // deployment-level scheduling policy (resource requests, placement) on the
 // sandboxes they create. The runtime records the summary on the
