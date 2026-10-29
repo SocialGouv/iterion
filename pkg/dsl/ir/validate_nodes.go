@@ -245,7 +245,7 @@ func (c *compiler) validateDeliverables(w *Workflow) {
 			later[name] = append(later[name], entry)
 		}
 		if len(refused) > 0 {
-			c.errorfAt(DiagDeliverableNotWorkspacePath, id, "",
+			c.errorfAtProperty(DiagDeliverableNotWorkspacePath, kind, id, "deliverables",
 				"%s %q declares %s not a workspace-relative file path: %s — the run collects a deliverable from the node's workspace and serves it under its base name, so none of these can be collected",
 				kind, id, countOf(len(refused), "a deliverable that is", "deliverables that are"), refusedDeliverables(refused))
 		}
@@ -255,7 +255,7 @@ func (c *compiler) validateDeliverables(w *Workflow) {
 			for _, col := range cols {
 				entries += len(col.files) + col.repeats
 			}
-			c.errorfAt(DiagDeliverableNameCollision, id, "",
+			c.errorfAtProperty(DiagDeliverableNameCollision, kind, id, "deliverables",
 				"%s %q declares %d deliverables served under %s: %s — the run store refuses every one after the first rather than overwrite it; %s",
 				kind, id, entries, countOf(len(cols), "one shared name", "shared names"), collisionsText(cols), remedy)
 		}
@@ -841,7 +841,7 @@ func (c *compiler) validateReviewGates(w *Workflow) {
 			}
 			id, _ := outputNodePath(w, ref.Path)
 			if _, exists := w.Nodes[id]; !exists {
-				c.warnfAt(DiagReviewURLUnknownRef, h.NodeID(), "",
+				c.warnfAtProperty(DiagReviewURLUnknownRef, "human", h.NodeID(), "review_url",
 					"human %q review_url references output of unknown node %q",
 					h.NodeID(), ref.Path[0])
 			}

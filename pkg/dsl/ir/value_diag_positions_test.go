@@ -96,6 +96,11 @@ func TestValueDiagnosticsCarryASourcePosition(t *testing.T) {
 		{"agent a:\n  model: \"m\"\nfail f:\n  code: lowercase\nworkflow w:\n  entry: a\n  a -> f\n", DiagInvalidFailCode, 4, 3, "code", 0, 0},
 		{"agent a:\n  model: \"m\"\nwait w:\n  event: \"x\"\n  timeout: \"abc\"\nworkflow wf:\n  entry: a\n  a -> w\n  w -> done\n", DiagWaitNoTimeout, 5, 3, "timeout", 0, 0},
 		{"agent a:\n  model: \"m\"\nawait_answers aa:\n  timeout: \"abc\"\nworkflow wf:\n  entry: a\n  a -> aa\n  aa -> done\n", DiagAwaitAnswersNoTimeout, 4, 3, "timeout", 0, 0},
+		// The deliverables rules (C317, C318) and a review_url naming an unknown
+		// node (C101) are about the property's value too: its own line.
+		{fmt.Sprintf(node, "deliverables", "[\"/abs.md\"]"), DiagDeliverableNotWorkspacePath, 3, 3, "deliverables", 0, 0},
+		{fmt.Sprintf(node, "deliverables", "[\"a/r.md\", \"b/r.md\"]"), DiagDeliverableNameCollision, 3, 3, "deliverables", 0, 0},
+		{"schema v:\n  decision: string\nhuman gate:\n  interaction: review\n  model: \"m\"\n  output: v\n  review_url: \"{{outputs.nonexistent.url}}\"\nworkflow wf:\n  entry: gate\n  worktree: auto\n  gate -> done when \"decision == 'approved'\"\n", DiagReviewURLUnknownRef, 7, 3, "review_url", 0, 0},
 		// A compute expression that does not parse: the entry's own line,
 		// the block holding one line per field.
 		{"compute c:\n  expr:\n    f: \"1 +\"\nworkflow w:\n  entry: c\n  c -> done\n", DiagBadExpr, 3, 5, "", 0, 0},
