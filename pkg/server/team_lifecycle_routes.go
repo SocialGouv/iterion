@@ -297,10 +297,15 @@ func (s *Server) teamResidue(ctx context.Context, teamID string) []string {
 		}
 	}
 	if s.apiKeys != nil {
-		if keys, err := s.apiKeys.ListByTeam(tctx, teamID, ""); err != nil {
+		// CountByTeam, not ListByTeam with no requesting user: the list's
+		// contract reads "" as "team-wide rows only", so a team holding ONLY
+		// user-scoped keys would count empty through it and be deleted with
+		// sealed credentials left behind in a tenant nothing can reach
+		// (#1687).
+		if n, err := s.apiKeys.CountByTeam(tctx, teamID); err != nil {
 			out = append(out, fmt.Sprintf("api keys (unreadable: %v)", err))
-		} else if len(keys) > 0 {
-			out = append(out, fmt.Sprintf("%d api key(s)", len(keys)))
+		} else if n > 0 {
+			out = append(out, fmt.Sprintf("%d api key(s)", n))
 		}
 	}
 	// Anything that still FIRES after the team is gone. A webhook is the
@@ -318,11 +323,24 @@ func (s *Server) teamResidue(ctx context.Context, teamID string) []string {
 	// Anything that still holds a CREDENTIAL. Left behind, these are sealed
 	// secrets belonging to a tenant nothing can reach — the same leak the
 	// org purge sweeper exists to prevent, arrived at by a different door.
+	// The whole-team view, personal scopes included: ListByTeam with no
+	// requesting user is one user's resolution view and skips every
+	// user-scoped row, the blind spot above (#1687). A store without the
+	// whole-team read is answered as "unreadable": the gate fails CLOSED —
+	// an emptiness it cannot prove is not one.
 	if s.genericSecrets != nil {
-		if secs, err := s.genericSecrets.ListByTeam(tctx, teamID, ""); err != nil {
-			out = append(out, fmt.Sprintf("secrets (unreadable: %v)", err))
-		} else if len(secs) > 0 {
-			out = append(out, fmt.Sprintf("%d named secret(s)", len(secs)))
+		lister, ok := s.genericSecrets.(interface {
+			ListAllInTeam(context.Context, string) ([]secrets.GenericSecret, error)
+		})
+		switch {
+		case !ok:
+			out = append(out, "secrets (unreadable: the store has no whole-team view)")
+		default:
+			if secs, err := lister.ListAllInTeam(tctx, teamID); err != nil {
+				out = append(out, fmt.Sprintf("secrets (unreadable: %v)", err))
+			} else if len(secs) > 0 {
+				out = append(out, fmt.Sprintf("%d named secret(s)", len(secs)))
+			}
 		}
 	}
 	if s.oauthStore != nil {

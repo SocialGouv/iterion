@@ -204,7 +204,10 @@ func (s *Server) handleDeleteGenericSecret(w http.ResponseWriter, r *http.Reques
 	rec, err := s.genericSecrets.Get(ctx, secretID)
 	if err != nil {
 		if errors.Is(err, secrets.ErrGenericSecretNotFound) {
-			w.WriteHeader(http.StatusNoContent)
+			// Not a 204, as on the api-key twin (handleDeleteApiKeyIn): a
+			// revoke that found nothing — a row gone, or one the tenant
+			// filter hid — is no success (#1687).
+			httpError(w, http.StatusNotFound, "secret not found")
 			return
 		}
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())

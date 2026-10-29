@@ -399,3 +399,41 @@ func TestMongoApiKey_PatchWithExpectSealedIsACompareAndSwap(t *testing.T) {
 		t.Fatalf("a missing row under CAS = %v, want ErrApiKeyNotFound", err)
 	}
 }
+
+// The Mongo twin of TestMemoryApiKey_CountByTeamCountsTheUserScopedRows —
+// the whole-team count the emptiness gate runs, user-scoped rows included,
+// proven on the real store (mongo-conformance CI gates it), tenant filter
+// and all: a row stamped with another tenant is not the team's, counted or
+// not.
+func TestMongoApiKey_CountByTeamCountsTheUserScopedRows(t *testing.T) {
+	s, ctx := mongoKeyStore(t)
+	teamA := store.WithTenant(ctx, "team-a")
+	for _, k := range []ApiKey{
+		{ID: "key-team", ScopeTeamID: "team-a", Provider: ProviderAnthropic, Name: "team-wide"},
+		{ID: "key-personal", ScopeTeamID: "team-a", ScopeUserID: "u1", Provider: ProviderAnthropic, Name: "personal"},
+	} {
+		if err := s.Create(teamA, k); err != nil {
+			t.Fatalf("create %s: %v", k.ID, err)
+		}
+	}
+	if err := s.Create(store.WithTenant(ctx, "team-b"), ApiKey{
+		ID: "key-elsewhere", ScopeTeamID: "team-b", ScopeUserID: "u2", Provider: ProviderAnthropic, Name: "elsewhere",
+	}); err != nil {
+		t.Fatalf("create elsewhere: %v", err)
+	}
+
+	if n, err := s.CountByTeam(teamA, "team-a"); err != nil || n != 2 {
+		t.Fatalf("CountByTeam(team-a) = %d, %v — want 2, the user-scoped row included", n, err)
+	}
+	if n, err := s.CountByTeam(store.WithTenant(ctx, "team-b"), "team-b"); err != nil || n != 1 {
+		t.Fatalf("CountByTeam(team-b) = %d, %v — want 1", n, err)
+	}
+	if n, err := s.CountByTeam(store.WithTenant(ctx, "team-c"), "team-c"); err != nil || n != 0 {
+		t.Fatalf("CountByTeam(team-c) = %d, %v — want 0", n, err)
+	}
+	// The tenant filter stands beside the scope filter: team-a's rows read
+	// from team-b's context are not team-b's to count.
+	if n, err := s.CountByTeam(store.WithTenant(ctx, "team-b"), "team-a"); err != nil || n != 0 {
+		t.Fatalf("CountByTeam(team-a) from team-b's context = %d, %v — want 0", n, err)
+	}
+}

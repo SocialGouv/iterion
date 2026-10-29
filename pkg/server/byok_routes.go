@@ -743,7 +743,12 @@ func (s *Server) handleDeleteApiKeyIn(w http.ResponseWriter, r *http.Request, sc
 	key, err := s.apiKeys.Get(ctx, keyID)
 	if err != nil {
 		if errors.Is(err, secrets.ErrApiKeyNotFound) {
-			w.WriteHeader(http.StatusNoContent)
+			// Not a 204: a success receipt for a deletion that did not
+			// happen is worse than an error — and "absent" here is also a
+			// row the TENANT FILTER hid, e.g. a credential orphaned by its
+			// team's deletion, which the owner can then never revoke while
+			// the API claims it revoked (#1687).
+			httpError(w, http.StatusNotFound, "key not found")
 			return
 		}
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())

@@ -381,3 +381,30 @@ func TestAnthropicWireSlotOrderMatchesWireFamily(t *testing.T) {
 		}
 	}
 }
+
+// CountByTeam is the whole-team read the team emptiness gate needs: every
+// key of the team, USER-SCOPED ROWS INCLUDED — ListByTeam with no requesting
+// user reads only team-wide rows, which is precisely the blind spot that let
+// a team holding only personal credentials read as empty (#1687).
+func TestMemoryApiKey_CountByTeamCountsTheUserScopedRows(t *testing.T) {
+	store := NewMemoryApiKeyStore()
+	sealer := newSealer(t)
+	mkKey(t, store, sealer, "team-a", "", ProviderAnthropic, "team-wide", "sk-ant-team", false)
+	mkKey(t, store, sealer, "team-a", "u1", ProviderAnthropic, "personal", "sk-ant-personal", false)
+	mkKey(t, store, sealer, "team-b", "u2", ProviderAnthropic, "elsewhere", "sk-ant-elsewhere", false)
+
+	if n, err := store.CountByTeam(context.Background(), "team-a"); err != nil || n != 2 {
+		t.Fatalf("CountByTeam(team-a) = %d, %v — want 2, the user-scoped row included", n, err)
+	}
+	if n, err := store.CountByTeam(context.Background(), "team-b"); err != nil || n != 1 {
+		t.Fatalf("CountByTeam(team-b) = %d, %v — want 1", n, err)
+	}
+	if n, err := store.CountByTeam(context.Background(), "team-empty"); err != nil || n != 0 {
+		t.Fatalf("CountByTeam(team-empty) = %d, %v — want 0", n, err)
+	}
+	// The contrast this exists for: the per-user resolution view with no
+	// requesting user sees the team-wide row alone.
+	if keys, err := store.ListByTeam(context.Background(), "team-a", ""); err != nil || len(keys) != 1 {
+		t.Fatalf("ListByTeam(team-a, \"\") = %d keys, %v — want the 1 team-wide row (its contract)", len(keys), err)
+	}
+}

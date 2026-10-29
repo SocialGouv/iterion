@@ -296,8 +296,10 @@ expiry. A personal access token passes the platform-admin routes, but
 `POST /api/admin/users/{id}/reset-password` answers it `403` for its own
 account.
 `POST /api/auth/desktop/exchange` answers `401` (`auth: session revoked`,
-`auth: account disabled`) to a ticket whose session was revoked, or whose
-account was disabled or set pending, since the IdP callback minted it.
+`auth: account disabled`) to a ticket whose login no longer stands — a
+revocation, a disable or a pending-password status landing since the IdP
+callback deferred it — and mints the session only then: no token exists
+while the ticket waits (#2635).
 
 ## Teams + members + invitations
 
@@ -365,7 +367,11 @@ Revoking takes the same right as creating (`canManageTeam` on both for a
 team-scoped record, `canManageOrg` for an org-tier one), so an
 org admin cannot be left holding a credential they installed in a team of
 their org and cannot pull back. A **user-scoped** record is exempt: it is
-personal, and only its owner or a super-admin may touch it.
+personal, and only its owner or a super-admin may touch it. On all four
+families a `DELETE` that finds nothing — the row gone, or hidden by the
+tenant filter (an orphaned credential read under another team's tenant) —
+answers `404`: a success receipt for a revoke that removed nothing would
+say the credential is gone when it is not.
 
 ⚠️ **`PATCH`/`DELETE` on `/api/me/...` is the same handler as the team
 route, with no `{id}` to re-scope from** — so the store tenant stays the
@@ -379,19 +385,19 @@ asymmetry: not listable there, still mutable there.
 | `GET` | `/api/teams/{id}/api-keys` | team member | List team's BYOK keys |
 | `POST` | `/api/teams/{id}/api-keys` | team admin | Create — `base_url` required for `openai_compatible` (https, canonical; literal non-public addresses and reserved names refused) and refused elsewhere; `repos` restricts the key to repositories (full forge paths, no URL or glob); unknown fields and a second JSON value are refused (strict) |
 | `PATCH` | `/api/teams/{id}/api-keys/{key_id}` | team admin | Rename, toggle default, ROTATE the sealed secret (same shape gate as create, new `last4` + fingerprint), set `max_concurrent_runs` (0 = uncapped), replace the `bots` or `repos` audience, move a gateway key's `base_url` — a rotation: `secret` is required in the same request and is sealed under the new URL, a move without it is `400` (the stored secret is never re-sealed for a host its holder did not prove it for), re-sending the stored URL is a no-op — and every rotation of a gateway key answers `409` when another writer rotated or moved the key between the read and the write; `base_url` on a vendor key is `400`, blank included (a create ignores an empty one as absent); unknown fields and a second JSON value are refused (strict) — an absent field is left alone, `"bots": []` clears it. The write is a `$set` of the named fields only, never a replace of the row. A row whose `provider` this server build does not know (written by a newer server during a rolling update, or left by a rollback) is refused with `409`, audited as `refused`: update it from a current server, or delete it |
-| `DELETE` | `/api/teams/{id}/api-keys/{key_id}` | team admin | Delete |
+| `DELETE` | `/api/teams/{id}/api-keys/{key_id}` | team admin | Delete — `404` on a row that is absent or tenant-hidden, never a success receipt for a no-op revoke |
 | `GET` | `/api/me/api-keys` | member | List own user-scoped keys |
 | `POST` | `/api/me/api-keys` | member | Create personal key (same fields and rules as the team route) |
 | `PATCH` | `/api/me/api-keys/{key_id}` | per record scope | Update — same write semantics and `409` on a row from a newer build as the team route |
-| `DELETE` | `/api/me/api-keys/{key_id}` | per record scope | Delete |
+| `DELETE` | `/api/me/api-keys/{key_id}` | per record scope | Delete — `404` on a row that is absent or tenant-hidden (see the note above) |
 | `GET` | `/api/teams/{id}/secrets` | team member | List team's generic secrets |
 | `POST` | `/api/teams/{id}/secrets` | team admin | Create |
 | `PATCH` | `/api/teams/{id}/secrets/{secret_id}` | team admin | Update |
-| `DELETE` | `/api/teams/{id}/secrets/{secret_id}` | team admin | Delete |
+| `DELETE` | `/api/teams/{id}/secrets/{secret_id}` | team admin | Delete — `404` on a row that is absent or tenant-hidden |
 | `GET` | `/api/me/secrets` | member | Personal secrets |
 | `POST` | `/api/me/secrets` | member | Create |
 | `PATCH` | `/api/me/secrets/{secret_id}` | per record scope | Update |
-| `DELETE` | `/api/me/secrets/{secret_id}` | per record scope | Delete |
+| `DELETE` | `/api/me/secrets/{secret_id}` | per record scope | Delete — `404` on a row that is absent or tenant-hidden (see the note above) |
 | `GET` | `/api/teams/{id}/bots/{bot_id}/bindings` | team member | List bot bindings |
 | `POST` | `/api/teams/{id}/bots/{bot_id}/bindings` | team admin | Create binding |
 | `PATCH` | `/api/teams/{id}/bots/{bot_id}/bindings/{binding_id}` | team admin | Update |

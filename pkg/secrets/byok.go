@@ -363,6 +363,14 @@ type ApiKeyStore interface {
 	// requestingUserID filter MUST be applied; passing "" returns
 	// only team-wide keys (admin path).
 	ListByTeam(ctx context.Context, teamID, requestingUserID string) ([]ApiKey, error)
+	// CountByTeam counts EVERY key of a team, user-scoped rows included.
+	// It is the whole-tenant read a lifecycle gate needs (the team
+	// emptiness probe, pkg/server teamResidue): ListByTeam's contract
+	// reads "" as "team-wide rows only", so a team holding ONLY personal
+	// credentials would count empty through it and be deleted with sealed
+	// keys left behind in a tenant nothing can reach (#1687). It takes no
+	// requesting user because it is not one user's view.
+	CountByTeam(ctx context.Context, teamID string) (int, error)
 	// ListByUser returns the requesting user's user-scoped keys
 	// inside a given team.
 	ListByUser(ctx context.Context, teamID, userID string) ([]ApiKey, error)
@@ -965,6 +973,21 @@ func (m *MemoryApiKeyStore) ListByTeam(_ context.Context, teamID, userID string)
 	return out, nil
 }
 
+// CountByTeam counts every key of the team, user-scoped rows included (see
+// the interface contract): ListByTeam with no requesting user skips them,
+// which is exactly the blind spot the team emptiness gate must not have.
+func (m *MemoryApiKeyStore) CountByTeam(_ context.Context, teamID string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, k := range m.keys {
+		if k.ScopeTeamID == teamID {
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (m *MemoryApiKeyStore) ListByUser(_ context.Context, teamID, userID string) ([]ApiKey, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1197,6 +1220,21 @@ func (s *MongoApiKeyStore) ListByTeam(ctx context.Context, teamID, userID string
 		return nil, fmt.Errorf("secrets: decode api keys: %w", err)
 	}
 	return out, nil
+}
+
+// CountByTeam counts every key of the team, user-scoped rows included (see
+// the interface contract). It reads no row body: a count is all a lifecycle
+// gate needs, and the scope_team index serves it.
+func (s *MongoApiKeyStore) CountByTeam(ctx context.Context, teamID string) (int, error) {
+	filter, err := withApiKeyTenantFilter(ctx, bson.M{"scope_team": teamID})
+	if err != nil {
+		return 0, err
+	}
+	n, err := s.coll.CountDocuments(ctx, filter)
+	if err != nil {
+		return 0, fmt.Errorf("secrets: count api keys: %w", err)
+	}
+	return int(n), nil
 }
 
 func (s *MongoApiKeyStore) ListByUser(ctx context.Context, teamID, userID string) ([]ApiKey, error) {
