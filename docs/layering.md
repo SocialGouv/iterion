@@ -38,13 +38,26 @@ rule.
   live). That list is not the promise: a file no context compiles is refused
   by `TestEveryNonTestFileIsSeenByAListingContext`, which measured 1704 of
   them on 2026-10-29, and `testdata/crossbuild` replays both attacks on a
-  module of its own. Three shapes sit outside that count because the go tool
-  compiles them in no context either — `testdata/`, a directory named `_x`
-  or `.x`, and a `//go:build ignore` generator: demanding a context for one
-  of them is a red nobody can clear, and forcing `ignore` as a tag makes
-  `go list` fail for the whole tree, so every test of the guard fatals over
-  a sound tree. `testdata/neverbuilt` is the module that says so, under
-  `TestTheGuardSkipsWhatTheToolchainNeverCompiles`.
+  module of its own. Four shapes sit outside that count, each one the go
+  tool itself drops from a listing of those two patterns: `testdata/`, a
+  file named `_x.go` or `.x.go`, a directory named `_x` or `.x`, and a file
+  whose constraint names `ignore` — bare or inside a conjunction. Demanding
+  a context for one of them is a red nobody can clear, and the reserved name
+  cannot even be passed as a tag: the toolchain's own generators carry it,
+  so `go list -tags ignore` exits 1 on GOROOT's own files over this module
+  (`TestTheReservedIgnoreTagCannotBePassedToTheListing`) and every test of
+  the guard fatals over a tree `go build ./...` compiles clean.
+- **Out of the listing is not out of the build.** A `_x` or `.x` DIRECTORY
+  holds an importable package: a pattern names it nowhere, and
+  `go build ./...` ships it the moment a listed package imports it, rules or
+  no rules. `TestEveryImportOfTheJudgedTreesIsAJudgedPackage` refuses that
+  edge — an import under `pkg/` or `internal/` the listing does not hold is
+  a package whose own imports no rule reads, and the remedy is to rename the
+  directory or to list it. A dropped FILE name is reached by nothing, since
+  no import names a file, and `TestNoGuardIsReadAroundByTheBuild` holds
+  every Go file of the repository to a package of the module, so a stray one
+  is refused there. `testdata/neverbuilt` is the module that says both,
+  under `TestTheGuardSkipsWhatTheToolchainNeverCompiles`.
 - **Direct imports, one hop.** A rule hit is one import edge; a banned
   family reached THROUGH another package is not one. `pkg/dsl/ir` is a leaf
   in that sense only: its direct imports name no `pkg/forge` package and, of
