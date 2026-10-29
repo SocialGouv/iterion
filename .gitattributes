@@ -60,3 +60,9 @@ Dockerfile  text eol=lf
 vendor/**          -text linguist-vendored
 pnpm-lock.yaml     linguist-generated
 go.sum             linguist-generated
+
+# The repository maps are rewritten by `iterion map gen` on nearly every
+# landing. The reading corpus (internal/corpusreading) pins no file marked
+# linguist-generated: such a pin pins churn, and makes every change that
+# regenerates the file collide with the next one in the merge queue.
+docs/references/map-*.md linguist-generated
