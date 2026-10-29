@@ -98,11 +98,11 @@ type connectionCreateReq struct {
 	Connector string `json:"connector"`
 	// Alias is the name a `.bot` writes in `connection:`. Defaults to "main",
 	// like the CLI: one connection per connector is the common case.
-	Alias        string   `json:"alias"`
-	BaseURL      string   `json:"base_url"`
-	SchemeID     string   `json:"scheme_id"`
-	Capabilities []string `json:"capabilities"`
-	DisplayName  string   `json:"display_name"`
+	Alias        string   `json:"alias,omitempty"`
+	BaseURL      string   `json:"base_url,omitempty"`
+	SchemeID     string   `json:"scheme_id,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
+	DisplayName  string   `json:"display_name,omitempty"`
 	// Token is the credential. Write-only: it is sealed before the store sees
 	// it and never read back by any route.
 	Token string `json:"token"`
