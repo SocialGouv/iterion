@@ -325,9 +325,11 @@ func parseToolNodeOutput(stdout, fallback string) map[string]any {
 // shapes came back: wrapped reports that stdout did not parse and the map is
 // the `result` text wrapper. A caller that knows the drain of this output was
 // cut short needs that answer, because the two shapes differ in what they can
-// hide — a JSON object that parsed is the whole of what the command meant to
-// say, a prefix of one does not parse at all, and the wrapper may be a prefix
-// of anything.
+// hide — bytes that parsed carry no EVIDENCE of a cut, since a prefix of a
+// JSON object does not parse at all, while the wrapper may be a prefix of
+// anything. No evidence is not proof of whole: bytes cut where they happen
+// to parse are published unmarked, and [toolNodeDrainCutKey] names that
+// hole.
 func parseToolNodeOutputWrapped(stdout, fallback string) (output map[string]any, wrapped bool) {
 	if json.Unmarshal([]byte(stdout), &output) != nil {
 		return map[string]any{"result": fallback}, true
@@ -680,12 +682,30 @@ func (e *ClawExecutor) toolNodePolicyIdentity(ctx context.Context, name string) 
 //
 // It is the HOST's bound. On a node the sandbox runs, this Cmd is the
 // driver's exec client, and the wait ends when that client does — whatever
-// the bound says, including an override (measured through the docker
-// driver: a command whose background job holds the in-container output comes
-// back with its whole answer, uncut and unreported, at 10 ms, 100 ms, 2 s and
-// unbounded alike, and the job keeps running in the container). What judges a
-// sandboxed command's end is its completion line instead
-// ([ClawExecutor.settleSandboxedRun]).
+// the bound says, including an override. What comes back whole there is the
+// command's OWN answer: measured through the docker driver, a command that
+// prints its object and leaves a job holding the in-container output gets
+// that object parsed, uncut and unreported, at 10 ms, 100 ms, 2 s and
+// unbounded alike, and the job keeps running in the container. What the job
+// writes AFTER the exec stream closes is LOST there, with neither the report
+// nor [toolNodeDrainCutKey]: the cut belongs to the client, not to this bound
+// — `docker exec` stops copying some 2 s after the exec'd process exits and
+// exits 0 (measured directly: the same head in hand against a holder writing
+// at 4 s and one writing at 10 s) — so this site reads no error,
+// [proc.DrainCutShort] is asked about nil, and the sentinel the host's
+// reading needs can never arrive.
+//
+// Nor can the path say the cut from somewhere else. What it proves is the
+// command's END — its completion line, which arrives after every byte the
+// command wrote to stdout before it, and which is what judges a sandboxed
+// command ([ClawExecutor.settleSandboxedRun]) — never that what followed
+// that line is whole, because the bytes are already gone when the client
+// returns. The one thing left to ask the container is whether the command's
+// session still holds a process ([sandbox.Completion.Sweep] scans it), and a
+// process proves a process: a job that redirected its own streams reads
+// there exactly like one that held the output, and neither says a byte was
+// lost. So a recipe whose answer comes from a process it did not wait for
+// has nothing to read under a sandbox.
 const toolNodeDrainBound = 2 * time.Second
 
 // runWithSeparateStreams runs cmd with stdout and stderr captured into
@@ -735,18 +755,36 @@ func runWithSeparateStreams(cmd *exec.Cmd) ([]byte, string, time.Duration, error
 // `publish:` writes and into the node_finished event's data, where the reader
 // who has to tell a prefix from an answer is.
 //
-// Its reach, exactly: a `{{outputs.<node>._drain_cut}}` ref resolves only on
-// a node that declares no `output:` schema, because C031 is an error on a
-// field a declared schema does not have (pkg/dsl/ir, validate_refs.go). The
-// engine's own event SUMMARY line also skips `_`-prefixed keys by convention
-// (engine_events.go), which is why the drain is reported in prose beside the
-// node's event as well as marked here.
+// Its reach, exactly: a `{{outputs.<node>._drain_cut}}` ref resolves on
+// EVERY tool node, whether it declares an `output:` schema or not. The rule
+// is `isRuntimeInjectedField` (pkg/dsl/ir, validate_edges.go): an
+// underscore-prefixed field is exempt from the outputs-ref validator
+// (C031/C032) and from the static type checker, the exemption session
+// metadata already travels on. Measured on a node declaring a schema whose
+// only field is `result`: `{{outputs.held.nope}}` is C031 and
+// `{{outputs.held._drain_cut}}` validates and resolves to `true`. The price
+// of that exemption is that a MISSPELLING compiles too — `_drain_cutt` earns
+// no diagnostic, and its raw `{{…}}` reaches `bash -c` as text.
 //
-// What it cannot mark: a cut that still left a parsed object behind — a
-// command emitting one JSON object per line, cut after a whole one, parses
-// and is published unmarked. The mark rides the wrapper because that is the
-// shape this site can prove nothing about, never a claim that every lost byte
-// is named.
+// An edge gate is the other surface, and the schema does decide there:
+// `node -> warn when _drain_cut` is C014 on a node that declares an
+// `output:` schema, because the condition validator takes no such exemption
+// (pkg/dsl/ir, validateConditionFields), and compiles and fires on a node
+// that declares none. The engine's own event SUMMARY line skips
+// `_`-prefixed keys by convention (engine_events.go), which is why the drain
+// is reported in prose beside the node's event as well as marked here.
+//
+// What it cannot mark is named by the PARSE, not by a shape: a cut whose
+// bytes still parse is published unmarked, whatever they parse TO. A command
+// emitting one JSON object per line, cut after a whole one, parses and is
+// unmarked; so is a bare `null` — what `cmd | jq '.absent'` prints — which
+// parses to no map at all, so the output a `publish:` writes is nil and
+// carries neither the mark nor the engine's own `_duration_ms`. Measured,
+// all three with the drain cut and reported: `null` leaves a nil output,
+// `{}` leaves `{"_duration_ms": …}` unmarked, and a lone space is marked
+// because a space does not parse. The mark rides the wrapper because that is
+// the shape this site can prove nothing about, never a claim that every lost
+// byte is named.
 const toolNodeDrainCutKey = "_drain_cut"
 
 // abandonedDrainReport is what a tool node's run says when the drain bound

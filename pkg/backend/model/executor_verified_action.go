@@ -428,6 +428,14 @@ func (e *ClawExecutor) recoveryModel(node *ir.ToolNode) string {
 // stdout (postcondition wins on key clash — it observed the final state) and
 // stamps the private _verified_action metadata the engine reads to emit the
 // node_verified_action event. The key is stripped before schema validation.
+//
+// This merge is the one point every rung of the ladder crosses, and the only
+// place in the engine where two tool-node output maps become one — so it is
+// where a mark that describes ONE of them is honoured or lost.
+// [toolNodeDrainCutKey] describes the `result` wrapper of the run it came
+// from, so it follows the `result` that survived the clash: the whole point
+// of the mark is to tell a possible prefix from an answer, and on a complete
+// answer it says the opposite of the truth.
 func (e *ClawExecutor) verifiedOutput(primary, postcond map[string]any, rung string, met bool, policy string) map[string]any {
 	out := map[string]any{}
 	for k, v := range primary {
@@ -435,6 +443,14 @@ func (e *ClawExecutor) verifiedOutput(primary, postcond map[string]any, rung str
 	}
 	for k, v := range postcond {
 		out[k] = v
+	}
+	if _, postcondOwnsResult := postcond["result"]; postcondOwnsResult {
+		// The recipe's `result` is gone, and with it everything its mark
+		// described. Only the postcondition's own mark — already merged in
+		// above when it carries one — can speak for the bytes that stayed.
+		if _, postcondMarked := postcond[toolNodeDrainCutKey]; !postcondMarked {
+			delete(out, toolNodeDrainCutKey)
+		}
 	}
 	out["_verified_action"] = map[string]any{
 		"rung":              rung,

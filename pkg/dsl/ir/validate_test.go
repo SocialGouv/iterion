@@ -2908,6 +2908,94 @@ workflow test:
 }
 
 // ---------------------------------------------------------------------------
+// An `_`-prefixed field has TWO surfaces: a ref (exempt) and an edge
+// condition (not) — #2855's `_drain_cut`
+// ---------------------------------------------------------------------------
+
+// A tool node's run publishes a private `_drain_cut` key beside its `result`
+// when the drain bound cut bytes that no longer parse (pkg/backend/model,
+// toolNodeDrainCutKey), and what an author may do with that key is decided in
+// two different places — which is the sentence that key's doc now states.
+//
+// isRuntimeInjectedField exempts an underscore field from the outputs-ref
+// validator, so the ref compiles on a tool node that DECLARES an output
+// schema, where a field the schema does not have is C031. The exemption is on
+// the PREFIX, not on a list of known keys, so a misspelling compiles with it
+// and its braces reach the shell as text: that is the cost, stated where the
+// key is defined rather than discovered by an author.
+//
+// An edge CONDITION takes no such exemption (validateConditionFields): there
+// the declared schema decides, under C014.
+//
+// Mutation seen red: exempt the condition validator too (the declared-schema
+// arm loses its C014 and the two surfaces stop being two).
+func TestAnUnderscoreRefCompilesOnASchemaDeclaringToolNodeButAnEdgeConditionDoesNot(t *testing.T) {
+	// The ref surface: one tool node declares the schema, a second reads a
+	// field of it in its own command body.
+	refSrc := func(field string) string {
+		return `
+schema answer:
+  result: string
+
+tool held:
+  command: "true"
+  output: answer
+
+tool reader:
+  command: "printf '%s' {{outputs.held.` + field + `}}"
+
+workflow test:
+  entry: held
+  held -> reader
+  reader -> done
+`
+	}
+	for name, tc := range map[string]struct {
+		field  string
+		wantC0 bool
+	}{
+		"a field the schema does not declare is C031, so the validator does reach a tool body": {field: "nope", wantC0: true},
+		"an underscore field is exempt on that same node":                                      {field: "_drain_cut"},
+		"a misspelled underscore field is exempt too, because the rule is the prefix":          {field: "_drain_cutt"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := compileFile(t, refSrc(tc.field))
+			if tc.wantC0 {
+				expectDiag(t, r, DiagRefFieldNotInSchema)
+				return
+			}
+			expectNoDiag(t, r, DiagRefFieldNotInSchema)
+		})
+	}
+
+	// The condition surface: the same field, as an edge gate.
+	gateSrc := func(declares string) string {
+		return `
+schema answer:
+  result: string
+
+tool held:
+  command: "true"` + declares + `
+
+tool warn:
+  command: "printf cut"
+
+workflow test:
+  entry: held
+  held -> warn when _drain_cut
+  held -> done else
+  warn -> done
+`
+	}
+	t.Run("an edge condition on that field is C014 when the node declares a schema", func(t *testing.T) {
+		expectDiag(t, compileFile(t, gateSrc("\n  output: answer")), DiagConditionFieldNotFound)
+	})
+	t.Run("and compiles when it declares none", func(t *testing.T) {
+		expectNoDiag(t, compileFile(t, gateSrc("")), DiagConditionFieldNotFound)
+	})
+}
+
+// ---------------------------------------------------------------------------
 // C060 — Playwright MCP requires a browser-capable sandbox image
 // ---------------------------------------------------------------------------
 

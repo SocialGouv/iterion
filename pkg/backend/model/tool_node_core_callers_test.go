@@ -35,11 +35,13 @@ var toolNodeCoreReaders = map[string]string{
 	"executor_verified_action.go:selfRepair":       "the corrected command's re-run, judged by that same oracle",
 }
 
-// walkFloor is what a lost walk would hide. This package held 215
-// deterministic test files and ~200 production files when the inventory was
-// written (see parallel_campaign_test.go for the same reading), so a walk
-// that comes back with a handful read nothing and its clean answer means
-// nothing.
+// walkFloor is what a lost walk would hide. Counted when the inventory was
+// written (`ls pkg/backend/model/*.go`): 303 Go files in this package, 73 of
+// them production and 230 test — so a walk that comes back having read a
+// handful read nothing, and its clean answer means nothing. The floor is set
+// well under that count because the walk's job is to cover the files, not to
+// pin how many there are: a package that loses half its files still fails
+// here, one that gains a file does not.
 const walkFloor = 150
 
 // TestEveryReaderOfRunToolNodeCoreNamesItsFamily pins the caller set of
@@ -47,16 +49,22 @@ const walkFloor = 150
 // belongs to instead of inheriting the exit-status reading in silence.
 //
 // The class is CLOSED by the language: runToolNodeCore is a method with a
-// lowercase name, so nothing outside this package can call it — asserted
-// below, because an exported twin would make this package's own files the
-// wrong net. The call is found through the Go syntax tree, called or taken as
-// a value, never by the spelling of a line; what it does not resolve is
-// types, so a same-named method on another receiver would read as this one.
+// lowercase name, so nothing outside this package can call it. What decides
+// that is the NAME this inventory is keyed by, so that is what is asserted —
+// exporting the method means renaming it, which changes
+// [runToolNodeCoreName] first, and the walk then reports 0 declarations of
+// the old one. A reading of the declaration the walk FOUND could never say
+// otherwise: the walk matches on that same constant. The call is found
+// through the Go syntax tree, called or taken as a value, never by the
+// spelling of a line; what it does not resolve is types, so a same-named
+// method on another receiver would read as this one.
 // That direction is a false positive, fails loudly, and is answered by a
 // rename; the direction that matters is a call the walk does not see.
 //
-// Mutation seen red: add a fifth method that calls runToolNodeCore — the
-// inventory names it and says what it owes.
+// Mutations seen red: add a fifth method that calls runToolNodeCore (the
+// inventory names it and says what it owes); and export the method, constant
+// and call sites as RunToolNodeCore (the class is no longer this package's
+// own files, and the name check says so).
 func TestEveryReaderOfRunToolNodeCoreNamesItsFamily(t *testing.T) {
 	t.Parallel()
 
@@ -66,7 +74,6 @@ func TestEveryReaderOfRunToolNodeCoreNamesItsFamily(t *testing.T) {
 	}
 	visited := 0
 	declared := 0
-	exported := false
 	seen := map[string]bool{}
 	var offenders []string
 	for _, e := range entries {
@@ -100,7 +107,6 @@ func TestEveryReaderOfRunToolNodeCoreNamesItsFamily(t *testing.T) {
 			}
 			if fn.Name.Name == runToolNodeCoreName && fn.Recv != nil {
 				declared++
-				exported = exported || ast.IsExported(fn.Name.Name)
 				continue // its own body is the reading, not a reader
 			}
 			if !referencesToolNodeCore(fn.Body) {
@@ -133,10 +139,10 @@ func TestEveryReaderOfRunToolNodeCoreNamesItsFamily(t *testing.T) {
 		t.Errorf("toolNodeCoreReaders names %s, which the walk did not see call runToolNodeCore: check whether that function still exists and still calls it. If it does, the walk lost the file — fix the walk. Only if the call is gone does the entry come out", key)
 	}
 	if declared != 1 {
-		t.Errorf("the walk found %d declarations of a runToolNodeCore method, want exactly 1: the inventory above describes the readers of ONE reading", declared)
+		t.Errorf("the walk found %d declarations of a %s method, want exactly 1: the inventory above describes the readers of ONE reading. Gone or renamed — and a rename that EXPORTED it also takes this package's own files out of being the whole class of its callers", declared, runToolNodeCoreName)
 	}
-	if exported {
-		t.Error("runToolNodeCore is exported: this package's own files are then no longer the whole class of its callers, and this inventory would certify a net it does not have")
+	if ast.IsExported(runToolNodeCoreName) {
+		t.Errorf("%s is exported: this package's own files are then no longer the whole class of its callers, and this inventory certifies a net it does not have — a reader may live in any package", runToolNodeCoreName)
 	}
 	if visited < walkFloor {
 		t.Errorf("the inventory read %d Go files of this package, fewer than the %d floor: what it did not read reports no caller", visited, walkFloor)

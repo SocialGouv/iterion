@@ -498,6 +498,21 @@ func (e *toolNodeEvents) callOutput() string {
 	return strings.Join(out, "\n")
 }
 
+// callOutputFor is every tool_called event of ONE virtual tool, joined: a
+// Verified Action fires one per rung, and an assertion about the recipe's own
+// run must not read the postcondition's.
+func (e *toolNodeEvents) callOutputFor(toolName string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var out []string
+	for _, c := range e.calls {
+		if c.ToolName == toolName {
+			out = append(out, c.Output)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
 // callError is the first error a tool_called event carried, nil when every
 // run ended clean.
 func (e *toolNodeEvents) callError() error {
@@ -844,5 +859,198 @@ func (j *writingJob) wrote(n int, within time.Duration) bool {
 			return false
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// The mark describes the `result` wrapper it travels with, and a Verified
+// Action publishes ONE output built from TWO runs: [ClawExecutor.verifiedOutput]
+// merges the recipe's map with the postcondition's, postcondition wins on key
+// clash. So the mark has to follow the `result` that SURVIVED that clash —
+// carried along blindly it lands on the postcondition's own answer, whole and
+// uncut, and tells a consumer of `{{outputs.<node>.result}}`, of the artifact
+// a `publish:` writes or of an edge gate on the mark that those bytes may be a
+// prefix when they are the whole.
+//
+// Three of the four readers of runToolNodeCore are on this path
+// (runVerifiedRecipe, runPostcondition, selfRepair, the inventory in
+// tool_node_core_callers_test.go), and the merge is the one point all five of
+// its call sites cross: the arms below drive it through
+// executeVerifiedToolNode's rung 2 — the recipe runs, its drain is cut, and
+// the postcondition judges — because that is where the two maps meet.
+//
+// Mutation seen red: carry the mark from whichever map holds it (the merge's
+// own default, `out[k] = v` with nothing after it) — the whole-postcondition
+// arm reads `{"_drain_cut": true, "result": "ok"}`, a complete 2-byte answer
+// published as a possible prefix.
+func TestTheDrainCutMarkFollowsTheResultThatSurvivedTheVerifiedMerge(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture, and the holder is a background job")
+	}
+	// The bound the arms rely on is this site's, so the environment the suite
+	// runs in does not get to choose it.
+	t.Setenv(proc.WaitDelayEnv, "")
+
+	const head = `{"deployed":12,"failed":`
+
+	for _, tc := range []struct {
+		name string
+		// postcondAnswer is what the postcondition prints once the recipe's
+		// marker is there: the second map of the merge.
+		postcondAnswer string
+		// postcondHolds is whether the postcondition itself leaves a process
+		// holding ITS output, so its own answer is the cut one.
+		postcondHolds bool
+		// wantResult is the `result` the merged output must carry.
+		wantResult string
+		// wantMarked is whether the mark belongs on that result.
+		wantMarked bool
+		// holders is how many leftover holders the node's runs leave.
+		holders int
+	}{
+		{
+			name:           "the postcondition's whole answer wins the clash, so the recipe's mark does not travel with it",
+			postcondAnswer: "ok",
+			wantResult:     "ok",
+			wantMarked:     false,
+			holders:        1,
+		},
+		{
+			name:           "the postcondition declares other fields, so the result the mark describes is still the recipe's",
+			postcondAnswer: `{"state":"whole"}`,
+			wantResult:     head,
+			wantMarked:     true,
+			holders:        1,
+		},
+		{
+			name:          "the postcondition's own drain was cut, so the result that won the clash carries its own mark",
+			postcondHolds: true,
+			wantResult:    head,
+			wantMarked:    true,
+			holders:       2,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			holders := newLeftoverHolders(t)
+			marker := filepath.Join(t.TempDir(), "the-recipe-ran")
+			// Rung 1 must NOT skip: the postcondition is unmet until the
+			// recipe has run, which is what puts the two maps in the merge.
+			postcond := "test -f " + marker + " || exit 1\n"
+			if tc.postcondHolds {
+				postcond += holders.cutAnswerRecipe(head, `0}`)
+			} else {
+				postcond += fmt.Sprintf("printf '%%s' %q\nexit 0", tc.postcondAnswer)
+			}
+			node := &ir.ToolNode{
+				BaseNode: ir.BaseNode{ID: "deploy"},
+				// The recipe prints nothing itself: its whole answer is
+				// written by the process it leaves, head now and tail past
+				// the bound, so what the bound leaves in hand is a PREFIX.
+				Command:       ": > " + marker + "\n" + holders.cutAnswerRecipe(head, `0}`),
+				Postcondition: postcond,
+				Goal:          "the deploy is reported",
+				Policy:        ir.PolicyRequired,
+			}
+			events := &toolNodeEvents{}
+			ex := newTestClawExecutor(NewRegistry(), &ir.Workflow{},
+				WithToolPolicy(tool.OpenPolicy()), events.hooks())
+
+			res, err := runToolNodeUnderDeadline(t, ex, node)
+			t.Cleanup(func() { holders.join(tc.holders) })
+			if err != nil {
+				t.Fatalf("the verified node failed although its recipe exited 0 and its postcondition was met: %v", err)
+			}
+			// The inconclusive-run guard: the arms below say what the mark
+			// does with a CUT recipe, so a run whose recipe was not cut —
+			// or whose bytes parsed, which is the unmarked shape — proves
+			// nothing about the merge.
+			recipe := events.callOutputFor(shellToolNodeToolName(node))
+			if !strings.Contains(recipe, "still holds its output") {
+				t.Fatalf("the recipe's drain was not cut, so its map carried no mark and this arm cannot judge the merge: %s", recipe)
+			}
+			if !strings.Contains(recipe, head) {
+				t.Fatalf("the recipe's bytes are %q, want the non-parsing head %q the mark rides: a map that parsed is published unmarked", recipe, head)
+			}
+
+			if res["result"] != tc.wantResult {
+				t.Errorf("the merged output's result is %#v, want %q", res["result"], tc.wantResult)
+			}
+			if marked := res[toolNodeDrainCutKey] == true; marked != tc.wantMarked {
+				t.Errorf("the merged output is marked as a possible prefix: %v, want %v — the mark belongs to the run whose `result` survived the clash (%v)", marked, tc.wantMarked, res)
+			}
+			// The rung is the ladder's, not an artefact of the merge: the
+			// recipe ran and the postcondition judged it met.
+			meta, ok := res["_verified_action"].(map[string]any)
+			if !ok {
+				t.Fatalf("the merged output carries no _verified_action metadata: %v", res)
+			}
+			if meta["rung"] != "recipe" || meta["postcondition_met"] != true {
+				t.Errorf("the ladder reports rung %v, met %v, want rung \"recipe\" met true: the arms above describe the rung-2 merge", meta["rung"], meta["postcondition_met"])
+			}
+		})
+	}
+}
+
+// The hole in [toolNodeDrainCutKey] is named by the PARSE, and this is that
+// parse: `wrapped` is the only thing the mark is conditioned on, so whatever
+// a cut command's bytes happen to parse TO is published unmarked.
+//
+// The `null` arm is the shape the key's doc now names beside the
+// object-per-line one: `cmd | jq '.absent'` prints it, it parses to NO map,
+// and the output a `publish:` writes is then nil — it carries neither the
+// mark nor the engine's own `_duration_ms`, measured on a run whose drain was
+// cut and reported.
+//
+// Mutation seen red: report wrapped for a parse that yielded a nil map
+// (`output == nil` joined to the unmarshal error) — the `null` arm then reads
+// the wrapper, and the doc's own hole closes on paper while the published
+// output stays nil.
+// It takes no t.Parallel(): this file is of the package's SERIAL family (it
+// calls t.Setenv), and a parallel test in a serial file panics the whole
+// binary (TestASerialTestFileNeverGoesParallel).
+func TestWhatAToolNodesStdoutParsesToDecidesWhetherACutCanBeMarked(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// stdout is what the command printed, as the node's output parse
+		// receives it.
+		stdout string
+		// wantWrapped is the answer the mark is conditioned on.
+		wantWrapped bool
+		// wantNil is whether the published output map is nil — no key of
+		// the engine's own can be attached to it either.
+		wantNil bool
+	}{
+		{name: "an object parses, so a cut leaves no evidence", stdout: `{"deployed":12}`},
+		{name: "an empty object parses too: the named hole", stdout: `{}`},
+		{name: "a bare null parses to no map at all", stdout: `null`, wantNil: true},
+		{name: "a prefix of an object cannot parse, which is what the mark rides", stdout: `{"deployed":12,"failed":`, wantWrapped: true},
+		{name: "a lone space does not parse", stdout: ` `, wantWrapped: true},
+		{name: "a number is not an object", stdout: `12`, wantWrapped: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, wrapped := parseToolNodeOutputWrapped(tc.stdout, strings.TrimSpace(tc.stdout))
+			if wrapped != tc.wantWrapped {
+				t.Errorf("parse of %q reports wrapped %v, want %v: the mark is conditioned on this answer alone", tc.stdout, wrapped, tc.wantWrapped)
+			}
+			if (out == nil) != tc.wantNil {
+				t.Errorf("parse of %q yields %#v, nil %v, want nil %v", tc.stdout, out, out == nil, tc.wantNil)
+			}
+			if tc.wantWrapped && out["result"] != strings.TrimSpace(tc.stdout) {
+				t.Errorf("the wrapper of %q holds %#v, want the bytes themselves", tc.stdout, out["result"])
+			}
+			if tc.wantNil {
+				// A nil map takes no key at all: a mark written on this
+				// parse's output would not be lost, it would PANIC. That is
+				// the second reason the write is conditioned on `wrapped`
+				// and not on the cut alone.
+				func() {
+					defer func() {
+						if recover() == nil {
+							t.Error("writing the mark on the output of a `null` parse did not panic: this arm's point is that the parse leaves no map to attach a key to")
+						}
+					}()
+					out[toolNodeDrainCutKey] = true
+				}()
+			}
+		})
 	}
 }
