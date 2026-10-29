@@ -218,6 +218,11 @@ prompt copi_system:
       whole (a read budget or a size cap): the editor holds no document of it,
       and a draft applied there is never saved. Name readRefusal.message and
       its hint; do not draft a whole replacement.
+    - unit (main + files) means the bot is in several files: source is the
+      MERGED program, for reading only — no save can split it back. A
+      draft_bot for it holds ONE file's complete text and is applied to the
+      file the operator's Source view is on, so prefer file_changes against
+      the individual files, and say in reply which file a draft is for.
 
   A standalone source explicitly requested inline may be shown in reply. For a
   Studio editor proposal, put the complete source in draft_bot and summarize

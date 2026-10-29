@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Editor from "@/lib/monaco";
-import { newSourceSession, unreachableSourceBuffer, useDocumentStore, useDocumentStoreInstance } from "@/store/document";
+import { newSourceSession, unreachableSourceBuffer, useDocumentStore, useDocumentStoreInstance, SOURCE_MERGED } from "@/store/document";
 import { useThemeStore } from "@/store/theme";
 import { useUIStore } from "@/store/ui";
 import * as api from "@/api/client";
@@ -14,14 +14,12 @@ import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 
-/** The picker's entry for the whole program of a bot in several files.
- *  Not a path: a unit's `rel` is a slash path ending in `.bot`, so this
- *  cannot collide with one. Deliberately plain ASCII — it travels as an
- *  `<option value>` and back through `e.target.value`, and a NUL there
- *  rests on a round trip no test in this repo exercises in a real browser
- *  (#1649). It is read-only either way: one text cannot be split back
- *  into the files it came from. */
-export const MERGED = "<merged>";
+/** The picker's entry for the whole program of a bot in several files —
+ *  the store's SOURCE_MERGED under the name this view and its tests have
+ *  always used. It lives on the store because it is a value `sourceFile`
+ *  can hold, and the offer that reads the selection (#1647) must not have
+ *  to import this view. */
+export const MERGED = SOURCE_MERGED;
 
 export default function SourceView() {
   const documentStore = useDocumentStoreInstance();
@@ -81,7 +79,13 @@ export default function SourceView() {
   const [parseError, setParseError] = useState<string | null>(null);
   const [refused, setRefused] = useState<string | null>(null);
   // Which file of the unit the view is on; null until a unit names one.
-  const [selected, setSelected] = useState<string | null>(null);
+  // The selection lives in the STORE (#1647), not in this component: it is
+  // the write target of the assistant's per-file proposal, which the
+  // ChatDock's offer reads whether or not this pane is mounted — and it
+  // survives the pane's unmounts, which the toggle, the canvas expand and
+  // the route all cause.
+  const selected = useDocumentStore((s) => s.sourceFile);
+  const setSelected = useDocumentStore((s) => s.setSourceFile);
   const relRef = useRef<string | null>(null);
   relRef.current = selected;
   const documentRef = useRef<IterDocument | null>(null);
@@ -126,32 +130,35 @@ export default function SourceView() {
       setSelected(null);
       return;
     }
-    setSelected((cur) => {
-      // A salvage is about the MAIN — it is the file that did not parse,
-      // and the one the refusal on every write points here to repair. Left
-      // on the merged entry the author would face a disabled picker with
-      // no Edit: a refusal naming a control they cannot reach, which is
-      // the defect this view was changed to remove.
-      if (salvaged) return unit.main;
-      if (cur === MERGED) return cur;
-      if (cur && unit.files.some((f) => f.rel === cur)) return cur;
-      // The selection is component state and does not survive the unmount,
-      // so a buffer held for a FRAGMENT would come back to a view sitting on
-      // the main and never be adopted. Land on the file the held work is
-      // for, when the unit still has it.
+    const cur = documentStore.getState().sourceFile;
+    let next: string;
+    // A salvage is about the MAIN — it is the file that did not parse,
+    // and the one the refusal on every write points here to repair. Left
+    // on the merged entry the author would face a disabled picker with
+    // no Edit: a refusal naming a control they cannot reach, which is
+    // the defect this view was changed to remove.
+    if (salvaged) {
+      next = unit.main;
+    } else if (cur === MERGED) {
+      next = cur;
+    } else if (cur && unit.files.some((f) => f.rel === cur)) {
+      next = cur;
+    } else {
+      // A buffer held for a FRAGMENT lands the view on the file the held
+      // work is for, when the unit still has it — the selection is what the
+      // adoption below matches the buffer against.
       const held = documentStore.getState().sourceBuffer;
-      if (
+      next =
         held &&
         held.text !== held.base &&
         held.path === currentFilePath &&
         held.rel &&
         unit.files.some((f) => f.rel === held.rel)
-      ) {
-        return held.rel;
-      }
-      return unit.main;
-    });
-  }, [unit, salvaged, currentFilePath, documentStore]);
+          ? held.rel
+          : unit.main;
+    }
+    if (next !== cur) setSelected(next);
+  }, [unit, salvaged, currentFilePath, documentStore, setSelected]);
 
   const perFile = !!unit && !!selected && selected !== MERGED && !salvaged;
   // Which twin this tab is on. The control that repairs a main the canvas
@@ -626,7 +633,7 @@ export default function SourceView() {
     setRendered({ key: `${currentFilePath ?? ""}\u0000${rel}`, doc: heldBuffer.doc });
     adopted.current = true;
     setEditingState(true);
-  }, [heldBuffer, restorable, currentFilePath]);
+  }, [heldBuffer, restorable, currentFilePath, setSelected]);
 
   useEffect(() => {
     if (!editing) return;

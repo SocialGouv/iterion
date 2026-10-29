@@ -11,6 +11,7 @@ const EMPTY: EditorProposalLookup = {
   revision: null,
   applyIntent: "none",
   saveIntent: "none",
+  file: null,
 };
 
 export function editorProposalQueryKey(runId: string, revision: number) {

@@ -108,7 +108,11 @@ func (p *ChatStateMatch) matches(value string) bool {
 // fixed artifact fields are `draft_bot`, `editor_session_id`,
 // `editor_revision`, `editor_apply_intent`, and `editor_save_intent`; intent
 // requests a host action but grants no authority. The studio, never the model,
-// owns policy evaluation, applying, and saving.
+// owns policy evaluation, applying, and saving. For a bot in several files
+// (#1647) the draft is ONE file's text and `editor_file` names which — a
+// hint, not an intent: it grants no authority either, so it can only refuse.
+// The write target is the studio's Source view picker selection, and a hint
+// that names another file disables Apply until the author switches to it.
 type ChatEditorSurface struct {
 	Context   bool `json:"context,omitempty" yaml:"context,omitempty"`
 	Proposals bool `json:"proposals,omitempty" yaml:"proposals,omitempty"`

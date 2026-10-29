@@ -96,6 +96,36 @@ describe("active editor session snapshots", () => {
     expect(snapshot).not.toHaveProperty("source");
   });
 
+  // A bot in several files: its document cannot render as ONE file (the
+  // server refuses, so no capture at all went out before #1647), so the
+  // model reads the FLATTENED program and learns the files, and its
+  // proposal is one file's text.
+  it("captures a unit as its merged program plus its file list", async () => {
+    api.unparse.mockResolvedValue({ source: "workflow merged:\n  entry: a\n" });
+    const tabId = useTabsStore
+      .getState()
+      .openTab("editor", { file: "bots/demo/main.bot" }, "demo");
+    const store = getOrCreateDocumentStore(tabId);
+    store.getState().setDocument(createEmptyDocument());
+    store.getState().setCurrentFilePath("bots/demo/main.bot");
+    store.getState().setUnit({
+      root: "bots/demo",
+      main: "main.bot",
+      revision: "r1",
+      files: [{ rel: "main.bot", imports: ["lib/nodes.bot"] }, { rel: "lib/nodes.bot" }],
+    });
+
+    const snapshot = await captureActiveEditorDocument();
+    if (!snapshot) throw new Error("a unit editor gave no snapshot");
+
+    expect(api.unparse).toHaveBeenCalledWith(expect.anything(), {
+      flatten: true,
+      path: "bots/demo/main.bot",
+    });
+    expect(snapshot.source).toBe("workflow merged:\n  entry: a\n");
+    expect(snapshot.unit).toEqual({ main: "main.bot", files: ["main.bot", "lib/nodes.bot"] });
+  });
+
   it("keeps the server-owned file hashes bound to the sent editor revision", async () => {
     api.unparse.mockResolvedValue({ source: "workflow live:\n  entry: a\n" });
     authoring.snapshotAssistantAuthoring.mockResolvedValue({

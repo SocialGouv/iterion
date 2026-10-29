@@ -91,6 +91,17 @@ export function newSourceSession(): number {
   return sourceSessions;
 }
 
+/** The Source view picker's entry for the whole program of a bot in several
+ *  files. Not a path: a unit's `rel` is a slash path ending in `.bot`, so
+ *  this cannot collide with one. Deliberately plain ASCII — it travels as an
+ *  `<option value>` and back through `e.target.value`, and a NUL there rests
+ *  on a round trip no test in this repo exercises in a real browser (#1649).
+ *  It is read-only either way: one text cannot be split back into the files
+ *  it came from. It lives HERE, beside the `sourceFile` selection it can be
+ *  the value of, so the offer that reads the selection (#1647) does not
+ *  import the view. */
+export const SOURCE_MERGED = "<merged>";
+
 /** What an answer was asked about: the tab's file, its content generation,
  *  the author's last request to replace the document, the replacements
  *  actually applied, and the Source buffer as it was — the object, which
@@ -203,6 +214,17 @@ export interface DocumentState {
   // (its files and the revision a save must present); null otherwise.
   // Dropped whenever the current file changes: a unit belongs to a file.
   unit: UnitInfo | null;
+  /** Which file of `unit` the Source view's picker is on — the selection
+   *  itself, in the store rather than in the view (#1647): it is the write
+   *  target of the assistant's per-file proposal, which the ChatDock's offer
+   *  reads whether or not the view is mounted, and it survives the view's
+   *  unmounts (the pane is hidden by the toggle, the canvas expand, the
+   *  route). null until the view derives one; `<merged>` (SOURCE_MERGED,
+   *  re-exported by the view as MERGED) names the read-only whole-program
+   *  entry, which no per-file write targets. Cleared with the path, like
+   *  the unit. */
+  sourceFile: string | null;
+  setSourceFile: (rel: string | null) => void;
   // The Source view's open, un-applied text edit — the buffer itself, not a
   // flag about it. It used to be component-local `useState`, so nothing
   // outside could see it: `_generation` does not move while an author types
@@ -455,6 +477,7 @@ export function createDocumentStore() {
   detached: false,
   currentSource: null,
   unit: null,
+  sourceFile: null,
   sourceBuffer: null,
   _generation: 0,
   _savedGeneration: 0,
@@ -478,10 +501,11 @@ export function createDocumentStore() {
   // about this one, so the flag is dropped with the unit. A null path here is
   // a detachment — told apart from a fresh store's null by `detached`.
   setCurrentFilePath: (currentFilePath) =>
-    set({ currentFilePath, unit: null, salvaged: false, readRefusal: null, openedDigest: null, sourceBuffer: null, detached: currentFilePath === null }),
+    set({ currentFilePath, unit: null, sourceFile: null, salvaged: false, readRefusal: null, openedDigest: null, sourceBuffer: null, detached: currentFilePath === null }),
   setSalvaged: (salvaged, readRefusal = null) => set({ salvaged, readRefusal: salvaged ? readRefusal : null }),
   setCurrentSource: (currentSource) => set((s) => (s.currentSource === currentSource ? s : { currentSource })),
   setUnit: (unit) => set({ unit }),
+  setSourceFile: (sourceFile) => set((s) => (s.sourceFile === sourceFile ? s : { sourceFile })),
   setOpenedDigest: (openedDigest) => set({ openedDigest }),
   setSourceBuffer: (sourceBuffer) => set({ sourceBuffer }),
   markSaved: () => set((s) => ({ _savedGeneration: s._generation })),
