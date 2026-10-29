@@ -35,7 +35,11 @@ task demo:rgaa-audit
    it prefers a matching global npm install; otherwise the first use
    installs the engine under `~/.cache/iterion/ultra11y` after
    verifying the pin's size and sha256).
-3. Installs the chromium build the engine's rendered scan navigates with.
+3. Installs the chromium build the engine's rendered scan navigates with
+   (a browser already on the machine is named instead with the bot's
+   `browser_path` var or `ULTRA11Y_BROWSER_PATH`, which the engine takes
+   as `--browser-path`; the sandbox browser image names its
+   `/usr/bin/chromium` that way).
 4. Runs `iterion run bots/rgaa-audit` with `rendered=required`: the
    studio is served locally (`studio/e2e/serve.mjs`, seeded workspace),
    the 21-page sample (`.ultra11yrc.json`) is captured with Chromium,
