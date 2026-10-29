@@ -54,6 +54,69 @@ func (x *residualFanExecutor) Execute(ctx context.Context, n ir.Node, in map[str
 	return x.stubExecutor.Execute(ctx, n, in)
 }
 
+// armedDeadline is a context whose deadline starts counting only when the
+// test arms it — the moment the undecided branch is running — so a slow
+// runner cannot spend the budget before that branch exists. A budget
+// measured from the run's start expired inside the router on a loaded runner
+// under the race detector (CI race-shard(0) on fdf9d9761, #2840) and the run
+// recorded TIMEOUT while no effect was undecided yet. Once fired, Err reads
+// as context.DeadlineExceeded exactly as a real deadline does, so the
+// engine's TIMEOUT classification stays the path under test; a cancelled
+// parent fires it with the parent's error instead.
+type armedDeadline struct {
+	parent context.Context
+	done   chan struct{}
+	once   sync.Once
+	mu     sync.Mutex
+	at     time.Time
+	err    error
+}
+
+func newArmedDeadline(parent context.Context) *armedDeadline {
+	c := &armedDeadline{parent: parent, done: make(chan struct{})}
+	go func() {
+		select {
+		case <-parent.Done():
+			c.fire(parent.Err())
+		case <-c.done:
+		}
+	}()
+	return c
+}
+
+// arm starts the budget now: the deadline fires after d.
+func (c *armedDeadline) arm(d time.Duration) {
+	c.mu.Lock()
+	c.at = time.Now().Add(d)
+	c.mu.Unlock()
+	time.AfterFunc(d, func() { c.fire(context.DeadlineExceeded) })
+}
+
+func (c *armedDeadline) fire(err error) {
+	c.once.Do(func() {
+		c.mu.Lock()
+		c.err = err
+		c.mu.Unlock()
+		close(c.done)
+	})
+}
+
+func (c *armedDeadline) Deadline() (time.Time, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.at, !c.at.IsZero()
+}
+
+func (c *armedDeadline) Done() <-chan struct{} { return c.done }
+
+func (c *armedDeadline) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
+}
+
+func (c *armedDeadline) Value(key any) any { return c.parent.Value(key) }
+
 // Mutation: remove collectBranches' ambiguous-result classification, or its
 // abandoned-result construction. Each topology must persist AMBIGUOUS_EFFECT
 // before it returns, even on a context-sensitive store; nothing reaches join.
@@ -90,10 +153,14 @@ func TestFanOutStopsOnUndecidedEffects(t *testing.T) {
 					case "drain":
 						stop = func() { cancel(ErrRunInterrupted) }
 					case "deadline":
-						var deadlineCancel context.CancelFunc
-						ctx, deadlineCancel = context.WithTimeout(ctx, 200*time.Millisecond)
-						defer deadlineCancel()
-						stop = func() {}
+						// The budget starts when the undecided branch is running (agent_b
+						// arms it once agent_a has started), never from the run's start: a
+						// fixed 200ms measured from Run expired inside the router on a loaded
+						// runner under the race detector and recorded TIMEOUT with no effect
+						// in flight (CI race-shard(0) on fdf9d9761, #2840).
+						armed := newArmedDeadline(ctx)
+						ctx = armed
+						stop = func() { armed.arm(50 * time.Millisecond) }
 					case "sibling":
 						stop = func() {}
 						triggerErr = errors.New("sibling fails")
