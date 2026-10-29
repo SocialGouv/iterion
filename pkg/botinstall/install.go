@@ -44,6 +44,12 @@ type Options struct {
 	// this name — never set by default, and every setter says why it owns
 	// the destination.
 	ReplaceUnrecorded bool
+	// DeferFragments says the CALLER resolves the bundle's
+	// `dependencies.fragments`, once every bundle of the project is in
+	// place. Only botdeps owns that order (Sync materializes the whole
+	// lockfile, then resolves): a lone install refuses rather than resolve
+	// against a producer the lockfile has not materialized yet.
+	DeferFragments bool
 }
 
 // Result is the structured outcome of an install.
@@ -135,6 +141,17 @@ func Install(ctx context.Context, opts Options) (*Result, error) {
 	b, err := bundle.OpenDir(botDir)
 	if err != nil {
 		return nil, fmt.Errorf("not a valid bot bundle at %s: %w", botDir, err)
+	}
+
+	// 3b. A bundle that declares shared fragments is refused here, BEFORE
+	//     anything is written or an existing target is removed: only the
+	//     project lockfile knows the order its producers materialize in.
+	if !opts.DeferFragments && b.Manifest != nil && len(b.Manifest.Dependencies.Fragments) > 0 {
+		declaredName := b.Manifest.Name
+		if declaredName == "" {
+			declaredName = filepath.Base(botDir)
+		}
+		return nil, fragmentDependenciesRefusal(declaredName, b.Manifest.Dependencies.Fragments)
 	}
 
 	// 4. Determine install name + destination.

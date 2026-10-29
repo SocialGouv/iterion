@@ -47,6 +47,53 @@ pin; it does not discover a newer revision or rewrite the lock. `bots update`
 does both. Local Git sources must be clean unless the operator explicitly uses
 `--allow-dirty`, whose resulting lock is not reproducible by another checkout.
 
+## Shared fragment dependencies
+
+The same two-sided key shares a `.bot` FRAGMENT — the files an
+`import "lib/x.bot"` reaches — so two bots stop carrying the same
+declarations ([ADR-145](adr/145-shared-fragments-are-bundle-dependencies.md)):
+
+```yaml
+# producer bundle
+exports:
+  fragments:
+    - id: forge-auth
+      path: lib/forge-auth.bot
+# consumer bundle
+dependencies:
+  fragments:
+    - name: forge-auth     # the name this bundle's `import "lib/<name>.bot"` reaches
+      from: app-dev        # the exact manifest name of the exporting bundle
+      id: forge-auth       # the exported id; defaults to name
+```
+
+Resolution is a **materialization at install**, by copy, into the consumer's
+own `lib/`: the parser, the unit loader, `E045` and the `lib/` confinement
+learn nothing, and every surface that reads the unit keeps reading what it
+reads now. What that costs is written down rather than hidden:
+
+- **`bots sync` resolves, a lone install refuses.** The lockfile is walked
+  alphabetically, so a consumer `a-bot` is installed before `.botz/z-lib`
+  exists; `bots sync` therefore materializes every pinned bundle FIRST and
+  resolves fragments in a second pass. `iterion bots install` of a single
+  bundle that declares `dependencies.fragments` is refused, naming
+  `iterion bots sync` — resolving there would make the verdict depend on an
+  accident of sorting.
+- **A dependency may not shadow.** A name that collides with a fragment the
+  bundle itself ships is refused, never overwritten: a silent overwrite would
+  make `import "lib/x.bot"` mean one thing in the source bundle and another
+  after an install.
+- **A miss is named where the dependency exists** — at the install, with the
+  bundle, the fragment and every directory looked in. No new parse-time
+  diagnostic: at parse time the file is simply there or absent.
+- **The pin keeps its meaning.** A materialized fragment is recorded in the
+  consumer's `.iterion-materialized-fragments` note and left out of the
+  bundle's content hash, which is what `bots.lock` pins: resolving a declared
+  dependency is not drift, and a second `bots sync` is a no-op. The note is
+  honoured only for a `lib/*.bot` path whose bytes still match the recorded
+  digest — a fragment edited after the install is hashed back in, because the
+  bundle on disk is then no longer what any producer published.
+
 ## Quick start
 
 ```bash

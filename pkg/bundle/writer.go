@@ -223,6 +223,16 @@ type packEntry struct {
 }
 
 func collectEntries(srcDir string, dropDrafts bool) (entries []packEntry, totalBytes int64, drafts int, err error) {
+	// A fragment an install materialized from `dependencies.fragments`, and
+	// the note that records it, are not the producer's content: neither the
+	// logical hash nor a redistributed archive carries them, because the
+	// install that resolves a dependency is what materializes it. The run's
+	// snapshot walks the directory itself (Snapshot.AddDir) and does carry
+	// them, as the compiled unit needs them.
+	materialized, exclErr := materializedFragmentExclusions(srcDir)
+	if exclErr != nil {
+		return nil, 0, 0, exclErr
+	}
 	walkErr := filepath.WalkDir(srcDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -239,6 +249,9 @@ func collectEntries(srcDir string, dropDrafts bool) (entries []packEntry, totalB
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if materialized[rel] {
 			return nil
 		}
 		info, infoErr := d.Info()

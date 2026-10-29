@@ -505,6 +505,11 @@ type ConsumedArtifact struct {
 // BundleExports is the public workflow surface of a bundle.
 type BundleExports struct {
 	Workflows []WorkflowExport `yaml:"workflows,omitempty" json:"workflows,omitempty"`
+	// Fragments are the `.bot` fragments under lib/ this bundle publishes
+	// for another bundle to import as its own — the third artefact kind of
+	// the same two-sided key (ADR-145). Shape and per-index refusals live
+	// in fragment_sharing.go.
+	Fragments []FragmentExport `yaml:"fragments,omitempty" json:"fragments,omitempty"`
 }
 
 // WorkflowExport binds a stable bot:// workflow id to a bundle-relative
@@ -518,6 +523,11 @@ type WorkflowExport struct {
 // resolve. The exact version and content hash live in the project lockfile.
 type BundleDependencies struct {
 	Workflows []WorkflowDependency `yaml:"workflows,omitempty" json:"workflows,omitempty"`
+	// Fragments are the shared `.bot` fragments this bundle is allowed to
+	// resolve, and the names its own `import "lib/<name>.bot"` lines reach
+	// them under. The install materializes them; nothing else learns of
+	// them (ADR-145).
+	Fragments []FragmentDependency `yaml:"fragments,omitempty" json:"fragments,omitempty"`
 }
 
 // WorkflowDependency names one shared workflow bundle. Matching is exact.
@@ -1185,6 +1195,9 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
 	if err := validateWorkflowSharing(m.Exports, m.Dependencies); err != nil {
+		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
+	}
+	if err := validateFragmentSharing(m.Exports, m.Dependencies); err != nil {
 		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
 	// A typo in retry: must fail at parse time, next to its source. Left
