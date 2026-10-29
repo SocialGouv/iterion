@@ -351,19 +351,27 @@ window in UTC so two periods compare:
   queue that were not a merge (`failed_checks`, `merge_conflict`, `manual`),
   among the pull requests merged in the window;
 - **what the window paid for** — the Tests runs on `merge_group`, and for
-  every rebuild, its cause, read from the clock — a direct push to `main` (a
-  release, a direct merge, any other push) committed at most 90 seconds before
-  the rebuild, or the queue itself (an entry ahead failed or left, a dequeue
-  and a re-enqueue) — and the state of the build it replaced: for a push,
-  whether it was already green or still running when the push hit (GitHub does
-  not cancel the run of a group it discards — the janitor below does, so a
-  discarded build now reads as `cancelled` rather than as a full run nobody
-  waited for; a build that had already finished red had ejected its pull
-  request, so its rebuild is a re-enqueue, counted as the queue's). **Queue
-  builds discarded by a direct push** is the line the release hold above
-  exists to shrink. Runs are read day by day and checked against the count the
-  API announces: a query answers at most 1000 runs, and paging has returned a
-  run twice;
+  every rebuild, its cause, read from the new group's **base** — the sha
+  `gh-readonly-queue/main/pr-<n>-<base sha>` carries: a base that moved to a
+  direct push to `main` (a release, a direct merge, any other push) IS that
+  push, whatever the delay, while an unchanged base, a queue merge or a
+  speculative queue branch is the queue itself (an entry ahead failed or left,
+  a dequeue and a re-enqueue) — and the state of the build it replaced: for a
+  push, whether it was already green or still running when the push hit
+  (GitHub does not cancel the run of a group it discards — the janitor below
+  does, so a discarded build now reads as `cancelled` rather than as a full
+  run nobody waited for; a build that had already finished red had ejected its
+  pull request, so its rebuild is a re-enqueue, counted as the queue's).
+  **Queue builds discarded by a direct push** is the line the release hold
+  above exists to shrink. The attribution is
+  [`queue-rebuild-cause.awk`](../scripts/diagnostics/queue-rebuild-cause.awk),
+  its own program so a harness can run it:
+  `internal/ciguard/queue_stats_test.go` holds each of its rules to a crafted
+  table — the previous rule blamed a push only within 90 seconds of the
+  rebuild, and GitHub rebuilt #1967's group 114 seconds after v3.217.0's
+  commit, so the discarded build was counted as the queue's own churn. Runs
+  are read day by day and checked against the count the API announces: a query
+  answers at most 1000 runs, and paging has returned a run twice;
 - **what failed the queue** — for each failed build, the failing jobs and
   steps and, unless `--no-logs`, the `--- FAIL:` tests in their logs, ranked.
   A build is named after the pull request at the tail of its group, so a
