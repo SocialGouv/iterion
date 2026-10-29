@@ -320,6 +320,17 @@ const (
 	// otherwise make endless. The DEFAULT: [proc.WaitDelayEnv] overrides it,
 	// and what the log names is the bound that ran.
 	cliAgentWaitDelay = 2 * time.Second
+	// permissionHookProbeDrainBound is the same bound for the probe that
+	// decides whether the hook binary is usable, and the probe family's
+	// default (the MCP stdio probe's): what this site reads is an EXIT
+	// STATUS, and nothing reads the output of a probe that passed, so the
+	// node's start is not held for it.
+	//
+	// Without a bound the probe's own 5 s context bounds nothing: it kills
+	// the probe, never a process the probe left holding the output, and a
+	// [exec.Cmd.Wait] with no bound then waits for that copy — so the start
+	// of every gated node parks for as long as the holder lives.
+	permissionHookProbeDrainBound = 500 * time.Millisecond
 )
 
 // Execute runs the target CLI for the given task and parses its output into a
@@ -549,7 +560,19 @@ func (b *CLIAgentBackend) preparePermissionHook(ctx context.Context, task Task, 
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if output, err := exec.CommandContext(probeCtx, iterionBin, "__permission-hook", "--probe").CombinedOutput(); err != nil {
+	probe := exec.CommandContext(probeCtx, iterionBin, "__permission-hook", "--probe")
+	// Before Start, which CombinedOutput performs.
+	probeBound := proc.SetWaitDelay(probe, permissionHookProbeDrainBound)
+	output, err := probe.CombinedOutput()
+	switch {
+	case proc.DrainCutShort(err):
+		// The probe RAN and exited 0 — exec reports this sentinel for no
+		// other status — and only the copy of its output was abandoned. The
+		// verdict here is that exit status, so the hook is usable and the
+		// gate arms; the drain is reported, never charged to the node.
+		b.Logger.Warn("[%s#%d/%s] the permission-hook probe exited but left its output held; abandoned the drain %s",
+			task.NodeID, task.Iteration, backendName, proc.WaitDelayHint(probeBound))
+	case err != nil:
 		return nil, nil, fmt.Errorf("delegate: %s: iterion hook binary %q is stale or unusable: %w (%s)", backendName, iterionBin, err, strings.TrimSpace(string(output)))
 	}
 

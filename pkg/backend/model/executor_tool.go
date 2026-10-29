@@ -599,6 +599,22 @@ func (e *ClawExecutor) toolNodePolicyIdentity(ctx context.Context, name string) 
 	return td.QualifiedName, td.QualifiedName
 }
 
+// toolNodeDrainBound is this site's default bound on the wait for a tool
+// node's output once the command itself is gone, overridable through
+// [proc.WaitDelayEnv].
+//
+// A tool node's command is the BOT's text, and backgrounding a process in it
+// (`server &`) is an authored recipe, not an accident: the shell exits, the
+// job it forked inherits the output pipe, and [exec.Cmd.Wait] ends only when
+// EVERY holder of that pipe has closed it. With no bound the node is parked
+// for as long as that job lives, which the node's own timeout does not reach
+// — it kills the shell, never what the shell forked.
+//
+// Two seconds, the family's default: the copier drains the output WHILE the
+// command runs, so what is left to read at its exit is a pipe buffer, not a
+// transcript.
+const toolNodeDrainBound = 2 * time.Second
+
 // runWithSeparateStreams runs cmd with stdout and stderr captured into
 // distinct buffers. Returns (stdout bytes, stderr string, run error).
 // Use this for tool nodes where downstream needs to parse stdout as a
@@ -606,9 +622,28 @@ func (e *ClawExecutor) toolNodePolicyIdentity(ctx context.Context, name string) 
 func runWithSeparateStreams(cmd *exec.Cmd) ([]byte, string, error) {
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
+	// Before Start, which Output performs — Start reads the field to decide
+	// whether to arm the context watcher — and only when no layer below chose
+	// a bound of its own: a sandbox driver that bounded the client it built
+	// (the kubernetes one, for a credential plugin holding kubectl's pipes)
+	// keeps its choice, which it took through this same override.
+	drainBound := cmd.WaitDelay
+	if drainBound == 0 {
+		drainBound = proc.SetWaitDelay(cmd, toolNodeDrainBound)
+	}
 	stdoutBytes, runErr := cmd.Output()
 	// exec.ExitError carries stderr it captured before we set ours; the
 	// buffer we provided is still the source of truth in our path.
+	if proc.DrainCutShort(runErr) {
+		// The command exited 0 — exec reports this sentinel for no other
+		// status — and only the copy of its output was abandoned. What the
+		// node ANSWERS with is those bytes, parsed as its structured output,
+		// so a short read is not a success: the operator gets the bound that
+		// ran and the knob that widens it instead of a bare sentinel, and
+		// the parse below never calls a truncated payload malformed.
+		runErr = fmt.Errorf("the command exited 0 but a process it left kept its output open, so the output was read short %s: %w",
+			proc.WaitDelayHint(drainBound), runErr)
+	}
 	return stdoutBytes, stderrBuf.String(), runErr
 }
 

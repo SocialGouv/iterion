@@ -89,6 +89,7 @@ var serialFamily = map[string]string{
 	"executor_retry_feedback_test.go":          "Setenv",
 	"executor_test.go":                         "Setenv",
 	"executor_timeout_test.go":                 "Setenv",
+	"executor_tool_drain_bound_test.go":        "Setenv",
 	"executor_tool_env_test.go":                "Setenv",
 	"executor_tool_overlay_test.go":            "Setenv",
 	"executor_tool_test.go":                    "Setenv",

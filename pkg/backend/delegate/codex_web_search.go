@@ -14,6 +14,7 @@ import (
 	codexsdk "github.com/ethpandaops/codex-agent-sdk-go"
 
 	"github.com/SocialGouv/iterion/pkg/internal/clilocate"
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 )
 
 const codexWebSearchModeLive = "live"
@@ -24,6 +25,18 @@ const codexWebSearchModeDisabled = "disabled"
 // floor independent from the SDK's general minimum even while they coincide.
 const codexWebSearchMinCLIVersion = "0.103.0"
 const codexWebSearchVersionTimeout = 5 * time.Second
+
+// codexVersionDrainBound is this site's default bound on the wait for
+// `codex --version`'s output once the CLI itself is gone, overridable
+// through [proc.WaitDelayEnv]. Two seconds — the same headroom the context
+// above buys, because what this gate reads is the version STRING and an npm
+// shim's own child has to let go of the pipe first.
+//
+// Without a bound the context bounds nothing past the CLI: it kills the
+// shim, never a process the shim left holding the output, and a
+// [exec.Cmd.Wait] with no bound then waits for that copy with no bound of
+// its own — a capability gate that parks the run instead of answering it.
+const codexVersionDrainBound = 2 * time.Second
 
 var codexVersionPattern = regexp.MustCompile(`\d+\.\d+\.\d+`)
 
@@ -87,7 +100,19 @@ func validateCodexWebSearchCapability(ctx context.Context, explicitCommand strin
 	// warning, so allow extra headroom for npm shims and cold filesystems.
 	versionCtx, cancel := context.WithTimeout(ctx, codexWebSearchVersionTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(versionCtx, path, "--version").Output()
+	versionCmd := exec.CommandContext(versionCtx, path, "--version")
+	// Before Start, which Output performs.
+	drainBound := proc.SetWaitDelay(versionCmd, codexVersionDrainBound)
+	out, err := versionCmd.Output()
+	if proc.DrainCutShort(err) {
+		// The CLI exited 0 — exec reports this sentinel for no other status
+		// — and only the copy of its output was abandoned. The answer here is
+		// the version in those bytes, so a short read is not a verdict: name
+		// the bound that ran and the knob that widens it, rather than let the
+		// parse below report a truncated line as an unreadable version.
+		err = fmt.Errorf("a process it left kept its output open, so the version line was read short %s: %w",
+			proc.WaitDelayHint(drainBound), err)
+	}
 	if err != nil {
 		return "", fmt.Errorf(
 			"delegate: codex web_search mode unavailable: cannot verify %s --version: %w; web_search requires Codex CLI >= %s",

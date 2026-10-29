@@ -46,6 +46,23 @@ const WaitDelayEnv = "ITERION_PROC_WAIT_DELAY"
 // `cmd.WaitDelay == 0` test around the call; one that owns the bound — the
 // launcher's promise that this dispatch hands the node back — calls it
 // unconditionally.
+//
+// The bound reaches a Cmd whose output is COPIED: Stdout or Stderr set to a
+// writer that is not an [*os.File], which is what Output, CombinedOutput and
+// any [bytes.Buffer] give. What Wait waits for past the child's exit is that
+// copying goroutine, and the bound is what stops waiting for it.
+//
+// It does NOT reach a Cmd whose caller took the pipe itself
+// ([exec.Cmd.StdoutPipe] and its siblings): exec starts no copier for an
+// owned pipe, so Wait has nothing to await, returns as soon as the child is
+// reaped, and can never answer [ErrWaitDelay] — the reading of a cut
+// (DrainCutShort) is unreachable there, and so is the cut. Such a spawn is
+// bounded by its own shutdown instead: the reader goroutines belong to the
+// caller, a descendant holding the pipe blocks THEM rather than Wait, and
+// only something that signals the process GROUP (a Cancel, a close ladder)
+// reaches it — which this bound's kill, aimed at the direct child, does not.
+// Do not put it on one: a bound that cannot fire reads like a promise the
+// site keeps and does not.
 func SetWaitDelay(cmd *exec.Cmd, def time.Duration) time.Duration {
 	d := resolveWaitDelay(os.Getenv(WaitDelayEnv), def, &waitDelayWarnOnce, os.Stderr)
 	cmd.WaitDelay = d
