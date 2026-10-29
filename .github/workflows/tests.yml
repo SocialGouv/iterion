@@ -573,7 +573,7 @@ jobs:
     # A Homebrew tap update skips this leg: the header says why, and `brand` verifies it.
     if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
-    timeout-minutes: 40
+    timeout-minutes: 50
     env:
       CGO_ENABLED: "1"
     strategy:
@@ -633,7 +633,10 @@ jobs:
           set -euo pipefail
           pkgs=$(go run -mod=vendor ./scripts/ci/testshards -n 3 -i ${{ matrix.shard }} -weights scripts/ci/test-shards-weights.tsv)
           echo "shard ${{ matrix.shard }} runs $(echo "$pkgs" | wc -w) packages"
-          go test -race -mod=vendor -count=1 -timeout 1800s $pkgs
+          # bots alone under -race is the wall of this leg: 1556 s on 1591e1911, over 1800 s on
+          # 69f2f501d (2026-10-29). 2400 s is the stopgap; the t.Parallel campaign (#2564 P2)
+          # and the next floor (#2789) are the fix.
+          go test -race -mod=vendor -count=1 -timeout 2400s $pkgs
 
   # ---- required aggregator: the name the ruleset requires ----
 
