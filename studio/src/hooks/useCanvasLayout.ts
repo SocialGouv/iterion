@@ -36,7 +36,28 @@ export function useCanvasLayout() {
 
   // Every @group annotation of the document, wherever its comment was
   // written — the head of the file, or the declaration that carries it.
-  const groups = useMemo(() => documentGroups(document), [document]);
+  // `dropped` holds the duplicates the dedupe did not draw.
+  const { groups, dropped: droppedGroups } = useMemo(() => documentGroups(document), [document]);
+
+  // A duplicate @group name is neither merged into the drawn annotation
+  // nor rewritten by the group operations — so it must not be invisible
+  // either (#1745). Name the duplicate(s) once per set of names; the
+  // author's lines stay as written until they answer the warning.
+  const droppedKey = droppedGroups.map((g) => g.name).join("\n");
+  const lastDroppedKeyRef = useRef("");
+  useEffect(() => {
+    if (droppedKey === lastDroppedKeyRef.current) return;
+    lastDroppedKeyRef.current = droppedKey;
+    if (!droppedKey) return;
+    const names = [...new Set(droppedGroups.map((g) => g.name))];
+    const quoted = names.map((n) => `"${n}"`).join(", ");
+    addToast(
+      names.length === 1
+        ? `@group ${quoted} is declared more than once — the canvas draws the first; the rest stay as written.`
+        : `@group ${quoted} are each declared more than once — the canvas draws the first of each; the rest stay as written.`,
+      "warning",
+    );
+  }, [droppedKey, droppedGroups, addToast]);
 
   // Macro view: collapse/expand all groups when toggled
   useEffect(() => {

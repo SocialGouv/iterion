@@ -303,7 +303,7 @@ export function useAddFromLibrary() {
 
           // 3. Create the group annotation
           const baseGroupName = pattern.groupName ?? toSnakeCase(item.name);
-          const existingGroups = documentGroups(result);
+          const existingGroups = documentGroups(result).groups;
           const existingGroupNames = new Set(existingGroups.map((g) => g.name));
           const groupName = uniqueName(baseGroupName, existingGroupNames);
           const comment = { text: groupToCommentText({ name: groupName, nodeIds: createdNames }) };

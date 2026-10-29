@@ -4,7 +4,9 @@ import type { Comment, IterDocument } from "@/api/types";
 import {
   documentComments,
   documentGroups,
+  groupToCommentText,
   mapDocumentComments,
+  mapDrawnGroupComment,
   parseGroups,
 } from "@/lib/groups";
 
@@ -43,7 +45,7 @@ describe("parseGroups", () => {
 
 describe("documentGroups over every comment provenance", () => {
   it("sees a group annotation the file's head carries", () => {
-    expect(documentGroups(doc({ comments: [group("@group head: a, b")] }))).toEqual([
+    expect(documentGroups(doc({ comments: [group("@group head: a, b")] })).groups).toEqual([
       { name: "head", nodeIds: ["a", "b"] },
     ]);
   });
@@ -63,7 +65,7 @@ describe("documentGroups over every comment provenance", () => {
         },
       ],
     });
-    expect(documentGroups(d)).toEqual([{ name: "attached", nodeIds: ["a", "b"] }]);
+    expect(documentGroups(d).groups).toEqual([{ name: "attached", nodeIds: ["a", "b"] }]);
   });
 
   it("sees a group annotation attached to an edge", () => {
@@ -76,7 +78,7 @@ describe("documentGroups over every comment provenance", () => {
         },
       ],
     });
-    expect(documentGroups(d)).toEqual([{ name: "edged", nodeIds: ["a", "b"] }]);
+    expect(documentGroups(d).groups).toEqual([{ name: "edged", nodeIds: ["a", "b"] }]);
   });
 
   // The carriers are not a list to keep in step: the walk keys on the
@@ -105,7 +107,7 @@ describe("documentGroups over every comment provenance", () => {
       workflows: [named("workflows")] as unknown as IterDocument["workflows"],
       comments: [group("@group comments: a, b")],
     });
-    expect(documentGroups(d).map((g) => g.name).sort()).toEqual(
+    expect(documentGroups(d).groups.map((g) => g.name).sort()).toEqual(
       [
         "agents",
         "comments",
@@ -138,7 +140,7 @@ describe("documentGroups over every comment provenance", () => {
         JSON.parse('{"file":"main.bot"}') as Comment,
       ],
     });
-    expect(documentGroups(d)).toEqual([{ name: "head", nodeIds: ["a", "b"] }]);
+    expect(documentGroups(d).groups).toEqual([{ name: "head", nodeIds: ["a", "b"] }]);
   });
 
   it("sees one on a declaration whose comments include a bare ##", () => {
@@ -160,11 +162,11 @@ describe("documentGroups over every comment provenance", () => {
         },
       ],
     });
-    expect(documentGroups(d)).toEqual([{ name: "attached", nodeIds: ["a", "b"] }]);
+    expect(documentGroups(d).groups).toEqual([{ name: "attached", nodeIds: ["a", "b"] }]);
   });
 
   it("returns nothing for an absent document rather than throwing", () => {
-    expect(documentGroups(null)).toEqual([]);
+    expect(documentGroups(null)).toEqual({ groups: [], dropped: [] });
     expect(documentComments(undefined)).toEqual([]);
   });
 });
@@ -245,7 +247,7 @@ describe("two declarations of one group name", () => {
         },
       ],
     });
-    expect(documentGroups(d)).toEqual([{ name: "deploy", nodeIds: ["build", "ship"] }]);
+    expect(documentGroups(d).groups).toEqual([{ name: "deploy", nodeIds: ["build", "ship"] }]);
   });
 
   it("leaves parseGroups itself alone — it reports what the text says", () => {
@@ -254,5 +256,115 @@ describe("two declarations of one group name", () => {
     expect(
       parseGroups([group("@group deploy: a, b"), group("@group deploy: a, c")]),
     ).toHaveLength(2);
+  });
+
+  // #1745: the duplicate is dropped from the DRAWN list, not from the
+  // author's sight — the reader enumerates it, and the canvas names it.
+  it("enumerates the duplicate it did not draw", () => {
+    const d = doc({
+      comments: [group("@group deploy: build, ship")],
+      agents: [
+        {
+          name: "build",
+          model: "m",
+          input: "in",
+          output: "out",
+          system: "s",
+          user: "u",
+          session: "fresh",
+          comments: [group("@group deploy: build, verify")],
+        },
+      ],
+    });
+    expect(documentGroups(d).dropped).toEqual([{ name: "deploy", nodeIds: ["build", "verify"] }]);
+  });
+
+  it("draws the first carrier when the head holds none, and reports the rest", () => {
+    const d = doc({
+      agents: [
+        {
+          name: "a",
+          model: "m",
+          input: "in",
+          output: "out",
+          system: "s",
+          user: "u",
+          session: "fresh",
+          comments: [group("@group review: a, b")],
+        },
+      ],
+      workflows: [
+        {
+          name: "w",
+          entry: "a",
+          edges: [{ from: "a", to: "b", comments: [group("@group review: a, c")] }],
+        },
+      ],
+    });
+    const read = documentGroups(d);
+    expect(read.groups).toEqual([{ name: "review", nodeIds: ["a", "b"] }]);
+    expect(read.dropped).toEqual([{ name: "review", nodeIds: ["a", "c"] }]);
+  });
+});
+
+// #1745: an operation keyed on a group NAME settles the annotation the
+// canvas DREW — the first carrier of the name — and leaves a duplicate the
+// dedupe dropped exactly as the author wrote it.
+describe("mapDrawnGroupComment", () => {
+  const carrier = (text: string) => ({
+    name: "build",
+    model: "m",
+    input: "in",
+    output: "out",
+    system: "s",
+    user: "u",
+    session: "fresh" as const,
+    comments: [group(text)],
+  });
+  const duplicated = () =>
+    doc({
+      comments: [group("@group deploy: build, ship")],
+      agents: [carrier("@group deploy: build, verify")],
+    });
+
+  it("rewrites the drawn annotation and leaves the duplicate byte-identical", () => {
+    const d = duplicated();
+    const next = mapDrawnGroupComment(d, "deploy", (c, g) => ({
+      ...c,
+      text: groupToCommentText({ ...g, nodeIds: [...g.nodeIds, "verify"] }),
+    }));
+    expect(next.comments).toEqual([{ text: "@group deploy: build, ship, verify" }]);
+    expect(next.agents[0]!.comments).toEqual([{ text: "@group deploy: build, verify" }]);
+    // …and the source document is untouched: the store keeps it for undo.
+    expect(d.comments[0]!.text).toBe("@group deploy: build, ship");
+  });
+
+  it("drops the drawn annotation on a null return — the duplicate survives, and is drawn next", () => {
+    const next = mapDrawnGroupComment(duplicated(), "deploy", () => null);
+    expect(next.comments).toEqual([]);
+    expect(next.agents[0]!.comments).toEqual([{ text: "@group deploy: build, verify" }]);
+    const read = documentGroups(next);
+    expect(read.groups).toEqual([{ name: "deploy", nodeIds: ["build", "verify"] }]);
+    expect(read.dropped).toEqual([]);
+  });
+
+  it("settles the declaration's annotation when the head holds none", () => {
+    const d = doc({
+      agents: [
+        carrier("@group deploy: build, ship"),
+        { ...carrier("@group deploy: build, verify"), name: "verify" },
+      ],
+    });
+    const next = mapDrawnGroupComment(d, "deploy", (c, g) => ({
+      ...c,
+      text: groupToCommentText({ ...g, nodeIds: ["build"] }),
+    }));
+    expect(next.agents[0]!.comments).toEqual([{ text: "@group deploy: build" }]);
+    expect(next.agents[1]!.comments).toEqual([{ text: "@group deploy: build, verify" }]);
+  });
+
+  it("returns the same document when the name is nowhere", () => {
+    const d = duplicated();
+    expect(mapDrawnGroupComment(d, "absent", () => null)).toBe(d);
   });
 });

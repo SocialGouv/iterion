@@ -107,28 +107,45 @@ export function documentComments(doc: IterDocument | null | undefined): Comment[
   return all;
 }
 
-/** Apply `rewrite` to every comment of the document, wherever it lives.
- *  Returning null drops the comment from the list that holds it, so a group
- *  the studio dissolves disappears from the declaration that carried it
- *  rather than surviving as a line the canvas can no longer reach. */
+/** Apply `rewrite` to every comment of one list. Returning null drops the
+ *  comment from the list, so a group the studio dissolves disappears from
+ *  the declaration that carried it rather than surviving as a line the
+ *  canvas can no longer reach. A list the rewrite did not change keeps its
+ *  identity. */
+function rewriteCommentList(list: Comment[], rewrite: (comment: Comment) => Comment | null): Comment[] {
+  let moved = false;
+  const next: Comment[] = [];
+  for (const comment of list) {
+    const replaced = rewrite(comment);
+    if (replaced !== comment) moved = true;
+    if (replaced !== null) next.push(replaced);
+  }
+  return moved ? next : list;
+}
+
+/** Apply `rewrite` to every comment of the document, wherever it lives. */
 export function mapDocumentComments(
   doc: IterDocument,
   rewrite: (comment: Comment) => Comment | null,
 ): IterDocument {
-  return rewriteCommentLists(doc, (list) => {
-    let moved = false;
-    const next: Comment[] = [];
-    for (const comment of list) {
-      const replaced = rewrite(comment);
-      if (replaced !== comment) moved = true;
-      if (replaced !== null) next.push(replaced);
-    }
-    return moved ? next : list;
-  }) as IterDocument;
+  return rewriteCommentLists(doc, (list) => rewriteCommentList(list, rewrite)) as IterDocument;
+}
+
+/** What the single reader found in the document. */
+export interface DocumentGroups {
+  /** One per NAME, the first seen winning — what the canvas draws. */
+  groups: GroupAnnotation[];
+  /** The annotations the dedupe did NOT draw: a hand-written `.bot` can
+   *  declare the same group twice, and `documentComments` surfaces both.
+   *  They are the author's lines on carriers the canvas never drew — the
+   *  group operations leave them alone (`mapDrawnGroupComment`), so they
+   *  must not be invisible either: the canvas names them to the author
+   *  (useCanvasLayout's toast) instead of silently absorbing them. */
+  dropped: GroupAnnotation[];
 }
 
 /** The document's group annotations, from every comment it carries — one per
- *  NAME, the first seen winning.
+ *  NAME drawn, the rest of each name reported as `dropped`.
  *
  *  The dedupe belongs here and not in `parseGroups`, which reports what the
  *  text says: this is the single reader every call site goes through, and a
@@ -136,22 +153,50 @@ export function mapDocumentComments(
  *  `makeGroupNodeId(g.name)`, so two annotations of one name hand React Flow
  *  two nodes sharing an id and one box stops rendering. `addGroup`'s own
  *  duplicate check cannot cover it: the second declaration is hand-written,
- *  and reading every carrier is what made the two meet.
- *
- *  What this does NOT close, stated so the next reader does not assume it
- *  does: `removeGroup` and `updateGroup` key on the NAME through
- *  `mapDocumentComments`, so they still reach the annotation this reader
- *  dropped — one canvas drag rewrites a line the author wrote on a
- *  declaration the canvas never drew, and nothing names the duplicate to
- *  them. That is older than this reader and orthogonal to the render bug it
- *  fixes; it needs a surface, not a wider predicate. */
-export function documentGroups(doc: IterDocument | null | undefined): GroupAnnotation[] {
+ *  and reading every carrier is what made the two meet. */
+export function documentGroups(doc: IterDocument | null | undefined): DocumentGroups {
   const seen = new Set<string>();
-  return parseGroups(documentComments(doc)).filter((g) => {
-    if (seen.has(g.name)) return false;
-    seen.add(g.name);
-    return true;
-  });
+  const groups: GroupAnnotation[] = [];
+  const dropped: GroupAnnotation[] = [];
+  for (const g of parseGroups(documentComments(doc))) {
+    if (seen.has(g.name)) {
+      dropped.push(g);
+    } else {
+      seen.add(g.name);
+      groups.push(g);
+    }
+  }
+  return { groups, dropped };
+}
+
+/** Rewrite — or drop, on a null return — the ONE annotation the canvas
+ *  draws for `name`: the first that carries it, in `documentComments`
+ *  order. A duplicate of the name is the author's line on a carrier the
+ *  canvas never drew, so an operation keyed on the name must not rewrite
+ *  or delete it — the author is told about it (the `dropped` of
+ *  `documentGroups`), and their text waits for them. Removing the drawn
+ *  annotation promotes the duplicate to drawn on the next read, where the
+ *  author can see it and answer it. */
+export function mapDrawnGroupComment(
+  doc: IterDocument,
+  name: string,
+  rewrite: (comment: Comment, group: GroupAnnotation) => Comment | null,
+): IterDocument {
+  let done = false;
+  const step = (c: Comment): Comment | null => {
+    if (done || groupNameFromComment(c) !== name) return c;
+    const g = parseGroups([c])[0];
+    if (!g) return c;
+    done = true;
+    return rewrite(c, g);
+  };
+  // `documentComments` reads the file's own list FIRST, whatever position
+  // the `comments` key holds in the document object — so the drawn match
+  // is the first match there when there is one, and the walk consults the
+  // carriers only when the head did not hold the name.
+  const head = doc.comments ? rewriteCommentList(doc.comments, step) : doc.comments;
+  const withHead = head === doc.comments ? doc : { ...doc, comments: head };
+  return mapDocumentComments(withHead, step);
 }
 
 /** Parse @group annotations from document comments.

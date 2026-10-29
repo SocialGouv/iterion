@@ -31,6 +31,7 @@ import {
   groupNameFromComment,
   groupToCommentText,
   mapDocumentComments,
+  mapDrawnGroupComment,
   parseGroups,
 } from "@/lib/groups";
 
@@ -408,7 +409,7 @@ function removeNodeFromGroups(before: IterDocument, after: IterDocument, nodeNam
   const kept = dropNodeFromGroups(before, nodeName);
   const survivors = documentComments(kept).filter((c) => groupNameFromComment(c));
   if (survivors.length === 0) return doc;
-  const present = new Set(documentGroups(doc).map((g) => g.name));
+  const present = new Set(documentGroups(doc).groups.map((g) => g.name));
   // The comment is re-declared with its `file` — a comment with none is
   // written to the main, so dropping it would move the author's line out of
   // the fragment they wrote it in and into main.bot, on a save they asked
@@ -951,13 +952,18 @@ export function createDocumentStore() {
   // studio CREATES goes on the document's own list, which the save writes
   // above the `dsl:` header; one the AUTHOR wrote is wherever they put it,
   // so every operation that reaches an existing group goes through
-  // `documentGroups`/`mapDocumentComments` rather than the head list.
+  // `documentGroups` rather than the head list. A name declared TWICE is
+  // drawn once and reported in `dropped`: removeGroup / updateGroup go
+  // through `mapDrawnGroupComment`, so they settle the annotation the
+  // canvas drew and leave the author's undrawn duplicate as written
+  // (#1745) — the canvas names it to them rather than rewriting a line
+  // they never saw move.
   addGroup: (group) =>
     set((s) => {
       if (!s.document) return s;
       // Check for duplicate group name
       const existing = documentGroups(s.document);
-      if (existing.some((g) => g.name === group.name)) return s;
+      if (existing.groups.some((g) => g.name === group.name)) return s;
       const comment: Comment = { text: groupToCommentText(group) };
       return { document: { ...s.document, comments: [...s.document.comments, comment] }, ...pushHistory(s) };
     }),
@@ -965,22 +971,17 @@ export function createDocumentStore() {
   removeGroup: (groupName) =>
     set((s) => {
       if (!s.document) return s;
-      const document = mapDocumentComments(s.document, (c) =>
-        groupNameFromComment(c) === groupName ? null : c,
-      );
+      const document = mapDrawnGroupComment(s.document, groupName, () => null);
       return { document, ...pushHistory(s) };
     }),
 
   updateGroup: (groupName, updates) =>
     set((s) => {
       if (!s.document) return s;
-      const document = mapDocumentComments(s.document, (c) => {
-        if (groupNameFromComment(c) !== groupName) return c;
-        const first = parseGroups([c])[0];
-        if (!first) return c;
-        const updated = { ...first, ...updates };
-        return { ...c, text: groupToCommentText(updated) };
-      });
+      const document = mapDrawnGroupComment(s.document, groupName, (c, g) => ({
+        ...c,
+        text: groupToCommentText({ ...g, ...updates }),
+      }));
       return { document, ...pushHistory(s) };
     }),
   }));
