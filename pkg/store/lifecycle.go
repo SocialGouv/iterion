@@ -113,6 +113,10 @@ const (
 	FailureSchemaUnusable FailureCode = "SCHEMA_UNUSABLE"
 	// The selected backend cannot serve a declared node capability. A
 	// configuration change is needed before the same run can make progress.
+	// Raised before the first node, too, when the run's RESOLVED sandbox
+	// image carries no CLI for a backend the run will dispatch (#1643): what
+	// cannot serve there is the image, and the cure is the same shape — the
+	// image, the backend, or `sandbox: none`.
 	FailureCapabilityUnsupported FailureCode = "CAPABILITY_UNSUPPORTED"
 
 	// FailureSandboxDriverUnavailable: an EXPLICIT sandbox mode was

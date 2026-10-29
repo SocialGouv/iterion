@@ -828,6 +828,20 @@ func SourceNodeBackendName(nodeBackend, workflowDefault string) string {
 	return effectiveNodeBackend(nodeBackend, workflowDefault)
 }
 
+// RunNodeBackendName is the RUN's reading of a node's primary route: the
+// node's `backend:` resolved against the process environment, the workflow's
+// `default_backend:` where that field falls through (empty, `auto`), and ""
+// for a field this reading cannot decide — a `{{vars.…}}` only the dispatch
+// resolves, a `${X}` nothing answers.
+//
+// It is what a pre-run admission in the engine keys on. The SOURCE reading
+// would take a dial's DEFAULT for the route (`${B:-kimi}` with B=claude_code
+// in the environment reads as kimi there), and a refusal on that is a refusal
+// of a run that would have worked.
+func RunNodeBackendName(nodeBackend, workflowDefault string) string {
+	return runBackend.effective(nodeBackend, workflowDefault)
+}
+
 // effectiveNodeBackend is the compile-time reading of a node's route.
 //
 // Copied from validateCommand rather than validateProviders, which

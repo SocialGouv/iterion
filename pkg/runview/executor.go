@@ -461,6 +461,24 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		spec.Logger.Warn("policy ladder stage not applied — %s", refusal)
 	}
 	fallbackRefusals = append(fallbackRefusals, policyRefusals...)
+	// A backend whose CLI no published sandbox image carries is refused at run
+	// start, where the resolved image is known (#1643) — and the launch's own
+	// `model_overrides` route is one the compiler never saw, so C321 cannot
+	// have warned about it. Said here, on the one path every plane builds its
+	// executor through, while the run is still free. A warning and not a
+	// refusal: the image this run resolves may be the operator's own and may
+	// well ship the CLI, which is what the refusal checks and this reading
+	// cannot.
+	if sandboxedHere {
+		for _, gap := range ir.SandboxImageGaps(spec.Workflow, func(n ir.LLMNode) string {
+			if ov := overrides.ForNode(n.NodeID(), n.NodeKind()); ov.Backend != "" {
+				return ir.SourceBackendName(ov.Backend)
+			}
+			return ir.SourceSandboxRoute(spec.Workflow)(n)
+		}) {
+			spec.Logger.Warn("sandboxed run — %s %q: %s", gap.NodeKind, gap.NodeID, gap.Reason())
+		}
+	}
 
 	reg := model.NewRegistry()
 	backendReg := delegate.DefaultRegistry(spec.Logger)

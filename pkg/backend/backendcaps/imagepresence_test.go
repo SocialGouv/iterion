@@ -52,13 +52,13 @@ type imageFamily struct {
 }
 
 var imageFamilies = []imageFamily{
-	{name: "runner", chains: []imageChain{
+	{name: ImageFamilyRunner, chains: []imageChain{
 		{name: "app image", manifests: []string{"Dockerfile"}},
 		{name: "cloud runner", manifests: []string{"Dockerfile.runner-devbox"}},
 	}},
 	// The bases are read with finalize on purpose: a base that starts putting
 	// the pinned bin dir on PATH moves the cell instead of being invisible.
-	{name: "sandbox", chains: []imageChain{
+	{name: ImageFamilySandbox, chains: []imageChain{
 		{name: "stock sandbox", manifests: []string{
 			"sandbox/slim/Dockerfile",
 			"sandbox/full/Dockerfile",
@@ -215,11 +215,11 @@ func readPinnedCLIs(t *testing.T, root string) map[string]bool {
 	return pinned
 }
 
-// deriveImagePresence returns the verdict each image-presence cell must carry,
-// measured from the manifests under root. deliveries is a parameter, not the
-// package variable, so a test can measure a hypothetical bake — pinning a CLI
-// also means naming the package that delivers it.
-func deriveImagePresence(t *testing.T, root string, deliveries map[string]cliDelivery) map[string]string {
+// deriveScopedImagePresence returns, per backend, the verdict each image
+// FAMILY earns: the scope a caller admitting one image reads. deliveries is a
+// parameter, not the package variable, so a test can measure a hypothetical
+// bake — pinning a CLI also means naming the package that delivers it.
+func deriveScopedImagePresence(t *testing.T, root string, deliveries map[string]cliDelivery) map[string]map[string]string {
 	t.Helper()
 	pinned := readPinnedCLIs(t, root)
 	byFamily := map[string]map[string]bool{}
@@ -239,13 +239,38 @@ func deriveImagePresence(t *testing.T, root string, deliveries map[string]cliDel
 			}
 		}
 	}
-	verdicts := map[string]string{}
+	scoped := map[string]map[string]string{}
 	for backend := range deliveries {
-		runner, sandbox := byFamily["runner"][backend], byFamily["sandbox"][backend]
+		scoped[backend] = map[string]string{}
+		for _, family := range imageFamilies {
+			verdict := UnwiredNoImage
+			if byFamily[family.name][backend] {
+				verdict = Shipped
+			}
+			scoped[backend][family.name] = verdict
+		}
+	}
+	return scoped
+}
+
+// deriveImagePresence returns the merged verdict each image-presence cell must
+// carry, FOLDED from the per-family measurement so the cell and its scopes
+// cannot disagree: one measurement, two readings.
+func deriveImagePresence(t *testing.T, root string, deliveries map[string]cliDelivery) map[string]string {
+	t.Helper()
+	scoped := deriveScopedImagePresence(t, root, deliveries)
+	verdicts := map[string]string{}
+	for backend, byFamily := range scoped {
+		served := 0
+		for _, verdict := range byFamily {
+			if verdict == Shipped {
+				served++
+			}
+		}
 		switch {
-		case runner && sandbox:
+		case served == len(byFamily):
 			verdicts[backend] = Shipped
-		case runner || sandbox:
+		case served > 0:
 			verdicts[backend] = Partial
 		default:
 			verdicts[backend] = UnwiredNoImage
@@ -311,6 +336,103 @@ func TestImagePresenceIsDerivedFromTheImageManifests(t *testing.T) {
 		if got[name] != want[name] {
 			t.Errorf("%s image-presence says %q, the image manifests say %q", name, got[name], want[name])
 		}
+	}
+	// The SCOPES are the fact an admission reads (#1643): the merged verdict
+	// cannot say which family serves, and a caller that must admit ONE image
+	// would have to guess. Derived from the same manifests, so a cell whose
+	// scope drifts from its image is a failure here and not a surprise in a
+	// run.
+	wantScoped := deriveScopedImagePresence(t, repoRoot, cliDeliveries)
+	for _, name := range Names() {
+		for _, family := range imageFamilies {
+			if got, want := ScopedVerdict(name, ImagePresence, family.name), wantScoped[name][family.name]; got != want {
+				t.Errorf("%s image-presence in the %s family says %q, the image manifests say %q", name, family.name, got, want)
+			}
+		}
+		// A refusal prints the executable the image lacks; an unnamed or
+		// drifted subject would make it print nothing, or the wrong name.
+		if got, want := ImageCLI(name), cliDeliveries[name].binary; got != want {
+			t.Errorf("%s image-presence names subject %q, its adapter invokes %q", name, got, want)
+		}
+	}
+	// A scope key the readers do not know is a verdict nobody can read, and a
+	// missing one reads as Unknown — neither is a measurement.
+	for _, b := range Snapshot().Backends {
+		for _, c := range b.Cells {
+			if c.Name != ImagePresence {
+				continue
+			}
+			if len(c.Scoped) != len(imageFamilies) {
+				t.Errorf("%s image-presence declares %d scopes, there are %d published families", b.Name, len(c.Scoped), len(imageFamilies))
+			}
+			for scope := range c.Scoped {
+				if !slices.ContainsFunc(imageFamilies, func(f imageFamily) bool { return f.name == scope }) {
+					t.Errorf("%s image-presence declares scope %q, which names no published image family", b.Name, scope)
+				}
+			}
+		}
+	}
+}
+
+// TestTheScopedImagePresenceFollowsTheFamilyThatMoved drives the per-family
+// derivation on a copy we own: a CLI leaving ONE family must move that
+// family's scope and leave the other alone. A scope that moves with its
+// sibling is the merged verdict wearing two names, which is exactly what the
+// admission cannot use.
+func TestTheScopedImagePresenceFollowsTheFamilyThatMoved(t *testing.T) {
+	root := copyManifests(t)
+	base := deriveScopedImagePresence(t, root, cliDeliveries)
+	if base[Pi][ImageFamilySandbox] != Shipped || base[Pi][ImageFamilyRunner] != Shipped {
+		t.Fatalf("pi reads %v on an unmutated copy: the baseline itself is wrong", base[Pi])
+	}
+	editManifest(t, root, "sandbox/finalize/Dockerfile", dropLine(pinnedTreeDir+"/.bin/pi"))
+	after := deriveScopedImagePresence(t, root, cliDeliveries)
+	if got := after[Pi][ImageFamilySandbox]; got != UnwiredNoImage {
+		t.Errorf("the sandbox stopped symlinking pi and its sandbox scope reads %q, want %q", got, UnwiredNoImage)
+	}
+	if got := after[Pi][ImageFamilyRunner]; got != Shipped {
+		t.Errorf("a sandbox edit moved pi's RUNNER scope to %q: the two families are being read as one", got)
+	}
+	// The other six are untouched by this edit, scope for scope: a derivation
+	// that moves a neighbour is reading the wrong line.
+	for _, name := range Names() {
+		if name == Pi {
+			continue
+		}
+		for _, family := range imageFamilies {
+			if got, want := after[name][family.name], base[name][family.name]; got != want {
+				t.Errorf("%s/%s moved from %q to %q on an edit that names pi", name, family.name, want, got)
+			}
+		}
+	}
+}
+
+// TestTheScopedCellsCannotBeMutatedThroughAProjection: the scoped verdicts are
+// a MAP on a compiled-in cell, which is the one shape a caller can mutate
+// through a copy that is not deep. The registry's existing promise
+// (TestCopiesAndUnknowns) must cover the new field too, or one consumer's
+// edit silently decides another's refusal.
+func TestTheScopedCellsCannotBeMutatedThroughAProjection(t *testing.T) {
+	before := ScopedVerdict(Codex, ImagePresence, ImageFamilySandbox)
+	if before != UnwiredNoImage {
+		t.Fatalf("codex's sandbox scope reads %q: this test's baseline is wrong", before)
+	}
+	snap := Snapshot()
+	for _, b := range snap.Backends {
+		for _, c := range b.Cells {
+			for scope := range c.Scoped {
+				c.Scoped[scope] = "mutated"
+			}
+			if c.Subject != "" {
+				c.Subject = "mutated"
+			}
+		}
+	}
+	if got := ScopedVerdict(Codex, ImagePresence, ImageFamilySandbox); got != before {
+		t.Fatalf("a caller moved a scoped verdict through a Snapshot: %q -> %q", before, got)
+	}
+	if got := ImageCLI(Codex); got != "codex" {
+		t.Fatalf("a caller moved an image-presence subject through a Snapshot: %q", got)
 	}
 }
 

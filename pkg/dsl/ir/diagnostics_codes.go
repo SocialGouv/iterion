@@ -414,4 +414,13 @@ const (
 	// expressions of a bot together (expr.ParseOn), and refuses the one
 	// the count runs out on — before the tree it would have built.
 	DiagExprPastReadBudget DiagCode = "C320" // an expression past the read budget (ITERION_DSL_READ_BUDGET): its tokens, with the bot's other expressions, exceed the count (error)
+	// A node's backend runs a CLI no sandbox image iterion publishes puts on
+	// PATH (#1643): kimi, grok and opencode, which no image carries, and
+	// codex, in the stock sandbox's pinned tree but outside its PATH. A
+	// warning, never a refusal: the limit is the IMAGE's contents, and the
+	// compiler knows neither the image the run resolves nor whether it will
+	// be sandboxed at all, so an operator whose own image bakes the CLI keeps
+	// a bot that compiles. The refusal lives where the image is known and
+	// names it (pkg/runtime's admitSandboxImageBackends).
+	DiagBackendAbsentFromSandboxImage DiagCode = "C321" // a node's backend has no CLI in the published sandbox images (warning — refused at start only where the resolved image is one of them)
 )

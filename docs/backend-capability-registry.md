@@ -58,6 +58,16 @@ in one family and absent from the other is `partial` — `codex` is exactly that
 in the image's contents that an operator image shipping the CLI lifts (#1643).
 The axis says nothing about multimodal image INPUT.
 
+Because `partial` cannot say WHICH family serves, the cell carries the split
+structurally: `scoped` holds one verdict per published family
+(`backendcaps.ScopedVerdict`, read through `UnservedByImageFamily`) and
+`subject` names the executable an image must put on PATH — the adapter's own
+`DefaultBinary`, held to it by the same derivation. A reader that knows which
+image a run resolved asks the scope; one that does not reads the merged cell
+(`UnservedByPublishedImages`) and warns instead of refusing. Both are derived
+from the same measurement and folded, not declared twice, so the cell and its
+scopes cannot disagree.
+
 The axes reference the still-open work in
 [epic #1404](https://github.com/SocialGouv/iterion/issues/1404): permission,
 resume, fork, session, MCP, subagents, workspace commands, allowed tools,

@@ -95,8 +95,13 @@ from a plausible one (#1417). The cells:
   parity rule above ("wired — or typed-refused — for the other") is not
   yet honoured. Each one is a gap a session can pick up.
 - **unwired (no image)** — a variant of the gap above: the code path is
-  there, but the stock sandbox image does not ship the CLI, so the
-  capability cannot be reached from a sandboxed run at all.
+  there, but no image iterion publishes ships the CLI, so the capability
+  cannot be reached from a sandboxed run at all. The gap is the image's
+  contents, not the backend: a sandboxed run whose RESOLVED image is one
+  iterion publishes is refused before the pulls, naming the image and the
+  missing executable (`CAPABILITY_UNSUPPORTED`), and the compiler warns
+  (C321) where it cannot know the image — an operator image that bakes the
+  CLI lifts both (#1643).
 - **unknown** — wired in code (path cited below), but no live e2e through
   this backend exercises it yet. It may work; nothing has paid to find
   out. Turning an unknown into proven costs one live e2e — extend
@@ -278,8 +283,10 @@ The citations, per cell that is not self-evident from the table:
   `refused (C267)` for the async pair and `warned (C271)` for the
   synchronous one (the tool list never reaches the CLI, so the node
   never pauses — the interaction protocol is prompt text only). Sandbox is `unwired (no image)`:
-  the stock image ships no opencode binary, so a sandboxed node dies at
-  `exec: not found` with nothing refusing it earlier — see
+  no published image ships an opencode binary, so a sandboxed run on a
+  published image is refused at start — the refusal names the image, the
+  `opencode` executable and both exits (`sandbox: none`, or an image of the
+  operator's own that ships it), and C321 says it at compile time — see
   [sandbox.md](sandbox.md#backend-compatibility). Session resume/fork is
   proven by `TestCLILiveOpenCodeSessionResume` (`task test:clilive`): the
   real opencode 1.19.0 CLI, driven through iterion's own `Execute`, against
@@ -2702,7 +2709,10 @@ posture `pi` takes with `--no-prompt-templates --no-themes`.
 #### Behaviour worth knowing
 
 - **Not in the stock sandbox image.** The published image bakes claude-code,
-  pi and codex only; a sandboxed `opencode` node dies at `exec: not found`.
+  pi and codex only (and codex outside the sandbox's PATH); a sandboxed
+  `opencode` node on a published image is refused at start rather than dying
+  at `exec: not found`, and an operator image that ships the binary passes —
+  the refusal is on the image's measured contents, not on the name.
 - **Its stderr is a JavaScript stack trace.** The shared CLI-agent retry
   classifier reads only the CLI's OWN transport-level error lines out of
   that dump — short, unindented error headers and Node's `[cause]:`

@@ -54,6 +54,18 @@ const (
 	ImagePresence = "image-presence"
 )
 
+// Published image families scope the image-presence cell. CLI reachability is
+// one fact per family and two different facts across them — the runner images
+// (the application image and the cloud runner) carry the pinned CLIs' bin
+// directory on PATH, the stock sandbox images extend no PATH and reach only
+// their explicit symlinks — so the question "may this image run that backend"
+// is only answerable per family. A scope is not a backend-wide verdict: see
+// [ScopedVerdict].
+const (
+	ImageFamilyRunner  = "runner"
+	ImageFamilySandbox = "sandbox"
+)
+
 // Implementation verdicts describe existing wiring, not live maturity.
 const (
 	Shipped      = "shipped"
@@ -78,6 +90,22 @@ type Cell struct {
 	Verdict  string   `json:"verdict"`
 	Evidence []string `json:"evidence"`
 	Detail   string   `json:"detail,omitempty"`
+
+	// Scoped carries the per-scope verdicts of a cell whose single verdict
+	// cannot answer a scoped question. image-presence is the case: codex is
+	// on the runner images' PATH and absent from the stock sandbox, which
+	// merges to Partial — a caller admitting ONE image needs the side, and
+	// deriving it from the merge would be a guess. Keys are the scopes the
+	// axis defines (the ImageFamily* names here). Empty on every cell whose
+	// axis has no scopes.
+	Scoped map[string]string `json:"scoped,omitempty"`
+
+	// Subject names what the verdict is ABOUT when the capability is not the
+	// backend itself: the image-presence cells name the executable an image
+	// must put on PATH, which is what a refusal has to print. It is the
+	// adapter's own DefaultBinary, held to it by
+	// TestImagePresenceIsDerivedFromTheImageManifests.
+	Subject string `json:"subject,omitempty"`
 }
 
 // Backend is one declarative row. Zero ranks mean absent from that selection
@@ -159,6 +187,91 @@ func Verdict(backend, capability string) string {
 		}
 	}
 	return Unknown
+}
+
+// cellOf returns the implementation cell of an exact (backend, capability)
+// pair. Lookup is exact, like [Verdict]'s: a caller's normalization policy is
+// its own.
+//
+// It hands back the REGISTRY's own Cell, whose Evidence slice and Scoped map
+// are the compiled-in ones: read them here and return values, never the
+// containers. [Snapshot] is the copying reader, and
+// TestTheScopedCellsCannotBeMutatedThroughAProjection pins the difference.
+func cellOf(backend, capability string) (Cell, bool) {
+	for _, b := range inventory.Backends {
+		if b.Name != backend {
+			continue
+		}
+		for _, c := range b.Cells {
+			if c.Name == capability {
+				return c, true
+			}
+		}
+	}
+	return Cell{}, false
+}
+
+// ScopedVerdict returns the verdict a cell records for ONE scope of its axis,
+// or Unknown for an unregistered backend, capability or scope. A cell that
+// declares no scopes answers Unknown for every scope: a merged verdict is not
+// a scoped one, and reading Partial as "absent here" (or as "present here") is
+// how an unmeasured side becomes a false refusal.
+func ScopedVerdict(backend, capability, scope string) string {
+	c, ok := cellOf(backend, capability)
+	if !ok {
+		return Unknown
+	}
+	if v, ok := c.Scoped[scope]; ok {
+		return v
+	}
+	return Unknown
+}
+
+// UnservedByPublishedImages reports that NO image iterion publishes carries
+// the backend's CLI — the image-presence cell itself says UnwiredNoImage. It
+// is the fact a reader who does not know which image a run will use can state:
+// the compiler's C321 and the launch-time warning read it, and neither
+// refuses, because the operator's own image may carry the CLI (#1643).
+func UnservedByPublishedImages(backend string) bool {
+	return Verdict(backend, ImagePresence) == UnwiredNoImage
+}
+
+// UnservedByImageFamily reports the MEASURED absence of a backend's CLI from
+// the published images of ONE family: the image-presence cell says
+// UnwiredNoImage for that family, explicitly. It is what a reader holding a
+// RESOLVED image asks — codex is served on the runner side and unserved in the
+// stock sandbox, a split [UnservedByPublishedImages] cannot express.
+//
+// Neither is the negation of [Offers]. An unregistered name — a custom backend
+// an operator registered, whose image is equally theirs — and a family this
+// build has no scope for both answer false, because refusing a name on silence
+// refuses what nobody measured. The gap they do report is the image's
+// contents, so a refusal must say which image and leave the operator the way
+// out.
+func UnservedByImageFamily(backend, family string) bool {
+	return ScopedVerdict(backend, ImagePresence, family) == UnwiredNoImage
+}
+
+// ServedByImage lists the backends whose CLI the published images of one
+// family DO put on PATH, in registry order. It is what a refusal's remedy
+// names — "route to one of these" — read from the same cells as the refusal
+// instead of a prose list that drifts the day an image bakes one more.
+func ServedByImage(family string) []string {
+	var names []string
+	for _, b := range inventory.Backends {
+		if ScopedVerdict(b.Name, ImagePresence, family) == Shipped {
+			names = append(names, b.Name)
+		}
+	}
+	return names
+}
+
+// ImageCLI returns the executable a published image must put on PATH for the
+// backend — the subject of its image-presence cell — or "" when the backend is
+// unregistered or its cell names none.
+func ImageCLI(backend string) string {
+	c, _ := cellOf(backend, ImagePresence)
+	return c.Subject
 }
 
 // Offers reports existing wiring, including conditional wiring. A partial

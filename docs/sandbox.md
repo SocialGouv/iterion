@@ -966,12 +966,50 @@ your repo root and `sandbox: auto` will pick them up.
 | ------------- | ----------------------------------------------------- |
 | `claude_code` | **fully sandboxed** (CLI runs inside the container)   |
 | `pi`          | **fully sandboxed** in both RPC and print transports |
-| `kimi` / `grok` | architecturally sandboxable, but **not in the stock image** — same as `opencode` below |
-| `opencode`    | **not shipped in the stock image** (the cloud runner image has the same gap) — the published sandbox image bakes claude-code and pi (and carries codex in node_modules), so a sandboxed `opencode`, `kimi` or `grok` node dies at `exec: not found` unless a custom image or a PATH inside the container supplies the binary. Nothing refuses it earlier: the limit is the image's contents, not the backend. |
+| `kimi` / `grok` | architecturally sandboxable, but **in no published image** — same as `opencode` below |
+| `opencode`    | **in no published image** (the cloud runner image has the same gap) — the published sandbox images bake claude-code and pi (and carry codex in `node_modules`, off PATH), so a sandboxed `opencode`, `kimi` or `grok` node needs a custom image or a PATH inside the container to supply the binary. A run whose RESOLVED sandbox image is one iterion publishes is **refused at start** rather than dying at `exec: not found` — see [A backend no published image can run](#a-backend-no-published-image-can-run). |
 | `codex`       | **unsupported by the outer sandbox** — the pinned SDK cannot use Iterion's command builder, so the node fails explicitly |
 | `claw`        | **sandboxed via runner sub-process** (Phase 4 V1) — see below |
 | Tool nodes    | **sandboxed**: shell and script recipes run inside the container (`bash -c`); a registry-tool recipe (`command: <tool>`) is a launcher closure, so it runs only for a launcher-placed tool and is refused otherwise — under a Verified Action (`postcondition:`) that refusal fails the node whatever its `policy:`, since no rung can make the recipe runnable |
 | MCP servers   | Built-in board tools reach sandboxed `claude_code` and pi RPC over per-run HTTP; ask-user uses HTTP for Claude Code and pi's embedded control channel. Declared stdio servers are started by the `claude_code` CLI itself (in the container when the node is sandboxed) and beside pi for pi RPC. claw connects them in the LAUNCHER, so under an active sandbox it starts only the operator's — a builtin, or a plugin installed under the iterion home the operator's own environment names, enabled and configured by the operator in both cases — see [MCP servers under a sandbox](#mcp-servers-under-a-sandbox). |
+
+### A backend no published image can run
+
+A sandboxed node whose backend runs a CLI the container has no executable
+for used to die mid-run at `exec: <cli>: not found` — an explicit failure
+that named neither the cause nor the cure (#1643). Three places now say it,
+each with what it actually knows:
+
+- **At compile time, a warning (C321).** The backend's `image-presence`
+  cell reads `unwired (no image)`: no image iterion publishes carries its
+  executable. A warning and not a refusal — the compiler knows neither the
+  image the run will resolve nor whether it will be sandboxed at all.
+  Silenced by the workflow's own `sandbox: none`.
+- **At launch, a warning on the run's log.** Said where the run's
+  sandboxing is resolved and the launch's own `model_overrides` backend is
+  read — a route the compiler never saw. The launch API still accepts every
+  backend name: tightening its enum would refuse a name an operator's own
+  image serves.
+- **At run start, a typed refusal.** The sandbox spec is resolved, so the
+  IMAGE is known. If it is one of the images iterion publishes
+  (`iterion-sandbox-slim`/`-full`/`-sec`/`-browser`) **and** that image
+  carries no CLI for a backend the run will dispatch, the run is refused
+  before any pull, with `CAPABILITY_UNSUPPORTED` naming the image, the
+  missing executable and both exits. This is the only place the per-image
+  fact exists: `codex` is on the runner images' PATH and outside the stock
+  sandbox's, so only the resolved image can decide.
+
+**The predicate is the escape hatch.** It speaks only for the images
+iterion publishes, because only their contents are measured
+(`TestImagePresenceIsDerivedFromTheImageManifests` reads
+`docker/llm-clis/package.json` and the Dockerfiles). An image you build —
+even from those manifests, under your own namespace, with the CLI baked in —
+is yours: `sandbox: { image: … }`, `build:`, `--sandbox-default-image` and
+`ITERION_SANDBOX_DEFAULT_IMAGE` all pass. So do `sandbox: none`,
+`--sandbox none` and `ITERION_SANDBOX_OVERRIDE=none`, which run the node on
+the host. A backend the registry does not know — a custom registration — is
+never refused: a measured absence is a fact, the absence of a measurement is
+not.
 
 ### Claw backend in sandbox
 

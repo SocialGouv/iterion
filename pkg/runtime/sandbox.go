@@ -516,6 +516,16 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// tried to put in it — after selection, so a run that degrades to
 	// the host never claims an allowlist it never had.
 	emitRepoTrustEvents(emitEvent, logger, res, source, p.RunID)
+	// The image is RESOLVED and the sandbox will start: this is the first
+	// moment the run can be told that the container it is about to enter
+	// carries no CLI for a backend it will dispatch, instead of discovering
+	// it as `exec: not found` at that node (#1643). Before the pulls and the
+	// mounts, so the refusal costs nothing, and after the driver is selected,
+	// so a `sandbox: auto` that degraded to the host — where the operator's
+	// own CLI may well be installed — is never refused.
+	if err := admitSandboxImageBackends(p.Workflow, spec, p.EffectiveBackend); err != nil {
+		return nil, err
+	}
 	caps := driver.Capabilities()
 
 	// Configure all mounts BEFORE the driver prepares resources. Each
