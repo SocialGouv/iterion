@@ -43,34 +43,35 @@ import (
 // a proxy ToolDef whose Execute emits [EnvelopeToolCall] and blocks on the
 // matching [EnvelopeToolResult] (placement: tool.SandboxPlacementOf).
 type IOTask struct {
-	NodeID              string           `json:"node_id"`
-	Iteration           int              `json:"iteration,omitempty"`
-	SystemPrompt        string           `json:"system_prompt,omitempty"`
-	SystemPromptMode    SystemPromptMode `json:"system_prompt_mode,omitempty"`
-	UserPrompt          string           `json:"user_prompt,omitempty"`
-	UserContent         []ContentBlock   `json:"user_content,omitempty"`
-	AllowedTools        []string         `json:"allowed_tools,omitempty"`
-	ToolsDeclared       bool             `json:"tools_declared,omitempty"`
-	Readonly            bool             `json:"readonly,omitempty"`
-	Capabilities        []string         `json:"capabilities,omitempty"`
-	StoreDir            string           `json:"store_dir,omitempty"`
-	RunStoreDir         string           `json:"run_store_dir,omitempty"`
-	Handoff             string           `json:"handoff,omitempty"`
-	HandoffMode         string           `json:"handoff_mode,omitempty"`
-	BoardHTTPEndpoint   string           `json:"board_http_endpoint,omitempty"`
-	BoardRunToken       string           `json:"board_run_token,omitempty"`
-	RunsHTTPEndpoint    string           `json:"runs_http_endpoint,omitempty"`
-	AskUserHTTPEndpoint string           `json:"ask_user_http_endpoint,omitempty"`
-	AskUserRunToken     string           `json:"ask_user_run_token,omitempty"`
-	ToolDefs            []IOToolDef      `json:"tool_defs,omitempty"`
-	OutputSchema        json.RawMessage  `json:"output_schema,omitempty"`
-	Model               string           `json:"model,omitempty"`
-	HasTools            bool             `json:"has_tools,omitempty"`
-	ToolMaxSteps        int              `json:"tool_max_steps,omitempty"`
-	MaxTokens           int              `json:"max_tokens,omitempty"`
-	WorkDir             string           `json:"work_dir,omitempty"`
-	BaseDir             string           `json:"base_dir,omitempty"`
-	RepoRoot            string           `json:"repo_root,omitempty"`
+	NodeID                string           `json:"node_id"`
+	Iteration             int              `json:"iteration,omitempty"`
+	SystemPrompt          string           `json:"system_prompt,omitempty"`
+	SystemPromptMode      SystemPromptMode `json:"system_prompt_mode,omitempty"`
+	UserPrompt            string           `json:"user_prompt,omitempty"`
+	UserContent           []ContentBlock   `json:"user_content,omitempty"`
+	AllowedTools          []string         `json:"allowed_tools,omitempty"`
+	ToolsDeclared         bool             `json:"tools_declared,omitempty"`
+	Readonly              bool             `json:"readonly,omitempty"`
+	Capabilities          []string         `json:"capabilities,omitempty"`
+	StoreDir              string           `json:"store_dir,omitempty"`
+	RunStoreDir           string           `json:"run_store_dir,omitempty"`
+	Handoff               string           `json:"handoff,omitempty"`
+	HandoffMode           string           `json:"handoff_mode,omitempty"`
+	BoardHTTPEndpoint     string           `json:"board_http_endpoint,omitempty"`
+	ConnectorHTTPEndpoint string           `json:"connector_http_endpoint,omitempty"`
+	BoardRunToken         string           `json:"board_run_token,omitempty"`
+	RunsHTTPEndpoint      string           `json:"runs_http_endpoint,omitempty"`
+	AskUserHTTPEndpoint   string           `json:"ask_user_http_endpoint,omitempty"`
+	AskUserRunToken       string           `json:"ask_user_run_token,omitempty"`
+	ToolDefs              []IOToolDef      `json:"tool_defs,omitempty"`
+	OutputSchema          json.RawMessage  `json:"output_schema,omitempty"`
+	Model                 string           `json:"model,omitempty"`
+	HasTools              bool             `json:"has_tools,omitempty"`
+	ToolMaxSteps          int              `json:"tool_max_steps,omitempty"`
+	MaxTokens             int              `json:"max_tokens,omitempty"`
+	WorkDir               string           `json:"work_dir,omitempty"`
+	BaseDir               string           `json:"base_dir,omitempty"`
+	RepoRoot              string           `json:"repo_root,omitempty"`
 	// ScratchDir is the run's ${PROJECT_SCRATCH_DIR} as the RUNNER sees it
 	// — the fixed container path on a sandbox crossing, where the host path
 	// would not exist. The runner's read tools (read_file, glob, grep)
@@ -217,6 +218,7 @@ func ToIOTask(t Task) IOTask {
 		Handoff:                t.Handoff,
 		HandoffMode:            t.HandoffMode,
 		BoardHTTPEndpoint:      t.BoardHTTPEndpoint,
+		ConnectorHTTPEndpoint:  t.ConnectorHTTPEndpoint,
 		BoardRunToken:          t.BoardRunToken,
 		RunsHTTPEndpoint:       t.RunsHTTPEndpoint,
 		AskUserHTTPEndpoint:    t.AskUserHTTPEndpoint,
@@ -281,6 +283,7 @@ func FromIOTask(t IOTask) Task {
 		Handoff:                t.Handoff,
 		HandoffMode:            t.HandoffMode,
 		BoardHTTPEndpoint:      t.BoardHTTPEndpoint,
+		ConnectorHTTPEndpoint:  t.ConnectorHTTPEndpoint,
 		BoardRunToken:          t.BoardRunToken,
 		RunsHTTPEndpoint:       t.RunsHTTPEndpoint,
 		AskUserHTTPEndpoint:    t.AskUserHTTPEndpoint,

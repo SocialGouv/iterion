@@ -3,6 +3,7 @@ package ir
 import (
 	"regexp"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 	"github.com/SocialGouv/iterion/pkg/runops"
 )
@@ -43,6 +44,10 @@ var KnownCapabilities = map[string]bool{
 	CapWatchSubscribe:        true,
 	CapWatchUnsubscribe:      true,
 	runops.CapRunsRead:       true,
+	// The connector MCP facade (ADR-098 §2, #2758): an agent node declaring
+	// `capabilities: [connectors]` is wired to the host's facade endpoint,
+	// through which it reaches the tenant's `agent`-capable connections.
+	connection.CapConnectors: true,
 }
 
 // capShapeRe enforces the lowercase `domain` or `domain.action` shape.

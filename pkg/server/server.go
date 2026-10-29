@@ -670,6 +670,23 @@ func (s *Server) boardMCPServiceOption(logger *iterlog.Logger, runStore store.Ru
 		RegisterBoardMCPRoutes(mux, "/api/v1/mcp/board", s.cfg.NativeTrackerStore, s.boardMCPTokens)
 	}
 	RegisterRunsMCPRoutes(mux, "/api/v1/mcp/runs", runStore, s.boardMCPTokens)
+	// The connector MCP facade (#2758) shares the mux: one gateway listener,
+	// one token, one registry. Wired only when the connection plane is —
+	// store + catalog + sealer; the client is the tier's guarded one, cloud
+	// strict, local with its operator hatch.
+	if s.connectionStore != nil && s.connectorCatalog != nil && s.sealer != nil {
+		client := connection.CloudHTTPClient()
+		if !strings.EqualFold(s.cfg.Mode, "cloud") {
+			client = connection.LocalHTTPClient()
+		}
+		RegisterConnectorMCPRoutes(mux, "/api/v1/mcp/connectors", ConnectorMCPDeps{
+			Store:   s.connectionStore,
+			Catalog: s.connectorCatalog,
+			Sealer:  s.sealer,
+			Client:  client,
+			Logger:  s.logger,
+		}, s.boardMCPTokens)
+	}
 	reg := s.boardMCPTokens
 	return runview.WithBoardMCP(mux, func(caps []string, sourceIssueID, runID string) string {
 		token := newBoardMCPToken()
@@ -680,6 +697,11 @@ func (s *Server) boardMCPServiceOption(logger *iterlog.Logger, runStore store.Ru
 			return ""
 		}
 		tenantID := ""
+		// The run's TRUST rides the grant (#1802 via #2758): the connector
+		// facade resolves credentials under it, and an unreadable run means
+		// unstated — which fails a mutating call closed rather than reading
+		// the zero value as "the tenant's own code".
+		trust, trustStated := store.RunTrust(""), false
 		if runStore != nil && runID != "" {
 			lookupCtx := context.Background()
 			if strings.EqualFold(s.cfg.Mode, "cloud") {
@@ -698,6 +720,7 @@ func (s *Server) boardMCPServiceOption(logger *iterlog.Logger, runStore store.Ru
 				}
 			} else {
 				tenantID = run.TenantID
+				trust, trustStated = run.Trust, true
 			}
 		}
 		if strings.EqualFold(s.cfg.Mode, "cloud") && tenantID == "" {
@@ -706,7 +729,7 @@ func (s *Server) boardMCPServiceOption(logger *iterlog.Logger, runStore store.Ru
 			}
 			return ""
 		}
-		if err := reg.Register(token, caps, sourceIssueID, tenantID); err != nil {
+		if err := reg.Register(token, caps, sourceIssueID, tenantID, trust, trustStated); err != nil {
 			if logger != nil {
 				logger.Error("board MCP: %v; sandboxed board-emit disabled for a node", err)
 			}

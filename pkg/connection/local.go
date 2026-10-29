@@ -345,6 +345,37 @@ func allowPrivateHosts() bool {
 	return os.Getenv(AllowPrivateHostsEnv) == "1"
 }
 
+// guardedBase builds the dial-guarded client WITHOUT the executor's mark:
+// the guarded dialer (strict or not) with dial failures marked as never-sent
+// for the executor's unknown-outcome contract. The mark
+// (exec.MarkGuarded) is applied LAST by each public client below, so no
+// wrapper a tier adds can sit outside it and hide it from Call.
+func guardedBase(strict bool, timeout time.Duration) *http.Client {
+	c := httpdial.SafeClient(strict, timeout)
+	markDialFailuresAsNotSent(c)
+	return c
+}
+
+// GuardedHTTPClient is the ONE construction a connector call goes out on
+// when the caller adds nothing of its own: guardedBase plus the guard mark
+// Call refuses to run without.
+func GuardedHTTPClient(strict bool, timeout time.Duration) *http.Client {
+	return exec.MarkGuarded(guardedBase(strict, timeout))
+}
+
+// CloudHTTPClient is the client the SERVER's connector calls go out on
+// (#2758's facade, and any future cloud tier of the node path).
+//
+// Always strict — LocalHTTPClient's AllowPrivateHostsEnv hatch is the LOCAL
+// tier's: there the operator runs the process, so relaxing the guard is their
+// call. In cloud the base URL is TENANT-supplied, and the same relaxation
+// would hand one tenant the pod's own network. A self-hosted vendor on a
+// private address needs a deployment decision with a network control behind
+// it, not an environment variable the route can be talked into honoring.
+func CloudHTTPClient() *http.Client {
+	return GuardedHTTPClient(true, 2*time.Minute)
+}
+
 // LocalHTTPClient is the client a local connector call goes out on.
 //
 // The GUARDED one by default, with no exception for a local run. A connector
@@ -362,16 +393,14 @@ func allowPrivateHosts() bool {
 // for, not an ergonomic papercut.
 func LocalHTTPClient() *http.Client {
 	strict := !allowPrivateHosts()
-	c := httpdial.SafeClient(strict, 2*time.Minute)
-	markDialFailuresAsNotSent(c)
+	c := guardedBase(strict, 2*time.Minute)
 	if strict {
 		// Only under the guard: with the hatch open there is no refusal to
 		// explain, and a hint on an ordinary "connection refused" to localhost
-		// would name a variable that is already set.
+		// would name a variable that is already set. The hint goes UNDER the
+		// mark, which is applied last so Call sees it outermost.
 		c.Transport = &privateHostHint{base: c.Transport}
 	}
-	// Marked LAST, so the mark sits outside every wrapper this function adds
-	// and no later one has to forward it.
 	return exec.MarkGuarded(c)
 }
 

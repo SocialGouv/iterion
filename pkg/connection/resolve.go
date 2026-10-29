@@ -58,6 +58,21 @@ type Resolver struct {
 // read either. Each step's failure names what to fix, because every one of
 // them surfaces to an operator as "the node failed" otherwise.
 func (r *Resolver) ResolveAction(ctx context.Context, actionID, alias string) (*spec.Package, spec.Operation, exec.Credential, string, error) {
+	return r.resolve(ctx, actionID, alias, CapAction)
+}
+
+// ResolveAgent is the MCP facade's half of the same chokepoint (#2758): the
+// operation the MODEL chose, resolved against the same catalog, the same
+// trust verdict and the same store, differing from ResolveAction in exactly
+// one thing — the capability the connection must declare. The two are one
+// code path so the facade cannot drift from the node on anything but the
+// grant it asks for.
+func (r *Resolver) ResolveAgent(ctx context.Context, actionID, alias string) (*spec.Package, spec.Operation, exec.Credential, string, error) {
+	return r.resolve(ctx, actionID, alias, CapAgent)
+}
+
+// resolve is the ONE resolution path; `want` is the use being authorised.
+func (r *Resolver) resolve(ctx context.Context, actionID, alias string, want Capability) (*spec.Package, spec.Operation, exec.Credential, string, error) {
 	var zero spec.Operation
 	if r == nil || r.Catalog == nil || r.Store == nil {
 		return nil, zero, exec.Credential{}, "", errors.New("connection: resolver is not wired (catalog or store missing)")
@@ -100,7 +115,7 @@ func (r *Resolver) ResolveAction(ctx context.Context, actionID, alias string) (*
 		}
 		return nil, zero, exec.Credential{}, "", fmt.Errorf("resolve connection %q: %w", alias, err)
 	}
-	if err := r.checkUsable(conn, pkg, tier, op); err != nil {
+	if err := r.checkUsable(conn, pkg, tier, op, want); err != nil {
 		return nil, zero, exec.Credential{}, "", err
 	}
 
@@ -166,7 +181,7 @@ func (r *Resolver) ResolveAction(ctx context.Context, actionID, alias string) (*
 // "which tier" is the first thing an operator has to know to repair it: the
 // id, the scheme id and the placement can all three be identical between two
 // tiers, so the id names nothing. It is printed, never branched on.
-func (r *Resolver) checkUsable(conn Connection, pkg *spec.Package, tier Tier, op spec.Operation) error {
+func (r *Resolver) checkUsable(conn Connection, pkg *spec.Package, tier Tier, op spec.Operation, want Capability) error {
 	if !conn.Status.Usable() {
 		reason := conn.StatusReason
 		if reason == "" {
@@ -214,12 +229,11 @@ func (r *Resolver) checkUsable(conn Connection, pkg *spec.Package, tier Tier, op
 	// one credential, and an operator may legitimately allow one and not the
 	// other.
 	//
-	// TYPED (agent.go): the refusal reaches the executor as the node's
-	// failure, and a caller — today the operator reading it, tomorrow the MCP
-	// facade — has to tell "widen this grant" from "the grant you hold is one
-	// this build cannot honour".
-	if !conn.Has(CapAction) {
-		return &CapabilityError{Alias: conn.Alias, Want: CapAction, Have: conn.Capabilities}
+	// TYPED (agent.go): the refusal reaches the caller — the node executor,
+	// the MCP facade — as the call's failure, and it has to tell "widen this
+	// grant" from "the grant you hold is one this build cannot honour".
+	if !conn.Has(want) {
+		return &CapabilityError{Alias: conn.Alias, Want: want, Have: conn.Capabilities}
 	}
 	// The scheme the connection holds must be one the operation accepts, and
 	// the grant must cover what the operation needs. Refused locally: the

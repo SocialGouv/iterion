@@ -33,7 +33,7 @@ func TestRunsMCPHTTPPinsTenantAndCapability(t *testing.T) {
 		t.Fatal(err)
 	}
 	reg := NewBoardMCPTokenRegistry()
-	if err := reg.Register("token", []string{runops.CapRunsRead}, "", "team-1"); err != nil {
+	if err := reg.Register("token", []string{runops.CapRunsRead}, "", "team-1", store.RunTrustDefault, true); err != nil {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
@@ -59,7 +59,7 @@ func TestRunsMCPHTTPDoesNotListToolsWithoutCapability(t *testing.T) {
 		t.Fatal(err)
 	}
 	reg := NewBoardMCPTokenRegistry()
-	if err := reg.Register("token", []string{"board.read"}, "", ""); err != nil {
+	if err := reg.Register("token", []string{"board.read"}, "", "", store.RunTrustDefault, true); err != nil {
 		t.Fatal(err)
 	}
 	id := json.RawMessage(`1`)

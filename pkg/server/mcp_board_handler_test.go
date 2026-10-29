@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
+	runstore "github.com/SocialGouv/iterion/pkg/store"
 )
 
 func newMCPBoardTestServer(t *testing.T) (*httptest.Server, *BoardMCPTokenRegistry, *native.Store) {
@@ -67,7 +68,7 @@ func TestBoardMCP_HTTP_UnknownToken(t *testing.T) {
 // board MCP from ever registering. The field must always be present.
 func TestBoardMCP_HTTP_InitializeServerInfoVersion(t *testing.T) {
 	srv, reg, _ := newMCPBoardTestServer(t)
-	reg.Register("tok", []string{"board.read"}, "", "")
+	reg.Register("tok", []string{"board.read"}, "", "", runstore.RunTrustDefault, true)
 	defer reg.Revoke("tok")
 	resp := doMCP(t, srv, "tok", map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize"})
 	defer resp.Body.Close()
@@ -95,7 +96,7 @@ func TestBoardMCP_HTTP_InitializeServerInfoVersion(t *testing.T) {
 
 func TestBoardMCP_HTTP_ToolsListFiltersByCaps(t *testing.T) {
 	srv, reg, _ := newMCPBoardTestServer(t)
-	reg.Register("tok", []string{"board.read"}, "", "")
+	reg.Register("tok", []string{"board.read"}, "", "", runstore.RunTrustDefault, true)
 	defer reg.Revoke("tok")
 	resp := doMCP(t, srv, "tok", map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
 	defer resp.Body.Close()
@@ -127,7 +128,7 @@ func TestBoardMCP_HTTP_ToolsListFiltersByCaps(t *testing.T) {
 
 func TestBoardMCP_HTTP_CreateAndRead(t *testing.T) {
 	srv, reg, store := newMCPBoardTestServer(t)
-	reg.Register("tok", []string{"board.create", "board.read"}, "", "")
+	reg.Register("tok", []string{"board.create", "board.read"}, "", "", runstore.RunTrustDefault, true)
 	defer reg.Revoke("tok")
 
 	resp := doMCP(t, srv, "tok", map[string]any{
@@ -171,7 +172,7 @@ func TestBoardMCP_HTTP_CreateStampsParentFromGrant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create parent: %v", err)
 	}
-	reg.Register("tok", []string{"board.create", "board.read"}, parent.ID, "")
+	reg.Register("tok", []string{"board.create", "board.read"}, parent.ID, "", runstore.RunTrustDefault, true)
 	defer reg.Revoke("tok")
 
 	resp := doMCP(t, srv, "tok", map[string]any{
@@ -211,7 +212,7 @@ func TestBoardMCP_HTTP_ExplicitParentOverridesGrant(t *testing.T) {
 	srv, reg, store := newMCPBoardTestServer(t)
 	grantParent, _ := store.Create(native.Issue{Title: "Grant planner"})
 	otherParent, _ := store.Create(native.Issue{Title: "Explicit planner"})
-	reg.Register("tok", []string{"board.create", "board.read"}, grantParent.ID, "")
+	reg.Register("tok", []string{"board.create", "board.read"}, grantParent.ID, "", runstore.RunTrustDefault, true)
 	defer reg.Revoke("tok")
 
 	resp := doMCP(t, srv, "tok", map[string]any{
@@ -240,7 +241,7 @@ func TestBoardMCP_HTTP_ExplicitParentOverridesGrant(t *testing.T) {
 
 func TestBoardMCP_HTTP_CapabilityDenied(t *testing.T) {
 	srv, reg, _ := newMCPBoardTestServer(t)
-	reg.Register("tok", []string{"board.read"}, "", "")
+	reg.Register("tok", []string{"board.read"}, "", "", runstore.RunTrustDefault, true)
 	defer reg.Revoke("tok")
 
 	resp := doMCP(t, srv, "tok", map[string]any{
@@ -268,11 +269,11 @@ func TestBoardMCP_HTTP_CapabilityDenied(t *testing.T) {
 func TestBoardMCPTokenRegistry_RegisterFullReturnsError(t *testing.T) {
 	reg := NewBoardMCPTokenRegistry()
 	for i := 0; i < boardMCPMaxTokens; i++ {
-		if err := reg.Register(fmt.Sprintf("tok-%d", i), []string{"board.read"}, "", ""); err != nil {
+		if err := reg.Register(fmt.Sprintf("tok-%d", i), []string{"board.read"}, "", "", runstore.RunTrustDefault, true); err != nil {
 			t.Fatalf("Register %d within cap: %v", i, err)
 		}
 	}
-	err := reg.Register("one-too-many", []string{"board.read"}, "", "")
+	err := reg.Register("one-too-many", []string{"board.read"}, "", "", runstore.RunTrustDefault, true)
 	if err == nil {
 		t.Fatal("Register beyond the cap should error")
 	}

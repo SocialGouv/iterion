@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
@@ -322,6 +323,29 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 			// never creates key material for an operator who doesn't use secrets.
 			cfg.GenericSecrets = lstore
 			cfg.Sealer = secrets.NewLazyLocalSealer(store.GlobalIterionDataDir(), logger.Warn)
+		}
+		// Connector connections, local tier (#2758): the SAME file `iterion
+		// connections` writes and the SAME layered catalog a run resolves —
+		// with the baked floor appended, so the facade serves the shipped
+		// Forgejo package on a machine with no install — so an agent node's
+		// facade call in a studio run resolves exactly what the CLI manages.
+		// The CRUD routes stay CLOUD-only (team-scoped paths); here the store
+		// feeds the MCP facade under connection.LocalTenant.
+		if cfg.Sealer != nil {
+			if connStore, cerr := connection.NewFileStore(connection.DefaultPath(resolvedStoreDir)); cerr != nil {
+				logger.Warn("studio: connector connections disabled (%v)", cerr)
+			} else {
+				tiers, terr := connection.LocalCatalogs(
+					connection.LocalCatalogPaths(dir, store.GlobalIterionDataDir()),
+					connection.TrustOfRun(store.RunTrustDefault))
+				if terr != nil {
+					logger.Warn("studio: connector catalog disabled (%v)", terr)
+				} else {
+					cfg.Connections = connStore
+					cfg.ConnectorCatalog = connection.NewLayeredCatalog(
+						append(tiers, connection.BakedCatalog())...)
+				}
+			}
 		}
 	}
 	// The operator's remembered model choice, one small JSON file next to the

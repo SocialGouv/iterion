@@ -13,6 +13,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // Valkey-backed implementations of the per-pod state stores (forge CSRF state,
@@ -95,10 +96,21 @@ type boardTokenPayload struct {
 	Caps          []string `json:"caps"`
 	SourceIssueID string   `json:"src,omitempty"`
 	TenantID      string   `json:"tenant_id,omitempty"`
+	// Trust carries the run's RunTrust to whichever replica serves the
+	// connector facade's call (#2758); absent on a legacy payload, which
+	// lookup must read as UNSTATED — the facade fails closed on it.
+	Trust       string `json:"trust,omitempty"`
+	TrustStated bool   `json:"trust_stated,omitempty"`
 }
 
-func (s *valkeyBoardMCPTokenStore) Register(token string, caps []string, sourceIssueID, tenantID string) error {
-	b, err := json.Marshal(boardTokenPayload{Caps: caps, SourceIssueID: strings.TrimSpace(sourceIssueID), TenantID: strings.TrimSpace(tenantID)})
+func (s *valkeyBoardMCPTokenStore) Register(token string, caps []string, sourceIssueID, tenantID string, trust store.RunTrust, trustStated bool) error {
+	b, err := json.Marshal(boardTokenPayload{
+		Caps:          caps,
+		SourceIssueID: strings.TrimSpace(sourceIssueID),
+		TenantID:      strings.TrimSpace(tenantID),
+		Trust:         string(trust),
+		TrustStated:   trustStated,
+	})
 	if err != nil {
 		return fmt.Errorf("marshal board MCP caps: %w", err)
 	}
@@ -147,6 +159,8 @@ func (s *valkeyBoardMCPTokenStore) lookup(token string) (boardMCPGrant, bool) {
 		Capabilities:  boardops.Capabilities{},
 		SourceIssueID: payload.SourceIssueID,
 		TenantID:      payload.TenantID,
+		Trust:         payload.Trust,
+		TrustStated:   payload.TrustStated,
 	}
 	for _, c := range payload.Caps {
 		grant.Capabilities[c] = true

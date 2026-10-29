@@ -718,6 +718,37 @@ func (b *ClaudeCodeBackend) wireBoardMCP(task Task, opts []claudesdk.Option, ext
 	return opts
 }
 
+// wireConnectorMCP registers the connector MCP facade (#2758) when the node
+// declares the `connectors` capability. HTTP ONLY, by design: the credential
+// a facade call spends is resolved and spent at the server (ADR-098 Q4), so
+// there is no stdio variant — one running in the agent's own process would be
+// the credential entering the sandbox. A node granted the capability with no
+// facade reachable warns loudly rather than silently no-opping (ADR-098: a
+// declared capability that cannot be brought up must say so).
+func (b *ClaudeCodeBackend) wireConnectorMCP(task Task, opts []claudesdk.Option, extras *[]string) []claudesdk.Option {
+	if !HasConnectorsCapability(task.Capabilities) {
+		return opts
+	}
+	if task.ConnectorHTTPEndpoint != "" && task.BoardRunToken != "" {
+		opts = append(opts, claudesdk.WithMCPServer(connectorMCPServerName, &claudesdk.MCPHTTPServer{
+			URL: task.ConnectorHTTPEndpoint,
+			Headers: map[string]string{
+				"X-Iterion-Run": task.BoardRunToken,
+			},
+			// Same reasoning as the board server: the facade's tools must
+			// surface without a ToolSearch hit, and an unreachable facade
+			// fails loudly at startup.
+			AlwaysLoad: true,
+		}))
+		if len(task.AllowedTools) > 0 {
+			*extras = append(*extras, ConnectorToolsFor(task.Capabilities)...)
+		}
+		return opts
+	}
+	b.Logger.Warn("[%s#%d/claude-code] connectors capability granted but no connector facade endpoint is configured (the run needs a server-wired sandbox); connector tools disabled for this node", task.NodeID, task.Iteration)
+	return opts
+}
+
 // wireUserMCP forwards the node's active user/plugin-declared MCP servers
 // (Task.MCPServers) to the claude_code CLI via --mcp-config, so their tools
 // are available to the agent — the claude_code half of the parity claw

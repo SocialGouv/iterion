@@ -9,49 +9,51 @@ import (
 // The `agent` capability, and the one place this build's answer about it
 // lives (ADR-098, docs/adr/098-connector-catalog.md).
 //
-// CapAgent names a use NOTHING here performs: the MCP facade through which a
-// model would reach a connector operation is not written, and no caller
-// anywhere resolves a connection for an agent. An operator can nevertheless
-// grant it — `connections add --capability agent` writes it, Validate accepts
-// it, the store keeps it, `connections list` printed it — so the grant reads
-// as a guarantee and is a no-op.
+// The facade EXISTS now (#2758): an agent node declaring
+// `capabilities: [connectors]` is wired to the server's MCP facade endpoint
+// over HTTP with a per-run token, the facade resolves the connection through
+// Resolver.ResolveAgent — this package's chokepoint, requiring CapAgent — and
+// the credential is spent at the server, never entering the sandbox. So
+// AgentFacadeWired answers true, and both CLI surfaces
+// (`connections add`, `connections list`) stopped warning because they read
+// the one predicate, not a copy of it.
 //
-// That is precisely the failure mode this package's doc names as designed out
-// ("a capability nobody checks is configuration that looks like a
-// guarantee"), and the second capability was the one it happened to. It is
-// answered here rather than fixed by removing the capability: `agent` is a
-// settled decision (Q1-Q8 of 2026-09-10, three tiers and an MCP facade from
-// the same package), the grant an operator wrote is theirs, and withdrawing
-// it silently would be the same defect wearing the opposite sign.
-//
-// So the capability becomes READ: by the resolution chokepoint, which names
-// what an agent-only grant does and does not buy today, and by the CLI, where
-// the grant is created and listed. When the facade lands it flips here, in one
-// place, and both readers tell the truth without being edited.
-//
-// `agent` was the first capability to need this and it is no longer the only
-// one (`trigger`, trigger.go), so the machinery that answers "does this build
-// perform it, and what is an operator owed if it does not" lives HERE for the
-// whole set — one table, one advice, one predicate — while each capability
-// keeps its own single source for the answer itself. A second copy per
-// capability is how a surface comes to print the truth about one grant and
-// nothing about the next.
+// The machinery below stays, because the failure mode it answers is
+// permanent: a capability nobody checks is configuration that looks like a
+// guarantee. `agent` was the first capability to need it and is no longer
+// the only one (`trigger`, trigger.go, still unwired), so the table, the
+// advice and the sentinels live HERE for the whole set — one predicate per
+// capability, every reader asking the same question, so the day a build
+// ships without a capability's surface there is one line to change and no
+// second site that still says otherwise.
 
-// ErrAgentFacadeUnwired is what an `agent` grant is worth in this build.
+// CapConnectors is the DSL capability an agent or judge node declares to
+// reach the MCP facade (`capabilities: [connectors]`): the workflow's half of
+// an `agent` connection grant. The connection's own `agent` capability is the
+// operator's half; a call needs both, which is what keeps a workflow from
+// spending a credential its operator granted to automation only.
 //
-// A SENTINEL, because the two answers a caller has to tell apart are not the
-// same kind of fact: "this connection declares the wrong capability" is fixed
-// on the record by its operator, while "the capability it declares is one this
-// build cannot honour" is fixed by shipping the facade. A substring match on a
-// message cannot carry that difference across a release.
+// The string lives HERE and not with the board capabilities because the two
+// halves of the grant must be read together: this file is where the agent
+// capability's answer lives.
+const CapConnectors = "connectors"
+
+// ErrAgentFacadeUnwired is what an `agent` grant is worth in a build with no
+// facade. UNREACHABLE since #2758 (AgentFacadeWired answers true) and kept as
+// the sentinel the predicate arms again the day a build ships without the
+// facade — the capability table below reads it, and a substring match on a
+// message could not carry "fixed by a release" versus "fixed on the record"
+// across one.
 var ErrAgentFacadeUnwired = errors.New("connection: the `agent` capability is granted but inert — no MCP facade reads it in this build (docs/adr/098-connector-catalog.md)")
 
 // AgentFacadeWired reports whether this build can serve CapAgent.
 //
 // The single source of the answer. Every reader asks here, so the day the
-// facade exists there is one line to change and no second site that still
-// says otherwise.
-func AgentFacadeWired() bool { return false }
+// facade is missing there is one line to change and no second site that still
+// says otherwise. TRUE since #2758: the facade is pkg/connector/facade, served
+// at /api/v1/mcp/connectors (pkg/server/mcp_connector_routes.go), reached by
+// an agent node declaring `capabilities: [connectors]`.
+func AgentFacadeWired() bool { return true }
 
 // capabilityWired reports whether this build PERFORMS a capability.
 //

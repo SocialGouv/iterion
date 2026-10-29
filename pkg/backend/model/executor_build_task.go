@@ -1410,6 +1410,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	}
 	e.applyBoardEndpoint(&task, effectiveCaps, sess)
 	e.applyRunsEndpoint(&task, effectiveCaps, sess)
+	e.applyConnectorEndpoint(&task, effectiveCaps, sess)
 	e.applyAskUserEndpoint(&task)
 
 	// Mark the tools the runtime opened for its OWN interaction/capability
@@ -1846,6 +1847,13 @@ func (e *ClawExecutor) assembleEffectiveTools(f backendFields, backendName strin
 	if delegate.HasBoardCapability(effectiveCaps) && len(effectiveTools) > 0 {
 		effectiveTools = append(effectiveTools, delegate.BoardToolsFor(effectiveCaps)...)
 	}
+	// The connector facade's discovery pair (and the tool glob for its
+	// curated set) join a RESTRICTED tool set the same way: a node that
+	// names tools: and declares `connectors` must still be able to reach
+	// mcp__iterion_connectors__*.
+	if delegate.HasConnectorsCapability(effectiveCaps) && len(effectiveTools) > 0 {
+		effectiveTools = append(effectiveTools, delegate.ConnectorToolsFor(effectiveCaps)...)
+	}
 	if delegate.HasRunsReadCapability(effectiveCaps) && len(effectiveTools) > 0 {
 		effectiveTools = append(effectiveTools, delegate.RunToolsFor(effectiveCaps)...)
 	}
@@ -1927,6 +1935,25 @@ func (e *ClawExecutor) applyRunsEndpoint(task *delegate.Task, effectiveCaps []st
 		return
 	}
 	task.RunsHTTPEndpoint = strings.TrimSuffix(e.boardEndpoint, "/api/v1/mcp/board") + "/api/v1/mcp/runs"
+	task.BoardRunToken = sess.boardTokenFor(func() string {
+		return e.boardRegister(effectiveCaps, e.sourceIssueID)
+	})
+}
+
+// applyConnectorEndpoint wires the per-run connector MCP facade transport
+// (#2758) onto the task for sandboxed nodes declaring the `connectors`
+// capability: the same gateway listener as the board endpoint (one mux),
+// the same per-node token — whose grant then carries this node's caps, so
+// the facade's own capability check reads exactly what the node was granted.
+// A node with the capability but no facade wired (no server, no sandbox, no
+// connection plane) is left without the endpoint, and the delegate warns
+// loudly — board-style silent disablement is the wrong default for a
+// capability a workflow declared (ADR-098).
+func (e *ClawExecutor) applyConnectorEndpoint(task *delegate.Task, effectiveCaps []string, sess *nodeBuildSession) {
+	if !delegate.HasConnectorsCapability(effectiveCaps) || e.sandbox == nil || e.boardEndpoint == "" || e.boardRegister == nil {
+		return
+	}
+	task.ConnectorHTTPEndpoint = strings.TrimSuffix(e.boardEndpoint, "/api/v1/mcp/board") + "/api/v1/mcp/connectors"
 	task.BoardRunToken = sess.boardTokenFor(func() string {
 		return e.boardRegister(effectiveCaps, e.sourceIssueID)
 	})

@@ -53,22 +53,25 @@ func TestATriggerOnlyGrantIsRefusedTypedAndSaysTheGrantIsInert(t *testing.T) {
 	}
 }
 
-// TestTwoInertGrantsBothTravel.
+// TestAnHonouredGrantMakesTheMismatchOrdinary.
 //
-// A connection granting `agent` AND `trigger` holds two facts a caller may
-// branch on, and which one it reads must not depend on the order the record
-// happens to list them in. Both orders, because the predicate walks the list.
-func TestTwoInertGrantsBothTravel(t *testing.T) {
+// Before the facade landed, [agent, trigger] held TWO inert facts and both
+// sentinels travelled. Since #2758 the agent half is honoured, so the
+// record is an ordinary grant mismatch — the connection DOES serve the
+// facade, and the refusal for a node must say "widen the grant", not "wait
+// for a release". Both orders, because the predicate walks the list: which
+// answer a caller reads must not depend on the field order.
+func TestAnHonouredGrantMakesTheMismatchOrdinary(t *testing.T) {
 	for _, caps := range [][]connection.Capability{
 		{connection.CapAgent, connection.CapTrigger},
 		{connection.CapTrigger, connection.CapAgent},
 	} {
 		err := (&connection.CapabilityError{Alias: "main", Want: connection.CapAction, Have: caps}).Unwrap()
-		if !errors.Is(err, connection.ErrAgentFacadeUnwired) {
-			t.Errorf("Have=%v: the agent fact must travel whatever the order", caps)
+		if errors.Is(err, connection.ErrAgentFacadeUnwired) {
+			t.Errorf("Have=%v: the agent grant is honoured (#2758), so no agent sentinel may travel", caps)
 		}
-		if !errors.Is(err, connection.ErrTriggerIngressUnwired) {
-			t.Errorf("Have=%v: the trigger fact must travel whatever the order", caps)
+		if errors.Is(err, connection.ErrTriggerIngressUnwired) {
+			t.Errorf("Have=%v: with `agent` honoured the record is not all-inert, so the release-fixed reading must not replace the widen-the-grant one", caps)
 		}
 	}
 	// And the falsifier the class rests on: a capability this build does not

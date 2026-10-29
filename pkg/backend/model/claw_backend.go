@@ -312,6 +312,20 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		return delegate.Result{}, fmt.Errorf("claw backend: node %q: a continued conversation runs in-process, never through the sandbox runner", task.NodeID)
 	}
 
+	// The connector MCP facade is refused for claw BY TYPE, not silently
+	// dropped (#2758, backend parity): the facade serves agents over the
+	// host's HTTP transport so the credential is resolved and spent at the
+	// server, while claw's tool loop runs IN the runner — wiring it here
+	// would resolve the credential one process too close to the model in
+	// cloud, the exact thing Q4 forbids. claude_code and pi reach the facade.
+	if delegate.HasConnectorsCapability(task.Capabilities) {
+		return delegate.Result{}, &delegate.ErrCapabilityUnsupported{
+			NodeID: task.NodeID, Backend: delegate.BackendClaw,
+			Capability: "connectors (the connector MCP facade)",
+			Remedy:     "route the node to claude_code or pi — the facade is served over the host's HTTP transport, and the claw tool loop has no path to it in this build",
+		}
+	}
+
 	// Outside the sandbox arm, deliberately. Resolution DROPS a refused
 	// server's tools whatever the run's sandbox is, so the refusal that
 	// compensates for the drop has to read the same fact: gated on

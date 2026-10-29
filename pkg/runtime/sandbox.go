@@ -38,6 +38,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
@@ -184,7 +185,7 @@ func workflowHasHostCapability(wf *ir.Workflow) bool {
 	}
 	has := func(caps []string) bool {
 		for _, capability := range caps {
-			if capability == runops.CapRunsRead {
+			if capability == runops.CapRunsRead || capability == connection.CapConnectors {
 				return true
 			}
 		}

@@ -494,6 +494,16 @@ type Task struct {
 	// It shares the same ephemeral capability token and host listener.
 	RunsHTTPEndpoint string
 
+	// ConnectorHTTPEndpoint is the URL of the iterion-host connector MCP
+	// facade (#2758), served on the same gateway listener as the board
+	// endpoint and gated by the SAME run token — whose grant must then carry
+	// the `connectors` capability for the facade to answer. Sandboxed nodes
+	// declaring `capabilities: [connectors]` register an HTTP MCP server
+	// pointing here; the credential a call spends is resolved server-side and
+	// never enters the sandbox. Empty (no server, no sandbox, no connection
+	// plane) disables the facade for the node — loudly, at the delegate.
+	ConnectorHTTPEndpoint string
+
 	// AskUserHTTPEndpoint is the URL of the per-run ask-user MCP HTTP
 	// endpoint the engine binds next to the sandbox (ADR-082 Phase 3).
 	// Sandboxed claude_code registers an HTTP MCP server pointing here

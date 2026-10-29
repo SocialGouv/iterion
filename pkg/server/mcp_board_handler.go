@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // boardMCPDefaultTTL caps how long a board MCP run token stays alive
@@ -48,7 +49,14 @@ type boardMCPGrant struct {
 	// spawned_from the same way the stdio and in-process transports do.
 	// Empty for runs with no owning ticket (plain studio/CLI launches).
 	SourceIssueID string
-	ExpiresAt     time.Time
+	// Trust is the run document's own RunTrust (#1802): the connector facade
+	// resolves credentials through it, so a token minted for a run over code
+	// the tenant does not control resolves READ operations only. Stated is
+	// false when the minter could not read the run — which the facade must
+	// read as "unknown", never as "trusted" (connection.TrustUnknown).
+	Trust       string
+	TrustStated bool
+	ExpiresAt   time.Time
 }
 
 // BoardMCPTokenStore is the per-run board-MCP token registry. The in-memory
@@ -59,8 +67,12 @@ type boardMCPGrant struct {
 // server's per-node token-minter closure (Server.boardMCPServiceOption) —
 // a Register failure means the minted token would never authorize, so the
 // minter must not hand it out; lookup is called by the HTTP handler.
+// The trust argument is the run's store.RunTrust: the connector facade's
+// credential resolution (#2758) fails CLOSED on an unstated trust, so the
+// minter must say when it could not read the run rather than letting the
+// zero value read as the trusted one.
 type BoardMCPTokenStore interface {
-	Register(token string, caps []string, sourceIssueID, tenantID string) error
+	Register(token string, caps []string, sourceIssueID, tenantID string, trust store.RunTrust, trustStated bool) error
 	Revoke(token string)
 	lookup(token string) (boardMCPGrant, bool)
 }
@@ -88,11 +100,13 @@ func newBoardMCPToken() string {
 // Register stores a token with its grant. A subsequent call with the same
 // token replaces the grant. A full registry is an error: the token would
 // never authorize, so the caller must not hand it out.
-func (r *BoardMCPTokenRegistry) Register(token string, caps []string, sourceIssueID, tenantID string) error {
+func (r *BoardMCPTokenRegistry) Register(token string, caps []string, sourceIssueID, tenantID string, trust store.RunTrust, trustStated bool) error {
 	grant := boardMCPGrant{
 		Capabilities:  boardops.Capabilities{},
 		SourceIssueID: strings.TrimSpace(sourceIssueID),
 		TenantID:      strings.TrimSpace(tenantID),
+		Trust:         string(trust),
+		TrustStated:   trustStated,
 		ExpiresAt:     r.now().Add(boardMCPDefaultTTL),
 	}
 	for _, c := range caps {

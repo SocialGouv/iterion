@@ -636,6 +636,24 @@ func piMCPServers(task Task, logger *iterlog.Logger) []piMCPServerSpec {
 				task.NodeID, task.Iteration, BackendPi)
 		}
 	}
+	// Connector facade (#2758), mirroring the board block: HTTP ONLY — the
+	// credential is resolved and spent at the server, so there is no stdio
+	// transport to fall back to (one would run where the agent runs, which
+	// is exactly what Q4 forbids).
+	if HasConnectorsCapability(task.Capabilities) {
+		switch {
+		case task.ConnectorHTTPEndpoint != "" && task.BoardRunToken != "":
+			out = append(out, piMCPServerSpec{
+				Name:      connectorMCPServerName,
+				Transport: "http",
+				URL:       task.ConnectorHTTPEndpoint,
+				Headers:   map[string]string{"X-Iterion-Run": task.BoardRunToken},
+			})
+		default:
+			warn("[%s#%d/%s] connectors capability granted but no connector facade endpoint is configured (the run needs a server-wired sandbox); connector tools disabled for this node",
+				task.NodeID, task.Iteration, BackendPi)
+		}
+	}
 	if HasRunsReadCapability(task.Capabilities) {
 		switch {
 		case task.RunsHTTPEndpoint != "" && task.BoardRunToken != "":

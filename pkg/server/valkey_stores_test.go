@@ -7,6 +7,8 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 func newTestRedis(t *testing.T) (*miniredis.Miniredis, redis.UniversalClient) {
@@ -76,7 +78,7 @@ func TestValkeyBoardMCPTokenStore_RegisterLookupRevoke(t *testing.T) {
 	mr, rdb := newTestRedis(t)
 	s := newValkeyBoardMCPTokenStore(rdb, nil)
 
-	if err := s.Register("tok1", []string{"board.read", "board.move"}, "", ""); err != nil {
+	if err := s.Register("tok1", []string{"board.read", "board.move"}, "", "", store.RunTrustFork, true); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	g, ok := s.lookup("tok1")
@@ -86,12 +88,18 @@ func TestValkeyBoardMCPTokenStore_RegisterLookupRevoke(t *testing.T) {
 	if g.Capabilities["board.create"] {
 		t.Errorf("ungranted cap leaked")
 	}
+	// The trust round-trips: the connector facade's credential resolution
+	// (#2758) fails closed on a grant whose trust did not survive the move
+	// between replicas.
+	if !g.TrustStated || g.Trust != string(store.RunTrustFork) {
+		t.Errorf("trust = %q stated=%v, want fork stated — a fork grant must survive the round trip", g.Trust, g.TrustStated)
+	}
 	s.Revoke("tok1")
 	if _, ok := s.lookup("tok1"); ok {
 		t.Errorf("revoked token should miss")
 	}
 	// TTL eviction.
-	if err := s.Register("tok2", []string{"board.read"}, "", ""); err != nil {
+	if err := s.Register("tok2", []string{"board.read"}, "", "", store.RunTrustDefault, true); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	mr.FastForward(boardMCPDefaultTTL + time.Minute)
@@ -107,7 +115,7 @@ func TestValkeyBoardMCPTokenStore_RegisterSurfacesSetFailure(t *testing.T) {
 	s := newValkeyBoardMCPTokenStore(rdb, nil)
 
 	mr.SetError("valkey down")
-	err := s.Register("secret-token", []string{"board.read"}, "", "")
+	err := s.Register("secret-token", []string{"board.read"}, "", "", store.RunTrustDefault, true)
 	if err == nil {
 		t.Fatal("Register should surface the Set failure")
 	}

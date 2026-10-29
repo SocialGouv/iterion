@@ -1091,6 +1091,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	opts = installRewriteHook(task, opts)
 	opts = b.wireBoardMCP(task, opts, &extraAllowedTools)
 	opts = b.wireRunsMCP(task, opts, &extraAllowedTools)
+	opts = b.wireConnectorMCP(task, opts, &extraAllowedTools)
 	opts = b.wireUserMCP(task, opts, &extraAllowedTools)
 
 	// Watch capabilities (watch.subscribe / watch.unsubscribe) are wired for

@@ -473,13 +473,13 @@ func TestAnHTTPOriginIsFlaggedOnAddAndOnEveryList(t *testing.T) {
 	}
 }
 
-// A grant nothing performs is said by BOTH commands that describe the record
-// (#1072 governance). `--capability agent` is accepted — it is a settled
-// decision and the operator's explicit choice is never silently narrowed — and
-// it is inert, so `add` says so when it writes it and `list` says so every
-// time it reads it back. A connection granting `action` alone is owed nothing
-// and must stay quiet.
-func TestAnAgentGrantIsReportedAsInertOnAddAndOnEveryList(t *testing.T) {
+// A grant this build honours is owed NO warning — and `agent` is honoured
+// since the facade landed (#2758). This is the ticket's own Done-when
+// witness: BOTH CLI surfaces stopped calling the grant inert, not because
+// either was edited (they were not — the warning is connection.GrantAdvice's
+// call) but because the one predicate changed. A `trigger` grant beside it is
+// still inert and must still be said, on add and on every list.
+func TestAnAgentGrantIsNoLongerReportedAsInertOnAddOrOnList(t *testing.T) {
 	ws := connectionsWorkspace(t)
 	storeDir := filepath.Join(ws, ".iterion")
 
@@ -491,35 +491,35 @@ func TestAnAgentGrantIsReportedAsInertOnAddAndOnEveryList(t *testing.T) {
 	}, &add); err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	if !strings.Contains(add.String(), "inert") {
-		t.Errorf("add must say the `agent` grant it just stored is inert, got:\n%s", add.String())
+	if strings.Contains(add.String(), "inert") {
+		t.Errorf("the `agent` grant is honoured by the facade — add must stop calling it inert, got:\n%s", add.String())
 	}
 
 	var list bytes.Buffer
 	if err := cli.ConnectionsList(storeDir, &list); err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if !strings.Contains(list.String(), "inert") {
-		t.Errorf("list must say it too — the grant outlives the command that wrote it, got:\n%s", list.String())
+	if strings.Contains(list.String(), "inert") {
+		t.Errorf("list must stop too — one predicate, both surfaces:\n%s", list.String())
 	}
 
-	// The action-only record next to it stays silent, or the warning is noise
-	// an operator learns to skip.
-	var addAction, listBoth bytes.Buffer
+	// The trigger-granting record next to it keeps its warning, or the flip
+	// silenced a grant nothing honours yet.
+	var addTrigger, listBoth bytes.Buffer
 	if err := cli.ConnectionsAdd(cli.ConnectionAddOptions{
-		Connector: "forgejo", Scheme: "token", Alias: "deterministic",
+		Connector: "forgejo", Scheme: "token", Alias: "inbound",
 		BaseURL: "https://codeberg.org", TokenEnv: "FORGE_TEST_TOKEN",
-		Capabilities: []string{"action"}, StoreDir: storeDir,
-	}, &addAction); err != nil {
-		t.Fatalf("add action-only: %v", err)
+		Capabilities: []string{"action", "trigger"}, StoreDir: storeDir,
+	}, &addTrigger); err != nil {
+		t.Fatalf("add trigger: %v", err)
 	}
-	if strings.Contains(addAction.String(), "inert") {
-		t.Errorf("an action-only grant is honoured and owed no warning, got:\n%s", addAction.String())
+	if !strings.Contains(addTrigger.String(), "inert") {
+		t.Errorf("the `trigger` grant is still inert and add must still say so, got:\n%s", addTrigger.String())
 	}
 	if err := cli.ConnectionsList(storeDir, &listBoth); err != nil {
 		t.Fatalf("list both: %v", err)
 	}
 	if n := strings.Count(listBoth.String(), "inert"); n != 1 {
-		t.Errorf("exactly the agent-granting record is flagged, got %d warnings in:\n%s", n, listBoth.String())
+		t.Errorf("exactly the trigger-granting record is flagged, got %d warnings in:\n%s", n, listBoth.String())
 	}
 }
