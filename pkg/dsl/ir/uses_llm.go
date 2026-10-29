@@ -303,9 +303,17 @@ func NodeUsesLLM(n Node) bool { return nodeUsesLLM(n) }
 // (self-repair) is a direct generation with no tool surface, so it is
 // deliberately NOT this predicate's answer: the permission validation's
 // "reader" is the rung that holds tools, not the one that only completes.
+//
+// Dispatch's own two conditions, and the companion of
+// ToolRecoverySelfRepairRung: the rungs exist under `policy: recover` alone,
+// so an inert `recovery:` block (C106) is no reader of the permission lists
+// — nothing can ever run to read them. Unlike rung 3 this one takes the
+// recipe as it finds it: an agent achieves the GOAL with real tools, so it
+// runs for a registry recipe the self-repair rung cannot correct.
 func ToolRecoveryAgentRung(n Node) bool {
 	t, ok := n.(*ToolNode)
-	return ok && t.Recovery != nil && t.Recovery.MaxAgentAttempts > 0
+	return ok && t.Policy == PolicyRecover && t.Recovery != nil &&
+		t.Recovery.MaxAgentAttempts > 0
 }
 
 // nodeUsesLLM answers for one node. Kept separate so the reasoning per node
@@ -328,12 +336,11 @@ func nodeUsesLLM(n Node) bool {
 		// recovery ladder spends a model when the recipe cannot heal
 		// itself: rung 3 asks one for a corrected command (a direct
 		// generation), rung 4 hands recovery to an agent. A run that only
-		// *might* reach a rung still can. The gate is dispatch's own
-		// (executeVerifiedToolNode): rungs exist under policy: recover
-		// alone, so an inert `recovery:` block (C106) spends nothing and
-		// does not count.
-		return node.Policy == PolicyRecover && node.Recovery != nil &&
-			(node.Recovery.MaxRepairAttempts > 0 || node.Recovery.MaxAgentAttempts > 0)
+		// *might* reach a rung still can. Both rungs are read through the
+		// predicates dispatch gates them on, never restated here: a rung
+		// this arm counts and dispatch never runs makes a launch refuse a
+		// provider nothing spends (#2783).
+		return ToolRecoverySelfRepairRung(node) || ToolRecoveryAgentRung(node)
 	case *SubbotNode:
 		// The child `.bot` is another source entirely: unknowable from
 		// here, so assumed to spend.

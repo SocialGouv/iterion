@@ -84,10 +84,37 @@ func TestWorkflowUsesLLM(t *testing.T) {
 		},
 		{
 			// Rung 3's self-repair is a model call too (a direct
-			// generation): the default recovery shape spends.
+			// generation): the default recovery shape spends, on a recipe
+			// the rung can replace with a corrected command.
 			name: "a tool node with self-repair does",
-			wf: wfWith(&ToolNode{BaseNode: BaseNode{ID: "a"}, Command: "true",
+			wf: wfWith(&ToolNode{BaseNode: BaseNode{ID: "a"}, Command: "make build",
 				Policy: PolicyRecover, Recovery: &RecoverySpec{MaxRepairAttempts: 1}}),
+			want: true,
+		},
+		{
+			// … and a REGISTRY recipe (a bare tool name) does NOT: rung 3
+			// proposes a corrected COMMAND, which that recipe has none of,
+			// so dispatch skips the rung and nothing is ever spent. Counted
+			// here, a launch was refused by name for the rung's provider
+			// (#2783) — on a workflow that had run on the release before.
+			name: "a self-repair rung on a registry recipe does not",
+			wf: wfWith(&ToolNode{BaseNode: BaseNode{ID: "a"}, Command: "noop_tool",
+				Policy: PolicyRecover, Recovery: &RecoverySpec{MaxRepairAttempts: 1}}),
+			want: false,
+		},
+		{
+			// A script recipe has a body to correct, so the rung is live.
+			name: "a self-repair rung on a script recipe does",
+			wf: wfWith(&ToolNode{BaseNode: BaseNode{ID: "a"}, Script: "exit 1",
+				Policy: PolicyRecover, Recovery: &RecoverySpec{MaxRepairAttempts: 1}}),
+			want: true,
+		},
+		{
+			// Rung 4 takes the recipe as it finds it: an agent achieves the
+			// GOAL with real tools, so a registry recipe still spends.
+			name: "an agent rung on a registry recipe does",
+			wf: wfWith(&ToolNode{BaseNode: BaseNode{ID: "a"}, Command: "noop_tool",
+				Policy: PolicyRecover, Recovery: &RecoverySpec{MaxAgentAttempts: 1}}),
 			want: true,
 		},
 		{

@@ -681,13 +681,13 @@ decode the native event and spell the native verdict.
   run stopping at the recipe. A workflow whose only node is such a `tool`
   node therefore gets no C111 on its rule lists: they are read, by the agent
   that runs after a deterministic recipe already failed.
-  C111's reader test is **wider than the gate** — it counts a tool node on
-  `recovery.max_agent_attempts > 0` alone, policy included or not — so the
-  same silence covers a node that declares the bound under any other policy
-  (`required`, `best_effort`, or none), where no rung ever runs and the lists
-  really are inert. There, **C106**
-  names the dead recovery config, which is the finding the author needs:
-  the bound, not the rule lists, is what is unreachable.
+  C111's reader test is **exactly that gate** (`ToolRecoveryAgentRung`):
+  the bound AND `policy: recover`. A node declaring the bound under any
+  other policy (`required`, `best_effort`, or none) runs no rung, so it is
+  no reader and the rule lists DO earn their C111 — alongside **C106** on
+  the dead recovery config. The author gets both findings, which is the
+  pair the shape deserves: the bound is unreachable, and so are the lists
+  whose only reader it was.
 
 ## See also
 

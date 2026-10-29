@@ -159,8 +159,12 @@ func TestToolNodeCommandKeepsSmallShellOnArgv(t *testing.T) {
 // formatting — which together account for the bulk of the file's
 // logic and the highest regression risk if anyone touches them.
 
-// ----- looksLikeShellCommand -----
+// ----- the recipe-kind heuristic, as dispatch reads it -----
 
+// The shell/registry split decides which code path runs the recipe AND
+// whether the Verified Action's self-repair rung exists at all
+// (ir.ToolRecoverySelfRepairRung), so it is pinned here through the reading
+// dispatch does.
 func TestLooksLikeShellCommand(t *testing.T) {
 	cases := []struct {
 		cmd  string
@@ -185,8 +189,8 @@ func TestLooksLikeShellCommand(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.cmd, func(t *testing.T) {
-			if got := looksLikeShellCommand(c.cmd); got != c.want {
-				t.Errorf("looksLikeShellCommand(%q) = %v, want %v", c.cmd, got, c.want)
+			if got := recipeKindOf(&ir.ToolNode{Command: c.cmd}) == recipeShell; got != c.want {
+				t.Errorf("recipeKindOf(command: %q) == recipeShell = %v, want %v", c.cmd, got, c.want)
 			}
 		})
 	}

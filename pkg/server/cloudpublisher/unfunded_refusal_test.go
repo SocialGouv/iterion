@@ -184,3 +184,74 @@ func TestResolve_LLMFallbackNone_ARecoveryRungsModelIsRefusedByName(t *testing.T
 		t.Fatalf("resolveAndSealCredentials = %v, want nil — the team funds exactly what its rungs name", err)
 	}
 }
+
+// #2783's other half — the walk prices only what dispatch can spend. The
+// same bot with a REGISTRY recipe (`command: "noop_tool"`: no space, no
+// slash, so a registered tool name) gives rung 3 no command to correct, so
+// dispatch skips the rung and the launch must start: refusing it named a
+// provider the run could never reach, for a workflow that launched on the
+// release before. Mutant: drop the recipe-kind conjunct from
+// ir.ToolRecoverySelfRepairRung → the first half fails with the phantom
+// openai refusal.
+const registryRecipeRung3Bot = `tool heal:
+  command: "noop_tool"
+  goal: "the build succeeds"
+  postcondition: "test -f build.ok"
+  policy: recover
+  recovery:
+    max_repair_attempts: 1
+    max_agent_attempts: 0
+    model: "openai/gpt-5.4-mini"
+
+agent verify:
+  model: "anthropic/claude-opus-5"
+  backend: "claw"
+
+workflow main:
+  heal -> verify
+  verify -> done
+`
+
+// The same registry recipe with rung 4 budgeted instead: an agent achieves
+// the goal with real tools whatever the recipe was, so THAT rung is a real
+// route and the unfunded refusal must still name it.
+const registryRecipeRung4Bot = `tool heal:
+  command: "noop_tool"
+  goal: "the build succeeds"
+  postcondition: "test -f build.ok"
+  policy: recover
+  recovery:
+    max_repair_attempts: 0
+    max_agent_attempts: 1
+    model: "openai/gpt-5.4-mini"
+
+agent verify:
+  model: "anthropic/claude-opus-5"
+  backend: "claw"
+
+workflow main:
+  heal -> verify
+  verify -> done
+`
+
+func TestResolve_LLMFallbackNone_ARegistryRecipeIsRefusedForRungFourAlone(t *testing.T) {
+	launch := func(t *testing.T, src string) error {
+		t.Helper()
+		p, _ := llmFallbackPublisher(t, map[string]string{"team1": "none"})
+		seedKeyFP(t, p.apiKeys, p.sealer, "team1", secrets.ProviderAnthropic, "sk-ant-team", "fp-ant-team")
+		return resolvePolicy(t, p, src)
+	}
+
+	if err := launch(t, registryRecipeRung3Bot); err != nil {
+		t.Fatalf("resolveAndSealCredentials = %v, want nil: a registry recipe has no self-repair rung for dispatch to spend, so its `recovery.model` is no route to refuse", err)
+	}
+
+	err := launch(t, registryRecipeRung4Bot)
+	var unfunded *UnfundedProvidersError
+	if !errors.As(err, &unfunded) {
+		t.Fatalf("resolveAndSealCredentials = %v, want an *UnfundedProvidersError: rung 4 runs for a registry recipe, so its model is a route", err)
+	}
+	if sites := unfunded.Sites["openai"]; len(sites) != 1 || sites[0] != "heal#agent_recovery" {
+		t.Errorf("sites naming openai = %v, want exactly [heal#agent_recovery] — the self-repair site is a rung dispatch cannot run", sites)
+	}
+}

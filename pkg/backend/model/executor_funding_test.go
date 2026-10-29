@@ -1,6 +1,7 @@
 package model
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -167,5 +169,48 @@ func TestAnthropicFunding_ReadsWhatTheFactoryReads(t *testing.T) {
 	}
 	if got := anthropicFunding(secrets.WithCredentials(context.Background(), forfaitCreds)); got != "the run's Claude forfait" {
 		t.Errorf("a real ctx forfait token read %q, want it funding", got)
+	}
+}
+
+// Dispatch's rung-3 gate is the predicate the launch walks read
+// (ir.ToolRecoverySelfRepairRung), so the two cannot disagree about which
+// recipes HAVE a self-repair rung: rung 3 asks a model for a corrected
+// COMMAND and re-runs it, which a registry recipe — a bare registered tool
+// name — gives it nothing to do. Measured on the ladder itself, because
+// that is where the gate lives: unfunded, entering the rung aborts with the
+// named reason and the ladder logs the attempt. Mutant: gate rung 3 on
+// node.Recovery.MaxRepairAttempts > 0 alone → the registry reading reddens,
+// and a bare tool name spends a repair generation nothing can use (the
+// over-read the launch walks were refusing launches for, #2783).
+func TestVerifiedAction_OnlyARepairableRecipeEntersTheSelfRepairRung(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		command  string
+		wantRung bool
+	}{
+		{"a registry recipe (a bare tool name)", "noop_tool", false},
+		{"a shell recipe", "/bin/false", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearAnthropicFunding(t)
+			t.Setenv("ITERION_PERMISSION", "")
+			var buf bytes.Buffer
+			exec := NewClawExecutor(NewRegistry(),
+				&ir.Workflow{Prompts: map[string]*ir.Prompt{}, Schemas: map[string]*ir.Schema{}},
+				WithLogger(iterlog.New(iterlog.LevelInfo, &buf)), WithWorkDir(t.TempDir()))
+			node := &ir.ToolNode{
+				BaseNode: ir.BaseNode{ID: "heal"}, Command: tc.command,
+				Goal: "the build succeeds", Postcondition: "false", Policy: ir.PolicyRecover,
+				Recovery: &ir.RecoverySpec{MaxRepairAttempts: 1},
+			}
+			// The run's own error is the ladder's verdict on an unmet
+			// postcondition; what is under test is how far it escalated.
+			_, err := exec.executeToolNode(context.Background(), node, map[string]any{})
+			entered := strings.Contains(buf.String(), "self-repair attempt 1 aborted")
+			if entered != tc.wantRung {
+				t.Errorf("%s: rung 3 entered = %v, want %v (run err: %v)\nrun log:\n%s",
+					tc.name, entered, tc.wantRung, err, buf.String())
+			}
+		})
 	}
 }

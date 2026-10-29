@@ -6,6 +6,14 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
+// registryRecipeTool is recoveryToolWith's registry twin: the same Verified
+// Action with a bare `command:` — a registered tool name, not a shell line.
+func registryRecipeTool(id string, rec *ir.RecoverySpec) *ir.ToolNode {
+	t := recoveryToolWith(id, ir.PolicyRecover, rec)
+	t.Command = "noop_tool"
+	return t
+}
+
 func recoveryToolWith(id, policy string, rec *ir.RecoverySpec) *ir.ToolNode {
 	return &ir.ToolNode{
 		BaseNode:      ir.BaseNode{ID: id},
@@ -142,6 +150,10 @@ func TestAnthropicWireRoutesReadsRecoveryRungs(t *testing.T) {
 		"rep-def":    recoveryToolWith("rep-def", ir.PolicyRecover, &ir.RecoverySpec{MaxRepairAttempts: 1}),
 		"rep-inert":  recoveryToolWith("rep-inert", ir.PolicyRequired, &ir.RecoverySpec{MaxRepairAttempts: 1, Model: "anthropic/claude-opus-5-5"}),
 		"rep-agent4": recoveryToolWith("rep-agent4", ir.PolicyRecover, &ir.RecoverySpec{MaxAgentAttempts: 1, Model: "openai/gpt-5.4-mini"}),
+		// A registry recipe (bare tool name) has no rung 3 to dispatch, so
+		// it is no route on this walk either — not even the anthropic one
+		// its spec names, which would arm the wire guard.
+		"rep-registry": registryRecipeTool("rep-registry", &ir.RecoverySpec{MaxRepairAttempts: 1, Model: "anthropic/claude-opus-5-5"}),
 	}}
 	got := AnthropicWireRoutes(RouteView{Workflow: wf, Overrides: ModelOverrides{}})
 	want := []WireRoute{
@@ -169,5 +181,60 @@ func TestAnthropicWireRoutesReadsRecoveryRungs(t *testing.T) {
 	}
 	if got := AnthropicWireRoutes(RouteView{Workflow: wfClaw, Overrides: ModelOverrides{}}); len(got) != 0 {
 		t.Fatalf("claw/openai rung 4 must not arm the wire guard: %+v", got)
+	}
+}
+
+// The rungs the walks price are the rungs DISPATCH runs (#2783). Rung 3
+// proposes a corrected COMMAND and re-runs it, so a registry recipe — a
+// bare `command:`, resolved as a registered tool name — has no rung 3 at
+// all, whatever `max_repair_attempts` says; pricing one refused a launch by
+// name for a provider nothing could spend. Rung 4 is the other answer: an
+// agent achieves the GOAL with real tools, so it runs for that same recipe.
+// Mutant: drop the recipe-kind conjunct from ir.ToolRecoverySelfRepairRung
+// (leaving MaxRepairAttempts > 0 alone) → the two registry-rung-3
+// assertions redden, each naming the phantom openai route.
+func TestEffectiveProviders_PricesOnlyTheRecoveryRungsDispatchCanRun(t *testing.T) {
+	t.Setenv("ITERION_VERIFIED_ACTION_MODEL", "")
+	view := func(tool *ir.ToolNode) RouteView {
+		wf := &ir.Workflow{Nodes: map[string]ir.Node{"a": agentWith("a", "zai", ""), "t": tool}}
+		return RouteView{Workflow: wf, Overrides: ModelOverrides{}}
+	}
+	repair := func() *ir.RecoverySpec {
+		return &ir.RecoverySpec{MaxRepairAttempts: 1, Model: "openai/gpt-5.4-mini"}
+	}
+
+	// A bare tool name: no rung 3, so no openai anywhere in the walk.
+	registry := recoveryToolWith("t", ir.PolicyRecover, repair())
+	registry.Command = "noop_tool"
+	got := EffectiveProviders(view(registry), knownForTest)
+	if !got.NarrowSafe || !slicesEqual(got.Providers, []string{"zai"}) || len(got.Pins["openai"]) != 0 {
+		t.Fatalf("a registry recipe's rung 3: got %+v, want [zai] narrow-safe and no openai pin — dispatch never runs that rung", got)
+	}
+	// … and it is not refused under an allowlist that excludes openai
+	// either: a launch that ran on the release before must still run.
+	got = EffectiveProviders(RouteView{
+		Workflow:         view(registry).Workflow,
+		Overrides:        ModelOverrides{},
+		AllowedProviders: []string{"zai"},
+	}, knownForTest)
+	if len(got.ForbiddenPrimary) != 0 || len(got.Unreadable) != 0 {
+		t.Fatalf("a registry recipe's rung 3 under an allowlist: got %+v, want nothing forbidden and nothing unreadable", got)
+	}
+
+	// A script recipe has a body rung 3 can replace: priced, at its site.
+	script := recoveryToolWith("t", ir.PolicyRecover, repair())
+	script.Command, script.Script = "", "exit 1"
+	got = EffectiveProviders(view(script), knownForTest)
+	if !slicesEqual(got.Pins["openai"], []string{"t#self_repair"}) {
+		t.Fatalf("a script recipe's rung 3: got %+v, want it pinned at t#self_repair", got.Pins)
+	}
+
+	// Rung 4 on the SAME registry recipe IS a route: the narrowing is rung
+	// 3's alone, never "a registry recipe spends nothing".
+	agentRung := recoveryToolWith("t", ir.PolicyRecover, &ir.RecoverySpec{MaxAgentAttempts: 1, Model: "openai/gpt-5.4-mini"})
+	agentRung.Command = "noop_tool"
+	got = EffectiveProviders(view(agentRung), knownForTest)
+	if !slicesEqual(got.Pins["openai"], []string{"t#agent_recovery"}) {
+		t.Fatalf("a registry recipe's rung 4: got %+v, want it pinned at t#agent_recovery", got.Pins)
 	}
 }

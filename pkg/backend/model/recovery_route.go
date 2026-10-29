@@ -7,45 +7,54 @@ import (
 )
 
 // recoveryRungsOf answers for a tool node's Verified Action recovery ladder
-// (ADR-044) the way dispatch spends it (executor_verified_action.go): the
-// rungs exist only under `policy: recover` with a `recovery:` spec, and an
-// action recipe never carries one (C262), so a surviving spec belongs to a
-// command/script — repairable — recipe. spec is the authored
-// `recovery.model`, RAW: the caller's view resolves it like every other
-// routing field (the run's vars by provenance, a late name kept as written).
+// (ADR-044) which rungs dispatch can spend, and on what spec. spec is the
+// authored `recovery.model`, RAW: the caller's view resolves it like every
+// other routing field (the run's vars by provenance, a late name kept as
+// written).
 //
 // The two rungs spend the SAME spec differently, and the callers read each
 // the way dispatch runs it:
 //
-//   - rung 3 (selfRepair, MaxRepairAttempts > 0) is a DIRECT generation on
-//     the spec (registry.ResolveWithContext): no backend, no
-//     default_backend, no override cell — the class humanLLMModelOf answers
-//     for a human node;
-//   - rung 4 (agentRecovery, MaxAgentAttempts > 0) builds a SYNTHETIC agent
-//     node — id `<tool>__recover`, the resolved spec its whole model — and
-//     runs the full agent path on it, so a launch override whose selector
-//     reaches that id (a kind word, a glob) applies exactly as at dispatch.
+//   - rung 3 (selfRepair) is a DIRECT generation on the spec
+//     (registry.ResolveWithContext): no backend, no default_backend, no
+//     override cell — the class humanLLMModelOf answers for a human node;
+//   - rung 4 (agentRung) builds a SYNTHETIC agent node — id
+//     `<tool>__recover`, the resolved spec its whole model — and runs the
+//     full agent path on it, so a launch override whose selector reaches
+//     that id (a kind word, a glob) applies exactly as at dispatch.
 //
 // The ONE reader both launch-time walks consult for the kind (#2783): read
 // by neither, the provider a rung spends was invisible to the providers
-// allowlist and to both unfunded refusals. ir.nodeUsesLLM's ToolNode arm
-// shares this gate — the walks' fieldless class and the graph property must
-// agree on one policy line, or an inert `recovery:` block would widen the
-// walks for a spend dispatch never makes.
+// allowlist and to both unfunded refusals. Each rung's reachability is the
+// predicate DISPATCH gates it on — ir.ToolRecoverySelfRepairRung,
+// ir.ToolRecoveryAgentRung, which ir.nodeUsesLLM reads too. Restated here
+// instead, the walks priced a rung dispatch never runs: a registry recipe
+// (a bare `command:`) has no command for rung 3 to correct, so a launch was
+// refused by name for a provider nothing could spend.
 func recoveryRungsOf(n ir.Node) (spec string, selfRepair, agentRung bool) {
 	t, ok := n.(*ir.ToolNode)
-	if !ok || t.Policy != ir.PolicyRecover || t.Recovery == nil {
+	if !ok {
 		return "", false, false
 	}
-	return t.Recovery.Model,
-		t.Recovery.MaxRepairAttempts > 0,
-		t.Recovery.MaxAgentAttempts > 0
+	selfRepair = ir.ToolRecoverySelfRepairRung(t)
+	agentRung = ir.ToolRecoveryAgentRung(t)
+	if !selfRepair && !agentRung {
+		return "", false, false
+	}
+	return t.Recovery.Model, selfRepair, agentRung
 }
 
 // recoveryModelFallback is the recovery ladder's default arm, shared by
 // dispatch (recoveryModel) and the launch walks so the two cannot drift over
 // one unpinned spec: ITERION_VERIFIED_ACTION_MODEL, else the package
 // default.
+//
+// The helper is shared; the ENV it reads is each process's own. A launch
+// walk runs in the API server and dispatch in the runner pod, so the
+// provider this arm names is dispatch's only while the dial reads the same
+// on both — which the chart guarantees by giving the two deployments one
+// envFrom ConfigMap, and which docs/environment-variables.md asks of an
+// operator who sets it by hand.
 func recoveryModelFallback() string {
 	if m := ir.LookupEnv("ITERION_VERIFIED_ACTION_MODEL"); m != "" {
 		return m

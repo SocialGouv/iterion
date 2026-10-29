@@ -89,35 +89,23 @@ func checkActionInvariants(node *ir.ToolNode) error {
 	return nil
 }
 
-// recipeKind classifies how a tool node's recipe is executed. The
-// classification is shared by executeToolNodeRecipe (standard path) and
-// runVerifiedRecipe (Verified Action ladder) so the script/shell/registry
-// heuristic lives in exactly one place.
-type recipeKind int
+// recipeKind classifies how a tool node's recipe is executed, under
+// dispatch's own names for ir's answer. The classification lives in ir,
+// with the fields it reads: executeToolNodeRecipe (standard path),
+// runVerifiedRecipe (Verified Action ladder) and the launch walks that
+// price the self-repair rung (ir.ToolRecoverySelfRepairRung) all read the
+// one heuristic, so none can drift from the others.
+type recipeKind = ir.ToolRecipeKind
 
 const (
-	recipeScript   recipeKind = iota // `script:` body via an interpreter
-	recipeShell                      // `command:` with template refs or shell metacharacters
-	recipeRegistry                   // bare `command:` resolved as a registered tool name
-	recipeAction                     // `action:` — a connector operation (ADR-098)
+	recipeScript   = ir.ToolRecipeScript   // `script:` body via an interpreter
+	recipeShell    = ir.ToolRecipeShell    // `command:` with template refs or shell metacharacters
+	recipeRegistry = ir.ToolRecipeRegistry // bare `command:` resolved as a registered tool name
+	recipeAction   = ir.ToolRecipeAction   // `action:` — a connector operation (ADR-098)
 )
 
-// recipeKindOf reports how node's recipe should run. `action:` and `script:`
-// take precedence over `command:` (IR validation makes all three mutually
-// exclusive); a command with template refs or shell metacharacters runs via
-// sh, else it is a bare registered-tool name.
-func recipeKindOf(node *ir.ToolNode) recipeKind {
-	switch {
-	case node.Action != "":
-		return recipeAction
-	case node.Script != "":
-		return recipeScript
-	case len(node.CommandRefs) > 0 || looksLikeShellCommand(node.Command):
-		return recipeShell
-	default:
-		return recipeRegistry
-	}
-}
+// recipeKindOf reports how node's recipe should run.
+func recipeKindOf(node *ir.ToolNode) recipeKind { return ir.ToolRecipeKindOf(node) }
 
 // toolNodeSetupError marks the sandbox refusal of a registry recipe: the
 // recipe can never run under this sandbox, so the Verified Action ladder
@@ -1148,14 +1136,6 @@ const (
 // "sandbox active = everything sandboxed" guarantee.
 func (e *ClawExecutor) nodeOptsOutOfSandbox(_ nodeOptOut) bool {
 	return false
-}
-
-// looksLikeShellCommand returns true if the command string looks like a shell
-// command rather than a bare tool name. Tool names are simple identifiers
-// (e.g. "read_file", "bash"), while shell commands contain spaces, operators,
-// or path separators.
-func looksLikeShellCommand(cmd string) bool {
-	return strings.ContainsAny(cmd, " \t|&;><$`(){}\"'/")
 }
 
 // resolveCommandTemplate substitutes {{input.X}}, {{vars.X}}, {{secrets.X}},

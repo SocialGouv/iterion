@@ -72,7 +72,7 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 	}
 
 	// Rung 2 — recipe.
-	res, repairable, setupErr := e.runVerifiedRecipe(ctx, node, input)
+	res, setupErr := e.runVerifiedRecipe(ctx, node, input)
 	if setupErr != nil {
 		// Build / policy failure — not a recoverable recipe error.
 		return nil, setupErr
@@ -109,8 +109,9 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 
 	// Rungs 3-4 only run under policy: recover.
 	if policy == ir.PolicyRecover && node.Recovery != nil {
-		// Rung 3 — self-repair (bounded). Only for command/script recipes.
-		if repairable && node.Recovery.MaxRepairAttempts > 0 {
+		// Rung 3 — self-repair (bounded). Only for command/script
+		// recipes: the predicate the launch walks read is this gate.
+		if ir.ToolRecoverySelfRepairRung(node) {
 			lastStdout, lastStderr, lastCmd := res.stdout, res.stderr, res.resolved
 			for i := 0; i < node.Recovery.MaxRepairAttempts; i++ {
 				corrected, repairRes, rerr := e.selfRepair(ctx, node, lastStdout, lastStderr, lastCmd)
@@ -144,7 +145,7 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 		}
 
 		// Rung 4 — agent recovery (opt-in; OFF unless budgeted).
-		if node.Recovery.MaxAgentAttempts > 0 {
+		if ir.ToolRecoveryAgentRung(node) {
 			for i := 0; i < node.Recovery.MaxAgentAttempts; i++ {
 				if aerr := e.agentRecovery(ctx, node, input, lastRung); aerr != nil {
 					e.logVA(node.ID, fmt.Sprintf("agent recovery attempt %d aborted: %v", i+1, aerr))
@@ -202,38 +203,38 @@ func (e *ClawExecutor) deliveryVerdict(nodeID string, res recipeResult) error {
 	return res.deliveryErr
 }
 
-// runVerifiedRecipe runs the node's recipe (rung 2) and reports whether it
-// is repairable (command/script — a self-repair rung can propose a corrected
-// command). Registry-tool recipes run via the standard path and are not
-// command-repairable. The returned error is a setup error (build/policy),
-// never a recipe run error (that lives in recipeResult.runErr).
-func (e *ClawExecutor) runVerifiedRecipe(ctx context.Context, node *ir.ToolNode, input map[string]any) (recipeResult, bool, error) {
+// runVerifiedRecipe runs the node's recipe (rung 2). Whether a self-repair
+// rung may follow is NOT its answer: that is
+// ir.ToolRecoverySelfRepairRung's, keyed on the same recipe kind this
+// switch reads, so the gate above and the launch walks that price the rung
+// cannot disagree about which recipes dispatch can repair. The returned
+// error is a setup error (build/policy), never a recipe run error (that
+// lives in recipeResult.runErr).
+func (e *ClawExecutor) runVerifiedRecipe(ctx context.Context, node *ir.ToolNode, input map[string]any) (recipeResult, error) {
 	switch recipeKindOf(node) {
 	case recipeScript:
 		resolve, buildCmd := e.scriptRecipe(ctx, node, input)
-		res, err := e.runToolNodeCore(ctx, node, scriptToolNodeToolName(node), resolve, buildCmd)
-		return res, true, err
+		return e.runToolNodeCore(ctx, node, scriptToolNodeToolName(node), resolve, buildCmd)
 	case recipeShell:
 		resolve, buildCmd := e.shellRecipe(ctx, node, input)
-		res, err := e.runToolNodeCore(ctx, node, shellToolNodeToolName(node), resolve, buildCmd)
-		return res, true, err
+		return e.runToolNodeCore(ctx, node, shellToolNodeToolName(node), resolve, buildCmd)
 	default:
-		// Registry tool (bare name): run via the standard recipe path. No
-		// command to self-repair, so report non-repairable. The sandbox
-		// refusal is a setup error; any other failure is the recipe's run.
+		// Registry tool (bare name): run via the standard recipe path —
+		// there is no command for rung 3 to correct. The sandbox refusal
+		// is a setup error; any other failure is the recipe's run.
 		out, rerr := e.executeToolNodeRecipe(ctx, node, input)
 		var setup *toolNodeSetupError
 		if errors.As(rerr, &setup) {
-			return recipeResult{}, false, rerr
+			return recipeResult{}, rerr
 		}
 		// A lost required deliverable travels as itself, never as the
 		// recipe's run error: the tool ran and returned, and the ladder
 		// must not read it as a run to judge by the postcondition.
 		var lost *requiredAttachmentLostError
 		if errors.As(rerr, &lost) {
-			return recipeResult{output: out, deliveryErr: rerr}, false, nil
+			return recipeResult{output: out, deliveryErr: rerr}, nil
 		}
-		return recipeResult{output: out, runErr: rerr}, false, nil
+		return recipeResult{output: out, runErr: rerr}, nil
 	}
 }
 
