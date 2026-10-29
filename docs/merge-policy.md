@@ -30,6 +30,30 @@ green.
   `main` — Tests, Container Image, Trivy, and through Container Image's
   completion Runner Image and Sandbox Base Images — run once per batch). A
   lone PR still merges after `min_entries_to_merge_wait_minutes` (5).
+- **How long the queue waits for a check** — `check_response_timeout_minutes`
+  (60), read from the ruleset on 2026-10-29 with
+  `gh api repos/SocialGouv/iterion/rulesets/18857412` (that GET is also the
+  rollback of any change to it, since the PUT below wants the complete
+  representation). An entry whose required check never reports is dequeued
+  `checks_timed_out` after that long, and so is every entry behind it.
+  Measured 2026-10-15 (SocialGouv/iterion#2377): a required job sat **70
+  minutes** `queued` on `arc-runners` with no runner while its siblings ran,
+  and the queue ejected the pull request. The pool had capacity — the Actions
+  service was holding the job on a phantom runner, the ghost class
+  `.github/workflows/arc-canary.yml` exists to detect.
+
+  > **The alert and the dequeue currently race, by arithmetic.** The canary
+  > pages on a probe nothing picked up within `STALL_SECONDS` (1500 s, 25 min,
+  > `scripts/ci/arc-canary-verdict.sh`), it probes every 30 minutes, and its
+  > watchdog gives the period it judges a 5-minute head start — so dispatch
+  > can stop being trustworthy up to **30 + 25 + 5 = 60 minutes** before anyone
+  > is paged, exactly the queue's own patience. The page is supposed to land
+  > while a human can still set `CI_SELF_HOSTED` to `off` (below), not after
+  > the queue has given up. Closing that gap is one field of the ruleset —
+  > `check_response_timeout_minutes` to 90 — and an admin's PUT, which is what
+  > is left on #2377; `internal/ciguard` holds the three numbers above to the
+  > ceiling this file claims, and holds every site that writes the timeout to
+  > one value.
 - **Required checks** (the fast, reliable ones): `test`, `race`, `vendor-check`,
   `mongo-conformance`, `golangci`, `brand`, `revi/review` — and
   `nats-conformance` once an admin adds it to ruleset 18857412.
