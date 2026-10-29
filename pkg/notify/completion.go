@@ -300,20 +300,16 @@ func (n *Notifier) deliver(ctx context.Context, rawURL string, payload Completio
 	// Per-delivery client: dial only the pinned IP (so the TLS handshake
 	// still uses the URL's host for SNI/verification while the TCP target
 	// is fixed) and never auto-follow redirects — a 3xx to a fresh host
-	// would re-open the rebinding window.
+	// would re-open the rebinding window. The transport never consults an
+	// ambient proxy (#2337): behind a credentialed HTTP_PROXY a proxy-form
+	// request would carry the operator's Proxy-Authorization to the
+	// run-chosen receiver.
 	client := &http.Client{
 		Timeout: n.client.Timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
-		Transport: &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-				d := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 15 * time.Second}
-				return d.DialContext(ctx, network, pinnedAddr)
-			},
-			TLSHandshakeTimeout: 10 * time.Second,
-		},
+		Transport: httpdial.PinnedTransport(pinnedAddr),
 	}
 
 	resp, err := client.Do(req)

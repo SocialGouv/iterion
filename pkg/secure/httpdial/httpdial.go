@@ -156,6 +156,34 @@ func SafeTransport(strict bool) *http.Transport {
 	}
 }
 
+// PinnedTransport returns an *http.Transport that dials ONLY pinnedAddr — a
+// host:port its caller resolved and validated through ResolvePublicHost —
+// whatever host the request names; the original host still travels in the
+// Host header and TLS SNI, so virtual-hosted and TLS-terminated upstreams
+// behave. It is the transport for a delivery whose target was vetted once
+// and must be connected exactly there (completion webhooks, the studio
+// preview proxy), and it shares SafeTransport's bounds.
+//
+// Proxy is pinned nil, never http.ProxyFromEnvironment (#2337): under an
+// ambient proxy, DialContext is called for the PROXY's address while this
+// dialer connects to the pinned target — net/http then writes a proxy-form
+// request, carrying the proxy's Proxy-Authorization, straight to the
+// run-chosen receiver, which can read the operator's proxy credentials and
+// replay them against the real proxy. The delivery is direct by
+// construction, so no proxy credential can ride it.
+func PinnedTransport(pinnedAddr string) *http.Transport {
+	return &http.Transport{
+		Proxy: nil,
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return PlainDialer().DialContext(ctx, network, pinnedAddr)
+		},
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 15 * time.Second,
+		IdleConnTimeout:       30 * time.Second,
+		ForceAttemptHTTP2:     true,
+	}
+}
+
 // PlainDialer returns the dialer SafeTransport connects through, WITHOUT the
 // guard: it bounds the connect and keeps the connection alive, and dials
 // whatever address it is handed. It serves a transport that keeps

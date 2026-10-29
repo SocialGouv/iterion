@@ -126,11 +126,15 @@ attacker-influenced. Before delivering, iterion vets it
 - unresolvable hosts and cluster-internal aliases
   (`*.svc.cluster.local`, `kubernetes.default`,
   `metadata.google.internal`) are refused;
-- resolution **fails closed**.
+- resolution **fails closed**;
+- the delivery dials the vetted address directly and **never consults an
+  ambient proxy** (`HTTP_PROXY` / `HTTPS_PROXY`) — a proxy hop would steer
+  the delivery around the guard, and a proxy-form request would carry the
+  operator's `Proxy-Authorization` to the run-chosen receiver.
 
 This mirrors the SSRF guard used by the preview proxy — both call the
 shared [`pkg/secure/httpdial`](../pkg/secure/httpdial/httpdial.go)
-(`ResolvePublicHost` / `IsPublicUnicast`).
+(`ResolvePublicHost` / `IsPublicUnicast`, delivery on `PinnedTransport`).
 
 ### Allowing private targets (self-host)
 

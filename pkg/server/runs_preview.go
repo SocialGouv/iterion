@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"io"
 	"net"
 	"net/http"
@@ -106,23 +105,14 @@ func (s *Server) handlePreviewProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build a transport that always dials the pinned IP. The HTTP
-	// request still sends the original Host header (and SNI for
-	// https), so virtual-hosted upstreams behave correctly.
+	// The transport dials only the pinned IP. The HTTP request still sends
+	// the original Host header (and SNI for https), so virtual-hosted
+	// upstreams behave correctly. It never consults an ambient proxy
+	// (#2337): behind a credentialed HTTP_PROXY the pinned dial would
+	// connect to the target while net/http wrote a proxy-form request for
+	// the proxy — handing the run-chosen target the operator's
+	// Proxy-Authorization.
 	pinnedAddr := net.JoinHostPort(pinnedIP.String(), port)
-	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			d := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 15 * time.Second}
-			return d.DialContext(ctx, network, pinnedAddr)
-		},
-		TLSHandshakeTimeout:   5 * time.Second,
-		ResponseHeaderTimeout: 15 * time.Second,
-		IdleConnTimeout:       30 * time.Second,
-		// Refuse upgrades to plaintext on https targets — Go's default
-		// already does that, but be explicit.
-		ForceAttemptHTTP2: true,
-	}
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 		// We don't auto-follow redirects: each hop must be re-validated.
@@ -132,7 +122,7 @@ func (s *Server) handlePreviewProxy(w http.ResponseWriter, r *http.Request) {
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
-		Transport: transport,
+		Transport: previewUpstreamTransport(pinnedAddr),
 	}
 
 	// #nosec G107 G704 — SSRF-safe: host was validated by httpdial.ResolvePublicHost and the
@@ -195,4 +185,13 @@ func (s *Server) handlePreviewProxy(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Iterion-Preview-Proxy", "1")
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, io.LimitReader(resp.Body, previewProxyMaxBytes))
+}
+
+// previewUpstreamTransport builds the transport the preview fetch goes out
+// on: the dial pins the validated address and no proxy is ever consulted
+// (httpdial.PinnedTransport) — an ambient credentialed proxy would turn the
+// pinned dial into a credential leak, the target receiving a proxy-form
+// request with the operator's Proxy-Authorization (#2337).
+func previewUpstreamTransport(pinnedAddr string) *http.Transport {
+	return httpdial.PinnedTransport(pinnedAddr)
 }

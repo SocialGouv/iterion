@@ -67,3 +67,18 @@ func TestHandlePreviewProxy_RejectsPrivateTargetStrict(t *testing.T) {
 		}
 	})
 }
+
+// #2337: the preview fetch never consults an ambient proxy — with one, the
+// pinned dial would connect to the run-chosen target while net/http wrote a
+// proxy-form request for the PROXY, handing the target the operator's
+// Proxy-Authorization. Reverting previewUpstreamTransport to an inline
+// transport with http.ProxyFromEnvironment turns this red.
+func TestPreviewUpstreamTransport_NeverProxies(t *testing.T) {
+	tr := previewUpstreamTransport("127.0.0.1:1")
+	if tr.Proxy != nil {
+		t.Fatal("preview upstream transport has a proxy func — an ambient proxy would steer, and credential-mark, a guarded fetch")
+	}
+	if tr.DialContext == nil {
+		t.Fatal("preview upstream transport lost its pinned dial")
+	}
+}
