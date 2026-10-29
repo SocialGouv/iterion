@@ -166,3 +166,84 @@ func flagWord(f *bool) string {
 		return "false"
 	}
 }
+
+// The three refusals the snapshot tier rests on, driven through the seam the
+// loader itself takes (loadFrom). Each is a line the whole decision depends
+// on and none had a witness: ADR-122's "schema 1 is not kept loadable" is an
+// argument about THIS verdict, and a reader that accepts a schema-1 file
+// serves its rows with every capability flag reading unknown, which is #2842
+// re-opened with the suite green.
+//
+// A refused file answers NOTHING — not even the lines that parsed: half a
+// table is a window and a price for some ids and silence for others, with no
+// way to tell which.
+func TestLoadFrom_RefusesWhatTheBinaryCannotRead(t *testing.T) {
+	good, err := WriteSnapshot([]byte(`{"prov":{"models":{"m":{"limit":{"context":8191,"output":512},`+
+		`"cost":{"input":1,"output":2},"tool_call":true}}}}`), "sha256:test", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("WriteSnapshot: %v", err)
+	}
+	header, body, _ := strings.Cut(string(good), "\n")
+	schemaOne := strings.Replace(header, `"schema":2`, `"schema":1`, 1)
+	if schemaOne == header {
+		t.Fatalf("the header does not carry the schema this case rewrites: %s", header)
+	}
+
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want string // a fragment of the refusal, naming what to do about it
+	}{
+		{"a schema this binary does not read", schemaOne + "\n" + body,
+			"snapshot schema 1, want 2 — regenerate with `task models:snapshot`"},
+		{"a header it cannot parse", "{not json\n" + body,
+			"snapshot header:"},
+		{"a line it cannot parse", header + "\n" + body + "{not json\n",
+			"snapshot entry:"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hdr, table, err := loadFrom([]byte(tc.raw))
+			if err == nil {
+				t.Fatalf("the file was accepted: header %+v, %d entries answer", hdr, len(table))
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("the refusal reads %q, want it to name %q", err, tc.want)
+			}
+			if len(table) != 0 || hdr.Schema != 0 {
+				t.Errorf("a refused file still answers: header %+v, %d entries", hdr, len(table))
+			}
+		})
+	}
+
+	// The control: the same bytes, unmodified, load and answer. A refusal
+	// that refused everything would pass every case above.
+	hdr, table, err := loadFrom(good)
+	if err != nil {
+		t.Fatalf("the file the writer just rendered was refused: %v", err)
+	}
+	if hdr.Schema != SnapshotSchema || len(table) != 1 {
+		t.Fatalf("header %+v, %d entries, want schema %d and 1 entry", hdr, len(table), SnapshotSchema)
+	}
+	spec := table["prov/m"]
+	if spec.ContextWindow != 8191 || spec.ToolCall == nil || !*spec.ToolCall {
+		t.Fatalf("the accepted entry reads %+v tool_call=%s", spec, flagWord(spec.ToolCall))
+	}
+}
+
+// loadSnapshot is the SITE: it is what SnapshotLookupExact serves from, and a
+// verdict that only lived in loadFrom would leave the loader free to go back
+// to ReadSnapshot alone. The embedded file is the one production reads, so
+// the assertion is that the loader took the seam and the blob passes it.
+func TestLoadSnapshot_ServesTheEmbeddedFileThroughTheSameVerdict(t *testing.T) {
+	hdr, index, err := loadFrom([]byte(snapshotBlob))
+	if err != nil {
+		t.Fatalf("the embedded snapshot does not load: %v — regenerate with `task models:snapshot`", err)
+	}
+	served, count := SnapshotInfo()
+	if served != hdr || count != len(index) {
+		t.Fatalf("the loader serves header %+v / %d entries, the seam reads %+v / %d", served, count, hdr, len(index))
+	}
+	if count == 0 {
+		t.Fatal("the embedded snapshot answers for no model: the probe lost its subject")
+	}
+}

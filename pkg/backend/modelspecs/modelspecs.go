@@ -10,15 +10,20 @@
 // aggregators yet, so the curated value must win. Merging the two is the
 // caller's business, which is why this package holds no curated table.
 //
-// It is a LEAF package (its only iterion dependency is pkg/store, for the
-// atomic cache write) so that pkg/backend/cost — itself a leaf, imported by
-// model/ and delegate/ — can price a run from published rates without
-// inverting that dependency.
+// It is a LEAF package (its iterion dependencies are pkg/store, for the
+// atomic cache write and the iterion home the cache lives under, and
+// internal/envtrust, for the provenance of the knobs that select the table)
+// so that pkg/backend/cost — itself a leaf, imported by model/ and
+// delegate/ — can price a run from published rates without inverting that
+// dependency.
 //
 // Resolution must NEVER block or slow a run: the synchronous path does only a
 // cheap disk-cache read plus map lookups. The network fetch is strictly a
 // background goroutine with a short timeout. The on-disk cache makes a freshly
-// fetched table available to subsequent runs/processes.
+// fetched table available to subsequent runs/processes. The one synchronous
+// cost that is not a map lookup is the embedded snapshot's first read (~40 ms
+// for 1.7 MB, once per process under a sync.Once, on whichever caller asks
+// first — which can be the studio's per-keystroke capability route).
 package modelspecs
 
 import (
@@ -35,6 +40,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -203,6 +209,46 @@ func NewSeeded(flat map[string]Spec) *Registry {
 	return r
 }
 
+// The knobs OptionsFromEnv reads, named so the class is greppable. They are
+// ONE class: each decides which table answers for EVERY model this registry
+// serves — the endpoint fetched, the file the table is read back from, how
+// long it is believed, whether the tier runs at all, and whether a fetch is
+// forced now — hence the window a node compacts at, the output budget it
+// asks for and the price it is billed at.
+const (
+	// EnabledEnv turns the whole tier off (ITERION_MODEL_SPECS=off); the
+	// embedded snapshot is static data and is not what the switch refuses.
+	EnabledEnv = "ITERION_MODEL_SPECS"
+	// URLEnv overrides the aggregator endpoint.
+	URLEnv = "ITERION_MODEL_SPECS_URL"
+	// CacheEnv overrides the on-disk cache location.
+	CacheEnv = "ITERION_MODEL_SPECS_CACHE"
+	// TTLEnv bounds cache freshness.
+	TTLEnv = "ITERION_MODEL_SPECS_TTL"
+	// RefreshEnv ignores initial cache freshness exactly once.
+	RefreshEnv = "ITERION_MODEL_SPECS_REFRESH"
+)
+
+// inheritedEnv reads one knob as the process INHERITED it: a value a project
+// `.env` planted reads as nothing said (internal/envtrust), so the package
+// default applies. It is the ONE place the provenance question is asked for
+// the class above, which is read on both sides of the sandbox boundary.
+//
+// A `.env` sits in a repository — including the one under review, mounted at
+// /workspace, whose `.env` the in-container runner auto-loads over every name
+// the crossing left absent. A table a repository chose is not the operator's:
+// in the container it IS the resolution, and on the host it is laundered into
+// the record the crossing carries as the host's own answer, where the
+// container has no mark left to refuse. CacheEnv is the sharpest of the five
+// — it names a FILE, and the registry indexes whatever that file holds, so a
+// repository writing one picks the window, the output budget and the price of
+// every model the run reviewing it dispatches. The gateway catalog's own
+// three names ask the same question, in the same words
+// (pkg/backend/compatgw catalogEnv).
+func inheritedEnv(name string) string {
+	return strings.TrimSpace(envtrust.Inherited(name))
+}
+
 // OptionsFromEnv reads the ITERION_MODEL_SPECS_* knobs. It is called lazily by
 // Default rather than at package init, so a process that sets the environment
 // before first use (a test, a subprocess wrapper) is honoured.
@@ -210,12 +256,12 @@ func OptionsFromEnv() Options {
 	// Reuse the package-wide env boolean grammar (0/false/off/no vs
 	// 1/true/on/yes) so these knobs behave like ITERION_SECRETS_* etc.
 	opts := Options{
-		Disabled:     !envFlagEnabled("ITERION_MODEL_SPECS", true),
-		ForceRefresh: envFlagEnabled("ITERION_MODEL_SPECS_REFRESH", false),
-		URL:          strings.TrimSpace(os.Getenv("ITERION_MODEL_SPECS_URL")),
-		CachePath:    strings.TrimSpace(os.Getenv("ITERION_MODEL_SPECS_CACHE")),
+		Disabled:     !envFlagEnabled(EnabledEnv, true),
+		ForceRefresh: envFlagEnabled(RefreshEnv, false),
+		URL:          inheritedEnv(URLEnv),
+		CachePath:    inheritedEnv(CacheEnv),
 	}
-	if v := strings.TrimSpace(os.Getenv("ITERION_MODEL_SPECS_TTL")); v != "" {
+	if v := inheritedEnv(TTLEnv); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			opts.TTL = d
 		}
@@ -228,7 +274,7 @@ func OptionsFromEnv() Options {
 // returns def. Duplicated from pkg/backend/model rather than imported: this
 // package must stay a leaf, and the grammar is ten lines.
 func envFlagEnabled(name string, def bool) bool {
-	switch strings.TrimSpace(strings.ToLower(os.Getenv(name))) {
+	switch strings.ToLower(inheritedEnv(name)) {
 	case "":
 		return def
 	case "0", "false", "off", "no":
@@ -241,10 +287,23 @@ func envFlagEnabled(name string, def bool) bool {
 }
 
 // DefaultCachePath is where the fetched table is persisted between processes:
-// under the iterion home ($ITERION_HOME, else ~/.iterion — a test process's
-// own home under go test).
+// under the iterion home the OPERATOR chose — $ITERION_HOME, else ~/.iterion,
+// a test process's own home under go test — resolved from the inherited
+// environment like the knobs above, since a home a project `.env` selected
+// would re-root this file too.
+//
+// "" when the inherited environment names no home, which leaves the registry
+// with no disk tier rather than one rooted at a guess: the homeless fallback
+// GlobalIterionDataDir's writers take is <tmp>/iterion-data, a shared path any
+// local user can create and fill before iterion does, and this file IS the
+// table every model is then resolved from. Such a process keeps the network
+// and the embedded snapshot; it carries nothing between runs.
 func DefaultCachePath() string {
-	return filepath.Join(store.GlobalIterionDataDir(), "model-specs-cache.json")
+	dir := store.InheritedIterionDataDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "model-specs-cache.json")
 }
 
 // ---------------------------------------------------------------------------
@@ -379,10 +438,19 @@ func (r *Registry) ensureFresh() {
 	}
 }
 
+// diskCacheOff reports that this registry has no on-disk tier: no path was
+// configured and DefaultCachePath named none, the inherited environment
+// naming no iterion home. Both disk sites ask it, so "no path" can never
+// become a relative file in whatever directory the process runs in.
+func (r *Registry) diskCacheOff() bool { return r.cachePath == "" }
+
 // loadDiskCacheLocked reads the on-disk cache and, when fresh (or stale but
 // present — better than nothing until a refresh lands), populates the in-memory
 // indices. Caller holds r.mu. Any error degrades silently to no-op.
 func (r *Registry) loadDiskCacheLocked() {
+	if r.diskCacheOff() {
+		return
+	}
 	data, err := os.ReadFile(r.cachePath)
 	if err != nil {
 		return
@@ -588,6 +656,9 @@ func agreedFlag(a, b *bool) *bool {
 
 // writeCache atomically persists the fetched table. Errors degrade silently.
 func (r *Registry) writeCache(cf cacheFile) {
+	if r.diskCacheOff() {
+		return
+	}
 	data, err := json.MarshalIndent(cf, "", "  ")
 	if err != nil {
 		return
@@ -609,6 +680,16 @@ func ParseModelsDev(body []byte) (map[string]Spec, error) {
 		return nil, err
 	}
 	full := map[string]Spec{}
+	// origin remembers which UPSTREAM key each normalised key was taken
+	// from, so a second upstream key normalising the same way is decided by
+	// a stable rule rather than by map iteration order. Two keys differing
+	// only in case ("Prov/M1" and "prov/m1") are one key here, and ranging
+	// two maps made the winner a coin flip — one body rendered two different
+	// snapshots, a `tool_call` verdict among what flipped. The snapshot's
+	// "the committed diff is the review" needs the same body to render the
+	// same file; WHICH key wins matters less than that it is always the same
+	// one, so the lexicographically smaller upstream key does.
+	origin := map[string]string{}
 	for providerID, prov := range providers {
 		pl := strings.ToLower(strings.TrimSpace(providerID))
 		for modelKey, m := range prov.Models {
@@ -616,7 +697,12 @@ func ParseModelsDev(body []byte) (map[string]Spec, error) {
 			if mk == "" {
 				continue
 			}
-			full[pl+"/"+mk] = Spec{
+			key, upstream := pl+"/"+mk, providerID+"/"+modelKey
+			if won, taken := origin[key]; taken && won <= upstream {
+				continue
+			}
+			origin[key] = upstream
+			full[key] = Spec{
 				ContextWindow:   m.Limit.Context,
 				MaxOutputTokens: m.Limit.Output,
 				InputCostPerM:   m.Cost.Input,

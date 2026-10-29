@@ -67,25 +67,41 @@ var (
 	snapshotErr   error
 )
 
+// loadFrom is the production READ of a snapshot file: the parse, plus the
+// three refusals that decide whether anything may be served from it — a
+// schema this binary does not read, a header it cannot parse, a line it
+// cannot parse. It returns no table with any of them: a file that is refused
+// answers nothing, rather than answering for the rows that happened to parse.
+//
+// The schema verdict lives HERE, not in the parser: production refuses a file
+// it cannot read as this schema, while the generator's changelog diffs the
+// VALUES across a schema bump — which is when a reviewer needs them most.
+//
+// It exists as a seam because loadSnapshot is welded to the embedded blob and
+// to this package's sync.Once state: a refusal reachable only by replacing
+// the embedded file is a refusal no test can witness, and ADR-122's "schema 1
+// is not kept loadable" rests on exactly this line. An accepted schema-1 file
+// IS #2842 — its rows answer, and every capability flag reads unknown where
+// the file states nothing.
+func loadFrom(raw []byte) (SnapshotHeader, map[string]Spec, error) {
+	hdr, index, err := ReadSnapshot(raw)
+	if err != nil {
+		return SnapshotHeader{}, nil, err
+	}
+	if hdr.Schema != SnapshotSchema {
+		return SnapshotHeader{}, nil, fmt.Errorf("model specs: snapshot schema %d, want %d — regenerate with `task models:snapshot`", hdr.Schema, SnapshotSchema)
+	}
+	return hdr, index, nil
+}
+
 func loadSnapshot() {
-	fail := func(err error) {
+	hdr, index, err := loadFrom([]byte(snapshotBlob))
+	if err != nil {
 		snapshotErr = err
 		// A corrupted or wrong-schema snapshot must not fail SILENTLY into
 		// false-unknown answers: the operator regenerating it is the fix,
 		// and only a log line can ask for that.
 		iterlog.NewFromEnv(os.Stderr).Warn("%v", err)
-	}
-	hdr, index, err := ReadSnapshot([]byte(snapshotBlob))
-	if err != nil {
-		fail(err)
-		return
-	}
-	// The schema verdict lives HERE, not in the parser: production refuses a
-	// file it cannot read as this schema, while the generator's changelog
-	// diffs the VALUES across a schema bump — which is when a reviewer needs
-	// them most.
-	if hdr.Schema != SnapshotSchema {
-		fail(fmt.Errorf("model specs: snapshot schema %d, want %d — regenerate with `task models:snapshot`", hdr.Schema, SnapshotSchema))
 		return
 	}
 	snapshotHdr, snapshotIndex = hdr, index

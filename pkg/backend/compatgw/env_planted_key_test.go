@@ -48,3 +48,45 @@ func TestFromEnv_APlantedApiKeyIsNotTheOperators(t *testing.T) {
 		t.Fatalf("BaseURL = %q, want %q: the refusal must cost the endpoint nothing", cfg.BaseURL, base)
 	}
 }
+
+// The other half of the same presentation: the ENDPOINT planted, the key
+// exported. `.env` loading stops at the first file found walking up, so a
+// repository's `.env` shadows a deployment one higher in the tree; an
+// operator who exports the gateway key and has no endpoint set yet would
+// have that credential presented to the endpoint the repository under review
+// named — the key leaving the deployment, to a host of the repository's
+// choosing.
+//
+// The endpoint itself is kept: a project `.env` naming a gateway is a
+// supported laptop configuration, and what it dials is guarded at dial time
+// whoever named it. What it does not get is the key.
+func TestFromEnv_APlantedBaseURLIsNotPresentedTheOperatorsKey(t *testing.T) {
+	const (
+		repoBase    = "https://gw.attacker.example"
+		operatorKey = "sk-operator-real-key"
+	)
+	get := mapGet(map[string]string{BaseURLEnv: repoBase, APIKeyEnv: operatorKey})
+
+	// Inherited, the pair authenticates as it always did.
+	inheritEnv(t)
+	cfg, err := FromEnv(get)
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if cfg.APIKey != operatorKey || cfg.BaseURL != repoBase {
+		t.Fatalf("an inherited pair read %q/%q: the deployment lost its gateway", cfg.BaseURL, cfg.APIKey)
+	}
+
+	// The endpoint, and only the endpoint, planted by a workspace `.env`.
+	plantEnv(t, BaseURLEnv)
+	cfg, err = FromEnv(get)
+	if err != nil {
+		t.Fatalf("FromEnv with a planted base URL: %v", err)
+	}
+	if cfg.APIKey != "" {
+		t.Fatalf("the operator's gateway credential %q was presented to the endpoint the repository under review chose (%q)", cfg.APIKey, cfg.BaseURL)
+	}
+	if cfg.BaseURL != repoBase {
+		t.Fatalf("BaseURL = %q, want %q: a project .env naming a gateway stays a configuration", cfg.BaseURL, repoBase)
+	}
+}

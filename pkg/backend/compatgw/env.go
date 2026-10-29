@@ -3,9 +3,10 @@
 // OpenAI-compatible gateway (LiteLLM, vLLM, a router), OPENAI_COMPATIBLE_API_KEY
 // authenticates it, and the gateway model id reaches the wire verbatim.
 //
-// The endpoint is the OPERATOR's choice, read from the process environment
-// the operator controls — the same trust class as OPENAI_BASE_URL — but what
-// it dials is guarded all the same (pkg/secure/httpdial): the model spec that
+// The endpoint is read from the process environment — the same trust class as
+// OPENAI_BASE_URL, and a project `.env` can fill it as well, which is why an
+// endpoint it planted is never presented the key (FromEnv). What the endpoint
+// dials is guarded whoever named it (pkg/secure/httpdial): the model spec that
 // lands here is workflow text, and a workflow must not be able to steer the
 // gateway client at private infrastructure by naming a spec whose gateway
 // happens to redirect.
@@ -60,12 +61,24 @@ type Config struct {
 // for an attempted auth; the endpoint is untouched, a gateway with no auth
 // being a configuration and not a refusal. The operator's own channel, the
 // environment this process inherited, answers exactly as before.
+//
+// The question is asked for the PAIR, not for the key alone: a planted base
+// URL drops the key too. The two names form one credential presentation —
+// this key authenticates to THAT endpoint — and `.env` loading stops at the
+// first file found walking up, so a repository's `.env` shadows a deployment
+// one higher in the tree. An operator who exports the key and leaves the
+// endpoint to a project file (or has not configured one yet) would otherwise
+// have their own gateway credential presented to an endpoint the repository
+// under review named, which is the credential leaving the deployment. The
+// endpoint stays as given: a project `.env` naming a gateway is a supported
+// laptop configuration, and what it dials is guarded anyway (Validate, and
+// pkg/secure/httpdial at dial time). What it does not get is the key.
 func FromEnv(get func(string) string) (Config, error) {
 	base, key := strings.TrimSpace(get(BaseURLEnv)), strings.TrimSpace(get(APIKeyEnv))
 	if base == "" {
 		return Config{}, ErrNotConfigured
 	}
-	if envtrust.Planted(APIKeyEnv) {
+	if envtrust.Planted(APIKeyEnv) || envtrust.Planted(BaseURLEnv) {
 		key = ""
 	}
 	return Config{BaseURL: base, APIKey: key}, nil

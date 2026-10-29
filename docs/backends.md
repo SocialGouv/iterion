@@ -1350,6 +1350,26 @@ never merged across sources, and an answer carries its provenance:
    `"source":"unknown"`, the estimator prices nothing, and compaction keeps
    the unknown-model floor.
 
+> **Set these in the environment the deployment EXPORTS — a project `.env`
+> does not configure them.** iterion auto-loads the nearest `.env` walking up
+> from the working directory, so these names can be *filled* from a file
+> inside a repository, including the one a run is reviewing. A value that
+> arrived that way is read as nothing said, wherever the read happens
+> (`internal/envtrust`): each of these names decides the window a node
+> compacts at, the `max_tokens` it asks for, the price it is billed at and
+> the provenance all of that is recorded under, and the host's answer is
+> what crosses into a sandboxed node as its own. So a table in a project
+> `.env` prices nothing and refuses nothing — the launch seam says so once
+> per process, with the parse refusal when that table is also malformed, so
+> a typo there is not silence. The same holds for the live tier's own knobs
+> (`ITERION_MODEL_SPECS_CACHE`, `_URL`, `_TTL`, `ITERION_MODEL_SPECS`,
+> `ITERION_MODEL_SPECS_REFRESH`, and `ITERION_HOME`, which roots the cache
+> file): `_CACHE` names the FILE the live table is read back from, which is
+> the table every model — vendor ids included — is then resolved from. And
+> for the gateway's credential: a planted `OPENAI_COMPATIBLE_API_KEY` is
+> dropped, and so is an inherited key when a `.env` planted the BASE URL,
+> since the pair is one credential presentation.
+
 The snapshot is regenerated with `task models:snapshot` (the committed diff
 is the review; it carries the source digest and an as-of date, and an answer
 older than 180 days logs a warning). Its **schema 2 holds the numerics and
@@ -1387,13 +1407,18 @@ fill, and they outrank the environment the container was STARTED with, so a
 repository's own `devcontainer.json` does not reach a gateway node's runner
 either.
 
-Provenance is asked once for the three (`internal/envtrust`): a value this
-process's own project `.env` planted is read as nothing said, wherever the
-read happens. That is what the container needs for a name no host wrote,
-and what the HOST needs for itself — an `iterion run` launched inside the
-repository loads that repository's `.env`, and a table taken for the
-operator's there would be laundered into the record the host then crosses
-as its own answer, carrying no mark the container could refuse. The
+Provenance is asked once for the three (`internal/envtrust`), and in the
+same words for the live tier the second of them resolves against — the
+`ITERION_MODEL_SPECS_*` knobs and the `ITERION_HOME` their cache file lives
+under: a value this process's own project `.env` planted is read as nothing
+said, wherever the read happens. That is what the container needs for a name
+no host wrote, and what the HOST needs for itself — an `iterion run` launched
+inside the repository loads that repository's `.env`, and a table taken for
+the operator's there would be laundered into the record the host then crosses
+as its own answer, carrying no mark the container could refuse. A repository
+naming the live tier's cache FILE is that same laundering one step out: every
+exact lookup is then answered from a file in the tree under review, under the
+provenance `catalog-live`. The
 gateway's API key is read the same way: a planted
 `OPENAI_COMPATIBLE_API_KEY` is dropped rather than presented, since a
 keyless gateway is a supported configuration and the crossing leaves the
@@ -1401,8 +1426,14 @@ name absent for one — the repository would otherwise select which virtual
 key, hence which budget and tenant, its reviewer's calls are billed to. A
 deployment therefore keeps that key in the environment it exports, not in a
 project `.env`: planted, it is read as no key at all, and the gateway
-answers whatever it answers to an unauthenticated call. The endpoint stays
-the operator's, crossed for every gateway node.
+answers whatever it answers to an unauthenticated call. The endpoint is kept
+as given — a project `.env` naming a gateway is a supported laptop
+configuration, the crossing carries the host's for every gateway node, and
+what it dials is guarded whoever named it — but a planted endpoint is not
+presented an inherited key either: `.env` loading stops at the first file
+found walking up, so an operator who exports the key while the endpoint comes
+from the repository under review would otherwise have their own gateway
+credential sent to a host that repository chose.
 
 > **The host environment is the channel for these names.** The crossing
 > writes all three unconditionally, and `docker exec --env` / `env NAME=`

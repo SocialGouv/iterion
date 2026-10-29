@@ -90,16 +90,30 @@ func readCurrent() map[string]modelspecs.Spec {
 	return table
 }
 
+// changelogListCap bounds each printed list on its own. Per LIST, not per
+// changelog: a regeneration that adds a field to every surviving entry would
+// otherwise spend the whole budget on that one class and print nothing of the
+// others — which is how the schema-2 bump reported 84% of the table changed,
+// printed twenty flag arrivals, and hid 1112 numeric drifts behind
+// "and N more", 22 of them a published price disappearing, 56 a context
+// window shrinking and every scaleway price moving by the same 12.15%
+// (#2842).
+const changelogListCap = 20
+
 func printChangelog(before, after map[string]modelspecs.Spec) {
-	var added, removed, changed []string
+	var added, removed, drifted, flagged []string
 	for k := range after {
 		old, ok := before[k]
 		if !ok {
 			added = append(added, k)
 			continue
 		}
-		if !specsEqual(old, after[k]) {
-			changed = append(changed, k)
+		switch {
+		case specsEqual(old, after[k]):
+		case numbersEqual(old, after[k]):
+			flagged = append(flagged, k)
+		default:
+			drifted = append(drifted, k)
 		}
 	}
 	for k := range before {
@@ -109,38 +123,64 @@ func printChangelog(before, after map[string]modelspecs.Spec) {
 	}
 	sort.Strings(added)
 	sort.Strings(removed)
-	sort.Strings(changed)
-	fmt.Printf("changelog: +%d -%d ~%d (total %d)\n", len(added), len(removed), len(changed), len(after))
+	sort.Strings(drifted)
+	sort.Strings(flagged)
+	changed := len(drifted) + len(flagged)
+	fmt.Printf("changelog: +%d -%d ~%d (total %d)\n", len(added), len(removed), changed, len(after))
 	// The committed diff is the review — value flips are what a reviewer
 	// needs to see, so changed entries print old→new, and a churn beyond a
 	// fraction of the table is named out loud instead of scrolling past.
-	if total := len(after); total > 0 && len(changed)*100/total >= 10 {
-		fmt.Printf("  !! %d of %d entries changed (%d%%) — verify this regeneration is intended\n", len(changed), total, len(changed)*100/total)
+	if total := len(after); total > 0 && changed*100/total >= 10 {
+		fmt.Printf("  !! %d of %d entries changed (%d%%) — verify this regeneration is intended\n", changed, total, changed*100/total)
 	}
-	for i, k := range added {
-		if i >= 20 {
-			fmt.Printf("  + … and %d more\n", len(added)-20)
-			break
+	// What CHANGED, split by what it costs to miss: a number that moved is a
+	// price, a window or an output cap the engine now bills and compacts at;
+	// a flag that arrived or left is a reader's verdict. The two counters are
+	// printed together so neither class can be read as the whole churn.
+	if changed > 0 {
+		fmt.Printf("  ~ %d of the %d changed entries moved a NUMBER; %d changed flags only\n", len(drifted), changed, len(flagged))
+	}
+	printCapped("+", added, func(k string) string { return k })
+	printCapped("-", removed, func(k string) string { return k })
+	if len(drifted) > 0 {
+		fmt.Println("  numbers drifted:")
+		printCapped("~", drifted, func(k string) string {
+			o, n := before[k], after[k]
+			return fmt.Sprintf("%s: in %g→%g out %g→%g window %d→%d maxout %d→%d flags %s→%s", k,
+				o.InputCostPerM, n.InputCostPerM, o.OutputCostPerM, n.OutputCostPerM,
+				o.ContextWindow, n.ContextWindow, o.MaxOutputTokens, n.MaxOutputTokens,
+				flagWords(o), flagWords(n))
+		})
+	}
+	if len(flagged) > 0 {
+		fmt.Println("  flags only:")
+		printCapped("~", flagged, func(k string) string {
+			return fmt.Sprintf("%s: flags %s→%s", k, flagWords(before[k]), flagWords(after[k]))
+		})
+	}
+}
+
+// printCapped prints at most changelogListCap entries of keys through line,
+// then one line naming how many it did not print. One printer for the four
+// lists, so a list added later cannot come with its own forgotten cap.
+func printCapped(marker string, keys []string, line func(string) string) {
+	for i, k := range keys {
+		if i >= changelogListCap {
+			fmt.Printf("  %s … and %d more\n", marker, len(keys)-changelogListCap)
+			return
 		}
-		fmt.Printf("  + %s\n", k)
+		fmt.Printf("  %s %s\n", marker, line(k))
 	}
-	for i, k := range removed {
-		if i >= 20 {
-			fmt.Printf("  - … and %d more\n", len(removed)-20)
-			break
-		}
-		fmt.Printf("  - %s\n", k)
-	}
-	for i, k := range changed {
-		if i >= 20 {
-			fmt.Printf("  ~ … and %d more\n", len(changed)-20)
-			break
-		}
-		o, n := before[k], after[k]
-		fmt.Printf("  ~ %s: in %g→%g out %g→%g window %d→%d flags %s→%s\n", k,
-			o.InputCostPerM, n.InputCostPerM, o.OutputCostPerM, n.OutputCostPerM,
-			o.ContextWindow, n.ContextWindow, flagWords(o), flagWords(n))
-	}
+}
+
+// numbersEqual compares the four numbers the engine BILLS and compacts at —
+// the two prices, the context window and the output cap. It is what separates
+// a flag-only change from a value move; the flags are compared by specsEqual.
+func numbersEqual(a, b modelspecs.Spec) bool {
+	return a.ContextWindow == b.ContextWindow &&
+		a.MaxOutputTokens == b.MaxOutputTokens &&
+		a.InputCostPerM == b.InputCostPerM &&
+		a.OutputCostPerM == b.OutputCostPerM
 }
 
 // specsEqual compares two entries by VALUE. Spec carries the three
@@ -148,10 +188,7 @@ func printChangelog(before, after map[string]modelspecs.Spec) {
 // compares ADDRESSES: two entries both stating `tool_call:false` would read
 // as a flip, and every regeneration would report the whole table as changed.
 func specsEqual(a, b modelspecs.Spec) bool {
-	return a.ContextWindow == b.ContextWindow &&
-		a.MaxOutputTokens == b.MaxOutputTokens &&
-		a.InputCostPerM == b.InputCostPerM &&
-		a.OutputCostPerM == b.OutputCostPerM &&
+	return numbersEqual(a, b) &&
 		flagEqual(a.Reasoning, b.Reasoning) &&
 		flagEqual(a.ToolCall, b.ToolCall) &&
 		flagEqual(a.Temperature, b.Temperature)

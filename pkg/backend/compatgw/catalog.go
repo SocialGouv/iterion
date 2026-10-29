@@ -135,7 +135,8 @@ func catalogEnv(get func(string) string, name string) string {
 // a REFUSAL at every seam that resolves a gateway route, not a silent
 // fallback to the catalog: the operator wrote a price, a typo must not
 // price the model differently. A table the repository planted is not the
-// operator's, so it neither prices nor refuses anything (catalogEnv).
+// operator's, so it neither prices nor refuses anything (catalogEnv) — and
+// the launch seam says so, refusal included (warnPlantedOperatorTable).
 func operatorModels(get func(string) string) (map[string]modelspecs.Spec, error) {
 	operatorTableOnce.Do(func() {
 		raw := catalogEnv(get, CatalogModelsEnv)
@@ -143,52 +144,104 @@ func operatorModels(get func(string) string) (map[string]modelspecs.Spec, error)
 			operatorTable = map[string]modelspecs.Spec{}
 			return
 		}
-		var entries map[string]struct {
-			ContextWindow    int     `json:"context_window"`
-			MaxOutputTokens  int     `json:"max_output_tokens"`
-			InputUSDPerMTok  float64 `json:"input_usd_per_mtok"`
-			OutputUSDPerMTok float64 `json:"output_usd_per_mtok"`
-			Reasoning        *bool   `json:"reasoning"`
-			ToolCall         *bool   `json:"tool_call"`
-			Temperature      *bool   `json:"temperature"`
-		}
-		dec := json.NewDecoder(strings.NewReader(raw))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&entries); err != nil {
-			operatorTableErr = fmt.Errorf("openai_compatible: %s does not parse: %w", CatalogModelsEnv, err)
-			return
-		}
-		operatorTable = map[string]modelspecs.Spec{}
-		for id, e := range entries {
-			if e.InputUSDPerMTok > 0 != (e.OutputUSDPerMTok > 0) {
-				operatorTableErr = fmt.Errorf("openai_compatible: %s[%q]: the prices arrive as a pair or not at all", CatalogModelsEnv, id)
-				return
-			}
-			if e.InputUSDPerMTok < 0 || e.OutputUSDPerMTok < 0 {
-				operatorTableErr = fmt.Errorf("openai_compatible: %s[%q]: a price is negative", CatalogModelsEnv, id)
-				return
-			}
-			operatorTable[strings.ToLower(strings.TrimSpace(id))] = modelspecs.Spec{
-				ContextWindow:   e.ContextWindow,
-				MaxOutputTokens: e.MaxOutputTokens,
-				InputCostPerM:   e.InputUSDPerMTok,
-				OutputCostPerM:  e.OutputUSDPerMTok,
-				Reasoning:       e.Reasoning,
-				ToolCall:        e.ToolCall,
-				Temperature:     e.Temperature,
-			}
-		}
+		operatorTable, operatorTableErr = parseOperatorTable(raw)
 	})
 	return operatorTable, operatorTableErr
+}
+
+// parseOperatorTable decodes one OPENAI_COMPATIBLE_MODELS value. It is the
+// ONE parser of that format: the resolution reads the operator's table
+// through it, and the planted-table diagnostic re-reads a value the
+// resolution declined through the SAME code, so what an operator is told
+// about their typo is what would have refused their routes — not a second
+// decoder that agrees today.
+func parseOperatorTable(raw string) (map[string]modelspecs.Spec, error) {
+	var entries map[string]struct {
+		ContextWindow    int     `json:"context_window"`
+		MaxOutputTokens  int     `json:"max_output_tokens"`
+		InputUSDPerMTok  float64 `json:"input_usd_per_mtok"`
+		OutputUSDPerMTok float64 `json:"output_usd_per_mtok"`
+		Reasoning        *bool   `json:"reasoning"`
+		ToolCall         *bool   `json:"tool_call"`
+		Temperature      *bool   `json:"temperature"`
+	}
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&entries); err != nil {
+		return nil, fmt.Errorf("openai_compatible: %s does not parse: %w", CatalogModelsEnv, err)
+	}
+	table := map[string]modelspecs.Spec{}
+	for id, e := range entries {
+		if e.InputUSDPerMTok > 0 != (e.OutputUSDPerMTok > 0) {
+			return nil, fmt.Errorf("openai_compatible: %s[%q]: the prices arrive as a pair or not at all", CatalogModelsEnv, id)
+		}
+		if e.InputUSDPerMTok < 0 || e.OutputUSDPerMTok < 0 {
+			return nil, fmt.Errorf("openai_compatible: %s[%q]: a price is negative", CatalogModelsEnv, id)
+		}
+		table[strings.ToLower(strings.TrimSpace(id))] = modelspecs.Spec{
+			ContextWindow:   e.ContextWindow,
+			MaxOutputTokens: e.MaxOutputTokens,
+			InputCostPerM:   e.InputUSDPerMTok,
+			OutputCostPerM:  e.OutputUSDPerMTok,
+			Reasoning:       e.Reasoning,
+			ToolCall:        e.ToolCall,
+			Temperature:     e.Temperature,
+		}
+	}
+	return table, nil
 }
 
 // CheckOperatorTable parses OPENAI_COMPATIBLE_MODELS and returns its
 // refusal — the seam-level probe for "the operator table, if any, is
 // well-formed". Memoised like the resolution itself: one parse per
 // process, the same refusal every time.
+//
+// It is also where a table the catalog DECLINED is said out loud, because
+// this is the launch-and-validation seam (pkg/backend/model checkGatewayEnv,
+// run before a gateway element is dispatched anywhere) rather than a
+// per-keystroke read.
 func CheckOperatorTable(get func(string) string) error {
+	warnPlantedOperatorTable(get)
 	_, err := operatorModels(get)
 	return err
+}
+
+var plantedTableWarnOnce sync.Once
+
+// plantedTableRemedy names the channel this catalog reads, on every
+// planted-table line: a diagnostic that only says "ignored" leaves the
+// operator with no next step.
+const plantedTableRemedy = "export it in the environment the deployment runs with — the channel this catalog reads, and the one a gateway node's crossing carries"
+
+// warnPlantedOperatorTable says, once per process, that
+// OPENAI_COMPATIBLE_MODELS holds a table a project `.env` filled in, which
+// prices nothing and refuses nothing (catalogEnv). A MALFORMED one is said
+// with its refusal: a malformed table is a REFUSAL at every seam that
+// resolves a gateway route — the operator wrote a price and a typo must not
+// price the model differently — and the narrowing turned that refusal into
+// silence for a value planted this way. An operator reading an unpriced run
+// and no diagnostic has nothing to look for; both halves of the fact are
+// theirs (the typo, and the file it is in not being a channel).
+//
+// Said on this seam only: the capability READ paths resolve through
+// ResolveCatalogQuiet, one call per keystroke of a free-text model field,
+// where a line per call is the noise #2103 closed.
+func warnPlantedOperatorTable(get func(string) string) {
+	if !envtrust.Planted(CatalogModelsEnv) {
+		return
+	}
+	raw := strings.TrimSpace(get(CatalogModelsEnv))
+	if raw == "" {
+		return
+	}
+	plantedTableWarnOnce.Do(func() {
+		log := iterlog.NewFromEnv(os.Stderr)
+		if _, err := parseOperatorTable(raw); err != nil {
+			log.Warn("%v — and it comes from a project `.env`, so it refuses nothing and the routes resolve to unknown instead: %s", err, plantedTableRemedy)
+			return
+		}
+		log.Warn("openai_compatible: %s comes from a project `.env`, so it prices nothing and refuses nothing: %s", CatalogModelsEnv, plantedTableRemedy)
+	})
 }
 
 // ResetCatalogCaches drops the memoised operator table and the per-id
@@ -197,6 +250,7 @@ func CheckOperatorTable(get func(string) string) error {
 func ResetCatalogCaches() {
 	operatorTableOnce = sync.Once{}
 	operatorTable, operatorTableErr = nil, nil
+	plantedTableWarnOnce = sync.Once{}
 	unknownWarns.Range(func(k, _ any) bool {
 		unknownWarns.Delete(k)
 		return true

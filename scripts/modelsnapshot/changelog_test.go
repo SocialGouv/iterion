@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -148,4 +149,100 @@ func TestReadCurrent_KeepsTheFlagsTheFileCarries(t *testing.T) {
 	if n := len(readCurrent()); n != 0 {
 		t.Errorf("a missing snapshot read %d entries, want an empty table", n)
 	}
+}
+
+// The cap is the review's budget, and a schema bump spends it all on one
+// class: every surviving entry gained the three flags, so the changelog
+// reported 84% of the table changed and printed twenty flag arrivals while
+// 1112 numeric drifts went out as "and N more" — 22 of them a published price
+// disappearing, 56 a context window shrinking, every scaleway price moving by
+// the same 12.15% (#2842). Classified, the price move cannot be crowded out
+// by a flag arrival, whatever their relative counts.
+//
+// Driven over the cap on purpose, with the drifted key sorting LAST so only
+// the split can surface it.
+func TestPrintChangelog_AFlagSweepCannotHideAPriceMove(t *testing.T) {
+	before := map[string]modelspecs.Spec{}
+	after := map[string]modelspecs.Spec{}
+	for i := 0; i < changelogListCap*3; i++ {
+		key := fmt.Sprintf("prov/flagged-%03d", i)
+		before[key] = modelspecs.Spec{ContextWindow: 4096, InputCostPerM: 1, OutputCostPerM: 2}
+		after[key] = modelspecs.Spec{ContextWindow: 4096, InputCostPerM: 1, OutputCostPerM: 2, ToolCall: boolp(true)}
+	}
+	const priced = "prov/zz-priced"
+	before[priced] = modelspecs.Spec{ContextWindow: 1_000_000, MaxOutputTokens: 8192, InputCostPerM: 1.8, OutputCostPerM: 5.5}
+	after[priced] = modelspecs.Spec{ContextWindow: 200_000, MaxOutputTokens: 8192, InputCostPerM: 2.0187, OutputCostPerM: 6.16825, ToolCall: boolp(true)}
+
+	out := captureStdout(t, func() { printChangelog(before, after) })
+	if !strings.Contains(out, "~ "+priced+": in 1.8→2.0187 out 5.5→6.16825 window 1000000→200000") {
+		t.Errorf("the price and window move is not in the changelog:\n%s", out)
+	}
+	// Both counters, so neither class reads as the whole churn.
+	if !strings.Contains(out, fmt.Sprintf("~ 1 of the %d changed entries moved a NUMBER; %d changed flags only", changelogListCap*3+1, changelogListCap*3)) {
+		t.Errorf("the two counters are not printed together:\n%s", firstLines(out, 4))
+	}
+	// Each list is capped on its own, and says how much it withheld.
+	if !strings.Contains(out, fmt.Sprintf("~ … and %d more", changelogListCap*2)) {
+		t.Errorf("the flags-only list did not name what it withheld:\n%s", out)
+	}
+	if !strings.Contains(out, "numbers drifted:") || !strings.Contains(out, "flags only:") {
+		t.Errorf("the two lists are not named:\n%s", out)
+	}
+	// The counts line still reports one churn, as it always did.
+	if !strings.Contains(out, fmt.Sprintf("changelog: +0 -0 ~%d (total %d)", changelogListCap*3+1, changelogListCap*3+1)) {
+		t.Errorf("the counts line changed shape: %q", firstLine(out))
+	}
+}
+
+// specsEqual compares MaxOutputTokens, and the `~` line omitted it: an entry
+// whose output cap alone moved printed "in 1→1 out 2→2 window N→N flags
+// X→X" — a changed entry naming nothing that changed. 115 of the 1112 drifts
+// of that regeneration were output-cap-only, 40 of them shrinking and 16
+// going to unknown (aihubmix/grok-4.3, 1000000→30000), and the cap is the
+// per-call output budget a gateway route takes from the record.
+func TestPrintChangelog_NamesAnOutputCapMove(t *testing.T) {
+	before := map[string]modelspecs.Spec{"prov/cap": {ContextWindow: 262144, MaxOutputTokens: 32768, InputCostPerM: 1, OutputCostPerM: 2, ToolCall: boolp(true)}}
+	after := map[string]modelspecs.Spec{"prov/cap": {ContextWindow: 262144, MaxOutputTokens: 1024, InputCostPerM: 1, OutputCostPerM: 2, ToolCall: boolp(true)}}
+	out := captureStdout(t, func() { printChangelog(before, after) })
+	if !strings.Contains(out, "maxout 32768→1024") {
+		t.Errorf("the output-cap move is not named: the line says %q", out)
+	}
+	if !strings.Contains(out, "numbers drifted:") {
+		t.Errorf("an output-cap move was classified as a flag change:\n%s", out)
+	}
+}
+
+// numbersEqual is what the split keys on, and specsEqual is built from it:
+// one definition of "the numbers the engine bills and compacts at". A field
+// missing from it is a field whose move is filed as a flag change — printed
+// without its old→new values, and under the counter a reviewer reads as "no
+// price moved".
+func TestNumbersEqual_CoversEveryNumberTheRecordCarries(t *testing.T) {
+	base := modelspecs.Spec{ContextWindow: 4096, MaxOutputTokens: 512, InputCostPerM: 1, OutputCostPerM: 2}
+	for _, tc := range []struct {
+		name string
+		spec modelspecs.Spec
+	}{
+		{"context window", modelspecs.Spec{ContextWindow: 8192, MaxOutputTokens: 512, InputCostPerM: 1, OutputCostPerM: 2}},
+		{"max output tokens", modelspecs.Spec{ContextWindow: 4096, MaxOutputTokens: 1024, InputCostPerM: 1, OutputCostPerM: 2}},
+		{"input price", modelspecs.Spec{ContextWindow: 4096, MaxOutputTokens: 512, InputCostPerM: 1.1, OutputCostPerM: 2}},
+		{"output price", modelspecs.Spec{ContextWindow: 4096, MaxOutputTokens: 512, InputCostPerM: 1, OutputCostPerM: 2.2}},
+	} {
+		if numbersEqual(base, tc.spec) {
+			t.Errorf("a %s move reads as the same numbers: it would be filed as a flag change", tc.name)
+		}
+	}
+	// A flag move is NOT a number move — that is the whole point of the split.
+	if !numbersEqual(base, modelspecs.Spec{ContextWindow: 4096, MaxOutputTokens: 512, InputCostPerM: 1, OutputCostPerM: 2, ToolCall: boolp(false)}) {
+		t.Error("a flag arrival reads as a number move: every regeneration would report a price churn")
+	}
+}
+
+// firstLines renders the first n lines of s for a failure message.
+func firstLines(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) > n {
+		lines = lines[:n]
+	}
+	return strings.Join(lines, "\n")
 }

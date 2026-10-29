@@ -27,9 +27,16 @@ import (
 var jsonOutput bool
 
 var rootCmd = &cobra.Command{
-	Use:           "iterion",
-	Short:         "Build, run and orchestrate agentic AI workflows",
-	Long:          "iterion — build, run and orchestrate agentic AI workflows",
+	Use:   "iterion",
+	Short: "Build, run and orchestrate agentic AI workflows",
+	Long: "iterion — build, run and orchestrate agentic AI workflows\n" +
+		"\n" +
+		"The nearest `.env` walking up from the working directory is auto-loaded, filling in\n" +
+		"every variable left unset: a convenience for API keys next to a project. It does not\n" +
+		"CONFIGURE iterion — a name a `.env` filled speaks for that project, not for the\n" +
+		"deployment, so it decides nothing an operator answers for: where plugins are\n" +
+		"installed, which table prices a model and where that table is cached, which\n" +
+		"credential a gateway is presented. Export those in the environment iterion runs with.",
 	SilenceUsage:  true,
 	SilenceErrors: true,
 }
@@ -59,6 +66,15 @@ func main() {
 		// vars take precedence; .env only fills in missing keys. Which
 		// invocations get that convenience — a human's, not a child the
 		// engine spawned against a repository — is the predicate's.
+		//
+		// FILLING a name is not answering for it: applyDotEnv marks
+		// every key it sets (internal/envtrust), and the reads that
+		// need the operator's own answer — the plugin home, the model
+		// table that prices a run and the cache file it is read from,
+		// the gateway catalog and the credential it presents — resolve
+		// the INHERITED value and take a planted one as nothing said.
+		// The file sits in a repository, including the one a run is
+		// reviewing.
 		if shouldLoadWorkspaceDotEnv() {
 			loadDotEnvFromCwd()
 		}
