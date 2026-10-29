@@ -148,7 +148,7 @@ func (e *Engine) predictAttachmentsDir() string {
 	// container, so nothing is mounted anywhere. A driver that binds and
 	// one that copies (kubernetes) land the directory at the same path.
 	caps := driver.Capabilities()
-	if driver.Name() == "noop" || !(caps.SupportsHostBindMounts || caps.SupportsHostDirCopy) {
+	if driver.Name() == "noop" || (!caps.SupportsHostBindMounts && !caps.SupportsHostDirCopy) {
 		return ""
 	}
 	return attachmentsContainerPath

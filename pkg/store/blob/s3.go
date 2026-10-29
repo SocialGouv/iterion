@@ -362,7 +362,7 @@ func (c *S3Client) DeleteRunAttachments(ctx context.Context, runID string) error
 // ---------------------------------------------------------------------------
 
 // PutUpload streams a staged upload under uploads/<uploadID>/<filename>.
-func (c *S3Client) PutUpload(ctx context.Context, uploadID, filename, contentType string, body io.Reader, size int64) error {
+func (c *S3Client) PutUpload(ctx context.Context, uploadID, filename, contentType string, body io.ReadSeeker, size int64) error {
 	key, err := uploadKey(uploadID, filename)
 	if err != nil {
 		return err

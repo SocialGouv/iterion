@@ -111,6 +111,8 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("ScratchBankStore", func(t *testing.T) { testScratchBankStore(t, factory(t)) })
 	t.Run("RunFilesStore", func(t *testing.T) { testRunFilesStore(t, factory(t)) })
 	t.Run("StagingStore", func(t *testing.T) { testStagingStore(t, factory(t)) })
+	t.Run("AttachmentsDottedName", func(t *testing.T) { testAttachmentsDottedName(t, factory(t)) })
+	t.Run("AttachmentsReservedFilename", func(t *testing.T) { testAttachmentsReservedFilename(t, factory(t)) })
 	t.Run("ParentedRunCreator", func(t *testing.T) { testParentedRunCreator(t, factory(t)) })
 	t.Run("RunListingProjection", func(t *testing.T) { testRunListingProjection(t, factory(t)) })
 	t.Run("RecordedSourceSetter", func(t *testing.T) { testSetRunRecordedSource(t, factory(t)) })
@@ -4243,6 +4245,25 @@ func testStagingStore(t *testing.T, s store.RunStore) {
 	if _, _, err := st.OpenStagedUpload(ctx, short.UploadID); !errors.Is(err, store.ErrUploadNotFound) {
 		t.Fatalf("the refused upload left something behind: %v", err)
 	}
+	// A body LONGER than its record is refused too — the record is the
+	// contract, and nothing of a refused upload stays.
+	long := store.StagedUpload{UploadID: "up_1700000000_0000000000000003", OriginalFilename: "long.txt", MIME: "text/plain", Size: 2, SHA256: "l"}
+	if err := st.StageUpload(ctx, long, bytes.NewReader([]byte("abcdef"))); err == nil {
+		t.Fatal("a body longer than its record was staged")
+	}
+	if _, _, err := st.OpenStagedUpload(ctx, long.UploadID); !errors.Is(err, store.ErrUploadNotFound) {
+		t.Fatalf("the refused long upload left something behind: %v", err)
+	}
+	// The record sidecar's name is nobody's filename, on either twin.
+	for _, name := range []string{"meta.json", "META.JSON"} {
+		sidecar := store.StagedUpload{UploadID: "up_1700000000_0000000000000002", OriginalFilename: name, MIME: "application/json", Size: 2, SHA256: "s"}
+		if err := st.StageUpload(ctx, sidecar, bytes.NewReader([]byte("{}"))); !errors.Is(err, store.ErrReservedUploadFilename) {
+			t.Fatalf("an upload named %q was staged (err=%v), want ErrReservedUploadFilename", name, err)
+		}
+		if _, _, err := st.OpenStagedUpload(ctx, sidecar.UploadID); !errors.Is(err, store.ErrUploadNotFound) {
+			t.Fatalf("the refused upload %q left something behind: %v", name, err)
+		}
+	}
 	// Discard, twice.
 	if err := st.DiscardStagedUpload(ctx, rec.UploadID); err != nil {
 		t.Fatalf("DiscardStagedUpload: %v", err)
@@ -4278,5 +4299,75 @@ func testStagingStore(t *testing.T, s store.RunStore) {
 		if _, _, err := st.OpenStagedUpload(ctx, u.UploadID); !errors.Is(err, store.ErrUploadNotFound) {
 			t.Fatalf("%s survived the reap: %v", u.UploadID, err)
 		}
+	}
+	// The reaper reads the RECORD's clock on both twins: an upload staged
+	// with an old CreatedAt is due although its bytes just landed.
+	old := store.StagedUpload{UploadID: "up_1700000000_000000000000000c", OriginalFilename: "c.txt", MIME: "text/plain", Size: 1, SHA256: "c", CreatedAt: time.Now().Add(-2 * time.Hour)}
+	if err := st.StageUpload(ctx, old, bytes.NewReader([]byte("x"))); err != nil {
+		t.Fatalf("stage %s: %v", old.UploadID, err)
+	}
+	if n, err := st.ReapStagedUploads(ctx, time.Now().Add(-time.Hour)); err != nil || n != 1 {
+		t.Fatalf("reap by the record's clock = %d, %v; want 1, nil", n, err)
+	}
+}
+
+// testAttachmentsDottedName: an attachment's name is a map KEY, dots and
+// all — every gate attachment is named <node>.<field>. A backend that
+// writes the map through a dotted update path nests the entry and reads it
+// back nameless; this round trip is the contract on both twins.
+func testAttachmentsDottedName(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const runID = "run_dotted_attachment"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	const name = "gate_music.music"
+	if err := s.WriteAttachment(ctx, runID, store.AttachmentRecord{Name: name, OriginalFilename: "track.txt", MIME: "text/plain"}, strings.NewReader("fake audio")); err != nil {
+		t.Fatalf("WriteAttachment(%q): %v", name, err)
+	}
+	list, err := s.ListAttachments(ctx, runID)
+	if err != nil || len(list) != 1 || list[0].Name != name {
+		t.Fatalf("ListAttachments = %+v, %v; want one record named %q", list, err, name)
+	}
+	rc, rec, err := s.OpenAttachment(ctx, runID, name)
+	if err != nil {
+		t.Fatalf("OpenAttachment(%q): %v", name, err)
+	}
+	data, _ := io.ReadAll(rc)
+	_ = rc.Close()
+	if rec.Name != name || string(data) != "fake audio" {
+		t.Fatalf("read back %q / %q, want %q / fake audio", rec.Name, data, name)
+	}
+	if err := s.RemoveAttachment(ctx, runID, name); err != nil {
+		t.Fatalf("RemoveAttachment(%q): %v", name, err)
+	}
+	if list, err := s.ListAttachments(ctx, runID); err != nil || len(list) != 0 {
+		t.Fatalf("after RemoveAttachment: %+v, %v; want none", list, err)
+	}
+}
+
+// testAttachmentsReservedFilename: the record sidecar's name is nobody's
+// filename in the attachments layout either — the filesystem twin would
+// read the bytes back as the record. Refused by both twins, whichever
+// writer asks (an original filename, or a name standing in for one).
+func testAttachmentsReservedFilename(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const runID = "run_reserved_attachment"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	for _, rec := range []store.AttachmentRecord{
+		{Name: "notes", OriginalFilename: "meta.json", MIME: "application/json"},
+		{Name: "notes", OriginalFilename: "META.JSON", MIME: "application/json"},
+		{Name: "meta.json", MIME: "application/json"},
+	} {
+		if err := s.WriteAttachment(ctx, runID, rec, strings.NewReader(`{"user":"payload"}`)); !errors.Is(err, store.ErrReservedUploadFilename) {
+			t.Fatalf("WriteAttachment(%+v) = %v, want ErrReservedUploadFilename", rec, err)
+		}
+	}
+	if list, err := s.ListAttachments(ctx, runID); err != nil || len(list) != 0 {
+		t.Fatalf("a refused attachment left a record: %+v, %v", list, err)
 	}
 }

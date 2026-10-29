@@ -108,8 +108,13 @@ reads, afterwards, as a run that never had it.
    `sandbox_skipped` with `refused: true` and the names.
 4. **A node that names `{{attachments.<name>.path}}` (or the bare form)
    while the run holds the attachment with no path it can open fails
-   before it runs**, `ATTACHMENT_PATH_UNAVAILABLE`, at the one boundary
-   every execution path crosses (`executeWithResources`). `.url` serves
+   before it runs**, `ATTACHMENT_PATH_UNAVAILABLE`, at the boundary every
+   executor call crosses (`executeWithResources`). An image attachment
+   referenced from an LLM node's USER prompt, when every route that may
+   serve the node is claw (the primary and each fallback), is not a path
+   reference — that executor sends an image block, by URL when no copy
+   exists; a system or interaction prompt, a router and a CLI backend
+   interpolate the path, and are admitted on it. `.url` serves
    anywhere; an attachment the run does not hold still renders empty — a
    declared optional attachment is the bot's to test for.
 5. **`sandbox.Capabilities.SupportsHostDirCopy` and
@@ -132,8 +137,17 @@ reads, afterwards, as a run that never had it.
   scoping rule (the tenant-filtered record), and in the backup page as
   transient. A new collection, `staged_uploads`, exempt from the per-run
   sweep guard because no run owns it.
-- Two failure codes join the reserved set; one event type joins the
-  sandbox family; the studio's hints and event union carry them.
+- Three failure codes join the reserved set and the retry classification:
+  `ATTACHMENTS_UNDELIVERABLE` and `ATTACHMENT_PATH_UNAVAILABLE` are
+  deterministic (a redelivery changes nothing), `ATTACHMENTS_UNFETCHABLE`
+  — the store did not hand the files over before the sandbox — parks the
+  run resumable, as a sandbox that could not be placed does, and the
+  cloud runner re-offers it after two minutes rather than at once. Two event
+  types join the sandbox family; the studio's hints and event union
+  carry them. The launch paths that hand the run to another process (the
+  cloud publisher, a detached runner) promote the staged uploads before
+  the hand-off (`runview.PromoteForHandoff`); a promotion that fails
+  fails the launch (`LAUNCH_FAILED`).
 - The runtime's attachments directory is a fact in one more case: a
   copied directory counts as landed, so `attachmentPath` keys off it as it
   keys off a bind.

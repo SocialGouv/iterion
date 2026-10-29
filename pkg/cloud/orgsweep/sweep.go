@@ -124,6 +124,11 @@ var notPurged = map[string]string{
 	"usage_windows":      "per-credential provider readings keyed by the credential, not the tenant; the credential itself is purged",
 	"platform_settings":  "the deployment's own settings record",
 	"sent_notifications": "idempotency claims keyed by notification key, TTL-reaped, carry no tenant",
+	// Uploads a launch form staged and no run claimed yet: the staging sweep
+	// of every replica removes the bytes THEN the record within the TTL. A
+	// tenant-filtered purge of the records would orphan the bytes under
+	// uploads/<id>/ for good — the leak the sweep's order exists to prevent.
+	"staged_uploads": "uploads no run claimed yet, reaped within the hour by the staging sweep (bytes, then record); a record-only purge would orphan the bytes",
 }
 
 // Cascade hard-deletes an org's identity records (teams, memberships,

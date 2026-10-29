@@ -881,14 +881,22 @@ func (e *Engine) execContext(ctx context.Context, rs *runState, nodeID string) c
 //   - Filesystem stores UNDER SANDBOX: the bind-mount path
 //     (/run/iterion/attachments/<name>/<filename>) — the host path does
 //     not exist inside the container.
-//   - Cloud / non-FS stores: Path is left empty; nodes that need bytes
-//     access them via the URL accessor (presigned).
+//   - Stores with no filesystem root: the copy the engine materialised —
+//     the container path when the sandbox mounted or seeded it, the local
+//     copy otherwise — or empty before one exists, when the URL accessor
+//     (presigned) serves.
 func (e *Engine) loadAttachmentInfos(ctx context.Context, runID string) map[string]model.AttachmentInfo {
 	if e.store == nil {
 		return nil
 	}
 	list, err := e.store.ListAttachments(ctx, runID)
-	if err != nil || len(list) == 0 {
+	if err != nil {
+		if e.logger != nil {
+			e.logger.Warn("runtime: list attachments of run %s: %v — every {{attachments.*}} reference renders empty this turn", runID, err)
+		}
+		return nil
+	}
+	if len(list) == 0 {
 		return nil
 	}
 	out := make(map[string]model.AttachmentInfo, len(list))
@@ -902,9 +910,9 @@ func (e *Engine) loadAttachmentInfos(ctx context.Context, runID string) map[stri
 		}
 		// Resolve to the path the NODES can open: the host path for an
 		// ordinary run, the bind-mount path when the run is sandboxed
-		// (where the host path simply does not exist). Empty for
-		// cloud/non-FS stores, whose consumers use the presign accessor
-		// below instead.
+		// (where the host path simply does not exist). On a store with no
+		// root, the materialised copy, or empty before one exists — the
+		// presign accessor below serves then.
 		info.Path = e.attachmentPath(rec)
 		// Where THIS process can read the bytes. Distinct from Path,
 		// which is the node's view and points inside the container on a

@@ -207,7 +207,7 @@ func (b *inMemoryBlob) DeleteRunAttachments(_ context.Context, runID string) err
 	return nil
 }
 
-func (b *inMemoryBlob) PutUpload(_ context.Context, uploadID, filename, _ string, body io.Reader, size int64) error {
+func (b *inMemoryBlob) PutUpload(_ context.Context, uploadID, filename, _ string, body io.ReadSeeker, size int64) error {
 	key, err := blob.UploadKey(uploadID, filename)
 	if err != nil {
 		return err

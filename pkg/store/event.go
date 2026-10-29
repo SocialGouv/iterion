@@ -496,10 +496,12 @@ const (
 	//   - source: precedence label ("workflow sandbox: block",
 	//     "cli flag --sandbox", "global sandbox default", …)
 	//   - reason: human-readable explanation
-	//   - refused: bool — true on the INLINE refusal path (the run
-	//     parks with FailureCode=SANDBOX_DRIVER_UNAVAILABLE); absent
-	//     or false on the AUTO soft-skip path (the run continues
-	//     unsandboxed)
+	//   - refused: bool — true on a refusal: the INLINE refusal path (the
+	//     run parks with FailureCode=SANDBOX_DRIVER_UNAVAILABLE) and the
+	//     attachments refusal (ATTACHMENTS_UNDELIVERABLE: the run holds
+	//     attachments the driver can neither bind nor copy, `attachments`
+	//     then lists their names); absent or false on the AUTO soft-skip
+	//     path (the run continues unsandboxed)
 	//   - error_code: string — the typed failure code, the same one
 	//     the run document carries as failure_code and the schedule
 	//     record copies into last_run_error_code (#1426). Set only
@@ -507,9 +509,9 @@ const (
 	//   - file_secrets_dropped: bool — set on an AUTO degrade whose
 	//     workflow declares `as: file` secrets: an unsandboxed run has
 	//     no container to mount them into, so they are not delivered
-	//   - driver: string — written only by the noop-pinned path
+	//   - driver: string — written by the noop-pinned path
 	//     (startNoopSandbox), where a caller chose the passthrough
-	//     driver deliberately
+	//     driver deliberately, and by the attachments refusal
 	EventSandboxSkipped EventType = "sandbox_skipped"
 	// EventSkillsInjected fires at run start when the OPERATOR added
 	// skill-library skills to this run on top of the workflow's own
@@ -561,6 +563,8 @@ const (
 	//   - withdrawn: []string of the variables withdrawn with their bind
 	//   - handed_back: map of variable → the bot's own value handed back in
 	//     its place, present only when one was
+	//   - carried: []string of dropped targets a seed lands all the same
+	//     (the attachments on a driver that copies), present only when one is
 	EventSandboxHostBindsDropped EventType = "sandbox_host_binds_dropped"
 	// EventSandboxAttachmentsCopied fires when a driver with no host
 	// filesystem receives the run's attachments as a directory to copy in

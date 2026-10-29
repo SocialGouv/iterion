@@ -69,6 +69,12 @@ func (s *FilesystemRunStore) WriteAttachment(ctx context.Context, runID string, 
 	if err := sanitizePathComponent("attachment filename", filepath.Base(filename)); err != nil {
 		return err
 	}
+	// The record sidecar sits beside the bytes: a file under its name
+	// would be read back as the record. Refused for every writer, here,
+	// the one write every attachment crosses.
+	if IsReservedUploadFilename(filepath.Base(filename)) {
+		return ErrReservedUploadFilename
+	}
 	dir := s.attachmentDir(runID, rec.Name)
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		return fmt.Errorf("store: mkdir attachment: %w", err)

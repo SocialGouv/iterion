@@ -145,6 +145,15 @@ func (e *ClawExecutor) buildUserContent(
 	return text.String(), blocks
 }
 
+// IsImageAttachmentRef is the executor's rule for a reference it turns into
+// an image block (isImageAttachmentRef), exported so the runtime's path
+// admission reads THE rule on the same text instead of a copy of it: ref is
+// the expression between "{{" and "}}", trimmed — a leading "!" included,
+// which this rule does not match, so such a reference renders as text.
+func IsImageAttachmentRef(ref string, imageNames map[string]bool) bool {
+	return isImageAttachmentRef(ref, imageNames)
+}
+
 // isImageAttachmentRef reports whether the given template reference
 // (without the "{{" "}}" delimiters) targets an image attachment whose
 // rendered position should become a separate ContentBlock. Matches the

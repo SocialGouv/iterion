@@ -23,6 +23,8 @@ export function runErrorHint(code: string, run: Pick<RunHeaderType, "error">): s
       return "Make the configured sandbox driver available on the runner: install Docker or Podman and check PATH locally, or check Kubernetes configuration and access in cloud. Then launch a new run — retrying the same setup will fail again.";
     case "ATTACHMENTS_UNDELIVERABLE":
       return "The run's attachments could not reach its sandbox: the driver has no host filesystem to bind them from and does not copy them in. Run the bot on a driver that delivers files to the container, or launch it without attachments.";
+    case "ATTACHMENTS_UNFETCHABLE":
+      return "The run store did not hand the run's attachments over before the sandbox started (a storage blip). Nothing of this attempt executed: resume it once the store answers — a redelivery fetches them again.";
     case "ATTACHMENT_PATH_UNAVAILABLE":
       return "A node names an attachment's path, but the run holds no file a node can open here (a store without a filesystem root whose attachments were not materialised). Reference {{attachments.<name>.url}} where a presigned URL serves, or run the bot where its attachments are delivered as files.";
     case "BUDGET_EXCEEDED":

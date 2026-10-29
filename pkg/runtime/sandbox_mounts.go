@@ -529,8 +529,13 @@ func homeNestedBindParents(homeDir string, mounts []string) []string {
 // the entry carries no target= field.
 func mountTarget(entry string) string {
 	for _, field := range strings.Split(entry, ",") {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(field), "target="); ok {
-			return v
+		field = strings.TrimSpace(field)
+		// docker spells the target three ways; a bind dropped under one of
+		// them is dropped all the same.
+		for _, key := range []string{"target=", "dst=", "destination="} {
+			if v, ok := strings.CutPrefix(field, key); ok {
+				return v
+			}
 		}
 	}
 	return ""
@@ -692,10 +697,28 @@ type droppedBinds struct {
 	Targets    []string          // cleaned container targets of the dropped host binds, sorted
 	Withdrawn  []string          // variables withdrawn because their bind went
 	HandedBack map[string]string // variable → the bot's own value handed back in the runtime's place
+	Carried    []string          // targets a seed serves in the dropped bind's place (the attachments on a copying driver)
 }
 
 func (d droppedBinds) empty() bool {
-	return len(d.Targets) == 0 && len(d.Withdrawn) == 0 && len(d.HandedBack) == 0
+	return len(d.Targets) == 0 && len(d.Withdrawn) == 0 && len(d.HandedBack) == 0 && len(d.Carried) == 0
+}
+
+// carry moves target from the dropped list to the carried one: the bind
+// went, but a seed lands the same directory at the same path, so the
+// container does have it.
+func (d droppedBinds) carry(target string) droppedBinds {
+	clean := path.Clean(target)
+	kept := make([]string, 0, len(d.Targets))
+	for _, t := range d.Targets {
+		if t == clean {
+			d.Carried = append(d.Carried, t)
+			continue
+		}
+		kept = append(kept, t)
+	}
+	d.Targets = kept
+	return d
 }
 
 // payload is the event data of store.EventSandboxHostBindsDropped.
@@ -713,6 +736,9 @@ func (d droppedBinds) payload(driver string) map[string]any {
 			handed[k] = v
 		}
 		out["handed_back"] = handed
+	}
+	if len(d.Carried) > 0 {
+		out["carried"] = append([]string{}, d.Carried...)
 	}
 	return out
 }

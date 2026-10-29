@@ -187,3 +187,9 @@ func imageAttachmentNames(wf *ir.Workflow) map[string]bool {
 	}
 	return names
 }
+
+// ImageAttachmentNames names the workflow's image-typed attachments — the
+// set IsImageAttachmentRef matches against.
+func ImageAttachmentNames(wf *ir.Workflow) map[string]bool {
+	return imageAttachmentNames(wf)
+}

@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/store/blob"
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 // Attachments are persisted in two places in cloud mode:
@@ -32,6 +33,12 @@ func (s *Store) WriteAttachment(ctx context.Context, runID string, rec store.Att
 	filename := rec.OriginalFilename
 	if filename == "" {
 		filename = rec.Name
+	}
+	// The filesystem twin keeps its record sidecar beside the bytes under
+	// this name; one contract for both twins, so a file that lands in cloud
+	// lands locally too.
+	if store.IsReservedUploadFilename(filename) {
+		return store.ErrReservedUploadFilename
 	}
 	// Stream-read into memory while hashing, bounded by the configured
 	// cap so an unbounded body can't push the runner pod into OOM.
@@ -69,17 +76,14 @@ func (s *Store) WriteAttachment(ctx context.Context, runID string, rec store.Att
 		return fmt.Errorf("store/mongo: blob put attachment: %w", err)
 	}
 
-	// Reflect into runs collection. Use $set on the nested key so a
-	// concurrent attachment write to a different name doesn't lose
-	// the document-level race.
+	// Reflect into the runs collection, ONE entry of the map at a time so
+	// a concurrent write to another name is not lost in a document-level
+	// race — through $setField, because the name is a map KEY, not a path:
+	// a $set on "attachments.<name>" reads the dot of a gate attachment's
+	// name (<node>.<field>) as nesting, and the entry reads back nameless.
 	_, err = s.runs.UpdateOne(ctx,
 		withTenantFilter(ctx, bson.M{"_id": runID}),
-		versionRunUpdate(bson.M{
-			"$set": bson.M{
-				"attachments." + rec.Name: rec,
-				"updated_at":              time.Now().UTC(),
-			},
-		}),
+		versionRunUpdate(attachmentFieldUpdate(rec.Name, bson.M{"$literal": rec})),
 	)
 	if err != nil {
 		return fmt.Errorf("store/mongo: index attachment in run: %w", err)
@@ -129,10 +133,7 @@ func (s *Store) RemoveAttachment(ctx context.Context, runID, name string) error 
 	}
 	_, err = s.runs.UpdateOne(ctx,
 		withTenantFilter(ctx, bson.M{"_id": runID}),
-		versionRunUpdate(bson.M{
-			"$unset": bson.M{"attachments." + name: ""},
-			"$set":   bson.M{"updated_at": time.Now().UTC()},
-		}),
+		versionRunUpdate(attachmentFieldUpdate(name, "$$REMOVE")),
 	)
 	if err != nil {
 		return fmt.Errorf("store/mongo: clear attachment %s/%s: %w", runID, name, err)
@@ -164,4 +165,20 @@ func (s *Store) PresignAttachment(ctx context.Context, runID, name string, ttl t
 		return "", store.ErrAttachmentNotFound
 	}
 	return s.blob.PresignAttachment(ctx, runID, name, rec.OriginalFilename, ttl)
+}
+
+// attachmentFieldUpdate is the pipeline update that writes one entry of
+// the run's attachments map under its NAME — or clears it, with "$$REMOVE"
+// as the value. $setField takes the name as a literal, so a dot in it (the
+// <node>.<field> name every gate attachment carries) stays a character of
+// the key instead of becoming a path into a nested document.
+func attachmentFieldUpdate(name string, value any) mongo.Pipeline {
+	return mongo.Pipeline{bson.D{{Key: "$set", Value: bson.M{
+		"attachments": bson.M{"$setField": bson.M{
+			"field": bson.M{"$literal": name},
+			"input": bson.M{"$ifNull": bson.A{"$attachments", bson.M{}}},
+			"value": value,
+		}},
+		"updated_at": time.Now().UTC(),
+	}}}}
 }

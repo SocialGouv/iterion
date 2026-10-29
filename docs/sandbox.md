@@ -272,7 +272,9 @@ names an attachment's path (`{{attachments.<name>.path}}`, or the bare
 form) while the run holds the attachment with no path it can open fails
 **before it runs**, typed `ATTACHMENT_PATH_UNAVAILABLE`, instead of
 running on an empty string; `{{attachments.<name>.url}}` serves wherever
-the node runs. An attachment the run does not hold still renders empty —
+the node runs, and so does an image attachment referenced with the plain
+spelling in the user prompt of an agent or judge whose every route is
+`claw` (that executor sends an image block, by URL when no copy exists). An attachment the run does not hold still renders empty —
 a declared optional attachment nobody uploaded is the bot's to test for.
 
 The measured cost of getting this wrong: the run-files variable once

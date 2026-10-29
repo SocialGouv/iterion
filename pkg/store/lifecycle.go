@@ -148,6 +148,13 @@ const (
 	// run. The node fails before it runs instead of running on an empty
 	// string (#2086).
 	FailureAttachmentPathUnavailable FailureCode = "ATTACHMENT_PATH_UNAVAILABLE"
+	// FailureAttachmentsUnfetchable: on a store with no filesystem root the
+	// engine fetches the run's attachments before the sandbox, and the store
+	// did not hand them over (a bucket blip). Nothing of this attempt executed;
+	// the run parks resumable and a redelivery fetches again. Distinct from
+	// ATTACHMENTS_UNDELIVERABLE, which is the driver's refusal and does not
+	// change on a redelivery (#2086).
+	FailureAttachmentsUnfetchable FailureCode = "ATTACHMENTS_UNFETCHABLE"
 
 	// FailureInterrupted: an INTERNAL stop (runner drain, dispatcher
 	// stall reap, server shutdown) parked the run failed_resumable.
@@ -280,6 +287,7 @@ var ReservedFailureCodes = []FailureCode{
 	FailureSandboxDriverUnavailable,
 	FailureAttachmentsUndeliverable,
 	FailureAttachmentPathUnavailable,
+	FailureAttachmentsUnfetchable,
 	FailureInterrupted,
 	FailureFailNode,
 	FailureProcessOrphaned,

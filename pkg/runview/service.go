@@ -107,7 +107,11 @@ type LaunchSpec struct {
 	// before the engine starts. It is expected to materialise every
 	// attachment declared in `attachments:` into the run-scoped store
 	// (typically by promoting uploads from a staging area). Errors
-	// abort the launch.
+	// abort the launch. An out-of-process path — the cloud publisher, a
+	// detached runner — invokes it before its hand-off, once the run row
+	// exists (PromoteForHandoff): the process that runs the engine has no
+	// staging area, and a run handed over without its attachments would
+	// start without them in silence.
 	AttachmentPromote runtime.AttachmentPromoteFunc
 	// Backend, when non-empty, overrides the workflow's `default_backend:`
 	// for this run. Node-level explicit `backend:` declarations still

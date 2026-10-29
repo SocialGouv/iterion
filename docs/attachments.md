@@ -391,7 +391,19 @@ mode). The run's stream says so (`sandbox_attachments_copied`), and
 `{{attachments.<name>.path}}` resolves to the same container path as on
 docker. A driver that can neither bind nor copy refuses a run that holds
 attachments (`ATTACHMENTS_UNDELIVERABLE`); a node that names a path the
-run cannot hand it fails before it runs (`ATTACHMENT_PATH_UNAVAILABLE`).
+run cannot hand it fails before it runs (`ATTACHMENT_PATH_UNAVAILABLE`) —
+except an image attachment referenced with the plain `{{attachments.<name>}}`
+or `.path` spelling in the user prompt of an agent or judge whose every
+route is `claw`: that executor sends an image block, by URL when no copy
+exists, and needs no path. A `{{!…}}` spelling, a user prompt that is also
+the node's system or interaction prompt, and a router's prompt render the
+path as text, and are admitted on it.
+
+`meta.json` is nobody's filename: the filesystem layout keeps each
+attachment's record under that name beside its bytes, so a file under it
+would be read back as the record. Both stores refuse it, typed, whoever
+writes the attachment — an upload (a 400 at the door), a node's
+attachment directive, a bundle default, an answered file.
 
 ## Cloud notes
 
@@ -402,8 +414,11 @@ run cannot hand it fails before it runs (`ATTACHMENT_PATH_UNAVAILABLE`).
   what the kubernetes driver seeds into the pod, and what the nodes open
   by path when the run executes in the runner's own process; the
   presigned URL (`{{attachments.<name>.url}}`) serves either way. A fetch
-  that fails stops the run typed (`ATTACHMENTS_UNDELIVERABLE`) instead of
-  running it without its files. No shared filesystem is required.
+  that fails parks the run resumable, typed `ATTACHMENTS_UNFETCHABLE`,
+  instead of running it without its files; a redelivery fetches again.
+  No shared filesystem is required. A cloud launch promotes the staged
+  uploads it names on the server, between the run row and the queue
+  message; a promotion that fails fails the launch (`LAUNCH_FAILED`).
 - Upload limits are advisory at the SPA level; the server pod
   re-validates each upload with its compiled server configuration.
   Today the cloud command has no upload-limit surface in `pkg/config`

@@ -210,6 +210,14 @@ const sandboxSetupTimeoutNakDelay = 2 * time.Minute
 // same ceiling and spends a delivery for it.
 const sandboxCapacityNakDelay = 3 * time.Minute
 
+// attachmentsFetchNakDelay spaces the redeliveries of a run whose
+// attachments the store did not hand over before the sandbox
+// (ATTACHMENTS_UNFETCHABLE). A storage blip clears on the store's side; a
+// bare Nak re-offers within seconds, spends every permitted delivery on the
+// same blip, and the DLQ park then writes DLQ_PARKED over the code. The
+// setup-timeout spacing is the same kind of wait.
+const attachmentsFetchNakDelay = 2 * time.Minute
+
 // resolveDeliveryPreconditions runs the pre-lock store gauntlet:
 // LoadRun (with its own short detached timeout context so a runner
 // shutdown can't terminate a live delivery) and the status switch
@@ -921,6 +929,22 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 			level:       logWarn,
 			logFmt:      "runner: run %s: the sandbox could not be placed (resumable) — re-offered in %s (%v)",
 			logArgs:     []any{runID, sandboxCapacityNakDelay, execErr},
+		}
+	}
+	// The store did not hand the run's attachments over before the sandbox
+	// (ATTACHMENTS_UNFETCHABLE): the engine wrote failed_resumable. Same
+	// treatment as the two above — a delayed Nak, the DLQ park on the last
+	// permitted delivery still applying — keyed on the code, which the
+	// engine's typed error carries.
+	if runtimeCodeOf(execErr) == runtime.ErrCodeAttachmentsUnfetchable {
+		return execOutcome{
+			finalStatus: "attachments_unfetchable",
+			op:          "nak-attachments-unfetchable",
+			action:      actionNakDelayed,
+			delay:       attachmentsFetchNakDelay,
+			level:       logWarn,
+			logFmt:      "runner: run %s: the run's attachments could not be fetched (resumable) — re-offered in %s (%v)",
+			logArgs:     []any{runID, attachmentsFetchNakDelay, execErr},
 		}
 	}
 	// The IR does not load on this runner (a server ahead of the fleet):

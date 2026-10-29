@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -48,6 +49,19 @@ const UploadStagingSubdir = "uploads"
 
 const stagedUploadMetaFilename = "meta.json"
 
+// IsReservedUploadFilename reports whether a filename is one the staging
+// and attachments layouts keep for themselves: the record sidecar. An
+// upload under that name would be read back as its own record. Compared
+// case-insensitively, because a filesystem may be.
+func IsReservedUploadFilename(name string) bool {
+	return strings.EqualFold(name, stagedUploadMetaFilename)
+}
+
+// ErrReservedUploadFilename refuses a file named like the record sidecar —
+// a staged upload, or an attachment whatever wrote it (an upload, a
+// node's attachment directive, a bundle default, an answered file).
+var ErrReservedUploadFilename = errors.New("store: the filename meta.json is reserved for the record sidecar")
+
 // StagingStore is the optional run-store capability that holds uploads
 // between their arrival and their promotion to a run. FilesystemRunStore
 // stages under <root>/uploads/; the Mongo (cloud) store stages the record
@@ -57,8 +71,11 @@ const stagedUploadMetaFilename = "meta.json"
 type StagingStore interface {
 	// StageUpload persists body under rec.UploadID with rec as its record.
 	// rec.Size is the byte length the caller measured; a body that yields
-	// a different length is refused and nothing is kept.
-	StageUpload(ctx context.Context, rec StagedUpload, body io.Reader) error
+	// a different length is refused and nothing is kept. The body is
+	// SEEKABLE because a blob backend rewinds it to retry and to checksum
+	// (an S3 PUT over plaintext refuses an unseekable stream outright);
+	// a filename IsReservedUploadFilename names is refused by every twin.
+	StageUpload(ctx context.Context, rec StagedUpload, body io.ReadSeeker) error
 	// OpenStagedUpload returns the record and a reader on the bytes, or
 	// ErrUploadNotFound. The caller closes the reader.
 	OpenStagedUpload(ctx context.Context, uploadID string) (StagedUpload, io.ReadCloser, error)
@@ -89,13 +106,16 @@ func (s *FilesystemRunStore) stagedUploadDir(uploadID string) (string, error) {
 // StageUpload implements StagingStore under <root>/uploads/<upload_id>/:
 // the bytes under the original filename, the record beside them. A
 // failure anywhere leaves no directory behind.
-func (s *FilesystemRunStore) StageUpload(_ context.Context, rec StagedUpload, body io.Reader) error {
+func (s *FilesystemRunStore) StageUpload(_ context.Context, rec StagedUpload, body io.ReadSeeker) error {
 	dir, err := s.stagedUploadDir(rec.UploadID)
 	if err != nil {
 		return err
 	}
 	if err := sanitizePathComponent("upload filename", rec.OriginalFilename); err != nil {
 		return err
+	}
+	if IsReservedUploadFilename(rec.OriginalFilename) {
+		return ErrReservedUploadFilename
 	}
 	if rec.Size <= 0 {
 		return fmt.Errorf("store: stage upload %s: the record carries no size", rec.UploadID)
@@ -180,8 +200,10 @@ func (s *FilesystemRunStore) DiscardStagedUpload(_ context.Context, uploadID str
 	return nil
 }
 
-// ReapStagedUploads implements StagingStore: an upload's directory keeps
-// the time it was staged, and one older than cutoff goes.
+// ReapStagedUploads implements StagingStore: the record says when an
+// upload was staged — the same clock the Mongo twin reaps on — and one
+// older than cutoff goes. A record that cannot be read dates the upload
+// by its directory instead, so an unreadable sidecar is still swept.
 func (s *FilesystemRunStore) ReapStagedUploads(_ context.Context, cutoff time.Time) (int, error) {
 	root := filepath.Join(s.root, UploadStagingSubdir)
 	entries, err := os.ReadDir(root)
@@ -197,12 +219,12 @@ func (s *FilesystemRunStore) ReapStagedUploads(_ context.Context, cutoff time.Ti
 		if !e.IsDir() {
 			continue
 		}
-		info, err := e.Info()
+		stagedAt, err := s.stagedUploadTime(filepath.Join(root, e.Name()), e)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("stat %s: %w", e.Name(), err))
 			continue
 		}
-		if !info.ModTime().Before(cutoff) {
+		if !stagedAt.Before(cutoff) {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(root, e.Name())); err != nil {
@@ -215,4 +237,20 @@ func (s *FilesystemRunStore) ReapStagedUploads(_ context.Context, cutoff time.Ti
 		return reaped, fmt.Errorf("store: reap staged uploads: %w", errors.Join(errs...))
 	}
 	return reaped, nil
+}
+
+// stagedUploadTime is when an upload was staged: its record's CreatedAt,
+// or the directory's modification time when the record is unreadable.
+func (s *FilesystemRunStore) stagedUploadTime(dir string, entry fs.DirEntry) (time.Time, error) {
+	if raw, err := os.ReadFile(filepath.Join(dir, stagedUploadMetaFilename)); err == nil {
+		var rec StagedUpload
+		if json.Unmarshal(raw, &rec) == nil && !rec.CreatedAt.IsZero() {
+			return rec.CreatedAt, nil
+		}
+	}
+	info, err := entry.Info()
+	if err != nil {
+		return time.Time{}, err
+	}
+	return info.ModTime(), nil
 }

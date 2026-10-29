@@ -64,6 +64,10 @@ const (
 	// run holds that attachment with no path a node can open
 	// (attachment_admission.go).
 	ErrCodeAttachmentPathUnavailable = store.FailureAttachmentPathUnavailable
+	// Raised before the sandbox when a store with no filesystem root did
+	// not hand the run's attachments over (materializeAttachments): the
+	// run parks resumable, a redelivery fetches again.
+	ErrCodeAttachmentsUnfetchable = store.FailureAttachmentsUnfetchable
 	// Raised before the first node when the attached bundle declares a
 	// `requires.iterion` this build is below (engine_requirement.go).
 	ErrCodeBotRequiresNewerEngine = store.FailureBotRequiresNewerEngine

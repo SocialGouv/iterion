@@ -973,6 +973,7 @@ func TestSanitizePathComponent(t *testing.T) {
 		{"run_with_underscores", true},
 		{"", false},
 		{"..", false},
+		{".", false},
 		{"foo/../bar", false},
 		{"foo/bar", false},
 		{"foo\\bar", false},

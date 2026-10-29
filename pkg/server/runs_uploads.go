@@ -92,6 +92,10 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid filename")
 		return
 	}
+	if store.IsReservedUploadFilename(filename) {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid filename: %q is reserved", filename)
+		return
+	}
 
 	// One pass over the part measures it — the size, the SHA-256 and the
 	// sniffed type, never the declared one — and the stager reads it again
@@ -133,7 +137,10 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "rewind upload: %v", err)
 		return
 	}
-	if err := stager.StageUpload(r.Context(), rec, io.LimitReader(file, written)); err != nil {
+	// A SectionReader, not a LimitReader: the seam wants a body it can
+	// rewind (the blob backend retries and checksums), and the part has
+	// ReadAt whether it sits in memory or was spilled to a temp file.
+	if err := stager.StageUpload(r.Context(), rec, io.NewSectionReader(file, 0, written)); err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "stage upload: %v", err)
 		return
 	}
@@ -205,6 +212,12 @@ func (s *Server) promoteStaged(ctx context.Context, runID string, mapping map[st
 		if err := store.SanitizePathComponent("attachment_name", name); err != nil {
 			rollback()
 			return nil, 0, fmt.Errorf("invalid attachment name %q: %w", name, err)
+		}
+		// A name is a directory entry a driver later hands to tools by name;
+		// one that reads as an option is nobody's attachment.
+		if strings.HasPrefix(name, "-") {
+			rollback()
+			return nil, 0, fmt.Errorf("invalid attachment name %q: a name must not start with a dash", name)
 		}
 		if err := store.SanitizePathComponent("upload_id", uploadID); err != nil {
 			rollback()
@@ -455,9 +468,15 @@ func splitMIME(m string) (string, string) {
 //     in a string field corrupt the file
 //
 // The size cap (255 bytes) matches what most filesystems will accept
-// as a single path component on disk.
+// as a single path component on disk. The store's own component rule
+// (SanitizePathComponent) is applied here too, so a name it would refuse
+// — a ".." inside the name — is a 400 at the door, not a 500 from the
+// seam.
 func validUploadFilename(filename string) bool {
 	if filename == "" || filename == "." || filename == ".." {
+		return false
+	}
+	if store.SanitizePathComponent("filename", filename) != nil {
 		return false
 	}
 	if len(filename) > 255 {

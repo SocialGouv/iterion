@@ -189,6 +189,7 @@ func TestValidUploadFilename(t *testing.T) {
 		{"del", "a\x7fb.txt", false},
 		{"invalid utf8", "a\xffb.txt", false},
 		{"too long", strings.Repeat("a", 256), false},
+		{"dots inside the name", "report..final.pdf", false},
 		{"max len", strings.Repeat("a", 255), true},
 	}
 	for _, tc := range tests {

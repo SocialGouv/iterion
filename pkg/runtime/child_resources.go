@@ -198,8 +198,8 @@ func (e *Engine) resourcesReady() {
 // never holds a reader while waiting for its child to acquire the writer.
 func (e *Engine) executeWithResources(ctx context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
 	// A node naming an attachment's path runs with a file or not at all —
-	// admitted here, the one boundary every execution path crosses.
-	if err := admitAttachmentPaths(node, e.workflow, model.TemplateDataFromContext(ctx)); err != nil {
+	// admitted here, the boundary every executor.Execute call crosses.
+	if err := admitAttachmentPaths(node, e.workflow, model.TemplateDataFromContext(ctx), e.executor); err != nil {
 		return nil, err
 	}
 	scope := e.resourceScope

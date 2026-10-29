@@ -40,7 +40,7 @@ func TestANodeNamingAnAttachmentPathRunsWithAFileOrNotAtAll(t *testing.T) {
 	}
 
 	t.Run("a held attachment with no path refuses the node, typed, naming it", func(t *testing.T) {
-		err := admitAttachmentPaths(tool, nil, held(map[string]string{"spec": "", "logo": "/run/iterion/attachments/logo/logo.png"}))
+		err := admitAttachmentPaths(tool, nil, held(map[string]string{"spec": "", "logo": "/run/iterion/attachments/logo/logo.png"}), nil)
 		var rt *RuntimeError
 		if !errors.As(err, &rt) || rt.Code != ErrCodeAttachmentPathUnavailable {
 			t.Fatalf("err = %v, want code %s", err, ErrCodeAttachmentPathUnavailable)
@@ -56,18 +56,18 @@ func TestANodeNamingAnAttachmentPathRunsWithAFileOrNotAtAll(t *testing.T) {
 		}
 	})
 	t.Run("a path for every named attachment admits the node", func(t *testing.T) {
-		if err := admitAttachmentPaths(tool, nil, held(map[string]string{"spec": "/run/iterion/attachments/spec/spec.md", "logo": "/x/logo.png"})); err != nil {
+		if err := admitAttachmentPaths(tool, nil, held(map[string]string{"spec": "/run/iterion/attachments/spec/spec.md", "logo": "/x/logo.png"}), nil); err != nil {
 			t.Fatalf("admitted node refused: %v", err)
 		}
 	})
 	t.Run("an attachment the run does not hold is not this guard's business", func(t *testing.T) {
-		if err := admitAttachmentPaths(tool, nil, held(map[string]string{"logo": "/x/logo.png"})); err != nil {
+		if err := admitAttachmentPaths(tool, nil, held(map[string]string{"logo": "/x/logo.png"}), nil); err != nil {
 			t.Fatalf("a node naming an absent attachment was refused: %v", err)
 		}
 	})
 	t.Run("a url reference alone needs no path", func(t *testing.T) {
 		urlOnly := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "fetch"}, CommandRefs: refsOf(t, "curl {{attachments.spec.url}}")}
-		if err := admitAttachmentPaths(urlOnly, nil, held(map[string]string{"spec": ""})); err != nil {
+		if err := admitAttachmentPaths(urlOnly, nil, held(map[string]string{"spec": ""}), nil); err != nil {
 			t.Fatalf("a url-only node was refused: %v", err)
 		}
 	})
@@ -77,7 +77,7 @@ func TestANodeNamingAnAttachmentPathRunsWithAFileOrNotAtAll(t *testing.T) {
 		}}
 		agent := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "ask"}}
 		agent.UserPrompt = "brief"
-		err := admitAttachmentPaths(agent, w, held(map[string]string{"spec": ""}))
+		err := admitAttachmentPaths(agent, w, held(map[string]string{"spec": ""}), nil)
 		var rt *RuntimeError
 		if !errors.As(err, &rt) || rt.Code != ErrCodeAttachmentPathUnavailable || rt.NodeID != "ask" {
 			t.Fatalf("err = %v, want the typed refusal on node ask", err)

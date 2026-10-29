@@ -418,6 +418,18 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 		}
 	}
 
+	// The staged uploads the launch names are promoted before the hand-off:
+	// the subprocess reads the run's attachments from the store, never a
+	// staging area. A promotion that fails fails the launch, the row marked
+	// LAUNCH_FAILED with its cause, and nothing is spawned.
+	if err := PromoteForHandoff(parent, runID, spec.AttachmentPromote); err != nil {
+		if uerr := store.FailRunAtLaunch(context.Background(), s.store, runID, err.Error()); uerr != nil {
+			s.logger.Warn("runview: detached: mark %s failed: %v", runID, uerr)
+		}
+		s.dropRunLog(runID)
+		return nil, fmt.Errorf("runview: %w", err)
+	}
+
 	// LaunchSpec.Backend is honored only by the in-process spawnRun
 	// path today. The detached runner is a separate process invoked
 	// via `iterion run` which has no `--backend` flag yet. Surface

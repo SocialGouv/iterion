@@ -208,12 +208,14 @@ func (s *Server) ListenAndServe() error {
 		s.logger.Info("Recovery-passive editor server listening on http://%s:%d", displayHost, s.cfg.Port)
 		return s.server.Serve(ln)
 	}
-	// Sweep abandoned upload staging dirs in the background. Without
-	// this, attachments uploaded for runs that never launched (operator
-	// closed the modal, browser crashed mid-upload, etc.) accumulate
-	// under <store>/uploads/ until the disk fills. The reaper itself
-	// is best-effort — it walks the staging root, deletes dirs older
-	// than uploadStagingTTL, and stops when s.shutdown closes.
+	// Sweep abandoned staged uploads in the background. Without this,
+	// attachments uploaded for runs that never launched (operator closed
+	// the modal, browser crashed mid-upload, etc.) accumulate — under
+	// <store>/uploads/ on a local store, as staged_uploads records and
+	// their blobs in cloud — until the disk or the bucket fills. The reaper
+	// sweeps through the run store's staging seam (store.StagingStore),
+	// removing what is older than uploadStagingTTL, says a failure at warn
+	// level, and stops when s.shutdown closes.
 	if s.runs != nil {
 		s.goUntilShutdown("server.stagedUploadReaper", s.runStagedUploadReaper)
 	}

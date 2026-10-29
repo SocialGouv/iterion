@@ -95,8 +95,11 @@ func TestAStoreWithNoRootMaterialisesTheAttachmentsBeforeTheSandbox(t *testing.T
 		e := engineOn(t, openFailingStore{fs})
 		_, err := e.startSandbox(ctx, runID, e.workDir, "", nil)
 		var rt *RuntimeError
-		if !errors.As(err, &rt) || rt.Code != ErrCodeAttachmentsUndeliverable || !strings.Contains(rt.Message, "spec") {
-			t.Fatalf("err = %v, want %s naming the attachment", err, ErrCodeAttachmentsUndeliverable)
+		if !errors.As(err, &rt) || rt.Code != ErrCodeAttachmentsUnfetchable || !strings.Contains(rt.Message, "spec") {
+			t.Fatalf("err = %v, want %s naming the attachment", err, ErrCodeAttachmentsUnfetchable)
+		}
+		if strings.Count(rt.Error(), "the bucket is unreachable") != 1 {
+			t.Fatalf("the cause is printed %d times: %s", strings.Count(rt.Error(), "the bucket is unreachable"), rt.Error())
 		}
 		if e.attachmentsLocalDir != "" {
 			t.Fatal("a failed materialisation announced a directory")

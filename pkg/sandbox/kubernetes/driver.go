@@ -1218,7 +1218,12 @@ func (r *Run) streamDirIntoPod(ctx context.Context, src, podDst string) error {
 	if len(entries) == 0 {
 		return nil // nothing to copy
 	}
-	tarArgs := []string{"-C", src, "-cf", "-"}
+	// The entry names are OPERANDS, fenced off the option parser with "--":
+	// a name that starts with "--" (a repository file, an attachment name a
+	// launch request chose) is otherwise an option to GNU tar, and
+	// `--checkpoint-action=exec=…` runs a command on the HOST, the trusted
+	// side of this pipe.
+	tarArgs := []string{"-C", src, "-cf", "-", "--"}
 	for _, e := range entries {
 		tarArgs = append(tarArgs, e.Name())
 	}

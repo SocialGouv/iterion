@@ -182,6 +182,16 @@ erDiagram
         string[] tags
         string tenant_id FK "team id"
     }
+    staged_uploads {
+        string _id PK "the upload id, up_<unix>_<32 hex>"
+        string tenant_id FK "team id"
+        string owner_id FK "users._id"
+        string original_filename
+        string mime "sniffed, never the declared one"
+        int64 size
+        string sha256
+        datetime created_at "the staging sweep reaps after an hour"
+    }
     run_gitmeta {
         ObjectId _id PK "the identity is the unique run_id"
         string run_id FK, UK "runs._id"
@@ -204,6 +214,8 @@ erDiagram
     runs }o..o| retry_circuits : "retry_circuits.key, derived from the run; the run stores no reference"
     retry_circuits }o--o| runs : "last_failure_run_id"
     run_tags |o--|| runs : "run_id"
+    staged_uploads }o--o| teams : "tenant_id"
+    staged_uploads }o..o| users : "owner_id"
     run_gitmeta |o--|| runs : "run_id"
     runs }o--o| runs : "parent_run_id"
     runs |o--o{ runs : "subbot_children - written on the PARENT"
@@ -276,7 +288,7 @@ erDiagram
         int64 lease_epoch
     }
     "S3: artifacts and backend sessions" {
-        string key PK "artifacts/<run>/<node>/<v>.json, attachments/<run>/<name>/<file>, tools/<run>/<toolUseID>/<kind>, ir/<run>.json, sessions/<run>/<ref>, runfiles/<run>/<path>"
+        string key PK "artifacts/<run>/<node>/<v>.json, attachments/<run>/<name>/<file>, tools/<run>/<toolUseID>/<kind>, ir/<run>.json, sessions/<run>/<ref>, runfiles/<run>/<path>, uploads/<upload>/<file>"
     }
     "NATS KV: run locks" {
         string key PK "the run id"
@@ -292,6 +304,7 @@ erDiagram
     assistant_missions }o--|| runs : "assistant_run_id"
     assistant_missions }o--|| assistant_run_watches : "watch_id"
     runs ||..o{ "S3: artifacts and backend sessions" : "key - the run id sits in its second path segment"
+    staged_uploads ||..o| "S3: artifacts and backend sessions" : "key - uploads/<_id>/<original_filename>, before any run exists"
     runs ||--o| "NATS KV: run locks" : "key - the run id; the claiming runner holds one lease per run"
 ```
 
@@ -300,7 +313,7 @@ erDiagram
 
 ## Where a run's bytes live
 
-Outside Mongo, a cloud run writes into six S3 key spaces of one bucket and one NATS KV bucket, and its launch travels on a JetStream subject; a second KV bucket holds the fleet's rollout epoch. The marked participants of Block 3 are the two stores a run itself writes; the streams are transport rather than state, so no entity draws them.
+Outside Mongo, a cloud run writes into six S3 key spaces of one bucket — beside a seventh, `uploads/`, where the server stages what a launch form uploads before any run exists — and one NATS KV bucket, and its launch travels on a JetStream subject; a second KV bucket holds the fleet's rollout epoch. The marked participants of Block 3 are the two stores a run itself writes; the streams are transport rather than state, so no entity draws them.
 
 | store | key or name | what it holds |
 | --- | --- | --- |
@@ -310,6 +323,7 @@ Outside Mongo, a cloud run writes into six S3 key spaces of one bucket and one N
 | S3 | `ir/<run>.json` | the compiled IR when it rides out of band |
 | S3 | `sessions/<run>/<ref>` | the backend conversation a resume reattaches to |
 | S3 | `runfiles/<run>/<rel path>` | tool-produced files |
+| S3 | `uploads/<upload>/<file>` | an upload a launch form staged and no run claimed yet — reached only through its `staged_uploads` record, read under the tenant filter, never presigned, swept after an hour (bytes, then record) |
 | NATS KV `iterion-run-locks` | the run id | the runner's execution lease (`LeaseInfo`: runner id, started_at, run_status, tenant, pool); bucket TTL `LockTTL`, 60s by default |
 | NATS KV `iterion-runner-rollout` | `epoch.high-water` | the monotonic runner rollout epoch, no TTL |
 | JetStream `ITERION_RUNS`, `ITERION_RUNS_DLQ` | `iterion.queue.runs`, `iterion.queue.runs.dlq` | the run work queue and its park; a sovereign pool gets its own `ITERION_RUNS_POOL_<pool>` pair on an exact, never wildcard, subject |
@@ -379,6 +393,7 @@ stateDiagram-v2
 | `run_notes` | `pkg/store/mongo` | `runNoteDoc` | `tenant_id` — team id | unique `(run_id, seq)`; no TTL | `file notes/<NNNN>.json` |
 | `run_turns` | `pkg/store/mongo` | `runTurnDoc` for `store.TurnCheckpoint` | `tenant_id` — team id | unique `(run_id, node_id, loop_iter, turn_index)`; TTL `ts` | `file turns/<node>/<iter>/<turn>.json` |
 | `run_tags` | `pkg/store/mongo` | `runTagsDoc` | `tenant_id` — team id | unique `run_id`; no TTL | `file tags.json` |
+| `staged_uploads` | `pkg/store/mongo` | `store.StagedUpload` | `tenant_id` — team id | `_id` is the upload id; index `created_at`; no TTL index — the staging sweep reaps after an hour, bytes then record | `file uploads/<id>/meta.json` |
 | `run_gitmeta` | `pkg/store/mongo` | `runGitMetaDoc` | `tenant_id` — team id | unique `run_id`; no TTL | `file gitmeta.json` |
 | `run_route_decisions` | `pkg/store/mongo` | `store.RouteDecision` | `tenant_id` — team id; the watermark sentinel is untenanted | unique `(run_id, outcome_seq)`; no TTL | `file route_decisions.json` |
 | `retry_circuits` | `pkg/store/mongo` | `store.RetryCircuitState` | `tenant_id` — team id | unique `(tenant_id, key)`; TTL `updated_at` after 30 days | `none (cloud-only)` |
@@ -391,7 +406,7 @@ stateDiagram-v2
 | `assistant_run_watches` | `pkg/runwatch` | `runwatch.Watch` | `tenant_id` — team id, a plain tenant parameter on the per-operator reads | unique partial `(tenant_id, owner_id, target_run_id)` on `state: active`; no TTL | `file assistant-run-watches.json` |
 | `assistant_run_watch_episodes` | `pkg/runwatch` | `runwatch.Episode` | `tenant_id` — team id, ignored by the claim queries | unique `(watch_id, outcome_event_id)`; no TTL | `file assistant-run-watches.json` |
 | `assistant_missions` | `pkg/assistantmission` | `assistantmission.Mission` | `tenant_id` — team id, a plain tenant parameter on the per-operator reads, ignored by the reconcile and claim queries | unique `(tenant_id, operator_id, invocation_key)`, unique partial `active_target_key`; no TTL | `file assistant-missions.json` |
-| `"S3: artifacts and backend sessions"` | `pkg/store/blob` | key spaces, not documents | the run id is the key's second path segment | none | `S3` |
+| `"S3: artifacts and backend sessions"` | `pkg/store/blob` | key spaces, not documents | the run id is the key's second path segment — the upload id under `uploads/`, scoped by its `staged_uploads` record | none | `S3` |
 | `"NATS KV: run locks"` | `pkg/queue/nats` | `nats.LeaseInfo` | `tenant_id` inside the lease payload | bucket TTL `LockTTL`, default 60s | `NATS KV` |
 
 ## Related

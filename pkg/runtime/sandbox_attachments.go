@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -58,14 +59,14 @@ func attachmentsUndeliverable(driver string, names []string) *RuntimeError {
 func (e *Engine) materializeAttachments(ctx context.Context, runID string) (string, error) {
 	list, err := e.store.ListAttachments(ctx, runID)
 	if err != nil {
-		return "", attachmentsUnfetchable(runID, "list the run's attachments", err)
+		return "", fetchFailure(ctx, runID, "list the run's attachments", err)
 	}
 	if len(list) == 0 {
 		return "", nil
 	}
 	dir, err := os.MkdirTemp("", "iterion-attachments-")
 	if err != nil {
-		return "", attachmentsUnfetchable(runID, "create the attachments directory", err)
+		return "", fmt.Errorf("the attachments of run %s were not materialised (%s): %w", runID, "create the attachments directory", err)
 	}
 	keep := false
 	defer func() {
@@ -73,20 +74,30 @@ func (e *Engine) materializeAttachments(ctx context.Context, runID string) (stri
 			_ = os.RemoveAll(dir)
 		}
 	}()
+	materialised := 0
 	for _, rec := range list {
-		if err := store.SanitizePathComponent("attachment name", rec.Name); err != nil {
-			return "", attachmentsUnfetchable(runID, "name attachment "+rec.Name, err)
-		}
 		file := attachmentFilename(rec)
-		if err := store.SanitizePathComponent("attachment filename", file); err != nil {
-			return "", attachmentsUnfetchable(runID, "name attachment "+rec.Name, err)
+		if store.SanitizePathComponent("attachment name", rec.Name) != nil || store.SanitizePathComponent("attachment filename", file) != nil {
+			// A record no name reaches: the empty entry a dotted name left in
+			// a store that wrote the attachments map through a path (a
+			// <node>.<field> gate attachment, before names were stored as
+			// keys). Nothing can reference it and nothing can be copied under
+			// it; a redelivery would meet it again, so it is no fetch blip.
+			if e.logger != nil {
+				e.logger.Warn("runtime: run %s: an attachment record with no usable name (name %q, file %q) is skipped — it cannot be referenced or materialised", runID, rec.Name, file)
+			}
+			continue
 		}
 		if err := os.MkdirAll(filepath.Join(dir, rec.Name), 0o755); err != nil {
-			return "", attachmentsUnfetchable(runID, "create the directory of attachment "+rec.Name, err)
+			return "", fmt.Errorf("the attachments of run %s were not materialised (%s): %w", runID, "create the directory of attachment "+rec.Name, err)
 		}
 		if err := e.fetchAttachment(ctx, runID, rec.Name, filepath.Join(dir, rec.Name, file)); err != nil {
-			return "", attachmentsUnfetchable(runID, "fetch attachment "+rec.Name, err)
+			return "", fetchFailure(ctx, runID, "fetch attachment "+rec.Name, err)
 		}
+		materialised++
+	}
+	if materialised == 0 {
+		return "", nil
 	}
 	keep = true
 	return dir, nil
@@ -111,13 +122,34 @@ func (e *Engine) fetchAttachment(ctx context.Context, runID, name, dst string) e
 	return f.Close()
 }
 
+// fetchFailure is how a failed FETCH reaches the setup — a store's list or
+// read, never a local step (a directory the runner could not create is its
+// own plain failure, not the store's). A store that did
+// not hand the attachments over under a LIVE context is
+// ATTACHMENTS_UNFETCHABLE — resumable, a redelivery fetches again. A fetch
+// the run's own context cut short (an operator's cancel, a drain, the
+// run's deadline) is the context's outcome: setupFailureStatus and setupErr
+// decide it, and it carries no code a runner would re-offer the run under.
+func fetchFailure(ctx context.Context, runID, step string, cause error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		if errors.Is(cause, ctxErr) {
+			return fmt.Errorf("the attachments of run %s were not materialised (%s): %w", runID, step, cause)
+		}
+		return fmt.Errorf("the attachments of run %s were not materialised (%s): %v: %w", runID, step, cause, ctxErr)
+	}
+	return attachmentsUnfetchable(runID, step, cause)
+}
+
 // attachmentsUnfetchable is the typed failure of a run whose attachments
-// the store could not hand over before the sandbox.
+// the store could not hand over before the sandbox: nothing of the run
+// executed, so it parks resumable (setupFailureStatus) and a redelivery
+// fetches again. The cause rides as Cause, not in the message — Error()
+// prints it once.
 func attachmentsUnfetchable(runID, step string, cause error) *RuntimeError {
 	return &RuntimeError{
-		Code:    ErrCodeAttachmentsUndeliverable,
-		Message: fmt.Sprintf("the run's attachments could not be materialised for the sandbox (%s): %v", step, cause),
-		Hint:    "the run store did not serve the attachments the run holds; launch again once it answers, or launch without attachments",
+		Code:    ErrCodeAttachmentsUnfetchable,
+		Message: fmt.Sprintf("the run's attachments could not be materialised for the sandbox of run %s (%s)", runID, step),
+		Hint:    "the run store did not hand the attachments over; nothing of this attempt executed — resume it once the store answers",
 		Cause:   cause,
 	}
 }

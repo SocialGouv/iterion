@@ -83,6 +83,9 @@ var classification = map[store.FailureCode]Disposition{
 	store.FailureProcessOrphaned:     DispositionInfrastructure, // a liveness probe found the owner dead
 	store.FailureSandboxSetupTimeout: DispositionInfrastructure,
 	store.FailureSandboxCapacity:     DispositionInfrastructure,
+	// The store did not hand the run's attachments over before the
+	// sandbox: nothing of this attempt executed, a fresh delivery fetches again.
+	store.FailureAttachmentsUnfetchable: DispositionInfrastructure,
 
 	// Re-executable — an LLM node decided it, so the next sample may pass.
 	// Behaviour is unchanged for these: the point of naming them is that
@@ -163,6 +166,12 @@ var classification = map[store.FailureCode]Disposition{
 	// keeps the code in last_run_error_code (#1426) for the operator
 	// who has to change the isolation ask or provision a driver. #1425.
 	store.FailureSandboxDriverUnavailable: DispositionDeterministic,
+	// The driver can neither bind nor copy the run's attachments: a
+	// redelivery meets the same driver.
+	store.FailureAttachmentsUndeliverable: DispositionDeterministic,
+	// The node names an attachment path the run cannot hand it: the same
+	// on every redelivery.
+	store.FailureAttachmentPathUnavailable: DispositionDeterministic,
 }
 
 // Classify reports what an automatic resume can achieve for this code.

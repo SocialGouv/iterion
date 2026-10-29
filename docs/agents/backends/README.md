@@ -11,5 +11,5 @@ native harness. Leaves, one line each:
 | [fallbacks-and-parity.md](fallbacks-and-parity.md) | `fallbacks:`, C173/C176, a "dumber" node, a degrading forfait. |
 | [metering.md](metering.md) | Trusted delegate counters, reserved output metadata, interaction spend. |
 | [plugins-compression.md](plugins-compression.md) | Output compression (rtk), secret substitution, or a plugin changing what a node sees. |
-| [sandbox.md](sandbox.md) | `SANDBOX_*` failures, changing what a node may execute. |
+| [sandbox.md](sandbox.md) | `SANDBOX_*` and `ATTACHMENT*` failures, host binds dropped or carried, changing what a node may execute. |
 | [prompt-engineering-dials.md](prompt-engineering-dials.md) | Authoring `cursor:` / `supervisor:` / ultracode. |

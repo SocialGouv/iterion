@@ -171,6 +171,12 @@ func SanitizePathComponent(name, component string) error {
 	if strings.Contains(component, "..") {
 		return fmt.Errorf("store: %s %q contains path traversal", name, component)
 	}
+	// A lone dot joins to the parent directory: an id of "." under
+	// <root>/uploads/ IS the staging root, and a sweep of it is a sweep of
+	// every upload.
+	if component == "." {
+		return fmt.Errorf("store: %s %q names the parent directory", name, component)
+	}
 	if strings.ContainsAny(component, "/\\") {
 		return fmt.Errorf("store: %s %q contains path separator", name, component)
 	}

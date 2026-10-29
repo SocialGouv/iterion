@@ -159,8 +159,10 @@ type Client interface {
 	// `uploads/<uploadID>/<filename>` with the given Content-Type; size is
 	// the exact byte length. Backs the cloud StagingStore twin: an upload
 	// waits here between POST /api/runs/uploads and the launch that
-	// promotes it to `attachments/<runID>/…`. Idempotent.
-	PutUpload(ctx context.Context, uploadID, filename, contentType string, body io.Reader, size int64) error
+	// promotes it to `attachments/<runID>/…`. Idempotent. The body is
+	// SEEKABLE by type: the client rewinds it to retry and to checksum, and
+	// over a plaintext endpoint it refuses an unseekable stream outright.
+	PutUpload(ctx context.Context, uploadID, filename, contentType string, body io.ReadSeeker, size int64) error
 	// GetUpload streams the bytes previously PUT under the same key, or
 	// ErrArtifactNotFound. Callers must Close the returned reader.
 	GetUpload(ctx context.Context, uploadID, filename string) (io.ReadCloser, AttachmentMeta, error)

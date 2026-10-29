@@ -651,8 +651,12 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// docker keeps everything (the capability is true there).
 	var dropped droppedBinds
 	attachmentsDir, dropped = finalizeMountsForDriver(spec, caps, attachmentsDir, botRunFilesDir, logger)
-	if !dropped.empty() {
-		_ = emitEvent(store.EventSandboxHostBindsDropped, dropped.payload(driver.Name()))
+	// Said once below, after the seed decision: a target a seed carries is
+	// not a target the container never had.
+	sayDropped := func() {
+		if !dropped.empty() {
+			_ = emitEvent(store.EventSandboxHostBindsDropped, dropped.payload(driver.Name()))
+		}
 	}
 	// The attachments are the one dropped bind nothing stands in for: a
 	// withdrawn variable sends a tool to a temp dir, a declined bundle
@@ -672,12 +676,15 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 			}
 			seeds = append(seeds, sandbox.SeedDir{HostDir: p.AttachmentsHostDir, ContainerPath: target, ReadOnly: true})
 			attachmentsDir = target
+			dropped = dropped.carry(target)
+			sayDropped()
 			_ = emitEvent(store.EventSandboxAttachmentsCopied, map[string]any{
 				"driver":      driver.Name(),
 				"target":      target,
 				"attachments": names,
 			})
 		} else if len(names) > 0 {
+			sayDropped()
 			refusal := attachmentsUndeliverable(driver.Name(), names)
 			_ = emitEvent(store.EventSandboxSkipped, map[string]any{
 				"mode":        string(spec.Mode),
@@ -692,7 +699,11 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 				logger.Warn("runtime: sandbox refused [%s]: %s (run %s)", refusal.Code, refusal.Message, p.RunID)
 			}
 			return nil, refusal
+		} else {
+			sayDropped()
 		}
+	} else {
+		sayDropped()
 	}
 
 	// Phase 4 V1: claw nodes are forwarded to the iterion-claw-runner

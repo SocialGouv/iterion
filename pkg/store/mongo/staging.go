@@ -25,9 +25,12 @@ var _ store.StagingStore = (*Store)(nil)
 // StageUpload implements store.StagingStore. The record goes first so the
 // sweep can find the bytes whatever happens next; a PUT that fails takes
 // the record back out.
-func (s *Store) StageUpload(ctx context.Context, rec store.StagedUpload, body io.Reader) error {
+func (s *Store) StageUpload(ctx context.Context, rec store.StagedUpload, body io.ReadSeeker) error {
 	if _, err := blob.UploadKey(rec.UploadID, rec.OriginalFilename); err != nil {
 		return fmt.Errorf("store/mongo: stage upload: %w", err)
+	}
+	if store.IsReservedUploadFilename(rec.OriginalFilename) {
+		return store.ErrReservedUploadFilename
 	}
 	if rec.Size <= 0 {
 		return fmt.Errorf("store/mongo: stage upload %s: the record carries no size", rec.UploadID)
@@ -45,7 +48,12 @@ func (s *Store) StageUpload(ctx context.Context, rec store.StagedUpload, body io
 		return fmt.Errorf("store/mongo: stage upload %s: record: %w", rec.UploadID, err)
 	}
 	if err := s.blob.PutUpload(ctx, rec.UploadID, rec.OriginalFilename, rec.MIME, body, rec.Size); err != nil {
-		_, _ = s.stagedUploads.DeleteOne(ctx, bson.M{"_id": rec.UploadID})
+		// A PUT that failed may still have stored the object (a connection
+		// dropped after the write): the bytes go with the record, or the
+		// record stays for the sweep — never bytes with no record.
+		if rmErr := s.removeStagedUpload(ctx, rec.UploadID); rmErr != nil && s.logger != nil {
+			s.logger.Warn("store/mongo: stage upload %s: the failed put left a record for the sweep: %v", rec.UploadID, rmErr)
+		}
 		return fmt.Errorf("store/mongo: stage upload %s: blob put: %w", rec.UploadID, err)
 	}
 	return nil

@@ -1103,10 +1103,12 @@ preserves](#what-the-checkpoint-preserves).
 ### Sandbox startup — which failures are resumable
 
 A failure at `sandbox start` happens before the first node runs, so it is
-classified from the DRIVER's typed error rather than assumed either way.
-Both resumable codes are persisted on `failed_resumable`, so
-`iterion resume`, `--auto-resume` and the cloud runner's redelivery all
-pick them up; anything else stays terminal `failed`, because a redelivery
+classified from the DRIVER's typed error — or the engine's own, for the
+attachments — rather than assumed either way.
+The resumable codes are persisted on `failed_resumable`, so
+`iterion resume` and the cloud runner's redelivery pick them up — the
+CLI's `--auto-resume` loop does not resume them; anything else stays
+terminal `failed`, because a redelivery
 would re-hit it identically and only spend a pod per attempt.
 
 | Failure | Code | Status |
@@ -1120,14 +1122,17 @@ would re-hit it identically and only spend a pod per attempt.
 | The pod could not be inspected at all (RBAC, apiserver blip) | — | `failed` — no evidence, nothing claimed |
 | No driver can honour an EXPLICIT `sandbox: { mode: inline, … }` (no runtime on the host / no usable cluster) | `SANDBOX_DRIVER_UNAVAILABLE` | `failed` — every redelivery reaches the same absent runtime, so `pkg/retrypolicy` classes it Deterministic and the runner acks. `sandbox: auto` does not land here: it degrades to an unsandboxed run with a `sandbox_skipped` event (#1425) |
 | The run holds attachments and the driver can neither bind-mount their directory into the container nor copy it in | `ATTACHMENTS_UNDELIVERABLE` | `failed` — a redelivery reaches the same driver; run the bot on one that delivers files, or launch it without attachments (#2086) |
+| On a store with no filesystem root, the store did not hand the run's attachments over before the sandbox (a bucket blip) | `ATTACHMENTS_UNFETCHABLE` | `failed_resumable` — nothing of this attempt executed; a redelivery fetches them again after two minutes (#2086) |
 
-Both resumable codes are re-offered by the cloud runner on a DELAY
+The resumable codes are re-offered by the cloud runner on a DELAY
 rather than at once: 2 minutes for `SANDBOX_SETUP_TIMEOUT` (the stall is
 usually infrastructure catching its breath, and a bare re-offer would
 burn the whole delivery budget as back-to-back pods — 8 × a 15-minute
-phase ≈ 2 hours — with nothing on the run's timeline in between), and
+phase ≈ 2 hours — with nothing on the run's timeline in between),
 longer for `SANDBOX_CAPACITY` (the cure is a cluster autoscaler adding a
-node, not the pod retrying). Each redelivery is recorded on the run's
+node, not the pod retrying), and 2 minutes for `ATTACHMENTS_UNFETCHABLE`
+(a storage blip clears on the store's side; a bare re-offer would spend
+every delivery on the same blip). Each redelivery is recorded on the run's
 timeline. A condition that persists through every permitted delivery
 ends parked on the DLQ like any other repeated failure — announced,
 rather than re-offered forever. A one-off stall needs no operator action

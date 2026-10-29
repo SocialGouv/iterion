@@ -1139,6 +1139,32 @@ func promoteBundleAttachmentDefaults(
 	if len(promotable) == 0 {
 		return nil
 	}
+	// An operator's upload is never replaced by a default. On a path that
+	// hands the run to another process (the cloud publisher, a detached
+	// runner) the uploads are promoted BEFORE this engine runs, so the call
+	// order no longer says who wins — the run's own records do.
+	held, err := s.ListAttachments(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("runtime/bundle: list the run's attachments before its defaults: %w", err)
+	}
+	holds := make(map[string]bool, len(held))
+	for _, rec := range held {
+		holds[rec.Name] = true
+	}
+	kept := promotable[:0]
+	for _, name := range promotable {
+		if holds[name] {
+			if logger != nil {
+				logger.Info("bundle: attachment %q is already held by the run (an operator upload) — its default does not replace it", name)
+			}
+			continue
+		}
+		kept = append(kept, name)
+	}
+	promotable = kept
+	if len(promotable) == 0 {
+		return nil
+	}
 	if b.AttachmentsDir == "" {
 		return fmt.Errorf("runtime/bundle: the manifest declares attachment default(s) %q the workflow references, but the bundle carries no %s/ directory to read them from", promotable, bundle.DirAttachments)
 	}

@@ -781,6 +781,14 @@ func (e *Engine) emitSetupFailure(ctx context.Context, runID, phase string, stat
 // cancelling, so what surfaces is whatever the interrupted step returned
 // (a killed `kubectl exec`, a half-written worktree), never the cause.
 func setupFailureStatus(ctx context.Context, phase string, cause error) (store.RunStatus, string, store.FailureCode) {
+	// An operator's cancel that reached the run ctx wins over everything a
+	// setup phase reports: a phase timeout or an unplaced pod observed in
+	// the same instant must not record a resumable failure the redelivery
+	// would resume — the run the operator cancelled. (A drain is decided
+	// below, after the two sentinels, as before.)
+	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) && !errors.Is(context.Cause(ctx), ErrRunInterrupted) {
+		return store.RunStatusCancelled, fmt.Sprintf("%s cancelled before the first node: %v", phase, cause), store.FailureCancelled
+	}
 	// Checked BEFORE the ctx: a phase timeout fires on a child ctx and
 	// leaves the run ctx live, so the "ctx.Err() == nil ⇒ failed" arm
 	// below would hard-fail — and the queue would drop — a run a peer pod
@@ -801,6 +809,16 @@ func setupFailureStatus(ctx context.Context, phase string, cause error) (store.R
 			store.FailureSandboxCapacity
 	}
 	if ctx == nil || ctx.Err() == nil {
+		// The store did not hand the run's attachments over before the
+		// sandbox, the run's own context still live: nothing of the run
+		// executed, and a fresh delivery fetches again. Under the live
+		// context only — a fetch an operator's cancel or a drain cut short is
+		// the cancel's or the drain's, decided below.
+		if setupFailureCode(cause) == store.FailureAttachmentsUnfetchable {
+			return store.RunStatusFailedResumable,
+				fmt.Sprintf("%s: the run's attachments could not be fetched (resumable — nothing of this attempt executed; a redelivery fetches them again): %v", phase, cause),
+				store.FailureAttachmentsUnfetchable
+		}
 		return store.RunStatusFailed, fmt.Sprintf("%s: %v", phase, cause), setupFailureCode(cause)
 	}
 	if errors.Is(context.Cause(ctx), ErrRunInterrupted) {
@@ -845,9 +863,20 @@ func setupFailureCode(cause error) store.FailureCode {
 // ack policy classifies those shapes itself — a NAK for redelivery, with
 // the DLQ park still applying on the last permitted delivery, which an
 // interruption is exempt from.
+//
+// The order, checked against the run ctx: a drain (ErrRunInterrupted, the
+// runner re-offers), then an operator's cancel (ErrRunCancelled, wrapped
+// with %v so the failure's own typed code does not ride along and the
+// runner acks the run setupFailureStatus recorded cancelled), then the two
+// setup sentinels, which keep their own (the runner re-offers after its
+// delay). A setup site that returns without this decoration (a resource
+// writer's wait, for one) keeps the runner's generic reading.
 func (e *Engine) setupErr(ctx context.Context, err error) error {
 	if ctx != nil && ctx.Err() != nil && errors.Is(context.Cause(ctx), ErrRunInterrupted) {
 		return fmt.Errorf("%w: %v", ErrRunInterrupted, err)
+	}
+	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
+		return fmt.Errorf("%w: %v", ErrRunCancelled, err)
 	}
 	return err
 }

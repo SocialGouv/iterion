@@ -37,7 +37,7 @@ func newMemStaging() *memStaging {
 	return &memStaging{recs: map[string]store.StagedUpload{}, bodies: map[string][]byte{}}
 }
 
-func (m *memStaging) StageUpload(_ context.Context, rec store.StagedUpload, body io.Reader) error {
+func (m *memStaging) StageUpload(_ context.Context, rec store.StagedUpload, body io.ReadSeeker) error {
 	data, err := io.ReadAll(body)
 	if err != nil {
 		return err
@@ -99,7 +99,7 @@ type rootlessStore struct {
 }
 
 func (r *rootlessStore) Root() string { return "" }
-func (r *rootlessStore) StageUpload(ctx context.Context, rec store.StagedUpload, body io.Reader) error {
+func (r *rootlessStore) StageUpload(ctx context.Context, rec store.StagedUpload, body io.ReadSeeker) error {
 	return r.staging.StageUpload(ctx, rec, body)
 }
 func (r *rootlessStore) OpenStagedUpload(ctx context.Context, id string) (store.StagedUpload, io.ReadCloser, error) {
@@ -146,8 +146,9 @@ func TestUploadAttachment_StagesThroughTheStoreWhenItHasNoFilesystemRoot(t *test
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s — a store with no root cannot stage?", w.Code, w.Body.String())
 	}
+	wire := append([]byte{}, w.Body.Bytes()...)
 	var staged stagedUpload
-	if err := json.NewDecoder(w.Body).Decode(&staged); err != nil {
+	if err := json.Unmarshal(wire, &staged); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if staged.MIME != "application/pdf" || staged.Size != int64(len(pdfBytes)) || staged.SHA256 == "" {
@@ -156,8 +157,8 @@ func TestUploadAttachment_StagesThroughTheStoreWhenItHasNoFilesystemRoot(t *test
 	if held, ok := staging.holds(staged.UploadID); !ok || !bytes.Equal(held, pdfBytes) {
 		t.Fatalf("the bytes did not reach the staging seam: held=%v equal=%v", ok, bytes.Equal(held, pdfBytes))
 	}
-	if len(w.Body.String()) > 0 && bytes.Contains(w.Body.Bytes(), []byte("tenant")) {
-		t.Fatalf("the wire answer carries a tenant field: %s", w.Body.String())
+	if bytes.Contains(wire, []byte("tenant")) || bytes.Contains(wire, []byte("owner")) {
+		t.Fatalf("the wire answer carries a principal field: %s", wire)
 	}
 
 	// The launch promotes it to a run attachment and the staging is cleared.

@@ -3808,6 +3808,15 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	}
 	persisted = true
 
+	// The staged uploads the launch names are promoted HERE, between the row
+	// and the message: the runner pod has no staging area to promote from,
+	// and a run queued without its attachments would start without them in
+	// silence. A promotion that fails fails the launch, and the rollback
+	// above marks the row LAUNCH_FAILED with its cause.
+	if err := runview.PromoteForHandoff(ctx, runID, spec.AttachmentPromote); err != nil {
+		return 0, fmt.Errorf("cloudpublisher: %w", err)
+	}
+
 	msg := &queue.RunMessage{
 		V:                  queue.SchemaVersion,
 		Contributions:      contributions,
