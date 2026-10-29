@@ -351,10 +351,11 @@ func droppedByName(name string) bool {
 //     would ask for a context no listing can use, and a fixture's file would
 //     be reported as unseen for ever.
 //   - a FILE named _x.go or .x.go (droppedByName): go/build drops that name
-//     in every context, and nothing can import a file, so no build of a
-//     package of this module compiles it — `go build ./...` leaves it out,
-//     and only an explicit `go run _x.go` ever reads it. Nor is it a file
-//     the repository forgets: TestNoGuardIsReadAroundByTheBuild
+//     in every context, and nothing can import a file, so NO go command
+//     compiles it — `go build ./...` leaves it out, and naming the file is
+//     no way in either: `go run _x.go` over a `package main` answers "no Go
+//     files in <dir>" (go1.26.2), where the same file renamed runs. Nor is
+//     it a file the repository forgets: TestNoGuardIsReadAroundByTheBuild
 //     (pkg/dsl/unit) holds every Go file of the tree to a package of the
 //     module, and a planted pkg/dsl/ir/_scratch.go is red there.
 //   - a DIRECTORY named _x or .x (droppedByName): a pattern names no package
