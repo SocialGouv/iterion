@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/internal/shellquote"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/devcontainer"
@@ -347,7 +348,10 @@ func plantHostileGitConfig(t *testing.T, path, canary string) {
 // helper of its own — decides nothing here either way.
 func gitUnderContainerEnv(t *testing.T, env map[string]string, stdin string, args ...string) (string, error) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	// A writing git since 2.48 detaches `git maintenance run --auto`; the
+	// guard of pkg/git refuses it so nothing keeps writing under .git after
+	// the test returns.
+	cmd := exec.Command("git", git.NoAutoMaintenance(args...)...)
 	cmd.Dir = t.TempDir()
 	cmd.Env = make([]string, 0, len(env)+2)
 	for k, v := range env {
