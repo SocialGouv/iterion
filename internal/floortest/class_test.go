@@ -6,14 +6,36 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/bundle"
 )
 
 // pinNames are the syntax floors, by the name of the constant that pins each
 // — bundle.SyntaxFloors spells them the same way.
-var pinNames = []string{"ProfileSince", "ImportSince", "ContractSince", "VarMatchingSince", "ToolAliasesSince", "DeclaredEmptyToolsSince"}
+var pinNames = []string{"ProfileSince", "ImportSince", "ContractSince", "VarMatchingSince", "ToolAliasesSince", "DeclaredEmptyToolsSince", "CatalogTaxonomySince", "SkillSharingSince"}
+
+// The list above is the registry's, held to it here: a pin added to the
+// floors table and forgotten in pinNames is a pin the sweep below cannot
+// see, so a test resting a floor case on it would never be read — the
+// failure mode the sweep exists to close, reopened one pin at a time.
+func TestEveryPinOfTheRegistryIsOneTheSweepKnows(t *testing.T) {
+	for name := range bundle.SyntaxFloors() {
+		ident := name
+		if i := strings.LastIndex(ident, "."); i >= 0 {
+			ident = ident[i+1:]
+		}
+		if i := strings.Index(ident, "["); i >= 0 {
+			ident = ident[:i]
+		}
+		if !slices.Contains(pinNames, ident) {
+			t.Errorf("the registry pins %s, which the sweep does not know: add %q to pinNames, or no test file resting a floor case on it is ever read", name, ident)
+		}
+	}
+}
 
 // exemptMarker is the greppable escape hatch: a test that rests a floor case
 // on a pin on purpose carries it on one line, NAMING the pin it covers and

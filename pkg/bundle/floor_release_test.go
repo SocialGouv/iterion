@@ -213,6 +213,9 @@ func TestCatalogTaxonomyFloorFollowsTopLevelKeyPresence(t *testing.T) {
 		"root merge":    "compat: &taxonomy\n  category: verify\n  tags: [read-only]\n<<: *taxonomy\n",
 		"neither":       "",
 	}
+	// floortest:exempt CatalogTaxonomySince — the floor declared in the
+	// rows below is the one each case is AT, read from its own pin; the
+	// release BELOW it comes from floortest.Below, never from a sibling pin.
 	floors := map[string]struct {
 		yaml                string
 		wantErrWithTaxonomy bool

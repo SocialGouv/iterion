@@ -240,12 +240,15 @@ type Manifest struct {
 	Produces []ProducedArtifact `yaml:"produces,omitempty"`
 	Consumes []ConsumedArtifact `yaml:"consumes,omitempty"`
 
-	// Exports names workflows that another bundle may reference through a
-	// bot:// URI. Dependencies is the consumer-side allow-list: a workflow
-	// can only resolve a shared bundle that its own manifest declares. Both
-	// fields are additive schema-v1 extensions; older binaries reject them
-	// explicitly through strict YAML decoding instead of silently ignoring
-	// the dependency contract.
+	// Exports names workflows and skills that another bundle may reference
+	// — a workflow through a bot:// URI, a skill by the name a `skills:`
+	// list spells. Dependencies is the consumer-side allow-list: a bundle
+	// can only resolve what its own manifest declares. Both fields are
+	// additive schema-v1 extensions; older binaries reject them explicitly
+	// through strict YAML decoding instead of silently ignoring the
+	// dependency contract — which is why each key owes a release floor
+	// (profile.go's one floors table) to say "this bundle needs iterion
+	// >= X" at authoring time.
 	Exports      BundleExports      `yaml:"exports,omitempty" json:"exports,omitempty"`
 	Dependencies BundleDependencies `yaml:"dependencies,omitempty" json:"dependencies,omitempty"`
 
@@ -512,7 +515,8 @@ type ConsumedArtifact struct {
 	From string `yaml:"from,omitempty" json:"from,omitempty"`
 }
 
-// BundleExports is the public workflow surface of a bundle.
+// BundleExports is the public surface of a bundle: what another bundle may
+// depend on rather than copy.
 type BundleExports struct {
 	Workflows []WorkflowExport `yaml:"workflows,omitempty" json:"workflows,omitempty"`
 	// Fragments are the `.bot` fragments under lib/ this bundle publishes
@@ -520,6 +524,18 @@ type BundleExports struct {
 	// the same two-sided key (ADR-145). Shape and per-index refusals live
 	// in fragment_sharing.go.
 	Fragments []FragmentExport `yaml:"fragments,omitempty" json:"fragments,omitempty"`
+	// Skills names the skill documents this bundle shares (ADR-144). The
+	// floor the key owes is bundle.SkillSharingSince.
+	Skills []SkillExport `yaml:"skills,omitempty" json:"skills,omitempty"`
+}
+
+// SkillExport binds a stable skill id to a bundle-relative skill document,
+// the way WorkflowExport binds a workflow id to its source: the id is what
+// a consumer's `dependencies.skills` entry names, the path is where this
+// bundle keeps the bytes.
+type SkillExport struct {
+	ID   string `yaml:"id" json:"id"`
+	Path string `yaml:"path" json:"path"`
 }
 
 // WorkflowExport binds a stable bot:// workflow id to a bundle-relative
@@ -529,8 +545,9 @@ type WorkflowExport struct {
 	Path string `yaml:"path" json:"path"`
 }
 
-// BundleDependencies declares the shared bundles a consumer is allowed to
-// resolve. The exact version and content hash live in the project lockfile.
+// BundleDependencies declares what a consumer is allowed to resolve from a
+// shared bundle. The exact version and content hash live in the project
+// lockfile.
 type BundleDependencies struct {
 	Workflows []WorkflowDependency `yaml:"workflows,omitempty" json:"workflows,omitempty"`
 	// Fragments are the shared `.bot` fragments this bundle is allowed to
@@ -538,6 +555,23 @@ type BundleDependencies struct {
 	// them under. The install materializes them; nothing else learns of
 	// them (ADR-145).
 	Fragments []FragmentDependency `yaml:"fragments,omitempty" json:"fragments,omitempty"`
+	// Skills is the consumer side of ADR-144: the skills this bundle may
+	// resolve from another, each under the name its own `skills:` lists
+	// reference. Declaring one is an ALLOW-LIST entry, not a
+	// materialization — the install-time resolution that writes the
+	// resolved document into this bundle's skills directory is ADR-144
+	// clause 2, and the typed error on a miss is its clause 4.
+	Skills []SkillDependency `yaml:"skills,omitempty" json:"skills,omitempty"`
+}
+
+// SkillDependency names one shared skill a consumer is allowed to resolve.
+// Matching is exact on both sides: From is the exporting bundle, ID the
+// export it names there (defaulting to Name), and Name is how this bundle's
+// own `skills:` lists spell it.
+type SkillDependency struct {
+	Name string `yaml:"name" json:"name"`
+	From string `yaml:"from" json:"from"`
+	ID   string `yaml:"id,omitempty" json:"id,omitempty"`
 }
 
 // WorkflowDependency names one shared workflow bundle. Matching is exact.
@@ -1219,6 +1253,9 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 	if err := validateFragmentSharing(m.Exports, m.Dependencies); err != nil {
 		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
+	if err := validateSkillSharing(&m.Exports, &m.Dependencies); err != nil {
+		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
+	}
 	// A typo in retry: must fail at parse time, next to its source. Left
 	// unvalidated it would surface days later as a silently-defaulted
 	// policy on a run nobody is watching.
@@ -1274,6 +1311,72 @@ func validateWorkflowSharing(exports BundleExports, dependencies BundleDependenc
 			return fmt.Errorf("dependencies.workflows[%d].name %q is duplicated", i, dep.Name)
 		}
 		dependencyNames[dep.Name] = struct{}{}
+	}
+	return nil
+}
+
+// validateSkillSharing holds both sides of `exports.skills` /
+// `dependencies.skills` to the shape ADR-144 decided, one refusal per index
+// so an author is told WHICH entry is wrong — the bar
+// validateWorkflowSharing sets for the other artefact kind. It normalizes
+// in place: trimmed names, a cleaned bundle-relative path, and an id that
+// defaults to the name it is referenced under (the default the record
+// spells out, never a guess at load time).
+func validateSkillSharing(exports *BundleExports, dependencies *BundleDependencies) error {
+	exportIDs := make(map[string]struct{}, len(exports.Skills))
+	for i := range exports.Skills {
+		exp := &exports.Skills[i]
+		exp.ID = strings.TrimSpace(exp.ID)
+		exp.Path = filepath.ToSlash(filepath.Clean(strings.TrimSpace(exp.Path)))
+		if exp.ID == "" {
+			return fmt.Errorf("exports.skills[%d].id is required", i)
+		}
+		if strings.ContainsAny(exp.ID, `/\`) || exp.ID == "." || exp.ID == ".." {
+			return fmt.Errorf("exports.skills[%d].id %q must not contain path separators", i, exp.ID)
+		}
+		if _, duplicate := exportIDs[exp.ID]; duplicate {
+			return fmt.Errorf("exports.skills[%d].id %q is duplicated", i, exp.ID)
+		}
+		exportIDs[exp.ID] = struct{}{}
+		if exp.Path == "" || exp.Path == "." {
+			return fmt.Errorf("exports.skills[%d].path is required", i)
+		}
+		if filepath.IsAbs(exp.Path) || strings.HasPrefix(exp.Path, "../") || exp.Path == ".." {
+			return fmt.Errorf("exports.skills[%d].path %q must stay inside the bundle", i, exp.Path)
+		}
+		if !strings.HasSuffix(strings.ToLower(exp.Path), ".md") {
+			return fmt.Errorf("exports.skills[%d].path %q must name a .md skill document", i, exp.Path)
+		}
+	}
+
+	dependencyNames := make(map[string]struct{}, len(dependencies.Skills))
+	for i := range dependencies.Skills {
+		dep := &dependencies.Skills[i]
+		dep.Name = strings.TrimSpace(dep.Name)
+		dep.From = strings.TrimSpace(dep.From)
+		dep.ID = strings.TrimSpace(dep.ID)
+		if dep.Name == "" {
+			return fmt.Errorf("dependencies.skills[%d].name is required", i)
+		}
+		if strings.ContainsAny(dep.Name, `/\`) || dep.Name == "." || dep.Name == ".." {
+			return fmt.Errorf("dependencies.skills[%d].name %q must not contain path separators", i, dep.Name)
+		}
+		if _, duplicate := dependencyNames[dep.Name]; duplicate {
+			return fmt.Errorf("dependencies.skills[%d].name %q is duplicated", i, dep.Name)
+		}
+		dependencyNames[dep.Name] = struct{}{}
+		if dep.From == "" {
+			return fmt.Errorf("dependencies.skills[%d].from is required: name the bundle that exports %q, since a name alone would resolve from any installed bundle that happens to export it", i, dep.Name)
+		}
+		if strings.ContainsAny(dep.From, `/\`) || dep.From == "." || dep.From == ".." {
+			return fmt.Errorf("dependencies.skills[%d].from %q must not contain path separators", i, dep.From)
+		}
+		if dep.ID == "" {
+			dep.ID = dep.Name
+		}
+		if strings.ContainsAny(dep.ID, `/\`) || dep.ID == "." || dep.ID == ".." {
+			return fmt.Errorf("dependencies.skills[%d].id %q must not contain path separators", i, dep.ID)
+		}
 	}
 	return nil
 }

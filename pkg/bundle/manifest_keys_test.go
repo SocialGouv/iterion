@@ -15,6 +15,9 @@ import (
 // key with an empty value counts, a root merge resolves to the keys it
 // brings in, a nested mapping is reached by its dotted path, and a sequence
 // is a value whose elements are not key paths.
+// floortest:exempt CatalogTaxonomySince — the floor spliced into the
+// manifest below is the one its own key asks for, read from that pin; no
+// case here states a release below a floor, which is floortest.Below's job.
 func TestDeclaredManifestKeysReadsDeclarationsNotValues(t *testing.T) {
 	body := "" +
 		"name: probe\n" +

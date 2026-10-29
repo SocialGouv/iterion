@@ -25,6 +25,8 @@ func floorProbes() []FloorSubject {
 		{Syntax: SyntaxRequirements{Profile: 1, EmptyToolsBy: []string{"main.bot"}}},
 		{Keys: ManifestKeys{keyCategory: true}},
 		{Keys: ManifestKeys{keyTags: true}},
+		{Keys: ManifestKeys{keyExportsSkills: true}},
+		{Keys: ManifestKeys{keyDependenciesSkills: true}},
 	}
 }
 

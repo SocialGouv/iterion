@@ -36,6 +36,10 @@ var releaseNotesMarkers = map[string]string{
 	// category + tags …`, so the notes of 3.225.0 carry the word the key is
 	// spelled with.
 	"bundle.CatalogTaxonomySince": "category",
+	// #2763 lands as `feat(bundle): a shared skill is declared on both
+	// sides — exports.skills …`, so the notes of the release the cut gives
+	// this pin carry the word both keys are spelled with.
+	"bundle.SkillSharingSince": "skills",
 }
 
 // ReleaseNotesMarker is the word the release notes of a floor's pinned

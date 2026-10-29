@@ -611,6 +611,14 @@ var syntaxFloors = []syntaxFloor{
 		},
 	},
 	{
+		pins:          map[string]string{"bundle.SkillSharingSince": SkillSharingSince},
+		onManifestKey: true,
+		consequence:   "a build older than the release that reads them decodes the manifest strictly, knows no such field under `exports`/`dependencies` and refuses the whole document",
+		need: func(s FloorSubject) (string, string, bool) {
+			return SkillSharingSince, "`exports.skills`/`dependencies.skills`", s.Keys.Declares(keyExportsSkills, keyDependenciesSkills)
+		},
+	},
+	{
 		pins:          map[string]string{"bundle.CatalogTaxonomySince": CatalogTaxonomySince},
 		onManifestKey: true,
 		consequence:   "a build older than the release that reads them decodes the manifest strictly, knows no such field and refuses the whole document",
