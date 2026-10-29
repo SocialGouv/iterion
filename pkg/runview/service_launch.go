@@ -19,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
 	"github.com/SocialGouv/iterion/pkg/routing"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -483,14 +484,22 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// legitimate use (C149), a typo'd key is the default's refusal. The
 	// runner re-applies the same check on the queued path, so a cloud run
 	// cannot skip it by having been admitted here.
+	//
+	// The engine-injected names are NOT unknowns (#2416): an env-shaped
+	// bot-var name (a provision's stamped ITERION_VIBE_* dials) is answered
+	// by the engine's expansion through the bot-vars ladder, so refusing it
+	// refused every API launch of a provisioned bot. The classification is
+	// platformcfg's, shared by every door so the check cannot drift.
 	if unknown := ir.UnknownInputNames(wf, spec.Vars); len(unknown) > 0 {
-		if !spec.AllowUnknownInputs {
-			s.dropRunLog(runID)
-			return nil, fmt.Errorf("launch input %s names no var of the workflow (declared: %s)",
-				strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+		if _, refused := platformcfg.SplitEngineInjectedInputs(unknown); len(refused) > 0 {
+			if !spec.AllowUnknownInputs {
+				s.dropRunLog(runID)
+				return nil, fmt.Errorf("launch input %s names no var of the workflow (declared: %s)",
+					strings.Join(refused, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+			}
+			runLogger.Warn("launch input %s name(s) no var of the workflow — riding the launch on the operator's opt-out (declared: %s)",
+				strings.Join(refused, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
 		}
-		runLogger.Warn("launch input %s name(s) no var of the workflow — riding the launch on the operator's opt-out (declared: %s)",
-			strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
 	}
 
 	// Resolve the credential-derived topology vars (review_mode +

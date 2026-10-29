@@ -3524,9 +3524,15 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// worse, run on defaults) at runner pickup. The runner re-applies the
 	// check on its side; spec.AllowUnknownInputs is the operator's opt-out
 	// (--allow-unknown-inputs, the dispatcher's warn-and-proceed contract).
+	// The engine-injected names are carved out (#2416): a provision's
+	// stamped ITERION_VIBE_* dials are answered by the engine's expansion,
+	// not by a DSL var — refusing them refused every API launch of a
+	// provisioned bot.
 	if unknown := ir.UnknownInputNames(wf, inputs); len(unknown) > 0 && !spec.AllowUnknownInputs {
-		return 0, fmt.Errorf("launch input %s names no var of the workflow (declared: %s)",
-			strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+		if _, refused := platformcfg.SplitEngineInjectedInputs(unknown); len(refused) > 0 {
+			return 0, fmt.Errorf("launch input %s names no var of the workflow (declared: %s)",
+				strings.Join(refused, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+		}
 	}
 	// The team's pool mapping, resolved BEFORE anything persists: the run
 	// document freezes it (a later re-mapping must not move this run), and

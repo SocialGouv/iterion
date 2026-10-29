@@ -764,6 +764,36 @@ func botVarNameOK(name string) bool {
 	return true
 }
 
+// EngineInjectedVarName reports whether name is an engine-injected launch
+// input: an env-shaped bot-var name the engine's expansion answers through
+// the bot-vars ladder (ADR-093's overlay — LookupEnv's reach), needing no
+// DSL var to declare it. This is botVarNameOK — the same grammar the
+// bot_vars record validates writes by — read from the launch side: a
+// sovereign pool's provision stamps exactly these onto an integration's
+// launch_vars (the ITERION_VIBE_* routing dials, the model ids), so the
+// strict launch check classifies them here (#2416) rather than refuse them
+// as inputs naming no var of the workflow (#1757). An infra or credential
+// name is NOT engine-injected: no ladder level carries it, so a launch
+// input spelling it is a no-op the refusal still owes the caller.
+func EngineInjectedVarName(name string) bool { return botVarNameOK(name) }
+
+// SplitEngineInjectedInputs partitions the names a launch check found
+// undeclared (ir.UnknownInputNames) by their source: the engine-injected
+// ones (EngineInjectedVarName — they ride the launch, as they already do on
+// the webhook lanes' warn-and-proceed contract) and the rest, which a
+// strict launch keeps refusing. Input order is preserved on both sides, so
+// a caller's sorted input stays sorted.
+func SplitEngineInjectedInputs(names []string) (injected, refused []string) {
+	for _, name := range names {
+		if EngineInjectedVarName(name) {
+			injected = append(injected, name)
+		} else {
+			refused = append(refused, name)
+		}
+	}
+	return injected, refused
+}
+
 // Store persists one settings family: Get returns (nil, nil) when no record
 // exists yet; Put replaces the whole record (ReplaceOne semantics, so a
 // cleared override really disappears).

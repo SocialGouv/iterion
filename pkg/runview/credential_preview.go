@@ -9,6 +9,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -162,14 +163,19 @@ func (s *Service) PreviewCredentials(ctx context.Context, spec CredentialPreview
 	// The SAME unknown-input refusal the launch funnel applies (#1757): a
 	// preview over a var no var of the workflow declares would answer for a
 	// launch that refuses itself. The operator's opt-out rides with a
-	// visible warning instead of silently reading the defaults.
+	// visible warning instead of silently reading the defaults. The
+	// engine-injected names are carved out exactly as the launch carves
+	// them (#2416): a provision's stamped dials are not unknowns, and a
+	// preview that refused them would describe a launch that runs.
 	var previewWarnings []string
 	if unknown := ir.UnknownInputNames(wf, spec.Launch.Vars); len(unknown) > 0 {
-		if !spec.Launch.AllowUnknownInputs {
-			return CredentialPreview{}, fmt.Errorf("credential preview input %s names no var of the workflow (declared: %s)",
-				strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+		if _, refused := platformcfg.SplitEngineInjectedInputs(unknown); len(refused) > 0 {
+			if !spec.Launch.AllowUnknownInputs {
+				return CredentialPreview{}, fmt.Errorf("credential preview input %s names no var of the workflow (declared: %s)",
+					strings.Join(refused, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+			}
+			previewWarnings = append(previewWarnings, fmt.Sprintf("Input %s name(s) no var of the workflow — riding on the operator's opt-out (declared: %s).", strings.Join(refused, ", "), strings.Join(ir.DeclaredVarNames(wf), ", ")))
 		}
-		previewWarnings = append(previewWarnings, fmt.Sprintf("Input %s name(s) no var of the workflow — riding on the operator's opt-out (declared: %s).", strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", ")))
 	}
 	// The resolved policy rides the spec's TOP-LEVEL field — the server
 	// resolves it exactly as the launch site would — while the fold reads

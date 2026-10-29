@@ -50,6 +50,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/notify"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/retrycoord"
@@ -2940,16 +2941,25 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// effective: the run fails naming the key, never runs on defaults
 		// as if parameterised. msg.AllowUnknownInputs is the operator's
 		// opt-out riding the wire (CLI --allow-unknown-inputs, the
-		// dispatcher's warn-and-proceed contract).
-		if unknown := ir.UnknownInputNames(wf, msg.Vars); len(unknown) > 0 && !msg.AllowUnknownInputs {
-			runErr = fmt.Errorf("launch input %s names no var of the workflow (declared: %s) — re-launch, or pass allow_unknown_inputs to ride it",
-				strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
-			runLogger.Error("%s", runErr.Error())
-		} else {
-			if len(unknown) > 0 {
+		// dispatcher's warn-and-proceed contract). The engine-injected
+		// names are carved out exactly as the admission did (#2416): a
+		// provision's stamped dials must not kill the run at pickup after
+		// the launch was admitted with them.
+		if unknown := ir.UnknownInputNames(wf, msg.Vars); len(unknown) > 0 {
+			_, refused := platformcfg.SplitEngineInjectedInputs(unknown)
+			switch {
+			case len(refused) == 0:
+				runErr = engine.Run(ctx, msg.RunID, msg.Vars)
+			case !msg.AllowUnknownInputs:
+				runErr = fmt.Errorf("launch input %s names no var of the workflow (declared: %s) — re-launch, or pass allow_unknown_inputs to ride it",
+					strings.Join(refused, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+				runLogger.Error("%s", runErr.Error())
+			default:
 				runLogger.Warn("launch input %s name(s) no var of the workflow — riding the launch on the operator's opt-out (declared: %s)",
-					strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+					strings.Join(refused, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+				runErr = engine.Run(ctx, msg.RunID, msg.Vars)
 			}
+		} else {
 			runErr = engine.Run(ctx, msg.RunID, msg.Vars)
 		}
 	}

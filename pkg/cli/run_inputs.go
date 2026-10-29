@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 )
 
 // buildRunInputs assembles the input map for [runtime.Engine.Run]
@@ -48,10 +49,16 @@ func buildRunInputs(wf *ir.Workflow, presetName string, vars map[string]string, 
 	// helper. allowUnknown is the operator's explicit opt-out
 	// (--allow-unknown-inputs): the keys ride, said — forwarding an
 	// undeclared payload key to a subbot through {{input.*}} is their
-	// legitimate use (C149).
+	// legitimate use (C149). The engine-injected names are carved out
+	// (#2416): an env-shaped bot-var dial (a provision's ITERION_VIBE_*)
+	// names no var and is none the less a real input — and this CLI is
+	// also the detached runner's subprocess, so refusing here would kill a
+	// launch the server already admitted.
 	if unknown := ir.UnknownInputNames(wf, vars); len(unknown) > 0 && !allowUnknown {
-		return nil, fmt.Errorf("--var %q, which names no var of the workflow (declared: %s)",
-			strings.Join(unknown, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+		if _, refused := platformcfg.SplitEngineInjectedInputs(unknown); len(refused) > 0 {
+			return nil, fmt.Errorf("--var %q, which names no var of the workflow (declared: %s)",
+				strings.Join(refused, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+		}
 	}
 	return inputs, nil
 }

@@ -102,6 +102,62 @@ func TestLaunch_AllowUnknownInputsRidesTheKey(t *testing.T) {
 	}
 }
 
+// TestLaunch_RidesAnEngineInjectedInput pins #2416: a strict launch (no
+// opt-out) accepts an input whose name is engine-injected — an env-shaped
+// bot-var dial a sovereign pool's provision stamps into launch_vars
+// (ITERION_VIBE_*), answered by the engine's expansion rather than by a DSL
+// var — while an infra name and a plain typo keep the #1757 refusal.
+func TestLaunch_RidesAnEngineInjectedInput(t *testing.T) {
+	dir := t.TempDir()
+	botPath := writeInputBot(t, dir)
+	svc, err := NewService(dir, WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	res, err := svc.Launch(context.Background(), LaunchSpec{
+		FilePath: botPath,
+		Vars:     map[string]string{"ITERION_VIBE_BACKEND_EMIT": "claw", "ITERION_VIBE_PROVIDER_EMIT": "openai_compatible"},
+	})
+	if err != nil {
+		t.Fatalf("launch with engine-injected inputs refused: %v", err)
+	}
+	select {
+	case <-res.Done:
+	case <-runWaitContext(t).Done():
+		t.Fatal("run goroutine did not exit (expected immediate human pause)")
+	}
+	r, err := svc.store.LoadRun(context.Background(), res.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got := r.Inputs["ITERION_VIBE_BACKEND_EMIT"]; got != "claw" {
+		t.Fatalf("run inputs = %v, want the injected dial carried on the doc", r.Inputs)
+	}
+
+	// An infra name is not engine-injected: nothing answers it at run time,
+	// so the refusal still owes the caller the truth.
+	_, err = svc.Launch(context.Background(), LaunchSpec{
+		FilePath: botPath,
+		Vars:     map[string]string{"ITERION_MONGO_URL": "mongodb://elsewhere"},
+	})
+	if err == nil {
+		t.Fatal("launch accepted an infra-shaped input, want the #1757 refusal")
+	}
+
+	// Mixed: the typo still refuses, naming itself — the injected names ride.
+	_, err = svc.Launch(context.Background(), LaunchSpec{
+		FilePath: botPath,
+		Vars:     map[string]string{"engin": "pg", "ITERION_VIBE_BACKEND_EMIT": "claw"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "engin") {
+		t.Fatalf("error = %v, want the refusal naming the typo", err)
+	}
+	if strings.Contains(err.Error(), "ITERION_VIBE_BACKEND_EMIT") {
+		t.Fatalf("error = %v, must not name the engine-injected dial as unknown", err)
+	}
+}
+
 // TestLaunch_TakesADeclaredInput is the positive twin: a declared var
 // launches and lands on the run doc, so the refusal above is a refusal of
 // the unknown only, not of inputs altogether.
