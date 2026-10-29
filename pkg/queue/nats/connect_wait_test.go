@@ -398,3 +398,48 @@ func TestAnExpiredLastAttemptKeepsTheLibrarysRefusalInTheChain(t *testing.T) {
 		t.Fatalf("err = %v, want the expired attempt kept in the chain too", err)
 	}
 }
+
+// 1ad0c1d9d taught the loop to keep natsgo's refusal when an ATTEMPT expires
+// in flight. The loop gives up in a second place, though: the top-of-loop
+// check, reached when the bound falls between the end of a pause and that
+// check — a window a loaded runner opens wide, and one no test can drive on
+// purpose, since it needs the pause's timer and the deadline to tie and the
+// runtime to pick the timer. So the guarantee is pinned where both exits
+// read it: a caller must get the same errors.Is answer whichever exit fired.
+func TestGaveUpCarriesTheBoundAndTheRefusalTogether(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		bound   error
+		refusal error
+		want    []error
+		absent  string
+	}{
+		{
+			name:  "deadline with a refusal in hand",
+			bound: context.DeadlineExceeded, refusal: natsgo.ErrNoServers,
+			want: []error{context.DeadlineExceeded, natsgo.ErrNoServers},
+		},
+		{
+			name:  "cancellation with a refusal in hand",
+			bound: context.Canceled, refusal: natsgo.ErrNoServers,
+			want: []error{context.Canceled, natsgo.ErrNoServers},
+		},
+		{
+			name:  "no dial was owed, so no refusal to carry",
+			bound: context.Canceled, refusal: nil,
+			want: []error{context.Canceled}, absent: "refused",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := gaveUp(tc.bound, tc.refusal)
+			for _, w := range tc.want {
+				if !errors.Is(err, w) {
+					t.Errorf("err = %v, want %v in the chain", err, w)
+				}
+			}
+			if tc.absent != "" && strings.Contains(err.Error(), tc.absent) {
+				t.Errorf("err = %q, want no %q with a nil refusal", err.Error(), tc.absent)
+			}
+		})
+	}
+}

@@ -98,8 +98,15 @@ func waitForBroker(ctx context.Context, dial brokerDialer, pol dialPolicy) (*nat
 			// dial bounded by a deadline in the past would reach natsgo
 			// as a negative timeout, i.e. an option error reading like a
 			// configuration mistake instead of a caller that gave up.
+			//
+			// This is the loop's OTHER give-up, and it is reached with a
+			// refusal already in hand whenever the bound falls between the
+			// end of a pause and this check — a window a loaded runner
+			// opens wide. The refusal travels here too, so the caller's
+			// errors.Is answer does not depend on which of the two exits
+			// the scheduler picked.
 			return nil, fmt.Errorf("queue/nats: connect: no broker after %d attempt(s) (%s): %w",
-				attempt-1, describeDialBound(ctx), ctx.Err())
+				attempt-1, describeDialBound(ctx), gaveUp(ctx.Err(), lastRefusal))
 		}
 		attemptCtx, cancel := context.WithTimeout(ctx, pol.attempt)
 		nc, err := dial(attemptCtx)
@@ -177,6 +184,17 @@ func retryableDial(err error) bool {
 // can tell "the caller gave up" from "the boot budget ran out". The store
 // half carries the same four lines (mongo's describeBound); a third bounded
 // wait extracts them rather than copying again.
+// gaveUp names why a wait ended: the bound that ended it and, when natsgo
+// had already refused, that refusal — two facts a caller reads through
+// errors.Is, never one replacing the other. A nil refusal is left out, so a
+// caller owed no dial reports the bound alone.
+func gaveUp(bound, refusal error) error {
+	if refusal == nil {
+		return bound
+	}
+	return fmt.Errorf("%w; the broker had refused: %w", bound, refusal)
+}
+
 func describeDialBound(ctx context.Context) string {
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return "context cancelled"
