@@ -15,8 +15,12 @@ package skillshare
 //   - A copy that differs from its source only by the `[[bundle]]` line that
 //     cross-references its own owning playbook. The document is shared; the
 //     self-reference cannot be. Those copies stay variants until the sharing
-//     primitive can substitute a per-bundle token — the `exports.skills`
-//     manifest work of #2357, which owes an ADR first.
+//     primitive can substitute a per-bundle token, which
+//     docs/adr/144-shared-skills-are-bundle-dependencies.md leaves
+//     deliberately undecided: `exports.skills` shares a document that is
+//     shareable verbatim, and a templated skill is an authoring surface of
+//     its own. Seven of the variants below are that one line and nothing
+//     else.
 //   - A copy whose generated region a per-bundle generator rebuilds
 //     (`iterion bots regen-catalog`). It can never be a byte-mirror.
 func Families() []Family {

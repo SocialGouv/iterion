@@ -150,8 +150,10 @@ declared copy that is gone, and an undeclared shared skill.
 Two shapes of divergence are worth knowing because they recur. A copy that
 differs only by the `[[bundle]]` line cross-referencing its own playbook is
 a shared document with an unshareable self-reference; those stay variants
-until the sharing primitive can substitute a per-bundle token (the
-`exports.skills` manifest work, which owes an ADR first). A copy whose
-generated region a per-bundle generator rebuilds
+until the sharing primitive can substitute a per-bundle token — the one
+axis [ADR-144](../../adr/144-shared-skills-are-bundle-dependencies.md)
+leaves open, because a templated skill is an authoring surface of its own
+(seven of the declared variants are that single line and nothing else). A
+copy whose generated region a per-bundle generator rebuilds
 (`iterion bots regen-catalog`) can never be a byte-mirror.
 
