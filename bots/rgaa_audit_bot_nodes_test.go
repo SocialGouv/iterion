@@ -1211,6 +1211,122 @@ L.out({ ok: true, cases: out });
 		return
 	}
 
+	t.Run("a_rewind_to_ledger_replay_on_a_folded_run_keeps_the_copy_and_re_emits_the_replay", func(t *testing.T) {
+		// #2438 case 1: a run with a committed ledger, folded, rewound to a
+		// node before fold_final. The audit stays folded, so a fresh replay
+		// would read every landed entry as obsolete and rewrite the copy with
+		// 0 entries. The copy found at the node's entry belongs to THIS audit:
+		// the node keeps it and re-emits the replay's recorded output.
+		var ledger map[string]any
+		rgaaReadJSON(t, fmt.Sprint(fold["ledger_path"]), &ledger)
+		entries, _ := ledger["entries"].([]any)
+		// Two entries stay out of the committed ledger: the run adjudicates
+		// and folds them itself, so the audit moves PAST the replay and the
+		// node's own once-record no longer covers the rewind.
+		var dropped []string
+		var kept []any
+		for _, e := range entries {
+			if len(dropped) < 2 {
+				dropped = append(dropped, fmt.Sprint(e.(map[string]any)["criteriaId"]))
+				continue
+			}
+			kept = append(kept, e)
+		}
+		ledger["entries"] = kept
+		path := filepath.Join(t.TempDir(), "rgaa.json")
+		rgaaWriteJSON(t, path, ledger)
+		base6 := filepath.Join(t.TempDir(), "scratch")
+		p6 := rgaaOK(t, "prepare", rgaaRunNode(t, scripts, "prepare", site, env, prepareIn(map[string]any{"input.run_dir": base6})))
+		run6 := fmt.Sprint(p6["run_dir"])
+		rgaaOK(t, "static_audit", rgaaRunNode(t, scripts, "static_audit", site, env, in(map[string]any{"input.run_dir": run6, "input.max_files": 4000, "input.audit_args": p6["audit_args"]})))
+		rep := rgaaOK(t, "ledger_replay", rgaaRunNode(t, scripts, "ledger_replay", site, env, in(map[string]any{"input.run_dir": run6, "input.ledger_present": true, "input.ledger_path": path})))
+		if rgaaInt(rep["replayed"]) != len(kept) {
+			t.Fatalf("replay: %v (want %d replayed)", rep, len(kept))
+		}
+		w6 := rgaaOK(t, "worklist", rgaaRunNode(t, scripts, "worklist", site, env, in(map[string]any{"input.run_dir": run6})))
+		if got := rgaaStrings(w6["pending_ids"]); len(got) != len(dropped) {
+			t.Fatalf("after the partial replay %v is open, want %v", got, dropped)
+		}
+		items6 := fmt.Sprint(w6["items_dir"])
+		for _, b := range planBatches(t, run6) {
+			var verdicts []any
+			for _, id := range b.IDs {
+				verdicts = append(verdicts, rgaaFixtureVerdict(t, items6, id))
+			}
+			writeFragment(t, run6, b, verdicts)
+		}
+		mergeVerdicts(t, run6, 0)
+		rgaaOK(t, "fold_final", rgaaRunNode(t, scripts, "fold_final", site, env, in(map[string]any{"input.run_dir": run6, "input.require_complete": true})))
+		// The fold moved the audit past the replay: a resume keyed on the
+		// audit hash cannot see this rewind — only the copy can.
+		var onceRec struct {
+			PostSHA string `json:"post_sha256"`
+		}
+		rgaaReadJSON(t, filepath.Join(run6, "state", "node-ledger_replay.json"), &onceRec)
+		if onceRec.PostSHA == rgaaFileSHA(t, filepath.Join(run6, "audit-latest.json")) {
+			t.Fatal("the fold did not move the audit past the replay: the once-record would cover the rewind and this test would exercise nothing")
+		}
+		copyPath := filepath.Join(run6, "ledger", "rgaa.json")
+		var copyDoc struct {
+			Entries []map[string]any `json:"entries"`
+		}
+		rgaaReadJSON(t, copyPath, &copyDoc)
+		if len(copyDoc.Entries) != len(entries) {
+			t.Fatalf("the fold's ledger copy carries %d entries, want %d", len(copyDoc.Entries), len(entries))
+		}
+		copySHA := rgaaFileSHA(t, copyPath)
+		out := rgaaOK(t, "ledger_replay", rgaaRunNode(t, scripts, "ledger_replay", site, env, in(map[string]any{"input.run_dir": run6, "input.ledger_present": true, "input.ledger_path": path})))
+		if rgaaFileSHA(t, copyPath) != copySHA {
+			t.Fatal("a rewind to ledger_replay over a folded audit rewrote the fold's ledger copy")
+		}
+		if rgaaInt(out["replayed"]) != rgaaInt(rep["replayed"]) || out["audit_sha256"] != rep["audit_sha256"] {
+			t.Fatalf("the rewind re-emitted %v, want the replay's recorded output %v", out, rep)
+		}
+	})
+
+	t.Run("a_rewind_to_static_audit_cannot_report_the_old_folded_audit_as_fresh", func(t *testing.T) {
+		// #2438 case 2: the engine's audit swallows a failed write of
+		// audit-latest.json, so the old folded document must be removed BEFORE
+		// the engine runs — else the node's existence check passes on it and
+		// the fold's ledger copy is dropped over an audit nothing replaced.
+		// A directory where the file should be (the write is swallowed the
+		// same way): the node dies untyped and the copy SURVIVES.
+		left := rgaaRunCopy(t, run)
+		if err := os.Remove(filepath.Join(left, "audit-latest.json")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(left, "audit-latest.json"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		r := rgaaRunNode(t, scripts, "static_audit", site, env, in(map[string]any{"input.run_dir": left, "input.max_files": 4000, "input.audit_args": prep["audit_args"]}))
+		if r.Code == 0 {
+			t.Fatalf("static_audit reported %v over an audit path that is a directory", r.Out)
+		}
+		if _, err := os.Stat(filepath.Join(left, "ledger", "rgaa.json")); err != nil {
+			t.Fatalf("a static_audit that could not write its audit dropped the fold's ledger copy: %v", err)
+		}
+		// The ticket's own proof, a read-only audit-latest.json: the node
+		// removes the old document first, so the audit it reports is the one
+		// the engine just wrote — never the folded one (root writes through
+		// the mode bits, so this half needs a user).
+		if os.Geteuid() != 0 {
+			left2 := rgaaRunCopy(t, run)
+			audit2 := filepath.Join(left2, "audit-latest.json")
+			foldedSHA := rgaaFileSHA(t, audit2)
+			if err := os.Chmod(audit2, 0o444); err != nil {
+				t.Fatal(err)
+			}
+			defer os.Chmod(audit2, 0o644) // let the cleanup remove it
+			out := rgaaOK(t, "static_audit", rgaaRunNode(t, scripts, "static_audit", site, env, in(map[string]any{"input.run_dir": left2, "input.max_files": 4000, "input.audit_args": prep["audit_args"]})))
+			if out["audit_sha256"] == foldedSHA || rgaaFileSHA(t, audit2) == foldedSHA {
+				t.Fatal("static_audit reported the OLD folded audit as the fresh one — the engine's swallowed write went unseen")
+			}
+		}
+	})
+	if t.Failed() {
+		return
+	}
+
 	t.Run("a_ledger_from_one_run_is_replayed_by_the_next_and_leaves_nothing_to_adjudicate", func(t *testing.T) {
 		base2 := filepath.Join(t.TempDir(), "scratch")
 		p2 := rgaaOK(t, "prepare", rgaaRunNode(t, scripts, "prepare", site, env, prepareIn(map[string]any{"input.run_dir": base2})))

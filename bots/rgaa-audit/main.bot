@@ -1237,17 +1237,22 @@ tool prepare:
 ## found nothing to parse is a different fact from the code being clean.
 tool static_audit:
   script: |
-    const path = require("path");
+    const fs = require("fs"), path = require("path");
     const RUN = {{input.run_dir}};
     const L = require(path.join(RUN, "bin", "lib.js")).init(RUN);
     const WS = {{input.workspace_dir}};
+    // Remove the previous generation's audit BEFORE calling the engine: the
+    // engine swallows a failed write of audit-latest.json, and the existence
+    // check below would otherwise pass on the OLD — possibly folded —
+    // document while this node drops the fold's ledger copy.
+    if (L.exists(L.auditPath())) fs.unlinkSync(L.auditPath());
     const r = L.engine(["audit"].concat({{input.audit_args}}, ["--out", RUN, "--json"], L.std({{input.standard}})), { cwd: WS, timeoutMs: 1800000 });
     if (r.code !== 0 && r.code !== 1) L.die("engine audit exit " + r.code + ": " + r.stderr.slice(-4000));
     if (!L.exists(L.auditPath())) L.die("the engine exited " + r.code + " but wrote no audit at " + L.auditPath() + ": " + r.stderr.slice(-2000));
     // A fresh audit starts a fresh generation: the ledger copy an earlier
     // fold of this run merged belongs to the audit this one replaced.
     const ledgerCopy = path.join(RUN, "ledger", {{input.standard}} + ".json");
-    if (L.exists(ledgerCopy)) require("fs").unlinkSync(ledgerCopy);
+    if (L.exists(ledgerCopy)) fs.unlinkSync(ledgerCopy);
     const doc = L.readJSON(L.auditPath());
     const core = doc.core || doc;
     const files = Number((core.scope && core.scope.files) || 0);
@@ -1373,6 +1378,17 @@ tool ledger_replay:
     const replayOut = path.join(RUN, "replay");
     const none = (reason) => { L.layer("ledger", { status: "absent", reason: reason }); L.out({ ok: true, fail_code: "", reason: reason, present: false, replayed: 0, stale: 0, obsolete: 0, missing: 0, refused: 0, recommendations_stripped: 0, audit_sha256: sha }); };
     if (!{{input.ledger_present}}) none("no ledger at " + {{input.ledger_path}});
+    // static_audit drops the copy with every fresh audit it writes, so a copy
+    // found at this node's entry belongs to THIS audit — already replayed, or
+    // folded, in this run. Keep it and re-emit the replay's recorded output
+    // instead of replaying over it: on a folded audit the engine sets every
+    // already-decided entry aside as obsolete, and the replay would rewrite
+    // the copy empty.
+    if (L.exists(copy)) {
+      const rec = L.exists(L.statePath("ledger-replay")) ? L.readJSON(L.statePath("ledger-replay")) : null;
+      if (rec && L.isObj(rec.out)) L.out(rec.out);
+      L.die("the ledger copy at " + copy + " exists but no replay of this run recorded it (a fold wrote it, or it was edited by hand): rewind to static_audit for a fresh audit instead of replaying over it");
+    }
     let doc;
     try { doc = L.readJSON({{input.ledger_path}}); } catch (e) { L.refuse("LEDGER_INVALID", "the ledger at " + {{input.ledger_path}} + " is not readable JSON: " + e.message, { present: true, replayed: 0, stale: 0, obsolete: 0, missing: 0, refused: 0, recommendations_stripped: 0, audit_sha256: sha }); }
     const entries = Array.isArray(doc) ? doc : (doc && Array.isArray(doc.entries) ? doc.entries : null);
@@ -1419,7 +1435,13 @@ tool ledger_replay:
     const fresh = r.json.replayed !== undefined ? Number(r.json.replayed || 0) : (Array.isArray(rp.fresh) ? rp.fresh.length : 0);
     const replayed = Math.max(0, fresh - refused.length);
     L.layer("ledger", { status: refused.length ? "degraded" : "ok", path: {{input.ledger_path}}, replayed: replayed, stale: stale, obsolete: obsolete, missing: missing, refused: refused, recommendations_stripped: recStripped });
-    L.out(L.record("ledger_replay", { ok: true, fail_code: "", reason: "", present: true, replayed: replayed, stale: stale.length, obsolete: obsolete.length, missing: missing.length, refused: refused.length, recommendations_stripped: recStripped, audit_sha256: sha }));
+    const outReplay = { ok: true, fail_code: "", reason: "", present: true, replayed: replayed, stale: stale.length, obsolete: obsolete.length, missing: missing.length, refused: refused.length, recommendations_stripped: recStripped, audit_sha256: sha };
+    // The copy above outlives the audit hash it was grounded on (a fold
+    // rewrites the audit): the re-emit a rewind to this node needs keys on
+    // the copy's existence, not on the hash — the `once` record keeps the
+    // resume case.
+    L.writeJSON(L.statePath("ledger-replay"), { out: outReplay });
+    L.out(L.record("ledger_replay", outReplay));
   language: js
   input: replay_input
   output: replay_output
