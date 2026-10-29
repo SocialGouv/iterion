@@ -273,6 +273,12 @@ func (e *ClawExecutor) runPostcondition(ctx context.Context, node *ir.ToolNode, 
 	// node's oracle, not its producer. A directive on its stdout still
 	// publishes, and a loss is still recorded on the run, but what the
 	// CHECK declares cannot overturn the check's own answer.
+	//
+	// exit 0 = met, and a drain the bound stopped waiting for IS an exit 0:
+	// runToolNodeCore reads that cut as the success it is and reports the
+	// abandoned drain (#2855), so a check that printed its state while a
+	// process it left held the output does not send the ladder back through
+	// the recipe's side effect.
 	return res.runErr == nil, res.output, nil
 }
 

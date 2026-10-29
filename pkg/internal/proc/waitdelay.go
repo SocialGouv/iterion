@@ -47,22 +47,29 @@ const WaitDelayEnv = "ITERION_PROC_WAIT_DELAY"
 // launcher's promise that this dispatch hands the node back — calls it
 // unconditionally.
 //
-// The bound reaches a Cmd whose output is COPIED: Stdout or Stderr set to a
-// writer that is not an [*os.File], which is what Output, CombinedOutput and
-// any [bytes.Buffer] give. What Wait waits for past the child's exit is that
-// copying goroutine, and the bound is what stops waiting for it.
+// The bound reaches a Cmd for which exec started a COPIER — ANY of Stdin,
+// Stdout or Stderr set to something that is not an [*os.File]: what Output,
+// CombinedOutput and any [bytes.Buffer] give, and what a [strings.Reader]
+// handed in on stdin gives just as well (the sandbox drivers stream a script
+// that way). What Wait awaits past the child's exit is those copying
+// goroutines, and the bound is what stops waiting for them. Soft, not hard:
+// it closes the descriptors exec owns, which releases a copier blocked
+// writing into a holder's pipe, but one blocked reading from a reader the
+// CALLER owns ends when that reader does — Wait then answers [ErrWaitDelay]
+// late rather than at the bound.
 //
-// It does NOT reach a Cmd whose caller took the pipe itself
-// ([exec.Cmd.StdoutPipe] and its siblings): exec starts no copier for an
-// owned pipe, so Wait has nothing to await, returns as soon as the child is
-// reaped, and can never answer [ErrWaitDelay] — the reading of a cut
-// (DrainCutShort) is unreachable there, and so is the cut. Such a spawn is
-// bounded by its own shutdown instead: the reader goroutines belong to the
-// caller, a descendant holding the pipe blocks THEM rather than Wait, and
-// only something that signals the process GROUP (a Cancel, a close ladder)
-// reaches it — which this bound's kill, aimed at the direct child, does not.
-// Do not put it on one: a bound that cannot fire reads like a promise the
-// site keeps and does not.
+// It does NOT reach a Cmd for which exec started NO copier: every stream
+// nil, an [*os.File], or a pipe the caller took itself ([exec.Cmd.StdoutPipe]
+// and its siblings). Wait then has nothing to await, returns as soon as the
+// child is reaped, and can never answer [ErrWaitDelay] — the reading of a
+// cut (DrainCutShort) is unreachable there, and so is the cut. That is the
+// shape of a spawn whose SDK takes all three streams as pipes of its own
+// (`claudesdk`, `pisdk`), and such a spawn is bounded by its own shutdown
+// instead: the reader goroutines belong to the caller, a descendant holding
+// the pipe blocks THEM rather than Wait, and only something that signals the
+// process GROUP (a Cancel, a close ladder) reaches it — which this bound's
+// kill, aimed at the direct child, does not. Do not put it on one: a bound
+// that cannot fire reads like a promise the site keeps and does not.
 func SetWaitDelay(cmd *exec.Cmd, def time.Duration) time.Duration {
 	d := resolveWaitDelay(os.Getenv(WaitDelayEnv), def, &waitDelayWarnOnce, os.Stderr)
 	cmd.WaitDelay = d

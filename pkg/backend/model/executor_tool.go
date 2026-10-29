@@ -402,6 +402,19 @@ type toolCommand struct {
 // recovery ladder must NOT try to repair). Extracted from
 // executeToolNodeCommon so the Verified Action ladder can reuse the exact
 // same execution path and observe the streams.
+//
+// Every caller judges a run by its EXIT STATUS, which is why the drain
+// bound's cut is read here, once, instead of four times (#2855):
+//   - executeToolNodeCommon — the recipe: a non-zero status fails the node;
+//   - runVerifiedRecipe — rung 2 of the ladder: the status is recorded, and
+//     the postcondition is what judges it (ADR-044);
+//   - runPostcondition — the oracle itself, "exit 0 = met";
+//   - selfRepair — the corrected command's re-run, judged by that same
+//     oracle.
+//
+// A caller whose answer is the BYTES could not take this reading, and must
+// not be added here: it calls runWithSeparateStreams itself, where exec's
+// sentinel comes back unwrapped.
 func (e *ClawExecutor) runToolNodeCore(
 	ctx context.Context,
 	node *ir.ToolNode,
@@ -432,8 +445,24 @@ func (e *ClawExecutor) runToolNodeCore(
 	// `[detached HEAD ...]` line, a `script: js` body's console.error)
 	// without that prose breaking the JSON parse downstream.
 	// CombinedOutput() conflated the two and poisoned the parse.
-	stdoutBytes, stderrStr, runErr := runWithSeparateStreams(tc.cmd)
+	stdoutBytes, stderrStr, drainBound, runErr := runWithSeparateStreams(tc.cmd)
 	duration := time.Since(start)
+	if proc.DrainCutShort(runErr) {
+		// exec reports this sentinel for no other status: the command
+		// exited 0 and only the copy of its output's tail was abandoned.
+		// Every reader above judges by that status, so the success and the
+		// answer stand and the drain is REPORTED — on the node's event,
+		// which carries this stream, and in the run log, the way the claw
+		// crossing already reports the pipes an agent's `server &` keeps.
+		// Read before the sandbox settles its run: there the completion
+		// line is what judges the command's end, and a sentinel left in
+		// runErr would travel joined to its verdict.
+		stderrStr = noteAbandonedDrain(stderrStr, drainBound)
+		if e.logger != nil {
+			e.logger.Warn("tool node %q: %s", node.ID, abandonedDrainReport(drainBound))
+		}
+		runErr = nil
+	}
 	// A client that never started ran nothing in the container: its own
 	// error is the whole story, and there is no session to sweep.
 	if tc.completion != nil && tc.cmd.Process != nil {
@@ -606,9 +635,15 @@ func (e *ClawExecutor) toolNodePolicyIdentity(ctx context.Context, name string) 
 // A tool node's command is the BOT's text, and backgrounding a process in it
 // (`server &`) is an authored recipe, not an accident: the shell exits, the
 // job it forked inherits the output pipe, and [exec.Cmd.Wait] ends only when
-// EVERY holder of that pipe has closed it. With no bound the node is parked
-// for as long as that job lives, which the node's own timeout does not reach
-// — it kills the shell, never what the shell forked.
+// EVERY holder of that pipe has closed it. Nothing else bounds that wait: a
+// tool node declares no timeout of its own (`timeout:` is an LLM field), and
+// the cancel that signals the whole process GROUP
+// ([proc.TerminateGroupOnCancel], installed by toolNodeCommand) does not
+// reach it either — exec hands the context watcher's verdict to Wait as soon
+// as the direct child is REAPED, so once the shell has exited that kill is
+// never dispatched, whatever the context does afterwards (measured: a node
+// under a 3 s deadline whose command left `sleep 30 &` came back at 30 s
+// with no error).
 //
 // Two seconds, the family's default: the copier drains the output WHILE the
 // command runs, so what is left to read at its exit is a pipe buffer, not a
@@ -616,10 +651,20 @@ func (e *ClawExecutor) toolNodePolicyIdentity(ctx context.Context, name string) 
 const toolNodeDrainBound = 2 * time.Second
 
 // runWithSeparateStreams runs cmd with stdout and stderr captured into
-// distinct buffers. Returns (stdout bytes, stderr string, run error).
+// distinct buffers. Returns (stdout bytes, stderr string, the drain bound in
+// force, run error).
 // Use this for tool nodes where downstream needs to parse stdout as a
 // structured payload while leaving stderr free for diagnostic chatter.
-func runWithSeparateStreams(cmd *exec.Cmd) ([]byte, string, error) {
+//
+// The run error is exec's OWN, unwrapped — [exec.ErrWaitDelay] included,
+// which is what comes back when the drain bound cut the copy of a finished
+// command's output short. Reading that sentinel belongs to the CALLER,
+// because the reading depends on what the caller answers with: a verdict
+// that is the exit status keeps the success and reports the abandoned drain,
+// one that is the BYTES cannot ([proc.DrainCutShort] holds both readings).
+// The bound travels back so whoever reports names the bound that RAN, never
+// this site's default, which a tightened override would make a lie.
+func runWithSeparateStreams(cmd *exec.Cmd) ([]byte, string, time.Duration, error) {
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
 	// Before Start, which Output performs — Start reads the field to decide
@@ -634,17 +679,34 @@ func runWithSeparateStreams(cmd *exec.Cmd) ([]byte, string, error) {
 	stdoutBytes, runErr := cmd.Output()
 	// exec.ExitError carries stderr it captured before we set ours; the
 	// buffer we provided is still the source of truth in our path.
-	if proc.DrainCutShort(runErr) {
-		// The command exited 0 — exec reports this sentinel for no other
-		// status — and only the copy of its output was abandoned. What the
-		// node ANSWERS with is those bytes, parsed as its structured output,
-		// so a short read is not a success: the operator gets the bound that
-		// ran and the knob that widens it instead of a bare sentinel, and
-		// the parse below never calls a truncated payload malformed.
-		runErr = fmt.Errorf("the command exited 0 but a process it left kept its output open, so the output was read short %s: %w",
-			proc.WaitDelayHint(drainBound), runErr)
+	return stdoutBytes, stderrBuf.String(), drainBound, runErr
+}
+
+// abandonedDrainReport is what a tool node's run says when the drain bound
+// stopped the wait for an output a process the command left behind still
+// holds: what the site KNOWS — the command exited 0, something still holds
+// the pipe, the wait stopped at the bound that ran — and the knob that
+// widens it.
+//
+// Never that the output was "read short": what the bound cuts is the TAIL of
+// a copy, and the measured case is a complete answer whose fd a descendant
+// merely kept — this site cannot tell the two apart, so it reports only the
+// one it can prove.
+func abandonedDrainReport(bound time.Duration) string {
+	return fmt.Sprintf("the command exited 0 and a process it left still holds its output; stopped waiting %s",
+		proc.WaitDelayHint(bound))
+}
+
+// noteAbandonedDrain adds that report to the stderr the node's event and the
+// run log carry, so the drain is auditable from the node itself and not only
+// from the engine's log. Engine prose, marked as such: the directives a tool
+// node's output declares are `[iterion] <key>=` lines, which this is not.
+func noteAbandonedDrain(stderr string, bound time.Duration) string {
+	note := "iterion: " + abandonedDrainReport(bound)
+	if trimmed := strings.TrimRight(stderr, "\n"); trimmed != "" {
+		return trimmed + "\n" + note
 	}
-	return stdoutBytes, stderrBuf.String(), runErr
+	return note
 }
 
 // combineStreamsForLog formats stdout + stderr into a single string for

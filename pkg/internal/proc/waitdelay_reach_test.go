@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,23 +17,28 @@ import (
 
 // What the drain bound can and cannot reach, measured rather than assumed:
 // [SetWaitDelay] is the one owner of the class, and the next site added to it
-// is chosen from this answer. A bound put on a Cmd whose caller owns its
-// pipes is inert — exec starts no copier for an owned pipe, so Wait has
-// nothing to await — and an inert bound is worse than none: it reads, in the
-// code and in the operator's documentation, like a promise the site keeps.
+// is chosen from this answer. A bound put on a Cmd for which exec started no
+// copier is inert — Wait has nothing to await — and an inert bound is worse
+// than none: it reads, in the code and in the operator's documentation, like
+// a promise the site keeps.
 //
-// One shape, both arms, one leftover holder: the child prints its answer,
-// leaves a process holding the output and exits 0. The wait is MEASURED
-// against a deadline, so a regression fails in seconds instead of holding
-// the package to its timeout.
+// The condition is the COPIER, not the direction: the third arm owns both
+// output pipes, the shape the first two tell apart, and a copied STDIN alone
+// puts it back in reach.
+//
+// One shape, three arms, one leftover holder where a holder is the point: the
+// child prints its answer, leaves a process holding the output and exits 0.
+// The wait is MEASURED against a deadline, so a regression fails in seconds
+// instead of holding the package to its timeout.
 //
 // Mutations seen red: drop the `cmd.WaitDelay = d` assignment in
 // [SetWaitDelay] — the copied arm reads Wait = <nil> where the cut belongs;
 // and make [DrainCutShort] answer for a nil error — the owned-pipe arm reads
-// a cut on a Cmd with no drain to cut. The owned-pipe arm's own claim is a
-// platform fact, so it is also seen red by giving that arm a copier
-// (`cmd.Stderr = &copied` beside the pipe it owns): Wait then answers
-// ErrWaitDelay, which is exactly the shape this test tells apart.
+// a cut on a Cmd with no drain to cut. Both arms' claims are platform facts,
+// so each is also seen red by a fixture mutation: giving the owned-pipe arm
+// a copier (`cmd.Stderr = &copied` beside the pipe it owns) makes Wait answer
+// ErrWaitDelay, and taking the copied stdin off the third arm makes its Wait
+// answer nil.
 func TestTheDrainBoundReachesACopiedOutputAndNotAPipeItsCallerOwns(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell fixture, and the holder is a background job")
@@ -115,6 +121,62 @@ func TestTheDrainBoundReachesACopiedOutputAndNotAPipeItsCallerOwns(t *testing.T)
 			t.Error("Wait reported the drain cut short on a Cmd with no drain to cut")
 		}
 	})
+
+	t.Run("a copied stdin is a copier too, so owned output pipes are not out of reach", func(t *testing.T) {
+		// The counterexample to "the caller owns its pipes, so nothing is
+		// copied": exec starts a copier for ANY stream that is not an
+		// *os.File, and Wait awaits every copier it started. A driver that
+		// streams a script in on stdin (strings.NewReader, the docker and
+		// kubernetes ones) gives a Cmd whose output pipes its caller owns a
+		// copier all the same — which is why the rule is read by the copier
+		// and not by the direction.
+		const reads = 5 * bound
+		cmd := exec.Command("sh", "-c", fmt.Sprintf("printf '%%s\\n' %q; exit 0", answer))
+		out, err := cmd.StdoutPipe()
+		if err != nil {
+			t.Fatalf("stdout pipe: %v", err)
+		}
+		if _, err := cmd.StderrPipe(); err != nil {
+			t.Fatalf("stderr pipe: %v", err)
+		}
+		cmd.Stdin = slowStdin{reads: reads}
+		if applied := SetWaitDelay(cmd, bound); applied != bound {
+			t.Fatalf("SetWaitDelay applied %s, want this test's %s", applied, bound)
+		}
+
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		line, readErr := bufio.NewReader(out).ReadString('\n')
+		if readErr != nil {
+			t.Fatalf("read the answer: %v", readErr)
+		}
+		if got := strings.TrimSpace(line); got != answer {
+			t.Fatalf("read %q, want %q", got, answer)
+		}
+		start := time.Now()
+		waitErr := waitWithin(t, cmd, 30*time.Second)
+		if !DrainCutShort(waitErr) {
+			t.Fatalf("Wait = %v, want the drain bound cutting short the stdin copy exec started", waitErr)
+		}
+		// And the bound is soft: closing the descriptors exec owns releases
+		// a copier blocked writing into a holder's pipe, never one blocked
+		// reading from a reader this caller owns, so the answer comes at the
+		// reader's end rather than at the bound.
+		if waited := time.Since(start); waited < reads-bound {
+			t.Errorf("Wait came back in %s, before the reader it copies let go (%s): the bound is reported as a hard one", waited, reads)
+		}
+	})
+}
+
+// slowStdin is a stdin reader that is not an *os.File and is still reading
+// when the bound fires: exec copies it in a goroutine, and the goroutine is
+// what Wait awaits.
+type slowStdin struct{ reads time.Duration }
+
+func (s slowStdin) Read([]byte) (int, error) {
+	time.Sleep(s.reads)
+	return 0, io.EOF
 }
 
 // waitWithin waits for cmd and fails if the wait is not over within d: a
