@@ -209,15 +209,19 @@ func TestResolveCatalog_AnIdAlreadyCarryingTheQualifierResolves(t *testing.T) {
 	// Across tables the live table keeps its precedence (ADR-122 §1.2): a
 	// live table holding only the stripped key answers before a snapshot
 	// holding `q/<id>`. nvidia self-namespaces its ids in models.dev, so the
-	// snapshot holds `nvidia/nvidia/<id>` and not `nvidia/<id>`.
+	// snapshot holds `nvidia/nvidia/<id>` and not `nvidia/<id>`. The id is an
+	// example of that SHAPE, not a contract: a regeneration can retire it
+	// (nemotron-3-super-120b-a12b left on 2026-10-29), and the fix is to name
+	// another `nvidia/nvidia/<id>` the snapshot carries.
 	nv := mapGet(map[string]string{CatalogProviderEnv: "nvidia"})
-	if res := ResolveCatalog("nvidia/nemotron-3-super-120b-a12b", nil, nv); res.Source != SourceCatalogSnapshot {
-		t.Fatalf("the snapshot's self-namespaced nvidia key did not answer: %+v", res)
+	const selfNamespaced = "nvidia/llama-3.1-nemotron-70b-instruct"
+	if res := ResolveCatalog(selfNamespaced, nil, nv); res.Source != SourceCatalogSnapshot {
+		t.Fatalf("the snapshot's self-namespaced nvidia key did not answer for %q: %+v — did the id leave models.dev?", selfNamespaced, res)
 	}
 	stripped := modelspecs.NewSeeded(map[string]modelspecs.Spec{
-		"nvidia/nemotron-3-super-120b-a12b": {ContextWindow: 7, InputCostPerM: 1, OutputCostPerM: 2},
+		selfNamespaced: {ContextWindow: 7, InputCostPerM: 1, OutputCostPerM: 2},
 	})
-	if res := ResolveCatalog("nvidia/nemotron-3-super-120b-a12b", stripped, nv); res.Source != SourceCatalogLive || res.Spec.ContextWindow != 7 {
+	if res := ResolveCatalog(selfNamespaced, stripped, nv); res.Source != SourceCatalogLive || res.Spec.ContextWindow != 7 {
 		t.Fatalf("the live table's stripped key must answer before the snapshot's q/<id>: %+v", res)
 	}
 }

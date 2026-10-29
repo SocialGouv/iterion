@@ -157,20 +157,34 @@ func TestAGatewayIdResolvesWhatItsCatalogStatesAndNothingMore(t *testing.T) {
 		t.Fatalf("the catalog's record reads source %q, window %d", caps.Source, caps.ContextWindow)
 	}
 
-	// The SNAPSHOT tier answers the numbers and NO flag: its schema holds
-	// the four numerics only, so an id models.dev publishes as
-	// `tool_call:false` reads unknown — a warning, not a block — whenever
-	// the live table is not loaded. Honest for what the file holds, and
-	// pinned here so widening the schema is a deliberate change (the flag
-	// an operator needs offline goes in OPENAI_COMPATIBLE_MODELS).
+	// The SNAPSHOT tier answers the numbers AND the flags models.dev
+	// publishes (schema 2): an embedding model the aggregator states as
+	// `tool_call:false` reads a stated false offline and on a cold start —
+	// the refusal a reader owes, not the warning an unknown earns — so the
+	// verdict no longer depends on whether the live table happened to load.
+	// What the catalog does not state still stays unknown; the operator
+	// table keeps its precedence over both models.dev tiers.
 	gatewayEnv(t, "", "scaleway")
 	seedSpecs(t, nil)
 	caps = capabilitiesForModel(modelroute.OpenAICompatible, "bge-multilingual-gemma2")
 	if caps.Source != llmtypes.SourceCatalogSnapshot || caps.ContextWindow != 8191 {
 		t.Fatalf("the snapshot's record reads source %q, window %d; want %q, 8191", caps.Source, caps.ContextWindow, llmtypes.SourceCatalogSnapshot)
 	}
-	if caps.Reasoning != nil || caps.ToolCall != nil || caps.Temperature != nil {
-		t.Fatalf("the snapshot answered flags %s/%s/%s, want unknown for all three", flagWord(caps.Reasoning), flagWord(caps.ToolCall), flagWord(caps.Temperature))
+	if !no(caps.ToolCall) || !no(caps.Reasoning) || !no(caps.Temperature) {
+		t.Fatalf("the snapshot answered flags %s/%s/%s, want no/no/no — the published verdict, not unknown", flagWord(caps.Reasoning), flagWord(caps.ToolCall), flagWord(caps.Temperature))
+	}
+	// The same tier answers the other verdict, so a snapshot answering
+	// `false` to everything would not pass.
+	caps = capabilitiesForModel(modelroute.OpenAICompatible, "gpt-oss-120b")
+	if caps.Source != llmtypes.SourceCatalogSnapshot || !yes(caps.ToolCall) {
+		t.Fatalf("a tool-calling id read source %q, tool_call %s; want the snapshot and yes", caps.Source, flagWord(caps.ToolCall))
+	}
+	// The operator's table still outranks the snapshot, flags included: a
+	// deployment that disagrees with models.dev declares the flag and wins.
+	gatewayEnv(t, `{"bge-multilingual-gemma2": {"context_window": 8191, "tool_call": true}}`, "scaleway")
+	caps = capabilitiesForModel(modelroute.OpenAICompatible, "bge-multilingual-gemma2")
+	if caps.Source != llmtypes.SourceOperator || !yes(caps.ToolCall) {
+		t.Fatalf("the operator's flag lost to the snapshot: source %q, tool_call %s", caps.Source, flagWord(caps.ToolCall))
 	}
 }
 

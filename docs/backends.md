@@ -1352,12 +1352,18 @@ never merged across sources, and an answer carries its provenance:
 
 The snapshot is regenerated with `task models:snapshot` (the committed diff
 is the review; it carries the source digest and an as-of date, and an answer
-older than 180 days logs a warning). Its schema holds the four numerics
-only: **the snapshot tier answers no capability flag**, so an id models.dev
-publishes as `"tool_call": false` reads unknown — a warning, not a block —
-on an offline or cold-start replica resolving from the snapshot. A flag you
-need honoured without the live table goes in `OPENAI_COMPATIBLE_MODELS`,
-whose entry wins over both models.dev tiers. A sandboxed gateway node
+older than 180 days logs a warning). Its **schema 2 holds the numerics and
+the three capability flags models.dev publishes**, each optional: an id the
+aggregator states as `"tool_call": false` reads a stated false on an offline
+or cold-start replica — the refusal a reader owes, not the warning an
+unknown earns — and a flag the aggregator does not state is absent from the
+line and reads unknown, never false. A flag you need honoured AGAINST
+models.dev still goes in `OPENAI_COMPATIBLE_MODELS`, whose entry wins over
+both models.dev tiers. Schema 1 (the numerics alone) is not loadable: the
+file is embedded, so it and its reader ship in the same binary, and a
+mismatch names `task models:snapshot` instead of guessing. An id can LEAVE
+models.dev between two regenerations — it then resolves to unknown, and the
+operator table is the road for a deployment that still serves it. A sandboxed gateway node
 receives the host's own resolution (`ITERION_OPENAI_COMPATIBLE_RESOLVED`),
 which answers before the container's local sources, flags included — the
 image's snapshot can be older than the host's, and the numbers never

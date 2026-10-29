@@ -123,3 +123,28 @@ The wire id is untouched: what the gateway serves is what it receives.
 ## Amendment 2026-10-21 — the gateway may be a bundle credential
 
 From #2005 PR-C' on ([ADR-131](131-tenant-gateway-credential.md) §7), §6's "the gateway is env-funded … never to a bundle credential" is superseded for a run whose team holds an `openai_compatible` key: the key and its base URL are sealed into the run bundle and served before the environment, in-process and in the sandbox. The deployment's `OPENAI_COMPATIBLE_*` environment stays the path of a run that holds no such key (a laptop, a sovereign pool). The resolution order of §1 (operator table, catalog provider) is unchanged: the catalog stays operator-wide. Until PR-C' lands, §6 holds for every run, gateway key stored or not.
+
+## Amendment 2026-10-29 — the snapshot carries the capability flags (schema 2)
+
+§4's **Content** took the snapshot to hold the flattened models.dev table with its *four numeric fields*. It
+holds the three capability flags beside them — `reasoning`, `tool_call`, `temperature` — each an OPTIONAL
+boolean: a flag the aggregator states crosses with its verdict, a flag it does not state is absent from the
+line and reads unknown. ADR-093 §5 ("unknown capability flags are omitted, never invented") therefore holds
+word for word; what changes is that models.dev's *stated* verdicts now survive the trip offline.
+
+The reason is measured (#2842, from the adversarial round on #2103): models.dev publishes `tool_call:false`
+for 1053 of its 8918 entries, and under the numbers-only schema an offline or cold-start replica answered
+every flag unknown — so a model KNOWN to lack tools earned a warning where the live table gives a refusal,
+and the verdict depended on whether the live table happened to be loaded. The decision above is untouched:
+exact resolution, whole-entry precedence, provenance that travels, and the operator table outranking both
+models.dev tiers (flags included).
+
+Schema 1 is **not** kept loadable. The snapshot is embedded, so the file and its reader ship in the same
+binary; a mismatch is reachable only by hand-editing the file, which the loader already refuses by name
+("regenerate with `task models:snapshot`"). The generator's changelog reads through the same parser as
+production (`modelspecs.ReadSnapshot`) and compares entries by VALUE, flags included — the Consequences'
+"the committed diff is the review" needs the changelog to be able to SEE a flag flip.
+
+Measured cost: the embedded file goes from 1 132 168 to 1 694 930 bytes, so the Consequences' "about 0.9 MB"
+becomes about 1.6 MB of embedded JSON. The gzipped-blob alternative stays rejected for the reason given
+above — a reviewer reads the committed diff.

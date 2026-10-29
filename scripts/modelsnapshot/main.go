@@ -7,17 +7,18 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 )
+
+// dst is the one snapshot the generator writes and the binary embeds.
+const dst = "pkg/backend/modelspecs/snapshot/models-dev.json"
 
 func main() {
 	if err := run(); err != nil {
@@ -36,7 +37,6 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	dst := "pkg/backend/modelspecs/snapshot/models-dev.json"
 	if werr := os.WriteFile(dst, out, 0o644); werr != nil {
 		return werr
 	}
@@ -69,36 +69,25 @@ func fetch() ([]byte, string, error) {
 }
 
 // readCurrent parses the snapshot on disk (or an empty table when absent)
-// so the changelog can diff the regeneration against it.
+// so the changelog can diff the regeneration against it. It reads through
+// modelspecs.ReadSnapshot — the parser production uses — so a field the
+// format carries cannot go missing from the changelog, and it ignores the
+// file's SCHEMA on purpose: diffing the values across a schema bump is
+// exactly what the reviewer of that bump needs.
 func readCurrent() map[string]modelspecs.Spec {
-	out := map[string]modelspecs.Spec{}
-	raw, err := os.ReadFile("pkg/backend/modelspecs/snapshot/models-dev.json")
+	raw, err := os.ReadFile(dst)
 	if err != nil {
-		return out
+		return map[string]modelspecs.Spec{}
 	}
-	lines := strings.Split(string(raw), "\n")
-	for _, line := range lines[1:] {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var e struct {
-			Key              string  `json:"key"`
-			ContextWindow    int     `json:"context_window"`
-			MaxOutputTokens  int     `json:"max_output_tokens"`
-			InputUSDPerMTok  float64 `json:"input_usd_per_mtok"`
-			OutputUSDPerMTok float64 `json:"output_usd_per_mtok"`
-		}
-		if json.Unmarshal([]byte(line), &e) == nil && e.Key != "" {
-			out[e.Key] = modelspecs.Spec{
-				ContextWindow:   e.ContextWindow,
-				MaxOutputTokens: e.MaxOutputTokens,
-				InputCostPerM:   e.InputUSDPerMTok,
-				OutputCostPerM:  e.OutputUSDPerMTok,
-			}
-		}
+	_, table, err := modelspecs.ReadSnapshot(raw)
+	if err != nil {
+		// A snapshot already on disk that does not parse is said out loud:
+		// the changelog would otherwise report the whole table as new and
+		// the operator would read a corrupted file as a first generation.
+		fmt.Fprintf(os.Stderr, "modelsnapshot: the snapshot on disk does not parse (%v) — the changelog treats it as empty\n", err)
+		return map[string]modelspecs.Spec{}
 	}
-	return out
+	return table
 }
 
 func printChangelog(before, after map[string]modelspecs.Spec) {
@@ -109,7 +98,7 @@ func printChangelog(before, after map[string]modelspecs.Spec) {
 			added = append(added, k)
 			continue
 		}
-		if old != after[k] {
+		if !specsEqual(old, after[k]) {
 			changed = append(changed, k)
 		}
 	}
@@ -148,9 +137,50 @@ func printChangelog(before, after map[string]modelspecs.Spec) {
 			break
 		}
 		o, n := before[k], after[k]
-		fmt.Printf("  ~ %s: in %g→%g out %g→%g window %d→%d\n", k,
+		fmt.Printf("  ~ %s: in %g→%g out %g→%g window %d→%d flags %s→%s\n", k,
 			o.InputCostPerM, n.InputCostPerM, o.OutputCostPerM, n.OutputCostPerM,
-			o.ContextWindow, n.ContextWindow)
+			o.ContextWindow, n.ContextWindow, flagWords(o), flagWords(n))
+	}
+}
+
+// specsEqual compares two entries by VALUE. Spec carries the three
+// capability flags as pointers, and `!=` on a struct holding pointers
+// compares ADDRESSES: two entries both stating `tool_call:false` would read
+// as a flip, and every regeneration would report the whole table as changed.
+func specsEqual(a, b modelspecs.Spec) bool {
+	return a.ContextWindow == b.ContextWindow &&
+		a.MaxOutputTokens == b.MaxOutputTokens &&
+		a.InputCostPerM == b.InputCostPerM &&
+		a.OutputCostPerM == b.OutputCostPerM &&
+		flagEqual(a.Reasoning, b.Reasoning) &&
+		flagEqual(a.ToolCall, b.ToolCall) &&
+		flagEqual(a.Temperature, b.Temperature)
+}
+
+// flagEqual compares two optional flags by value: unstated equals unstated,
+// and a stated value equals only the same stated value.
+func flagEqual(a, b *bool) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+// flagWords renders the three flags for the changelog in the order the
+// snapshot and the operator table name them: reasoning, tool_call,
+// temperature — `?` for a flag the source did not state.
+func flagWords(s modelspecs.Spec) string {
+	return flagWord(s.Reasoning) + "/" + flagWord(s.ToolCall) + "/" + flagWord(s.Temperature)
+}
+
+func flagWord(f *bool) string {
+	switch {
+	case f == nil:
+		return "?"
+	case *f:
+		return "yes"
+	default:
+		return "no"
 	}
 }
 

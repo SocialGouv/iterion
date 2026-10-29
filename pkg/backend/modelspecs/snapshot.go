@@ -28,8 +28,11 @@ import (
 var snapshotBlob string
 
 // SnapshotSchema is the snapshot file's format version. A reader that does
-// not match refuses the file rather than guess.
-const SnapshotSchema = 1
+// not match refuses the file rather than guess. Schema 2 carries the three
+// capability flags beside the numbers; the file is EMBEDDED, so the constant
+// and the bytes it judges ship in the same binary — a mismatch is reachable
+// only by hand-editing the snapshot, which is what the refusal names.
+const SnapshotSchema = 2
 
 // SnapshotHeader is the file's first line.
 type SnapshotHeader struct {
@@ -39,14 +42,22 @@ type SnapshotHeader struct {
 	AsOf         string `json:"as_of"`         // RFC3339 UTC
 }
 
-// snapshotEntry is one line: the four numeric fields the gateway catalog
-// resolves, nothing else.
+// snapshotEntry is one line: the numeric fields the gateway catalog
+// resolves, plus the three capability flags models.dev publishes. The flags
+// are `*bool,omitempty` for the same reason Spec's are — a flag the source
+// did not state is ABSENT from the line and reads unknown, while a stated
+// false crosses as false. The distinction is the point: `tool_call:false` is
+// what turns a reader's warning into a refusal, and an embedding model
+// offline must refuse, not warn.
 type snapshotEntry struct {
 	Key              string  `json:"key"`
 	ContextWindow    int     `json:"context_window,omitempty"`
 	MaxOutputTokens  int     `json:"max_output_tokens,omitempty"`
 	InputUSDPerMTok  float64 `json:"input_usd_per_mtok,omitempty"`
 	OutputUSDPerMTok float64 `json:"output_usd_per_mtok,omitempty"`
+	Reasoning        *bool   `json:"reasoning,omitempty"`
+	ToolCall         *bool   `json:"tool_call,omitempty"`
+	Temperature      *bool   `json:"temperature,omitempty"`
 }
 
 var (
@@ -57,7 +68,6 @@ var (
 )
 
 func loadSnapshot() {
-	hdrLine, body, _ := strings.Cut(snapshotBlob, "\n")
 	fail := func(err error) {
 		snapshotErr = err
 		// A corrupted or wrong-schema snapshot must not fail SILENTLY into
@@ -65,15 +75,39 @@ func loadSnapshot() {
 		// and only a log line can ask for that.
 		iterlog.NewFromEnv(os.Stderr).Warn("%v", err)
 	}
-	if err := json.Unmarshal([]byte(hdrLine), &snapshotHdr); err != nil {
-		fail(fmt.Errorf("model specs: snapshot header: %w", err))
+	hdr, index, err := ReadSnapshot([]byte(snapshotBlob))
+	if err != nil {
+		fail(err)
 		return
 	}
-	if snapshotHdr.Schema != SnapshotSchema {
-		fail(fmt.Errorf("model specs: snapshot schema %d, want %d — regenerate with `task models:snapshot`", snapshotHdr.Schema, SnapshotSchema))
+	// The schema verdict lives HERE, not in the parser: production refuses a
+	// file it cannot read as this schema, while the generator's changelog
+	// diffs the VALUES across a schema bump — which is when a reviewer needs
+	// them most.
+	if hdr.Schema != SnapshotSchema {
+		fail(fmt.Errorf("model specs: snapshot schema %d, want %d — regenerate with `task models:snapshot`", hdr.Schema, SnapshotSchema))
 		return
 	}
-	snapshotIndex = map[string]Spec{}
+	snapshotHdr, snapshotIndex = hdr, index
+}
+
+// ReadSnapshot parses a snapshot file into its header and its table. It is
+// the reader beside WriteSnapshot, so the format has exactly ONE definition:
+// a field the writer emits cannot be dropped by a second parser, and the
+// generator's changelog sees every field the file carries. It does not judge
+// the schema — the caller does (loadSnapshot refuses a mismatch).
+//
+// It parses the bytes it is GIVEN. The embedded snapshot stays reachable only
+// through SnapshotLookupExact's exact lookup (ADR-122 §4, Access): the blob is
+// unexported, so this function cannot hand anyone the embedded table, and a
+// reader wanting a whole table still goes through the live registry.
+func ReadSnapshot(raw []byte) (SnapshotHeader, map[string]Spec, error) {
+	hdrLine, body, _ := strings.Cut(string(raw), "\n")
+	var hdr SnapshotHeader
+	if err := json.Unmarshal([]byte(hdrLine), &hdr); err != nil {
+		return SnapshotHeader{}, nil, fmt.Errorf("model specs: snapshot header: %w", err)
+	}
+	index := map[string]Spec{}
 	for _, line := range strings.Split(body, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -81,16 +115,19 @@ func loadSnapshot() {
 		}
 		var e snapshotEntry
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			fail(fmt.Errorf("model specs: snapshot entry: %w", err))
-			return
+			return SnapshotHeader{}, nil, fmt.Errorf("model specs: snapshot entry: %w", err)
 		}
-		snapshotIndex[e.Key] = Spec{
+		index[e.Key] = Spec{
 			ContextWindow:   e.ContextWindow,
 			MaxOutputTokens: e.MaxOutputTokens,
 			InputCostPerM:   e.InputUSDPerMTok,
 			OutputCostPerM:  e.OutputUSDPerMTok,
+			Reasoning:       e.Reasoning,
+			ToolCall:        e.ToolCall,
+			Temperature:     e.Temperature,
 		}
 	}
+	return hdr, index, nil
 }
 
 // SnapshotLookupExact answers an exact "<provider>/<model>" lookup from the
@@ -167,6 +204,9 @@ func WriteSnapshot(body []byte, sourceDigest string, asOf time.Time) ([]byte, er
 			MaxOutputTokens:  sp.MaxOutputTokens,
 			InputUSDPerMTok:  sp.InputCostPerM,
 			OutputUSDPerMTok: sp.OutputCostPerM,
+			Reasoning:        sp.Reasoning,
+			ToolCall:         sp.ToolCall,
+			Temperature:      sp.Temperature,
 		})
 		if err != nil {
 			return nil, err
