@@ -238,6 +238,7 @@ default and warns in the server log, naming the variable:
 | `ITERION_GATE_SWEEP_INTERVAL` | Time between two passes (Go duration). The sweeper's lease is paced by it, capped at the default: its TTL is three intervals, three minutes at most, so a long interval does not delay the failover. A new term's first pass runs at once. | `1m` |
 | `ITERION_GATE_SWEEP_LOOKBACK` | How far back an ordinary pass reaches (Go duration). The ordinary publish grant outlives it by 30 minutes. | `1h` |
 | `ITERION_GATE_SWEEP_DEEP_EVERY` | Passes between two deep ones, which reach the whole 8-day horizon. | `30` |
+| `ITERION_LEASE_HANDOVER` | Whether a leased net's term may end on the work failing, and after how many consecutive passes that attempted work and reached nothing (#2685). `off` (or `0`, `false`, `no`) disarms it on every net — a replica whose egress is broken then keeps renewing while every pass fails, as before. A positive count replaces the default. Anything else keeps the default and warns, naming the variable. Applies to the four elected server nets: forge token refresh, merge-gate sweep, assistant run-watch sweep, forge→board issue sync. | `3` passes |
 
 ## Forge publish read-back (server)
 

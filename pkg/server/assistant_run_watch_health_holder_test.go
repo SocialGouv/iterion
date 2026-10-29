@@ -404,3 +404,91 @@ func TestAssistantWatchHealth_AReElectedHoldersFirstMomentsAreNotAnAlarm(t *test
 		t.Fatalf("three intervals into the new term with nothing completed raises %v, want sweep_stale", got)
 	}
 }
+
+// The handover is the ANSWERING replica's, where Holder is the lease's: a
+// replica that holds the lease while every pass fails is the sick-but-alive
+// leader of #2685, and the only place that shows is this field.
+func TestAssistantWatchHealth_ReportsTheAnsweringReplicasHandover(t *testing.T) {
+	s, rs, _ := electedWorker(t, lease.NewMemoryStore(), "holder")
+	waitForCond(t, 10*time.Second, "the holder elected", func() bool { return s.assistantWatch.heartbeat().Elected })
+	seedHealthRun(t, rs, "run-1")
+
+	h := watchHealthOf(t, s, "run-1").Coordinator.Handover
+	if h == nil {
+		t.Fatal("an elected replica's answer carries no handover state")
+	}
+	if !h.Armed || h.Passes != lease.DefaultHandoverPasses {
+		t.Fatalf("handover = %+v, want armed with the default of %d passes", h, lease.DefaultHandoverPasses)
+	}
+	if h.Handovers != 0 || h.CircuitOpen {
+		t.Fatalf("handover = %+v, want nothing handed over on a healthy sweep", h)
+	}
+	if got := sweepAttention(watchHealthOf(t, s, "run-1").Attention); slices.Contains(got, "sweep_handover_circuit_open") {
+		t.Fatalf("a healthy sweep raised the circuit attention: %v", got)
+	}
+}
+
+// A replica that has stopped handing over keeps serving a net whose passes
+// fail, and nothing but the far side coming back recovers it: that is an
+// attention code, not a state to read past.
+func TestAssistantWatchHealth_AnOpenHandoverCircuitIsAnAttention(t *testing.T) {
+	s, rs, _ := electedWorker(t, lease.NewMemoryStore(), "holder")
+	waitForCond(t, 10*time.Second, "the holder elected", func() bool { return s.assistantWatch.heartbeat().Elected })
+	seedHealthRun(t, rs, "run-1")
+
+	// Drive this replica's own policy into the state the sick terms leave it
+	// in — through a REAL campaign, which is the only way the circuit opens:
+	// the state lives in the campaign, and a test seam into it would prove
+	// the seam rather than the mechanism. The lease here is this probe's own;
+	// what the route reports is the POLICY's snapshot.
+	sick := &lease.Health{Passes: 1, SickTerms: 1}
+	s.assistantWatch.setHealth(sick)
+	drive, stopDrive := context.WithCancel(context.Background())
+	driven := make(chan struct{})
+	go func() {
+		defer close(driven)
+		_ = lease.Run(drive, lease.NewMemoryStore(), lease.Spec{
+			Name:   "handover-probe",
+			Owner:  "holder",
+			TTL:    60 * time.Millisecond,
+			Retry:  10 * time.Millisecond,
+			Health: sick,
+		}, func(term context.Context) {
+			for {
+				var pass lease.Pass
+				pass.Failed(unreachableForge())
+				if sick.Observe(pass.Verdict()) {
+					return
+				}
+				select {
+				case <-term.Done():
+					return
+				case <-time.After(5 * time.Millisecond):
+				}
+			}
+		})
+	}()
+	t.Cleanup(func() { stopDrive(); <-driven })
+	waitForCond(t, 10*time.Second, "the handover circuit opened", func() bool { return sick.Snapshot().CircuitOpen })
+
+	out := watchHealthOf(t, s, "run-1")
+	if out.Coordinator.Handover == nil || !out.Coordinator.Handover.CircuitOpen {
+		t.Fatalf("handover = %+v, want the open circuit visible", out.Coordinator.Handover)
+	}
+	if got := sweepAttention(out.Attention); !slices.Contains(got, "sweep_handover_circuit_open") {
+		t.Fatalf("attention = %v, want sweep_handover_circuit_open", got)
+	}
+}
+
+// A coordinator no campaign armed — a local process, a sweep that never
+// started — reports no handover at all, rather than a zero state an operator
+// would read as "armed and healthy".
+func TestAssistantWatchHealth_NoArmedPolicyReportsNoHandover(t *testing.T) {
+	s, rs, _ := electedWorker(t, lease.NewMemoryStore(), "holder")
+	waitForCond(t, 10*time.Second, "the holder elected", func() bool { return s.assistantWatch.heartbeat().Elected })
+	seedHealthRun(t, rs, "run-1")
+	s.assistantWatch.setHealth(nil)
+	if h := watchHealthOf(t, s, "run-1").Coordinator.Handover; h != nil {
+		t.Fatalf("handover = %+v, want none when no campaign armed a policy", h)
+	}
+}

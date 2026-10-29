@@ -373,6 +373,19 @@ func (c *assistantWatchCoordinator) setHealth(h *lease.Health) {
 	c.healthMu.Unlock()
 }
 
+// handoverState is the handover as the health answer reports it, and the zero
+// state when no campaign has armed one — a local process, a server whose
+// sweep never started.
+func (c *assistantWatchCoordinator) handoverState() lease.HandoverState {
+	if c.origin != nil {
+		c = c.origin
+	}
+	c.healthMu.RLock()
+	h := c.handover
+	c.healthMu.RUnlock()
+	return h.Snapshot()
+}
+
 func (c *assistantWatchCoordinator) sweepLoop(ctx context.Context, shutdown <-chan struct{}, health *lease.Health) {
 	ticker := time.NewTicker(assistantWatchSweepInterval)
 	defer ticker.Stop()

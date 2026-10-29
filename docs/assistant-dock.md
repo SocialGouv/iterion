@@ -315,7 +315,17 @@ answered: `held`; `free` (nobody holds it — the gap between a release and the
 successor's next attempt, normal during a hand-over, so no attention); `expired`
 (a holder nobody replaced: the sweep is dead, `stale` wherever it is read,
 attention `sweep_holder_expired`); `unreadable` (attention
-`sweep_holder_unreadable`). Shutdown cancels that worker and
+`sweep_holder_unreadable`). Beside it, `coordinator.handover` is the ANSWERING
+replica's own handover (#2685): `armed` (false when an operator set
+`ITERION_LEASE_HANDOVER=off`), `failing_passes` out of `passes` — the run of
+passes that attempted work and reached nothing, against the count that ends a
+term — `handovers` and `sick_terms`, `circuit_open` (every peer took the lease
+and gave it back just as sick, so this replica keeps serving a net whose passes
+fail: attention `sweep_handover_circuit_open`), and the `last_pass_verdict` it
+classified (`idle`, `progressed`, `unreachable`, `refused`). It is the
+replica's, like `elected` and unlike `holder`: `elected: true` next to a run of
+failing passes is the sick-but-alive leader the field exists to make visible.
+Shutdown cancels that worker and
 bounds its final join after HTTP draining. On a local project switch, an active
 sweep keeps its original project; queued work belongs to the selected project,
 and the old project's persisted watches resume when that project is selected

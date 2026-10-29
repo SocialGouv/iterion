@@ -211,7 +211,10 @@ type Health struct {
 	// SickTerms is the fleet circuit breaker's threshold: the consecutive
 	// terms this replica ended by handing over after which it stops handing
 	// over and keeps serving, because every peer gave the lease back just as
-	// sick. Zero or negative means DefaultSickTerms.
+	// sick. It stays open until a pass reaches the far side again, so a
+	// fleet-wide outage leaves ONE replica working rather than the net
+	// bouncing between replicas with nobody working. Zero or negative means
+	// DefaultSickTerms.
 	SickTerms int
 	// Backoff is the wait a handover adds before this replica campaigns
 	// again. Zero means defaultBackoffTerms campaign retries, which is the
@@ -231,7 +234,8 @@ type Health struct {
 	// handedOver says THIS term ended because the work kept failing.
 	handedOver bool
 	// open is the circuit breaker: handing over has not helped, so this
-	// replica keeps serving. Closed again by the first pass that progresses.
+	// replica keeps serving. Closed again by the first pass that reaches the
+	// far side — one that progressed, or one the far side refused.
 	open bool
 	// handovers, lastAt and lastVerdict are what an operator reads
 	// (Snapshot); they are not read by any decision here.
@@ -285,8 +289,11 @@ func (h *Health) Observe(v PassVerdict) (handOver bool) {
 		return false
 	case VerdictRefused:
 		// The far side answered: this replica reaches it, whatever the
-		// answer was.
-		h.unreachable = 0
+		// answer was. That closes the circuit too — a replica that stopped
+		// handing over because nothing was reachable is reaching again, so
+		// the mechanism is armed for the next outage — while a refusal is
+		// not progress and does not clear the run of sick TERMS.
+		h.unreachable, h.open = 0, false
 		return false
 	case VerdictUnreachable:
 		h.unreachable++
@@ -346,12 +353,14 @@ func (h *Health) endTerm() (handedOver bool, sickTerms int, circuitOpened bool) 
 	defer h.mu.Unlock()
 	if !h.handedOver {
 		// A term that ended another way — a step-down, a rollout, the lease
-		// lost — breaks the run of sick terms AND re-arms the handover: the
-		// evidence that handing over was not helping is this replica's own
-		// consecutive sick terms, and a term that ended otherwise is not one
-		// of them. Without this, a circuit opened by a past outage disarms
-		// the handover for the next one.
-		h.sickTerms, h.open = 0, false
+		// lost — breaks the RUN of sick terms. It does not close the
+		// circuit: with the circuit open no pass hands over, so every term
+		// that follows ends "another way", and closing here would suppress
+		// exactly one term's handover and leave the state unreadable. What
+		// closes it is evidence that this replica reaches the far side again
+		// (Observe), which is the same evidence that says handing over could
+		// help.
+		h.sickTerms = 0
 		return false, 0, false
 	}
 	h.sickTerms++

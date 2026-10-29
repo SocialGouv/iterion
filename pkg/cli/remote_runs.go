@@ -400,14 +400,32 @@ type remoteWatchHealthCoordinator struct {
 	// (a hand-over in progress), expired (a holder nobody replaced, stale on
 	// every replica) or unreadable. A server older than the field sends no
 	// state, printed as unknown.
-	Elected              bool       `json:"elected"`
-	Holder               string     `json:"holder,omitempty"`
-	HolderExpiresAt      *time.Time `json:"holder_expires_at,omitempty"`
-	HolderState          string     `json:"holder_state,omitempty"`
-	LastSweepStartedAt   *time.Time `json:"last_sweep_started_at,omitempty"`
-	LastSweepCompletedAt *time.Time `json:"last_sweep_completed_at,omitempty"`
-	LastSweepDurationMS  int64      `json:"last_sweep_duration_ms,omitempty"`
-	Stale                bool       `json:"stale"`
+	Elected              bool                 `json:"elected"`
+	Holder               string               `json:"holder,omitempty"`
+	HolderExpiresAt      *time.Time           `json:"holder_expires_at,omitempty"`
+	HolderState          string               `json:"holder_state,omitempty"`
+	Handover             *remoteWatchHandover `json:"handover,omitempty"`
+	LastSweepStartedAt   *time.Time           `json:"last_sweep_started_at,omitempty"`
+	LastSweepCompletedAt *time.Time           `json:"last_sweep_completed_at,omitempty"`
+	LastSweepDurationMS  int64                `json:"last_sweep_duration_ms,omitempty"`
+	Stale                bool                 `json:"stale"`
+}
+
+// remoteWatchHandover is the answering replica's handover: whether its term
+// can end on the work failing (armed), where the run of failing passes stands
+// against the count that ends a term, how many terms it has handed over, and
+// whether it has stopped handing over because the peers gave the lease back
+// just as sick. A server older than the field sends none, and the line is
+// omitted rather than printed as a healthy zero.
+type remoteWatchHandover struct {
+	Armed           bool       `json:"armed"`
+	Passes          int        `json:"passes,omitempty"`
+	FailingPasses   int        `json:"failing_passes,omitempty"`
+	Handovers       int        `json:"handovers,omitempty"`
+	SickTerms       int        `json:"sick_terms,omitempty"`
+	CircuitOpen     bool       `json:"circuit_open,omitempty"`
+	LastPassAt      *time.Time `json:"last_pass_at,omitempty"`
+	LastPassVerdict string     `json:"last_pass_verdict,omitempty"`
 }
 
 type remoteWatchHealthEpisode struct {
@@ -528,6 +546,32 @@ func watchHealthReprint(prevKey, key string, printedExpiry *time.Time, sinceLast
 	return false, false
 }
 
+// formatWatchHandover is the handover on one line: what the mechanism is set
+// to, where this replica stands in it, and the last pass it classified — the
+// three facts that tell a quiet net from a blackholed one.
+func formatWatchHandover(h remoteWatchHandover) string {
+	if !h.Armed {
+		// An operator disarmed it (ITERION_LEASE_HANDOVER=off). Saying so is
+		// the point: a sick leader that never hands over is then expected,
+		// not a defect to chase.
+		return "disarmed by the operator"
+	}
+	out := fmt.Sprintf("failing passes=%d/%d handovers=%d", h.FailingPasses, h.Passes, h.Handovers)
+	if h.SickTerms > 0 {
+		out += fmt.Sprintf(" sick terms=%d", h.SickTerms)
+	}
+	if h.CircuitOpen {
+		out += " — HANDING OVER STOPPED: every peer gave the lease back just as sick"
+	}
+	if h.LastPassVerdict != "" {
+		out += " last pass=" + h.LastPassVerdict
+		if h.LastPassAt != nil {
+			out += " at " + FormatTime(*h.LastPassAt)
+		}
+	}
+	return out
+}
+
 // watchHealthChangeKey is what --follow compares between two reads: the answer
 // without the lease expiry, which the holder's renewal moves every third of
 // the TTL — a renewal is not a change worth a line.
@@ -563,6 +607,9 @@ func printRemoteWatchHealth(p *Printer, health remoteWatchHealth, heartbeat bool
 		holder += " (" + state + ")"
 	}
 	p.KV("Coordinator", fmt.Sprintf("present=%t elected=%t holder=%s stale=%t", health.Coordinator.Present, health.Coordinator.Elected, holder, health.Coordinator.Stale))
+	if h := health.Coordinator.Handover; h != nil {
+		p.KV("Handover", formatWatchHandover(*h))
+	}
 	if health.Coordinator.HolderExpiresAt != nil {
 		p.KV("Lease until", FormatTime(*health.Coordinator.HolderExpiresAt))
 	}

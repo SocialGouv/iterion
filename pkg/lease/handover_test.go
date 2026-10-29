@@ -330,10 +330,12 @@ func TestHealth_theCircuitStopsTheChurnOnceHandingOverStopsHelping(t *testing.T)
 	}
 }
 
-// The circuit is evidence about THIS replica's consecutive sick terms, so a
-// term that ended another way re-arms the handover. Without it, one outage
-// disarms the mechanism for every outage after it.
-func TestHealth_aTermThatEndedAnotherWayRearmsTheHandover(t *testing.T) {
+// An open circuit outlives the terms that follow it: with the circuit open no
+// pass hands over, so every one of them ends "another way", and a breaker
+// that closed on that would suppress exactly ONE term's handover. What closes
+// it is reaching the far side again — the same evidence that says handing
+// over could help.
+func TestHealth_anOpenCircuitOutlivesTheTermsThatFollowIt(t *testing.T) {
 	h := &Health{Passes: 1, SickTerms: 1}
 	h.beginTerm()
 	if !h.Observe(VerdictUnreachable) {
@@ -342,14 +344,26 @@ func TestHealth_aTermThatEndedAnotherWayRearmsTheHandover(t *testing.T) {
 	if _, _, opened := h.endTerm(); !opened {
 		t.Fatal("the circuit did not open after the one sick term it takes")
 	}
-	// A term that ends on a step-down, a rollout or the lease lost: no pass
-	// handed over.
-	h.beginTerm()
-	if ended, _, _ := h.endTerm(); ended {
-		t.Fatal("a term nothing handed over reported a handover")
+	// Three terms that end on a step-down, a rollout or the lease lost.
+	for term := 1; term <= 3; term++ {
+		h.beginTerm()
+		if h.Observe(VerdictUnreachable) {
+			t.Fatalf("term %d handed over with the circuit open", term)
+		}
+		if ended, _, _ := h.endTerm(); ended {
+			t.Fatalf("term %d reported a handover nothing made", term)
+		}
+		if st := h.Snapshot(); !st.CircuitOpen {
+			t.Fatalf("term %d closed the circuit: %+v — an operator cannot read a state that lasts one term", term, st)
+		}
+	}
+	// Reaching the far side again re-arms it, refusal included: the answer
+	// came back, so a peer might do better next time.
+	if h.Observe(VerdictRefused) {
+		t.Fatal("a refusal handed the lease over")
 	}
 	if st := h.Snapshot(); st.CircuitOpen {
-		t.Fatalf("snapshot = %+v, want the circuit closed again", st)
+		t.Fatalf("snapshot = %+v, want the circuit closed once the far side answered", st)
 	}
 	h.beginTerm()
 	if !h.Observe(VerdictUnreachable) {
