@@ -69,7 +69,14 @@ func RunFix(opts FixOptions) (FixResult, error) {
 			if err != nil {
 				return res, fmt.Errorf("fix: %w", err)
 			}
-			if err := writeFileAtomic(path, out.Fixed, info.Mode().Perm()); err != nil {
+			if err := replaceBotFileNow(path, raw, out.Fixed, info.Mode().Perm()); err != nil {
+				if botFileLeftAsItIs(err) {
+					// Refused like a file with no mechanical remedy: the
+					// others are still fixed, and the command exits on
+					// ErrFixRefused.
+					res.Refused = append(res.Refused, err.Error())
+					continue
+				}
 				return res, fmt.Errorf("fix: %w", err)
 			}
 			f.Written = true

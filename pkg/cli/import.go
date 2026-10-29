@@ -81,7 +81,10 @@ func RunImport(opts ImportOptions, p *Printer) error {
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("stat %s: %w", outPath, err)
 	}
-	if err := os.WriteFile(outPath, []byte(res.BotSource), 0o644); err != nil {
+	// The stat above is a read; the refusal that counts is the one taken
+	// under the lock, where nothing can be created between the look and
+	// the write.
+	if err := replaceBotFileNow(outPath, nil, []byte(res.BotSource), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", outPath, err)
 	}
 

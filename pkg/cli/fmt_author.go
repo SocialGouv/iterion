@@ -130,7 +130,15 @@ func runFmtConvert(opts FmtOptions) (FmtResult, error) {
 				if info, err := os.Stat(path); err == nil {
 					perm = info.Mode().Perm()
 				}
-				if err := writeFileAtomic(dest, out, perm); err != nil {
+				decided := existing
+				if !there {
+					decided = nil
+				}
+				if err := replaceBotFileNow(dest, decided, out, perm); err != nil {
+					if botFileLeftAsItIs(err) {
+						res.refuse(dest, err.Error())
+						continue
+					}
 					return res, fmt.Errorf("fmt: %w", err)
 				}
 				f.Written = true

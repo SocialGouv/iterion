@@ -138,7 +138,13 @@ func RunFmt(opts FmtOptions) (FmtResult, error) {
 			if err != nil {
 				return res, fmt.Errorf("fmt: %w", err)
 			}
-			if err := writeFileAtomic(path, out, info.Mode().Perm()); err != nil {
+			if err := replaceBotFileNow(path, raw, out, info.Mode().Perm()); err != nil {
+				if botFileLeftAsItIs(err) {
+					// One file being saved elsewhere is that file's
+					// refusal, not the end of a whole-tree format.
+					res.refuse(path, err.Error())
+					continue
+				}
 				return res, fmt.Errorf("fmt: %w", err)
 			}
 			f.Written = true

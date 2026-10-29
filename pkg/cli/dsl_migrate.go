@@ -100,6 +100,7 @@ func MigrateDSL(opts MigrateDSLOptions) (MigrateDSLResult, error) {
 	// Plan first.
 	type planned struct {
 		path string
+		src  []byte
 		out  *migrate.Result
 	}
 	var plans []planned
@@ -123,7 +124,7 @@ func MigrateDSL(opts MigrateDSLOptions) (MigrateDSLResult, error) {
 			}
 		}
 		res.Files = append(res.Files, file)
-		plans = append(plans, planned{path, out})
+		plans = append(plans, planned{path, src, out})
 	}
 	if len(res.Refused) > 0 {
 		reportMigration(opts, res)
@@ -169,7 +170,7 @@ func MigrateDSL(opts MigrateDSLOptions) (MigrateDSLResult, error) {
 			if err != nil {
 				return res, err
 			}
-			if err := writeFileAtomic(p.path, p.out.Migrated, info.Mode().Perm()); err != nil {
+			if err := replaceBotFileNow(p.path, p.src, p.out.Migrated, info.Mode().Perm()); err != nil {
 				return res, fmt.Errorf("dsl migrate: write %s: %w", p.path, err)
 			}
 			res.Files[i].Written = true
