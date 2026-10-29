@@ -340,8 +340,11 @@ func plantHostileGitConfig(t *testing.T, path, canary string) {
 // environment the drivers hand the container and nothing of the host's but
 // the PATH its binaries are found on (containerEnvRun's rule), from a
 // directory outside any repository so the only configuration in play is the
-// one the environment points at. GIT_TERMINAL_PROMPT=0 rides on BOTH arms: a
-// helper that answers nothing must fail, never reach for a terminal.
+// one the environment points at. Two names ride on BOTH arms, the test's own
+// instrumentation: GIT_TERMINAL_PROMPT=0, so a helper that answers nothing
+// fails instead of reaching for a terminal, and GIT_CONFIG_NOSYSTEM=1, so
+// /etc/gitconfig — the MACHINE's, which a CI image may give a credential
+// helper of its own — decides nothing here either way.
 func gitUnderContainerEnv(t *testing.T, env map[string]string, stdin string, args ...string) (string, error) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
@@ -350,7 +353,7 @@ func gitUnderContainerEnv(t *testing.T, env map[string]string, stdin string, arg
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
-	cmd.Env = append(cmd.Env, "PATH="+os.Getenv("PATH"), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(cmd.Env, "PATH="+os.Getenv("PATH"), "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1")
 	cmd.Stdin = strings.NewReader(stdin)
 	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err
