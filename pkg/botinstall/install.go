@@ -173,13 +173,14 @@ func Install(ctx context.Context, opts Options) (*Result, error) {
 		if err := refuseUnrecordedReplacement(target, opts); err != nil {
 			return nil, err
 		}
-		if err := os.RemoveAll(target); err != nil {
-			return nil, fmt.Errorf("remove existing %s: %w", target, err)
-		}
 	}
 
-	// 5. Copy the bundle directory into the workspace (git metadata excluded).
-	if err := copyTree(botDir, target); err != nil {
+	// 5. Make the workspace copy hold exactly what the bundle ships (git
+	//    metadata excluded), file by file and each under its own authoring
+	//    lock: a save of one of those files stops the install instead of
+	//    losing its bytes, and the bundle is never missing while it is
+	//    replaced (replaceTree).
+	if err := replaceTree(ctx, botDir, target); err != nil {
 		return nil, fmt.Errorf("install %s: %w", name, err)
 	}
 	origin := Origin{
@@ -576,71 +577,6 @@ func validateRemoveName(name string) error {
 	}
 	if name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
 		return fmt.Errorf("invalid remove name %q (no path separators)", name)
-	}
-	return nil
-}
-
-// copyTree recursively copies src into dst, skipping VCS and local-state
-// directories and any non-regular files (symlinks, devices).
-func copyTree(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() && (d.Name() == ".git" || d.Name() == ".iterion") {
-			return filepath.SkipDir
-		}
-		if bundle.IsDraftEntry(d.Name(), d.IsDir()) {
-			// An author document is never a member of a bundle: the archive
-			// path never carries one, and an install from a directory or a
-			// clone lands the same tree.
-			return nil
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		return copyFileTo(path, target)
-	})
-}
-
-func copyFileTo(src, dst string) (err error) {
-	info, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	// Preserve the source file's permission bits so an executable shipped in
-	// the bundle (a tool script under skills/ or attachments/) stays runnable
-	// after install, rather than being flattened to 0644.
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm())
-	if err != nil {
-		return err
-	}
-	// Close explicitly and surface its error: on NFS / full disks
-	// io.Copy can succeed while the buffered write only fails at Close,
-	// so a deferred-and-ignored Close would hide a real write failure.
-	defer func() {
-		if cerr := out.Close(); cerr != nil && err == nil {
-			err = cerr
-		}
-	}()
-	if _, err := io.Copy(out, in); err != nil {
-		return err
 	}
 	return nil
 }
