@@ -439,6 +439,89 @@ func TestASweepThatCannotLookSaysSoInTheEvent(t *testing.T) {
 	}
 }
 
+// leftoverEndRun is a sandbox whose exec that ends a spawn prints a clean
+// sweep report — the sweep program's own last line, proc's sweepLineDone —
+// leaves a process holding the output it was given, and exits 0: the shape
+// any driver can produce, because killing an exec does not reach what it
+// forked and a copier ends only when every holder of the pipe has closed it.
+type leftoverEndRun struct {
+	sandbox.Run
+	holds   time.Duration
+	pidFile string
+}
+
+func (r *leftoverEndRun) Command(ctx context.Context, _ []string, _ sandbox.ExecOpts) *exec.Cmd {
+	return exec.CommandContext(ctx, "sh", "-c",
+		"sleep "+strconv.Itoa(int(r.holds.Seconds()))+" &\n"+
+			"echo $! > "+r.pidFile+"\n"+
+			"printf '%s\\n' 'iterion-node-session done'\n"+
+			"exit 0")
+}
+
+// The exec that ends a spawn hands the node back even when it leaves a
+// process holding its output: its own deadline reaches the exec, never the
+// subshells and scans the exec forked, so with no bound on the drain the wait
+// ends only when that process does — 19 minutes, measured on a loaded host
+// where one sweep scan sat on a /proc entry it could not read (#2469). The
+// bound is that end, and because the report is then read short, the node's
+// event says so and names the bound that ran and the knob that widens it.
+//
+// Mutation seen red: drop the proc.SetWaitDelay call in
+// killSandboxDelegateReporting — the end of the spawn waits the holder out,
+// and calls a report it never finished reading a clean sweep.
+func TestTheEndOfASpawnReturnsWhileALeftoverHoldsItsOutput(t *testing.T) {
+	const holds = 30 * time.Second
+	// The bound asserted below is the SITE's, so the environment this suite
+	// runs in does not get to choose it.
+	t.Setenv(proc.WaitDelayEnv, "")
+	pidFile := filepath.Join(t.TempDir(), "holder.pid")
+	// The holder is this test's, and is killed only while it still is the
+	// process this test started.
+	t.Cleanup(func() {
+		raw, err := os.ReadFile(pidFile)
+		if err != nil {
+			return
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+		if err != nil || pid <= 1 {
+			return
+		}
+		cmdline, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
+		if err == nil && string(cmdline) == fmt.Sprintf("sleep\x00%d\x00", int(holds.Seconds())) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+
+	var events []BackgroundWork
+	task := Task{NodeID: "agent", Hooks: TaskHooks{OnBackgroundWork: func(bw BackgroundWork) { events = append(events, bw) }}}
+	_, end := SandboxNodeSession(&leftoverEndRun{holds: holds, pidFile: pidFile}, task,
+		BackendClaw, iterlog.New(iterlog.LevelWarn, io.Discard))
+
+	// The wait is MEASURED, never waited out: a regression that parks the
+	// node has to fail this test in seconds instead of holding the package to
+	// its timeout, the way it held the gate.
+	done := make(chan []string, 1)
+	go func() { done <- end() }()
+	var labels []string
+	select {
+	case labels = <-done:
+	case <-time.After(holds / 2):
+		t.Fatalf("the end of the spawn did not return in %s: the node waits for the output a process it left holds", holds/2)
+	}
+
+	if len(labels) != 0 {
+		t.Errorf("a sweep whose report was read short reported stopping %q", labels)
+	}
+	if len(events) != 1 || !strings.HasPrefix(events[0].Reason, nodeSessionUnsureReason) {
+		t.Fatalf("events = %+v, want one event saying the end of the spawn did not finish", events)
+	}
+	for _, want := range []string{spawnEndDrainBound.String(), proc.WaitDelayEnv} {
+		if !strings.Contains(events[0].Reason, want) {
+			t.Errorf("the event does not name %q — the bound that ran, and the knob that widens it: %q", want, events[0].Reason)
+		}
+	}
+}
+
 // dockerishRun is localRun where, as with `docker exec`, the cmd the backend
 // holds is a client: killing it — an abort, a timeout — leaves the
 // in-container CLI running. The exec that ends the spawn runs as is.

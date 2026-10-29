@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -88,9 +89,16 @@ func TestResolveWaitDelay_SaysItOncePerProcess(t *testing.T) {
 // abandoned drain, and a message quoting the site's default lies as soon as
 // an operator overrides it.
 //
+// The three arms a call site meets, through the real environment: a duration
+// replaces the default, the escape hatch removes the bound, and an ABSENT
+// variable is the site's own default — never the unbounded wait "no value"
+// could be read as, which is the one reading that parks a node for good.
+//
 // Mutations seen red: return `def` instead of `d` (the message names a bound
 // that never ran); guard the assignment with `if cmd.WaitDelay == 0` (the
-// bound a driver chose survives the one the call site owns).
+// bound a driver chose survives the one the call site owns); make the empty
+// arm fall through to the unbound one (an unset variable leaves every site
+// unbounded).
 func TestSetWaitDelay_ReplacesTheCmdsBoundAndReportsWhatItApplied(t *testing.T) {
 	t.Setenv(WaitDelayEnv, "250ms")
 	cmd := exec.Command("true")
@@ -106,6 +114,24 @@ func TestSetWaitDelay_ReplacesTheCmdsBoundAndReportsWhatItApplied(t *testing.T) 
 	plain := exec.Command("true")
 	if applied := SetWaitDelay(plain, 2*time.Second); applied != 2*time.Second || plain.WaitDelay != 2*time.Second {
 		t.Errorf("with no override: applied %s, cmd %s — want this site's 2s default", applied, plain.WaitDelay)
+	}
+
+	t.Setenv(WaitDelayEnv, "off")
+	unbound := exec.Command("true")
+	if applied := SetWaitDelay(unbound, 2*time.Second); applied != 0 || unbound.WaitDelay != 0 {
+		t.Errorf("with %s=off: applied %s, cmd %s — want the escape hatch, no bound at all", WaitDelayEnv, applied, unbound.WaitDelay)
+	}
+
+	// Absent, not empty: the t.Setenv above registered the restore of
+	// whatever the environment carried, so removing the name here is undone
+	// with the rest of this test.
+	if err := os.Unsetenv(WaitDelayEnv); err != nil {
+		t.Fatal(err)
+	}
+	absent := exec.Command("true")
+	if applied := SetWaitDelay(absent, 2*time.Second); applied != 2*time.Second || absent.WaitDelay != 2*time.Second {
+		t.Errorf("with %s absent: applied %s, cmd %s — want this site's 2s default, never an unbounded wait",
+			WaitDelayEnv, applied, absent.WaitDelay)
 	}
 }
 

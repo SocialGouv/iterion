@@ -124,6 +124,18 @@ func killSandboxDelegate(run sandbox.Run, mark string, o sweepOwner, spawnFiles 
 // session, and the CLI is the spawn, not something it left.
 const sandboxDelegateCLILine = "iterion-delegate-cli "
 
+// spawnEndDrainBound is this site's default bound on the wait for the output
+// of the exec that ends a spawn, once that exec itself is gone — the session
+// sweep's default, because this is the same program read the same way.
+// Overridable through [proc.WaitDelayEnv].
+//
+// The timeout below kills the exec, never the subshells the sweep program
+// runs in nor the `tr`, `grep` and `sleep` they fork, and [exec.Cmd.Wait]
+// ends only when EVERY holder of the output pipe has closed it: one scan
+// blocked on a process whose /proc entry cannot be read keeps the wait going
+// for as long as it lives, and the node is not handed back.
+const spawnEndDrainBound = 2 * time.Second
+
 // killSandboxDelegateReporting returns a cleanup that ends a sandboxed spawn,
 // in one short-lived exec: it removes the in-container files the spawn wrote,
 // when the caller names any (claude_code's flag settings file); stops the
@@ -169,11 +181,23 @@ func killSandboxDelegateReporting(run sandbox.Run, mark string, o sweepOwner, sp
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		cmd := run.Command(ctx, []string{"sh", "-c", script}, sandbox.ExecOpts{})
+		// The cleanup owns this bound, whatever the driver chose: it is the
+		// promise that ending the spawn hands the node back, and the one
+		// thing above it is the operator's own override.
+		drainBound := proc.SetWaitDelay(cmd, spawnEndDrainBound)
 		out, err := cmd.Output()
 		if sweepErr != nil {
 			return reportNodeSessionSweep(o, proc.SweepReport{}, fmt.Errorf("the processes this spawn left cannot be swept: %w", sweepErr))
 		}
 		r, perr := proc.ParseNodeSessionSweep(string(out))
+		if proc.DrainCutShort(err) {
+			// The exec exited 0 and only the read of its report was cut. The
+			// answer here is that REPORT — what the sweep stopped and what it
+			// left — so a truncated read is not a clean end: the operator gets
+			// the bound and the knob instead of a bare sentinel.
+			err = fmt.Errorf("a process it left kept its output open, so its report was read short %s: %w",
+				proc.WaitDelayHint(drainBound), err)
+		}
 		// The exec's status is the sweep program's, which exits 0 once it has
 		// reported: anything else is a sweep that did not finish, whatever
 		// its output says.
