@@ -187,7 +187,7 @@ secrets:
     description: "SSH key used by the deploy step"
 ```
 
-Value secrets render as opaque placeholders and are materialised only at execution sinks. File secrets render as their mounted path. A declaration without `value:` resolves by name from the local/cloud store. Use `{{secrets.forge_token}}` or `{{secrets.deploy_key.path}}`; undeclared references are compile errors. The protection layers, egress scoping, stores, and limitations are documented in [secrets](secrets.md) and the [secrets reference](secrets-reference.md).
+Value secrets render as opaque placeholders and are materialised only at execution sinks. File secrets render as their mounted path. A declaration without `value:` resolves by name from the local/cloud store. Use `{{secrets.forge_token}}` or `{{secrets.deploy_key.path}}`; undeclared references are compile errors. A var the SERVER mints for the run (`forge_publish_token`) is the same kind of placeholder in a tool node's `command:` or `postcondition:`, materialised into the child process's environment rather than the command line — the raw `{{!vars.x}}` form and a `script:` body keep the value in the text. The protection layers, egress scoping, stores, and limitations are documented in [secrets](secrets.md) and the [secrets reference](secrets-reference.md).
 
 ## Prompts, schemas, and templates
 

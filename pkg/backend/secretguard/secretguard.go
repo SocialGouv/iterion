@@ -57,6 +57,15 @@ import (
 // (__ITERION_SECRET_<name>__), so a model that writes one would otherwise
 // fetch the value; only a secret the workflow declares for its agents to
 // use is materialisable.
+//
+// EnvOnly carves ONE exception into RedactOnly, for a credential the server
+// minted for this run (store.ServerMintedSecretVars): its placeholder
+// resolves in text the workflow's AUTHOR wrote, and only as an environment
+// variable handed to the child process
+// (MaterializeAuthoredShellEnv) — never inlined into a command line, never
+// in a script body, never in agent tool input, never at egress, and never
+// for text a MODEL proposed. Honoured only together with RedactOnly: it is a
+// narrowing of that class, not a way to widen a declared secret.
 type Secret struct {
 	Name        string
 	Value       string
@@ -65,6 +74,7 @@ type Secret struct {
 	Env         string
 	Hosts       []string
 	RedactOnly  bool
+	EnvOnly     bool
 }
 
 type FileSecretHint struct {
@@ -136,6 +146,8 @@ type Guard struct {
 	matcher            *literalMatcher   // every known encoding, longest first
 	placeholderValue   map[string]string // placeholder → raw value (Materialize)
 	placeholderByName  map[string]string // exact declared name → placeholder
+	envOnlyValue       map[string]string // placeholder → raw value (MaterializeAuthoredShellEnv only)
+	envOnlyByName      map[string]string // env-only secret name → its placeholder
 	filePathByName     map[string]string // secret name → mounted file path
 	fileHints          []FileSecretHint
 	fileValueByName    map[string]string // secret name → file plaintext (host materialisation)
@@ -244,6 +256,22 @@ func New(secrets []Secret, cfg Config) *Guard {
 		if !s.RedactOnly {
 			g.placeholderValue[ph] = s.Value
 			g.placeholderByName[s.Name] = ph
+		}
+		// The env-only class, kept in its own map: the Materialize* family
+		// reads placeholderValue, so a value registered here resolves for
+		// the authored-shell path alone. First registration wins — a
+		// lineage's records may carry several grants under one name (a
+		// fork's source, an ancestor's), and the one the RUN holds is the
+		// one its commands must present.
+		if s.RedactOnly && s.EnvOnly {
+			if _, taken := g.envOnlyValue[ph]; !taken {
+				if g.envOnlyValue == nil {
+					g.envOnlyValue = make(map[string]string, 1)
+					g.envOnlyByName = make(map[string]string, 1)
+				}
+				g.envOnlyValue[ph] = s.Value
+				g.envOnlyByName[s.Name] = ph
+			}
 		}
 		encs := encodingsOf(s.Value)
 
@@ -804,6 +832,70 @@ func (g *Guard) MaterializeShellEnv(s string) (string, map[string]string) {
 		}
 	}
 	return s, env
+}
+
+// MaterializeAuthoredShellEnv is MaterializeShellEnv for text the workflow's
+// AUTHOR wrote — a tool node's own `command:`, its postcondition. It resolves
+// everything MaterializeShellEnv resolves, plus the env-only class: a
+// credential the server minted for this run, which reaches the command
+// through the child process's environment and nowhere else.
+//
+// The distinction is PROVENANCE, not sink. A command a MODEL proposed (the
+// self-repair rung) goes through plain MaterializeShellEnv, where an env-only
+// placeholder resolves to nothing — so a model that writes one, or copies one
+// out of the failed command it was shown, gets the placeholder and not the
+// grant. The plain method is the safe default every new call site inherits;
+// this one is chosen explicitly, for text no model can author.
+//
+// An env-only placeholder is converted ONLY in its single-quoted form, with
+// no inline fallback: the whole point is that its value never enters an argv.
+// A bare occurrence (the author's own {{!vars.x}} raw form, which opts out of
+// quoting) is left as written rather than inlined.
+func (g *Guard) MaterializeAuthoredShellEnv(s string) (string, map[string]string) {
+	out, env := g.MaterializeShellEnv(s)
+	if g == nil || out == "" || len(g.envOnlyValue) == 0 {
+		return out, env
+	}
+	for ph, val := range g.envOnlyValue {
+		quoted := "'" + ph + "'"
+		if !strings.Contains(out, quoted) {
+			continue
+		}
+		if env == nil {
+			env = make(map[string]string, len(g.envOnlyValue))
+		}
+		env[ph] = val
+		out = strings.ReplaceAll(out, quoted, `"$`+ph+`"`)
+	}
+	return out, env
+}
+
+// AuthoredEnvPlaceholder returns the placeholder that stands for the env-only
+// secret registered under name, or "" when this guard holds none. The
+// template layer ASKS rather than deriving the placeholder from the name:
+// only a placeholder this guard will materialise may take a value's place, or
+// the command would run with a reference that resolves to nothing. Nil-safe.
+func (g *Guard) AuthoredEnvPlaceholder(name string) string {
+	if g == nil || name == "" {
+		return ""
+	}
+	return g.envOnlyByName[name]
+}
+
+// NamesEnvOnlySecret reports whether s references an env-only secret's
+// placeholder. A caller that hands authored text to another TOOL asks first:
+// the compression rewriter runs the command it rewrites, and the value is
+// materialised into whatever child starts it. Nil-safe.
+func (g *Guard) NamesEnvOnlySecret(s string) bool {
+	if g == nil || s == "" {
+		return false
+	}
+	for ph := range g.envOnlyValue {
+		if strings.Contains(s, ph) {
+			return true
+		}
+	}
+	return false
 }
 
 // ResolveSecretRef renders a {{secrets.NAME}} reference. With

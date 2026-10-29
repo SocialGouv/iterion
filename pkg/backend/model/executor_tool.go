@@ -508,7 +508,7 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			// command line and never rewrites.
 			// A command naming a secret is not compressed: the compressor
 			// runs it with the value (rtk records every command it runs).
-			if m := rewrite.ResolveToolNode(e.compressOverride, node.Compress); m.Enabled() && e.secretGuard.Materialize(resolved) == resolved {
+			if m := rewrite.ResolveToolNode(e.compressOverride, node.Compress); m.Enabled() && e.secretGuard.Materialize(resolved) == resolved && !e.secretGuard.NamesEnvOnlySecret(resolved) {
 				if rewritten, changed := e.chain.Rewrite(ctx, m, resolved); changed {
 					resolved = rewritten
 				}
@@ -524,7 +524,11 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			// either — a command line is visible to any co-resident
 			// local process via `ps`/`/proc/<pid>/cmdline` for the
 			// subprocess's whole lifetime, unlike envp.
-			materialized, env := e.secretGuard.MaterializeShellEnv(resolved)
+			// Authored: this is the node's own `command:`, so the env-only
+			// class (the run's minted grant) resolves here. A command a
+			// MODEL proposed — the self-repair rung — goes through the plain
+			// materialiser, where it resolves to nothing.
+			materialized, env := e.secretGuard.MaterializeAuthoredShellEnv(resolved)
 			return e.toolNodeCommand(ctx, materialized, env), nil, nil
 		}
 }
@@ -1204,7 +1208,7 @@ func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, 
 // hole as null — named once each so the production path and a dry run
 // cannot choose differently.
 func renderCommand(command string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, shapes *Shapes, unresolved func(ref string)) string {
-	return resolveTemplateWith(command, refs, input, vars, td, ctxRunID, guard, shapes, shellEscapeValue, false, unresolved)
+	return resolveTemplateWith(command, refs, input, vars, td, ctxRunID, guard, shapes, true, shellEscapeValue, false, unresolved)
 }
 
 // A script body carries no declared shape: every namespace renders as a
@@ -1212,7 +1216,7 @@ func renderCommand(command string, refs []*ir.Ref, input, vars map[string]any, t
 // JS/Python/Ruby parser — `["a","b"]` for a `string[]`, the parsed document
 // for a `json`. Passing the declarations would be wiring nothing reads.
 func renderScript(script string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, unresolved func(ref string)) string {
-	return resolveTemplateWith(script, refs, input, vars, td, ctxRunID, guard, nil, jsonLiteralValue, true, unresolved)
+	return resolveTemplateWith(script, refs, input, vars, td, ctxRunID, guard, nil, false, jsonLiteralValue, true, unresolved)
 }
 
 // resolveTemplateWith is the shared core: walk refs, look up each value,
@@ -1237,7 +1241,7 @@ func renderScript(script string, refs []*ir.Ref, input, vars map[string]any, td 
 // text is never re-read for braces, since a value may carry `{{…}}` of its
 // own and that is the value, not a reference. The production callers
 // listen to none; a dry run names them.
-func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, shapes *Shapes, defaultRender func(any, ValueShape) string, substituteNil bool, unresolved func(ref string)) string {
+func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, shapes *Shapes, shellBody bool, defaultRender func(any, ValueShape) string, substituteNil bool, unresolved func(ref string)) string {
 	if len(refs) == 0 {
 		return template
 	}
@@ -1248,6 +1252,30 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 			// not shell-escape/JSON-quote it or rescan the emitted braces.
 			subs[ref.Raw] = "{{"
 			continue
+		}
+		// A credential the server minted for this run
+		// (store.ServerMintedSecretVars) renders as the guard's placeholder,
+		// single-quoted: exactly the form MaterializeAuthoredShellEnv swaps
+		// for a reference to the CHILD's environment, so the bearer never
+		// enters a command line — which any co-resident process reads from
+		// /proc/<pid>/cmdline for the whole life of the command.
+		//
+		// The placeholder is ASKED of the guard, never derived from the
+		// name: only one this guard will materialise may take a value's
+		// place, or the command would run with a reference resolving to
+		// nothing. Emitted here rather than through a renderer below,
+		// because the text and its quoting are one decision: no declared
+		// shape can reshape it into a form the materialiser no longer
+		// recognises.
+		//
+		// Shell bodies only: a script body's value is a language literal,
+		// materialised into the script file itself. The raw {{!vars.x}} form
+		// is the author's own text, quoting included, and keeps the value.
+		if shellBody && !ref.Unquoted && ref.Kind == ir.RefVars && len(ref.Path) == 1 {
+			if ph := guard.AuthoredEnvPlaceholder(ref.Path[0]); ph != "" {
+				subs[ref.Raw] = "'" + ph + "'"
+				continue
+			}
 		}
 		var val any
 		var handled, present bool

@@ -194,3 +194,130 @@ func TestSelfRepairNeverShowsTheModelAMintedToken(t *testing.T) {
 		t.Error("the self-repair prompt does not show the placeholder in the token's place")
 	}
 }
+
+// The acceptance of #2033, through the REAL executor: a tool node's own
+// command names the grant, the tool process runs, and the bearer is nowhere
+// in that process's /proc/<pid>/cmdline — which any co-resident process reads
+// for the whole life of the command, and which Kubernetes copies into the
+// pods/exec audit log. It still ARRIVES: the command reads it from its own
+// environment, so the fix is not a silent loss of the publish capability.
+func TestTheMintedGrantNeverEntersAToolProcessCmdline(t *testing.T) {
+	blankHostCredentials(t)
+	// `$$` is the pid of the bash the executor starts, whose argv holds the
+	// resolved command; cat keeps the NUL separators for the reader below.
+	const command = `cat /proc/$$/cmdline > cmdline.bin; printf '%s' {{vars.forge_publish_token}} > token.txt`
+	refs, err := ir.ParseRefs(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placeholder := secretguard.PlaceholderForName(store.ForgePublishTokenVar)
+
+	for _, tc := range []struct {
+		name     string
+		recorded map[string][]string
+	}{
+		// A fresh launch carries the grant in its launch vars; a resumed run
+		// carries it in the checkpoint vars the engine resumes from, and its
+		// RECORD may hold others (its own, an ancestor's, a fork's source).
+		{name: "fresh launch"},
+		{name: "resume", recorded: map[string][]string{store.ForgePublishTokenVar: {randomToken(t), randomToken(t)}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tok := randomToken(t)
+			dir := t.TempDir()
+			wf := &ir.Workflow{Prompts: map[string]*ir.Prompt{}, Schemas: map[string]*ir.Schema{}}
+			vars := map[string]string{store.ForgePublishTokenVar: tok, store.ForgePublishURLVar: "https://iterion.example/publish"}
+			guard := BuildSecretGuard(t.Context(), wf, vars, tc.recorded)
+			e := newTestClawExecutor(NewRegistry(), wf, WithWorkDir(dir), WithSecretGuard(guard))
+			e.vars = map[string]any{store.ForgePublishTokenVar: tok, store.ForgePublishURLVar: "https://iterion.example/publish"}
+
+			node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "publish"}, Command: command, CommandRefs: refs}
+			if _, err := e.Execute(context.Background(), node, nil); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			cmdline, err := os.ReadFile(filepath.Join(dir, "cmdline.bin"))
+			if err != nil {
+				t.Fatalf("the tool process did not run: %v", err)
+			}
+			argv := strings.ReplaceAll(string(cmdline), "\x00", " ")
+			if strings.Contains(argv, tok) {
+				t.Errorf("the tool process's cmdline carries the grant: %q", argv)
+			}
+			for _, other := range tc.recorded[store.ForgePublishTokenVar] {
+				if strings.Contains(argv, other) {
+					t.Errorf("the tool process's cmdline carries a recorded grant: %q", argv)
+				}
+			}
+			if !strings.Contains(argv, `"$`+placeholder+`"`) {
+				t.Errorf("cmdline = %q, want the grant referenced through the environment", argv)
+			}
+			got, err := os.ReadFile(filepath.Join(dir, "token.txt"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tok {
+				// The run presents ITS grant: a lineage's other records are
+				// registered for redaction, never for carriage.
+				t.Errorf("the command received %d bytes, want the run's own grant: a publish would be refused", len(got))
+			}
+		})
+	}
+}
+
+// The provenance rule, at the seam: the guard resolves the grant for text the
+// AUTHOR wrote and for nothing else. A model's own command — the self-repair
+// rung's corrected command — goes through the plain materialiser.
+func TestOnlyAuthoredTextMaterializesTheMintedGrant(t *testing.T) {
+	blankHostCredentials(t)
+	tok := randomToken(t)
+	g := BuildSecretGuard(t.Context(), &ir.Workflow{}, map[string]string{store.ForgePublishTokenVar: tok}, nil)
+	ph := secretguard.PlaceholderForName(store.ForgePublishTokenVar)
+	if got := g.AuthoredEnvPlaceholder(store.ForgePublishTokenVar); got != ph {
+		t.Fatalf("AuthoredEnvPlaceholder = %q, want %q — the template layer would render the value itself", got, ph)
+	}
+	body := "publish --token '" + ph + "'"
+	authored, env := g.MaterializeAuthoredShellEnv(body)
+	if strings.Contains(authored, tok) {
+		t.Errorf("the authored command inlines the grant: %q", authored)
+	}
+	if env[ph] != tok {
+		t.Errorf("the authored command's env does not carry the grant (%d entries)", len(env))
+	}
+	if !strings.Contains(authored, `"$`+ph+`"`) {
+		t.Errorf("authored = %q, want the environment reference", authored)
+	}
+	modelText, modelEnv := g.MaterializeShellEnv(body)
+	if modelText != body || len(modelEnv) != 0 {
+		t.Errorf("a model's command resolved the grant: %q env=%v", modelText, modelEnv)
+	}
+	// No inline fallback: a bare occurrence stays as written rather than
+	// being substituted into the command line the whole class avoids.
+	bare, bareEnv := g.MaterializeAuthoredShellEnv("publish --token " + ph)
+	if strings.Contains(bare, tok) || len(bareEnv) != 0 {
+		t.Errorf("a bare placeholder was inlined: %q env=%v", bare, bareEnv)
+	}
+}
+
+// The grant is scoped to the endpoints the server bound it to, so the egress
+// gate (Layer 2) refuses it toward anywhere else.
+func TestTheMintedGrantIsScopedToItsEndpoints(t *testing.T) {
+	blankHostCredentials(t)
+	tok := randomToken(t)
+	g := BuildSecretGuard(t.Context(), &ir.Workflow{}, map[string]string{
+		store.ForgePublishTokenVar: tok,
+		store.ForgePublishURLVar:   "https://iterion.example/api/v1/forge/publish",
+		store.ForgePRStateURLVar:   "https://iterion.example/api/v1/forge/pr-state",
+	}, nil)
+	if !g.ExfiltratesTo("Authorization: Bearer "+tok, "attacker.example") {
+		t.Error("the grant leaves toward any host: the egress gate does not know its scope")
+	}
+	if g.ExfiltratesTo("Authorization: Bearer "+tok, "iterion.example") {
+		t.Error("the grant is refused toward the endpoint it was minted for: the publish itself would fail")
+	}
+	// An endpoint we cannot read is no scope at all — refusing the publish
+	// would be worse than the exposure.
+	unscoped := BuildSecretGuard(t.Context(), &ir.Workflow{}, map[string]string{store.ForgePublishTokenVar: tok}, nil)
+	if unscoped.ExfiltratesTo("Bearer "+tok, "attacker.example") {
+		t.Error("a grant whose endpoints are unknown was scoped to nothing reachable")
+	}
+}

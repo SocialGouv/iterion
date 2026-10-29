@@ -256,7 +256,9 @@ func (e *ClawExecutor) postconditionBody(ctx context.Context, node *ir.ToolNode,
 func (e *ClawExecutor) runPostcondition(ctx context.Context, node *ir.ToolNode, input map[string]any) (met bool, output map[string]any, err error) {
 	resolve := func() string { return e.postconditionBody(ctx, node, input) }
 	buildCmd := func(resolved string) (toolCommand, func(), error) {
-		materialized, env := e.secretGuard.MaterializeShellEnv(resolved)
+		// A postcondition is the AUTHOR's text, like the node's command: the
+		// env-only class resolves for it, by environment.
+		materialized, env := e.secretGuard.MaterializeAuthoredShellEnv(resolved)
 		return e.toolNodeCommand(ctx, materialized, env), nil, nil
 	}
 	res, setupErr := e.runToolNodeCore(ctx, node, postcondToolName(node), resolve, buildCmd)
@@ -345,6 +347,10 @@ Return only the corrected command (one shell invocation, may use && / pipes). Do
 	// resolved (placeholder-form) command is what hooks/events persist.
 	resolve := func() string { return corrected }
 	buildCmd := func(resolved string) (toolCommand, func(), error) {
+		// The MODEL wrote this command: the plain materialiser, where the
+		// env-only class resolves to nothing. A model that copies the
+		// grant's placeholder out of the failed command it was shown gets
+		// the placeholder, not the bearer.
 		materialized, env := e.secretGuard.MaterializeShellEnv(resolved)
 		return e.toolNodeCommand(ctx, materialized, env), nil, nil
 	}

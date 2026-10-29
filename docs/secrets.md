@@ -88,6 +88,21 @@ no agent, command or egress request can turn it back into the value, and it is
 passed through unchanged. Only the secrets a workflow declares (Layer 1)
 materialize.
 
+One narrowing of that class: the credential a server mints for a run
+(`forge_publish_token`) is **env-only**. A `{{vars.forge_publish_token}}` the
+workflow's AUTHOR wrote in a tool node's `command:` or `postcondition:`
+renders as the placeholder, and the bearer reaches the command through the
+child process's environment — never inlined into the command line, which any
+co-resident process reads from `/proc/<pid>/cmdline` for the whole life of the
+command and which Kubernetes copies into the `pods/exec` audit log. The
+distinction is provenance, not sink: a command a MODEL proposed (the
+self-repair rung) resolves nothing, and neither does an agent's tool input, a
+script body or an egress request. Two forms keep the value in the text, by the
+author's own choice: the raw `{{!vars.x}}` form, whose quoting is the
+author's, and a `script:` body, whose value is a language literal written
+into the script file. The grant is also scoped (Layer 2) to the endpoints the
+server bound it to, so the egress gate refuses it toward any other host.
+
 ### Where a CLI backend's redaction stops (the hook-protocol limits)
 
 `claw` in-process, sandboxed `claw`, `claude_code` and `pi` run the same agent

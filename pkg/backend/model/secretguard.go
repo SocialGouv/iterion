@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -96,12 +97,29 @@ func BuildSecretGuard(ctx context.Context, wf *ir.Workflow, vars map[string]stri
 	known = append(known, declaredWorkflowSecrets(wf, vars, genericSecrets, genericHosts)...)
 
 	// 4. Credentials the server minted for this run and carries as launch
-	//    vars (the forge publish grant): a plain var to the workflow, a
-	//    secret in every sink.
+	//    vars (the forge publish grant): a secret in every sink, and — for
+	//    the one the RUN holds — an env-only value, so a {{vars.<name>}} an
+	//    author wrote in a tool body renders the placeholder and the bearer
+	//    reaches the command through the child's environment instead of its
+	//    command line. The grants read from RECORDS (a resume, a fork, an
+	//    ancestor) stay redaction-only: they are not what this run presents.
+	//
+	//    Hosts scopes the launch grant to the endpoints the server bound it
+	//    to (Layer 2): the egress gate then refuses the bearer toward any
+	//    other destination. An endpoint var that names no host contributes no
+	//    scope — scoping a grant to a host we could not read would refuse the
+	//    publish the grant exists for.
+	grantHosts := mintedGrantHosts(vars)
 	for _, name := range store.ServerMintedSecretVars {
-		for _, val := range append([]string{vars[name]}, recorded[name]...) {
+		for i, val := range append([]string{vars[name]}, recorded[name]...) {
 			if val = strings.TrimSpace(val); val != "" && val != store.RedactedLaunchVar {
-				known = append(known, secretguard.Secret{Name: name, Value: val, RedactOnly: true})
+				known = append(known, secretguard.Secret{
+					Name:       name,
+					Value:      val,
+					RedactOnly: true,
+					EnvOnly:    i == 0,
+					Hosts:      hostsForMintedGrant(grantHosts, i == 0),
+				})
 			}
 		}
 	}
@@ -114,6 +132,43 @@ func BuildSecretGuard(ctx context.Context, wf *ir.Workflow, vars map[string]stri
 		return nil
 	}
 	return g
+}
+
+// mintedGrantHosts returns the hosts of the endpoints a server-minted grant is
+// presented to, read from the launch vars that name them. Deduplicated and
+// sorted so the registered scope does not depend on map order.
+func mintedGrantHosts(vars map[string]string) []string {
+	seen := map[string]bool{}
+	for _, name := range []string{store.ForgePublishURLVar, store.ForgePRStateURLVar, store.ForgeDeliveryPreflightURLVar} {
+		raw := strings.TrimSpace(vars[name])
+		if raw == "" {
+			continue
+		}
+		u, err := url.Parse(raw)
+		if err != nil || u.Hostname() == "" {
+			// Not an endpoint this guard can scope to. The value is still
+			// registered for redaction; the scope stays as wide as it is
+			// today rather than refusing the publish itself.
+			continue
+		}
+		seen[u.Hostname()] = true
+	}
+	hosts := make([]string, 0, len(seen))
+	for h := range seen {
+		hosts = append(hosts, h)
+	}
+	sort.Strings(hosts)
+	return hosts
+}
+
+// hostsForMintedGrant scopes the LAUNCH grant to the endpoints this run was
+// given and leaves a grant read from a record unscoped: its own endpoints are
+// not in these vars, and inventing a scope for it would be a guess.
+func hostsForMintedGrant(hosts []string, launch bool) []string {
+	if !launch || len(hosts) == 0 {
+		return nil
+	}
+	return hosts
 }
 
 // ambientSecretGloballySafe reports whether an ambient value is distinctive
