@@ -63,6 +63,14 @@ RUN --mount=type=cache,target=/root/.npm \
 # user's home so each run gets a fresh, isolated cache.
 ENV CHROMIUM_FLAGS="--headless --no-sandbox --disable-dev-shm-usage --remote-debugging-pipe"
 
+# The rgaa-audit bot's rendered layer launches the browser the ultra11y engine
+# is told about: Playwright's own resolution never finds Debian's Chromium, so
+# the image names it once here (the bot reads ULTRA11Y_BROWSER_PATH when its
+# browser_path var is empty, and the engine's `status --browser`/`scan` take it
+# as --browser-path). bots/rgaa_audit_sandbox_browser_test.go holds this line,
+# the apt package above and the bot's reader together.
+ENV ULTRA11Y_BROWSER_PATH=/usr/bin/chromium
+
 # Numeric UID (not the `devbox` name) so the image runs under platforms
 # that forbid non-numeric / root-capable users (OpenShift `restricted`
 # SCC, k8s `runAsNonRoot`). uid 1000 == devbox.
