@@ -622,6 +622,11 @@ const (
 	//     the shared <tmp> fallback); absent when it was mounted
 	//   - home_not_mounted: the home dir a project `.env` set, under which
 	//     nothing was mounted; absent when the operator's own
+	//   - guarded: []string of host paths the #2069 host-config guard
+	//     shadowed — "copy:<path>" (per-run copy), "copy-seeded:<path>"
+	//     (host file created empty so the shadow has a mountpoint),
+	//     "ro:<path>" / "ro-created:<path>" (read-only overlay); absent
+	//     when the guard is off or nothing was shadowed
 	EventSandboxHostStateMounted EventType = "sandbox_host_state_mounted"
 	// EventSandboxUserRemap fires when the docker driver injects
 	// `--user $(id -u):$(id -g)` because host_state=auto requires

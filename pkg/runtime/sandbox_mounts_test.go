@@ -54,7 +54,7 @@ func TestApplyHostStateMounts_HomeTmpfsIsExec(t *testing.T) {
 	p := SandboxParams{WorkspacePath: t.TempDir()}
 	noopEmit := func(store.EventType, map[string]any) error { return nil }
 
-	_ = applyHostStateMounts(spec, wf, p, noopEmit, iterlog.Nop())
+	_ = applyHostStateMounts(spec, wf, p, nil, noopEmit, iterlog.Nop())
 
 	var homeEntry string
 	for _, tm := range spec.Tmpfs {
@@ -99,7 +99,7 @@ func TestApplyHostStateMounts_WarmGoCaches(t *testing.T) {
 
 	spec := &sandbox.Spec{}
 	applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()},
-		func(store.EventType, map[string]any) error { return nil }, iterlog.Nop())
+		nil, func(store.EventType, map[string]any) error { return nil }, iterlog.Nop())
 
 	for _, rel := range []string{".cache/go-build", "go/pkg/mod"} {
 		want := filepath.Join(home, rel)
@@ -137,7 +137,7 @@ func TestApplyHostStateMounts_ClaudeConfigFile(t *testing.T) {
 		}
 		spec := &sandbox.Spec{}
 		applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()},
-			func(store.EventType, map[string]any) error { return nil }, iterlog.Nop())
+			nil, func(store.EventType, map[string]any) error { return nil }, iterlog.Nop())
 		found := false
 		for _, m := range spec.Mounts {
 			if strings.Contains(m, "source="+cfg+",") && strings.Contains(m, "target="+cfg) {
@@ -156,7 +156,7 @@ func TestApplyHostStateMounts_ClaudeConfigFile(t *testing.T) {
 	t.Run("absent host file skipped silently", func(t *testing.T) {
 		spec := &sandbox.Spec{}
 		applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()},
-			func(store.EventType, map[string]any) error { return nil }, iterlog.Nop())
+			nil, func(store.EventType, map[string]any) error { return nil }, iterlog.Nop())
 		for _, m := range spec.Mounts {
 			if strings.Contains(m, ".claude.json") {
 				t.Errorf("no host ~/.claude.json exists, yet a mount references it: %q", m)
@@ -190,7 +190,7 @@ func TestApplyHostStateMounts_HomeNestedBindParentsWritable(t *testing.T) {
 
 	spec := &sandbox.Spec{}
 	applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()},
-		func(store.EventType, map[string]any) error { return nil }, iterlog.Nop())
+		nil, func(store.EventType, map[string]any) error { return nil }, iterlog.Nop())
 
 	for _, parent := range []string{filepath.Join(home, ".cache"), filepath.Join(home, "go")} {
 		entry, ok := tmpfsDir(spec.Tmpfs, parent)
@@ -264,7 +264,7 @@ func TestApplyHostStateMounts_ReportsTheSharedStateDir(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("ITERION_HOME", home)
 		got := applyHostStateMounts(&sandbox.Spec{}, &ir.Workflow{},
-			SandboxParams{WorkspacePath: t.TempDir()}, noopEmit, iterlog.Nop())
+			SandboxParams{WorkspacePath: t.TempDir()}, nil, noopEmit, iterlog.Nop())
 		if got != home {
 			t.Errorf("shared state dir = %q, want %q", got, home)
 		}
@@ -274,7 +274,7 @@ func TestApplyHostStateMounts_ReportsTheSharedStateDir(t *testing.T) {
 	t.Run("empty when host_state is off", func(t *testing.T) {
 		t.Setenv("ITERION_HOME", t.TempDir())
 		p := SandboxParams{WorkspacePath: t.TempDir(), HostStateOverride: "none"}
-		if got := applyHostStateMounts(&sandbox.Spec{}, &ir.Workflow{}, p, noopEmit, iterlog.Nop()); got != "" {
+		if got := applyHostStateMounts(&sandbox.Spec{}, &ir.Workflow{}, p, nil, noopEmit, iterlog.Nop()); got != "" {
 			t.Errorf("shared state dir = %q, want none", got)
 		}
 	})
@@ -288,7 +288,7 @@ func TestApplyHostStateMounts_ReportsTheSharedStateDir(t *testing.T) {
 			t.Fatal(err)
 		}
 		got := applyHostStateMounts(&sandbox.Spec{}, &ir.Workflow{},
-			SandboxParams{WorkspacePath: workspace}, noopEmit, iterlog.Nop())
+			SandboxParams{WorkspacePath: workspace}, nil, noopEmit, iterlog.Nop())
 		if got != "" {
 			t.Errorf("shared state dir = %q, want none — the workspace bind already covers it", got)
 		}
@@ -315,7 +315,7 @@ func TestApplyHostStateMounts_MountsOnlyTheIterionHomeTheOperatorChose(t *testin
 		return nil
 	}
 	spec := &sandbox.Spec{}
-	got := applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()}, emit, iterlog.Nop())
+	got := applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()}, nil, emit, iterlog.Nop())
 	if got != "" {
 		t.Errorf("shared state dir = %q; a planted iterion home must not be mounted", got)
 	}
@@ -352,7 +352,7 @@ func TestApplyHostStateMounts_NoOperatorHomeIsNotMounted(t *testing.T) {
 		return nil
 	}
 	spec := &sandbox.Spec{}
-	if got := applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()}, emit, iterlog.Nop()); got != "" {
+	if got := applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()}, nil, emit, iterlog.Nop()); got != "" {
 		t.Errorf("shared state dir = %q; with no home dir no iterion home is the operator's", got)
 	}
 	for _, m := range spec.Mounts {
@@ -395,7 +395,7 @@ func TestApplyHostStateMounts_APlantedHomeDirBindsNothingUnderIt(t *testing.T) {
 		return nil
 	}
 	spec := &sandbox.Spec{}
-	applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()}, emit, iterlog.Nop())
+	applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()}, nil, emit, iterlog.Nop())
 	for _, m := range spec.Mounts {
 		if strings.Contains(m, "source="+home+string(filepath.Separator)) {
 			t.Fatalf("bound from the planted home dir %s: %s", home, m)
@@ -656,7 +656,7 @@ func TestApplyHostStateMounts_NoneCarriesGitIdentity(t *testing.T) {
 		spec := &sandbox.Spec{}
 		p := SandboxParams{WorkspacePath: repo, HostStateOverride: "none"}
 
-		_ = applyHostStateMounts(spec, &ir.Workflow{}, p, noopEmit, iterlog.Nop())
+		_ = applyHostStateMounts(spec, &ir.Workflow{}, p, nil, noopEmit, iterlog.Nop())
 
 		for key, want := range map[string]string{
 			"GIT_AUTHOR_NAME":     "Ada Lovelace",
@@ -680,7 +680,7 @@ func TestApplyHostStateMounts_NoneCarriesGitIdentity(t *testing.T) {
 		spec := &sandbox.Spec{}
 		p := SandboxParams{WorkspacePath: repo, HostStateOverride: "none"}
 
-		_ = applyHostStateMounts(spec, &ir.Workflow{}, p, noopEmit, iterlog.Nop())
+		_ = applyHostStateMounts(spec, &ir.Workflow{}, p, nil, noopEmit, iterlog.Nop())
 
 		if got, set := spec.Env["GIT_AUTHOR_NAME"]; set {
 			t.Errorf("an identity was invented for an unconfigured host: %q", got)
@@ -694,7 +694,7 @@ func TestApplyHostStateMounts_NoneCarriesGitIdentity(t *testing.T) {
 		spec := &sandbox.Spec{}
 		p := SandboxParams{WorkspacePath: repo, HostStateOverride: "auto"}
 
-		_ = applyHostStateMounts(spec, &ir.Workflow{}, p, noopEmit, iterlog.Nop())
+		_ = applyHostStateMounts(spec, &ir.Workflow{}, p, nil, noopEmit, iterlog.Nop())
 
 		if got, set := spec.Env["GIT_AUTHOR_NAME"]; set {
 			t.Errorf("host_state=auto mounts ~/.gitconfig; seeding GIT_AUTHOR_NAME=%q on top would override it", got)

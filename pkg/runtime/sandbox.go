@@ -64,6 +64,9 @@ type activeSandbox struct {
 	askUserEndpoint string       // http URL of the per-run gateway-reachable ask-user MCP listener (ADR-082 Phase 3); empty when not started (no interactive node / bind failure)
 	askUserToken    string       // per-run bearer token authorizing calls to askUserEndpoint (X-Iterion-Run)
 	askUserListener *http.Server // the ask-user listener to shut down at teardown; nil when not started
+	// hostGuardCleanup removes the #2069 per-run config copies at teardown;
+	// nil-safe (no guard, or a driver with no host binds staged nothing).
+	hostGuardCleanup func()
 }
 
 // shutdown tears down both handles best-effort. Safe to call multiple
@@ -91,6 +94,9 @@ func (a *activeSandbox) shutdown(ctx context.Context, logger *iterlog.Logger) {
 		if err := a.askUserListener.Shutdown(ctx); err != nil && logger != nil {
 			logger.Warn("runtime: sandbox ask-user listener shutdown: %v", err)
 		}
+	}
+	if a.hostGuardCleanup != nil {
+		a.hostGuardCleanup()
 	}
 }
 
@@ -604,7 +610,24 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	if caps.SupportsHostBindMounts {
 		bundleContainerPath = addOptionalBindMount(spec, p.BundleHostDir, p.BundleContainerPath, "/run/iterion/bundle", "bundle", true, logger)
 	}
-	sharedStateDir := applyHostStateMounts(spec, p.Workflow, p, emitEvent, logger)
+	// #2069: the host-config guard shadows the host configuration a
+	// host_state auto-bind (or the worktree .git bind) would otherwise hand
+	// the sandboxed agent read-WRITE — per-run copies and read-only
+	// overlays. Only a driver with a shared host filesystem has anything to
+	// guard; a nil guard (kubernetes, or ITERION_SANDBOX_HOST_STATE_GUARD=off)
+	// leaves every mount as it was. The .git shadows are applied inside
+	// applyHostStateMounts (via p.WorktreeGitDir) so every shadowed path
+	// rides the one sandbox_host_state_mounted audit event — while the .git
+	// bind itself stays BELOW, out of the HOME-tmpfs layering: a tmpfs laid
+	// at a bind's own destination shadows the bind in either argument order
+	// (measured, docker 29), so the .git tree must never feed
+	// homeNestedBindParents. hostGuard.cleanup is wired into the sandbox
+	// teardown below; on every error path until then it runs at the return.
+	hostGuard := newHostConfigGuard(logger)
+	if !caps.SupportsHostBindMounts {
+		hostGuard = nil
+	}
+	sharedStateDir := applyHostStateMounts(spec, p.Workflow, p, hostGuard, emitEvent, logger)
 	// Back ${PROJECT_SCRATCH_DIR} with a host dir so a parent and its
 	// sub-bot children — separate runs in separate containers — can hand
 	// work to each other through it. AFTER applyHostStateMounts because it
@@ -630,13 +653,17 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// worktree .git — require a driver with a shared host filesystem. On
 	// kubernetes (SupportsHostBindMounts=false) type=bind is rejected at
 	// translateMounts; there the iterion/rtk binaries are baked into the
-	// sandbox image instead (see sandbox/*/Dockerfile).
+	// sandbox image instead (see sandbox/*/Dockerfile). The .git bind stays
+	// HERE, after applyHostStateMounts: it must not feed the HOME-tmpfs
+	// layering (a tmpfs at a bind's destination shadows the bind), and its
+	// #2069 shadows were already applied there.
 	if caps.SupportsHostBindMounts {
 		addClawBinaryMount(spec, p.Workflow, p.EffectiveBackend)
 		addRewriterMounts(spec)
 		addWorktreeGitMount(spec, p.WorktreeGitDir, logger)
 	}
 	if err := addSecretFileMounts(ctx, spec, p.Workflow, p.SecretVars); err != nil {
+		hostGuard.cleanup()
 		return nil, err
 	}
 
@@ -766,6 +793,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// (fuseDevcontainerSpec).
 	proxy, proxyEndpoint, proxyCACert, err := startNetworkProxy(spec, driver, p.RunID, p.SecretRewriter, emitEvent, logger)
 	if err != nil {
+		hostGuard.cleanup()
 		return nil, fmt.Errorf("runtime: sandbox: network proxy: %w", err)
 	}
 
@@ -792,6 +820,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 
 	prepared, err := driver.Prepare(ctx, *spec)
 	if err != nil {
+		hostGuard.cleanup()
 		if proxy != nil {
 			_ = proxy.Shutdown(ctx)
 		}
@@ -800,6 +829,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 
 	prepared, err = buildSandboxImageIfRequested(ctx, driver, prepared, spec, info, emitEvent)
 	if err != nil {
+		hostGuard.cleanup()
 		if proxy != nil {
 			_ = proxy.Shutdown(ctx)
 		}
@@ -824,6 +854,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// failed on its own, and the event is out either way.
 	run, prepared, err := startScreenedSandbox(ctx, driver, prepared, info, logger, emitEvent, p.RunID)
 	if err != nil {
+		hostGuard.cleanup()
 		if proxy != nil {
 			_ = proxy.Shutdown(ctx)
 		}
@@ -847,6 +878,9 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		attachmentsDir:  attachmentsDir,
 		sharedStateDir:  sharedStateDir,
 		scratchHostDir:  scratchHostDir,
+		// The #2069 copies die with the sandbox: its teardown removes the
+		// per-run scratch they were staged in.
+		hostGuardCleanup: hostGuard.cleanup,
 	}
 
 	// Second half of the Claude forfait delivery: copy the read-only mount

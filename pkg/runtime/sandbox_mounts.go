@@ -173,6 +173,13 @@ func addOptionalBindMount(
 // [store.EventSandboxHostStateMounted] with the precedence source so
 // operators can audit why the mount fired (or didn't).
 //
+// guard (#2069) shadows the host configuration the HOST later executes —
+// plugins.yaml + plugins/, ~/.claude/settings*.json + plugins/,
+// ~/.claude.json, ~/.codex/config.toml, ~/.gitconfig — with per-run copies
+// or read-only overlays, and its audit list rides the event's `guarded`
+// field. Nil disables the shadowing (the ITERION_SANDBOX_HOST_STATE_GUARD=off
+// posture; tests construct their own).
+//
 // Pre-conditions: spec is the resolved active spec; the caller has
 // already decided that mounts/env mutations are safe.
 // It RETURNS the host `~/.iterion` path it actually bind-mounted, at that same
@@ -250,6 +257,7 @@ func applyHostStateMounts(
 	spec *sandbox.Spec,
 	wf *ir.Workflow,
 	p SandboxParams,
+	guard *hostConfigGuard,
 	emitEvent func(store.EventType, map[string]any) error,
 	logger *iterlog.Logger,
 ) (sharedStateDir string) {
@@ -257,10 +265,17 @@ func applyHostStateMounts(
 	spec.HostState = sandbox.HostState(resolvedHostState)
 	if !spec.HostState.Active() {
 		seedGitIdentityEnv(spec, p.WorkspacePath, logger)
-		_ = emitEvent(store.EventSandboxHostStateMounted, map[string]any{
+		// The worktree .git bind is not host_state-gated, so its #2069
+		// shadows apply here too — and the one audit event carries them.
+		guard.guardWorktreeGit(spec, p.WorktreeGitDir)
+		disabled := map[string]any{
 			"enabled": false,
 			"source":  hsSource,
-		})
+		}
+		if guarded := guard.audit(); len(guarded) > 0 {
+			disabled["guarded"] = guarded
+		}
+		_ = emitEvent(store.EventSandboxHostStateMounted, disabled)
 		return ""
 	}
 
@@ -323,6 +338,48 @@ func applyHostStateMounts(
 	}
 
 	mounts := collectHostStateMounts(absWorkspace, iterionHomeDir, claudeDir, claudeConfigPath, codexDir, gitConfigPath)
+
+	// #2069: the binds above give the sandbox the host state it must WRITE
+	// (the run store, Claude Code sessions and credential refresh, codex's
+	// auth.json). What follows shadows the host CONFIGURATION the host later
+	// executes — per-run copies for files in-sandbox tools legitimately
+	// write, read-only overlays for what they never do. Only the SURVIVING
+	// binds are guarded: a candidate the filter dropped (missing on the
+	// host, or covered by the workspace bind) exposes nothing.
+	if guard != nil {
+		mounted := map[string]bool{}
+		for _, m := range mounts {
+			mounted[m.HostPath] = true
+		}
+		if mounted[gitConfigPath] {
+			mounts = guard.copyFileOver(mounts, gitConfigPath, "")
+		}
+		if mounted[claudeConfigPath] {
+			mounts = guard.copyFileOver(mounts, claudeConfigPath, "{}\n")
+		}
+		if mounted[claudeDir] {
+			// Claude Code persists state into both settings files (a
+			// permission "always allow" lands in settings.local.json), so
+			// they are copies, not read-only binds — writes succeed and die
+			// with the run; the hooks a plant would carry never reach the
+			// host's settings.
+			mounts = guard.copyFileOver(mounts, filepath.Join(claudeDir, "settings.json"), "{}\n")
+			mounts = guard.copyFileOver(mounts, filepath.Join(claudeDir, "settings.local.json"), "{}\n")
+			// Installed plugins (hooks, MCP servers) stay VISIBLE to the
+			// in-container CLI but unwritable.
+			mounts = guard.roDirOver(mounts, filepath.Join(claudeDir, "plugins"))
+		}
+		if mounted[codexDir] {
+			// auth.json refresh needs the dir writable; config.toml's MCP
+			// servers are the host's to execute, so it is a copy.
+			mounts = guard.copyFileOver(mounts, filepath.Join(codexDir, "config.toml"), "")
+		}
+		if mounted[iterionHomeDir] {
+			mounts = guard.copyFileOver(mounts, filepath.Join(iterionHomeDir, "plugins.yaml"), "")
+			mounts = guard.roDirOver(mounts, filepath.Join(iterionHomeDir, "plugins"))
+		}
+	}
+
 	mountPairs := make([]string, 0, len(mounts))
 	for _, m := range mounts {
 		entry := fmt.Sprintf("source=%s,target=%s,type=bind", m.HostPath, m.ContainerPath)
@@ -443,11 +500,26 @@ func applyHostStateMounts(
 
 	applyHostUIDRemap(spec, emitEvent, logger)
 
+	// The worktree .git shadows (#2069) are applied HERE — after the
+	// HOME-tmpfs layering above, which a mount under $HOME must never feed:
+	// homeNestedBindParents would lay a tmpfs at the workspace bind's own
+	// destination for the overlay's ancestors, and a tmpfs shadows a bind
+	// at the same destination in either argument order. Docker mounts
+	// nested binds parents-first by destination depth, so these overlays
+	// win over the tree bind addWorktreeGitMount appends later.
+	guard.guardWorktreeGit(spec, p.WorktreeGitDir)
+
 	mounted := map[string]any{
 		"enabled":          true,
 		"source":           hsSource,
 		"workspace_folder": spec.WorkspaceFolder,
 		"mounts":           mountPairs,
+	}
+	// #2069: the host-config guard's audit — every host path shadowed by a
+	// per-run copy or a read-only overlay, so `docker inspect` never shows
+	// a host bind this event cannot explain.
+	if guarded := guard.audit(); len(guarded) > 0 {
+		mounted["guarded"] = guarded
 	}
 	if iterionHomeNotMounted != "" {
 		mounted["iterion_home_not_mounted"] = iterionHomeNotMounted
@@ -486,9 +558,21 @@ func operatorsIterionHome() (dir, notMounted string) {
 // ($HOME/<x>) are excluded — their parent is $HOME itself, already a
 // user-owned tmpfs. Results are deduped and ordered shallowest-first so
 // the tmpfs layers stack in mount order.
+//
+// An ancestor that is ITSELF a bind target is skipped: docker does not
+// root-create what a mount provides, and a tmpfs there would SHADOW the
+// bind — the #2069 config overlays ($HOME/.claude/settings.json over the
+// $HOME/.claude bind) are exactly this shape, and laying the tmpfs lost
+// the operator's whole ~/.claude for the run.
 func homeNestedBindParents(homeDir string, mounts []string) []string {
 	if homeDir == "" {
 		return nil
+	}
+	targets := map[string]bool{}
+	for _, m := range mounts {
+		if t := mountTarget(m); t != "" {
+			targets[t] = true
+		}
 	}
 	var out []string
 	seen := map[string]bool{}
@@ -507,6 +591,9 @@ func homeNestedBindParents(homeDir string, mounts []string) []string {
 		}
 		for depth := 1; depth < len(parts); depth++ {
 			ancestor := filepath.Join(append([]string{homeDir}, parts[:depth]...)...)
+			if targets[ancestor] {
+				continue // a bind already provides it — never shadow it
+			}
 			if !seen[ancestor] {
 				seen[ancestor] = true
 				out = append(out, ancestor)
@@ -853,15 +940,29 @@ func mountIsHostBind(mount string) bool {
 //
 // Mounting only the per-run subtree leaves git unable to find shared
 // objects, refs/, HEAD, packed-refs — and every command fails with
-// `fatal: not a git repository`. The TODO below tracks a tighter
-// per-run isolation design (whole `.git` read-only + per-run subtree
-// read-write overlay), which docker bind layering technically allows
-// but is risky to ship without a test matrix proving the override
-// semantics on every supported driver. For now: simple + correct.
+// `fatal: not a git repository`. A tighter per-run isolation (whole `.git`
+// read-only + per-run subtree read-write overlay) remains possible —
+// docker bind layering allows it — but still wants a test matrix proving
+// the override semantics on every supported driver. #2069 closed the
+// host-EXECUTION half of it below (config + hooks shadowed); the residual
+// is ref/object corruption, an availability concern, not host code
+// execution.
 //
 // Read-write because git writes HEAD, refs, packed-refs, index, etc.
 // into the gitdir during normal `git commit` / `git checkout` flows,
 // and the worktree's gitdir is part of the broader `.git` tree.
+//
+// That read-write tree is also the #2069 surface on the REPOSITORY side:
+// `.git/config` (core.hooksPath, core.fsmonitor, aliases, credential
+// helpers) and `.git/hooks/` are configuration the operator's own git
+// executes on its next host-side command in this checkout. The guard
+// shadows both — from applyHostStateMounts (hostConfigGuard.
+// guardWorktreeGit), NOT here: the overlays must not feed the HOME-tmpfs
+// layering, which a mount added before applyHostStateMounts would (a
+// tmpfs at a bind's destination shadows the bind, whatever the argument
+// order — measured on docker 29). Docker mounts nested binds by
+// destination depth, parents first, so the overlays win over this tree
+// bind even though it is appended after them.
 //
 // Silently skips when:
 //   - gitDir is empty (non-worktree run, or cloud runner that never
@@ -886,7 +987,7 @@ func addWorktreeGitMount(spec *sandbox.Spec, gitDir string, logger *iterlog.Logg
 		return
 	}
 	// Walk up two levels: <repoRoot>/.git/worktrees/<run-id> → <repoRoot>/.git
-	dotGit := filepath.Dir(filepath.Dir(gitDir))
+	dotGit := worktreeDotGit(gitDir)
 	info, statErr := os.Stat(dotGit)
 	if statErr != nil {
 		if !errors.Is(statErr, fs.ErrNotExist) && logger != nil {

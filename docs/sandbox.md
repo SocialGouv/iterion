@@ -367,6 +367,47 @@ on shared infrastructure. The `kubernetes` driver hard-errors on
 `host_state: auto` for the same reason: cloud pods have no host
 filesystem to bind and the design refuses to fake it.
 
+**Host-configuration guard (#2069).** The state the sandbox must *write*
+stays writable — the run store and memory under the iterion home, Claude
+Code's sessions and credential refresh under `~/.claude`, codex's
+`auth.json` under `~/.codex`, the caches. The configuration the *host
+later executes* does not: a sandboxed agent (a prompt-injected one, say)
+must not be able to plant it. Under the guard — on by default wherever
+the driver has host bind mounts —
+
+- `~/.gitconfig`, `~/.claude.json`, `~/.claude/settings.json`,
+  `~/.claude/settings.local.json`, `~/.codex/config.toml`,
+  `<iterion home>/plugins.yaml` and the worktree `.git`'s `config` bind
+  a **per-run copy** seeded from the host content: reads see the
+  operator's config, writes (Claude Code's own state updates included)
+  land in the copy and die with the sandbox teardown;
+- `<iterion home>/plugins/`, `~/.claude/plugins/` and the worktree
+  `.git`'s `hooks/` bind **read-only** — created empty on the host first
+  when absent, so the agent cannot plant the directory fresh through the
+  read-write parent bind (and docker's root-owned mountpoint never
+  appears: the runtime pre-creates the path itself, user-owned).
+
+Docker mounts nested binds by destination depth, parents first, so the
+overlays win over the parent binds regardless of list order (measured on
+docker 29). Every shadowed path is listed in the
+`sandbox_host_state_mounted` event's `guarded` field, so
+`docker inspect` never shows a host bind the run's events cannot
+explain. `ITERION_SANDBOX_HOST_STATE_GUARD=off` disables the guard and
+restores the all-writable posture, for the operator whose bots
+deliberately manage host config.
+
+One write shape changes under the guard, loudly: a copy-bound file
+absorbs streaming writes into the copy, but an ATOMIC write — write a
+sibling, rename over the file, the `config.lock` pattern of
+`git config <key> <value>` — fails with EBUSY, because a mountpoint
+cannot be renamed over. A bot that edits workspace-local git config
+(golden-master's extend identity swap is the catalog case) refuses
+loudly instead of writing; the hatch above restores the writable config.
+Residual, deliberately out of scope: prompt-level files the host's
+tools *read* (`~/.claude/CLAUDE.md`, `~/.claude/agents/`) stay writable —
+they carry no host code execution — and the worktree `.git` keeps
+objects/refs writable, which a commit needs.
+
 **host_state mounts only the state the operator chose.** The iterion home
 (`$ITERION_HOME`, else `~/.iterion`) and the scratch dir under it are
 bind-mounted read-write only when that home is the one the operator chose —
@@ -381,9 +422,10 @@ per-run state in the checkout's `.iterion/`, as with `host_state: none`, and
 
 Audit trail: the `sandbox_host_state_mounted` event in `events.jsonl`
 lists the resolved source (CLI / workflow / env / default), the
-container workspace path, every mount that landed,
-`iterion_home_not_mounted` when the iterion home was left out, and
-`home_not_mounted` when a `.env` set the home dir.
+container workspace path, every mount that landed, the guard's
+`guarded` shadow list (#2069), `iterion_home_not_mounted` when the
+iterion home was left out, and `home_not_mounted` when a `.env` set the
+home dir.
 
 ### Network policy
 
