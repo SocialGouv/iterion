@@ -79,7 +79,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/backend/forfait` | implements a best-effort Anthropic "forfait" (Claude Code OAuth subscription) usage-cap check used by the LAYER-2 run-level auto-resume loop. | `Doer` |
 | `pkg/backend/llmtypes` | defines iterion-owned types for the LLM generation layer. | `FatalToolError` |
 | `pkg/backend/mcp` | — | `BrowserRegistry`, `ChromiumRunner` |
-| `pkg/backend/model` | provides the ModelRegistry and claw-based NodeExecutor for resolving "provider/model-id" specs and executing LLM nodes. | `AsyncAskBinder`, `AsyncAskHook`, `AttachmentLister`, `AttachmentWriter`, `ConnectorResolver`, `EventEmitter`, `InboxBinder`, `InboxHook`, `NodeServedRecorder`, `PlanWriter`, `SecretRefResolver`, `SessionCaptureSink`, `ToolBlobWriter`, `TurnWriter` |
+| `pkg/backend/model` | provides the ModelRegistry and claw-based NodeExecutor for resolving "provider/model-id" specs and executing LLM nodes. | `AsyncAskBinder`, `AsyncAskHook`, `AttachmentLister`, `AttachmentWriter`, `ConnectorResolver`, `EventEmitter`, `InboxBinder`, `InboxHook`, `NodeServedRecorder`, `PlanWriter`, `SecretRefResolver`, `SessionCaptureSink`, `SinkSecretRefResolver`, `ToolBlobWriter`, `TurnWriter` |
 | `pkg/backend/modelroute` | the one reading of a model spec: which provider routes it, which id goes on the wire, and which id names its capabilities. | — |
 | `pkg/backend/modelspecs` | the dynamic model-spec registry: model metadata (context window, max output tokens, pricing, and the reasoning/tool_call/temperature flags) fetched… | — |
 | `pkg/backend/permission` | implements iterion's tool-permission gate — the anti-hypnosis / anti-prompt-injection boundary shared by every backend with an enforcement seam. | — |
@@ -147,6 +147,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/dsl/parser` | — | — |
 | `pkg/dsl/parser/parsertest` | how a test outside pkg/dsl/parser reads a source in one value: the strict reading (parser.Parse). | — |
 | `pkg/dsl/readbudget` | resolves the read budget: how much one bot may ask its readers to record. | — |
+| `pkg/dsl/secretsink` | names the materialization sinks a declared secret may be granted to — the `sinks:` vocabulary of a `.bot` secret declaration… | — |
 | `pkg/dsl/spec` | the declarative registry of the `.bot` DSL's property surface: for every declaration kind, node kind and anonymous block, the properties it accepts,… | — |
 | `pkg/dsl/types` | defines shared enum types used by both the AST and IR packages. | — |
 | `pkg/dsl/unit` | loads a bot's compilation unit: its main file and the fragments the file imports, transitively, merged into one ast.File (ADR-098 §3). | — |
