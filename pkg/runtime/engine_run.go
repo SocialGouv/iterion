@@ -187,6 +187,13 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 		return err
 	}
 
+	// The operator isolation floor (#1959): a non-operator bot source's
+	// `sandbox: none` is neutralized HERE — once, before admission and
+	// sandbox start, so the admission probe, the mount plan and every
+	// downstream pickMode judge the workflow the run actually executes
+	// under. Loud: warn + sandbox_floor_applied, never a silent upgrade.
+	e.applySandboxFloor(ctx, runID, run)
+
 	// Admission is deliberately before attachment promotion, workspace
 	// setup, sandbox startup and the first model call. A denied context is
 	// therefore a durable, actionable failure without external side effects.
@@ -434,7 +441,7 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		}
 		run = created
 	}
-	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.trust != "" || e.repoSHAExpected != "" || e.runnerPool != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || len(e.extraSkills) > 0 || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil || e.executionContext != nil ||
+	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.trust != "" || e.repoSHAExpected != "" || e.botSourceTier != "" || e.runnerPool != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || len(e.extraSkills) > 0 || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil || e.executionContext != nil ||
 		e.routingPolicy != nil || e.budgetAsk != nil || e.budgetOverrides != nil || e.botOrigin != nil || e.delegation != nil ||
 		e.sandboxOverride != "" || e.sandboxDefaultImage != "" || e.sandboxHostStateOverride != "" || e.mergeInto != "" || e.branchName != "" || e.workflow.Contract != nil || len(run.PublicContract) > 0 {
 		if e.workflowHash != "" {
@@ -457,6 +464,12 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		}
 		if e.repoSHAExpected != "" {
 			run.RepoSHAExpected = e.repoSHAExpected
+		}
+		// Same write-once doctrine as Trust: a launch fact the floor (#1959)
+		// and the studio read off the document; an engine that says nothing
+		// must not clear what the publisher stamped.
+		if e.botSourceTier != "" {
+			run.BotSourceTier = e.botSourceTier
 		}
 		if e.runnerPool != "" {
 			run.RunnerPool = e.runnerPool

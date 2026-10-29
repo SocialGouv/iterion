@@ -414,9 +414,14 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		// path only), so these are its exact tiers.
 		SandboxDefault:    s.sandboxDefault,
 		SandboxTiersKnown: true,
-		ModelOverrides:    toModelOverrides(spec.ModelOverrides),
-		RunFallback:       toRunFallback(spec.Fallback),
-		LLMProviders:      spec.LLMRoutePolicy.ProviderAllowlist(),
+		// The tier the launch resolver served (#1959): the MCP start
+		// prediction and the fallback screen must judge the floored
+		// workflow, or a team bot's `sandbox: none` would start its
+		// MCP servers beside the launcher for a run that sandboxes.
+		BotSourceTier:  spec.BotSourceTier,
+		ModelOverrides: toModelOverrides(spec.ModelOverrides),
+		RunFallback:    toRunFallback(spec.Fallback),
+		LLMProviders:   spec.LLMRoutePolicy.ProviderAllowlist(),
 		// Resolved, not taken raw: spec.BotID is empty whenever the caller
 		// launched by path (the studio's own file picker), and the executor
 		// would then fall back to the workflow name — while a RESUME of that
@@ -1098,6 +1103,15 @@ func runSandboxOverride(r *store.Run) string {
 	return r.SandboxOverride
 }
 
+// runBotSourceTier reads the bot-resolution tier a run recorded at launch,
+// tolerating a nil run the way runSandboxOverride beside it does.
+func runBotSourceTier(r *store.Run) string {
+	if r == nil {
+		return ""
+	}
+	return r.BotSourceTier
+}
+
 // ResumeProbeWorkDir is the directory a RESUMED run's fallback screen resolves
 // its repository from: the root the launch recorded, else the run's workspace,
 // else none — and the probe then falls back to the engine's own directory.
@@ -1137,7 +1151,11 @@ func (s *Service) resumeExecutorSpec(wf *ir.Workflow, r *store.Run, runLogger *i
 		SandboxOverride:   runSandboxOverride(r),
 		SandboxDefault:    s.sandboxDefault,
 		SandboxTiersKnown: true,
-		WorkDir:           s.effectiveWorkDir(runWorkDir),
+		// The resumed run's frozen tier (#1959) — replayed from the
+		// document like the override beside it, so the floor judges the
+		// source the LAUNCH resolved, on every attempt.
+		BotSourceTier: runBotSourceTier(r),
+		WorkDir:       s.effectiveWorkDir(runWorkDir),
 		// The repository the resumed engine roots this run at, which is the
 		// RECORDED root before the workspace below: WorkDir is Claw's
 		// file-tool root and stays what it was.

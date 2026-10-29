@@ -84,7 +84,7 @@ func TestMaterializeFileSecretsNoSandbox_DegradedAutoStillWrites(t *testing.T) {
 		Logger:         iterlog.New(iterlog.LevelError, os.Stderr),
 		SandboxDrivers: driverlessSandboxRegistry(),
 	}}
-	written, cleanup, err := degraded.materializeFileSecretsNoSandbox(ctx, wf, repoRoot)
+	written, cleanup, err := degraded.materializeFileSecretsNoSandbox(ctx, wf, repoRoot, "")
 	if cleanup != nil {
 		defer cleanup()
 	}
@@ -99,7 +99,7 @@ func TestMaterializeFileSecretsNoSandbox_DegradedAutoStillWrites(t *testing.T) {
 		Logger:         iterlog.New(iterlog.LevelError, os.Stderr),
 		SandboxDrivers: workingSandboxRegistry(),
 	}}
-	written, cleanup, err = sandboxed.materializeFileSecretsNoSandbox(ctx, wf, repoRoot)
+	written, cleanup, err = sandboxed.materializeFileSecretsNoSandbox(ctx, wf, repoRoot, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -108,5 +108,53 @@ func TestMaterializeFileSecretsNoSandbox_DegradedAutoStillWrites(t *testing.T) {
 			cleanup()
 		}
 		t.Fatalf("a genuinely sandboxed run must not materialize secrets on the host, got %v", written)
+	}
+}
+
+// #1959 — the gate must judge the FLOORED workflow: a team-authored bot's
+// `sandbox: none` is neutralized by the operator isolation floor, so the
+// run executes in a container and its `as: file` secrets are delivered by
+// the container mount. A gate probing the DECLARED mode would materialize
+// them on the pod instead — the agent opens an empty path, and the secret
+// sits on a filesystem the floor exists to keep the agent off.
+func TestMaterializeFileSecretsNoSandbox_FlooredOptOutKeepsGateClosed(t *testing.T) {
+	wf := &ir.Workflow{
+		Sandbox: &ir.SandboxSpec{Mode: "none"},
+		Secrets: map[string]*ir.Secret{
+			"forge_token": {Name: "forge_token", As: "file"},
+		},
+	}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		Generic: map[string]string{"forge_token": "tok"},
+	})
+	repoRoot := t.TempDir()
+
+	sandboxed := &Runner{cfg: Config{
+		Logger:         iterlog.New(iterlog.LevelError, os.Stderr),
+		SandboxDefault: "auto", // the operator's floor the neutralization falls through to
+		SandboxDrivers: workingSandboxRegistry(),
+	}}
+	// Without the tier (the operator's own launch) the declared opt-out
+	// holds: the gate OPENS. Whether the write itself lands depends on
+	// this machine's /run writability, so — as in the degraded-auto test
+	// above — the assertion keys on the gate: the silent (nil, nil, nil)
+	// early return is the "read as sandboxed" bug, not a write failure.
+	written, cleanup, err := sandboxed.materializeFileSecretsNoSandbox(ctx, wf, repoRoot, "")
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if written == nil && cleanup == nil && err == nil {
+		t.Fatal("the operator's own `sandbox: none` run is unsandboxed — the gate must open so its file secrets materialize on the pod")
+	}
+
+	written, cleanup, err = sandboxed.materializeFileSecretsNoSandbox(ctx, wf, repoRoot, "team")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if written != nil || cleanup != nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		t.Fatalf("a team-source `sandbox: none` is floored to sandboxed — secrets must NOT materialize on the pod, got %v", written)
 	}
 }

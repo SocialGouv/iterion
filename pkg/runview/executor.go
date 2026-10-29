@@ -195,6 +195,14 @@ type ExecutorSpec struct {
 	// the sandbox for real. Pass them.
 	SandboxOverride string
 	SandboxDefault  string
+	// BotSourceTier is the bot-resolution tier that served this run's
+	// launch (store.BotSourceTier*), when the surface resolved one. The
+	// #1959 isolation floor reads it: the fallback screen's sandbox probe
+	// and the MCP start policy must judge the workflow the run EXECUTES
+	// under — after a non-operator source's `sandbox: none` is
+	// neutralized — not the declared one. Empty means the operator's own
+	// launch (or a surface with no bot resolution): no floor.
+	BotSourceTier string
 	// SandboxTiersKnown tells the two cases the empty strings cannot:
 	// "this surface knows the tiers and they are genuinely empty" from
 	// "this surface did not look". Set it wherever both tiers above are
@@ -461,7 +469,8 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// existed to survive. The refusal now also lands on the run's timeline
 	// (run_fallback_refused), because a refusal the decider cannot read is a
 	// silent fallback.
-	sandboxedHere := runtime.RunWillBeSandboxed(spec.Workflow, spec.SandboxOverride, spec.SandboxDefault,
+	sandboxedHere := runtime.RunWillBeSandboxed(
+		flooredWorkflow(spec), spec.SandboxOverride, spec.SandboxDefault,
 		runtime.EngineRepoRoot(spec.sandboxProbeRoot()), spec.SandboxDrivers)
 	overrides := spec.ModelOverrides
 	fallbackRefusals := ir.ApplyRunFallback(spec.Workflow, spec.RunFallback, sandboxedHere, spec.Vars, func(n ir.LLMNode) string {
@@ -1219,10 +1228,23 @@ func predictedStartPolicy(spec ExecutorSpec) mcp.StartPolicy {
 	if !spec.SandboxTiersKnown {
 		return mcp.StartPolicyUnknown
 	}
-	if runtime.WorkflowSandboxActive(spec.Workflow, spec.SandboxOverride, spec.SandboxDefault) {
+	if runtime.WorkflowSandboxActive(flooredWorkflow(spec), spec.SandboxOverride, spec.SandboxDefault) {
 		return mcp.StartOperatorServersOnly
 	}
 	return mcp.StartAllServers
+}
+
+// flooredWorkflow is the workflow the run EXECUTES under: spec.Workflow
+// after the #1959 isolation floor neutralized a non-operator source's
+// `sandbox: none`. Both sandbox predictions of the launch surface (the
+// fallback screen's driver probe and the MCP start policy's mode reading)
+// must judge this one — the permissive answer is the one that must never
+// be wrong, and a prediction made from the declared mode would start a
+// team-authored workflow's MCP servers beside the launcher for a run the
+// floor in fact sandboxes.
+func flooredWorkflow(spec ExecutorSpec) *ir.Workflow {
+	effective, _ := runtime.ApplySandboxFloor(spec.Workflow, spec.BotSourceTier, spec.SandboxOverride)
+	return effective
 }
 
 func buildMCPManager(wf *ir.Workflow, storeDir string, logger *iterlog.Logger, policy mcp.StartPolicy) (*mcp.Manager, *mcp.OAuthBroker, error) {

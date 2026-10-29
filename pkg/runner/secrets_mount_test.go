@@ -29,7 +29,7 @@ func TestMaterializeFileSecretsNoSandboxRejectsOutOfTreeMountPath(t *testing.T) 
 		// Sandbox nil → the no-sandbox materialize path runs.
 	}
 
-	written, cleanup, err := r.materializeFileSecretsNoSandbox(ctx, wf, "")
+	written, cleanup, err := r.materializeFileSecretsNoSandbox(ctx, wf, "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestMaterializeFileSecretsNoSandbox_GateShapes(t *testing.T) {
 	repoRoot := t.TempDir()
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			written, cleanup, err := r.materializeFileSecretsNoSandbox(c.ctx, c.wf, repoRoot)
+			written, cleanup, err := r.materializeFileSecretsNoSandbox(c.ctx, c.wf, repoRoot, "")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}

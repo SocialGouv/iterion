@@ -2577,7 +2577,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// — needs them materialized as 0600 files at their mount paths in the
 	// runner pod so the in-pod agent can read them — e.g. review-pr's
 	// forge_token for glab. Removed on return.
-	fileSecrets, rm, ferr := r.materializeFileSecretsNoSandbox(ctx, wf, runtime.EngineRepoRoot(workDir))
+	fileSecrets, rm, ferr := r.materializeFileSecretsNoSandbox(ctx, wf, runtime.EngineRepoRoot(workDir), msg.BotSourceTier)
 	if rm != nil {
 		// Always schedule cleanup, even on error: materialize returns a
 		// non-nil remover covering the files it wrote BEFORE failing, so
@@ -2731,6 +2731,12 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// the admission compares document ≡ message, and a doc the engine
 		// rebuilt without the stamp would contradict its own message.
 		runtime.WithRunnerPool(msg.RunnerPool),
+		// The launch fact the isolation floor (#1959) judges: which
+		// bot-resolution tier served this run. From the MESSAGE (queue v28),
+		// not a document read — the same doctrine as Trust above it — and
+		// the engine stamps it onto the document for the floors that read
+		// there (a local resume, a subbot's child row).
+		runtime.WithBotSourceTier(msg.BotSourceTier),
 		// Sandbox defaults from the operator config (ITERION_SANDBOX_DEFAULT /
 		// ITERION_SANDBOX_HOST_STATE). pkg/cli/run.go wires these for `iterion
 		// run`; the cloud runner must too — else cfg.Sandbox.* is read and
@@ -3385,6 +3391,11 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		WorkDir:             workDir,
 		SandboxProbeWorkDir: workDir,
 		BotID:               msg.BotID,
+		// The wire-carried tier (queue v28): the fallback screen's sandbox
+		// probe and the MCP start policy judge the floored workflow with
+		// it (#1959) — a team source's `sandbox: none` must not start
+		// workflow MCP servers on this pod for a run the floor sandboxes.
+		BotSourceTier: msg.BotSourceTier,
 		// The launch-time decision, carried on the wire. Without it the pod
 		// would resolve auto-memory from the workflow and its own (empty)
 		// environment, so an operator's `--auto-memory off` on a bot whose

@@ -1587,6 +1587,12 @@ func ResolveGlobalSandboxDefault() string {
 // pickMode walks the precedence chain and returns the first
 // non-empty mode along with a human-readable source label.
 //
+// One filter sits ABOVE this chain without being a tier of it: the #1959
+// operator isolation floor ([ApplySandboxFloor]) removes a non-operator
+// bot source's `sandbox: none` from the workflow BEFORE this chain reads
+// it, so the opt-out never reaches here. The chain itself stays
+// source-blind.
+//
 // Special case: a CLI override of "auto" expresses intent ("turn the
 // sandbox on, read devcontainer.json") but is less specific than a
 // workflow-level block-form `sandbox:` declaration that already

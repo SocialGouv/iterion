@@ -271,8 +271,15 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// dropped, a stale runner expands the braced environment forms of a body
 	// the author declared verbatim — the engine answering a read the body
 	// means for its own shell, on a runner and only there.
-	if SchemaVersion != 27 {
-		t.Errorf("SchemaVersion = %d, want 27 (bump intentionally)", SchemaVersion)
+	// v=27 carries BudgetOverrides.DonorMaxCostUSD: dropped, a stale runner
+	// loses the absolute donor ceiling on exit grace and live raises.
+	// v=28 carries BotSourceTier (#1959): dropped, a stale runner honours a
+	// team-authored `sandbox: none` the operator isolation floor exists to
+	// neutralize — failing open, on the pod. MinSchemaVersion stays 27: the
+	// v27 publisher already stamps the tier on the run document, so the
+	// runner re-reads it from there instead of dropping the decision.
+	if SchemaVersion != 28 {
+		t.Errorf("SchemaVersion = %d, want 28 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 27 {
 		t.Errorf("MinSchemaVersion = %d, want 27", MinSchemaVersion)
@@ -280,8 +287,10 @@ func TestSchemaVersionConstant(t *testing.T) {
 }
 
 // TestValidate_DualAcceptWindow pins the explicit compatibility window.
-// At v27 the bounds coincide: pre-v27 donor messages lack the ceiling needed
-// for safe grace and live raises. Refusals remain TRANSIENT ErrSchemaVersion.
+// At v28 the window is [27, 28]: a v27 message lacks the wire-carried
+// BotSourceTier (#1959) but its publisher already stamped the run document,
+// so the floor re-reads it from there. Refusals remain TRANSIENT
+// ErrSchemaVersion.
 func TestValidate_DualAcceptWindow(t *testing.T) {
 	base := func(v int) *RunMessage {
 		return &RunMessage{

@@ -218,7 +218,7 @@ func TestDonorCeilingWireRoundTrip(t *testing.T) {
 			if err := decoded.Validate(); err != nil {
 				t.Fatal(err)
 			}
-			if decoded.V != 27 || decoded.Budget == nil || !decoded.Budget.CapImposed || decoded.Budget.DonorMaxCostUSD != 10+spent {
+			if decoded.V != queue.SchemaVersion || decoded.Budget == nil || !decoded.Budget.CapImposed || decoded.Budget.DonorMaxCostUSD != 10+spent {
 				t.Fatalf("wire lost absolute donor ceiling: %+v", decoded.Budget)
 			}
 			// This is the same decoder and IR application the runner invokes.

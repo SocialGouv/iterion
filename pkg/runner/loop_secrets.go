@@ -22,10 +22,15 @@ import (
 // repoRoot is the run's repository root as the engine will resolve it
 // (runtime.EngineRepoRoot over the run workspace): the sandbox gate's
 // mode=auto devcontainer lookup must read the same directory the
-// engine's will.
-func (r *Runner) materializeFileSecretsNoSandbox(ctx context.Context, wf *ir.Workflow, repoRoot string) (map[string]string, func(), error) {
-	if wf == nil || len(wf.Secrets) == 0 ||
-		runtime.RunWillBeSandboxed(wf, r.cfg.SandboxOverride, r.cfg.SandboxDefault, repoRoot, r.cfg.SandboxDrivers) {
+// engine's will. botSourceTier is the wire-carried launch fact (queue
+// v28): the probe must judge the workflow the run executes under, i.e.
+// AFTER the #1959 floor neutralized a non-operator source's opt-out —
+// probing the declared mode would materialize the secrets on the pod for
+// a run the floor in fact executes inside a container.
+func (r *Runner) materializeFileSecretsNoSandbox(ctx context.Context, wf *ir.Workflow, repoRoot, botSourceTier string) (map[string]string, func(), error) {
+	effective, _ := runtime.ApplySandboxFloor(wf, botSourceTier, r.cfg.SandboxOverride)
+	if effective == nil || len(effective.Secrets) == 0 ||
+		runtime.RunWillBeSandboxed(effective, r.cfg.SandboxOverride, r.cfg.SandboxDefault, repoRoot, r.cfg.SandboxDrivers) {
 		// No secrets, or the run will execute inside a sandbox (which mounts
 		// file secrets into the container). The RESOLVED, driver-aware
 		// decision — not wf.Sandbox, and not the resolved mode alone — is

@@ -513,6 +513,19 @@ const (
 	//     (startNoopSandbox), where a caller chose the passthrough
 	//     driver deliberately, and by the attachments refusal
 	EventSandboxSkipped EventType = "sandbox_skipped"
+	// EventSandboxFloorApplied is emitted at run start when the operator
+	// isolation floor (#1959) neutralized a WORKFLOW-declared sandbox
+	// opt-out because the bot source that declared it is not one the
+	// operator controls (a team-authored botsource row). The run does NOT
+	// execute unsandboxed on the bot's say-so; resolution falls through
+	// to the operator's tiers. Loud by design — never a silent upgrade.
+	// Data:
+	//   - tier: the bot-source tier that spoke (e.g. "team")
+	//   - overridden_mode: the workflow's declared mode ("none")
+	//   - reason: human-readable explanation naming the floor
+	//   - escape_hatch: the env var that disables the floor
+	//     (ITERION_SANDBOX_FLOOR=off)
+	EventSandboxFloorApplied EventType = "sandbox_floor_applied"
 	// EventSkillsInjected fires at run start when the OPERATOR added
 	// skill-library skills to this run on top of the workflow's own
 	// (`--skill <name>`, or the ITERION_SKILLS machine default).

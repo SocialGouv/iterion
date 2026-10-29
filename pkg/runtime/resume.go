@@ -107,6 +107,13 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 	if err := e.supersededBy(r); err != nil {
 		return err
 	}
+	// A resumed attempt is judged by the same isolation floor (#1959) the
+	// launch was: the workflow this engine compiled may still carry the
+	// non-operator source's `sandbox: none`, and the neutralization must
+	// land BEFORE admission so the admission probe and the sandbox start
+	// judge the same workflow. The tier replays from the run document when
+	// the wire (WithBotSourceTier) did not carry it.
+	e.applySandboxFloor(ctx, runID, r)
 	// Re-run the same context admission before any resume claim, workspace
 	// restoration or answer side effect. A denial leaves the resumable status
 	// untouched so the operator can repair the declaration and retry.

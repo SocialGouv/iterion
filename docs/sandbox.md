@@ -1086,6 +1086,28 @@ The same chain applies to `host_state` via `--sandbox-host-state`,
 `sandbox.host_state:` in the workflow block, and
 `ITERION_SANDBOX_HOST_STATE`. The built-in default is `auto`.
 
+### The operator isolation floor (#1959)
+
+The chain above decides between *who asked* — and a workflow-level
+`sandbox: none` asked by a bot source the operator does not control is
+not honoured: in cloud, a bot resolved from a **team** botsource row (a
+fork authored in the studio editor) gets its opt-out neutralized, loudly
+— a warn in the run log and a `sandbox_floor_applied` event naming the
+tier, the overridden mode and the hatch — and mode resolution falls
+through to the operator's own tiers (the CLI-strength override, then the
+global default). Operator-origin sources keep their opt-out: the **baked**
+catalog the deployment shipped (`bots/copilot` opts out deliberately and
+keeps working), the **platform** override, and any local launch, which is
+the operator's own file. An unrecognized tier floors too — the floor
+fails closed on vocabulary it does not know.
+
+The tier rides the queue message (schema v28) and the run document, so a
+resume and a subbot child are judged by the source the launch resolved,
+on every attempt. The one decision lives in `runtime.ApplySandboxFloor`;
+the engine applies it before admission so the admission probe and the
+sandbox start judge the same workflow. `ITERION_SANDBOX_FLOOR=off` is the
+greppable escape hatch for an operator who trusts their team tier.
+
 ## Default image
 
 When `sandbox: auto` is in effect but no `.devcontainer/devcontainer.json`

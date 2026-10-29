@@ -772,3 +772,47 @@ func TestSubbotRunnerTheChildDocumentCarriesThePool(t *testing.T) {
 		t.Fatalf("the child document lost the frozen pool stamp: %+v", doc)
 	}
 }
+
+// #1959 — the subbot inherits the source tier: the child's run DOCUMENT
+// must carry the parent's BotSourceTier, or the floor reads the child as
+// the operator's own and a team-authored parent's `sandbox: none` text —
+// copied into the child's message by the struct copy — is rehabilitated
+// one level down.
+func TestSubbotChildInheritsTheBotSourceTier(t *testing.T) {
+	r, st := subbotTestRunner(t)
+	dir := t.TempDir()
+	parentDir := filepath.Join(dir, "parent")
+	writeSubbotFixture(t, parentDir, "main.bot", subbotTestParent)
+	writeSubbotFixture(t, parentDir, "child.bot", subbotTestChild)
+	msg := &queue.RunMessage{
+		RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent",
+		BotSourceTier: store.BotSourceTierTeam,
+	}
+
+	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
+	if _, err := run(context.Background(), runtime.SubbotRequest{
+		Source: "child.bot", Vars: map[string]any{"ticket": "T-9"},
+		ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
+	}); err != nil {
+		t.Fatalf("subbot runner: %v", err)
+	}
+	idCtx := store.WithIdentity(context.Background(), "t1", "u1")
+	ids, err := st.ListRuns(idCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var children int
+	for _, id := range ids {
+		child, cerr := st.LoadRun(idCtx, id)
+		if cerr != nil || child.ParentRunID != msg.RunID {
+			continue
+		}
+		children++
+		if child.BotSourceTier != store.BotSourceTierTeam {
+			t.Errorf("child %s BotSourceTier = %q, want %q — inherited from the parent's message", id, child.BotSourceTier, store.BotSourceTierTeam)
+		}
+	}
+	if children != 1 {
+		t.Fatalf("children of the parent = %d, want exactly one", children)
+	}
+}

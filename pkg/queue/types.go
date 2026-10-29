@@ -177,7 +177,17 @@ import (
 // and live raises. Both schema bounds move to 27: older donor payloads may
 // omit even CapImposed when the ask fits below the allowance, so no safe
 // migration can recover their ceiling. Drain or park/resume; server first.
-const SchemaVersion = 27
+// v=28: BotSourceTier (the #1959 isolation floor) — which bot-resolution
+// tier served the launch, mirrored from the run document so the runner
+// applies the operator isolation floor BEFORE any document read, exactly
+// like Trust. Breaking by the additive-field rule: a stale runner dropping
+// it would honour a team-authored `sandbox: none` the floor exists to
+// neutralize — failing open, on the pod. MinSchemaVersion stays 27: every
+// v27 publisher already stamps BotSourceTier on the run document, so a new
+// runner consuming a v27 message re-reads the tier from the document (the
+// floor's second carrier) instead of dropping the decision — the one
+// direction in which ignoring the field cannot fail open.
+const SchemaVersion = 28
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // Pre-v27 messages cannot prove an absolute donor ceiling. Resume republishes
@@ -219,6 +229,14 @@ type RunMessage struct {
 	// BotID is the stable bundle/bot identifier for this run. It qualifies
 	// structured visibility=bot memory and is preserved on resume.
 	BotID string `json:"bot_id,omitempty"`
+	// BotSourceTier names which bot-resolution tier served the launch
+	// (store.BotSourceTierTeam/Platform/Baked), mirrored from the run
+	// document so the runner applies the #1959 operator isolation floor —
+	// a non-operator source's `sandbox: none` is neutralized — before it
+	// has any reason to read the document, and so a subbot's child message
+	// (a struct copy of this one) inherits it. Empty is the operator's own
+	// launch (local run, or a doc that predates the stamp): no floor.
+	BotSourceTier string `json:"bot_source_tier,omitempty"`
 	// Contributions carries the plugin markdown contributions and
 	// skill-library skills the LAUNCHING instance resolved for this run (the
 	// wire mirror of runtime.Contributions). A runner pod's iterion home is

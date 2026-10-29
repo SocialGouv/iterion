@@ -335,6 +335,25 @@ func WithTrust(trust store.RunTrust, repoSHAExpected string) EngineOption {
 	}
 }
 
+// WithBotSourceTier records which bot-resolution tier served this run's
+// launch (store.BotSourceTierTeam/Platform/Baked) — the fact the #1959
+// isolation floor judges. It rides the queue message (schema v28), is
+// replayed from the run document on resume, and a subbot child inherits it
+// from its parent's message, exactly like WithTrust: the child's document
+// is built from a named field list and would otherwise read as the
+// operator's own, so the option also stamps the document.
+//
+// Empty means "no tier spoke" — a local launch of the operator's own file,
+// or a run document that predates the stamp — and stamps nothing (never
+// cleared: the floor treats empty as operator-trusted).
+func WithBotSourceTier(tier string) EngineOption {
+	return func(e *Engine) {
+		if tier != "" {
+			e.botSourceTier = tier
+		}
+	}
+}
+
 // WithRunnerPool stamps the sovereign runner pool (#2029) the run is frozen
 // to onto the persisted run document. The wire message carries the field
 // (child := *msg), but the DOCUMENT is built from a named field list — the

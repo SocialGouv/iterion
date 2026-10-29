@@ -3871,7 +3871,11 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		Trust:           spec.Trust,
 		RepoSHAExpected: spec.RepoSHAExpected,
 		BotID:           spec.BotID,
-		Budget:          budget,
+		// The resolved source's tier rides the wire beside BotID (#1959):
+		// the runner's isolation floor reads it before any document read,
+		// and a subbot's child message — a struct copy — inherits it.
+		BotSourceTier: spec.BotSourceTier,
+		Budget:        budget,
 		// The operator's model/backend pins must ride the wire: the runner
 		// pod builds its own executor, so a pin only persisted on the run
 		// doc is display-only — the studio would show an override the
@@ -4400,6 +4404,11 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		Trust:           prior.Trust,
 		RepoSHAExpected: prior.RepoSHAExpected,
 		BotID:           prior.BotID,
+		// Same replay doctrine as Trust: the resumed attempt inherits the
+		// tier the launch resolved, so the runner's isolation floor (#1959)
+		// judges the SAME source on every attempt — a resume must never
+		// come back with the bot's sandbox opt-out rehabilitated.
+		BotSourceTier: prior.BotSourceTier,
 	}
 	// The text this resume compiled, stamped WITH the hash of that same
 	// compile — the pair `rewind --auto` diffs against, and its only chance on

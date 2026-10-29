@@ -28,8 +28,10 @@ for the dated super-admin API, existing-run resume exemption and local
 
 - **Explicit compatibility window.** A consumer accepts only
   `[MinSchemaVersion, SchemaVersion]` and rejects anything outside it in both
-  directions. The current v27 consumer accepts only v27: older donor messages can
-  omit their absolute ceiling and cannot be migrated safely.
+  directions. The current v28 consumer accepts v27 and v28: a v27 message
+  predates the wire-carried `bot_source_tier`, and the run document its
+  publisher persisted already carries the stamp — the runner re-reads the
+  tier from there, so the #1959 floor never silently drops.
 - **Server first by default.** Both orders can park a message, and a resume
   recovers the run either way — but not at the same moment. Old runners
   rejecting the new version park runs a resume recovers as soon as the fleet
@@ -103,6 +105,27 @@ Use **server-first**, with Path A (drain before cutover) or Path B (park and
 resume). Runner-first without a drain is unsafe because the minimum moves.
 The historical versions below remain in their original chronological order;
 their compatibility windows describe those releases, not the v27 consumer.
+
+## v28 bot-source tier (isolation floor)
+
+`bot_source_tier` mirrors the run document's stamp of which bot-resolution
+tier served the launch (team / platform / baked) so the runner applies the
+#1959 operator isolation floor — neutralizing a non-operator source's
+`sandbox: none` — before any document read, and a subbot's child message (a
+struct copy) inherits it. Breaking by the additive-field rule: a stale v27
+runner must reject the message rather than honour a team-authored opt-out
+the floor exists to neutralize.
+
+`MinSchemaVersion` stays **27**: every v27 publisher already stamps
+`BotSourceTier` on the run document, so a v28 runner consuming a v27 message
+re-reads the tier from the document (the floor's second carrier) instead of
+dropping the decision — the one direction in which ignoring the field cannot
+fail open. A run whose document predates the stamp carries an empty tier and
+reads as the operator's own launch: unfloored, as it was.
+
+Use **server-first**; old runners park the v28 message replayably and a
+resume recovers once the fleet is upgraded.
+
 
 ## v12 runner-epoch bootstrap
 

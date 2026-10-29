@@ -326,6 +326,13 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			// The wire carries these (child := *msg); the DOCUMENT is built
 			// from a named field list and would otherwise read as trusted.
 			runtime.WithTrust(child.Trust, child.RepoSHAExpected),
+			// The tier the parent's launch resolved (#1959): the child
+			// message is a struct copy of the parent's, so the fact already
+			// rides the wire — this stamps the child's DOCUMENT, whose named
+			// field list would otherwise read as the operator's own and
+			// disarm the floor for exactly the nested launches a team bot
+			// controls the text of.
+			runtime.WithBotSourceTier(child.BotSourceTier),
 			// Same trap for the frozen pool stamp: the child's document must
 			// name the pool its message claims. Nothing compares the pair
 			// YET — D4's admission guard will, and a doc left unmapped would

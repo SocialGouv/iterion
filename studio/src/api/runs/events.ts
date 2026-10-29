@@ -441,6 +441,7 @@ export type PassthroughEventType =
   | "model_served_via_facade"
   | "session_degraded"
   | "sandbox_skipped"
+  | "sandbox_floor_applied"
   | "sandbox_started"
   | "sandbox_claw_routed_via_runner"
   | "sandbox_host_state_mounted"

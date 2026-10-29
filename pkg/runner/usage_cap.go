@@ -485,8 +485,11 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 	// the same two tiers, so the escape judgment agrees with the refusal it
 	// mirrors. A driver-aware answer here would un-park a degraded-auto run
 	// for a codex stage the screen still refuses, stranding it on the
-	// capped wire — the very outcome the park prevents.
-	escapable := ladderEscapes(wf, msg, runtime.WorkflowSandboxActive(wf, r.cfg.SandboxOverride, r.cfg.SandboxDefault))
+	// capped wire — the very outcome the park prevents. The workflow is the
+	// FLOORED one (#1959): the mode that counts is the one the run resolves
+	// after a non-operator source's opt-out is neutralized.
+	flooredWf, _ := runtime.ApplySandboxFloor(wf, msg.BotSourceTier, r.cfg.SandboxOverride)
+	escapable := ladderEscapes(wf, msg, runtime.WorkflowSandboxActive(flooredWf, r.cfg.SandboxOverride, r.cfg.SandboxDefault))
 	if len(routes) == 0 && len(sups) == 0 {
 		if logger != nil {
 			logger.Debug("runner: run %s targets no anthropic-wire route — usage cap not applied", msg.RunID)

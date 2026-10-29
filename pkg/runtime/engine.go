@@ -198,6 +198,7 @@ type Engine struct {
 	parentRunID            string                   // immediate parent run, set via WithParentRunID for nested executions
 	trust                  store.RunTrust           // who wrote the code in this run's workspace, set via WithTrust
 	repoSHAExpected        string                   // the commit the admission pinned, set via WithTrust
+	botSourceTier          string                   // which bot-resolution tier served the launch (store.BotSourceTier*), set via WithBotSourceTier; the #1959 isolation floor reads it
 	runnerPool             string                   // the sovereign pool the run is frozen to, set via WithRunnerPool
 	parentNodeID           string                   // IR node id of the parent's subbot node that spawned this run, set via WithParentNodeID
 	isolatedChild          bool                     // the parent's subbot node declared `isolated:` for this child, set via WithIsolatedChild
