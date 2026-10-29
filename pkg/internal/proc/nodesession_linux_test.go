@@ -510,22 +510,29 @@ func (w *nodeWorld) check(r SweepReport, err error) {
 		if err != nil {
 			w.t.Fatalf("respawner's replacement: unreadable pid file %q", b)
 		}
-		switch {
-		case sighted[child]:
+		// Judged in a subtest of its own, so the premise that disables the
+		// judgement is a RESULT and not a comment: `go test` prints a t.Logf
+		// only when the test fails, so a premise that quietly stopped holding
+		// would leave a green gate byte-identical for months, while a skipped
+		// subtest is a result kind `-v`, `-json` and the skip census all
+		// carry. The guarantee itself does not rest here — the window this
+		// would judge is staged, not raced, by
+		// TestSweepStopsAProcessThatShowsAfterANonEmptyScan — so this reading
+		// is a bonus and its absence costs no coverage.
+		w.t.Run("respawner's replacement", func(t *testing.T) {
+			if !sighted[child] {
+				// The sweep ended before the replacement joined the session:
+				// two scans in a row found nothing while it was still
+				// forking — its environ is unreadable for the instant of an
+				// exec, and its parent, the respawner, is gone by then, so
+				// neither the entry nor a live ancestor names it. Judging it
+				// here would be a verdict on how fast this machine starts a
+				// process.
+				w.strays = append(w.strays, child)
+				t.Skipf("the sweep returned before the respawner's replacement (pid %d) joined the session: the window is judged by TestSweepStopsAProcessThatShowsAfterANonEmptyScan, which stages it instead of racing it", child)
+			}
 			w.marked["respawner's replacement"] = child
-		default:
-			// The sweep ended before the replacement joined the session: two
-			// scans in a row found nothing while it was still forking — its
-			// environ is unreadable for the instant of an exec, and its
-			// parent, the respawner, is gone by then, so neither the entry
-			// nor a live ancestor names it. Judging it here would be a
-			// verdict on how fast this machine starts a process. That the
-			// sweep stops a member which shows BETWEEN two scans is the
-			// claim of TestSweepStopsAProcessThatShowsAfterAnEmptyScan,
-			// which stages that window instead of racing it.
-			w.strays = append(w.strays, child)
-			w.t.Logf("the sweep returned before the respawner's replacement (pid %d) joined the session: not judged here, see TestSweepStopsAProcessThatShowsAfterAnEmptyScan", child)
-		}
+		})
 	} else if hasRespawner {
 		w.t.Errorf("the respawner never forked its replacement within %s: TERM did not reach it", goneWait)
 	}
@@ -704,7 +711,10 @@ func TestGuardFoundRefusesALiveIntruder(t *testing.T) {
 	if m == nil {
 		t.Fatalf("the live-intruder helper failed before it started its intruder: %v\n%s", err, out)
 	}
-	refused := fmt.Sprintf("the session holds pid %s", m[1])
+	// The refusal names the pid, then its name in parentheses: the trailing
+	// "(" is what bounds the number, because a prefix match on "pid 12"
+	// accepts a refusal of pid 123 — a process this test never started.
+	refused := fmt.Sprintf("the session holds pid %s (", m[1])
 	if !strings.Contains(string(out), "which this test did not start") || !strings.Contains(string(out), refused) {
 		t.Fatalf("the helper failed for another reason, or refused a process other than the intruder it started (%q): %v\n%s", refused, err, out)
 	}
@@ -727,6 +737,45 @@ func TestSweepStopsAProcessThatShowsAfterAnEmptyScan(t *testing.T) {
 			sweep := w.sweepInBackground(s, win)
 			if found := win.await(t); found != 0 {
 				t.Fatalf("premise: the scan the sweep is held at found %d process(es) of the session, want a scan that found nothing", found)
+			}
+			w.marked["late"] = w.sh("late", []string{w.entry()}, true, false, `exec sleep 300`)
+			awaitSessionHolds(t, w.token, "late", w.marked["late"])
+			if win.passed() {
+				t.Fatal("premise: the sweep left the scan gate before `late` joined the session: the window was not staged")
+			}
+			win.resume()
+			awaitPremise(t, "the gate never recorded the sweep passing", win.passed)
+			w.check(sweep())
+		})
+	}
+}
+
+// The same guarantee at the window the product actually opens: a scan that
+// found MEMBERS, after which one more joins. This is the respawn window —
+// a supervisor forks its replacement because TERM reached it, so the
+// replacement can only ever show after a scan that found the supervisor — and
+// the witness above cannot stage it, because it asserts its held scan found
+// NOTHING. A sweep that files the members of its first non-empty scan and
+// stops re-discovering passes that witness, and the one the session's own
+// fixtures give (the respawner's replacement is judged only when the sweep
+// sighted it, so such a sweep exempts itself). Here the seed ignores TERM, so
+// the session is never empty and the sweep stays in its TERM phase while the
+// window is staged: `late` joins between two scans and must be stopped, which
+// is the clause SweepNodeSession documents — "every scan finds the carriers of
+// the entry, the processes earlier scans found and that are still the same, and
+// every descendant of either".
+//
+// Not parallel: the holds arm a package seam.
+func TestSweepStopsAProcessThatShowsAfterANonEmptyScan(t *testing.T) {
+	for _, s := range sweepers {
+		t.Run(s.name, func(t *testing.T) {
+			w := newNodeWorld(t)
+			w.marked["seed"] = w.sh("seed", []string{w.entry()}, true, false, `trap "" TERM; exec sleep 300`)
+			w.awaitSeeded()
+			win := s.hold(t, w)
+			sweep := w.sweepInBackground(s, win)
+			if found := win.await(t); found == 0 {
+				t.Fatal("premise: the scan the sweep is held at found nothing, want one that found the seed")
 			}
 			w.marked["late"] = w.sh("late", []string{w.entry()}, true, false, `exec sleep 300`)
 			awaitSessionHolds(t, w.token, "late", w.marked["late"])
