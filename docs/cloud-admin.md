@@ -234,8 +234,13 @@ creates team and org state — a membership or a role, a team secret, an API
 key, a forge or OAuth connection, a webhook's non-token settings — that
 outlives it, listed and revocable in the team's, the org's or the
 account's settings. What it no longer mints is the tokens of that state:
-the webhook and share-link tokens and the invitation are gated above, so
-the door that outlives the session is opened by a standing session only. A WebSocket opened before the
+the webhook and share-link tokens and the invitation are gated above, and
+so is the webhook token a repo-bot provisioning mints through the
+orchestrator (the Integrations enable and update, and the org approval that
+replays one) — the class is every caller of the three mint primitives, not
+a list of route names, and a test enumerates them from the source
+(`TestEveryTeamTokenMintSitsBehindTheChokepoint`). The door that outlives
+the session is opened by a standing session only. A WebSocket opened before the
 revocation is asked again: every envelope that changes a run (cancel,
 pause, answer, queue a message or cancel a queued one, bump a loop, raise a
 budget) checks the standing of the credential the socket was opened with —

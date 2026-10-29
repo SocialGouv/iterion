@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/configshare"
+	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
@@ -177,4 +178,148 @@ func TestTeamTokenMints_APersonalAccessTokenMintsNone(t *testing.T) {
 		t.Fatalf("a personal access token's mints changed the state: webhooks %d→%d, shares %d→%d, invitations %d→%d",
 			hooks, h, shares, s, invitations, i)
 	}
+}
+
+// forgeMintFixture is the derivation fixture with the forge stack wired, so
+// the Integrations routes register and their success path really reaches the
+// orchestrator's mint (forge.Orchestrator.Provision → webhooks.MintToken).
+func forgeMintFixture(t *testing.T) (*derivationFixture, *mockGitLab, string) {
+	t.Helper()
+	gl := newMockGitLab()
+	glsrv := gl.server()
+	t.Cleanup(glsrv.Close)
+	sealer, err := secrets.NewAESGCMSealer(bytes.Repeat([]byte{9}, 32))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	f := newDerivationFixtureWith(t, func(c *Config) {
+		c.WebhookConfigs = webhooks.NewMemoryConfigStore()
+		c.WebhookDeliveries = webhooks.NewMemoryDeliveryStore()
+		c.GenericSecrets = secrets.NewMemoryGenericSecretStore()
+		c.ConfigShares = configshare.NewMemoryStore()
+		c.Sealer = sealer
+		c.ForgeConnections = forge.NewMemoryConnectionStore()
+		c.ForgeIntegrations = forge.NewMemoryRepoIntegrationStore()
+	})
+	if f.s.forgeOrchestrator == nil {
+		t.Fatal("no forge orchestrator was built: the Integrations routes are not registered")
+	}
+	f.s.forgeOrchestrator.Bots = testForgeBotLookup
+	f.s.forgeOrchestrator.Invocations = nil
+	return f, gl, glsrv.URL
+}
+
+// connectForge points team ta at the mock GitLab and answers the connection
+// id the enable names.
+func connectForge(t *testing.T, f *derivationFixture, bearer, glURL string) string {
+	t.Helper()
+	body := `{"provider":"gitlab","mode":"pat","forge_base_url":"` + glURL + `","pat":"glpat-token"}`
+	code, _, resp := f.call(t, http.MethodPost, "/api/teams/ta/forge/connections", bearer, body)
+	if code != http.StatusOK {
+		t.Fatalf("connect the forge: %d %s", code, resp)
+	}
+	var out struct {
+		Connection struct {
+			ID string `json:"id"`
+		} `json:"connection"`
+	}
+	if err := json.Unmarshal([]byte(resp), &out); err != nil || out.Connection.ID == "" {
+		t.Fatalf("connect answered %q", resp)
+	}
+	return out.Connection.ID
+}
+
+// forgeProvisioningMints are the three routes whose success path mints the
+// repo's webhook token through the orchestrator. The PATCH and the approve
+// name ids nothing holds: the gate answers before the handler would look
+// them up, which is the point — the refusal does not depend on the target
+// existing.
+func forgeProvisioningMints(connID string) []teamTokenMint {
+	return []teamTokenMint{
+		{http.MethodPost, "/api/teams/ta/forge/repo-bots", `{"connection_id":"` + connID + `","repo":"group/api","bot_ids":["review-pr"]}`},
+		{http.MethodPatch, "/api/teams/ta/forge/repo-bots/00000000-0000-4000-8000-000000000001", `{"bot_ids":["review-pr"]}`},
+		{http.MethodPost, "/api/orgs/o1/provision-approvals/00000000-0000-4000-8000-000000000002/approve", ""},
+	}
+}
+
+// TestTeamTokenMints_TheRepoBotProvisioningIsGated: the Integrations enable,
+// the update that re-provisions and the org approval that replays the parked
+// request mint the repo's webhook token exactly as POST
+// /api/teams/{id}/webhooks does — through the orchestrator rather than in the
+// handler — so they answer the same refusals. A revoked session's access
+// token mints none (401) and a personal access token never does (403), and
+// the enable — the one request here whose target really exists — writes no
+// webhooks.Config row and ships no token to the forge the same credential
+// named.
+func TestTeamTokenMints_TheRepoBotProvisioningIsGated(t *testing.T) {
+	t.Run("a revoked session's access token", func(t *testing.T) {
+		f, gl, glURL := forgeMintFixture(t)
+		connID := connectForge(t, f, f.user.AccessToken, glURL)
+		if code, _, body := f.call(t, http.MethodPost, "/api/me/sessions/revoke-all", f.other.AccessToken, ""); code != http.StatusNoContent {
+			t.Fatalf("sign out everywhere: %d %s", code, body)
+		}
+		f.s.authSvc.WaitRevocationPasses()
+		hooks, _, _ := mintedCounts(t, f)
+		for _, c := range forgeProvisioningMints(connID) {
+			code, _, body := f.call(t, c.method, c.path, f.user.AccessToken, c.body)
+			if code != http.StatusUnauthorized {
+				t.Errorf("%s %s with a revoked session's access token: %d %s, want 401", c.method, c.path, code, body)
+			}
+		}
+		if h, _, _ := mintedCounts(t, f); h != hooks {
+			t.Errorf("a revoked session minted %d webhook row(s) through the provisioning", h-hooks)
+		}
+		gl.mu.Lock()
+		created := gl.createBody
+		gl.mu.Unlock()
+		if created != nil {
+			t.Errorf("a revoked session had a hook pushed to the forge it named: %v", created)
+		}
+	})
+
+	t.Run("a personal access token", func(t *testing.T) {
+		f, gl, glURL := forgeMintFixture(t)
+		connID := connectForge(t, f, f.user.AccessToken, glURL)
+		code, patToken := f.mintPAT(t, f.user.AccessToken, "ci")
+		if code != http.StatusCreated || patToken == "" {
+			t.Fatalf("mint the PAT: %d", code)
+		}
+		hooks, _, _ := mintedCounts(t, f)
+		for _, c := range forgeProvisioningMints(connID) {
+			code, _, body := f.call(t, c.method, c.path, patToken, c.body)
+			if code != http.StatusForbidden {
+				t.Errorf("%s %s with a personal access token: %d %s, want 403", c.method, c.path, code, body)
+			}
+			if want := "cannot mint another credential"; !strings.Contains(body, want) {
+				t.Errorf("%s %s: the refusal does not carry %q: %s", c.method, c.path, want, body)
+			}
+		}
+		if h, _, _ := mintedCounts(t, f); h != hooks {
+			t.Errorf("a personal access token minted %d webhook row(s) through the provisioning", h-hooks)
+		}
+		gl.mu.Lock()
+		created := gl.createBody
+		gl.mu.Unlock()
+		if created != nil {
+			t.Errorf("a personal access token had a hook pushed to the forge: %v", created)
+		}
+	})
+
+	t.Run("a standing session still provisions", func(t *testing.T) {
+		f, gl, glURL := forgeMintFixture(t)
+		connID := connectForge(t, f, f.user.AccessToken, glURL)
+		code, _, body := f.call(t, http.MethodPost, "/api/teams/ta/forge/repo-bots", f.user.AccessToken, forgeProvisioningMints(connID)[0].body)
+		if code != http.StatusOK {
+			t.Fatalf("enable with a live session: %d %s, want the provisioning to go through", code, body)
+		}
+		if h, _, _ := mintedCounts(t, f); h != 1 {
+			t.Fatalf("a live session's enable wrote %d webhook rows, want 1", h)
+		}
+		gl.mu.Lock()
+		created := gl.createBody
+		gl.mu.Unlock()
+		if created == nil {
+			t.Fatal("a live session's enable pushed no hook to the forge")
+		}
+	})
 }

@@ -18,11 +18,18 @@ import (
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
+// registerForgeProvisioningRoutes wires the Integrations surface. The enable
+// and the update MINT a team token: their success path runs
+// forge.Orchestrator.Provision, which reserves the repo's hook identity with
+// webhooks.MintToken and writes the webhooks.Config row whose token
+// authenticates POST /api/webhooks/{provider}/{id} — the same door the
+// team-scoped webhook mints open, so they ask the same chokepoint
+// (auth.MintTeamToken). The preview, the list and the disable mint nothing.
 func (s *Server) registerForgeProvisioningRoutes() {
 	s.mux.Handle("GET /api/teams/{id}/forge/repo-bots", s.requireAuth(http.HandlerFunc(s.handleListForgeRepoBots)))
-	s.mux.Handle("POST /api/teams/{id}/forge/repo-bots", s.requireAuth(http.HandlerFunc(s.handleEnableForgeRepoBots)))
+	s.mux.Handle("POST /api/teams/{id}/forge/repo-bots", s.requireAuth(s.gateDerivation(auth.MintTeamToken, http.HandlerFunc(s.handleEnableForgeRepoBots))))
 	s.mux.Handle("GET /api/teams/{id}/forge/repo-bots/preview", s.requireAuth(http.HandlerFunc(s.handlePreviewForgeEnable)))
-	s.mux.Handle("PATCH /api/teams/{id}/forge/repo-bots/{integration_id}", s.requireAuth(http.HandlerFunc(s.handleUpdateForgeRepoBots)))
+	s.mux.Handle("PATCH /api/teams/{id}/forge/repo-bots/{integration_id}", s.requireAuth(s.gateDerivation(auth.MintTeamToken, http.HandlerFunc(s.handleUpdateForgeRepoBots))))
 	s.mux.Handle("DELETE /api/teams/{id}/forge/repo-bots/{integration_id}", s.requireAuth(http.HandlerFunc(s.handleDisableForgeRepoBots)))
 }
 

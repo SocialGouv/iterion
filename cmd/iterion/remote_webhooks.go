@@ -48,9 +48,12 @@ var remoteWebhooksGetCmd = &cobra.Command{
 
 var remoteWebhooksCreateCmd = &cobra.Command{
 	Use:   "create",
-	Short: "Create a webhook (--data @file)",
+	Short: "Create a webhook (--data @file) — studio only from a stored token",
 	Args:  cobra.NoArgs,
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		if err := c.RefuseTeamTokenMintFromPAT("Team → Webhooks"); err != nil {
+			return err
+		}
 		base, err := teamBase(cmd, c, "/webhooks")
 		if err != nil {
 			return err
@@ -87,9 +90,12 @@ var remoteWebhooksDeleteCmd = &cobra.Command{
 
 var remoteWebhooksRotateCmd = &cobra.Command{
 	Use:   "rotate <webhook-id>",
-	Short: "Rotate the webhook's token",
+	Short: "Rotate the webhook's token — studio only from a stored token",
 	Args:  cobra.ExactArgs(1),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		if err := c.RefuseTeamTokenMintFromPAT("Team → Webhooks"); err != nil {
+			return err
+		}
 		base, err := teamBase(cmd, c, "/webhooks")
 		if err != nil {
 			return err
@@ -212,6 +218,16 @@ var remoteForgeRepoBotsCmd = &cobra.Command{
 		}
 		if !preview && (cmd.Flags().Changed("connection-id") || cmd.Flags().Changed("bots")) {
 			return fmt.Errorf("--connection-id and --bots only apply to `repo-bots preview`")
+		}
+		// create and update provision: the orchestrator mints the repo's
+		// webhook token, which the instance refuses to a stored token like
+		// every other team-token mint. It is stated before the body is even
+		// read, and before the team resolution sends anything; preview, the
+		// list and delete mint nothing and stay available.
+		if dataVerb {
+			if err := c.RefuseTeamTokenMintFromPAT("Team → Integrations"); err != nil {
+				return err
+			}
 		}
 		readData := func() ([]byte, error) {
 			if !cmd.Flags().Changed("data") || strings.TrimSpace(remoteForgeData) == "" {

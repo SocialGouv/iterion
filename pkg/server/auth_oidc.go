@@ -426,10 +426,31 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		// replayable — and taking it is what tells a DESKTOP flow apart, so
 		// the refusal reaches the desktop's loopback instead of sitting in
 		// the browser tab while the app waits out its timeout (#2687).
+		//
+		// Only a flow THIS provider started is honoured, the same rule the
+		// accepted path applies below (pending.Provider != name): a state
+		// another provider's /start issued names no client of this one. And
+		// a read that did not complete is not a state consumed: it says so
+		// in the log instead of leaving the claim "consumed" standing on a
+		// state that may still be replayable.
 		var flow oidc.PendingAuth
 		if st := r.URL.Query().Get("state"); st != "" && s.oidcStates != nil {
-			if p, terr := s.oidcStates.Take(r.Context(), st); terr == nil {
+			p, terr := s.oidcStates.Take(r.Context(), st)
+			switch {
+			case terr == nil && p.Provider == name:
 				flow = p
+			case terr == nil:
+				if s.logger != nil {
+					s.logger.Warn("oidc callback error from %s: the state belongs to provider %q, so the refusal is not routed to its client", name, p.Provider)
+				}
+			case !errors.Is(terr, oidc.ErrStateNotFound):
+				// A read that did not complete, like a provider
+				// resolution that fails above: the cause survives
+				// nowhere else, and this is a server fault, not a
+				// client's.
+				if s.logger != nil {
+					s.logger.Error("oidc callback error from %s: read the flow's state: %v — the state was NOT consumed and may still be replayable", name, terr)
+				}
 			}
 		}
 		redirectCallbackError(w, r, flow, ssoErrProviderReturned, provQ)

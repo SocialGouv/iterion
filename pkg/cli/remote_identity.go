@@ -63,6 +63,34 @@ func asPATMintRefusal(err error, advice string) (error, bool) {
 	return err, false
 }
 
+// RefuseTeamTokenMintFromPAT is the pre-flight refusal every command whose
+// route MINTS A TEAM TOKEN puts first (auth.MintTeamToken — the webhook
+// mints, the share-link mints, the team and org invitations, and the
+// repo-bot provisioning whose orchestrator mints the repo's hook token).
+// The instance refuses every one of them to a personal access token (403,
+// #1668), and a personal access token is the only thing the CLI ever stores
+// — every `remote login` branch saves an `iap_…` — so the refusal is stated
+// here, before anything is sent, with the one place the deed can be done.
+//
+// Its CLI callers are `webhooks create`, `webhooks rotate`, `teams|orgs
+// invitations create`, `forge repo-bots create|update` and `orgs approvals
+// approve`; the share-link mints have no first-hand command.
+//
+// where names that place in the studio ("Team → Webhooks"), because naming
+// a login would be a dead end: the login would store another personal
+// access token, which mints no more than this one.
+func (c *RemoteClient) RefuseTeamTokenMintFromPAT(where string) error {
+	return c.refuseIfPAT(teamTokenMintAdvice(c.BaseURL(), where))
+}
+
+// teamTokenMintAdvice is that refusal's advice, in one place so every one of
+// those commands says the same thing.
+func teamTokenMintAdvice(base, where string) string {
+	return "Do it in the studio: " + strings.TrimRight(base, "/") + " → " + where + ".\n" +
+		"The CLI stores a personal access token, which is pinned to its team and its own expiry;\n" +
+		"a token that would outlive it — a webhook, share-link or invitation token — is minted by a live session only."
+}
+
 // teamSwitchAdvice names the two ways to put the CLI on another team, given
 // that only a sign-in mints a team-pinned token.
 func teamSwitchAdvice(base, teamID string) string {
@@ -72,14 +100,34 @@ func teamSwitchAdvice(base, teamID string) string {
 		"` (the browser approval pins the studio's active team)."
 }
 
+// TeamApprovalResult is what a browser approval handed back. Every field is
+// a CLAIM of the page, verified against the server before anything is
+// stored (RemoteTeamsSwitch): the approval runs in a browser whose live
+// session the CLI does not control.
+type TeamApprovalResult struct {
+	// Token is the minted plaintext.
+	Token string
+	// TeamID is the team the page states it pinned the token to — empty
+	// from a page that does not know ?team= at all, which is how an
+	// instance older than the CLI announces itself.
+	TeamID string
+	// OrgID is the org the page states for that team; empty from a
+	// pre-org_id instance.
+	OrgID string
+}
+
 // TeamApproval mints a team-pinned CLI token through a fresh browser
 // approval: the instance's /cli-auth page opened with ?team=<id>, where the
 // APPROVING live session — never the stored credential — mints the token
 // (#2674: a personal access token cannot mint another credential since
 // #1668, so the switch re-runs the approval instead of presenting its PAT
-// to POST /api/me/tokens). It answers the minted token's plaintext and the
-// org the server states for the team (empty from a pre-org_id instance).
-type TeamApproval func(ctx context.Context, teamID string) (token, orgID string, err error)
+// to POST /api/me/tokens).
+//
+// It reports what the page answered and never decides on it: a result the
+// switch refuses is a token already minted, and only its caller can revoke
+// it (refuseApprovedToken), so a seam that refused on its own would leave
+// that token alive on the server.
+type TeamApproval func(ctx context.Context, teamID string) (TeamApprovalResult, error)
 
 // tokenCreateAdvice names the two ways to get a new token.
 func tokenCreateAdvice(base string) string {
@@ -290,6 +338,18 @@ func ResolveRemoteRunScopeTeam(ctx context.Context, c *RemoteClient, flag string
 // the CLI's loopback, the derivation rule holds, and the command stays
 // one step (#2674). A nil approve with a PAT stored is the old refusal —
 // advice included, nothing sent.
+//
+// A token the CLI did not mint is a token the CLI must check before it
+// stores it: the approving browser's live session may be ANOTHER account's,
+// and that account's token would silently become the CLI's identity — every
+// later command running as someone else, the replaced token left alive
+// because the revocation below would look through the wrong account's
+// tokens. So the account is read once BEFORE the approval, the approved
+// token is read back from the server, and a mismatch — of the account, of
+// the team — refuses without persisting and REVOKES what was minted
+// (refuseApprovedToken): a refused switch leaves no live token behind. The
+// direct mint needs none of it: there the minter IS the stored credential,
+// so neither the account nor the pin can be another than the one asked for.
 func RemoteTeamsSwitch(ctx context.Context, c *RemoteClient, p *Printer, teamID, tokenName string, approve TeamApproval) error {
 	if strings.TrimSpace(teamID) == "" {
 		return fmt.Errorf("team id required (see `iterion remote teams list`)")
@@ -316,14 +376,44 @@ func RemoteTeamsSwitch(ctx context.Context, c *RemoteClient, p *Printer, teamID,
 	var newToken, orgID string
 	if viaBrowser {
 		// The approval mints from the approving live session — never from
-		// the stored PAT, which is presented to nothing here but the
-		// read-only resolution above and the revocation below.
-		newToken, orgID, err = approve(ctx, teamID)
+		// the stored PAT, which this path presents to nothing but the
+		// read-only resolution above and the account read here (the
+		// revocation below is done with the NEW token).
+		before, err := c.Me(ctx)
+		if err != nil {
+			return fmt.Errorf("read the account the CLI is signed in as, before approving anything: %w — nothing was sent", err)
+		}
+		res, err := approve(ctx, teamID)
 		if err != nil {
 			return err
 		}
-		if newToken == "" {
+		if res.Token == "" {
 			return fmt.Errorf("the browser approval returned no token")
+		}
+		// What the server says about the token just minted, read WITH it:
+		// its account and the team it answers for, in one read. Every
+		// refusal from here on revokes it.
+		after, err := c.MeAs(ctx, res.Token)
+		if err != nil {
+			return refuseApprovedToken(ctx, c, res.Token, fmt.Errorf("the approved token could not be read back from %s: %w", c.BaseURL(), err))
+		}
+		switch {
+		case before.User.ID == "" || after.User.ID == "":
+			return refuseApprovedToken(ctx, c, res.Token, fmt.Errorf("%s named no account for one of the two credentials, so the approval cannot be shown to be yours", c.BaseURL()))
+		case after.User.ID != before.User.ID:
+			return refuseApprovedToken(ctx, c, res.Token, fmt.Errorf("the browser approved as %s, not as the account the CLI is signed in as (%s) — sign that account into the studio and retry, or run `iterion remote login %s`",
+				describeRemoteAccount(after.User), describeRemoteAccount(before.User), c.BaseURL()))
+		case res.TeamID != "" && res.TeamID != teamID:
+			return refuseApprovedToken(ctx, c, res.Token, fmt.Errorf("the approval pinned the token to team %q, not the %q it was asked for", res.TeamID, teamID))
+		case after.ActiveTeam != teamID:
+			return refuseApprovedToken(ctx, c, res.Token, fmt.Errorf("the approved token answers for team %q, not the %q it was asked for — an approval page that predates the team pin mints without one", after.ActiveTeam, teamID))
+		}
+		newToken, orgID = res.Token, res.OrgID
+		// The org the NEW token actually sits in, as the server states it
+		// for that token; the page's echo is the fallback for an instance
+		// whose /api/auth/me answers no active org.
+		if after.ActiveOrg != "" {
+			orgID = after.ActiveOrg
 		}
 	} else {
 		// No client-side membership pre-check: the mint endpoint's canViewTeam
@@ -384,6 +474,60 @@ func RemoteTeamsSwitch(ctx context.Context, c *RemoteClient, p *Printer, teamID,
 	}
 	p.Line("Previous token not found among your tokens (env-provided or already revoked) — left untouched")
 	return nil
+}
+
+// describeRemoteAccount names an account the way an operator recognises it:
+// its email, its id when the view carries none.
+func describeRemoteAccount(u server.UserView) string {
+	if strings.TrimSpace(u.Email) != "" {
+		return u.Email
+	}
+	return u.ID
+}
+
+// refuseApprovedToken is the one way out of a browser approval the switch
+// will not store: nothing is persisted, and the token the approval minted is
+// revoked — a credential nobody can use must not outlive the refusal that
+// rejected it. The error states the reason AND that token's fate, including
+// when the revocation itself failed: an operator who is not told cannot
+// clean up what they cannot see.
+func refuseApprovedToken(ctx context.Context, c *RemoteClient, plaintext string, reason error) error {
+	if err := revokeApprovedToken(ctx, c, plaintext); err != nil {
+		return fmt.Errorf("%w; nothing was stored, and the token the approval minted could NOT be revoked: %w — revoke it in the studio (Account → Access tokens)", reason, err)
+	}
+	return fmt.Errorf("%w; nothing was stored and the token the approval minted was revoked", reason)
+}
+
+// revokeApprovedToken revokes the token an approval minted, presenting THAT
+// token: removing a credential of its own account is a derivation a personal
+// access token may make (auth.ChangeCredential), so the refusal needs no
+// other credential — which matters, since the token may belong to an account
+// the CLI holds nothing for. It matches on the plaintext's own fingerprint,
+// so no other token of that account can be hit.
+func revokeApprovedToken(ctx context.Context, c *RemoteClient, plaintext string) error {
+	cfg := c.cfg
+	cfg.Token = plaintext
+	client := NewRemoteClientFor(cfg)
+	var toks struct {
+		Tokens []remotePAT `json:"tokens"`
+	}
+	if _, err := client.Call(ctx, "GET", "/api/me/tokens", nil, &toks); err != nil {
+		return fmt.Errorf("list the tokens of the approving account: %w", err)
+	}
+	fingerprint := secrets.FingerprintSHA256(plaintext)
+	for _, t := range toks.Tokens {
+		if t.Fingerprint == "" || t.Fingerprint != fingerprint {
+			continue
+		}
+		if t.RevokedAt != nil {
+			return nil
+		}
+		if _, err := client.Call(ctx, "DELETE", "/api/me/tokens/"+t.ID, nil, nil); err != nil {
+			return fmt.Errorf("revoke the minted token %s: %w", t.ID, err)
+		}
+		return nil
+	}
+	return fmt.Errorf("no token of the approving account matches the minted one's fingerprint")
 }
 
 // RemoteOrgsSwitch persists the default org used by org-scoped commands.

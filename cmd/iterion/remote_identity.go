@@ -154,6 +154,13 @@ func invitationsCmd(resolve func(*cobra.Command, *cli.RemoteClient) (string, err
 		Short: "List or manage " + scopeWord(prefix) + " invitations",
 		Args:  cobra.MaximumNArgs(2),
 		RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+			// Before the scope resolution, which reads /api/auth/me: a
+			// credential that mints nothing sends nothing at all.
+			if len(args) == 2 && args[0] == "create" {
+				if err := c.RefuseTeamTokenMintFromPAT(scopeWord(prefix) + " → Members → Invite"); err != nil {
+					return err
+				}
+			}
 			id, err := resolve(cmd, c)
 			if err != nil {
 				return err
@@ -163,6 +170,8 @@ func invitationsCmd(resolve func(*cobra.Command, *cli.RemoteClient) (string, err
 			case len(args) == 0:
 				return cli.RemoteGetPrint(cmd.Context(), c, p, base)
 			case args[0] == "create" && len(args) == 2:
+				// The invitation IS a team token — whoever holds it joins
+				// the team with it — so a stored token was refused above.
 				role := remoteInviteRole
 				if role == "" {
 					role = "member"

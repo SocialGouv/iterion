@@ -154,13 +154,25 @@ func TestRemoteTeamsSwitch_TheStoredPATApprovesThroughTheBrowser(t *testing.T) {
 	t.Setenv("ITERION_REMOTE_URL", "")
 
 	const teamUUID = "87a2ee99-6b91-43ca-bb51-659a8ce7f705"
+	const mintedToken = "iap_browser_minted"
 	oldToken := "iap_stored"
 	oldFP := secrets.FingerprintSHA256(oldToken)
 	var revoked string
 	srv := newCountingServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/auth/me":
-			_, _ = io.WriteString(w, `{"user":{"id":"u1"},"orgs":[{"org_id":"o1","teams":[{"team_id":"`+teamUUID+`","team_name":"Team B","team_slug":"team-b"}]}]}`)
+			// As the real route answers it: the ACTIVE TEAM of the
+			// credential presented — its pin for a team-pinned token
+			// (pkg/server handleMe reads auth.Identity.TeamID) — and the
+			// account that credential belongs to. The switch reads both,
+			// with the stored token and with the approved one, so a stub
+			// answering one body for every bearer would hide the very
+			// mismatch it must catch.
+			active := ""
+			if strings.Contains(r.Header.Get("Authorization"), mintedToken) {
+				active = teamUUID
+			}
+			_, _ = io.WriteString(w, `{"user":{"id":"u1","email":"ops@example.test"},"active_team_id":"`+active+`","active_org_id":"o1","orgs":[{"org_id":"o1","teams":[{"team_id":"`+teamUUID+`","team_name":"Team B","team_slug":"team-b"}]}]}`)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/me/tokens":
 			_, _ = io.WriteString(w, `{"tokens":[{"id":"p-old","name":"cli","fingerprint":"`+oldFP+`"}]}`)
 		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/me/tokens/"):
@@ -177,9 +189,9 @@ func TestRemoteTeamsSwitch_TheStoredPATApprovesThroughTheBrowser(t *testing.T) {
 	c := NewRemoteClientFor(RemoteConfig{BaseURL: srv.URL, Token: oldToken})
 
 	var approvedTeam string
-	approve := func(_ context.Context, teamID string) (string, string, error) {
+	approve := func(_ context.Context, teamID string) (TeamApprovalResult, error) {
 		approvedTeam = teamID
-		return "iap_browser_minted", "o1", nil
+		return TeamApprovalResult{Token: mintedToken, TeamID: teamID, OrgID: "o1"}, nil
 	}
 	p := NewPrinter(OutputHuman)
 	if err := RemoteTeamsSwitch(context.Background(), c, p, "team-b", "iterion-cli (host)", approve); err != nil {
@@ -192,7 +204,7 @@ func TestRemoteTeamsSwitch_TheStoredPATApprovesThroughTheBrowser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Token != "iap_browser_minted" || cfg.TeamID != teamUUID || cfg.OrgID != "o1" {
+	if cfg.Token != mintedToken || cfg.TeamID != teamUUID || cfg.OrgID != "o1" {
 		t.Fatalf("the stored credential is %+v, want the approval's token pinned to %s in o1", cfg, teamUUID)
 	}
 	if revoked != "p-old" {

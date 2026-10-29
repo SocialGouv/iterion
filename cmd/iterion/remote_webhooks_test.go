@@ -33,7 +33,14 @@ func runRemoteForgeRepoBots(t *testing.T, serverURL string, args ...string) erro
 	resetRemoteForgeRepoBotsTestFlags()
 	t.Cleanup(resetRemoteForgeRepoBotsTestFlags)
 	t.Setenv("ITERION_REMOTE_URL", serverURL)
-	t.Setenv("ITERION_REMOTE_TOKEN", "iap_test")
+	// A SESSION credential: `repo-bots create|update` provisions, and the
+	// provisioning mints the repo's webhook token, which the CLI refuses to
+	// present a personal access token for before it reads an argument
+	// (RefuseTeamTokenMintFromPAT). These cases are about the arguments, so
+	// they hold a credential the command may actually run with; the refusal
+	// itself has its own witness
+	// (TestRemoteTeamTokenMints_EveryFirstHandCommandRefusesAStoredTokenBeforeSendingAnything).
+	t.Setenv("ITERION_REMOTE_TOKEN", "eyJhbGciOiJIUzI1NiJ9.e30.sig")
 	t.Setenv("ITERION_REMOTE_TEAM", "")
 	t.Setenv("ITERION_REMOTE_ORG", "")
 	rootCmd.SetArgs(append([]string{"--json", "remote", "forge", "repo-bots"}, args...))

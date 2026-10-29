@@ -85,8 +85,22 @@ Headless, pin the team at login instead:
 credential the switch still mints directly, stores, and revokes the same
 way. `iterion remote tokens create` is refused the same way
 from a stored token: create the token in the studio (Account → Access
-tokens) or from a fresh login. Both refusals happen before anything is
-sent. Org-scoped commands (`--org` / `ITERION_REMOTE_ORG` /
+tokens) or from a fresh login.
+
+The same rule reaches every command whose route mints a **team token** — a
+token that outlives the credential it is minted from: `webhooks create`,
+`webhooks rotate`, `teams|orgs invitations create`, `forge repo-bots
+create|update` (the provisioning mints the repo's webhook token) and `orgs
+approvals approve` (it replays that provisioning). All of them are refused
+from a stored token, and the advice names the **studio**, not a login: a
+login stores another personal access token, which mints no more than this
+one. Reads and the gestures that mint nothing stay available —
+`webhooks list`, the invitation list and `DELETE`, `repo-bots
+preview|delete`, `orgs approvals reject`.
+
+Every one of these refusals happens before anything is sent — not even the
+`/api/auth/me` the team and org scope resolution would read. Org-scoped
+commands (`--org` / `ITERION_REMOTE_ORG` /
 `orgs switch`) need no re-minting (org scope is path-based).
 
 ## The launch → follow → inspect recipe
@@ -145,12 +159,12 @@ the staging step alone and prints the upload id.
 | `schedules` | `list · create · delete` (team-scoped, cloud recurring bots) |
 | `teams` | `list · create · switch · members · invitations · update · status · delete · add-member` |
 | `orgs` | `list · switch · members · invitations · usage · teams · add-member · approvals · credential-audience · oauth · settings` |
-| `… members` (both) | `members` alone lists; `add <user-id> <role>` places an account that ALREADY exists (idempotent), `set-role` updates an existing membership, `remove` revokes. A team grant needs the user in the team's org first, so the order for someone new is `orgs members add` then `teams members add`. **`orgs members add` is super-admin only** — an org admin adds by `orgs invitations create <email>` and keeps `set-role`/`remove`; `teams members add` stays theirs, its candidates being already in the org. |
+| `… members` (both) | `members` alone lists; `add <user-id> <role>` places an account that ALREADY exists (idempotent), `set-role` updates an existing membership, `remove` revokes. A team grant needs the user in the team's org first, so the order for someone new is `orgs members add` then `teams members add`. **`orgs members add` is super-admin only** — an org admin adds by `orgs invitations create <email>` (from the studio, or from a CLI holding a session credential: the invitation is a team token, which a stored personal access token does not mint) and keeps `set-role`/`remove`; `teams members add` stays theirs, its candidates being already in the org. |
 | `me` | `password · sessions-revoke-all · sso-links` |
 | `tokens` | `list · create · revoke` |
 | `secrets` / `api-keys` | `list · set/create · rotate/update · delete` (`--scope team\|me`) |
 | `bindings` | per-bot secret bindings (`list · create · delete`) |
-| `webhooks` | `list · get · create · update · delete · rotate · deliveries` |
+| `webhooks` | `list · get · create · update · delete · rotate · deliveries` (`create` and `rotate` mint a team token: studio only from a stored token) |
 | `forge` | `connections · refresh · repo-bots · oauth-apps · integrations` |
 | `audit` / `usage` / `limits` | `audit team\|org\|admin` · org usage · cost limits |
 | `memory` | `docs · doc get\|put\|delete · export · import` (`--name` space) — `usage` carries no space flags, so the server refuses it |

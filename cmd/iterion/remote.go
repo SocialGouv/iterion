@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net"
 	"net/http"
@@ -297,19 +298,25 @@ func loginViaBrowser(ctx context.Context, base string) (string, error) {
 }
 
 // browserApprovalResult is what the /cli-auth page handed the loopback
-// listener: the minted token and, for a team-pinned approval, the org the
-// server states for the team (empty from a pre-org_id instance).
+// listener: the minted token and, for a team-pinned approval, the team the
+// page says it pinned it to and the org the server states for that team
+// (both empty from an instance whose page does not know ?team=).
 type browserApprovalResult struct {
-	token string
-	orgID string
+	token  string
+	teamID string
+	orgID  string
 }
 
 // approveViaBrowser is the browser-approval flow of `remote login` and —
 // with team non-empty — of `remote teams switch` (#2674): the /cli-auth page
 // is opened with ?team=<id>, the approving LIVE SESSION mints the team-pinned
 // token (a stored PAT mints nothing since #1668), and the loopback callback
-// hands the token back. The page echoes the pin, and a callback answering a
-// different team than asked is refused rather than stored.
+// hands the token back together with the pin the page claims.
+//
+// It judges NOTHING about that pin: by the time the callback arrives the
+// token exists on the server, and only the caller holding it can revoke the
+// one it refuses (cli.RemoteTeamsSwitch). A refusal here would abandon a
+// live token nobody can see.
 func approveViaBrowser(ctx context.Context, base, team string) (browserApprovalResult, error) {
 	state := randHex(16)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -342,13 +349,8 @@ func approveViaBrowser(ctx context.Context, base, team string) (browserApprovalR
 			errCh <- fmt.Errorf("callback returned no token")
 			return
 		}
-		if team != "" && q.Get("team_id") != team {
-			fmt.Fprint(w, htmlMsg("Token pinned to another team — you can close this tab."))
-			errCh <- fmt.Errorf("the approval minted a token pinned to team %q, not %q — retry the switch", q.Get("team_id"), team)
-			return
-		}
 		fmt.Fprint(w, htmlMsg("iterion CLI authorized ✓ — return to your terminal."))
-		resCh <- browserApprovalResult{token: tok, orgID: q.Get("org_id")}
+		resCh <- browserApprovalResult{token: tok, teamID: q.Get("team_id"), orgID: q.Get("org_id")}
 	})
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
@@ -377,9 +379,9 @@ func approveViaBrowser(ctx context.Context, base, team string) (browserApprovalR
 // cliTeamApproval is the pkg/cli TeamApproval seam `remote teams switch`
 // runs through: the browser approval of the instance the client points at.
 func cliTeamApproval(c *cli.RemoteClient) cli.TeamApproval {
-	return func(ctx context.Context, teamID string) (string, string, error) {
+	return func(ctx context.Context, teamID string) (cli.TeamApprovalResult, error) {
 		res, err := approveViaBrowser(ctx, c.BaseURL(), teamID)
-		return res.token, res.orgID, err
+		return cli.TeamApprovalResult{Token: res.token, TeamID: res.teamID, OrgID: res.orgID}, err
 	}
 }
 
@@ -487,8 +489,12 @@ func init() {
 	rootCmd.AddCommand(remoteCmd)
 }
 
+// htmlMsg renders the one-line page the loopback listener of the browser
+// approval serves. msg is escaped at the sink, so a sentence that ever
+// carries a value the instance chose cannot run as markup on
+// http://127.0.0.1:<port>.
 func htmlMsg(msg string) string {
-	return "<!doctype html><meta charset=utf-8><body style=\"font-family:system-ui;padding:3rem;text-align:center\"><h2>" + msg + "</h2>"
+	return "<!doctype html><meta charset=utf-8><body style=\"font-family:system-ui;padding:3rem;text-align:center\"><h2>" + html.EscapeString(msg) + "</h2>"
 }
 
 // browserOpener opens the approval URL in the system browser. A var so a

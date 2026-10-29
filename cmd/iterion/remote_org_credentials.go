@@ -215,6 +215,15 @@ var remoteOrgsApprovalsCmd = &cobra.Command{
 		"is rejected rather than re-provisioned by surprise.",
 	Args: cobra.RangeArgs(0, 2),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		// Approving REPLAYS the parked provisioning, so it mints the repo's
+		// webhook token: refused to a stored token like every other
+		// team-token mint, and refused before the org resolution reads
+		// anything. Rejecting deletes the record and mints nothing.
+		if len(args) == 2 && args[0] == "approve" {
+			if err := c.RefuseTeamTokenMintFromPAT("Org → Approvals"); err != nil {
+				return err
+			}
+		}
 		org, err := c.ResolveOrg(cmd.Context(), remoteOrgFlag)
 		if err != nil {
 			return err

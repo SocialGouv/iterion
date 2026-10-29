@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net/http"
@@ -1850,10 +1851,17 @@ func desktopCallbackHandler(cloudURL string, ticketCh chan<- string, refusalCh c
 
 // ssoClosePage renders the minimal HTML the system browser shows after the SSO
 // round-trip completes on the loopback listener.
+//
+// msg is ESCAPED here, at the one sink every caller goes through: a refusal's
+// sentence carries the provider's label, which travels in the callback's
+// ?sso_provider= and is an org admin's free-text display_name upstream
+// (auth.OrgSSOProvider.DisplayName). Rendered raw it would run that admin's
+// script on http://127.0.0.1:<port>, where a cookie is written for every
+// port of the loopback host.
 func ssoClosePage(msg string) string {
 	return "<!doctype html><html><head><meta charset=\"utf-8\"><title>Iterion</title></head>" +
 		"<body style=\"font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0\">" +
-		"<p style=\"font-size:1rem;color:#333\">" + msg + "</p></body></html>"
+		"<p style=\"font-size:1rem;color:#333\">" + html.EscapeString(msg) + "</p></body></html>"
 }
 
 // desktopSSORefusal maps the sso_error code the cloud's OIDC callback

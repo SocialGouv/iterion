@@ -282,6 +282,12 @@ var gatedRouteChokepointCodes = map[string][]int{
 	"POST /api/teams/{id}/config-shares/{sid}/rotate":    {http.StatusUnauthorized, http.StatusForbidden},
 	"POST /api/teams/{id}/invitations":                   {http.StatusUnauthorized, http.StatusForbidden},
 	"POST /api/orgs/{id}/invitations":                    {http.StatusUnauthorized, http.StatusForbidden},
+	// The repo-bot provisioning mints the repo's webhook token through the
+	// orchestrator (forge.Orchestrator.Provision → webhooks.MintToken), and
+	// the org approval replays that exact request.
+	"POST /api/teams/{id}/forge/repo-bots":                          {http.StatusUnauthorized, http.StatusForbidden},
+	"PATCH /api/teams/{id}/forge/repo-bots/{integration_id}":        {http.StatusUnauthorized, http.StatusForbidden},
+	"POST /api/orgs/{id}/provision-approvals/{approval_id}/approve": {http.StatusUnauthorized, http.StatusForbidden},
 }
 
 // chokepointResponses answers the refusal response objects a route carries:

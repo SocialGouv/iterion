@@ -22,10 +22,16 @@ import (
 // parked as a forge.ProvisionApproval — with ZERO forge-side surface
 // created — until an org admin approves (replays the exact request through
 // the orchestrator) or rejects (deletes it). Org admins and super-admins
-// are never gated: they already hold the approval right.
+// are never gated by the approval queue: they already hold the approval
+// right.
+//
+// The approval REPLAYS the parked request through forge.Orchestrator.Provision,
+// so it mints the repo's webhook token exactly as the enable it stands for
+// does: it asks the derivation chokepoint (auth.MintTeamToken) like every
+// other team-token mint. The reject deletes the record and mints nothing.
 func (s *Server) registerForgeApprovalRoutes() {
 	s.mux.Handle("GET /api/orgs/{id}/provision-approvals", s.requireAuth(http.HandlerFunc(s.handleListOrgProvisionApprovals)))
-	s.mux.Handle("POST /api/orgs/{id}/provision-approvals/{approval_id}/approve", s.requireAuth(http.HandlerFunc(s.handleApproveProvision)))
+	s.mux.Handle("POST /api/orgs/{id}/provision-approvals/{approval_id}/approve", s.requireAuth(s.gateDerivation(auth.MintTeamToken, http.HandlerFunc(s.handleApproveProvision))))
 	s.mux.Handle("POST /api/orgs/{id}/provision-approvals/{approval_id}/reject", s.requireAuth(http.HandlerFunc(s.handleRejectProvision)))
 	s.mux.Handle("GET /api/teams/{id}/provision-approvals", s.requireAuth(http.HandlerFunc(s.handleListTeamProvisionApprovals)))
 }
