@@ -23,6 +23,7 @@ import { useBotsStore } from "@/store/bots";
 
 import { CreateWebhookDialog } from "./webhooks/CreateWebhookDialog";
 import { DeliveriesDrawer } from "./webhooks/DeliveriesDrawer";
+import KeyOverridesDialog from "./webhooks/KeyOverridesDialog";
 import { TokenOncePanel } from "./webhooks/TokenOncePanel";
 
 interface Props {
@@ -49,6 +50,10 @@ export default function WebhooksTab({ teamID, canManage }: Props) {
     null,
   );
   const [deliveriesFor, setDeliveriesFor] = useState<WebhookConfig | null>(null);
+  // The credential pins of one webhook (#2648). Held by id, not by value:
+  // a reload between opening and saving must not edit the pins of the row
+  // the operator was looking at a moment ago.
+  const [pinsForID, setPinsForID] = useState<string | null>(null);
 
   // Mutations (toggle/rotate/delete) flow through `run()`; list-load
   // failures surface from the query. One banner shows whichever is
@@ -73,6 +78,11 @@ export default function WebhooksTab({ teamID, canManage }: Props) {
 
   const reload = () =>
     queryClient.invalidateQueries({ queryKey: ["team-webhooks", teamID] });
+  // Resolved from the CURRENT list, so a reload (a save, a toggle) re-renders
+  // the dialog against the stored config instead of the snapshot that opened
+  // it. A webhook deleted meanwhile closes the dialog rather than editing a
+  // config that no longer exists.
+  const pinsFor = webhooks.find((w) => w.id === pinsForID) ?? null;
 
   useEffect(() => {
     void fetchBots();
@@ -226,6 +236,11 @@ export default function WebhooksTab({ teamID, canManage }: Props) {
                   </Button>
                   {canManage && (
                     <>
+                      <Button size="sm" variant="ghost" onClick={() => setPinsForID(w.id)}>
+                        Credential pins
+                        {Object.keys(w.key_overrides ?? {}).length > 0 &&
+                          ` (${Object.keys(w.key_overrides ?? {}).length})`}
+                      </Button>
                       <Button size="sm" variant="ghost" onClick={() => void askRotate(w)}>
                         Rotate
                       </Button>
@@ -272,6 +287,15 @@ export default function WebhooksTab({ teamID, canManage }: Props) {
           teamID={teamID}
           webhook={deliveriesFor}
           onClose={() => setDeliveriesFor(null)}
+        />
+      )}
+
+      {pinsFor && (
+        <KeyOverridesDialog
+          teamID={teamID}
+          webhook={pinsFor}
+          onClose={() => setPinsForID(null)}
+          onSaved={() => void reload()}
         />
       )}
     </div>
