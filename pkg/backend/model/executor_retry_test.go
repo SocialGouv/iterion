@@ -14,6 +14,7 @@ import (
 )
 
 func TestIsRetryable(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		err  error
@@ -41,6 +42,7 @@ func TestIsRetryable(t *testing.T) {
 }
 
 func TestStatusCodeOf(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		err  error
@@ -62,6 +64,7 @@ func TestStatusCodeOf(t *testing.T) {
 }
 
 func TestIsDelegateRetryable(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		err  error
@@ -95,6 +98,7 @@ func TestIsDelegateRetryable(t *testing.T) {
 }
 
 func TestExtractExitCode(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		msg  string
@@ -134,6 +138,7 @@ func newTestExecutorForRetry(maxAttempts int) *ClawExecutor {
 // figure reports the cost of nothing. The caps, the org ledger and a lending
 // donor all read the map, so the true figure has to survive.
 func TestRetryDelegateLoop_KeepsTheSpendItDiscards(t *testing.T) {
+	t.Parallel()
 	e := newTestExecutorForRetry(3)
 	calls := 0
 	billed := func(tokens int, usd float64) delegate.Result {
@@ -182,6 +187,7 @@ func TestRetryDelegateLoop_KeepsTheSpendItDiscards(t *testing.T) {
 // resumed formatting pass's Usage onto pass 1's — so they still sum. Both
 // halves are asserted here precisely because they disagree.
 func TestRetryDelegateLoop_SessionTotalCostIsNotDoubled(t *testing.T) {
+	t.Parallel()
 	e := newTestExecutorForRetry(3)
 	calls := 0
 	got, err := e.retryDelegateLoop(context.Background(), "node1", delegate.BackendClaudeCode, true, func() (delegate.Result, error) {
@@ -227,6 +233,7 @@ func TestRetryDelegateLoop_SessionTotalCostIsNotDoubled(t *testing.T) {
 // two. Same class as a failed node whose spend never reached the totals: the
 // caps, the org ledger and a lending donor all read this map.
 func TestRetryDelegateLoop_SessionTotalKeepsTheLargestReading(t *testing.T) {
+	t.Parallel()
 	e := newTestExecutorForRetry(3)
 	calls := 0
 	got, err := e.retryDelegateLoop(context.Background(), "node1", delegate.BackendClaudeCode, true, func() (delegate.Result, error) {
@@ -269,6 +276,7 @@ func TestRetryDelegateLoop_SessionTotalKeepsTheLargestReading(t *testing.T) {
 // tokens it was computed from. A fold keyed on the session ALONE read this
 // shape as cumulative and dropped a whole attempt's spend.
 func TestRetryDelegateLoop_EstimatedCostSumsEvenInOneSession(t *testing.T) {
+	t.Parallel()
 	e := newTestExecutorForRetry(3)
 	calls := 0
 	got, err := e.retryDelegateLoop(context.Background(), "node1", delegate.BackendClaudeCode, true, func() (delegate.Result, error) {
@@ -301,6 +309,7 @@ func TestRetryDelegateLoop_EstimatedCostSumsEvenInOneSession(t *testing.T) {
 // here reported 9000 for 10300 of work — an under-report, which is the
 // direction that lets a run walk past max_cost_usd.
 func TestRetryDelegateLoop_FreshSessionsEachSpendTheirOwn(t *testing.T) {
+	t.Parallel()
 	e := newTestExecutorForRetry(3)
 	calls := 0
 	got, err := e.retryDelegateLoop(context.Background(), "node1", "claw", false, func() (delegate.Result, error) {
@@ -336,6 +345,7 @@ func TestRetryDelegateLoop_FreshSessionsEachSpendTheirOwn(t *testing.T) {
 // A cancelled retry keeps the accounting too: no output survives a
 // cancellation, but what the attempts spent is not undone by it.
 func TestRetryDelegateLoop_CancelledKeepsTheSpend(t *testing.T) {
+	t.Parallel()
 	e := newTestExecutorForRetry(3)
 	ctx, cancel := context.WithCancel(context.Background())
 	got, err := e.retryDelegateLoop(ctx, "node1", "claw", false, func() (delegate.Result, error) {
@@ -353,6 +363,7 @@ func TestRetryDelegateLoop_CancelledKeepsTheSpend(t *testing.T) {
 }
 
 func TestRetryDelegateLoop_SucceedsFirstTry(t *testing.T) {
+	t.Parallel()
 	e := newTestExecutorForRetry(3)
 	calls := 0
 	want := delegate.Result{Output: map[string]any{"k": "v"}, BackendName: "claw"}
@@ -372,6 +383,7 @@ func TestRetryDelegateLoop_SucceedsFirstTry(t *testing.T) {
 }
 
 func TestRetryDelegateLoop_RetriesOnTransientThenSucceeds(t *testing.T) {
+	t.Parallel()
 	e := newTestExecutorForRetry(3)
 	calls := 0
 	got, err := e.retryDelegateLoop(context.Background(), "node1", "claw", false, func() (delegate.Result, error) {
@@ -393,6 +405,7 @@ func TestRetryDelegateLoop_RetriesOnTransientThenSucceeds(t *testing.T) {
 }
 
 func TestRetryDelegateLoop_GivesUpAtMaxAttempts(t *testing.T) {
+	t.Parallel()
 	e := newTestExecutorForRetry(3)
 	calls := 0
 	_, err := e.retryDelegateLoop(context.Background(), "node1", "claw", false, func() (delegate.Result, error) {
@@ -408,6 +421,7 @@ func TestRetryDelegateLoop_GivesUpAtMaxAttempts(t *testing.T) {
 }
 
 func TestRetryDelegateLoop_NonRetryableErrorStopsImmediately(t *testing.T) {
+	t.Parallel()
 	e := newTestExecutorForRetry(5)
 	calls := 0
 	_, err := e.retryDelegateLoop(context.Background(), "node1", "claw", false, func() (delegate.Result, error) {
@@ -423,6 +437,7 @@ func TestRetryDelegateLoop_NonRetryableErrorStopsImmediately(t *testing.T) {
 }
 
 func TestRetryDelegateLoop_ContextCancelStopsBackoff(t *testing.T) {
+	t.Parallel()
 	e := newTestExecutorForRetry(10)
 	e.retry.BackoffBase = 500 * time.Millisecond // long enough to actually wait
 	ctx, cancel := context.WithCancel(context.Background())
@@ -444,6 +459,7 @@ func TestRetryDelegateLoop_ContextCancelStopsBackoff(t *testing.T) {
 }
 
 func TestRetryDelegateLoop_OnDelegateRetryHookFires(t *testing.T) {
+	t.Parallel()
 	e := newTestExecutorForRetry(3)
 	var hookFires []DelegateInfo
 	e.hooks.OnDelegateRetry = func(nodeID string, info DelegateInfo) {

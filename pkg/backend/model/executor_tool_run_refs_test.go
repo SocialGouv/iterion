@@ -37,6 +37,7 @@ func runTemplateData() *TemplateData {
 // shell body, so `sh -c` fails on visible braces instead of silently
 // running one argument short.
 func TestRunRefUnknownMemberKeepsPlaceholderInShellBody(t *testing.T) {
+	t.Parallel()
 	refs := []*ir.Ref{{Kind: ir.RefRun, Path: []string{"no_such_member"}, Raw: "{{run.no_such_member}}"}}
 	got := resolveToolCommandUnderTest("git checkout {{run.no_such_member}}", refs, nil, nil, runTemplateData(), "run-abc")
 	if got != "git checkout {{run.no_such_member}}" {
@@ -48,6 +49,7 @@ func TestRunRefUnknownMemberKeepsPlaceholderInShellBody(t *testing.T) {
 // missing-ref rule is the language's null literal — a bare `{{…}}` would
 // crash the interpreter at parse time before any script logic runs.
 func TestRunRefUnknownMemberRendersNullInScriptBody(t *testing.T) {
+	t.Parallel()
 	refs := []*ir.Ref{{Kind: ir.RefRun, Path: []string{"no_such_member"}, Raw: "{{run.no_such_member}}"}}
 	got := resolveToolScriptUnderTest("const v = {{run.no_such_member}};", refs, nil, nil, runTemplateData(), "run-abc")
 	if got != "const v = null;" {
@@ -60,6 +62,7 @@ func TestRunRefUnknownMemberRendersNullInScriptBody(t *testing.T) {
 // Substituting run refs in a pass of their own feeds their output back
 // into the next pass — the cascade the single-pass walk exists to kill.
 func TestRunRefValueIsNotReExpanded(t *testing.T) {
+	t.Parallel()
 	td := runTemplateData()
 	td.Run["note"] = "{{input.payload}}"
 	refs := []*ir.Ref{
@@ -79,6 +82,7 @@ func TestRunRefValueIsNotReExpanded(t *testing.T) {
 // context (shell-escaped / JSON literal). Folding the namespace into the
 // shared resolver must not cost that.
 func TestRunRefKnownMemberResolvesInBothBodies(t *testing.T) {
+	t.Parallel()
 	td := runTemplateData()
 	refs := []*ir.Ref{
 		{Kind: ir.RefRun, Path: []string{"id"}, Raw: "{{run.id}}"},
@@ -100,6 +104,7 @@ func TestRunRefKnownMemberResolvesInBothBodies(t *testing.T) {
 // WithRunID (no template snapshot) still resolves `{{run.id}}` — the one
 // member the ctx identity answers for.
 func TestRunRefIDFallsBackToTheContextRunID(t *testing.T) {
+	t.Parallel()
 	refs := []*ir.Ref{{Kind: ir.RefRun, Path: []string{"id"}, Raw: "{{run.id}}"}}
 	got := resolveToolCommandUnderTest("b/{{run.id}}", refs, nil, nil, nil, "run-abc")
 	if got != "b/'run-abc'" {
@@ -112,6 +117,7 @@ func TestRunRefIDFallsBackToTheContextRunID(t *testing.T) {
 // placeholder like any other unresolvable ref. Rendering the empty string
 // instead would hand `sh -c` a command one argument short.
 func TestRunRefIDWithNoIdentityKeepsPlaceholder(t *testing.T) {
+	t.Parallel()
 	refs := []*ir.Ref{{Kind: ir.RefRun, Path: []string{"id"}, Raw: "{{run.id}}"}}
 	got := resolveToolCommandUnderTest("b/{{run.id}}", refs, nil, nil, nil, "")
 	if got != "b/{{run.id}}" {

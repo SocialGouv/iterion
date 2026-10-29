@@ -36,6 +36,7 @@ func (e *countingEmitter) AppendEvent(context.Context, string, store.Event) (*st
 // builds, so the block sinks pay through [storeHooks.logFarSideBlock] — one
 // owner of the gate for all of them, and one subtest per body it carries.
 func TestClawRelay_AHookLogThatDropsTheRecordCostsNoPass(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-proj-WITNESSHOOKLAZY0123456789abcdef"
 	bulky := strings.Repeat("x", 4096) + secret
 
@@ -136,6 +137,7 @@ func TestClawRelay_AHookLogThatDropsTheRecordCostsNoPass(t *testing.T) {
 // every tool call made with no arguments — the record an operator at
 // --log-level debug is reading the raw input FOR.
 func TestClawRelay_TheBlockGateDropsNoRecordTheLogKeeps(t *testing.T) {
+	t.Parallel()
 	for _, input := range []json.RawMessage{json.RawMessage(""), json.RawMessage(`{"path":"a.txt"}`)} {
 		t.Run("input="+string(input), func(t *testing.T) {
 			at := func(level iterlog.Level) string {

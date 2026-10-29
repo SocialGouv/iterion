@@ -33,6 +33,7 @@ func jsonFieldNode() *ir.ToolNode {
 // `KEY={{input.x}} cmd` assigned only the first word and ran the second
 // as a command (exit 127).
 func TestShapeJSON_StringListIsOneToken(t *testing.T) {
+	t.Parallel()
 	got := shellEscapeValue([]any{"Go", "Fail-open partout: comma"}, ShapeJSON)
 	if want := `'["Go","Fail-open partout: comma"]'`; got != want {
 		t.Errorf("json rendering = %s, want %s", got, want)
@@ -43,6 +44,7 @@ func TestShapeJSON_StringListIsOneToken(t *testing.T) {
 // {{input.files}}` depends on it, and an agent's output arrives as []any
 // whatever the declaration, so only the declared type separates the two.
 func TestShapeWords_ListIsOneWordPerElement(t *testing.T) {
+	t.Parallel()
 	got := shellEscapeValue([]any{"a.go", "b c.go"}, ShapeWords)
 	if want := `'a.go' 'b c.go'`; got != want {
 		t.Errorf("string[] rendering = %s, want %s", got, want)
@@ -53,6 +55,7 @@ func TestShapeWords_ListIsOneWordPerElement(t *testing.T) {
 // does not move; `string[]` renders nothing, which is what an empty argv
 // list means and what the docs now promise.
 func TestEmptyList_JSONKeepsItsToken_WordsRenderNone(t *testing.T) {
+	t.Parallel()
 	if got := shellEscapeValue([]any{}, ShapeJSON); got != `'[]'` {
 		t.Errorf("empty json = %s, want '[]'", got)
 	}
@@ -68,6 +71,7 @@ func TestEmptyList_JSONKeepsItsToken_WordsRenderNone(t *testing.T) {
 // says "document", the value says "string", and adding quotes it never
 // carried would change what the program reads.
 func TestShapeJSON_TextStaysText(t *testing.T) {
+	t.Parallel()
 	if got := shellEscapeValue("not json at all", ShapeJSON); got != `'not json at all'` {
 		t.Errorf("json text = %s, want the text as one token", got)
 	}
@@ -79,6 +83,7 @@ func TestShapeJSON_TextStaysText(t *testing.T) {
 // Undeclared sites keep the shape heuristic, unchanged: an `outputs.*`
 // field, a key an edge delivers to a node with no `input:` schema.
 func TestShapeUndeclared_KeepsTheHeuristic(t *testing.T) {
+	t.Parallel()
 	if got := shellEscapeValue([]any{"a", "b"}, ShapeUndeclared); got != `'a' 'b'` {
 		t.Errorf("undeclared scalar slice = %s, want the space-join", got)
 	}
@@ -122,6 +127,7 @@ func shapesFixture() *Shapes {
 }
 
 func TestDeclaredShapes_ReadsVarsInputFieldsAndOutputs(t *testing.T) {
+	t.Parallel()
 	s := shapesFixture()
 	cases := []struct {
 		expr string
@@ -199,6 +205,7 @@ func mustRefs(s string) []*ir.Ref {
 }
 
 func TestShellRecipe_RendersEachFieldByItsDeclaration(t *testing.T) {
+	t.Parallel()
 	e := jsonFieldExecutor(
 		&ir.SchemaField{Name: "quick_replies", Type: ir.FieldTypeJSON},
 		&ir.SchemaField{Name: "files", Type: ir.FieldTypeStringArray},
@@ -224,6 +231,7 @@ func TestShellRecipe_RendersEachFieldByItsDeclaration(t *testing.T) {
 // VAR. jsonFieldsAsText only ever saw the input map, so `{{vars.langs}}`
 // space-joined into the command whatever the declaration said.
 func TestShellRecipe_RendersVarsByTheirDeclaration(t *testing.T) {
+	t.Parallel()
 	e := listVarExecutor(map[string]*ir.Var{
 		"langs": {Name: "langs", Type: ir.VarJSON},
 		"files": {Name: "files", Type: ir.VarStringArray},
@@ -253,6 +261,7 @@ func TestShellRecipe_RendersVarsByTheirDeclaration(t *testing.T) {
 }
 
 func TestPostconditionRecipe_RendersByDeclaration(t *testing.T) {
+	t.Parallel()
 	e := jsonFieldExecutor(&ir.SchemaField{Name: "ids", Type: ir.FieldTypeJSON})
 	node := &ir.ToolNode{
 		BaseNode:      ir.BaseNode{ID: "gate"},
@@ -273,6 +282,7 @@ func TestPostconditionRecipe_RendersByDeclaration(t *testing.T) {
 // string, which found nothing and left the reference in the command as
 // written.
 func TestShellRecipe_DrilledPathIntoAJSONFieldStillResolves(t *testing.T) {
+	t.Parallel()
 	e := jsonFieldExecutor(&ir.SchemaField{Name: "payload", Type: ir.FieldTypeJSON})
 	node := jsonFieldRecipeNode(`INNER={{input.payload.inner}} run`, "")
 	input := map[string]any{"payload": map[string]any{"inner": "leaf"}}
@@ -291,6 +301,7 @@ func TestShellRecipe_DrilledPathIntoAJSONFieldStillResolves(t *testing.T) {
 // script: bodies are JSON literals for every namespace — the shape does
 // not enter there, and a `json` value must not gain a second encoding.
 func TestScriptRecipe_IsUnchangedByTheDeclaration(t *testing.T) {
+	t.Parallel()
 	e := jsonFieldExecutor(&ir.SchemaField{Name: "ids", Type: ir.FieldTypeJSON})
 	node := jsonFieldRecipeNode("", `const ids = {{input.ids}};`)
 	node.Language = "js"
@@ -311,6 +322,7 @@ func TestScriptRecipe_IsUnchangedByTheDeclaration(t *testing.T) {
 // No schema, no declared field: the reference renders by the heuristic
 // rather than by a declaration nobody made.
 func TestNodeShapes_NoSchemaIsUndeclared(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{schemas: map[string]*ir.Schema{}}
 	if s := e.nodeShapes(jsonFieldNode()); s != nil {
 		t.Errorf("unknown schema produced shapes: %#v", s)
@@ -328,6 +340,7 @@ func TestNodeShapes_NoSchemaIsUndeclared(t *testing.T) {
 // default is read. A test that sets wfVars by hand proves the renderer and
 // nothing about how it ever gets its answer.
 func TestNewClawExecutor_SeedsAndTypesTheDeclaredVars(t *testing.T) {
+	t.Parallel()
 	wf := &ir.Workflow{
 		Name:    "wf",
 		Schemas: map[string]*ir.Schema{"gate_in": {Name: "gate_in"}},
@@ -363,6 +376,7 @@ func TestNewClawExecutor_SeedsAndTypesTheDeclaredVars(t *testing.T) {
 // not the `{{…}}` placeholder a shell body keeps for a reference nobody
 // wired — which is what the nil short-circuit did, past the declaration.
 func TestPresentNull_RendersThroughTheDeclaration(t *testing.T) {
+	t.Parallel()
 	e := listVarExecutor(
 		map[string]*ir.Var{
 			"doc": {Name: "doc", Type: ir.VarJSON},
@@ -396,6 +410,7 @@ func TestPresentNull_RendersThroughTheDeclaration(t *testing.T) {
 // #1320 on the namespace that most often carries an agent's structured
 // output: the producer's `output:` schema is a declaration too.
 func TestShellRecipe_RendersOutputsByTheProducersSchema(t *testing.T) {
+	t.Parallel()
 	produced := &ir.Schema{Name: "scan_out", Fields: []*ir.SchemaField{
 		{Name: "langs", Type: ir.FieldTypeJSON},
 		{Name: "files", Type: ir.FieldTypeStringArray},
@@ -428,6 +443,7 @@ func TestShellRecipe_RendersOutputsByTheProducersSchema(t *testing.T) {
 // `map[k:v]` debug syntax is what the undeclared arm exists to avoid, and
 // a declared slot must not reintroduce it.
 func TestShapeWords_MapKeepsItsJSON(t *testing.T) {
+	t.Parallel()
 	m := map[string]any{"k": "v"}
 	if got, want := shellEscapeValue(m, ShapeWords), `'{"k":"v"}'`; got != want {
 		t.Errorf("map in a string[] slot = %s, want %s", got, want)
@@ -442,6 +458,7 @@ func TestShapeWords_MapKeepsItsJSON(t *testing.T) {
 // into its place — in the one configuration where the author had DECLARED
 // the slot, which is the opposite of what declaring it should buy.
 func TestPresentNull_InAStringArraySlotKeepsThePlaceholder(t *testing.T) {
+	t.Parallel()
 	e := jsonFieldExecutor(&ir.SchemaField{Name: "files", Type: ir.FieldTypeStringArray})
 	node := jsonFieldRecipeNode(`run {{input.files}} --flag SENTINEL`, "")
 
@@ -463,6 +480,7 @@ func TestPresentNull_InAStringArraySlotKeepsThePlaceholder(t *testing.T) {
 // made one reference mean three things across the three surfaces that
 // resolve it.
 func TestShellRecipe_DrillsIntoAJSONVar(t *testing.T) {
+	t.Parallel()
 	e := listVarExecutor(map[string]*ir.Var{"cfg": {Name: "cfg", Type: ir.VarJSON}})
 	e.vars = map[string]any{"cfg": map[string]any{"name": "alpha", "on": true}}
 	node := jsonFieldRecipeNode(`NAME={{vars.cfg.name}} ON={{vars.cfg.on}} ABSENT={{vars.cfg.nope}}`, "")
@@ -489,6 +507,7 @@ func TestShellRecipe_DrillsIntoAJSONVar(t *testing.T) {
 // the maps it shares. Two nodes with different input schemas, rendered
 // concurrently off the same workflow shapes, under -race.
 func TestShapes_AreSafeForConcurrentNodes(t *testing.T) {
+	t.Parallel()
 	wf := &ir.Workflow{
 		Vars: map[string]*ir.Var{"langs": {Name: "langs", Type: ir.VarJSON}},
 		Schemas: map[string]*ir.Schema{
@@ -530,6 +549,7 @@ func TestShapes_AreSafeForConcurrentNodes(t *testing.T) {
 // The two shapes' answer for nil, stated once: the renderer is what the
 // presence rule above hands a null to.
 func TestShellEscapeValue_NilByShape(t *testing.T) {
+	t.Parallel()
 	if got := shellEscapeValue(nil, ShapeJSON); got != `'null'` {
 		t.Errorf("nil json = %s, want 'null'", got)
 	}

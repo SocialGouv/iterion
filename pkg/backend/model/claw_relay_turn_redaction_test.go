@@ -72,6 +72,7 @@ func relayedTurnWireStrings(t *testing.T) []string {
 // redacted; a field it names must come back in clear, so the list cannot
 // quietly outlive its reason either.
 func TestClawRelay_PersistsNoRelayedTurnInClear(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-proj-TURNWITNESS0123456789abcdefghij"
 
 	// What a field is allowed to look like once the run has written it.

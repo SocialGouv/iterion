@@ -38,6 +38,7 @@ func placementTask(names []string) (delegate.Task, map[string]bool) {
 // the container wrote it on the runner's stdout. The names come from the
 // classification itself, so a tool added to it is covered here too.
 func TestMultiplexerHandler_RefusesEveryToolNotPlacedOnTheLauncher(t *testing.T) {
+	t.Parallel()
 	contained := append(tool.SandboxPlacedTools(tool.PlacementSandbox), tool.SandboxPlacedTools(tool.PlacementRefused)...)
 	contained = append(contained, "unclassified_future_tool")
 	task, ran := placementTask(contained)
@@ -71,6 +72,7 @@ func TestMultiplexerHandler_RefusesEveryToolNotPlacedOnTheLauncher(t *testing.T)
 //
 // Reddens on the mutation that deletes the launcher's permission check.
 func TestMultiplexerHandler_EnforcesThePermissionGateOnForwardedCalls(t *testing.T) {
+	t.Parallel()
 	const name = "mcp_github_create_issue"
 	for _, tc := range []struct {
 		allow    []string
@@ -135,6 +137,7 @@ func identityTask(pol *permission.Policy) (delegate.Task, *bool) {
 // one that lets an allow outrank an explicit deny, and on the one that maps
 // an unadvertised spelling back onto the tool.
 func TestMultiplexerHandler_PermissionGateTakesTheToolsIdentity(t *testing.T) {
+	t.Parallel()
 	if err, ran := gateForwardedCall(t, []string{"*"}, []string{"mcp__github__delete_*"}, "mcp_github_delete_repo", `{}`); err == nil || ran {
 		t.Errorf("an FQN deny rule did not deny the sanitized forwarded name: err=%v ran=%v", err, ran)
 	}
@@ -170,6 +173,7 @@ func gateForwardedCall(t *testing.T, allow, deny []string, name, input string) (
 // Reddens on the mutation that skips the first spelling's explicit deny, and
 // on the one that lets a default deny from the FQN spelling refuse.
 func TestMultiplexerHandler_PermissionGateHonoursAdvertisedFormRules(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		allow, deny []string
 		wantRun     bool
@@ -192,6 +196,7 @@ func TestMultiplexerHandler_PermissionGateHonoursAdvertisedFormRules(t *testing.
 //
 // Reddens on the mutation that carries on with nil arguments.
 func TestMultiplexerHandler_RefusesAnUndecodableInputUnderAPolicy(t *testing.T) {
+	t.Parallel()
 	if err, ran := gateForwardedCall(t, []string{"*"}, nil, "mcp_github_delete_repo", `[]`); err == nil || ran {
 		t.Errorf("a non-object input was gated as if it had no arguments: err=%v ran=%v", err, ran)
 	}
@@ -203,6 +208,7 @@ func TestMultiplexerHandler_RefusesAnUndecodableInputUnderAPolicy(t *testing.T) 
 //
 // Reddens on the mutation that drops QualifiedName from ToDelegateDef.
 func TestMultiplexerHandler_GatesTheIdentityBuildTaskProduces(t *testing.T) {
+	t.Parallel()
 	for _, withToolPolicy := range []bool{false, true} {
 		reg := tool.NewRegistry()
 		ran := false
@@ -243,6 +249,7 @@ func TestMultiplexerHandler_GatesTheIdentityBuildTaskProduces(t *testing.T) {
 //
 // Reddens on the mutation that drops the hook from refuseForwardedCall.
 func TestMultiplexerHandler_RecordsARefusedForwardedCall(t *testing.T) {
+	t.Parallel()
 	var logged bytes.Buffer
 	var recorded []LLMToolCallInfo
 	hooks := EventHooks{OnToolCall: func(_ string, info LLMToolCallInfo) { recorded = append(recorded, info) }}
@@ -264,6 +271,7 @@ func TestMultiplexerHandler_RecordsARefusedForwardedCall(t *testing.T) {
 // launcher-placed built-in and MCP tool, under the name it was advertised by —
 // the one a runner's proxy closure forwards.
 func TestMultiplexerHandler_ExecutesLauncherPlacedTools(t *testing.T) {
+	t.Parallel()
 	names := append(tool.SandboxPlacedTools(tool.PlacementLauncher), "mcp_github_create_issue")
 	task, ran := placementTask(names)
 	handler := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}).multiplexerHandler(context.Background(), task, sessionSeed{})

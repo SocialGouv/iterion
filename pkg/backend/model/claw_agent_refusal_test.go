@@ -21,6 +21,7 @@ import (
 // reads a tool error naming what cannot be served, and the loop CONTINUES —
 // the node does not die on a tool the engine granted it under ultracode.
 func TestTheAgentRefusalReachesTheModelAsAToolError(t *testing.T) {
+	t.Parallel()
 	reg := tool.NewRegistry()
 	if err := tool.RegisterClawSubagents(reg, nil); err != nil {
 		t.Fatalf("RegisterClawSubagents: %v", err)
@@ -82,6 +83,7 @@ func TestTheAgentRefusalReachesTheModelAsAToolError(t *testing.T) {
 // Reddens on the mutation that trims the name inside
 // resolveSingleToolForNode — the engine silently repairing the author's list.
 func TestAPaddedToolEntryNeverReachesTheRefusal(t *testing.T) {
+	t.Parallel()
 	reg := tool.NewRegistry()
 	if err := tool.RegisterClawAll(reg, tool.ClawDefaults{}); err != nil {
 		t.Fatalf("RegisterClawAll: %v", err)

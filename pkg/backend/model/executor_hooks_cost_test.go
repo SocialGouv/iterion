@@ -12,6 +12,7 @@ import (
 // is the only path by which a delegate backend's spend reaches the runner's
 // per-run totals (and from there the org cost cap and the credential pool).
 func TestDelegateInfoFromResult_carriesCost(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		result delegate.Result

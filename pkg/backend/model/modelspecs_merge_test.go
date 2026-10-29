@@ -14,7 +14,12 @@ import (
 // assertions (TestCapabilitiesForModel) flake on a dev machine that has run a
 // real bot, and a usage_progress sample falls under its floor wherever claw's
 // cache prices a model below the static table (#1686).
+//
+// capParallelism first, because the cap has to land before m.Run builds the
+// test context that reads `-parallel` (testparallel_test.go carries the
+// measurement that chose the number).
 func TestMain(m *testing.M) {
+	capParallelism()
 	restore := pricingtest.Isolate()
 	code := m.Run()
 	restore()

@@ -33,6 +33,7 @@ func zeroResults(typ reflect.Type) []reflect.Value {
 }
 
 func TestChainHooksForwardsEveryField(t *testing.T) {
+	t.Parallel()
 	typ := reflect.TypeOf(EventHooks{})
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
@@ -81,6 +82,7 @@ func TestChainHooksForwardsEveryField(t *testing.T) {
 // registrant's own files still have to be handed over — and the verdict
 // of either reaches the caller.
 func TestChainHooksJoinsTheDeliverablesVerdict(t *testing.T) {
+	t.Parallel()
 	lost := errors.New("report.md was not delivered")
 
 	cases := []struct {
@@ -128,6 +130,7 @@ func TestChainHooksJoinsTheDeliverablesVerdict(t *testing.T) {
 // walk above whenever the omission is a whole-field drop, so this asserts
 // the single-side path per field as well.
 func TestChainHooksKeepsTheLoneSideOfEveryField(t *testing.T) {
+	t.Parallel()
 	typ := reflect.TypeOf(EventHooks{})
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)

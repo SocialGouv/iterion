@@ -24,6 +24,7 @@ import (
 // active set as "unrestricted", which is right for a tool node and says the
 // opposite of what an agent with `inherit: false` wrote.
 func TestTheServerNamingMCPToolsHonourTheNodesScope(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		active  []string
@@ -82,6 +83,7 @@ func TestTheServerNamingMCPToolsHonourTheNodesScope(t *testing.T) {
 // picks a server name from a model — and wrapping it would refuse a call the
 // author wrote explicitly.
 func TestANonLLMNodeKeepsTheServerNamingToolsUnwrapped(t *testing.T) {
+	t.Parallel()
 	var reached bool
 	e := scopingExecutor(t, "list_mcp_resources", func(json.RawMessage) { reached = true })
 	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "t"}}
@@ -122,6 +124,7 @@ func scopingExecutor(t *testing.T, toolName string, onCall func(json.RawMessage)
 // read as "allowed" by a struct-based guard and as "forbidden" by the call it
 // was guarding — one extra capital letter and the node's MCP scope was gone.
 func TestTheNodeScopeReadsTheSameServerNameTheToolWillRead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		body    string
@@ -178,6 +181,7 @@ func TestTheNodeScopeReadsTheSameServerNameTheToolWillRead(t *testing.T) {
 // too, past the `mcp:` block of the node that spawned it. claw's per-type
 // allowlist is no help: nil means "every tool".
 func TestASubagentGetsNoNodeScopedMCPTool(t *testing.T) {
+	t.Parallel()
 	reg := tool.NewRegistry()
 	exec := func(context.Context, json.RawMessage) (string, error) { return "ok", nil }
 	for _, name := range []string{"bash", "list_mcp_resources", "read_mcp_resource", "mcp_auth"} {
@@ -212,6 +216,7 @@ func TestASubagentGetsNoNodeScopedMCPTool(t *testing.T) {
 // `PlacementLauncher` entry by analogy with the other three — and the node's
 // MCP scope silently does not apply to it, because this map never heard of it.
 func TestTheServerNamingListIsTheRegistrarsOwn(t *testing.T) {
+	t.Parallel()
 	registered := tool.MCPServerNamingTools()
 	if len(registered) == 0 {
 		t.Fatal("the registrar names no server-naming tool — this guard has nothing to compare")
@@ -234,6 +239,7 @@ func TestTheServerNamingListIsTheRegistrarsOwn(t *testing.T) {
 // conversation with no node; this is the same answer for a node with no
 // servers.
 func TestTheServerNamingToolsAreWithheldFromANodeWithNoMCPServers(t *testing.T) {
+	t.Parallel()
 	for _, toolName := range []string{"list_mcp_resources", "read_mcp_resource", "mcp_auth"} {
 		t.Run(toolName, func(t *testing.T) {
 			var reached string
@@ -261,6 +267,7 @@ func TestTheServerNamingToolsAreWithheldFromANodeWithNoMCPServers(t *testing.T) 
 // the two the same way is precisely the conflation scopeMCPServerNamingTool
 // exists to avoid, and withholding must not reintroduce it.
 func TestAToolNodeKeepsTheServerNamingTools(t *testing.T) {
+	t.Parallel()
 	e := scopingExecutor(t, "list_mcp_resources", func(json.RawMessage) {})
 	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "t"}}
 	defs, _, err := e.resolveToolsForNode(context.Background(), node, []string{"list_mcp_resources"})

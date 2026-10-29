@@ -46,6 +46,7 @@ func captureToolCall(t *testing.T, node *ir.ToolNode) (LLMToolCallInfo, string, 
 }
 
 func TestFailingToolNodeCarriesItsOutputOnTheEvent(t *testing.T) {
+	t.Parallel()
 	// Both streams: a gate prints its verdict on stdout and its diagnosis
 	// on stderr, and reading one without the other is how an environment
 	// failure gets mistaken for a red verdict.
@@ -93,6 +94,7 @@ func TestFailingToolNodeCarriesItsOutputOnTheEvent(t *testing.T) {
 }
 
 func TestSucceedingToolNodeCarriesItsOutputOnTheEvent(t *testing.T) {
+	t.Parallel()
 	// Not only the failure path: the field exists so the run view can render
 	// in+out, and a success that reports nothing is the same blind spot one
 	// exit code later.

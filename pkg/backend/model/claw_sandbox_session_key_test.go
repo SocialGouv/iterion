@@ -32,6 +32,7 @@ const dispatchBound = 300 * time.Second
 // writes and the one a schema re-ask can mistake for the answer it is
 // re-asking about.
 func TestSandboxSessionMirrorAndSeedShareTheTasksSessionKey(t *testing.T) {
+	t.Parallel()
 	const runID = "run-1"
 	for _, tc := range []struct {
 		name  string
@@ -82,6 +83,7 @@ func TestSandboxSessionMirrorAndSeedShareTheTasksSessionKey(t *testing.T) {
 // nothing writes it: anything found there is residue from an earlier
 // crossing, never the answer being re-asked about.
 func TestCompletedClawConversation_ReadsOnlyTheTasksSessionKey(t *testing.T) {
+	t.Parallel()
 	const runID = "run-1"
 	stale := []api.Message{{
 		Role:    "assistant",
@@ -123,6 +125,7 @@ func TestCompletedClawConversation_ReadsOnlyTheTasksSessionKey(t *testing.T) {
 // reports "nothing to compact", and the retry replays the whole
 // pre-overflow history again.
 func TestClawExecutorCompact_FindsASlotNodesConversation(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		node ir.Node
@@ -220,6 +223,7 @@ func mustMarshalMessages(t *testing.T, msgs []api.Message) json.RawMessage {
 // sentinel names the ADDRESS that held nothing — for a slot node that is
 // the slot, not the node id the dispatcher knows it by.
 func TestClawExecutorCompact_NamesTheKeyItFoundEmpty(t *testing.T) {
+	t.Parallel()
 	e := NewClawExecutor(NewRegistry(), &ir.Workflow{Nodes: map[string]ir.Node{"copi": &ir.AgentNode{
 		BaseNode:  ir.BaseNode{ID: "copi"},
 		LLMFields: ir.LLMFields{Backend: delegate.BackendClaw, Model: "openai/gpt-5"},

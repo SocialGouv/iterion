@@ -20,6 +20,7 @@ import (
 // started crossing, not only to the outcomes that reach the end of the
 // dispatch.
 func TestSandboxDispatch_ReportsTheRunnersStderrWhenTheCrossingAborts(t *testing.T) {
+	t.Parallel()
 	const diagnostic = `iterion-claw-runner: exec: "iterion": executable file not found in $PATH`
 	var logs strings.Builder
 	b := loggedTestClawBackend(&logs)

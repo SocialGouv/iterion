@@ -23,6 +23,7 @@ func mustPolicy(t *testing.T, mode permission.Mode, allow, ask, deny []string) *
 // refused loudly — whatever its nominal mode (an explicit ask rule
 // outranks mode deny).
 func TestClawSandboxRefusesAskCapablePolicy(t *testing.T) {
+	t.Parallel()
 	b := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{})
 	cases := map[string]*permission.Policy{
 		"mode ask":             mustPolicy(t, permission.ModeAsk, []string{"WebFetch(*)"}, nil, nil),
@@ -50,6 +51,7 @@ func TestClawSandboxRefusesAskCapablePolicy(t *testing.T) {
 // Execute proceeds into the sandbox-runner path and fails there on the
 // fake sandbox handle, never on the permission guard.
 func TestClawSandboxAdmitsDenyOnlyPolicy(t *testing.T) {
+	t.Parallel()
 	b := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{})
 	task := delegate.Task{
 		NodeID:     "synth",

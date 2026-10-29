@@ -1,11 +1,10 @@
 package bots
 
 import (
-	"flag"
 	"os"
-	"runtime"
-	"strconv"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/testparallel"
 )
 
 // botsParallelCap bounds how many of this package's tests may run at once.
@@ -50,32 +49,4 @@ func TestMain(m *testing.M) {
 // capParallelism lowers `-parallel` to botsParallelCap when the operator left
 // it at its default. Called from TestMain, so it lands before m.Run builds
 // the test context that reads the flag.
-func capParallelism() {
-	f := flag.Lookup("test.parallel")
-	if f == nil {
-		return
-	}
-	limit := botsParallelCap
-	if v := os.Getenv(botsParallelEnv); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 {
-			// An unusable value is a mistake worth seeing, not a silent
-			// fallback to a number the operator did not ask for.
-			panic(botsParallelEnv + ": want a positive integer, got " + strconv.Quote(v))
-		}
-		limit = n
-	}
-	// Unreachable discrimination today: TestMain runs before flag.Parse, so
-	// the flag is always at its registered default here. The check keeps the
-	// function honest if that ordering ever changes — see the botsParallelEnv
-	// note.
-	if f.Value.String() != strconv.Itoa(runtime.GOMAXPROCS(0)) {
-		return
-	}
-	if current, err := strconv.Atoi(f.Value.String()); err == nil && current <= limit {
-		return
-	}
-	if err := f.Value.Set(strconv.Itoa(limit)); err != nil {
-		panic("cap test.parallel: " + err.Error())
-	}
-}
+func capParallelism() { testparallel.Cap(botsParallelEnv, botsParallelCap) }

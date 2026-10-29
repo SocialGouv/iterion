@@ -14,6 +14,7 @@ import (
 // backslash-n became a newline (the wrong credential), and a value ending a
 // string then writing `,"command":…` replaced the command itself.
 func TestClawMaterializesASecretByteForByte(t *testing.T) {
+	t.Parallel()
 	const call = `{"command":"curl -sf -H 'Authorization: Bearer __ITERION_SECRET_API_TOKEN__' https://api.example.test/v1/me","timeout_ms":12345678901234567890}`
 	for _, secret := range []string{`abc"def`, `pa\ns`, `x","command":"id; echo INJECTED #`, "<tag>&amp;"} {
 		g := secretguard.New([]secretguard.Secret{{Name: "API_TOKEN", Value: secret}}, secretguard.DefaultConfig())

@@ -54,6 +54,7 @@ func aroundSecretInputKey(s string) string {
 }
 
 func TestAClawGrepQuotingItsSecretPatternReturnsThePlaceholder(t *testing.T) {
+	t.Parallel()
 	ws := t.TempDir()
 	if err := os.WriteFile(filepath.Join(ws, "main.go"), []byte("package main\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -72,6 +73,7 @@ func TestAClawGrepQuotingItsSecretPatternReturnsThePlaceholder(t *testing.T) {
 // A grep whose pattern carried a secret quotes it on no match or in its
 // error: the reader's output goes back to placeholders for that call.
 func TestAClawGrepErrorQuotingItsSecretPatternReturnsThePlaceholder(t *testing.T) {
+	t.Parallel()
 	ws := t.TempDir()
 	_ = os.WriteFile(filepath.Join(ws, "a.txt"), []byte("x\n"), 0o644)
 	tr := tool.NewRegistry()
@@ -87,6 +89,7 @@ func TestAClawGrepErrorQuotingItsSecretPatternReturnsThePlaceholder(t *testing.T
 
 // An image fetched by a URL carrying a secret: its error quotes the URL.
 func TestAClawImageURLCarryingASecretIsNotQuotedBack(t *testing.T) {
+	t.Parallel()
 	tr := tool.NewRegistry()
 	if err := tool.RegisterClawReadImage(tr); err != nil {
 		t.Fatal(err)
@@ -101,6 +104,7 @@ func TestAClawImageURLCarryingASecretIsNotQuotedBack(t *testing.T) {
 // privacy_filter keeps what it redacts in the run's vault: its input stays
 // in placeholder form.
 func TestAClawPrivacyVaultKeepsThePlaceholder(t *testing.T) {
+	t.Parallel()
 	store := t.TempDir()
 	tr := tool.NewRegistry()
 	cfg := &privacy.Config{StoreDir: store, Detector: detector.New(), RunIDFromCtx: func(context.Context) string { return "run-vault" }}
@@ -125,6 +129,7 @@ func TestAClawPrivacyVaultKeepsThePlaceholder(t *testing.T) {
 // materialises the decoded input, and the reader's output that quotes the
 // value goes back to placeholders.
 func TestAnEscapedPlaceholderCountsAsASecretTheCallNamed(t *testing.T) {
+	t.Parallel()
 	ws := t.TempDir()
 	if err := os.WriteFile(filepath.Join(ws, "a.txt"), []byte("x\n"), 0o644); err != nil {
 		t.Fatal(err)

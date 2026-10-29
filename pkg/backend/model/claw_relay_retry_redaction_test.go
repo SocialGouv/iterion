@@ -22,6 +22,7 @@ import (
 // decoder, the production store hooks — because the leak is in what the SINK
 // does with text the relay hands it, not in either half alone.
 func TestClawRelay_RedactsARelayedRetryForTheOperatorLog(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-proj-RELAY0123456789abcdefghijklmnopqrs"
 	g := secretguard.New([]secretguard.Secret{{Name: "OPENAI_API_KEY", Value: secret}}, secretguard.DefaultConfig())
 	placeholder := g.Redact(secret)

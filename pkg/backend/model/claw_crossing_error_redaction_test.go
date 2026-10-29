@@ -45,6 +45,7 @@ func resultEnvelopeFile(t *testing.T, dir string, res delegate.IOResult) string 
 // reader. Each case below is one of the error returns that quotes the far
 // side.
 func TestSandboxDispatch_TheErrorOfAFailedCrossingCarriesNoFarSideSecret(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-ant-api03-CROSSING-0123456789abcdefghijklmnopqrstuv"
 	const placeholder = "__ITERION_SECRET_api_key__"
 	diagnostic := "iterion-claw-runner: anthropic: 401 unauthorized (x-api-key: " + secret + ")"
@@ -157,6 +158,7 @@ func TestSandboxDispatch_TheErrorOfAFailedCrossingCarriesNoFarSideSecret(t *test
 // The guard is nil here on purpose: a redaction added at the sink later must
 // not be what makes this witness pass.
 func TestClawCrossing_AFailedNodesOperatorLineCarriesNoFarSideSecret(t *testing.T) {
+	t.Parallel()
 	const secret = "ghp_CROSSING0123456789abcdefghijklmnopqrstu"
 	const placeholder = "__ITERION_SECRET_deploy_token__"
 
@@ -195,6 +197,7 @@ func TestClawCrossing_AFailedNodesOperatorLineCarriesNoFarSideSecret(t *testing.
 // more than a string replacement: the wrapper is built only when the text
 // changed, and even then the error below stays reachable.
 func TestRedactedThrough_KeepsWhatItDidNotTouchAndTheCauseItDid(t *testing.T) {
+	t.Parallel()
 	sentinel := errors.New("the cause")
 	wrapped := fmt.Errorf("claw backend: runner: %w", sentinel)
 
@@ -222,6 +225,7 @@ func TestRedactedThrough_KeepsWhatItDidNotTouchAndTheCauseItDid(t *testing.T) {
 // when the defer reads it. Under `-race` this is also the witness that the
 // report is not a concurrent read of a buffer still being written.
 func TestSandboxDispatch_ReportsTheRunnersStderrWhenTheDrainIsAbandoned(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	resultFile := resultEnvelopeFile(t, dir, delegate.IOResult{Output: map[string]any{"verdict": "ok"}})
 	const warning = "iterion-claw-runner: warn: the settings-hooks document declares an event claw does not export"
@@ -315,6 +319,7 @@ func (c causeWrapper) Cause() error  { return c.cause }
 // cannot see — and the reporter that reads these chains follows three shapes,
 // not two. Driven on each shape in turn, with the secret one link down.
 func TestChainLinksReachesEveryShapeAReporterFollows(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-ant-api03-CHAINWALK-0123456789abcdef"
 	leaf := errors.New("far side said: " + secret)
 	for name, err := range map[string]error{

@@ -85,6 +85,7 @@ func mutatingPackage(base string) (*spec.Package, spec.Operation) {
 // certifies a component that was never wrong; only running the real dispatcher
 // over the real node error certifies the property an operator cares about.
 func TestAnAmbiguousMutationIsNeverRetriedAutomatically(t *testing.T) {
+	t.Parallel()
 	// A server that accepts the request and then hangs up WITHOUT answering:
 	// the remote has seen the mutation, the caller learns nothing.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -166,6 +167,7 @@ func TestAnAmbiguousMutationIsNeverRetriedAutomatically(t *testing.T) {
 // — so the node reported SUCCESS while no HTTP request was ever made. A server
 // that fails the test if it is ever touched is what proves it.
 func TestRuntimeEnforcesTheActionInvariants(t *testing.T) {
+	t.Parallel()
 	var touched bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		touched = true
@@ -221,6 +223,7 @@ func TestRuntimeEnforcesTheActionInvariants(t *testing.T) {
 // properties a `.bot` author cannot see, and which arrive at run time from a
 // tier the workflow never named.
 func TestRuntimeRefusesAnOperationTheResolverShouldNotHaveOffered(t *testing.T) {
+	t.Parallel()
 	var touched bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		touched = true
@@ -314,6 +317,7 @@ func (c *countingClassifier) Classify(context.Context, string, map[string]any) (
 // classifier is off by default. The claim is only worth something when the
 // classifier is ON, which is why this test enables it.
 func TestNoModelIsConsultedForAnActionEvenWithTheClassifierEnabled(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(201)
 		_, _ = w.Write([]byte(`{"id": 1}`))
@@ -354,6 +358,7 @@ func TestNoModelIsConsultedForAnActionEvenWithTheClassifierEnabled(t *testing.T)
 // action path skips is the MODEL, not the policy. An operator who denied a
 // connector must still see it denied.
 func TestTheOperatorsOwnRulesStillApplyToAnAction(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Error("the vendor must not be reached by a denied node")
 	}))
@@ -391,6 +396,7 @@ func TestTheOperatorsOwnRulesStillApplyToAnAction(t *testing.T) {
 // The oracle is the SERVER: what the vendor received is the only thing that
 // settles it.
 func TestASecretReferenceReachesTheVendorAsItsVALUE(t *testing.T) {
+	t.Parallel()
 	const secretValue = "gh-pat-not-a-real-token"
 	var receivedBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -439,6 +445,7 @@ func TestASecretReferenceReachesTheVendorAsItsVALUE(t *testing.T) {
 // make it a way to duplicate a mutation, so the SAME `retry: 5` that patiently
 // re-drives a throttled read performs a lost-answer POST exactly once.
 func TestRetryIsHonouredAndStillCannotDuplicateAnEffect(t *testing.T) {
+	t.Parallel()
 	t.Run("a retryable failure is re-driven", func(t *testing.T) {
 		calls := 0
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -621,6 +628,7 @@ func TestRetryIsHonouredAndStillCannotDuplicateAnEffect(t *testing.T) {
 // is now decided where the facts are — status plus the operation's effect —
 // and covers every way a dispatched mutation can end undecided.
 func TestTheEngineNeverRetriesAnUndecidedMutation(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		handler  http.HandlerFunc
@@ -697,6 +705,7 @@ func TestTheEngineNeverRetriesAnUndecidedMutation(t *testing.T) {
 // making every transient blip terminal. A GET refused with a 503 never
 // happened, so repeating it is free.
 func TestAnOrdinaryFailureStillRetries(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(`{"message": "upstream is restarting"}`))
@@ -735,6 +744,7 @@ func TestAnOrdinaryFailureStillRetries(t *testing.T) {
 // something other than what the author wrote — which is why the SERVER is the
 // oracle in every case.
 func TestParameterValuesReachTheVendorIntact(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		declared string
@@ -837,6 +847,7 @@ func TestParameterValuesReachTheVendorIntact(t *testing.T) {
 // silently in a way the workflow never sees — on a path whose whole promise is
 // that the request is what was declared.
 func TestAValueOfTheWrongTypeIsRefused(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, declared, value string }{
 		{"a fraction where an integer is declared", "integer", "1.5"},
 		{"a number where a boolean is declared", "boolean", "123"},
@@ -905,6 +916,7 @@ func refsOf(value string) []*ir.Ref {
 // can produce (250ms at the first attempt, jitter included) and far above
 // scheduler noise, so it is neither flaky nor vacuous.
 func TestRetriesDoNotHammerAVendorThatNamedNoDelay(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var seen []time.Time
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -963,6 +975,7 @@ func TestRetriesDoNotHammerAVendorThatNamedNoDelay(t *testing.T) {
 // A READ, deliberately: a retried mutation is refused by Retryable, and the
 // point here is the accounting, not the safety rule.
 func TestARetriedNodeReportsWhatTheVendorActuallyServed(t *testing.T) {
+	t.Parallel()
 	var served int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		served++
@@ -1014,6 +1027,7 @@ func TestARetriedNodeReportsWhatTheVendorActuallyServed(t *testing.T) {
 // having spent the most slots of any shape. The cost belongs on the failure
 // too, and the error message is where a failed node's story is read.
 func TestAFailedNodeAlsoReportsWhatTheVendorServed(t *testing.T) {
+	t.Parallel()
 	var served int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		served++

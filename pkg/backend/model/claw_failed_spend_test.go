@@ -26,6 +26,7 @@ import (
 // half, and without it the run-level booking is inert on the default
 // in-process backend.
 func TestClawBackendKeepsWhatAnAbandonedGenerationBurned(t *testing.T) {
+	t.Parallel()
 	schema := &ir.Schema{Name: "verdict", Fields: []*ir.SchemaField{{Name: "approved", Type: ir.FieldTypeBool}}}
 	schemaJSON, err := SchemaToJSON(schema)
 	if err != nil {
@@ -157,6 +158,7 @@ func TestClawBackendKeepsWhatAnAbandonedGenerationBurned(t *testing.T) {
 // used to return a bare nil beside its error, so there was nothing to fold.
 // Adding the partial connected one end of that pipe and left this one open.
 func TestClawParseFallbackPricesTheRecoveryPassItRan(t *testing.T) {
+	t.Parallel()
 	schema := &ir.Schema{Name: "verdict", Fields: []*ir.SchemaField{{Name: "approved", Type: ir.FieldTypeBool}}}
 	schemaJSON, err := SchemaToJSON(schema)
 	if err != nil {
@@ -222,6 +224,7 @@ func TestClawParseFallbackPricesTheRecoveryPassItRan(t *testing.T) {
 // The attempts SUM: claw opens a fresh conversation each time (it never reads
 // SessionID), so no attempt's figure contains another's.
 func TestClawRetryLoopKeepsEveryAttemptsSpend(t *testing.T) {
+	t.Parallel()
 	backend := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{MaxAttempts: 2, BackoffBase: time.Millisecond})
 	task := delegate.Task{NodeID: "reviewer", Model: "test/test-model"}
 
@@ -259,6 +262,7 @@ func TestClawRetryLoopKeepsEveryAttemptsSpend(t *testing.T) {
 // bare nil, so the figure — final, since a human answers next and a human
 // reports no tokens — was lost at the last frame that could see it.
 func TestHumanLLMHalfKeepsWhatItBurnedOnFailure(t *testing.T) {
+	t.Parallel()
 	reg := NewRegistry()
 	// A billed turn that answers with text instead of the synthetic tool_use
 	// the schema forces: the provider charged, the node has nothing usable.

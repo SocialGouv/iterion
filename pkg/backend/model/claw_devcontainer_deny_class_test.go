@@ -19,6 +19,7 @@ import (
 // operator's, and the devcontainer deny class must refuse it, or a planted
 // value answers wherever the host said nothing.
 func TestDevcontainerDenyClassCoversEveryNameTheRunnerIsHanded(t *testing.T) {
+	t.Parallel()
 	sources := map[string][]string{
 		"providerCredentialEnvVars": providerCredentialEnvVars,
 		"providerRoutingEnvVars":    providerRoutingEnvVars,

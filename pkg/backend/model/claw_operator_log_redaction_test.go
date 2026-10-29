@@ -28,6 +28,7 @@ func sinkRedaction(secret, placeholder string) func(string) string {
 // which is this backend's own duty. A run whose secrets are known must not
 // read one of them in clear.
 func TestSandboxDispatch_RedactsTheRunnersStderrForTheOperatorLog(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-ant-api03-WITNESS-0123456789abcdefghijklmnopqrstuvwxyz"
 	const placeholder = "__ITERION_SECRET_api_key__"
 
@@ -74,6 +75,7 @@ func TestSandboxDispatch_RedactsTheRunnersStderrForTheOperatorLog(t *testing.T) 
 // that put a secret value in a denied call writes it into the operator's log
 // unless this sink redacts too.
 func TestClawLauncher_RedactsARefusedForwardedCallForTheOperatorLog(t *testing.T) {
+	t.Parallel()
 	const secret = "ghp_WITNESS0123456789abcdefghijklmnopqrstuv"
 	const placeholder = "__ITERION_SECRET_deploy_token__"
 
@@ -110,6 +112,7 @@ func TestClawLauncher_RedactsARefusedForwardedCallForTheOperatorLog(t *testing.T
 // parses its own text (a timestamp). The payload crossed the boundary, so the
 // report crosses the run's redaction.
 func TestClawRelay_RedactsAnUndecodableEventForTheOperatorLog(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-proj-WITNESS0123456789abcdefghijklmnop"
 	const placeholder = "__ITERION_SECRET_openai_key__"
 
@@ -155,6 +158,7 @@ func TestClawRelay_RedactsAnUndecodableEventForTheOperatorLog(t *testing.T) {
 // named in reach: a scenario that stops producing one of them is a witness
 // that stopped watching a sink, and says so instead of passing.
 func TestClawRelay_RedactsTheNamesOfARelayedEventForTheOperatorLog(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		secret  string
@@ -239,6 +243,7 @@ func TestClawRelay_RedactsTheNamesOfARelayedEventForTheOperatorLog(t *testing.T)
 // is reported at DEBUG with the TYPE the container sent — a name the far side
 // chose, so it crosses the pass like the decoder's complaint above.
 func TestClawRelay_RedactsAnUnconsumedEventTypeForTheOperatorLog(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-proj-WITNESS0123456789abcdefghijklmnop"
 	const placeholder = "__ITERION_SECRET_openai_key__"
 
@@ -273,6 +278,7 @@ func TestClawRelay_RedactsAnUnconsumedEventTypeForTheOperatorLog(t *testing.T) {
 // sent. [farSideForLog] moves each one behind the sink's own gate; the three
 // sites are independent, so each subtest reddens alone.
 func TestClawCrossing_AnOperatorLogThatDropsTheRecordCostsNoPass(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-proj-WITNESSLAZY0123456789abcdefghijk"
 
 	pol, err := permission.NewPolicy(permission.ModeDeny, []string{"*"}, nil, []string{"mcp_github_create_issue"})
@@ -356,6 +362,7 @@ func TestClawCrossing_AnOperatorLogThatDropsTheRecordCostsNoPass(t *testing.T) {
 // Driven over the spellings a container could send, against a payload no host
 // decoder accepts.
 func TestClawRelay_OnlyAHostEventTypeReachesTheDecodeFailureArm(t *testing.T) {
+	t.Parallel()
 	breaks := map[string]any{"timestamp": "sk-proj-NOTATIME0123456789abcdefghijkl"}
 	for _, typ := range []string{
 		"vendor_metric_sk-proj-SECRET", "sk-proj-SECRET",

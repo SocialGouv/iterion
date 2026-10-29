@@ -23,6 +23,7 @@ import (
 // it crosses the run's redaction once, and the two copies stay the same
 // string — a blob the event points at, under a name that holds no secret.
 func TestClawRelay_ARelayedToolBlobIsKeyedByWhatTheEventPointsAt(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-proj-BLOBWITNESS0123456789abcdefghij"
 	const runID = "run-blob-key"
 
@@ -126,6 +127,7 @@ func TestClawRelay_ARelayedToolBlobIsKeyedByWhatTheEventPointsAt(t *testing.T) {
 // itself for every shape the backends actually produce, so an operator
 // reading a run's tools/ tree still sees the ids the model used.
 func TestClawRelay_ARealToolUseIDIsTheBlobKey(t *testing.T) {
+	t.Parallel()
 	const runID = "run-blob-real-ids"
 	ids := []string{"toolu_01A09q90qw90lq917835lq9", "toolu_bdrk_01ABCdefGH", "call_abc123XYZ", "fc_9f8e7d6c", "tu_9"}
 	g := secretguard.New([]secretguard.Secret{{Name: "OPENAI_API_KEY", Value: "sk-proj-BLOBREAL0123456789abcdefghijkl"}}, secretguard.DefaultConfig())

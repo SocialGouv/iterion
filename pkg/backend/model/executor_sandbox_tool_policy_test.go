@@ -30,6 +30,7 @@ func (allowingClassifier) Classify(context.Context, string, map[string]any) (per
 //
 // Reddens on the mutation that advertises a denied container tool anyway.
 func TestResolveToolsForNode_SandboxedNodeWithholdsContainerToolsThePolicyDenies(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{
 		logger:       iterlog.Nop(),
 		toolRegistry: placementRegistry(t, "read_file", "bash", "todo_write"),
@@ -66,6 +67,7 @@ func TestResolveToolsForNode_SandboxedNodeWithholdsContainerToolsThePolicyDenies
 // Reddens on the mutation that restricts the pre-check to sandbox-placed
 // tools.
 func TestResolveToolsForNode_SandboxedNodeWithholdsAnUnplaceableToolThePolicyDenies(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{
 		logger:       iterlog.Nop(),
 		toolRegistry: placementRegistry(t, "read_file", "lsp"),
@@ -98,6 +100,7 @@ func (c *countingDenyingClassifier) Classify(context.Context, string, map[string
 //
 // Reddens on the mutation that drops `Deterministic` from the pre-check.
 func TestResolveToolsForNode_SandboxPreCheckNeverConsultsTheClassifier(t *testing.T) {
+	t.Parallel()
 	classifier := &countingDenyingClassifier{}
 	e := &ClawExecutor{
 		logger:       iterlog.Nop(),
@@ -128,6 +131,7 @@ func TestResolveToolsForNode_SandboxPreCheckNeverConsultsTheClassifier(t *testin
 //
 // Reddens on the mutation that drops ResolvePattern from the pre-check.
 func TestResolveToolsForNode_SandboxPreCheckResolvesAliasesLikeTheGuard(t *testing.T) {
+	t.Parallel()
 	ctx := tool.WithBuiltinAliases(context.Background(), true)
 	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "worker"}}
 	newExecutor := func(sb bool) *ClawExecutor {
@@ -170,6 +174,7 @@ func TestResolveToolsForNode_SandboxPreCheckResolvesAliasesLikeTheGuard(t *testi
 // Without a sandbox nothing moves: the denied tool stays advertised and its
 // call is refused by the guard.
 func TestResolveToolsForNode_UnsandboxedNodeKeepsTheCallTimeGuard(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{
 		logger:       iterlog.Nop(),
 		toolRegistry: placementRegistry(t, "read_file", "bash"),
@@ -197,6 +202,7 @@ func TestResolveToolsForNode_UnsandboxedNodeKeepsTheCallTimeGuard(t *testing.T) 
 //
 // Reddens on the mutation that drops the warning.
 func TestResolveToolsForNode_SandboxedNodeNamesTheClassifierGap(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	e := &ClawExecutor{
 		logger:       iterlog.New(iterlog.LevelInfo, &buf),

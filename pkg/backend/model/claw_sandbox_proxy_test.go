@@ -47,6 +47,7 @@ func (f proxiedFakeRun) CaptureWorkspaceHead(ctx context.Context) (string, error
 func (f proxiedFakeRun) ProxyEndpoint() string { return f.endpoint }
 
 func TestSandboxProxyEnv_ProxiedSandboxCarriesTheEndpoint(t *testing.T) {
+	t.Parallel()
 	env := sandboxProxyEnv(proxiedFakeRun{endpoint: "http://tok@10.2.200.59:41625"})
 	if env[compatgw.SandboxProxyEndpointEnv] != "http://tok@10.2.200.59:41625" {
 		t.Fatalf("%s = %q, want the endpoint — the gateway would dial direct and drop on the policy", compatgw.SandboxProxyEndpointEnv, env[compatgw.SandboxProxyEndpointEnv])
@@ -57,6 +58,7 @@ func TestSandboxProxyEnv_ProxiedSandboxCarriesTheEndpoint(t *testing.T) {
 }
 
 func TestSandboxProxyEnv_PolicyLessSandboxUnsetsTheName(t *testing.T) {
+	t.Parallel()
 	env := sandboxProxyEnv(proxiedFakeRun{endpoint: ""})
 	if env[compatgw.SandboxProxyEndpointEnv] != "" {
 		t.Fatalf("policy-less sandbox env = %v, want the key UNSET — the container's own env must not speak for the engine", env)
@@ -70,6 +72,7 @@ func TestSandboxProxyEnv_PolicyLessSandboxUnsetsTheName(t *testing.T) {
 // not proxied: the fold must UNSET the name, because the exec env rides the
 // container's own and the runner would otherwise trust it (rva Rd67587).
 func TestSandboxProxyEnv_NonProxiedRunUnsetsTheName(t *testing.T) {
+	t.Parallel()
 	var plain sandbox.Run = nonProxiedFakeRun{}
 	env := sandboxProxyEnv(plain)
 	if env[compatgw.SandboxProxyEndpointEnv] != "" {

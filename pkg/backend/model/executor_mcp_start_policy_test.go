@@ -17,6 +17,7 @@ import (
 // one is the regression that would follow a fix written for the leak alone —
 // an unsandboxed run whose project MCP servers silently stopped working.
 func TestSetSandboxSettlesTheMCPStartPolicy(t *testing.T) {
+	t.Parallel()
 	t.Run("a live sandbox tightens a permissive prediction", func(t *testing.T) {
 		m := mcp.NewManager(nil, mcp.WithStartPolicy(mcp.StartAllServers))
 		e := &ClawExecutor{logger: iterlog.Nop(), mcpManager: m}

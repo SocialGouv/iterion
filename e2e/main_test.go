@@ -1,15 +1,13 @@
 package e2e
 
 import (
-	"flag"
 	"os"
-	"runtime"
-	"strconv"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/internal/hometest"
 	"github.com/SocialGouv/iterion/internal/proctest"
+	"github.com/SocialGouv/iterion/internal/testparallel"
 )
 
 // e2eParallelCap bounds how many of this package's tests run at once.
@@ -57,32 +55,4 @@ func TestMain(m *testing.M) {
 // capParallelism lowers `-parallel` to e2eParallelCap when the operator left
 // it at its default. Called from TestMain, so it lands before m.Run builds
 // the test context that reads the flag.
-func capParallelism() {
-	f := flag.Lookup("test.parallel")
-	if f == nil {
-		return
-	}
-	limit := e2eParallelCap
-	if v := os.Getenv(e2eParallelEnv); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 {
-			// An unusable value is a mistake worth seeing, not a silent
-			// fallback to a number the operator did not ask for.
-			panic(e2eParallelEnv + ": want a positive integer, got " + strconv.Quote(v))
-		}
-		limit = n
-	}
-	// Unreachable discrimination today: TestMain runs before flag.Parse, so
-	// the flag is always at its registered default here. The check keeps the
-	// function honest if that ordering ever changes — see the e2eParallelEnv
-	// note.
-	if f.Value.String() != strconv.Itoa(runtime.GOMAXPROCS(0)) {
-		return
-	}
-	if current, err := strconv.Atoi(f.Value.String()); err == nil && current <= limit {
-		return
-	}
-	if err := f.Value.Set(strconv.Itoa(limit)); err != nil {
-		panic("cap test.parallel: " + err.Error())
-	}
-}
+func capParallelism() { testparallel.Cap(e2eParallelEnv, e2eParallelCap) }

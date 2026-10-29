@@ -16,6 +16,7 @@ import (
 
 // TestClawRegistry_ResolveSuccess verifies basic resolve and caching.
 func TestClawRegistry_ResolveSuccess(t *testing.T) {
+	t.Parallel()
 	r := NewRegistry()
 	mock := &execMockClient{streams: []<-chan api.StreamEvent{mockStreamEvents("hello", "end_turn")}}
 	r.Register("custom", func(modelID string) (api.APIClient, error) {
@@ -34,6 +35,7 @@ func TestClawRegistry_ResolveSuccess(t *testing.T) {
 // TestClawRegistry_ResolveCache verifies that repeated Resolve calls return
 // the same cached instance.
 func TestClawRegistry_ResolveCache(t *testing.T) {
+	t.Parallel()
 	r := NewRegistry()
 	callCount := 0
 	mock := &execMockClient{streams: []<-chan api.StreamEvent{mockStreamEvents("hello", "end_turn")}}
@@ -55,6 +57,7 @@ func TestClawRegistry_ResolveCache(t *testing.T) {
 
 // TestClawRegistry_ResolveUnknownProvider verifies error on unknown provider.
 func TestClawRegistry_ResolveUnknownProvider(t *testing.T) {
+	t.Parallel()
 	r := NewRegistry()
 	_, err := r.Resolve("nonexistent/model")
 	if err == nil {
@@ -64,6 +67,7 @@ func TestClawRegistry_ResolveUnknownProvider(t *testing.T) {
 
 // TestClawRegistry_ParseModelSpecValid verifies valid spec parsing.
 func TestClawRegistry_ParseModelSpecValid(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		spec     string
 		provider string
@@ -88,6 +92,7 @@ func TestClawRegistry_ParseModelSpecValid(t *testing.T) {
 
 // TestClawRegistry_ParseModelSpecInvalid verifies error on invalid specs.
 func TestClawRegistry_ParseModelSpecInvalid(t *testing.T) {
+	t.Parallel()
 	invalid := []string{
 		"no-slash",
 		"/missing-provider",
@@ -111,6 +116,7 @@ func TestClawRegistry_ParseModelSpecInvalid(t *testing.T) {
 // long the factory takes. This is the core invariant of the per-key
 // sync.Once cache that replaces the old write-lock-during-factory pattern.
 func TestClawRegistry_ResolveConcurrentSameKey(t *testing.T) {
+	t.Parallel()
 	r := NewRegistry()
 
 	var calls int32
@@ -157,6 +163,7 @@ func TestClawRegistry_ResolveConcurrentSameKey(t *testing.T) {
 // the registry never serializes them on a global write lock. Every factory
 // must enter before any factory is allowed to return.
 func TestClawRegistry_ResolveConcurrentDifferentKeys(t *testing.T) {
+	t.Parallel()
 	r := NewRegistry()
 
 	const goroutines = 10
@@ -222,6 +229,7 @@ waitForFactories:
 // TestClawRegistry_ResolveFactoryError verifies that factory errors are
 // surfaced and that the error is sticky for the cached entry (sync.Once).
 func TestClawRegistry_ResolveFactoryError(t *testing.T) {
+	t.Parallel()
 	r := NewRegistry()
 	var calls int32
 	wantErr := errors.New("boom")
@@ -245,6 +253,7 @@ func TestClawRegistry_ResolveFactoryError(t *testing.T) {
 // provider invalidates any cached entries created by the previous factory,
 // so subsequent Resolve calls go through the new factory.
 func TestClawRegistry_RegisterInvalidatesCache(t *testing.T) {
+	t.Parallel()
 	r := NewRegistry()
 	mock1 := &execMockClient{streams: []<-chan api.StreamEvent{mockStreamEvents("v1", "end_turn")}}
 	mock2 := &execMockClient{streams: []<-chan api.StreamEvent{mockStreamEvents("v2", "end_turn")}}
@@ -273,6 +282,7 @@ func TestClawRegistry_RegisterInvalidatesCache(t *testing.T) {
 // after an unknown-provider failure no longer leaves a poisoned cache entry —
 // once Register adds the provider, Resolve must succeed.
 func TestClawRegistry_ResolveAfterUnknownProviderRegister(t *testing.T) {
+	t.Parallel()
 	r := NewRegistry()
 	if _, err := r.Resolve("late/m"); err == nil {
 		t.Fatal("expected error for unknown provider")

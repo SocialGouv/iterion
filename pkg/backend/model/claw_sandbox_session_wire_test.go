@@ -57,6 +57,7 @@ func unshrinkableSlotConversation() []api.Message {
 // answers nor fails. The seed is therefore compacted to fit, keeping the
 // recent turns, and the crossing is spawned WITH the history it can carry.
 func TestSandboxSeed_AnOversizeSessionCrossesCompactedNotRefused(t *testing.T) {
+	t.Parallel()
 	const runID = "run-1"
 	store := newNodeSessionStore()
 	store.save(runID, "assistant_conversation", oversizeSlotConversation(5))
@@ -124,6 +125,7 @@ func TestSandboxSeed_AnOversizeSessionCrossesCompactedNotRefused(t *testing.T) {
 // once compacted, or one the store cannot even decode, is REFUSED with its
 // size named. Never written (that kills the channel), never silently emptied.
 func TestConstrainSessionSnapshotForWire_RefusesWhatItCannotBound(t *testing.T) {
+	t.Parallel()
 	t.Run("a snapshot that is not a conversation", func(t *testing.T) {
 		_, reduced, err := constrainSessionSnapshotForWire([]byte(strings.Repeat("x", clawSessionWireBudget+1)))
 		if err == nil {
@@ -198,6 +200,7 @@ func TestConstrainSessionSnapshotForWire_RefusesWhatItCannotBound(t *testing.T) 
 // named — a node answering from a history nobody can account for is what
 // this reports.
 func TestSandboxSeed_AnUnboundableSessionIsLeftBehindNotFailed(t *testing.T) {
+	t.Parallel()
 	const runID = "run-1"
 	store := newNodeSessionStore()
 	store.save(runID, "assistant_conversation", unshrinkableSlotConversation())
@@ -304,6 +307,7 @@ func resultEnvelope(t *testing.T, output map[string]any) delegate.Envelope {
 // the runner sent. It is the launcher's own diagnostic — never handed to the
 // node's event hooks.
 func TestSandboxDispatch_AMirrorGapIsHeardOnACrossingThatAnswers(t *testing.T) {
+	t.Parallel()
 	gap, err := NewSessionMirrorGapEvent(MirrorGapSnapshotRefused, 10_588_891)
 	if err != nil {
 		t.Fatalf("build the gap envelope: %v", err)
@@ -352,6 +356,7 @@ func TestSandboxDispatch_AMirrorGapIsHeardOnACrossingThatAnswers(t *testing.T) {
 // turns of one crossing that never saw it. The retained conversation is also
 // the only thing CompactAndRetry can shrink to make the next seed fit.
 func TestSandboxMirror_ARefusedSeedKeepsTheSessionsConversation(t *testing.T) {
+	t.Parallel()
 	const runID = "run-1"
 	store := newNodeSessionStore()
 	store.save(runID, "assistant_conversation", unshrinkableSlotConversation())
@@ -408,6 +413,7 @@ func TestSandboxMirror_ARefusedSeedKeepsTheSessionsConversation(t *testing.T) {
 // holds MORE than this copy — so the capture that follows it is a
 // continuation the mirror must still take.
 func TestSandboxMirror_ARelayedReplayGapKeepsTheSessionsConversation(t *testing.T) {
+	t.Parallel()
 	const runID = "run-1"
 	sibling := []api.Message{
 		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "sibling-turn-1"}}},
@@ -533,6 +539,7 @@ func TestSandboxMirror_ARelayedReplayGapKeepsTheSessionsConversation(t *testing.
 // mirror takes it even where the host's own copy is one no channel could
 // have carried.
 func TestSandboxSeed_ATaskCarryingItsHistoryIsSeededNothingAndStillMirrors(t *testing.T) {
+	t.Parallel()
 	const runID = "run-1"
 	resumed := func(t *testing.T) json.RawMessage {
 		t.Helper()
@@ -661,6 +668,7 @@ func TestSandboxSeed_ATaskCarryingItsHistoryIsSeededNothingAndStillMirrors(t *te
 // below ever stops holding, the residual is closed and both this witness
 // and that paragraph go.
 func TestSandboxMirror_AGapStrandsTheCrossingButNotThePauseItProduces(t *testing.T) {
+	t.Parallel()
 	const runID = "run-1"
 	const slot = "assistant_conversation"
 	blind := mustMarshalMessages(t, []api.Message{{
@@ -726,6 +734,7 @@ func TestSandboxMirror_AGapStrandsTheCrossingButNotThePauseItProduces(t *testing
 // where the same refusal after the spawn lands on the abort path, on a
 // runner the launcher then has to kill while the node answers nothing.
 func TestSandboxDispatch_ATaskOverTheChannelLineFailsBeforeAnyRunnerExists(t *testing.T) {
+	t.Parallel()
 	const runID = "run-1"
 	carried := mustMarshalMessages(t, oversizeSlotConversation(5))
 	for _, tc := range []struct {
@@ -809,6 +818,7 @@ func TestSandboxDispatch_ATaskOverTheChannelLineFailsBeforeAnyRunnerExists(t *te
 // a carried history as ResumeConversation and reads the other field only to
 // keep the two spellings one rule.
 func TestSandboxArm_AContinuedConversationIsRefusedBeforeTheSeed(t *testing.T) {
+	t.Parallel()
 	script, says := envelopeScript(t, 1, resultEnvelope(t, map[string]any{"verdict": "ok"}))
 	sb := &scriptedSandbox{script: script, args: []string{"", says}}
 	store := newNodeSessionStore()
@@ -840,6 +850,7 @@ func TestSandboxArm_AContinuedConversationIsRefusedBeforeTheSeed(t *testing.T) {
 // is the whole account: the far side's bytes are not quoted into the
 // operator's log.
 func TestSandboxMirror_ACaptureThatDoesNotDecodeIsReportedNotSwallowed(t *testing.T) {
+	t.Parallel()
 	const runID = "run-1"
 	garbage := json.RawMessage(`{"not":"a conversation"}`)
 	script, says := envelopeScript(t, 1,
@@ -874,6 +885,7 @@ func TestSandboxMirror_ACaptureThatDoesNotDecodeIsReportedNotSwallowed(t *testin
 // report still composes its own words, so a far side that puts text in the
 // reason does not get it into the operator's log.
 func TestSandboxDispatch_AnUnknownMirrorGapIsStillReported(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		payload map[string]any

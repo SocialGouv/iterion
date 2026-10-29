@@ -12,6 +12,7 @@ import (
 // so a backend admitted with no session root to pack from would degrade every
 // visit to a fresh session. claw is the exception: it packs its own envelope.
 func TestSessionResumeCapabilityHasAPacker(t *testing.T) {
+	t.Parallel()
 	exec := NewClawExecutor(NewRegistry(), verdictWorkflow())
 	backends := []string{
 		delegate.BackendClaw, delegate.BackendClaudeCode, delegate.BackendCodex,

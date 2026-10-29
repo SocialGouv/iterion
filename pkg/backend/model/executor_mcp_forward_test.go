@@ -19,6 +19,7 @@ import (
 // looks like a node that chose not to use them. Every test that exercised the
 // bridge hand-built a delegate.Task, so none of them crossed this seam.
 func TestBuildTaskForwardsDeclaredMCPServersPerBackend(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{
 		logger: iterlog.Nop(),
 		mcpManager: mcp.NewManager(map[string]*mcp.ServerConfig{
@@ -63,6 +64,7 @@ func TestBuildTaskForwardsDeclaredMCPServersPerBackend(t *testing.T) {
 // splice let one token-less repo server kill every claw node of a run
 // (native:b2e46831 — the repo-scoped sentry server on runner pods).
 func TestBuildTaskAmbientMCPServerBootFailureDegradesNotFails(t *testing.T) {
+	t.Parallel()
 	tr := tool.NewRegistry()
 	for _, name := range []string{"bash", "todo_write"} {
 		if err := tr.RegisterBuiltin(name, name, nil, func(context.Context, json.RawMessage) (string, error) {
@@ -113,6 +115,7 @@ func TestBuildTaskAmbientMCPServerBootFailureDegradesNotFails(t *testing.T) {
 // accident of which branch returns, and the tolerant half would erode onto the
 // declared path — silently running an agent without the tools it asked for.
 func TestExplicitMCPWildcardBootFailureFailsTheNode(t *testing.T) {
+	t.Parallel()
 	tr := tool.NewRegistry()
 	if err := tr.RegisterBuiltin("bash", "bash", nil, func(context.Context, json.RawMessage) (string, error) {
 		return "ok", nil

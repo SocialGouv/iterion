@@ -48,6 +48,7 @@ func jsonExec(result string) func(context.Context, json.RawMessage) (string, err
 // ---------------------------------------------------------------------------
 
 func TestActToolNodeAllowed(t *testing.T) {
+	t.Parallel()
 	policy := tool.NewPolicy("run_command", "git_diff")
 	exec := actExecutor(t, policy, map[string]func(context.Context, json.RawMessage) (string, error){
 		"run_command": jsonExec(`{"exit_code":0,"stdout":"ok"}`),
@@ -80,6 +81,7 @@ func TestActToolNodeAllowed(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestActToolNodeDenied(t *testing.T) {
+	t.Parallel()
 	policy := tool.NewPolicy("git_diff") // only git_diff allowed
 	exec := actExecutor(t, policy, map[string]func(context.Context, json.RawMessage) (string, error){
 		"run_command": jsonExec(`{"exit_code":0}`),
@@ -101,6 +103,7 @@ func TestActToolNodeDenied(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestActDenyAllPolicyRejectsEverything(t *testing.T) {
+	t.Parallel()
 	policy := tool.DenyAllPolicy()
 	exec := actExecutor(t, policy, map[string]func(context.Context, json.RawMessage) (string, error){
 		"run_command": jsonExec(`{}`),
@@ -121,6 +124,7 @@ func TestActDenyAllPolicyRejectsEverything(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestActNilPolicyAllowsEverything(t *testing.T) {
+	t.Parallel()
 	exec := actExecutor(t, nil, map[string]func(context.Context, json.RawMessage) (string, error){
 		"run_command": jsonExec(`{"exit_code":0}`),
 	})
@@ -140,6 +144,7 @@ func TestActNilPolicyAllowsEverything(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestActWildcardPolicyAllowsEverything(t *testing.T) {
+	t.Parallel()
 	policy := tool.NewPolicy("*")
 	exec := actExecutor(t, policy, map[string]func(context.Context, json.RawMessage) (string, error){
 		"run_command": jsonExec(`{"exit_code":0}`),
@@ -157,6 +162,7 @@ func TestActWildcardPolicyAllowsEverything(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestActPrefixWildcardMCP(t *testing.T) {
+	t.Parallel()
 	policy := tool.NewPolicy("mcp.github.*")
 
 	reg := NewRegistry()
@@ -190,6 +196,7 @@ func TestActPrefixWildcardMCP(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestActDeniedToolFiresHook(t *testing.T) {
+	t.Parallel()
 	policy := tool.NewPolicy("git_diff")
 
 	var hookCalled bool
@@ -227,6 +234,7 @@ func TestActDeniedToolFiresHook(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestActArtifactsProduced(t *testing.T) {
+	t.Parallel()
 	policy := tool.NewPolicy("run_command", "run_tests", "apply_patch", "git_diff")
 	exec := actExecutor(t, policy, map[string]func(context.Context, json.RawMessage) (string, error){
 		"run_command": jsonExec(`{"exit_code":0,"stdout":"compiled"}`),
