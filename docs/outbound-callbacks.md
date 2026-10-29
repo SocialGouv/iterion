@@ -42,9 +42,10 @@ Supply three optional fields when launching a run via `POST /api/runs`
   artifact holds the run's user-facing answer (read from its
   `final_answer` field). When omitted, iterion probes every
   artifact-producing node of the run's artifact index and returns the
-  first `final_answer` it finds. That index is a map and the scan has no
-  ordering key, so when two nodes carry an answer which one wins is
-  undefined — name the node when it matters.
+  `final_answer` written LAST — the artifact's `written_at`, with the
+  node id breaking a tie — so a redelivery of the same finished run
+  resolves to the same answer. Name the node when the run's last answer
+  is not the one the receiver should see.
 
 The three fields are persisted on the run and propagated across the
 cloud queue (`queue.RunMessage`), so both local (in-process) and cloud

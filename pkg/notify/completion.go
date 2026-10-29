@@ -23,6 +23,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -167,7 +168,14 @@ func shouldNotify(s store.RunStatus) bool {
 //   - When the run names CallbackAnswerNode, the latest artifact for
 //     that node is read and its DefaultAnswerField returned.
 //   - Otherwise every node in Run.ArtifactIndex is probed (latest
-//     version) and the first DefaultAnswerField string wins.
+//     version) and the answer written LAST wins, node id breaking a tie.
+//
+// Run.ArtifactIndex is a map, so the scan needs a key of its own: the
+// node that "wins" cannot be the one a map range happens to yield first,
+// or the same finished run posts a different answer to the same receiver
+// on a redelivery. WrittenAt is the key the promise already implies — a
+// receiver is told the run's final answer — and the node id breaks a tie
+// so two artifacts stamped in the same instant still resolve alike.
 //
 // Returns ("", "") when no answer artifact is present — a legitimate
 // outcome (e.g. a facilitator bot that chose to stay silent), which the
@@ -180,35 +188,48 @@ func (n *Notifier) resolveFinalAnswer(ctx context.Context, st store.RunStore, ru
 		// post an answer the caller never intended (e.g. an internal
 		// reasoning artifact), so a named-but-empty node correctly
 		// yields silence.
-		if s, ok := n.answerFromNode(ctx, st, run.ID, run.CallbackAnswerNode); ok {
+		if s, _, ok := n.answerFromNode(ctx, st, run.ID, run.CallbackAnswerNode); ok {
 			return s, run.CallbackAnswerNode
 		}
 		return "", ""
 	}
+	nodeIDs := make([]string, 0, len(run.ArtifactIndex))
 	for nodeID := range run.ArtifactIndex {
-		if s, ok := n.answerFromNode(ctx, st, run.ID, nodeID); ok {
-			return s, nodeID
+		nodeIDs = append(nodeIDs, nodeID)
+	}
+	sort.Strings(nodeIDs)
+	var bestAt time.Time
+	for _, nodeID := range nodeIDs {
+		s, at, ok := n.answerFromNode(ctx, st, run.ID, nodeID)
+		if !ok {
+			continue
+		}
+		// Strictly after, over ids walked in sorted order: the earliest
+		// id keeps a tie, so the verdict does not depend on the walk.
+		if node == "" || at.After(bestAt) {
+			answer, node, bestAt = s, nodeID, at
 		}
 	}
-	return "", ""
+	return answer, node
 }
 
 // answerFromNode reads the node's latest artifact and returns its
-// DefaultAnswerField as a string when present and non-empty.
-func (n *Notifier) answerFromNode(ctx context.Context, st store.RunStore, runID, nodeID string) (string, bool) {
+// DefaultAnswerField as a string when present and non-empty, with the
+// instant it was written — the scan's ordering key.
+func (n *Notifier) answerFromNode(ctx context.Context, st store.RunStore, runID, nodeID string) (string, time.Time, bool) {
 	art, err := st.LoadLatestArtifact(ctx, runID, nodeID)
 	if err != nil || art == nil || art.Data == nil {
-		return "", false
+		return "", time.Time{}, false
 	}
 	raw, ok := art.Data[DefaultAnswerField]
 	if !ok {
-		return "", false
+		return "", time.Time{}, false
 	}
 	s, ok := raw.(string)
 	if !ok || s == "" {
-		return "", false
+		return "", time.Time{}, false
 	}
-	return s, true
+	return s, art.WrittenAt, true
 }
 
 // deliver POSTs the payload after vetting the URL. All paths are
