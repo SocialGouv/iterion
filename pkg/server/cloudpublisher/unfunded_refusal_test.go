@@ -148,3 +148,39 @@ func TestResolve_RequireLLMCredential_ReadsTheAttributedSet(t *testing.T) {
 		}
 	})
 }
+
+// #2783 — a tool node's `recovery: model:` is a route the walk reads: under
+// `llm_fallback: none`, a recovery rung pinning a provider the team funds
+// nothing of refuses the launch, naming the provider AND the node. `verify`
+// pins the anthropic the team holds, so the refusal can only come from the
+// rungs' own routes — which is what makes this a witness of the reader
+// (recoveryRungsOf), not of the agent arm. Mutant: the recovery arm dropped
+// from EffectiveProviders → the refusal disappears.
+const recoveryRungBot = "tool heal:\n  command: \"make build\"\n  goal: \"the build succeeds\"\n  postcondition: \"test -f build.ok\"\n  policy: recover\n  recovery:\n    max_repair_attempts: 1\n    max_agent_attempts: 1\n    model: \"openai/gpt-5.4-mini\"\n\nagent verify:\n  model: \"anthropic/claude-opus-5\"\n  backend: \"claw\"\n\nworkflow main:\n  heal -> verify\n  verify -> done\n"
+
+func TestResolve_LLMFallbackNone_ARecoveryRungsModelIsRefusedByName(t *testing.T) {
+	p, _ := llmFallbackPublisher(t, map[string]string{"team1": "none"})
+	seedKeyFP(t, p.apiKeys, p.sealer, "team1", secrets.ProviderAnthropic, "sk-ant-team", "fp-ant-team")
+
+	err := resolvePolicy(t, p, recoveryRungBot)
+	var unfunded *UnfundedProvidersError
+	if !errors.As(err, &unfunded) {
+		t.Fatalf("resolveAndSealCredentials = %v, want an *UnfundedProvidersError naming openai: the recovery rungs' `model:` spends a provider the team funds nothing of", err)
+	}
+	if got := unfunded.Providers; len(got) != 1 || got[0] != "openai" {
+		t.Fatalf("unfunded providers = %v, want exactly [openai] — `verify`'s anthropic IS funded by the team's own key", got)
+	}
+	// Provider AND node: each enabled rung names its own site, so the
+	// operator reading "provision openai" learns which node spends it.
+	wantSites := []string{"heal#agent_recovery", "heal#self_repair"}
+	if sites := unfunded.Sites["openai"]; len(sites) != 2 || sites[0] != wantSites[0] || sites[1] != wantSites[1] {
+		t.Errorf("sites naming openai = %v, want %v — the refusal must name the node and the rung", sites, wantSites)
+	}
+	// The same team, funding what its rungs name, starts.
+	q, _ := llmFallbackPublisher(t, map[string]string{"team1": "none"})
+	seedKeyFP(t, q.apiKeys, q.sealer, "team1", secrets.ProviderAnthropic, "sk-ant-team", "fp-ant-team")
+	seedKeyFP(t, q.apiKeys, q.sealer, "team1", secrets.ProviderOpenAI, "sk-openai-team", "fp-openai-team")
+	if err := resolvePolicy(t, q, recoveryRungBot); err != nil {
+		t.Fatalf("resolveAndSealCredentials = %v, want nil — the team funds exactly what its rungs name", err)
+	}
+}

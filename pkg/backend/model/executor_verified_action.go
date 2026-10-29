@@ -372,15 +372,8 @@ Return only the corrected command (one shell invocation, may use && / pipes). Do
 // (budget, node events, capability→tool opening). Replace with a typed
 // recovery-agent entry point on the generation/backend layer.
 func (e *ClawExecutor) agentRecovery(ctx context.Context, node *ir.ToolNode, input map[string]any, lastRung string) error {
-	recovery := node.Recovery
 	modelSpec := e.recoveryModel(node)
-	syn := &ir.AgentNode{
-		BaseNode: ir.BaseNode{ID: node.ID + "__recover"},
-		LLMFields: ir.LLMFields{
-			Model: modelSpec,
-		},
-		Tools: recovery.AgentTools,
-	}
+	syn := recoveryAgentNode(node.ID, modelSpec, node.Recovery.AgentTools)
 	// A DEFAULT the serving backend cannot fund is refused before dispatch —
 	// claw-scoped like the router guard: a claude_code-serving deployment
 	// funds the recovery agent on the CLI's own login (FORBID's documented
@@ -412,18 +405,16 @@ func (e *ClawExecutor) agentRecovery(ctx context.Context, node *ir.ToolNode, inp
 }
 
 // recoveryModel resolves the model spec for the recovery rungs: the node's
-// recovery.model (env-expanded) when set, else ITERION_VERIFIED_ACTION_MODEL,
-// else the package default.
+// recovery.model (env-expanded) when set, else the ladder's default arm
+// (recoveryModelFallback — the one the launch walks read, so a pre-flight
+// and this dispatch cannot disagree on one unpinned spec).
 func (e *ClawExecutor) recoveryModel(node *ir.ToolNode) string {
 	if node.Recovery != nil && node.Recovery.Model != "" {
 		if m := e.resolveRoutingField(node.Recovery.Model); m != "" {
 			return m
 		}
 	}
-	if m := ir.LookupEnv("ITERION_VERIFIED_ACTION_MODEL"); m != "" {
-		return m
-	}
-	return defaultVerifiedActionModel
+	return recoveryModelFallback()
 }
 
 // verifiedOutput merges the recipe output with the postcondition's JSON

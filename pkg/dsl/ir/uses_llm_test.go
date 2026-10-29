@@ -79,13 +79,29 @@ func TestWorkflowUsesLLM(t *testing.T) {
 			// that only MIGHT reach it still can.
 			name: "a tool node with agent recovery does",
 			wf: wfWith(&ToolNode{BaseNode: BaseNode{ID: "a"}, Command: "true",
-				Recovery: &RecoverySpec{MaxAgentAttempts: 1}}),
+				Policy: PolicyRecover, Recovery: &RecoverySpec{MaxAgentAttempts: 1}}),
+			want: true,
+		},
+		{
+			// Rung 3's self-repair is a model call too (a direct
+			// generation): the default recovery shape spends.
+			name: "a tool node with self-repair does",
+			wf: wfWith(&ToolNode{BaseNode: BaseNode{ID: "a"}, Command: "true",
+				Policy: PolicyRecover, Recovery: &RecoverySpec{MaxRepairAttempts: 1}}),
 			want: true,
 		},
 		{
 			name: "a tool node whose agent rung is off does not",
 			wf: wfWith(&ToolNode{BaseNode: BaseNode{ID: "a"}, Command: "true",
-				Recovery: &RecoverySpec{MaxAgentAttempts: 0}}),
+				Policy: PolicyRecover, Recovery: &RecoverySpec{MaxAgentAttempts: 0}}),
+			want: false,
+		},
+		{
+			// Bounds without policy: recover are inert (C106): dispatch
+			// never runs the rungs, so the graph property agrees.
+			name: "an inert recovery block does not",
+			wf: wfWith(&ToolNode{BaseNode: BaseNode{ID: "a"}, Command: "true",
+				Recovery: &RecoverySpec{MaxRepairAttempts: 1, MaxAgentAttempts: 1}}),
 			want: false,
 		},
 		{

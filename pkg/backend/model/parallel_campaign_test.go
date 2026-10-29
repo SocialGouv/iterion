@@ -112,6 +112,7 @@ var serialFamily = map[string]string{
 	"process_env_policy_test.go":               "Setenv",
 	"provider_allowlist_test.go":               "Setenv",
 	"provider_hint_test.go":                    "Setenv",
+	"recovery_route_test.go":                   "Setenv",
 	"registry_identity_test.go":                "Setenv",
 	"registry_global_lookup_test.go":           "SetCredentialsLookup, SetOAuthDirLookup",
 	"registry_moonshot_test.go":                "Setenv",

@@ -84,8 +84,9 @@ func gateModeIsKnown(mode string) bool {
 //     synthetic agent (executor_verified_action.go) that carries no lists of
 //     its own and is therefore gated by the workflow's — the most dangerous
 //     agent in the graph, since it runs after a deterministic recipe already
-//     failed. NodeUsesLLM is the repo's own answer to "does this node reach a
-//     model", and its ToolNode arm is exactly that rung;
+//     failed. ToolRecoveryAgentRung is exactly that rung — rung 3's
+//     self-repair generation holds no tools and reads no list, so it is not
+//     a reader even though it spends a model;
 //   - the SHADOW question is mode-INDEPENDENT. `--permission` can arm a node
 //     the DSL leaves off (ITERION_PERMISSION cannot: mode resolution is
 //     cmp.Or(override, node, workflow, env), so an explicit off outranks the
@@ -112,7 +113,7 @@ func (c *compiler) validatePermissionRules(w *Workflow) {
 
 	for _, n := range w.Nodes {
 		if tn, ok := n.(*ToolNode); ok {
-			if NodeUsesLLM(tn) {
+			if ToolRecoveryAgentRung(tn) {
 				readers++
 				for _, kind := range permissionRuleKinds {
 					readsWorkflowList[kind] = true
@@ -302,8 +303,9 @@ func (c *compiler) checkShellClassCoverage(w *Workflow) {
 			// surface that agent will hold: a declared list is its tool set,
 			// an undeclared one the registry's ambient built-ins (the same
 			// declared/ambient split the runtime resolves, and the node's own
-			// arm below reads).
-			if tn.Recovery == nil || !NodeUsesLLM(tn) {
+			// arm below reads). Rung 3's generation holds no tools, so the
+			// rung-4 predicate — not NodeUsesLLM — decides.
+			if !ToolRecoveryAgentRung(tn) {
 				continue
 			}
 			if !gateModeIsOn(w.Permission) || !toolcatalog.ConstrainsTools(effectiveNodeBackend("", w.DefaultBackend)) {

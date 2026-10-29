@@ -41,14 +41,16 @@ type RouteUnreadableError struct {
 }
 
 // fieldlessSite marks the fieldless site class (a model-calling node with
-// no LLMFields — a subbot, an agent recovery): the route spends a model no
-// field exposes. A human node's LLM half is not of this class: its model
-// is read as the direct generation it is (humanLLMModelOf).
+// no LLMFields — a subbot): the route spends a model no field exposes. A
+// human node's LLM half is not of this class (its model is read as the
+// direct generation it is — humanLLMModelOf), and neither is a Verified
+// Action's recovery ladder, read rung by rung as dispatch spends it
+// (recoveryRungsOf, #2783).
 const fieldlessSite = "\x00fieldless"
 
 func (e *RouteUnreadableError) Error() string {
 	if e.Field == fieldlessSite {
-		return fmt.Sprintf("provider allowlist: node %s spends a model no field exposes (a subbot or an agent recovery) — a non-empty providers list refuses a launch whose routes it cannot check, whatever the list names; replace or remove the node, or launch without the providers list", e.Site)
+		return fmt.Sprintf("provider allowlist: node %s spends a model no field exposes (a subbot) — a non-empty providers list refuses a launch whose routes it cannot check, whatever the list names; replace or remove the node, or launch without the providers list", e.Site)
 	}
 	hint := ""
 	if e.Hint != "" {

@@ -43,10 +43,12 @@ func anthropicWireHints() map[string]bool {
 //   - claw or pi with a provider it cannot resolve (claw substitutes the
 //     first available provider, which may be anthropic);
 //   - any resolved hint that is anthropic or zai, on any backend;
-//   - a model-calling node that exposes no LLMFields (subbot, agent-rung
-//     recovery), a nil workflow; a human node's LLM half is read on its
-//     model's prefix (humanLLMModelOf) — on the wire when the prefix is,
-//     armed when the prefix cannot be read.
+//   - a model-calling node that exposes no LLMFields (a subbot), a nil
+//     workflow; a human node's LLM half is read on its model's prefix
+//     (humanLLMModelOf) — on the wire when the prefix is, armed when the
+//     prefix cannot be read; a Verified Action's recovery rungs are read
+//     the way dispatch spends them (recoveryRungsOf): rung 3 as the direct
+//     generation it is, rung 4 as the synthetic agent dispatch it is.
 //
 // A `{{vars.*}}` span resolves against the view's vars (RouteView.field) —
 // the run's own reading — and a late name stays as written, undecided,
@@ -116,6 +118,30 @@ func AnthropicWireRoutes(v RouteView) []WireRoute {
 				// prefix the walk cannot read keeps the guard armed.
 				if r := directWireRoute(n.NodeID(), v.field(mdl)); !r.Readable || anthropicWireProviders[r.Hint] {
 					out = append(out, r)
+				}
+				continue
+			}
+			if spec, selfRepair, agentRung := recoveryRungsOf(n); selfRepair || agentRung {
+				// A Verified Action's recovery ladder (#2783), read the way
+				// dispatch spends it: rung 3 is a direct generation on the
+				// recovery model (the human arm's reading), rung 4 a full
+				// agent dispatch on the synthetic node — overrides and the
+				// workflow's default backend included.
+				spec = recoverySpecOf(v, spec)
+				if selfRepair {
+					if r := directWireRoute(n.NodeID()+"#self_repair", spec); !r.Readable || anthropicWireProviders[r.Hint] {
+						out = append(out, r)
+					}
+				}
+				if agentRung {
+					syn := recoveryAgentNode(n.NodeID(), spec, nil)
+					ov := v.Overrides.ForNode(syn.NodeID(), syn.NodeKind())
+					backend := routeBackend(v.field(ov.Backend), "", v.field(wf.DefaultBackend))
+					mdl := v.field(firstNonEmpty(ov.Model, spec))
+					ovProv := v.field(ov.Provider)
+					if routeOnAnthropicWire(backend, ovProv, "", mdl) {
+						out = append(out, primaryWireRoute(n.NodeID()+"#agent_recovery", backend, ovProv, "", mdl))
+					}
 				}
 				continue
 			}

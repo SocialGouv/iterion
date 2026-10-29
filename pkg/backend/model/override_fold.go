@@ -70,8 +70,10 @@ type ProviderResolution struct {
 	// resolved to a known provider: an LLM node with no pin, an explicit
 	// "auto", a ${VAR} empty at resolution time, a hint the caller does
 	// not know, a model-calling node that carries no LLMFields at all
-	// (a human node answering with a model, a subbot), or a fallback
-	// route that pins nothing. A caller NARROWING a request on Providers
+	// (a subbot — a human node's LLM half and a Verified Action's
+	// recovery rungs are READ, through humanLLMModelOf and
+	// recoveryRungsOf), or a fallback route that pins nothing. A caller
+	// NARROWING a request on Providers
 	// must fail OPEN when it is false — treat the run as able to spend
 	// every provider — because a node that resolved to nothing takes
 	// whatever credential the process holds (claw substitutes the first
@@ -97,6 +99,8 @@ type ProviderResolution struct {
 	// Pins maps a provider in Providers to the sites that named it — the
 	// node id whose own route resolves to it, `node#name` for an authored
 	// `fallbacks:` route (its index when the author named none),
+	// `node#interaction` for an interaction generation, `node#self_repair`
+	// and `node#agent_recovery` for a Verified Action's recovery rungs,
 	// `run-fallback#<stage>` for the run-level chain, `supervisor:<name>`
 	// for a supervisor. A refusal built on this walk can say which node
 	// pinned what; sorted, deduplicated.
@@ -199,6 +203,40 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 				acc.backend = ""
 				acc.site = n.NodeID()
 				acc.resolveDirect(v.field(mdl), "")
+				continue
+			}
+			if spec, selfRepair, agentRung := recoveryRungsOf(n); selfRepair || agentRung {
+				// A Verified Action's recovery ladder (#2783): the rungs
+				// spend the recovery model — resolved like dispatch's
+				// recoveryModel, default included — and each is read the
+				// way dispatch runs it.
+				seenAnyLLM = true
+				spec = recoverySpecOf(v, spec)
+				if selfRepair {
+					// Rung 3 is a DIRECT generation on the spec (the
+					// registry, rung 3 never consults ForNode): the human
+					// arm's reading, at the rung's own site.
+					acc.backend = ""
+					acc.site = n.NodeID() + "#self_repair"
+					acc.resolveDirect(spec, "")
+				}
+				if agentRung {
+					// Rung 4 dispatches a synthetic agent node — read it
+					// through the SAME shape dispatch builds, so the
+					// executor's whole precedence (a kind or glob override
+					// reaching `<tool>__recover`, the workflow's default
+					// backend) applies exactly as at dispatch.
+					syn := recoveryAgentNode(n.NodeID(), spec, nil)
+					ov := v.Overrides.ForNode(syn.NodeID(), syn.NodeKind())
+					b, fromEnv := resolveRouteBackend(v.field(ov.Backend), "", v.field(wf.DefaultBackend))
+					if fromEnv {
+						// Expanded with this process's env, not the runner's.
+						b = ""
+					}
+					acc.backend = b
+					acc.site = n.NodeID() + "#agent_recovery"
+					acc.resolveNode(syn, &syn.LLMFields, v.Overrides)
+				}
 				continue
 			}
 			if ir.NodeUsesLLM(n) {

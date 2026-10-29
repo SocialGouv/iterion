@@ -877,10 +877,15 @@ says — so:
   to a funded one, or unset the knob. A gateway route
   (`openai_compatible/…`) is never named: it acquires no credential.
 
-One gap is NOT closed: a tool node's `recovery: model:` is read by no
-provider walk, so the provider it pins is invisible to both refusals (and
-to the allowlist). It is tracked, not hidden — the same class #2691 closed
-for human nodes.
+A tool node's `recovery: model:` is read too (#2783): the walk resolves the
+rung's spec the way dispatch's `recoveryModel` does — the authored field
+through the run's vars, then `ITERION_VERIFIED_ACTION_MODEL`, then the
+`anthropic/claude-opus-5-5` default — and reads each enabled rung the way it
+runs (rung 3 a direct generation, rung 4 the synthetic agent dispatch), so
+both refusals name its provider AND its node (`openai (named by
+heal#agent_recovery, heal#self_repair)`). Rungs exist under
+`policy: recover` alone, so an inert `recovery:` block (C106) is read as
+what it is: nothing.
 
 The setting is a boundary, not a preference: it is audited on every write
 (`team.llm_fallback_set`, tenant trail + org mirror), and survives the other
@@ -960,8 +965,12 @@ to that same policy:
   node's LLM half (`interaction: llm` / `llm_or_human`) is read as the
   direct generation it is — its `model:` prefix names the provider, no
   backend and no override cell applies, exactly as dispatch spends it — so
-  it narrows, is served or refused like any primary route; a subbot or an
-  agent recovery still exposes no field and refuses under any list. An
+  it narrows, is served or refused like any primary route; a Verified
+  Action's recovery rungs are read the same way, rung 3 as the direct
+  generation it is and rung 4 as the synthetic agent dispatch it runs
+  (override cell included, at the `<tool>__recover` id dispatch builds),
+  each pinned at its own site (`node#self_repair`, `node#agent_recovery`);
+  a subbot still exposes no field and refuses under any list. An
   explicitly empty list is refused at the write surface: a level that must
   forbid everything has no run to make, and the honest spelling refuses the
   bot.

@@ -289,10 +289,24 @@ func runsEveryBranch(n Node) bool {
 // half of UsesLLM, exported for the walks outside this package that must
 // stay CONSERVATIVE about spend (a credential-wants derivation that
 // narrows a pool request, a usage-cap wire predicate): a node this answers
-// true for but that exposes no LLMFields (a human node answering with a
-// model, a Verified Action's agent rung, a subbot) cannot be resolved to
-// a provider, and a caller must widen rather than assume it spends nothing.
+// true for but that exposes no LLMFields (a subbot) cannot be resolved to
+// a provider by shape alone, and a caller must widen rather than assume it
+// spends nothing. The two model-calling kinds that carry no LLMFields but
+// DO expose their route — a human node's LLM half and a Verified Action's
+// recovery rungs — are read through their own shared readers
+// (model.humanLLMModelOf, model.recoveryRungsOf).
 func NodeUsesLLM(n Node) bool { return nodeUsesLLM(n) }
+
+// ToolRecoveryAgentRung reports whether a tool node's Verified Action
+// recovery can reach rung 4 — the AGENT dispatch, which carries a tool set
+// (`agent_tools:`) and is gated by the workflow's permission lists. Rung 3
+// (self-repair) is a direct generation with no tool surface, so it is
+// deliberately NOT this predicate's answer: the permission validation's
+// "reader" is the rung that holds tools, not the one that only completes.
+func ToolRecoveryAgentRung(n Node) bool {
+	t, ok := n.(*ToolNode)
+	return ok && t.Recovery != nil && t.Recovery.MaxAgentAttempts > 0
+}
 
 // nodeUsesLLM answers for one node. Kept separate so the reasoning per node
 // kind stays readable, and each `true` names why it is one.
@@ -311,9 +325,15 @@ func nodeUsesLLM(n Node) bool {
 		return interactionUsesLLM(node.Interaction)
 	case *ToolNode:
 		// A tool node is a shell command — except that a Verified Action's
-		// rung 4 hands recovery to an agent when the recipe cannot heal
-		// itself. A run that only *might* reach that rung still can.
-		return node.Recovery != nil && node.Recovery.MaxAgentAttempts > 0
+		// recovery ladder spends a model when the recipe cannot heal
+		// itself: rung 3 asks one for a corrected command (a direct
+		// generation), rung 4 hands recovery to an agent. A run that only
+		// *might* reach a rung still can. The gate is dispatch's own
+		// (executeVerifiedToolNode): rungs exist under policy: recover
+		// alone, so an inert `recovery:` block (C106) spends nothing and
+		// does not count.
+		return node.Policy == PolicyRecover && node.Recovery != nil &&
+			(node.Recovery.MaxRepairAttempts > 0 || node.Recovery.MaxAgentAttempts > 0)
 	case *SubbotNode:
 		// The child `.bot` is another source entirely: unknowable from
 		// here, so assumed to spend.
