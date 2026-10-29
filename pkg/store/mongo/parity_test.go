@@ -29,6 +29,10 @@ var nonPerRunCollections = map[string]bool{
 	// retry_circuits is keyed by tenant + workflow revision, not run_id;
 	// deleting one run must not erase the shared breaker used by siblings.
 	"retry_circuits": true,
+	// run_seq is keyed by the compound _id {tenant_id, run_id} and carries no
+	// top-level run_id: DeleteRun sweeps it with its own DeleteMany on that key
+	// (runs.go), before the children loop, so the run_id sweep is not its path.
+	"run_seq": true,
 }
 
 func TestDeleteRunCoversEveryPerRunCollection(t *testing.T) {

@@ -70,6 +70,7 @@ var catalogHostAllowlist = map[string]string{
 	"github.com":                "the public forge this project is hosted on",
 	"api.github.com":            "GitHub's public API",
 	"raw.githubusercontent.com": "GitHub's public raw-content host",
+	"codeload.github.com":      "GitHub's archive download host — the ARC runner image bakes the pinned actions from it (ci/arc-runner/Dockerfile)",
 	"gitlab.com":                "the public GitLab instance",
 	"codeberg.org":              "a public forge",
 	"nixhub.io":                 "the public devbox package index, named in devbox locks",
