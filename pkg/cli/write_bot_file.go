@@ -75,7 +75,7 @@ func replaceBotFile(ctx context.Context, path string, decidedOn, data []byte, pe
 		// Nothing was written and the file is whole: the take is the only
 		// thing that failed, and it is the one failure a caller may want to
 		// tell its user to retry.
-		return fmt.Errorf("%s: %w (an editor is saving it, or the %s this writer waits ended): %w", path, ErrBotFileNotTaken, botFileLockWait, err)
+		return fmt.Errorf("%s: %w — an editor is saving it, or the %s this writer waits ended; left as it is (%w)", path, ErrBotFileNotTaken, botFileLockWait, err)
 	case err != nil:
 		return err
 	}

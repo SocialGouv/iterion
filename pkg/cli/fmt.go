@@ -142,7 +142,8 @@ func RunFmt(opts FmtOptions) (FmtResult, error) {
 				if botFileLeftAsItIs(err) {
 					// One file being saved elsewhere is that file's
 					// refusal, not the end of a whole-tree format.
-					res.refuse(path, err.Error())
+					// refuse names the path itself.
+					res.refuse(path, strings.TrimPrefix(err.Error(), path+": "))
 					continue
 				}
 				return res, fmt.Errorf("fmt: %w", err)

@@ -27,6 +27,23 @@ var ErrInstallTargetLocked = errors.New("a file of the bundle is being saved (it
 // operator's SIGINT through cobra's context.
 var installLockWait = 15 * time.Second
 
+// holdBounded runs fn under path's authoring lock and answers whether it got
+// in. The wait is bounded PER FILE — a bundle of many files must not run out
+// of one budget halfway through its replacement, which would leave a tree
+// half old and half new — and by the caller's context too, whichever ends
+// first. The bool tells a refused TAKE, where nothing was written or
+// removed, from a failure under the lock.
+func holdBounded(ctx context.Context, path string, fn func() error) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, installLockWait)
+	defer cancel()
+	held := false
+	err := authoringlock.Hold(ctx, path, func() error {
+		held = true
+		return fn()
+	})
+	return held, err
+}
+
 // replaceTree makes target hold exactly what source ships — the same set
 // copyTree ever copied: no .git, no .iterion, no author document, no
 // irregular file — one file at a time, and every file it writes or removes
@@ -46,8 +63,6 @@ var installLockWait = 15 * time.Second
 // save a brand-new lock file while this install still held the old one —
 // which is to say no exclusion at all.
 func replaceTree(ctx context.Context, source, target string) error {
-	ctx, cancel := context.WithTimeout(ctx, installLockWait)
-	defer cancel()
 	shipped, err := shippedEntries(source)
 	if err != nil {
 		return err
@@ -207,9 +222,7 @@ func removeUnderLock(ctx context.Context, path, target string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	held := false
-	err := authoringlock.Hold(ctx, path, func() error {
-		held = true
+	held, err := holdBounded(ctx, path, func() error {
 		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("remove %s: %w", path, err)
 		}
@@ -247,9 +260,7 @@ func copyShipped(ctx context.Context, source, target string, shipped map[string]
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return err
 		}
-		held := false
-		err := authoringlock.Hold(ctx, path, func() error {
-			held = true
+		held, err := holdBounded(ctx, path, func() error {
 			return stageFileInto(src, path)
 		})
 		if err != nil && !held {

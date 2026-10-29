@@ -136,7 +136,8 @@ func runFmtConvert(opts FmtOptions) (FmtResult, error) {
 				}
 				if err := replaceBotFileNow(dest, decided, out, perm); err != nil {
 					if botFileLeftAsItIs(err) {
-						res.refuse(dest, err.Error())
+						// refuse names the destination itself.
+						res.refuse(dest, strings.TrimPrefix(err.Error(), dest+": "))
 						continue
 					}
 					return res, fmt.Errorf("fmt: %w", err)
