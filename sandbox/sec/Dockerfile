@@ -83,20 +83,28 @@ RUN case "$(uname -m)" in \
 # Layer 4 — OPTIONAL deepsec backend (Enhancement 4 in the sec-audit
 # uplift). https://github.com/vercel-labs/deepsec. Only exercised when
 # the sec-audit-source workflow is run with --var enable_deepsec=true;
-# the tool node degrades gracefully (envelope with errors[]) if any
-# of these binaries are missing, so this layer NEVER hard-fails the
-# build and a partial install only flips the degraded flag at runtime.
+# the tool node degrades gracefully (envelope with errors[]) if the
+# binary is missing at RUN time. At BUILD time the posture is the
+# opposite: the published image must ship the pinned deepsec, so the
+# Layer 5 sanity check below hard-fails on an absent or drifted one
+# (#2350) — the install's `|| echo` only lets the build reach that
+# refusal with a clear message instead of an opaque npm failure.
 #
 # Requires Node.js 22+ (deepsec hard-requirement). Debian's apt `nodejs`
 # trails behind, so install the NodeSource Node 24 LTS deb and pin
 # deepsec via build arg. npm install -g lands the `deepsec` binary on
 # /usr/local/bin which is already on PATH for uid 1000 (devbox).
 #
-# A failure here MUST NOT break the build for users who don't want
-# deepsec — wrap in `|| echo`. The Layer 4 sanity check below records
-# whether deepsec is actually callable.
+# DEEPSEC_VERSION is EXACT, never a range or `latest`: deepsec 2.3.x
+# changed `init` semantics (a bare `init` now demands --model/--yes and
+# throws MODEL_SELECTION_REQUIRED headless), and an unpinned install made
+# the published :edge serve whatever npm had on the last base rebuild —
+# 2.0.12 is the version the bot's reader fixtures were measured against
+# (bots/sec_audit_deepsec_coverage_test.go). A bump is a migration:
+# renovate proposes it, the sanity check and that test judge it.
 # ---------------------------------------------------------------------
-ARG DEEPSEC_VERSION=latest
+# renovate: datasource=npm depName=deepsec
+ARG DEEPSEC_VERSION=2.0.12
 # CODEX_VERSION is pinned SEPARATELY from deepsec on purpose. deepsec
 # bundles a codex of its own, and that one trails: measured 2026-09-10,
 # the image carried codex-cli 0.145.0 while the model asked for was gated
@@ -115,7 +123,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         && apt-get install -y --no-install-recommends nodejs \
         && npm install -g "deepsec@${DEEPSEC_VERSION}" \
         && npm install -g "@openai/codex@${CODEX_VERSION}" ; } \
-    || echo "deepsec Layer 4 setup did not complete — run_deepsec_scanner will degrade gracefully (enable_deepsec=true users should rebuild with a Node 22+ base or pre-install deepsec)."
+    || echo "deepsec Layer 4 setup did not complete — the Layer 5 sanity check below will refuse this image: the published sec image ships the pinned deepsec or no image at all (#2350)."
 
 # ---------------------------------------------------------------------
 # Layer 5 — supply-shield analyzers (MANDATORY): @nodesecure/js-x-ray for
@@ -225,10 +233,11 @@ WORKDIR /workspace
 
 # Build-time sanity check — fail the build rather than ship an image
 # that silently lacks a scanner (the exact façade this image prevents).
-# deepsec is intentionally NOT in the hard-fail list: it is the only
-# optional scanner and the run_deepsec_scanner tool degrades gracefully
-# when it is absent. A presence probe is logged for the image audit
-# trail without affecting the build exit code.
+# deepsec IS in the hard-fail list (#2350): optional at RUN time (the
+# run_deepsec_scanner tool degrades gracefully when enable_deepsec=false),
+# never at BUILD time — the published image ships exactly the pinned
+# deepsec, and an absent or drifted one fails here with the version it
+# found named.
 RUN semgrep --version \
  && gosec --version \
  && govulncheck -version \
@@ -244,7 +253,13 @@ RUN semgrep --version \
  && SCAN_DIR=/tmp/jsx WORKSPACE_DIR=/tmp/jsx iterion-jsxray \
  && node -e 'const d=require("/tmp/jsx/jsxray.json");if(!d.some(f=>f.warnings.length)){console.error("iterion-jsxray produced no warnings on a known-malicious eval — FAIL");process.exit(1)}console.log("iterion-jsxray: present, detected eval on the self-test")' \
  && rm -rf /tmp/jsx \
- && { command -v deepsec >/dev/null 2>&1 \
-        && deepsec --version \
-        && echo "deepsec: present (optional, only used when enable_deepsec=true)" \
-        || echo "deepsec: ABSENT — enable_deepsec=true runs will degrade with an unavailable-reason envelope"; }
+ && DEEPSEC_FOUND="$(deepsec --version 2>/dev/null || true)" \
+ && if [ -z "$DEEPSEC_FOUND" ]; then \
+        echo "deepsec: ABSENT — expected the pinned ${DEEPSEC_VERSION}; the Layer 4 install did not complete, and the published sec image does not ship without its pinned deepsec (#2350)" >&2; \
+        exit 1; \
+    elif [ "$DEEPSEC_FOUND" != "${DEEPSEC_VERSION}" ]; then \
+        echo "deepsec: version drift — the image pinned ${DEEPSEC_VERSION} but installed ${DEEPSEC_FOUND}; rebuild with --build-arg DEEPSEC_VERSION=${DEEPSEC_VERSION} or fix the Layer 4 install (#2350)" >&2; \
+        exit 1; \
+    else \
+        echo "deepsec: present at the pinned ${DEEPSEC_FOUND} (optional, only used when enable_deepsec=true)"; \
+    fi
