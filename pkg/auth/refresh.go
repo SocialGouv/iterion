@@ -282,10 +282,12 @@ func HashRefreshToken(token string) string {
 // every successor copies — and the account session generation it is born
 // under. A login resolves its root before it commits anything (NewSessionRoot,
 // NewAccountRoot) and signs it into the access token it answers with, so a
-// switch can check the token against the revocations of its session.
+// switch can check the token against the revocations of its session. The bson
+// tags are its stored form where a desktop SSO ticket carries it
+// (auth.DesktopLogin).
 type SessionRoot struct {
-	ID         string
-	Generation int64
+	ID         string `bson:"id" json:"id"`
+	Generation int64  `bson:"generation,omitempty" json:"generation,omitempty"`
 }
 
 // NewSessionRoot names the root a login of an existing account will write:

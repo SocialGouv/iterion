@@ -497,6 +497,48 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, deeplink.Path("/account")+"?sso_linked="+url.QueryEscape(c.Display()), http.StatusFound)
 		return
 	}
+	// Desktop flow: don't set browser cookies — and DON'T mint the session
+	// here. The login is DEFERRED to the ticket's redemption (#2635): the
+	// ticket carries what the redemption needs to mint it (the account, the
+	// lineage the session will be born under, the landing team), and the
+	// store holds the ticket only as its hash, so no credential ever rests
+	// in desktop_sso_tickets and an unredeemed ticket leaves no live session
+	// behind. The desktop redeems the ticket at /api/auth/desktop/exchange
+	// over its native client (see desktop_sso.go), which is where the
+	// refresh token first exists. The refresh token thus never enters a URL.
+	if pending.Desktop {
+		if s.desktopTickets == nil {
+			redirectSSOError(w, r, ssoErrExchangeFailed, provQ)
+			return
+		}
+		var d auth.DesktopLogin
+		if pending.TenantID != "" {
+			d, err = s.authSvc.LoginWithExternalForOrgDesktop(r.Context(), ext, pending.TenantID, pending.OrgProviderID, r.UserAgent(), s.clientIP(r))
+		} else {
+			d, err = s.authSvc.LoginWithExternalDesktop(r.Context(), ext, r.UserAgent(), s.clientIP(r))
+		}
+		if err != nil {
+			if s.logger != nil {
+				s.logger.Warn("sso login failed via %s: %v", name, err)
+			}
+			redirectSSOError(w, r, ssoErrorForAuth(err), provQ)
+			return
+		}
+		ticket, mintErr := s.desktopTickets.Mint(r.Context(), d)
+		if mintErr != nil {
+			if s.logger != nil {
+				s.logger.Error("sso login via %s: mint the desktop ticket: %v", name, mintErr)
+			}
+			redirectSSOError(w, r, ssoErrExchangeFailed, provQ)
+			return
+		}
+		sep := "?"
+		if strings.Contains(pending.DesktopRedirect, "?") {
+			sep = "&"
+		}
+		http.Redirect(w, r, pending.DesktopRedirect+sep+"ticket="+url.QueryEscape(ticket), http.StatusFound)
+		return
+	}
 	// Per-org flows drive the login from the tenant/provider stored in
 	// PendingAuth at /start (server-side, keyed by the IdP-echoed state) — NOT
 	// from the URL — so a slug presented at /callback cannot be coerced into
@@ -512,30 +554,6 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 			s.logger.Warn("sso login failed via %s: %v", name, err)
 		}
 		redirectSSOError(w, r, ssoErrorForAuth(err), provQ)
-		return
-	}
-	// Desktop flow: don't set browser cookies. Mint a single-use ticket holding
-	// this LoginResult and 302 to the desktop's loopback listener with it; the
-	// desktop redeems it at /api/auth/desktop/exchange over its native client
-	// (see desktop_sso.go). The refresh token thus never enters a URL.
-	if pending.Desktop {
-		if s.desktopTickets == nil {
-			redirectSSOError(w, r, ssoErrExchangeFailed, provQ)
-			return
-		}
-		ticket, mintErr := s.desktopTickets.Mint(r.Context(), res)
-		if mintErr != nil {
-			if s.logger != nil {
-				s.logger.Error("sso login via %s: mint the desktop ticket: %v", name, mintErr)
-			}
-			redirectSSOError(w, r, ssoErrExchangeFailed, provQ)
-			return
-		}
-		sep := "?"
-		if strings.Contains(pending.DesktopRedirect, "?") {
-			sep = "&"
-		}
-		http.Redirect(w, r, pending.DesktopRedirect+sep+"ticket="+url.QueryEscape(ticket), http.StatusFound)
 		return
 	}
 	s.setAuthCookies(w, res.AccessToken, res.AccessExpires, res.RefreshToken, res.RefreshExpires)

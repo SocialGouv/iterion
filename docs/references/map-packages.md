@@ -61,7 +61,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/assistantmission` | persists bounded, host-authorized control loops between a conversational assistant and one target run. | `Store` |
 | `pkg/audit` | persists control-plane mutations into a queryable, tenant-scoped log. | `Store` |
 | `pkg/auth` | implements the multitenant authentication core: password hashing, JWT issuance/verification, refresh token rotation, and the per-request Identity… | `JWTDenylist`, `PasswordResetStore`, `SessionStore` |
-| `pkg/auth/desktopsso` | holds the single-use, TTL-bounded ticket store that carries a login result between the OIDC callback (which MINTS a ticket for a desktop SSO flow)… | `Store` |
+| `pkg/auth/desktopsso` | holds the single-use, TTL-bounded ticket store that carries a DEFERRED login between the OIDC callback (which MINTS a ticket for a desktop SSO flow)… | `Store` |
 | `pkg/auth/oidc` | owns the SSO connectors: Google, GitHub, and a generic OIDC discovery-based provider. | `Connector`, `StateStore` |
 | `pkg/auth/orgsso` | owns the per-tenant (per-org) SSO provider configuration: the rows an iterion org admin self-serves to enable login via their own Keycloak (a… | `DomainStore`, `Store` |
 | `pkg/auth/wsticket` | holds the single-use, short-TTL ticket store that lets a client open an authenticated WebSocket without carrying a long-lived access JWT in the URL… | `Store` |

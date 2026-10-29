@@ -364,6 +364,30 @@ type LoginResult struct {
 	OrgMemberships []identity.OrgMembership
 }
 
+// DesktopLogin is what a desktop SSO login defers from the IdP callback to
+// the ticket's redemption (#2635): the account, the lineage its session will
+// be born under and the landing team the login resolved — and NO token. The
+// callback mints nothing: no session row is written and no refresh token
+// exists while the login waits, so an unredeemed ticket leaves no live
+// session (there is nothing to revoke at its expiry) and the ticket store
+// never rests a credential. The session is minted by RedeemDesktopLogin,
+// when the desktop redeems the ticket.
+//
+// The bson tags are the wire shape of a desktop_sso_tickets document's
+// payload (pkg/auth/desktopsso).
+type DesktopLogin struct {
+	UserID string `bson:"user_id" json:"user_id"`
+	// Root names the lineage the session will be born under, resolved at the
+	// callback: a revoke-all landing between the callback and the redemption
+	// raises the account's generation above the one carried here, and the
+	// redemption's standing check refuses it (SessionRevoked).
+	Root SessionRoot `bson:"root" json:"root"`
+	// PreferredTeamID is the active team the login resolved at the callback
+	// (the per-org SSO landing, or the account's default): the redemption
+	// prefers it again when the account is still a member of it.
+	PreferredTeamID string `bson:"preferred_team,omitempty" json:"preferred_team,omitempty"`
+}
+
 // Login authenticates with email + password. On success, issues an
 // access JWT bound to the user's default team (or first available)
 // and a refresh token.
@@ -691,18 +715,13 @@ func (s *Service) commitLogin(ctx context.Context, lc loginContext, u identity.U
 	return lc.result(refresh, sess.ExpiresAt), nil
 }
 
-// issueLogin is the shared post-authentication path: every caller that has
-// just authenticated an existing account ends here. It picks the active
-// team, mints tokens, and records the refresh session.
-func (s *Service) issueLogin(ctx context.Context, u identity.User, userAgent, ip string) (LoginResult, error) {
-	return s.issueLoginInTeam(ctx, u, "", userAgent, ip)
-}
-
-// issueLoginInTeam is issueLogin with a preferred active team: when
-// preferredTeamID is one of the user's memberships, the JWT is stamped with it
-// (and its role) instead of the DefaultTeamID/first-membership pick. Used by
-// per-org SSO so a user who logs in via an org's own Keycloak lands in that
-// org rather than their stored default.
+// issueLoginInTeam is the shared post-authentication path of an EXISTING
+// account: every caller that has just authenticated one ends here. It picks
+// the active team — preferredTeamID when it names one of the user's
+// memberships (and its role), the DefaultTeamID/first-membership pick
+// otherwise; the per-org SSO flow uses it so a user who logs in via an
+// org's own Keycloak lands in that org rather than their stored default —
+// mints tokens, and records the refresh session.
 func (s *Service) issueLoginInTeam(ctx context.Context, u identity.User, preferredTeamID, userAgent, ip string) (LoginResult, error) {
 	lc, err := s.prepareLogin(ctx, u, preferredTeamID)
 	if err != nil {
@@ -727,6 +746,77 @@ func (s *Service) issueNewAccountLogin(ctx context.Context, u identity.User, pre
 		return LoginResult{}, err
 	}
 	if lc, err = s.signLogin(lc, NewAccountRoot()); err != nil {
+		return LoginResult{}, err
+	}
+	return s.commitLogin(ctx, lc, u, userAgent, ip)
+}
+
+// finishExternalLogin ends an SSO login of an existing account — the tails
+// of LoginWithExternal and LoginWithExternalForOrg share it. With desktop nil
+// it mints and delivers the session at once (issueLoginInTeam). With one, it
+// DEFERS the mint to the desktop ticket's redemption: what redemption needs
+// is captured (the account, the lineage its session will be born under — read
+// now so a revoke-all landing meanwhile covers it — and the landing team the
+// login resolved), and nothing is signed and no session is written (#2635).
+func (s *Service) finishExternalLogin(ctx context.Context, u identity.User, preferredTeamID, userAgent, ip string, desktop *DesktopLogin) (LoginResult, error) {
+	if desktop == nil {
+		return s.issueLoginInTeam(ctx, u, preferredTeamID, userAgent, ip)
+	}
+	lc, err := s.prepareLogin(ctx, u, preferredTeamID)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	root, err := NewSessionRoot(ctx, s.sessions, u.ID)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	*desktop = DesktopLogin{UserID: u.ID, Root: root, PreferredTeamID: lc.teamID}
+	return LoginResult{}, nil
+}
+
+// finishNewAccountLogin is finishExternalLogin for an account the calling
+// flow created a moment ago: its deferred root is born under generation zero
+// (NewAccountRoot) — no session-store row of the account is read, and a
+// revoke-all landing once the account exists raises the generation above
+// zero, which the redemption's standing check refuses.
+func (s *Service) finishNewAccountLogin(ctx context.Context, u identity.User, preferredTeamID, userAgent, ip string, desktop *DesktopLogin) (LoginResult, error) {
+	if desktop == nil {
+		return s.issueNewAccountLogin(ctx, u, preferredTeamID, userAgent, ip)
+	}
+	lc, err := s.prepareLogin(ctx, u, preferredTeamID)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	*desktop = DesktopLogin{UserID: u.ID, Root: NewAccountRoot(), PreferredTeamID: lc.teamID}
+	return LoginResult{}, nil
+}
+
+// RedeemDesktopLogin completes a desktop SSO login whose ticket the desktop
+// redeemed: the account is asked about its standing as the login's lineage
+// and generation name it — a disable, a pending-password status, a sign-out
+// or a "sign out everywhere" landing since the IdP callback refuses (the
+// generation the root carries is the one the callback read) — and ONLY then
+// is the session minted. The refresh token exists from this call on and is
+// handed to the caller; before it, nothing of this login rested in any
+// store (#2635).
+func (s *Service) RedeemDesktopLogin(ctx context.Context, d DesktopLogin, userAgent, ip string) (LoginResult, error) {
+	if d.UserID == "" || d.Root.ID == "" {
+		return LoginResult{}, errors.New("auth: a desktop login that names no account or no lineage")
+	}
+	u, err := s.standing(ctx, Identity{
+		UserID:            d.UserID,
+		Credential:        CredentialAccessToken,
+		SessionLineage:    d.Root.ID,
+		SessionGeneration: d.Root.Generation,
+	})
+	if err != nil {
+		return LoginResult{}, err
+	}
+	lc, err := s.prepareLogin(ctx, u, d.PreferredTeamID)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	if lc, err = s.signLogin(lc, d.Root); err != nil {
 		return LoginResult{}, err
 	}
 	return s.commitLogin(ctx, lc, u, userAgent, ip)

@@ -22,12 +22,18 @@ import (
 //     → PendingAuth.Desktop + DesktopRedirect are stored; the desktop opens the
 //     returned authorize_url in the system browser.
 //  2. The IdP redirects to the STABLE cloud callback (handleOIDCCallback). For a
-//     desktop flow the callback mints a single-use ticket holding the
-//     LoginResult and 302s to DesktopRedirect?ticket=… (a loopback URL).
+//     desktop flow the callback DEFERS the login: it stores what the redemption
+//     needs to mint the session — the account, the lineage it will be born
+//     under, the landing team (auth.DesktopLogin) — mints a single-use ticket
+//     for it and 302s to DesktopRedirect?ticket=… (a loopback URL). No session
+//     row is written and no token exists yet (#2635), so the ticket store never
+//     rests a credential and an unredeemed ticket leaves no live session.
 //  3. The desktop's loopback listener captures the ticket and redeems it at
-//     POST /api/auth/desktop/exchange over its native client, receiving the
-//     same response shape as a password login (access token in body, refresh
-//     in the Set-Cookie the native client harvests).
+//     POST /api/auth/desktop/exchange over its native client: the account's
+//     standing is re-asked against the lineage and generation the callback
+//     named, the session is minted NOW, and the answer is a password login's
+//     (access token in body, refresh in the Set-Cookie the native client
+//     harvests).
 //
 // The ticket store (pkg/auth/desktopsso) is in-memory by default and
 // Mongo-backed in the cloud control plane, so the mint (callback) and redeem
@@ -58,7 +64,7 @@ func (s *Server) handleDesktopExchange(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "missing ticket")
 		return
 	}
-	res, err := s.desktopTickets.Redeem(r.Context(), req.Ticket)
+	d, err := s.desktopTickets.Redeem(r.Context(), req.Ticket)
 	if errors.Is(err, desktopsso.ErrTicketNotFound) {
 		httpError(w, http.StatusUnauthorized, "invalid or expired ticket")
 		return
@@ -69,23 +75,18 @@ func (s *Server) handleDesktopExchange(w http.ResponseWriter, r *http.Request) {
 		s.identityFailure(w, r, fmt.Errorf("redeem the desktop ticket: %w", err))
 		return
 	}
-	// The session the ticket carries was opened at the IdP callback, up to
+	// The login the ticket defers was resolved at the IdP callback, up to
 	// desktopTicketTTL ago: a sign-out, "sign out everywhere", a password
-	// change or a disable landing since covers it, and it is asked about as
-	// any presented credential is (auth.Service.CheckStanding) before its
-	// tokens are handed out — 401 when it no longer stands.
-	if s.signer == nil {
-		s.identityFailure(w, r, errors.New("redeem the desktop ticket: no access-token verifier configured"))
-		return
-	}
-	carried, err := s.signer.Verify(res.AccessToken)
+	// change or a disable landing since refuses it — the redemption asks the
+	// account's standing against the lineage and generation the callback
+	// named (auth.Service.RedeemDesktopLogin), as any presented credential
+	// is asked (auth.Service.CheckStanding) — 401 when it no longer stands —
+	// and only then mints the session: the refresh token exists from here
+	// on, handed to the desktop, never stored.
+	res, err := s.authSvc.RedeemDesktopLogin(r.Context(), d, r.UserAgent(), s.clientIP(r))
 	if err != nil {
-		httpError(w, http.StatusUnauthorized, "invalid or expired ticket")
-		return
-	}
-	if _, err := s.authSvc.CheckStanding(r.Context(), carried); err != nil {
 		if mapAuthErrorStatus(err) >= http.StatusInternalServerError {
-			s.identityFailure(w, r, fmt.Errorf("check the session a desktop ticket carries: %w", err))
+			s.identityFailure(w, r, fmt.Errorf("mint the session a desktop ticket defers: %w", err))
 			return
 		}
 		s.authError(w, r, err)

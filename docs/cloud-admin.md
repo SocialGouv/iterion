@@ -270,25 +270,19 @@ did before.
 
 `sessions` stores no refresh token: the successor is re-derived from the
 presented token under a key derived from `ITERION_JWT_SECRET`, so rotating
-that secret also ends the window for the tokens rotated just before. A
-plaintext refresh token does rest in `desktop_sso_tickets`: a desktop SSO
-ticket carries the whole minted login, its refresh token in plaintext,
-until the desktop redeems it or two minutes pass; an unredeemed ticket
-then stays in the collection until Mongo's TTL monitor reaps it (a pass
-every 60 seconds, later under load), its insert rests in the oplog for
-the oplog's retention window, and every backup taken while it exists
-holds it too — the whole-database `mongodump --oplog` archives of
-[cloud-backup.md](cloud-backup.md), kept 7 days, 35 days and 13 months
-under its recommended retention.
-The ticket's expiry does not end the session it carries: a refresh token
-read from any of those copies stays usable until it is rotated — the
-desktop's first refresh of a redeemed ticket's session retires it, and the
-copy presented after that is reuse, which ends the session — or its
-session is signed out, or `ITERION_REFRESH_TTL` passes; an unredeemed
-ticket's session is never rotated, so its copy is usable for the whole TTL
-unless its account is signed out everywhere — treat those archives as
-credential stores. Ending the session with its ticket is tracked in
-[#2635](https://github.com/SocialGouv/iterion/issues/2635).
+that secret also ends the window for the tokens rotated just before. The
+desktop SSO ticket store (`desktop_sso_tickets`) rests no credential either
+([#2635](https://github.com/SocialGouv/iterion/issues/2635)): the IdP
+callback DEFERS a desktop login — the ticket stores the account, the lineage
+the session will be born under and the landing team, keyed by the ticket's
+SHA-256, never the ticket — and the session, its refresh token included, is
+minted when the desktop redeems the ticket. No refresh token exists while a
+ticket waits, so none rests in the collection, in the oplog, or in a backup
+([cloud-backup.md](cloud-backup.md)), and an unredeemed ticket leaves no
+live session behind — there is none to revoke at its expiry. A document
+written before this shape (the ticket in plaintext as `_id`, a whole login
+with its refresh token as `result`) answers no redemption — its `_id` is no
+hash a redemption computes — and the TTL index reaps it.
 
 Upgrading from a release without session lineages (before #1668) is a
 rollout constraint: pods of both releases serve the same `sessions` while

@@ -341,11 +341,27 @@ type ticketGate struct {
 	failRedeemArmed atomic.Bool
 }
 
-func (s *ticketGate) Redeem(ctx context.Context, ticket string) (auth.LoginResult, error) {
+func (s *ticketGate) Redeem(ctx context.Context, ticket string) (auth.DesktopLogin, error) {
 	if s.failRedeemArmed.CompareAndSwap(true, false) {
-		return auth.LoginResult{}, fmt.Errorf("desktopsso: redeem: %w", errClusterUnreachable)
+		return auth.DesktopLogin{}, fmt.Errorf("desktopsso: redeem: %w", errClusterUnreachable)
 	}
 	return s.MemoryStore.Redeem(ctx, ticket)
+}
+
+// mintDesktopTicket mints the ticket a desktop SSO callback would for
+// userID: the login DEFERRED — the account, the lineage its session will be
+// born under — and no session written (#2635).
+func mintDesktopTicket(t *testing.T, f *authRouteFixture, userID string) string {
+	t.Helper()
+	root, err := auth.NewSessionRoot(context.Background(), f.sessions, userID)
+	if err != nil {
+		t.Fatalf("name the session root: %v", err)
+	}
+	ticket, err := f.s.desktopTickets.Mint(context.Background(), auth.DesktopLogin{UserID: userID, Root: root})
+	if err != nil {
+		t.Fatalf("mint ticket: %v", err)
+	}
+	return ticket
 }
 
 // authRouteFixture is a server on gated stores with a captured log, and one
@@ -633,14 +649,7 @@ func credentialRoutes() []credentialRoute {
 			}},
 		{name: "desktop exchange", refresh: true, handle: func(s *Server) http.HandlerFunc { return s.handleDesktopExchange },
 			prepare: func(t *testing.T, f *authRouteFixture) *http.Request {
-				res, err := f.s.authSvc.Login(context.Background(), fixtureEmail, fixturePassword, "desktop", "ip")
-				if err != nil {
-					t.Fatalf("login for the ticket: %v", err)
-				}
-				ticket, err := f.s.desktopTickets.Mint(context.Background(), res)
-				if err != nil {
-					t.Fatalf("mint ticket: %v", err)
-				}
+				ticket := mintDesktopTicket(t, f, f.user.User.ID)
 				return jsonReq("/api/auth/desktop/exchange", fmt.Sprintf(`{"ticket":%q}`, ticket))
 			}},
 		{name: "switch team", handle: func(s *Server) http.HandlerFunc { return s.handleSwitchTeam },

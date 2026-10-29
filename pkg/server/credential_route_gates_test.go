@@ -543,9 +543,9 @@ func TestWSTicket_APersonalAccessTokensTicketDiesWithTheToken(t *testing.T) {
 }
 
 // TestDesktopExchange_ATicketWhoseSessionWasRevokedSinceDeliversNothing: the
-// session a desktop SSO ticket carries is asked about before its tokens are
-// handed out: a password change or a disable landing between the IdP callback
-// and the exchange leaves the ticket nothing to deliver.
+// standing of the login a desktop SSO ticket defers is asked before the
+// session is minted: a password change or a disable landing between the IdP
+// callback and the exchange leaves the ticket nothing to mint.
 func TestDesktopExchange_ATicketWhoseSessionWasRevokedSinceDeliversNothing(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -570,15 +570,7 @@ func TestDesktopExchange_ATicketWhoseSessionWasRevokedSinceDeliversNothing(t *te
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newDerivationFixture(t)
-			ctx := context.Background()
-			login, err := f.svc.Login(ctx, fixtureEmail, fixturePassword, "desktop", "ip")
-			if err != nil {
-				t.Fatal(err)
-			}
-			ticket, err := f.tickets.Mint(ctx, login)
-			if err != nil {
-				t.Fatal(err)
-			}
+			ticket := mintDesktopTicket(t, f.authRouteFixture, f.user.User.ID)
 			tc.revoke(t, f)
 			code, _, body := f.call(t, http.MethodPost, "/api/auth/desktop/exchange", "", `{"ticket":"`+ticket+`"}`)
 			var sess AuthSessionResponse

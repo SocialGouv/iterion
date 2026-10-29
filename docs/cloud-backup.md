@@ -11,13 +11,15 @@ This runbook covers the durable state iterion owns in cloud-mode:
 | Secrets (BYOK, OAuth, run secrets) | Mongo, encrypted with `ITERION_SECRETS_KEY` | Per-tenant credentials | Secrets unrecoverable if the secrets key is also lost |
 | Artifact bodies | S3 / blob | Versioned `artifacts/<run-id>/<node>/<v>.json` | Artifacts lost; checkpoints reference dead keys |
 
-A Mongo dump is also a credential store: it holds the plaintext refresh
-token of every desktop SSO ticket (`desktop_sso_tickets`) in the
-collection when it ran, each usable until it is rotated, its session or
-account is signed out, or `ITERION_REFRESH_TTL` passes — an unredeemed
-ticket's for the whole TTL unless its account is signed out everywhere
-([cloud-admin.md](cloud-admin.md) §2). Store, restrict and destroy the
-archives accordingly.
+A Mongo dump holds no plaintext session credential: `sessions` stores only
+refresh-token hashes, and the desktop SSO ticket store
+(`desktop_sso_tickets`) rests no credential at all — a ticket's payload is
+the deferred login (account, lineage, landing team) keyed by the ticket's
+SHA-256, and the session is minted at redemption
+([#2635](https://github.com/SocialGouv/iterion/issues/2635);
+[cloud-admin.md](cloud-admin.md) §2). The sealed BYOK/OAuth rows a dump does
+hold stay unreadable without `ITERION_SECRETS_KEY`. Store, restrict and
+destroy the archives accordingly.
 
 **Critical invariant:** the Mongo backup and the blob backup must
 overlap in time. A Mongo restore that references blob keys deleted

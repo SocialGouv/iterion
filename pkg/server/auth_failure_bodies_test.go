@@ -59,10 +59,7 @@ func TestAuthRoutes_StoreFailuresAnswerTheGenericBody(t *testing.T) {
 // retries the ticket, which is still valid; an unknown ticket stays 401.
 func TestHandleDesktopExchange_AStoreFailureIsNotAnInvalidTicket(t *testing.T) {
 	f := newAuthRouteFixture(t)
-	ticket, err := f.tickets.Mint(context.Background(), f.user)
-	if err != nil {
-		t.Fatalf("mint: %v", err)
-	}
+	ticket := mintDesktopTicket(t, f, f.user.User.ID)
 	exchange := func(ticket string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
 		f.s.handleDesktopExchange(w, httptest.NewRequest("POST", "/api/auth/desktop/exchange", strings.NewReader(fmt.Sprintf(`{"ticket":%q}`, ticket))))

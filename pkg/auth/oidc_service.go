@@ -20,6 +20,23 @@ import (
 //   - in SignupInviteOnly mode, returns ErrSignupClosed unless the
 //     user was already provisioned.
 func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, userAgent, ip string) (LoginResult, error) {
+	return s.loginWithExternal(ctx, ext, userAgent, ip, nil)
+}
+
+// LoginWithExternalDesktop is LoginWithExternal for a DESKTOP SSO flow: the
+// same identity work at the IdP callback, but the session is DEFERRED to the
+// ticket's redemption (RedeemDesktopLogin) — nothing is signed, no session
+// row is written, and no refresh token exists while the ticket waits, so the
+// ticket store never rests a credential (#2635).
+func (s *Service) LoginWithExternalDesktop(ctx context.Context, ext oidc.ExternalUser, userAgent, ip string) (DesktopLogin, error) {
+	var d DesktopLogin
+	if _, err := s.loginWithExternal(ctx, ext, userAgent, ip, &d); err != nil {
+		return DesktopLogin{}, err
+	}
+	return d, nil
+}
+
+func (s *Service) loginWithExternal(ctx context.Context, ext oidc.ExternalUser, userAgent, ip string, desktop *DesktopLogin) (LoginResult, error) {
 	if ext.Subject == "" {
 		return LoginResult{}, fmt.Errorf("auth: external user missing subject")
 	}
@@ -69,7 +86,7 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 		if errors.Is(err, ErrAccountDisabled) {
 			return LoginResult{}, err
 		}
-		return s.issueLogin(ctx, u, userAgent, ip)
+		return s.finishExternalLogin(ctx, u, "", userAgent, ip, desktop)
 	}
 	if !errors.Is(err, identity.ErrNotFound) {
 		return LoginResult{}, err
@@ -112,7 +129,7 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 		if errors.Is(err, ErrAccountDisabled) {
 			return LoginResult{}, err
 		}
-		return s.issueLogin(ctx, u, userAgent, ip)
+		return s.finishExternalLogin(ctx, u, "", userAgent, ip, desktop)
 	}
 	if !errors.Is(err, identity.ErrNotFound) {
 		return LoginResult{}, err
@@ -126,7 +143,7 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 	gated := gh.provider && gh.active
 	if gated && len(gh.rows) == 0 {
 		if s.githubUngrantedPolicy == GitHubUngrantedSubmitter {
-			return s.provisionSubmitter(ctx, ext, email, now, userAgent, ip)
+			return s.provisionSubmitter(ctx, ext, email, now, userAgent, ip, desktop)
 		}
 		return LoginResult{}, ErrSSORestricted
 	}
@@ -194,7 +211,7 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 	if u, err = s.store.PatchUser(ctx, u.ID, patch); err != nil {
 		return LoginResult{}, err
 	}
-	return s.issueNewAccountLogin(ctx, u, preferredTeam, userAgent, ip)
+	return s.finishNewAccountLogin(ctx, u, preferredTeam, userAgent, ip, desktop)
 }
 
 // provisionSubmitter creates a teamless account for a GitHub login that is
@@ -203,7 +220,7 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 // account can authenticate + submit to the marketplace (auth-only) but has no
 // team-scoped rights. If the user is later added to an allow-listed team, the
 // returning-user grant re-evaluation in LoginWithExternal upgrades them.
-func (s *Service) provisionSubmitter(ctx context.Context, ext oidc.ExternalUser, email string, now time.Time, userAgent, ip string) (LoginResult, error) {
+func (s *Service) provisionSubmitter(ctx context.Context, ext oidc.ExternalUser, email string, now time.Time, userAgent, ip string, desktop *DesktopLogin) (LoginResult, error) {
 	u := identity.User{
 		ID:        uuid.NewString(),
 		Email:     email,
@@ -230,7 +247,7 @@ func (s *Service) provisionSubmitter(ctx context.Context, ext oidc.ExternalUser,
 		return LoginResult{}, err
 	}
 	// No team: the login lands with an empty active team.
-	return s.issueNewAccountLogin(ctx, u, "", userAgent, ip)
+	return s.finishNewAccountLogin(ctx, u, "", userAgent, ip, desktop)
 }
 
 // LoginWithExternalForOrg completes a per-org OIDC flow (a tenant's own
@@ -243,6 +260,21 @@ func (s *Service) provisionSubmitter(ctx context.Context, ext oidc.ExternalUser,
 // tenantID at the provider's DefaultRole (grant-only, never downgraded, capped
 // below owner) and lands in that org.
 func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.ExternalUser, tenantID, providerID, userAgent, ip string) (LoginResult, error) {
+	return s.loginWithExternalForOrg(ctx, ext, tenantID, providerID, userAgent, ip, nil)
+}
+
+// LoginWithExternalForOrgDesktop is LoginWithExternalForOrg for a DESKTOP SSO
+// flow: the session is deferred to the ticket's redemption, as
+// LoginWithExternalDesktop defers it (#2635).
+func (s *Service) LoginWithExternalForOrgDesktop(ctx context.Context, ext oidc.ExternalUser, tenantID, providerID, userAgent, ip string) (DesktopLogin, error) {
+	var d DesktopLogin
+	if _, err := s.loginWithExternalForOrg(ctx, ext, tenantID, providerID, userAgent, ip, &d); err != nil {
+		return DesktopLogin{}, err
+	}
+	return d, nil
+}
+
+func (s *Service) loginWithExternalForOrg(ctx context.Context, ext oidc.ExternalUser, tenantID, providerID, userAgent, ip string, desktop *DesktopLogin) (LoginResult, error) {
 	if s.orgSSO == nil {
 		return LoginResult{}, oidc.ErrUnknownProvider
 	}
@@ -290,7 +322,7 @@ func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.External
 		if errors.Is(err, ErrAccountDisabled) {
 			return LoginResult{}, err
 		}
-		return s.issueLoginInTeam(ctx, u, tenantID, userAgent, ip)
+		return s.finishExternalLogin(ctx, u, tenantID, userAgent, ip, desktop)
 	}
 	if !errors.Is(err, identity.ErrNotFound) {
 		return LoginResult{}, err
@@ -334,7 +366,7 @@ func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.External
 		if errors.Is(err, ErrAccountDisabled) {
 			return LoginResult{}, err
 		}
-		return s.issueLoginInTeam(ctx, existing, tenantID, userAgent, ip)
+		return s.finishExternalLogin(ctx, existing, tenantID, userAgent, ip, desktop)
 	} else if !errors.Is(err, identity.ErrNotFound) {
 		return LoginResult{}, err
 	}
@@ -380,7 +412,7 @@ func (s *Service) LoginWithExternalForOrg(ctx context.Context, ext oidc.External
 	if patched, uerr := s.store.PatchUser(ctx, u.ID, identity.UserPatch{LastLoginAt: &now}); uerr == nil {
 		u = patched
 	}
-	return s.issueNewAccountLogin(ctx, u, tenantID, userAgent, ip)
+	return s.finishNewAccountLogin(ctx, u, tenantID, userAgent, ip, desktop)
 }
 
 // LinkExternalToUser attaches a freshly-authenticated external identity to an
