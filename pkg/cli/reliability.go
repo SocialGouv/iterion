@@ -361,10 +361,13 @@ func (m mongoReliabilitySource) LoadRun(ctx context.Context, id string) (*store.
 // scoped carries the tenant the way every cloud caller does — on the
 // context, where the store's tenant filter reads it. BOTH methods go
 // through it: a scoped listing whose loads were unscoped would pair one
-// tenant's ids with another tenant's documents.
+// tenant's ids with another tenant's documents. The every-tenant baseline
+// (no --tenant) is an operator's read over the whole store, so it says so
+// with the store's own bypass instead of reaching the filter unscoped: a
+// tenant-scoped query without a tenant in ctx panics by design.
 func (m mongoReliabilitySource) scoped(ctx context.Context) context.Context {
 	if m.tenant == "" {
-		return ctx
+		return store.WithoutTenantFilter(ctx)
 	}
 	return store.WithIdentity(ctx, m.tenant, "")
 }
