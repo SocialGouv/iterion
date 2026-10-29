@@ -65,9 +65,9 @@ vars:
   ## (scripts/ultra11y.mjs in the npm tarball). bots/rgaa-audit/ultra11y.pin
   ## is the authored copy; bots/rgaa_audit_engine_pin_test.go holds these
   ## three defaults equal to it. Bump deliberately, through the pin file.
-  engine_version: string = "5.45.0"
-  engine_sha256: string = "f29a85849b90c254d8836fbbbf71131a89e361cbefda321d48d47e5e00d916eb"
-  engine_size: int = 3722105
+  engine_version: string = "5.49.0"
+  engine_sha256: string = "114cdbd640c837ce14796601e56f1c15df3756987ef9c803a1f411fee9d2a404"
+  engine_size: int = 3805949
   ## The standard the engine audits against. Only the French RGAA 4.1.2 pack
   ## today: the WCAG core report carries no « Décidés » line and a different
   ## rate semantics, so the cross-checks below would read it as degraded on
@@ -268,6 +268,12 @@ prompt refute_system:
 
   For EVERY claim `n` in the batch:
     1. Open the cited file at the cited line. Read the surrounding element.
+       A claim marked `uncited: true` cites nothing: it is an agent's
+       « non applicable » (or a conformity landed without evidence) on a
+       criterion whose harvest came back empty. There is no file to open —
+       read the brief, then look in the audited workspace for a SUBJECT the
+       criterion applies to: one found = `refuted` (the criterion applies
+       and was never assessed), none found = `supported`.
     2. Read `<briefs_dir>/<criteriaId>.md` for the tests the claim rests on.
     3. Rule:
        - "supported": the claim is real and correctly attached to this
@@ -287,7 +293,8 @@ prompt refute_system:
 prompt refute_user:
   Batch: {{input.batch_id}} (round {{input.round}})
   Claims to verify (JSON array; each has n, criteriaId, file, line,
-  selector, claim, and kind "c" + citations for a landed conformity):
+  selector, claim, and kind "c" + citations for a landed conformity;
+  `uncited: true` = nothing cited, a scope-level non-applicability):
   {{input.items}}
 
   Business summary under trial: {{input.draft_path}}
@@ -1759,7 +1766,7 @@ tool plan_refute:
     for (let i = 0; i < items.length; i += size) {
       const chunk = items.slice(i, i + size);
       const id = "r" + pending.round + "-c" + String(batches.length + 1).padStart(2, "0");
-      const b = { id: id, round: pending.round, ns: chunk.map((c) => Number(c.n)), items: chunk.map((c) => ({ n: c.n, criteriaId: c.criteriaId, file: c.file, line: c.line, selector: c.selector, claim: c.claim, kind: c.kind || "nc", citations: c.citations || [] })) };
+      const b = { id: id, round: pending.round, ns: chunk.map((c) => Number(c.n)), items: chunk.map((c) => ({ n: c.n, criteriaId: c.criteriaId, file: c.file, line: c.line, selector: c.selector, claim: c.claim, kind: c.kind || "nc", uncited: c.uncited === true, citations: c.citations || [] })) };
       L.writeJSON(path.join(RUN, "refute", "batches", id + ".json"), b);
       batches.push(b);
     }

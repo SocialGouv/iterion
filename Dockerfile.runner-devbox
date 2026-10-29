@@ -82,7 +82,7 @@ RUN --mount=type=cache,target=/root/.npm \
 # holds this ARG, the pin, the lockfile and the bot's default together. A bump
 # goes through the pin file (docs/agents/testing/engine-contracts.md), never
 # here alone — so no renovate annotation on this line.
-ARG ULTRA11Y_VERSION=5.45.0
+ARG ULTRA11Y_VERSION=5.49.0
 COPY scripts/ultra11y-engine/package.json scripts/ultra11y-engine/package-lock.json /opt/iterion/ultra11y/${ULTRA11Y_VERSION}/
 RUN --mount=type=cache,target=/root/.npm \
     cd "/opt/iterion/ultra11y/${ULTRA11Y_VERSION}" \

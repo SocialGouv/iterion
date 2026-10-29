@@ -1584,7 +1584,12 @@ L.out({ ok: true, cases: out });
 			t.Fatal("the ledger copy carries no cited conformity to drop or relative citation to write another way")
 		}
 		dr := rgaaOK(t, "draft_report", rgaaRunNode(t, scripts, "draft_report", site, env, in(map[string]any{"input.run_dir": dir})))
-		// What goes on trial is exactly what the audit says agents landed.
+		// What goes on trial is what the audit says agents landed as a CLEARING
+		// claim: every conformity, and the non-applicabilities (a pack
+		// adjudication keeps an agent's NA as `NA`) except the ones the engine's
+		// own absence fold proves — so every agent C is on trial, and nothing is
+		// on trial that an agent did not clear. Measured on ultra11y 5.49.0: an
+		// NA without a citation stands trial at the scope level (`uncited`).
 		var doc struct {
 			Core struct {
 				PackAdjudication struct {
@@ -1597,10 +1602,16 @@ L.out({ ok: true, cases: out });
 			} `json:"core"`
 		}
 		rgaaReadJSON(t, filepath.Join(dir, "audit-latest.json"), &doc)
-		var landed []string
+		var conformities, cleared []string
 		for _, c := range doc.Core.PackAdjudication.Criteria {
-			if c.DecidedBy == "agent" && c.Status == "C" {
-				landed = append(landed, c.ID)
+			if c.DecidedBy != "agent" {
+				continue
+			}
+			if c.Status == "C" {
+				conformities = append(conformities, c.ID)
+			}
+			if c.Status == "C" || c.Status == "NA" {
+				cleared = append(cleared, c.ID)
 			}
 		}
 		var todo []map[string]any
@@ -1611,10 +1622,21 @@ L.out({ ok: true, cases: out });
 				onTrial = append(onTrial, fmt.Sprint(it["criteriaId"]))
 			}
 		}
-		sort.Strings(landed)
+		sort.Strings(conformities)
+		sort.Strings(cleared)
 		sort.Strings(onTrial)
-		if len(landed) == 0 || strings.Join(onTrial, ",") != strings.Join(landed, ",") || !rgaaContains(onTrial, dropped) {
-			t.Fatalf("on trial %v, landed in the audit %v (the ledger copy lacks %s)", onTrial, landed, dropped)
+		if len(conformities) == 0 || !rgaaContains(onTrial, dropped) {
+			t.Fatalf("on trial %v, conformities landed in the audit %v (the ledger copy lacks %s)", onTrial, conformities, dropped)
+		}
+		for _, id := range conformities {
+			if !rgaaContains(onTrial, id) {
+				t.Fatalf("conformity %s landed in the audit is not on trial: on trial %v", id, onTrial)
+			}
+		}
+		for _, id := range onTrial {
+			if !rgaaContains(cleared, id) {
+				t.Fatalf("%s is on trial but no agent cleared it (C or NA) in the audit: cleared %v", id, cleared)
+			}
 		}
 		for _, it := range todo {
 			it["verdict"] = "supported"
@@ -1824,6 +1846,40 @@ L.out({ ok: true, cases: out });
 		batches := planRefute(t)
 		if len(batches) < 2 {
 			t.Fatalf("%d refutation batches, the dead-branch case needs two", len(batches))
+		}
+		// An uncited clearing claim (an agent NA on an empty harvest) has no file
+		// to open: the refuter must be told so, or it reads `file: "", line: 0`
+		// as a citation. The flag travels from the engine's todo to the batch.
+		var draft struct {
+			TodoPath string `json:"todo_path"`
+		}
+		rgaaReadJSON(t, filepath.Join(run, "draft", "draft.json"), &draft)
+		var todo []map[string]any
+		rgaaReadJSON(t, draft.TodoPath, &todo)
+		uncited := map[int]bool{}
+		for _, it := range todo {
+			if it["uncited"] == true {
+				uncited[rgaaInt(it["n"])] = true
+			}
+		}
+		if len(uncited) == 0 {
+			t.Fatal("the engine put no uncited clearing claim on trial — the fixture's agent NA verdicts should stand trial at the scope level")
+		}
+		seen := 0
+		for _, b := range batches {
+			for _, it := range b.Items {
+				if uncited[rgaaInt(it["n"])] {
+					seen++
+					if it["uncited"] != true || it["file"] != "" {
+						t.Fatalf("uncited claim n=%v dispatched as %v: want uncited=true and no file", it["n"], it)
+					}
+				} else if it["uncited"] == true {
+					t.Fatalf("claim n=%v dispatched as uncited, the engine cited it", it["n"])
+				}
+			}
+		}
+		if seen != len(uncited) {
+			t.Fatalf("%d uncited claims on trial, %d dispatched", len(uncited), seen)
 		}
 		for i, b := range batches {
 			if i == len(batches)-1 {

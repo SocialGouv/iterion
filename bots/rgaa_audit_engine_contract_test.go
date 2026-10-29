@@ -34,7 +34,7 @@ import (
 // These tests run the pinned engine on testdata/rgaa-audit-site (two HTML
 // pages and one TSX component with planted defects) and assert the shapes the
 // bot reads: exit codes, JSON keys, counters, file layout. Every assertion
-// below was measured on ultra11y 5.45.0; a pin bump that changes one of them
+// below was measured on ultra11y 5.49.0; a pin bump that changes one of them
 // is a migration, and this file is where it shows first.
 //
 // Facts worth their weight (all measured, all relied on by the bot):

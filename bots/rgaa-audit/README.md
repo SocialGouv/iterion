@@ -76,7 +76,7 @@ prepare ─► static_audit ─► bank_static ─► render_gate ─► [render
   own findings are never pruned) and reports what it pruned; an incomplete
   trial is not applied, and the part of an applied one the engine refuses
   (a retained claim whose anchor does not ground) is named as a degradation.
-- `final_report` uses ultra11y 5.45.0 to render the business summary and
+- `final_report` uses ultra11y 5.49.0 to render the business summary and
   its separate technical annex. It cross-checks the annex's « Décidés »
   line and the summary's RGAA rate against the audit, then runs the engine's
   integrity and completeness checks. Both draft readers receive both files.
