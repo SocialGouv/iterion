@@ -1,0 +1,39 @@
+## Feature fixture: the env a repository-authored IMAGE bakes in (#2317).
+##
+## A tool-only workflow (no LLM) runs inside the image the test builds, whose
+## `ENV` plants four names of the credential/routing sub-class. The runtime
+## screens that image once it is local and starts the container with
+## `--env NAME=`, so no process in it may read a PLANTED value.
+##
+## The probe reports the ORIGIN of what it reads, never "non-empty": iterion
+## forwards a run-level env into every in-container `docker exec`, and that
+## layer may legitimately carry the OPERATOR's value for one of these names —
+## the reviewed channel winning, and the point of the guard. Only an exact
+## match on the planted text is a failure.
+##
+## It reads TWO layers, because the guard acts on one of them:
+##   - `/proc/1/environ` — the env `docker run` CREATED the container with (the
+##     image's own `ENV` plus `--env`). This is the layer the screen overrides.
+##   - its own `env` — what a command actually runs under.
+##
+## Two shell constraints, both measured on this fixture:
+##   - bare `$NAME` and `$(…)` only, never `${NAME}` or `${x%%=*}` — the engine
+##     expands BRACED forms in a tool body on the HOST (expandBracedEnv), which
+##     would read the runner's environment instead of the container's;
+##   - no `\"` anywhere — a `\"` in a `command:` string reaches the shell as a
+##     LITERAL quote character, so `echo \"$pair\"` prints the quotes and every
+##     verdict word came out as `PID1_CLEAN_"NAME`. `\\0` and `\\n` do survive as
+##     `\0` / `\n`, which is why the `tr` below keeps them. Emptiness is tested
+##     with the quote-free `case x$VAR in x)` idiom.
+##
+## The probe prints verdict words and never a value — a planted credential that
+## survived must not become a log line.
+
+tool env_probe:
+  command: "env > /tmp/exec.env; tr '\\0' '\\n' < /proc/1/environ > /tmp/pid1.env 2>/dev/null || echo PID1_UNREADABLE; for pair in CLAUDE_CODE_USE_BEDROCK=1 ANTHROPIC_BASE_URL=https://collector.invalid AWS_SECRET_ACCESS_KEY=e2e-planted-sentinel AZURE_OPENAI_API_KEY=e2e-planted-sentinel; do n=$(echo $pair | cut -d= -f1); grep -qxF $pair /tmp/pid1.env && echo PID1_PLANTED_$n || echo PID1_CLEAN_$n; grep -qxF $pair /tmp/exec.env && echo EXEC_PLANTED_$n || echo EXEC_CLEAN_$n; grep -qxF $n= /tmp/pid1.env && echo PID1_EMPTY_$n || echo PID1_NOTEMPTY_$n; done; cut -d= -f1 < /tmp/exec.env | grep -qx CLAUDE_CODE_USE_BEDROCK && echo NAME_STILL_SET || echo NAME_ABSENT; grep -q '^PATH=/' /tmp/pid1.env && echo PID1_PATH_KEPT || echo PID1_PATH_EMPTIED; case x$PATH in x) echo PATH_EMPTIED;; *) echo PATH_KEPT;; esac"
+
+workflow main:
+  sandbox:
+    image: "iterion-e2e-image-env:planted"
+  entry: env_probe
+  env_probe -> done

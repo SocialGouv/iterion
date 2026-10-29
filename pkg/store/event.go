@@ -661,6 +661,44 @@ const (
 	//     devcontainer.json path)
 	//   - run_id: the run scope
 	EventSandboxEnvDenied EventType = "sandbox_env_denied"
+	// EventSandboxImageEnvPlanted fires when the IMAGE a sandbox starts
+	// from bakes names of that same deny class into its own `ENV` — the
+	// second channel into the container's environment, and the one the
+	// devcontainer seam cannot see: the drivers pass `--env` for
+	// `spec.Env` alone, so a repository that commits
+	// `{"image":"ghcr.io/planter/dev:1"}` whose Dockerfile carries
+	// `ENV CLAUDE_CODE_USE_BEDROCK=1` plus the planter's keys re-routes
+	// every prompt of the run with ZERO containerEnv entries (#2317).
+	//
+	// Emitted once per sandbox boot, from the screen that runs after the
+	// image is local (pulled, or built from a `build:`) and before the
+	// container starts — so a boot that then fails to start still records
+	// what the image planted — and only when the image has something to
+	// answer for, "not screened" included. It carries the WHOLE class, not the
+	// acted-on half alone: the kept half is what an operator reads to
+	// judge whether such an image belongs in the run at all. Data:
+	//   - image: the inspected image reference ("" when the driver's
+	//     prepared spec exposes none)
+	//   - neutralized: []string, sorted — the credential and routing
+	//     sub-class, which the container starts with `--env NAME=`:
+	//     set and EMPTY, which every one of those consumers reads as
+	//     absent. Always present, empty list included
+	//   - reported: []string, sorted — the rest of the class, which
+	//     KEEPS its value because an empty one would break an image
+	//     doing its job (`PATH`, `HOME`, a loader path, `KUBECONFIG`),
+	//     plus any planted name no driver could pass and no process
+	//     could resolve. Always present, empty list included
+	//   - allowed: []string, sorted — names the host-side
+	//     ITERION_SANDBOX_IMAGE_ENV_ALLOW let through untouched;
+	//     absent when the knob named none
+	//   - unscreened: string — why nothing was screened: a driver that
+	//     cannot read an image's config (kubernetes, whose images the
+	//     kubelet pulls), a failed read, or a refused neutralisation.
+	//     Absent when the screen ran. Nothing is ever inferred from a
+	//     silence: the names of a refused neutralisation move to
+	//     `reported`, because that is what the container got
+	//   - run_id: the run scope
+	EventSandboxImageEnvPlanted EventType = "sandbox_image_env_planted"
 	// EventSandboxNetworkDefaulted fires when a repo-defined sandbox
 	// (mode auto and a devcontainer.json found) runs on an
 	// iterion-default base the runtime chose because the workflow

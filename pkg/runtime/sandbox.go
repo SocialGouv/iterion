@@ -811,10 +811,9 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// before a process sees it. The screen neutralises the credential and
 	// routing names a repository-authored image contributes below the
 	// devcontainer env seam, and reports the rest (#2317). Its findings
-	// reach the operator through the run's log here; the
-	// `sandbox_image_env_planted` event that carries them to the studio is
-	// the visible half of the same seam (unit 2317.2).
-	prepared, _ = screenSandboxImageEnv(ctx, driver, prepared, logger)
+	// reach the operator twice: the run's log, and the
+	// `sandbox_image_env_planted` event the studio and a bug report read.
+	prepared = screenAndReportSandboxImageEnv(ctx, driver, prepared, logger, emitEvent, p.RunID)
 
 	run, err := driver.Start(ctx, prepared, info)
 	if err != nil {

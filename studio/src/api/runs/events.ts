@@ -450,6 +450,7 @@ export type PassthroughEventType =
   | "sandbox_uid_mismatch_warning"
   | "sandbox_devbox_provisioned"
   | "sandbox_env_denied"
+  | "sandbox_image_env_planted"
   | "sandbox_network_defaulted"
   | "network_blocked"
   | "sandbox_build_started"

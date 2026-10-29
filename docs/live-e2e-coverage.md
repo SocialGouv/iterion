@@ -180,6 +180,25 @@ A new test is one file `e2e/live_bot_<name>_test.go` (or `live_feat_<name>_test.
    `gitArtifactEvidence(t, ws)` (code bots) or render the emitted
    issues/findings (board/audit bots).
 
+### Registering it — four files, not one
+
+A `TestLive_*` function needs a `task test:live:*` target of its own
+(`TestEveryLiveTestIsInvocableFromItsOwnTarget`), and that target needs a
+row in **three** committed files that the gate compares cell-for-cell:
+
+| file | guard that reads it |
+|---|---|
+| `Taskfile.yml` — a target anchored on the function name | `TestEveryLiveTestIsInvocableFromItsOwnTarget` |
+| `e2e/testdata/live/ledger.json` — the row, `verdict: never` | `TestEveryRecordingTargetHasALedgerRow` |
+| `pkg/backend/backendcaps/live_seed.json` — the embedded twin | `TestLiveLedgerZeroMove` (cell-for-cell) |
+| `pkg/backend/backendcaps/testdata/registry.golden.json` | `TestRegistryGolden` — the golden embeds `LiveSeed()`; regenerate with `go test ./pkg/backend/backendcaps/ -args -update-backendcaps` and review the diff |
+
+The last two are the ones a new target forgets: the seed is hand-maintained,
+no task generates it, and the golden carries it inside a larger document.
+Then add the row to [docs/e2e-coverage-matrix.md](e2e-coverage-matrix.md) —
+whose per-surface counts [docs/e2e-stabilisation-plan.md](e2e-stabilisation-plan.md)
+derives, and whose guard prints the table the plan should carry.
+
 ## Coverage matrix
 
 Status legend: ✅ implemented · 🚧 planned.

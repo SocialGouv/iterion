@@ -45,14 +45,14 @@ Repeated from #1424 verbatim so the plan cannot drift from its own definition:
 | tools-mcp | 14 | 13 | 0 | 0 | 1 | 0 |
 | triggers | 13 | 13 | 0 | 0 | 0 | 0 |
 | persistence | 9 | 9 | 0 | 0 | 0 | 0 |
+| sandbox | 9 | 6 | 1 | 0 | 0 | 2 |
 | webhooks | 9 | 9 | 0 | 0 | 0 | 0 |
 | observability | 8 | 6 | 0 | 0 | 2 | 0 |
 | plugins | 8 | 7 | 1 | 0 | 0 | 0 |
-| sandbox | 8 | 5 | 1 | 0 | 0 | 2 |
 | forge | 7 | 7 | 0 | 0 | 0 | 0 |
 | integrations | 6 | 2 | 0 | 0 | 0 | 4 |
 | desktop | 1 | 0 | 0 | 0 | 1 | 0 |
-| Total | 401 | 379 | 7 | 1 | 7 | 7 |
+| Total | 402 | 380 | 7 | 1 | 7 | 7 |
 
 The surface axis is the matrix's **Family** column — the one the gate reads and
 the "front door per family" section documents. The `ID` prefix is a naming
@@ -169,7 +169,7 @@ re-measuring it.
 
 - **Already free**: 23 / 25 rows (parse + compile + golden replays).
 - **Must become free, or be split honestly**: `bots.uncovered-catalog` — the
-  only `uncovered` row in 401 — covers six bots with nothing beyond
+  only `uncovered` row in 402 — covers six bots with nothing beyond
   parse+compile: **modernize, wiki-gen, app-dev, supply-shield,
   supply-shield-cve, smoke**. Each belongs in one of three states: a
   deterministic seam exists (structural output), the value really is the LLM

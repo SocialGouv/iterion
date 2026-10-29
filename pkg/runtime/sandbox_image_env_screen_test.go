@@ -313,3 +313,53 @@ func TestTheHostAllowKnobIsParsedExactly(t *testing.T) {
 		t.Errorf("an unset knob allows something")
 	}
 }
+
+// TestTheScreensWarningDoesNotLetAnImageWriteLinesInTheLog: an image's
+// `Env` is the PLANTER's text and its reference is the repository's, and
+// a name the class catches on its namespace can carry a newline — an OCI
+// config is JSON, not a Dockerfile, so `AWS_SECRET\nACCESS_KEY` is a
+// legal entry that `HasPrefix("AWS_")` classes in. Unquoted, it writes a
+// line of its own into the operator's run log, and so does a crafted
+// image reference. The devcontainer channel pays for this lesson already
+// (emitRepoTrustEvents quotes its refused keys); the image channel takes
+// the same answer.
+func TestTheScreensWarningDoesNotLetAnImageWriteLinesInTheLog(t *testing.T) {
+	t.Setenv(EnvSandboxImageEnvAllow, "")
+	var out bytes.Buffer
+	logger := iterlog.New(iterlog.LevelInfo, &out)
+	driver := &screeningDriver{name: "docker", supports: true,
+		imageEnv: []string{"AWS_SECRET\nACCESS_KEY=planted", "CLAUDE_CODE_USE_BEDROCK=1"}}
+
+	screenSandboxImageEnv(context.Background(), driver,
+		newScreenedSpec("planter/dev\nsandbox: nothing to report here:1"), logger)
+
+	logged := out.String()
+	for _, injected := range []string{"\nACCESS_KEY", "\nsandbox: nothing to report here"} {
+		if strings.Contains(logged, injected) {
+			t.Errorf("the image wrote a line of its own into the operator's log (%q):\n%s", injected, logged)
+		}
+	}
+	// The second door to the same injection: the reason of a screen that
+	// could not run wraps a driver error carrying the repository's own
+	// image reference.
+	var refused bytes.Buffer
+	screenSandboxImageEnv(context.Background(),
+		&screeningDriver{name: "docker", supports: true,
+			inspectErr: errors.New("exit status 1\nsandbox: nothing to report here")},
+		newScreenedSpec("planter/dev:1"), iterlog.New(iterlog.LevelInfo, &refused))
+	if strings.Contains(refused.String(), "\nsandbox: nothing to report here") {
+		t.Errorf("a driver error wrote a line of its own into the operator's log:\n%s", refused.String())
+	}
+	if !strings.Contains(refused.String(), "NOT screened") {
+		t.Errorf("the refusal is no longer reported:\n%s", refused.String())
+	}
+
+	// Escaped, not dropped: the operator still has to be able to act on
+	// the name and the reference.
+	if !strings.Contains(logged, `AWS_SECRET\nACCESS_KEY`) {
+		t.Errorf("the malformed name is not reported in escaped form:\n%s", logged)
+	}
+	if !strings.Contains(logged, `planter/dev\nsandbox: nothing to report here:1`) {
+		t.Errorf("the crafted image reference is not reported in escaped form:\n%s", logged)
+	}
+}

@@ -4,11 +4,13 @@ import (
 	"context"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/devcontainer"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // EnvSandboxImageEnvAllow names the variables the image env screen must let
@@ -49,6 +51,90 @@ type imageEnvScreen struct {
 // anyFinding reports whether the screen has something to tell the operator.
 func (s imageEnvScreen) anyFinding() bool {
 	return len(s.neutralized) > 0 || len(s.reported) > 0 || len(s.allowed) > 0 || s.unscreened != ""
+}
+
+// eventPayload is the screen as [store.EventSandboxImageEnvPlanted]
+// carries it — the half of the guard an operator reads in the studio and
+// in a bug report, rather than in the run's log (#2317).
+//
+// The two halves of the partition ALWAYS travel, the empty list
+// included: a reader must never have to tell "this disposition caught
+// nothing" from "this event does not carry that disposition". The two
+// conditions — the host knob let a name through, the screen could not
+// run — travel only when they hold, so their presence is the signal.
+func (s imageEnvScreen) eventPayload(runID string) map[string]any {
+	payload := map[string]any{
+		"image":       s.image,
+		"neutralized": envNameList(s.neutralized),
+		"reported":    envNameList(s.reported),
+		"run_id":      runID,
+	}
+	if len(s.allowed) > 0 {
+		payload["allowed"] = envNameList(s.allowed)
+	}
+	if s.unscreened != "" {
+		payload["unscreened"] = s.unscreened
+	}
+	return payload
+}
+
+// sortedSet is one disposition as the event and the log publish it: in
+// name order, each name once.
+func sortedSet(names []string) []string {
+	slices.Sort(names)
+	return slices.Compact(names)
+}
+
+// envNameList renders one disposition for the event: a copy, so the
+// payload does not alias the screen's own slices, and never nil, so an
+// empty disposition serialises as `[]` and not as `null` — a null reads
+// as "unknown" to every consumer of the event stream, which is the one
+// thing this event must never say by accident.
+func envNameList(names []string) []string {
+	out := make([]string, len(names))
+	copy(out, names)
+	return out
+}
+
+// screenAndReportSandboxImageEnv is the seam the sandbox boot calls: it
+// screens the image's baked-in env, reports what it found to the run —
+// the warning inside the screen, the
+// [store.EventSandboxImageEnvPlanted] event here — and returns the spec
+// to start.
+//
+// One function, because the two are one fact: a boot that neutralised a
+// planted credential and an event that does not say so, or the reverse,
+// are both a guard the operator cannot audit. Keeping them at a single
+// seam is what makes the pair testable without a container (#2317).
+func screenAndReportSandboxImageEnv(
+	ctx context.Context,
+	driver sandbox.Driver,
+	prepared sandbox.PreparedSpec,
+	logger *iterlog.Logger,
+	emit func(store.EventType, map[string]any) error,
+	runID string,
+) sandbox.PreparedSpec {
+	screened, screen := screenSandboxImageEnv(ctx, driver, prepared, logger)
+	emitImageEnvScreen(emit, screen, runID)
+	return screened
+}
+
+// emitImageEnvScreen carries the screen's findings to the run's event
+// stream (#2317). An image that plants nothing of the class emits
+// nothing: an event on every started sandbox saying "nothing" would bury
+// the ones that say something.
+func emitImageEnvScreen(
+	emit func(store.EventType, map[string]any) error,
+	screen imageEnvScreen,
+	runID string,
+) {
+	if !screen.anyFinding() {
+		return
+	}
+	// Discarded the way every sandbox lifecycle event is: the emitter the
+	// runtime wraps already warns on a store-side failure, and a degraded
+	// store must not stop a run whose container was screened.
+	_ = emit(store.EventSandboxImageEnvPlanted, screen.eventPayload(runID))
 }
 
 // screenSandboxImageEnv screens the ENV of the image a sandbox is about to
@@ -141,11 +227,14 @@ func screenSandboxImageEnv(
 			screen.reported = append(screen.reported, name)
 		}
 	}
-	// Sorted: these lists are a run event's payload and a warning's text,
-	// and an image's ENV order is the planter's, not a fact to publish.
-	slices.Sort(screen.neutralized)
-	slices.Sort(screen.reported)
-	slices.Sort(screen.allowed)
+	// Sorted and deduplicated: these lists are a run event's payload and a
+	// warning's text, an image's ENV order is the planter's rather than a
+	// fact to publish, and its entries are not a set — docker's own build
+	// collapses a repeated name, a config written by another tool need
+	// not. A name listed twice in an audit record reads as two findings.
+	screen.neutralized = sortedSet(screen.neutralized)
+	screen.reported = sortedSet(screen.reported)
+	screen.allowed = sortedSet(screen.allowed)
 	if len(screen.neutralized) == 0 {
 		return prepared, screen
 	}
@@ -155,8 +244,7 @@ func screenSandboxImageEnv(
 		// not silently start without it. The names move to unscreened so
 		// the caller's refusal names what it could not neutralise.
 		screen.unscreened = err.Error()
-		screen.reported = append(screen.reported, screen.neutralized...)
-		slices.Sort(screen.reported)
+		screen.reported = sortedSet(append(screen.reported, screen.neutralized...))
 		screen.neutralized = nil
 		return prepared, screen
 	}
@@ -195,24 +283,47 @@ func warnImageEnvScreen(logger *iterlog.Logger, screen imageEnvScreen) {
 	if logger == nil || !screen.anyFinding() {
 		return
 	}
-	image := screen.image
-	if image == "" {
+	image := strconv.Quote(screen.image)
+	if screen.image == "" {
 		image = "(unnamed)"
 	}
 	if len(screen.neutralized) > 0 {
 		logger.Warn("sandbox: image %s bakes in %s — overridden with an empty value: a repository-authored image must not contribute a credential or a model route (set %s to let one through)",
-			image, strings.Join(screen.neutralized, ", "), EnvSandboxImageEnvAllow)
+			image, quotedEnvNames(screen.neutralized), EnvSandboxImageEnvAllow)
 	}
 	if len(screen.reported) > 0 {
 		logger.Warn("sandbox: image %s bakes in %s — kept, because an empty value would break the image: the container's processes read the image's value, not iterion's",
-			image, strings.Join(screen.reported, ", "))
+			image, quotedEnvNames(screen.reported))
 	}
 	if len(screen.allowed) > 0 {
 		logger.Warn("sandbox: image %s bakes in %s — let through by %s",
-			image, strings.Join(screen.allowed, ", "), EnvSandboxImageEnvAllow)
+			image, quotedEnvNames(screen.allowed), EnvSandboxImageEnvAllow)
 	}
 	if screen.unscreened != "" {
+		// Quoted for the same reason the names are: the reason wraps a
+		// driver error that carries the repository's own image
+		// reference, so an unquoted one is a second door to the same
+		// log-line injection.
 		logger.Warn("sandbox: the env image %s bakes in was NOT screened (%s) — a variable it plants reaches every process iterion runs in the container",
-			image, screen.unscreened)
+			image, strconv.Quote(screen.unscreened))
 	}
+}
+
+// quotedEnvNames renders one disposition for the operator's LOG.
+//
+// Quoted, every name, because the text is the PLANTER's: an image's `Env`
+// is whatever its OCI config holds, and a repository's `devcontainer.json`
+// chooses the image reference. A planted `AWS_SECRET\nACCESS_KEY` — which
+// the class catches on its `AWS_` namespace and which nothing in the
+// container could resolve — would otherwise write lines of its own into
+// the run's log. The devcontainer channel already quotes its refused keys
+// for exactly this reason (emitRepoTrustEvents); this is the same fact at
+// the image channel. The `sandbox_image_env_planted` event needs no such
+// care: its payload is JSON, which escapes the name itself.
+func quotedEnvNames(names []string) string {
+	quoted := make([]string, len(names))
+	for i, name := range names {
+		quoted[i] = strconv.Quote(name)
+	}
+	return strings.Join(quoted, ", ")
 }

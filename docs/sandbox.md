@@ -726,11 +726,31 @@ two halves of the class get different answers:
   binaries a CLI spawns are reported for the same reason: an image may
   legally bake them, and their consumers read presence as much as value.
 
+Every screen that finds something says so **twice**: a warning per
+disposition in the run's log, and one `sandbox_image_env_planted` event
+carrying the whole class — `image`, `neutralized`, `reported`, plus
+`allowed` and `unscreened` when those hold. The two name lists always
+travel, the empty one included, so "this half caught nothing" never
+reads like "this event does not report that half"; a refused
+neutralisation moves its names to `reported`, because that is what the
+container got. An image that plants nothing of the class emits nothing.
+
 A name let through keeps its value and is still reported — the operator
 asked for the variable, not for silence. A variable the screen
 neutralises is **set and empty**, not absent: `docker inspect` shows it,
 and a consumer that reads presence rather than value still sees it. That
 is the accepted cost of not refusing an image that works.
+
+**Where the override applies, measured.** The screen acts on the layer
+the container is *created* with: `/proc/1/environ` of a run on a planted
+image reads `CLAUDE_CODE_USE_BEDROCK=`, set and empty, and a tool node's
+own environment carries no planted value either. Two layers, because only
+the first is the screen's: a command iterion runs through `docker exec`
+also receives the run's own env layer, and that layer may legitimately
+set one of these names to the OPERATOR's value — the reviewed channel
+winning, which is the point. So the promise is precise: the
+**repository's** value never reaches a process, not that the name is
+empty everywhere.
 
 **Not screened, said out loud.** `image inspect` is a local-store read,
 so only a driver that resolves images locally can do it: the **docker**

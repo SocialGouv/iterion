@@ -557,6 +557,11 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run 'TestLive_Feat_Sandbox_Network$' -timeout 12m ./e2e/...
 
+  test:live:feat:sandbox-image-env:
+    desc: 'Live e2e for the image ENV screen: a built image plants a credential and a route, the container reads them empty (docker, no LLM).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_Sandbox_Image_Env$' -timeout 12m ./e2e/...
+
   test:live:feat:fork:
     desc: 'Live e2e for run forking (parent run → fork at a turn → child run).'
     cmds:
