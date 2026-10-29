@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -1100,7 +1101,15 @@ func copyFile(src, dst string) error {
 // and skipped (the workflow would not be able to reference them
 // anyway).
 //
-// No-op when bundle, manifest, or attachments map are absent.
+// A default the workflow DOES reference and the bundle cannot deliver
+// fails the run: a declared file missing from the directory already did
+// (os.Open below), and a missing `attachments/` directory does too.
+// Both are one fault — the bot runs without reference material its
+// manifest promises — and the directory case is the wider one: it takes
+// every default at once, in every run of that bot, schedules included.
+//
+// No-op when bundle, manifest or attachments map are absent, and when
+// the workflow references none of the declared names.
 func promoteBundleAttachmentDefaults(
 	ctx context.Context,
 	s store.RunStore,
@@ -1109,10 +1118,14 @@ func promoteBundleAttachmentDefaults(
 	b *bundle.Bundle,
 	logger *iterlog.Logger,
 ) error {
-	if b == nil || b.Manifest == nil || len(b.Manifest.Attachments) == 0 || b.AttachmentsDir == "" {
+	if b == nil || b.Manifest == nil || len(b.Manifest.Attachments) == 0 {
 		return nil
 	}
-	for name, relPath := range b.Manifest.Attachments {
+	// Sorted: a map range would leave both the promotion order and the
+	// refusal below at the mercy of the iteration, so a bundle missing
+	// several defaults would name an arbitrary one of them.
+	var promotable []string
+	for _, name := range slices.Sorted(maps.Keys(b.Manifest.Attachments)) {
 		if wf != nil {
 			if _, declared := wf.Attachments[name]; !declared {
 				if logger != nil {
@@ -1121,6 +1134,16 @@ func promoteBundleAttachmentDefaults(
 				continue
 			}
 		}
+		promotable = append(promotable, name)
+	}
+	if len(promotable) == 0 {
+		return nil
+	}
+	if b.AttachmentsDir == "" {
+		return fmt.Errorf("runtime/bundle: the manifest declares attachment default(s) %q the workflow references, but the bundle carries no %s/ directory to read them from", promotable, bundle.DirAttachments)
+	}
+	for _, name := range promotable {
+		relPath := b.Manifest.Attachments[name]
 		srcPath := filepath.Join(b.AttachmentsDir, relPath)
 		f, err := os.Open(srcPath)
 		if err != nil {
