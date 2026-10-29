@@ -134,27 +134,45 @@ func TestARefusedPropertyIsNotRecorded(t *testing.T) {
 		t.Fatalf("the refused property is recorded: %+v", table)
 	}
 	// The race detector multiplies the constant, not the exponent: a tenth
-	// of the strays under it, the same budget, the same linear claim.
-	strays := 100000
+	// of the strays under it, the same linear claim.
+	large := 100000
 	if raceEnabled {
-		strays = 10000
-	}
-	var b strings.Builder
-	b.WriteString("agent a:\n  model: \"m\"\n")
-	for i := 0; i < strays; i++ {
-		fmt.Fprintf(&b, "  zz_stray_%d: 1\n", i)
+		large = 10000
 	}
 	t.Setenv(ReadBudgetEnv, "0")
-	start := time.Now()
-	res, err = Parse("strays.bot", b.String())
-	if err != nil {
-		t.Fatal(err)
+	parse := func(strays int) time.Duration {
+		t.Helper()
+		var b strings.Builder
+		b.WriteString("agent a:\n  model: \"m\"\n")
+		for i := 0; i < strays; i++ {
+			fmt.Fprintf(&b, "  zz_stray_%d: 1\n", i)
+		}
+		src := b.String()
+		start := time.Now()
+		res, err := Parse("strays.bot", src)
+		took := time.Since(start)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := len(res.File.Agents[0].Properties); n != 1 {
+			t.Fatalf("%d strays leave %d entries for one accepted property: the table grows with them", strays, n)
+		}
+		return took
 	}
-	if took := time.Since(start); took > 10*time.Second {
-		t.Fatalf("%d strays took %s to parse: the table grows with them", strays, took)
+	// The table staying at ONE entry is the claim; the shape of the curve is
+	// its second witness, for a Set that turns quadratic without the table
+	// growing. Measured as a RATIO, never as a duration: quadrupling the
+	// input costs ~4x while Set is linear in a one-entry table and ~16x when
+	// it is not, and neither figure moves with the machine. The 10s bound
+	// this replaces read 44.8s and 59.4s on two loaded shards under -race
+	// (2026-10-29, race-shard (1) on #2843) with the table perfectly
+	// correct — only the clock had been borrowed, so no rerun could clear it.
+	quarter, full := parse(large/4), parse(large)
+	if quarter <= 0 {
+		t.Fatalf("the %d-stray parse measured %s: no baseline to compare against", large/4, quarter)
 	}
-	if n := len(res.File.Agents[0].Properties); n != 1 {
-		t.Fatalf("the table holds %d entries for one accepted property", n)
+	if ratio := float64(full) / float64(quarter); ratio > 8 {
+		t.Fatalf("quadrupling the strays cost %.1fx (%s then %s): Set is not linear in a one-entry table", ratio, quarter, full)
 	}
 }
 
