@@ -6,9 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"os/exec"
-	"strings"
 	"sync"
 	"time"
 
@@ -325,26 +323,19 @@ func (c *sdkClient) buildTransport() (mcp.Transport, error) {
 		if c.cfg.WorkDir != "" {
 			cmd.Dir = c.cfg.WorkDir
 		}
-		if len(c.cfg.Env) > 0 {
-			// Merge user env on top of the inherited environ so a
-			// user-supplied override (e.g. PATH, PYTHONPATH) wins
-			// instead of being a duplicate appended after the parent's
-			// value — execve doesn't dedup and Go's docs leave dup
-			// resolution implementation-defined.
-			environ := os.Environ()
-			merged := make(map[string]string, len(environ)+len(c.cfg.Env))
-			for _, kv := range environ {
-				if i := strings.IndexByte(kv, '='); i > 0 {
-					merged[kv[:i]] = kv[i+1:]
-				}
-			}
-			for k, v := range c.cfg.Env {
-				merged[k] = v
-			}
-			cmd.Env = make([]string, 0, len(merged))
-			for k, v := range merged {
-				cmd.Env = append(cmd.Env, k+"="+v)
-			}
+		// The child receives what the server DECLARES plus a
+		// process-essential allowlist (stdioChildEnv), never the launcher's
+		// whole environment. Set UNCONDITIONALLY: a nil cmd.Env makes Go
+		// hand the child every variable of the parent, so an empty `env:`
+		// leaked exactly as the merging path did — one assignment, both
+		// paths.
+		decision := stdioChildEnv(c.cfg.Env)
+		cmd.Env = decision.Env
+		if decision.Info != "" {
+			c.logger.Info("mcp: %s: %s", c.cfg.Name, decision.Info)
+		}
+		if decision.Warning != "" {
+			c.logger.Warn("mcp: %s: %s", c.cfg.Name, decision.Warning)
 		}
 		return newDiagnosticCommandTransport(cmd), nil
 

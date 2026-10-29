@@ -262,6 +262,7 @@ var botVarsInfraExact = map[string]bool{
 	"ITERION_SKIP_MCP_HEALTH":                          true,
 	"ITERION_PI_MCP_SERVERS":                           true,
 	"ITERION_MCP_EXPAND_UNTRUSTED_ENV":                 true,
+	"ITERION_MCP_SERVER_ENV_PASSTHROUGH":               true,
 	"ITERION_PLUGINS_ENABLE":                           true,
 	"ITERION_PLUGINS_DISABLE":                          true,
 	"ITERION_CLAUDE_CODE_SETTING_SOURCES":              true,
