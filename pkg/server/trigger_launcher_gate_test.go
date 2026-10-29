@@ -33,15 +33,26 @@ type spinePublisher struct {
 	err      error
 	tenant   string
 	owner    string
+	spec     runview.LaunchSpec
 }
 
-func (p *spinePublisher) SubmitLaunch(ctx context.Context, _ string, _ runview.LaunchSpec, _ *ir.Workflow, _ *runview.CompiledSource) (int, error) {
+func (p *spinePublisher) SubmitLaunch(ctx context.Context, _ string, spec runview.LaunchSpec, _ *ir.Workflow, _ *runview.CompiledSource) (int, error) {
 	p.mu.Lock()
 	p.launches++
 	p.tenant, _ = store.TenantFromContext(ctx)
 	p.owner, _ = store.OwnerFromContext(ctx)
+	p.spec = spec
 	p.mu.Unlock()
 	return 0, p.err
+}
+
+// lastSpec is the spec of the most recent launch. Read under the lock like
+// every other field: the publisher is written by whatever goroutine the run
+// service launches on.
+func (p *spinePublisher) lastSpec() runview.LaunchSpec {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.spec
 }
 
 func (p *spinePublisher) count() int {
