@@ -41,6 +41,23 @@ forwarded servers. `tool-list` arrival is neither name resolution nor proof
 of an empty effective tool surface. The Claude roster stays at its existing
 14 entries, including legacy `Task`; this does not resolve #1651.
 
+`image-presence` is the one cell **derived**, not seeded: it answers "does a
+published image put this backend's executable on PATH?", and
+`TestImagePresenceIsDerivedFromTheImageManifests` measures it from the
+manifests that build those images
+([the CLI pins](../docker/llm-clis/package.json), the app image, the cloud
+runner, the sandbox bases and [finalize](../sandbox/finalize/Dockerfile)).
+Seeded from prose, the cell certified the prose; derived, it certifies the
+image. Its evidence therefore names CURRENT lines rather than seed-commit
+lines, and the derivation — not the line number — is what holds. Two families
+differ: the runner images put the pinned `node_modules/.bin` on PATH, so every
+pinned CLI is reachable there, while the stock sandbox extends no PATH and
+only its explicit symlinks and the baked `iterion` binary are. A CLI reachable
+in one family and absent from the other is `partial` — `codex` is exactly that
+— and `unwired (no image)` means no image carries the executable at all, a gap
+in the image's contents that an operator image shipping the CLI lifts (#1643).
+The axis says nothing about multimodal image INPUT.
+
 The axes reference the still-open work in
 [epic #1404](https://github.com/SocialGouv/iterion/issues/1404): permission,
 resume, fork, session, MCP, subagents, workspace commands, allowed tools,
@@ -131,6 +148,8 @@ the corresponding guard. The historical source commit remains historical.
 | `TestPublishedProofZeroMove` | Upgrade a proof cell from `unknown` to `proven`, or rename/re-axis a proof column while retaining its verdict. Both identity and value must agree with the nine published columns. |
 | `TestInventoryIntegrity` | Misspell an implementation verdict as `shippped`, duplicate a backend/cell/rank, remove evidence or cite an absent test. |
 | `TestCopiesAndUnknowns` | Return `inventory` directly from `Snapshot`, or return the native roster without cloning it. Independent before-images detect either leak. Normalizing unknown names into a registered name must also fail. |
+| `TestImagePresenceIsDerivedFromTheImageManifests` | Drop a CLI pin from `docker/llm-clis/package.json`, stop symlinking `claude` in `sandbox/finalize/Dockerfile`, or take the pinned `node_modules/.bin` off the runner `PATH`, and leave the cell as it reads: the registry then certifies an image fact that is no longer true. Registering an eighth backend without declaring the executable its image must ship fails the same guard. |
+| `TestImagePresenceMovesWithTheManifests` | Make the derivation answer from a constant table instead of reading the manifests: the five scoped mutations — applied to a copy of the manifests, never the repository — stop moving their verdict, in both directions (a CLI taken out, and one put in). |
 | `model.TestBackendCapabilityConsumersConform` | Replace the provider-chain eligibility consumer with `return false`; the actual consumer must disagree with the registry on claude_code. |
 
 Existing consumer tests remain independent behavioral witnesses: the Claude

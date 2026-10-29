@@ -84,11 +84,14 @@
           {
             "name": "image-presence",
             "axis": "image/presence",
-            "verdict": "unknown",
+            "verdict": "shipped",
             "evidence": [
-              "docs/backends.md:108"
+              "docker/llm-clis/package.json:6",
+              "sandbox/finalize/Dockerfile:40",
+              "Dockerfile:109",
+              "pkg/backend/backendcaps/imagepresence_test.go:TestImagePresenceIsDerivedFromTheImageManifests"
             ],
-            "detail": "Stock sandbox CLI presence and multimodal image input are separate from a full feature-matrix proof."
+            "detail": "claude is reachable in both published families: the runner images carry the pinned node_modules/.bin on PATH and symlink it, the stock sandbox symlinks it. CLI reachability on PATH, not multimodal image input."
           },
           {
             "name": "interaction-async",
@@ -370,11 +373,13 @@
           {
             "name": "image-presence",
             "axis": "image/presence",
-            "verdict": "unknown",
+            "verdict": "shipped",
             "evidence": [
-              "docs/backends.md:109"
+              "sandbox/finalize/Dockerfile:29",
+              "Dockerfile.runner-devbox:127",
+              "pkg/backend/backendcaps/imagepresence_test.go:TestImagePresenceIsDerivedFromTheImageManifests"
             ],
-            "detail": "Stock sandbox CLI presence and multimodal image input are separate from a full feature-matrix proof."
+            "detail": "claw is served by the iterion binary itself, which both families copy onto PATH; no npm pin is involved. CLI reachability on PATH, not multimodal image input."
           },
           {
             "name": "interaction-async",
@@ -658,11 +663,14 @@
           {
             "name": "image-presence",
             "axis": "image/presence",
-            "verdict": "unknown",
+            "verdict": "partial",
             "evidence": [
-              "docs/backends.md:110"
+              "docker/llm-clis/package.json:8",
+              "Dockerfile:109",
+              "sandbox/finalize/Dockerfile:40",
+              "pkg/backend/backendcaps/imagepresence_test.go:TestImagePresenceIsDerivedFromTheImageManifests"
             ],
-            "detail": "Stock sandbox CLI presence and multimodal image input are separate from a full feature-matrix proof."
+            "detail": "codex is reachable in the runner images (pinned, and the pinned node_modules/.bin is on PATH) and NOT in the stock sandbox, which extends no PATH and symlinks only claude and pi. CLI reachability on PATH, not multimodal image input."
           },
           {
             "name": "interaction-async",
@@ -944,11 +952,14 @@
           {
             "name": "image-presence",
             "axis": "image/presence",
-            "verdict": "unknown",
+            "verdict": "shipped",
             "evidence": [
-              "docs/backends.md:111"
+              "docker/llm-clis/package.json:7",
+              "Dockerfile:109",
+              "sandbox/finalize/Dockerfile:41",
+              "pkg/backend/backendcaps/imagepresence_test.go:TestImagePresenceIsDerivedFromTheImageManifests"
             ],
-            "detail": "Stock sandbox CLI presence and multimodal image input are separate from a full feature-matrix proof."
+            "detail": "pi is reachable in the runner images through the pinned node_modules/.bin on PATH, with no symlink of its own, and in the stock sandbox through its symlink. CLI reachability on PATH, not multimodal image input."
           },
           {
             "name": "interaction-async",
@@ -1232,11 +1243,13 @@
           {
             "name": "image-presence",
             "axis": "image/presence",
-            "verdict": "unknown",
+            "verdict": "unwired (no image)",
             "evidence": [
-              "docs/backends.md:113"
+              "docker/llm-clis/package.json:5",
+              "pkg/backend/delegate/grok.go:44",
+              "pkg/backend/backendcaps/imagepresence_test.go:TestImagePresenceIsDerivedFromTheImageManifests"
             ],
-            "detail": "Stock sandbox CLI presence and multimodal image input are separate from a full feature-matrix proof."
+            "detail": "No published image carries the grok executable its adapter invokes: the pin manifest declares three CLIs and none is grok, which has no npm package upstream. The gap is the image's contents, so an operator image that ships the CLI lifts it. CLI reachability on PATH, not multimodal image input."
           },
           {
             "name": "interaction-async",
@@ -1518,11 +1531,13 @@
           {
             "name": "image-presence",
             "axis": "image/presence",
-            "verdict": "unknown",
+            "verdict": "unwired (no image)",
             "evidence": [
-              "docs/backends.md:112"
+              "docker/llm-clis/package.json:5",
+              "pkg/backend/delegate/kimi.go:34",
+              "pkg/backend/backendcaps/imagepresence_test.go:TestImagePresenceIsDerivedFromTheImageManifests"
             ],
-            "detail": "Stock sandbox CLI presence and multimodal image input are separate from a full feature-matrix proof."
+            "detail": "No published image carries the kimi executable its adapter invokes: the pin manifest declares three CLIs and none is kimi, which has no npm package upstream. The gap is the image's contents, so an operator image that ships the CLI lifts it. CLI reachability on PATH, not multimodal image input."
           },
           {
             "name": "interaction-async",
@@ -1806,9 +1821,11 @@
             "axis": "image/presence",
             "verdict": "unwired (no image)",
             "evidence": [
-              "docs/backends.md:114"
+              "docker/llm-clis/package.json:5",
+              "pkg/backend/delegate/opencode.go:68",
+              "pkg/backend/backendcaps/imagepresence_test.go:TestImagePresenceIsDerivedFromTheImageManifests"
             ],
-            "detail": "Stock sandbox CLI presence and multimodal image input are separate from a full feature-matrix proof."
+            "detail": "No published image carries the opencode executable its adapter invokes; baking it measures +178 MB and asks which of two live distribution lines to pin (opencode-ai 1.19, @opencode/cli 2.x), the choice #1643 reserves. The gap is the image's contents. CLI reachability on PATH, not multimodal image input."
           },
           {
             "name": "interaction-async",

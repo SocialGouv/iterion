@@ -40,6 +40,18 @@ const (
 	MCPForwarding          = "mcp-forwarding"
 	AutoMemory             = "auto-memory"
 	AutoMemoryPrompt       = "auto-memory-prompt"
+
+	// ImagePresence is CLI reachability in the images iterion publishes: does
+	// a published image put this backend's executable on PATH? It is derived
+	// from the image manifests, not from prose — see
+	// TestImagePresenceIsDerivedFromTheImageManifests. It says nothing about
+	// multimodal image INPUT, which is a separate axis.
+	//
+	// Partial here means reachable in ONE published family and not the other
+	// (codex: on the runner images' PATH, absent from the stock sandbox), so a
+	// caller that needs a per-image answer must not read this cell as a
+	// boolean — Offers reports partial as offered.
+	ImagePresence = "image-presence"
 )
 
 // Implementation verdicts describe existing wiring, not live maturity.
@@ -49,6 +61,12 @@ const (
 	TypedRefused = "typed-refused"
 	Inert        = "inert"
 	Unknown      = "unknown"
+
+	// UnwiredNoImage is the published vocabulary for "the capability has no
+	// wiring because no image carries the CLI it needs". The gap is the
+	// image's contents, not the backend: an operator image that ships the CLI
+	// lifts it (#1643).
+	UnwiredNoImage = "unwired (no image)"
 )
 
 // Cell records one scoped fact. Proof cells retain the published vocabulary

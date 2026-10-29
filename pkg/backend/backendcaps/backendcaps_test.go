@@ -225,7 +225,7 @@ func TestInventoryIntegrity(t *testing.T) {
 				}
 				seen[c.Name] = true
 				if group == "implementation" {
-					if !slices.Contains([]string{Shipped, Partial, TypedRefused, Inert, Unknown, "unwired (gap)", "unwired (no image)"}, c.Verdict) {
+					if !slices.Contains([]string{Shipped, Partial, TypedRefused, Inert, Unknown, "unwired (gap)", UnwiredNoImage}, c.Verdict) {
 						t.Errorf("%s/%s invalid implementation verdict %q", b.Name, c.Name, c.Verdict)
 					}
 					gotKeys = append(gotKeys, c.Name)
