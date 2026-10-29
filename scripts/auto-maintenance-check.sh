@@ -21,6 +21,9 @@
 #   AUTO_MAINT_ITERION    argv that prints the repo-bots JSON   (default: iterion remote forge repo-bots --json)
 #   AUTO_MAINT_BOTS_DIR   the catalog to read bot defaults from (default: <repo root>/bots)
 #   AUTO_MAINT_PR_SAMPLE  how many recent PRs to sample         (default: 20)
+#   AUTO_MAINT_PUSH_SAMPLE how many recent pushes to the default branch to
+#                         classify as conforming or bypass        (default: 20)
+#   AUTO_MAINT_DELIVERY_APP the app_slug of iterion's own App     (default: iterion-forge-core)
 #   AUTO_MAINT_PAT        a classic PAT for the one read an OAuth token cannot do
 #                         (agreement 6; the value is used by reference, never printed)
 #
@@ -41,6 +44,7 @@ set -euo pipefail
 
 GH="${AUTO_MAINT_GH:-gh}"
 PR_SAMPLE="${AUTO_MAINT_PR_SAMPLE:-20}"
+PUSH_SAMPLE="${AUTO_MAINT_PUSH_SAMPLE:-20}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BOTS_DIR="${AUTO_MAINT_BOTS_DIR:-$ROOT/bots}"
 
@@ -104,6 +108,39 @@ api_bounded() {
   fi
   [ -s "$dest" ] || fatal "$GH api $* answered with an empty body"
   jq -e . <"$dest" >/dev/null 2>&1 || fatal "$GH api $* did not answer valid JSON"
+}
+
+# sample_head_signals — what ran on the sampled pull request heads, and WHO
+# posted each status the forge attributes.
+#
+# Read once, decided on twice: agreement 2 asks whether the App it compares a
+# pin to is the App that actually posts, and agreement 7 asks whether a
+# required context is produced at all. Two reads of "what happened on these
+# heads" would answer differently the day one of them paginated, and they are
+# the same sample by construction. Called lazily, so an agreement that settles
+# before needing it costs no API traffic.
+sample_head_signals() {
+  [ -f "$WORK/seen" ] && return 0
+  [ -f "$WORK/prs" ] || api_bounded "$WORK/prs" "repos/$REPO/pulls?state=all&per_page=$PR_SAMPLE&sort=created&direction=desc"
+  : >"$WORK/seen"
+  : >"$WORK/producers"
+  while read -r head; do
+    [ -n "$head" ] || continue
+    # --paginate emits one JSON document per page, so each expression below is
+    # written against ONE page: check-runs pages are objects, statuses pages
+    # are arrays.
+    api "$WORK/cr-$head" "repos/$REPO/commits/$head/check-runs?per_page=100"
+    jq -r '.check_runs[]?.name' <"$WORK/cr-$head" >>"$WORK/seen"
+    api "$WORK/st-$head" "repos/$REPO/commits/$head/statuses?per_page=100"
+    jq -r '.[]?.context' <"$WORK/st-$head" >>"$WORK/seen"
+    # An attributed status only. A forge that reports no creator leaves the
+    # producer UNOBSERVED, which agreement 2 says out loud rather than reading
+    # as agreement.
+    jq -r '.[]? | select((.creator.login // "") != "") | [.context, .creator.login] | @tsv' \
+      <"$WORK/st-$head" >>"$WORK/producers"
+  done < <(jq -r '.[].head.sha' <"$WORK/prs")
+  sort -u "$WORK/seen" -o "$WORK/seen"
+  sort -u "$WORK/producers" -o "$WORK/producers"
 }
 
 # expect_complete <file> <jq-count-expr> — cross-check a paginated list against
@@ -191,9 +228,15 @@ while read -r rid; do
   [ -n "$rid" ] || continue
   api "$WORK/ruleset-$rid" "repos/$REPO/rulesets/$rid"
   ruleset_covers_default "$WORK/ruleset-$rid" || continue
-  jq -r '[.rules[]? | select(.type=="required_status_checks")
+  # Three columns, and the third is not decoration. The SAME context can be
+  # required by several active rulesets, each with its own pin — GitHub
+  # accumulates them — so a requirement is only decidable together with the
+  # ruleset it comes from. A reader that kept the first row it met let the
+  # order the API happened to return choose the verdict; the source travels
+  # WITH the requirement instead.
+  jq -r --arg rs "$rid" '[.rules[]? | select(.type=="required_status_checks")
           | .parameters.required_status_checks[]?
-          | [.context, (.integration_id|tostring)] | @tsv] | .[]' \
+          | [.context, (.integration_id|tostring), $rs] | @tsv] | .[]' \
     <"$WORK/ruleset-$rid" >>"$WORK/required"
   jq -r '[.bypass_actors[]? | [(.actor_type|tostring), (.actor_id|tostring), (.bypass_mode|tostring)] | @tsv] | .[]' \
     <"$WORK/ruleset-$rid" >>"$WORK/bypass"
@@ -218,6 +261,23 @@ INTEG_COUNT="$(jq 'length' <"$WORK/integrations")"
 api "$WORK/installs" "orgs/$ORG/installations?per_page=100"
 expect_complete "$WORK/installs" \
   '[.[].installations[]?]|length' '(.[0].total_count // null)' "orgs/$ORG/installations"
+
+# iterion's OWN App, resolved once. Agreement 2 needs the App id it posts a
+# verdict as; agreement 5 needs the same installation's permissions. Two
+# resolutions of one identity drift — the defect this whole preflight exists
+# to catch — so there is one.
+DELIVERY_SLUG="${AUTO_MAINT_DELIVERY_APP:-iterion-forge-core}"
+DEL="$(jq -s --arg s "$DELIVERY_SLUG" '[.[].installations[]?] | map(select(.app_slug == $s)) | .[0] // empty' <"$WORK/installs")"
+
+# PRODUCER_APP_ID is the number a ruleset must pin to authenticate that
+# verdict: `app_id`, NEVER the installation `id`. They are two different
+# numbers on the same payload — measured 2026-10-29 on this org,
+# iterion-forge-core is installation 160560029 of App 4895793 — and a
+# ruleset's `integration_id`, like a `bypass_actors` entry of actor_type
+# Integration, is the APP id. Reading `id` here would compare unrelated
+# identifiers and call every correctly pinned repository broken.
+PRODUCER_APP_ID=""
+[ -n "$DEL" ] && PRODUCER_APP_ID="$(printf '%s' "$DEL" | jq -r '.app_id // empty')"
 
 # The Renovate installation. Preferring a repo-scoped install over an org-wide
 # one is deliberate — the org carries both, a hosted `renovate` on all repos and
@@ -321,7 +381,7 @@ else
       if awk -F'\t' -v c="$ctx" '$1 == c { found = 1 } END { exit !found }' "$WORK/required"; then
         agree "1 gate context" "$bot posts '$ctx', and the ruleset requires it"
       else
-        disagree "1 gate context" "$bot posts '$ctx', which NO active ruleset requires — its verdict is advisory ($REQUIRED_COUNT required: $(cut -f1 "$WORK/required" | paste -sd, -))"
+        disagree "1 gate context" "$bot posts '$ctx', which NO active ruleset requires — its verdict is advisory ($REQUIRED_COUNT required: $(cut -f1 "$WORK/required" | sort -u | paste -sd, -))"
       fi
     done <"$WORK/posted"
   fi
@@ -333,33 +393,86 @@ fi
 # A required check pinned by name alone is satisfied by ANY credential able to
 # post a commit status on the repository. The loop's premise is that the gate
 # proves an adversarial reviewer saw the change; a name does not prove that.
+#
+# The decision is a TRIPLE — context x producing App x requiring ruleset — and
+# dropping any leg answers a different question:
+#
+#   * the CONTEXT alone is agreement 1's question, who waits for the verdict;
+#   * a pin that is merely PRESENT authenticates nothing. `revi/review` pinned
+#     to GitHub Actions (15368) while iterion posts it as its own App reads as
+#     "pinned, therefore safe" and is in fact a required check that can never
+#     go green — a configuration that cannot converge, which this epic's
+#     cursor 2 says must be refused at launch rather than met at 3 a.m.;
+#   * the RULESET is where the requirement comes from, and there can be
+#     several. Two active rulesets requiring `revi/review`, one pinned and one
+#     not, mean a status from any credential still satisfies the unpinned one
+#     — invisible to a reader that kept one row per context.
 # ---------------------------------------------------------------------------
 
 if [ ! -s "$WORK/posted" ]; then
   disagree "2 authorised producer" "no posted context to authenticate"
+elif [ -z "$DEL" ]; then
+  # The App iterion posts as is the pivot of the comparison, and unknown is
+  # not "no disagreement": agreement 5 reddens for the absent installation,
+  # and this agreement refuses to call a pin right or wrong without it.
+  blind "2 authorised producer" "no installation with app_slug '$DELIVERY_SLUG' on org $ORG — the App iterion posts its verdict as is unknown, so no pin can be compared to it"
+elif [ -z "$PRODUCER_APP_ID" ]; then
+  blind "2 authorised producer" "the $DELIVERY_SLUG installation carries no app_id — a ruleset pins an APP id and an installation id is a different number, so comparing them would decide on an unrelated identifier"
 else
-  while IFS=$'\t' read -r _bot ctx; do
-    integ="$(awk -F'\t' -v c="$ctx" '$1 == c { print $2; exit }' "$WORK/required")"
-    case "$integ" in
-      ""|null) disagree "2 authorised producer" "required check '$ctx' carries no integration_id — any credential that can post a status satisfies it" ;;
-      *)       agree "2 authorised producer" "required check '$ctx' is pinned to App $integ" ;;
+  # Once per posted CONTEXT, not once per bot: a repo deliberately shares one
+  # gate context between several bots (agreement 1 is the per-bot question),
+  # and repeating an identical verdict per producer inflates the report and
+  # the broken count with the same fact said twice.
+  while read -r ctx; do
+    [ -n "$ctx" ] || continue
+    if ! awk -F'\t' -v c="$ctx" '$1 == c { found = 1 } END { exit !found }' "$WORK/required"; then
+      disagree "2 authorised producer" "'$ctx' is required by no active ruleset, so it has no producer to authenticate — see agreement 1"
+      continue
+    fi
+    # The App iterion posts as is DECLARED by the installation carrying
+    # $DELIVERY_SLUG, and whether that App is the one that actually posted
+    # this context is a DIFFERENT question — the one that decides whether the
+    # pin comparison means anything at all. Each tenant deployment carries its
+    # own `iterion-forge-*` App, so the default slug is right for the core
+    # repository and wrong for a pilot; comparing a correct pin to the wrong
+    # App would send the operator to edit a ruleset that is already right.
+    sample_head_signals
+    observed="$(awk -F'\t' -v c="$ctx" '$1 == c { print $2 }' "$WORK/producers" | sort -u | paste -sd, -)"
+    producer="$DELIVERY_SLUG, declared by its installation and unobserved on the last $PR_SAMPLE PRs"
+    case ",$observed," in
+      ",,") ;;
+      *",$DELIVERY_SLUG[bot],"*) producer="$DELIVERY_SLUG, observed posting it" ;;
+      *) disagree "2 authorised producer" "'$ctx' is posted by $observed, not by $DELIVERY_SLUG — the App this agreement compares the pin to is not the App producing the verdict, so neither answer about the pin would be worth anything (name the right one with AUTO_MAINT_DELIVERY_APP)"
+         continue ;;
     esac
-  done <"$WORK/posted"
+    # EVERY row that requires this context, never the first one found.
+    while IFS=$'\t' read -r _c integ rs; do
+      case "$integ" in
+        ""|null)
+          disagree "2 authorised producer" "ruleset $rs requires '$ctx', which carries no integration_id — any credential that can post a status satisfies it" ;;
+        "$PRODUCER_APP_ID")
+          agree "2 authorised producer" "ruleset $rs pins '$ctx' to App $integ, the App iterion posts as ($producer)" ;;
+        *)
+          disagree "2 authorised producer" "producing App != pinned App: ruleset $rs pins '$ctx' to App $integ, but iterion posts it as App $PRODUCER_APP_ID ($DELIVERY_SLUG) — the pinned App never posts this context, so the check can never go green" ;;
+      esac
+    done < <(awk -F'\t' -v c="$ctx" '$1 == c' "$WORK/required")
+  done < <(cut -f2 "$WORK/posted" | sort -u)
 fi
 
-# Bypass actors are INVENTORY, not an agreement — they are the admin escape
-# hatch this project keeps on purpose, so both outcomes are legitimate and
-# neither can redden. Printed as a note rather than through agree(), because a
-# line that cannot fail should not be counted among lines that can: it inflates
-# the report and makes the preflight look more thorough than it is. What the
-# reader needs is the list, so that a merge by one of them is never mistaken
-# for a conforming merge.
+# Bypass actors are INVENTORY: who MAY bypass. Their presence is not a
+# disagreement — it is the admin escape hatch this project keeps on purpose —
+# so this stays a note rather than an agree() line, because a line that cannot
+# fail should not be counted among lines that can.
+#
+# What it must NOT do is answer the reader's actual question. "No bypass actor,
+# therefore every merge went through the gate" was printed here about pushes
+# nobody had read; who DID bypass is agreement 8, which reads them.
 if [ -s "$WORK/bypass" ]; then
-  printf '  · inventory — %s bypass actor(s) on the default branch: %s(a merge by one of them did NOT pass the gate)\n' \
+  printf '  · inventory — %s bypass actor(s) on the default branch: %s(a merge by one of them did NOT pass the gate; agreement 8 says which)\n' \
     "$(sort -u "$WORK/bypass" | wc -l | tr -d ' ')" \
     "$(sort -u "$WORK/bypass" | awk -F'\t' '{printf "%s:%s(%s) ", $1, $2, $3}')" >&3
 else
-  printf '  · inventory — no bypass actor on the default branch: every merge went through the gate\n' >&3
+  printf '  · inventory — no bypass actor is listed on the default branch; agreement 8 says whether any push bypassed it anyway\n' >&3
 fi
 
 # ---------------------------------------------------------------------------
@@ -571,8 +684,8 @@ fi
 # delivers the alignment cannot touch the very files Renovate bumps.
 # ---------------------------------------------------------------------------
 
-DELIVERY_SLUG="${AUTO_MAINT_DELIVERY_APP:-iterion-forge-core}"
-DEL="$(jq -s --arg s "$DELIVERY_SLUG" '[.[].installations[]?] | map(select(.app_slug == $s)) | .[0] // empty' <"$WORK/installs")"
+# DELIVERY_SLUG and DEL are resolved once, next to the installations read:
+# agreement 2 decides against the same identity.
 if [ -z "$DEL" ]; then
   disagree "5 delivery app" "no installation with app_slug '$DELIVERY_SLUG' on org $ORG — nothing delivers the alignment"
 elif app_is_live "$DEL" "$DELIVERY_SLUG" "5 delivery app"; then
@@ -654,21 +767,9 @@ if [ "$REQUIRED_COUNT" = "0" ]; then
     agree "7 every required gate executes" "no required check, and auto-merge is not armed"
   fi
 else
-  [ -f "$WORK/prs" ] || api_bounded "$WORK/prs" "repos/$REPO/pulls?state=all&per_page=$PR_SAMPLE&sort=created&direction=desc"
-  : >"$WORK/seen"
-  while read -r head; do
-    [ -n "$head" ] || continue
-    # --paginate emits one JSON document per page, so each expression below is
-    # written against ONE page: check-runs pages are objects, statuses pages
-    # are arrays.
-    api "$WORK/cr-$head" "repos/$REPO/commits/$head/check-runs?per_page=100"
-    jq -r '.check_runs[]?.name' <"$WORK/cr-$head" >>"$WORK/seen"
-    api "$WORK/st-$head" "repos/$REPO/commits/$head/statuses?per_page=100"
-    jq -r '.[]?.context' <"$WORK/st-$head" >>"$WORK/seen"
-  done < <(jq -r '.[].head.sha' <"$WORK/prs")
-  sort -u "$WORK/seen" -o "$WORK/seen"
+  sample_head_signals
 
-  while IFS=$'\t' read -r ctx _integ; do
+  while IFS=$'\t' read -r ctx _integ _rs; do
     [ -n "$ctx" ] || continue
     if grep -qxF "$ctx" "$WORK/seen"; then
       agree "7 every required gate executes" "'$ctx' was produced on the sampled PRs"
@@ -678,6 +779,98 @@ else
       disagree "7 every required gate executes" "'$ctx' is required but nothing produced it on the last $PR_SAMPLE PRs — every PR here blocks forever"
     fi
   done <"$WORK/required"
+fi
+
+# ---------------------------------------------------------------------------
+# Agreement 8 — a conforming merge is told apart from a bypass merge
+#
+# The inventory above says who MAY bypass. It cannot say who DID, and the line
+# printed in its place ("every merge went through the gate", whenever the list
+# came back empty) was a statement about pushes nobody had read.
+#
+# GitHub evaluates every push to a ruleset-covered ref and keeps its own
+# verdict: `rulesets/rule-suites` answers pass | fail | bypass with the actor
+# that pushed. That is the measurement, so this reads it rather than inferring
+# a merge actor from a pull request — a queue merge, a squash and a direct
+# push are three different pushes there and one shape here.
+#
+# What can redden is a bypass NO inventory entry can explain, decided by
+# SHAPE: an App bypassed while the ruleset lists no Integration, or a human
+# bypassed while it lists no role-shaped actor. Shape is as far as this read
+# honestly goes. A bypass by a repository admin is reported as the ACTOR and
+# never as the role id, because rule-suites names the user who pushed while
+# the ruleset names the role that let them, and nothing read here joins the
+# two — asserting the join would be the same unfalsifiable line in a new
+# costume.
+# ---------------------------------------------------------------------------
+
+HAS_INTEGRATION_BYPASS=0
+HAS_ACTOR_BYPASS=0
+if [ -s "$WORK/bypass" ]; then
+  while IFS=$'\t' read -r atype _aid _mode; do
+    [ -n "$atype" ] || continue
+    case "$atype" in
+      Integration) HAS_INTEGRATION_BYPASS=1 ;;
+      *)           HAS_ACTOR_BYPASS=1 ;;
+    esac
+  done < <(sort -u "$WORK/bypass")
+fi
+
+# Not through api(): an operator without admin on the repository gets 403
+# here, and that blinds ONE agreement rather than aborting the run — the same
+# reason blind() exists at all. The bound is the point, so no --paginate.
+if ! "$GH" api "repos/$REPO/rulesets/rule-suites?ref=refs/heads/$DEFAULT_BRANCH&per_page=$PUSH_SAMPLE" \
+     >"$WORK/suites" 2>"$WORK/suites.err"; then
+  blind "8 conforming vs bypass merge" "the rule-suite history of refs/heads/$DEFAULT_BRANCH is unreadable (it needs admin on the repository): $(tr '\n' ' ' <"$WORK/suites.err") — which pushes bypassed the gate is UNKNOWN, not none"
+elif ! jq -e 'type == "array"' <"$WORK/suites" >/dev/null 2>&1; then
+  # Valid JSON is not enough: `gh` prints an error OBJECT with exit 0 on some
+  # paths, and `jq 'length'` on an object counts its keys while `.[]` walks
+  # its values — every count below would be a number about the wrong thing.
+  fatal "repos/$REPO/rulesets/rule-suites did not answer a JSON array of rule suites (got $(jq -r 'type' <"$WORK/suites" 2>/dev/null || echo "unparseable"))"
+else
+  SUITES_TOTAL="$(jq 'length' <"$WORK/suites")"
+  SUITES_PASS="$(jq '[.[] | select(.result=="pass")] | length' <"$WORK/suites")"
+  SUITES_FAIL="$(jq '[.[] | select(.result=="fail")] | length' <"$WORK/suites")"
+  SUITES_BYPASS="$(jq '[.[] | select(.result=="bypass")] | length' <"$WORK/suites")"
+  if [ "$SUITES_TOTAL" = "0" ]; then
+    # Said plainly rather than dressed as a pass: an empty window proves
+    # nothing in either direction, and this is the one honest wording for it.
+    agree "8 conforming vs bypass merge" "no push to refs/heads/$DEFAULT_BRANCH in the window rule-suites covers — nothing is known to have bypassed the gate, and nothing is known to have passed it"
+  elif [ "$SUITES_BYPASS" = "0" ]; then
+    agree "8 conforming vs bypass merge" "$SUITES_PASS of the last $SUITES_TOTAL push(es) to $DEFAULT_BRANCH passed the ruleset, $SUITES_FAIL were refused by it, and none bypassed it"
+  else
+    # One line per distinct actor, with the count and the revisions. No
+    # ordering is claimed: rule-suites' order is not a fact this script reads
+    # a key for, so "the most recent bypass" is not printed at all.
+    while IFS=$'\t' read -r actor n shas; do
+      [ -n "$actor" ] || continue
+      case "$actor" in
+        *'[bot]')
+          slug="${actor%'[bot]'}"
+          app_id="$(jq -s -r --arg s "$slug" '[.[].installations[]?] | map(select(.app_slug == $s)) | (.[0].app_id // empty) | tostring' <"$WORK/installs")"
+          if [ -z "$app_id" ] || [ "$app_id" = "null" ]; then
+            disagree "8 conforming vs bypass merge" "$actor bypassed the ruleset on $n of the last $SUITES_TOTAL push(es) to $DEFAULT_BRANCH ($shas) and no installation on $ORG carries app_slug '$slug' — the bypass list cannot be matched to it, so these merges are unexplained"
+          elif awk -F'\t' -v a="$app_id" '$1 == "Integration" && $2 == a { found = 1 } END { exit !found }' "$WORK/bypass"; then
+            agree "8 conforming vs bypass merge" "$actor (App $app_id) bypassed the ruleset on $n of the last $SUITES_TOTAL push(es) to $DEFAULT_BRANCH ($shas) — sanctioned: the ruleset lists Integration $app_id, and these merges did NOT pass the gate"
+          else
+            disagree "8 conforming vs bypass merge" "$actor (App $app_id) bypassed the ruleset on $n of the last $SUITES_TOTAL push(es) to $DEFAULT_BRANCH ($shas), and the bypass list does not name Integration $app_id — an App is merging past the gate without being allowed to"
+          fi ;;
+        *)
+          if [ "$HAS_ACTOR_BYPASS" = 1 ]; then
+            agree "8 conforming vs bypass merge" "$actor bypassed the ruleset on $n of the last $SUITES_TOTAL push(es) to $DEFAULT_BRANCH ($shas) — the ruleset sanctions a role-shaped escape hatch ($(sort -u "$WORK/bypass" | awk -F'\t' '$1 != "Integration" {printf "%s:%s ", $1, $2}')), and these merges did NOT pass the gate"
+          else
+            disagree "8 conforming vs bypass merge" "$actor bypassed the ruleset on $n of the last $SUITES_TOTAL push(es) to $DEFAULT_BRANCH ($shas), and the bypass list names no role-shaped actor that could explain it — these merges went past a gate nobody was allowed to skip"
+          fi ;;
+      esac
+    done < <(jq -r '[.[] | select(.result=="bypass")] | group_by(.actor_name)[]
+                    | ([.[] | ((.after_sha // "?")[0:8])]) as $shas
+                    | [ (.[0].actor_name // "?"), (length|tostring),
+                        (($shas[0:3] | join(", ")) + (if ($shas|length) > 3 then ", +\(($shas|length)-3) more" else "" end)) ]
+                    | @tsv' <"$WORK/suites")
+    if [ "$SUITES_PASS" != "0" ]; then
+      agree "8 conforming vs bypass merge" "$SUITES_PASS of the same $SUITES_TOTAL push(es) DID pass the ruleset — those are the conforming merges"
+    fi
+  fi
 fi
 
 # ---------------------------------------------------------------------------

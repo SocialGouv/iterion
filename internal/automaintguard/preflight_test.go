@@ -15,14 +15,24 @@ const (
 	repo = "SocialGouv/fixture-repo"
 	org  = "SocialGouv"
 	// The exit codes the script's own header contracts.
-	exitAgree    = 0
-	exitBroken   = 1
-	exitBlind    = 2
-	renovateApp  = 149553497
-	deliveryApp  = 4895793
-	headSHA      = "aaa1111"
-	renovateBot  = "socialgouv-renovate[bot]"
-	scriptRelDir = "../../scripts/auto-maintenance-check.sh"
+	exitAgree  = 0
+	exitBroken = 1
+	exitBlind  = 2
+	// An INSTALLATION id and an APP id are two different numbers on the same
+	// payload, and the whole of agreement 2 turns on which one a ruleset pins:
+	// `integration_id` and a `bypass_actors` entry of actor_type Integration
+	// are APP ids, while `user/installations/<id>/repositories` takes the
+	// installation. These four are the values SocialGouv actually carries
+	// (read 2026-10-29), so a fixture that conflated them would bless an
+	// implementation that compares the wrong pair.
+	renovateApp     = 149553497 // the socialgouv-renovate INSTALLATION
+	renovateAppID   = 4413416   // the App behind it
+	deliveryInstall = 160560029 // the iterion-forge-core INSTALLATION
+	deliveryApp     = 4895793   // the App iterion posts its verdict as
+	actionsApp      = 15368     // GitHub Actions' own App
+	headSHA         = "aaa1111"
+	renovateBot     = "socialgouv-renovate[bot]"
+	scriptRelDir    = "../../scripts/auto-maintenance-check.sh"
 )
 
 // rawBody is a fixture written verbatim, for payloads that are not valid JSON.
@@ -56,7 +66,7 @@ func conforming() *world {
 				"rules": []any{map[string]any{
 					"type": "required_status_checks",
 					"parameters": map[string]any{"required_status_checks": []any{
-						map[string]any{"context": "test", "integration_id": 15368},
+						map[string]any{"context": "test", "integration_id": actionsApp},
 						map[string]any{"context": "revi/review", "integration_id": deliveryApp},
 					}},
 				}},
@@ -79,7 +89,8 @@ func conforming() *world {
 				"total_count": 2,
 				"installations": []any{
 					map[string]any{
-						"id": renovateApp, "app_slug": "socialgouv-renovate",
+						"id": renovateApp, "app_id": renovateAppID,
+						"app_slug":             "socialgouv-renovate",
 						"repository_selection": "all",
 						"permissions": map[string]any{
 							"contents": "write", "issues": "write",
@@ -87,7 +98,8 @@ func conforming() *world {
 						},
 					},
 					map[string]any{
-						"id": deliveryApp, "app_slug": "iterion-forge-core",
+						"id": deliveryInstall, "app_id": deliveryApp,
+						"app_slug":             "iterion-forge-core",
 						"repository_selection": "all",
 						"permissions": map[string]any{
 							"contents": "write", "statuses": "write", "workflows": "write",
@@ -98,6 +110,17 @@ func conforming() *world {
 
 			"repos/" + repo + "/contents/renovate.json5": map[string]any{
 				"content": base64.StdEncoding.EncodeToString([]byte(renovateCfg)),
+			},
+			// GitHub's own verdict per push to the default branch. The
+			// conforming world is one where every sampled push PASSED the
+			// ruleset — the only shape in which "every merge went through the
+			// gate" is a measured fact rather than a line that cannot fail.
+			"repos/" + repo + "/rulesets/rule-suites": []any{
+				map[string]any{
+					"id": 90001, "actor_id": 4242, "actor_name": "a-maintainer",
+					"after_sha": "cafe1234cafe5678", "ref": "refs/heads/main",
+					"pushed_at": "2026-10-29T08:00:00+01:00", "result": "pass",
+				},
 			},
 			"repos/" + repo + "/actions/secrets": map[string]any{
 				"total_count": 2,
@@ -132,6 +155,14 @@ func (w *world) requiredChecks() []any {
 func (w *world) setRequiredChecks(c []any) {
 	rules := w.ruleset()["rules"].([]any)
 	rules[0].(map[string]any)["parameters"].(map[string]any)["required_status_checks"] = c
+}
+
+func (w *world) setRuleSuites(s []any) {
+	w.api["repos/"+repo+"/rulesets/rule-suites"] = s
+}
+
+func (w *world) setBypassActors(a []any) {
+	w.ruleset()["bypass_actors"] = a
 }
 
 func (w *world) launchVars() map[string]any {
@@ -341,7 +372,7 @@ func TestAConformingRepositoryPasses(t *testing.T) {
 	for _, want := range []string{
 		"1 gate context", "2 authorised producer", "3 author allowlist",
 		"4 renovate permissions", "5 delivery app", "6 installation covers the repo",
-		"7 every required gate executes",
+		"7 every required gate executes", "8 conforming vs bypass merge",
 	} {
 		if !strings.Contains(got.stdout, want) {
 			t.Errorf("agreement %q was never evaluated — a green that skipped it proves nothing\n%s",
@@ -398,6 +429,185 @@ func TestARequiredCheckWithoutItsProducerReddens(t *testing.T) {
 	}
 	if !strings.Contains(got.stdout, "carries no integration_id") {
 		t.Errorf("the report does not name the missing producer pin\n%s", got.stdout)
+	}
+}
+
+func TestARequiredCheckPinnedToAnAppThatNeverPostsReddens(t *testing.T) {
+	// #1589's second half: a pin that is PRESENT is not a pin that
+	// authenticates. `revi/review` pinned to GitHub Actions while iterion
+	// posts it as its own App is a required check nothing the ruleset accepts
+	// will ever produce — green to a reader who only asks "is there an
+	// integration_id?", and a pull request that never merges in practice.
+	w := conforming()
+	checks := w.requiredChecks()
+	for _, raw := range checks {
+		m := raw.(map[string]any)
+		if m["context"] == "revi/review" {
+			m["integration_id"] = actionsApp
+		}
+	}
+	w.setRequiredChecks(checks)
+
+	got := run(t, w)
+	if got.code != exitBroken {
+		t.Fatalf("a check pinned to an App that never posts it must exit %d, got %d\n%s",
+			exitBroken, got.code, got.all())
+	}
+	if !strings.Contains(got.stdout, "producing App != pinned App") {
+		t.Errorf("the report does not name the mismatch between the pinned App and the producer\n%s", got.stdout)
+	}
+	// Both numbers, because this message's whole job is to tell two Apps
+	// apart: naming only one sends the reader hunting the other.
+	for _, want := range []string{fmt.Sprint(actionsApp), fmt.Sprint(deliveryApp), "iterion-forge-core"} {
+		if !strings.Contains(got.stdout, want) {
+			t.Errorf("the mismatch does not name %q\n%s", want, got.stdout)
+		}
+	}
+}
+
+func TestASecondRulesetRequiringTheSameContextUnpinnedReddens(t *testing.T) {
+	// GitHub ACCUMULATES required checks across active rulesets, so the same
+	// context can be required twice with a different pin each time. A reader
+	// that took the first row it met and stopped let the order the API
+	// happened to return decide the verdict: with the pinned ruleset returned
+	// first, an unpinned duplicate — which any credential satisfies — was
+	// invisible. The requirement is only decidable together with its source.
+	w := conforming()
+	rulesets := w.api["repos/"+repo+"/rulesets"].([]any)
+	w.api["repos/"+repo+"/rulesets"] = append(rulesets,
+		map[string]any{"id": 2, "target": "branch", "enforcement": "active"})
+	w.api["repos/"+repo+"/rulesets/2"] = map[string]any{
+		"bypass_actors": []any{},
+		"rules": []any{map[string]any{
+			"type": "required_status_checks",
+			"parameters": map[string]any{"required_status_checks": []any{
+				map[string]any{"context": "revi/review"},
+			}},
+		}},
+	}
+
+	got := run(t, w)
+	if got.code != exitBroken {
+		t.Fatalf("an unpinned duplicate requirement must exit %d, got %d\n%s",
+			exitBroken, got.code, got.all())
+	}
+	if !strings.Contains(got.stdout, "ruleset 2 requires 'revi/review', which carries no integration_id") {
+		t.Errorf("the report does not name the ruleset whose requirement is unpinned\n%s", got.stdout)
+	}
+	// And the conforming row must still be reported: a verdict that replaced
+	// "first row wins" with "worst row wins" would hide which ruleset is
+	// already right, which is the half the operator does not have to touch.
+	if !strings.Contains(got.stdout, "ruleset 1 pins 'revi/review'") {
+		t.Errorf("the report drops the ruleset that IS pinned correctly\n%s", got.stdout)
+	}
+}
+
+func TestAnInstallationWithoutItsAppIDBlinds(t *testing.T) {
+	// The comparison's pivot. An installation payload with no `app_id` leaves
+	// the App iterion posts as unknown, and the two numbers on that payload
+	// are NOT interchangeable: reading the installation id instead would
+	// compare an unrelated identifier to the ruleset's pin and call a
+	// correctly pinned repository broken. Unknown must stay unknown.
+	w := conforming()
+	delete(w.installation("iterion-forge-core"), "app_id")
+
+	got := run(t, w)
+	if got.code != exitBlind {
+		t.Fatalf("an installation with no app_id must blind, got exit %d\n%s", got.code, got.all())
+	}
+	if !strings.Contains(got.stdout, "carries no app_id") {
+		t.Errorf("the blind spot does not name the missing App id\n%s", got.stdout)
+	}
+	// It blinds ONE agreement: the pin is undecidable, the rest is not.
+	if !strings.Contains(got.stdout, "7 every required gate executes") {
+		t.Errorf("the blind spot aborted the agreements after it\n%s", got.stdout)
+	}
+}
+
+func TestTheProducerComparedToThePinIsTheAppThatActuallyPosts(t *testing.T) {
+	// The pivot of agreement 2 is DECLARED by the installation carrying the
+	// delivery slug, and each tenant deployment carries its OWN
+	// `iterion-forge-*` App. Comparing a correct pin to the wrong App sends
+	// the operator to edit a ruleset that is already right — so when the
+	// forge attributes the status to another App, that is the disagreement,
+	// and the pin is not judged at all.
+	w := conforming()
+	w.api["repos/"+repo+"/commits/"+headSHA+"/statuses"] = []any{
+		map[string]any{
+			"context": "revi/review",
+			"creator": map[string]any{"login": "iterion-forge-cdtn[bot]"},
+		},
+	}
+
+	got := run(t, w)
+	if got.code != exitBroken {
+		t.Fatalf("a producer that is not the declared App must exit %d, got %d\n%s",
+			exitBroken, got.code, got.all())
+	}
+	for _, want := range []string{"iterion-forge-cdtn[bot]", "iterion-forge-core", "AUTO_MAINT_DELIVERY_APP"} {
+		if !strings.Contains(got.stdout, want) {
+			t.Errorf("the report does not name %q — the operator cannot act on it\n%s", want, got.stdout)
+		}
+	}
+	// And it must NOT also blame the pin: ruleset 1 pins revi/review to the
+	// delivery App correctly, and saying that is wrong would be a second,
+	// false, disagreement on the same line of configuration.
+	if strings.Contains(got.stdout, "producing App != pinned App") {
+		t.Errorf("the pin was judged against an App that does not post it\n%s", got.stdout)
+	}
+}
+
+func TestAnObservedProducerThatMatchesIsSaidToBeObserved(t *testing.T) {
+	// The positive control. Without it, a cross-check that rejected EVERY
+	// observed producer would pass the test above and redden every repository
+	// in production — and the conforming world, whose fixture attributes no
+	// creator, could not tell the two apart.
+	w := conforming()
+	w.api["repos/"+repo+"/commits/"+headSHA+"/statuses"] = []any{
+		map[string]any{
+			"context": "revi/review",
+			"creator": map[string]any{"login": "iterion-forge-core[bot]"},
+		},
+	}
+
+	got := run(t, w)
+	if got.code != exitAgree {
+		t.Fatalf("an observed producer matching the declared App must exit %d, got %d\n%s",
+			exitAgree, got.code, got.all())
+	}
+	if !strings.Contains(got.stdout, "observed posting it") {
+		t.Errorf("the agreement does not say the producer was OBSERVED, so a reader cannot tell it from a declaration\n%s", got.stdout)
+	}
+}
+
+func TestAnUnattributedStatusLeavesTheProducerUnobservedNotWrong(t *testing.T) {
+	// A forge that reports no creator — the shape the conforming fixture
+	// carries — must read as UNOBSERVED, never as a mismatch: reddening there
+	// would make the agreement depend on a field the provider may omit.
+	got := run(t, conforming())
+	if got.code != exitAgree {
+		t.Fatalf("an unattributed status must not redden, got exit %d\n%s", got.code, got.all())
+	}
+	if !strings.Contains(got.stdout, "unobserved on the last 20 PRs") {
+		t.Errorf("the agreement hides that the producer was never observed\n%s", got.stdout)
+	}
+}
+
+func TestARuleSuitePayloadThatIsNotAnArrayIsABlindSpot(t *testing.T) {
+	// `gh` prints an error OBJECT with exit 0 on some paths. `jq length` on an
+	// object counts its keys and `.[]` walks its values, so every count in
+	// agreement 8 would be a number about the wrong thing — and a repository
+	// with bypassed merges would report none.
+	w := conforming()
+	w.setRuleSuites(nil)
+	w.api["repos/"+repo+"/rulesets/rule-suites"] = map[string]any{"message": "Not Found"}
+
+	got := run(t, w)
+	if got.code != exitBlind {
+		t.Fatalf("a non-array rule-suite payload must exit %d, got %d\n%s", exitBlind, got.code, got.all())
+	}
+	if !strings.Contains(got.stderr, "did not answer a JSON array") {
+		t.Errorf("the failure does not name the wrong payload shape\n%s", got.stderr)
 	}
 }
 
@@ -813,7 +1023,7 @@ func TestTheDeliveryAppScopedAwayFromTheRepositoryReddens(t *testing.T) {
 	// refused, with every permission line green.
 	w := conforming()
 	w.installation("iterion-forge-core")["repository_selection"] = "selected"
-	w.api[fmt.Sprintf("user/installations/%d/repositories", deliveryApp)] = map[string]any{
+	w.api[fmt.Sprintf("user/installations/%d/repositories", deliveryInstall)] = map[string]any{
 		"total_count":  1,
 		"repositories": []any{map[string]any{"full_name": "SocialGouv/some-other-repo"}},
 	}
@@ -851,6 +1061,165 @@ func TestArmAutomergeIsReadTheWayTheEngineCoercesIt(t *testing.T) {
 	}
 }
 
+// --------------------------------------------------------------------------
+// Agreement 8 — a conforming merge told apart from a bypass merge.
+//
+// The line this replaces could not fail: with an empty bypass list the
+// preflight printed "every merge went through the gate" about pushes it had
+// never read. GitHub keeps its own verdict per push, so the scenarios below
+// are measured rather than inferred.
+// --------------------------------------------------------------------------
+
+func TestABypassedPushIsNamedAndNotCountedAsConforming(t *testing.T) {
+	// The sanctioned case, and the one the live repository is in: a
+	// maintainer pushes past the ruleset under the admin escape hatch the
+	// project keeps on purpose. Legitimate, so it must not redden — and
+	// NAMED, so the reader never reads it as a merge that passed the gate.
+	w := conforming()
+	w.setBypassActors([]any{
+		map[string]any{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"},
+	})
+	w.setRuleSuites([]any{
+		map[string]any{
+			"id": 90002, "actor_id": 4242, "actor_name": "a-maintainer",
+			"after_sha": "deadbeefdeadbeef", "ref": "refs/heads/main",
+			"pushed_at": "2026-10-29T09:00:00+01:00", "result": "bypass",
+		},
+		map[string]any{
+			"id": 90001, "actor_id": 4242, "actor_name": "a-maintainer",
+			"after_sha": "cafe1234cafe5678", "ref": "refs/heads/main",
+			"pushed_at": "2026-10-29T08:00:00+01:00", "result": "pass",
+		},
+	})
+
+	got := run(t, w)
+	if got.code != exitAgree {
+		t.Fatalf("a bypass the ruleset sanctions must not redden, got exit %d\n%s", got.code, got.all())
+	}
+	for _, want := range []string{"a-maintainer", "deadbeef", "did NOT pass the gate"} {
+		if !strings.Contains(got.stdout, want) {
+			t.Errorf("the report does not name the bypass (%q missing)\n%s", want, got.stdout)
+		}
+	}
+	// The claim that used to be printed without reading anything.
+	if strings.Contains(got.stdout, "every merge went through the gate") {
+		t.Errorf("the report still claims every merge passed the gate while one bypassed it\n%s", got.stdout)
+	}
+}
+
+func TestASanctionedAppBypassIsMatchedByItsAppIDNotItsName(t *testing.T) {
+	// A bypassing App appears in rule-suites as `<slug>[bot]` with its BOT
+	// USER id (measured: tokenbureau[bot] is actor 191878105 of App
+	// 1088820), while the ruleset lists the APP id. Comparing the two ids
+	// directly never matches, so the bridge is the installation's slug.
+	w := conforming()
+	w.setBypassActors([]any{
+		map[string]any{"actor_id": deliveryApp, "actor_type": "Integration", "bypass_mode": "always"},
+	})
+	w.setRuleSuites([]any{
+		map[string]any{
+			"id": 90003, "actor_id": 191878105, "actor_name": "iterion-forge-core[bot]",
+			"after_sha": "f00dbabef00dbabe", "ref": "refs/heads/main",
+			"pushed_at": "2026-10-29T09:00:00+01:00", "result": "bypass",
+		},
+	})
+
+	got := run(t, w)
+	if got.code != exitAgree {
+		t.Fatalf("an App bypass the ruleset lists must not redden, got exit %d\n%s", got.code, got.all())
+	}
+	if !strings.Contains(got.stdout, fmt.Sprintf("iterion-forge-core[bot] (App %d)", deliveryApp)) {
+		t.Errorf("the report does not resolve the bot login to the App id the ruleset lists\n%s", got.stdout)
+	}
+}
+
+func TestAnAppBypassTheInventoryDoesNotNameReddens(t *testing.T) {
+	// The inventory lists one App; another one merged past the gate. That is
+	// not an escape hatch anybody sanctioned, and it is exactly what the
+	// inventory-only line could never surface.
+	w := conforming()
+	w.setBypassActors([]any{
+		map[string]any{"actor_id": deliveryApp, "actor_type": "Integration", "bypass_mode": "always"},
+	})
+	w.setRuleSuites([]any{
+		map[string]any{
+			"id": 90004, "actor_id": 777, "actor_name": "socialgouv-renovate[bot]",
+			"after_sha": "abcdef0123456789", "ref": "refs/heads/main",
+			"pushed_at": "2026-10-29T09:00:00+01:00", "result": "bypass",
+		},
+	})
+
+	got := run(t, w)
+	if got.code != exitBroken {
+		t.Fatalf("an App bypass outside the inventory must exit %d, got %d\n%s",
+			exitBroken, got.code, got.all())
+	}
+	if !strings.Contains(got.stdout, fmt.Sprintf("does not name Integration %d", renovateAppID)) {
+		t.Errorf("the report does not say which App id the bypass list is missing\n%s", got.stdout)
+	}
+}
+
+func TestAHumanBypassWithNoRoleShapedActorListedReddens(t *testing.T) {
+	// The other direction, and the reason the verdict is decided on SHAPE: a
+	// ruleset that lists only an Integration sanctions no human bypass, so a
+	// human push past the gate is unexplained by anything the operator wrote.
+	w := conforming()
+	w.setBypassActors([]any{
+		map[string]any{"actor_id": deliveryApp, "actor_type": "Integration", "bypass_mode": "always"},
+	})
+	w.setRuleSuites([]any{
+		map[string]any{
+			"id": 90005, "actor_id": 4242, "actor_name": "a-maintainer",
+			"after_sha": "0123456789abcdef", "ref": "refs/heads/main",
+			"pushed_at": "2026-10-29T09:00:00+01:00", "result": "bypass",
+		},
+	})
+
+	got := run(t, w)
+	if got.code != exitBroken {
+		t.Fatalf("a human bypass no listed actor explains must exit %d, got %d\n%s",
+			exitBroken, got.code, got.all())
+	}
+	if !strings.Contains(got.stdout, "names no role-shaped actor") {
+		t.Errorf("the report does not say the bypass list cannot explain a human push\n%s", got.stdout)
+	}
+}
+
+func TestAnUnreadableRuleSuiteHistoryIsABlindSpotNotAPass(t *testing.T) {
+	// The read needs admin on the repository, and an operator without it must
+	// get "unknown" — never the absence of a bypass. It must also not abort
+	// the other agreements, which is why it is blind() and not fatal().
+	w := conforming()
+	delete(w.api, "repos/"+repo+"/rulesets/rule-suites")
+
+	got := run(t, w)
+	if got.code != exitBlind {
+		t.Fatalf("an unreadable rule-suite history must exit %d (blind spot), got %d\n%s",
+			exitBlind, got.code, got.all())
+	}
+	if !strings.Contains(got.stdout, "is UNKNOWN, not none") {
+		t.Errorf("the blind spot lets an unreadable history read as no bypass\n%s", got.stdout)
+	}
+	if !strings.Contains(got.stdout, "7 every required gate executes") {
+		t.Errorf("the blind spot aborted the agreements around it\n%s", got.stdout)
+	}
+}
+
+func TestAnEmptyRuleSuiteWindowProvesNeitherDirection(t *testing.T) {
+	// No push in the window is not "every merge passed": the honest wording
+	// says both halves are unproven, so nobody reads the line as a clean bill.
+	w := conforming()
+	w.setRuleSuites([]any{})
+
+	got := run(t, w)
+	if got.code != exitAgree {
+		t.Fatalf("an empty window must not redden, got exit %d\n%s", got.code, got.all())
+	}
+	if !strings.Contains(got.stdout, "nothing is known to have passed it") {
+		t.Errorf("an empty window is reported as proof of something\n%s", got.stdout)
+	}
+}
+
 func TestJSONOutputIsTheOnlyThingOnStdout(t *testing.T) {
 	// An advertised --json whose output cannot be parsed is worse than none:
 	// the caller's jq fails in a way that looks like the preflight crashed.
@@ -878,7 +1247,7 @@ func TestJSONKeepsADetailThatContainsTheSeparator(t *testing.T) {
 	// `build | linux` is an ordinary matrix job name. Splitting the record on
 	// every `|` drops the rest of the sentence in silence.
 	w := conforming()
-	w.setRequiredChecks([]any{map[string]any{"context": "build | linux", "integration_id": 15368}})
+	w.setRequiredChecks([]any{map[string]any{"context": "build | linux", "integration_id": actionsApp}})
 	w.api["repos/"+repo+"/commits/"+headSHA+"/check-runs"] = map[string]any{
 		"total_count": 1,
 		"check_runs":  []any{map[string]any{"name": "build | linux"}},
