@@ -38,14 +38,11 @@ import (
 // second source of truth ADR-144 forbids ("the server plane is a parallel
 // mechanism, never the place a shared skill's bytes come from when the tree
 // has them").
-func (s *Server) resolveSnapshotSkills(ctx context.Context, teamID string, snap *bundle.Snapshot, roots []string) error {
-	// One producer is resolved ONCE per freeze, and every dependency on it
-	// reads that one materialization: resolving per dependency would let two
-	// declarations naming the same bundle land bytes from two versions of it
-	// when the row changes mid-freeze, and would write the same bundle to the
-	// temp tree once per dependency.
-	producers := newSnapshotProducers()
-	defer producers.release()
+//
+// producers is the freeze's own cache, passed in rather than built here: a
+// bundle that declares both a skill and a fragment from the same producer must
+// read ONE materialization of it, which a cache per pass cannot promise.
+func (s *Server) resolveSnapshotSkills(ctx context.Context, teamID string, snap *bundle.Snapshot, roots []string, producers *snapshotProducers) error {
 	ordered := append([]string(nil), roots...)
 	sort.Strings(ordered)
 	for _, root := range ordered {
@@ -58,7 +55,7 @@ func (s *Server) resolveSnapshotSkills(ctx context.Context, teamID string, snap 
 		}
 		deps := append([]bundle.SkillDependency(nil), manifest.Dependencies.Skills...)
 		sort.Slice(deps, func(i, j int) bool { return deps[i].Name < deps[j].Name })
-		recorded, err := snapshotSkillRecord(snap, root)
+		recorded, err := snapshotLocalStateRecord(snap, root, bundle.LocalStateSkill)
 		if err != nil {
 			return err
 		}
@@ -111,18 +108,19 @@ func snapshotManifest(snap *bundle.Snapshot, root string) (*bundle.Manifest, err
 	return nil, nil
 }
 
-// snapshotSkillRecord reads the bundle's own record of what a previous
-// resolution materialized, from the frozen copy: Snapshot.AddDir carries the
-// live files of a directory, so a bundle launched straight from a synced
-// working tree arrives WITH its materialized skill and the record that
-// describes it. Reading the record is what tells that file apart from one the
-// producer ships — the same question, the same answer, on both planes.
-func snapshotSkillRecord(snap *bundle.Snapshot, root string) (map[string]string, error) {
+// snapshotLocalStateRecord reads the bundle's own record of what a previous
+// resolution materialized for one KIND of local state, from the frozen copy:
+// Snapshot.AddDir carries the live files of a directory, so a bundle launched
+// straight from a synced working tree arrives WITH its materialized skill or
+// fragment and the record that describes it. Reading the record is what tells
+// that file apart from one the producer ships — the same question, the same
+// answer, on both planes and for both artefact kinds.
+func snapshotLocalStateRecord(snap *bundle.Snapshot, root string, kind bundle.LocalStateKind) (map[string]string, error) {
 	file, ok := snap.Files[root+"/"+bundle.LocalStateFile]
 	if !ok {
 		return nil, nil
 	}
-	entries, err := bundle.DecodeLocalStateOfKind(file.Content, bundle.LocalStateSkill)
+	entries, err := bundle.DecodeLocalStateOfKind(file.Content, kind)
 	if err != nil {
 		return nil, fmt.Errorf("bundle snapshot: bundle %q: %w", root, err)
 	}

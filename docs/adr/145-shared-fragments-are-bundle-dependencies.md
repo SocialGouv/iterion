@@ -140,6 +140,33 @@ property a bundle has to express — which three more facts constrain:
    What the cap owes is named below, and it is a decision about the cap, not
    about sharing.
 
+   *Amended 2026-10-29, when a cloud launch of a consumer was measured
+   ([#2853](https://github.com/SocialGouv/iterion/issues/2853), ARB-120 of the
+   debt-leap lane):* "no cloud twin is owed" is true of the DURABLE record and
+   was read as true of the CAPABILITY, which it is not. Neither carrier that
+   brings a bundle to the server plane carries what an install materialized —
+   `PackDir` leaves the local-state file and its members out of a `.botz`, and
+   a bundle authored in the studio never had them — so the launch froze a
+   consumer whose fragment was absent, and died on
+   `E046 import "lib/x.bot": no such fragment` — the wrong actor clause 3
+   named: a true sentence about a file the author never wrote, blaming as
+   corrupt a bundle that is perfectly valid git-native. **The launch therefore RESOLVES
+   what a bundle declares while it freezes the collection**, through the
+   team-scoped tiers a child workflow's authority comes from, at the path the
+   install would have written — the moment a bundle JOINS the collection, which
+   is before the unit that imports it is parsed. That ordering is what a
+   fragment asks of the freeze and a skill (read by nobody until the run
+   starts) does not. Nothing durable is added, so this clause stands as
+   written: the bytes travel in the run's own snapshot, pinned by its digest,
+   and `workflow_sources` records them as it records every other file of the
+   unit. A producer that reaches no tier stops the launch, naming the consumer,
+   the fragment, the producer and the tiers searched — `iterion bots sync` is
+   named by the INSTALL's refusal, which is the plane that has a working tree
+   for it to act on. What a found producer is held to is one chokepoint for both planes
+   ([skills.go](../../pkg/botinstall/skills.go),
+   [fragments.go](../../pkg/botinstall/fragments.go)): a rule recopied for the
+   second plane is the rule that drifts.
+
 5. **The pin comes from the mechanisms that already distribute bundles** —
    `botinstall` / `botregistry` / `marketplace` / `botsource`, pinned the way
    ADR-094 pins a shared workflow bundle (exact version and content hash).
@@ -246,6 +273,9 @@ property a bundle has to express — which three more facts constrain:
 - **A cloud store of fragment CONTENT.** What is durable is the run's own
   record of the files it executed; the server plane is a parallel mechanism,
   never the place a shared fragment's bytes come from when the tree has them.
+  *Still exactly true after clause 4's 2026-10-29 amendment:* the launch
+  resolves the producer through the tiers that already distribute bundles and
+  keeps nothing of its own.
 - **Lot 3's mechanism.** The exemplar is `group goal(condition, cap)` and
   nothing more: no DSL `goal:` field, no engine API, and no stop condition
   that lets a model re-read its own transcript — its evaluator has no tool
@@ -262,6 +292,12 @@ property a bundle has to express — which three more facts constrain:
   duplication measured here shrinks by one copy per consumer that migrates —
   and the 59 byte-identical names are where that costs no editorial judgment.
   Progress is the copies gone, not a count in a report.
+- A bundle that declares a dependency is launchable on BOTH planes, and one
+  chokepoint per artefact kind holds a found producer to its terms for both:
+  the install walks the directories a project materializes producers into, the
+  launch resolves the producer through its tiers and asks the same function.
+  What differs is only what a MISS reads, because only one of the two planes
+  has a working tree to sync.
 - `exports.fragments` and `exports.skills` now owe the SAME floor-table
   widening. Landing it twice would be the second hand-rolled check clause 6
   refuses; the second key to land declares its pin in the seam the first

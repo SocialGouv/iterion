@@ -63,7 +63,26 @@ func (s *Server) snapshotLaunchBot(ctx context.Context, teamID string, lb *launc
 	}
 	queue := []pending{{entry, 0}}
 	seen := map[string]bool{}
-	loaded := map[string]bool{root: true}
+	// One producer is resolved ONCE per freeze, and every dependency on it —
+	// of either artefact kind — reads that one materialization: resolving per
+	// dependency would let two declarations naming the same bundle land bytes
+	// from two versions of it when the row changes mid-freeze, and would write
+	// the same bundle to the temp tree once per dependency.
+	producers := newSnapshotProducers()
+	defer producers.release()
+	loaded := map[string]bool{}
+	// A bundle brings the FRAGMENTS it declares the moment it joins the
+	// collection, which is before any of its workflows is parsed: a fragment
+	// is part of the compilation unit the parse below reads, where a skill is
+	// read by nobody until the run starts (resolveSnapshotSkills, after the
+	// walk).
+	join := func(name string) error {
+		loaded[name] = true
+		return s.resolveSnapshotFragments(ctx, teamID, snap, name, producers)
+	}
+	if err := join(root); err != nil {
+		return nil, err
+	}
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
@@ -126,7 +145,9 @@ func (s *Server) snapshotLaunchBot(ctx context.Context, teamID string, lb *launc
 				if err != nil {
 					return nil, err
 				}
-				loaded[parts[0]] = true
+				if err := join(parts[0]); err != nil {
+					return nil, err
+				}
 			}
 			queue = append(queue, pending{key, current.depth + 1})
 		}
@@ -139,7 +160,7 @@ func (s *Server) snapshotLaunchBot(ctx context.Context, teamID string, lb *launc
 	for name := range loaded {
 		rootNames = append(rootNames, name)
 	}
-	if err := s.resolveSnapshotSkills(ctx, teamID, snap, rootNames); err != nil {
+	if err := s.resolveSnapshotSkills(ctx, teamID, snap, rootNames, producers); err != nil {
 		return nil, err
 	}
 	body, digest, err := snap.Encode()

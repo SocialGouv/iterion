@@ -86,6 +86,24 @@ reads now. What that costs is written down rather than hidden:
 - **A miss is named where the dependency exists** — at the install, with the
   bundle, the fragment and every directory looked in. No new parse-time
   diagnostic: at parse time the file is simply there or absent.
+- **The cloud plane resolves at the launch freeze, before the parse.** A
+  bundle that reaches the server never carries what an install materialized,
+  so the launch resolves every declared fragment while it freezes the bot's
+  collection — through the same team-scoped tiers (team → platform → baked
+  catalog) a child workflow's authority comes from, injected at the same
+  `lib/<name>.bot`, the moment a bundle joins the collection. That moment is
+  the point: the freeze PARSES each workflow, so a fragment that arrived after
+  the walk would arrive after the `E046` that blames the consumer's own file.
+  Every bundle of the collection is resolved, a child's declarations included.
+  Nothing durable is added: the fragment travels inside the run's snapshot,
+  whose digest answers "which version of the shared logic did this run
+  execute" at a tier that has no `bots.lock`, and `workflow_sources` records
+  its bytes as it records the rest of the unit. A producer that resolves in no
+  tier stops the launch, naming the consumer, the fragment, the producer and
+  the tiers searched — not `iterion bots sync`, which is the install's remedy
+  and needs a working tree; a tier that errors is transient and the resume
+  retries it. There is no fragment store on the server: the tree stays the only
+  place a shared fragment's bytes come from.
 - **The pin keeps its meaning.** A materialized fragment is recorded in the
   consumer's `.iterion-materialized-fragments` note and left out of the
   bundle's content hash, which is what `bots.lock` pins: resolving a declared
