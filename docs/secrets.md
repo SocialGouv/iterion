@@ -79,7 +79,12 @@ sink, before persistence:
   checkpoint keep them whole: the run needs them). A placeholder in them is
   kept as is — the heuristic pass never redacts one, trailing sentence
   punctuation included,
-- run.log block bodies, tool sidecar blobs, turn-snapshot conversations.
+- run.log — every record the run's logger keeps, at the logger itself
+  (`Logger.WithRedactor`, wired by `runview.BuildExecutor` from this guard;
+  [ADR-148](adr/148-the-run-logger-redacts-what-it-keeps.md)) — block bodies,
+  tool sidecar blobs, and turn-snapshot conversations keep their own eager
+  pass (their stores bypass the redacting wrapper, or the text is cut before
+  it is logged).
 
 Values iterion only scrubs — the run's provider keys, the process's own
 secret-named environment, and credentials a server mints for a run (the forge

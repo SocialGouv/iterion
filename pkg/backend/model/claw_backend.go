@@ -1444,16 +1444,17 @@ func (e *errDrainBoundCut) Unwrap() error { return e.cause }
 // wrote — put through the run's Layer-0 sink redaction before this backend
 // hands it to anything that outlives the dispatch. A relayed payload the
 // host DOES decode is not this pass's business: it re-enters as an event,
-// redacted by Layer 0 and, for the log line, at its store-hook sink.
+// redacted by Layer 0 at the emitter.
 //
-// Two such sinks, not one. The operator's log is this backend's own, so a
-// backend writing third-party text to it owes the pass. The ERROR it
-// returns owes it too: the hooks that report a failed delegation read that
-// error where it is raised — the run log's "Delegation failed" line, the
-// delegate_error event, the error tracker — and the node's own scrub
-// ([ClawExecutor.scrubNodeError]) only runs at Execute, after all of them.
-// Redacting at the crossing covers every reader at once; [redactedThrough]
-// is the same pass for an error whose Is/As chain has to survive it.
+// The LOG is no longer one of this pass's sinks: the run logger redacts
+// every record it keeps (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458), so a line that merely
+// prints third-party text owes nothing here. The ERROR this backend returns
+// still owes the pass: the hooks that report a failed delegation read that
+// error where it is raised — the delegate_error event, the error tracker —
+// and the node's own scrub ([ClawExecutor.scrubNodeError]) only runs at
+// Execute, after all of them. Redacting at the crossing covers every reader
+// at once; [redactedThrough] is the same pass for an error whose Is/As
+// chain has to survive it.
 //
 // [delegate.Task.RedactSecrets] is nil when the run's redaction kill switch
 // is set, and the text then goes through unchanged.
@@ -1463,27 +1464,6 @@ func redactedFarSide(task delegate.Task, s string) string {
 	}
 	return task.RedactSecrets(s)
 }
-
-// farSideForLog is [redactedFarSide] deferred to the moment a log record is
-// FORMATTED, for the far-side text that only ever reaches the operator's log.
-//
-// iterlog drops a record above the logger's level before it reaches
-// fmt.Sprintf (pkg/log: the level test precedes the format), so a %s argument
-// of this type costs the run's secret pass only on a line the log actually
-// keeps — the same "ask the sink before the pass" the stderr report gets from
-// an explicit IsEnabled gate. Two shapes because the logger has two: a
-// formatted line evaluates its arguments lazily, a LogBlock BODY is a plain
-// string the caller must build, so that one still owes the gate.
-//
-// Only for a sink that drops. Text that also reaches an error or an event is
-// redacted eagerly through [redactedFarSide]: those keep it whatever the log
-// level is.
-type farSideForLog struct {
-	task delegate.Task
-	text string
-}
-
-func (f farSideForLog) String() string { return redactedFarSide(f.task, f.text) }
 
 const clawRunnerHomePrefix = "/tmp/iterion-scratch/claw-runner-home-"
 
@@ -2756,13 +2736,14 @@ func evaluateForwardedCall(p *permission.Policy, spellings []string, args map[st
 // returns err. The refusal happens on the host's side of the boundary, so it
 // is logged and emitted from here — not left to the runner's event relay,
 // which whatever forged the call also controls. Its text quotes the call the
-// other side sent, argument included, so THIS log line owes the run's
-// redaction. The error itself travels to two readers that already handle it:
-// back over the IPC as the refused call's result, to the side that wrote the
-// argument, and to the OnToolCall hook, whose own sink redacts its text.
+// other side sent, argument included; the run logger redacts the record
+// (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458). The error itself travels to two readers that
+// already handle it: back over the IPC as the refused call's result, to the
+// side that wrote the argument, and to the OnToolCall hook, whose own sink
+// redacts its text.
 func (b *ClawBackend) refuseForwardedCall(task delegate.Task, name string, err error) error {
 	if b.logger != nil {
-		b.logger.Warn("[%s/claw] %s", task.NodeID, farSideForLog{task, err.Error()})
+		b.logger.Warn("[%s/claw] %s", task.NodeID, err)
 	}
 	if b.hooks.OnToolCall != nil {
 		b.hooks.OnToolCall(task.NodeID, LLMToolCallInfo{ToolName: name, Error: err})
@@ -3035,18 +3016,16 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 			// unknown type is the far side's own spelling, while a type
 			// that failed to decode matched a case on one of this host's
 			// constants ([ApplyRelayedEvent] raises an error from nowhere
-			// else). Both go through the run's redaction all the same,
-			// because the pass is what keeps a sink of this class honest
-			// when a new arm quotes a type the far side chose; and through
-			// [farSideForLog], this sink being the only reader, so an
-			// operator log that drops the record on its level pays no pass.
+			// else). The run logger redacts every record it keeps
+			// (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458), which is what keeps a sink of this
+			// class honest when a new arm quotes a type the far side chose.
 			switch {
 			case err != nil:
 				b.logger.Warn("[%s#%d/claw] the sandbox runner relayed a %s event this host cannot decode — the node's per-step metering is incomplete: %s",
-					task.NodeID, task.Iteration, farSideForLog{task, eventType}, farSideForLog{task, err.Error()})
+					task.NodeID, task.Iteration, eventType, err)
 			case !handled:
 				b.logger.Debug("[%s#%d/claw] the sandbox runner relayed a %s event this host does not consume",
-					task.NodeID, task.Iteration, farSideForLog{task, eventType})
+					task.NodeID, task.Iteration, eventType)
 			}
 		},
 	}

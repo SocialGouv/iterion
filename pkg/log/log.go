@@ -123,6 +123,11 @@ type Logger struct {
 	// tree reaches all of them. Never nil for a Logger built through a
 	// constructor; the dispatch stays nil-safe regardless.
 	hook *atomic.Pointer[Hook]
+	// redact, when set by WithRedactor, scrubs every record this logger
+	// KEEPS — line, block header and body, and string field values —
+	// before the write and before the hook dispatch. Copied across forks
+	// like the writer; nil on a logger that scrubs nothing.
+	redact func(string) string
 	// fields is the inherited context. nil for the root logger; copied
 	// (not aliased) on each WithField call so a fork's mutations don't
 	// leak back to the parent.
@@ -187,13 +192,18 @@ func (l *Logger) dispatchHook(level Level, msg string) {
 }
 
 // snapshotFields returns a private copy of the inherited context so a
-// hook can retain or mutate it without racing the logger tree.
+// hook can retain or mutate it without racing the logger tree. String
+// values cross the logger's redactor like the record itself: the hook is
+// a sink of the same class (the error tracker reads them).
 func (l *Logger) snapshotFields() map[string]any {
 	if len(l.fields) == 0 {
 		return nil
 	}
 	out := make(map[string]any, len(l.fields))
 	for k, v := range l.fields {
+		if s, ok := v.(string); ok {
+			v = l.redactString(s)
+		}
 		out[k] = v
 	}
 	return out
@@ -260,7 +270,7 @@ func (l *Logger) log(level Level, emoji string, format string, args ...any) {
 	if l == nil || level > l.level {
 		return
 	}
-	msg := fmt.Sprintf(format, args...)
+	msg := l.redactString(fmt.Sprintf(format, args...))
 	l.emit(level, emoji, msg)
 	l.dispatchHook(level, msg)
 }
@@ -279,6 +289,38 @@ func (l *Logger) emit(level Level, emoji string, msg string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	_, _ = io.WriteString(l.w, line)
+}
+
+// WithRedactor returns a fork of l that passes every record it KEEPS
+// through redact — the formatted line, a LogBlock's header and body, and
+// the string values of its inherited fields — before the record is written
+// and before the warn+ hook is dispatched, so every sink of the logger
+// (console, run.log tee, error tracking) sees the same scrubbed text. The
+// scan runs AFTER the level test: a record the logger drops is never
+// redacted, so a quiet log pays nothing. A nil redact is a no-op fork.
+// Safe on a nil Logger.
+//
+// This is the redaction chokepoint a RUN's logger carries
+// (runview.BuildExecutor wires the run's secret guard here): ten
+// per-sink passes would leave the eleventh to drift, so producers hand
+// third-party text to the logger raw and the fork scrubs it once. Text a
+// caller TRUNCATES before logging still owes its own pass first — the
+// chokepoint can only recognise a value the cut kept whole.
+func (l *Logger) WithRedactor(redact func(string) string) *Logger {
+	if l == nil {
+		return nil
+	}
+	out := l.withFields(nil)
+	out.redact = redact
+	return out
+}
+
+// redactString applies the logger's redactor, if one is wired.
+func (l *Logger) redactString(s string) string {
+	if l.redact == nil || s == "" {
+		return s
+	}
+	return l.redact(s)
 }
 
 // WithWriter returns a fork of l writing to w instead of l's own
@@ -339,6 +381,7 @@ func (l *Logger) withFields(extra map[string]any) *Logger {
 		format: l.format,
 		mu:     l.mu,
 		hook:   l.hook,
+		redact: l.redact,
 	}
 	if len(l.fields) == 0 && len(extra) == 0 {
 		return out
@@ -370,6 +413,12 @@ func (l *Logger) LogBlock(level Level, emoji string, header string, body string)
 	if l == nil || level > l.level {
 		return
 	}
+
+	// Kept records cross the redactor once, here, before either sink
+	// (writer and hook) reads them. A body the caller truncated owes its
+	// own pass BEFORE the cut — see WithRedactor.
+	header = l.redactString(header)
+	body = l.redactString(body)
 
 	// The body travels as a field, so the hook sees the same structured
 	// record a JSON shipper would.

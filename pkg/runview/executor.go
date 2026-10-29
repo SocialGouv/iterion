@@ -410,6 +410,38 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	if spec.Logger == nil {
 		spec.Logger = iterlog.NewFromEnv(os.Stderr)
 	}
+	ctx := spec.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Local (desktop / CLI / non-cloud studio) secret injection: resolve the
+	// workflow's declared `secrets:` names from the local sealed store and
+	// stamp them into ctx — the in-process equivalent of the cloud runner's
+	// injectCredentials. Skipped when the cloud path already put Credentials
+	// in ctx (never overwrite pre-resolved cloud credentials).
+	stamped, err := StampLocalCredentials(ctx, spec.Workflow, spec.LocalSecrets, spec.LocalSealer, spec.Logger)
+	if err != nil {
+		return nil, err
+	}
+	ctx = stamped
+	// Build the per-run secret guard (Layer 0/1/2) from the resolved
+	// credentials in ctx + sensitive host env + declared workflow
+	// secrets, then thread it through the event hooks so every sink is
+	// scrubbed before persistence.
+	guard := model.BuildSecretGuard(ctx, spec.Workflow, spec.Vars, recordedMintedSecrets(ctx, spec))
+	// …and through the run's LOGGER, the redaction chokepoint
+	// (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458): every record this fork keeps crosses
+	// guard.Redact before the write and before the warn+ hook, so a
+	// producer hands the log third-party text raw and no per-sink pass is
+	// owed. Built before the FIRST line this run logs, so the fallback /
+	// policy refusals below are covered too, and inherited by every fork
+	// (the run.log tee, the per-node field forks, the delegate registry).
+	// A nil guard (no known values, heuristic off) wires no redactor: the
+	// no-secrets run pays nothing, and ITERION_SECRETS_REDACT=off — which
+	// builds exactly such a guard — is the kill switch.
+	if guard != nil {
+		spec.Logger = spec.Logger.WithRedactor(guard.Redact)
+	}
 	// Materialise the operator's launch-time fallback chain onto the
 	// compiled workflow BEFORE anything reads it. The engine is
 	// constructed from the same *ir.Workflow, so writing it here is what
@@ -483,10 +515,6 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	reg := model.NewRegistry()
 	backendReg := delegate.DefaultRegistry(spec.Logger)
 
-	ctx := spec.Ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	// Best effort on purpose: a timeline that cannot take the refusal must
 	// not stop a run the screen already made safe — the log line above
 	// remains, and the failure to record is itself logged.
@@ -500,21 +528,6 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 			}
 		}
 	}
-	// Local (desktop / CLI / non-cloud studio) secret injection: resolve the
-	// workflow's declared `secrets:` names from the local sealed store and
-	// stamp them into ctx — the in-process equivalent of the cloud runner's
-	// injectCredentials. Skipped when the cloud path already put Credentials
-	// in ctx (never overwrite pre-resolved cloud credentials).
-	stamped, err := StampLocalCredentials(ctx, spec.Workflow, spec.LocalSecrets, spec.LocalSealer, spec.Logger)
-	if err != nil {
-		return nil, err
-	}
-	ctx = stamped
-	// Build the per-run secret guard (Layer 0/1/2) from the resolved
-	// credentials in ctx + sensitive host env + declared workflow
-	// secrets, then thread it through the event hooks so every sink is
-	// scrubbed before persistence.
-	guard := model.BuildSecretGuard(ctx, spec.Workflow, spec.Vars, recordedMintedSecrets(ctx, spec))
 	// The routing handoff recorder (ADR-121 § Delivery 2) exists only for
 	// a run whose resolved posture is ACTIVE. Its fallback root is the
 	// run's artifact files dir (the shared state dir arrives later, from

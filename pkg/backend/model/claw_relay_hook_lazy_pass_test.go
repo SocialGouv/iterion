@@ -22,15 +22,18 @@ func (e *countingEmitter) AppendEvent(context.Context, string, store.Event) (*st
 }
 
 // Ask the sink before the pass — at the relayed-hook sinks too, not only at
-// the three in claw_backend.go.
+// the ones in claw_backend.go.
 //
-// Every far-side value these hooks write to the operator's log costs the run's
-// secret guard (an unmaterialize, a heuristic detector and a recursive decode
-// over the whole text), and the logger drops a record above its level before
-// it formats the line. A relayed retry's error is bounded only by the IPC's
-// per-field budget — 1 MiB — so a run at `--log-level error` would pay the
-// whole pass for a line it discards. Each site is gated on its own level, so
-// each subtest reddens alone; the KEEPS arm proves the drive reaches the site.
+// The pass is the run's secret guard, and since #2458 it rides the run
+// LOGGER (iterlog drops a record above its level before it formats AND
+// before it redacts), except where a body is redacted before it is bounded
+// (logFarSideBlock, h.red). Either way the property this witness pins is the
+// same: a relayed retry's error is bounded only by the IPC's per-field
+// budget — 1 MiB — so a run at `--log-level error` must not pay the whole
+// pass for a line it discards. Each site is gated on its own level, so each
+// subtest reddens alone; the KEEPS arm proves the drive reaches the site.
+// The counting func is wired as BOTH the logger's redactor and h.red,
+// because which side pays differs per site and the witness counts either.
 //
 // A formatted line is lazy by itself; a block BODY is a string the caller
 // builds, so the block sinks pay through [storeHooks.logFarSideBlock] — one
@@ -105,15 +108,16 @@ func TestClawRelay_AHookLogThatDropsTheRecordCostsNoPass(t *testing.T) {
 			drive := func(level iterlog.Level) int {
 				var passes int
 				var logs strings.Builder
+				counting := func(s string) string {
+					passes++
+					return strings.ReplaceAll(s, secret, "__ITERION_SECRET_openai_key__")
+				}
 				h := &storeHooks{
 					ctx:     context.Background(),
 					emitter: &countingEmitter{},
 					runID:   "run-hook-lazy",
-					logger:  iterlog.New(level, &logs),
-					red: func(s string) string {
-						passes++
-						return strings.ReplaceAll(s, secret, "__ITERION_SECRET_openai_key__")
-					},
+					logger:  iterlog.New(level, &logs).WithRedactor(counting),
+					red:     counting,
 				}
 				tc.drive(h)
 				return passes

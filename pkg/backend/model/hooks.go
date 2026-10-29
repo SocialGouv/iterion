@@ -224,12 +224,17 @@ func persistToolPayload(ctx context.Context, guard *secretguard.Guard, blobSink 
 // logger, guard, the redacting emitter wrapper, and the optional
 // store-capability sinks), so behaviour is identical.
 type storeHooks struct {
-	ctx            context.Context
-	emitter        EventEmitter // post-wrap; carries the redactingEmitter for AppendEvent
-	runID          string
-	logger         *iterlog.Logger
-	guard          *secretguard.Guard
-	red            func(string) string // guard.Redact (nil-safe)
+	ctx     context.Context
+	emitter EventEmitter // post-wrap; carries the redactingEmitter for AppendEvent
+	runID   string
+	logger  *iterlog.Logger
+	guard   *secretguard.Guard
+	// red is guard.Redact (nil-safe), for the EAGER passes: text that also
+	// reaches an event, a checkpoint, or a sink the redactingEmitter does
+	// not wrap, and bodies this file cuts before logging (a secret
+	// straddling the cut must be redacted first). Plain log lines owe no
+	// pass: the run logger redacts every record it keeps (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458.
+	red            func(string) string
 	attachmentSink AttachmentWriter
 	toolBlobSink   ToolBlobWriter
 	turnSink       TurnWriter
@@ -320,25 +325,20 @@ func (h *storeHooks) emit(nodeID string, evType store.EventType, data map[string
 }
 
 // logFarSideBlock writes one log block whose BODY is text from outside this
-// process — the model's answer, a container's relayed step, a tool's payload —
-// through the run's redaction, asking the sink BEFORE paying for the pass.
+// process — the model's answer, a container's relayed step, a tool's payload.
 //
-// The gate belongs here rather than at each sink. A formatted line gets this
-// for free ([farSideForLog]: iterlog drops a record above its level before
-// fmt.Sprintf), but a block body is a string the caller builds, so every
-// builder of one owed the same IsEnabled test — and a sink that forgets it
-// pays the run's whole secret guard (an unmaterialize, a heuristic detector
-// and a recursive decode) over a field bounded only by the IPC's 1 MiB budget,
-// for output nobody will see.
-//
-// The body is also bounded here, on what [iterlog.Logger.LogBlock] WRITES
-// rather than on the bytes handed over ([iterlog.BlockPreviewRendered] at
-// maxFieldSize): the far side chooses both its size and where its newlines
-// fall, and every rendered line carries the logger's continuation prefix, so
-// an unbounded 1 MiB body of single-byte lines is ~7.5 MiB of run log. Redact
-// first, bound second: a secret straddling the cut must be redacted, not
-// halved onto the operator's log. One owner, like the gate — a new block site
-// inherits the bound instead of re-deriving it.
+// The run's logger is the redaction chokepoint (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458): it
+// scans every record it keeps, so a block site owes no pass of its own for
+// the log. This helper keeps TWO things the chokepoint cannot do for it.
+// The gate: a block body is a string the caller builds and this helper
+// bounds, and bounding far-side text costs a pass over a field bounded only
+// by the IPC's 1 MiB budget — a record the level drops must not pay it (a
+// formatted line gets the gate for free: iterlog drops a record above its
+// level before fmt.Sprintf). And the ordering: the body is bounded on what
+// [iterlog.Logger.LogBlock] WRITES ([iterlog.BlockPreviewRendered] at
+// maxFieldSize), and redact-then-bound is the only safe order — a secret
+// straddling the cut must be redacted, not halved onto the operator's log,
+// and the chokepoint sees only what the cut kept.
 //
 // Only for a body that reaches the operator's log and nothing else. Text that
 // also lands in an event or an error is redacted eagerly, where it is built:
@@ -364,14 +364,15 @@ func (h *storeHooks) onLLMPrompt(nodeID string, systemPrompt string, userMessage
 	// Use LogBlock so the prompt body folds under the header
 	// in the studio's run log. Pass the full text — truncating
 	// at the source loses signal (the studio already provides
-	// a Wrap toggle + per-block expand/collapse).
+	// a Wrap toggle + per-block expand/collapse). The run logger
+	// redacts the whole record (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458).
 	if userMessage != "" {
 		h.logger.LogBlock(iterlog.LevelInfo, "💬",
-			fmt.Sprintf("Prompt [%s]:", nodeID), h.red(userMessage))
+			fmt.Sprintf("Prompt [%s]:", nodeID), userMessage)
 	}
 	if systemPrompt != "" {
 		h.logger.LogBlock(iterlog.LevelDebug, "📝",
-			fmt.Sprintf("System prompt [%s]:", nodeID), h.red(systemPrompt))
+			fmt.Sprintf("System prompt [%s]:", nodeID), systemPrompt)
 	}
 }
 
@@ -397,9 +398,7 @@ func (h *storeHooks) onLLMRequest(nodeID string, info LLMRequestInfo) {
 	// The model string and the effort are the far side's account of the call
 	// it made — a relayed llm_request carries whatever the container wrote
 	// (pkg/backend/model/sandbox_relay.go re-fires this hook from an `event`
-	// envelope), so they cross the run's redaction like the content below.
-	// The sink is asked first: the pass is the run's secret guard, and a
-	// record the log drops on its level is never scanned for it.
+	// envelope). The run logger redacts the record whole (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458; the event's copies cross Layer 0 at the emitter.
 	if h.logger.IsEnabled(iterlog.LevelInfo) {
 		toolInfo := ""
 		if info.ToolCount > 0 {
@@ -407,10 +406,10 @@ func (h *storeHooks) onLLMRequest(nodeID string, info LLMRequestInfo) {
 		}
 		reasoningInfo := ""
 		if info.ReasoningEffort != "" {
-			reasoningInfo = fmt.Sprintf(", reasoning=%s", h.red(info.ReasoningEffort))
+			reasoningInfo = fmt.Sprintf(", reasoning=%s", info.ReasoningEffort)
 		}
 		h.logger.Logf(iterlog.LevelInfo, "🤖", "[%s#%d/claw] LLM call: %s (%d msgs%s%s)",
-			nodeID, info.Iteration, h.red(info.Model), info.MessageCount, toolInfo, reasoningInfo)
+			nodeID, info.Iteration, info.Model, info.MessageCount, toolInfo, reasoningInfo)
 	}
 }
 
@@ -431,19 +430,13 @@ func (h *storeHooks) onLLMRetry(nodeID string, info RetryInfo) {
 	// A relayed retry carries the CONTAINER's account of the provider call
 	// (pkg/backend/model/sandbox_relay.go re-fires this hook from an `event`
 	// envelope), and an in-process one carries the provider's — third-party
-	// text either way, so the line crosses the run's redaction like every
-	// other content this file writes to the log. Behind the sink's own gate:
-	// a relayed error is bounded only by the IPC's per-field budget (1 MiB),
-	// and the pass over it is the run's whole secret guard — a run at
-	// --log-level error would pay it for a line it then drops.
-	if h.logger.IsEnabled(iterlog.LevelWarn) {
-		errMsg := ""
-		if info.Error != nil {
-			errMsg = h.red(info.Error.Error())
-		}
-		h.logger.Warn("LLM retry [%s]: attempt %d, delay %dms: %s",
-			nodeID, info.Attempt, info.Delay.Milliseconds(), errMsg)
+	// text either way. The run logger redacts the record whole (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458; the event's copy crosses Layer 0 at the emitter.
+	errMsg := ""
+	if info.Error != nil {
+		errMsg = info.Error.Error()
 	}
+	h.logger.Warn("LLM retry [%s]: attempt %d, delay %dms: %s",
+		nodeID, info.Attempt, info.Delay.Milliseconds(), errMsg)
 }
 
 // onLLMStepFinish implements the OnLLMStepFinish hook.
@@ -525,20 +518,19 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 	// hook in executor.go only ferries event payloads, and
 	// the LLMStepInfo arrives only for claw's direct loop.
 	// Nothing in this loop leaves the operator's log, so the sink is asked
-	// once for all of it: every far-side value below costs the run's secret
-	// pass, and a log that keeps no INFO record keeps none of these (a
-	// DEBUG-enabled logger keeps INFO too — the levels are ordered). The
-	// block bodies ask again through [storeHooks.logFarSideBlock] — one owner
-	// for the rule, one IsEnabled compare for the repetition.
+	// once for the display formatting below (HeaderDetail / BlockBody read
+	// the raw input); redaction itself is the run logger's (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458, applied to every record it keeps. The block bodies ask again
+	// through [storeHooks.logFarSideBlock] — one owner for the bound, one
+	// IsEnabled compare for the repetition.
 	if len(step.ToolCalls) > 0 && h.logger.IsEnabled(iterlog.LevelInfo) {
 		for _, tc := range step.ToolCalls {
 			// The NAME is the far side's too, not only the input: a
 			// relayed llm_step_finished carries the name the container
-			// sent. One pass per call, read by all four lines below.
-			name := h.red(tc.Name)
+			// sent. The logger's chokepoint scrubs it with the line.
+			name := tc.Name
 			detail := tooldisplay.HeaderDetail(tc.Name, tc.Input, tooldisplay.SnakeCaseKeys)
 			if detail != "" {
-				h.logger.Logf(iterlog.LevelInfo, "🔧", "[%s#%d/claw] %s %s", nodeID, step.Iteration, name, h.red(detail))
+				h.logger.Logf(iterlog.LevelInfo, "🔧", "[%s#%d/claw] %s %s", nodeID, step.Iteration, name, detail)
 			} else {
 				h.logger.Logf(iterlog.LevelInfo, "🔧", "[%s#%d/claw] %s", nodeID, step.Iteration, name)
 			}
@@ -547,9 +539,9 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 					fmt.Sprintf("[%s#%d/claw] tool input %s:", nodeID, step.Iteration, name),
 					body)
 			}
-			// The raw input keeps its own gate around the HEADER too: the
-			// name it formats is far-side text, bounded only by the IPC
-			// budget, so a DEBUG-less run must not copy it either.
+			// The raw input keeps its own gate around the HEADER too:
+			// logFarSideBlock bounds and redacts its body, but the header
+			// formats the far-side name either way.
 			if h.logger.IsEnabled(iterlog.LevelDebug) {
 				h.logFarSideBlock(iterlog.LevelDebug, "🔧",
 					fmt.Sprintf("[%s#%d/claw] raw input %s:", nodeID, step.Iteration, name),
@@ -1094,10 +1086,12 @@ func (h *storeHooks) onToolCall(nodeID string, info LLMToolCallInfo) {
 	if info.Error != nil {
 		// The NAME is as third-party as the error text beside it — the
 		// model wrote it, and a relayed tool_called carries what the
-		// container sent — so the line crosses the run's redaction whole,
-		// not only its error. (The input preview crossed it already, at
-		// rememberInput, where the cut would split a value it recognises.)
-		toolName := h.red(info.ToolName)
+		// container sent — and the run logger redacts the record whole
+		// (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458); errText was redacted eagerly because the
+		// EVENT carries it too. (The input preview crossed the guard
+		// already, at rememberInput, where the cut would split a value it
+		// recognises.)
+		toolName := info.ToolName
 		// The rejected input goes on the same line: an error naming a missing
 		// property is not actionable without the payload that omitted it.
 		if preview := h.takeInput(info.ToolUseID); preview != "" {
@@ -1316,8 +1310,10 @@ func (h *storeHooks) onDelegateFinished(nodeID string, info DelegateInfo) {
 		h.logger.Warn("Delegation [%s]: structured output parsing fell back to text wrapper", nodeID)
 	}
 	if info.Stderr != "" {
+		// Whole body, no cut: the run logger's chokepoint redacts it
+		// (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458).
 		h.logger.LogBlock(iterlog.LevelDebug, "⚠️",
-			fmt.Sprintf("Delegation stderr [%s]:", nodeID), h.red(info.Stderr))
+			fmt.Sprintf("Delegation stderr [%s]:", nodeID), info.Stderr)
 	}
 }
 
@@ -1664,8 +1660,9 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 		runID:   runID,
 		logger:  logger,
 		guard:   guard,
-		// red scrubs run.log block bodies (a separate sink from
-		// events.jsonl). Nil-safe: a nil guard returns the input unchanged.
+		// red scrubs the eager sinks (checkpoints, blobs, previews cut
+		// before logging). Nil-safe: a nil guard returns the input
+		// unchanged. Plain log lines are the run logger's own chokepoint.
 		red:            guard.Redact,
 		attachmentSink: attachmentSink,
 		toolBlobSink:   toolBlobSink,

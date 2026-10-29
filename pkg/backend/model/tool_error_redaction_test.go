@@ -21,11 +21,12 @@ import (
 
 // toolErrorWire builds the production pair: the store event hooks writing to
 // a run log, and the bridge a claude_code delegate receives as Task.Hooks
-// (delegateHooksFor), both on one guard.
+// (delegateHooksFor), both on one guard — and the logger wired as
+// BuildExecutor wires the run's, with the guard's redaction on it (#2458).
 func toolErrorWire(t *testing.T, g *secretguard.Guard) (delegate.TaskHooks, *bytes.Buffer, *captureEmitter) {
 	t.Helper()
 	var logBuf bytes.Buffer
-	logger := iterlog.New(iterlog.LevelInfo, &logBuf)
+	logger := iterlog.New(iterlog.LevelInfo, &logBuf).WithRedactor(g.Redact)
 	em := &captureEmitter{}
 	hooks := NewStoreEventHooks(context.Background(), em, "run-1", logger, g, nil)
 	e := newFallbackExecutor(delegate.NewRegistry(), hooks)
