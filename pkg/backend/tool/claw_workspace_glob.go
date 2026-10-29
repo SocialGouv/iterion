@@ -74,10 +74,11 @@ func executeWorkspaceGlobWithLimits(ctx context.Context, input map[string]any, s
 		return "", fmt.Errorf("glob: path is a protected credential directory")
 	}
 
-	// Matches are reported relative to the scope root that CONTAINS the
-	// search path — the workspace for an in-workspace search, the scratch
-	// root for a scratch one — so a match never surfaces as a "../…" path
-	// the model cannot hand back to read_file.
+	// Matches are reported through readResultPath, keyed on the scope root
+	// that CONTAINS the search path: relative inside the workspace (the
+	// spelling read_file rebases onto that same workspace), absolute under
+	// any extra read root — where a relative spelling would send read_file
+	// to the workspace's homonym instead of the file glob matched.
 	workspace, extra := scope.snapshot()
 	root := containingRoot(searchPath, workspace, extra)
 	if root == "" {
@@ -123,11 +124,7 @@ func executeWorkspaceGlobWithLimits(ctx context.Context, input map[string]any, s
 		if err != nil || !matched {
 			return nil
 		}
-		relativeToRoot, err := filepath.Rel(root, path)
-		if err != nil {
-			return nil
-		}
-		candidate := filepath.ToSlash(relativeToRoot)
+		candidate := readResultPath(scope, root, path)
 		separator := 0
 		if len(matches) > 0 {
 			separator = 1

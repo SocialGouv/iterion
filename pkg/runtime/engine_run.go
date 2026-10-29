@@ -768,15 +768,10 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	if s, ok := e.executor.(repoRootSetter); ok {
 		s.SetRepoRoot(run.RepoRoot)
 	}
-	// Push the resolved ${PROJECT_SCRATCH_DIR} so claw's read tools accept
-	// the run scratch as a read root (#2650) — a bot whose agents read
-	// their own briefs from there otherwise loses every one of them on
-	// claw while claude_code's unbounded Read reaches them. After
-	// startSandbox, so the pushed value is the CONTAINER path when
-	// sandboxed. Same minimal-interface pattern as SetWorkDir.
-	if s, ok := e.executor.(scratchDirSetter); ok {
-		s.SetScratchDir(e.projectScratchDirVarValue())
-	}
+	// The scratch read root (#2650) is NOT pushed here: this runs before
+	// `e.repoRoot = repoRoot` and before startSandbox, the two facts
+	// ${PROJECT_SCRATCH_DIR} keys on. pushExecutorVars owns it, once per
+	// path, after both are settled.
 	// Refresh the orchestrator-facing bot catalog from the live manifests
 	// (display_name / description / when_to_use / triggers / enabled +
 	// the workspace overlay) BEFORE mirroring, so an edited bot or a
@@ -1068,9 +1063,14 @@ func (e *Engine) applyPresetFocus() {
 
 // runInitState constructs the per-run runState, resolves vars,
 // loads attachments, caches the worktree flag (so per-node snapshot
-// decisions don't re-read run.json N times), and pushes the resolved
-// vars back into the executor — PROJECT_DIR-aware expansion may have
+// decisions don't re-read run.json N times), and hands the resolved
+// vars to pushExecutorVars — PROJECT_DIR-aware expansion may have
 // changed values from what the caller originally seeded.
+//
+// This is the LAUNCH path's run-level push, and it is reached after
+// `e.repoRoot = repoRoot` and startSandbox, which is what lets
+// pushExecutorVars resolve the scratch read root the way the nodes
+// about to execute will resolve ${PROJECT_SCRATCH_DIR}.
 func (e *Engine) runInitState(ctx context.Context, runID string, inputs map[string]any) *runState {
 	rs := e.newRunState(runID, inputs)
 	rs.ctx = ctx
@@ -1079,9 +1079,7 @@ func (e *Engine) runInitState(ctx context.Context, runID string, inputs map[stri
 	if r, err := e.store.LoadRun(ctx, runID); err == nil && r != nil {
 		rs.isWorktree = r.Worktree
 	}
-	if sv, ok := e.executor.(varsSetter); ok {
-		sv.SetVars(rs.vars)
-	}
+	e.pushExecutorVars(rs.vars)
 	return rs
 }
 

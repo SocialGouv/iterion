@@ -161,8 +161,10 @@ type workDirSetter interface{ SetWorkDir(string) }
 type repoRootSetter interface{ SetRepoRoot(string) }
 
 // scratchDirSetter receives the run's resolved ${PROJECT_SCRATCH_DIR} so
-// the claw read tools accept it as a read root (#2650). Pushed only after
-// the sandbox decision: the value differs between host and container.
+// the claw read tools accept it as a read root (#2650). Pushed from
+// pushExecutorVars only, which every path reaches after e.repoRoot is
+// settled AND after the sandbox decision — the value is keyed on the
+// repo root and differs between host and container.
 type scratchDirSetter interface{ SetScratchDir(string) }
 
 type varsSetter interface{ SetVars(map[string]any) }

@@ -2041,15 +2041,10 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 
 	// Push the freshly-resolved vars into the executor so substitutions
 	// in tool commands and prompt templates see the same map the engine
-	// just built.
+	// just built — and, with them, the scratch read root THIS resume's
+	// startSandbox just pinned: a banked-and-restored scratch (ADR-106)
+	// must stay readable by the resumed node's agents (#2650).
 	e.pushExecutorVars(rs.vars)
-	// The scratch read root (#2650) rides the same push: restored runs get
-	// it here, after THIS resume's startSandbox pinned the value — a
-	// banked-and-restored scratch (ADR-106) must stay readable by the
-	// resumed node's agents, which is the other half of the ticket.
-	if s, ok := e.executor.(scratchDirSetter); ok {
-		s.SetScratchDir(e.projectScratchDirVarValue())
-	}
 
 	// This runState came from a RESUME, so its first workspace boundary
 	// closes the window in which the run was stopped. An empty
@@ -2291,14 +2286,10 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run, prepared .
 	// exactly how it was missed once already.
 	rs.resumed = true
 
+	// Vars and the scratch read root (#2650) in one push, after THIS
+	// resume's startSandbox pinned the value — the restored scratch
+	// (ADR-106) stays readable by the resumed node's agents.
 	e.pushExecutorVars(rs.vars)
-	// The scratch read root (#2650) rides the same push: restored runs get
-	// it here, after THIS resume's startSandbox pinned the value — a
-	// banked-and-restored scratch (ADR-106) must stay readable by the
-	// resumed node's agents, which is the other half of the ticket.
-	if s, ok := e.executor.(scratchDirSetter); ok {
-		s.SetScratchDir(e.projectScratchDirVarValue())
-	}
 
 	e.restampWorkflowSource(ctx, r)
 	// An answered human gate on the restart node never reaches this
@@ -2511,12 +2502,31 @@ func (e *Engine) restoreRunEnv(r *store.Run) {
 	}
 }
 
-// pushExecutorVars refreshes the executor's vars map. Used after every
-// resolveVars on the resume path; the launch path does this inline in
-// Run().
+// pushExecutorVars refreshes the executor's run-level state: the resolved
+// vars map, and the scratch read root that keys off the same engine
+// fields. It is the ONE site that pushes either, reached after every
+// resolveVars — the launch path through runInitState, the paused and
+// parallel and review and recovery resumes through resumeRebuildState,
+// the failure resume through resumeFromFailure.
+//
+// One site because the scratch root (#2650) is only right once BOTH facts
+// ${PROJECT_SCRATCH_DIR} keys on are settled: e.repoRoot (assigned in Run
+// after runPersistWorkspace, restored by restoreRunEnv on resume) and the
+// sandbox decision (startSandbox pins e.containerWorkspace, and a
+// sandboxed run's scratch is the fixed container path). Pushed any
+// earlier, a `worktree: auto` run attaches a root keyed on the WORKTREE
+// while the bots' briefs live under the repo-root-keyed dir the var
+// names, and claw's read tools keep refusing them — the defect #2650
+// set out to remove. Vars and root travel together so a seventh entry
+// point inherits both; projectScratchDirVarValue is the same resolver
+// the var expansion dispatches to, so the root cannot drift from the
+// path the nodes are told to write.
 func (e *Engine) pushExecutorVars(vars map[string]any) {
 	if sv, ok := e.executor.(varsSetter); ok {
 		sv.SetVars(vars)
+	}
+	if s, ok := e.executor.(scratchDirSetter); ok {
+		s.SetScratchDir(e.projectScratchDirVarValue())
 	}
 }
 

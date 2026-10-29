@@ -78,6 +78,31 @@ agents must read the briefs the run itself wrote there, as claude_code's
 unbounded `Read` does); other attachment paths stay outside the read
 scope — reach them through `bash`.
 
+What that root holds, measured: it is the PROJECT scratch dir —
+`<iterion home>/projects/<encoded repo root>/scratch`, the iterion home
+being `$ITERION_HOME` or `~/.iterion` — and it is shared between the
+runs of one repository on purpose, because a sub-bot child writes its
+fan-in there from its own container and docs-refresh, sec-audit-deps and
+wiki-gen treat it as cross-run memory (`pkg/runtime/scratch_sweep.go`,
+`applyScratchMount`, which creates it `0700` when it binds it). A claw
+agent can therefore read what other runs OF THE SAME REPOSITORY left
+there, scanner output included — the breadth claude_code's unbounded
+`Read` already had. It reaches no further: another repository encodes
+another key, another operator resolves another iterion home, and a
+driver with no host filesystem (kubernetes — a pod rejects `type=bind`)
+gets a container-local scratch that the teardown banks per run
+(ADR-106), so no host directory is shared into the pod at all.
+Narrowing the root to the run's own subtree is a separate change, and it
+has to keep the fan-in and those caches readable.
+
+Only reads take the extra root. `write_file` and `file_edit` are not
+scope-aware: a relative path rebases onto the workspace, an absolute one
+passes through, exactly as before. And a path one read tool emits is
+spelled so another read tool opens the same file — workspace-relative
+inside the workspace, absolute under any other read root, since
+`read_file` joins a relative path onto the workspace and would otherwise
+open its homonym.
+
 ### Per-backend capability matrix
 
 The status table says which backends are trusted; this matrix says what

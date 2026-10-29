@@ -128,6 +128,25 @@ func containingRoot(resolved, workspace string, extra []string) string {
 	return ""
 }
 
+// readResultPath spells a found path the way the OTHER read tools take it
+// back. read_file JOINS a relative path onto the workspace (resolveReadPath),
+// so a path spelled relative to an extra read root would reopen the
+// workspace's homonym — the wrong file, silently, with no refusal to
+// notice. Inside the workspace the relative spelling is kept — the one
+// the path contract pins (claw_workspace_path_contract_test.go) and
+// agents hand back; under any other root the path is absolute, which is
+// what grep already labels its matches with. One helper, so a third
+// path-emitting read tool cannot invent a fourth spelling.
+func readResultPath(scope *ReadScope, root, path string) string {
+	workspace, _ := scope.snapshot()
+	if canon, err := canonicalReadRoot(workspace); err == nil && canon != "" && canon == root {
+		if rel, relErr := filepath.Rel(root, path); relErr == nil {
+			return filepath.ToSlash(rel)
+		}
+	}
+	return filepath.ToSlash(path)
+}
+
 // resolveReadPath is the scope-wide path gate, shared by read_file, glob
 // and grep: a relative path joins the workspace (and so can never leave
 // it); an absolute path must land under the workspace or one of the extra

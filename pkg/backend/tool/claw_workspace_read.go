@@ -341,8 +341,18 @@ func workspacePathInput(input map[string]any, toolName string) (string, error) {
 	return path, nil
 }
 
+// sensitiveWorkspacePath reports whether a read target is a credential or
+// secret file the read tools refuse, under the workspace and under every
+// declared read root alike.
+//
+// Every comparison is case-folded, the way the extension switch below
+// already is: a file system that folds case (macOS, Windows) makes `.ENV`
+// and `.env` THE SAME FILE, so a list of names read in one spelling only
+// is a bypass of itself. Folding errs closed — on a case-sensitive file
+// system a distinct `.ENV` is refused rather than read, which costs a
+// refusal, never a leak.
 func sensitiveWorkspacePath(path string) bool {
-	clean := filepath.ToSlash(filepath.Clean(path))
+	clean := strings.ToLower(filepath.ToSlash(filepath.Clean(path)))
 	base := filepath.Base(clean)
 	if base == ".env" || strings.HasPrefix(base, ".env.") || base == ".netrc" || base == ".git-credentials" || base == "cli-auth.json" {
 		return true

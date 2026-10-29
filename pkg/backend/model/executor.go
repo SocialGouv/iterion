@@ -1170,12 +1170,13 @@ func (e *ClawExecutor) SetRepoRoot(dir string) {
 
 // SetScratchDir records the run's resolved ${PROJECT_SCRATCH_DIR} and
 // attaches it to the claw read tools' scope as a READ-ONLY root (#2650).
-// The engine calls it once the sandbox decision pinned the value down —
-// after startSandbox on both the run and the resume paths, since a
-// sandboxed run's scratch is the fixed container path, not the host one.
-// The value is per-WORKSPACE and shared between runs by design
-// (pkg/runtime/scratch_sweep.go); the narrower per-run scratch is its own
-// fix. Empty, or no read scope wired (WithClawReadScope), is a no-op.
+// The engine calls it from its single run-level push, once the repo root
+// and the sandbox decision pinned the value down — the scratch dir is
+// keyed on the repo root, and a sandboxed run's is the fixed container
+// path, not the host one. The value is per-WORKSPACE and shared between
+// runs of the same repository by design (pkg/runtime/scratch_sweep.go,
+// docs/backends.md); the narrower per-run scratch is its own fix.
+// Empty, or no read scope wired (WithClawReadScope), is a no-op.
 // Only the READ tools take the root; the write tools' contract is
 // untouched. Safe to call before Execute; not safe to call concurrently
 // with an in-flight Execute.
