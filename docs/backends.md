@@ -1261,9 +1261,13 @@ never merged across sources, and an answer carries its provenance:
 
 1. `OPENAI_COMPATIBLE_MODELS` — the operator's JSON table,
    `{"<gateway id>": {"context_window": N, "max_output_tokens": N,
-   "input_usd_per_mtok": F, "output_usd_per_mtok": F}}`. Strict decoding
+   "input_usd_per_mtok": F, "output_usd_per_mtok": F,
+   "reasoning": B, "tool_call": B, "temperature": B}}`. Strict decoding
    (unknown fields refused); prices arrive as a pair or not at all; a
-   declared 0/0 means unpriced, not free.
+   declared 0/0 means unpriced, not free. The three capability flags are
+   each optional: a flag the table leaves out — or that no table answers —
+   is UNKNOWN to every reader (`iterion models`, the studio picker, the
+   REST catalog), never `false`; a vendor id keeps its curated verdict.
 2. `OPENAI_COMPATIBLE_CATALOG_PROVIDER=<q>` — the exact key `q/<id>` in the
    models.dev table (the live table when loaded, else the embedded
    snapshot). `<q>` is the upstream provider key the gateway's ids live

@@ -6783,12 +6783,12 @@ export interface components {
             price_known: boolean;
             provider: string;
             reachability: string;
-            reasoning: boolean;
+            reasoning?: boolean;
             recommended?: boolean;
             source: string;
             spec: string;
-            temperature: boolean;
-            tool_call: boolean;
+            temperature?: boolean;
+            tool_call?: boolean;
             ultracode_capable: boolean;
             unusable_reason?: string;
             usable: boolean;

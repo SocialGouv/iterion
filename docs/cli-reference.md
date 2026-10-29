@@ -622,6 +622,8 @@ iterion openapi --output openapi.json
 
 Model data reports the online-cache or curated-fallback source. `openapi` is offline and code-generated; use `iterion remote openapi` for a server's live spec.
 
+In the `iterion models` table the REASON, TOOLS and TEMP columns read `yes`, `no` or `?` — `?` when no table answered the flag, which is a gateway id (`openai_compatible/<id>`) whose catalog record states none; `--json` then leaves `reasoning`, `tool_call` and `temperature` out of the entry rather than printing a `false` nobody stated. A vendor id always carries all three.
+
 `iterion models pricing` audits the rate a run is **actually charged at** against the price published by the spec aggregator (models.dev), and reports every disagreement — it never rewrites the committed table in `pkg/backend/cost/cost.go` (prices feed budget decisions, so a change is a human judgement call). The charged rate is resolved in tiers: claw's live registry, then the aggregator's published pair, then the committed table. Three verdicts: **DISAGREES** (the charged rate differs from the published one — in practice claw's live registry quoting something else, since the aggregator's own pair is used when claw has no entry), **IGNORED** (a price is published and a run still reports none — now expected only for a **half-published** pair, which is refused whole rather than priced with a zero half), and **table only** (nothing is published — expected for brand-new models, which is why the committed table exists). `--refresh` refetches published prices first; `--check` exits non-zero on drift, for CI:
 
 ```bash

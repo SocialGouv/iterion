@@ -25,12 +25,15 @@ export interface ModelEntry {
 
   context_window: number;
   max_output_tokens?: number;
-  reasoning: boolean;
-  // The hard capability gate: a model without tool-calling cannot drive board
-  // tools, skills or run introspection, so an agent node on it is broken
-  // rather than merely degraded.
-  tool_call: boolean;
-  temperature: boolean;
+  // The three capability flags are ABSENT when the catalog answered none —
+  // a gateway id (openai_compatible/<id>) whose record carries no flags —
+  // and a reader says "unknown", never "no": absent is not false.
+  reasoning?: boolean;
+  // The hard capability gate: a model KNOWN to lack tool-calling cannot drive
+  // board tools, skills or run introspection, so an agent node on it is
+  // broken rather than merely degraded; an unknown one is a warning.
+  tool_call?: boolean;
+  temperature?: boolean;
   // Whether `reasoning_effort: ultracode` holds here — it is reliable only on
   // claude-opus-4-8 and silently degrades to plain xhigh elsewhere (C089).
   ultracode_capable: boolean;
@@ -158,7 +161,8 @@ export function backendForModel(
 
 // modelCapabilityWarning names the reason a model is a bad fit for an agent
 // node, or null when there is none. Ordered by severity: unreachable and
-// tool-less are hard breakages, ultracode is a silent downgrade.
+// tool-less are hard breakages, an unknown tool-calling flag and ultracode
+// are warnings — a flag the catalog did not state blocks nothing.
 //
 // `wantsUltracode` should be true when the node (or session) runs at
 // reasoning_effort: ultracode.
@@ -175,11 +179,18 @@ export function modelCapabilityWarning(
         "no credential on this host can reach this model — the run will fail at the first node",
     };
   }
-  if (!m.tool_call) {
+  if (m.tool_call === false) {
     return {
       level: "blocking",
       message:
         "this model cannot call tools — the agent loses the board, skills and run introspection",
+    };
+  }
+  if (m.tool_call === undefined) {
+    return {
+      level: "warning",
+      message:
+        "whether this model calls tools is not known — its catalog record states no flags; an agent node needs tool calling for the board, skills and run introspection",
     };
   }
   if (m.reachability === "unknown") {

@@ -30,14 +30,17 @@ func mergeSpec(spec modelspecs.Spec, curated ModelCapabilities) ModelCapabilitie
 	}
 	// Flags fall back to heuristics when the source omits them (nil pointer).
 	if spec.Reasoning != nil {
-		out.Reasoning = *spec.Reasoning
+		out.Reasoning = spec.Reasoning
 	}
 	if spec.ToolCall != nil {
-		out.ToolCall = *spec.ToolCall
+		out.ToolCall = spec.ToolCall
 	}
 	if spec.Temperature != nil {
-		out.Temperature = *spec.Temperature
+		out.Temperature = spec.Temperature
 	}
+	// The aggregator contributed, so it is the record's source — the curated
+	// table stands under it for whatever it left unsaid.
+	out.Source = SourceAggregator
 	// Pricing has no curated counterpart to fall back on, so it is carried
 	// through as published: zero stays zero and means "the aggregator had no
 	// price", never "free".

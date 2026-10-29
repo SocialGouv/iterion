@@ -37,8 +37,8 @@ func TestRunModels_JSONSingleModel(t *testing.T) {
 		t.Errorf("Source = %q, want curated (unknown model)", m.Source)
 	}
 	// Unknown provider → conservative default: tool calling + temperature.
-	if !m.ToolCall || !m.Temperature {
-		t.Errorf("flags = %+v, want ToolCall+Temperature", m)
+	if m.ToolCall == nil || !*m.ToolCall || m.Temperature == nil || !*m.Temperature {
+		t.Errorf("flags = %+v, want ToolCall+Temperature known true", m)
 	}
 }
 
@@ -126,5 +126,47 @@ func TestFormatContextWindow(t *testing.T) {
 		if got := formatContextWindow(in); got != want {
 			t.Errorf("formatContextWindow(%d) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestRunModels_AGatewayIdLeavesItsFlagsUnknown: a gateway id no catalog
+// table carries answers with NO capability flags — absent from the JSON,
+// "?" in the table — and the source "unknown", never a false nobody stated
+// (#2103).
+func TestRunModels_AGatewayIdLeavesItsFlagsUnknown(t *testing.T) {
+	t.Setenv("OPENAI_COMPATIBLE_MODELS", "")
+	t.Setenv("OPENAI_COMPATIBLE_CATALOG_PROVIDER", "")
+	t.Setenv("ITERION_OPENAI_COMPATIBLE_RESOLVED", "")
+	var buf bytes.Buffer
+	p := &Printer{W: &buf, Format: OutputJSON}
+	if err := RunModels(context.Background(), ModelsOptions{Spec: "openai_compatible/zz-unknown-gateway-model"}, p); err != nil {
+		t.Fatalf("RunModels: %v", err)
+	}
+	var got modelcatalog.Catalog
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, buf.String())
+	}
+	if len(got.Models) != 1 {
+		t.Fatalf("got %d models, want 1", len(got.Models))
+	}
+	m := got.Models[0]
+	if m.Reasoning != nil || m.ToolCall != nil || m.Temperature != nil {
+		t.Errorf("flags = %v/%v/%v, want all unknown (nil)", m.Reasoning, m.ToolCall, m.Temperature)
+	}
+	if m.Source != "unknown" {
+		t.Errorf("Source = %q, want unknown", m.Source)
+	}
+	for _, key := range []string{`"reasoning"`, `"tool_call"`, `"temperature"`} {
+		if strings.Contains(buf.String(), key) {
+			t.Errorf("the JSON states %s for a flag nobody answered:\n%s", key, buf.String())
+		}
+	}
+	buf.Reset()
+	p = &Printer{W: &buf, Format: OutputHuman}
+	if err := RunModels(context.Background(), ModelsOptions{Spec: "openai_compatible/zz-unknown-gateway-model"}, p); err != nil {
+		t.Fatalf("RunModels (human): %v", err)
+	}
+	if !strings.Contains(buf.String(), "?") || strings.Contains(buf.String(), "zz-unknown-gateway-model  unknown") && false {
+		t.Errorf("the table does not read ? for an unknown flag:\n%s", buf.String())
 	}
 }

@@ -38,14 +38,22 @@ type FatalToolError interface {
 // ModelCapabilities describes what features a model supports.
 // This is iterion-owned — decoupled from any SDK's capability type.
 type ModelCapabilities struct {
-	// Reasoning indicates the model supports extended thinking/reasoning.
-	Reasoning bool
+	// Reasoning, ToolCall and Temperature say whether the model supports
+	// extended thinking, tool calling and a temperature parameter — or are
+	// nil when no table answered them: a gateway id (openai_compatible/<id>)
+	// whose catalog record carries no flags, a bare id with no provider to
+	// resolve it against. A consumer reads nil as UNKNOWN and never as
+	// false: a false that was really "nobody said" clamps an effort, hides
+	// tools or refuses a launch the model may well serve (#2103). A curated
+	// vendor entry answers all three (Known).
+	Reasoning   *bool
+	ToolCall    *bool
+	Temperature *bool
 
-	// ToolCall indicates the model supports tool/function calling.
-	ToolCall bool
-
-	// Temperature indicates the model accepts a temperature parameter.
-	Temperature bool
+	// Source is the table that answered this record, flags included
+	// (CapabilitySource): what tells a reader a published fact from a
+	// curated heuristic, and an unknown from a false.
+	Source CapabilitySource
 
 	// ContextWindow is the model's context window in tokens. Zero = unknown.
 	ContextWindow int
@@ -69,3 +77,26 @@ type ModelCapabilities struct {
 	InputCostPerM  float64
 	OutputCostPerM float64
 }
+
+// Known is a flag a table answered.
+func Known(v bool) *bool { return &v }
+
+// CapabilitySource names the table a capability record came from.
+type CapabilitySource string
+
+const (
+	// SourceCurated means the curated static table alone answered — the
+	// online aggregator lacked the model, was disabled or offline.
+	SourceCurated CapabilitySource = "curated"
+	// SourceAggregator means the online model-spec aggregator had an entry
+	// for the model, merged over the curated fallback.
+	SourceAggregator CapabilitySource = "aggregator"
+	// The gateway catalog's tables, spelled as pkg/backend/compatgw spells
+	// them (a test keeps the two from drifting): the operator's own table,
+	// the live models.dev registry, the embedded snapshot — and
+	// SourceUnknown for an id no table carries, whose flags are nil.
+	SourceOperator        CapabilitySource = "operator"
+	SourceCatalogLive     CapabilitySource = "catalog-live"
+	SourceCatalogSnapshot CapabilitySource = "catalog-snapshot"
+	SourceUnknown         CapabilitySource = "unknown"
+)

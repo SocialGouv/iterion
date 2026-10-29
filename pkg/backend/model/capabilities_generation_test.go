@@ -48,7 +48,7 @@ func TestAnthropicReasoningFollowsGeneration(t *testing.T) {
 		"claude-3-5-sonnet-20241022", "claude-3.5-sonnet",
 	}
 	for _, id := range reasons {
-		if !anthropicCapabilities(id).Reasoning {
+		if !yes(anthropicCapabilities(id).Reasoning) {
 			t.Errorf("%s: expected extended thinking to be available", id)
 		}
 	}
@@ -57,7 +57,7 @@ func TestAnthropicReasoningFollowsGeneration(t *testing.T) {
 	// thinking from a model that has none is a hard API error, so an
 	// unrecognised id must not opt in.
 	for _, id := range []string{"claude-3-opus-20240229", "claude-2.1", "claude-instant"} {
-		if anthropicCapabilities(id).Reasoning {
+		if !no(anthropicCapabilities(id).Reasoning) {
 			t.Errorf("%s: expected no extended thinking", id)
 		}
 	}
@@ -70,10 +70,10 @@ func TestFutureGenerationsNeedNoCodeChange(t *testing.T) {
 	t.Parallel()
 	for _, id := range []string{"claude-opus-6", "claude-sonnet-7-2", "claude-opus-10"} {
 		c := anthropicCapabilities(id)
-		if !c.Reasoning {
+		if !yes(c.Reasoning) {
 			t.Errorf("%s: a later generation must resolve as reasoning-capable", id)
 		}
-		if !c.ToolCall || !c.Temperature {
+		if !yes(c.ToolCall) || !yes(c.Temperature) {
 			t.Errorf("%s: tool calling and temperature must stay available", id)
 		}
 	}
@@ -85,7 +85,7 @@ func TestFutureGenerationsNeedNoCodeChange(t *testing.T) {
 func TestGLMStillHandledBeforeClaudeParsing(t *testing.T) {
 	t.Parallel()
 	c := anthropicCapabilities("glm-5.2")
-	if !c.Reasoning {
+	if !yes(c.Reasoning) {
 		t.Error("glm-5.2: reasoning lost — the GLM branch must run first")
 	}
 	if c.ContextWindow != 1_000_000 {

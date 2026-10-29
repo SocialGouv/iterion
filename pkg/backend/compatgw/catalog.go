@@ -31,7 +31,9 @@ import (
 // CatalogModelsEnv holds the operator's JSON table for the ids its gateway
 // serves. `{"scaleway/gpt-oss-120b": {"context_window": 131072, ...}}` —
 // unknown fields refused (a typo'd price silently ignored is worse than a
-// refusal), prices as a pair or nothing.
+// refusal), prices as a pair or nothing, and the capability flags
+// (`reasoning`, `tool_call`, `temperature`) each optional: a flag the
+// operator leaves out stays UNKNOWN downstream, never false (#2103).
 const CatalogModelsEnv = "OPENAI_COMPATIBLE_MODELS"
 
 // ResolvedEnvName carries the HOST's own catalog resolution into the
@@ -105,6 +107,9 @@ func operatorModels(get func(string) string) (map[string]modelspecs.Spec, error)
 			MaxOutputTokens  int     `json:"max_output_tokens"`
 			InputUSDPerMTok  float64 `json:"input_usd_per_mtok"`
 			OutputUSDPerMTok float64 `json:"output_usd_per_mtok"`
+			Reasoning        *bool   `json:"reasoning"`
+			ToolCall         *bool   `json:"tool_call"`
+			Temperature      *bool   `json:"temperature"`
 		}
 		dec := json.NewDecoder(strings.NewReader(raw))
 		dec.DisallowUnknownFields()
@@ -127,6 +132,9 @@ func operatorModels(get func(string) string) (map[string]modelspecs.Spec, error)
 				MaxOutputTokens: e.MaxOutputTokens,
 				InputCostPerM:   e.InputUSDPerMTok,
 				OutputCostPerM:  e.OutputUSDPerMTok,
+				Reasoning:       e.Reasoning,
+				ToolCall:        e.ToolCall,
+				Temperature:     e.Temperature,
 			}
 		}
 	})

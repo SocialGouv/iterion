@@ -220,3 +220,37 @@ func TestResolveCatalog_AnIdAlreadyCarryingTheQualifierResolves(t *testing.T) {
 		t.Fatalf("the live table's stripped key must answer before the snapshot's q/<id>: %+v", res)
 	}
 }
+
+// TestOperatorModels_DeclaresTheFlagsItKnows: the operator's table may state
+// reasoning, tool_call and temperature; a flag it leaves out is nil — unknown
+// downstream, never false — and an unknown key is still refused.
+func TestOperatorModels_DeclaresTheFlagsItKnows(t *testing.T) {
+	ResetCatalogCaches()
+	t.Cleanup(ResetCatalogCaches)
+	get := func(k string) string {
+		if k == CatalogModelsEnv {
+			return `{"glm-5.2": {"context_window": 200000, "reasoning": true, "temperature": false}}`
+		}
+		return ""
+	}
+	r := ResolveCatalog("glm-5.2", nil, get)
+	if r.Source != SourceOperator || r.Spec.ContextWindow != 200000 {
+		t.Fatalf("resolved = %+v, want the operator's record", r)
+	}
+	if r.Spec.Reasoning == nil || !*r.Spec.Reasoning || r.Spec.Temperature == nil || *r.Spec.Temperature {
+		t.Fatalf("flags = %v/%v, want reasoning true and temperature false as declared", r.Spec.Reasoning, r.Spec.Temperature)
+	}
+	if r.Spec.ToolCall != nil {
+		t.Fatalf("tool_call = %v, want nil: the operator left it out", *r.Spec.ToolCall)
+	}
+	ResetCatalogCaches()
+	bad := func(k string) string {
+		if k == CatalogModelsEnv {
+			return `{"glm-5.2": {"reasonning": true}}`
+		}
+		return ""
+	}
+	if err := CheckOperatorTable(bad); err == nil {
+		t.Fatal("a misspelt flag key was accepted")
+	}
+}

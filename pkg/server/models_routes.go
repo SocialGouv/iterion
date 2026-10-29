@@ -318,9 +318,9 @@ func (s *Server) handleModelCapabilities(w http.ResponseWriter, r *http.Request)
 			MaxOutputTokens: rc.MaxOutputTokens,
 			InputCostPerM:   rc.InputCostPerM,
 			OutputCostPerM:  rc.OutputCostPerM,
-			Reasoning:       &rc.Reasoning,
-			ToolCall:        &rc.ToolCall,
-			Temperature:     &rc.Temperature,
+			Reasoning:       rc.Reasoning,
+			ToolCall:        rc.ToolCall,
+			Temperature:     rc.Temperature,
 		})
 		return
 	}

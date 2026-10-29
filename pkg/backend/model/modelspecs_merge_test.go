@@ -60,13 +60,16 @@ func TestMergeSpec_AggregatorOverridesCurated(t *testing.T) {
 	if got.InputCostPerM != 3 || got.OutputCostPerM != 15 {
 		t.Errorf("price = %v/%v, want 3/15", got.InputCostPerM, got.OutputCostPerM)
 	}
-	if got.Temperature {
+	if !no(got.Temperature) {
 		t.Error("an explicit aggregator false must override the curated true")
 	}
 	// A nil flag is "unstated", not false — the curated heuristic stands.
-	if got.ToolCall != curated.ToolCall || got.Reasoning != curated.Reasoning {
-		t.Errorf("unstated flags = tool:%v reason:%v, want curated tool:%v reason:%v",
-			got.ToolCall, got.Reasoning, curated.ToolCall, curated.Reasoning)
+	if flagWord(got.ToolCall) != flagWord(curated.ToolCall) || flagWord(got.Reasoning) != flagWord(curated.Reasoning) {
+		t.Errorf("unstated flags = tool:%s reason:%s, want curated tool:%s reason:%s",
+			flagWord(got.ToolCall), flagWord(got.Reasoning), flagWord(curated.ToolCall), flagWord(curated.Reasoning))
+	}
+	if got.Source != SourceAggregator {
+		t.Errorf("a merged record reads source %q, want aggregator", got.Source)
 	}
 }
 
@@ -120,7 +123,7 @@ func TestCapabilitiesForModel_DisabledRegistryIsPureCurated(t *testing.T) {
 	t.Cleanup(modelspecs.SetDefault(modelspecs.New(modelspecs.Options{Disabled: true})))
 
 	got := capabilitiesForModel("anthropic", "claude-sonnet-4-6")
-	if want := curatedCapabilities("anthropic", "claude-sonnet-4-6"); got != want {
-		t.Errorf("disabled resolution = %+v, want curated %+v", got, want)
+	if want := curatedCapabilities("anthropic", "claude-sonnet-4-6"); !sameCapabilities(got, want) {
+		t.Errorf("disabled resolution = %s, want curated %s", capabilitiesWords(got), capabilitiesWords(want))
 	}
 }

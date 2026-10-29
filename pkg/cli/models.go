@@ -62,9 +62,9 @@ func RunModels(ctx context.Context, opts ModelsOptions, p *Printer) error {
 			m.Source,
 			formatContextWindow(m.ContextWindow),
 			formatContextWindow(m.MaxOutputTokens),
-			yesNo(m.Reasoning),
-			yesNo(m.ToolCall),
-			yesNo(m.Temperature),
+			flagWord(m.Reasoning),
+			flagWord(m.ToolCall),
+			flagWord(m.Temperature),
 			formatPrice(m),
 			formatUsable(m),
 		})
@@ -141,4 +141,13 @@ func yesNo(b bool) string {
 		return "yes"
 	}
 	return "no"
+}
+
+// flagWord renders a capability flag: yes, no, or "?" when no table answered
+// it — a gateway id's unknown is never printed as a no.
+func flagWord(p *bool) string {
+	if p == nil {
+		return "?"
+	}
+	return yesNo(*p)
 }

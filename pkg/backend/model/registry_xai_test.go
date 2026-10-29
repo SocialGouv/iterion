@@ -52,10 +52,10 @@ func TestRegistry_XAIProviderRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Capabilities: %v", err)
 	}
-	if !caps.ToolCall {
+	if !yes(caps.ToolCall) {
 		t.Error("grok-3 should support tool calling")
 	}
-	if !caps.Temperature {
+	if !yes(caps.Temperature) {
 		t.Error("grok-3 should accept temperature")
 	}
 	if caps.ContextWindow != 131_072 {
@@ -95,17 +95,17 @@ func TestRegistry_XAIProviderWithKey(t *testing.T) {
 
 func TestXAICapabilities_ReasoningMini(t *testing.T) {
 	caps := curatedCapabilities("xai", "grok-3-mini")
-	if !caps.Reasoning {
+	if !yes(caps.Reasoning) {
 		t.Error("grok-3-mini should be Reasoning")
 	}
-	if caps.Temperature {
+	if !no(caps.Temperature) {
 		t.Error("grok-3-mini should not accept Temperature")
 	}
 	caps = curatedCapabilities("xai", "grok-3")
-	if caps.Reasoning {
+	if !no(caps.Reasoning) {
 		t.Error("grok-3 should not be Reasoning by default")
 	}
-	if !caps.Temperature {
+	if !yes(caps.Temperature) {
 		t.Error("grok-3 should accept Temperature")
 	}
 }

@@ -50,7 +50,7 @@ func TestRegistry_MoonshotProviderRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Capabilities: %v", err)
 	}
-	if !caps.ToolCall {
+	if !yes(caps.ToolCall) {
 		t.Error("kimi-k2 must be usable for tool calling — an agent node on a model without it is broken, not degraded")
 	}
 }
