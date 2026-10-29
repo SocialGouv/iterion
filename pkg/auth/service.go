@@ -2138,6 +2138,55 @@ func (s *Service) Store() identity.Store { return s.store }
 // construction and never calls this.
 func (s *Service) SetStoreForTest(st identity.Store) { s.store = st }
 
+// provisionUndoTimeout bounds a compensation whose request context may
+// already be done — the provisioning often failed BECAUSE the caller went
+// away — while keeping it from running unbounded (the shape revokeAccount
+// uses for its detached record).
+const provisionUndoTimeout = sessionOpTimeout
+
+// provisionUndo holds the undo of every write a provisioning COMMITTED, in
+// the order it committed them. compensate runs them newest-first, so a
+// provisioning that cannot finish leaves the state it started from: the slug
+// free, no half-provisioned row for the retry to collide with. A step is
+// pushed only once its write answered.
+type provisionUndo struct {
+	steps []provisionUndoStep
+}
+
+type provisionUndoStep struct {
+	what string
+	undo func(context.Context) error
+}
+
+func (p *provisionUndo) push(what string, undo func(context.Context) error) {
+	p.steps = append(p.steps, provisionUndoStep{what: what, undo: undo})
+}
+
+// compensate removes the committed writes and answers cause — the failure
+// that stopped the provisioning, which is what the caller asked about —
+// naming any row the undo could not remove: the operator needs both facts,
+// because that row is what a retry will collide with. Detached from the
+// caller's cancellation and bounded.
+func (p *provisionUndo) compensate(ctx context.Context, cause error) error {
+	if len(p.steps) == 0 {
+		return cause
+	}
+	uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), provisionUndoTimeout)
+	defer cancel()
+	var left []string
+	for i := len(p.steps) - 1; i >= 0; i-- {
+		// A row already gone is the state the undo wanted.
+		if err := p.steps[i].undo(uctx); err != nil && !errors.Is(err, identity.ErrNotFound) {
+			left = append(left, fmt.Sprintf("%s (%v)", p.steps[i].what, err))
+		}
+	}
+	if len(left) == 0 {
+		return cause
+	}
+	return fmt.Errorf("%w — and the compensation could not remove %s, so a retry will answer a duplicate",
+		cause, strings.Join(left, ", "))
+}
+
 // CreateTeamFor provisions a non-personal team inside org `orgID`,
 // owned by user `userID`. The user must be a member of the org (super-
 // admins may create in any org). Returns the new team. If slug is empty
@@ -2167,6 +2216,20 @@ func (s *Service) CreateTeamFor(ctx context.Context, userID, orgID, name, slug s
 			return identity.Team{}, err
 		}
 	}
+	undo := &provisionUndo{}
+	t, err := s.createTeamIn(ctx, u, orgID, name, slug, s.now().UTC(), undo)
+	if err != nil {
+		return identity.Team{}, undo.compensate(ctx, err)
+	}
+	return t, nil
+}
+
+// createTeamIn is CreateTeamFor's WRITE phase: it reads nothing, so a caller
+// that has already read (or just written) the rows the authorization needs
+// runs no read after its own first irreversible write. It pushes the undo of
+// each write it commits onto undo and leaves compensating to the caller —
+// one decision, at the call that owns the whole unit.
+func (s *Service) createTeamIn(ctx context.Context, u identity.User, orgID, name, slug string, now time.Time, undo *provisionUndo) (identity.Team, error) {
 	base := slug
 	if base == "" {
 		base = identity.SlugifyTeamName(name)
@@ -2174,7 +2237,6 @@ func (s *Service) CreateTeamFor(ctx context.Context, userID, orgID, name, slug s
 			base = "team"
 		}
 	}
-	now := s.now().UTC()
 	for attempt := 0; attempt < 10; attempt++ {
 		try := base
 		if attempt > 0 {
@@ -2199,6 +2261,9 @@ func (s *Service) CreateTeamFor(ctx context.Context, userID, orgID, name, slug s
 		if err != nil {
 			return identity.Team{}, err
 		}
+		undo.push(fmt.Sprintf("the team %s (slug %s)", t.ID, t.Slug), func(c context.Context) error {
+			return s.store.DeleteTeam(c, t.ID)
+		})
 		if err := s.store.UpsertMembership(ctx, identity.Membership{
 			UserID:   u.ID,
 			TeamID:   t.ID,
@@ -2207,6 +2272,9 @@ func (s *Service) CreateTeamFor(ctx context.Context, userID, orgID, name, slug s
 		}); err != nil {
 			return identity.Team{}, err
 		}
+		undo.push(fmt.Sprintf("the owner grant of %s on team %s", u.ID, t.ID), func(c context.Context) error {
+			return s.store.DeleteMembership(c, u.ID, t.ID)
+		})
 		return t, nil
 	}
 	return identity.Team{}, errors.New("auth: could not allocate slug for team")
@@ -2256,17 +2324,32 @@ func (s *Service) CreateOrgFor(ctx context.Context, userID, name, slug string) (
 		if err != nil {
 			return identity.Org{}, err
 		}
+		// The org row is the first irreversible write, so everything after
+		// it is compensated: a failure in between used to leave a TEAM-LESS
+		// org holding the slug, and the retry — the only remedy, super-admin
+		// only — answered acme-corp-2.
+		undo := &provisionUndo{}
+		undo.push(fmt.Sprintf("the org %s (slug %s)", o.ID, o.Slug), func(c context.Context) error {
+			return s.store.DeleteOrg(c, o.ID)
+		})
 		if err := s.store.UpsertOrgMembership(ctx, identity.OrgMembership{
 			UserID:   u.ID,
 			OrgID:    o.ID,
 			Role:     identity.OrgRoleOwner,
 			JoinedAt: now,
 		}); err != nil {
-			return identity.Org{}, err
+			return identity.Org{}, undo.compensate(ctx, err)
 		}
-		// Seed a default team so the org is immediately usable.
-		if _, err := s.CreateTeamFor(ctx, u.ID, o.ID, name, ""); err != nil {
-			return identity.Org{}, err
+		undo.push(fmt.Sprintf("the owner membership of %s in org %s", u.ID, o.ID), func(c context.Context) error {
+			return s.store.DeleteOrgMembership(c, u.ID, o.ID)
+		})
+		// Seed a default team so the org is immediately usable. The write
+		// phase directly: the account was read above, and the org and the
+		// owner membership CreateTeamFor would read are the two rows THIS
+		// call just wrote — reading them back is the read-after-write
+		// #2655 names, and a failure of it left exactly the team-less org.
+		if _, err := s.createTeamIn(ctx, u, o.ID, name, "", now, undo); err != nil {
+			return identity.Org{}, undo.compensate(ctx, err)
 		}
 		return o, nil
 	}
