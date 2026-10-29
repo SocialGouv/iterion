@@ -20,6 +20,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/memory"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -532,9 +533,10 @@ func TestResumeFromFailure_BackendRehydrationInjectedOnce(t *testing.T) {
 // charEnvSpyExecutor records the env-restore calls resumeFromFailure makes
 // on an executor that implements the optional setter seams.
 type charEnvSpyExecutor struct {
-	workDirs  []string
-	repoRoots []string
-	varsCalls int
+	workDirs    []string
+	repoRoots   []string
+	scratchDirs []string
+	varsCalls   int
 }
 
 func (x *charEnvSpyExecutor) Execute(_ context.Context, _ ir.Node, _ map[string]any) (map[string]any, error) {
@@ -542,6 +544,7 @@ func (x *charEnvSpyExecutor) Execute(_ context.Context, _ ir.Node, _ map[string]
 }
 func (x *charEnvSpyExecutor) SetWorkDir(d string)      { x.workDirs = append(x.workDirs, d) }
 func (x *charEnvSpyExecutor) SetRepoRoot(r string)     { x.repoRoots = append(x.repoRoots, r) }
+func (x *charEnvSpyExecutor) SetScratchDir(d string)   { x.scratchDirs = append(x.scratchDirs, d) }
 func (x *charEnvSpyExecutor) SetVars(_ map[string]any) { x.varsCalls++ }
 
 // TestResumeFromFailure_ExecutorEnvRestored pins restoreRunEnv +
@@ -596,6 +599,13 @@ func TestResumeFromFailure_ExecutorEnvRestored(t *testing.T) {
 	}
 	if spy.varsCalls == 0 {
 		t.Error("SetVars never called — resolved vars must be pushed on resume")
+	}
+	// The scratch read root (#2650) is pushed on resume too, keyed off the
+	// restored repo root — the resumed run's agents must read the banked
+	// scratch the teardown preserved.
+	wantScratch := memory.WorkspaceScratchDir(repoRoot)
+	if len(spy.scratchDirs) == 0 || spy.scratchDirs[len(spy.scratchDirs)-1] != wantScratch {
+		t.Errorf("SetScratchDir calls = %v, want last == %q", spy.scratchDirs, wantScratch)
 	}
 }
 

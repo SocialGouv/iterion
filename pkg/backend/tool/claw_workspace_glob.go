@@ -35,18 +35,18 @@ var defaultWorkspaceGlobLimits = workspaceGlobLimits{
 
 func workspaceGlobTool() api.Tool {
 	t := clawtools.GlobTool()
-	t.Description = "Find files inside the active workspace by name or layout. " +
+	t.Description = "Find files inside the active workspace or a declared read root (the run's scratch directory is one when the engine resolves it), by name or layout. " +
 		"Recursive searches are bounded; credential files and internal run stores are excluded. " +
 		"The path is optional; an omitted or empty path searches the active workspace root. " +
 		"Use a narrow path whenever you know the bundle or directory."
 	return t
 }
 
-func executeWorkspaceGlob(ctx context.Context, input map[string]any, workspace string) (string, error) {
-	return executeWorkspaceGlobWithLimits(ctx, input, workspace, defaultWorkspaceGlobLimits)
+func executeWorkspaceGlob(ctx context.Context, input map[string]any, scope *ReadScope) (string, error) {
+	return executeWorkspaceGlobWithLimits(ctx, input, scope, defaultWorkspaceGlobLimits)
 }
 
-func executeWorkspaceGlobWithLimits(ctx context.Context, input map[string]any, workspace string, limits workspaceGlobLimits) (string, error) {
+func executeWorkspaceGlobWithLimits(ctx context.Context, input map[string]any, scope *ReadScope, limits workspaceGlobLimits) (string, error) {
 	pattern, ok := input["pattern"].(string)
 	if !ok || strings.TrimSpace(pattern) == "" {
 		return "", fmt.Errorf("glob: 'pattern' input is required and must be a string")
@@ -59,7 +59,7 @@ func executeWorkspaceGlobWithLimits(ctx context.Context, input map[string]any, w
 	if err != nil {
 		return "", err
 	}
-	searchPath, err := resolveWorkspacePath(workspace, rawPath)
+	searchPath, err := resolveReadPath(scope, rawPath)
 	if err != nil {
 		return "", fmt.Errorf("glob: %w", err)
 	}
@@ -74,12 +74,14 @@ func executeWorkspaceGlobWithLimits(ctx context.Context, input map[string]any, w
 		return "", fmt.Errorf("glob: path is a protected credential directory")
 	}
 
-	root := searchPath
-	if workspace != "" {
-		root, err = filepath.EvalSymlinks(workspace)
-		if err != nil {
-			return "", fmt.Errorf("glob: resolve workspace: %w", err)
-		}
+	// Matches are reported relative to the scope root that CONTAINS the
+	// search path — the workspace for an in-workspace search, the scratch
+	// root for a scratch one — so a match never surfaces as a "../…" path
+	// the model cannot hand back to read_file.
+	workspace, extra := scope.snapshot()
+	root := containingRoot(searchPath, workspace, extra)
+	if root == "" {
+		root = searchPath
 	}
 
 	var (
@@ -121,11 +123,11 @@ func executeWorkspaceGlobWithLimits(ctx context.Context, input map[string]any, w
 		if err != nil || !matched {
 			return nil
 		}
-		relativeToWorkspace, err := filepath.Rel(root, path)
+		relativeToRoot, err := filepath.Rel(root, path)
 		if err != nil {
 			return nil
 		}
-		candidate := filepath.ToSlash(relativeToWorkspace)
+		candidate := filepath.ToSlash(relativeToRoot)
 		separator := 0
 		if len(matches) > 0 {
 			separator = 1

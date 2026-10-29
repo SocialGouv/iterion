@@ -311,7 +311,7 @@ func TestClawWorkspaceGrep_BoundsOutputDuringScan(t *testing.T) {
 	const maxOutput = 512
 	out, err := executeWorkspaceGrepWithLimits(t.Context(),
 		map[string]any{"pattern": "needle-", "path": "."},
-		dir,
+		NewReadScope(dir),
 		workspaceGrepLimits{maxResults: 100, maxOutputBytes: maxOutput},
 	)
 	if err != nil {
@@ -341,7 +341,7 @@ func TestClawWorkspaceGrep_OversizedFirstMatchReportsPartial(t *testing.T) {
 	const maxOutput = 256
 	out, err := executeWorkspaceGrepWithLimits(t.Context(),
 		map[string]any{"pattern": "needle", "path": "."},
-		dir,
+		NewReadScope(dir),
 		workspaceGrepLimits{maxResults: 100, maxOutputBytes: maxOutput},
 	)
 	if err != nil {
@@ -367,7 +367,7 @@ func TestClawWorkspaceGrep_ReportsInjectedResultLimit(t *testing.T) {
 
 	out, err := executeWorkspaceGrepWithLimits(t.Context(),
 		map[string]any{"pattern": "needle-", "path": "."},
-		dir,
+		NewReadScope(dir),
 		workspaceGrepLimits{maxResults: 2, maxOutputBytes: 512},
 	)
 	if err != nil {
@@ -449,7 +449,7 @@ func TestWorkspaceGlob_StopsOnCancellationAndTraversalBudget(t *testing.T) {
 		}
 	}
 	limits := workspaceGlobLimits{maxResults: 100, maxOutputBytes: 10_000, maxVisitedEntries: 3}
-	out, err := executeWorkspaceGlobWithLimits(context.Background(), map[string]any{"path": ".", "pattern": "**/absent.txt"}, workspace, limits)
+	out, err := executeWorkspaceGlobWithLimits(context.Background(), map[string]any{"path": ".", "pattern": "**/absent.txt"}, NewReadScope(workspace), limits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +458,7 @@ func TestWorkspaceGlob_StopsOnCancellationAndTraversalBudget(t *testing.T) {
 	}
 	limits.maxVisitedEntries = 100
 	limits.maxResults = 1
-	out, err = executeWorkspaceGlobWithLimits(context.Background(), map[string]any{"path": ".", "pattern": "**/*.txt"}, workspace, limits)
+	out, err = executeWorkspaceGlobWithLimits(context.Background(), map[string]any{"path": ".", "pattern": "**/*.txt"}, NewReadScope(workspace), limits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -468,7 +468,7 @@ func TestWorkspaceGlob_StopsOnCancellationAndTraversalBudget(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = executeWorkspaceGlobWithLimits(ctx, map[string]any{"path": ".", "pattern": "**/*.txt"}, workspace, defaultWorkspaceGlobLimits)
+	_, err = executeWorkspaceGlobWithLimits(ctx, map[string]any{"path": ".", "pattern": "**/*.txt"}, NewReadScope(workspace), defaultWorkspaceGlobLimits)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled glob error = %v, want context.Canceled", err)
 	}

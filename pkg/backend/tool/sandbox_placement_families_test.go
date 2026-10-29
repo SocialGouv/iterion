@@ -23,9 +23,12 @@ import (
 // itself, and therefore one this helper must wire too.
 func TestTheFullRegistryWiresEveryFamilyTheHostHasTo(t *testing.T) {
 	exempt := map[string]string{
-		// A thin wrapper over RegisterClawBuiltinsWithEnv, which
-		// RegisterClawAll calls: the same tools, no extra names.
-		"RegisterClawBuiltins": "wrapper over RegisterClawBuiltinsWithEnv",
+		// Thin wrappers over the scope variant RegisterClawAll calls: the
+		// same tools, no extra names — the scope only carries the extra
+		// read roots a host attaches after registration (#2650).
+		"RegisterClawBuiltins":             "wrapper over RegisterClawBuiltinsWithScope",
+		"RegisterClawBuiltinsWithEnv":      "wrapper over RegisterClawBuiltinsWithScope",
+		"RegisterClawWorkspaceDiagnostics": "wrapper over RegisterClawWorkspaceDiagnosticsWithScope",
 
 		// Registers ONE tool the caller supplies. There is no fixed name for
 		// a placement table to classify, and the classification of whatever

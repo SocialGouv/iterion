@@ -1465,7 +1465,15 @@ func redactedFarSide(task delegate.Task, s string) string {
 	return task.RedactSecrets(s)
 }
 
-const clawRunnerHomePrefix = "/tmp/iterion-scratch/claw-runner-home-"
+// sandboxScratchContainerDir is where ${PROJECT_SCRATCH_DIR} resolves
+// inside a sandbox — pkg/runtime's sandboxScratchContainerPath, duplicated
+// here because the dependency runs the other way (runtime imports model).
+// engine_resolve pins it unconditionally for a sandboxed run, whether the
+// scratch is host-backed or container-local, so the value the runner
+// registers as a read root (#2650) is the same one the bot's prompts name.
+const sandboxScratchContainerDir = "/tmp/iterion-scratch"
+
+const clawRunnerHomePrefix = sandboxScratchContainerDir + "/claw-runner-home-"
 
 // clawRunnerHome scopes runner-owned state to the run or fan-out branch,
 // never to the shared project scratch or to one node. HomeScope is the
@@ -2034,6 +2042,11 @@ func (b *ClawBackend) runnerIOTask(task delegate.Task) delegate.IOTask {
 	ioTask := delegate.ToIOTask(task)
 	ioTask.SettingsHooks = settingsHooksForWire(task.WorkDir, task.NodeID, task.Iteration, b.logger)
 	ioTask.Retry = b.retry.wire()
+	// The runner's read tools take the container's scratch as a second read
+	// root (#2650): the bot's briefs live under ${PROJECT_SCRATCH_DIR},
+	// outside the workspace bind, and claude_code's Read reaches them —
+	// without the root a sandboxed claw node reads none of them.
+	ioTask.ScratchDir = sandboxScratchContainerDir
 	// executeViaSandboxRunner wraps the runner in the node's session and ends
 	// it: the runner draws none of its own.
 	ioTask.LauncherEndsNodeSession = true

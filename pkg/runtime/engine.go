@@ -160,6 +160,11 @@ type workDirSetter interface{ SetWorkDir(string) }
 
 type repoRootSetter interface{ SetRepoRoot(string) }
 
+// scratchDirSetter receives the run's resolved ${PROJECT_SCRATCH_DIR} so
+// the claw read tools accept it as a read root (#2650). Pushed only after
+// the sandbox decision: the value differs between host and container.
+type scratchDirSetter interface{ SetScratchDir(string) }
+
 type varsSetter interface{ SetVars(map[string]any) }
 
 // Engine executes workflows. It supports sequential execution and

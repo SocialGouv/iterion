@@ -33,11 +33,11 @@ var defaultWorkspaceGrepLimits = workspaceGrepLimits{
 
 var errGrepInputLimit = errors.New("grep input byte limit reached")
 
-func executeWorkspaceGrep(ctx context.Context, input map[string]any, workspace string) (string, error) {
-	return executeWorkspaceGrepWithLimits(ctx, input, workspace, defaultWorkspaceGrepLimits)
+func executeWorkspaceGrep(ctx context.Context, input map[string]any, scope *ReadScope) (string, error) {
+	return executeWorkspaceGrepWithLimits(ctx, input, scope, defaultWorkspaceGrepLimits)
 }
 
-func executeWorkspaceGrepWithLimits(ctx context.Context, input map[string]any, workspace string, limits workspaceGrepLimits) (string, error) {
+func executeWorkspaceGrepWithLimits(ctx context.Context, input map[string]any, scope *ReadScope, limits workspaceGrepLimits) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", fmt.Errorf("grep: %w", err)
 	}
@@ -52,7 +52,7 @@ func executeWorkspaceGrepWithLimits(ctx context.Context, input map[string]any, w
 	if sensitiveWorkspacePath(rawPath) {
 		return "", fmt.Errorf("grep: %q is excluded as a credential or secret file", rawPath)
 	}
-	searchPath, err := resolveWorkspacePath(workspace, rawPath)
+	searchPath, err := resolveReadPath(scope, rawPath)
 	if err != nil {
 		return "", fmt.Errorf("grep: %w", err)
 	}
@@ -118,7 +118,7 @@ func executeWorkspaceGrepWithLimits(ctx context.Context, input map[string]any, w
 			truncated = inputReason
 			return filepath.SkipAll
 		}
-		f, err := openWorkspaceFile(workspace, path)
+		f, err := openReadFile(scope, path)
 		if err != nil {
 			return nil
 		}

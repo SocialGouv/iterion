@@ -38,7 +38,7 @@ func TestWorkspaceReadFile_ContainsPathInsideWorkspace(t *testing.T) {
 		secret,
 		filepath.Join("..", filepath.Base(outside), "id_rsa"),
 	} {
-		out, err := executeWorkspaceReadFile(map[string]any{"path": rawPath}, workspace)
+		out, err := executeWorkspaceReadFile(map[string]any{"path": rawPath}, NewReadScope(workspace))
 		if err == nil {
 			t.Fatalf("read_file(%q) returned %q, want a containment error", rawPath, out)
 		}
@@ -47,7 +47,7 @@ func TestWorkspaceReadFile_ContainsPathInsideWorkspace(t *testing.T) {
 		}
 	}
 
-	out, err := executeWorkspaceReadFile(map[string]any{"path": "inside.txt"}, workspace)
+	out, err := executeWorkspaceReadFile(map[string]any{"path": "inside.txt"}, NewReadScope(workspace))
 	if err != nil {
 		t.Fatalf("read_file on a workspace file: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestWorkspaceReadFile_RefusesCredentialFilesInsideWorkspace(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(workspace, name), []byte("SECRET=1\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		out, err := executeWorkspaceReadFile(map[string]any{"path": name}, workspace)
+		out, err := executeWorkspaceReadFile(map[string]any{"path": name}, NewReadScope(workspace))
 		if err == nil || !strings.Contains(err.Error(), "credential or secret file") {
 			t.Fatalf("read_file(%q) error = %v (out %q), want the credential exclusion", name, err, out)
 		}
@@ -73,7 +73,7 @@ func TestWorkspaceReadFile_RequiresActiveWorkspace(t *testing.T) {
 	// Matches workspace_grep and glob: with no workspace there is no
 	// containment boundary at all, so the tool refuses rather than reading
 	// whatever absolute path the model supplies.
-	if _, err := executeWorkspaceReadFile(map[string]any{"path": "/etc/passwd"}, ""); err == nil ||
+	if _, err := executeWorkspaceReadFile(map[string]any{"path": "/etc/passwd"}, NewReadScope("")); err == nil ||
 		!strings.Contains(err.Error(), "active workspace is required") {
 		t.Fatalf("error = %v, want the missing active-workspace error", err)
 	}
@@ -84,7 +84,7 @@ func TestWorkspaceReadFile_RefusesNonRegularFiles(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(workspace, "sub"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := executeWorkspaceReadFile(map[string]any{"path": "sub"}, workspace); err == nil ||
+	if _, err := executeWorkspaceReadFile(map[string]any{"path": "sub"}, NewReadScope(workspace)); err == nil ||
 		!strings.Contains(err.Error(), "not a regular file") {
 		t.Fatalf("read_file on a directory: error = %v, want the regular-file refusal", err)
 	}
@@ -104,7 +104,7 @@ func TestWorkspaceReadFile_RetainsOnlyOneChunkOfALargeFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := executeWorkspaceReadFile(map[string]any{"path": "big.txt"}, workspace)
+	out, err := executeWorkspaceReadFile(map[string]any{"path": "big.txt"}, NewReadScope(workspace))
 	if err != nil {
 		t.Fatalf("read_file: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestWorkspaceReadFile_RetainsOnlyOneChunkOfALargeFile(t *testing.T) {
 
 	// The continuation contract still holds: start_line from the marker
 	// picks up exactly where the previous chunk stopped.
-	window, count, err := workspaceFileWindow(workspace, filepath.Join(workspace, "big.txt"), total, workspaceReadMaxBytes)
+	window, count, err := workspaceFileWindow(NewReadScope(workspace), filepath.Join(workspace, "big.txt"), total, workspaceReadMaxBytes)
 	if err != nil {
 		t.Fatalf("workspaceFileWindow: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestWorkspaceFileWindow_CountsLinesLikeTheWholeFileRead(t *testing.T) {
 		if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		window, total, err := workspaceFileWindow(dir, path, 1, workspaceReadMaxBytes)
+		window, total, err := workspaceFileWindow(NewReadScope(dir), path, 1, workspaceReadMaxBytes)
 		if err != nil {
 			t.Fatalf("%q: %v", tc.body, err)
 		}
@@ -167,7 +167,7 @@ func TestWorkspaceReadFile_CapsAnOverlongSingleLine(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "one-line.txt"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, err := executeWorkspaceReadFile(map[string]any{"path": "one-line.txt"}, workspace)
+	out, err := executeWorkspaceReadFile(map[string]any{"path": "one-line.txt"}, NewReadScope(workspace))
 	if err != nil {
 		t.Fatalf("read_file: %v", err)
 	}
@@ -199,10 +199,10 @@ func TestWorkspaceReadFileChecksBothSymlinkNamesAndTargets(t *testing.T) {
 		}
 	}
 	for _, path := range []string{"hidden.txt", ".env.alias"} {
-		if out, err := executeWorkspaceReadFile(map[string]any{"path": path}, root); err == nil || out != "" {
+		if out, err := executeWorkspaceReadFile(map[string]any{"path": path}, NewReadScope(root)); err == nil || out != "" {
 			t.Fatalf("%s: %q, %v", path, out, err)
 		}
-		if out, err := executeWorkspaceGrep(t.Context(), map[string]any{"path": path, "pattern": "."}, root); err == nil || out != "" {
+		if out, err := executeWorkspaceGrep(t.Context(), map[string]any{"path": path, "pattern": "."}, NewReadScope(root)); err == nil || out != "" {
 			t.Fatalf("grep %s: %q, %v", path, out, err)
 		}
 	}
@@ -210,7 +210,7 @@ func TestWorkspaceReadFileChecksBothSymlinkNamesAndTargets(t *testing.T) {
 	if err := os.Symlink(root, aliasRoot); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := executeWorkspaceReadFile(map[string]any{"path": "readable.txt"}, aliasRoot); err != nil || out != "public" {
+	if out, err := executeWorkspaceReadFile(map[string]any{"path": "readable.txt"}, NewReadScope(aliasRoot)); err != nil || out != "public" {
 		t.Fatalf("internal symlink: %q, %v", out, err)
 	}
 }
@@ -227,7 +227,7 @@ func TestWorkspaceReadFileRejectsOversizedSparseFile(t *testing.T) {
 	}
 	f.Close()
 	for _, start := range []int{1, 1000000000} {
-		out, err := executeWorkspaceReadFile(map[string]any{"path": "large.txt", "start_line": start}, root)
+		out, err := executeWorkspaceReadFile(map[string]any{"path": "large.txt", "start_line": start}, NewReadScope(root))
 		if err == nil || !strings.Contains(err.Error(), "read ceiling") || out != "" {
 			t.Fatalf("start=%d: %q, %v", start, out, err)
 		}
@@ -269,7 +269,7 @@ func TestWorkspaceReadFile_ExtractsAPdfInsteadOfReturningMangledBytes(t *testing
 	workspace := t.TempDir()
 	writeSimplePDF(t, workspace, "spec.pdf", "BT\n/F1 12 Tf\n(reference spec text for the reader) Tj\nET")
 
-	out, err := executeWorkspaceReadFile(map[string]any{"path": "spec.pdf"}, workspace)
+	out, err := executeWorkspaceReadFile(map[string]any{"path": "spec.pdf"}, NewReadScope(workspace))
 	if err != nil {
 		t.Fatalf("read_file on a workspace pdf: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestWorkspaceReadFile_PdfTextWindowsAndPaginates(t *testing.T) {
 	// so the extraction is three lines.
 	writeSimplePDF(t, workspace, "lines.pdf", "BT\n/F1 12 Tf\n(first line) Tj\n(second line) '\n(third line) '\nET")
 
-	out, err := executeWorkspaceReadFile(map[string]any{"path": "lines.pdf", "start_line": float64(2)}, workspace)
+	out, err := executeWorkspaceReadFile(map[string]any{"path": "lines.pdf", "start_line": float64(2)}, NewReadScope(workspace))
 	if err != nil {
 		t.Fatalf("read_file start_line=2 on a pdf: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestWorkspaceReadFile_PdfTextWindowsAndPaginates(t *testing.T) {
 	}
 
 	// A bounded window IS partial: the marker must name the next line.
-	out, err = executeWorkspaceReadFile(map[string]any{"path": "lines.pdf", "start_line": float64(2), "line_count": float64(1)}, workspace)
+	out, err = executeWorkspaceReadFile(map[string]any{"path": "lines.pdf", "start_line": float64(2), "line_count": float64(1)}, NewReadScope(workspace))
 	if err != nil {
 		t.Fatalf("read_file line_count=1 on a pdf: %v", err)
 	}
@@ -321,7 +321,7 @@ func TestWorkspaceReadFile_MisnamedTextPdfReadsAsText(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "notes.pdf"), []byte("plain notes\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, err := executeWorkspaceReadFile(map[string]any{"path": "notes.pdf"}, workspace)
+	out, err := executeWorkspaceReadFile(map[string]any{"path": "notes.pdf"}, NewReadScope(workspace))
 	if err != nil {
 		t.Fatalf("read_file on a misnamed text file: %v", err)
 	}
@@ -334,7 +334,7 @@ func TestWorkspaceReadFile_TextlessPdfReadsEmpty(t *testing.T) {
 	workspace := t.TempDir()
 	writeSimplePDF(t, workspace, "blank.pdf", "")
 
-	out, err := executeWorkspaceReadFile(map[string]any{"path": "blank.pdf"}, workspace)
+	out, err := executeWorkspaceReadFile(map[string]any{"path": "blank.pdf"}, NewReadScope(workspace))
 	if err != nil {
 		t.Fatalf("read_file on a text-less pdf: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestWorkspaceReadFile_DoesNotBlockOnAPdfNamedFIFO(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := executeWorkspaceReadFile(map[string]any{"path": "report.pdf"}, workspace)
+		_, err := executeWorkspaceReadFile(map[string]any{"path": "report.pdf"}, NewReadScope(workspace))
 		done <- err
 	}()
 	select {
@@ -389,7 +389,7 @@ func TestWorkspaceReadFile_PdfBombIsRefusedNotAllocated(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := executeWorkspaceReadFile(map[string]any{"path": "bomb.pdf"}, workspace)
+	_, err := executeWorkspaceReadFile(map[string]any{"path": "bomb.pdf"}, NewReadScope(workspace))
 	if !errors.Is(err, clawtools.ErrBudgetExceeded) {
 		t.Fatalf("error = %v, want the extraction-budget refusal", err)
 	}

@@ -34,7 +34,7 @@ const agentProbe = `{"description":"summarise","prompt":"Summarise Go interfaces
 // *delegate.ErrCapabilityUnsupported, in-container, on the default path.
 func TestTheInContainerAgentToolReachesARunner(t *testing.T) {
 	reg := tool.NewRegistry()
-	registrar := sandboxLocalToolRegistrar(model.NewRegistry(), model.EventHooks{})
+	registrar := sandboxLocalToolRegistrar("", model.NewRegistry(), model.EventHooks{})
 	if err := registrar(reg, t.TempDir()); err != nil {
 		t.Fatalf("sandboxLocalToolRegistrar: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestTheInContainerAgentToolReachesARunner(t *testing.T) {
 // refuses every call, rather than letting claw's executor report a start.
 func TestAnUnwiredInContainerAgentToolStillRefusesInTheOpen(t *testing.T) {
 	reg := tool.NewRegistry()
-	if err := registerSandboxLocalTools(reg, t.TempDir(), nil); err != nil {
+	if err := registerSandboxLocalTools(reg, t.TempDir(), "", nil); err != nil {
 		t.Fatalf("registerSandboxLocalTools: %v", err)
 	}
 	td, err := reg.Resolve("agent")

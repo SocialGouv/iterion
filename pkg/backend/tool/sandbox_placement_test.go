@@ -35,6 +35,9 @@ func buildFullClawRegistry(t *testing.T) *Registry {
 		IncludeComputerUse:          true,
 		IncludeWorkspaceDiagnostics: true,
 		PlanMode:                    &clawtools.PlanModeState{Active: &planActive, Dir: t.TempDir()},
+		// Not an optional family, but the guard counts every field: the
+		// scope the read tools share, workspace-only here.
+		ReadScope: NewReadScope(""),
 		Privacy: &privacy.Config{
 			StoreDir:     t.TempDir(),
 			Detector:     detector.New(),

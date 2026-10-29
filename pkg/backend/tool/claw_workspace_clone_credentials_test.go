@@ -62,7 +62,7 @@ func TestWorkspaceReadFile_RefusesTheClonesCredentialStore(t *testing.T) {
 			workspace := t.TempDir()
 			token := cloneCredentialFixture(t, workspace, name)
 			rel := ".git/" + name
-			out, err := executeWorkspaceReadFile(map[string]any{"path": rel}, workspace)
+			out, err := executeWorkspaceReadFile(map[string]any{"path": rel}, NewReadScope(workspace))
 			if err == nil || !strings.Contains(err.Error(), "credential or secret file") {
 				t.Errorf("read_file(%q) error = %v, want the credential exclusion", rel, err)
 			}
@@ -80,7 +80,7 @@ func TestWorkspaceReadFile_RefusesTheClonesCredentialStore(t *testing.T) {
 		if err := os.Symlink(filepath.Join(workspace, ".git", gitlib.CredentialStoreFile), filepath.Join(workspace, "notes.txt")); err != nil {
 			t.Fatal(err)
 		}
-		out, err := executeWorkspaceReadFile(map[string]any{"path": "notes.txt"}, workspace)
+		out, err := executeWorkspaceReadFile(map[string]any{"path": "notes.txt"}, NewReadScope(workspace))
 		if err == nil || !strings.Contains(err.Error(), "credential or secret file") {
 			t.Errorf("read_file through a symlink: error = %v, want the credential exclusion", err)
 		}
@@ -95,7 +95,7 @@ func TestWorkspaceGrep_NeverServesTheClonesCredentialStore(t *testing.T) {
 		workspace := t.TempDir()
 		token := cloneCredentialFixture(t, workspace, gitlib.CredentialStoreFile)
 		rel := ".git/" + gitlib.CredentialStoreFile
-		out, err := executeWorkspaceGrep(t.Context(), map[string]any{"pattern": "oauth2", "path": rel}, workspace)
+		out, err := executeWorkspaceGrep(t.Context(), map[string]any{"pattern": "oauth2", "path": rel}, NewReadScope(workspace))
 		if err == nil || !strings.Contains(err.Error(), "excluded as a credential or secret file") {
 			t.Errorf("grep(%q) error = %v, want the credential exclusion", rel, err)
 		}
@@ -112,7 +112,7 @@ func TestWorkspaceGrep_NeverServesTheClonesCredentialStore(t *testing.T) {
 		if err := os.Symlink(filepath.Join(workspace, ".git", gitlib.CredentialStoreFile), filepath.Join(workspace, "notes.txt")); err != nil {
 			t.Fatal(err)
 		}
-		out, err := executeWorkspaceGrep(t.Context(), map[string]any{"pattern": "oauth2", "path": "notes.txt"}, workspace)
+		out, err := executeWorkspaceGrep(t.Context(), map[string]any{"pattern": "oauth2", "path": "notes.txt"}, NewReadScope(workspace))
 		if err == nil || !strings.Contains(err.Error(), "protected credential file") {
 			t.Errorf("grep through a symlink: error = %v, want the protected-credential refusal", err)
 		}
@@ -132,7 +132,7 @@ func TestWorkspaceGrep_NeverServesTheClonesCredentialStore(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(workspace, ".git", "description"), []byte("oauth2 is mentioned here too\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		out, err := executeWorkspaceGrep(t.Context(), map[string]any{"pattern": "oauth2", "path": ".git"}, workspace)
+		out, err := executeWorkspaceGrep(t.Context(), map[string]any{"pattern": "oauth2", "path": ".git"}, NewReadScope(workspace))
 		if err != nil {
 			t.Fatalf("grep(.git): %v", err)
 		}
@@ -158,7 +158,7 @@ func TestWorkspaceGlob_NeverListsTheClonesCredentialStore(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, ".git", "description"), []byte("not a secret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, err := executeWorkspaceGlob(t.Context(), map[string]any{"path": ".git", "pattern": "*"}, workspace)
+	out, err := executeWorkspaceGlob(t.Context(), map[string]any{"path": ".git", "pattern": "*"}, NewReadScope(workspace))
 	if err != nil {
 		t.Fatalf("glob(.git): %v", err)
 	}

@@ -72,8 +72,11 @@ read ceiling (64 MiB): zlib holds ~1000:1, so a compressed bomb — or
 many small streams summing to one — fails the read with an explicit
 `ErrBudgetExceeded` instead of allocating. claude_code reads PDFs
 natively; this is the same capability wired on claw (the parity
-doctrine above). Scratch/attachment paths stay outside `read_file`'s
-workspace containment — reach them through `bash`.
+doctrine above). The run's `${PROJECT_SCRATCH_DIR}` is a READ root of
+claw's `read_file`/`glob`/`grep` beside the workspace (#2650 — a bot's
+agents must read the briefs the run itself wrote there, as claude_code's
+unbounded `Read` does); other attachment paths stay outside the read
+scope — reach them through `bash`.
 
 ### Per-backend capability matrix
 

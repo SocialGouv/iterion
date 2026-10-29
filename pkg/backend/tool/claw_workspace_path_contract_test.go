@@ -152,9 +152,9 @@ func TestWorkspacePathContract_RejectsInvalidPathsAndMissingContext(t *testing.T
 		t.Run(toolName+" missing active workspace", func(t *testing.T) {
 			var err error
 			if toolName == "workspace_grep" {
-				_, err = executeWorkspaceGrep(t.Context(), map[string]any{"pattern": "needle"}, "")
+				_, err = executeWorkspaceGrep(t.Context(), map[string]any{"pattern": "needle"}, NewReadScope(""))
 			} else {
-				_, err = executeWorkspaceGlob(context.Background(), map[string]any{"pattern": "*.txt"}, "")
+				_, err = executeWorkspaceGlob(context.Background(), map[string]any{"pattern": "*.txt"}, NewReadScope(""))
 			}
 			if err == nil || !strings.Contains(err.Error(), "active workspace is required") {
 				t.Fatalf("error = %v, want missing active-workspace error", err)

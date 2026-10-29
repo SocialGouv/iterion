@@ -2043,6 +2043,13 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	// in tool commands and prompt templates see the same map the engine
 	// just built.
 	e.pushExecutorVars(rs.vars)
+	// The scratch read root (#2650) rides the same push: restored runs get
+	// it here, after THIS resume's startSandbox pinned the value — a
+	// banked-and-restored scratch (ADR-106) must stay readable by the
+	// resumed node's agents, which is the other half of the ticket.
+	if s, ok := e.executor.(scratchDirSetter); ok {
+		s.SetScratchDir(e.projectScratchDirVarValue())
+	}
 
 	// This runState came from a RESUME, so its first workspace boundary
 	// closes the window in which the run was stopped. An empty
@@ -2285,6 +2292,13 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run, prepared .
 	rs.resumed = true
 
 	e.pushExecutorVars(rs.vars)
+	// The scratch read root (#2650) rides the same push: restored runs get
+	// it here, after THIS resume's startSandbox pinned the value — a
+	// banked-and-restored scratch (ADR-106) must stay readable by the
+	// resumed node's agents, which is the other half of the ticket.
+	if s, ok := e.executor.(scratchDirSetter); ok {
+		s.SetScratchDir(e.projectScratchDirVarValue())
+	}
 
 	e.restampWorkflowSource(ctx, r)
 	// An answered human gate on the restart node never reaches this

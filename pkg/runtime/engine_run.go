@@ -768,6 +768,15 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	if s, ok := e.executor.(repoRootSetter); ok {
 		s.SetRepoRoot(run.RepoRoot)
 	}
+	// Push the resolved ${PROJECT_SCRATCH_DIR} so claw's read tools accept
+	// the run scratch as a read root (#2650) — a bot whose agents read
+	// their own briefs from there otherwise loses every one of them on
+	// claw while claude_code's unbounded Read reaches them. After
+	// startSandbox, so the pushed value is the CONTAINER path when
+	// sandboxed. Same minimal-interface pattern as SetWorkDir.
+	if s, ok := e.executor.(scratchDirSetter); ok {
+		s.SetScratchDir(e.projectScratchDirVarValue())
+	}
 	// Refresh the orchestrator-facing bot catalog from the live manifests
 	// (display_name / description / when_to_use / triggers / enabled +
 	// the workspace overlay) BEFORE mirroring, so an edited bot or a

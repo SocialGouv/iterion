@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
@@ -29,7 +28,8 @@ const workspaceReadMaxFileBytes = 64 * 1024 * 1024
 
 func workspaceReadFileTool() api.Tool {
 	t := clawtools.ReadFileTool()
-	t.Description = "Read a file inside the active workspace. Credential files and internal run stores are excluded. " +
+	t.Description = "Read a file inside the active workspace or a declared read root (the run's scratch directory is one when the engine resolves it). " +
+		"Credential files and internal run stores are excluded. " +
 		"PDF files (.pdf) are returned as their extracted text (BT/ET content streams); a text-less PDF reads empty. " +
 		"Large files are returned in explicit line chunks; " +
 		"when the result is partial, call it again with the next start_line printed in the marker."
@@ -47,7 +47,8 @@ func workspaceReadFileTool() api.Tool {
 func workspaceGrepTool() api.Tool {
 	t := clawtools.GrepTool()
 	t.Name = "workspace_grep"
-	t.Description = "Search file contents inside the active workspace. Credential files and internal run stores are excluded. " +
+	t.Description = "Search file contents inside the active workspace or a declared read root (the run's scratch directory is one when the engine resolves it). " +
+		"Credential files and internal run stores are excluded. " +
 		"The path is optional; an omitted or empty path searches the active workspace root. " +
 		"Use this to discover source and project artifacts by content, then read the matching files."
 	// The handler has an explicit active-workspace default for the optional
@@ -65,17 +66,18 @@ func diagnosticShellTool() api.Tool {
 	return t
 }
 
-func executeWorkspaceReadFile(input map[string]any, workspace string) (string, error) {
+func executeWorkspaceReadFile(input map[string]any, scope *ReadScope) (string, error) {
 	rawPath, ok := input["path"].(string)
 	if !ok || strings.TrimSpace(rawPath) == "" {
 		return "", fmt.Errorf("read_file: 'path' input is required and must be a string")
 	}
 	// Same boundary as workspace_grep and glob: the path is resolved and
-	// contained inside the active workspace, and a credential file is
-	// refused. Without this an absolute path skipped the join entirely and
-	// only got filepath.Clean, so the model could read ~/.ssh/id_rsa or
+	// contained inside the active read scope (workspace plus its declared
+	// read roots, #2650), and a credential file is refused. Without this
+	// an absolute path skipped the join entirely and only got
+	// filepath.Clean, so the model could read ~/.ssh/id_rsa or
 	// ~/.iterion/secrets.json through the one read tool that had no guard.
-	path, err := resolveWorkspacePath(workspace, rawPath)
+	path, err := resolveReadPath(scope, rawPath)
 	if err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
 	}
@@ -101,20 +103,20 @@ func executeWorkspaceReadFile(input map[string]any, workspace string) (string, e
 	var lines []string
 	var total int
 	if strings.EqualFold(filepath.Ext(path), ".pdf") {
-		pdfLines, pdfTotal, isPDF, pdfErr := workspacePDFWindow(workspace, path, start, workspaceReadMaxBytes, workspaceReadMaxFileBytes)
+		pdfLines, pdfTotal, isPDF, pdfErr := workspacePDFWindow(scope, path, start, workspaceReadMaxBytes, workspaceReadMaxFileBytes)
 		if pdfErr != nil {
 			return "", fmt.Errorf("read_file: %w", pdfErr)
 		}
 		if isPDF {
 			lines, total = pdfLines, pdfTotal
 		} else {
-			lines, total, err = workspaceFileWindow(workspace, path, start, workspaceReadMaxBytes)
+			lines, total, err = workspaceFileWindow(scope, path, start, workspaceReadMaxBytes)
 			if err != nil {
 				return "", fmt.Errorf("read_file: %w", err)
 			}
 		}
 	} else {
-		lines, total, err = workspaceFileWindow(workspace, path, start, workspaceReadMaxBytes)
+		lines, total, err = workspaceFileWindow(scope, path, start, workspaceReadMaxBytes)
 		if err != nil {
 			return "", fmt.Errorf("read_file: %w", err)
 		}
@@ -163,7 +165,7 @@ func executeWorkspaceReadFile(input map[string]any, workspace string) (string, e
 
 // workspacePDFWindow windows a .pdf-suffixed file as its EXTRACTED TEXT,
 // reading the file exactly the way the regular path does — one
-// openWorkspaceFile open (O_NOFOLLOW|O_NONBLOCK: a FIFO substituted for
+// openReadFile open (O_NOFOLLOW|O_NONBLOCK: a FIFO substituted for
 // the .pdf cannot hang the call), one Stat, one bounded read, no re-open
 // for the extraction to race against. isPDF=false (nil err) means "not
 // actually a PDF" — a misnamed text file, or a non-regular file — and
@@ -174,8 +176,8 @@ func executeWorkspaceReadFile(input map[string]any, workspace string) (string, e
 // error, not allocate. Peak in-process memory is bounded at roughly
 // 3x maxFile (the bytes read + one inflated stream + the accumulated
 // text), all under the caller's own ceiling.
-func workspacePDFWindow(workspace, path string, start int, maxBytes, maxFile int64) (lines []string, total int, isPDF bool, err error) {
-	f, err := openWorkspaceFile(workspace, path)
+func workspacePDFWindow(scope *ReadScope, path string, start int, maxBytes, maxFile int64) (lines []string, total int, isPDF bool, err error) {
+	f, err := openReadFile(scope, path)
 	if err != nil {
 		return nil, 0, false, nil
 	}
@@ -255,8 +257,8 @@ func textWindowLines(text string, start, maxBytes int) ([]string, int) {
 // address space on a single model tool call. Retaining one line PAST the
 // cap is deliberate — it is what lets the caller distinguish "byte cap
 // reached" from "that was the whole file".
-func workspaceFileWindow(workspace, path string, start, maxBytes int) ([]string, int, error) {
-	f, err := openWorkspaceFile(workspace, path)
+func workspaceFileWindow(scope *ReadScope, path string, start, maxBytes int) ([]string, int, error) {
+	f, err := openReadFile(scope, path)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -337,82 +339,6 @@ func workspacePathInput(input map[string]any, toolName string) (string, error) {
 		return "", fmt.Errorf("%s: 'path' must be a non-empty string when provided", toolName)
 	}
 	return path, nil
-}
-
-// openWorkspaceFile checks aliases before opening and verifies the opened
-// identity. Internal symlinks remain readable only after canonical policy
-// checks; descriptor traversal refuses any links substituted after resolution.
-func openWorkspaceFile(workspace, raw string) (*os.File, error) {
-	path, err := resolveWorkspacePath(workspace, raw)
-	if err != nil {
-		return nil, err
-	}
-	if sensitiveWorkspacePath(raw) || sensitiveWorkspacePath(path) {
-		return nil, fmt.Errorf("path is a protected credential or secret file")
-	}
-	root, err := filepath.EvalSymlinks(workspace)
-	if err != nil {
-		return nil, err
-	}
-	root, err = filepath.Abs(root)
-	if err != nil {
-		return nil, err
-	}
-	rel, err := filepath.Rel(root, path)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return nil, fmt.Errorf("path is outside workspace")
-	}
-	before, err := os.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !before.Mode().IsRegular() {
-		return nil, fmt.Errorf("%q is not a regular file", filepath.Base(path))
-	}
-	f, err := openWorkspaceFileAt(root, strings.Split(rel, string(filepath.Separator)))
-	if err != nil {
-		return nil, err
-	}
-	after, err := f.Stat()
-	if err != nil || !after.Mode().IsRegular() || !os.SameFile(before, after) {
-		_ = f.Close()
-		if err != nil {
-			return nil, err
-		}
-		return nil, fmt.Errorf("workspace file changed or is not a regular file")
-	}
-	return f, nil
-}
-
-func resolveWorkspacePath(workspace, raw string) (string, error) {
-	if strings.TrimSpace(workspace) == "" {
-		return "", fmt.Errorf("active workspace is required")
-	}
-	path := raw
-	if !filepath.IsAbs(path) && workspace != "" {
-		path = filepath.Join(workspace, path)
-	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-	resolved, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		return "", err
-	}
-	root, err := filepath.EvalSymlinks(workspace)
-	if err != nil {
-		return "", err
-	}
-	root, err = filepath.Abs(root)
-	if err != nil {
-		return "", err
-	}
-	rel, err := filepath.Rel(root, resolved)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path %q is outside workspace", raw)
-	}
-	return resolved, nil
 }
 
 func sensitiveWorkspacePath(path string) bool {

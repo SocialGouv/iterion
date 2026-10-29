@@ -578,6 +578,14 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		return nil, err
 	}
 
+	// The read tools' scope, shared by the registry (clawDefaults below)
+	// and the executor (WithClawReadScope): the engine's SetScratchDir push
+	// — run start and resume, after the sandbox decision — attaches the
+	// run's ${PROJECT_SCRATCH_DIR} as a read root (#2650) to the VERY
+	// registry the agents call; a scope of runview's own would widen reads
+	// nobody makes.
+	readScope := tool.NewReadScope(workspace)
+
 	planActive := false
 	planDir := filepath.Join(spec.StoreDir, "plan-mode")
 	if err := os.MkdirAll(planDir, 0o755); err != nil {
@@ -602,6 +610,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		model.WithAllowedProviders(spec.LLMProviders),
 		model.WithEventHooks(hooks),
 		model.WithToolRegistry(toolReg),
+		model.WithClawReadScope(readScope),
 		model.WithLogger(spec.Logger),
 		model.WithLifecycleHooks(lifecycle),
 		model.WithStoreDir(dispatcherStoreDir),
@@ -691,6 +700,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		Workspace:                   workspace,
 		IncludeWebSearch:            tool.ResolveWebSearchEnabled(),
 		IncludeWorkspaceDiagnostics: workflowUsesWorkspaceDiagnostics(spec.Workflow),
+		ReadScope:                   readScope,
 	}
 	if planDir != "" {
 		clawDefaults.PlanMode = &clawtools.PlanModeState{Active: &planActive, Dir: planDir}

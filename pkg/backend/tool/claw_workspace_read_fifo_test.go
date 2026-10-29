@@ -28,12 +28,12 @@ func TestWorkspaceReadAndGrep_DoNotBlockOnAFIFO(t *testing.T) {
 		call func() (string, error)
 	}{
 		{"read_file", func() (string, error) {
-			return executeWorkspaceReadFile(map[string]any{"path": "pipe"}, workspace)
+			return executeWorkspaceReadFile(map[string]any{"path": "pipe"}, NewReadScope(workspace))
 		}},
 		// grep walks the whole tree, so it reaches the FIFO with no help
 		// from the model at all.
 		{"workspace_grep", func() (string, error) {
-			return executeWorkspaceGrep(t.Context(), map[string]any{"pattern": "needle"}, workspace)
+			return executeWorkspaceGrep(t.Context(), map[string]any{"pattern": "needle"}, NewReadScope(workspace))
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -73,7 +73,7 @@ func TestWorkspaceGrep_DoesNotFollowSymlinksOutOfTheWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := executeWorkspaceGrep(t.Context(), map[string]any{"pattern": "needle"}, workspace)
+	out, err := executeWorkspaceGrep(t.Context(), map[string]any{"pattern": "needle"}, NewReadScope(workspace))
 	if err != nil {
 		t.Fatalf("grep: %v", err)
 	}

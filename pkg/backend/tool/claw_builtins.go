@@ -75,6 +75,17 @@ func RegisterClawBuiltins(reg *Registry, workspace string) error {
 // fixers can validate their patches in-loop. Pass nil for plain
 // inheritance.
 func RegisterClawBuiltinsWithEnv(reg *Registry, workspace string, bashExtraEnv []string) error {
+	return RegisterClawBuiltinsWithScope(reg, NewReadScope(workspace), bashExtraEnv)
+}
+
+// RegisterClawBuiltinsWithScope is RegisterClawBuiltinsWithEnv over a
+// shared ReadScope instead of a bare workspace string. The scope is the
+// host's handle for attaching extra READ-only roots after registration —
+// the engine pushes the run's ${PROJECT_SCRATCH_DIR} once it resolves
+// (#2650), which is after the registry exists. Write tools are not
+// scope-aware: relative paths rebase onto the workspace as before.
+func RegisterClawBuiltinsWithScope(reg *Registry, scope *ReadScope, bashExtraEnv []string) error {
+	workspace, _ := scope.snapshot()
 	bashExec := func(ctx context.Context, input map[string]any) (string, error) {
 		if rewritten, changed := rewrite.RewriteCommandFieldCtx(ctx, input); changed {
 			input = rewritten
@@ -84,16 +95,16 @@ func RegisterClawBuiltinsWithEnv(reg *Registry, workspace string, bashExtraEnv [
 
 	return registerClawSpecs(reg, []clawBuiltinSpec{
 		{tool: workspaceReadFileTool(), exec: func(_ context.Context, input map[string]any) (string, error) {
-			return executeWorkspaceReadFile(input, workspace)
+			return executeWorkspaceReadFile(input, scope)
 		}},
 		{tool: clawtools.WriteFileTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
 			return clawtools.ExecuteWriteFile(ctx, clawWorkspaceFileInput(input, workspace, "path"))
 		}},
 		{tool: workspaceGlobTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
-			return executeWorkspaceGlob(ctx, input, workspace)
+			return executeWorkspaceGlob(ctx, input, scope)
 		}},
 		{tool: clawtools.GrepTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
-			return executeWorkspaceGrep(ctx, input, workspace)
+			return executeWorkspaceGrep(ctx, input, scope)
 		}},
 		{tool: clawtools.FileEditTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
 			return clawtools.ExecuteFileEdit(ctx, clawWorkspaceFileInput(input, workspace, "file_path"))
@@ -126,6 +137,14 @@ func clawWorkspaceFileInput(input map[string]any, workspace, pathKey string) map
 // tool. The workflow still has to declare the aliases in its tools list and
 // permission policy.
 func RegisterClawWorkspaceDiagnostics(reg *Registry, workspace string, bashExtraEnv []string) error {
+	return RegisterClawWorkspaceDiagnosticsWithScope(reg, NewReadScope(workspace), bashExtraEnv)
+}
+
+// RegisterClawWorkspaceDiagnosticsWithScope is RegisterClawWorkspaceDiagnostics
+// over a shared ReadScope, so the workspace_grep alias honours the same extra
+// read roots as the plain read tools (#2650).
+func RegisterClawWorkspaceDiagnosticsWithScope(reg *Registry, scope *ReadScope, bashExtraEnv []string) error {
+	workspace, _ := scope.snapshot()
 	bashExec := func(ctx context.Context, input map[string]any) (string, error) {
 		if rewritten, changed := rewrite.RewriteCommandFieldCtx(ctx, input); changed {
 			input = rewritten
@@ -134,7 +153,7 @@ func RegisterClawWorkspaceDiagnostics(reg *Registry, workspace string, bashExtra
 	}
 	return registerClawSpecs(reg, []clawBuiltinSpec{
 		{tool: workspaceGrepTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
-			return executeWorkspaceGrep(ctx, input, workspace)
+			return executeWorkspaceGrep(ctx, input, scope)
 		}},
 		{tool: diagnosticShellTool(), exec: bashExec},
 	})
@@ -639,6 +658,15 @@ type ClawDefaults struct {
 	// gating.
 	Workspace string
 
+	// ReadScope, when non-nil, is the read tools' (read_file, glob, grep,
+	// workspace_grep) scope — workspace plus the extra read-only roots a
+	// host attaches after registration, the run's ${PROJECT_SCRATCH_DIR}
+	// being the canonical one (#2650). Nil builds a workspace-only scope
+	// from Workspace. A host that passes one here should hand the SAME
+	// instance to whatever attaches roots later (the engine's executor
+	// push), or the reads will not see them.
+	ReadScope *ReadScope
+
 	// Tasks, Workers, Teams, Crons, LSP hold the registries each tool
 	// family needs. Leave nil to have RegisterClawAll allocate a fresh
 	// empty registry.
@@ -747,11 +775,15 @@ func RegisterClawAll(reg *Registry, defaults ClawDefaults) error {
 		defaults.LSP = clawlsp.NewRegistry()
 	}
 
-	if err := RegisterClawBuiltinsWithEnv(reg, defaults.Workspace, defaults.BashExtraEnv); err != nil {
+	readScope := defaults.ReadScope
+	if readScope == nil {
+		readScope = NewReadScope(defaults.Workspace)
+	}
+	if err := RegisterClawBuiltinsWithScope(reg, readScope, defaults.BashExtraEnv); err != nil {
 		return err
 	}
 	if defaults.IncludeWorkspaceDiagnostics {
-		if err := RegisterClawWorkspaceDiagnostics(reg, defaults.Workspace, defaults.BashExtraEnv); err != nil {
+		if err := RegisterClawWorkspaceDiagnosticsWithScope(reg, readScope, defaults.BashExtraEnv); err != nil {
 			return err
 		}
 	}

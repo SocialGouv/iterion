@@ -321,14 +321,21 @@ func relaySessionMirrorGap(d *proxyDispatcher, stderr io.Writer, reason string, 
 //
 // workspace is the runner's cwd (docker exec lands at the bind-mount target).
 //
+// scratchDir is the container's ${PROJECT_SCRATCH_DIR} the launcher crossed
+// on the task envelope: the read tools accept it as a second, read-only
+// root (#2650) so a sandboxed node can read the run's own briefs; empty
+// keeps the workspace-only scope.
+//
 // bashExtraEnv is nil here on purpose: a sandboxed task carries no env
 // additions (delegate.Task.ExtraEnv is host-only, and IOTask has no such
 // field) — bash sees the container's environment, settled at its creation.
-func registerSandboxLocalTools(reg *tool.Registry, workspace string, subagent tool.SubagentRunner) error {
-	if err := tool.RegisterClawBuiltinsWithEnv(reg, workspace, nil); err != nil {
+func registerSandboxLocalTools(reg *tool.Registry, workspace, scratchDir string, subagent tool.SubagentRunner) error {
+	readScope := tool.NewReadScope(workspace)
+	readScope.AddExtraRoot(scratchDir)
+	if err := tool.RegisterClawBuiltinsWithScope(reg, readScope, nil); err != nil {
 		return err
 	}
-	if err := tool.RegisterClawWorkspaceDiagnostics(reg, workspace, nil); err != nil {
+	if err := tool.RegisterClawWorkspaceDiagnosticsWithScope(reg, readScope, nil); err != nil {
 		return err
 	}
 	if err := tool.RegisterClawSimple(reg); err != nil {
@@ -366,16 +373,19 @@ func makeHybridToolDefs(
 	defs []delegate.IOToolDef,
 	d *proxyDispatcher,
 	workspace string,
+	scratchDir string,
 	modelReg *model.Registry,
 	hooks model.EventHooks,
 ) ([]delegate.ToolDef, error) {
-	return buildHybridToolDefs(defs, d, workspace, sandboxLocalToolRegistrar(modelReg, hooks))
+	return buildHybridToolDefs(defs, d, workspace, sandboxLocalToolRegistrar(scratchDir, modelReg, hooks))
 }
 
 // sandboxLocalToolRegistrar closes the in-container registration over what a
 // child conversation needs: the model registry that resolves this container's
 // API clients, and the hooks that relay the child's turns to the launcher so
 // a sandboxed delegation is metered and auditable like an unsandboxed one.
+// scratchDir is the container's ${PROJECT_SCRATCH_DIR}, a read root for the
+// local read tools (#2650).
 //
 // The subagent runner is built per registration, over the very registry it is
 // registered into: a child spawned in here draws from the container's own
@@ -383,9 +393,9 @@ func makeHybridToolDefs(
 // one does (model.ParentLoop, which the in-container Execute fills from the
 // forwarded task). Lifecycle hooks are nil, as they are for this runner's own
 // loop — the launcher owns that layer.
-func sandboxLocalToolRegistrar(modelReg *model.Registry, hooks model.EventHooks) func(*tool.Registry, string) error {
+func sandboxLocalToolRegistrar(scratchDir string, modelReg *model.Registry, hooks model.EventHooks) func(*tool.Registry, string) error {
 	return func(reg *tool.Registry, workspace string) error {
-		return registerSandboxLocalTools(reg, workspace,
+		return registerSandboxLocalTools(reg, workspace, scratchDir,
 			model.NewSubagentRunner(modelReg, reg, hooks, nil, ""))
 	}
 }

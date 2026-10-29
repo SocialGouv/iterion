@@ -70,14 +70,19 @@ type ClawExecutor struct {
 	// body as the same []any, and only the declaration separates the
 	// document from the argv list (see value_shape.go). Read-only after
 	// construction; each node layers its own `input:` schema on top.
-	wfShapes       *Shapes
-	presetPrompt   string   // selected preset's "## Focus" bias, {{vars}}-templated per node
-	presetSkills   []string // selected preset's relevant-skill hint names
-	hooks          EventHooks
-	retry          RetryPolicy
-	logger         *iterlog.Logger
-	workDir        string // working directory for backend subprocesses
-	repoRoot       string // source-of-truth repo path (project-rooted memory uses this)
+	wfShapes     *Shapes
+	presetPrompt string   // selected preset's "## Focus" bias, {{vars}}-templated per node
+	presetSkills []string // selected preset's relevant-skill hint names
+	hooks        EventHooks
+	retry        RetryPolicy
+	logger       *iterlog.Logger
+	workDir      string // working directory for backend subprocesses
+	repoRoot     string // source-of-truth repo path (project-rooted memory uses this)
+	// readScope is the claw read tools' scope, shared with the registry
+	// the host built (runview hands the same instance to both). The
+	// engine's SetScratchDir push attaches the run's ${PROJECT_SCRATCH_DIR}
+	// to it (#2650); nil leaves reads workspace-only.
+	readScope      *tool.ReadScope
 	defaultBackend string // workflow-level default backend (empty = use "claw")
 	// modelOverrides are launch-time per-node/-group backend+model+provider
 	// overrides (studio Launch dropdowns, CLI --model/--backend). They sit at
@@ -493,6 +498,13 @@ func WithEventHooks(h EventHooks) ClawExecutorOption {
 // WithToolRegistry sets the unified tool registry on the executor.
 func WithToolRegistry(tr *tool.Registry) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.toolRegistry = tr }
+}
+
+// WithClawReadScope hands the executor the read scope the host registered
+// the claw read tools against, so the engine's SetScratchDir push widens
+// THOSE tools (#2650). Without it SetScratchDir is a recorded no-op.
+func WithClawReadScope(scope *tool.ReadScope) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.readScope = scope }
 }
 
 // WithMCPManager sets the generic MCP manager used to lazily discover MCP tools.
@@ -1154,6 +1166,24 @@ func (e *ClawExecutor) SetWorkDir(dir string) {
 // specs that require it will fall back to WorkDir's encoded key.
 func (e *ClawExecutor) SetRepoRoot(dir string) {
 	e.repoRoot = dir
+}
+
+// SetScratchDir records the run's resolved ${PROJECT_SCRATCH_DIR} and
+// attaches it to the claw read tools' scope as a READ-ONLY root (#2650).
+// The engine calls it once the sandbox decision pinned the value down —
+// after startSandbox on both the run and the resume paths, since a
+// sandboxed run's scratch is the fixed container path, not the host one.
+// The value is per-WORKSPACE and shared between runs by design
+// (pkg/runtime/scratch_sweep.go); the narrower per-run scratch is its own
+// fix. Empty, or no read scope wired (WithClawReadScope), is a no-op.
+// Only the READ tools take the root; the write tools' contract is
+// untouched. Safe to call before Execute; not safe to call concurrently
+// with an in-flight Execute.
+func (e *ClawExecutor) SetScratchDir(dir string) {
+	if e.readScope == nil {
+		return
+	}
+	e.readScope.AddExtraRoot(dir)
 }
 
 // clawToolHint extracts a short human-readable hint from a tool's

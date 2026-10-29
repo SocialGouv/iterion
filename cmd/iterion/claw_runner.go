@@ -168,7 +168,7 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	// tools, never the launcher's). Both are used once more below.
 	registry := model.NewRegistry()
 	relayHooks := relayEventHooks(dispatcher, stderr)
-	toolDefs, toolErr := makeHybridToolDefs(ioTask.ToolDefs, dispatcher, workspace, registry, relayHooks)
+	toolDefs, toolErr := makeHybridToolDefs(ioTask.ToolDefs, dispatcher, workspace, ioTask.ScratchDir, registry, relayHooks)
 	if toolErr != nil {
 		return emitFatal(dispatcher, stderr, fmt.Errorf("build the in-container tool set: %w", toolErr))
 	}
