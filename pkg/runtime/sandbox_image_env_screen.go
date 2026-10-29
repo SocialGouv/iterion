@@ -42,6 +42,20 @@ type imageEnvScreen struct {
 	// reported are the names of the class the image plants that keep their
 	// value, sorted — an empty one would break the image doing its job.
 	reported []string
+	// operatorSet are the names of the neutralise sub-class the image
+	// plants that the RUN's own reviewed env already sets, sorted: the
+	// workflow's `sandbox.env:`, the launch overlay, or the runtime's own
+	// `exportForfaitConfigDirs`. The driver leaves those alone, so the
+	// container starts with the OPERATOR's value — not the image's, and
+	// not empty.
+	//
+	// Their own disposition, because the other two would both lie about
+	// the container that started: `neutralized` says "set and EMPTY",
+	// which `docker inspect` would contradict, and `reported` says the
+	// IMAGE's value was kept, which is the one thing that did not happen.
+	// The planted value reaches nothing either way — the reviewed channel
+	// wins — so this is an audit fact, not a hole.
+	operatorSet []string
 	// allowed are the names the host knob let through, sorted.
 	allowed []string
 	// unscreened, when non-empty, says WHY nothing was screened: the driver
@@ -66,7 +80,7 @@ type imageEnvScreen struct {
 // anyFinding reports whether the screen has something to tell the operator.
 func (s imageEnvScreen) anyFinding() bool {
 	return len(s.neutralized) > 0 || len(s.reported) > 0 || len(s.allowed) > 0 ||
-		s.unscreened != "" || s.refused != ""
+		len(s.operatorSet) > 0 || s.unscreened != "" || s.refused != ""
 }
 
 // refusal is the typed error a refused neutralisation stops the boot with,
@@ -88,9 +102,10 @@ func (s imageEnvScreen) refusal() error {
 //
 // The two halves of the partition ALWAYS travel, the empty list
 // included: a reader must never have to tell "this disposition caught
-// nothing" from "this event does not carry that disposition". The two
-// conditions — the host knob let a name through, the screen could not
-// run — travel only when they hold, so their presence is the signal.
+// nothing" from "this event does not carry that disposition". The
+// conditional dispositions — the host knob let a name through, the run's
+// own env already set one, the screen could not run, the driver refused —
+// travel only when they hold, so their presence is the signal.
 func (s imageEnvScreen) eventPayload(runID string) map[string]any {
 	payload := map[string]any{
 		"image":       s.image,
@@ -100,6 +115,9 @@ func (s imageEnvScreen) eventPayload(runID string) map[string]any {
 	}
 	if len(s.allowed) > 0 {
 		payload["allowed"] = envNameList(s.allowed)
+	}
+	if len(s.operatorSet) > 0 {
+		payload["operator_set"] = envNameList(s.operatorSet)
 	}
 	if s.unscreened != "" {
 		payload["unscreened"] = s.unscreened
@@ -201,6 +219,10 @@ func emitImageEnvScreen(
 //     loader path would break an image doing its job — iterion's own `full`
 //     variant bakes `PATH`, and its runner image bakes `ITERION_VERSION` —
 //     so the operator is told and the value stays;
+//   - a name of the neutralise sub-class the RUN's own env already sets is
+//     left to the operator's value and reported as such, under its own
+//     disposition: the driver skips it, so the container is not created
+//     with `NAME=` and the audit record must not claim it was;
 //   - a driver that cannot read an image's config is reported as NOT
 //     screened, with the reason. Nothing is inferred from a silence.
 //
@@ -279,7 +301,8 @@ func screenSandboxImageEnv(
 	if len(screen.neutralized) == 0 {
 		return prepared, screen
 	}
-	neutralized, err := screener.NeutralizeImageEnv(prepared, screen.neutralized)
+	decided := screen.neutralized
+	neutralized, emptied, err := screener.NeutralizeImageEnv(prepared, decided)
 	if err != nil {
 		// The neutralisation IS the guard, so this is the closed-by-default
 		// branch: the names it covered move to their own disposition, where
@@ -287,9 +310,28 @@ func screenSandboxImageEnv(
 		// folded into `reported` — nothing is kept, because nothing starts
 		// — and `neutralized` is emptied, because nothing was overridden.
 		screen.refused = err.Error()
-		screen.refusedNames = screen.neutralized
+		screen.refusedNames = decided
 		screen.neutralized = nil
 		return prepared, screen
+	}
+	// `neutralized` is what the driver says it EMPTIED, never what the
+	// screen decided: the container the operator will read `--env NAME=`
+	// into is the driver's, and a name the run's own reviewed env already
+	// sets is started with the OPERATOR's value instead. Reporting that
+	// name as emptied would describe a container state that is not the one
+	// started (`docker inspect` shows the operator's value), and the
+	// warning below would promise an override that never happened.
+	//
+	// Keyed on what the screen ASKED — `decided` is already a sorted set,
+	// so both halves come out sorted — so a name the driver echoes that
+	// was never decided on cannot enter a disposition.
+	screen.neutralized = nil
+	for _, name := range decided {
+		if slices.Contains(emptied, name) {
+			screen.neutralized = append(screen.neutralized, name)
+			continue
+		}
+		screen.operatorSet = append(screen.operatorSet, name)
 	}
 	return neutralized, screen
 }
@@ -337,6 +379,10 @@ func warnImageEnvScreen(logger *iterlog.Logger, screen imageEnvScreen) {
 	if len(screen.reported) > 0 {
 		logger.Warn("sandbox: image %s bakes in %s — kept, because an empty value would break the image: the container's processes read the image's value, not iterion's",
 			image, quotedEnvNames(screen.reported))
+	}
+	if len(screen.operatorSet) > 0 {
+		logger.Warn("sandbox: image %s bakes in %s — the run's own env already sets them, so the container starts with the OPERATOR's value: the image's is never read, and iterion does not override the reviewed channel with an empty one",
+			image, quotedEnvNames(screen.operatorSet))
 	}
 	if len(screen.allowed) > 0 {
 		logger.Warn("sandbox: image %s bakes in %s — let through by %s",

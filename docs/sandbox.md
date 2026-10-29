@@ -746,10 +746,19 @@ as `BASH_ENV` and no entry needs a lower-case twin.
 Every screen that finds something says so **twice**: a warning per
 disposition in the run's log, and one `sandbox_image_env_planted` event
 carrying the whole class — `image`, `neutralized`, `reported`, plus
-`allowed`, `unscreened` and `refused`/`refused_names` when those hold.
-The two name lists always travel, the empty one included, so "this half
-caught nothing" never reads like "this event does not report that half".
-An image that plants nothing of the class emits nothing.
+`allowed`, `operator_set`, `unscreened` and `refused`/`refused_names` when
+those hold. The two name lists always travel, the empty one included, so
+"this half caught nothing" never reads like "this event does not report
+that half". An image that plants nothing of the class emits nothing.
+
+`neutralized` is what the driver **actually** emptied, not what the class
+decided: a name the run's own reviewed env already carries — the
+workflow's `sandbox.env:`, the launch overlay, the forfait config dirs —
+is left at the **operator's** value and travels under `operator_set`
+instead. The planted value reaches nothing either way, because the
+reviewed channel wins; but the container is not created with `NAME=`, and
+an audit record that said otherwise would describe a container
+`docker inspect` contradicts.
 
 **A neutralisation the driver refuses stops the run.** The override IS
 the guard, so the screen is closed by default: when the class decides a
@@ -777,9 +786,17 @@ own environment carries no planted value either. Two layers, because only
 the first is the screen's: a command iterion runs through `docker exec`
 also receives the run's own env layer, and that layer may legitimately
 set one of these names to the OPERATOR's value — the reviewed channel
-winning, which is the point. So the promise is precise: the
-**repository's** value never reaches a process, not that the name is
-empty everywhere.
+winning, which is the point.
+
+So the promise is precise, and it is **about the neutralised sub-class
+only**: for a name of that sub-class the repository's value never reaches
+a process — the name may still be *set*, to the operator's own value, and
+`operator_set` says when. For the **reported** half the image's value
+*does* reach every process in the container, by design: that half is told,
+not emptied. Measured on the same run, in the same container, with a
+reported name the image alone sets (`KUBECONFIG`): `/proc/1/environ` and a
+tool node's own environment both read back the image's exact value, while
+the four planted credentials read empty.
 
 **Not screened, said out loud.** `image inspect` is a local-store read,
 so only a driver that resolves images locally can do it: the **docker**

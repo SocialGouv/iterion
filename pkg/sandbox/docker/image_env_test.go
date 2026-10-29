@@ -110,9 +110,15 @@ func TestNeutralizedImageEnvReachesTheRunArgv(t *testing.T) {
 		runtime: RuntimeDocker,
 	}
 
-	screened, err := d.NeutralizeImageEnv(prepared, []string{"CLAUDE_CODE_USE_BEDROCK", "AWS_SECRET_ACCESS_KEY"})
+	screened, emptied, err := d.NeutralizeImageEnv(prepared, []string{"CLAUDE_CODE_USE_BEDROCK", "AWS_SECRET_ACCESS_KEY"})
 	if err != nil {
 		t.Fatalf("NeutralizeImageEnv: %v", err)
+	}
+	// What it says it emptied is what it emptied: the caller publishes
+	// that list as the run's audit record of a container started with
+	// `--env NAME=`.
+	if want := []string{"CLAUDE_CODE_USE_BEDROCK", "AWS_SECRET_ACCESS_KEY"}; !slices.Equal(emptied, want) {
+		t.Errorf("NeutralizeImageEnv reports it emptied %q, want %q", emptied, want)
 	}
 	sp, ok := screened.(*Prepared)
 	if !ok {
@@ -144,6 +150,12 @@ func TestNeutralizedImageEnvReachesTheRunArgv(t *testing.T) {
 // `sandbox.env:` and the launch overlay are the operator's reviewed channel.
 // The screen reports the collision; it never replaces that value with an
 // empty string.
+//
+// And it says so: the name it skipped is absent from the list it reports
+// as emptied. That list is the one the run's event and log publish as
+// "set and EMPTY", a container state `docker inspect` can contradict —
+// this is the measurement the runtime's doubles copy their skip rule
+// from, so an over-generous answer here is a false audit record there.
 func TestNeutralizeImageEnvLeavesTheOperatorsOwnValueAlone(t *testing.T) {
 	d := &Driver{rt: RuntimeDocker, logger: discardLogger()}
 	prepared := &Prepared{
@@ -151,7 +163,7 @@ func TestNeutralizeImageEnvLeavesTheOperatorsOwnValueAlone(t *testing.T) {
 		runtime: RuntimeDocker,
 	}
 
-	screened, err := d.NeutralizeImageEnv(prepared, []string{"AWS_REGION", "AWS_SECRET_ACCESS_KEY"})
+	screened, emptied, err := d.NeutralizeImageEnv(prepared, []string{"AWS_REGION", "AWS_SECRET_ACCESS_KEY"})
 	if err != nil {
 		t.Fatalf("NeutralizeImageEnv: %v", err)
 	}
@@ -161,6 +173,20 @@ func TestNeutralizeImageEnvLeavesTheOperatorsOwnValueAlone(t *testing.T) {
 	}
 	if v, ok := got["AWS_SECRET_ACCESS_KEY"]; !ok || v != "" {
 		t.Errorf("AWS_SECRET_ACCESS_KEY = %q (present %v), want neutralised", v, ok)
+	}
+	if !slices.Equal(emptied, []string{"AWS_SECRET_ACCESS_KEY"}) {
+		t.Errorf("NeutralizeImageEnv reports it emptied %q, want [AWS_SECRET_ACCESS_KEY] alone: the container starts with the operator's AWS_REGION, so a caller told it was emptied would publish a state docker inspect contradicts", emptied)
+	}
+	// The argv is the producer, and it carries the operator's value and
+	// the empty override — exactly what the two lists say.
+	args, err := envArgs(got)
+	if err != nil {
+		t.Fatalf("envArgs: %v", err)
+	}
+	for _, want := range []string{"AWS_REGION=eu-west-3", "AWS_SECRET_ACCESS_KEY="} {
+		if !slices.Contains(args, want) {
+			t.Errorf("the run argv lacks %q: %q", want, args)
+		}
 	}
 }
 
@@ -172,7 +198,7 @@ func TestNeutralizeImageEnvRefusesAMalformedName(t *testing.T) {
 	d := &Driver{rt: RuntimeDocker, logger: discardLogger()}
 	prepared := &Prepared{spec: sandbox.Spec{Image: "i:1"}, runtime: RuntimeDocker}
 
-	if _, err := d.NeutralizeImageEnv(prepared, []string{"OK_TOKEN\nDOCKER_HOST=tcp://planter"}); err == nil {
+	if _, _, err := d.NeutralizeImageEnv(prepared, []string{"OK_TOKEN\nDOCKER_HOST=tcp://planter"}); err == nil {
 		t.Fatalf("NeutralizeImageEnv accepted a name carrying a newline")
 	}
 }

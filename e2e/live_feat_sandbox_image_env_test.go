@@ -47,6 +47,20 @@ var plantedEnv = []string{
 	"AZURE_OPENAI_API_KEY=e2e-planted-sentinel",
 }
 
+// reportedSentinel is the REPORTED half of the class, baked by the image
+// alone: `KUBECONFIG` is in the deny class and `reportedOnly` (emptying it
+// would send the client to the operator's own default, worse than the
+// planted path), and no code path of iterion sets it on a sandbox — so an
+// exact match on this pair inside the container attributes the value to
+// the IMAGE and to nothing else.
+//
+// It is what makes docs/sandbox.md's scoped promise a measurement rather
+// than a claim: the repository's value never reaching a process is true
+// of the NEUTRALISED sub-class, and this name is the other half, whose
+// value is told and kept. A `PATH` reading cannot say it — PATH is
+// non-empty for a dozen reasons.
+const reportedSentinel = "KUBECONFIG=/tmp/iterion-e2e-reported-sentinel"
+
 // replantScript is the file the fixture's image points BASH_ENV at, and
 // it re-exports every pair of [plantedEnv].
 //
@@ -144,11 +158,13 @@ func TestLive_Feat_Sandbox_Image_Env(t *testing.T) {
 		if eventDataMentions(res.events, "EXEC_PLANTED_"+name) {
 			t.Errorf("a command iterion ran in the container read the image's planted %s", name)
 		}
-	}
-	// Asserted positively at the exec layer too, so a verdict word that
-	// stopped being printed cannot pass as a clean process.
-	if !eventDataMentions(res.events, "EXEC_CLEAN_AZURE_OPENAI_API_KEY") {
-		t.Errorf("the probe never reported on AZURE_OPENAI_API_KEY in its own env: an absent verdict is not a clean one")
+		// Asserted positively at the exec layer too, for EVERY name: a
+		// per-name verdict that stopped being printed would otherwise
+		// pass as a clean process, which is the vacuity class this arm
+		// exists to kill.
+		if !eventDataMentions(res.events, "EXEC_CLEAN_"+name) {
+			t.Errorf("the probe never reported on %s in its own env: an absent verdict is not a clean one", name)
+		}
 	}
 	// The re-plant channel, read at the layer that would have used it: a
 	// `bash -c` whose BASH_ENV is empty sources nothing. The four
@@ -168,6 +184,17 @@ func TestLive_Feat_Sandbox_Image_Env(t *testing.T) {
 			t.Errorf("%s missing — the reported half of the class must never be emptied", kept)
 		}
 	}
+	// And the reported half keeps the IMAGE's exact value, which is the
+	// measurement behind docs/sandbox.md's scoped promise: the
+	// repository's value not reaching a process is true of the
+	// NEUTRALISED sub-class, while this name's planted value reaches
+	// both layers by design. A missing verdict is read as a failure, not
+	// as a pass.
+	for _, kept := range []string{"PID1_REPORTED_KEPT", "EXEC_REPORTED_KEPT"} {
+		if !eventDataMentions(res.events, kept) {
+			t.Errorf("%s missing — docs/sandbox.md tells the operator the reported half of the class KEEPS the image's value, and that half is where unit 2317.1's two critical bypasses lived", kept)
+		}
+	}
 
 	// And the visible half of the same seam: the event an operator reads
 	// in the studio names what was done to each name.
@@ -181,8 +208,10 @@ func TestLive_Feat_Sandbox_Image_Env(t *testing.T) {
 			t.Errorf("the %s event's neutralized list is %v, missing %s", store.EventSandboxImageEnvPlanted, neutralized, want)
 		}
 	}
-	if reported := payloadNames(t, payload, "reported"); !slicesContains(reported, "PATH") {
-		t.Errorf("the %s event's reported list is %v, missing PATH — the kept half must travel too", store.EventSandboxImageEnvPlanted, reported)
+	for _, want := range []string{"PATH", "KUBECONFIG"} {
+		if reported := payloadNames(t, payload, "reported"); !slicesContains(reported, want) {
+			t.Errorf("the %s event's reported list is %v, missing %s — the kept half must travel too, and it is the half an operator judges the image on", store.EventSandboxImageEnvPlanted, reported, want)
+		}
 	}
 	if got := payload["image"]; got != plantedImageTag {
 		t.Errorf("the event names image %v, want %s", got, plantedImageTag)
@@ -242,6 +271,8 @@ func buildPlantedImage(t *testing.T, base string) {
 	}
 	dockerfile += "RUN printf '" + exports.String() + "' > " + replantScript + "\n"
 	dockerfile += "ENV BASH_ENV=" + replantScript + "\n"
+	// The reported half, so one run measures both answers of the class.
+	dockerfile += "ENV " + reportedSentinel + "\n"
 
 	cmd := exec.Command("docker", "build", "--quiet", "-t", plantedImageTag, "-")
 	cmd.Stdin = strings.NewReader(dockerfile)

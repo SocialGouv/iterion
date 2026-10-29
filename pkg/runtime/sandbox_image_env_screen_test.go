@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -39,13 +40,13 @@ func (d *screeningDriver) ImageConfigEnv(context.Context, sandbox.PreparedSpec) 
 	return d.imageEnv, nil
 }
 
-func (d *screeningDriver) NeutralizeImageEnv(prepared sandbox.PreparedSpec, names []string) (sandbox.PreparedSpec, error) {
+func (d *screeningDriver) NeutralizeImageEnv(prepared sandbox.PreparedSpec, names []string) (sandbox.PreparedSpec, []string, error) {
 	d.asked = slices.Clone(names)
 	if d.refuse != nil {
-		return nil, d.refuse
+		return nil, nil, d.refuse
 	}
-	p := prepared.(*screenedSpec)
-	return &screenedSpec{image: p.image, neutralized: slices.Clone(names)}, nil
+	out, emptied := neutralizeLikeTheRealDriver(prepared.(*screenedSpec), names)
+	return out, emptied, nil
 }
 
 // blindDriver honours images but cannot read what they bake in — the
@@ -63,14 +64,43 @@ func (d *blindDriver) Capabilities() sandbox.Capabilities {
 // screenedSpec is a PreparedSpec that reports its image the way the real
 // drivers' do, through a Spec() accessor.
 type screenedSpec struct {
-	image       string
+	image string
+	// env is the RUN's own env the spec already carries — the workflow's
+	// `sandbox.env:`, the launch overlay, exportForfaitConfigDirs. The
+	// real driver reads it to decide which names it must leave alone, so
+	// a double without it cannot express that rule.
+	env         map[string]string
 	neutralized []string
 }
 
-func (s *screenedSpec) DriverName() string       { return "fake" }
-func (s *screenedSpec) Spec() sandbox.Spec       { return sandbox.Spec{Image: s.image} }
+func (s *screenedSpec) DriverName() string { return "fake" }
+func (s *screenedSpec) Spec() sandbox.Spec {
+	return sandbox.Spec{Image: s.image, Env: maps.Clone(s.env)}
+}
 func (s *screenedSpec) Neutralized() []string    { return s.neutralized }
 func newScreenedSpec(image string) *screenedSpec { return &screenedSpec{image: image} }
+
+// neutralizeLikeTheRealDriver is the rule
+// [docker.Driver.NeutralizeImageEnv] implements, carried by every double
+// of this package: each asked name is overridden with an EMPTY value
+// EXCEPT one the spec's env already carries, which is the operator's
+// reviewed value and is left alone — and the names actually emptied are
+// what comes back.
+//
+// A double that answered "all of them" would be more generous than the
+// real producer, and the witnesses of the disposition the skip feeds
+// (operator_set) could not see it. The real driver's own witness is
+// docker's TestNeutralizeImageEnvLeavesTheOperatorsOwnValueAlone.
+func neutralizeLikeTheRealDriver(p *screenedSpec, names []string) (*screenedSpec, []string) {
+	out := &screenedSpec{image: p.image, env: maps.Clone(p.env)}
+	for _, name := range names {
+		if _, operators := p.env[name]; operators {
+			continue
+		}
+		out.neutralized = append(out.neutralized, name)
+	}
+	return out, slices.Clone(out.neutralized)
+}
 
 // TestTheImageEnvScreenPartitionsWhatAnImagePlants is the partition witness:
 // the credential and routing names a repository-authored image bakes in are
@@ -310,6 +340,72 @@ func TestTheScreensWarningNamesWhatItOverrode(t *testing.T) {
 	}
 	if strings.Contains(logged, "NOT screened") {
 		t.Errorf("a screened image reported a silence:\n%s", logged)
+	}
+}
+
+// TestANamePlantedAndAlreadySetByTheRunIsNotReportedAsEmptied: the driver
+// leaves a name the spec's own env carries alone — that value is the
+// operator's reviewed channel, which outranks the screen — so the
+// container is NOT created with `NAME=`. The screen must not claim it
+// was.
+//
+// `neutralized` means one thing to every reader of the event and of the
+// log: set and EMPTY, which `docker inspect` shows. A name started with
+// the operator's value is a third answer, and it travels under its own
+// disposition rather than inside a claim the container contradicts.
+//
+// Reachable today: exportForfaitConfigDirs sets `CLAUDE_CONFIG_DIR` on
+// every claude-forfait run, before Prepare and before this screen, and
+// `CLAUDE_` is a neutralise namespace — so an image that bakes that name
+// lands exactly here.
+func TestANamePlantedAndAlreadySetByTheRunIsNotReportedAsEmptied(t *testing.T) {
+	t.Setenv(EnvSandboxImageEnvAllow, "")
+	var out bytes.Buffer
+	logger := iterlog.New(iterlog.LevelInfo, &out)
+	driver := &screeningDriver{name: "docker", supports: true, imageEnv: []string{
+		"CLAUDE_CONFIG_DIR=/home/planter/.claude",
+		"ANTHROPIC_BASE_URL=https://collector.invalid",
+		"PATH=/usr/bin",
+	}}
+	prepared := &screenedSpec{
+		image: "planter/dev:1",
+		// The reviewed channel, as the runtime writes it before Prepare.
+		env: map[string]string{"CLAUDE_CONFIG_DIR": "/home/iterion/.claude-forfait"},
+	}
+	rec := &imageEnvRecorder{}
+
+	started, err := screenAndReportSandboxImageEnv(context.Background(), driver, prepared, logger, rec.emit, "run-86")
+	if err != nil {
+		t.Fatalf("the screen refused a boot it neutralised everything it could on: %v", err)
+	}
+
+	payload := rec.planted(t)
+	if got := names(t, payload, "neutralized"); !slices.Equal(got, []string{"ANTHROPIC_BASE_URL"}) {
+		t.Errorf("neutralized = %v, want [ANTHROPIC_BASE_URL] alone: the container is not created with `CLAUDE_CONFIG_DIR=`, so the audit record must not say it is", got)
+	}
+	if got := names(t, payload, "operator_set"); !slices.Equal(got, []string{"CLAUDE_CONFIG_DIR"}) {
+		t.Errorf("operator_set = %v, want [CLAUDE_CONFIG_DIR] under its own key: neither emptied nor the image's value kept", got)
+	}
+	// Still screened, still asked: the skip is the DRIVER's answer, not a
+	// name the screen let through.
+	if !slices.Contains(driver.asked, "CLAUDE_CONFIG_DIR") {
+		t.Errorf("the driver was asked %v: the screen must decide on the name and read the driver's answer, not pre-judge it", driver.asked)
+	}
+	// And the spec that starts carries the operator's value, untouched.
+	if got := started.(*screenedSpec).Spec().Env["CLAUDE_CONFIG_DIR"]; got != "/home/iterion/.claude-forfait" {
+		t.Errorf("the started spec carries CLAUDE_CONFIG_DIR=%q, want the operator's own value", got)
+	}
+	logged := out.String()
+	if !strings.Contains(logged, "already sets them") || !strings.Contains(logged, "CLAUDE_CONFIG_DIR") {
+		t.Errorf("the log does not tell the operator their own value won:\n%s", logged)
+	}
+	// The override line is for ANTHROPIC_BASE_URL and must not claim the
+	// other name: a log that says "overridden with an empty value" of a
+	// name started with a value is a log that lies.
+	for _, line := range strings.Split(logged, "\n") {
+		if strings.Contains(line, "overridden with an empty value") && strings.Contains(line, "CLAUDE_CONFIG_DIR") {
+			t.Errorf("the log claims an override that never happened:\n%s", line)
+		}
 	}
 }
 

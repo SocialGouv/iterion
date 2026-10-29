@@ -681,9 +681,13 @@ const (
 	//   - image: the inspected image reference ("" when the driver's
 	//     prepared spec exposes none)
 	//   - neutralized: []string, sorted — the credential and routing
-	//     sub-class, which the container starts with `--env NAME=`:
-	//     set and EMPTY, which every one of those consumers reads as
-	//     absent. Always present, empty list included
+	//     sub-class the driver ACTUALLY overrode, which the container
+	//     starts with `--env NAME=`: set and EMPTY, which every one of
+	//     those consumers reads as absent. The driver reports what it
+	//     emptied and this list is that answer, never the set the screen
+	//     decided on: the two differ for a name the run's own env
+	//     already sets (operator_set below). Always present, empty list
+	//     included
 	//   - reported: []string, sorted — the rest of the class, which
 	//     KEEPS its value because an empty one would break an image
 	//     doing its job (`PATH`, `HOME`, a loader path, `KUBECONFIG`),
@@ -692,6 +696,14 @@ const (
 	//   - allowed: []string, sorted — names the host-side
 	//     ITERION_SANDBOX_IMAGE_ENV_ALLOW let through untouched;
 	//     absent when the knob named none
+	//   - operator_set: []string, sorted — names of the neutralise
+	//     sub-class the RUN's own reviewed env already sets (the
+	//     workflow's `sandbox.env:`, the launch overlay, the forfait
+	//     config dirs). The container starts with the OPERATOR's value:
+	//     the image's is never read, and iterion does not override the
+	//     reviewed channel with an empty string — so they are neither
+	//     `neutralized` (set and EMPTY) nor `reported` (the image's
+	//     value kept). Absent when none collided
 	//   - unscreened: string — why nothing was screened: a driver that
 	//     cannot read an image's config (kubernetes, whose images the
 	//     kubelet pulls) or a failed read. The run PROCEEDS under that

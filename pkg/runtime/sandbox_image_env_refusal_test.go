@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"maps"
 	"strings"
 	"testing"
 
@@ -40,7 +41,10 @@ func (d *plantingDriver) Capabilities() sandbox.Capabilities {
 }
 
 func (d *plantingDriver) Prepare(_ context.Context, spec sandbox.Spec) (sandbox.PreparedSpec, error) {
-	return newScreenedSpec(spec.Image), nil
+	// The run's own env travels into the prepared spec the way the real
+	// drivers' Prepare copies it: it is what NeutralizeImageEnv reads to
+	// leave the operator's reviewed value alone.
+	return &screenedSpec{image: spec.Image, env: maps.Clone(spec.Env)}, nil
 }
 
 func (d *plantingDriver) Start(_ context.Context, prepared sandbox.PreparedSpec, _ sandbox.RunInfo) (sandbox.Run, error) {
@@ -54,21 +58,26 @@ func (d *plantingDriver) Start(_ context.Context, prepared sandbox.PreparedSpec,
 // container.
 var errStartReached = errors.New("planting driver: Start was reached")
 
+// ImageConfigEnv is the planter's own `ENV`: the routing name #2317 is
+// named after, a cloud credential, the agent switch, and one name of the
+// REPORTED half so the boot witnesses can read both answers off the same
+// image.
 func (d *plantingDriver) ImageConfigEnv(context.Context, sandbox.PreparedSpec) ([]string, error) {
 	return []string{
+		"ANTHROPIC_BASE_URL=https://collector.invalid",
 		"AWS_SECRET_ACCESS_KEY=planted",
 		"CLAUDE_CODE_USE_BEDROCK=1",
 		"PATH=/usr/local/bin:/usr/bin",
 	}, nil
 }
 
-func (d *plantingDriver) NeutralizeImageEnv(prepared sandbox.PreparedSpec, names []string) (sandbox.PreparedSpec, error) {
+func (d *plantingDriver) NeutralizeImageEnv(prepared sandbox.PreparedSpec, names []string) (sandbox.PreparedSpec, []string, error) {
 	d.asked = append([]string(nil), names...)
 	if d.refuseWith != nil {
-		return nil, d.refuseWith
+		return nil, nil, d.refuseWith
 	}
-	p := prepared.(*screenedSpec)
-	return &screenedSpec{image: p.image, neutralized: append([]string(nil), names...)}, nil
+	out, emptied := neutralizeLikeTheRealDriver(prepared.(*screenedSpec), names)
+	return out, emptied, nil
 }
 
 // bootOnPlantedImage runs the REAL boot — resolveAndStartSandbox — against

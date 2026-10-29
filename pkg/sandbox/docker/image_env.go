@@ -48,22 +48,28 @@ func (d *Driver) ImageConfigEnv(ctx context.Context, prepared sandbox.PreparedSp
 // NeutralizeImageEnv implements [sandbox.ImageEnvScreener]: a copy of the
 // prepared spec whose env carries each name with an EMPTY value, so Start's
 // argv puts `--env NAME=` after the image's own `ENV` and the planted value
-// never reaches a process in the container.
+// never reaches a process in the container — and the names it actually
+// emptied.
 //
-// A name the spec's env already carries is left as it is: that value is the
-// operator's — the workflow's `sandbox.env:`, the launch overlay — and the
-// screen never overrides the reviewed channel with an empty string.
-func (d *Driver) NeutralizeImageEnv(prepared sandbox.PreparedSpec, names []string) (sandbox.PreparedSpec, error) {
+// A name the spec's env already carries is left as it is, and is NOT among
+// them: that value is the operator's — the workflow's `sandbox.env:`, the
+// launch overlay — and the screen never overrides the reviewed channel with
+// an empty string. The planted value still never reaches a process, because
+// the operator's wins; but the container is not created with `NAME=`, so a
+// caller that reported it as emptied would publish a container state that is
+// not the one started.
+func (d *Driver) NeutralizeImageEnv(prepared sandbox.PreparedSpec, names []string) (sandbox.PreparedSpec, []string, error) {
 	p, ok := prepared.(*Prepared)
 	if !ok {
-		return nil, fmt.Errorf("docker driver: neutralize image env: prepared spec is %T, not this driver's", prepared)
+		return nil, nil, fmt.Errorf("docker driver: neutralize image env: prepared spec is %T, not this driver's", prepared)
 	}
 	if len(names) == 0 {
-		return prepared, nil
+		return prepared, nil, nil
 	}
 	cp := *p
 	cp.spec.Env = make(map[string]string, len(p.spec.Env)+len(names))
 	maps.Copy(cp.spec.Env, p.spec.Env)
+	emptied := make([]string, 0, len(names))
 	for _, name := range names {
 		if _, operators := cp.spec.Env[name]; operators {
 			continue
@@ -72,9 +78,10 @@ func (d *Driver) NeutralizeImageEnv(prepared sandbox.PreparedSpec, names []strin
 		// a malformed name from an image's ENV is refused at the screen
 		// rather than killing the run three steps later with an argv error.
 		if err := validateEnvVar(name, ""); err != nil {
-			return nil, fmt.Errorf("docker driver: neutralize image env %s: %w", name, err)
+			return nil, nil, fmt.Errorf("docker driver: neutralize image env %s: %w", name, err)
 		}
 		cp.spec.Env[name] = ""
+		emptied = append(emptied, name)
 	}
-	return &cp, nil
+	return &cp, emptied, nil
 }

@@ -34,14 +34,23 @@ func (r *imageEnvRecorder) emit(typ store.EventType, data map[string]any) error 
 // both defects this helper must not hide.
 func (r *imageEnvRecorder) planted(t *testing.T) map[string]any {
 	t.Helper()
+	return plantedPayload(t, r.events)
+}
+
+// plantedPayload is the same reading over events a BOOT recorded, which
+// the boot witnesses hold alongside the spec that reached Start.
+func plantedPayload(t *testing.T, events []recordedEvent) map[string]any {
+	t.Helper()
 	var found []map[string]any
-	for _, ev := range r.events {
+	var types []store.EventType
+	for _, ev := range events {
+		types = append(types, ev.typ)
 		if ev.typ == store.EventSandboxImageEnvPlanted {
 			found = append(found, ev.data)
 		}
 	}
 	if len(found) != 1 {
-		t.Fatalf("want exactly one %s event, got %d (events: %v)", store.EventSandboxImageEnvPlanted, len(found), r.types())
+		t.Fatalf("want exactly one %s event, got %d (events: %v)", store.EventSandboxImageEnvPlanted, len(found), types)
 	}
 	return found[0]
 }

@@ -377,13 +377,25 @@ type ImageEnvScreener interface {
 
 	// NeutralizeImageEnv returns a [PreparedSpec] whose sandbox starts with
 	// each named variable overridden by an EMPTY value, consumed by
-	// [Driver.Start] in place of the original. Names already carried by the
-	// spec's own env — the workflow's `sandbox.env:`, the operator's
-	// overlay — are left alone: the operator's reviewed channel outranks
-	// the screen.
+	// [Driver.Start] in place of the original, AND the names it actually
+	// overrode.
+	//
+	// Names already carried by the spec's own env — the workflow's
+	// `sandbox.env:`, the operator's overlay — are left alone, and are
+	// absent from that list: the operator's reviewed channel outranks the
+	// screen, so the container starts with the operator's value rather
+	// than an empty one. The implementation is the only party that knows
+	// which names it skipped, so the fact travels back with the result
+	// instead of being reconstructed by the caller — which would be a
+	// second copy of this rule, and the audit record the caller publishes
+	// says "set and EMPTY" of every name it lists.
+	//
+	// The returned names are a subset of `names`, in any order; the caller
+	// keys its partition on what it ASKED, so a name it never asked about
+	// cannot enter a disposition.
 	//
 	// Implementations must not mutate the PreparedSpec they are handed.
-	NeutralizeImageEnv(prepared PreparedSpec, names []string) (PreparedSpec, error)
+	NeutralizeImageEnv(prepared PreparedSpec, names []string) (PreparedSpec, []string, error)
 }
 
 // SchedulingPolicyReporter is implemented by drivers that stamp a
