@@ -3,28 +3,18 @@
 package server
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 
-	"golang.org/x/sys/unix"
+	"github.com/SocialGouv/iterion/pkg/authoringlock"
 )
 
+// openDependencyDirectory opens a rename parent pinned to the directory the
+// caller stat'd. The authoring lock's control directory is opened with the
+// same guarantee, through the same code: one implementation of a pinned
+// open, so a fix to it is a fix for both.
 func openDependencyDirectory(path string, expected os.FileInfo) (*os.File, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return nil, err
-	}
-	file := os.NewFile(uintptr(fd), path)
-	info, err := file.Stat()
-	if err != nil || expected == nil || !os.SameFile(expected, info) || info.Mode() != expected.Mode() {
-		_ = file.Close()
-		if err != nil {
-			return nil, err
-		}
-		return nil, errors.New("dependency rename parent changed")
-	}
-	return file, nil
+	return authoringlock.OpenDirectory(path, expected)
 }
 
 func renameDependencyNoReplace(from, to string, fromInfo, toInfo os.FileInfo) error {
