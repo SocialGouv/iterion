@@ -272,6 +272,61 @@ func TestUnknownProviderGetsItsOwnReason(t *testing.T) {
 	}
 }
 
+// The local gateway row (#2646): an `openai_compatible/<id>` spec reads the
+// detect provider row of the same name — usable through claw when the host
+// serves a gateway, never through pi (which resolves none of the
+// OPENAI_COMPATIBLE_* variables), and a named credential gap rather than
+// "no credential probe" when the host serves none.
+func TestGatewaySpecReadsTheLocalGatewayRow(t *testing.T) {
+	gatewayHost := func(gatewayAvailable bool) *detect.Report {
+		return hostReport(
+			[]detect.ProviderStatus{
+				{Name: "openai_compatible", Available: gatewayAvailable, Source: "OPENAI_COMPATIBLE_BASE_URL"},
+			},
+			[]detect.BackendStatus{
+				{Name: detect.BackendClaw, Available: true},
+				{Name: detect.BackendPi, Available: true},
+			},
+		)
+	}
+	find := func(t *testing.T, cat Catalog) Entry {
+		t.Helper()
+		e, ok := cat.Find("openai_compatible/team/m")
+		if !ok {
+			t.Fatalf("missing entry, got %v", cat.SortedSpecs())
+		}
+		return e
+	}
+
+	t.Run("usable through claw, never pi", func(t *testing.T) {
+		cat := build(t, Options{Specs: []string{"openai_compatible/team/m"}, Report: gatewayHost(true)})
+		e := find(t, cat)
+		if !e.Usable {
+			t.Fatalf("gateway spec unusable on a gateway host: %q", e.UnusableReason)
+		}
+		if len(e.Backends) != 1 || e.Backends[0] != detect.BackendClaw {
+			t.Errorf("Backends = %v, want [claw] — pi cannot read the gateway's variables", e.Backends)
+		}
+		if e.CredentialSource != "OPENAI_COMPATIBLE_BASE_URL" {
+			t.Errorf("CredentialSource = %q, want OPENAI_COMPATIBLE_BASE_URL", e.CredentialSource)
+		}
+	})
+
+	t.Run("a named gap when the host serves no gateway", func(t *testing.T) {
+		cat := build(t, Options{Specs: []string{"openai_compatible/team/m"}, Report: gatewayHost(false)})
+		e := find(t, cat)
+		if e.Usable {
+			t.Error("gateway spec usable with the gateway row unavailable")
+		}
+		if strings.Contains(e.UnusableReason, "no credential probe") {
+			t.Errorf("UnusableReason = %q — the gateway has a probe now; the reason must name the missing credential", e.UnusableReason)
+		}
+		if want := `no credential detected for provider "openai_compatible"`; e.UnusableReason != want {
+			t.Errorf("UnusableReason = %q, want %q", e.UnusableReason, want)
+		}
+	})
+}
+
 // Specs REPLACES (the `iterion models <spec>` case) and ExtraSpecs ADDS (the
 // picker case). Conflating the two narrows a picker to the models already in
 // use — the one list from which no new choice can be made.

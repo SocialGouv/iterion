@@ -348,10 +348,19 @@ func availability(report detect.Report, specProvider, modelID, credProvider stri
 			if claudeCodeFits {
 				backends = append(backends, name)
 			}
-		case detect.BackendClaw, detect.BackendPi:
-			// Both resolve a provider credential from the environment, so
-			// they can drive whatever the detected provider unlocks.
+		case detect.BackendClaw:
+			// claw resolves a provider credential from the environment, so
+			// it can drive whatever the detected provider unlocks.
 			if prov.Available {
+				backends = append(backends, name)
+			}
+		case detect.BackendPi:
+			// pi resolves from the environment too, but only the providers
+			// it can actually read — the gateway row's OPENAI_COMPATIBLE_*
+			// variables are not among them, so pairing it would offer a
+			// model on a credential pi cannot spend (detect's own probe
+			// excludes the same set when it reports pi available).
+			if prov.Available && detect.PiReadsProvider(credProvider) {
 				backends = append(backends, name)
 			}
 		case detect.BackendOpenCode:

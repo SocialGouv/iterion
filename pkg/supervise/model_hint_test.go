@@ -168,6 +168,23 @@ func TestResolveModelWithHintPrecedence(t *testing.T) {
 	}
 }
 
+// The local gateway row (#2646) carries no suggested model — a gateway's
+// model id is the deployment's own naming — so a host whose ONLY detected
+// credential is the gateway must still resolve no supervisor model rather
+// than invent one.
+func TestResolveModelWithGatewayRowSuggestsNothing(t *testing.T) {
+	providers := []detect.ProviderStatus{
+		{Name: "openai_compatible", Available: true, Source: "OPENAI_COMPATIBLE_BASE_URL"},
+	}
+	noCtx := func(string) bool { return false }
+	if _, err := resolveModelWith("", "", providers, noCtx); !errors.Is(err, ErrNoSupervisorModel) {
+		t.Errorf("gateway-only host: err = %v, want ErrNoSupervisorModel", err)
+	}
+	if got, err := resolveModelWith("", "openai_compatible", providers, noCtx); err == nil || got != "" {
+		t.Errorf("a gateway hint with no suggested model must not resolve, got (%q, %v)", got, err)
+	}
+}
+
 // The pod scenario the hint exists for: the run's credentials live in ctx
 // (sealed bundle / OAuth-forfait files), NOT in the process env — so the
 // detector reports the hinted provider unavailable while the claw

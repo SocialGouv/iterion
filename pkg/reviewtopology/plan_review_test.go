@@ -75,6 +75,20 @@ func TestFamiliesFromReportCountsOnlyParticipatingCredentials(t *testing.T) {
 	}
 }
 
+// The local gateway row (#2646) participates in NO review family: a gateway
+// may serve anything, so its presence must not read as a second family and
+// turn a mono resolution dual.
+func TestFamiliesFromReportIgnoresTheGatewayRow(t *testing.T) {
+	rep := detect.Report{
+		Providers: []detect.ProviderStatus{
+			{Name: "openai_compatible", Available: true, Source: "OPENAI_COMPATIBLE_BASE_URL"},
+		},
+	}
+	if got := FamiliesFromReport(rep); len(got) != 0 {
+		t.Errorf("FamiliesFromReport(gateway only) = %v, want empty — the gateway backs no review family", got)
+	}
+}
+
 func TestInjectPlanReviewIfDeclared(t *testing.T) {
 	// Not declared → untouched.
 	inputs := map[string]any{}

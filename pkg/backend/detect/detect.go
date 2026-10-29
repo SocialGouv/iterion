@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
+	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/internal/clilocate"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -318,7 +320,7 @@ func detectPi(prov []ProviderStatus) BackendStatus {
 		st.Auth = kind
 	}
 	for _, p := range prov {
-		if !p.Available || !piReadsProvider(p.Name) || !piEnvVarSource(p.Source) {
+		if !p.Available || !PiReadsProvider(p.Name) || !piEnvVarSource(p.Source) {
 			continue
 		}
 		sources = append(sources, p.Source)
@@ -372,18 +374,25 @@ func piEnvVarSource(source string) bool {
 	return strings.TrimSpace(os.Getenv(source)) != ""
 }
 
-// piReadsProvider reports whether an available provider is one pi can actually
+// PiReadsProvider reports whether an available provider is one pi can actually
 // resolve a credential for.
 //
 // bedrock and vertex are marked available on `AWS_REGION` / `GOOGLE_CLOUD_PROJECT`
 // alone — variables an AWS host or CI runner sets by default — and pi reads
 // neither AWS nor GCP application-default credentials; they are absent from the
-// env-key set the pi backend forwards. Counting them would report pi available
-// on a host where every call fails, and because auto-selection filters on this
-// report, `ITERION_BACKEND_PREFERENCE=pi` would then resolve there.
-func piReadsProvider(name string) bool {
+// env-key set the pi backend forwards. The gateway row is out too: pi resolves
+// none of the OPENAI_COMPATIBLE_* variables, so counting it would report pi
+// available on the deployment's gateway with no credential it can spend.
+// Counting any of these would report pi available on a host where every call
+// fails, and because auto-selection filters on this report,
+// `ITERION_BACKEND_PREFERENCE=pi` would then resolve there.
+//
+// Exported for the model catalogue, which must ask the same question before
+// pairing a model with the pi backend (OpenCodeReadsSource is the opencode
+// twin of this seam).
+func PiReadsProvider(name string) bool {
 	switch name {
-	case "bedrock", "vertex":
+	case "bedrock", "vertex", modelroute.OpenAICompatible:
 		return false
 	default:
 		return true
@@ -447,7 +456,7 @@ func piOwnLoginKind() string {
 // mode alone was weaker than the consumer's gate, so a partially-written or
 // logged-out Codex state made detect report pi available while the bridge
 // stepped aside, and the node then died with "No API key found for
-// openai-codex". That is the same false-positive class piReadsProvider argues
+// openai-codex". That is the same false-positive class PiReadsProvider argues
 // against just above; a probe must not be more optimistic than what will
 // actually use the credential.
 //
@@ -720,8 +729,34 @@ func detectProviders() []ProviderStatus {
 			Source:         envSource("GOOGLE_CLOUD_PROJECT"),
 			SuggestedModel: "",
 		},
+		detectGatewayProvider(),
 	}
 	return out
+}
+
+// detectGatewayProvider reports the LOCAL OpenAI-compatible gateway row
+// (#2646 — the cloud presence row is #2005's, claw-only and never pi): the
+// host serves `openai_compatible/<id>` when the operator's environment names
+// one (compatgw.FromEnv: the base URL is the presence signal, the key is
+// optional — a gateway may sit behind network auth alone). It is a provider
+// row, not a backend: claw is the backend that drives it.
+//
+// No SuggestedModel: the model id is the deployment's own naming, so nothing
+// here can guess one — and an empty suggestion is what keeps the row out of
+// every "pick a default model" consumer (detect.SuggestedModel,
+// supervise.resolveModelWith) and out of reviewtopology's family set
+// (familyOf maps only the vendor names). pi is excluded through
+// PiReadsProvider: it reads none of these variables, so counting the row
+// there would report pi available on a credential it cannot spend.
+func detectGatewayProvider() ProviderStatus {
+	st := ProviderStatus{
+		Name:   modelroute.OpenAICompatible,
+		Source: envSource(compatgw.APIKeyEnv, compatgw.BaseURLEnv),
+	}
+	if _, err := compatgw.FromEnv(os.Getenv); err == nil {
+		st.Available = true
+	}
+	return st
 }
 
 // detectOpenAIProvider reports the OpenAI provider availability across both
