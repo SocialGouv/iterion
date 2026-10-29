@@ -15,7 +15,7 @@ import (
 // the way the runtime does, because the whole shape rests on one claim: the
 // verdict is the condition's exit code, not something a model can be talked
 // into. Three conditions, three verdicts, and the one that matters most is
-// the EMPTY one — `bash -c ''` exits 0, so a shape that passed it through
+// the EMPTY one — `bash -c ”` exits 0, so a shape that passed it through
 // would report a reached goal nobody checked, on the first pass, forever.
 func TestGoalLoopCheckIsTheVerdict(t *testing.T) {
 	if runtime.GOOS == "windows" {
