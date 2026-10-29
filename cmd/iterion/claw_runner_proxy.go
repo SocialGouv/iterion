@@ -329,7 +329,11 @@ func relaySessionMirrorGap(d *proxyDispatcher, stderr io.Writer, reason string, 
 // bashExtraEnv is nil here on purpose: a sandboxed task carries no env
 // additions (delegate.Task.ExtraEnv is host-only, and IOTask has no such
 // field) — bash sees the container's environment, settled at its creation.
-func registerSandboxLocalTools(reg *tool.Registry, workspace, scratchDir string, subagent tool.SubagentRunner) error {
+//
+// commandMaxBytes is the launcher's resolved ceiling for `command`
+// (delegate.IOTask.SlashCommandMaxBytes): 0 — a launcher that predates the
+// field — leaves the built-in default, as it did.
+func registerSandboxLocalTools(reg *tool.Registry, workspace, scratchDir string, subagent tool.SubagentRunner, commandMaxBytes int) error {
 	readScope := tool.NewReadScope(workspace)
 	readScope.AddExtraRoot(scratchDir)
 	if err := tool.RegisterClawBuiltinsWithScope(reg, readScope, nil); err != nil {
@@ -345,11 +349,12 @@ func registerSandboxLocalTools(reg *tool.Registry, workspace, scratchDir string,
 		return err
 	}
 	// The `command` tool reads the CONTAINER's workspace through the same
-	// contained lookup; the ceiling is the built-in default here — the
-	// operator's override (ITERION_CLAW_SLASH_COMMAND_MAX_BYTES) is a
-	// host-side read that does not cross, and the kill switch's answer
-	// arrives as the tool's absence from the advertised set.
-	if err := tool.RegisterClawCommand(reg, workspace, tool.DefaultWorkspaceCommandMaxBytes); err != nil {
+	// contained lookup, under the ceiling the LAUNCHER resolved: this
+	// process reads no dial of its own (the container's environment carries
+	// none, and the sandbox env-classification guard holds that line), and
+	// the kill switch's answer arrives as the tool's absence from the
+	// advertised set.
+	if err := tool.RegisterClawCommand(reg, workspace, commandMaxBytes); err != nil {
 		return err
 	}
 	// The subagent runner spawns its child conversation against THIS
@@ -384,8 +389,9 @@ func makeHybridToolDefs(
 	scratchDir string,
 	modelReg *model.Registry,
 	hooks model.EventHooks,
+	commandMaxBytes int,
 ) ([]delegate.ToolDef, error) {
-	return buildHybridToolDefs(defs, d, workspace, sandboxLocalToolRegistrar(scratchDir, modelReg, hooks))
+	return buildHybridToolDefs(defs, d, workspace, sandboxLocalToolRegistrar(scratchDir, modelReg, hooks, commandMaxBytes))
 }
 
 // sandboxLocalToolRegistrar closes the in-container registration over what a
@@ -394,6 +400,8 @@ func makeHybridToolDefs(
 // a sandboxed delegation is metered and auditable like an unsandboxed one.
 // scratchDir is the container's ${PROJECT_SCRATCH_DIR}, a read root for the
 // local read tools (#2650).
+// commandMaxBytes is the launcher's own answer for the `command` tool's
+// ceiling, carried by the task (delegate.IOTask.SlashCommandMaxBytes).
 //
 // The subagent runner is built per registration, over the very registry it is
 // registered into: a child spawned in here draws from the container's own
@@ -401,10 +409,10 @@ func makeHybridToolDefs(
 // one does (model.ParentLoop, which the in-container Execute fills from the
 // forwarded task). Lifecycle hooks are nil, as they are for this runner's own
 // loop — the launcher owns that layer.
-func sandboxLocalToolRegistrar(scratchDir string, modelReg *model.Registry, hooks model.EventHooks) func(*tool.Registry, string) error {
+func sandboxLocalToolRegistrar(scratchDir string, modelReg *model.Registry, hooks model.EventHooks, commandMaxBytes int) func(*tool.Registry, string) error {
 	return func(reg *tool.Registry, workspace string) error {
 		return registerSandboxLocalTools(reg, workspace, scratchDir,
-			model.NewSubagentRunner(modelReg, reg, hooks, nil, ""))
+			model.NewSubagentRunner(modelReg, reg, hooks, nil, ""), commandMaxBytes)
 	}
 }
 

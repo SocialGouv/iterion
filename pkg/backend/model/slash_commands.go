@@ -237,9 +237,31 @@ func slashCommandMaxBytes() int {
 // builds the tool registry (runview → tool.ClawDefaults.CommandMaxBytes):
 // the `command` tool's exec reads no environment — the runner's would not
 // carry the dial — so the value crosses as a registration parameter. The
-// dial's documented "0" (no ceiling) arrives as 0 here; the host maps it
-// to the registration's unbounded spelling (a negative value).
+// dial's documented "0" (no ceiling) arrives as 0 here;
+// SlashCommandMaxBytesForRegistry maps it to the registration's spelling.
 func SlashCommandMaxBytes() int { return slashCommandMaxBytes() }
+
+// SlashCommandMaxBytesForRegistry is that answer in the REGISTRATION's
+// vocabulary (tool.RegisterClawCommand's maxBytes, which reads 0 as "the
+// built-in default" and a negative value as unbounded): the dial's
+// documented "0" — no ceiling — becomes -1, so an operator who REMOVES the
+// bound is obeyed rather than silently given 256 KiB back.
+//
+// The one mapping, read by both registrations the capability has: the
+// host's registry (runview.BuildExecutor) and, across the sandbox envelope,
+// the in-container one (delegate.IOTask.SlashCommandMaxBytes →
+// cmd/iterion's registerSandboxLocalTools). `command` is PlacementSandbox,
+// so in a sandboxed run the SECOND is the registration that executes: a
+// dial read only on the host would leave every sandboxed run on the
+// built-in default, which is philosophy #1's "never silently replace an
+// operator's explicit choice" — and the tightening direction is the one a
+// review run needs.
+func SlashCommandMaxBytesForRegistry() int {
+	if max := slashCommandMaxBytes(); max > 0 {
+		return max
+	}
+	return -1
+}
 
 // slashWarnOnce keeps the `$N` divergence notice to one line per command
 // file per run — noise suppression only. The frontmatter divergence is NOT

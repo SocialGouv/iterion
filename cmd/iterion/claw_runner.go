@@ -168,7 +168,7 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	// tools, never the launcher's). Both are used once more below.
 	registry := model.NewRegistry()
 	relayHooks := relayEventHooks(dispatcher, stderr)
-	toolDefs, toolErr := makeHybridToolDefs(ioTask.ToolDefs, dispatcher, workspace, ioTask.ScratchDir, registry, relayHooks)
+	toolDefs, toolErr := makeHybridToolDefs(ioTask.ToolDefs, dispatcher, workspace, ioTask.ScratchDir, registry, relayHooks, ioTask.SlashCommandMaxBytes)
 	if toolErr != nil {
 		return emitFatal(dispatcher, stderr, fmt.Errorf("build the in-container tool set: %w", toolErr))
 	}
@@ -218,6 +218,7 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	// bounds billed attempts — so it is never read from this process's env,
 	// where a variable a repository's devcontainer declares would set it.
 	backend := model.NewClawBackend(registry, relayHooks, model.RetryPolicyFromWire(ioTask.Retry),
+		model.WithSlashCommandCeiling(ioTask.SlashCommandMaxBytes),
 		model.WithClawLogger(iterlog.NewFromEnv(stderr)))
 
 	start := time.Now()

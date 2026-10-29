@@ -8,6 +8,8 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	clawcmds "github.com/SocialGouv/claw-code-go/pkg/api/commands"
+
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // DefaultWorkspaceCommandMaxBytes is the built-in ceiling on a workspace
@@ -43,9 +45,10 @@ const commandArgsPrefix = "\n\nARGUMENTS: "
 // Nothing here fails a call with a Go error but a missing name: claude_code
 // answers an unknown command locally (is_error: false), so every domain
 // outcome — unknown name, unreadable file, oversized body, empty expansion
-// — is the tool's TEXT, for the model to report. The frontmatter divergence
-// is the prompt path's own (#1717): keys other than `description:` are read
-// and discarded by the lookup, `disable-model-invocation:` included.
+// — is the tool's TEXT, for the model to report. So are the two divergences
+// the lookup reports (commandNotices): the enforcement of
+// `disable-model-invocation:` and the rest of the frontmatter stays #1717's,
+// the VISIBILITY of what was discarded is this surface's own.
 func RegisterClawCommand(reg *Registry, workDir string, maxBytes int) error {
 	if maxBytes == 0 {
 		maxBytes = DefaultWorkspaceCommandMaxBytes
@@ -99,5 +102,53 @@ func executeWorkspaceCommand(workDir string, maxBytes int, input map[string]any)
 	if maxBytes > 0 && len(expanded) > maxBytes {
 		return fmt.Sprintf("/%s (%s) reaches %d bytes with its arguments, over the %d-byte ceiling — not invoked", name, cmd.Path, len(expanded), maxBytes), nil
 	}
-	return expanded, nil
+	return commandNotices(name, cmd, args) + expanded, nil
 }
+
+// commandNotices prefixes the body with the divergences the lookup reported
+// — the frontmatter it discarded, and the body forms this backend expands
+// differently — each the sentence the prompt path logs
+// (model.expandWorkspaceSlashCommand), addressed to the reader this surface
+// has.
+//
+// The frontmatter one is the divergence that carries a SECURITY
+// consequence: a command narrowing itself with `allowed-tools:` is bounded
+// on claude_code and keeps the node's whole tool set here, so an operator
+// reads a restriction nothing enforces. Saying nothing while #1717's
+// enforcement is deferred is the "one file means two things silently"
+// outcome the prompt path's warning exists to prevent, and the model-driven
+// surface needs it MORE: nobody typed the invocation, so nobody is watching
+// for the file's claims.
+//
+// The tool's own answer is the channel because it is the only one BOTH
+// placements have: `command` is PlacementSandbox, so in a sandboxed run the
+// registration that executes is the in-container one — no run logger, no
+// build session, no event bus. The answer crosses instead, and the host
+// persists it on the node's `tool_called` event (persistToolPayload), so a
+// gate reading events.jsonl finds the notice where the model found it. At
+// the HEAD for the same reason: an oversized answer is persisted as a
+// preview of its first bytes.
+func commandNotices(name string, cmd clawcmds.WorkspaceCommand, args string) string {
+	var b strings.Builder
+	if keys := cmd.DiscardedFrontmatter; len(keys) > 0 {
+		fmt.Fprintf(&b, "NOTE (iterion): /%s (%s) declares %s in its frontmatter — claude_code honours those, this backend ignores them, so the command does not narrow the tools you hold (#1717). Report this with your answer.\n",
+			noticeValue(name), cmd.Path, noticeValue(strings.Join(keys, ", ")))
+	}
+	if forms := clawcmds.DynamicBodyForms(cmd.Body, args); len(forms) > 0 {
+		fmt.Fprintf(&b, "NOTE (iterion): /%s uses %s — those mean something else here than in claude_code; see docs/backends.md#workspace-slash-commands.\n",
+			noticeValue(name), strings.Join(forms, ", "))
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	return b.String() + "\n"
+}
+
+// noticeValue bounds a value a notice interpolates from untrusted input, to
+// the same 200 bytes the prompt path's safeDiag keeps. The notice is added
+// AFTER the ceiling check, so without this a frontmatter of megabyte-long
+// key names would reach the model past the bound the ceiling exists to
+// hold: the keys come from a file in a checkout the run does not control,
+// and the command name is whatever the model asked for. The forms need no
+// bound — they are this package's own words, from a closed vocabulary.
+func noticeValue(s string) string { return iterlog.Truncate(s, 200) }

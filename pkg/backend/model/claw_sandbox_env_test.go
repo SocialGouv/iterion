@@ -619,3 +619,54 @@ func TestForwardableProviderEnv_ForfaitCrossingKeepsThisNodesPinnedAnthropicKey(
 		t.Error("CLAUDE_CONFIG_DIR set although this node holds its own pinned key — the sandbox would spend the forfait while the in-process path spends the pin")
 	}
 }
+
+// The workspace-command ceiling crosses with the task (#1716). `command` is
+// PlacementSandbox, so the registration that EXECUTES in a sandboxed run is
+// the container's, and the container's environment carries no dial: read
+// only on the host, an operator who tightens the bound for a checkout under
+// review would keep 256 KiB on every sandboxed run — philosophy #1's
+// "never silently replace an operator's explicit choice".
+//
+// Mutants: drop the assignment from runnerIOTask → the forwarding readings
+// redden; have WithSlashCommandCeiling read the dial instead of its
+// argument → the last reading reddens, which is the devcontainer case.
+func TestExecuteViaSandboxRunner_SendsTheWorkspaceCommandCeiling(t *testing.T) {
+	work := t.TempDir()
+
+	// The host's reading of the dial, in the registration's vocabulary.
+	for _, tc := range []struct {
+		dial string
+		want int
+	}{
+		// A tightened bound, as set.
+		{"4096", 4096},
+		// The dial's documented "0" REMOVES the ceiling, which the
+		// registration spells negative: a 0 on the wire would mean "the
+		// built-in default" to the runner — the operator's choice replaced.
+		{"0", -1},
+		// No dial: the host's built-in default, NAMED on the wire rather
+		// than left to whatever the container's own build defaults to.
+		{"", defaultSlashCommandMaxBytes},
+	} {
+		t.Setenv(SlashCommandMaxBytesEnv, tc.dial)
+		if got := SlashCommandMaxBytesForRegistry(); got != tc.want {
+			t.Errorf("dial %q resolves to %d for a registration, want %d", tc.dial, got, tc.want)
+		}
+	}
+
+	// The crossing carries the ceiling the backend was BUILT with, never one
+	// read where the crossing is dispatched: an in-container runner relaying
+	// a nested crossing reads its own environment — a repository's
+	// devcontainer — which must not widen the operator's bound.
+	t.Setenv(SlashCommandMaxBytesEnv, "999999")
+	built := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}, WithSlashCommandCeiling(4096))
+	if got := dispatchCapturingTheTask(t, built, work).SlashCommandMaxBytes; got != 4096 {
+		t.Errorf("the ceiling on the wire = %d, the one the backend was built with = 4096 (this process's env says 999999)", got)
+	}
+	// A launcher that names none sends 0: the runner keeps the built-in
+	// default, as it did before the field existed.
+	bare := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{})
+	if got := dispatchCapturingTheTask(t, bare, work).SlashCommandMaxBytes; got != 0 {
+		t.Errorf("the ceiling on the wire = %d with no ceiling configured, want 0 — the runner's built-in default", got)
+	}
+}

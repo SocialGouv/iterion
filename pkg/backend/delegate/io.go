@@ -114,6 +114,17 @@ type IOTask struct {
 	// from a launcher that predates it: the runner keeps the built-in
 	// defaults.
 	Retry *IORetryPolicy `json:"retry,omitempty"`
+	// SlashCommandMaxBytes is the launcher's answer for the `command`
+	// tool's body/expansion ceiling, in the registration's vocabulary (0 =
+	// the built-in default, negative = unbounded). The dial that resolves
+	// it is read on the HOST (model.SlashCommandMaxBytesForRegistry,
+	// ITERION_CLAW_SLASH_COMMAND_MAX_BYTES): the tool is PlacementSandbox,
+	// so the registration that executes in a sandboxed run is the
+	// container's, and the container's environment carries no dial — an
+	// operator who tightens the ceiling for a review run would otherwise
+	// keep the default there. 0 from a launcher that predates the field:
+	// the runner keeps the built-in default, as it did.
+	SlashCommandMaxBytes int `json:"slash_command_max_bytes,omitempty"`
 	// LauncherEndsNodeSession says the launcher spawned the runner inside the
 	// node's session and ends that session when the node ends
 	// (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md): what the

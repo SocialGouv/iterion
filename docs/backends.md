@@ -225,7 +225,12 @@ The citations, per cell that is not self-evident from the table:
   same contained `pkg/api/commands` lookup, under the same byte ceiling and
   the same kill switch (`ITERION_CLAW_SLASH_COMMANDS=off` drops both
   surfaces — the tool is not even registered, so a node declaring it fails
-  loudly at dispatch rather than half-living). The returned body is inert
+  loudly at dispatch rather than half-living). Both dials are read on the
+  HOST, because the tool is sandbox-placed and a container holds no dial of
+  its own: the switch arrives as the tool's absence from the advertised set,
+  and the ceiling as a value the task carries (`slash_command_max_bytes`) —
+  so an operator who tightens it for a checkout under review reaches the
+  registration that actually executes. The returned body is inert
   text: executing anything it asks for takes the node's own declared tools,
   so a `command` grant hands over no capability the node did not already
   hold. `claude_code`'s native equivalent is its `SlashCommand` tool, which
@@ -235,7 +240,12 @@ The citations, per cell that is not self-evident from the table:
   safe form of the same capability. The frontmatter divergence below covers
   both paths: `disable-model-invocation:` is among the keys the lookup
   reads and discards, so on claw the model path is not bounded by it
-  (#1717 carries the enforcement). The deterministic witness is
+  (#1717 carries the enforcement). What the tool does carry is the notice:
+  its answer OPENS with the keys that were discarded and with the body
+  forms this backend expands differently, so the model reports a command
+  whose own header claims a narrowing nothing applies — and the host
+  persists that answer on the node's `tool_called` event, where a
+  deterministic gate can read it. The deterministic witness is
   `pkg/backend/tool/claw_command_test.go`; the live one is the
   `via_claw_model_tool` node of `TestLive_Feat_WorkspaceCommands`, whose
   prompt does not open with the invocation.

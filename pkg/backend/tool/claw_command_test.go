@@ -156,3 +156,72 @@ func TestRegisterClawAll_WorkspaceCommandsKillSwitchDropsTheTool(t *testing.T) {
 		t.Error("DisableWorkspaceCommands must drop the command tool from the set")
 	}
 }
+
+// The two divergences the lookup reports travel with the body, because this
+// surface's only channel is its own answer (#1716): the frontmatter it
+// discarded — the one with a security consequence, since nothing here
+// honours `allowed-tools:` while #1717's enforcement is deferred — and the
+// body forms claw expands differently. Mutant: drop the commandNotices call
+// from executeWorkspaceCommand → every assertion below reddens, and the
+// model invokes a command whose own header claims a narrowing that is not
+// there.
+func TestClawCommand_ReportsTheDiscardedFrontmatterAndTheDivergentForms(t *testing.T) {
+	ws := writeCommandFile(t, "narrow",
+		"---\nallowed-tools: Read\nmodel: haiku\ndisable-model-invocation: true\ndescription: narrow\n---\nRead only. $1 is the target.\n")
+	reg := NewRegistry()
+	if err := RegisterClawCommand(reg, ws, 0); err != nil {
+		t.Fatalf("RegisterClawCommand: %v", err)
+	}
+	out, err := execCommand(t, mustCommandTool(t, reg), map[string]any{"name": "narrow", "args": "pkg/auth"})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	for _, want := range []string{
+		"declares allowed-tools, disable-model-invocation, model in its frontmatter",
+		"does not narrow the tools you hold (#1717)",
+		"uses $N",
+		"docs/backends.md#workspace-slash-commands",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output = %q, want it to carry %q", out, want)
+		}
+	}
+	// The notices lead, so the host persists them even when the answer is
+	// large enough to be stored as a preview of its first bytes
+	// (model.persistToolPayload), and the body still arrives expanded.
+	if !strings.HasPrefix(out, "NOTE (iterion): /narrow") {
+		t.Errorf("output = %q, want the notices at the head", out)
+	}
+	if !strings.Contains(out, "Read only. pkg/auth is the target.") {
+		t.Errorf("output = %q, want the expanded body after the notices", out)
+	}
+
+	// A command with nothing to report answers with the body alone: a
+	// notice on every invocation would cost the real ones their audience.
+	wsPlain := writeCommandFile(t, "plain", "---\ndescription: plain\n---\nDo the thing.\n")
+	regPlain := NewRegistry()
+	if err := RegisterClawCommand(regPlain, wsPlain, 0); err != nil {
+		t.Fatalf("RegisterClawCommand (plain): %v", err)
+	}
+	out, err = execCommand(t, mustCommandTool(t, regPlain), map[string]any{"name": "plain"})
+	if err != nil || out != "Do the thing." {
+		t.Errorf("plain command: out=%q err=%v, want exactly the body", out, err)
+	}
+
+	// The notice is added AFTER the ceiling check, so what it interpolates
+	// is bounded itself: a frontmatter key of 4 KiB cannot carry the
+	// untrusted file past the bound that exists to hold it.
+	huge := strings.Repeat("k", 4096)
+	wsHuge := writeCommandFile(t, "huge", "---\n"+huge+": x\ndescription: huge\n---\nBody.\n")
+	regHuge := NewRegistry()
+	if err := RegisterClawCommand(regHuge, wsHuge, 0); err != nil {
+		t.Fatalf("RegisterClawCommand (huge): %v", err)
+	}
+	out, err = execCommand(t, mustCommandTool(t, regHuge), map[string]any{"name": "huge"})
+	if err != nil {
+		t.Fatalf("execute (huge): %v", err)
+	}
+	if !strings.Contains(out, "[truncated]") || len(out) > 1024 {
+		t.Errorf("oversized frontmatter key: out is %d bytes (%q), want it truncated", len(out), out)
+	}
+}

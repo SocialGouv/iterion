@@ -60,6 +60,15 @@ type ClawBackend struct {
 	// channel for (e.g. "this node is about to spend your subscription's
 	// extra-usage balance"). nil silences them. See [WithClawLogger].
 	logger *iterlog.Logger
+	// slashCommandCeiling is the `command` tool's body/expansion ceiling to
+	// forward to a sandboxed crossing, in the registration's vocabulary (0
+	// = the built-in default, negative = unbounded). It is resolved by
+	// whoever CONSTRUCTS the backend — the host from its dial, the
+	// in-container runner from the task it was handed — never read from the
+	// env where the crossing is dispatched: the runner's environment is a
+	// repository's devcontainer, which must not get to widen a bound the
+	// operator set. See [WithSlashCommandCeiling].
+	slashCommandCeiling int
 }
 
 func (*ClawBackend) SupportsAsyncQuestions() bool { return true }
@@ -67,6 +76,18 @@ func (*ClawBackend) SupportsAsyncQuestions() bool { return true }
 // WithClawLogger attaches a leveled logger for operator-facing warnings.
 func WithClawLogger(l *iterlog.Logger) ClawBackendOption {
 	return func(b *ClawBackend) { b.logger = l }
+}
+
+// WithSlashCommandCeiling sets the `command` tool's ceiling this backend
+// forwards to a sandboxed crossing (delegate.IOTask.SlashCommandMaxBytes),
+// in the registration's vocabulary: the host resolves it from the dial
+// (SlashCommandMaxBytesForRegistry), and an in-container runner passes on
+// the one it received, so a nested crossing carries the operator's bound
+// rather than whatever the container's own environment says. Unset — 0 —
+// leaves the runner on the built-in default, which is what a launcher that
+// predates the field sends.
+func WithSlashCommandCeiling(maxBytes int) ClawBackendOption {
+	return func(b *ClawBackend) { b.slashCommandCeiling = maxBytes }
 }
 
 // WithMemoryStore injects a non-default workspace-memory backend
@@ -2064,8 +2085,13 @@ func (b *ClawBackend) sessionSeedForCrossing(ctx context.Context, task delegate.
 // the parity gap of #1715). So does this backend's retry budget: the
 // runner's loop spends the launcher's, never one read from its own env, so
 // a variable a repository's devcontainer declares cannot set how many
-// attempts are billed. An old runner ignores both unknown fields — it
-// reads its own WorkDir and keeps its defaults.
+// attempts are billed. So does the workspace-command ceiling, for the same
+// reason and in the same direction: the `command` tool's in-container
+// registration would read no dial, and the operator's is a TIGHTENING on a
+// checkout under review — and like the budget it comes from this backend's
+// own field, so the dial is read by the host that built it and never by the
+// runner dispatching a nested crossing. An old runner ignores every
+// unknown field — it reads its own WorkDir and keeps its defaults.
 func (b *ClawBackend) runnerIOTask(task delegate.Task) delegate.IOTask {
 	ioTask := delegate.ToIOTask(task)
 	ioTask.SettingsHooks = settingsHooksForWire(task.WorkDir, task.NodeID, task.Iteration, b.logger)
@@ -2075,6 +2101,7 @@ func (b *ClawBackend) runnerIOTask(task delegate.Task) delegate.IOTask {
 	// outside the workspace bind, and claude_code's Read reaches them —
 	// without the root a sandboxed claw node reads none of them.
 	ioTask.ScratchDir = sandboxScratchContainerDir
+	ioTask.SlashCommandMaxBytes = b.slashCommandCeiling
 	// executeViaSandboxRunner wraps the runner in the node's session and ends
 	// it: the runner draws none of its own.
 	ioTask.LauncherEndsNodeSession = true
