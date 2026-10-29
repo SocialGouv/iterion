@@ -35,7 +35,6 @@ func TestEveryParseCallerChoosesFileOrUnit(t *testing.T) {
 		"pkg/dsl/parser/parsertest/parsertest.go":    "the tests' one-value parse of one source; production code never depends on it (TestNoGuardIsReadAroundByTheBuild)",
 		"pkg/dsl/unparse/verify.go":                  "Verify re-parses the one file it wrote",
 		"pkg/runview/rewind_auto.go":                 "parses the recorded main of a run launched before units were recorded; a unit run is read through unit.LoadMap and LoadDir, and a unit run recorded main-only is refused",
-		"pkg/server/cost_preview.go":                 "previews an uploaded document, the flattened unit (lot 3, remote launch)",
 		"pkg/server/server_dsl.go":                   "the studio's parse endpoint hands the EDITOR a document from text, and the example loader parses the one program it serves — a bot in several files it reads as its unit (on disk) or serves flat (embedded); it also re-parses the MAIN alone to answer whether that one file was read whole",
 		"pkg/server/server_files.go":                 "the editor's open hands the EDITOR a document of one file — a bot in several files it reads as its unit",
 		// Neither of the two below compiles anything: each asks of ONE file
