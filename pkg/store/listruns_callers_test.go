@@ -27,6 +27,7 @@ import (
 // implement the indexed questions by scanning) are listed like everyone else.
 var listRunsCallers = map[string]string{
 	"cmd/iterion/migrate.go":             "operator-driven one-off: copies every run from one backend to the other",
+	"pkg/cli/reliability.go":             "operator-driven one-off: the reliability pilot's baseline over the cloud run store (`iterion reliability report --cloud`), taken once before a promotion and once after",
 	"pkg/cli/bench.go":                   "operator-driven benchmark over the whole store",
 	"pkg/cli/inspect.go":                 "operator-driven inspection of a local store",
 	"pkg/operatormcp/tools_local.go":     "operator tool listing a local store on request",

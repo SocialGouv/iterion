@@ -78,14 +78,22 @@ The rollout is deliberately reversible:
 
 1. Capture a baseline with `iterion reliability report` — finished, failed,
    failed-resumable, paused and queued runs, plus retry-armed and ledger-use
-   counts, over the store the working directory resolves to (`--store-dir`
-   overrides it, `--json` makes it diffable). The same command with
-   `--run-id <id>` answers the per-run question instead: legacy or contract
-   context, admission recorded, how many nodes published, and whether the run
-   is rollback-safe. Both are strictly read-only — reporting on a legacy run
-   never upgrades its policy. The report's first lines are the RESOLVED mode
-   and context policy, so the baseline always states which of the two
-   variables below was in effect when it was taken.
+   counts (`--json` makes it diffable). **Over the store the pilot runs on:**
+   the plain command reads the filesystem store the working directory
+   resolves to (`--store-dir` overrides which one), which is a developer's
+   local runs, not the population a cloud promotion is decided on;
+   `--cloud` reads the Mongo run store through the same configuration the
+   server and runner use (`ITERION_MONGO_URI` plus `ITERION_S3_*`, which
+   that store requires to open at all), and `--tenant <id>` scopes the
+   baseline to one tenant. The report's `store` line names the source it
+   actually read, so a before/after pair cannot silently compare two
+   different populations. The same command with `--run-id <id>` answers the
+   per-run question instead: legacy or contract context, admission
+   recorded, how many nodes published, and whether the run is
+   rollback-safe. All of them are strictly read-only — reporting on a
+   legacy run never upgrades its policy. The report's first lines are the
+   RESOLVED mode and context policy, so the baseline always states which of
+   the two variables below was in effect when it was taken.
 2. Start a pilot in `report` mode with `ITERION_RELIABILITY_MODE=report`.
    Admission decisions are recorded and surfaced, but legacy contexts remain
    runnable; correction and watcher ledgers are observational evidence that

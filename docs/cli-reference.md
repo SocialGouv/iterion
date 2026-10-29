@@ -780,13 +780,14 @@ The watcher evaluates on turn boundaries/monitor matches and injects node-scoped
 ### `iterion reliability`
 
 ```bash
-iterion reliability report                       # resolved rollout mode + a fleet baseline over the store
+iterion reliability report                       # resolved rollout mode + a fleet baseline over the LOCAL store
+iterion reliability report --cloud --json        # the baseline a cloud promotion is decided on
+iterion reliability report --cloud --tenant t1   # one tenant's cloud runs
 iterion reliability report --run-id <id>         # one run's compatibility report
-iterion reliability report --json                # machine-readable
 iterion reliability rollback                     # print the non-destructive rollback plan
 ```
 
-Read-only operator surface for the staged workflow-reliability rollout ([workflow-reliability-1006.md](workflow-reliability-1006.md)). `report` prints the mode the launch surfaces actually apply for this environment (`ITERION_RELIABILITY_MODE`, falling back to the older `ITERION_EXECUTION_CONTEXT_POLICY`), the retry-circuit settings, and either a fleet baseline over the store's runs or, with `--run-id`, one run's compatibility report — capture it before switching modes and again after, and compare. Run directories whose `run.json` cannot be loaded are listed as `unreadable` rather than skipped, since a baseline that under-counts silently is worse than none. `rollback` prints which variable to set and what evidence to keep; it mutates nothing, because the variables are read where the launch surfaces run (a pod spec, a service unit, a shell), which a one-shot CLI process cannot reach. Flags: `--store-dir`, `--run-id`.
+Read-only operator surface for the staged workflow-reliability rollout ([workflow-reliability-1006.md](workflow-reliability-1006.md)). `report` prints the mode the launch surfaces actually apply for this environment (`ITERION_RELIABILITY_MODE`, falling back to the older `ITERION_EXECUTION_CONTEXT_POLICY`), the retry-circuit settings, and either a fleet baseline over the store's runs or, with `--run-id`, one run's compatibility report — capture it before switching modes and again after, and compare. Run directories whose `run.json` cannot be loaded are listed as `unreadable` rather than skipped, since a baseline that under-counts silently is worse than none. Which store it reads is part of the answer, and the report's `store` line names it: without `--cloud` the baseline covers the filesystem store the working directory resolves to, which is not the population a cloud promotion is decided on; `--cloud` reads the Mongo run store through the same configuration the server and runner use (`ITERION_MONGO_URI` plus `ITERION_S3_*`, which the cloud store requires to open at all), and `--tenant` scopes it to one tenant's runs. `rollback` prints which variable to set and what evidence to keep; it mutates nothing, because the variables are read where the launch surfaces run (a pod spec, a service unit, a shell), which a one-shot CLI process cannot reach. Flags: `--store-dir`, `--run-id`, `--cloud`, `--tenant`, `--config`.
 
 ## Remote, benchmarks, and utility commands
 
