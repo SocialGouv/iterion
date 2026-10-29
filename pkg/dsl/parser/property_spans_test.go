@@ -123,7 +123,10 @@ func TestEveryNodeKindKeepsItsPropertySpans(t *testing.T) {
 // TestARefusedPropertyIsNotRecorded: a name the declaration refuses (E012)
 // is no property of it and takes no entry — so a file of strays leaves the
 // table as small as the registry, and Set, linear in the table, stays linear
-// in the file. A hundred thousand strays parse in the time the lexer takes.
+// in the file. A hundred thousand strays parse in the time the lexer takes,
+// counted in the process's CPU time: a shared runner's wall clock also
+// counts every other test binary of the shard, and reads the same linear
+// parse at several times its cost.
 func TestARefusedPropertyIsNotRecorded(t *testing.T) {
 	res, err := Parse("strays.bot", "agent a:\n  model: \"m\"\n  zz_bogus: 1\n  tools: [x]\n")
 	if err != nil {
@@ -145,13 +148,18 @@ func TestARefusedPropertyIsNotRecorded(t *testing.T) {
 		fmt.Fprintf(&b, "  zz_stray_%d: 1\n", i)
 	}
 	t.Setenv(ReadBudgetEnv, "0")
-	start := time.Now()
+	cpuStart, timed := processCPUTime(t)
 	res, err = Parse("strays.bot", b.String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if took := time.Since(start); took > 10*time.Second {
-		t.Fatalf("%d strays took %s to parse: the table grows with them", strays, took)
+	if timed {
+		cpuEnd, _ := processCPUTime(t)
+		if took := cpuEnd - cpuStart; took > 10*time.Second {
+			t.Fatalf("%d strays took %s of CPU to parse: the parse grows faster than the file (a table growing with the strays is the known way)", strays, took)
+		}
+	} else {
+		t.Log("no process CPU clock on this platform: the linear claim is not timed, the table claims still are")
 	}
 	if n := len(res.File.Agents[0].Properties); n != 1 {
 		t.Fatalf("the table holds %d entries for one accepted property", n)
