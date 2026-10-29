@@ -188,11 +188,55 @@ of the members the scan found, for the sweep that runs in-process;
 waits at, for the program a sandbox runs. Both are inert by default (nil, and an
 empty `GATE=''` whose `gate()` returns at once), and the program's gate is
 bounded: a gate nobody releases prints an `iterion-node-session error` line, so
-a held sweep is never read as a sweep that found nothing. The witness holds the
-sweep there, asserts from the sweep's OWN view that the held scan found nothing,
-starts `late`, waits until `FindNodeSession` holds it — the entry is readable
-only once the exec is done, which is the fact the window needs — and only then
-releases.
+a held sweep is never read as a sweep that found nothing. EVERY scan is held and
+released one at a time, the release naming the scan it frees (`.resume.<n>` for
+the program), so a witness reads what each scan found from the sweep's own view
+and stages its window at the scan its premise names.
+
+**Which scan the premise is about, and why the first one is a bet.** Holding the
+FIRST scan put the premise back where the sleep had been: a seed's `exec` can
+still be running when that scan reads it, and a process in the middle of an
+execve takes its `/proc/<pid>/environ` with it for that instant, so the scan
+files it as unreadable instead of a member.
+`TestSweepStopsAProcessThatShowsAfterANonEmptyScan` asserted its held scan had
+found the seed, and reddened on 2 of 40 serial runs of unchanged code
+(`premise: the scan the sweep is held at found nothing`), then on 2 of the 3
+`go` arms of a second series — a verdict on an execve, and idle-biased: 0 of
+200 arms of the same binary under eight-way load, so a green loaded run says
+nothing about it. (The sandbox is the right place to hunt it: it is a PID
+namespace of its own, nine processes, which is the throwaway namespace this
+package's header asks for.) The
+premise is now a predicate given to `scanWindow.at`, which releases the scans
+that do not meet it and judges the first that does — the pattern
+`TestGuardFoundRefusesALiveIntruder` already applied to its own scan. And what
+`awaitSessionHolds` proves is where a launcher BECOMES visible: until its own
+execve it is a fork of the test binary, carrying the test binary's environment.
+It never proves where a process stops being missable, so a witness that needs
+ONE named scan to hold a process it started adds `awaitExeced`, which waits for
+the name `/proc/<pid>/stat` gives — the file the last execve ran.
+
+**The window the product opens is not only the first one.** A sweep that files
+the members of its first scans and then stops re-discovering passed both
+witnesses while their single window sat between scan 1 and scan 2: a mutant that
+drops members new at the third scan of a phase was green on 18 of 18 arms. Each
+witness now stages its window a second time, at a later scan and in the phase
+that ENDS its sweep — the empty-scan witness in its TERM phase, which ends on
+two scans that find nothing, and the non-empty one at the first scan to find
+nothing, which only a KILL-phase scan after the TERM-ignoring seed was killed
+ever is. A member dropped in a phase that hands over to the next one is
+re-discovered for free by that phase's own first scan, so a window staged there
+witnesses nothing. That mutant and its sh twin now redden 3 of 3 arms each, on
+the product's own lines (`later (pid N) belongs to the session and is still
+running`). The KILL-phase window also turns a capture that never was one: the
+mutant that drops re-discovery in the KILL phase ALONE read as caught by
+`TestSweepSignalsBeforeItsDeadline`, and is caught there 1 arm in 15 — by the
+same execve miss, so the verdict was a race's. It reddens the non-empty witness
+3 of 3, and the deadline witness is now green on it: when a sweep gives up is
+that witness's subject, re-discovery is not. The phase deadlines are set wide for these witnesses (`sweepBudget`):
+a phase that ends on its deadline skips the scan the window was staged for and
+reads as a verdict on how long this host took to start one process — when a
+sweep gives up is `TestSweepSignalsBeforeItsDeadline`'s subject, and it keeps
+the knob.
 
 Where the gate sits is what keeps the mutation honest. At the settle instead,
 the mutant that ends on the FIRST empty scan never settles, and the witness
@@ -214,9 +258,11 @@ time instead of a verdict, and a premise that never holds fails as itself.
 
 The seeds are the other side of the same wall, and there load FAILS the witness
 instead of passing it vacuously. A foreground seed returns the pid of a launcher
-whose exec may still be running, and a process carries the entry only once its
-exec is done — until then its `/proc/pid/environ` is the test binary's, and a
-scan misses it. `TestSweepStopsTheSessionAndNothingElse/go` bet all of
+the test binary has only just forked, and until that launcher's own execve runs
+it carries the test binary's environment and not the entry, so a scan misses it.
+What it does not prove is the exec of the program the seed goes on to become:
+that is the bet the two paragraphs above pay for.
+`TestSweepStopsTheSessionAndNothingElse/go` bet all of
 `populate()` on those execs and lost in a merge queue that touched no file of
 the package (#2539): the guard refused (`the session misses [respawner …]`),
 which is correct, but read as a product verdict. The world now awaits its seeds:
