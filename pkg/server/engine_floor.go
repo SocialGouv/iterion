@@ -204,9 +204,14 @@ func (s *Server) requiresFloorGap(ctx context.Context, bs botsource.BotSource, s
 // does not reach: the shape every write of a bundle refuses on (the push
 // routes, the assistant's authoring commit), one predicate for all of them.
 type syntaxFloorGap struct {
-	uses string // what the sources use: "`contract` (main.bot)"
+	uses string // what the bundle asks for: "`contract` (main.bot)"
 	gap  string // what the manifest declares, or does not
 	need string // the release the floor must reach
+	// consequence is what a build below the floor does with the bundle,
+	// from the floors table entry that decided it (bundle.ProfileFloor):
+	// a forced push says it, and it is never a sentence this package
+	// guesses for a floor it does not know.
+	consequence string
 	// short names the sources a bound of the reader cut short, each with
 	// its refusal (bundle.SyntaxRequirements.Short): what they use is not
 	// known, so no declared floor is checked against them.
@@ -221,8 +226,8 @@ func (g *syntaxFloorGap) forced(slug string) string {
 	if g.short != "" {
 		return fmt.Sprintf("FORCED past the syntax-floor guard: %q has executable sources the server does not read whole, so the release they need was not checked (C256) — and every reader held to this read budget refuses them: %s", slug, g.short)
 	}
-	return fmt.Sprintf("FORCED past the syntax-floor guard: %q uses %s and %s — a runner older than the release that reads it will fail at its first parse of a child, a fragment or the contract",
-		slug, g.uses, g.gap)
+	return fmt.Sprintf("FORCED past the syntax-floor guard: %q uses %s and %s — %s",
+		slug, g.uses, g.gap, g.consequence)
 }
 
 // refusal is the sentence a write is refused with.
@@ -250,9 +255,10 @@ func bundleSyntaxFloorGap(bs botsource.BotSource) *syntaxFloorGap {
 		// bundle's own names, the refusal its remedy.
 		return &syntaxFloorGap{uses: "sources not read whole", gap: "cannot be checked", short: strings.Join(syntax.Short, "; ")}
 	}
-	if !syntax.Asks() {
-		return nil
-	}
+	// What asks for the floor is the whole subject — the sources AND the
+	// keys the manifest declares (bundle.FloorSubject) — so the verdict is
+	// what answers "nothing asks" here: an early exit on the sources alone
+	// would admit a manifest key's floor unchecked.
 	pf := bundle.CheckSyntaxFloor(bs.Manifest(), syntax)
 	if pf.OK {
 		return nil
@@ -265,7 +271,7 @@ func bundleSyntaxFloorGap(bs botsource.BotSource) *syntaxFloorGap {
 	if pf.Declared != "" {
 		gap = fmt.Sprintf("declares requires.iterion %q, below %s (the release that reads it)", pf.Declared, need)
 	}
-	return &syntaxFloorGap{uses: syntax.Describe(), gap: gap, need: need}
+	return &syntaxFloorGap{uses: pf.Uses, gap: gap, need: need, consequence: pf.Consequence}
 }
 
 // declaredEngineRequirement reports whether a stored bundle's manifest

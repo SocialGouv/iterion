@@ -11,15 +11,20 @@ import (
 
 // floorProbes asks, one per entry of the syntax-floor table, for that
 // entry's release: the list every walk of the table shares, so a floor added
-// to the table is held by each of them at once.
-func floorProbes() []SyntaxRequirements {
-	return []SyntaxRequirements{
-		{Profile: parser.MaxProfile, DeclaredBy: []string{"main.bot"}},
-		{Profile: 1, ImportedBy: []string{"main.bot"}},
-		{Profile: 1, ContractedBy: []string{"main.bot"}},
-		{Profile: 1, AliasBy: []string{"main.bot"}},
-		{Profile: 1, MatchingBy: []string{"main.bot"}},
-		{Profile: 1, EmptyToolsBy: []string{"main.bot"}},
+// to the table is held by each of them at once. A probe carries the half of
+// the subject its entry reads — the sources for a syntax, the declared keys
+// for a manifest key — so an entry no probe reaches is named by
+// TestEveryFloorTheTableAsksForIsPinned.
+func floorProbes() []FloorSubject {
+	return []FloorSubject{
+		{Syntax: SyntaxRequirements{Profile: parser.MaxProfile, DeclaredBy: []string{"main.bot"}}},
+		{Syntax: SyntaxRequirements{Profile: 1, ImportedBy: []string{"main.bot"}}},
+		{Syntax: SyntaxRequirements{Profile: 1, ContractedBy: []string{"main.bot"}}},
+		{Syntax: SyntaxRequirements{Profile: 1, AliasBy: []string{"main.bot"}}},
+		{Syntax: SyntaxRequirements{Profile: 1, MatchingBy: []string{"main.bot"}}},
+		{Syntax: SyntaxRequirements{Profile: 1, EmptyToolsBy: []string{"main.bot"}}},
+		{Keys: ManifestKeys{keyCategory: true}},
+		{Keys: ManifestKeys{keyTags: true}},
 	}
 }
 
@@ -99,15 +104,21 @@ func TestEveryFloorTheTableAsksForIsPinned(t *testing.T) {
 		if len(f.pins) == 0 {
 			t.Errorf("table entry %d contributes no pin to the registry", i)
 		}
+		if f.consequence == "" {
+			t.Errorf("table entry %d names no consequence: C252 and the push admission would end their refusal on nothing", i)
+		}
 		var asked bool
-		for _, req := range probes {
-			release, reason, asks := f.need(req)
+		for _, probe := range probes {
+			release, reason, asks := f.need(probe)
 			if !asks {
 				continue
 			}
 			asked = true
 			if !pinned[release] {
 				t.Errorf("table entry %d asks for %s (%s), which no pin of the registry names", i, release, reason)
+			}
+			if probe.Describe() == "" {
+				t.Errorf("table entry %d asks for %s (%s) on a probe that describes nothing: C252 and the push admission would name no subject — a manifest-key entry owes onManifestKey", i, release, reason)
 			}
 		}
 		if !asked {

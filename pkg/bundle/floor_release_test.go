@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/floortest"
 )
 
 // A syntax floor is pinned to the release that will carry the syntax and
@@ -136,7 +138,7 @@ func TestSilentNotesTravelAsATypedVerdict(t *testing.T) {
 // admission refuses the same bundle with a 409.
 func TestEveryShippedBundleDeclaresAFloorThatReachesWhatItNeeds(t *testing.T) {
 	root := filepath.Join("..", "..")
-	checked := 0
+	checked, keyFloors := 0, 0
 	for _, collection := range []string{"bots", "examples"} {
 		entries, err := os.ReadDir(filepath.Join(root, collection))
 		if err != nil {
@@ -157,26 +159,26 @@ func TestEveryShippedBundleDeclaresAFloorThatReachesWhatItNeeds(t *testing.T) {
 				t.Errorf("%s: %v", path, err)
 				continue
 			}
+			// One predicate for both halves of what the bundle asks: the
+			// sources it is written in AND the keys its own manifest
+			// declares (the taxonomy floor), so the catalogue is held to
+			// what `validate` C252 and the push admission read.
 			if pf := CheckSyntaxFloor(m, MaxSyntaxRequirementsDir(dir)); !pf.OK {
 				t.Errorf("%s declares %q, which does not reach %s, the release that reads %s: a floor constant moved and this manifest did not follow — raise it", path, pf.Declared, pf.Need, pf.Reason)
 			}
-			body, err := os.ReadFile(path)
-			if err != nil {
-				t.Errorf("%s: %v", path, err)
-				continue
-			}
-			if err := checkCatalogTaxonomyFloor(manifestKeySet(t, body), m); err != nil {
-				t.Errorf("%s: %v", path, err)
+			if SubjectOf(m, SyntaxRequirements{}).Asks() {
+				keyFloors++
 			}
 		}
 	}
 	if checked < 30 {
 		t.Fatalf("only %d shipped manifests were read — the walk lost a collection, and a green verdict would mean nothing", checked)
 	}
-	t.Logf("%d shipped manifests declare a floor that reaches what they need", checked)
+	if keyFloors == 0 {
+		t.Fatalf("not one of the %d shipped manifests asks for a floor through a MANIFEST KEY: the keys stopped being read (Manifest.DeclaredKeys), so the taxonomy floor above passed on nothing", checked)
+	}
+	t.Logf("%d shipped manifests declare a floor that reaches what they need, %d of them through a manifest key", checked, keyFloors)
 }
-
-const catalogTaxonomySince = "3.225.0"
 
 func TestCatalogTaxonomyFloorFollowsTopLevelKeyPresence(t *testing.T) {
 	check := func(t *testing.T, taxonomy, requirement string, wantErr bool) {
@@ -186,9 +188,21 @@ func TestCatalogTaxonomyFloorFollowsTopLevelKeyPresence(t *testing.T) {
 		if err != nil {
 			t.Fatalf("decode: %v", err)
 		}
-		err = checkCatalogTaxonomyFloor(manifestKeySet(t, []byte(body)), m)
-		if (err != nil) != wantErr {
-			t.Fatalf("taxonomy floor error = %v, want error = %v\nmanifest:\n%s", err, wantErr, body)
+		// The PRODUCT predicate, never a floor the test holds alone: what
+		// the catalogue owes is what `validate` (C252), the push admission
+		// and the scaffold read off the one floors table.
+		pf := CheckSyntaxFloor(m, SyntaxRequirements{})
+		if pf.OK == wantErr {
+			t.Fatalf("the taxonomy floor passes = %v, want a refusal = %v (need %q, declared %q, uses %q)\nmanifest:\n%s", pf.OK, wantErr, pf.Need, pf.Declared, pf.Uses, body)
+		}
+		if !wantErr {
+			return
+		}
+		if pf.Need != CatalogTaxonomySince || pf.Reason != "top-level `category`/`tags`" || pf.Uses != pf.Reason {
+			t.Fatalf("the refusal does not name the keys and the release that reads them: %+v", pf)
+		}
+		if !strings.Contains(pf.Consequence, "refuses the whole document") {
+			t.Fatalf("the refusal does not say what a build below the floor does with the manifest: %q", pf.Consequence)
 		}
 	}
 
@@ -204,9 +218,9 @@ func TestCatalogTaxonomyFloorFollowsTopLevelKeyPresence(t *testing.T) {
 		wantErrWithTaxonomy bool
 	}{
 		"absent": {"", true},
-		"lower":  {"requires:\n  iterion: \">= 3.224.0\"\n", true},
-		"equal":  {"requires:\n  iterion: \">= 3.225.0\"\n", false},
-		"higher": {"requires:\n  iterion: \">= 3.226.0\"\n", false},
+		"lower":  {"requires:\n  iterion: \">= " + floortest.Below(t, CatalogTaxonomySince) + "\"\n", true},
+		"equal":  {"requires:\n  iterion: \">= " + CatalogTaxonomySince + "\"\n", false},
+		"higher": {"requires:\n  iterion: \">= 9.999.0\"\n", false},
 	}
 	for taxonomyName, taxonomy := range taxonomies {
 		for floorName, floor := range floors {
@@ -216,7 +230,7 @@ func TestCatalogTaxonomyFloorFollowsTopLevelKeyPresence(t *testing.T) {
 		}
 	}
 
-	for name, taxonomy := range map[string]string{
+	for name, taxonomy := range map[string]string{ // a key declared with no value is still declared
 		"empty category":                            "category:\n",
 		"empty tags":                                "tags:\n",
 		"empty category and tags":                   "category:\ntags:\n",
@@ -224,25 +238,7 @@ func TestCatalogTaxonomyFloorFollowsTopLevelKeyPresence(t *testing.T) {
 		"empty-valued category and tags root merge": "compat: &taxonomy\n  category: \"\"\n  tags: []\n<<: *taxonomy\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			check(t, taxonomy, "requires:\n  iterion: \">= 3.224.0\"\n", true)
+			check(t, taxonomy, "requires:\n  iterion: \">= "+floortest.Below(t, CatalogTaxonomySince)+"\"\n", true)
 		})
 	}
-}
-
-func checkCatalogTaxonomyFloor(keys map[string]bool, m *Manifest) error {
-	if !keys["category"] && !keys["tags"] {
-		return nil
-	}
-	if m == nil || m.Requires == nil {
-		return errors.New("top-level category/tags require requires.iterion >= " + catalogTaxonomySince)
-	}
-	constraint, err := ParseEngineConstraint(m.Requires.Iterion)
-	if err != nil {
-		return err
-	}
-	cmp, ok := constraint.CompareFloor(catalogTaxonomySince)
-	if !ok || cmp < 0 {
-		return errors.New("top-level category/tags require requires.iterion >= " + catalogTaxonomySince + "; got " + strings.TrimSpace(m.Requires.Iterion))
-	}
-	return nil
 }

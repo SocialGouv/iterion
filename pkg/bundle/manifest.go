@@ -79,6 +79,16 @@ type Manifest struct {
 	// keys here are ignored without breaking loads from newer bundles.
 	Compat map[string]any `yaml:"compat,omitempty"`
 
+	// DeclaredKeys is the set of keys this manifest's own bytes declare,
+	// dotted for a nested one ("category", "exports.skills"): what the one
+	// floors table reads when a release floor is asked for by a KEY
+	// (FloorSubject). It is filled by the decoder, at the one door every
+	// manifest load goes through, because a key declared with an empty
+	// value is still declared and no decoded zero value tells that apart.
+	// It is not part of the document: a Manifest built in code declares no
+	// key, and owes no floor for one it does not spell.
+	DeclaredKeys ManifestKeys `yaml:"-" json:"-"`
+
 	// Attachments declares default values for the workflow's
 	// `attachments:` block: keys are attachment names, values are
 	// paths inside the bundle's `attachments/` directory (relative).
@@ -1144,6 +1154,15 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 			m.SchemaVersion, CurrentManifestSchema,
 		)
 	}
+	// The keys the document DECLARES, read from the bytes here so every
+	// load carries them: the floors table is asked for a release by a
+	// key's PRESENCE (CatalogTaxonomySince), which a decoded zero value
+	// cannot tell from an absent key.
+	keys, err := DeclaredManifestKeys(body)
+	if err != nil {
+		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
+	}
+	m.DeclaredKeys = keys
 	m.Icon = strings.TrimSpace(m.Icon)
 	if len(m.Icon) > maxIconLen {
 		return nil, fmt.Errorf("bundle: manifest %s: icon %q exceeds %d bytes — expected a short emoji", srcLabel, m.Icon, maxIconLen)

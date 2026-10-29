@@ -387,12 +387,12 @@ func (r SyntaxRequirements) UsesToolAliases() bool { return len(r.AliasBy) > 0 }
 // agent/judge `tools:` list.
 func (r SyntaxRequirements) UsesDeclaredEmptyTools() bool { return len(r.EmptyToolsBy) > 0 }
 
-// Asks reports whether the sources use anything a floor is asked for — the
-// one predicate the push admission, `validate` and the scaffold read, so a
-// syntax added to RequiredRelease is asked for everywhere at once.
+// Asks reports whether the sources use anything a floor is asked for. A
+// caller that also has the manifest asks the whole subject
+// (FloorSubject.Asks): a floor a manifest KEY asks for is invisible here by
+// construction, since no source carries it.
 func (r SyntaxRequirements) Asks() bool {
-	_, reason := RequiredRelease(r)
-	return reason != ""
+	return FloorSubject{Syntax: r}.Asks()
 }
 
 // Describe names what the sources use, for a diagnostic: "dsl profile 2
@@ -430,22 +430,36 @@ type ProfileFloor struct {
 	Need string
 	// Declared is the manifest's requires.iterion, trimmed; "" when absent.
 	Declared string
-	// Reason names what asks for the floor: "dsl profile 2", "import".
+	// Reason names what asks for the floor: "dsl profile 2", "import",
+	// "top-level `category`/`tags`" — the entry of the one table that
+	// decided Need.
 	Reason string
+	// Uses names everything of the subject that asks for a floor, each
+	// syntax with the files that declare it: the subject of the refusal
+	// `validate` (C252) and the push admission write, so neither describes
+	// a manifest key from a list of its own.
+	Uses string
+	// Consequence is what a build below Need does with this bundle, from
+	// the table entry that decided the floor: the sentence those two
+	// refusals end on, so neither tells an author to expect a failure this
+	// floor does not have.
+	Consequence string
 	// OK: nothing asks for a floor; otherwise a declared floor that is
 	// ordered at or above Need (or any declared floor, when Need is unknown).
 	OK bool
 }
 
-// CheckSyntaxFloor holds a manifest's engine floor against what its sources
-// use — a syntax profile above 1, `import` — one predicate for the author's
+// CheckSyntaxFloor holds a manifest's engine floor against what its bundle
+// asks for — a syntax profile above 1, `import`, a key the manifest itself
+// declares (FloorSubject) — one predicate for the author's
 // `validate` (C252) and the deployment's push admission (409), so the two
 // never read a floor two different ways. A floor's PRESENCE is not enough:
 // `>= 0.0.1` on such a bundle admits every runner that cannot read it, which
 // is exactly what the floor exists to refuse.
 func CheckSyntaxFloor(m *Manifest, req SyntaxRequirements) ProfileFloor {
-	pf := ProfileFloor{Profile: req.Profile}
-	pf.Need, pf.Reason = RequiredRelease(req)
+	subject := SubjectOf(m, req)
+	pf := ProfileFloor{Profile: req.Profile, Uses: subject.Describe()}
+	pf.Need, pf.Reason, pf.Consequence = requiredRelease(subject)
 	if pf.Reason == "" {
 		pf.OK = true
 		return pf
@@ -469,56 +483,139 @@ func CheckSyntaxFloor(m *Manifest, req SyntaxRequirements) ProfileFloor {
 	return pf
 }
 
-// syntaxFloor is one syntax a floor is asked for: the pins it contributes
-// to the registry (by the name of the parser constant), and what it needs
-// of a set of sources. The table below is the ONE list — RequiredRelease
-// reads it, SyntaxFloors projects it — so a syntax added to it is asked
-// for by `validate`'s C252, the push admission, the scaffold and the
-// release test at once, and one added anywhere else is a test failure
+// FloorSubject is what the ONE floors table judges: a bundle's executable
+// sources and the keys its own manifest declares. A release floor can be
+// asked for by either — a syntax the sources are written in, or a manifest
+// key a build below the floor refuses at its strict decode — so every
+// reader of the table reads ONE subject: `validate`'s C252, the push
+// admission, the scaffold's own manifest and the release test.
+type FloorSubject struct {
+	// Syntax is what the `.bot` sources use (MaxSyntaxRequirements).
+	Syntax SyntaxRequirements
+	// Keys is what the manifest declares (Manifest.DeclaredKeys), empty for
+	// a caller that has sources alone.
+	Keys ManifestKeys
+}
+
+// SubjectOf is the floor subject of a manifest and its sources; a nil
+// manifest declares no key.
+func SubjectOf(m *Manifest, req SyntaxRequirements) FloorSubject {
+	s := FloorSubject{Syntax: req}
+	if m != nil {
+		s.Keys = m.DeclaredKeys
+	}
+	return s
+}
+
+// Asks reports whether anything of the subject asks for a floor.
+func (s FloorSubject) Asks() bool {
+	_, reason, _ := requiredRelease(s)
+	return reason != ""
+}
+
+// Describe names what asks for a floor, for a diagnostic: the sources'
+// syntaxes with the files that declare them, then the manifest keys — "dsl
+// profile 2 (main.bot)", "top-level `category`/`tags`", or both. The key
+// half is read from the one table, so a key added there is described
+// without a second list to keep in step.
+func (s FloorSubject) Describe() string {
+	var parts []string
+	if sources := s.Syntax.Describe(); sources != "" {
+		parts = append(parts, sources)
+	}
+	for _, f := range syntaxFloors {
+		if !f.onManifestKey {
+			continue
+		}
+		if _, reason, asks := f.need(s); asks {
+			parts = append(parts, reason)
+		}
+	}
+	return strings.Join(parts, " and ")
+}
+
+// sourceParseConsequence is what a build below a floor a SOURCE syntax asks
+// for does with the bundle: it re-parses as text what it was handed and
+// fails there.
+const sourceParseConsequence = "a runner older than the release that reads it re-parses a subbot child, a fragment or the contract as text and fails at that parse"
+
+// syntaxFloor is one thing a floor is asked for: the pins it contributes to
+// the registry (by the name of the constant that pins each), what it needs
+// of a floor subject, and what a build below it does with the bundle. The
+// table below is the ONE list — RequiredRelease reads it, SyntaxFloors
+// projects it — so an entry added to it is asked for by `validate`'s C252,
+// the push admission, the scaffold and the release test at once, and one
+// added anywhere else is a test failure
 // (TestEveryFloorTheTableAsksForIsPinned).
 type syntaxFloor struct {
 	pins map[string]string
-	need func(SyntaxRequirements) (release, reason string, asks bool)
+	// onManifestKey marks an entry that reads what the MANIFEST declares
+	// rather than what the sources use: no source file carries it, so its
+	// reason is the whole description a diagnostic can give of it.
+	onManifestKey bool
+	// consequence is what a build below the floor does with the bundle. It
+	// lives with the pin so a floor's failure mode cannot be read two ways,
+	// and so a floor added later cannot inherit a consequence that is false
+	// for it.
+	consequence string
+	need        func(FloorSubject) (release, reason string, asks bool)
 }
 
 var syntaxFloors = []syntaxFloor{
 	{
-		pins: profilePins(),
-		need: func(req SyntaxRequirements) (string, string, bool) {
-			if req.Profile < 2 {
+		pins:        profilePins(),
+		consequence: sourceParseConsequence,
+		need: func(s FloorSubject) (string, string, bool) {
+			if s.Syntax.Profile < 2 {
 				return "", "", false
 			}
-			return parser.ProfileSince[req.Profile], fmt.Sprintf("dsl profile %d", req.Profile), true
+			return parser.ProfileSince[s.Syntax.Profile], fmt.Sprintf("dsl profile %d", s.Syntax.Profile), true
 		},
 	},
 	{
-		pins: map[string]string{"parser.ImportSince": parser.ImportSince},
-		need: func(req SyntaxRequirements) (string, string, bool) {
-			return parser.ImportSince, "import", req.UsesImport()
+		pins:        map[string]string{"parser.ImportSince": parser.ImportSince},
+		consequence: sourceParseConsequence,
+		need: func(s FloorSubject) (string, string, bool) {
+			return parser.ImportSince, "import", s.Syntax.UsesImport()
 		},
 	},
 	{
-		pins: map[string]string{"parser.ContractSince": parser.ContractSince},
-		need: func(req SyntaxRequirements) (string, string, bool) {
-			return parser.ContractSince, "contract", req.UsesContract()
+		pins:        map[string]string{"parser.ContractSince": parser.ContractSince},
+		consequence: sourceParseConsequence,
+		need: func(s FloorSubject) (string, string, bool) {
+			return parser.ContractSince, "contract", s.Syntax.UsesContract()
 		},
 	},
 	{
-		pins: map[string]string{"bundle.ToolAliasesSince": ToolAliasesSince},
-		need: func(req SyntaxRequirements) (string, string, bool) {
-			return ToolAliasesSince, "the Claw tool alias", req.UsesToolAliases()
+		pins:        map[string]string{"bundle.ToolAliasesSince": ToolAliasesSince},
+		consequence: "a runner older than the release that reads it keeps resolving the aliased spellings as exact tools or unique MCP shorthand only, and the node's tool list fails at dispatch",
+		need: func(s FloorSubject) (string, string, bool) {
+			return ToolAliasesSince, "the Claw tool alias", s.Syntax.UsesToolAliases()
 		},
 	},
 	{
 		pins: map[string]string{"bundle.DeclaredEmptyToolsSince": DeclaredEmptyToolsSince},
-		need: func(req SyntaxRequirements) (string, string, bool) {
-			return DeclaredEmptyToolsSince, "an empty `tools: []` declaration", req.UsesDeclaredEmptyTools()
+		// This floor is the one whose failure is SILENT: an older runner
+		// parses `tools: []` without complaint and reads it as an absent
+		// list, which is the opposite bound.
+		consequence: "a runner older than the release that reads it parses `tools: []` as an ABSENT list — the opposite bound — and hands the node the CLI backend's own toolset instead of none",
+		need: func(s FloorSubject) (string, string, bool) {
+			return DeclaredEmptyToolsSince, "an empty `tools: []` declaration", s.Syntax.UsesDeclaredEmptyTools()
 		},
 	},
 	{
-		pins: map[string]string{"parser.VarMatchingSince": parser.VarMatchingSince},
-		need: func(req SyntaxRequirements) (string, string, bool) {
-			return parser.VarMatchingSince, `a var's [matching: "<re>"] constraint`, req.UsesVarMatching()
+		pins:        map[string]string{"parser.VarMatchingSince": parser.VarMatchingSince},
+		consequence: sourceParseConsequence,
+		need: func(s FloorSubject) (string, string, bool) {
+			return parser.VarMatchingSince, `a var's [matching: "<re>"] constraint`, s.Syntax.UsesVarMatching()
+		},
+	},
+	{
+		pins:          map[string]string{"bundle.CatalogTaxonomySince": CatalogTaxonomySince},
+		onManifestKey: true,
+		consequence:   "a build older than the release that reads them decodes the manifest strictly, knows no such field and refuses the whole document",
+		need: func(s FloorSubject) (string, string, bool) {
+			return CatalogTaxonomySince, "top-level `category`/`tags`", s.Keys.Declares(keyCategory, keyTags)
 		},
 	},
 }
@@ -596,22 +693,40 @@ func SyntaxFloors() map[string]string {
 	return out
 }
 
-// RequiredRelease is the release a set of sources needs — the HIGHEST among
-// what they use, read from the one table of syntaxes that ask for a floor —
-// with the reason, or "" and "" when they use nothing a floor is asked for.
-// The one arithmetic behind `validate`'s C252, the push admission, the
-// scaffold's manifest and `dsl migrate`'s floor.
+// RequiredRelease is the release a set of SOURCES needs — the HIGHEST among
+// what they use, read from the one table of what asks for a floor — with
+// the reason, or "" and "" when they use nothing a floor is asked for. It
+// is the form for a caller that has sources alone (`dsl migrate`); a caller
+// that also has the manifest reads RequiredReleaseOf, so a floor a manifest
+// key asks for is not lost on the way.
 func RequiredRelease(req SyntaxRequirements) (release, reason string) {
+	release, reason, _ = requiredRelease(FloorSubject{Syntax: req})
+	return release, reason
+}
+
+// RequiredReleaseOf is the release a whole subject needs — its sources AND
+// the keys its manifest declares. The one arithmetic behind `validate`'s
+// C252, the push admission, the scaffold's manifest and `dsl migrate`'s
+// floor.
+func RequiredReleaseOf(s FloorSubject) (release, reason string) {
+	release, reason, _ = requiredRelease(s)
+	return release, reason
+}
+
+// requiredRelease is RequiredReleaseOf with the consequence of the entry
+// that decided the floor — what a build below it does with the bundle,
+// which only the winning entry knows.
+func requiredRelease(s FloorSubject) (release, reason, consequence string) {
 	for _, f := range syntaxFloors {
-		rel, why, asks := f.need(req)
+		rel, why, asks := f.need(s)
 		if !asks {
 			continue
 		}
 		if reason == "" || laterRelease(rel, release) {
-			release, reason = rel, why
+			release, reason, consequence = rel, why, f.consequence
 		}
 	}
-	return release, reason
+	return release, reason, consequence
 }
 
 // laterRelease reports whether a orders after b; a release not on record

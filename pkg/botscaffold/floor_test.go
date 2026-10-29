@@ -1,6 +1,7 @@
 package botscaffold
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -32,8 +33,27 @@ func TestEveryTemplateDeclaresTheFloorItsSourcesNeed(t *testing.T) {
 				t.Fatal(err)
 			}
 			req := bundle.MaxSyntaxRequirementsDir(dir)
+			// The predicate judges BOTH halves of what the scaffold wrote:
+			// the rendered sources and the keys its manifest declares.
 			if pf := bundle.CheckSyntaxFloor(m, req); !pf.OK {
-				t.Fatalf("the scaffold declares %q but its sources use %s, which needs %s (C252 on a fresh scaffold)", pf.Declared, req.Describe(), pf.Need)
+				t.Fatalf("the scaffold declares %q but its bundle asks for %s, which needs %s (C252 on a fresh scaffold)", pf.Declared, pf.Uses, pf.Need)
+			}
+			// The keys the scaffold ASKS the table for must be the
+			// floor-bearing keys it actually WROTE: a template that starts
+			// writing another one reddens here instead of shipping a floor
+			// that is short.
+			body, err := os.ReadFile(filepath.Join(dir, bundle.ManifestFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+			written, err := bundle.DeclaredManifestKeys(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fromWritten, reason := bundle.RequiredReleaseOf(bundle.FloorSubject{Keys: written})
+			fromAsked, _ := bundle.RequiredReleaseOf(bundle.FloorSubject{Keys: spec.manifestKeys()})
+			if fromWritten != fromAsked {
+				t.Fatalf("the rendered manifest asks for %s (%s) through its keys, the scaffold asked the table for %s: Spec.manifestKeys does not name every floor-bearing key the template writes", fromWritten, reason, fromAsked)
 			}
 			if tpl.Spec.Category != "" {
 				if m.Requires == nil {
@@ -43,8 +63,11 @@ func TestEveryTemplateDeclaresTheFloorItsSourcesNeed(t *testing.T) {
 				if err != nil {
 					t.Fatalf("the categorized template declares %q: %v", m.Requires.Iterion, err)
 				}
-				if cmp, ok := c.CompareFloor("3.225.0"); !ok || cmp < 0 {
-					t.Fatalf("the categorized template declares %q, below the release that reads category/tags (3.225.0)", m.Requires.Iterion)
+				// The release is read from the pin the floors table carries,
+				// never spelled here: the day the cut realigns it, the
+				// scaffold follows and this case follows with it.
+				if cmp, ok := c.CompareFloor(bundle.CatalogTaxonomySince); !ok || cmp < 0 {
+					t.Fatalf("the categorized template declares %q, below the release that reads category/tags (%s)", m.Requires.Iterion, bundle.CatalogTaxonomySince)
 				}
 			}
 			if tpl.Spec.Shape == "library" {

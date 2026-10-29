@@ -726,12 +726,18 @@ func sameStringSet(a, b []string) bool {
 // in pkg/bundle, so an author, an operator and a pod cannot read the same
 // manifest three different ways.
 // checkSyntaxFloor holds the manifest's engine floor against what the
-// bundle's sources use (C252): a profile above 1, `import`, a `contract`,
-// or a Claw tool alias needs a declared `requires.iterion` at or above the
-// release that reads it (bundle.CheckSyntaxFloor, the predicate the push
-// admission shares) — a floor declared but lower leaves every runner
-// between the two admitting a bundle it cannot parse. The remedy names that
-// release, or this build when the release has none on record.
+// bundle asks for (C252): a profile above 1, `import`, a `contract`, a Claw
+// tool alias, or a key the manifest itself declares (`category`/`tags`)
+// needs a declared `requires.iterion` at or above the release that reads it
+// (bundle.CheckSyntaxFloor, the predicate the push admission shares) — a
+// floor declared but lower leaves every runner between the two admitting a
+// bundle it cannot read. The remedy names that release, or this build when
+// the release has none on record.
+//
+// What asks for the floor and what a build below it does are read from the
+// verdict (ProfileFloor.Uses, .Consequence), which carries them from the
+// one floors table: a floor added there is named here without an arm of
+// its own, and cannot inherit a consequence that is false for it.
 func checkSyntaxFloor(diags *[]Diag, m *bundle.Manifest, req bundle.SyntaxRequirements, build string) {
 	pf := bundle.CheckSyntaxFloor(m, req)
 	if pf.OK {
@@ -746,17 +752,7 @@ func checkSyntaxFloor(diags *[]Diag, m *bundle.Manifest, req bundle.SyntaxRequir
 			}
 		}
 	}
-	uses := req.Describe()
-	consequence := "a runner older than the release that reads it re-parses a subbot child, a fragment or the contract as text and fails at that parse"
-	if req.UsesToolAliases() {
-		consequence = "a runner older than the release that reads it keeps resolving the aliased spellings as exact tools or unique MCP shorthand only, and the node's tool list fails at dispatch"
-	}
-	if req.UsesDeclaredEmptyTools() {
-		// This floor is the one whose failure is SILENT: an older runner
-		// parses `tools: []` without complaint and reads it as an absent
-		// list, which is the opposite bound.
-		consequence = "a runner older than the release that reads it parses `tools: []` as an ABSENT list — the opposite bound — and hands the node the CLI backend's own toolset instead of none"
-	}
+	uses, consequence := pf.Uses, pf.Consequence
 	msg := fmt.Sprintf("the bundle uses %s but declares no engine floor: %s", uses, consequence)
 	hint := fmt.Sprintf("declare `requires: { iterion: \">= %s\" }` in the manifest, so such a runner refuses the bundle at admission instead", floor)
 	if pf.Declared != "" {
