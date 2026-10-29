@@ -759,6 +759,7 @@ jobs:
           # job's fifteen-minute limit without shortening any test coverage.
           go test -mod=vendor -count=1 -v -timeout 10m ./pkg/store/mongo/... \
             ./pkg/internal/storekit/... ./pkg/audit/... ./pkg/pat/... \
+            ./pkg/connection/... \
             ./pkg/cloudsched/... ./pkg/auth/... \
             ./pkg/secrets/... ./pkg/orgusage/... ./pkg/credusage/... ./pkg/credpool/... \
             ./pkg/botsource/... \

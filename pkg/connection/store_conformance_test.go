@@ -2,13 +2,19 @@ package connection_test
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
 	"github.com/SocialGouv/iterion/pkg/connection"
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 )
 
 func writeFile(path, body string) error { return os.WriteFile(path, []byte(body), 0o600) }
@@ -20,12 +26,16 @@ func contains(s, sub string) bool { return strings.Contains(s, sub) }
 // This suite exists because a durable seam with two implementations drifts at
 // the edges nobody tests — the tenant check on the third method, the error a
 // missing record returns, whether an update may move an owner. Each new
-// implementation (the Mongo twin next) adds one line here and inherits the
-// whole contract, which is the only version of this that stays true.
+// implementation adds one entry here and inherits the whole contract, which
+// is the only version of this that stays true. The Mongo twin's entry is
+// gated on ITERION_TEST_MONGO_URI, like every mongo suite in this tree, and
+// the mongo-conformance CI job is what runs it (its package list names
+// ./pkg/connection/... — pkg/store/mongo's ci_mongo_gate_test holds that
+// sync).
 
 func stores(t *testing.T) map[string]func() connection.Store {
 	t.Helper()
-	return map[string]func() connection.Store{
+	out := map[string]func() connection.Store{
 		"memory": func() connection.Store { return connection.NewMemoryStore() },
 		"file": func() connection.Store {
 			s, err := connection.NewFileStore(filepath.Join(t.TempDir(), "connections.json"))
@@ -35,6 +45,41 @@ func stores(t *testing.T) map[string]func() connection.Store {
 			return s
 		},
 	}
+	if uri := os.Getenv("ITERION_TEST_MONGO_URI"); uri != "" {
+		client, err := mongo.Connect(options.Client().ApplyURI(uri))
+		if err != nil {
+			t.Fatalf("mongo connect: %v", err)
+		}
+		nonce := make([]byte, 4)
+		_, _ = rand.Read(nonce)
+		db := client.Database("iterion_connection_" + hex.EncodeToString(nonce))
+		t.Cleanup(func() {
+			drop, dropCancel := mongotest.TeardownCtx()
+			defer dropCancel()
+			_ = db.Drop(drop)
+			_ = client.Disconnect(drop)
+		})
+		out["mongo"] = func() connection.Store {
+			// A FRESH COLLECTION per build: the suite's contract is that every
+			// store starts empty, and a shared one would leak a subtest's
+			// records into the next.
+			nonce := make([]byte, 6)
+			_, _ = rand.Read(nonce)
+			s := connection.NewMongoStoreIn(db, "connections_test_"+hex.EncodeToString(nonce))
+			schemaCtx, schemaCancel := mongotest.Ctx(t)
+			defer schemaCancel()
+			if err := s.EnsureSchema(schemaCtx); err != nil {
+				t.Fatalf("mongo schema: %v", err)
+			}
+			t.Cleanup(func() {
+				drop, dropCancel := mongotest.TeardownCtx()
+				defer dropCancel()
+				_ = s.Drop(drop)
+			})
+			return s
+		}
+	}
+	return out
 }
 
 func TestStoreConformance(t *testing.T) {
