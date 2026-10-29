@@ -1,5 +1,27 @@
 # Mirrors Revi's `revi/review` verdict from a pull request's head onto the
-# merge-queue branch built from it.
+# merge-queue branch built from it — the documented FALLBACK for what the
+# engine now does itself (pkg/server/forge_gate_merge_group.go, #1589).
+#
+# WHY THE ENGINE OWNS THIS NOW, and why this file stays: a required check
+# pinned by NAME alone is satisfied by any credential able to post a commit
+# status, which is the premise #1589 refuses. Authenticating the producer means
+# pinning the ruleset's `integration_id` to the App that posts the verdict —
+# and a workflow posts as GitHub Actions, never as iterion's App, so a pinned
+# ruleset and an Actions-mirrored verdict are MUTUALLY EXCLUSIVE: the check
+# arrives from the wrong App and the entry waits for one that never comes.
+# The engine answers the same `merge_group` event as the same App that answers
+# the pull request, which makes the pin possible.
+#
+# This job is therefore the lever for the window where the engine cannot:
+# a replica rolling out, a webhook subscription not yet carrying Merge group,
+# a tenant whose connection cannot mint a token. It is ON by default — turning
+# it off before the engine is proven posting would stall every entry — and
+# `MERGE_QUEUE_MIRROR=off` (repository or org variable) is the documented step
+# that retires it, in the order docs/auto-maintenance.md pins.
+#
+# BOTH posting is harmless in itself (same context, same state, mirrored from
+# the same head) but the LAST writer owns the context, so with a pinned
+# ruleset this job must be off: see "the merge-queue caveat".
 #
 # Why this exists: `revi/review` is a REQUIRED status check, and it is posted by
 # the iterion server's forge client in response to a `pull_request` event (see
@@ -45,6 +67,11 @@ permissions:
 
 jobs:
   mirror-revi-verdict:
+    # The fallback's off switch. Default ON: an absent variable must behave
+    # exactly as this file did before the engine learned to post, because the
+    # alternative is a merge queue that stalls on every entry while someone
+    # finds this line.
+    if: vars.MERGE_QUEUE_MIRROR != 'off'
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 5
     steps:

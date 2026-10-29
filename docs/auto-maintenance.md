@@ -130,6 +130,24 @@ they are the admin escape hatch, kept on purpose. What is a defect is not
 knowing them, because a merge by a bypass actor did **not** pass the gate, and
 nothing downstream should read it as a conforming merge.
 
+The inventory says who **may** bypass; it cannot say who **did**. That is
+agreement 8, and it reads GitHub's own verdict per push —
+`repos/<repo>/rulesets/rule-suites` answers `pass | fail | bypass` with the
+actor — rather than inferring a merge actor from a pull request, where a queue
+merge, a squash and a direct push all look the same. What reddens is a bypass
+no inventory entry can explain **by shape**: an App bypassed while the ruleset
+lists no `Integration`, or a human bypassed while it lists no role-shaped
+actor. Shape is as far as the read honestly goes — rule-suites names the user
+who pushed, the ruleset names the role that let them, and nothing joins the
+two, so the report names the **actor** and never claims the role. The read
+needs admin on the repository; without it the agreement is a BLIND SPOT, never
+"no bypass".
+
+Measured on `SocialGouv/iterion` itself (2026-10-29): 8 of the last 10 pushes
+to `main` were `bypass` — the landing trains, by a repository admin, under
+`RepositoryRole 5`. Both legitimate and worth saying out loud, which is the
+whole point of the agreement.
+
 ### 4. The iterion integration, auto-merge OFF
 
 ```
@@ -203,6 +221,68 @@ check pinned by name alone is satisfied by *any* credential able to post a
 commit status on the repository — including one that is neither Revi nor Vetty.
 The loop's whole premise is that the gate proves an adversarial reviewer saw
 the change, and a name does not prove that. This is agreement 2.
+
+```
+gh api repos/<owner>/<repo>/rulesets/<id> -X PUT --input - <<'JSON'
+{ "rules": [ { "type": "required_status_checks", "parameters": {
+    "required_status_checks": [
+      { "context": "revi/review", "integration_id": 4895793 },
+      { "context": "test" }, { "context": "race" } ] } } ] }
+JSON
+```
+
+Two numbers that are **not** interchangeable, and getting them wrong is the
+whole of this step:
+
+- `integration_id` is the **App id** — `app_id` on the installation payload,
+  and the same id space as a `bypass_actors` entry of `actor_type:
+  Integration`. On SocialGouv, `iterion-forge-core` is **installation**
+  160560029 of **App** 4895793; pinning the installation id pins nothing that
+  can ever post.
+- the App to pin is the one iterion **posts as**, read rather than assumed:
+  `repos/<repo>/commits/<head>/statuses` carries `creator.login` on the
+  verdict (`iterion-forge-core[bot]` here). Per-tenant deployments carry their
+  own `iterion-forge-*` App, so the id is per-org, never a constant.
+
+Agreement 2 decides this as a **triple** — context × producing App ×
+requiring ruleset — because dropping any leg answers something else: a merely
+*present* pin can name an App that never posts (a check that can never go
+green), and GitHub **accumulates** required checks across active rulesets, so
+the same context can be required twice with a different pin each time.
+
+#### The merge-queue caveat — pin LAST, and in this order
+
+A merge-queue entry is a revision **no pull request owns**: GitHub builds
+`gh-readonly-queue/<base>/pr-<n>-<base-sha>` and fires `merge_group`, so the
+review lane never runs there and the required context is absent exactly where
+the merge decision is made. The queue then waits for a status that cannot
+arrive and dequeues the entry on timeout, with every entry behind it
+(measured 2026-07-28 on PR #307: 62 minutes in `AWAITING_CHECKS`).
+
+Two things can answer on that revision, and only one of them can satisfy a
+pinned check:
+
+| producer | posts as | works under a pin? |
+|---|---|---|
+| the engine (`pkg/server/forge_gate_merge_group.go`) | the repo's iterion App | yes — the same App as on the pull request head |
+| [merge-queue-gate.yml](../.github/workflows/merge-queue-gate.yml) | GitHub Actions (App 15368) | no — the pinned App never posted it |
+
+So the order is not a preference. **Pinning the ruleset while the workflow is
+the producer stalls every queue entry**, and the last writer owns the context,
+so both posting is not a safe middle ground either:
+
+1. the engine's binary carrying the `merge_group` lane is **deployed**;
+2. the GitHub App's webhook subscription carries **Merge group** (without it
+   the delivery never arrives and nothing on the queue revision changes);
+3. one entry observed with `revi/review` on the queue revision **posted by
+   the iterion App** — read `creator.login`, not just the state;
+4. `MERGE_QUEUE_MIRROR=off` on the repository, retiring the fallback;
+5. **then** `integration_id` on the ruleset, and one more queue entry watched
+   through.
+
+Rolling back is step 4 in reverse: unset `MERGE_QUEUE_MIRROR` and drop the
+`integration_id`, in that order — the workflow must be producing again before
+the pin stops being satisfiable.
 
 ### 7. Watch it BLOCK a fresh revision
 

@@ -63,6 +63,13 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		// PR auto-review and slash-command paths.
 		s.handleGitHubIssues(w, r, cfg, body, payloadHash, srcIP)
 		return
+	case prforge.EventHeaderMergeGroup:
+		// Merge-queue path: the revision GitHub builds from a queue entry is
+		// not a pull request, so no review runs on it and the required check
+		// is absent exactly where the merge decision is made. This mirrors
+		// the entry's verdict onto it, as the App the ruleset can pin.
+		s.handleGitHubMergeGroup(ctx, w, cfg, body, payloadHash, srcIP)
+		return
 	case prforge.EventHeaderPullRequest:
 		// fall through to the PR auto-review path below.
 	default:
