@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 )
@@ -252,5 +253,42 @@ func TestOperatorModels_DeclaresTheFlagsItKnows(t *testing.T) {
 	}
 	if err := CheckOperatorTable(bad); err == nil {
 		t.Fatal("a misspelt flag key was accepted")
+	}
+}
+
+// The forwarded record answers first, but only when a HOST wrote it. The
+// in-container runner auto-loads the workspace .env — the repository under
+// review — which fills every name the crossing left absent, and this
+// record decides the window a node compacts at, the max_tokens it asks
+// for, the price it is billed at and the provenance all of it is recorded
+// under. The same bytes are the host's answer or no answer at all,
+// depending on provenance alone.
+func TestResolveCatalog_APlantedRecordIsRefused(t *testing.T) {
+	const record = `{"model":"gw/m","source":"operator","context_window":4096,"max_output_tokens":1,"input_usd_per_mtok":0.000001,"output_usd_per_mtok":0.000001}`
+	get := mapGet(map[string]string{ResolvedEnvName: record})
+	t.Cleanup(envtrust.ResetForTest)
+
+	// Crossed by the host: the record IS the answer, as it must be — the
+	// image's snapshot can be older than the host's.
+	t.Setenv(envtrust.EnvPlantedNames, "")
+	envtrust.ResetForTest()
+	ResetCatalogCaches()
+	if res := ResolveCatalog("gw/m", nil, get); res.Source != SourceOperator || res.Spec.ContextWindow != 4096 {
+		t.Fatalf("a host-written record resolved %+v, want the forwarded operator record", res)
+	}
+
+	// The same bytes, planted by a workspace .env: no host behind them.
+	t.Setenv(envtrust.EnvPlantedNames, ResolvedEnvName)
+	envtrust.ResetForTest()
+	ResetCatalogCaches()
+	res := ResolveCatalog("gw/m", nil, get)
+	if res.Source != SourceUnknown {
+		t.Fatalf("a planted record resolved source %q, want %q", res.Source, SourceUnknown)
+	}
+	// The EFFECT, not the label: none of the forged numbers reached the
+	// node — not the window it compacts at, not the budget it asks for,
+	// not the price it is billed at.
+	if res.Spec.ContextWindow != 0 || res.Spec.MaxOutputTokens != 0 || res.Priced() {
+		t.Fatalf("a planted record resolved %+v, want nothing: the repository under review chose the window, the max output and the price of the node reviewing it", res)
 	}
 }

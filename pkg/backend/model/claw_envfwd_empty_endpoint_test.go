@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 )
 
 // The two lists must not drift apart: every endpoint-shaped name on the
@@ -78,5 +80,34 @@ func TestForwardableProviderEnv_HostSetEndpointStillCrosses(t *testing.T) {
 	}
 	if env["XAI_API_KEY"] != "sk-x" {
 		t.Error("XAI_API_KEY did not cross")
+	}
+}
+
+// The forwarded catalog record is the endpoint empties' twin: the host
+// writes ITERION_OPENAI_COMPATIBLE_RESOLVED for every gateway node it
+// dispatches, an EMPTY record when its own answer is unknown. Absent, the
+// name is filled by the workspace .env of the repository under review —
+// and that record is what the in-container catalog answers from FIRST, so
+// the repository would pick the window its reviewer compacts at, the
+// max_tokens it asks for, the price it is billed at and the provenance all
+// of it is recorded under.
+func TestForwardableProviderEnv_ForwardsAnEmptyGatewayRecordWhenTheHostDoesNotKnow(t *testing.T) {
+	t.Setenv("OPENAI_COMPATIBLE_MODELS", "")
+	t.Setenv("OPENAI_COMPATIBLE_CATALOG_PROVIDER", "")
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://198.51.100.7")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "sk-test")
+	t.Setenv(compatgw.ResolvedEnvName, "")
+	compatgw.ResetCatalogCaches()
+
+	env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/no-table-has-this-id")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+	raw, ok := env[compatgw.ResolvedEnvName]
+	if !ok {
+		t.Fatalf("%s crossed ABSENT for an id the host does not know — the workspace .env fills it and the repository under review writes the record its reviewer's node runs on", compatgw.ResolvedEnvName)
+	}
+	if raw != "" {
+		t.Errorf("%s crossed as %q, want the explicit empty: the host resolved nothing for this id", compatgw.ResolvedEnvName, raw)
 	}
 }

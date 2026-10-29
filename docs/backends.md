@@ -1368,6 +1368,17 @@ what it did before they existed (the kubernetes driver runs the image's
 baked binary, so a lagging image is the normal case there, not an
 accident). The flags cross intact on an image at this version or later.
 
+The name crosses for every gateway node, **always** — an empty value when
+the host resolved nothing for the id. An absent name is the one a workspace
+`.env` fills inside the container (the runner auto-loads the nearest one,
+filling every name the crossing left unset), and this record is the first
+thing the in-container catalog answers from: whoever writes it picks the
+window the node compacts at, the `max_tokens` it asks for, the price it is
+billed at and the provenance all of that is recorded under. The explicit
+empty leaves no gap to fill, and the reader refuses a record a project
+`.env` planted — one with no host behind it — so a repository under review
+never writes the record its own reviewer runs on.
+
 > **Version skew.** The three flag keys are decoded strictly — this is the
 > operator table, not the forwarded record: an iterion older than their
 > introduction refuses the WHOLE table, naming the first of the new keys

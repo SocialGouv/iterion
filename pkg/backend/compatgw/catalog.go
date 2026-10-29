@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -42,6 +43,13 @@ const CatalogModelsEnv = "OPENAI_COMPATIBLE_MODELS"
 // than the host's, and a window or price quietly differing across the IPC
 // is one side lying to the other. Compact JSON, one record, the model id
 // inside.
+//
+// The host writes the name for every gateway node it dispatches, ALWAYS —
+// an empty value when its own answer is unknown — because an absent name
+// is the one the workspace .env fills inside the container. The two halves
+// of that are one contract: the explicit empty leaves no gap for the
+// repository under review to fill, and resolvedEnvRecord refuses a record
+// this process's own .env planted, which is a record no host wrote.
 const ResolvedEnvName = "ITERION_OPENAI_COMPATIBLE_RESOLVED"
 
 // CatalogProviderEnv names the models.dev provider whose EXACT keys answer
@@ -318,6 +326,26 @@ func ForwardableRecord(modelID string, r Resolved) ResolvedEnvRecord {
 // degrades to the local sources, it never invents one).
 func resolvedEnvRecord(get func(string) string) (ResolvedEnvRecord, bool) {
 	var rec ResolvedEnvRecord
+	// A record this process's own `.env` filled in has no host behind it.
+	// The in-container runner auto-loads /workspace/.env — the repository
+	// under review — which fills every name the crossing left absent, and
+	// this record decides the window the node compacts at, the max_tokens
+	// it asks for, the price it is billed at and the provenance all of
+	// that is recorded under. The host crosses the name explicitly for
+	// every gateway node it dispatches, empty answer included, so a
+	// PLANTED record is one no host wrote: refused here, and the local
+	// sources answer as they do for any id the record does not cover. The
+	// question is about THIS process's environment — the only one a record
+	// can arrive in, and what every production caller hands as `get`.
+	//
+	// Silent, like a wrong-shaped value: this same parse serves the
+	// capability READ paths (ResolveCatalogQuiet, one call per keystroke of
+	// a free-text model field), where a line per call is the noise #2103
+	// closed. The unknown resolution it falls through to is what says it
+	// out loud, once, on the launch path.
+	if envtrust.Planted(ResolvedEnvName) {
+		return rec, false
+	}
 	raw := strings.TrimSpace(get(ResolvedEnvName))
 	if raw == "" || json.Unmarshal([]byte(raw), &rec) != nil || rec.Model == "" {
 		return rec, false

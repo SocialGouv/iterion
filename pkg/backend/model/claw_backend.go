@@ -2453,6 +2453,19 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 		// declared must not read unknown container-side under a record that
 		// still claims `source=operator`. Top precedence container-side
 		// (compatgw.ResolvedEnvRecord, the shape both sides share).
+		//
+		// And the name crosses EXPLICITLY, an empty record included: the
+		// runner auto-loads the workspace .env, which only fills names
+		// MISSING from the process env (applyDotEnv honours LookupEnv), so
+		// an ABSENT name lets the repository under review write the record
+		// the in-container catalog answers from FIRST — its window (hence
+		// when the node compacts), its max output (hence max_tokens), its
+		// price and the provenance it all gets recorded under. An unknown
+		// answer is still an answer, and an empty value is nothing to say
+		// here: the reader takes it as no record at all and the local
+		// sources decide, as they did before this crossed (the catalog
+		// twin of providerRoutingEnvVars' explicit empties).
+		env[compatgw.ResolvedEnvName] = ""
 		if resolved := compatgw.ResolveCatalog(modelroute.Parse(model).Wire, modelspecs.Default(), os.Getenv); resolved.Known() {
 			if raw, merr := json.Marshal(compatgw.ForwardableRecord(modelroute.Parse(model).Wire, resolved)); merr == nil {
 				env[compatgw.ResolvedEnvName] = string(raw)
