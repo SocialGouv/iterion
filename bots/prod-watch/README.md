@@ -1,11 +1,15 @@
 # prod-watch (Argus)
 
-Production watchdog for one deployed application. This slice is the
-**deterministic, zero-LLM watch tick**: it reads the signals of a running
-app — logs through Loki, metrics through Prometheus (both via the Grafana
+Production watchdog for one deployed application. Three **deterministic,
+zero-LLM** modes: the **watch tick** reads the signals of a running app —
+logs through Loki, metrics through Prometheus (both via the Grafana
 datasource proxy), Sentry's issues, the app's own health URLs — redacts every raw line
 before anything is derived, runs an incident lifecycle every tick, delivers
-to chat webhooks and keeps its state in git.
+to chat webhooks and keeps its state in git; the **digest** posts the day in
+numbers, always — its absence is the alert; the **session** watches a
+declared usage window densely, with immediate escalation, a heartbeat of
+positive numbers and a summary. Every message ends with the run that wrote
+it.
 
 The whole design (analysis agent reading the code at the deployed ref,
 leak policy with a circuit-breaker, Telegram, forge issues, daily digest,
@@ -16,10 +20,31 @@ sub-issue.
 ## Shape
 
 ```
-plan → resolve_release → poll_loki → poll_prom → poll_sentry → probe_http → leak_scan → decide → notify → commit_state → done
-plan → watch_halted (typed fail)                          when a halt is armed in the state
-notify → done                                             when not consume (dry-run, partial delivery)
+plan → resolve_release → poll_loki → poll_prom → poll_sentry → poll_galerts → probe_http → leak_scan → decide → notify → commit_state → done
+plan → watch_halted (typed fail)                          when a halt is armed in the state (watch, session)
+plan → done                                               when step_back: a watch tick inside a declared window or
+                                                          while a session is open, a session tick outside every window
+plan → poll_prom → digest → notify → done                 mode=digest (the ranges, the digest; persists nothing)
+decide → session → notify                                 mode=session (start / heartbeat / cap note / summary)
+notify → done                                             when not persist (dry-run, partial delivery, the digest)
 ```
+
+`mode=session` runs the SAME chain on a **fork of the watch state** under
+`<state_dir>/session/` — the session is its only writer, the watch state
+is never written by a session tick; the first tick of a window copies the
+watch state (known incidents are not news, the Loki cursor continues where
+watch stopped), and the watch resumes from its own cursor once the window
+is over (the catch-up is bounded by `max_window_minutes`, the gap said as
+partial coverage — the session saw the window live; an incident the session
+escalated and still open is announced once more by the watch). The watch
+steps back inside a declared window whatever the envelope, and past the
+window only while the envelope is still open (ten minutes of closing-tick
+grace plus that tick's run budget); a closed envelope frees it at once. Two
+windows back to back continue one fork when the watch state has not changed
+between them. Escalation is the
+lifecycle's own `new` alert: every new incident posts at once. The
+analysis cap (`max_analyses_per_session`) HOLDS the escalations past it —
+not posted, not re-fired — and the summary names them.
 
 | node | what it is | reads | writes |
 |---|---|---|---|
@@ -32,7 +57,9 @@ notify → done                                             when not consume (dr
 | `leak_scan` | **the only reader of the raw lines and the Sentry issue text**: redaction by class, error templates, masked samples, coverage | scratch | `<scratch>/signals-<run>.json` |
 | `decide` | incident lifecycle (new / escalated / reminder / quiet, and pending past the cap; for Sentry also regressed / escalating / resolved), source staleness, cap + overflow, staged next state | `signals-<run>.json`, `state.json` | scratch: `state_next-<run>.json`, `alertlog_delta-<run>.jsonl`, `tick-<run>.json` |
 | `notify` | Mattermost incoming webhooks (the rendering is Mattermost's), per-sink `min_severity`, `required` sinks, all-or-nothing consume | `webhooks` secret | the channel |
-| `commit_state` | `state.json` (replaced), `alertlog.jsonl` + `ticks.jsonl` (appended, `merge=union`), optional commit + push | scratch | `<state_dir>/` |
+| `commit_state` | `state.json` (replaced), `alertlog.jsonl` + `ticks.jsonl` (appended, `merge=union`), optional commit + push; a session tick writes `session.json` beside them | scratch | `<state_dir>/` (the session's: `<state_dir>/session/`) |
+| `session` | mode=session: the start message, a heartbeat every `session_heartbeat_minutes` (config `session.heartbeat.metrics` + every probe + the lanes' counts), the cap note, the summary at the window's end; stages the envelope | `session.json`, the session ledgers | scratch: `session_next-<run>.json` |
+| `digest` | mode=digest: ticks executed vs expected (`digest.tick_interval_minutes`), lanes silent, the alerts posted over the window (top error patterns, Sentry and Grafana transitions), the probe success ratio, the Prometheus ranges (`digest.prometheus.ranges`), open incidents, HALTED, release — ALWAYS one message | `ticks*.jsonl`, `alertlog*.jsonl`, `state.json` (read-only) | — |
 
 ## Run it
 
@@ -41,6 +68,8 @@ notify → done                                             when not consume (dr
 iterion run bots/prod-watch/main.bot --var dry_run=true        # first tick: bootstrap + preview, nothing posted
 iterion run bots/prod-watch/main.bot                            # a real tick
 iterion run bots/prod-watch/main.bot --var state_commit=true    # ephemeral runners: git is the state store
+iterion run bots/prod-watch/main.bot --var mode=digest          # the day in numbers, posted whatever it holds
+iterion run bots/prod-watch/main.bot --var mode=session --var state_commit=true   # one dense tick of a usage window
 ```
 
 Secrets: `webhooks` (JSON map name → incoming-webhook URL, shared with
@@ -58,7 +87,8 @@ delivery-permission preflight
 
 ## What this slice does NOT do yet
 
-No LLM analysis, no Telegram, no forge issue, no leak policy beyond
-"report every class at severity high", no digest, no session mode, no
-Sentry event body (issue lists only — the analysis slice reads events). Each
-is a ticketed slice; the graph above is the chassis they plug into.
+No LLM analysis (the digest is numbers only: its narrative waits for the
+analysis slice's gates), no Telegram, no forge issue, no leak policy beyond
+"report every class at severity high", no Sentry event body (issue lists
+only — the analysis slice reads events). Each is a ticketed slice; the
+graph above is the chassis they plug into.

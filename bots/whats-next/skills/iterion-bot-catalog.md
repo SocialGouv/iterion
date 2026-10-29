@@ -1415,11 +1415,16 @@ Auto-fires via the trigger spine on cards carrying triage:auto
 
 ### `prod-watch` — Argus
 
-Production watchdog for ONE deployed application (a scheduled tick,
+Production watchdog for ONE deployed application (scheduled ticks,
 zero LLM in this slice — the compiled workflow contains no agent or
 judge node, so a tick can neither spend a token nor show a log line to
-a model). One deterministic run mode over a git-versioned state in the
-target workspace (an ops repository, never the application's own):
+a model). Three deterministic run modes over a git-versioned state in
+the target workspace (an ops repository, never the application's own):
+`watch`, the idle-profile tick; `digest`, the daily digest that always
+posts (the watchdog's own health, the window's signals, the ranges);
+`session`, a dense tick inside a declared usage window with immediate
+escalation, a heartbeat of positive numbers and a summary. The watch
+tick:
 
 - Loki through the Grafana datasource proxy: the configured error query
   and a full leak sweep, paged FORWARD over a frozen window with an
@@ -1454,7 +1459,8 @@ target workspace (an ops repository, never the application's own):
   absence of observation.
 - Deterministic delivery to Mattermost incoming webhooks with
   per-sink severity thresholds and required/optional sinks; the state
-  advances only after delivery (at-least-once, never a silent loss).
+  advances only after delivery (at-least-once, never a silent loss);
+  every message ends with the run that wrote it.
 
 Universal by design: no host, namespace, metric name, language or
 channel is baked in — everything comes from the workspace config
@@ -1472,7 +1478,7 @@ Requires python3 (stdlib only) on the execution host.
   vulnerability watch (use vuln-watch), not an editorial digest (use
   feed-watch), not the instrumentation of the application itself (use
   instrument); it never edits code.
-- **Vars**: `allow_private_sources` (bool), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `forget_after_days` (int), `ingest_lag_seconds` (int), `max_alerts_per_lane` (int), `max_alerts_per_run` (int), `max_lines` (int), `max_message_chars` (int), `max_window_minutes` (int), `mode` (string), `quiet_after_hours` (int), `renotify_hours` (int), `scratch_dir` (string), `source_stale_hours` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
+- **Vars**: `allow_private_sources` (bool), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `forget_after_days` (int), `ingest_lag_seconds` (int), `max_alerts_per_lane` (int), `max_alerts_per_run` (int), `max_analyses_per_session` (int), `max_lines` (int), `max_message_chars` (int), `max_window_minutes` (int), `mode` (string), `quiet_after_hours` (int), `renotify_hours` (int), `scratch_dir` (string), `session_heartbeat_minutes` (int), `source_stale_hours` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/prod-watch/main.bot`
 
 ### `review-env` — Envy

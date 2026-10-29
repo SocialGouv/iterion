@@ -1,7 +1,22 @@
 name: prod-watch
 display_name: Argus
 icon: 👁️
-version: 0.3.1
+version: 0.4.0
+## 0.4.0 — the digest and the session modes (#1701, #1708). `mode=digest`
+## posts the daily digest — ALWAYS: its absence is the alert — carrying the
+## watchdog's own health (ticks executed vs expected, lanes silent) and
+## the window's signals read from the ledgers, plus the Prometheus ranges
+## of config digest.prometheus.ranges; it writes nothing. `mode=session`
+## is a DENSE cron inside a declared usage window (config
+## session.active_windows): the lifecycle runs on a fork of the watch
+## state under <state_dir>/session/ (its only writer) — immediate
+## escalation, a heartbeat of positive numbers every
+## session_heartbeat_minutes, one note at the analysis cap
+## (max_analyses_per_session, the rest held and named in the summary), a
+## summary when the window ends; a watch tick steps back inside a declared
+## window, and past it only while the envelope is still open (the closing
+## tick's grace plus its run budget). Every message now ends with the run that wrote it (#2430,
+## the prod-watch half), its room reserved before the clip.
 ## 0.3.1 — the state push declares the paths it owns (DELIVERY_OWNED_PATHS):
 ## _staged_outside reads one tuple, so a path outside the state dir can
 ## never reach the push and the bot owes no delivery-permission preflight
@@ -39,11 +54,16 @@ version: 0.3.1
 ## mode are the next slices of the same epic.
 category: operate
 description: |
-  Production watchdog for ONE deployed application (a scheduled tick,
+  Production watchdog for ONE deployed application (scheduled ticks,
   zero LLM in this slice — the compiled workflow contains no agent or
   judge node, so a tick can neither spend a token nor show a log line to
-  a model). One deterministic run mode over a git-versioned state in the
-  target workspace (an ops repository, never the application's own):
+  a model). Three deterministic run modes over a git-versioned state in
+  the target workspace (an ops repository, never the application's own):
+  `watch`, the idle-profile tick; `digest`, the daily digest that always
+  posts (the watchdog's own health, the window's signals, the ranges);
+  `session`, a dense tick inside a declared usage window with immediate
+  escalation, a heartbeat of positive numbers and a summary. The watch
+  tick:
 
   - Loki through the Grafana datasource proxy: the configured error query
     and a full leak sweep, paged FORWARD over a frozen window with an
@@ -78,7 +98,8 @@ description: |
     absence of observation.
   - Deterministic delivery to Mattermost incoming webhooks with
     per-sink severity thresholds and required/optional sinks; the state
-    advances only after delivery (at-least-once, never a silent loss).
+    advances only after delivery (at-least-once, never a silent loss);
+    every message ends with the run that wrote it.
 
   Universal by design: no host, namespace, metric name, language or
   channel is baked in — everything comes from the workspace config
@@ -105,6 +126,24 @@ invocations:
     mode: direct
     context_vars: { mode: watch }
     schedule: { suggested_cron: "*/30 * * * *", default_vars: { state_commit: "true" } }
+  ## The daily digest: always posted, writes nothing. Set
+  ## config digest.tick_interval_minutes to the watch cron's cadence so
+  ## the "ticks executed vs expected" line counts against the truth.
+  - kind: schedule
+    mode: direct
+    context_vars: { mode: digest }
+    schedule: { suggested_cron: "0 7 * * *" }
+  ## The session tick: a DENSE cron covering the declared usage windows
+  ## (config session.active_windows) plus one slot past their end, so the
+  ## closing tick fires; outside a window the tick steps back for free.
+  ## Schedule crons run in UTC: this one covers a Friday 13:00-19:00
+  ## Europe/Paris window in both DST regimes (11:00-17:00 or 12:00-18:00
+  ## UTC) with a slot past its end. The default overlap (skip) keeps at
+  ## most one tick live.
+  - kind: schedule
+    mode: direct
+    context_vars: { mode: session }
+    schedule: { suggested_cron: "*/2 11-19 * * 5", default_vars: { state_commit: "true" } }
 
 ## A watch tick is a perishable observation: one that died on a provider
 ## quota window must NOT come back hours later carrying stale signals —

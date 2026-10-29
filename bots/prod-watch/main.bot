@@ -1,13 +1,13 @@
 ## ─────────────────────────────────────────────────────────────────
 ## prod_watch — "Argus", a production watchdog for one deployed app.
 ##
-## One scheduled run mode today (mode=watch), ZERO LLM: the compiled
-## workflow contains no agent/judge node, so a tick can neither spend a
-## token nor show a log line to a model. The analysis agent (a later
-## slice) sits BEHIND a deterministic scrub and only ever reads derived,
-## redacted signals.
+## Three scheduled run modes (mode=watch | digest | session), ZERO LLM:
+## the compiled workflow contains no agent/judge node, so a tick can
+## neither spend a token nor show a log line to a model. The analysis
+## agent (a later slice) sits BEHIND a deterministic scrub and only ever
+## reads derived, redacted signals.
 ##
-##   mode=watch
+##   mode=watch       the idle-profile tick (the suggested cron: every 30 min)
 ##     plan             (tool) read + validate the workspace config and
 ##                             the mounted secrets; compute the Loki
 ##                             window from the persisted cursor; refuse
@@ -46,12 +46,29 @@
 ##                             state_commit=true — commit + push it (git as
 ##                             the state store: runners are ephemeral)
 ##
+##   mode=digest      plan → poll_prom (the configured ranges) → digest →
+##                    notify: the daily digest, ALWAYS posted — its absence
+##                    is the alert — carrying the watchdog's own health
+##                    (ticks executed vs expected, lanes silent) and the
+##                    window's signals read from the ledgers. Writes nothing.
+##   mode=session     the SAME poll chain on a dense cron inside a declared
+##                    usage window (config session.active_windows): the
+##                    lifecycle runs on a fork of the watch state under
+##                    <state_dir>/session/ (its only writer) — immediate
+##                    escalation, a heartbeat of positive numbers, a summary
+##                    when the window ends; a watch tick steps back inside a
+##                    declared window or while a session is open (plan → done).
+##
 ## State lives in `<state_dir>/` inside the workspace (the ops repo, never
 ## the application repo):
 ##   state.json      cursors + incidents + source health (watch is its
 ##                   ONLY writer — other modes own other files)
 ##   alertlog.jsonl  append-only history of every alert posted (merge=union)
 ##   ticks.jsonl     append-only tick ledger (merge=union)
+##   session/        the session mode's files — session.json (the open
+##                   session's envelope), state.json / alertlog.jsonl /
+##                   ticks.jsonl forked from the watch state at the
+##                   window's first tick; the session is their only writer
 ##
 ## Universal by design: no host, namespace, metric name, language or
 ## channel is baked in — everything comes from the workspace config
@@ -64,9 +81,13 @@ dsl: 2
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
-  ## watch = poll the lanes, run the incident lifecycle, deliver, commit.
-  ## (Single mode in this slice; digest / session / ack / doctor follow.)
-  mode: string [enum: "watch"] = "watch"
+  ## watch   = poll the lanes, run the incident lifecycle, deliver, commit.
+  ## digest  = the daily digest: the watchdog's own health and the window's
+  ##           signals read from the ledgers; always posted, nothing written.
+  ## session = a dense tick inside a declared usage window (config
+  ##           session.active_windows): the lifecycle on a fork of the watch
+  ##           state, immediate escalation, heartbeat, summary at the end.
+  mode: string [enum: "watch", "digest", "session"] = "watch"
   ## Workspace-relative config file (JSON). See skills/argus-config.md.
   config_path: string = "prod-watch.json"
   ## Workspace-relative state root (gitignore it, or set
@@ -125,6 +146,14 @@ vars:
   ## 16383-char post limit; 1500 at least — a note's names take it less
   ## 1000 characters, and go on in parts past it).
   max_message_chars: int = 14000
+  ## session: minutes between two heartbeats — each carries POSITIVE
+  ## numbers (config session.heartbeat.metrics, every probe's status and
+  ## latency, the lanes' counts); the start message is the first one.
+  session_heartbeat_minutes: int = 30
+  ## session: escalations (= analysis requests) a session may post; past
+  ## it a signal is HELD — not posted, named once, listed in the summary.
+  ## 0 = no cap.
+  max_analyses_per_session: int = 10
 
 secrets:
   ## JSON map of webhook name → incoming-webhook URL (the same contract
@@ -199,6 +228,32 @@ schema plan_output:
   ## The time (epoch seconds) the delivery must be done by: what the run's
   ## budget keeps after it is the state commit's.
   deliver_by: int
+  ## The mode's route — four exclusive booleans: halted (above; refuses
+  ## watch and session, the digest SAYS it), step_back (a watch tick inside a
+  ## declared window or while a session is open, a session tick outside every
+  ## window), collect (digest:
+  ## the ranges, then the digest), poll (watch, session: the lanes).
+  step_back: bool
+  collect: bool
+  poll: bool
+  ## False in digest mode: a consumed delivery persists nothing.
+  persist: bool
+  ## The state dir the lifecycle runs in: the var's, or its session/ fork.
+  state_dir: string
+  ## The watch state a session forks from ("" outside a session, or when
+  ## the session already has its own state).
+  state_seed_file: string
+  ## session: {active, new, closing, id, window, starts_at, ends_at,
+  ## ends_local, tz, file, heartbeat_due, heartbeat_minutes, cap, cap_left};
+  ## {} outside the mode.
+  session: json
+  ## The escalations the session may still post this tick (-1: no cap, and
+  ## outside a session).
+  session_cap_left: int
+  ## digest: {hours, tick_interval_minutes, expected_ticks, from, to,
+  ## step_minutes, halt, session_open, session, watch_state_file}; {}
+  ## outside the mode.
+  digest: json
   summary: string
 
 schema release_input:
@@ -248,6 +303,14 @@ schema prom_output:
   ## [{id, state (healthy|breached|no_data|error), value, op, threshold,
   ##   severity, title, warnings (a count), error}]
   results: json
+  ## [{id, title, unit, state (observed|no_data|error), value, error}] —
+  ## the threshold-free observations (config session.heartbeat.metrics):
+  ## the positive numbers a session's heartbeat carries.
+  metrics: json
+  ## [{id, title, unit, agg, state (observed|no_data|error), value, points,
+  ##   error}] — the query_range aggregates over the digest's window
+  ## (config digest.prometheus.ranges).
+  ranges: json
   ok: bool
   errors: json
 
@@ -341,8 +404,14 @@ schema leak_output:
   summary: string
 
 schema decide_input:
+  ## The tick's mode: the lifecycle's state dir is the mode's, and the
+  ## sibling state it reads for the lanes' last success is the OTHER's.
+  mode: string
   signals_file: string
   prom_results: json
+  ## poll_prom's observations, carried into the tick record (a session's
+  ## summary reads their min/max from its ledger).
+  prom_metrics: json
   http_results: json
   loki: json
   loki_ok: bool
@@ -369,6 +438,9 @@ schema decide_input:
   app: json
   workspace: string
   state_dir: string
+  ## A session's first tick: the watch state the lifecycle starts from
+  ## when <state_dir>/state.json does not exist yet ("" otherwise).
+  state_seed_file: string
   scratch_dir: string
   renotify_hours: int
   quiet_after_hours: int
@@ -377,6 +449,9 @@ schema decide_input:
   max_alerts: int
   max_alerts_per_lane: int
   max_message_chars: int
+  ## The session's analysis cap, what it has left (-1: none — the watch
+  ## tick, or an uncapped session): escalations past it are HELD.
+  session_cap_left: int
 
 schema decide_output:
   ## Alerts to post this tick, rendered by notify: [{fingerprint, kind,
@@ -400,6 +475,17 @@ schema decide_output:
   ## The state generation decide read; commit_state refuses to overwrite a
   ## state another tick rewrote since.
   generation: int
+  ## [{fingerprint, kind, severity, title}] — the escalations the session's
+  ## analysis cap held this tick: not posted, not deferred to re-fire,
+  ## their record stamped held_by_cap; the session summary names them.
+  held: json
+  held_count: int
+  ## Report messages for notify (a session's, a digest's); the watch
+  ## lifecycle emits none — the field keeps one edge shape into notify.
+  reports: json
+  ## Always "": the watch lifecycle stages no session envelope (one edge
+  ## shape into notify).
+  session_next_file: string
   summary: string
 
 schema notify_input:
@@ -419,6 +505,17 @@ schema notify_input:
   dry_run: bool
   max_message_chars: int
   deliver_by: int
+  ## [{marker, icon, severity, title_key, title_arg, lines: [{label,
+  ## fields}], names: [{label, members: [{name, count}]}]}] — the digest's
+  ## and the session's messages, rendered here under the alerts' discipline
+  ## (every value inline code, every label escaped) and delivered to every
+  ## sink like a notice: the watchdog's own voice.
+  reports: json
+  ## False in digest mode: a consumed delivery persists nothing.
+  persist_state: bool
+  ## The staged session envelope, passed through to commit_state ("" when
+  ## the tick is not a session's).
+  session_next_file: string
 
 schema notify_output:
   posted: bool
@@ -432,6 +529,9 @@ schema notify_output:
   ## one sink (at-least-once: a delivered alert may repeat once, which is
   ## strictly better than a silent loss).
   consume: bool
+  ## consume AND the mode persists a state: the edge to commit_state.
+  persist: bool
+  session_next_file: string
   targets: string[]
   summary: string
 
@@ -439,6 +539,10 @@ schema commit_input:
   state_next_file: string
   alertlog_file: string
   tick_file: string
+  ## The staged session envelope ("" outside session mode): written as
+  ## <state_dir>/session.json beside the state, under the same lock, and
+  ## staged with it.
+  session_next_file: string
   ## The generation decide read: refused under the lock if the file moved on.
   generation: int
   state_commit: bool
@@ -455,6 +559,60 @@ schema commit_output:
   ## performed, one entry per ledger file that passed its bound: the trim
   ## is SAID here and in the summary, never silent. Empty when none.
   rotations: json
+
+schema session_input:
+  ## plan's session plan (see plan_output.session).
+  session: json
+  workspace: string
+  alerts: json
+  overflow_count: int
+  stale_sources: json
+  held: json
+  tick_file: string
+  prom_results: json
+  prom_metrics: json
+  http_results: json
+  state_dir: string
+  scratch_dir: string
+  release: string
+
+schema session_output:
+  ## The lifecycle's alerts, passed through: an escalation IS the alert.
+  alerts: json
+  overflow_count: int
+  stale_sources: json
+  ## The session's own messages: start, heartbeat, cap note, summary.
+  reports: json
+  ## The next envelope, staged out-of-tree: commit_state writes it as
+  ## session.json only after delivery (a failed post replays the message).
+  session_next_file: string
+  summary: string
+
+schema digest_input:
+  ## plan's digest plan (see plan_output.digest).
+  digest: json
+  workspace: string
+  state_dir: string
+  scratch_dir: string
+  prom_ranges: json
+  prom_ok: bool
+  prom_errors: json
+  lanes: json
+  source_stale_hours: int
+
+schema digest_output:
+  ## Always empty: the digest posts a report, never an alert.
+  alerts: json
+  overflow_count: int
+  stale_sources: json
+  ## The one digest message — ALWAYS one: its absence is the alert.
+  reports: json
+  ## The release the last tick of the window recorded ("" when none).
+  release: string
+  release_known: bool
+  ## Always "": the digest stages nothing.
+  session_next_file: string
+  summary: string
 
 ## ─── Nodes ──────────────────────────────────────────────────────
 
@@ -477,8 +635,19 @@ tool plan:
     if fetch_timeout < 1:
         raise SystemExit('prod-watch: fetch_timeout_secs must be at least 1, got ' + str(fetch_timeout))
     os.chdir(ws)
-    if mode != 'watch':
-        raise SystemExit('prod-watch: invalid mode ' + repr(mode) + ' -- only mode=watch exists in this slice')
+    if mode not in ('watch', 'digest', 'session'):
+        raise SystemExit('prod-watch: invalid mode ' + repr(mode) + ' -- watch, digest or session')
+    heartbeat_min = int({{vars.session_heartbeat_minutes}})
+    if heartbeat_min < 1:
+        raise SystemExit('prod-watch: session_heartbeat_minutes must be at least 1, got ' + str(heartbeat_min))
+    analyses_cap = int({{vars.max_analyses_per_session}})
+    if analyses_cap < 0:
+        raise SystemExit('prod-watch: max_analyses_per_session must be 0 (no cap) or more, got ' + str(analyses_cap))
+    msg_cap = int({{vars.max_message_chars}})
+    if msg_cap > 16383:
+        ## Refused HERE, before a poll: a tick dying at delivery would post
+        ## nothing, every tick.
+        raise SystemExit('prod-watch: max_message_chars must be at most 16383 (the webhook post limit), got ' + str(msg_cap))
     if not os.path.exists(cfg_path):
         raise SystemExit('prod-watch: config file ' + repr(cfg_path) + ' not found in ' + os.getcwd() +
                          ' -- create it (see the argus-config skill) or pass --var config_path=...')
@@ -711,6 +880,133 @@ tool plan:
                                'environment': s_env or ''},
                   'link_prefix': s_base + '/organizations/' + sentry_cfg['org'] + '/issues/'}
 
+    ## ── digest + session ───────────────────────────────────────────
+    ## Both sections are validated whatever the mode: a config error is a
+    ## config error, found by the first tick of any mode.
+    now_utc = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+    AGGS = ('sum', 'max', 'min', 'avg', 'last')
+    def norm_series(items, where):
+        ## A threshold-free series: {id, query, title, agg, unit}.
+        if isinstance(items, dict):
+            items = [dict(v, id=k) for k, v in items.items()]
+        if not isinstance(items, list):
+            raise SystemExit('prod-watch: ' + where + ' must be a list of {id, title, query, agg, unit}')
+        out = []
+        for m in items:
+            if not isinstance(m, dict) or not m.get('id') or not isinstance(m.get('query'), str) or not m['query'].strip():
+                raise SystemExit('prod-watch: each entry of ' + where + ' needs an id and a query')
+            agg = str(m.get('agg') or 'max').lower()
+            if agg not in AGGS:
+                raise SystemExit('prod-watch: ' + where + ' entry ' + repr(m['id']) + ' has an unknown agg ' + repr(agg) +
+                                 ' (' + ', '.join(AGGS) + ') -- an unknown word would silently mean max')
+            title = m.get('title')
+            if isinstance(title, bool) or not isinstance(title, (str, int, float, type(None))):
+                raise SystemExit('prod-watch: ' + where + ' entry ' + repr(m['id']) + ' title must be text, got ' + repr(title)[:60])
+            unit = m.get('unit')
+            if unit is not None and not isinstance(unit, str):
+                raise SystemExit('prod-watch: ' + where + ' entry ' + repr(m['id']) + ' unit must be text, got ' + repr(unit)[:60])
+            out.append({'id': str(m['id']), 'query': m['query'], 'agg': agg, 'unit': (unit or '')[:20],
+                        'title': str(title) if title not in (None, '') else str(m['id'])})
+        return out
+    dg_cfg = section('digest', {})
+    def dg_int(name, default, lo, hi):
+        v = dg_cfg.get(name)
+        if v is None:
+            return default
+        if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+            raise SystemExit('prod-watch: config.digest.' + name + ' must be an integer in [' + str(lo) + ', ' + str(hi) + '], got ' + repr(v)[:40])
+        return v
+    dg_hours = dg_int('hours', 24, 1, 168)
+    dg_interval = dg_int('tick_interval_minutes', 30, 1, 1440)
+    dg_step = dg_int('step_minutes', 5, 1, 1440)
+    if dg_interval > dg_hours * 60:
+        raise SystemExit('prod-watch: config.digest.tick_interval_minutes (' + str(dg_interval) + ') exceeds the window (hours x 60 = ' +
+                         str(dg_hours * 60) + '): the digest would have no tick slot to count')
+    dg_prom = dg_cfg.get('prometheus')
+    if dg_prom is None:
+        dg_prom = {}
+    if not isinstance(dg_prom, dict):
+        raise SystemExit('prod-watch: config.digest.prometheus must be an object {ranges: [...]}')
+    dg_ranges = norm_series(dg_prom.get('ranges') or [], 'config.digest.prometheus.ranges')
+    if dg_ranges and not grafana.get('prometheus_uid'):
+        raise SystemExit('prod-watch: config.digest.prometheus.ranges are configured but config.grafana.prometheus_uid is missing')
+    ss_cfg = section('session', {})
+    hb_cfg = ss_cfg.get('heartbeat')
+    if hb_cfg is None:
+        hb_cfg = {}
+    if not isinstance(hb_cfg, dict):
+        raise SystemExit('prod-watch: config.session.heartbeat must be an object {metrics: [...]}')
+    hb_metrics = norm_series(hb_cfg.get('metrics') or [], 'config.session.heartbeat.metrics')
+    if hb_metrics and not grafana.get('prometheus_uid'):
+        raise SystemExit('prod-watch: config.session.heartbeat.metrics are configured but config.grafana.prometheus_uid is missing')
+    DAYS = ('mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun')
+    windows = []
+    aw = ss_cfg.get('active_windows')
+    if aw is None:
+        aw = []
+    if not isinstance(aw, list):
+        raise SystemExit('prod-watch: config.session.active_windows must be a list of {days, from, to, tz}')
+    for i, w in enumerate(aw):
+        where = 'config.session.active_windows[' + str(i) + ']'
+        if not isinstance(w, dict):
+            raise SystemExit('prod-watch: ' + where + ' must be an object {days, from, to, tz}')
+        days = w.get('days')
+        if days is None:
+            days = list(DAYS)
+        if not isinstance(days, list) or not days or any(not isinstance(d, str) or d.lower()[:3] not in DAYS for d in days):
+            raise SystemExit('prod-watch: ' + where + '.days must be a non-empty list of day names (mon..sun)')
+        hm = []
+        for f in ('from', 'to'):
+            v = w.get(f)
+            if f == 'to' and v == '24:00':
+                ## A window ending at midnight: minute 1440, past every
+                ## minute of the day.
+                hm.append(1440)
+                continue
+            m = re.fullmatch(r'([01]?[0-9]|2[0-3]):([0-5][0-9])', v) if isinstance(v, str) else None
+            if m is None:
+                raise SystemExit('prod-watch: ' + where + '.' + f + ' must be HH:MM (24 h; `to` may be 24:00), got ' + repr(v)[:40])
+            hm.append(int(m.group(1)) * 60 + int(m.group(2)))
+        if hm[1] <= hm[0]:
+            raise SystemExit('prod-watch: ' + where + ': `to` must come after `from` on the same day (an overnight window is two windows)')
+        tz = w.get('tz')
+        if tz is None:
+            tz = 'UTC'
+        if not isinstance(tz, str) or not tz:
+            raise SystemExit('prod-watch: ' + where + '.tz must be a time zone name (IANA, e.g. Europe/Paris)')
+        if tz.upper() == 'UTC':
+            zone = datetime.timezone.utc
+        else:
+            try:
+                import zoneinfo
+                zone = zoneinfo.ZoneInfo(tz)
+            except Exception:
+                raise SystemExit('prod-watch: ' + where + '.tz ' + repr(tz)[:40] + ' is not a time zone this host knows (an IANA name, tzdata installed)')
+        windows.append({'days': [d for d in DAYS if d in {x.lower()[:3] for x in days}], 'from': hm[0], 'to': hm[1],
+                        'from_text': w['from'], 'to_text': w['to'], 'tz': tz, 'zone': zone})
+    def window_at(t):
+        ## The declared window holding t (the first match, in config order):
+        ## its bounds in UTC and its end in the window's own clock.
+        for w in windows:
+            local = t.astimezone(w['zone'])
+            if DAYS[local.weekday()] not in w['days']:
+                continue
+            minute = local.hour * 60 + local.minute
+            if not w['from'] <= minute < w['to']:
+                continue
+            ## The bounds are the day's start plus wall-clock minutes (the
+            ## operator's own clock, DST included); an end of 24:00 is the
+            ## next day's midnight, which no hour field can spell.
+            day0 = local.replace(hour=0, minute=0, second=0, microsecond=0)
+            start = day0 + datetime.timedelta(minutes=w['from'])
+            end = day0 + datetime.timedelta(minutes=w['to'])
+            return {'id': start.strftime('%Y-%m-%d') + 'T' + w['from_text'] + '-' + w['to_text'] + '@' + w['tz'],
+                    'starts_at': start.astimezone(datetime.timezone.utc).isoformat(),
+                    'ends_at': end.astimezone(datetime.timezone.utc).isoformat(),
+                    'ends_local': w['to_text'] + ' (' + w['tz'] + ')',
+                    'days': w['days'], 'from': w['from_text'], 'to': w['to_text'], 'tz': w['tz']}
+        return None
+
     ## ── the run's budget ───────────────────────────────────────────
     ## A tick the budget kills (budget.max_duration below: 12 minutes)
     ## posts nothing, the app-down probe included: every wait before the
@@ -741,9 +1037,12 @@ tool plan:
     waits = [('release', 2 * fetch_timeout if release['source'] != 'none' else 0),
              ('probes', sum(2 * p['timeout_secs'] + 2 for p in http_probes) + sum(probe_hosts.values())),
              ('loki', grafana['deadline_secs'] if queries else 0),
-             ('prometheus', grafana['deadline_secs'] if norm_probes else 0),
+             ('prometheus', grafana['deadline_secs'] if norm_probes or hb_metrics else 0),
              ('sentry', sentry['deadline_secs'] if sentry['enabled'] else 0),
              ('grafana alerts', grafana['deadline_secs'] if isinstance(cfg.get('grafana_alerts'), dict) else 0)]
+    if mode == 'digest':
+        ## The digest polls one lane: the Prometheus ranges.
+        waits = [('prometheus ranges', grafana['deadline_secs'] if dg_ranges else 0)]
     worst = sum(w for _, w in waits)
     if RUN_BUDGET_SECS > 0 and worst > RUN_BUDGET_SECS - AFTER_FETCH_SECS:
         raise SystemExit('prod-watch: the fetches can wait ' + str(worst) + ' s at worst (' +
@@ -800,6 +1099,57 @@ tool plan:
         'halted': 'watchdog halted since {since}: {reason}',
         'severity': 'severity',
         'sample': 'masked sample',
+        ## The digest's message (mode=digest): one report, always posted.
+        'digest': 'daily digest',
+        'digest_title': 'the watchdog and the app, in numbers',
+        'digest_span': 'window: {from} to {to} ({hours} h)',
+        'digest_ticks': 'watchdog: {executed} tick(s) executed of {expected} expected (one every {interval} min)',
+        'digest_ticks_missing': '{missing} tick(s) MISSING: {executed} executed of {expected} expected — the watchdog itself was silent',
+        'digest_silent': 'lane silent: {source} without a successful poll for {hours} h (last OK: {last})',
+        'digest_silent_never': 'lane silent: {source} never polled successfully',
+        'digest_records': '{records} tick record(s) over the window, watch and session together',
+        'digest_malformed': '{n} ledger line(s) unreadable — counted neither executed nor missing',
+        'digest_session_stale': 'a session was left open: {id} — its window ended at {until} and no closing tick came; its summary waits for the next window (check the session cron covers one slot past the window)',
+        'digest_alerts': '{n} alert(s) posted: critical {critical} · high {high} · medium {medium} · low {low}',
+        'digest_alerts_none': 'no alert posted over the window',
+        'digest_lanes': 'by lane: {lanes}',
+        'digest_sentry': 'Sentry: {new} new · {regressed} regressed · {escalating} escalating · {reopened} reopened · {resolved} resolved',
+        'digest_galerts': 'Grafana alerts: {firing} fired · {resolved} resolved',
+        'digest_top_templates': 'top error patterns ({n}, by occurrences since first seen): {names}',
+        'digest_probes': 'health probes: {ok}/{total} check(s) ok ({pct} %) over {ticks} tick(s)',
+        'digest_probes_none': 'health probes: no tick of the window recorded a probe result',
+        'digest_range': '{title}: {value} {unit} ({agg} over the window, {points} point(s))',
+        'digest_range_missing': '{title}: {state}',
+        'digest_open': '{n} open incident(s) in the watch state',
+        'digest_coverage': '{partial} tick(s) with partial coverage',
+        'digest_halted': 'HALTED since {since}: {reason} — nothing is watched until an operator acknowledges',
+        'digest_session': 'a session is open: {id} (started {started}, until {until})',
+        'digest_release': 'release {release}',
+        ## The session's messages (mode=session).
+        'session_start': 'session start',
+        'session_start_title': 'active watch of a usage window',
+        'session_until': 'active until {until}',
+        'session_setup': 'a heartbeat every {heartbeat} min · analysis cap {cap}',
+        'session_metric': '{title}: {value} {unit}',
+        'session_metric_missing': '{title}: {state}',
+        'session_probe': 'probe {id}: {ok} — {status} in {ms} ms',
+        'session_lanes': 'this tick: {lines} log line(s), {templates} error pattern(s), {sentry} Sentry issue(s) read, {breached} metric probe(s) breached, coverage {coverage}',
+        'session_heartbeat': 'heartbeat',
+        'session_heartbeat_title': 'the session so far',
+        'session_progress': '{ticks} tick(s) · {escalations} escalation(s) · {held} held by the cap · until {until}',
+        'session_cap': 'analysis cap',
+        'session_cap_title': 'escalations held',
+        'session_cap_detail': 'the cap of {cap} analysis(es) for this session is reached: {held} signal(s) held, listed in the summary',
+        'session_summary': 'session summary',
+        'session_summary_title': 'the window, in numbers',
+        'session_summary_span': 'from {from} to {to} · {ticks} tick(s) · {heartbeats} heartbeat(s)',
+        'session_summary_escalations': '{n} escalation(s): critical {critical} · high {high} · medium {medium} · low {low}',
+        'session_summary_names': 'escalated: {names}',
+        'session_summary_folded': '{n} more alert(s) folded into notes (not counted as escalations)',
+        'session_summary_held': '{n} held by the analysis cap ({cap}): {names}',
+        'session_summary_metric': '{title}: min {min} · max {max} · last {last} {unit}',
+        'session_summary_probes': 'health probes: {ok}/{total} check(s) ok',
+        'session_summary_coverage': '{partial} tick(s) with partial coverage',
     }
     for k, v in (cfg.get('labels') or {}).items():
         if k in labels and isinstance(v, str) and v:
@@ -813,8 +1163,168 @@ tool plan:
                              '(a note says its members by name)')
 
     ## ── halt + cursor ──────────────────────────────────────────────
+    ## ── the session's envelope, the mode's state dir ───────────────
+    def jread(path, what):
+        if not os.path.exists(path):
+            return {}
+        try:
+            with open(path, encoding='utf-8') as fh:
+                v = json.load(fh)
+        except ValueError:
+            raise SystemExit('prod-watch: ' + what + ' ' + path + ' is not valid JSON -- repair or remove it')
+        if not isinstance(v, dict):
+            raise SystemExit('prod-watch: ' + what + ' ' + path + ' is not a JSON object -- repair or remove it')
+        return v
+    def iso_ok(v):
+        try:
+            datetime.datetime.fromisoformat(v)
+            return True
+        except (TypeError, ValueError):
+            return False
+    def fork_id(raw):
+        ## What the watch KNOWS, not how its file is spelled: an editor's
+        ## round trip or a halt armed then lifted changes the bytes, not the
+        ## state a session forks from.
+        try:
+            d = json.loads(raw.decode('utf-8'))
+        except (ValueError, UnicodeDecodeError):
+            return hashlib.sha256(raw).hexdigest()
+        if not isinstance(d, dict):
+            return hashlib.sha256(raw).hexdigest()
+        d = dict(d)
+        d.pop('halt', None)
+        return hashlib.sha256(json.dumps(d, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
+    session_dir = os.path.join(state_dir, 'session')
+    session_file = os.path.join(session_dir, 'session.json')
+    envelope = jread(session_file, 'session file')
+    for f in ('started_at', 'ends_at', 'closed_at', 'last_heartbeat_at'):
+        if envelope.get(f) is not None and not iso_ok(envelope[f]):
+            raise SystemExit('prod-watch: session.' + f + ' is not an ISO timestamp (' + repr(envelope[f])[:40] + ') -- repair or remove ' + session_file)
+    for f in ('ticks', 'escalations', 'held', 'heartbeats'):
+        if envelope.get(f) is not None and (isinstance(envelope[f], bool) or not isinstance(envelope[f], int)):
+            raise SystemExit('prod-watch: session.' + f + ' is not an integer (' + repr(envelope[f])[:40] + ') -- repair or remove ' + session_file)
+    s_open = bool(envelope) and not envelope.get('closed')
+    s_ends = None
+    if s_open and envelope.get('ends_at'):
+        s_ends = datetime.datetime.fromisoformat(envelope['ends_at'])
+        if s_ends.tzinfo is None:
+            s_ends = s_ends.replace(tzinfo=datetime.timezone.utc)
+    ## A watch tick steps back while a session is open and its window not
+    ## over: the session is the writer and the voice — a second poster
+    ## would escalate every signal twice. Past the window plus one slot of
+    ## grace the watch resumes whatever the envelope says: a session that
+    ## never closed (a cron stopping at the window's end) holds nothing.
+    GRACE_SECS = 600
+    ## The closing tick is admitted until GRACE_SECS past the window and may
+    ## run its whole budget — the SESSION tick's, carried by the envelope
+    ## (this tick's own may be another schedule's): the watch waits that
+    ## budget too while the envelope is still open; a closed one frees it
+    ## at once.
+    _tick_secs = envelope.get('tick_secs')
+    CLOSING_TICK_SECS = _tick_secs if isinstance(_tick_secs, int) and not isinstance(_tick_secs, bool) and _tick_secs > 0 else 720
+    ## The digest's "a session is open" ends with the closing tick's grace;
+    ## past it the session is left open, and the digest says so.
+    s_digest_active = s_open and s_ends is not None and now_utc < s_ends + datetime.timedelta(seconds=GRACE_SECS)
+    s_active = s_open and s_ends is not None and now_utc < s_ends + datetime.timedelta(seconds=GRACE_SECS + CLOSING_TICK_SECS)
+    step_back, step_reason = False, ''
+    eff_state_dir, seed_file = state_dir, ''
+    session_plan = {}
+    win_now = window_at(now_utc)
+    if mode == 'watch' and (s_active or win_now is not None):
+        ## Inside a declared window the session schedule owns the signals,
+        ## envelope or not yet: at the window's first slot both crons fire
+        ## together and the envelope exists only once the session's first
+        ## tick committed — a watch tick deciding by the envelope alone
+        ## would post the same new signal twice.
+        step_back = True
+        step_reason = (('session active until ' + str(envelope.get('ends_local') or envelope.get('ends_at'))) if s_active
+                       else ('session window ' + str(win_now['id']) + ' (the session schedule owns it)')) + ', stepping back'
+    if mode == 'session':
+        win = win_now
+        eff_state_dir = session_dir
+        watch_spath_for_fork = os.path.join(state_dir, 'state.json')
+        if os.path.isdir(os.path.join(session_dir, 'state.json')):
+            ## A directory where the copy belongs cannot be replaced by the
+            ## fork's write after the delivery: refused here, by name.
+            raise SystemExit('prod-watch: ' + os.path.join(session_dir, 'state.json') + ' is a directory -- remove it (the session state is a file)')
+        stale = s_open and (not win or envelope.get('id') != win['id'])
+        CLOSE_GRACE_SECS = GRACE_SECS
+        closed = {}
+        if stale:
+            ## An open session whose window is over (or another window's).
+            ## Right after the window the closing tick — the recipe's one slot
+            ## past its end, within the same grace the watch steps back for —
+            ## observes once more and posts the summary; later, the next
+            ## window's first tick posts it, bounded to the old window; with no
+            ## window at hand the stale envelope waits (the digest says so)
+            ## rather than polling beside the resumed watch on a fork hours old.
+            closed = {'id': envelope.get('id'), 'started_at': envelope.get('started_at'), 'ends_at': envelope.get('ends_at'),
+                      'ends_local': envelope.get('ends_local')}
+            fresh_close = s_ends is not None and now_utc < s_ends + datetime.timedelta(seconds=CLOSE_GRACE_SECS)
+            if not win and not fresh_close:
+                step_back = True
+                step_reason = ('session ' + str(envelope.get('id')) + ' left open: its window ended at ' +
+                               str(envelope.get('ends_local') or envelope.get('ends_at')) + ' and no closing tick came within ten minutes -- '
+                               "the next window's first tick posts its summary (check the session cron covers one slot past the window)")
+            elif not win:
+                session_plan = {'active': True, 'new': False, 'closing': True, 'closed': closed, 'id': envelope.get('id'),
+                                'window': envelope.get('window') or {}, 'starts_at': envelope.get('started_at'),
+                                'ends_at': envelope.get('ends_at'), 'ends_local': envelope.get('ends_local'), 'tz': envelope.get('tz')}
+        if win and not step_back and not session_plan:
+            new = (not s_open) or stale
+            session_plan = {'active': True, 'new': new, 'closing': bool(stale), 'closed': closed, 'id': win['id'], 'window': win,
+                            'starts_at': now_utc.isoformat() if new else envelope.get('started_at'),
+                            'ends_at': win['ends_at'], 'ends_local': win['ends_local'], 'tz': win['tz']}
+        if not win and not s_open:
+            step_back = True
+            step_reason = ('session: outside every active window' +
+                           (' (none declared in config.session.active_windows)' if not windows else '') + ', stepping back')
+        if session_plan:
+            ## The envelope carries this tick's budget: the watch waits it out
+            ## after the window while the envelope stays open.
+            session_plan['tick_secs'] = RUN_BUDGET_SECS if RUN_BUDGET_SECS > 0 else 720
+            ## The heartbeat is due when none went out for heartbeat_min; the
+            ## start message counts as the first.
+            last_hb = None if session_plan['new'] else envelope.get('last_heartbeat_at')
+            due = not session_plan['new']
+            if due and last_hb:
+                last = datetime.datetime.fromisoformat(last_hb)
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=datetime.timezone.utc)
+                due = (now_utc - last).total_seconds() >= heartbeat_min * 60
+            spent = 0 if session_plan['new'] else int(envelope.get('escalations') or 0)
+            session_plan.update({'heartbeat_due': bool(due), 'heartbeat_minutes': heartbeat_min, 'cap': analyses_cap,
+                                 'cap_left': -1 if analyses_cap == 0 else max(0, analyses_cap - spent), 'file': session_file,
+                                 'now': now_utc.isoformat()})
+        copy_path = os.path.join(session_dir, 'state.json')
+        if ((session_plan.get('new') or not os.path.exists(copy_path)) and os.path.exists(watch_spath_for_fork)):
+            ## EVERY window's first tick forks the watch state (a fork lost
+            ## with a runner too): what the watch posted since the last
+            ## session is not news, its cursors continue where it stopped —
+            ## an earlier session's copy would re-announce the day's incidents
+            ## and spend the analysis cap on them. Unless the watch has NOT
+            ## moved since that copy was forked (two windows back to back, the
+            ## documented overnight pair): the copy is then the fresher state,
+            ## and the watch's would re-announce what the first window saw.
+            fresh_fork = False
+            if session_plan.get('new') and os.path.exists(copy_path):
+                try:
+                    with open(copy_path, encoding='utf-8') as fh:
+                        copy = json.load(fh)
+                except (ValueError, OSError):
+                    copy = {}
+                    print('prod-watch: the session copy ' + copy_path + ' is not a readable JSON file -- replaced by a fresh fork', file=sys.stderr)
+                with open(watch_spath_for_fork, 'rb') as fh:
+                    watch_sha = fork_id(fh.read())
+                forked = (copy if isinstance(copy, dict) else {}).get('forked_from_sha')
+                fresh_fork = isinstance(forked, str) and forked == watch_sha
+            if not fresh_fork:
+                seed_file = watch_spath_for_fork
     state = {}
-    spath = os.path.join(state_dir, 'state.json')
+    watch_spath = os.path.join(state_dir, 'state.json')
+    spath = os.path.join(eff_state_dir, 'state.json')
+    if seed_file:
+        spath = seed_file
     if os.path.exists(spath):
         try:
             with open(spath, encoding='utf-8') as fh:
@@ -835,7 +1345,7 @@ tool plan:
     ## dropped ones — parses below.
     def refuse_state(where, value, what):
         raise SystemExit('prod-watch: state.' + where + ' is not ' + what + ' (' + repr(value)[:60] +
-                         ') -- repair it or remove the state file')
+                         ') -- repair or remove ' + spath)
     def is_iso(v):
         try:
             datetime.datetime.fromisoformat(v)
@@ -898,7 +1408,21 @@ tool plan:
         if not isinstance(hrec, dict):
             refuse_state('health[' + repr(src)[:40] + ']', hrec, 'an object')
     halt = state.get('halt') or None
-    halted = bool(halt)
+    if mode == 'session' and spath != watch_spath:
+        ## A halt armed on the watch state stops a session too: the fork
+        ## carries it, but the watch state is the one an operator edits.
+        w_state = jread(watch_spath, 'state file')
+        if w_state.get('halt') is not None and not isinstance(w_state['halt'], dict):
+            refuse_state('halt', w_state['halt'], 'an object')
+        halt = halt or w_state.get('halt') or None
+    ## The digest never refuses: it SAYS the halt — its absence is the alert.
+    halted = bool(halt) and mode != 'digest'
+    if halted and mode == 'session' and step_back:
+        ## Nothing to poll outside the window: stepping back says it; the
+        ## halt refuses the ticks that would poll.
+        halted = False
+    if halted:
+        step_back = False
     halt_reason = ''
     if halted:
         halt_reason = (labels['halted'].replace('{since}', str(halt.get('since') or '?'))
@@ -1174,18 +1698,46 @@ tool plan:
         raise SystemExit('prod-watch: config declares no lane at all (loki.queries, prometheus.probes, probes, sentry and '
                          'grafana_alerts all empty)')
 
-    summary = ('watch: app=' + app['name'] + ('/' + app['environment'] if app['environment'] else '') +
+    ## ── the mode's route ───────────────────────────────────────────
+    collect = mode == 'digest'
+    poll = not halted and not step_back and not collect
+    persist = mode != 'digest'
+    digest_plan = {}
+    prom_plan = {'probes': norm_probes, 'metrics': hb_metrics if mode == 'session' else [], 'ranges': []}
+    if collect:
+        ## The window ends on the tick grid (the last slot's tick is still in
+        ## flight at the digest's own minute, and a slot judged by seconds of
+        ## latency flips between 48/48 and "1 missing" from one day to the
+        ## next): the minutes since the grid's last mark roll into tomorrow's.
+        dg_to = now_utc - datetime.timedelta(minutes=(now_utc.hour * 60 + now_utc.minute) % dg_interval, seconds=now_utc.second)
+        dg_from = dg_to - datetime.timedelta(hours=dg_hours)
+        digest_plan = {'hours': dg_hours, 'tick_interval_minutes': dg_interval, 'expected_ticks': dg_hours * 60 // dg_interval,
+                       'from': dg_from.isoformat(), 'to': dg_to.isoformat(), 'step_minutes': dg_step, 'halt': halt or {},
+                       'session_open': s_open, 'session_active': s_digest_active, 'session_stale': bool(s_open and not s_active),
+                       'session': {k: envelope.get(k) for k in ('id', 'started_at', 'ends_at', 'ends_local')} if s_open else {},
+                       'watch_state_file': watch_spath}
+        prom_plan = {'probes': [], 'metrics': [], 'ranges': dg_ranges, 'range_from': int(dg_from.timestamp()),
+                     'range_to': int(dg_to.timestamp()), 'range_step_secs': dg_step * 60}
+    summary = (mode + ': app=' + app['name'] + ('/' + app['environment'] if app['environment'] else '') +
                ', loki ' + str(len(queries)) + ' query(ies), prometheus ' + str(len(norm_probes)) +
                ' probe(s), http ' + str(len(http_probes)) + ' probe(s), sentry ' +
                ((sentry['project'] + ('/' + sentry['environment'] if sentry['environment'] else '') +
                  (' (bootstrap)' if sentry['bootstrap'] else '')) if sentry['enabled'] else 'off') +
                ', grafana alerts ' + ('on' if ga['enabled'] else 'off') +
-               ', ' + str(len(sinks)) + ' sink(s)' + (', HALTED' if halted else ''))
+               ', ' + str(len(sinks)) + ' sink(s)' + (', HALTED' if halted else '') +
+               (', STEP BACK: ' + step_reason if step_back else '') +
+               ((', session ' + ('NEW ' if session_plan.get('new') else 'CLOSING ' if session_plan.get('closing') else '') +
+                 str(session_plan.get('id'))) if session_plan else '') +
+               ((', digest of the last ' + str(dg_hours) + ' h, ' + str(len(dg_ranges)) + ' range(s)') if collect else ''))
     print(json.dumps({'app': app, 'release': release, 'grafana': grafana, 'loki': loki_plan,
-                      'prometheus': {'probes': norm_probes}, 'probes': http_probes, 'sentry': sentry,
+                      'prometheus': prom_plan, 'probes': http_probes, 'sentry': sentry,
                       'grafana_alerts': ga, 'sinks': sinks,
                       'labels': labels, 'lanes': lanes, 'ledger': ledger, 'halted': halted, 'halt': halt or {},
-                      'halt_reason': halt_reason, 'deliver_by': deliver_by, 'summary': summary}, ensure_ascii=False))
+                      'halt_reason': halt_reason, 'deliver_by': deliver_by,
+                      'step_back': step_back, 'collect': collect, 'poll': poll, 'persist': persist,
+                      'state_dir': eff_state_dir, 'state_seed_file': seed_file, 'session': session_plan,
+                      'session_cap_left': session_plan.get('cap_left', -1) if session_plan else -1,
+                      'digest': digest_plan, 'summary': summary}, ensure_ascii=False))
 
   language: py
   output: plan_output
@@ -1351,7 +1903,7 @@ tool poll_loki:
     raw_path = os.path.join(scratch, 'loki_raw-' + str({{run.id}})[-12:] + '.jsonl')
     try:
         cutoff = time.time() - 24 * 3600
-        prefixes = ('loki_raw-', 'sentry_raw-', 'signals-', 'state_next-', 'alertlog_delta-', 'tick-')
+        prefixes = ('loki_raw-', 'sentry_raw-', 'signals-', 'state_next-', 'alertlog_delta-', 'tick-', 'session_next-')
         for name in os.listdir(scratch):
             if not name.startswith(prefixes):
                 continue
@@ -1792,8 +2344,10 @@ tool poll_prom:
     allow_private = {{input.allow_private}}
     token_file = {{secrets.grafana_token.path}}
     probes = prom.get('probes') or []
-    if not probes:
-        print(json.dumps({'results': [], 'ok': True, 'errors': []}))
+    metrics = prom.get('metrics') or []
+    ranges = prom.get('ranges') or []
+    if not probes and not metrics and not ranges:
+        print(json.dumps({'results': [], 'metrics': [], 'ranges': [], 'ok': True, 'errors': []}))
         raise SystemExit(0)
     base = (grafana.get('base_url') or '').rstrip('/')
     uid = grafana.get('prometheus_uid') or ''
@@ -2010,9 +2564,128 @@ tool poll_prom:
             res['error'] = lane_error(e)
             errors.append({'probe': p['id'], 'error': res['error']})
         results.append(res)
+    last_info = [(None, 0)]
+    def samples_of(data, instant):
+        ## The numbers of one answer: an instant vector's or a scalar's
+        ## values, a matrix's points (every series, in time order).
+        if data.get('status') != 'success':
+            raise LaneError('Prometheus answered status ' + word(data.get('status')) + ' (' + word(data.get('errorType')) + ')')
+        d = data.get('data') or {}
+        rtype = d.get('resultType')
+        out = []
+        if instant and rtype == 'scalar':
+            out = [float(d.get('result', [0, 'nan'])[1])]
+        elif instant and rtype == 'vector':
+            for s in (d.get('result') or []):
+                try:
+                    out.append(float((s.get('value') or [0, 'nan'])[1]))
+                except (TypeError, ValueError):
+                    pass
+        elif not instant and rtype == 'matrix':
+            ## Every series' points, in TIME order: `last` is the latest point
+            ## of the window, not the last point of the last series.
+            points = []
+            for s in (d.get('result') or []):
+                for pt in (s.get('values') or []):
+                    try:
+                        points.append((float(pt[0]), float(pt[1])))
+                    except (TypeError, ValueError, IndexError):
+                        pass
+            ## Only finite points count — a NaN at the last step (a 0/0 ratio,
+            ## a quiet histogram_quantile) is no latest value.
+            points = [(ts, v) for ts, v in points if not (math.isnan(v) or math.isinf(v))]
+            points.sort(key=lambda p: p[0])
+            out = [v for _, v in points]
+        else:
+            raise LaneError('unsupported resultType ' + word(rtype) +
+                            (' (use an instant vector or scalar query)' if instant else ' (a range query answers a matrix)'))
+        out = [v for v in out if not (math.isnan(v) or math.isinf(v))]
+        if not instant and rtype == 'matrix' and points:
+            ## `last` reads the latest point; several series sharing it have
+            ## no single value — the query must aggregate.
+            latest = max(p[0] for p in points)
+            at_latest = [v for ts, v in points if ts == latest]
+            last_info[0] = (at_latest[-1] if at_latest else None, len(at_latest))
+        elif instant:
+            ## An instant answer's `last` is its one series' value: several
+            ## series have no order Prometheus promises.
+            last_info[0] = (out[-1] if out else None, len(out))
+        return out
+    def fold(values, agg):
+        if agg == 'avg':
+            return sum(values) / len(values)
+        fn = {'sum': sum, 'max': max, 'min': min, 'last': lambda xs: xs[-1]}.get(agg)
+        if fn is None:
+            ## plan validates agg; reaching this line means the normaliser
+            ## or the edge was bypassed — say so, never max.
+            raise SystemExit('prod-watch: a series carries an unknown agg ' + repr(agg))
+        return fn(values)
+    ## The threshold-free observations (config session.heartbeat.metrics):
+    ## the positive numbers a session's heartbeat carries — observed, no
+    ## data, or the lane's error; never a verdict.
+    out_metrics = []
+    for m in metrics:
+        res = {'id': m['id'], 'title': m.get('title') or m['id'], 'unit': m.get('unit') or '', 'state': 'error', 'value': None, 'error': ''}
+        try:
+            if setup_exc is not None:
+                raise setup_exc
+            vals = samples_of(get('/api/datasources/proxy/uid/' + uid + '/api/v1/query', {'query': m['query'], 'time': str(now)}), True)
+            if not vals:
+                res['state'] = 'no_data'
+            elif (m.get('agg') or 'max') == 'last':
+                last_v, n_last = last_info[0]
+                if n_last != 1 or last_v is None:
+                    raise LaneError('agg last needs one series, the answer holds ' + str(n_last) + ' -- aggregate in the query')
+                res['value'] = last_v
+                res['state'] = 'observed'
+            else:
+                res['value'] = fold(vals, m.get('agg') or 'max')
+                res['state'] = 'observed'
+        except SystemExit:
+            raise
+        except Exception as e:
+            res['error'] = lane_error(e)
+            errors.append({'metric': m['id'], 'error': res['error']})
+        out_metrics.append(res)
+    ## The digest's ranges (config digest.prometheus.ranges): one
+    ## query_range over the window, folded by the configured agg over every
+    ## point of every series the answer holds.
+    out_ranges = []
+    r_from, r_to = int(prom.get('range_from') or 0), int(prom.get('range_to') or 0)
+    r_step = max(1, int(prom.get('range_step_secs') or 300))
+    for m in ranges:
+        res = {'id': m['id'], 'title': m.get('title') or m['id'], 'unit': m.get('unit') or '', 'agg': m.get('agg') or 'max',
+               'state': 'error', 'value': None, 'points': 0, 'error': ''}
+        try:
+            if setup_exc is not None:
+                raise setup_exc
+            if r_to <= r_from:
+                raise LaneError('the range window is empty (from ' + str(r_from) + ' to ' + str(r_to) + ')')
+            vals = samples_of(get('/api/datasources/proxy/uid/' + uid + '/api/v1/query_range',
+                                  {'query': m['query'], 'start': str(r_from), 'end': str(r_to), 'step': str(r_step)}), False)
+            res['points'] = len(vals)
+            if not vals:
+                res['state'] = 'no_data'
+            elif res['agg'] == 'last':
+                last_v, n_last = last_info[0]
+                if n_last != 1 or last_v is None:
+                    raise LaneError('agg last needs one series at the latest point, the answer holds ' + str(n_last) +
+                                    ' -- aggregate in the query (sum by (...), max by (...))')
+                res['value'] = last_v
+                res['state'] = 'observed'
+            else:
+                res['value'] = fold(vals, res['agg'])
+                res['state'] = 'observed'
+        except SystemExit:
+            raise
+        except Exception as e:
+            res['error'] = lane_error(e)
+            errors.append({'range': m['id'], 'error': res['error']})
+        out_ranges.append(res)
     ## Every probe failing is the LANE failing — reported like one probe:
     ## decide refuses the tick only when every configured lane failed.
-    print(json.dumps({'results': results, 'ok': not errors, 'errors': errors}, ensure_ascii=False))
+    print(json.dumps({'results': results, 'metrics': out_metrics, 'ranges': out_ranges, 'ok': not errors, 'errors': errors},
+                     ensure_ascii=False))
 
   language: py
   input: prom_input
@@ -3680,10 +4353,12 @@ tool leak_scan:
 ## staged out-of-tree and persisted by commit_state only after delivery.
 tool decide:
   script: |
-    import json, os, re, datetime
+    import json, os, re, sys, datetime, hashlib
     null = None; true = True; false = False  # JSON-literal shim for missing refs
+    mode = {{input.mode}} or 'watch'
     signals_file = {{input.signals_file}}
     prom_results = {{input.prom_results}} or []
+    prom_metrics = {{input.prom_metrics}} or []
     http_results = {{input.http_results}} or []
     loki_ok = bool({{input.loki_ok}})
     loki_truncated = bool({{input.loki_truncated}})
@@ -3710,6 +4385,7 @@ tool decide:
     app = {{input.app}} or {}
     ws = {{input.workspace}}
     state_dir = {{input.state_dir}}
+    state_seed_file = {{input.state_seed_file}} or ''
     scratch = {{input.scratch_dir}}
     renotify_h = int({{input.renotify_hours}})
     quiet_h = int({{input.quiet_after_hours}})
@@ -3721,6 +4397,10 @@ tool decide:
     max_per_lane = int({{input.max_alerts_per_lane}})
     if max_per_lane < 0:
         raise SystemExit('prod-watch: max_alerts_per_lane must be 0 or more, got ' + str(max_per_lane))
+    ## A session's analysis cap, what it has left this tick; -1 = none (the
+    ## watch tick, an uncapped session).
+    _cap_left = {{input.session_cap_left}}
+    session_cap_left = int(_cap_left) if _cap_left is not None else -1
     ## How many state generations a Sentry record posted alone outlives the
     ## store's cut: at most min(per-lane, per-run cap) records are posted alone
     ## a generation, so the protected ones fill at most half the cap — the
@@ -3743,6 +4423,36 @@ tool decide:
             with open(path, encoding='utf-8') as fh:
                 return json.load(fh)
         return default
+    def jload_lenient(path, what):
+        ## A file this mode does not own (the sibling's state, the copy a
+        ## fork replaces) is read for what it says; one that does not parse
+        ## is absent, said on stderr — never this tick's death.
+        try:
+            v = jload(path, {})
+        except (ValueError, OSError):
+            print('prod-watch: ' + what + ' ' + path + ' is not a readable JSON file -- read as absent', file=sys.stderr)
+            return {}
+        return v if isinstance(v, dict) else {}
+    def gen_of(d):
+        ## The ONE reading of a generation, shared with commit_state's guard:
+        ## absent, foreign or oversized reads as 0, never as a traceback.
+        try:
+            return int((d if isinstance(d, dict) else {}).get('generation') or 0)
+        except (TypeError, ValueError, OverflowError):
+            return 0
+    def fork_id(raw):
+        ## What the watch KNOWS, not how its file is spelled: an editor's
+        ## round trip or a halt armed then lifted changes the bytes, not the
+        ## state a session forks from.
+        try:
+            d = json.loads(raw.decode('utf-8'))
+        except (ValueError, UnicodeDecodeError):
+            return hashlib.sha256(raw).hexdigest()
+        if not isinstance(d, dict):
+            return hashlib.sha256(raw).hexdigest()
+        d = dict(d)
+        d.pop('halt', None)
+        return hashlib.sha256(json.dumps(d, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
     def age_h(iso):
         try:
             return (now - datetime.datetime.fromisoformat(iso)).total_seconds() / 3600
@@ -3799,6 +4509,12 @@ tool decide:
                          'reported ' + str(galerts_expected) + ' -- a scan from another tick; relaunch the tick')
     spath = os.path.join(state_dir, 'state.json')
     bootstrap = not os.path.exists(spath)
+    if state_seed_file and os.path.exists(state_seed_file):
+        ## A window's first tick: the lifecycle starts from the watch state
+        ## plan named — its incidents are not news, its cursor continues —
+        ## and writes its own copy from here on. Not a bootstrap: the first
+        ## window's templates are news during a usage window.
+        spath, bootstrap = state_seed_file, False
     state = jload(spath, {'version': 1, 'generation': 0, 'cursors': {'loki': {}}, 'incidents': {}, 'health': {}, 'halt': None})
     incidents = state.setdefault('incidents', {})
     health = state.setdefault('health', {})
@@ -3806,8 +4522,26 @@ tool decide:
     ## The generation read HERE is what commit_state compares under its
     ## lock: a state rewritten by another tick in between is refused, not
     ## overwritten.
-    generation_seen = int(state.get('generation') or 0)
-    state['generation'] = generation_seen + 1
+    generation_seen = gen_of(state)
+    own_spath = os.path.join(state_dir, 'state.json')
+    if spath != own_spath:
+        ## A fork: it remembers the watch state it started from — by its
+        ## bytes, not by a generation counter that restarts at 1 when the
+        ## state is removed — so a window back to back with this one
+        ## continues it instead of re-forking a watch state that has not
+        ## moved.
+        with open(spath, 'rb') as fh:
+            state['forked_from_sha'] = fork_id(fh.read())
+        state['forked_from_gen'] = gen_of(state)
+    if spath != own_spath and os.path.exists(own_spath):
+        ## A fork replacing an earlier session's copy: the generation
+        ## commit_state compares under its lock is the copy's, not the seed's
+        ## — and the generation WRITTEN passes both, since the seed's records
+        ## carry stamps up to the watch's own (plan refuses a state whose
+        ## records are stamped later than itself). A copy that does not parse
+        ## is replaced like an absent one.
+        generation_seen = gen_of(jload_lenient(own_spath, 'the session copy'))
+    state['generation'] = max(generation_seen, gen_of(state)) + 1
     def ns_to_iso(ts):
         try:
             return datetime.datetime.fromtimestamp(int(ts) / 1e9, datetime.timezone.utc).isoformat(timespec='minutes')
@@ -4515,13 +5249,36 @@ tool decide:
     for source in [k for k in health if not lanes.get(k, False)]:
         del health[source]
     stale = []
+    ## A lane the OTHER mode polled while this one stepped back is not
+    ## silent: the sibling state's last success — and its last warning —
+    ## count (read-only; a sibling that does not parse is absent).
+    sibling = (os.path.join(state_dir, 'session', 'state.json') if mode != 'session'
+               else os.path.join(os.path.dirname(state_dir.rstrip('/')) or '.', 'state.json'))
+    sibling_health = jload_lenient(sibling, 'the sibling state').get('health') or {}
+    if not isinstance(sibling_health, dict):
+        sibling_health = {}
+    def sibling_stamp(source, field):
+        rec = sibling_health.get(source)
+        v = rec.get(field) if isinstance(rec, dict) else None
+        return v if isinstance(v, str) and v else ''
     if stale_h > 0 and not bootstrap:
         for source, h in sorted(health.items()):
             last_ok = h.get('last_ok') or ''
+            ## A sibling stamp from a clock running ahead is none: it would
+            ## win every comparison and read as "not said" for ever.
+            s_ok = past(sibling_stamp(source, 'last_ok'))
+            if s_ok and (not last_ok or age_h(s_ok) < age_h(last_ok)):
+                last_ok = s_ok
             a = age_h(last_ok) if last_ok else 10 ** 6
             if a < stale_h:
                 continue
             warned = h.get('last_warned') or ''
+            s_w = past(sibling_stamp(source, 'last_warned'))
+            if s_w and (not warned or age_h(s_w) < age_h(warned)):
+                ## The sibling's warning is this state's too: a fork replacing
+                ## the copy that held it must not warn again inside the window.
+                warned = s_w
+                h['last_warned'] = warned
             if warned and said_within(warned, stale_h):
                 continue
             stale.append({'source': source, 'hours': int(a) if a < 10 ** 6 else -1, 'last_ok': last_ok, 'error': h.get('last_error') or ''})
@@ -4781,6 +5538,51 @@ tool decide:
         i = j
     ## The per-run cap bounds the alerts posted one by one; a note ranks with
     ## its kind, after the alerts of its rank.
+    ## A session's analysis cap, applied BEFORE the per-run cut: past it, an
+    ## escalation — an alert the analysis agent would read: a new, escalated
+    ## or transitioned incident of a signal lane — is HELD: not posted, not
+    ## deferred to re-fire as overflow, its record stamped held_by_cap and
+    ## not alerted, so the lifecycle offers it again every tick and the cap
+    ## holds it again, silently, until the session's summary names it. An
+    ## alert posted alone spends the cap; a note of the same kind spends
+    ## nothing while the cap has room and is held with its members once it
+    ## has none — past the cap nothing of an actionable kind posts, the loud
+    ## and the folded alike. Leaks and a probe's no-data are never held.
+    ACTIONABLE_STATES = ('new', 'escalated', 'regressed', 'escalating', 'reopened')
+    ACTIONABLE_KINDS = ('probe', 'prom', 'loki', 'sentry', 'galert')
+    def actionable(a):
+        return a['state'] in ACTIONABLE_STATES and a['kind'] in ACTIONABLE_KINDS
+    held = []
+    if session_cap_left >= 0:
+        kept, room = [], session_cap_left
+        for a in fair:
+            if actionable(a):
+                if room <= 0:
+                    held.append(a)
+                    continue
+                if len(kept) < max_alerts:
+                    ## Room is spent on what posts this tick; an alert the
+                    ## per-run cut defers is offered again next tick.
+                    room -= 1
+            kept.append(a)
+        fair = kept
+        if room <= 0:
+            held += [n for n in notes if actionable(n)]
+            notes = [n for n in notes if not actionable(n)]
+        for a in held:
+            for fp in ([a['fingerprint']] if not a.get('members') else [m['fp'] for m in a['members']]):
+                rec = incidents.get(fp)
+                if rec is not None:
+                    rec['held_by_cap'] = now_iso
+    held_out = []
+    for a in held:
+        if a.get('members'):
+            for m in a['members']:
+                held_out.append({'fingerprint': m['fp'], 'kind': a['kind'], 'severity': m.get('severity') or a['severity'],
+                                 'title': str(m.get('name') or m['fp'])[:130]})
+        else:
+            held_out.append({'fingerprint': a['fingerprint'], 'kind': a['kind'], 'severity': a['severity'],
+                             'title': a.get('log_title') or a.get('title_arg') or a['fingerprint']})
     posted, deferred = fair[:max_alerts], fair[max_alerts:]
     overflow = len(deferred)
     posted = sorted(posted + notes, key=rank_key, reverse=True)
@@ -4931,16 +5733,27 @@ tool decide:
         json.dump({'at': now_iso, 'generation': state['generation'], 'lines': signals.get('lines_scanned', 0),
                    'templates': len(signals.get('templates') or []), 'alerts': len(posted), 'overflow': overflow,
                    'lanes_ok': lane_ok, 'coverage': coverage, 'release': release, 'release_known': release_known,
-                   'bootstrap': bootstrap, 'sentry_issues': len(s_issues), 'sentry_bootstrap': bool(s_on and s_boot)}, fh, ensure_ascii=False)
+                   'bootstrap': bootstrap, 'sentry_issues': len(s_issues), 'sentry_bootstrap': bool(s_on and s_boot),
+                   ## The digest's probe success ratio and a session's summary
+                   ## read these from the ledger: every probe's verdict this
+                   ## tick, the observations, the escalations and the holds.
+                   'probes_ok': sum(1 for r in http_results if r.get('ok')), 'probes_total': len(http_results),
+                   'metrics': [{'id': m.get('id'), 'title': m.get('title') or m.get('id'), 'value': m.get('value'),
+                                'unit': m.get('unit') or '', 'state': m.get('state')} for m in prom_metrics],
+                   'escalations': sum(1 for a in posted if actionable(a) and not a.get('members')), 'held': len(held_out)}, fh, ensure_ascii=False)
     summary = ('alerts: ' + str(len(posted)) + ' to post (' + str(overflow) + ' overflow), ' + str(observed_new) +
                ' observed, ' + str(len(incidents)) + ' open incident(s), coverage ' + coverage +
                (', BOOTSTRAP' if bootstrap else '') + (', SENTRY BOOTSTRAP' if s_on and s_boot else '') +
                ((' -- lane errors: ' + json.dumps(loki_errors + prom_errors + sentry_errors)[:400])
                 if (loki_errors or prom_errors or sentry_errors) else ''))
+    if held_out:
+        summary += ', ' + str(len(held_out)) + ' held by the session cap'
     print(json.dumps({'alerts': posted, 'alert_count': len(posted), 'overflow_count': overflow, 'generation': generation_seen,
                       'stale_sources': stale + ([{'source': 'coverage', 'hours': -1, 'last_ok': coverage, 'reasons': coverage_reasons}] if coverage_note else []),
                       'needs_analysis': needs_analysis, 'state_next_file': state_next, 'alertlog_file': alertlog,
-                      'tick_file': tick, 'bootstrap': bootstrap, 'summary': summary}, ensure_ascii=False))
+                      'tick_file': tick, 'bootstrap': bootstrap,
+                      'held': held_out, 'held_count': len(held_out), 'reports': [], 'session_next_file': '',
+                      'summary': summary}, ensure_ascii=False))
 
   language: py
   input: decide_input
@@ -4970,7 +5783,49 @@ tool notify:
     release_known = bool({{input.release_known}})
     dry_run = {{input.dry_run}}
     max_chars = int({{input.max_message_chars}} or 14000)
+    if max_chars > 16383:
+        ## The webhook's post limit: past it the server splits a post
+        ## wherever the limit falls, a code span included. (The floor is the
+        ## lifecycle's — decide's 1500, the room a note's names need; a
+        ## report path has no notes, and the labels' check below still judges
+        ## a tiny budget by name.)
+        raise SystemExit('prod-watch: max_message_chars must be at most 16383 (the webhook post limit), got ' + str(max_chars))
     webhooks_file = {{secrets.webhooks.path}}
+    reports = {{input.reports}} or []
+    persist_state = bool({{input.persist_state}})
+    session_next_file = {{input.session_next_file}} or ''
+    run_url = {{run.url}}
+    run_id = {{run.id}}
+    def footer():
+        ## The run that wrote the message (docs/agents/bots/run-link.md): a
+        ## plain id becomes the link's label; an empty address, or one still
+        ## carrying a template delimiter (an engine older than the member),
+        ## prints the id alone — never a root-relative link a client would
+        ## resolve against itself.
+        rid = str(run_id if run_id is not None else '')
+        url = str(run_url if run_url is not None else '')
+        label = rid if re.fullmatch(r'[A-Za-z0-9._:-]{1,80}', rid) else 'this run'
+        if url and (chr(123) * 2) not in url and re.fullmatch(r'https?://[^\s<>()\[\]`"\']{1,300}', url):
+            return '🤖 [iterion](https://iterion.cloud) · run [`' + label + '`](' + url + ')'
+        return '🤖 iterion · run `' + label + '`'
+    FOOTER = footer()
+    ## The footer's room is reserved BEFORE anything is sized — the labels'
+    ## check, a note's parts, the clip all work in body_chars — so a message
+    ## cut to the budget still ends with its run.
+    body_chars = max(1, max_chars - len(FOOTER) - 1)
+    ## Mattermost rewrites every `<A|B>` into `[B](A)` — one character more
+    ## per match, code spans included — before it splits a post at its limit
+    ## whatever the markdown: a post sized as SENT could grow past the budget
+    ## and be cut inside a code span, freeing a mention. The body is sized
+    ## as the server will store it.
+    MM_LINK_RE = re.compile(r'<[^\n<|>]+\|[^|\n>]+>')
+    def mm_len(t):
+        return len(t) + len(MM_LINK_RE.findall(t))
+    def mm_clip(text):
+        t = clip(text, body_chars)
+        while t and mm_len(t) > body_chars:
+            t = clip(t, max(0, len(t) - (mm_len(t) - body_chars)))
+        return t
     RANK = {'critical': 4, 'high': 3, 'medium': 2, 'low': 1}
     ICON = {'critical': ':rotating_light:', 'high': ':red_circle:', 'medium': ':large_orange_diamond:', 'low': ':white_check_mark:'}
 
@@ -5112,7 +5967,7 @@ tool notify:
         if a.get('title_arg'):
             lines.append(code(a['title_arg'], 200))
         if detail_key:
-            lines.append(fmt_capped(detail_key, {'names': max_chars} if a.get('members') else {}, **fields))
+            lines.append(fmt_capped(detail_key, {'names': body_chars} if a.get('members') else {}, **fields))
         meta = [lab(labels.get('severity', 'severity')) + ' ' + sev.upper(),
                 fmt('new_since', date=(a.get('first_seen') or '')[:16]),
                 fmt('count', n=count or 0)]
@@ -5173,11 +6028,11 @@ tool notify:
     def note_parts(a):
         members = a['members']
         whole = note_part(a, members, True)
-        if names_kept(whole) <= max_chars:
+        if names_kept(whole) <= body_chars:
             return [whole]
         parts, chunk = [], []
         for m in members:
-            if chunk and max(names_kept(note_part(a, chunk + [m], True)), names_kept(note_part(a, chunk + [m], False))) > max_chars:
+            if chunk and max(names_kept(note_part(a, chunk + [m], True)), names_kept(note_part(a, chunk + [m], False))) > body_chars:
                 parts.append(note_part(a, chunk, False))
                 chunk = []
             chunk.append(m)
@@ -5201,14 +6056,14 @@ tool notify:
     worst_name = ('ftp:' * NAME_CAP)[:NAME_CAP]
     heads = [(len(header(sev, st, status, tk)), 'labels.' + marker_key(st, status) + ' with labels.' + tk)
              for tk, states in NOTE_KINDS.items() for st, status in states for sev in ICON]
-    folds = [(len(fmt_capped(k, {'names': max_chars}, n=1, names=worst_name, more=more)), 'labels.' + k)
+    folds = [(len(fmt_capped(k, {'names': body_chars}, n=1, names=worst_name, more=more)), 'labels.' + k)
              for k, more in (('folded_detail', 0), ('folded_detail_more', wide))]
     worst_head, worst_names = max(n for n, _ in heads), max(n for n, _ in folds)
-    if worst_head + 1 + worst_names > max_chars:
+    if worst_head + 1 + worst_names > body_chars:
         ## Every label at the worst length is named: shortening one of two
         ## would only move the refusal to the other.
         raise SystemExit('prod-watch: these labels leave a note of folded alerts no room to name one member within max_message_chars ' +
-                         str(max_chars) + ': its header renders up to ' + str(worst_head) + ' characters (' +
+                         str(max_chars) + ' less the run footer (' + str(len(FOOTER) + 1) + '): its header renders up to ' + str(worst_head) + ' characters (' +
                          '; '.join(sorted({k for n, k in heads if n == worst_head})) + ') and its names line up to ' +
                          str(worst_names) + ' with one name (' + '; '.join(sorted({k for n, k in folds if n == worst_names})) +
                          ') -- shorten those labels (a label renders escaped: & becomes &amp;) or the app name, or raise '
@@ -5239,9 +6094,39 @@ tool notify:
                 text += chr(10) + '> ' + code(str(s.get('error')), 400)
             messages.append(('medium', text, True))
 
+    ## The reports (a session's, the digest's): the watchdog's own voice,
+    ## rendered like an alert — a header, lines of labels and values, names
+    ## — under the same discipline (every value inline code, every label
+    ## escaped), delivered to every sink like a notice, first in the tick.
+    def render_report(r):
+        if not isinstance(r, dict):
+            raise SystemExit('prod-watch: a report is not an object -- the producing node is wrong')
+        sev = r.get('severity') or 'low'
+        icon = r.get('icon') if isinstance(r.get('icon'), str) and re.fullmatch(r':[a-z0-9_+-]{1,40}:', r['icon']) else ICON.get(sev, ':bell:')
+        marker = labels.get(r.get('marker') or '') or (r.get('marker') or 'report')
+        head = labels.get(r.get('title_key') or '') or (r.get('title_key') or '')
+        lines = [icon + ' **' + lab(str(marker).upper(), 40) + ' · ' + lab(scope, 100) + (' — ' + lab(head, 120) if head else '') + '**']
+        if r.get('title_arg'):
+            lines.append(code(r['title_arg'], 200))
+        for ln in r.get('lines') or []:
+            fields = ln.get('fields') if isinstance(ln, dict) else None
+            if fields is None:
+                fields = {}
+            if not isinstance(ln, dict) or not isinstance(fields, dict) or any(not re.fullmatch(r'[A-Za-z_]\w*', str(k)) for k in fields):
+                raise SystemExit('prod-watch: a report line is not {label, fields} with placeholder names -- the producing node is wrong')
+            lines.append(fmt(str(ln.get('label') or ''), **{str(k): v for k, v in fields.items()}))
+        for nl in r.get('names') or []:
+            members = nl.get('members') or []
+            joined = ', '.join(str(m.get('name') or '')[:NAME_CAP] + (' ×' + str(m['count']) if m.get('count') else '') for m in members)
+            extra = nl.get('fields') if isinstance(nl.get('fields'), dict) else {}
+            lines.append(fmt_capped(str(nl.get('label') or ''), {'names': body_chars}, n=len(members), names=joined, **{str(k): v for k, v in extra.items()}))
+        return lines
+    messages = [(r.get('severity') or 'low', chr(10).join(render_report(r)), True) for r in reports] + messages
+
     if not messages:
         out({'posted': False, 'dry_run': bool(dry_run), 'messages': [], 'delivered': 0,
-             'consume': not dry_run, 'targets': [], 'summary': 'nothing to deliver'})
+             'consume': not dry_run, 'persist': (not dry_run) and persist_state, 'session_next_file': session_next_file,
+             'targets': [], 'summary': 'nothing to deliver'})
     if not sinks:
         raise SystemExit('prod-watch: ' + str(len(messages)) + ' message(s) to deliver but NO sinks are configured -- add a `sinks` entry '
                          'to the workspace config (or run with --var dry_run=true to preview). Nothing was consumed: these alerts '
@@ -5251,7 +6136,7 @@ tool notify:
         for s in sinks:
             if not meta_notice and RANK.get(sev, 0) < RANK.get(s.get('min_severity') or 'low', 1):
                 continue
-            payloads.append((idx, s, {'text': clip(text, max_chars), 'channel': str(s.get('channel') or ''),
+            payloads.append((idx, s, {'text': mm_clip(text) + chr(10) + FOOTER, 'channel': str(s.get('channel') or ''),
                                       'username': str(s.get('username') or 'Argus'), 'icon_emoji': str(s.get('icon_emoji') or ':eye:')}))
     ## The required sinks take every message first: an optional sink's
     ## slowness never spends their time.
@@ -5260,13 +6145,15 @@ tool notify:
     if dry_run:
         for _, s, p in payloads:
             print('DRY-RUN -> webhook=' + str(s.get('webhook')) + ' channel=' + p['channel'] + chr(10) + p['text'] + chr(10) + '---', file=sys.stderr)
-        out({'posted': False, 'dry_run': True, 'messages': rendered, 'delivered': 0, 'consume': False,
+        out({'posted': False, 'dry_run': True, 'messages': rendered, 'delivered': 0, 'consume': False, 'persist': False,
+             'session_next_file': session_next_file,
              'targets': sorted({str(s.get('webhook')) for _, s, _ in payloads}),
              'summary': 'dry-run: ' + str(len(payloads)) + ' payload(s) prepared, nothing posted, nothing consumed'})
     if not payloads:
         ## Every message fell under every sink's min_severity: a legitimate
         ## routing outcome, and the state may advance.
-        out({'posted': False, 'dry_run': False, 'messages': [], 'delivered': 0, 'consume': True, 'targets': [],
+        out({'posted': False, 'dry_run': False, 'messages': [], 'delivered': 0, 'consume': True, 'persist': persist_state,
+             'session_next_file': session_next_file, 'targets': [],
              'summary': str(len(messages)) + ' message(s) below every sink threshold; nothing posted'})
     whmap = {}
     if webhooks_file and os.path.exists(webhooks_file):
@@ -5345,11 +6232,14 @@ tool notify:
         summary += ' -- FAILED: ' + '; '.join(failures)
     if not consume:
         print(json.dumps({'posted': True, 'dry_run': False, 'messages': rendered, 'delivered': delivered, 'consume': False,
+                          'persist': False, 'session_next_file': session_next_file,
                           'targets': sorted(set(targets)), 'summary': summary}, ensure_ascii=False), file=sys.stderr)
         raise SystemExit('prod-watch: delivery incomplete (' + ('required sink(s) down: ' + ', '.join(sorted(set(required_failed))) if required_failed else
                          str(len(messages) - len(msgs_ok)) + ' message(s) reached NO sink') +
-                         ') -- the state is NOT consumed, so this tick replays in full on the next run. ' + summary)
-    out({'posted': True, 'dry_run': False, 'messages': rendered, 'delivered': delivered, 'consume': True,
+                         (') -- the state is NOT consumed, so this tick replays in full on the next run. ' if persist_state else
+                          ') -- nothing is consumed: the next scheduled digest posts afresh. ') + summary)
+    out({'posted': True, 'dry_run': False, 'messages': rendered, 'delivered': delivered, 'consume': True, 'persist': persist_state,
+         'session_next_file': session_next_file,
          'targets': sorted(set(targets)), 'summary': summary})
 
   language: py
@@ -5368,6 +6258,7 @@ tool commit_state:
     state_next = {{input.state_next_file}}
     alertlog_delta = {{input.alertlog_file}}
     tick_file = {{input.tick_file}}
+    session_next = {{input.session_next_file}} or ''
     generation = int({{input.generation}} or 0)
     state_commit = {{input.state_commit}}
     ws = {{input.workspace}}
@@ -5387,7 +6278,9 @@ tool commit_state:
     t0 = time.monotonic()
     os.chdir(ws)
 
-    STATE_FILES = ['state.json', 'alertlog.jsonl', 'ticks.jsonl']
+    ## A session tick stages its envelope too (its state dir is the
+    ## session's: session.json lives beside the forked state).
+    STATE_FILES = ['state.json', 'alertlog.jsonl', 'ticks.jsonl'] + (['session.json'] if session_next else [])
     ## Everything the node stages, by explicit path: the bot commits what it
     ## writes, never a stray file an operator left in the state dir.
     STAGED_FILES = STATE_FILES + ['.gitignore', '.gitattributes']
@@ -5548,6 +6441,13 @@ tool commit_state:
         if os.path.getsize(cur) <= max_bytes:
             return None
         stem = base[:-len('.jsonl')]
+        ## A generation that went backwards (a session copy removed and
+        ## re-forked from an older watch generation) must not name a rotation
+        ## that sorts below the elders `keep` would then prune the new rows
+        ## for: the name passes every existing one of its stem.
+        elders = [int(m.group(2)) for fn in os.listdir(sdir) for m in [ROTATION_RE.match(fn)] if m and m.group(1) == stem]
+        if elders and gen < max(elders):
+            gen = max(elders) + 1
         dst = os.path.join(sdir, stem + '-' + str(gen) + '.jsonl')
         n = 1
         while os.path.exists(dst):
@@ -5580,23 +6480,35 @@ tool commit_state:
         with open(ga, 'a', encoding='utf-8') as fh:
             for w in missing:
                 fh.write(w + chr(10))
+    ## One lock per clone, whatever the mode: a session tick's commit and a
+    ## watch tick's share the index of the same checkout, and a lock per
+    ## state dir would serialize nothing between them.
+    lock_dir = (os.path.dirname(state_dir.rstrip('/')) or '.') if session_next else state_dir
     ## The lock file is host-local plumbing, never state: keep it out of git.
-    gi = os.path.join(state_dir, '.gitignore')
-    if not os.path.exists(gi) or '.lock' not in open(gi, encoding='utf-8').read():
-        with open(gi, 'a', encoding='utf-8') as fh:
-            fh.write('.lock' + chr(10))
-    lock = open(os.path.join(state_dir, '.lock'), 'w')
+    for _d in sorted({state_dir, lock_dir}):
+        gi = os.path.join(_d, '.gitignore')
+        if not os.path.exists(gi) or '.lock' not in open(gi, encoding='utf-8').read():
+            with open(gi, 'a', encoding='utf-8') as fh:
+                fh.write('.lock' + chr(10))
+    lock = open(os.path.join(lock_dir, '.lock'), 'w')
     fcntl.flock(lock, fcntl.LOCK_EX)
     ## The read-modify-write spans two nodes: decide read the state minutes
     ## ago. Under the lock, refuse to overwrite a state another tick has
     ## rewritten since (its generation moved) — the tick replays.
     spath = os.path.join(state_dir, 'state.json')
     if os.path.exists(spath):
+        ## Read the one way decide reads it (gen_of): a state that is no
+        ## object, no JSON, or whose generation is no number never reaches
+        ## decide on the lifecycle's own path (plan refuses it by name); a
+        ## fork replaces such a copy, and decide read it as generation 0 —
+        ## a different reading here would refuse the fork, every tick, after
+        ## the delivery.
         try:
             with open(spath, encoding='utf-8') as fh:
-                current = int((json.load(fh) or {}).get('generation') or 0)
-        except ValueError:
-            current = -1
+                _cur = json.load(fh)
+            current = int((_cur if isinstance(_cur, dict) else {}).get('generation') or 0)
+        except (ValueError, OSError, TypeError, OverflowError):
+            current = 0
         if current != generation:
             raise SystemExit('prod-watch: state.json moved from generation ' + str(generation) + ' to ' + str(current) +
                              ' while this tick ran (another tick wrote it) -- refusing to overwrite; this tick replays')
@@ -5609,6 +6521,16 @@ tool commit_state:
     with open(tmp, 'w', encoding='utf-8') as fh:
         fh.write(staged)
     os.replace(tmp, os.path.join(state_dir, 'state.json'))
+    if session_next:
+        if not os.path.exists(session_next):
+            raise SystemExit('prod-watch: the staged session file ' + repr(session_next) + ' is missing -- a resumed run on another '
+                             'runner, or a cleaned scratch; this tick replays')
+        with open(session_next, encoding='utf-8') as fh:
+            s_staged = fh.read()
+        tmp = os.path.join(state_dir, 'session.json.tmp')
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            fh.write(s_staged)
+        os.replace(tmp, os.path.join(state_dir, 'session.json'))
     ## The ledgers exist after every tick, empty or not: the node stages them
     ## by name, and a quiet tick (nothing posted) has nothing to append.
     for _f in ('alertlog.jsonl', 'ticks.jsonl'):
@@ -5664,11 +6586,16 @@ tool commit_state:
         ## naturally absent (nothing for git to untrack; a pathspec for it
         ## would abort the whole add). `git ls-files` reads the index, so
         ## once the deletion is staged the name stops coming back.
-        for _ln in subprocess.run(['git', 'ls-files', '--', state_dir], capture_output=True, text=True).stdout.split(chr(10)):
+        ## The index's view of THIS directory alone: `git ls-files -- <dir>`
+        ## recurses, and a session rotation (session/ticks-2.jsonl) read by
+        ## its basename would be handed to `git add` as a path the watch's
+        ## dir never had — aborting the whole add, every watch tick.
+        for _ln in subprocess.run(['git', 'ls-files', '--', ':(glob)' + re.sub(r'([*?\[\]\\])', r'\\\1', state_dir.rstrip('/')) + '/*'],
+                                  capture_output=True, text=True).stdout.split(chr(10)):
             _fn = os.path.basename(_ln.strip())
             if _fn and ROTATION_RE.match(_fn) and not os.path.exists(os.path.join(state_dir, _fn)):
                 stage_extra.append(_fn)
-        committed = _commit_push_state(state_dir, 'chore(prod-watch): watch tick, ' + str(appended) + ' alert(s)' +
+        committed = _commit_push_state(state_dir, 'chore(prod-watch): ' + ('session' if session_next else 'watch') + ' tick, ' + str(appended) + ' alert(s)' +
                                        (', ' + said if said else ''), stage_extra)
     print(json.dumps({'committed': committed, 'rotations': rotations,
                       'summary': 'state persisted (' + str(appended) + ' alert(s) logged)' + (', pushed' if committed else '') +
@@ -5678,6 +6605,511 @@ tool commit_state:
   language: py
   input: commit_input
   output: commit_output
+
+## ─── Session ────────────────────────────────────────────────────
+
+## The session's own voice (mode=session), after the lifecycle ran on the
+## session's fork of the state: the start message, a heartbeat of POSITIVE
+## numbers every session_heartbeat_minutes, the one note that the analysis
+## cap is reached, the summary when the window is over. The envelope is
+## STAGED here and written by commit_state after delivery, like the state:
+## a failed post replays the message, never loses it.
+tool session:
+  script: |
+    import json, os, re, datetime
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    plan = {{input.session}} or {}
+    ws = {{input.workspace}}
+    alerts = {{input.alerts}} or []
+    overflow = int({{input.overflow_count}} or 0)
+    stale = {{input.stale_sources}} or []
+    held_now = {{input.held}} or []
+    tick_file = {{input.tick_file}}
+    prom_results = {{input.prom_results}} or []
+    prom_metrics = {{input.prom_metrics}} or []
+    http_results = {{input.http_results}} or []
+    state_dir = {{input.state_dir}}
+    scratch = {{input.scratch_dir}}
+    release = {{input.release}} or ''
+    if not plan.get('active'):
+        raise SystemExit('prod-watch: the session node ran without an active session plan -- the edge from decide is wrong')
+    os.chdir(ws)
+    os.makedirs(scratch, exist_ok=True)
+    def when(v):
+        try:
+            d = datetime.datetime.fromisoformat(v)
+        except (TypeError, ValueError):
+            return None
+        return d if d.tzinfo is not None else d.replace(tzinfo=datetime.timezone.utc)
+    ## The tick's instant is plan's: the heartbeat was judged due against it,
+    ## and a stamp taken after the polls would drift the cadence (a
+    ## 30-minute heartbeat every 35).
+    now = when(plan.get('now')) or datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+    now_iso = now.isoformat()
+    def jload(path, default):
+        if path and os.path.exists(path):
+            with open(path, encoding='utf-8') as fh:
+                return json.load(fh)
+        return default
+    sfile = plan.get('file') or os.path.join(state_dir, 'session.json')
+    old = jload(sfile, {})
+    if not isinstance(old, dict):
+        raise SystemExit('prod-watch: session file ' + sfile + ' is not a JSON object -- repair or remove it')
+    ACTIONABLE_STATES = ('new', 'escalated', 'regressed', 'escalating', 'reopened')
+    ACTIONABLE_KINDS = ('probe', 'prom', 'loki', 'sentry', 'galert')
+    def alone(a):
+        ## An escalation posted alone: what spends the cap, what the envelope
+        ## and the heartbeat count; a note's members are named, not counted.
+        return a.get('state') in ACTIONABLE_STATES and a.get('kind') in ACTIONABLE_KINDS and not a.get('members')
+    escalated = [a for a in alerts if alone(a)]
+    tick = jload(tick_file, {}) if tick_file else {}
+    def num(v):
+        ## A number in a message: an integer as is, a float to 3 decimals, a
+        ## tiny one in scientific notation rather than a false zero.
+        if isinstance(v, bool) or v is None:
+            return '-'
+        if isinstance(v, int):
+            return str(v)
+        if isinstance(v, float):
+            if v == 0:
+                return '0'
+            if v == int(v) and abs(v) < 10 ** 15:
+                return str(int(v))
+            if abs(v) < 0.001:
+                return '%.2e' % v
+            return ('%.3f' % v).rstrip('0').rstrip('.')
+        return str(v)
+    def numbers():
+        ## What a heartbeat carries: the configured observations, every
+        ## probe's verdict and latency, the lanes' counts this tick.
+        lines = []
+        for m in prom_metrics:
+            if m.get('state') == 'observed':
+                lines.append({'label': 'session_metric', 'fields': {'title': m.get('title') or m.get('id'), 'value': num(m.get('value')),
+                                                                    'unit': m.get('unit') or ''}})
+            else:
+                lines.append({'label': 'session_metric_missing', 'fields': {'title': m.get('title') or m.get('id'),
+                                                                            'state': m.get('state') or 'error'}})
+        for r in http_results:
+            lines.append({'label': 'session_probe', 'fields': {'id': r.get('id'), 'ok': 'ok' if r.get('ok') else 'FAILING',
+                                                               'status': r.get('status') if r.get('status') is not None else 'no answer',
+                                                               'ms': num(r.get('ms'))}})
+        lines.append({'label': 'session_lanes', 'fields': {'lines': num(tick.get('lines', 0)), 'templates': num(tick.get('templates', 0)),
+                                                           'sentry': num(tick.get('sentry_issues', 0)),
+                                                           'breached': num(sum(1 for r in prom_results if r.get('state') == 'breached')),
+                                                           'coverage': tick.get('coverage') or '?'}})
+        return lines
+    def ledger(base, since, until):
+        ## One session's rows of a ledger: the live file and its rotations
+        ## hold every session's, so a row before this one's start or after
+        ## its window's end (plus the closing grace) is another session's.
+        rows = []
+        if not os.path.isdir(state_dir):
+            return rows
+        names = [fn for fn in os.listdir(state_dir) if re.fullmatch(re.escape(base) + r'(-[0-9]+(-[0-9]+)?)?\.jsonl', fn)]
+        for fn in sorted(names):
+            with open(os.path.join(state_dir, fn), encoding='utf-8', errors='replace') as fh:
+                for ln in fh:
+                    ln = ln.strip()
+                    if not ln:
+                        continue
+                    try:
+                        rec = json.loads(ln)
+                    except ValueError:
+                        continue
+                    if not isinstance(rec, dict):
+                        continue
+                    at = when(rec.get('at'))
+                    if at is None or (since is not None and at < since) or (until is not None and at > until):
+                        continue
+                    rows.append(rec)
+        return rows
+    RANK = {'critical': 4, 'high': 3, 'medium': 2, 'low': 1}
+    def summary_of(env, with_tick):
+        ## The window in numbers, from the session's OWN rows: its ticks, its
+        ## alerts (this tick's too, not appended yet, when this tick is the
+        ## session's), between its start and its window's end plus an hour.
+        since = when(env.get('started_at'))
+        until = when(env.get('ends_at'))
+        if until is not None:
+            until = until + datetime.timedelta(seconds=3600)
+        ticks = ledger('ticks', since, until) + ([tick] if with_tick and tick else [])
+        posted = ledger('alertlog', since, until) + ([{'fp': a.get('fingerprint'), 'title': a.get('log_title') or a.get('title_arg') or '',
+                                                       'count': a.get('count'), 'kind': a.get('kind'), 'severity': a.get('severity'),
+                                                       'state': a.get('state'), 'folded': len(a.get('members') or []) or None}
+                                                      for a in alerts] if with_tick else [])
+        esc = [p for p in posted if p.get('state') in ACTIONABLE_STATES and p.get('kind') in ACTIONABLE_KINDS and not p.get('folded')]
+        folded = sum(int(p.get('folded') or 0) for p in posted if p.get('folded'))
+        by_sev = {s: sum(1 for p in esc if p.get('severity') == s) for s in ('critical', 'high', 'medium', 'low')}
+        lines = [{'label': 'session_summary_span', 'fields': {'from': str(env.get('started_at') or '')[:16],
+                                                               'to': str((env.get('closed_at') or now_iso) if with_tick else (env.get('ends_at') or env.get('closed_at') or now_iso))[:16],
+                                                               'ticks': num(len(ticks)), 'heartbeats': num(env.get('heartbeats') or 0)}},
+                 {'label': 'session_summary_escalations', 'fields': dict({'n': num(len(esc))}, **{k: num(v) for k, v in by_sev.items()})}]
+        if folded:
+            lines.append({'label': 'session_summary_folded', 'fields': {'n': num(folded)}})
+        members, seen = [], set()
+        for p in sorted(esc, key=lambda p: RANK.get(p.get('severity'), 0), reverse=True):
+            key = str(p.get('fp') or p.get('title'))
+            if key in seen:
+                continue
+            seen.add(key)
+            c = p.get('count')
+            members.append({'name': str(p.get('title') or p.get('fp') or '?')[:130],
+                            'count': c if isinstance(c, int) and not isinstance(c, bool) else 0})
+        names = [{'label': 'session_summary_names', 'members': members[:50]}] if members else []
+        held_names = env.get('held_names') if isinstance(env.get('held_names'), dict) else {}
+        if held_names:
+            names.append({'label': 'session_summary_held', 'members': [{'name': v, 'count': 0} for v in list(held_names.values())[:50]],
+                          'fields': {'cap': num(env.get('cap'))}})
+        series = {}
+        for t in ticks:
+            for m in (t.get('metrics') or []):
+                v = m.get('value')
+                if m.get('state') == 'observed' and isinstance(v, (int, float)) and not isinstance(v, bool):
+                    s = series.setdefault(str(m.get('id')), {'title': m.get('title') or m.get('id'), 'unit': m.get('unit') or '', 'values': []})
+                    s['values'].append(float(v))
+        for sid in sorted(series):
+            s = series[sid]
+            lines.append({'label': 'session_summary_metric', 'fields': {'title': s['title'], 'min': num(min(s['values'])),
+                                                                        'max': num(max(s['values'])), 'last': num(s['values'][-1]), 'unit': s['unit']}})
+        with_probes = [t for t in ticks if 'probes_total' in t]
+        p_ok = sum(int(t.get('probes_ok') or 0) for t in with_probes)
+        p_total = sum(int(t.get('probes_total') or 0) for t in with_probes)
+        if p_total:
+            lines.append({'label': 'session_summary_probes', 'fields': {'ok': num(p_ok), 'total': num(p_total)}})
+        partial = sum(1 for t in ticks if t.get('coverage') == 'partial')
+        if partial:
+            lines.append({'label': 'session_summary_coverage', 'fields': {'partial': num(partial)}})
+        return {'marker': 'session_summary', 'icon': ':checkered_flag:', 'severity': 'low', 'title_key': 'session_summary_title',
+                'lines': lines, 'names': names}
+    reports = []
+    closed_id = ''
+    closing_old = bool(plan.get('closing') and old and not old.get('closed'))
+    closing_only = closing_old and not plan.get('new')
+    if plan.get('new'):
+        env = {'version': 1, 'id': plan.get('id'), 'window': plan.get('window') or {}, 'started_at': plan.get('starts_at') or now_iso,
+               'ends_at': plan.get('ends_at'), 'ends_local': plan.get('ends_local'), 'tz': plan.get('tz'),
+               'ticks': 0, 'escalations': 0, 'held': 0, 'held_names': {}, 'heartbeats': 0, 'last_heartbeat_at': None,
+               'cap_said': False, 'closed': False, 'closed_at': None, 'cap': plan.get('cap'),
+               'heartbeat_minutes': plan.get('heartbeat_minutes'), 'tick_secs': plan.get('tick_secs')}
+    else:
+        env = old
+        if plan.get('tick_secs'):
+            env['tick_secs'] = plan.get('tick_secs')
+    if not env:
+        raise SystemExit('prod-watch: the session envelope ' + sfile + ' is missing while plan continues a session -- relaunch the tick')
+    if closing_old and not closing_only:
+        ## A new window starts here: the old session's summary goes out
+        ## first, without this tick, which is the new session's.
+        old['closed'] = True
+        old['closed_at'] = now_iso
+        reports.append(summary_of(old, False))
+        closed_id = str(old.get('id'))
+    live = not env.get('closed')
+    if live:
+        ## This tick is the session's — the closing tick's observation too.
+        env['ticks'] = int(env.get('ticks') or 0) + 1
+        env['escalations'] = int(env.get('escalations') or 0) + len(escalated)
+        held_names = env.get('held_names') if isinstance(env.get('held_names'), dict) else {}
+        for h in held_now:
+            if isinstance(h, dict) and h.get('fingerprint'):
+                held_names[str(h['fingerprint'])] = str(h.get('title') or h['fingerprint'])[:130]
+        for a in escalated:
+            ## Held earlier, posted now: no longer held.
+            held_names.pop(str(a.get('fingerprint')), None)
+        env['held_names'] = held_names
+        env['held'] = len(held_names)
+        if plan.get('new'):
+            reports.append({'marker': 'session_start', 'icon': ':large_green_circle:', 'severity': 'low', 'title_key': 'session_start_title',
+                            'lines': [{'label': 'session_until', 'fields': {'until': env.get('ends_local') or env.get('ends_at') or '?'}},
+                                      {'label': 'session_setup', 'fields': {'heartbeat': num(env.get('heartbeat_minutes')),
+                                                                            'cap': num(env.get('cap')) if env.get('cap') else 'none'}}] + numbers()})
+            env['last_heartbeat_at'] = now_iso
+        elif plan.get('heartbeat_due') and not closing_only:
+            reports.append({'marker': 'session_heartbeat', 'icon': ':heartbeat:', 'severity': 'low', 'title_key': 'session_heartbeat_title',
+                            'lines': [{'label': 'session_progress', 'fields': {'ticks': num(env['ticks']), 'escalations': num(env['escalations']),
+                                                                               'held': num(env['held']),
+                                                                               'until': env.get('ends_local') or env.get('ends_at') or '?'}}] + numbers()})
+            env['last_heartbeat_at'] = now_iso
+            env['heartbeats'] = int(env.get('heartbeats') or 0) + 1
+        if held_now and not env.get('cap_said'):
+            reports.append({'marker': 'session_cap', 'icon': ':no_entry_sign:', 'severity': 'medium', 'title_key': 'session_cap_title',
+                            'lines': [{'label': 'session_cap_detail', 'fields': {'cap': num(env.get('cap')), 'held': num(len(held_names))}}]})
+            env['cap_said'] = True
+    if closing_only:
+        ## The window is over: this observation closes the session, and the
+        ## summary counts it.
+        env['closed'] = True
+        env['closed_at'] = now_iso
+        reports.append(summary_of(env, True))
+        closed_id = str(env.get('id'))
+    session_next = os.path.join(scratch, 'session_next-' + str({{run.id}})[-12:] + '.json')
+    with open(session_next, 'w', encoding='utf-8') as fh:
+        json.dump(env, fh, ensure_ascii=False, indent=1, sort_keys=True)
+    said = [r['marker'] for r in reports]
+    print(json.dumps({'alerts': alerts, 'overflow_count': overflow, 'stale_sources': stale, 'reports': reports,
+                      'session_next_file': session_next,
+                      'summary': 'session ' + str(env.get('id')) + ': tick ' + str(env.get('ticks')) + ', ' + str(len(escalated)) +
+                                 ' escalation(s) this tick (' + str(env.get('escalations')) + ' so far), ' +
+                                 str(len(env.get('held_names') or {})) + ' held' + (', ' + ', '.join(said) if said else '') +
+                                 ((', closed ' + closed_id) if closed_id else '') + (', CLOSED' if env.get('closed') else '')},
+                     ensure_ascii=False))
+
+  language: py
+  input: session_input
+  output: session_output
+
+## ─── Digest ─────────────────────────────────────────────────────
+
+## The daily digest (mode=digest): ALWAYS one message — the heartbeat whose
+## absence is the alert — carrying the watchdog's own health (ticks executed
+## vs expected, lanes silent) and the window's signals read from the
+## ledgers, the watch state (read-only) and the Prometheus ranges.
+## Deterministic, numbers only; it writes nothing.
+tool digest:
+  script: |
+    import json, os, re, sys, datetime
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    plan = {{input.digest}} or {}
+    ws = {{input.workspace}}
+    state_dir = {{input.state_dir}}
+    scratch = {{input.scratch_dir}}
+    ranges = {{input.prom_ranges}} or []
+    prom_ok = bool({{input.prom_ok}})
+    prom_errors = {{input.prom_errors}} or []
+    lanes = {{input.lanes}} or {}
+    stale_h = int({{input.source_stale_hours}})
+    if not plan:
+        raise SystemExit('prod-watch: the digest node ran without a digest plan -- the edge from plan is wrong')
+    os.chdir(ws)
+    now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+    def when(v):
+        try:
+            d = datetime.datetime.fromisoformat(v)
+        except (TypeError, ValueError):
+            return None
+        return d if d.tzinfo is not None else d.replace(tzinfo=datetime.timezone.utc)
+    w_from, w_to = when(plan.get('from')), when(plan.get('to'))
+    if w_from is None or w_to is None:
+        raise SystemExit('prod-watch: the digest plan carries no window -- plan is wrong')
+    interval = int(plan.get('tick_interval_minutes') or 30)
+    expected = int(plan.get('expected_ticks') or 0)
+    if interval < 1 or expected < 1:
+        raise SystemExit('prod-watch: the digest plan carries no tick slot (interval ' + str(interval) + ', expected ' + str(expected) + ') -- plan is wrong')
+    def num(v):
+        ## A number in a message: an integer as is, a float to 3 decimals, a
+        ## tiny one in scientific notation rather than a false zero.
+        if isinstance(v, bool) or v is None:
+            return '-'
+        if isinstance(v, int):
+            return str(v)
+        if isinstance(v, float):
+            if v == 0:
+                return '0'
+            if v == int(v) and abs(v) < 10 ** 15:
+                return str(int(v))
+            if abs(v) < 0.001:
+                return '%.2e' % v
+            return ('%.3f' % v).rstrip('0').rstrip('.')
+        return str(v)
+    def weight(p):
+        ## A ledger line stands for one alert, or for the members of a note.
+        f = p.get('folded')
+        return f if isinstance(f, int) and not isinstance(f, bool) and f > 0 else 1
+    malformed = [0]
+    ## The watch's files and the session's: during a window the watch steps
+    ## back and the session observes — a digest reading one set would call
+    ## the watchdog silent on every day with a window.
+    dirs = [state_dir, os.path.join(state_dir, 'session')]
+    def ledger(base):
+        ## The live file and its rotations, in both dirs: the window's rows
+        ## may straddle a rotation. A line that does not parse, or whose
+        ## stamp does not, is counted and said — never read as a quiet tick;
+        ## a byte that is not UTF-8 is replaced, not the digest's death.
+        rows = []
+        for d in dirs:
+            if not os.path.isdir(d):
+                continue
+            names = [fn for fn in os.listdir(d) if re.fullmatch(re.escape(base) + r'(-[0-9]+(-[0-9]+)?)?\.jsonl', fn)]
+            for fn in sorted(names):
+                with open(os.path.join(d, fn), encoding='utf-8', errors='replace') as fh:
+                    for ln in fh:
+                        ln = ln.strip()
+                        if not ln:
+                            continue
+                        try:
+                            rec = json.loads(ln)
+                        except ValueError:
+                            malformed[0] += 1
+                            continue
+                        if not isinstance(rec, dict):
+                            malformed[0] += 1
+                            continue
+                        at = when(rec.get('at'))
+                        if at is None:
+                            malformed[0] += 1
+                            continue
+                        if not (w_from <= at < w_to):
+                            continue
+                        rec['_at'] = at
+                        rows.append(rec)
+        return rows
+    ticks = sorted(ledger('ticks'), key=lambda t: t['_at'])
+    posted = ledger('alertlog')
+    ## Executed = the tick slots of the window holding at least one record,
+    ## watch or session: a dense session covers its slots once, ten manual
+    ## runs in one hour cover one slot, a five-hour outage is five... missing.
+    slots = set()
+    for t in ticks:
+        k = int((t['_at'] - w_from).total_seconds() // (interval * 60))
+        if 0 <= k < expected:
+            slots.add(k)
+    executed = len(slots)
+    missing = max(0, expected - executed)
+    def state_of(path):
+        if not path or not os.path.exists(path):
+            return {}
+        with open(path, encoding='utf-8') as fh:
+            try:
+                v = json.load(fh)
+            except ValueError:
+                raise SystemExit('prod-watch: state file ' + path + ' is not valid JSON -- repair or remove it')
+        if not isinstance(v, dict):
+            raise SystemExit('prod-watch: state file ' + path + ' is not a JSON object -- repair or remove it')
+        return v
+    w_state = state_of(plan.get('watch_state_file') or os.path.join(state_dir, 'state.json'))
+    def state_lenient(path, what):
+        ## A file another mode owns is read for what it says; one that is no
+        ## readable JSON object is absent, said on stderr.
+        try:
+            with open(path, encoding='utf-8') as fh:
+                v = json.load(fh)
+        except FileNotFoundError:
+            return {}
+        except (ValueError, OSError):
+            print('prod-watch: ' + what + ' ' + path + ' is not a readable JSON file -- read as absent', file=sys.stderr)
+            return {}
+        return v if isinstance(v, dict) else {}
+    s_state = state_lenient(os.path.join(state_dir, 'session', 'state.json'), 'the session state')
+    incidents = w_state.get('incidents') or {}
+    ## A lane's last success is the later of the two states': the session
+    ## polled it while the watch stepped back.
+    last_ok = {}
+    for st in (w_state, s_state):
+        hs = st.get('health')
+        if not isinstance(hs, dict):
+            continue
+        for src_name, h in hs.items():
+            if not isinstance(h, dict):
+                continue
+            ok = when(h.get('last_ok'))
+            if src_name not in last_ok or (ok is not None and (last_ok[src_name] is None or ok > last_ok[src_name])):
+                last_ok[src_name] = ok
+    silent = []
+    for src_name in sorted(last_ok):
+        if not lanes.get(src_name) or stale_h <= 0:
+            continue
+        ok = last_ok[src_name]
+        if ok is None:
+            silent.append({'label': 'digest_silent_never', 'fields': {'source': src_name}})
+            continue
+        hours = (now - ok).total_seconds() / 3600
+        if hours >= stale_h:
+            silent.append({'label': 'digest_silent', 'fields': {'source': src_name, 'hours': num(int(hours)), 'last': ok.isoformat()}})
+    lines = [{'label': 'digest_span', 'fields': {'from': str(plan.get('from'))[:16], 'to': str(plan.get('to'))[:16], 'hours': num(plan.get('hours'))}},
+             {'label': 'digest_ticks', 'fields': {'executed': num(executed), 'expected': num(expected), 'interval': num(interval)}}]
+    if missing:
+        lines.append({'label': 'digest_ticks_missing', 'fields': {'missing': num(missing), 'executed': num(executed), 'expected': num(expected)}})
+    if len(ticks) != executed:
+        lines.append({'label': 'digest_records', 'fields': {'records': num(len(ticks))}})
+    if malformed[0]:
+        lines.append({'label': 'digest_malformed', 'fields': {'n': num(malformed[0])}})
+    lines += silent
+    if plan.get('halt'):
+        h = plan['halt']
+        lines.append({'label': 'digest_halted', 'fields': {'since': str(h.get('since') or '?'), 'reason': str(h.get('reason') or '?')}})
+    s = plan.get('session') or {}
+    if plan.get('session_active') and s:
+        lines.append({'label': 'digest_session', 'fields': {'id': str(s.get('id') or '?'), 'started': str(s.get('started_at') or '?')[:16],
+                                                            'until': str(s.get('ends_local') or s.get('ends_at') or '?')}})
+    elif plan.get('session_stale') and s:
+        lines.append({'label': 'digest_session_stale', 'fields': {'id': str(s.get('id') or '?'),
+                                                                  'until': str(s.get('ends_local') or s.get('ends_at') or '?')}})
+    n_posted = sum(weight(p) for p in posted)
+    by_sev = {sev: sum(weight(p) for p in posted if p.get('severity') == sev) for sev in ('critical', 'high', 'medium', 'low')}
+    if posted:
+        lines.append({'label': 'digest_alerts', 'fields': dict({'n': num(n_posted)}, **{k: num(v) for k, v in by_sev.items()})})
+        by_kind = {}
+        for p in posted:
+            k = str(p.get('kind') or '?')
+            by_kind[k] = by_kind.get(k, 0) + weight(p)
+        lines.append({'label': 'digest_lanes', 'fields': {'lanes': ', '.join(k + ' ' + str(v) for k, v in sorted(by_kind.items()))}})
+    else:
+        lines.append({'label': 'digest_alerts_none', 'fields': {}})
+    s_counts = {st: sum(weight(p) for p in posted if p.get('kind') == 'sentry' and p.get('state') == st)
+                for st in ('new', 'regressed', 'escalating', 'reopened', 'resolved')}
+    if lanes.get('sentry') or any(s_counts.values()):
+        lines.append({'label': 'digest_sentry', 'fields': {k: num(v) for k, v in s_counts.items()}})
+    g_fire = sum(weight(p) for p in posted if p.get('kind') == 'galert' and p.get('state') in ('new', 'escalated'))
+    g_res = sum(weight(p) for p in posted if p.get('kind') == 'galert' and p.get('state') == 'resolved')
+    if lanes.get('grafana_alerts') or g_fire or g_res:
+        lines.append({'label': 'digest_galerts', 'fields': {'firing': num(g_fire), 'resolved': num(g_res)}})
+    ## The top patterns: one entry per template posted ALONE (a note's line
+    ## names several), at the occurrences its incident had at its last post
+    ## — the ledger holds the cumulative count, not the window's.
+    tpl = {}
+    for p in posted:
+        if p.get('kind') != 'loki' or p.get('folded') or str(p.get('fp') or '').startswith('folded:'):
+            continue
+        key = str(p.get('fp') or p.get('title') or '')
+        t = tpl.setdefault(key, {'name': str(p.get('title') or key)[:130], 'count': 0})
+        c = p.get('count')
+        if isinstance(c, int) and not isinstance(c, bool) and c > t['count']:
+            t['count'] = c
+        if p.get('title'):
+            t['name'] = str(p['title'])[:130]
+    top = sorted(tpl.values(), key=lambda t: (-t['count'], t['name']))[:5]
+    names = [{'label': 'digest_top_templates', 'members': top}] if top else []
+    with_probes = [t for t in ticks if 'probes_total' in t]
+    p_ok = sum(int(t.get('probes_ok') or 0) for t in with_probes)
+    p_total = sum(int(t.get('probes_total') or 0) for t in with_probes)
+    if p_total:
+        ## The ratio is floored to a tenth: 4799 of 4800 is not 100 %.
+        pct = int(1000 * p_ok / p_total) / 10.0
+        lines.append({'label': 'digest_probes', 'fields': {'ok': num(p_ok), 'total': num(p_total), 'pct': num(pct),
+                                                           'ticks': num(len(with_probes))}})
+    elif lanes.get('probes'):
+        lines.append({'label': 'digest_probes_none', 'fields': {}})
+    for r in ranges:
+        if r.get('state') == 'observed':
+            lines.append({'label': 'digest_range', 'fields': {'title': r.get('title') or r.get('id'), 'value': num(r.get('value')),
+                                                              'unit': r.get('unit') or '', 'agg': r.get('agg') or 'max', 'points': num(r.get('points') or 0)}})
+        else:
+            lines.append({'label': 'digest_range_missing', 'fields': {'title': r.get('title') or r.get('id'),
+                                                                      'state': (r.get('state') or 'error') + (': ' + str(r.get('error'))[:120] if r.get('error') else '')}})
+    lines.append({'label': 'digest_open', 'fields': {'n': num(len(incidents))}})
+    partial = sum(1 for t in ticks if t.get('coverage') == 'partial')
+    if partial:
+        lines.append({'label': 'digest_coverage', 'fields': {'partial': num(partial)}})
+    release = str((ticks[-1].get('release') if ticks else '') or '')
+    if release:
+        lines.append({'label': 'digest_release', 'fields': {'release': release}})
+    ## ALWAYS one report: the digest is the heartbeat, and a quiet window
+    ## says so in numbers — its absence is the alert.
+    reports = [{'marker': 'digest', 'icon': ':bar_chart:', 'severity': 'low', 'title_key': 'digest_title', 'lines': lines, 'names': names}]
+    summary = ('digest: ' + str(executed) + '/' + str(expected) + ' tick slot(s)' + (', ' + str(missing) + ' MISSING' if missing else '') +
+               ' (' + str(len(ticks)) + ' record(s)), ' + str(n_posted) + ' alert(s) posted, ' + str(len(incidents)) + ' open, ' +
+               str(len(silent)) + ' lane(s) silent' + (', ' + str(len(ranges)) + ' range(s)' if ranges else '') +
+               ((' -- prometheus lane errors: ' + json.dumps(prom_errors)[:400]) if prom_errors or not prom_ok else '') +
+               (', HALTED' if plan.get('halt') else '') + (', session open' if plan.get('session_active') else '') +
+               (', session STALE' if plan.get('session_stale') else '') +
+               (', ' + str(malformed[0]) + ' malformed ledger line(s)' if malformed[0] else ''))
+    print(json.dumps({'alerts': [], 'overflow_count': 0, 'stale_sources': [], 'reports': reports, 'release': release,
+                      'release_known': False, 'session_next_file': '', 'summary': summary}, ensure_ascii=False))
+
+  language: py
+  input: digest_input
+  output: digest_output
 
 ## ─── Terminal refusal ───────────────────────────────────────────
 
@@ -5710,7 +7142,52 @@ workflow prod_watch:
 
   plan -> watch_halted when halted
 
-  plan -> resolve_release with {
+  ## A watch tick while a session is open, a session tick outside every
+  ## window: nothing polled, nothing posted — plan's summary says why.
+  plan -> done when step_back
+
+  ## ── digest: the ranges, the digest, a delivery that persists nothing ──
+  plan -> poll_prom when collect with {
+    grafana: "{{outputs.plan.grafana}}",
+    prometheus: "{{outputs.plan.prometheus}}",
+    timeout_secs: "{{vars.fetch_timeout_secs}}",
+    allow_private: "{{vars.allow_private_sources}}",
+  }
+
+  poll_prom -> digest when "vars.mode == 'digest'" with {
+    digest: "{{outputs.plan.digest}}",
+    workspace: "{{vars.workspace_dir}}",
+    state_dir: "{{outputs.plan.state_dir}}",
+    scratch_dir: "{{vars.scratch_dir}}",
+    prom_ranges: "{{outputs.poll_prom.ranges}}",
+    prom_ok: "{{outputs.poll_prom.ok}}",
+    prom_errors: "{{outputs.poll_prom.errors}}",
+    lanes: "{{outputs.plan.lanes}}",
+    source_stale_hours: "{{vars.source_stale_hours}}",
+  }
+
+  digest -> notify with {
+    alerts: "{{outputs.digest.alerts}}",
+    overflow_count: "{{outputs.digest.overflow_count}}",
+    stale_sources: "{{outputs.digest.stale_sources}}",
+    reports: "{{outputs.digest.reports}}",
+    sinks: "{{outputs.plan.sinks}}",
+    labels: "{{outputs.plan.labels}}",
+    app: "{{outputs.plan.app}}",
+    sentry: "{{outputs.plan.sentry}}",
+    release: "{{outputs.digest.release}}",
+    release_known: "{{outputs.digest.release_known}}",
+    dry_run: "{{vars.dry_run}}",
+    max_message_chars: "{{vars.max_message_chars}}",
+    deliver_by: "{{outputs.plan.deliver_by}}",
+    persist_state: "{{outputs.plan.persist}}",
+    session_next_file: "{{outputs.digest.session_next_file}}",
+  }
+
+  ## ── watch + session: the lanes, the lifecycle, the delivery ──
+  ## The fallback (plan's `poll`): the first edge above whose condition
+  ## holds wins, so this one fires for a watch or session tick only.
+  plan -> resolve_release else with {
     release: "{{outputs.plan.release}}",
     timeout_secs: "{{vars.fetch_timeout_secs}}",
     allow_private: "{{vars.allow_private_sources}}",
@@ -5731,7 +7208,7 @@ workflow prod_watch:
     allow_private: "{{vars.allow_private_sources}}",
   }
 
-  poll_prom -> poll_sentry with {
+  poll_prom -> poll_sentry else with {
     sentry: "{{outputs.plan.sentry}}",
     timeout_secs: "{{vars.fetch_timeout_secs}}",
     scratch_dir: "{{vars.scratch_dir}}",
@@ -5764,8 +7241,10 @@ workflow prod_watch:
   }
 
   leak_scan -> decide with {
+    mode: "{{vars.mode}}",
     signals_file: "{{outputs.leak_scan.signals_file}}",
     prom_results: "{{outputs.poll_prom.results}}",
+    prom_metrics: "{{outputs.poll_prom.metrics}}",
     http_results: "{{outputs.probe_http.results}}",
     loki: "{{outputs.plan.loki}}",
     loki_ok: "{{outputs.poll_loki.ok}}",
@@ -5791,7 +7270,8 @@ workflow prod_watch:
     lanes: "{{outputs.plan.lanes}}",
     app: "{{outputs.plan.app}}",
     workspace: "{{vars.workspace_dir}}",
-    state_dir: "{{vars.state_dir}}",
+    state_dir: "{{outputs.plan.state_dir}}",
+    state_seed_file: "{{outputs.plan.state_seed_file}}",
     scratch_dir: "{{vars.scratch_dir}}",
     renotify_hours: "{{vars.renotify_hours}}",
     quiet_after_hours: "{{vars.quiet_after_hours}}",
@@ -5800,12 +7280,32 @@ workflow prod_watch:
     max_alerts: "{{vars.max_alerts_per_run}}",
     max_alerts_per_lane: "{{vars.max_alerts_per_lane}}",
     max_message_chars: "{{vars.max_message_chars}}",
+    session_cap_left: "{{outputs.plan.session_cap_left}}",
   }
 
-  decide -> notify with {
+  ## A session tick: its own messages join the lifecycle's alerts before
+  ## the delivery; the envelope is staged with them.
+  decide -> session when "vars.mode == 'session'" with {
+    session: "{{outputs.plan.session}}",
+    workspace: "{{vars.workspace_dir}}",
     alerts: "{{outputs.decide.alerts}}",
     overflow_count: "{{outputs.decide.overflow_count}}",
     stale_sources: "{{outputs.decide.stale_sources}}",
+    held: "{{outputs.decide.held}}",
+    tick_file: "{{outputs.decide.tick_file}}",
+    prom_results: "{{outputs.poll_prom.results}}",
+    prom_metrics: "{{outputs.poll_prom.metrics}}",
+    http_results: "{{outputs.probe_http.results}}",
+    state_dir: "{{outputs.plan.state_dir}}",
+    scratch_dir: "{{vars.scratch_dir}}",
+    release: "{{outputs.resolve_release.release}}",
+  }
+
+  session -> notify with {
+    alerts: "{{outputs.session.alerts}}",
+    overflow_count: "{{outputs.session.overflow_count}}",
+    stale_sources: "{{outputs.session.stale_sources}}",
+    reports: "{{outputs.session.reports}}",
     sinks: "{{outputs.plan.sinks}}",
     labels: "{{outputs.plan.labels}}",
     app: "{{outputs.plan.app}}",
@@ -5815,21 +7315,43 @@ workflow prod_watch:
     dry_run: "{{vars.dry_run}}",
     max_message_chars: "{{vars.max_message_chars}}",
     deliver_by: "{{outputs.plan.deliver_by}}",
+    persist_state: "{{outputs.plan.persist}}",
+    session_next_file: "{{outputs.session.session_next_file}}",
+  }
+
+  decide -> notify else with {
+    alerts: "{{outputs.decide.alerts}}",
+    overflow_count: "{{outputs.decide.overflow_count}}",
+    stale_sources: "{{outputs.decide.stale_sources}}",
+    reports: "{{outputs.decide.reports}}",
+    sinks: "{{outputs.plan.sinks}}",
+    labels: "{{outputs.plan.labels}}",
+    app: "{{outputs.plan.app}}",
+    sentry: "{{outputs.plan.sentry}}",
+    release: "{{outputs.resolve_release.release}}",
+    release_known: "{{outputs.resolve_release.release_known}}",
+    dry_run: "{{vars.dry_run}}",
+    max_message_chars: "{{vars.max_message_chars}}",
+    deliver_by: "{{outputs.plan.deliver_by}}",
+    persist_state: "{{outputs.plan.persist}}",
+    session_next_file: "{{outputs.decide.session_next_file}}",
   }
 
   ## Only a completed delivery (or a nothing-to-deliver tick) consumes
   ## the staged state; dry-runs and partial deliveries keep the old
-  ## state so the SAME alerts recompute next tick (at-least-once).
-  notify -> done when not consume
+  ## state so the SAME alerts recompute next tick (at-least-once). The
+  ## digest persists nothing: its delivery ends the run.
+  notify -> done when not persist
 
-  notify -> commit_state when consume with {
+  notify -> commit_state when persist with {
     state_next_file: "{{outputs.decide.state_next_file}}",
     alertlog_file: "{{outputs.decide.alertlog_file}}",
     tick_file: "{{outputs.decide.tick_file}}",
+    session_next_file: "{{outputs.notify.session_next_file}}",
     generation: "{{outputs.decide.generation}}",
     state_commit: "{{vars.state_commit}}",
     workspace: "{{vars.workspace_dir}}",
-    state_dir: "{{vars.state_dir}}",
+    state_dir: "{{outputs.plan.state_dir}}",
     ledger: "{{outputs.plan.ledger}}",
   }
 

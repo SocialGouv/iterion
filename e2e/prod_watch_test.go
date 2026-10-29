@@ -48,6 +48,16 @@ var pwGalertsOff = map[string]any{
 	"galerts_ok": true, "galerts_truncated": false, "galerts_errors": []any{}, "galerts_walk": map[string]any{},
 }
 
+// pwModeInputDefaults and pwModeVarDefaults are what the watch tick passes
+// for the inputs and vars the digest and session modes added (#1701,
+// #1708): a test written for the watch tick keeps exercising it.
+var pwModeInputDefaults = map[string]any{
+	"mode": "watch", "prom_metrics": []any{}, "state_seed_file": "", "session_cap_left": -1,
+	"reports": []any{}, "persist_state": true, "session_next_file": "",
+}
+
+var pwModeVarDefaults = map[string]any{"session_heartbeat_minutes": 30, "max_analyses_per_session": 10, "max_message_chars": 14000}
+
 // pwSub replaces {{input.K}} / {{vars.K}} refs with JSON literals (the
 // engine's injection contract for script nodes) and {{secrets.N.path}}
 // with the mounted path, failing on any leftover ref.
@@ -77,10 +87,25 @@ func pwSub(t *testing.T, script string, inputs, vars map[string]any, secrets map
 			}
 		}
 	}
+	for k, v := range pwModeInputDefaults {
+		if _, set := inputs[k]; !set && strings.Contains(script, "{{input."+k+"}}") {
+			merged[k] = v
+		}
+	}
 	for k, v := range inputs {
 		merged[k] = v
 	}
 	inputs = merged
+	withVars := map[string]any{}
+	for k, v := range pwModeVarDefaults {
+		if strings.Contains(script, "{{vars."+k+"}}") {
+			withVars[k] = v
+		}
+	}
+	for k, v := range vars {
+		withVars[k] = v
+	}
+	vars = withVars
 	for k, v := range inputs {
 		b, err := json.Marshal(v)
 		if err != nil {
@@ -100,6 +125,9 @@ func pwSub(t *testing.T, script string, inputs, vars map[string]any, secrets map
 		script = strings.ReplaceAll(script, "{{secrets."+name+".path}}", string(b))
 	}
 	script = strings.ReplaceAll(script, "{{run.id}}", `"harness"`)
+	// A local run publishes no origin: the footer prints the id alone. A
+	// test proving the link replaces the reference before calling pwSub.
+	script = strings.ReplaceAll(script, "{{run.url}}", `""`)
 	// The run's effective budget: the bot's own max_duration (12m) — a test
 	// giving the run more replaces the reference before calling pwSub.
 	script = strings.ReplaceAll(script, "{{run.max_duration_seconds}}", "720")
@@ -210,6 +238,8 @@ type pwHarness struct {
 	ws, scratch, tokenFile, webhooksFile string
 	lines                                atomic.Value // []pwLine
 	prom                                 atomic.Value // map[string]pwProm
+	promRanges                           atomic.Value // map[string][]float64: the matrix a query_range answers, one point per value
+	rangeCalls                           []url.Values // every query_range call (under callMu)
 	healthStatus                         atomic.Int64
 	srv                                  *httptest.Server
 	callMu                               sync.Mutex
@@ -260,6 +290,7 @@ func newPWHarness(t *testing.T) *pwHarness {
 	h := &pwHarness{ws: t.TempDir(), scratch: t.TempDir()}
 	h.lines.Store([]pwLine{})
 	h.prom.Store(map[string]pwProm{})
+	h.promRanges.Store(map[string][]float64{})
 	h.healthStatus.Store(200)
 	mux := http.NewServeMux()
 	auth := func(w http.ResponseWriter, r *http.Request) bool {
@@ -359,6 +390,30 @@ func newPWHarness(t *testing.T) *pwHarness {
 			resp["warnings"] = p.Warnings
 		}
 		_ = json.NewEncoder(w).Encode(resp)
+	})
+	mux.HandleFunc("/api/datasources/proxy/uid/prom/api/v1/query_range", func(w http.ResponseWriter, r *http.Request) {
+		if !auth(w, r) {
+			return
+		}
+		q := r.URL.Query()
+		h.callMu.Lock()
+		h.rangeCalls = append(h.rangeCalls, q)
+		h.callMu.Unlock()
+		result := []map[string]any{}
+		if vals, ok := h.promRanges.Load().(map[string][]float64)[q.Get("query")]; ok && len(vals) > 0 {
+			start, _ := strconv.ParseInt(q.Get("start"), 10, 64)
+			step, _ := strconv.ParseInt(q.Get("step"), 10, 64)
+			if step <= 0 {
+				step = 300
+			}
+			points := make([][]any, 0, len(vals))
+			for i, v := range vals {
+				// Prometheus writes a sample's value as a string.
+				points = append(points, []any{float64(start + int64(i)*step), strconv.FormatFloat(v, 'f', -1, 64)})
+			}
+			result = append(result, map[string]any{"metric": map[string]string{"job": "x"}, "values": points})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "success", "data": map[string]any{"resultType": "matrix", "result": result}})
 	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		if raw, _ := h.rawHealth.Load().(string); raw != "" && answerRaw(w, raw) {
@@ -510,7 +565,7 @@ func (h *pwHarness) tick(t *testing.T, wf *ir.Workflow, dryRun bool) map[string]
 		return out
 	}
 	plan := run("plan", nil)
-	if plan["halted"] == true {
+	if plan["halted"] == true || plan["step_back"] == true {
 		return outs
 	}
 	rel := run("resolve_release", map[string]any{"release": plan["release"], "timeout_secs": 5, "allow_private": true})
@@ -3047,124 +3102,123 @@ func TestProdWatch_ResolveReleaseContract(t *testing.T) {
 	}
 }
 
-// TestProdWatch_TheGraphWiringIsTheTick: tick() re-declares every node's
-// inputs by hand, so a dropped or renamed edge mapping compiles fine and
-// runs green — the golden table here is what notices. Any key added to or
-// removed from an edge mapping must edit this table on purpose. The second
-// table pins each mapping's SOURCE expression: a key re-soured to the wrong
-// output (galerts_file ← poll_loki.raw_file) would pass the key check and
-// every hand-fed tick() test — only this table notices.
+// TestProdWatch_TheGraphWiringIsTheTick: tick() and modeTick() re-declare
+// every node's inputs by hand, so a dropped or renamed edge mapping compiles
+// fine and runs green — the golden table here is what notices. One row per
+// EDGE carrying a mapping — a node several edges reach (poll_prom from plan
+// for the digest and from poll_loki for the lanes; notify from the digest,
+// the session and the lifecycle) has one row per edge — pinning each key's
+// SOURCE expression: a key re-sourced to the wrong output (galerts_file ←
+// poll_loki.raw_file) would pass every hand-fed test, only this table
+// notices. Any key added to or removed from a mapping edits this table on
+// purpose.
 func TestProdWatch_TheGraphWiringIsTheTick(t *testing.T) {
 	t.Parallel()
 	wf := compileFixture(t, "prod-watch/main.bot")
-	want := map[string]map[string]bool{
-		"resolve_release": {"release": true, "timeout_secs": true, "allow_private": true},
-		"poll_loki":       {"grafana": true, "loki": true, "timeout_secs": true, "scratch_dir": true, "allow_private": true},
-		"poll_prom":       {"grafana": true, "prometheus": true, "timeout_secs": true, "allow_private": true},
-		"poll_sentry":     {"sentry": true, "timeout_secs": true, "scratch_dir": true, "allow_private": true},
-		"poll_galerts":    {"grafana": true, "grafana_alerts": true, "timeout_secs": true, "scratch_dir": true, "allow_private": true},
-		"probe_http":      {"probes": true, "timeout_secs": true, "allow_private": true},
-		"leak_scan":       {"raw_file": true, "per_query": true, "sentry_file": true, "sentry_issues": true, "galerts_file": true, "galerts_expected": true, "app": true, "scratch_dir": true},
-		"decide": {"signals_file": true, "prom_results": true, "http_results": true, "loki": true, "loki_ok": true, "loki_truncated": true,
-			"loki_errors": true, "loki_per_query": true, "prom_ok": true, "prom_errors": true, "release": true, "release_known": true,
-			"sentry": true, "sentry_ok": true, "sentry_truncated": true, "sentry_errors": true, "sentry_walk": true, "sentry_issues": true,
-			"grafana_alerts": true, "galerts_ok": true, "galerts_truncated": true, "galerts_errors": true, "galerts_walk": true, "galerts_expected": true,
-			"lanes": true, "app": true, "workspace": true, "state_dir": true, "scratch_dir": true, "renotify_hours": true,
-			"quiet_after_hours": true, "forget_after_days": true, "source_stale_hours": true, "max_alerts": true,
-			"max_alerts_per_lane": true, "max_message_chars": true},
-		"notify": {"alerts": true, "overflow_count": true, "stale_sources": true, "sinks": true, "labels": true, "app": true, "sentry": true,
-			"release": true, "release_known": true, "dry_run": true, "max_message_chars": true, "deliver_by": true},
-		"commit_state": {"state_next_file": true, "alertlog_file": true, "tick_file": true, "generation": true,
-			"state_commit": true, "workspace": true, "state_dir": true, "ledger": true},
-	}
-	got := map[string]map[string]bool{}
-	for _, e := range wf.Edges {
-		if len(e.With) == 0 {
-			continue
-		}
-		if got[e.To] != nil {
-			t.Fatalf("node %s receives data mappings from more than one edge — decide which wiring is real", e.To)
-		}
-		got[e.To] = map[string]bool{}
-		for _, m := range e.With {
-			got[e.To][m.Key] = true
-		}
-	}
-	for node, keys := range want {
-		if len(got[node]) != len(keys) {
-			t.Fatalf("node %s receives %d input mappings, the tick declares %d (got %v, want %v)", node, len(got[node]), len(keys), got[node], keys)
-		}
-		for k := range keys {
-			if !got[node][k] {
-				t.Fatalf("node %s: the edge mapping lost input %q — decide's tick() feeds it and the edge no longer carries it", node, k)
+	v := func(name string) string { return "{{vars." + name + "}}" }
+	o := func(node, field string) string { return "{{outputs." + node + "." + field + "}}" }
+	merge := func(maps ...map[string]string) map[string]string {
+		out := map[string]string{}
+		for _, m := range maps {
+			for k, val := range m {
+				out[k] = val
 			}
 		}
+		return out
 	}
-	for node := range got {
-		if want[node] == nil {
-			t.Fatalf("node %s receives edge mappings the golden table does not know — update the table on purpose", node)
+	lane := map[string]string{"timeout_secs": v("fetch_timeout_secs"), "allow_private": v("allow_private_sources")}
+	promIn := merge(lane, map[string]string{"grafana": o("plan", "grafana"), "prometheus": o("plan", "prometheus")})
+	notifyIn := func(src, releaseFrom string) map[string]string {
+		return map[string]string{
+			"alerts": o(src, "alerts"), "overflow_count": o(src, "overflow_count"), "stale_sources": o(src, "stale_sources"),
+			"reports": o(src, "reports"), "sinks": o("plan", "sinks"), "labels": o("plan", "labels"), "app": o("plan", "app"),
+			"sentry": o("plan", "sentry"), "release": o(releaseFrom, "release"), "release_known": o(releaseFrom, "release_known"),
+			"dry_run": v("dry_run"), "max_message_chars": v("max_message_chars"), "deliver_by": o("plan", "deliver_by"),
+			"persist_state": o("plan", "persist"), "session_next_file": o(src, "session_next_file"),
 		}
 	}
-	wantSrc := map[string]map[string]string{
-		"resolve_release": {"release": "{{outputs.plan.release}}", "timeout_secs": "{{vars.fetch_timeout_secs}}", "allow_private": "{{vars.allow_private_sources}}"},
-		"poll_loki": {"grafana": "{{outputs.plan.grafana}}", "loki": "{{outputs.plan.loki}}", "timeout_secs": "{{vars.fetch_timeout_secs}}",
-			"scratch_dir": "{{vars.scratch_dir}}", "allow_private": "{{vars.allow_private_sources}}"},
-		"poll_prom": {"grafana": "{{outputs.plan.grafana}}", "prometheus": "{{outputs.plan.prometheus}}",
-			"timeout_secs": "{{vars.fetch_timeout_secs}}", "allow_private": "{{vars.allow_private_sources}}"},
-		"poll_sentry": {"sentry": "{{outputs.plan.sentry}}", "timeout_secs": "{{vars.fetch_timeout_secs}}",
-			"scratch_dir": "{{vars.scratch_dir}}", "allow_private": "{{vars.allow_private_sources}}"},
-		"poll_galerts": {"grafana": "{{outputs.plan.grafana}}", "grafana_alerts": "{{outputs.plan.grafana_alerts}}",
-			"timeout_secs": "{{vars.fetch_timeout_secs}}", "scratch_dir": "{{vars.scratch_dir}}", "allow_private": "{{vars.allow_private_sources}}"},
-		"probe_http": {"probes": "{{outputs.plan.probes}}", "timeout_secs": "{{vars.fetch_timeout_secs}}", "allow_private": "{{vars.allow_private_sources}}"},
-		"leak_scan": {"raw_file": "{{outputs.poll_loki.raw_file}}", "per_query": "{{outputs.poll_loki.per_query}}",
-			"sentry_file": "{{outputs.poll_sentry.raw_file}}", "sentry_issues": "{{outputs.poll_sentry.issues}}",
-			"galerts_file": "{{outputs.poll_galerts.raw_file}}", "galerts_expected": "{{outputs.poll_galerts.alerts}}",
-			"app": "{{outputs.plan.app}}", "scratch_dir": "{{vars.scratch_dir}}"},
-		"decide": {
-			"signals_file": "{{outputs.leak_scan.signals_file}}", "prom_results": "{{outputs.poll_prom.results}}",
-			"http_results": "{{outputs.probe_http.results}}", "loki": "{{outputs.plan.loki}}",
-			"loki_ok": "{{outputs.poll_loki.ok}}", "loki_truncated": "{{outputs.poll_loki.truncated}}",
-			"loki_errors": "{{outputs.poll_loki.errors}}", "loki_per_query": "{{outputs.poll_loki.per_query}}",
-			"prom_ok": "{{outputs.poll_prom.ok}}", "prom_errors": "{{outputs.poll_prom.errors}}",
-			"sentry": "{{outputs.plan.sentry}}", "sentry_ok": "{{outputs.poll_sentry.ok}}",
-			"sentry_truncated": "{{outputs.poll_sentry.truncated}}", "sentry_errors": "{{outputs.poll_sentry.errors}}",
-			"sentry_walk": "{{outputs.poll_sentry.walk}}", "sentry_issues": "{{outputs.poll_sentry.issues}}",
-			"grafana_alerts": "{{outputs.plan.grafana_alerts}}", "galerts_ok": "{{outputs.poll_galerts.ok}}",
-			"galerts_truncated": "{{outputs.poll_galerts.truncated}}", "galerts_errors": "{{outputs.poll_galerts.errors}}",
-			"galerts_walk": "{{outputs.poll_galerts.walk}}", "galerts_expected": "{{outputs.poll_galerts.alerts}}",
-			"release": "{{outputs.resolve_release.release}}", "release_known": "{{outputs.resolve_release.release_known}}",
-			"lanes": "{{outputs.plan.lanes}}", "app": "{{outputs.plan.app}}",
-			"workspace": "{{vars.workspace_dir}}", "state_dir": "{{vars.state_dir}}", "scratch_dir": "{{vars.scratch_dir}}",
-			"renotify_hours": "{{vars.renotify_hours}}", "quiet_after_hours": "{{vars.quiet_after_hours}}",
-			"forget_after_days": "{{vars.forget_after_days}}", "source_stale_hours": "{{vars.source_stale_hours}}",
-			"max_alerts": "{{vars.max_alerts_per_run}}", "max_alerts_per_lane": "{{vars.max_alerts_per_lane}}",
-			"max_message_chars": "{{vars.max_message_chars}}",
+	want := map[string]map[string]string{
+		// mode=digest: the ranges, the digest, a delivery that persists nothing
+		"plan->poll_prom": promIn,
+		"poll_prom->digest": {"digest": o("plan", "digest"), "workspace": v("workspace_dir"), "state_dir": o("plan", "state_dir"),
+			"scratch_dir": v("scratch_dir"), "prom_ranges": o("poll_prom", "ranges"), "prom_ok": o("poll_prom", "ok"),
+			"prom_errors": o("poll_prom", "errors"), "lanes": o("plan", "lanes"), "source_stale_hours": v("source_stale_hours")},
+		"digest->notify": notifyIn("digest", "digest"),
+		// mode=watch and mode=session: the lanes
+		"plan->resolve_release":      merge(lane, map[string]string{"release": o("plan", "release")}),
+		"resolve_release->poll_loki": merge(lane, map[string]string{"grafana": o("plan", "grafana"), "loki": o("plan", "loki"), "scratch_dir": v("scratch_dir")}),
+		"poll_loki->poll_prom":       promIn,
+		"poll_prom->poll_sentry":     merge(lane, map[string]string{"sentry": o("plan", "sentry"), "scratch_dir": v("scratch_dir")}),
+		"poll_sentry->poll_galerts":  merge(lane, map[string]string{"grafana": o("plan", "grafana"), "grafana_alerts": o("plan", "grafana_alerts"), "scratch_dir": v("scratch_dir")}),
+		"poll_galerts->probe_http":   merge(lane, map[string]string{"probes": o("plan", "probes")}),
+		"probe_http->leak_scan": {"raw_file": o("poll_loki", "raw_file"), "per_query": o("poll_loki", "per_query"),
+			"sentry_file": o("poll_sentry", "raw_file"), "sentry_issues": o("poll_sentry", "issues"),
+			"galerts_file": o("poll_galerts", "raw_file"), "galerts_expected": o("poll_galerts", "alerts"),
+			"app": o("plan", "app"), "scratch_dir": v("scratch_dir")},
+		"leak_scan->decide": {
+			"mode": v("mode"), "signals_file": o("leak_scan", "signals_file"), "prom_results": o("poll_prom", "results"), "prom_metrics": o("poll_prom", "metrics"),
+			"http_results": o("probe_http", "results"), "loki": o("plan", "loki"),
+			"loki_ok": o("poll_loki", "ok"), "loki_truncated": o("poll_loki", "truncated"),
+			"loki_errors": o("poll_loki", "errors"), "loki_per_query": o("poll_loki", "per_query"),
+			"prom_ok": o("poll_prom", "ok"), "prom_errors": o("poll_prom", "errors"),
+			"sentry": o("plan", "sentry"), "sentry_ok": o("poll_sentry", "ok"),
+			"sentry_truncated": o("poll_sentry", "truncated"), "sentry_errors": o("poll_sentry", "errors"),
+			"sentry_walk": o("poll_sentry", "walk"), "sentry_issues": o("poll_sentry", "issues"),
+			"grafana_alerts": o("plan", "grafana_alerts"), "galerts_ok": o("poll_galerts", "ok"),
+			"galerts_truncated": o("poll_galerts", "truncated"), "galerts_errors": o("poll_galerts", "errors"),
+			"galerts_walk": o("poll_galerts", "walk"), "galerts_expected": o("poll_galerts", "alerts"),
+			"release": o("resolve_release", "release"), "release_known": o("resolve_release", "release_known"),
+			"lanes": o("plan", "lanes"), "app": o("plan", "app"),
+			"workspace": v("workspace_dir"), "state_dir": o("plan", "state_dir"), "state_seed_file": o("plan", "state_seed_file"),
+			"scratch_dir": v("scratch_dir"), "renotify_hours": v("renotify_hours"), "quiet_after_hours": v("quiet_after_hours"),
+			"forget_after_days": v("forget_after_days"), "source_stale_hours": v("source_stale_hours"),
+			"max_alerts": v("max_alerts_per_run"), "max_alerts_per_lane": v("max_alerts_per_lane"),
+			"max_message_chars": v("max_message_chars"), "session_cap_left": o("plan", "session_cap_left"),
 		},
-		"notify": {"alerts": "{{outputs.decide.alerts}}", "overflow_count": "{{outputs.decide.overflow_count}}",
-			"stale_sources": "{{outputs.decide.stale_sources}}", "sinks": "{{outputs.plan.sinks}}",
-			"labels": "{{outputs.plan.labels}}", "app": "{{outputs.plan.app}}", "sentry": "{{outputs.plan.sentry}}",
-			"release": "{{outputs.resolve_release.release}}", "release_known": "{{outputs.resolve_release.release_known}}",
-			"dry_run": "{{vars.dry_run}}", "max_message_chars": "{{vars.max_message_chars}}", "deliver_by": "{{outputs.plan.deliver_by}}"},
-		"commit_state": {"state_next_file": "{{outputs.decide.state_next_file}}", "alertlog_file": "{{outputs.decide.alertlog_file}}",
-			"tick_file": "{{outputs.decide.tick_file}}", "generation": "{{outputs.decide.generation}}",
-			"state_commit": "{{vars.state_commit}}", "workspace": "{{vars.workspace_dir}}", "state_dir": "{{vars.state_dir}}",
-			"ledger": "{{outputs.plan.ledger}}"},
+		// mode=session: the session's own messages join the lifecycle's alerts
+		"decide->session": {"session": o("plan", "session"), "workspace": v("workspace_dir"), "alerts": o("decide", "alerts"),
+			"overflow_count": o("decide", "overflow_count"), "stale_sources": o("decide", "stale_sources"), "held": o("decide", "held"),
+			"tick_file": o("decide", "tick_file"), "prom_results": o("poll_prom", "results"), "prom_metrics": o("poll_prom", "metrics"),
+			"http_results": o("probe_http", "results"), "state_dir": o("plan", "state_dir"), "scratch_dir": v("scratch_dir"),
+			"release": o("resolve_release", "release")},
+		"session->notify": notifyIn("session", "resolve_release"),
+		"decide->notify":  notifyIn("decide", "resolve_release"),
+		"notify->commit_state": {"state_next_file": o("decide", "state_next_file"), "alertlog_file": o("decide", "alertlog_file"),
+			"tick_file": o("decide", "tick_file"), "session_next_file": o("notify", "session_next_file"), "generation": o("decide", "generation"),
+			"state_commit": v("state_commit"), "workspace": v("workspace_dir"), "state_dir": o("plan", "state_dir"),
+			"ledger": o("plan", "ledger")},
 	}
-	byNode := map[string]map[string]string{}
+	got := map[string]map[string]string{}
 	for _, e := range wf.Edges {
 		if len(e.With) == 0 {
 			continue
 		}
-		byNode[e.To] = map[string]string{}
+		key := e.From + "->" + e.To
+		if got[key] != nil {
+			t.Fatalf("edge %s carries two mappings — decide which wiring is real", key)
+		}
+		got[key] = map[string]string{}
 		for _, m := range e.With {
-			byNode[e.To][m.Key] = m.Raw
+			got[key][m.Key] = m.Raw
 		}
 	}
-	for node, src := range wantSrc {
-		for k, w := range src {
-			if got := byNode[node][k]; got != w {
-				t.Fatalf("node %s: input %q is sourced from %q, the tick reads %q — a re-edited source is a rewired tick", node, k, got, w)
+	for edge, keys := range want {
+		g := got[edge]
+		if g == nil {
+			t.Fatalf("edge %s carries no mapping — the tick feeds its target by hand", edge)
+		}
+		if len(g) != len(keys) {
+			t.Fatalf("edge %s carries %d input mappings, the tick declares %d (got %v, want %v)", edge, len(g), len(keys), g, keys)
+		}
+		for k, w := range keys {
+			if g[k] != w {
+				t.Fatalf("edge %s: input %q is sourced from %q, the tick reads %q — a re-edited source is a rewired tick", edge, k, g[k], w)
 			}
+		}
+	}
+	for edge := range got {
+		if want[edge] == nil {
+			t.Fatalf("edge %s carries mappings the golden table does not know — update the table on purpose", edge)
 		}
 	}
 }

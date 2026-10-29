@@ -70,15 +70,20 @@ footer degrades to the id alone instead of publishing a dead relative link.
 That is why this costs no `requires.iterion` bump: refusing to run a malware
 scan because a signature line cannot render would be the worse trade.
 
-## The chat lane is not wired yet
+## The chat lane — prod-watch carries it, feed-watch is next
 
-`bots/prod-watch` (Argus) and `bots/feed-watch` (Vigie) post to Mattermost and
-carry no run link. The retrofit is not a copy of the forge footer: their text
-goes through `clip(text, max_chars)`, so a footer appended after the clip can
-push the message past the webhook's limit, and one appended before it is the
-first thing cut. Reserve the footer's room, then clip — and the test must send
-a message long enough to prove it, which is why this lives in its own change
-([#2430](https://github.com/SocialGouv/iterion/issues/2430)).
+`bots/prod-watch` (Argus) ends every Mattermost message — an alert, a notice,
+the digest, a session message — with the footer; `bots/feed-watch` (Vigie)
+still carries none. The retrofit is not a copy of the forge footer: the chat
+text goes through `clip(text, max_chars)`, so a footer appended after the clip
+can push the message past the webhook's limit, and one appended before it is
+the first thing cut. prod-watch reserves the footer's room FIRST
+(`body_chars = max_message_chars - len(footer) - 1`: the labels' check, a
+note's parts and the clip all work in it), then clips —
+`TestProdWatch_AClippedMessageStillEndsWithItsRun` (e2e) sends a message long
+enough to be cut and reads the link at its end. The feed-watch half and the
+chat-class guard are
+[#2430](https://github.com/SocialGouv/iterion/issues/2430).
 
 ## The guard
 

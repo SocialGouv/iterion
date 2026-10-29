@@ -1,6 +1,6 @@
 ---
 name: argus-config
-description: prod-watch (Argus) workspace configuration — the prod-watch.json format (app, release, grafana, loki, prometheus, probes, sentry, sinks, labels), the secrets, the state layout in the ops repository, and the cloud schedule + binding recipe.
+description: prod-watch (Argus) workspace configuration — the prod-watch.json format (app, release, grafana, loki, prometheus, probes, sentry, sinks, labels, digest, session), the secrets, the state layout in the ops repository, and the cloud schedule + binding recipe.
 ---
 
 # prod-watch workspace configuration
@@ -38,6 +38,20 @@ overrides).
     {"id": "frontend", "url": "https://myapp.example/live", "expect_status": 200, "severity": "high"}
   ],
   "sentry": {"base_url": "https://sentry.example", "org": "myorg", "project": "myapp", "environment": "preprod", "min_level": "error"},
+  "digest": {
+    "tick_interval_minutes": 30,
+    "prometheus": {"ranges": [
+      {"id": "requests", "title": "requests", "query": "sum(increase(nginx_ingress_controller_requests{exported_namespace=\"myapp-preprod\"}[5m]))", "agg": "sum", "unit": "req"},
+      {"id": "p95", "title": "p95 latency", "query": "histogram_quantile(0.95, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{exported_namespace=\"myapp-preprod\"}[5m])) by (le))", "agg": "max", "unit": "s"}
+    ]}
+  },
+  "session": {
+    "active_windows": [{"days": ["fri"], "from": "13:00", "to": "19:00", "tz": "Europe/Paris"}],
+    "heartbeat": {"metrics": [
+      {"id": "rps", "title": "requests/s", "query": "sum(rate(nginx_ingress_controller_requests{exported_namespace=\"myapp-preprod\"}[2m]))", "unit": "req/s"},
+      {"id": "db_pool", "title": "DB pool in use", "query": "max(pg_pool_in_use{namespace=\"myapp-preprod\"})", "unit": "conn"}
+    ]}
+  },
   "sinks": [
     {"kind": "mattermost", "webhook": "mm_myapp_ops", "channel": "#myapp-prod", "username": "Argus", "icon_emoji": ":eye:", "min_severity": "medium", "required": true}
   ],
@@ -234,6 +248,64 @@ overrides).
   operator's lever is the repo's own pruning (a periodic squash of the
   state-dir history, or a shallow clone for readers).
 
+- `digest` — the daily digest (`mode=digest`), always posted: a window
+  without a single signal still says so in numbers, because a missing
+  digest is itself the alert. `tick_interval_minutes` (30, 1–1440) is the
+  watch cron's cadence: the digest counts the ticks the ledger holds
+  against `hours × 60 / tick_interval_minutes` expected and says how many
+  are MISSING — set it to what your cron does, nothing reads the cron.
+  `hours` (24, 1–168) is the window; `step_minutes` (5) the range step.
+  `prometheus.ranges` — `query_range` series folded over the window by
+  `agg` (`sum`, `max`, `min`, `avg` over every finite point of every
+  series; `last` is the latest finite point and needs ONE series —
+  aggregate in the query),
+  with a `unit` printed after the value: requests, 5xx ratio, p95,
+  restarts, OOM are the operator's queries, nothing is baked in. The
+  digest also reads the ledgers (alerts posted by severity and lane, the
+  top error patterns, Sentry and Grafana transitions, the probe success
+  ratio over the ticks, partial-coverage ticks) and the watch state
+  read-only (open incidents, lanes silent beyond `source_stale_hours`,
+  the halt). It writes nothing: it is safe to run anywhere the ops repo
+  is checked out.
+- `session` — the session mode (`mode=session`, G18: a DENSE cron inside
+  a declared window, state between ticks). `active_windows` — a list of
+  `{days, from, to, tz}`: `days` are names (`mon`..`sun`, default every
+  day), `from`/`to` are `HH:MM` in the window's `tz` (IANA name, default
+  `UTC`; `24:00` is accepted as `to`; `to` must come after `from` on the
+  same day — an overnight window is two windows, `22:00`-`24:00` and
+  `00:00`-`06:00`; windows must not overlap: the first declared holding
+  the instant wins). A session tick INSIDE a window runs; the first one
+  opens the session (a START message) on a fork of the watch's CURRENT
+  state under `<state_dir>/session/` — every window's first tick forks
+  anew unless the watch state has not changed since the last fork (two
+  windows back to back), so what the watch posted since the last window
+  is not news; one
+  outside every window steps back for free, or closes an open session
+  whose window is over (the SUMMARY) when it comes within ten minutes of
+  the end — so the cron may be wider than the window, and MUST cover one slot
+  past its end: a cron stopping at the window's end leaves the session
+  open, the digest says so every day, and the summary (bounded to its
+  window) goes out with the next window's start. Inside a declared
+  window the watch tick steps back, envelope or not: the session schedule
+  owns the signals there, and a window declared without a session
+  schedule is a hole the digest reports as missing ticks. After the
+  window the watch resumes from its own cursors: an incident the session
+  escalated and still open is announced again by the watch's first ticks
+  (its Loki cursor catches up within `max_window_minutes`, its Sentry
+  lane within `max_catchup_hours`) — one repeat per incident, by design
+  in this slice. `heartbeat.metrics` — instant
+  queries without a threshold (same shape as a range, no `op`), the
+  POSITIVE numbers every heartbeat carries beside each probe's status and
+  latency and the lanes' counts: requests, errors, p95 by route, jobs
+  ok/failed, external dependencies, the DB pool — "no alert" is not a
+  heartbeat. The vars: `session_heartbeat_minutes` (30), and
+  `max_analyses_per_session` (10, 0 = no cap) — escalations (= analysis
+  requests) past it are HELD, not posted and not re-fired, said once and
+  named in the summary. A signal that flaps escalates once per lifecycle
+  cycle (the lifecycle's `renotify_hours` / `quiet_after_hours` apply:
+  pass shorter ones on the session schedule to hear reminders and
+  recoveries within a window).
+
 ## The secrets
 
 - `webhooks` — JSON map name → incoming-webhook URL, identical to
@@ -272,7 +344,15 @@ Cloud: bind team secrets by name (`POST /api/teams/<id>/secrets` with
   state.json             cursors (Loki, Sentry) + incidents + source health — mode=watch is its ONLY writer
   alertlog.jsonl         history of every alert posted; at ledger.max_bytes it
                          rotates to alertlog-<gen>.jsonl and a fresh file starts
-  ticks.jsonl            tick ledger (the digest slice reads it); rotates the same way
+  ticks.jsonl            tick ledger (the digest reads it: ticks executed, probe
+                         verdicts, coverage); rotates the same way
+  session/               mode=session's files — ITS only writer; the watch
+                         state above is never written by a session tick
+    session.json         the open session's envelope: window, started/ends,
+                         ticks, escalations, held, heartbeats, closed
+    state.json           the lifecycle's state, forked from ../state.json at
+    alertlog.jsonl       the window's first tick; the session's own ledgers
+    ticks.jsonl          (the summary reads them)
   alertlog-<gen>.jsonl   closed rotations — never appended again; the newest
   ticks-<gen>.jsonl      ledger.keep stay tracked, older ones leave the tree
                          (git history keeps every version)
@@ -339,6 +419,39 @@ iterion remote schedules create --data '{"bot_id":"prod-watch",
   "cron":"*/30 * * * *","repo_url":"https://forge.example/org/myapp-ops.git",
   "repo_ref":"main","vars":{"mode":"watch","state_commit":"true"}}'
 ```
+
+Three schedules make the full watchdog — the modes own distinct files, so
+they never race on the state. **Schedule crons run in UTC** (`iterion
+schedule install` writes `CRON_TZ=UTC`; the cloud scheduler evaluates
+them in the server's zone, UTC on the published charts) while a window
+is written in its own `tz`: a cron wider than the window costs nothing
+(the tick steps back outside it), so cover both DST regimes — a Friday
+13:00-19:00 Europe/Paris window is 11:00-17:00 or 12:00-18:00 UTC:
+
+```sh
+# the daily digest (writes nothing): set digest.tick_interval_minutes to the watch cron's cadence
+iterion schedule add prod-watch-digest --cron "0 7 * * *" --bot $B --workdir $W --var mode=digest
+# the session: DENSE inside the declared windows (UTC hours wider than the Paris window), one slot
+# past their end (the closing tick); outside a window the tick steps back for free; the default
+# overlap (skip) keeps one tick live
+iterion schedule add prod-watch-session --cron "*/2 11-19 * * 5" --bot $B --workdir $W --var mode=session --var state_commit=true
+```
+
+Inside a declared window a watch tick steps back ("stepping back": nothing
+polled, nothing posted) whatever the envelope; past the window it steps
+back only while the envelope is still open — ten minutes of closing-tick
+grace plus that tick's run budget, the one the envelope recorded
+(twenty-two minutes with the default budget) —
+and a closed envelope frees it at once. Two windows back to back (the
+overnight pair) continue ONE fork when the watch state did not change
+between them: the second half does not re-announce what the first
+escalated. Then the watch resumes from its own cursors — the Loki
+catch-up is bounded by `max_window_minutes` and the gap is said as partial
+coverage, the session having watched the window live; an incident the
+session escalated and still open is announced again once by the watch.
+On a shared local clone with `state_commit=true` the watch and the session
+commit under one lock (the watch dir's `.lock`); cloud runners clone per
+run.
 
 A scheduled launch mints its clone token from the repo integration when
 the ops repo has one; otherwise bind the bot to the forge connection's
