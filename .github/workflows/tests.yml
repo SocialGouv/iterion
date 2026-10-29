@@ -683,10 +683,7 @@ jobs:
     # A Homebrew tap update skips this job: the header says why, and `brand` verifies it.
     if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
-    # 20, not 15: the harness's per-package budget is 12m (pkg/server
-    # outgrew 5m — see the run step) and setup + the package list ride on
-    # the same cap.
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -757,12 +754,10 @@ jobs:
         env:
           ITERION_TEST_MONGO_URI: mongodb://localhost:27017/?replicaSet=rs0
         run: |
-          # pkg/server outgrew the 5m per-package timeout on CI (2026-10-27:
-          # the alarm fired while a pipeline test had just started — a
-          # mid-suite panic reads as a bug nobody introduced, the same way
-          # the Taskfile documents it for ./e2e). 12m of per-package
-          # budget; the job cap follows the setup + package list.
-          go test -mod=vendor -count=1 -v -timeout 12m ./pkg/store/mongo/... \
+          # This includes the complete server suite, which already exceeds
+          # five minutes without Mongo. Keep its package budget below the
+          # job's fifteen-minute limit without shortening any test coverage.
+          go test -mod=vendor -count=1 -v -timeout 10m ./pkg/store/mongo/... \
             ./pkg/internal/storekit/... ./pkg/audit/... ./pkg/pat/... \
             ./pkg/cloudsched/... ./pkg/auth/... \
             ./pkg/secrets/... ./pkg/orgusage/... ./pkg/credusage/... ./pkg/credpool/... \
@@ -1166,9 +1161,8 @@ jobs:
           sudo install -m 0755 /tmp/golangci-lint-2.12.2-linux-amd64/golangci-lint /usr/local/bin/golangci-lint
           golangci-lint version
       - name: Run golangci-lint
-        # 10m: a loaded night pushes the package-loading phase alone past
-        # the 5m default (2026-10-28: "failed to load packages: context
-        # deadline exceeded" — the load, not a lint error).
+        # Cold package loading exceeded five minutes on the shared runners.
+        # Keep every analyzer enabled within the existing 20-minute job budget.
         run: golangci-lint run --timeout 10m
 
   brand:

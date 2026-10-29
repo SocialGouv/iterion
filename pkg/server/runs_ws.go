@@ -114,7 +114,7 @@ func runWSMaxLifetime() time.Duration {
 }
 
 // runWSStandingTickPeriod is how often a SUBSCRIBED passive connection
-// re-derives its standing. The ADR-144 review's F1: subscribe and
+// re-derives its standing. The ADR-148 review's F1: subscribe and
 // subscribe_logs carry no envelope of their own, so without a tick a
 // stream would outlive the standing it was opened under until the
 // lifetime cap. Overridable like the lifetime cap; the standing read
@@ -387,7 +387,7 @@ func (c *runConn) watchLifetime() {
 // mutating-envelope gate never re-derives their scope. Every tick, a
 // SUBSCRIBED connection re-asks what the upgrade answered once — does the
 // credential still stand, and does a viewer standing in the run's team
-// still hold? The run-visibility axis is part of that standing (ADR-144):
+// still hold? The run-visibility axis is part of that standing (ADR-148):
 // closing it, or removing the org-membership it leaned on, ends the
 // stream within one tick. An unreadable read is no verdict — the socket
 // stays and the failure is logged; the server's own failure is no
@@ -401,7 +401,7 @@ func (c *runConn) watchStanding() {
 	// runTenant below reads the primary store and would answer not-found,
 	// closing the socket at the first tick with a reason that names no
 	// bound — the same exemption the mutating-envelope gate makes for
-	// c.xStore (the ADR-144 review's R63ff56).
+	// c.xStore (the ADR-148 review's R63ff56).
 	if c.xStore != nil {
 		return
 	}
@@ -690,7 +690,7 @@ func (c *runConn) handleSubscribe(env runWSEnvelope) {
 		c.sendError("snapshot_failed", err.Error(), env.AckID)
 		return
 	}
-	// The caller's standing for THIS run (the ADR-144 review's F4): the
+	// The caller's standing for THIS run (the ADR-148 review's F4): the
 	// upgrade resolved it; the studio derives its action affordances
 	// from it. Server-attached after the deterministic build, like the
 	// REST path.

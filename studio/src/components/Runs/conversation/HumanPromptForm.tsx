@@ -229,7 +229,7 @@ export default function HumanPromptForm({
   if (submitted) return null;
 
   // A reader (org-shared, team viewer) has no answer to give: the run
-  // ladder refuses the resume behind this form (ADR-144). The read-only
+  // ladder refuses the resume behind this form (ADR-148). The read-only
   // note replaces the form instead of proposing a command that 403s.
   if (!canAct) {
     return (

@@ -23,7 +23,7 @@ erDiagram
         string status
         string runner_pool UK "a platform_settings runner_pools name"
         string llm_fallback "empty or 'platform'; 'none'"
-        string run_visibility "empty or 'org' (ADR-144)"
+        string run_visibility "empty or 'org' (ADR-148)"
     }
     users {
         string _id PK

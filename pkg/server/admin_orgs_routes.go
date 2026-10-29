@@ -92,7 +92,7 @@ type teamSummaryView struct {
 	// LLMFallback is the team's credential-fallback policy — the same
 	// boundary class: read back to confirm and audit the write.
 	LLMFallback string `json:"llm_fallback,omitempty"`
-	// RunVisibility is the run sharing axis (ADR-144) — read back to
+	// RunVisibility is the run sharing axis (ADR-148) — read back to
 	// confirm and audit the write.
 	RunVisibility string `json:"run_visibility,omitempty"`
 	CreatedAt     string `json:"created_at,omitempty"`

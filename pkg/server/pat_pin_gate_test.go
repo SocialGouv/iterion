@@ -127,7 +127,7 @@ func (f pinGateFixture) teamGates(t *testing.T) map[string]func(auth.Identity, s
 		// The run- and issue-by-id re-scope (ADR-103/141): the second way a
 		// request addresses a team, and the one a per-route guard misses.
 		// allowOrgShared is true on purpose: it is the widest form of this
-		// gate (the ADR-144 org-shared arm included), so the census measures
+		// gate (the ADR-148 org-shared arm included), so the census measures
 		// the pin against every grant the re-scope can hand out.
 		"identityInTeam": func(id auth.Identity, team string) bool {
 			_, ok, err := f.s.identityInTeam(f.ctx, id, team, true)

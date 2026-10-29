@@ -629,7 +629,7 @@ export interface RunSnapshot {
   last_seq: number; // -1 sentinel when no events have been applied
   diagnostic?: DiagnosticProjection;
   // The caller's effective standing for THIS run, resolved by the
-  // server's run-by-id choke point (ADR-144). Absent on auth-less local
+  // server's run-by-id choke point (ADR-148). Absent on auth-less local
   // servers — the UI then keeps its unconditional affordances. The
   // client's local per-seq rebuilds never carry it; the store keeps the
   // last server-set value.

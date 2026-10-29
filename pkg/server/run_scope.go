@@ -203,7 +203,7 @@ func (s *Server) runTenant(ctx context.Context, runID string) (string, error) {
 //     admin's PAT pinned to another team was unusable there), it does not
 //     widen a session beyond canViewTeam;
 //   - a plain org member of the team's parent org reads as a viewer too,
-//     but only when the team's run-visibility axis (ADR-144) is explicitly
+//     but only when the team's run-visibility axis (ADR-148) is explicitly
 //     opened to the org — a per-team flag the org sets, marked Via:
 //     org-shared; every action stays behind the member rung;
 //   - everyone else: not authorized.
@@ -213,7 +213,7 @@ func (s *Server) runTenant(ctx context.Context, runID string) (string, error) {
 // X-Iterion-Team header re-scope passes false — the header costs exactly
 // what a team switch would demand, and a plain org member's switch into
 // the team is refused; letting the axis ride the header would open the
-// team's run LISTS and stats to it (the ADR-144 review's R1141b0).
+// team's run LISTS and stats to it (the ADR-148 review's R1141b0).
 //
 // A membership-store FAILURE is an error, never a silent degrade to viewer.
 func (s *Server) identityInTeam(ctx context.Context, id auth.Identity, teamID string, allowOrgShared bool) (auth.Identity, bool, error) {
@@ -301,7 +301,7 @@ func identityInTeamOn(st identity.Store, ctx context.Context, id auth.Identity, 
 		// The org reach, narrowest grant first: an org admin/owner reads
 		// as a viewer on every team of their org (what canViewTeam would
 		// grant); a plain org member does too, but ONLY on a team whose
-		// run-visibility axis (ADR-144) is explicitly opened to the org —
+		// run-visibility axis (ADR-148) is explicitly opened to the org —
 		// a per-team, org-gated flag read LIVE with the team above. Both
 		// land as a viewer: the ladder still refuses every action, and
 		// cdp/shell stay member-only.
@@ -447,7 +447,7 @@ func (s *Server) scopeRunByID(w http.ResponseWriter, r *http.Request, id auth.Id
 // issue's own board unchanged. An issue the caller cannot see answers 404
 // exactly like a missing one; a resolver that cannot read is a 500; an
 // ambiguous id prefix is not an address — the ambient stamp decides.
-// allowOrgShared=false: the run-visibility axis (ADR-144) is a RUNS grant —
+// allowOrgShared=false: the run-visibility axis (ADR-148) is a RUNS grant —
 // it does not reach the board surface.
 func (s *Server) scopeIssueByID(w http.ResponseWriter, r *http.Request, id auth.Identity, issueID string, fixedSegments int) (context.Context, bool) {
 	if issueID == "" {
@@ -488,7 +488,7 @@ func (s *Server) scopeIssueByID(w http.ResponseWriter, r *http.Request, id auth.
 }
 
 // attachRunViewer stamps the caller's effective standing for THIS run
-// onto a snapshot about to be served (the ADR-144 review's F4): the
+// onto a snapshot about to be served (the ADR-148 review's F4): the
 // choke point resolved it; the studio derives its action affordances
 // from it instead of guessing from run status. No identity (or none
 // with a role — a local, auth-less server), no field: today's
