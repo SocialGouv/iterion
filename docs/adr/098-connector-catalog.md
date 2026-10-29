@@ -1456,9 +1456,10 @@ deployment that grants the project tier *and* serves the fork review lane
 would let the reviewed tree ship `connectors/<id>/` declaring `effect: read`
 on a `DELETE`, and that package's own word is what the lane's refusal reads —
 the guard would consult the thing it guards against. Pinning the tier onto the
-resolved package is not available (`spec.Package` carries no provenance and
-the layered catalog hands back no tier), so the tier that must not win is not
-BUILT for that run. The two reasons are worded apart where the tier reports
+resolved package is not available (`spec.Package` carries no provenance), and
+the tier the layered catalog hands back since #2757 names the winner only once
+it has WON — a name for the operator reading a refusal, never a licence a rule
+may branch on — so the tier that must not win is still not BUILT for that run. The two reasons are worded apart where the tier reports
 itself: an operator whose tier is merely ungranted keeps reading the variable
 that opens it, while a run over code the tenant does not control is told the
 tier was not consulted for it and is not handed the sentence that would serve

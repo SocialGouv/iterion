@@ -89,7 +89,7 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	pkg, err := cat.Package(opts.Connector)
+	pkg, tier, err := cat.Package(opts.Connector)
 	if err != nil {
 		return err
 	}
@@ -192,6 +192,15 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 	// The pinned origin, always: it is what this credential may now be sent to,
 	// and the operator is the only one who can say it is wrong.
 	fmt.Fprintf(out, "connected %s as %q → %s\n", opts.Connector, alias, conn.BaseURL)
+	// WHICH TIER the package came from, next to the two things it decided.
+	//
+	// The instance URL above and the placement below are both pinned FROM
+	// this package — and two tiers can hold the same connector id, the same
+	// version and the same scheme id, so the id says nothing about which copy
+	// answered. An operator whose granted project tier shadows the package
+	// they installed in their home tier has no other way to see it here, and
+	// this is the command where the credential is entrusted.
+	fmt.Fprintf(out, "  package: %s v%s from the %s\n", pkg.Connector.ID, pkg.Connector.Version, tier)
 	// The RESOLVED capabilities, not the flag. An operator who named none gets
 	// `action` by default, and echoing the empty flag reported a grant that
 	// differs from the record just written — `connections list` then says

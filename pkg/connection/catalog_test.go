@@ -27,10 +27,10 @@ import (
 // distinguish the two loaders at all.
 func TestTheCatalogServesTheEffectivePackage(t *testing.T) {
 	root := filepath.Join("..", "..", "connectors")
-	if _, err := connection.NewFSCatalog(root).Package("forgejo"); err != nil {
+	if _, _, err := connection.NewFSCatalog(root).Package("forgejo"); err != nil {
 		t.Skipf("the shipped Forgejo package is not present: %v", err)
 	}
-	pkg, err := connection.NewFSCatalog(root).Package("forgejo")
+	pkg, _, err := connection.NewFSCatalog(root).Package("forgejo")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestAMalformedTierStopsTheSearchInsteadOfFallingThrough(t *testing.T) {
 		connection.NewFSCatalog(project),
 		connection.NewFSCatalog(home),
 	)
-	_, err := cat.Package("probe")
+	_, _, err := cat.Package("probe")
 	if err == nil {
 		t.Fatal("a tier that holds the package and cannot load it must stop the search")
 	}
@@ -109,7 +109,7 @@ func TestAMalformedTierStopsTheSearchInsteadOfFallingThrough(t *testing.T) {
 		connection.NewFSCatalog(t.TempDir()), // empty: holds nothing
 		connection.NewFSCatalog(filepath.Join("..", "..", "connectors")),
 	)
-	if _, err := sound.Package("forgejo"); err != nil {
+	if _, _, err := sound.Package("forgejo"); err != nil {
 		t.Errorf("an ABSENT connector must fall through to the next tier: %v", err)
 	}
 }
@@ -282,7 +282,7 @@ func TestTheProjectTierIsAGrantRatherThanADefault(t *testing.T) {
 		if err != nil {
 			t.Fatalf("tiers: %v", err)
 		}
-		pkg, err := connection.NewLayeredCatalog(tiers...).Package("probe")
+		pkg, _, err := connection.NewLayeredCatalog(tiers...).Package("probe")
 		if err != nil {
 			t.Fatalf("package: %v", err)
 		}
@@ -327,7 +327,7 @@ func TestASkippedProjectTierSaysWhyItDidNotAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tiers: %v", err)
 	}
-	_, err = connection.NewLayeredCatalog(tiers...).Package("probe")
+	_, _, err = connection.NewLayeredCatalog(tiers...).Package("probe")
 	if err == nil {
 		t.Fatal("the project tier is not granted, so nothing may serve the package it holds")
 	}
@@ -346,9 +346,10 @@ func TestASkippedProjectTierSaysWhyItDidNotAnswer(t *testing.T) {
 // RESOLVED — so a reviewed tree only had to ship `connectors/probe/` declaring
 // `effect: read` on a DELETE and the guard read the attacker's own word for
 // what the operation does. Nothing pins the tier onto the resolved package
-// (spec.Package carries no provenance, NewLayeredCatalog hands back no tier),
-// so the tier that must not win is not BUILT for that run — decided where the
-// tiers are built, which is where the trust already is.
+// (spec.Package carries no provenance), and the tier a layered lookup DOES
+// hand back names the winner only once it has won — so the tier that must not
+// win is not BUILT for that run, decided where the tiers are built, which is
+// where the trust already is.
 //
 // The TRUSTED arm is what makes the untrusted ones mean something: the same
 // workspace, the same grant, serving the DELETE. And the fix is "that tier is
@@ -445,7 +446,7 @@ func TestASkippedWorkspaceTierSaysWhichOfTheTwoClosedIt(t *testing.T) {
 		if err != nil {
 			t.Fatalf("tiers: %v", err)
 		}
-		if _, err := connection.NewLayeredCatalog(tiers...).Package("shadow"); err != nil {
+		if _, _, err := connection.NewLayeredCatalog(tiers...).Package("shadow"); err != nil {
 			return err.Error()
 		}
 		t.Fatal("the workspace tier must not serve this package")

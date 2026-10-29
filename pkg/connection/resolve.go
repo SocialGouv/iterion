@@ -74,7 +74,7 @@ func (r *Resolver) ResolveAction(ctx context.Context, actionID, alias string) (*
 	// --connectors`) has to refuse the same thing with the same sentence, and
 	// a second copy of "cut the id, ask the tier, ask the package" is how the
 	// two would drift.
-	pkg, op, err := ResolveOperation(r.Catalog, actionID)
+	pkg, op, tier, err := ResolveOperation(r.Catalog, actionID)
 	if err != nil {
 		return nil, zero, exec.Credential{}, "", err
 	}
@@ -100,7 +100,7 @@ func (r *Resolver) ResolveAction(ctx context.Context, actionID, alias string) (*
 		}
 		return nil, zero, exec.Credential{}, "", fmt.Errorf("resolve connection %q: %w", alias, err)
 	}
-	if err := r.checkUsable(conn, pkg, op); err != nil {
+	if err := r.checkUsable(conn, pkg, tier, op); err != nil {
 		return nil, zero, exec.Credential{}, "", err
 	}
 
@@ -161,7 +161,12 @@ func (r *Resolver) ResolveAction(ctx context.Context, actionID, alias string) (*
 // Checked at the moment of USE rather than trusted from the record's own
 // status, because both facts change under the run: a credential is revoked
 // while a loop iterates, an operator narrows a capability between two nodes.
-func (r *Resolver) checkUsable(conn Connection, pkg *spec.Package, op spec.Operation) error {
+// The TIER is a parameter because the two refusals below are about the package
+// a tier is serving RIGHT NOW against a record entrusted to another one, and
+// "which tier" is the first thing an operator has to know to repair it: the
+// id, the scheme id and the placement can all three be identical between two
+// tiers, so the id names nothing. It is printed, never branched on.
+func (r *Resolver) checkUsable(conn Connection, pkg *spec.Package, tier Tier, op spec.Operation) error {
 	if !conn.Status.Usable() {
 		reason := conn.StatusReason
 		if reason == "" {
@@ -197,12 +202,12 @@ func (r *Resolver) checkUsable(conn Connection, pkg *spec.Package, op spec.Opera
 	// credential needs re-consenting.
 	scheme, found := pkg.Connector.AuthScheme(conn.SchemeID)
 	if !found {
-		return fmt.Errorf("connection %q names scheme %q, which connector %q no longer declares — reconnect it against the package now installed",
-			conn.Alias, conn.SchemeID, pkg.Connector.ID)
+		return fmt.Errorf("connection %q names scheme %q, which connector %q no longer declares in the package the %s serves — reconnect it against the package now installed",
+			conn.Alias, conn.SchemeID, pkg.Connector.ID, tier)
 	}
 	if got := placementOf(scheme); !conn.AuthPlacement.Equal(got) {
-		return fmt.Errorf("connection %q was entrusted for %s and the package now asks for %s — refusing rather than sending the credential somewhere it was not granted to go; reconnect it if the change is intended",
-			conn.Alias, conn.AuthPlacement.Describe(), got.Describe())
+		return fmt.Errorf("connection %q was entrusted for %s and the %s now asks for %s — refusing rather than sending the credential somewhere it was not granted to go; reconnect it if the change is intended",
+			conn.Alias, conn.AuthPlacement.Describe(), tier, got.Describe())
 	}
 	// The capability is the whole answer to "may this connection be used for
 	// this?". A deterministic node and an agent facade are different uses of
@@ -271,8 +276,8 @@ func (r *Resolver) suggestAlias(ctx context.Context, connector string) string {
 }
 
 // ResolveOperation answers the catalogue half of a resolution: the package a
-// tier serves for the action's connector, and the operation that package
-// declares.
+// tier serves for the action's connector, the operation that package declares,
+// and WHICH tier served it.
 //
 // EXPORTED, and ResolveAction's own first steps, because resolution happens at
 // two surfaces that must agree. A run resolves to CALL; `iterion validate
@@ -287,27 +292,31 @@ func (r *Resolver) suggestAlias(ctx context.Context, connector string) string {
 // unseals a credential, which is what lets an authoring surface call it: a
 // misspelt operation id cannot cost a credential read, the ordering rule
 // ResolveAction's own doc states.
-func ResolveOperation(catalog Catalog, actionID string) (*spec.Package, spec.Operation, error) {
+func ResolveOperation(catalog Catalog, actionID string) (*spec.Package, spec.Operation, Tier, error) {
 	var zero spec.Operation
 	if catalog == nil {
 		// Refused rather than read as "no such connector": a caller with no
 		// catalog has an install to fix, not a `.bot` to correct.
-		return nil, zero, errors.New("connection: no connector catalog to resolve against")
+		return nil, zero, Tier{}, errors.New("connection: no connector catalog to resolve against")
 	}
 	connectorID, _, ok := strings.Cut(actionID, ".")
 	if !ok || connectorID == "" {
-		return nil, zero, fmt.Errorf("action %q is not an operation id — it must read `connector.resource.verb`", actionID)
+		return nil, zero, Tier{}, fmt.Errorf("action %q is not an operation id — it must read `connector.resource.verb`", actionID)
 	}
-	pkg, err := catalog.Package(connectorID)
+	pkg, tier, err := catalog.Package(connectorID)
 	if err != nil {
-		return nil, zero, err
+		return nil, zero, Tier{}, err
 	}
 	op, found := pkg.Operation(actionID)
 	if !found {
-		return nil, zero, fmt.Errorf("connector %q (v%s) has no operation %q%s",
-			connectorID, pkg.Connector.Version, actionID, suggestOperation(pkg, actionID))
+		// The TIER, not just the connector id and version: two tiers can hold
+		// the same id at the same version, and an operator told only "forgejo
+		// v1.2 has no such operation" reads the package they expected to win
+		// rather than the one that answered.
+		return nil, zero, Tier{}, fmt.Errorf("connector %q (v%s) from the %s has no operation %q%s",
+			connectorID, pkg.Connector.Version, tier, actionID, suggestOperation(pkg, actionID))
 	}
-	return pkg, op, nil
+	return pkg, op, tier, nil
 }
 
 // suggestOperation points at the nearest operation id, which for a mistyped

@@ -109,7 +109,11 @@ func resolveConnectorActions(wf *ir.Workflow) (*ConnectorsReport, error) {
 	// reported against two different packages.
 	catalog := connection.NewLayeredCatalog(tiers...)
 	for _, n := range nodes {
-		if _, _, err := connection.ResolveOperation(catalog, n.Action); err != nil {
+		// The serving TIER is dropped on purpose: a node the catalogue CAN
+		// serve says nothing here (this report is the list of what an
+		// operator has to fix), and a node it cannot serve has no serving
+		// tier — the layered reasons in err are what name the tiers it asked.
+		if _, _, _, err := connection.ResolveOperation(catalog, n.Action); err != nil {
 			report.Findings = append(report.Findings, ConnectorFinding{
 				NodeID:     n.NodeID,
 				Action:     n.Action,

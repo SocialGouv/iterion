@@ -24,17 +24,76 @@ import (
 // wrong connector, which is worse than failing.
 var errNoSuchConnector = errors.New("connection: no such connector in this catalog")
 
+// TierKind says what KIND of catalog answered. A plain name rather than an
+// int, because it is printed: the one reader of a tier is a person debugging
+// an operation they did not expect.
+type TierKind string
+
+const (
+	// TierDirectory is a catalog root nobody labelled further — a test
+	// fixture, an operator's own tree handed to NewFSCatalog.
+	TierDirectory TierKind = "directory"
+	// TierProject is `<workspace>/connectors`, the tier a repository ships
+	// and that ITERION_CONNECTOR_PROJECT_CATALOG gates.
+	TierProject TierKind = "project"
+	// TierHome is `<iterion home>/connectors`, installed for every project.
+	TierHome TierKind = "home"
+	// TierMemory is a catalog held in memory: tests, and the tier that
+	// rebuilds a stored package.
+	TierMemory TierKind = "memory"
+)
+
+// Tier names the catalog that SERVED a package, and where that copy came from.
+//
+// It travels WITH the answer rather than being reconstructed by whoever reads
+// it, because an observer cannot reconstruct it at all: a layered lookup asks
+// its tiers in order and only the one that answered knows it did. Two tiers
+// can hold the same connector id, the same scheme id and the same placement,
+// so "which one won" is not derivable from the package.
+//
+// For TELLING, never for choosing. The resolver must not acquire a branch on
+// the tier that served it — a rule that reads a tier would put the decision
+// back on the untrusted side of the question LocalCatalogs answers once (a
+// tier that must not win is not BUILT for that run). Naming the winner is for
+// the operator reading an error; it is not a licence.
+type Tier struct {
+	// Kind is WHICH tier this is. It does not carry rank: precedence is the
+	// ORDER the tiers were composed in (NewLayeredCatalog), so a rule that
+	// read a kind to decide anything would be a second, disagreeing answer.
+	Kind TierKind
+	// Source is where this tier's copy lives — a root directory, or empty
+	// for a tier that is not a path.
+	Source string
+}
+
+// String is the phrase a surface prints, with no leading article so a caller
+// can write "from the %s" or "the %s now asks for".
+func (t Tier) String() string {
+	if t.Kind == "" {
+		// The zero value means NOTHING served, which only reaches a reader
+		// through a bug: every error path pairs it with the error that says
+		// what happened.
+		return "no tier"
+	}
+	if t.Source == "" {
+		return string(t.Kind) + " catalog"
+	}
+	return string(t.Kind) + " catalog " + t.Source
+}
+
 // Catalog resolves a connector id to its package.
 //
-// An interface because the tiers differ and the resolver must not know which
-// one answered: a directory on a laptop, a team-authored package in Mongo, a
-// platform override, a marketplace entry. The three-tier resolution lands
-// later; what matters now is that nothing downstream is written against a
-// filesystem.
+// An interface because the tiers differ and the resolver must not DEPEND on
+// which one answered: a directory on a laptop, a team-authored package in
+// Mongo, a platform override, a marketplace entry. The three-tier resolution
+// lands later; what matters now is that nothing downstream is written against
+// a filesystem.
 type Catalog interface {
-	// Package returns the connector's package, or an error naming what was
-	// looked for. Implementations must be safe for concurrent use.
-	Package(connectorID string) (*spec.Package, error)
+	// Package returns the connector's package and the tier that served it,
+	// or an error naming what was looked for. Implementations must be safe
+	// for concurrent use, and must name themselves: a zero Tier with a nil
+	// error is a defect, and layeredCatalog refuses it by name.
+	Package(connectorID string) (*spec.Package, Tier, error)
 	// Connectors lists the ids this catalog can serve, sorted. Used by the
 	// studio and by a diagnostic that suggests a near miss.
 	Connectors() []string
@@ -47,27 +106,53 @@ type Catalog interface {
 // the shipped Forgejo package is 651 KiB of YAML across ten files, and parsing
 // it per node would put a measurable cost on every call in a loop.
 type FSCatalog struct {
+	kind TierKind
 	root string
 
 	mu     sync.RWMutex
 	loaded map[string]*spec.Package
 }
 
-// NewFSCatalog serves packages from the directories under root.
+// NewFSCatalog serves packages from the directories under root, as a tier
+// nobody labelled further — a test fixture, an operator's own tree.
 func NewFSCatalog(root string) *FSCatalog {
-	return &FSCatalog{root: root, loaded: map[string]*spec.Package{}}
+	return NewFSCatalogAs("", root)
 }
 
-// Package loads (once) and returns a connector package.
-func (c *FSCatalog) Package(connectorID string) (*spec.Package, error) {
+// NewFSCatalogAs is NewFSCatalog for a root whose tier is KNOWN.
+//
+// The kind is the BUILDER's knowledge, not the catalog's: the same type serves
+// `<workspace>/connectors` and `<iterion home>/connectors`, and only the
+// function that decides which root is which can say (LocalCatalogs). Reading
+// it off the path would be a second rule, wrong the first time an operator
+// points a tier somewhere unusual.
+//
+// An EMPTY kind is the unlabelled door above rather than a mistake to recover
+// from: it means "a directory, and nothing more is known about it", said here
+// so the two constructors cannot disagree about what unlabelled serves as.
+func NewFSCatalogAs(kind TierKind, root string) *FSCatalog {
+	if kind == "" {
+		kind = TierDirectory
+	}
+	return &FSCatalog{kind: kind, root: root, loaded: map[string]*spec.Package{}}
+}
+
+// tier says which tier this catalog is, for the answers it serves. Internal:
+// the tier travels in the ANSWER, so no caller has to ask a catalog what it
+// is — and an accessor nobody needs is surface a later tier would have to
+// honour.
+func (c *FSCatalog) tier() Tier { return Tier{Kind: c.kind, Source: c.root} }
+
+// Package loads (once) and returns a connector package, with this tier.
+func (c *FSCatalog) Package(connectorID string) (*spec.Package, Tier, error) {
 	if err := CheckConnectorID(connectorID); err != nil {
-		return nil, err
+		return nil, Tier{}, err
 	}
 	c.mu.RLock()
 	pkg, ok := c.loaded[connectorID]
 	c.mu.RUnlock()
 	if ok {
-		return pkg, nil
+		return pkg, c.tier(), nil
 	}
 
 	dir := filepath.Join(c.root, connectorID)
@@ -90,22 +175,22 @@ func (c *FSCatalog) Package(connectorID string) (*spec.Package, error) {
 			// ABSENT — the only case a layered lookup may fall through on, so
 			// it carries the sentinel. Anything else below means the tier has
 			// the package and cannot load it.
-			return nil, fmt.Errorf("no connector %q in %s%s: %w", connectorID, c.root, c.suggest(connectorID), errNoSuchConnector)
+			return nil, Tier{}, fmt.Errorf("no connector %q in %s%s: %w", connectorID, c.root, c.suggest(connectorID), errNoSuchConnector)
 		}
-		return nil, fmt.Errorf("connector %q: %w", connectorID, err)
+		return nil, Tier{}, fmt.Errorf("connector %q: %w", connectorID, err)
 	}
 	if pkg.Connector.ID != connectorID {
 		// The directory name is what a `.bot` addresses, so a package whose
 		// own id differs would be reachable under a name it does not answer
 		// to — and its operation ids, which all start with its own id, would
 		// never match what was asked for.
-		return nil, fmt.Errorf("connector directory %q holds a package whose id is %q; the directory name is what a `.bot` addresses", connectorID, pkg.Connector.ID)
+		return nil, Tier{}, fmt.Errorf("connector directory %q holds a package whose id is %q; the directory name is what a `.bot` addresses", connectorID, pkg.Connector.ID)
 	}
 
 	c.mu.Lock()
 	c.loaded[connectorID] = pkg
 	c.mu.Unlock()
-	return pkg, nil
+	return pkg, c.tier(), nil
 }
 
 // Connectors lists the directories that look like packages.
@@ -192,14 +277,17 @@ func NewMemoryCatalog(pkgs ...*spec.Package) *MemoryCatalog {
 	return c
 }
 
-func (c *MemoryCatalog) Package(connectorID string) (*spec.Package, error) {
+// tier says which tier this catalog is, for the answers it serves.
+func (c *MemoryCatalog) tier() Tier { return Tier{Kind: TierMemory} }
+
+func (c *MemoryCatalog) Package(connectorID string) (*spec.Package, Tier, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	p, ok := c.pkg[connectorID]
 	if !ok {
-		return nil, fmt.Errorf("no connector %q in this catalog: %w", connectorID, errNoSuchConnector)
+		return nil, Tier{}, fmt.Errorf("no connector %q in this catalog: %w", connectorID, errNoSuchConnector)
 	}
-	return p, nil
+	return p, c.tier(), nil
 }
 
 func (c *MemoryCatalog) Connectors() []string {

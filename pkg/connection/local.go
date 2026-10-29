@@ -67,15 +67,24 @@ func NewLayeredCatalog(tiers ...Catalog) Catalog {
 	return &layeredCatalog{tiers: kept}
 }
 
-func (c *layeredCatalog) Package(connectorID string) (*spec.Package, error) {
+func (c *layeredCatalog) Package(connectorID string) (*spec.Package, Tier, error) {
 	if len(c.tiers) == 0 {
-		return nil, fmt.Errorf("no connector catalog is configured, so %q cannot be resolved", connectorID)
+		return nil, Tier{}, fmt.Errorf("no connector catalog is configured, so %q cannot be resolved", connectorID)
 	}
 	var reasons []string
 	for _, t := range c.tiers {
-		pkg, err := t.Package(connectorID)
+		pkg, tier, err := t.Package(connectorID)
 		if err == nil {
-			return pkg, nil
+			if tier.Kind == "" {
+				// The tier that answered is the only one that KNOWS it did,
+				// so a tier that does not name itself makes the answer
+				// unattributable — and an observer cannot recover it from the
+				// order of a search it did not watch. Refused by name rather
+				// than papered over with the index of the loop: a guess here
+				// would read as provenance at every surface that prints it.
+				return nil, Tier{}, fmt.Errorf("connector %q was served by a %T that did not name its tier, so nothing can say which tier won", connectorID, t)
+			}
+			return pkg, tier, nil
 		}
 		// A tier that HAS the package and could not load it stops the search.
 		//
@@ -86,14 +95,14 @@ func (c *layeredCatalog) Package(connectorID string) (*spec.Package, error) {
 		// different operations and a different policy. The run succeeded
 		// against the wrong connector, which is worse than failing.
 		if !errors.Is(err, errNoSuchConnector) {
-			return nil, err
+			return nil, Tier{}, err
 		}
 		reasons = append(reasons, err.Error())
 	}
 	// Every tier's reason, not just the last: two tiers can be absent for
 	// different reasons, and reporting only the last sends the reader to the
 	// wrong directory.
-	return nil, fmt.Errorf("%s", strings.Join(reasons, "; "))
+	return nil, Tier{}, fmt.Errorf("%s", strings.Join(reasons, "; "))
 }
 
 // Connectors is the union of every tier's, deduplicated and sorted.
@@ -174,9 +183,12 @@ func ProjectCatalogGranted() bool {
 // otherwise let the reviewed tree ship `connectors/<id>/` declaring `effect:
 // read` on a DELETE — and that package's own word is what #1802's refusal
 // reads, so the guard would consult the thing it is guarding against. There is
-// no shape that pins the tier onto the resolved package (spec.Package carries
-// no provenance and NewLayeredCatalog hands back no tier), so the tier that
-// must not win is simply not built for that run.
+// no shape that pins the tier onto the resolved PACKAGE (spec.Package carries
+// no provenance), so the tier that must not win is simply not built for that
+// run. A layered lookup does now hand back the tier that SERVED, which is a
+// name for the operator reading an error and not a guard: it arrives after the
+// win, and a rule keyed on it would be read from the answer the tier itself
+// produced.
 func LocalCatalogs(paths LocalPaths, trust ActionTrust) ([]Catalog, error) {
 	var out []Catalog
 	for i, root := range []string{paths.Project, paths.Home} {
@@ -184,6 +196,13 @@ func LocalCatalogs(paths LocalPaths, trust ActionTrust) ([]Catalog, error) {
 			continue
 		}
 		project := i == 0
+		// The RANK of each root, known here and nowhere else: this is the
+		// function that decides which root is the repository's and which is
+		// the operator's own, so it is the one that can label them.
+		kind := TierHome
+		if project {
+			kind = TierProject
+		}
 		// ONE answer per root, read by all three decisions below — an
 		// unreadable root, a present-but-closed tier, a live one. A tier that
 		// is skipped for one of them and consulted for another is how a
@@ -209,7 +228,7 @@ func LocalCatalogs(paths LocalPaths, trust ActionTrust) ([]Catalog, error) {
 			out = append(out, disabledCatalog{root: root, untrusted: !trust.tenantsOwnCode()})
 			continue
 		}
-		out = append(out, NewFSCatalog(root))
+		out = append(out, NewFSCatalogAs(kind, root))
 	}
 	return out, nil
 }
@@ -245,12 +264,14 @@ type disabledCatalog struct {
 	untrusted bool
 }
 
-func (c disabledCatalog) Package(connectorID string) (*spec.Package, error) {
+// Package never serves, so it never names a tier: a zero Tier beside an error
+// is the shape every refusal in this package returns.
+func (c disabledCatalog) Package(connectorID string) (*spec.Package, Tier, error) {
 	if c.untrusted {
-		return nil, fmt.Errorf("a project connector catalog exists at %s and this run's workspace holds code the tenant does not control, so it is not consulted for this run (a repository under review must not be able to redefine what an operation does): %w",
+		return nil, Tier{}, fmt.Errorf("a project connector catalog exists at %s and this run's workspace holds code the tenant does not control, so it is not consulted for this run (a repository under review must not be able to redefine what an operation does): %w",
 			c.root, errNoSuchConnector)
 	}
-	return nil, fmt.Errorf("a project connector catalog exists at %s but this process does not consult one (a repository under review must not be able to redefine what an operation does); set %s=1 to grant it: %w",
+	return nil, Tier{}, fmt.Errorf("a project connector catalog exists at %s but this process does not consult one (a repository under review must not be able to redefine what an operation does); set %s=1 to grant it: %w",
 		c.root, ProjectCatalogEnv, errNoSuchConnector)
 }
 
