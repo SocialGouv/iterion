@@ -32,6 +32,15 @@ type projectBotGitLab struct {
 	avatarAuth  []string // Authorization header of every avatar upload
 	hookBody    map[string]any
 	hookDeletes int
+	// grant, when non-empty, is the access token /oauth/token answers with
+	// instead of pbGrant — a re-authorise as another account is witnessed by
+	// pointing it at a token /user resolves to someone else (#2698).
+	grant string
+	// altUser is who /user reports for `grant` (zero value: nobody — a 401).
+	altUser struct {
+		id       int
+		username string
+	}
 }
 
 const (
@@ -48,7 +57,13 @@ func (m *projectBotGitLab) server() *httptest.Server {
 	m.minted, m.revoked = map[string]bool{}, map[string]bool{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /oauth/token", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": pbGrant, "refresh_token": "refresh-1", "expires_in": 7200, "scope": "api", "token_type": "bearer"})
+		m.mu.Lock()
+		grant := m.grant
+		m.mu.Unlock()
+		if grant == "" {
+			grant = pbGrant
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": grant, "refresh_token": "refresh-1", "expires_in": 7200, "scope": "api", "token_type": "bearer"})
 	})
 	mux.HandleFunc("GET /api/v4/user", func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
@@ -56,6 +71,12 @@ func (m *projectBotGitLab) server() *httptest.Server {
 		switch tok := m.bearer(r); {
 		case tok == pbGrant:
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 42, "username": "alice", "bot": false})
+		case m.grant != "" && tok == m.grant:
+			if m.altUser.id == 0 {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": m.altUser.id, "username": m.altUser.username, "bot": false})
 		case m.minted[tok] && !m.revoked[tok]:
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 575, "username": pbBot, "bot": true})
 		default:

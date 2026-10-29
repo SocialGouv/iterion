@@ -44,7 +44,12 @@ type forgePending struct {
 	// (forge.BotIdentity* constants) to the OAuth callback, the only place
 	// that can stamp it on the created Connection.
 	BotIdentity string
-	IssuedAt    time.Time
+	// ConnectionID pins an EXISTING connection when the flow is a
+	// re-authorisation (POST …/connections/{id}/reauthorize) rather than a
+	// connect: the callback seals the fresh token pair INTO that row instead
+	// of creating a second connection (#2698). Empty on a connect.
+	ConnectionID string
+	IssuedAt     time.Time
 }
 
 // forgeStateBackend stores forgePending CSRF state keyed by State, with a

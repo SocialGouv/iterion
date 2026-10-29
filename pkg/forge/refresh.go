@@ -445,20 +445,29 @@ func (w *RefreshWorker) withdrawSecurityReadEntry(ctx context.Context, conn Conn
 }
 
 func (w *RefreshWorker) rewriteManagedSecret(ctx context.Context, secretID string, out RefreshedToken) error {
-	token := out.AccessToken
-	gs, err := w.Secrets.Get(ctx, secretID)
+	return RewriteManagedSecret(ctx, w.Secrets, w.Sealer, secretID, out.AccessToken, out.TokenProof)
+}
+
+// RewriteManagedSecret is the second of the two writes a credential
+// replacement owes — the connection blob is rewritten first (the canonical
+// record), then the managed forge_token secret's plaintext, so bot runs read
+// the fresh token. The refresh worker, the OAuth re-authorise callback and
+// the PAT replacement all make the same pair; a crash between them leaves a
+// stale-but-valid secret rather than a zero value.
+func RewriteManagedSecret(ctx context.Context, store secrets.GenericSecretStore, sealer secrets.Sealer, secretID, token string, proof *secrets.TokenPermissionProof) error {
+	gs, err := store.Get(ctx, secretID)
 	if err != nil {
 		return fmt.Errorf("forge: load managed secret for rewrite: %w", err)
 	}
-	sealed, err := secrets.SealGenericSecret(w.Sealer, secretID, []byte(token))
+	sealed, err := secrets.SealGenericSecret(sealer, secretID, []byte(token))
 	if err != nil {
 		return err
 	}
 	gs.SealedSecret = sealed
 	gs.Last4 = secrets.Last4(token)
 	gs.Fingerprint = secrets.FingerprintSHA256(token)
-	gs.ForgeTokenProof = out.TokenProof
-	return w.Secrets.Update(ctx, gs)
+	gs.ForgeTokenProof = proof
+	return store.Update(ctx, gs)
 }
 
 // markRevoked flips the connection to StatusNeedsReauth with a compare-and-

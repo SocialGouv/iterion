@@ -261,6 +261,175 @@ func (s *Server) connectForgeOAuth(w http.ResponseWriter, r *http.Request, teamI
 	writeJSON(w, forgeConnectResp{AuthorizeURL: authURL})
 }
 
+type forgeReauthorizeReq struct {
+	// Next is the studio path to return to after the round-trip, same
+	// semantics as the connect flow's.
+	Next string `json:"next,omitempty"`
+}
+
+// handleReauthorizeForgeConnection starts the OAuth re-authorisation of an
+// EXISTING connection — the repair gesture a needs_reauth (or degraded)
+// oauth_app connection otherwise lacks: running the connect wizard again
+// would mint a SECOND connection while the dead row keeps the repository
+// integrations (hook, minted project bot, managed secret). The flow is the
+// connect flow with the connection id pinned in the pending state, so the
+// callback re-seals the fresh token pair into the existing row (#2698).
+func (s *Server) handleReauthorizeForgeConnection(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	teamID := r.PathValue("id")
+	if !s.canManageTeam(r.Context(), id, teamID) {
+		httpError(w, http.StatusForbidden, "admin or owner required")
+		return
+	}
+	if s.forgeConnections == nil {
+		httpError(w, http.StatusNotFound, "forge integrations disabled")
+		return
+	}
+	conn, ok := s.forgeConnForTenant(w, r, teamID, r.PathValue("conn_id"))
+	if !ok {
+		return
+	}
+	if conn.Kind != forge.KindOAuthApp {
+		httpError(w, http.StatusUnprocessableEntity, "re-authorise applies to an OAuth connection — a pasted-token connection takes its new token via PATCH {\"pat\": \"…\"}, a GitHub-App connection is re-installed")
+		return
+	}
+	var req forgeReauthorizeReq
+	if err := decodeJSONOptional(r, &req); err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	// The app the connection was MADE through, pinned on it — another app's
+	// secret cannot redeem the code the forge is about to issue (the rule the
+	// callback already applies to pending.OAuthAppID). A connection that
+	// predates the pin resolves the instance's app, as the refresher does.
+	var record forge.ForgeOAuthApp
+	if conn.OAuthAppID != "" {
+		rec, found, rerr := s.forgeOAuthAppRecordByID(r.Context(), teamID, conn.OAuthAppID)
+		switch {
+		case rerr != nil:
+			httpError(w, http.StatusBadGateway, "could not read the OAuth app this connection was made through: %v — retry the re-authorise", rerr)
+			return
+		case !found:
+			httpError(w, http.StatusBadRequest, "the OAuth app this connection was made through is no longer registered — register it again, then retry")
+			return
+		}
+		record = rec
+	} else {
+		record, ok = s.forgeOAuthAppRecordFor(r.Context(), teamID, conn.Provider, conn.BaseURL())
+		if !ok {
+			httpError(w, http.StatusBadRequest, "no OAuth app is registered for %s on this instance — register one in Integrations → OAuth apps, then retry", conn.Provider)
+			return
+		}
+	}
+	app, ok := s.forgeOAuthClientFromRecord(record)
+	if !ok {
+		httpError(w, http.StatusInternalServerError, "the OAuth app this connection was made through cannot be opened — re-register it")
+		return
+	}
+	state, verifier, challenge, err := oidc.GenerateStateAndPKCE()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	binding, err := newAgentBindingToken()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if err := s.forgeStates.put(forgePending{
+		State: state, CodeVerifier: verifier, Provider: conn.Provider, ForgeBaseURL: conn.BaseURL(),
+		TenantID: teamID, UserID: id.UserID, AgentBinding: binding,
+		NextURL: safeNext(req.Next), OAuthAppID: record.ID, ConnectionID: conn.ID,
+		IssuedAt: time.Now().UTC(),
+	}); err != nil {
+		if s.logger != nil {
+			s.logger.Error("forge reauthorize: %v", err)
+		}
+		httpError(w, http.StatusBadGateway, "could not persist OAuth state — try again")
+		return
+	}
+	s.setForgeAgentBindingCookie(w, binding)
+	authURL := app.AuthorizeURL(s.forgeOAuthRedirectURI(), state, challenge, nil)
+	writeJSON(w, forgeConnectResp{AuthorizeURL: authURL})
+}
+
+// completeForgeReauthorize is the callback half of a re-authorise flow
+// (forgePending.ConnectionID set): the fresh token pair is sealed INTO the
+// pinned connection — the integrations, hooks and managed secret stay put —
+// and the row goes back to active. The authorisation is refused when it
+// completes as a DIFFERENT forge account: the repositories' minted bots and
+// hooks hang off the first account's grant, so an identity swap would leave
+// the connection holding a credential that cannot administer them.
+func (s *Server) completeForgeReauthorize(w http.ResponseWriter, r *http.Request, pending forgePending, record forge.ForgeOAuthApp, tok forge.RefreshedToken, ident forge.Identity) {
+	conn, err := s.forgeConnections.Get(r.Context(), pending.ConnectionID)
+	if err != nil || conn.TenantID != pending.TenantID || conn.Kind != forge.KindOAuthApp {
+		httpError(w, http.StatusBadRequest, "the connection this re-authorisation was started for no longer exists — connect anew")
+		return
+	}
+	if !sameForgeAccount(conn, ident) {
+		httpError(w, http.StatusUnprocessableEntity,
+			"authorised as @%s, but this connection belongs to @%s — the repositories' bots and hooks hang off the first account's grant, so re-authorise with the same account",
+			ident.Login, conn.AccountLogin)
+		return
+	}
+	sealed, err := forge.SealOAuthTokens(s.sealer, conn.ID, tok.AccessToken, tok.RefreshToken, tok.ExpiresAt)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "seal token: %v", err)
+		return
+	}
+	ctx := store.WithTenant(r.Context(), conn.TenantID)
+	now := time.Now().UTC()
+	conn.SealedPayload = sealed
+	conn.Status = forge.StatusActive
+	conn.StatusReason = ""
+	// A non-expiring grant drops the recorded expiry outright: keeping the
+	// stale past date would sweep the connection into an immediate refresh.
+	if tok.ExpiresAt.IsZero() {
+		conn.AccessTokenExpiresAt = nil
+	} else {
+		exp := tok.ExpiresAt
+		conn.AccessTokenExpiresAt = &exp
+	}
+	if len(tok.Scopes) > 0 {
+		conn.Scopes = tok.Scopes
+	}
+	conn.UpdatedAt = now
+	if err := s.forgeConnections.Update(ctx, conn); err != nil {
+		httpError(w, http.StatusInternalServerError, "persist connection: %v", err)
+		return
+	}
+	// The second of the two writes (blob first, secret second — the refresh
+	// worker's ordering): bot runs read the managed secret, which still holds
+	// the dead token. A PAT connection is never swept, but an OAuth one is —
+	// still, the next refresh may be a full token lifetime out, so rewrite
+	// now. A failure leaves the row fixed and the secret stale: the operator
+	// retries the gesture, which is idempotent.
+	if conn.ManagedSecretID != "" {
+		if err := forge.RewriteManagedSecret(ctx, s.genericSecrets, s.sealer, conn.ManagedSecretID, tok.AccessToken, nil); err != nil {
+			httpError(w, http.StatusInternalServerError, "the connection is re-authorised but its managed secret could not be rewritten: %v — retry the re-authorise", err)
+			return
+		}
+	}
+	s.auditTenant(r, pending.TenantID, "forge.connection.reauthorized", "forge_connection", conn.ID, map[string]any{
+		"provider": pending.Provider, "kind": "oauth_app", "oauth_app_id": record.ID,
+	})
+	target := pending.NextURL
+	if target == "" {
+		target = deeplink.Path("/teams/" + pending.TenantID)
+	}
+	http.Redirect(w, r, appendQueryParam(target, "connected", conn.ID), http.StatusFound)
+}
+
+// sameForgeAccount reports whether a WhoAmI identity is the account a
+// connection belongs to: by account id when both ends carry one, else by
+// login (a connection older than the AccountID field has nothing else).
+func sameForgeAccount(conn forge.Connection, ident forge.Identity) bool {
+	if conn.AccountID != "" && ident.ID != "" {
+		return conn.AccountID == ident.ID
+	}
+	return conn.AccountLogin != "" && conn.AccountLogin == ident.Login
+}
+
 func (s *Server) handleForgeOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	if s.forgeStates == nil {
 		httpError(w, http.StatusNotFound, "forge integrations disabled")
@@ -332,6 +501,13 @@ func (s *Server) handleForgeOAuthCallback(w http.ResponseWriter, r *http.Request
 	ident, err := admin.WhoAmI(r.Context())
 	if err != nil {
 		httpError(w, http.StatusBadGateway, "could not read identity from %s: %v", pending.Provider, err)
+		return
+	}
+	// A re-authorise flow seals the fresh pair INTO the pinned existing
+	// connection; the create path below would mint a SECOND connection while
+	// the dead one keeps the repository integrations (#2698).
+	if pending.ConnectionID != "" {
+		s.completeForgeReauthorize(w, r, pending, record, tok, ident)
 		return
 	}
 	connID := uuid.NewString()
