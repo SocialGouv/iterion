@@ -317,11 +317,22 @@ func (e *ClawExecutor) deliverToolNodeFiles(nodeID, output string) error {
 // skips leading/trailing whitespace), so the raw stdout is always
 // acceptable for the parse attempt.
 func parseToolNodeOutput(stdout, fallback string) map[string]any {
-	var output map[string]any
-	if json.Unmarshal([]byte(stdout), &output) != nil {
-		return map[string]any{"result": fallback}
-	}
+	output, _ := parseToolNodeOutputWrapped(stdout, fallback)
 	return output
+}
+
+// parseToolNodeOutputWrapped is parseToolNodeOutput plus WHICH of the two
+// shapes came back: wrapped reports that stdout did not parse and the map is
+// the `result` text wrapper. A caller that knows the drain of this output was
+// cut short needs that answer, because the two shapes differ in what they can
+// hide — a JSON object that parsed is the whole of what the command meant to
+// say, a prefix of one does not parse at all, and the wrapper may be a prefix
+// of anything.
+func parseToolNodeOutputWrapped(stdout, fallback string) (output map[string]any, wrapped bool) {
+	if json.Unmarshal([]byte(stdout), &output) != nil {
+		return map[string]any{"result": fallback}, true
+	}
+	return output, false
 }
 
 // executeToolNodeCommon is the shared execution skeleton for the two
@@ -414,7 +425,9 @@ type toolCommand struct {
 //
 // A caller whose answer is the BYTES could not take this reading, and must
 // not be added here: it calls runWithSeparateStreams itself, where exec's
-// sentinel comes back unwrapped.
+// sentinel comes back unwrapped. The set above is not prose a fifth reader
+// can join unnoticed — `TestEveryReaderOfRunToolNodeCoreNamesItsFamily`
+// (tool_node_core_callers_test.go) is its inventory.
 func (e *ClawExecutor) runToolNodeCore(
 	ctx context.Context,
 	node *ir.ToolNode,
@@ -447,7 +460,8 @@ func (e *ClawExecutor) runToolNodeCore(
 	// CombinedOutput() conflated the two and poisoned the parse.
 	stdoutBytes, stderrStr, drainBound, runErr := runWithSeparateStreams(tc.cmd)
 	duration := time.Since(start)
-	if proc.DrainCutShort(runErr) {
+	drainCut := proc.DrainCutShort(runErr)
+	if drainCut {
 		// exec reports this sentinel for no other status: the command
 		// exited 0 and only the copy of its output's tail was abandoned.
 		// Every reader above judges by that status, so the success and the
@@ -456,7 +470,9 @@ func (e *ClawExecutor) runToolNodeCore(
 		// crossing already reports the pipes an agent's `server &` keeps.
 		// Read before the sandbox settles its run: there the completion
 		// line is what judges the command's end, and a sentinel left in
-		// runErr would travel joined to its verdict.
+		// runErr would travel joined to its verdict. The cut itself travels
+		// to the parse below, which is where a consumer of the OUTPUT can
+		// still be told the bytes may stop mid-answer.
 		stderrStr = noteAbandonedDrain(stderrStr, drainBound)
 		if e.logger != nil {
 			e.logger.Warn("tool node %q: %s", node.ID, abandonedDrainReport(drainBound))
@@ -472,8 +488,19 @@ func (e *ClawExecutor) runToolNodeCore(
 
 	deliveryErr := e.emitToolNodeFinish(node.ID, toolName, resolved, outputStr, stderrStr, duration, runErr)
 
+	output, wrapped := parseToolNodeOutputWrapped(outputStr, strings.TrimSpace(outputStr))
+	if drainCut && wrapped {
+		// The success and the bytes stand — the verdict is the exit status
+		// — but these bytes did not parse as the node's answer, and the
+		// bound abandoned the copy that would have completed them: a
+		// downstream {{outputs.<node>.result}} reads what MAY be a prefix.
+		// The mark is the only thing here that can tell it so; the report
+		// of the bound and the knob rides the node's event and the run log.
+		output[toolNodeDrainCutKey] = true
+	}
+
 	return recipeResult{
-		output:      parseToolNodeOutput(outputStr, strings.TrimSpace(outputStr)),
+		output:      output,
 		stdout:      outputStr,
 		stderr:      stderrStr,
 		resolved:    resolved,
@@ -635,9 +662,11 @@ func (e *ClawExecutor) toolNodePolicyIdentity(ctx context.Context, name string) 
 // A tool node's command is the BOT's text, and backgrounding a process in it
 // (`server &`) is an authored recipe, not an accident: the shell exits, the
 // job it forked inherits the output pipe, and [exec.Cmd.Wait] ends only when
-// EVERY holder of that pipe has closed it. Nothing else bounds that wait: a
-// tool node declares no timeout of its own (`timeout:` is an LLM field), and
-// the cancel that signals the whole process GROUP
+// EVERY holder of that pipe has closed it. Nothing else bounds that wait:
+// `timeout:` on a tool node is read by the `action:` recipe alone
+// ([ir.ToolNode.CallTimeout]) and warned as inert on a command or a script
+// (C266, `TestOrphanTimeoutWarns`), and the cancel that signals the whole
+// process GROUP
 // ([proc.TerminateGroupOnCancel], installed by toolNodeCommand) does not
 // reach it either — exec hands the context watcher's verdict to Wait as soon
 // as the direct child is REAPED, so once the shell has exited that kill is
@@ -648,6 +677,15 @@ func (e *ClawExecutor) toolNodePolicyIdentity(ctx context.Context, name string) 
 // Two seconds, the family's default: the copier drains the output WHILE the
 // command runs, so what is left to read at its exit is a pipe buffer, not a
 // transcript.
+//
+// It is the HOST's bound. On a node the sandbox runs, this Cmd is the
+// driver's exec client, and the wait ends when that client does — whatever
+// the bound says, including an override (measured through the docker
+// driver: a command whose background job holds the in-container output comes
+// back with its whole answer, uncut and unreported, at 10 ms, 100 ms, 2 s and
+// unbounded alike, and the job keeps running in the container). What judges a
+// sandboxed command's end is its completion line instead
+// ([ClawExecutor.settleSandboxedRun]).
 const toolNodeDrainBound = 2 * time.Second
 
 // runWithSeparateStreams runs cmd with stdout and stderr captured into
@@ -682,6 +720,35 @@ func runWithSeparateStreams(cmd *exec.Cmd) ([]byte, string, time.Duration, error
 	return stdoutBytes, stderrBuf.String(), drainBound, runErr
 }
 
+// toolNodeDrainCutKey marks a tool node's output as possibly SHORT of the
+// answer: the drain bound abandoned the copy of this run's output, and what
+// arrived did not parse as a JSON object, so the `result` wrapper beside the
+// mark may be a prefix rather than the whole. The report of the bound and the
+// knob goes on the node's event and in the run log; this is the same fact in
+// the one place a consumer of the OUTPUT reads.
+//
+// Private and `_`-prefixed, the shape `_verified_action` already uses
+// (ADR-044): [ValidateOutput] reads the schema's declared fields only, so the
+// mark never fails a node whose output it describes. Unlike
+// `_verified_action`, which the engine strips once it has emitted its event,
+// this one is NOT stripped: it travels with the output into the artifact a
+// `publish:` writes and into the node_finished event's data, where the reader
+// who has to tell a prefix from an answer is.
+//
+// Its reach, exactly: a `{{outputs.<node>._drain_cut}}` ref resolves only on
+// a node that declares no `output:` schema, because C031 is an error on a
+// field a declared schema does not have (pkg/dsl/ir, validate_refs.go). The
+// engine's own event SUMMARY line also skips `_`-prefixed keys by convention
+// (engine_events.go), which is why the drain is reported in prose beside the
+// node's event as well as marked here.
+//
+// What it cannot mark: a cut that still left a parsed object behind — a
+// command emitting one JSON object per line, cut after a whole one, parses
+// and is published unmarked. The mark rides the wrapper because that is the
+// shape this site can prove nothing about, never a claim that every lost byte
+// is named.
+const toolNodeDrainCutKey = "_drain_cut"
+
 // abandonedDrainReport is what a tool node's run says when the drain bound
 // stopped the wait for an output a process the command left behind still
 // holds: what the site KNOWS — the command exited 0, something still holds
@@ -691,7 +758,8 @@ func runWithSeparateStreams(cmd *exec.Cmd) ([]byte, string, time.Duration, error
 // Never that the output was "read short": what the bound cuts is the TAIL of
 // a copy, and the measured case is a complete answer whose fd a descendant
 // merely kept — this site cannot tell the two apart, so it reports only the
-// one it can prove.
+// one it can prove. The one shape where the difference is invisible to a
+// reader of the OUTPUT carries [toolNodeDrainCutKey] instead.
 func abandonedDrainReport(bound time.Duration) string {
 	return fmt.Sprintf("the command exited 0 and a process it left still holds its output; stopped waiting %s",
 		proc.WaitDelayHint(bound))
@@ -1037,7 +1105,11 @@ func (e *ClawExecutor) settleSandboxedRun(ctx context.Context, nodeID string, co
 	clean, status, ended := completion.Settle(stdout)
 	if ended {
 		if status != 0 && runErr == nil {
-			runErr = fmt.Errorf("sandbox: the command exited %d but its exec client reported success", status)
+			// Not "the client reported success": runToolNodeCore clears the
+			// drain bound's sentinel before this settle runs, so a nil
+			// runErr here is a client that reported nothing this site can
+			// charge the command with — success, or a drain it abandoned.
+			runErr = fmt.Errorf("sandbox: the command exited %d but its exec client did not report that status", status)
 		}
 		return clean, runErr
 	}
