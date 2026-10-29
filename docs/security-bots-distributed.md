@@ -278,14 +278,14 @@ paths). Two new tool nodes:
 The `triage` prompt + schema accept `file_filter` and DROP every
 candidate whose `file` is not in the list before downstream.
 
-⚠️ Step 5 — Cloud-mode publishing: `iterion __scan-shards
+Step 5 — Cloud-mode publishing: `iterion __scan-shards
 --mode=cloud` (or auto when `ITERION_SERVER_URL` is set) POSTs one
-launch per shard to `/api/v1/runs/launch`
-([cmd/iterion/scan_shards.go](../cmd/iterion/scan_shards.go)),
-passing `parent_run_id`, `shard_index`, `shard_count`,
-`shard_label`. The server registers no such route — its only launch
-endpoint is `POST /api/runs` ([pkg/server/runs.go](../pkg/server/runs.go)) —
-so a shard POST 404s. Once a launch lands, the server
+launch per shard to `POST /api/runs`
+([cmd/iterion/scan_shards.go](../cmd/iterion/scan_shards.go)), the
+only route that launches a run
+([pkg/server/runs.go](../pkg/server/runs.go)), passing
+`parent_run_id`, `shard_index`, `shard_count`, `shard_label` — the
+four fields that request body accepts. Once a launch lands, the server
 (cloudpublisher) persists those four fields on the queued Run AND on
 the published RunMessage. The existing runner pool drains the
 queue; the parent (the `__scan-shards` invocation) polls the

@@ -438,8 +438,10 @@ func dispatchLocal(ctx context.Context, plans []shardPlan, baseVars map[string]s
 }
 
 // dispatchCloud POSTs each shard to the iterion server's launch
-// endpoint and returns once the server has accepted the request — the
-// child runs continue executing inside the runner pool. The terminal
+// endpoint (POST /api/runs — the only route that launches a run; the
+// four shard fields below are read from that request body) and returns
+// once the server has accepted the request — the child runs continue
+// executing inside the runner pool. The terminal
 // status is collected by awaitTerminal polling the shared store.
 //
 // Required env:
@@ -485,7 +487,7 @@ func dispatchCloud(ctx context.Context, plans []shardPlan, baseVars map[string]s
 			"shard_count":   len(plans),
 			"shard_label":   p.Label,
 		})
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL+"/api/v1/runs/launch", bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL+"/api/runs", bytes.NewReader(body))
 		if err != nil {
 			r.Error = fmt.Sprintf("build launch request: %v", err)
 			return
@@ -496,7 +498,7 @@ func dispatchCloud(ctx context.Context, plans []shardPlan, baseVars map[string]s
 		}
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			r.Error = fmt.Sprintf("POST /runs/launch: %v", err)
+			r.Error = fmt.Sprintf("POST /api/runs: %v", err)
 			return
 		}
 		defer resp.Body.Close()
