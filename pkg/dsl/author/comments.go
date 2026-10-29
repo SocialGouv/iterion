@@ -23,7 +23,9 @@ import (
 // written there and drops the rest: that region is read off the source too,
 // last of all.
 // Write renders the program, not the document, and keeps none of them;
-// WriteKeepingComments carries them onto the nodes it writes, and `iterion
+// WriteKeepingComments carries them onto the nodes it writes — the trailing
+// region re-emitted off the source, markers and all, so this list is the
+// same for a document and its written form (markerRegions) — and `iterion
 // fmt` compares this list for the source and the written form before it
 // rewrites a document in its canonical form, refusing when one would be
 // lost; `fmt --to bot` counts them and names the first. A source that is
@@ -43,25 +45,59 @@ func Comments(src []byte) []string {
 	// that region is counted.
 	foot := doc.FootComment
 	doc.FootComment = ""
-	var out []string
-	// footRun counts the lines at the END of out the FOOT comments the walk
-	// CLOSES on added: a comment of the trailing region hangs on a foot and
-	// on nothing else, so those are the only lines its source read repeats.
-	// Visiting any node afterwards ends the run — whether that node carries
-	// a comment or not, since a foot run armed past a comment-less node
-	// would match the region's head off a comment written elsewhere.
-	footRun := 0
-	add := func(block string, isFoot bool) {
+	w := walkComments(&doc, lines)
+	out := w.lines
+	trailing := trailingComments(lines, &doc)
+	out = out[:len(out)-hungOnTheLastNode(out, w.footRun, trailing)]
+	// A comment on a directive's line (`%YAML 1.1 # c`, `%TAG …`) is no
+	// node's: yaml.v3 drops it. It is read off the source and listed after
+	// the own-line comments written above the first directive, which
+	// yaml.v3 lists first, on the document's head.
+	if above, dc := directiveComments(lines); len(dc) > 0 {
+		at := min(above, len(out))
+		out = append(out[:at], append(dc, out[at:]...)...)
+	}
+	return append(out, append(footAboveTheRegion(foot, trailing), trailing...)...)
+}
+
+// commentWalk is what a walk over a document's nodes listed: one entry per
+// comment line, in Comments' order, with the comment block each line was
+// read from — nil for a line read off a flow collection's own source, which
+// no block holds — and the run of foot lines the walk closes on.
+type commentWalk struct {
+	lines   []string
+	blocks  []*string
+	footRun int
+}
+
+// walkComments lists the comments the nodes of doc carry, in the order
+// Comments reads them, over the source lines a flow collection's comments
+// are read from. doc's own foot comment is listed as any other node's: a
+// caller reading the trailing region takes it off the node first, since
+// that region's source read is where its lines are counted (Comments).
+//
+// footRun counts the lines at the END of the list the FOOT comments the
+// walk CLOSES on added: a comment of the trailing region hangs on a foot
+// and on nothing else, so those are the only lines its source read
+// repeats. Visiting any node afterwards ends the run — whether that node
+// carries a comment or not, since a foot run armed past a comment-less node
+// would match the region's head off a comment written elsewhere.
+func walkComments(doc *yaml.Node, lines []string) commentWalk {
+	var w commentWalk
+	add := func(block *string, isFoot bool) {
 		if !isFoot {
-			footRun = 0
+			w.footRun = 0
 		}
-		added := commentLines(block)
+		added := commentLines(*block)
 		if len(added) == 0 {
 			return
 		}
-		out = append(out, added...)
+		w.lines = append(w.lines, added...)
+		for range added {
+			w.blocks = append(w.blocks, block)
+		}
 		if isFoot {
-			footRun += len(added)
+			w.footRun += len(added)
 		}
 	}
 	var walk func(n *yaml.Node)
@@ -72,49 +108,49 @@ func Comments(src []byte) []string {
 		if n.Style&yaml.FlowStyle != 0 && (n.Kind == yaml.MappingNode || n.Kind == yaml.SequenceNode) {
 			flow, hungFoot := walkFlow(n, lines)
 			if len(flow) == 0 {
-				footRun = 0
+				w.footRun = 0
 				return
 			}
-			out = append(out, flow...)
+			w.lines = append(w.lines, flow...)
+			// The hung foot lines close the list (walkFlow emits the line
+			// comment's before them); the ones the sourced read emitted are
+			// written inside the collection, where no block holds them.
+			for i := range flow {
+				if i < len(flow)-hungFoot {
+					w.blocks = append(w.blocks, nil)
+					continue
+				}
+				w.blocks = append(w.blocks, &n.FootComment)
+			}
 			if len(flow) == hungFoot {
-				footRun += hungFoot
+				w.footRun += hungFoot
 			} else {
-				footRun = hungFoot
+				w.footRun = hungFoot
 			}
 			return
 		}
-		add(n.HeadComment, false)
-		add(n.LineComment, false)
+		add(&n.HeadComment, false)
+		add(&n.LineComment, false)
 		if n.Kind == yaml.MappingNode {
 			for i := 0; i+1 < len(n.Content); i += 2 {
 				k := n.Content[i]
-				add(k.HeadComment, false)
-				add(k.LineComment, false)
+				add(&k.HeadComment, false)
+				add(&k.LineComment, false)
 				for _, c := range k.Content {
 					walk(c)
 				}
 				walk(n.Content[i+1])
-				add(k.FootComment, true)
+				add(&k.FootComment, true)
 			}
 		} else {
 			for _, c := range n.Content {
 				walk(c)
 			}
 		}
-		add(n.FootComment, true)
+		add(&n.FootComment, true)
 	}
-	walk(&doc)
-	trailing := trailingComments(lines, &doc)
-	out = out[:len(out)-hungOnTheLastNode(out, footRun, trailing)]
-	// A comment on a directive's line (`%YAML 1.1 # c`, `%TAG …`) is no
-	// node's: yaml.v3 drops it. It is read off the source and listed after
-	// the own-line comments written above the first directive, which
-	// yaml.v3 lists first, on the document's head.
-	if above, dc := directiveComments(lines); len(dc) > 0 {
-		at := min(above, len(out))
-		out = append(out[:at], append(dc, out[at:]...)...)
-	}
-	return append(out, append(footAboveTheRegion(foot, trailing), trailing...)...)
+	walk(doc)
+	return w
 }
 
 // commentLines cuts a yaml.v3 comment block into its lines, trimmed, the

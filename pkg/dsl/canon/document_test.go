@@ -48,56 +48,58 @@ func TestTheDocumentsCanonicalFormKeepsTheBOMAndTheLineEndings(t *testing.T) {
 // rewrite would lose what the author wrote: a text the .bot reads otherwise
 // than written (a prompt body the lexer settles, E053), a YAML comment the
 // written form cannot hold — one right after a flow collection's opening
-// bracket, which yaml.v3 drops, or one written below the last content line
-// that no node holds: the comment of a `...` marker's own line, a block the
-// one below the marker displaces, anything under a commented marker line —
-// and, before either, a document that does not read.
+// bracket, which yaml.v3 drops, or one on a respelled edge — and, before
+// either, a document that does not read.
+//
+// The lines written around a `...` or `---` marker were fourteen rows of
+// this table until #2359: the writer re-emits those markers with the region
+// they sit in, so each of those rows is now a KEEP row, named one by one in
+// TestTheDocumentsCanonicalFormKeepsTheLinesWrittenAroundAMarker. A
+// fifteenth row left too — the comment on a `%YAML` directive's line — for
+// TestTheDocumentsCanonicalFormRefusesTheStreamDirectiveItCannotEmit, which
+// refuses it by naming the DIRECTIVE rather than the comment. The count
+// below is announced so neither table can lose a row in silence (#1784).
 func TestTheDocumentsCanonicalFormRefusesWhatARewriteWouldLose(t *testing.T) {
-	for name, tc := range map[string]struct{ src, want string }{
-		"a settled prompt body":                                {"dsl: 2\nprompts:\n  spaced: |\n\n      Indented, after a blank line.\n      Second line.\n\nnodes:\n  - agent: a\n    model: m\n    system: spaced\nworkflow:\n  name: w\n  entry: a\n  edges:\n    - a -> done\n", "E053"},
-		"a comment yaml.v3 drops":                              {strings.Replace(looseDoc, "edges: [hello -> done]", "edges: [ # keep me\n    hello -> done]", 1), "(the first: # keep me)"},
-		"a comment on a respelled edge":                        {strings.Replace(looseDoc, "edges: [hello -> done]", "edges: [hello->done # keep me\n    ]", 1), "(the first: # keep me)"},
-		"a comment on the marker's line":                       {looseDoc + "... # keep me\n", "(the first: # keep me)"},
-		"a comment above the marker":                           {looseDoc + "# keep me\n...\n# the foot\n", "(the first: # keep me)"},
-		"a comment on the marker's line with a block below it": {looseDoc + "...  # end\n# keep me\n", "(the first: # end)"},
-		// Below a BARE marker, the first block rides the document's foot
-		// through a rewrite; what is lost is a block a blank line keeps off
-		// it, and a second one.
-		"a comment below the marker after a blank": {looseDoc + "...\n\n# keep me\n", "(the first: # keep me)"},
-		"a second block below the marker":          {looseDoc + "...\n# a\n\n# keep me\n", "(the first: # keep me)"},
-		// A document whose last declaration is a block scalar with NO body:
-		// the lines below the header are the trailing region's, where the
-		// scanner floors a body's indentation at column 1, and the region's
-		// own read is what the refusal counts.
-		"a comment below a marker under an empty block scalar":      {emptyDoc + "...\n\n# keep me\n", "(the first: # keep me)"},
-		"a comment below two markers under an empty block scalar":   {emptyDoc + "...\n...\n# keep me\n", "(the first: # keep me)"},
-		"a second block below a marker under an empty block scalar": {emptyDoc + "...\n# a\n\n# keep me\n", "(the first: # keep me)"},
-		"a comment below a marker under an empty tool script":       {emptyScriptDoc + "...\n\n# keep me\n", "(the first: # keep me)"},
-		// A block above the marker a blank keeps off the node AND the one
-		// below the marker displaces off the document's foot is hung on
-		// nothing: the source is the only place it is written.
-		"a block above the marker the one below it displaces": {looseDoc + "\n# keep me\n\n...\n# the foot\n", "(the first: # keep me)"},
-		// Indented and displaced off the document's foot, a block is read
-		// at its own column or not at all: this document's last
-		// declaration is a flow collection, so no node of it holds that
-		// line either, and a rewrite would delete it.
-		"an indented block above the marker the one below displaces": {looseDoc + "  # keep me\n...\n# the foot\n", "(the first: # keep me)"},
-		"the same text above the marker and on its line":             {looseDoc + "\n# keep me\n\n...  # keep me\n", "(the first: # keep me)"},
-		// The same text as a MID-DOCUMENT foot comment and on the marker's
-		// line: two comments, and only the first has a node to ride. Read
-		// as one, the marker's line is deleted and nothing is refused.
-		"the text of a mid-document foot on the marker's line": {footTwinDoc + "...  # twice\n", "(the first: # twice)"},
-		"the text of a mid-document foot below a blank":        {footTwinDoc + "...\n\n# twice\n", "(the first: # twice)"},
-		// The directive LINE is dropped with no refusal, as the markers
-		// are; a comment written on one is counted like any other, and the
-		// written form has nowhere to put it.
-		"a comment on a directive's line": {"%YAML 1.1 # keep me\n---\n" + looseDoc, "(the first: # keep me)"},
-		"a document that does not read":   {"dsl: 2\nnodes: 3\n", "does not read"},
-	} {
+	table := map[string]struct{ src, want string }{
+		"a settled prompt body":         {"dsl: 2\nprompts:\n  spaced: |\n\n      Indented, after a blank line.\n      Second line.\n\nnodes:\n  - agent: a\n    model: m\n    system: spaced\nworkflow:\n  name: w\n  entry: a\n  edges:\n    - a -> done\n", "E053"},
+		"a comment yaml.v3 drops":       {strings.Replace(looseDoc, "edges: [hello -> done]", "edges: [ # keep me\n    hello -> done]", 1), "(the first: # keep me)"},
+		"a comment on a respelled edge": {strings.Replace(looseDoc, "edges: [hello -> done]", "edges: [hello->done # keep me\n    ]", 1), "(the first: # keep me)"},
+		"a document that does not read": {"dsl: 2\nnodes: 3\n", "does not read"},
+	}
+	if len(table) != 4 {
+		t.Fatalf("the table holds %d rows, want 4 — the fourteen marker rows are KEEP rows since #2359, and a row does not leave this table in silence", len(table))
+	}
+	for name, tc := range table {
 		t.Run(name, func(t *testing.T) {
 			_, err := Document("x.bot.yaml", []byte(tc.src))
 			if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("got %v, want a refusal saying %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// A `%YAML` or `%TAG` directive opens a STREAM, and the writer renders one
+// document: it emits no directive, and the line the author wrote has no
+// place in the written form. It does not disappear in silence either — the
+// rewrite is refused, naming the directive — which is the half of ADR-102
+// §5 the markers themselves left when #2359 made the writer re-emit them.
+// A comment written on a directive's line is named with it.
+func TestTheDocumentsCanonicalFormRefusesTheStreamDirectiveItCannotEmit(t *testing.T) {
+	for name, tc := range map[string]struct{ src, want string }{
+		"a %YAML directive":              {"%YAML 1.1\n---\n" + looseDoc, "%YAML 1.1"},
+		"a %TAG directive":               {"%TAG !e! tag:example.com,2000:\n---\n" + looseDoc, "%TAG !e! tag:example.com,2000:"},
+		"a directive carrying a comment": {"%YAML 1.1 # keep me\n---\n" + looseDoc, "%YAML 1.1 # keep me"},
+		"a directive below a comment":    {"# above\n%YAML 1.1\n---\n" + looseDoc, "%YAML 1.1"},
+		"two directives":                 {"%YAML 1.1\n%TAG !e! tag:example.com,2000:\n---\n" + looseDoc, "%YAML 1.1; %TAG !e! tag:example.com,2000:"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Document("x.bot.yaml", []byte(tc.src))
+			if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want a refusal naming %q", err, tc.want)
+			}
+			if !strings.Contains(err.Error(), "stream directive") {
+				t.Fatalf("the refusal does not say what it is about: %v", err)
 			}
 		})
 	}

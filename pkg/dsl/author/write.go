@@ -41,6 +41,15 @@ func Write(f *ast.File) ([]byte, error) {
 // keepComments). A comment whose node the written document does not hold at
 // that path is not carried; Comments of the two texts says which, and a
 // caller that must not lose one compares them.
+//
+// The explicit document markers src wrote come back with them: a `---`
+// opening the document, and the trailing region below its last content line
+// — the `...` markers, and the comments and blank lines written around them,
+// which hang on no node — are re-emitted off the source, where Comments
+// reads them, and the comments yaml.v3 attached from that region are taken
+// off the tree first so none is written twice (markerRegions). A `%YAML` or
+// `%TAG` directive is the one thing src wrote that does not come back:
+// Directives lists them for a caller that must not drop one in silence.
 func WriteKeepingComments(f *ast.File, src []byte) ([]byte, error) {
 	doc, _, err := readFirst(src)
 	if err != nil {
@@ -49,7 +58,14 @@ func WriteKeepingComments(f *ast.File, src []byte) ([]byte, error) {
 	if doc == nil {
 		doc = &yaml.Node{}
 	}
-	return write(f, doc)
+	lines := sourceLines(src)
+	markers := readMarkerRegions(lines, doc)
+	stripTrailingRegion(doc, lines)
+	out, err := write(f, doc)
+	if err != nil {
+		return nil, err
+	}
+	return markers.emit(out), nil
 }
 
 // write renders f, with the comments of the document from when it is not nil.

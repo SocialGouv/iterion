@@ -20,15 +20,31 @@ import (
 // left the author's: a document that does not read; one the .bot reads
 // otherwise than it was written — a prompt body the lexer settles, a line
 // separator in a block scalar, the warnings author.Parse reports (E053) —
-// since the writer would put that reading in the author's place; one whose
-// written form would lose a comment, or move one on a second pass; one whose
-// written form reads as another program.
+// since the writer would put that reading in the author's place; one
+// opening a stream with a `%YAML`/`%TAG` directive, which the writer does
+// not emit; one whose written form would lose a comment, or move one on a
+// second pass; one whose written form reads as another program.
+//
+// The explicit document markers the author wrote come back: a `---` opening
+// the document and the trailing region below its last content line — the
+// `...` markers and the lines written around them — are re-emitted off the
+// source by the writer, so a document carrying one is rewritten rather than
+// losing its marker in silence.
 func Document(name string, src []byte) ([]byte, error) {
 	norm := rewrite.Normalize(src)
 	text := []byte(norm.Text)
 	res := author.Parse(name, text)
 	if errs := diagnosticsOf(res.Diagnostics, parser.SeverityError); len(errs) > 0 {
 		return nil, fmt.Errorf("%w: does not read: %s", ErrRefused, strings.Join(errs, "; "))
+	}
+	// A `%YAML`/`%TAG` directive opens a STREAM; the writer renders one
+	// document and emits none, so a rewrite would drop the line the author
+	// wrote. Refused, naming it, rather than dropped in silence: the
+	// explicit markers of the document itself — a `---` opening it, a `...`
+	// closing it — ARE re-emitted (author.WriteKeepingComments), and §5 of
+	// ADR-102 holds the rest to a refusal.
+	if ds := author.Directives(text); len(ds) > 0 {
+		return nil, fmt.Errorf("%w: its written form would lose the YAML stream directive the author wrote, which the author writer does not emit: %s", ErrRefused, strings.Join(ds, "; "))
 	}
 	// A ` #` ending a plain value is the one reading a rewrite keeps as the
 	// author wrote it — the comment rides the value — so it refuses only if

@@ -821,13 +821,16 @@ func TestCommentLinesOfCountsOneCommentPerLine(t *testing.T) {
 
 // A comment written below the last content line that no node holds — the
 // comment on a `...` marker's own line, a block the one below the marker
-// displaces, anything under a commented marker line — is one the canonical
-// form cannot hold, since the writer emits no marker: `fmt` refuses the
-// document by name and leaves its bytes as they are, under --check too,
-// while `--to bot` writes the .bot and counts the comment among those it
-// does not carry. A comment the rewrite DOES keep, and a `#` that is text,
-// are rewritten all the same.
-func TestFmtRefusesTheCommentsOfADocumentEndMarker(t *testing.T) {
+// displaces, anything under a commented marker line — used to make `fmt`
+// refuse the document: the writer emitted no marker, so the canonical form
+// had no place for it. Since #2359 the writer re-emits the marker with the
+// region it sits in: `fmt` formats these documents, every comment line of
+// the author's file is in the result, the marker lines are still there, and
+// `--check` is green afterwards. `--to bot` is the other half and does not
+// move: a .bot carries no YAML comment, so it counts them and names the
+// first. A comment the rewrite keeps on a node, and a `#` that is text, are
+// rewritten all the same.
+func TestFmtKeepsTheCommentsOfADocumentEndMarker(t *testing.T) {
 	inTempWorkspace(t)
 	for _, tc := range []struct {
 		dir, body, tail, first string
@@ -855,14 +858,18 @@ func TestFmtRefusesTheCommentsOfADocumentEndMarker(t *testing.T) {
 			doc := writeBot(t, tc.dir+"/end.bot.yaml", src)
 			jp, _ := jsonPrinter()
 			res, err := RunFmt(FmtOptions{Paths: []string{doc}, Printer: jp})
-			if !errors.Is(err, ErrFmtRefused) || len(res.Refused) != 1 || !strings.Contains(res.Refused[0], "(the first: "+tc.first+")") {
-				t.Fatalf("the comment of a document-end marker was not refused by name: %v %q", err, res.Refused)
+			if err != nil || len(res.Refused) != 0 {
+				t.Fatalf("a document whose marker region the writer re-emits was refused: %v %q", err, res.Refused)
 			}
-			if got, _ := os.ReadFile(doc); string(got) != src {
-				t.Fatalf("the author's bytes were rewritten:\n%q", got)
+			got, _ := os.ReadFile(doc)
+			if had, kept := commentLinesOf(src), commentLinesOf(string(got)); had != kept {
+				t.Fatalf("the rewrite carries the comment lines %q, the author's file %q:\n%s", kept, had, got)
 			}
-			if _, err := RunFmt(FmtOptions{Paths: []string{tc.dir}, Check: true, Printer: jp}); !errors.Is(err, ErrFmtRefused) {
-				t.Fatalf("--check in a walk: %v, want ErrFmtRefused", err)
+			if had, kept := markerLinesOf(src), markerLinesOf(string(got)); had != kept {
+				t.Fatalf("the rewrite carries %d marker line(s), the author's file %d:\n%s", kept, had, got)
+			}
+			if _, err := RunFmt(FmtOptions{Paths: []string{tc.dir}, Check: true, Printer: jp}); err != nil {
+				t.Fatalf("--check after fmt: %v", err)
 			}
 			res, err = RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
 			want := fmt.Sprintf("%s: %d YAML comment line(s) are not carried into the .bot (the first: %s)", doc, tc.n, tc.first)
@@ -875,32 +882,36 @@ func TestFmtRefusesTheCommentsOfADocumentEndMarker(t *testing.T) {
 	// node it is written under: the rewrite keeps it, so the document is
 	// rewritten rather than refused, --check is green afterwards and `--to
 	// bot` counts it ONCE. The same holds of a block scalar's body line
-	// that starts with `#`, which is no comment at all.
+	// that starts with `#`, which is no comment at all. The rows marked
+	// `same` are the ones #2359 turned into a NO-OP: body and marker region
+	// already in the writer's own form, `fmt` hands the bytes back as they
+	// are — which is the acceptance the ticket asked for.
 	for _, tc := range []struct {
 		dir, src string
 		text     []string
 		n        int
+		same     bool
 	}{
-		{"i", authorHelloDoc + "  # inner\n...\n", nil, 1},
-		{"i2", authorHelloDoc + "  # i1\n...\n# below\n", nil, 2},
-		{"i3", authorHelloDoc + "  # i1\n# i2\n...\n", nil, 2},
-		{"bs", strings.Replace(authorHelloDoc, "  ask: Say hello.\n", "  ask: |\n    Say hello.\n    # Role\n", 1) + "...\n", []string{"# Role"}, 0},
+		{dir: "i", src: authorHelloDoc + "  # inner\n...\n", n: 1, same: true},
+		{dir: "i2", src: authorHelloDoc + "  # i1\n...\n# below\n", n: 2, same: true},
+		{dir: "i3", src: authorHelloDoc + "  # i1\n# i2\n...\n", n: 2, same: true},
+		{dir: "bs", src: strings.Replace(authorHelloDoc, "  ask: Say hello.\n", "  ask: |\n    Say hello.\n    # Role\n", 1) + "...\n", text: []string{"# Role"}, n: 0},
 		// A mid-document FOOT comment and its twin above a bare marker are
 		// two comments the rewrite keeps where they hang: read as one, the
 		// second is deleted and the rewrite says nothing.
-		{"ft4", footTwinHelloDoc + "# twice\n...\n", nil, 2},
-		{"ft5", footTwinHelloDoc + "\n# twice\n", nil, 2},
+		{dir: "ft4", src: footTwinHelloDoc + "# twice\n...\n", n: 2},
+		{dir: "ft5", src: footTwinHelloDoc + "\n# twice\n", n: 2},
 		// A multi-line QUOTED value whose last line starts with `#` carries
 		// no comment at all: read as one, the document is unformattable and
 		// `--to bot` names the author's own prose.
-		{"q", quotedHelloDoc, []string{`# not a comment"`, "# not a comment'"}, 0},
-		{"q2", quotedHelloDoc + "...\n", []string{`# not a comment"`, "# not a comment'"}, 0},
+		{dir: "q", src: quotedHelloDoc, text: []string{`# not a comment"`, "# not a comment'"}, n: 0},
+		{dir: "q2", src: quotedHelloDoc + "...\n", text: []string{`# not a comment"`, "# not a comment'"}, n: 0},
 		// The same text written INSIDE a flow collection and after its
 		// closing bracket is two comments: read as one, `fmt` left these
 		// two files alone for a comment it said it would write twice,
 		// though its own rewrite carries both.
-		{"fc", flowCloseHelloDoc, []string{`# b"} # twice`, "# b'"}, 2},
-		{"fcb", flowBareCloseHelloDoc, nil, 2},
+		{dir: "fc", src: flowCloseHelloDoc, text: []string{`# b"} # twice`, "# b'"}, n: 2},
+		{dir: "fcb", src: flowBareCloseHelloDoc, n: 2},
 	} {
 		t.Run(tc.dir+" is rewritten", func(t *testing.T) {
 			doc := writeBot(t, tc.dir+"/end.bot.yaml", tc.src)
@@ -910,7 +921,10 @@ func TestFmtRefusesTheCommentsOfADocumentEndMarker(t *testing.T) {
 				t.Fatalf("a document whose rewrite keeps every comment was refused: %v %q", err, res.Refused)
 			}
 			got, _ := os.ReadFile(doc)
-			if string(got) == tc.src {
+			if tc.same && string(got) != tc.src {
+				t.Fatalf("a document already in the writer's form was rewritten:\n%q\nwant\n%q", got, tc.src)
+			}
+			if !tc.same && string(got) == tc.src {
 				t.Fatalf("the document was not rewritten:\n%s", got)
 			}
 			if had, kept := commentLinesOf(tc.src, tc.text...), commentLinesOf(string(got), tc.text...); had != kept {
@@ -952,6 +966,22 @@ func TestFmtRefusesTheCommentsOfADocumentEndMarker(t *testing.T) {
 			t.Fatalf("the text was not rewritten, or the `#` of its value did not survive:\n%s", got)
 		}
 	})
+}
+
+// markerLinesOf counts the explicit document markers of text: a `---` or a
+// `...` at column 0, followed by a blank or the end of its line, which is
+// where YAML reads one.
+func markerLinesOf(text string) int {
+	n := 0
+	for _, line := range strings.Split(text, "\n") {
+		if !strings.HasPrefix(line, "---") && !strings.HasPrefix(line, "...") {
+			continue
+		}
+		if len(line) == 3 || line[3] == ' ' || line[3] == '\t' {
+			n++
+		}
+	}
+	return n
 }
 
 // headerCommentDoc declares its script's indentation with a header whose
