@@ -392,7 +392,7 @@ func TestForgePublishGrantUpdate_KeepsTheExpiryAndNeverResurrects(t *testing.T) 
 		{"valkey", func(t *testing.T) (ForgePublishTokenStore, func(string) time.Duration) {
 			mr, rdb := newTestRedis(t)
 			return newValkeyForgePublishTokenStore(rdb, nil), func(token string) time.Duration {
-				return mr.TTL(forgePublishTokenKeyPrefix + token)
+				return mr.TTL(forgePublishTokenKey(token))
 			}
 		}},
 	} {

@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -156,7 +158,32 @@ func (s *valkeyBoardMCPTokenStore) lookup(token string) (boardMCPGrant, bool) {
 
 // --- forge-publish run tokens ------------------------------------------------
 
+// forgePublishTokenKeyPrefix keyed a grant by the BEARER itself. Anything that
+// can SCAN, MONITOR or read the slowlog reads key NAMES, so that key handed a
+// live grant to every one of them. Kept for the dual read below until no grant
+// minted under it can still be alive.
 const forgePublishTokenKeyPrefix = "iterion:forgepub:tok:"
+
+// forgePublishTokenDigestKeyPrefix keys a grant by the SHA-256 of its bearer:
+// the name proves nothing a holder of the keyspace can present.
+const forgePublishTokenDigestKeyPrefix = "iterion:forgepub:tokd:"
+
+// forgePublishTokenKey is where a grant minted by this build lives.
+func forgePublishTokenKey(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return forgePublishTokenDigestKeyPrefix + hex.EncodeToString(sum[:])
+}
+
+// forgePublishTokenKeys are the keys a grant can live under, in READ order:
+// the digest key, then the legacy key whose name was the bearer. The second
+// read is the cutover's bridge — a grant minted by a previous build stays
+// usable for at most one grant TTL (forgePublishDefaultTTL: 9 days, the retry
+// window plus a margin), after which no legacy key can exist and the second
+// half can go. Every reader, writer and reaper of a grant goes through this
+// one list, so the two keys cannot drift apart.
+func forgePublishTokenKeys(token string) []string {
+	return []string{forgePublishTokenKey(token), forgePublishTokenKeyPrefix + token}
+}
 
 // valkeyForgePublishTokenStore shares per-run forge-publish grants across
 // server replicas (the run's POST is load-balanced to any pod while the
@@ -179,7 +206,7 @@ func (s *valkeyForgePublishTokenStore) Register(token string, g ForgePublishGran
 	defer cancel()
 	// Redis TTL replaces the in-memory sweep. The grant is safe to name in
 	// the error (team/conn/repo); the token is not.
-	if err := s.rdb.Set(ctx, forgePublishTokenKeyPrefix+token, b, forgePublishDefaultTTL).Err(); err != nil {
+	if err := s.rdb.Set(ctx, forgePublishTokenKey(token), b, forgePublishDefaultTTL).Err(); err != nil {
 		return fmt.Errorf("store forge publish token (repo=%s): %w", g.Repo, err)
 	}
 	return nil
@@ -190,7 +217,9 @@ func (s *valkeyForgePublishTokenStore) Register(token string, g ForgePublishGran
 func (s *valkeyForgePublishTokenStore) Revoke(token string) {
 	ctx, cancel := valkeyCtx()
 	defer cancel()
-	if err := s.rdb.Del(ctx, forgePublishTokenKeyPrefix+token).Err(); err != nil && s.logger != nil {
+	// Both keys: a grant minted before the digest cutover lives under the
+	// legacy one, and a revoke that missed it would leave it usable.
+	if err := s.rdb.Del(ctx, forgePublishTokenKeys(token)...).Err(); err != nil && s.logger != nil {
 		prefix := token
 		if len(prefix) > 8 {
 			prefix = prefix[:8]
@@ -205,12 +234,16 @@ func (s *valkeyForgePublishTokenStore) Revoke(token string) {
 func (s *valkeyForgePublishTokenStore) expireIn(token string, d time.Duration) {
 	ctx, cancel := valkeyCtx()
 	defer cancel()
-	if err := s.rdb.ExpireLT(ctx, forgePublishTokenKeyPrefix+token, d).Err(); err != nil && s.logger != nil {
-		prefix := token
-		if len(prefix) > 8 {
-			prefix = prefix[:8]
+	// ExpireLT on a key that does not exist is a no-op, so both keys of the
+	// cutover are named and whichever holds the grant is shortened.
+	for _, key := range forgePublishTokenKeys(token) {
+		if err := s.rdb.ExpireLT(ctx, key, d).Err(); err != nil && s.logger != nil {
+			prefix := token
+			if len(prefix) > 8 {
+				prefix = prefix[:8]
+			}
+			s.logger.Warn("forge publish: shorten token %s… to %s: %v (best-effort — Redis TTL %s is the backstop)", prefix, d, err, forgePublishDefaultTTL)
 		}
-		s.logger.Warn("forge publish: shorten token %s… to %s: %v (best-effort — Redis TTL %s is the backstop)", prefix, d, err, forgePublishDefaultTTL)
 	}
 }
 
@@ -219,9 +252,21 @@ func (s *valkeyForgePublishTokenStore) expireIn(token string, d time.Duration) {
 // expiry is not pushed out, and a concurrent write to the same grant makes
 // the transaction retry rather than be overwritten.
 func (s *valkeyForgePublishTokenStore) update(token string, fn func(*ForgePublishGrant)) (bool, error) {
+	// In read order, one transaction per key: a grant lives under exactly one
+	// of them (Register writes the digest key only), and a miss on the first
+	// is the cutover's legacy case, not an absent grant.
+	for _, key := range forgePublishTokenKeys(token) {
+		found, err := s.updateKey(key, fn)
+		if err != nil || found {
+			return found, err
+		}
+	}
+	return false, nil
+}
+
+func (s *valkeyForgePublishTokenStore) updateKey(key string, fn func(*ForgePublishGrant)) (bool, error) {
 	ctx, cancel := valkeyCtx()
 	defer cancel()
-	key := forgePublishTokenKeyPrefix + token
 	found := false
 	txf := func(tx *redis.Tx) error {
 		b, err := tx.Get(ctx, key).Bytes()
@@ -299,16 +344,19 @@ var forgePublishGrantKeys = []string{"team_id", "connection_id", "repo", "bot", 
 func (s *valkeyForgePublishTokenStore) lookup(token string) (ForgePublishGrant, bool) {
 	ctx, cancel := valkeyCtx()
 	defer cancel()
-	b, err := s.rdb.Get(ctx, forgePublishTokenKeyPrefix+token).Bytes()
-	if err != nil {
-		return ForgePublishGrant{}, false
+	for _, key := range forgePublishTokenKeys(token) {
+		b, err := s.rdb.Get(ctx, key).Bytes()
+		if err != nil {
+			continue
+		}
+		var g ForgePublishGrant
+		if json.Unmarshal(b, &g) != nil {
+			return ForgePublishGrant{}, false
+		}
+		// ExpiresAt left zero: Redis already evicted the key if it lapsed.
+		return g, true
 	}
-	var g ForgePublishGrant
-	if json.Unmarshal(b, &g) != nil {
-		return ForgePublishGrant{}, false
-	}
-	// ExpiresAt left zero: Redis already evicted the key if it lapsed.
-	return g, true
+	return ForgePublishGrant{}, false
 }
 
 // --- auth rate limit (atomic token bucket) ----------------------------------
