@@ -91,6 +91,7 @@ func waitForBroker(ctx context.Context, dial brokerDialer, pol dialPolicy) (*nat
 		ctx, cancel = context.WithTimeout(ctx, pol.budget)
 		defer cancel()
 	}
+	var lastRefusal error // the last answer natsgo itself gave; an expired attempt alone says nothing about the broker
 	for attempt := 1; ; attempt++ {
 		if ctx.Err() != nil {
 			// The caller is already done, so no attempt is owed — and a
@@ -106,8 +107,18 @@ func waitForBroker(ctx context.Context, dial brokerDialer, pol dialPolicy) (*nat
 		if err == nil {
 			return nc, nil
 		}
+		if errors.Is(err, context.DeadlineExceeded) && lastRefusal != nil {
+			// The attempt expired before natsgo answered (a slow runner under the
+			// race detector measured it): the library's last refusal is the
+			// informative one, so both stay in the chain — the caller reads
+			// natsgo.ErrNoServers through errors.Is, and the bound through the text.
+			err = fmt.Errorf("%w; the last attempt expired: %w", lastRefusal, err)
+		}
 		if !retryableDial(err) {
 			return nil, fmt.Errorf("queue/nats: connect: %w", err)
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			lastRefusal = err
 		}
 		exhausted := fmt.Errorf("queue/nats: connect: no broker after %d attempt(s) (%s): %w",
 			attempt, describeDialBound(ctx), err)

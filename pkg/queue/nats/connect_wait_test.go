@@ -367,3 +367,34 @@ func TestDialBrokerWithAnExpiredAttemptReportsTheDeadline(t *testing.T) {
 		t.Fatalf("err = %v must stay retryable so the loop reports the bounded wait", err)
 	}
 }
+
+// When the budget runs out while an attempt is in flight, the dialer answers
+// context.DeadlineExceeded (see TestDialBrokerWithAnExpiredAttemptReportsTheDeadline);
+// the error Connect returns must still carry the library's last refusal in its
+// chain, or a caller reading natsgo.ErrNoServers through errors.Is loses the
+// one fact that says "nothing is listening" (CI race-shard(1) on 6c7a08b8f).
+func TestAnExpiredLastAttemptKeepsTheLibrarysRefusalInTheChain(t *testing.T) {
+	pol := dialPolicy{attempt: 20 * time.Millisecond, pause: time.Millisecond, budget: 40 * time.Millisecond}
+	calls := 0
+	dial := func(ctx context.Context) (*natsgo.Conn, error) {
+		calls++
+		if calls == 1 {
+			return nil, natsgo.ErrNoServers
+		}
+		time.Sleep(pol.budget) // outlive the budget, as a slow runner does
+		return nil, context.DeadlineExceeded
+	}
+	_, err := waitForBroker(context.Background(), dial, pol)
+	if err == nil {
+		t.Fatal("waitForBroker returned no error against a dialer that never connects")
+	}
+	if !strings.Contains(err.Error(), "queue/nats: connect: no broker after") {
+		t.Fatalf("err = %v, want the bounded wait's wording", err)
+	}
+	if !errors.Is(err, natsgo.ErrNoServers) {
+		t.Fatalf("err = %v, want the library's refusal kept in the chain", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want the expired attempt kept in the chain too", err)
+	}
+}
