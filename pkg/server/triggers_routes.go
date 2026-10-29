@@ -13,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
@@ -264,10 +265,16 @@ func (s *Server) handleEmitTrigger(w http.ResponseWriter, r *http.Request) {
 	}
 	adm.rollback(s.logger)
 	payload := map[string]any{}
-	if len(req.Vars) > 0 {
+	// A client drives this ingress, so whatever it sends under a
+	// server-minted var's name is not that var: the server mints the forge
+	// publish grant per run and binds the bearer to its own endpoints.
+	// Dropped here rather than carried into an event every matching
+	// subscription reads (the same rule every client-driven write path
+	// applies — store.DropServerMintedVars).
+	if emitVars := store.DropServerMintedVars(req.Vars); len(emitVars) > 0 {
 		total := 0
-		vm := make(map[string]any, len(req.Vars))
-		for k, v := range req.Vars {
+		vm := make(map[string]any, len(emitVars))
+		for k, v := range emitVars {
 			total += len(k) + len(v)
 			if total > maxEmitVarsBytes {
 				dispatcher.WriteErr(w, http.StatusBadRequest, errors.New("vars payload too large"))

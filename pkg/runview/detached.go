@@ -123,6 +123,12 @@ type detachedSpec struct {
 // responsible for SysProcAttr (Setsid).
 func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.Cmd, error) {
 	var args []string
+	// The run's server-minted secrets (the forge publish grant) travel in the
+	// child's environment; everything else rides the argv below. `--var
+	// forge_publish_token=<bearer>` would put the grant in the runner's
+	// command line, which any co-resident process reads from
+	// /proc/<pid>/cmdline for the whole life of the run.
+	argvVars, mintedEnv := store.ServerMintedSecretEnv(spec.Vars)
 	switch spec.Command {
 	case runnerCommandRun:
 		args = append(args, "run", spec.FilePath, "--background", "--run-id", spec.RunID, "--no-interactive")
@@ -134,7 +140,7 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 		if spec.BundleDir != "" {
 			args = append(args, "--bundle-dir", spec.BundleDir)
 		}
-		for k, v := range spec.Vars {
+		for k, v := range argvVars {
 			args = append(args, "--var", k+"="+v)
 		}
 		if spec.MergeInto != "" {
@@ -221,6 +227,13 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 	}
 
 	cmd := exec.CommandContext(ctx, bin, args...)
+	// The other half of the split: `iterion run` takes these from its
+	// environment and unsets them before the first node runs
+	// (store.TakeServerMintedSecretVarsFromEnv), so no tool process the run
+	// spawns inherits the grant.
+	if len(mintedEnv) > 0 {
+		cmd.Env = append(os.Environ(), mintedEnv...)
+	}
 	// The runner's stdout/stderr go to /dev/null in production —
 	// observability is via events.jsonl + run.log, not the runner's
 	// stdio. Silencing them prevents the studio server's terminal from

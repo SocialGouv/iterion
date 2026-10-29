@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -230,5 +231,75 @@ func TestDropServerMintedVarsKeepsAnExplicitWithdrawal(t *testing.T) {
 	pinned := map[string]string{ForgePublishTokenVar: "a-token-of-its-own", "reviewer": "alice"}
 	if _, ok := DropServerMintedVars(pinned)[ForgePublishTokenVar]; ok {
 		t.Error("DropServerMintedVars kept a token a client sent")
+	}
+}
+
+// The environment is how a server-minted secret reaches a child process
+// iterion spawns: its name reads as a credential, so every surface that
+// classifies env names by shape already treats it as one.
+func TestServerMintedSecretEnvName_ReadsAsACredential(t *testing.T) {
+	name := ServerMintedSecretEnvName(ForgePublishTokenVar)
+	if name != "ITERION_LAUNCH_SECRET_FORGE_PUBLISH_TOKEN" {
+		t.Fatalf("ServerMintedSecretEnvName = %q — the spawning and the reading side read the same name or the grant is lost", name)
+	}
+	if !IsSecretEnvName(name) {
+		t.Error("the carriage env name does not read as a secret: the guard would not redact its value")
+	}
+}
+
+// The carriage is symmetric: what a launcher puts in a child's environment is
+// what the child's launch takes back out — and taking it out REMOVES it, so
+// no tool process the run spawns inherits the grant.
+func TestServerMintedSecretEnv_CarriesTheGrantAndTheChildTakesItOut(t *testing.T) {
+	vars := map[string]string{
+		ForgePublishTokenVar: publishTokenSentinel,
+		ForgePublishURLVar:   "https://iterion.example/publish",
+		"reviewer":           "alice",
+	}
+	argv, env := ServerMintedSecretEnv(vars)
+	want := ServerMintedSecretEnvName(ForgePublishTokenVar) + "=" + publishTokenSentinel
+	if len(env) != 1 || env[0] != want {
+		t.Fatalf("ServerMintedSecretEnv env = %q, want exactly %q — an endpoint is not a credential and rides the argv", env, want)
+	}
+	if _, ok := argv[ForgePublishTokenVar]; ok {
+		t.Error("the grant is on BOTH channels: the argv half still names it")
+	}
+	for _, name := range []string{ForgePublishURLVar, "reviewer"} {
+		if argv[name] != vars[name] {
+			t.Errorf("argv half lost %s (%q): the child would re-resolve it from the workflow", name, argv[name])
+		}
+	}
+
+	envName := ServerMintedSecretEnvName(ForgePublishTokenVar)
+	t.Setenv(envName, publishTokenSentinel)
+	got := TakeServerMintedSecretVarsFromEnv()
+	if got[ForgePublishTokenVar] != publishTokenSentinel {
+		t.Fatalf("TakeServerMintedSecretVarsFromEnv = %v, want the grant under %s", got, ForgePublishTokenVar)
+	}
+	if v, ok := os.LookupEnv(envName); ok {
+		t.Errorf("%s is still set after the take (%d bytes): every tool process the run spawns would inherit the grant", envName, len(v))
+	}
+	if again := TakeServerMintedSecretVarsFromEnv(); len(again) != 0 {
+		t.Errorf("a second take returned %v, want nothing", again)
+	}
+}
+
+// An empty value is a withdrawal, not a grant: it never takes the credential
+// channel, so the child reads it as the explicit "do not publish" it is.
+func TestServerMintedSecretEnv_SkipsAWithdrawal(t *testing.T) {
+	argv, env := ServerMintedSecretEnv(map[string]string{ForgePublishTokenVar: "  "})
+	if len(env) != 0 {
+		t.Fatalf("ServerMintedSecretEnv env = %q for a withdrawal, want nothing", env)
+	}
+	if _, ok := argv[ForgePublishTokenVar]; !ok {
+		t.Error("the withdrawal left the argv: the child would inherit a live grant instead of the operator's explicit none")
+	}
+	envName := ServerMintedSecretEnvName(ForgePublishTokenVar)
+	t.Setenv(envName, "")
+	if got := TakeServerMintedSecretVarsFromEnv(); len(got) != 0 {
+		t.Fatalf("TakeServerMintedSecretVarsFromEnv = %v for an empty value, want nothing", got)
+	}
+	if _, ok := os.LookupEnv(envName); ok {
+		t.Error("an empty carriage value was left in the environment")
 	}
 }

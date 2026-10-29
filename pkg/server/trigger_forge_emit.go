@@ -4,9 +4,36 @@ import (
 	"context"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
+
+// forgeTriggerPayload is the event payload mirroring one inbound webhook's
+// launch onto the trigger spine: the launched run's id, the bot, the provider,
+// the repo, and the launch vars MINUS the ones the server minted for that run.
+//
+// The grant the server mints at launch (store.ServerMintedLaunchVars: the
+// forge publish bearer and the endpoints it is presented to) is for the run
+// and its own record alone. The spine fans the event out to every subscription
+// that matches it — in-process locally, NATS in cloud — so copying the bearer
+// here would hand a live credential to readers the launch never named.
+func forgeTriggerPayload(runID, botID, provider, repoURL string, vars map[string]string) map[string]any {
+	payload := map[string]any{
+		trigger.PayloadLaunchedRunID: runID,
+		"bot_id":                     botID,
+		"provider":                   provider,
+		"repo_url":                   repoURL,
+	}
+	if carried := store.DropServerMintedVars(vars); len(carried) > 0 {
+		vm := make(map[string]any, len(carried))
+		for k, v := range carried {
+			vm[k] = v
+		}
+		payload[trigger.PayloadVars] = vm
+	}
+	return payload
+}
 
 // emitForgeTriggerEvent publishes a SourceForge trigger.Event onto the trigger
 // bus after an inbound forge webhook has launched a run. This puts git-forge
@@ -27,19 +54,7 @@ func (s *Server) emitForgeTriggerEvent(ctx context.Context, cfg webhooks.Config,
 	if bus == nil {
 		return
 	}
-	payload := map[string]any{
-		trigger.PayloadLaunchedRunID: runID,
-		"bot_id":                     botID,
-		"provider":                   string(cfg.Provider),
-		"repo_url":                   repoURL,
-	}
-	if len(vars) > 0 {
-		vm := make(map[string]any, len(vars))
-		for k, v := range vars {
-			vm[k] = v
-		}
-		payload[trigger.PayloadVars] = vm
-	}
+	payload := forgeTriggerPayload(runID, botID, string(cfg.Provider), repoURL, vars)
 	ev := trigger.Event{
 		ID:       "forge:" + string(cfg.Provider) + ":" + cfg.TenantID + ":" + meta.SubjectID + ":" + runID,
 		Source:   trigger.SourceForge,

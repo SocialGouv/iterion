@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -110,6 +111,20 @@ var runCmd = &cobra.Command{
 				return err
 			}
 			opts.Vars = vars
+		}
+		// The server-minted secrets a spawning iterion handed over through
+		// the environment instead of this process's command line (the
+		// detached runner, store.ServerMintedSecretEnv). Taken once, here:
+		// the call removes them from the environment, so no tool process the
+		// run spawns inherits the grant. The environment wins over a flag of
+		// the same name — the server minted the value, the flag cannot.
+		if minted := store.TakeServerMintedSecretVarsFromEnv(); len(minted) > 0 {
+			if opts.Vars == nil {
+				opts.Vars = make(map[string]string, len(minted))
+			}
+			for k, v := range minted {
+				opts.Vars[k] = v
+			}
 		}
 		return cli.RunRun(cmd.Context(), opts, newPrinter())
 	},
