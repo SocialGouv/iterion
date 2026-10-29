@@ -126,6 +126,12 @@ type Store interface {
 	// WithSchedule excludes other replicas through overlap evaluation and launch.
 	// Its context fences the final run persistence against an expired owner.
 	WithSchedule(context.Context, string, func(context.Context)) (bool, error)
+	// ListIntentSchedules returns the ids of the schedules holding at least one
+	// due, unfinished intent, OLDEST-WORK first (a schedule ranks by its oldest
+	// due intent's not_before, ties break on the id), capped by limit (0 = no
+	// cap). The seniority order is the starvation fence: a lexical cap would
+	// let a durably held prefix re-occupy the whole selection at every tick
+	// and never attempt a schedule beyond it.
 	ListIntentSchedules(context.Context, time.Time, int) ([]string, error)
 	ClaimScheduleIntents(context.Context, string, time.Time, int) ([]LaunchIntent, error)
 	// PutIntent is idempotent per nominal slot and must precede ClaimTick.

@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 // The renewable lease covers the slow guard/compile/resolve path. The lease
@@ -84,35 +85,67 @@ func (s *MemoryStore) WithSchedule(ctx context.Context, id string, fn func(conte
 	return true, nil
 }
 
+// ListIntentSchedules ranks candidate schedules by the age of their OLDEST
+// due intent, tie-broken on the id. A lexical first-N selection lets a durably
+// held prefix re-occupy the whole selection at every tick, so a schedule
+// beyond the cap is never attempted; ranking by the oldest due not_before
+// rotates the cap toward the work nobody has retried recently (a fresh
+// intent's zero not_before is the oldest there is).
 func (s *MemoryStore) ListIntentSchedules(_ context.Context, now time.Time, limit int) ([]string, error) {
 	s.intentMu.Lock()
 	defer s.intentMu.Unlock()
-	seen := map[string]bool{}
+	oldest := map[string]time.Time{}
 	for _, r := range s.intents {
-		if !r.Done && !r.NotBefore.After(now) {
-			seen[r.Schedule.ID] = true
+		if r.Done || r.NotBefore.After(now) {
+			continue
+		}
+		cur, ok := oldest[r.Schedule.ID]
+		if !ok || r.NotBefore.Before(cur) {
+			oldest[r.Schedule.ID] = r.NotBefore
 		}
 	}
-	ids := make([]string, 0, len(seen))
-	for id := range seen {
+	ids := make([]string, 0, len(oldest))
+	for id := range oldest {
 		ids = append(ids, id)
 	}
-	sort.Strings(ids)
+	sort.Slice(ids, func(i, j int) bool {
+		a, b := oldest[ids[i]], oldest[ids[j]]
+		if !a.Equal(b) {
+			return a.Before(b)
+		}
+		return ids[i] < ids[j]
+	})
 	if limit > 0 && len(ids) > limit {
 		ids = ids[:limit]
 	}
 	return ids, nil
 }
 
+// The Mongo twin of the memory selection above: same seniority ranking, pushed
+// into an aggregation so the LIMIT lands on the oldest-work-first order rather
+// than on the lexical one.
 func (s *MongoStore) ListIntentSchedules(ctx context.Context, now time.Time, limit int) ([]string, error) {
-	var ids []string
-	err := s.intentColl().Distinct(ctx, "schedule._id", bson.M{"done": false, "not_before": bson.M{"$lte": now}}).Decode(&ids)
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{"done": false, "not_before": bson.M{"$lte": now}}}},
+		{{Key: "$group", Value: bson.M{"_id": "$schedule._id", "oldest": bson.M{"$min": "$not_before"}}}},
+		{{Key: "$sort", Value: bson.D{{Key: "oldest", Value: 1}, {Key: "_id", Value: 1}}}},
+	}
+	if limit > 0 {
+		pipeline = append(pipeline, bson.D{{Key: "$limit", Value: limit}})
+	}
+	cur, err := s.intentColl().Aggregate(ctx, pipeline)
 	if err != nil {
 		return nil, err
 	}
-	sort.Strings(ids)
-	if limit > 0 && len(ids) > limit {
-		ids = ids[:limit]
+	var groups []struct {
+		ID string `bson:"_id"`
+	}
+	if err := cur.All(ctx, &groups); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(groups))
+	for _, g := range groups {
+		ids = append(ids, g.ID)
 	}
 	return ids, nil
 }
