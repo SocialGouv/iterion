@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -21,9 +22,30 @@ func (s *Server) registerBotBindingRoutes() {
 }
 
 type botBindingReq struct {
-	SecretID              *string  `json:"secret_id,omitempty"`
-	SecretNameForWorkflow *string  `json:"secret_name_for_workflow,omitempty"`
-	AllowedHosts          []string `json:"allowed_hosts,omitempty"`
+	// Kind is optional: absent means the secret kind, which is what every
+	// client sent before kinds existed (ADR-147 D2).
+	Kind                  *string                `json:"kind,omitempty"`
+	SecretID              *string                `json:"secret_id,omitempty"`
+	SecretNameForWorkflow *string                `json:"secret_name_for_workflow,omitempty"`
+	AllowedHosts          []string               `json:"allowed_hosts,omitempty"`
+	Context               *secrets.ContextSource `json:"context,omitempty"`
+}
+
+// BindingContextNotMaterialisedCode is the stable code a client reads when it
+// creates a context binding before the materialisation slice lands: the only
+// part of a 501 body that survives redaction.
+const BindingContextNotMaterialisedCode = "context_binding_not_materialised"
+
+// bindingStoreError maps what the store refuses onto what the caller is owed:
+// a name already bound on that bot is a conflict, not a server fault. Both
+// store twins return the same typed error, so this reads the same locally and
+// in the cloud.
+func bindingStoreError(w http.ResponseWriter, err error) {
+	if errors.Is(err, secrets.ErrBindingNameConflict) {
+		httpError(w, http.StatusConflict, "a binding for this workflow name already exists on this bot")
+		return
+	}
+	httpError(w, http.StatusInternalServerError, "%s", err.Error())
 }
 
 // validateBindingSecret confirms the referenced generic secret is bindable
@@ -39,6 +61,22 @@ func (s *Server) validateBindingSecret(r *http.Request, teamID, secretID string)
 		return false
 	}
 	return sec.ScopeTeamID == teamID && sec.ScopeUserID == ""
+}
+
+// bindingCredentialsAreBindable checks EVERY generic secret a binding
+// dereferences against the one tenancy predicate bindings have always used:
+// the secret a `secret` kind exposes, and the read credential a `context`
+// kind pins. A kind that skipped it would reopen the door
+// bindableGenericSecretForBotBinding exists to close — a shared automation
+// policy dereferencing somebody's personal credential.
+func (s *Server) bindingCredentialsAreBindable(r *http.Request, teamID string, b secrets.BotSecretBinding) (string, bool) {
+	if b.SecretID != "" && !s.validateBindingSecret(r, teamID, b.SecretID) {
+		return "secret_id", false
+	}
+	if b.Context != nil && b.Context.SecretID != "" && !s.validateBindingSecret(r, teamID, b.Context.SecretID) {
+		return "context.secret_id", false
+	}
+	return "", true
 }
 
 func (s *Server) bindingForTenantBot(w http.ResponseWriter, r *http.Request, teamID, botID, bindingID string) (secrets.BotSecretBinding, bool) {
@@ -81,34 +119,53 @@ func (s *Server) handleCreateBotBinding(w http.ResponseWriter, r *http.Request) 
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.SecretID == nil || *req.SecretID == "" || req.SecretNameForWorkflow == nil || *req.SecretNameForWorkflow == "" {
-		httpError(w, http.StatusBadRequest, "secret_id and secret_name_for_workflow required")
-		return
-	}
-	if !s.validateBindingSecret(r, teamID, *req.SecretID) {
-		httpError(w, http.StatusBadRequest, "secret_id is not a team-scoped secret in this org")
-		return
-	}
 	now := time.Now().UTC()
 	b := secrets.BotSecretBinding{
-		ID:                    uuid.NewString(),
-		TenantID:              teamID,
-		BotID:                 botID,
-		SecretID:              *req.SecretID,
-		SecretNameForWorkflow: *req.SecretNameForWorkflow,
-		AllowedHosts:          req.AllowedHosts,
-		CreatedBy:             id.UserID,
-		CreatedAt:             now,
-		UpdatedAt:             now,
+		ID:           uuid.NewString(),
+		TenantID:     teamID,
+		BotID:        botID,
+		AllowedHosts: req.AllowedHosts,
+		Context:      req.Context,
+		CreatedBy:    id.UserID,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if req.Kind != nil {
+		b.Kind = *req.Kind
+	}
+	if req.SecretID != nil {
+		b.SecretID = *req.SecretID
+	}
+	if req.SecretNameForWorkflow != nil {
+		b.SecretNameForWorkflow = *req.SecretNameForWorkflow
+	}
+	if err := b.Validate(); err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+	if field, ok := s.bindingCredentialsAreBindable(r, teamID, b); !ok {
+		httpError(w, http.StatusBadRequest, "%s is not a team-scoped secret in this org", field)
+		return
+	}
+	// The context kind is stored and served, and nothing materialises it into
+	// a run yet. Refusing it by name is the honest half of that state: a
+	// binding accepted here would be an operator-visible no-op, which is the
+	// very defect the kind exists to fix (#1908, ADR-147). The reason travels
+	// as an error_code, the only field a 5xx body keeps (httpx.WriteErrorJSON
+	// redacts the message), so a client can say what is missing.
+	if b.EffectiveKind() == secrets.BindingKindContext {
+		s.httpErrorCode(w, r, http.StatusNotImplemented, BindingContextNotMaterialisedCode,
+			"a context binding is not materialised into runs yet — it arrives with the materialisation slice of #1908")
+		return
 	}
 	// The binding must land in the team it is created FOR — a binding
 	// stamped with the caller's active tenant is invisible to that team's
 	// runs, so the bot silently runs without the credential (#997).
 	if err := s.botBindings.Create(teamPathTenantCtx(r), b); err != nil {
-		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		bindingStoreError(w, err)
 		return
 	}
-	s.auditTenant(r, teamID, "binding.created", "binding", b.ID, map[string]any{"bot_id": botID, "secret_name": b.SecretNameForWorkflow, "allowed_hosts": len(b.AllowedHosts)})
+	s.auditTenant(r, teamID, "binding.created", "binding", b.ID, map[string]any{"bot_id": botID, "kind": b.EffectiveKind(), "secret_name": b.SecretNameForWorkflow, "allowed_hosts": len(b.AllowedHosts)})
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, b)
 }
@@ -141,12 +198,26 @@ func (s *Server) handleUpdateBotBinding(w http.ResponseWriter, r *http.Request) 
 	if req.AllowedHosts != nil {
 		b.AllowedHosts = req.AllowedHosts
 	}
-	b.UpdatedAt = time.Now().UTC()
-	if err := s.botBindings.Update(teamPathTenantCtx(r), b); err != nil {
-		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+	if req.Context != nil {
+		b.Context = req.Context
+		if b.Context.SecretID != "" && !s.validateBindingSecret(r, teamID, b.Context.SecretID) {
+			httpError(w, http.StatusBadRequest, "context.secret_id is not a team-scoped secret in this org")
+			return
+		}
+	}
+	// A patch cannot turn a binding into a shape its kind forbids: the stored
+	// record is what the resolver reads, so it is validated after the merge,
+	// not field by field.
+	if err := b.Validate(); err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
-	s.auditTenant(r, teamID, "binding.updated", "binding", b.ID, map[string]any{"bot_id": botID, "secret_name": b.SecretNameForWorkflow})
+	b.UpdatedAt = time.Now().UTC()
+	if err := s.botBindings.Update(teamPathTenantCtx(r), b); err != nil {
+		bindingStoreError(w, err)
+		return
+	}
+	s.auditTenant(r, teamID, "binding.updated", "binding", b.ID, map[string]any{"bot_id": botID, "kind": b.EffectiveKind(), "secret_name": b.SecretNameForWorkflow})
 	writeJSON(w, b)
 }
 

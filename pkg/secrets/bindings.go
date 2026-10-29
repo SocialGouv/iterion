@@ -18,17 +18,64 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
+// Binding kinds say what a binding makes resolvable for its bot. The
+// discriminator is absent on every binding written before kinds existed, so
+// an empty Kind reads as BindingKindSecret — see EffectiveKind and ADR-147.
+const (
+	BindingKindSecret  = "secret"
+	BindingKindContext = "context"
+)
+
+// ContextSource is the `context` kind's payload: reference material an
+// OPERATOR controls, materialised into the bot's runs without republishing
+// the bundle. It is pinned on purpose, the way pluginsource.PluginSource is:
+// a moving ref makes the material change under the operator's feet, which is
+// the silent-drift failure that record exists to prevent (ADR-147 D3).
+type ContextSource struct {
+	// GitURL is the clone URL holding the material (https or ssh, per the
+	// credential kind).
+	GitURL string `bson:"git_url" json:"git_url"`
+	// Ref is what to resolve. PIN A TAG OR SHA: a branch makes every launch
+	// a network round-trip and the content mutable behind the operator.
+	Ref string `bson:"ref" json:"ref"`
+	// Path is the file inside the source, relative to its root.
+	Path string `bson:"path" json:"path"`
+	// SecretID references the GenericSecret holding the READ credential (PAT
+	// or deploy key) — empty for a public repository. It is not the material:
+	// a context binding exposes no secret to the workflow, which is why the
+	// record's own SecretID stays empty for this kind.
+	SecretID string `bson:"secret_id,omitempty" json:"secret_id,omitempty"`
+}
+
 // BotSecretBinding is a policy wrapper over an existing generic secret:
 // it makes a stored org/user secret resolvable for a specific bot under
 // the name the bot's workflow declares in its `secrets:` block. It does
 // NOT store secret material — only a reference (SecretID) plus optional
 // tightening (AllowedHosts narrows the egress policy).
 type BotSecretBinding struct {
-	ID                    string `bson:"_id" json:"id"`
-	TenantID              string `bson:"tenant_id" json:"tenant_id"`
-	BotID                 string `bson:"bot_id" json:"bot_id"`
-	SecretID              string `bson:"secret_id" json:"secret_id"` // -> GenericSecret._id
+	ID       string `bson:"_id" json:"id"`
+	TenantID string `bson:"tenant_id" json:"tenant_id"`
+	BotID    string `bson:"bot_id" json:"bot_id"`
+
+	// Kind discriminates the payload below. Absent on every binding stored
+	// before kinds existed, and absent from a client that does not send it,
+	// so it reads as BindingKindSecret — read it through EffectiveKind, never
+	// raw.
+	Kind string `bson:"kind,omitempty" json:"kind,omitempty"`
+
+	SecretID string `bson:"secret_id" json:"secret_id"` // -> GenericSecret._id (secret kind only)
+	// SecretNameForWorkflow is the name the bot's workflow declares, and the
+	// name this binding resolves under: a `secrets:` name for the secret
+	// kind, an `attachments:` name for the context kind (ADR-147 D6). It is
+	// the third key of the unique index, so one name on one bot carries one
+	// meaning whatever the kind — see bindingUniqueKey.
 	SecretNameForWorkflow string `bson:"secret_name_for_workflow" json:"secret_name_for_workflow"`
+
+	// Context is the `context` kind's payload, nil for every other kind.
+	// New kinds take a payload of their own rather than more flat fields
+	// conditional on Kind: the flat fields above are what the secret kind
+	// was stored as before kinds existed, not a pattern to repeat.
+	Context *ContextSource `bson:"context,omitempty" json:"context,omitempty"`
 
 	// AllowedHosts, when non-empty, intersects (never broadens) the
 	// workflow secret's declared egress hosts. This is an ENFORCED egress
@@ -57,7 +104,67 @@ type BotSecretBindingStore interface {
 var (
 	ErrBindingNotFound      = errors.New("secrets: bot secret binding not found")
 	ErrBindingTenantMissing = errors.New("secrets: bot secret binding store called without tenant context")
+	// ErrBindingNameConflict is what both stores return when a second
+	// binding claims a name already bound on that bot. The Mongo store has
+	// enforced it by unique index since the collection existed; the memory
+	// store used to accept the duplicate, which made every in-memory test of
+	// a conflict pass while production answered a driver error.
+	ErrBindingNameConflict = errors.New("secrets: a binding for this workflow name already exists on this bot")
+	// ErrBindingKindUnknown names a kind the server does not implement.
+	ErrBindingKindUnknown = errors.New("secrets: unknown bot binding kind")
 )
+
+// EffectiveKind is the binding's kind, reading an absent discriminator as the
+// only kind that existed before kinds did.
+func (b BotSecretBinding) EffectiveKind() string {
+	if b.Kind == "" {
+		return BindingKindSecret
+	}
+	return b.Kind
+}
+
+// DeclaredName is the workflow-declared name the binding resolves under,
+// whatever its kind.
+func (b BotSecretBinding) DeclaredName() string { return b.SecretNameForWorkflow }
+
+// bindingUniqueKey is the triple the Mongo unique index `tenant_bot_name_unique`
+// enforces (tenant_id, bot_id, secret_name_for_workflow). It is written once,
+// here, because the memory store has to refuse exactly what the index refuses
+// — two keys drifting apart is how a fixture becomes gentler than production.
+func bindingUniqueKey(b BotSecretBinding) [3]string {
+	return [3]string{b.TenantID, b.BotID, b.DeclaredName()}
+}
+
+// Validate refuses a binding whose payload contradicts its kind. It is the
+// one place that knows what each kind requires, so a route, a store or a
+// future importer cannot each decide differently.
+func (b BotSecretBinding) Validate() error {
+	if strings.TrimSpace(b.DeclaredName()) == "" {
+		return fmt.Errorf("secrets: bot binding needs the workflow name it resolves under")
+	}
+	switch kind := b.EffectiveKind(); kind {
+	case BindingKindSecret:
+		if strings.TrimSpace(b.SecretID) == "" {
+			return fmt.Errorf("secrets: a %s binding needs the secret it exposes", BindingKindSecret)
+		}
+		if b.Context != nil {
+			return fmt.Errorf("secrets: a %s binding carries no context payload", BindingKindSecret)
+		}
+	case BindingKindContext:
+		if b.Context == nil {
+			return fmt.Errorf("secrets: a %s binding needs its pinned source", BindingKindContext)
+		}
+		if strings.TrimSpace(b.SecretID) != "" {
+			return fmt.Errorf("secrets: a %s binding exposes no secret to the workflow — put the read credential in context.secret_id", BindingKindContext)
+		}
+		if strings.TrimSpace(b.Context.GitURL) == "" || strings.TrimSpace(b.Context.Ref) == "" || strings.TrimSpace(b.Context.Path) == "" {
+			return fmt.Errorf("secrets: a %s binding needs context.git_url, context.ref and context.path", BindingKindContext)
+		}
+	default:
+		return fmt.Errorf("%w %q (known: %s, %s)", ErrBindingKindUnknown, kind, BindingKindSecret, BindingKindContext)
+	}
+	return nil
+}
 
 // IntersectHosts returns the stricter of two egress host policies. An
 // empty list means "no restriction"; the result never broadens either
@@ -294,7 +401,23 @@ func (m *MemoryBotSecretBindingStore) Create(ctx context.Context, b BotSecretBin
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	b.TenantID = stampTenant(ctx, b.TenantID)
+	if err := m.refuseNameConflict(b); err != nil {
+		return err
+	}
 	m.bindings[b.ID] = b
+	return nil
+}
+
+// refuseNameConflict is the memory twin of the `tenant_bot_name_unique`
+// index: the same triple, refused for the same reason, so a conflict a test
+// exercises here is the conflict production answers.
+func (m *MemoryBotSecretBindingStore) refuseNameConflict(candidate BotSecretBinding) error {
+	key := bindingUniqueKey(candidate)
+	for id, existing := range m.bindings {
+		if id != candidate.ID && bindingUniqueKey(existing) == key {
+			return ErrBindingNameConflict
+		}
+	}
 	return nil
 }
 
@@ -316,6 +439,9 @@ func (m *MemoryBotSecretBindingStore) Update(ctx context.Context, b BotSecretBin
 		return ErrBindingNotFound
 	}
 	b.TenantID = stampTenant(ctx, cur.TenantID)
+	if err := m.refuseNameConflict(b); err != nil {
+		return err
+	}
 	m.bindings[b.ID] = b
 	return nil
 }
@@ -371,6 +497,8 @@ func NewMongoBotSecretBindingStore(db *mongo.Database) *MongoBotSecretBindingSto
 
 func (s *MongoBotSecretBindingStore) EnsureSchema(ctx context.Context) error {
 	_, err := s.coll.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		// Keys in lock-step with bindingUniqueKey, which is what the memory
+		// twin refuses on: one workflow name per bot, whatever the kind.
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "bot_id", Value: 1}, {Key: "secret_name_for_workflow", Value: 1}}, Options: options.Index().SetUnique(true).SetName("tenant_bot_name_unique")},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "secret_id", Value: 1}}, Options: options.Index().SetName("tenant_secret")},
 	})
@@ -400,6 +528,11 @@ func (s *MongoBotSecretBindingStore) Create(ctx context.Context, b BotSecretBind
 	}
 	b.TenantID = tenantID
 	if _, err := s.coll.InsertOne(ctx, b); err != nil {
+		// The index is the enforcement; without this translation the caller
+		// reads a driver error and answers 500 to what is a 409.
+		if mongoutil.IsDuplicateKey(err) {
+			return ErrBindingNameConflict
+		}
 		return fmt.Errorf("secrets: insert bot binding: %w", err)
 	}
 	return nil
@@ -419,7 +552,7 @@ func (s *MongoBotSecretBindingStore) Update(ctx context.Context, b BotSecretBind
 		return ErrBindingTenantMissing
 	}
 	b.TenantID = tenantID
-	return mongoutil.ReplaceOneChecked(ctx, s.coll, bson.M{"_id": b.ID, "tenant_id": tenantID}, b, nil, ErrBindingNotFound, "secrets: update bot binding")
+	return mongoutil.ReplaceOneChecked(ctx, s.coll, bson.M{"_id": b.ID, "tenant_id": tenantID}, b, ErrBindingNameConflict, ErrBindingNotFound, "secrets: update bot binding")
 }
 
 func (s *MongoBotSecretBindingStore) Delete(ctx context.Context, id string) error {
