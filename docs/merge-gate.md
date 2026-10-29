@@ -1015,6 +1015,17 @@ that from doing harm of its own:
     attempted — it would replay the run's inputs, stale head included, and
     audit the same superseded revision again at full price.
 
+    The record carries its own **identity** (random, minted when the refusal
+    is recorded), and the reconciler retires the record it consumed by that
+    identity: a refusal recorded *after* it — a fresher episode, inside the
+    post→clear window — is not that pass's to retire, and the identity is
+    what tells the two apart when they agree on everything else (#2174).
+    During a **rolling upgrade** the identity may be dropped: a replica
+    older than the field rewrites the whole refusal record on its first
+    read-modify-write of the grant. The clear then falls back to matching
+    the record's clock, pin and check — the rule the identity replaced — so
+    a refusal is still retired exactly once, never zero times.
+
 A paused run is not reconciled: it is expected to resume and post its own
 verdict.
 

@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -149,6 +151,70 @@ type gateRefusal struct {
 	Context    string    `json:"context"`
 	Reason     string    `json:"reason"`
 	At         time.Time `json:"at"`
+	// ID identifies this RECORD — minted at record time (newGateRefusal),
+	// never derived from the clock. It is what tells two refusals apart when
+	// they agree on every other field, so clearGateRefusal's compare-and-swap
+	// retires the one it consumed and no other (#2174). The clock cannot
+	// carry that identity: a refusal's At is the untruncated gateNow(), which
+	// makes the collision unreachable on ONE replica serializing its writes,
+	// not impossible — two replicas do not share a clock.
+	//
+	// Empty is legal and means "no identity": a record a build older than
+	// this field wrote, one such a build re-serialized (mergeGrantJSON
+	// rewrites the whole refusal key, nested fields included, so a mixed
+	// -version rollout erases it), or the effectively impossible crypto/rand
+	// failure. The clear then falls back to the pre-id triple — identifies.
+	ID string `json:"id,omitempty"`
+}
+
+// newGateRefusal records one refused verdict. It is the ONE place that stamps
+// a refusal's clock AND its identity, so a third refusing site cannot ship
+// without either (TestEveryGateRefusalIsBuiltByItsConstructor pins it).
+func (s *Server) newGateRefusal(auditedSHA, headSHA, check, reason string) *gateRefusal {
+	return &gateRefusal{
+		AuditedSHA: auditedSHA,
+		HeadSHA:    headSHA,
+		Context:    check,
+		Reason:     reason,
+		At:         s.gateNow(),
+		ID:         newGateRefusalID(),
+	}
+}
+
+// newGateRefusalID mints a refusal's identity: 16 random bytes, hex. Random,
+// not clock-derived — the clock is precisely what proved too coarse to tell
+// two records apart (#2174). "" on the (effectively impossible) crypto/rand
+// failure: that is not a silent degrade, an identity-less refusal is matched
+// by the pre-id triple, the rule this identity replaces (identifies).
+func newGateRefusalID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b)
+}
+
+// identifies reports whether r is the same refusal RECORD as other — the
+// compare-and-swap clearGateRefusal performs before it retires one.
+//
+// The id decides when BOTH sides carry one: it is unique per record, so two
+// refusals that agree on their clock, their pin and their check are still
+// told apart (#2174). When either side carries none, the pre-id triple
+// decides — a record written (or re-serialized) by a build that does not know
+// the id must still be clearable, because a refusal nothing retires is a
+// diagnosis a LATER episode inherits, the very defect the clear exists to
+// prevent. The fallback is therefore exactly the rule the id replaces, never
+// a weaker one.
+func (r *gateRefusal) identifies(other *gateRefusal) bool {
+	if r == nil || other == nil {
+		return false
+	}
+	if r.ID != "" && other.ID != "" {
+		return r.ID == other.ID
+	}
+	return r.At.Equal(other.At) &&
+		strings.EqualFold(r.AuditedSHA, other.AuditedSHA) &&
+		strings.EqualFold(r.Context, other.Context)
 }
 
 // grantTenantMismatchReason is the typed refusal a publish grant earns when
@@ -1050,16 +1116,16 @@ func (s *Server) recordGateRefusal(token string, gate gateOutcome) {
 // compare-and-swap on the CONSUMED refusal's identity (like replaceDeferral):
 // a refusal recorded after it — a fresher episode, inside the post→clear
 // window — is not this pass's to retire, or "honored at most once" degrades
-// into "possibly zero". Best-effort: a failed clear costs a wrong diagnosis
-// on one later reconcile, never a wrong write.
+// into "possibly zero". The identity it swaps on is the record's own id
+// (identifies), so two refusals agreeing on clock, pin and check are still
+// told apart. Best-effort: a failed clear costs a wrong diagnosis on one
+// later reconcile, never a wrong write.
 func (s *Server) clearGateRefusal(token string, consumed *gateRefusal) {
 	if s.forgePublishTokens == nil || consumed == nil {
 		return
 	}
 	if _, err := s.forgePublishTokens.update(token, func(g *ForgePublishGrant) {
-		if g.Refusal != nil && g.Refusal.At.Equal(consumed.At) &&
-			strings.EqualFold(g.Refusal.AuditedSHA, consumed.AuditedSHA) &&
-			strings.EqualFold(g.Refusal.Context, consumed.Context) {
+		if g.Refusal.identifies(consumed) {
 			g.Refusal = nil
 		}
 	}); err != nil && s.logger != nil {
@@ -1188,22 +1254,16 @@ func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo
 		// reader diffing two revisions, or hunting a push that never happened.
 		out.errText = "audited_sha " + strconv.Quote(audited) + " is not a commit id (7-40 hex) — " +
 			"refusing to certify on a pin that cannot be read"
-		out.refusal = &gateRefusal{
-			AuditedSHA: audited, HeadSHA: head, Context: out.context,
-			Reason: "its audited_sha " + strconv.Quote(boundedRunes(audited, 24)) + " is not a commit id",
-			At:     s.gateNow(),
-		}
+		out.refusal = s.newGateRefusal(audited, head, out.context,
+			"its audited_sha "+strconv.Quote(boundedRunes(audited, 24))+" is not a commit id")
 		return out
 	case !equalSHA(head, audited):
 		// Full SHAs on both sides: this message's whole job is to tell two
 		// revisions apart, and abbreviating both is how it names one twice.
 		out.errText = "the head moved since the audit (audited " + audited +
 			", head is now " + head + ") — no status on a revision nobody audited"
-		out.refusal = &gateRefusal{
-			AuditedSHA: audited, HeadSHA: head, Context: out.context,
-			Reason: "it audited " + shortSHA(audited) + " but the head moved to " + shortSHA(head),
-			At:     s.gateNow(),
-		}
+		out.refusal = s.newGateRefusal(audited, head, out.context,
+			"it audited "+shortSHA(audited)+" but the head moved to "+shortSHA(head))
 		return out
 	}
 	out.sha = head

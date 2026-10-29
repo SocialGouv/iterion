@@ -3,8 +3,13 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -379,5 +384,217 @@ func TestGateReconcile_RefusedPinNamesTheRefusalNotADeath(t *testing.T) {
 	}
 	if !strings.HasPrefix(gc.last.Description, "review refused to certify") {
 		t.Errorf("description = %q — says \"died\" of a review that was REFUSED; the operator re-runs a bot whose pin template is broken and gets the same refusal", gc.last.Description)
+	}
+}
+
+// #2174 — the collision the clock cannot close: two refusals that agree on
+// At, AuditedSHA and Context. One replica cannot produce it (a refusal's At
+// is the untruncated gateNow() and the token registry serializes its
+// writes), so this is a FORMAL closure, provable only under a frozen clock —
+// and two replicas do not share a clock. The identity is what makes the swap
+// EXACT instead of merely probable.
+//
+// Mutation that reddens this test: dropping the id from the compare-and-swap
+// (identifies back to the pre-id triple) — the fresher refusal is swallowed.
+func TestClearGateRefusal_TellsTwoRefusalsApartUnderAFrozenClock(t *testing.T) {
+	s, _ := newForgePublishTestServer(t)
+	// Frozen at ONE instant, derived from the real clock rather than written
+	// as a date: the property under test is that two records made under the
+	// same instant differ, and a literal date drifts from the registry's own
+	// (real) clock as the tree ages. Truncated to the millisecond on purpose
+	// — that is the granularity a gate DECISION keeps, and it is still too
+	// coarse to tell two refusals apart.
+	frozen := time.Now().UTC().Truncate(time.Millisecond)
+	s.gateClock = func() time.Time { return frozen }
+	registerPublishToken(t, s, "tok-gate", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+
+	// Built by the production constructor: these are the records production
+	// writes, not a hand-made pair the real path could never emit.
+	r1 := s.newGateRefusal("deadbeef", "cafebabe", "iterion/review", "r1")
+	r2 := s.newGateRefusal("deadbeef", "cafebabe", "iterion/review", "r2")
+	if !r1.At.Equal(r2.At) || !strings.EqualFold(r1.AuditedSHA, r2.AuditedSHA) || !strings.EqualFold(r1.Context, r2.Context) {
+		t.Fatalf("the fixture must COLLIDE on the pre-id triple, or it proves nothing about the identity: %+v vs %+v", r1, r2)
+	}
+	if r1.ID == "" || r2.ID == "" || r1.ID == r2.ID {
+		t.Fatalf("each record carries its OWN identity: %q vs %q", r1.ID, r2.ID)
+	}
+	// The grant carries R2 — recorded mid-pass, after this pass consumed R1.
+	if _, err := s.forgePublishTokens.update("tok-gate", func(g *ForgePublishGrant) { g.Refusal = r2 }); err != nil {
+		t.Fatal(err)
+	}
+
+	s.clearGateRefusal("tok-gate", r1)
+	grant, ok := s.forgePublishTokens.lookup("tok-gate")
+	if !ok || grant.Refusal == nil || grant.Refusal.ID != r2.ID {
+		t.Fatalf("clearing the CONSUMED refusal swallowed the fresher one — its episode is left with no diagnosis to honor: %+v", grant.Refusal)
+	}
+	s.clearGateRefusal("tok-gate", r2)
+	if grant, ok := s.forgePublishTokens.lookup("tok-gate"); ok && grant.Refusal != nil {
+		t.Fatalf("the refusal that WAS consumed survived its clear: %+v", grant.Refusal)
+	}
+}
+
+// The mixed-version rollout, which is the one state where two clocks can
+// collide in the first place: mergeGrantJSON — the Valkey store's
+// read-modify-write — rewrites the WHOLE refusal key from the writing
+// build's struct, nested fields included, so a replica that predates the id
+// ERASES it from the stored record while the pass that already read the
+// grant still holds a copy carrying one. A compare-and-swap on the id alone
+// would never clear that record again, and a refusal nothing retires is
+// exactly the diagnosis a LATER episode inherits (the defect the clear
+// exists to prevent). The premise is asserted through the production merge,
+// not assumed.
+//
+// Mutations that redden this test: comparing the ids whenever EITHER side
+// carries one (|| instead of &&); dropping the triple fallback outright.
+func TestClearGateRefusal_FallsBackToTheTripleWhenAnOlderBuildErasedTheId(t *testing.T) {
+	s, _ := newForgePublishTestServer(t)
+	frozen := time.Now().UTC().Truncate(time.Millisecond)
+	s.gateClock = func() time.Time { return frozen }
+	consumed := s.newGateRefusal("deadbeef", "cafebabe", "iterion/review", "it audited deadbeef but the head moved to cafebabe")
+	if consumed.ID == "" {
+		t.Fatal("precondition: the record this pass consumed carries an identity")
+	}
+
+	// The blob this build wrote: the identity is in it.
+	raw, err := json.Marshal(ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r", Refusal: consumed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"id":"`+consumed.ID+`"`) {
+		t.Fatalf("precondition: the stored refusal carries its id: %s", raw)
+	}
+	// What an id-BLIND build does to it: it decodes the grant (its own
+	// gateRefusal has no id field — modelled by the zero value), then merges
+	// its view back through the production function.
+	var older ForgePublishGrant
+	if err := json.Unmarshal(raw, &older); err != nil {
+		t.Fatal(err)
+	}
+	idBlind := *older.Refusal
+	idBlind.ID = ""
+	older.Refusal = &idBlind
+	merged, err := mergeGrantJSON(raw, older)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(merged), `"id"`) {
+		t.Fatalf("mergeGrantJSON kept a NESTED key the writing build does not own — this test's premise (and the fallback it guards) has to be re-derived from the new behaviour: %s", merged)
+	}
+	var afterRoundTrip ForgePublishGrant
+	if err := json.Unmarshal(merged, &afterRoundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if afterRoundTrip.Refusal == nil || afterRoundTrip.Refusal.ID != "" {
+		t.Fatalf("the round trip must leave the record identity-less: %+v", afterRoundTrip.Refusal)
+	}
+
+	registerPublishToken(t, s, "tok-gate", afterRoundTrip)
+	s.clearGateRefusal("tok-gate", consumed)
+	if grant, ok := s.forgePublishTokens.lookup("tok-gate"); ok && grant.Refusal != nil {
+		t.Fatalf("a refusal whose id an older replica erased can no longer be cleared — a later episode of the run inherits a diagnosis it never earned: %+v", grant.Refusal)
+	}
+	// And the fallback stays as narrow as the rule it replaces: a record that
+	// disagrees on the triple is still not this pass's to retire
+	// (TestClearGateRefusal_NeverSwallowsAFresherRefusal holds that line with
+	// two identity-less records).
+}
+
+// The identity has to come from the PRODUCTION path, and not from the clock:
+// two refusals the real publish endpoint records under the SAME frozen
+// instant must still be two records.
+//
+// Mutations that redden this test: newGateRefusal minting no id; an id
+// derived from At (UnixNano, a formatted timestamp) — under the frozen clock
+// both records would then share it.
+func TestGateRefusal_ProductionMintsADistinctIdentityPerRecord(t *testing.T) {
+	gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "cafebabe"}}
+	s, _ := gateReconcileFixture(t, gatingInputs(), gc)
+	frozen := time.Now().UTC().Truncate(time.Millisecond)
+	s.gateClock = func() time.Time { return frozen }
+
+	recorded := func(step string) gateRefusal {
+		t.Helper()
+		publishRefusedGate(t, s, "deadbeef")
+		grant, ok := s.forgePublishTokens.lookup("tok-gate")
+		if !ok || grant.Refusal == nil {
+			t.Fatalf("%s: the refusal was not recorded on the grant", step)
+		}
+		return *grant.Refusal
+	}
+	first := recorded("first publish")
+	second := recorded("second publish")
+
+	if !first.At.Equal(frozen) {
+		t.Fatalf("the frozen clock did not reach the recorded refusal (At=%s) — the distinct ids below would prove nothing about the clock", first.At)
+	}
+	if first.ID == "" {
+		t.Fatal("a refusal the production path records carries NO identity — the clear is back to telling two records apart by their clock (#2174)")
+	}
+	if len(first.ID) != 32 {
+		t.Errorf("identity = %q (%d chars), want 16 random bytes in hex — a short one is a narrowed random source", first.ID, len(first.ID))
+	}
+	if second.ID == first.ID {
+		t.Fatalf("two refusals recorded under the same instant share an identity (%q) — a clock-derived id closes no collision (#2174)", first.ID)
+	}
+}
+
+// Every refusal the server records is built by newGateRefusal: the ONE place
+// that stamps a record's clock AND its identity. A literal built elsewhere
+// ships a refusal the clear can only match by the pre-id triple — the
+// collision #2174 closes — so the scan refuses a gateRefusal composite
+// literal anywhere in the package's production code but inside the
+// constructor itself. Documented blind spot: new(gateRefusal) followed by
+// field assignments (no literal to see).
+//
+// Mutation that reddens this test: building either refusal in postGateStatus
+// as a literal again.
+func TestEveryGateRefusalIsBuiltByItsConstructor(t *testing.T) {
+	fset := token.NewFileSet()
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var offenders []string
+	files, sawConstructor := 0, false
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		files++
+		for _, decl := range f.Decls {
+			owner := ""
+			if fn, ok := decl.(*ast.FuncDecl); ok {
+				if fn.Name.Name == "newGateRefusal" {
+					sawConstructor = true
+					continue // the one site allowed to build one
+				}
+				owner = fn.Name.Name
+			}
+			ast.Inspect(decl, func(n ast.Node) bool {
+				lit, ok := n.(*ast.CompositeLit)
+				if !ok {
+					return true
+				}
+				if id, ok := lit.Type.(*ast.Ident); ok && id.Name == "gateRefusal" {
+					offenders = append(offenders, name+":"+strconv.Itoa(fset.Position(lit.Pos()).Line)+" ("+owner+")")
+				}
+				return true
+			})
+		}
+	}
+	if files < 100 {
+		t.Fatalf("scanned %d files — the scan is not reading the package", files)
+	}
+	if !sawConstructor {
+		t.Fatal("newGateRefusal is gone: the scan exempts a constructor that no longer exists, so it proves nothing — re-point it at whatever stamps a refusal's identity now")
+	}
+	if len(offenders) > 0 {
+		t.Fatalf("gateRefusal built outside newGateRefusal — the record ships with no identity and its clear falls back to the clock (#2174):\n  %s", strings.Join(offenders, "\n  "))
 	}
 }
