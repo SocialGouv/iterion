@@ -14,8 +14,10 @@ import type { ChangeEvent, RefObject } from "react";
  *    accessible name — axe `label`, and a source scan that can only stay
  *    quiet by exempting the whole `hidden` utility.
  *  - `sr-only` with an `aria-label`, for an input the operator DOES reach and
- *    operate (GateFileInput, AttachmentFieldInput): it must stay focusable
- *    and announce itself, so it must NOT use this component.
+ *    operate (the drop zones of GateFileInput and AttachmentFieldInput): it
+ *    must stay focusable and announce itself, so it must NOT use this
+ *    component. `FileDropZone` owns that shape, where an enclosing <label>
+ *    is what activates the input and the zone claims no role of its own.
  *
  * One component rather than the attribute pair repeated per call site, so the
  * pair cannot drift between them.

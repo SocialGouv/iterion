@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect } from "react";
 
 import type { AttachmentField, UploadLimits } from "@/api/types";
+import { FileDropZone } from "@/components/shared/FileDropZone";
 import { Button } from "@/components/ui/Button";
-import { clickableRowProps } from "@/lib/a11y";
 import { formatBytes, validateAttachment } from "@/lib/attachmentValidation";
 
 export interface AttachmentValue {
@@ -40,9 +40,6 @@ export default function AttachmentFieldInput({
   serverLimits,
   disabled,
 }: Props) {
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const [dragging, setDragging] = useState(false);
-
   // Revoke the previous ObjectURL on unmount or when value changes.
   useEffect(() => {
     return () => {
@@ -73,46 +70,22 @@ export default function AttachmentFieldInput({
 
   return (
     <div className="space-y-1">
-      <div
-        {...clickableRowProps(() => inputRef.current?.click(), `Upload ${field.name}`, { disabled })}
-        aria-invalid={Boolean(value?.error) || undefined}
-        aria-busy={showProgress || undefined}
-        aria-disabled={disabled || undefined}
-        data-disabled={disabled || undefined}
-        className={[
-          "flex flex-col items-center justify-center gap-1.5 rounded-md border-dashed border p-3 text-center transition-colors cursor-pointer data-[disabled]:opacity-60",
-          dragging ? "border-accent bg-accent-soft" : "border-border-default",
-          value?.error ? "border-danger ring-1 ring-danger" : "",
-          disabled ? "pointer-events-none" : "hover:border-accent",
-        ]
-          .filter(Boolean)
-          .join(" ")}
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragging(true);
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDragging(false);
-          const file = e.dataTransfer.files[0];
-          if (file) acceptFile(file);
-        }}
+      {/* The zone is no control: the label inside FileDropZone owns the
+          input, which is the one named thing that opens the picker. */}
+      <FileDropZone
+        name={`Upload ${field.name}`}
+        accept={accept}
+        onPick={acceptFile}
+        disabled={disabled}
+        busy={showProgress}
+        invalid={Boolean(value?.error)}
       >
         {hasFile ? (
           <FilledPreview value={value!} field={field} />
         ) : (
           <EmptyHint isImage={isImage} description={field.description} />
         )}
-        <input
-          ref={inputRef}
-          type="file"
-          accept={accept}
-          className="sr-only"
-          aria-label={`Upload ${field.name}`}
-          onChange={(e) => acceptFile(e.target.files?.[0] ?? null)}
-        />
-      </div>
+      </FileDropZone>
 
       {hasFile && !showProgress && (
         <div className="flex items-center justify-between text-micro text-fg-muted">

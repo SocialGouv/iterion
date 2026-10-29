@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 
 import { uploadAttachment } from "@/api/runs";
 import type { AttachmentField } from "@/api/types";
+import { FileDropZone } from "@/components/shared/FileDropZone";
 import { Button } from "@/components/ui/Button";
-import { clickableRowProps } from "@/lib/a11y";
 import { errorMessage } from "@/lib/errorHints";
 import { formatBytes, validateAttachment } from "@/lib/attachmentValidation";
 import { useServerInfoStore } from "@/store/serverInfo";
@@ -50,8 +50,6 @@ export default function GateFileInput({
   hint,
   disabled,
 }: Props) {
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const [dragging, setDragging] = useState(false);
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const limits = useServerInfoStore((s) => s.info?.limits?.upload ?? null);
@@ -111,35 +109,20 @@ export default function GateFileInput({
   };
 
   const uploading = progress !== null;
-  const busy = disabled || uploading;
 
   return (
     <div className="space-y-1">
-      <div
-        {...clickableRowProps(() => inputRef.current?.click(), `Upload ${label}`, { disabled: busy })}
-        aria-invalid={Boolean(error) || undefined}
-        aria-busy={uploading || undefined}
-        aria-disabled={disabled || undefined}
-        data-disabled={disabled || undefined}
-        className={[
-          "flex flex-col items-center justify-center gap-1.5 rounded-md border-dashed border p-3 text-center transition-colors cursor-pointer data-[disabled]:opacity-60",
-          dragging ? "border-accent bg-accent-soft" : "border-border-default",
-          error ? "border-danger ring-1 ring-danger" : "",
-          busy ? "pointer-events-none" : "hover:border-accent",
-        ]
-          .filter(Boolean)
-          .join(" ")}
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragging(true);
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDragging(false);
-          const file = e.dataTransfer.files[0];
+      {/* The zone is no control: the label inside FileDropZone owns the
+          input, which is the one named thing that opens the picker. */}
+      <FileDropZone
+        name={`Upload ${label}`}
+        accept={accept}
+        onPick={(file) => {
           if (file) void upload(file);
         }}
+        disabled={disabled}
+        busy={uploading}
+        invalid={Boolean(error)}
       >
         {value ? (
           <p className="text-xs truncate max-w-full">
@@ -154,21 +137,7 @@ export default function GateFileInput({
             {hint && <p className="text-micro text-fg-muted">{hint}</p>}
           </>
         )}
-        <input
-          ref={inputRef}
-          type="file"
-          accept={accept}
-          aria-label={`Upload ${label}`}
-          className="sr-only"
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            // Reset so re-picking the SAME file fires onChange again
-            // (the operator replacing a file they just removed).
-            e.target.value = "";
-            if (file) void upload(file);
-          }}
-        />
-      </div>
+      </FileDropZone>
 
       {value && !uploading && (
         <div className="flex items-center justify-end">
