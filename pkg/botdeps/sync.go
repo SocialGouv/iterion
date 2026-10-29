@@ -130,6 +130,15 @@ func materializeOne(ctx context.Context, workdir, dest, name string, dep botlock
 	installed, installErr := botinstall.Install(ctx, botinstall.Options{
 		Source: fetched, Name: name, Force: !private, Workdir: workdir, Dest: dest, SkipCatalog: private,
 		Origin: origin,
+		// bots.lock IS the record of management for .botz/<name>: the pin
+		// names the dependency in a committed file, and the hash check above
+		// has already proven the installed copy is not what that pin says.
+		// Sync's whole contract is to make .botz match the lock, so it owns
+		// this destination even where the installer's own origin record is
+		// missing (a workspace materialized before origins existed). The
+		// refusal this skips guards a DIFFERENT destination: an operator
+		// pointing --dest at authored bundles.
+		ReplaceUnrecorded: !private,
 	})
 	if installErr != nil {
 		return SyncResult{}, fmt.Errorf("bot dependencies: install %q: %w", name, installErr)

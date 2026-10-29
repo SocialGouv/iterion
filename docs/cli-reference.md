@@ -529,7 +529,7 @@ iterion bots templates
 iterion bots list
 iterion bots list --paths bots --paths examples --format markdown
 iterion bots list --category verify --tag security --format tree
-iterion bots install <git-url|path> [--path <bundle>] [--ref <git-ref>] [--name <id>] [--dest <dir>] [--force]
+iterion bots install <git-url|path> [--path <bundle>] [--ref <git-ref>] [--name <id>] [--dest <dir>] [--force] [--replace-unrecorded]
 iterion bots sync [--workdir <dir>]
 iterion bots update <name> [--ref <git-ref>] [--workdir <dir>] [--allow-dirty]
 iterion bots regen-catalog
@@ -552,6 +552,20 @@ The name must be free **everywhere discovery looks** (`bots/`, `examples/`, `.bo
 
 `bots list` scans `bots` and `examples` by default and emits `json`, `markdown`, a generated `skill`, or `tree` — the navigation spine (category → bot → presets). `--category <slug>` keeps bots in the named categories (`build`, `verify`, `harden`, `document`, `operate`, `steer`; the pseudo-slug `uncategorized` selects the Uncategorized group — bots with no category OR an unknown slug, exactly the bots the grouped views file there; repeatable, OR within the flag); `--tag <t>` keeps bots carrying EVERY listed tag (repeatable, AND across tags). Installs default to the git-ignored workspace `.botz/` and never run the bot — pass `--dest bots` to install into a committable location. `regen-catalog` rebuilds Nexie's generated bot catalogue from manifests and `.iterion/bot-overrides.yaml`. `create`, `install`, `sync` and `update` refresh that catalogue too, and a refresh that fails does not fail the gesture: the command prints `! catalog not refreshed:` with the cause and the `regen-catalog` retry (`--json` carries it as `catalog_error`). Install names are bot names — letters, digits and `. _ -`, starting with a letter or digit (`botlock`'s own charset) — so a pulled bundle's manifest cannot write a line of the output. A `bots sync` that aborts after materializing some dependencies leaves ONE `--json` document, `{"results": […], "error": …}`, and exits non-zero — never a second document after the first.
 
+**`--force` replaces an install, not authored work.** A `--force` install removes
+the target directory whole before copying the source over it, and `--dest bots`
+is a committable location that holds hand-written bundles — so `--force` is held
+to what the flag says it overwrites: *an existing install*. The record is the
+installer's own, an origin file it writes beside everything it installs
+(`<dest>/.origins/<name>.json`, outside the bundle so it does not alter the
+content hash). A target with no readable origin record beside it is refused,
+naming the directory and the escape hatch; `--replace-unrecorded` is that hatch
+and replaces it anyway. An origin record that cannot be READ is refused the same
+way: an unreadable ledger is not a licence to delete, since whether the target is
+authored work is then unknown. `bots sync` and `bots update` are not subject to
+it — `bots.lock` is the record of management for `.botz/<name>`, and making
+`.botz` match that pin is their whole contract.
+
 `bots sync` materializes every dependency pinned by the project-root
 `bots.lock` into `.botz/` and rejects content whose bundle hash differs from
 the lock. `bots update <name>` fetches that dependency again, computes its
@@ -565,7 +579,7 @@ changes before updating whenever the pin is meant to be shared.
 ```bash
 iterion marketplace list [--kind bot|plugin] [--query text] [--tag tag]
 iterion marketplace submit <git-url|path> [--path subdir] [--ref ref]
-iterion marketplace install <slug> [--force]
+iterion marketplace install <slug> [--force] [--replace-unrecorded]
 iterion marketplace uninstall <slug>
 ```
 

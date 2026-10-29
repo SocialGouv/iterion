@@ -10,8 +10,10 @@ package botinstall
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,6 +38,12 @@ type Options struct {
 	Workdir     string  // workspace root for catalog regen (default cwd)
 	SkipCatalog bool    // private dependency staging only; preserve pinned catalog bytes
 	Origin      *Origin // private staging: durable source identity instead of the fetched checkout
+	// ReplaceUnrecorded is the operator's explicit override of the refusal
+	// below: --force may replace a target this installer has no record of
+	// installing. The escape hatch of a load-bearing limit, greppable by
+	// this name — never set by default, and every setter says why it owns
+	// the destination.
+	ReplaceUnrecorded bool
 }
 
 // Result is the structured outcome of an install.
@@ -145,6 +153,9 @@ func Install(ctx context.Context, opts Options) (*Result, error) {
 		if !opts.Force {
 			return nil, fmt.Errorf("%s already exists — pass --force to overwrite", target)
 		}
+		if err := refuseUnrecordedReplacement(target, opts); err != nil {
+			return nil, err
+		}
 		if err := os.RemoveAll(target); err != nil {
 			return nil, fmt.Errorf("remove existing %s: %w", target, err)
 		}
@@ -190,6 +201,39 @@ func Install(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 	return res, nil
+}
+
+// refuseUnrecordedReplacement holds --force to what the flag itself says it
+// does — "overwrite an existing install". A --force install REMOVES the
+// target whole (os.RemoveAll) before copying the source over it, so pointed
+// at a bundle this installer never installed it destroys work no installer
+// owns: `--dest bots` is the committable location `bots install --help`
+// names, and that is exactly where AUTHORED bundles live (#2689 item 2). No
+// lock, no version, no diff — the directory is simply gone.
+//
+// The record is the installer's OWN: Install writes an origin beside
+// everything it installs (writeOrigin), outside the bundle so it does not
+// alter the content hash. A target with no origin record beside it is
+// therefore not one of its installs, whatever else it is. An origin that
+// cannot be READ answers the same way: an unreadable ledger is not a licence
+// to delete, since whether the target is authored work is then unknown.
+//
+// Deliberately NOT extended to Remove: an uninstall destroys the bundle the
+// operator NAMED, which is the whole act, where a --force install destroys a
+// bundle to put a different one in its place.
+func refuseUnrecordedReplacement(target string, opts Options) error {
+	if opts.ReplaceUnrecorded {
+		return nil
+	}
+	_, err := ReadOrigin(target)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("refusing --force over %s: this installer has no record of installing it (no origin record beside it), so it is authored or hand-placed work that --force would delete whole; move it aside, install under another --name, or pass --replace-unrecorded to replace it anyway", target)
+	default:
+		return fmt.Errorf("refusing --force over %s: its install record cannot be read, so whether --force would delete authored work is unknown: %w — repair or remove the record, or pass --replace-unrecorded to replace it anyway", target, err)
+	}
 }
 
 // InstallFromBotzBytes extracts a `.botz` archive streamed from r into a

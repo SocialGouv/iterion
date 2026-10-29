@@ -162,10 +162,12 @@ sandboxing applies as usual). By default bots install under <workdir>/.botz/
 		dest, _ := cmd.Flags().GetString("dest")
 		name, _ := cmd.Flags().GetString("name")
 		force, _ := cmd.Flags().GetBool("force")
+		replaceUnrecorded, _ := cmd.Flags().GetBool("replace-unrecorded")
 		workdir, _ := cmd.Flags().GetString("workdir")
 		p := newPrinter()
 		res, err := botinstall.Install(cmd.Context(), botinstall.Options{
 			Source: args[0], Ref: ref, Path: path, Dest: dest, Name: name, Force: force, Workdir: workdir,
+			ReplaceUnrecorded: replaceUnrecorded,
 		})
 		if err != nil {
 			return err
@@ -289,6 +291,7 @@ func init() {
 	botsInstallCmd.Flags().String("dest", "", "Install destination root (default: <workdir>/.botz)")
 	botsInstallCmd.Flags().String("name", "", "Install under this name instead of the source's")
 	botsInstallCmd.Flags().Bool("force", false, "Overwrite an existing install of the same name")
+	botsInstallCmd.Flags().Bool("replace-unrecorded", false, "Let --force replace a bundle this installer has no record of installing (authored or hand-placed work it would otherwise refuse to delete)")
 	botsInstallCmd.Flags().String("workdir", "", "Workspace root for catalog refresh (default: current directory)")
 	botsSyncCmd.Flags().String("workdir", "", "Workspace root containing bots.lock (default: current directory)")
 	botsUpdateCmd.Flags().String("workdir", "", "Workspace root containing bots.lock (default: current directory)")

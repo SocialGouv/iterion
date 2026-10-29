@@ -114,8 +114,10 @@ var marketplaceInstallCmd = &cobra.Command{
 		storeDir, _ := cmd.Flags().GetString("store-dir")
 		workdir, _ := cmd.Flags().GetString("workdir")
 		force, _ := cmd.Flags().GetBool("force")
+		replaceUnrecorded, _ := cmd.Flags().GetBool("replace-unrecorded")
 		res, err := cli.MarketplaceInstall(cmd.Context(), cli.MarketplaceInstallOptions{
 			StoreDir: storeDir, Slug: args[0], Workdir: workdir, Force: force,
+			ReplaceUnrecorded: replaceUnrecorded,
 		})
 		if err != nil {
 			return err
@@ -194,6 +196,7 @@ func init() {
 	marketplaceInstallCmd.Flags().String("store-dir", "", "Store directory override (default: managed store for the working directory)")
 	marketplaceInstallCmd.Flags().String("workdir", "", "Workspace root to install into (default: current directory; bots only)")
 	marketplaceInstallCmd.Flags().Bool("force", false, "Overwrite an existing install (update)")
+	marketplaceInstallCmd.Flags().Bool("replace-unrecorded", false, "Let --force replace a bundle this installer has no record of installing (authored or hand-placed work it would otherwise refuse to delete)")
 
 	marketplaceUninstallCmd.Flags().String("store-dir", "", "Store directory override (default: managed store for the working directory)")
 	marketplaceUninstallCmd.Flags().String("workdir", "", "Workspace root to uninstall from (default: current directory; bots only)")

@@ -38,6 +38,10 @@ type MarketplaceInstallOptions struct {
 	Slug     string
 	Workdir  string
 	Force    bool
+	// ReplaceUnrecorded carries the installer's escape hatch: --force may
+	// replace a bundle the installer has no record of installing. Off by
+	// default — authored work is not collateral of an install.
+	ReplaceUnrecorded bool
 }
 
 // MarketplaceInstallResult is the kind-aware outcome of
@@ -196,11 +200,15 @@ func MarketplaceInstall(ctx context.Context, opts MarketplaceInstallOptions) (*M
 		out.Plugin = name
 	} else {
 		res, err := botinstall.Install(ctx, botinstall.Options{
-			Source:  entry.RepoURL,
-			Ref:     entry.Ref,
-			Path:    entry.Subpath,
-			Force:   opts.Force,
-			Workdir: opts.Workdir,
+			Source: entry.RepoURL,
+			Ref:    entry.Ref,
+			Path:   entry.Subpath,
+			Force:  opts.Force,
+			// The same escape hatch the `bots install` flag names: a
+			// marketplace --force over a bundle the installer never
+			// installed refuses unless the operator says otherwise.
+			ReplaceUnrecorded: opts.ReplaceUnrecorded,
+			Workdir:           opts.Workdir,
 		})
 		if err != nil {
 			return nil, err
