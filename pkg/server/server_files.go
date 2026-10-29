@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/internal/httpx"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/canon"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -301,8 +302,19 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 // writeJSONFor is the request-aware variant of writeJSON: it also reflects an
 // allowlisted Origin header so legitimate browser callers receive ACAO.
+//
+// A board card is masked on the way out (native.IssueForRead): its bot args
+// can still carry a publish grant written before the store dropped those vars,
+// and this is the studio's read surface for a card. A response that EMBEDS a
+// card masks it itself.
 func (s *Server) writeJSONFor(w http.ResponseWriter, r *http.Request, v any) {
 	s.reflectAllowedOrigin(w, r)
+	switch t := v.(type) {
+	case *native.Issue:
+		v = native.IssueForRead(t)
+	case []*native.Issue:
+		v = native.IssuesForRead(t)
+	}
 	httpx.EncodeJSON(w, v)
 }
 

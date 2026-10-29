@@ -279,6 +279,25 @@ before dispatch. `assignee_workflows:` in the dispatcher config is the
 routing table consulted under whichever key won. See
 [docs/dispatcher.md §Per-ticket bot + args fields](dispatcher.md).
 
+A card never carries the launch vars a server mints for one run — the forge
+publish grant's bearer and the three endpoints it is presented to
+(`pkg/store.ServerMintedLaunchVars`). The store drops them from `bot_args` at
+its write boundary, on BOTH twins (`native.BotArgsForWrite`, called by Create
+and Update), so the drop answers for every writer at once: the REST routes
+above, the board MCP tools, `iterion issue`, trigger promote. **A `bot_args`
+holding one of those names does not round-trip** — the write answers with the
+card it stored, which no longer has it. An EMPTY value is kept: it withdraws a
+grant instead of granting one, and dropping it would hand the launch a fresh
+grant instead.
+
+A card written before that boundary existed can still hold a LIVE bearer, so
+every surface that hands a card out shows the mask (`[redacted]`,
+`native.IssueForRead`): the REST reads above, the board tool results an LLM
+reads, `iterion issue --json`, and the pipeline-board task responses. The
+record keeps its bearer — the launch lane reads it to refuse a card carrying a
+live grant of another team (`withoutCardGrant`), which a mask under the store
+would answer "no crossing" to.
+
 The SPA's Board view (`/board` in the studio) is a thin React shell on
 top of the REST surface. The table below covers the issue/board CRUD;
 the label manager and the board-schema editor add

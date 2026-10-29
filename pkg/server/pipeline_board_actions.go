@@ -358,7 +358,9 @@ func (s *Server) handlePipelineBoardTaskReset(w http.ResponseWriter, r *http.Req
 	}
 	w.Header().Set("Content-Type", "application/json")
 	s.reflectAllowedOrigin(w, r)
-	_ = json.NewEncoder(w).Encode(updated)
+	// Masked like every card this surface hands out (writeJSONFor): this
+	// one streams its own body, so it says so itself.
+	_ = json.NewEncoder(w).Encode(native.IssueForRead(updated))
 }
 
 // pipelineRunRetired reports that a run needs no cancel sweep. It is

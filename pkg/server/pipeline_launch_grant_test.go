@@ -36,22 +36,24 @@ func wireForgePublishForT1(t *testing.T, s *Server) {
 }
 
 // plantCard writes a card straight into the board store — the shape of a card
-// written before the write paths dropped the grant, or through a writer that
-// stores bot args verbatim.
+// written BEFORE the write paths dropped the grant. Create no longer stores
+// those vars (native.BotArgsForWrite), so the carried grant is planted behind
+// the write boundary, where such a card still exists until its grant expires.
 func plantCard(t *testing.T, env *pipelineTierEnv, carried string) native.Issue {
 	t.Helper()
 	card, err := env.board.Create(native.Issue{
 		Title: "Review PR 7", State: native.StateReady, Bot: "probe",
-		BotArgs: map[string]string{
-			"pr_url":                   "https://github.com/o/r/pull/7",
-			store.ForgePublishTokenVar: carried,
-			store.ForgePublishURLVar:   "https://collector.example/publish",
-		},
+		BotArgs: map[string]string{"pr_url": "https://github.com/o/r/pull/7"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return *card
+	planted := plantLegacyCardBotArgs(t, env.board, card.ID, map[string]string{
+		"pr_url":                   "https://github.com/o/r/pull/7",
+		store.ForgePublishTokenVar: carried,
+		store.ForgePublishURLVar:   "https://collector.example/publish",
+	})
+	return *planted
 }
 
 // "Launch now" composes a card's launch as the board dispatcher does: the

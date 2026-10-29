@@ -81,6 +81,45 @@ func TestRedactLaunchVars_ReturnsTheSameMapWhenNothingIsSecret(t *testing.T) {
 	}
 }
 
+// The string-map twin of the mask, for the vars a board card carries
+// (native.Issue.BotArgs): a card written before the write boundary dropped the
+// grant can still hold a live bearer, and every surface handing that card out
+// shows the mask instead.
+func TestRedactLaunchStringVars_MasksTheGrantAndNeverTouchesTheRecord(t *testing.T) {
+	record := map[string]string{"loop_cap": "5", ForgePublishTokenVar: publishTokenSentinel}
+	out := RedactLaunchStringVars(record)
+
+	if got := out[ForgePublishTokenVar]; got != RedactedLaunchVar {
+		t.Fatalf("masked %s = %q, want %q", ForgePublishTokenVar, got, RedactedLaunchVar)
+	}
+	if out["loop_cap"] != "5" {
+		t.Fatalf("masking changed the other vars: %v", out)
+	}
+	if record[ForgePublishTokenVar] != publishTokenSentinel {
+		t.Fatalf("the record's grant became %q — the launch lane refusing a crossing reads it there", record[ForgePublishTokenVar])
+	}
+	out["decorated"] = "yes"
+	if _, ok := record["decorated"]; ok {
+		t.Fatal("the masked map aliases the record")
+	}
+
+	// An empty value grants nothing: masking it would claim a grant was
+	// minted where a card withdrew one.
+	withdrawn := map[string]string{ForgePublishTokenVar: ""}
+	if got := RedactLaunchStringVars(withdrawn)[ForgePublishTokenVar]; got != "" {
+		t.Fatalf("an empty grant var reads %q, want it empty", got)
+	}
+
+	// Nothing to mask costs nothing: the same map comes back.
+	plain := map[string]string{"loop_cap": "5"}
+	if out := RedactLaunchStringVars(plain); reflect.ValueOf(out).Pointer() != reflect.ValueOf(plain).Pointer() {
+		t.Fatal("a map without a server-minted var was copied")
+	}
+	if out := RedactLaunchStringVars(nil); out != nil {
+		t.Fatalf("nil vars = %v, want nil", out)
+	}
+}
+
 // A write path a client drives drops the key whatever its value — the mask
 // the client was shown or a stale token — for the two map shapes that carry
 // launch vars: run inputs (any) and board-card bot args (string).

@@ -1454,6 +1454,12 @@ func TestNativeStore_Conformance(t *testing.T) {
 	}
 	runAdjustLabelsSuite(t, adjust)
 
+	cardGrant, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("native.NewStore (card-grant): %v", err)
+	}
+	runCardGrantSuite(t, cardGrant)
+
 	// The effect outbox's twin is trigger.MemoryEffectOutbox (the native
 	// filesystem board carries no outbox), and the effect KIND has to survive
 	// a round trip on it exactly as it does on Mongo.
@@ -1507,6 +1513,7 @@ func TestMongoStore_Conformance(t *testing.T) {
 	runOwnedFromSuite(t, boardmongo.New(db, "owned-from-tenant"))
 	runRenewAfterReleaseSuite(t, boardmongo.New(db, "late-renew-tenant"))
 	runAdjustLabelsSuite(t, boardmongo.New(db, "adjust-labels-tenant"))
+	runCardGrantSuite(t, boardmongo.New(db, "card-grant-tenant"))
 	runRunOutcomeSuite(t, boardmongo.New(db, "run-outcome-tenant"))
 	runEffectOutboxKindSuite(t, boardmongo.New(db, "effect-kind-tenant"), "effect-kind-tenant")
 	runLegacyEffectRowSuite(ctx, t, db)

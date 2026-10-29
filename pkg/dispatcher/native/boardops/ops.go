@@ -397,7 +397,7 @@ func doCreate(store native.BoardStore, raw json.RawMessage, env CallEnv) (json.R
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(iss)
+	return marshalIssue(iss)
 }
 
 func doComment(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
@@ -424,7 +424,7 @@ func doComment(store native.BoardStore, raw json.RawMessage) (json.RawMessage, e
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(iss)
+	return marshalIssue(iss)
 }
 
 func doTransition(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
@@ -446,7 +446,7 @@ func doTransition(store native.BoardStore, raw json.RawMessage) (json.RawMessage
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(iss)
+	return marshalIssue(iss)
 }
 
 func doAssign(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
@@ -468,7 +468,7 @@ func doAssign(store native.BoardStore, raw json.RawMessage) (json.RawMessage, er
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(iss)
+	return marshalIssue(iss)
 }
 
 // doSetBot sets the issue's explicit bot — the canonical dispatcher
@@ -494,7 +494,7 @@ func doSetBot(store native.BoardStore, raw json.RawMessage) (json.RawMessage, er
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(iss)
+	return marshalIssue(iss)
 }
 
 func doSetLabels(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
@@ -519,7 +519,7 @@ func doSetLabels(store native.BoardStore, raw json.RawMessage) (json.RawMessage,
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(iss)
+	return marshalIssue(iss)
 }
 
 // doAddLabels / doRemoveLabels are the RELATIVE label writes: the delta
@@ -562,7 +562,7 @@ func adjustLabels(store native.BoardStore, raw json.RawMessage, add bool) (json.
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(iss)
+	return marshalIssue(iss)
 }
 
 func doClose(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
@@ -604,7 +604,7 @@ func doClose(store native.BoardStore, raw json.RawMessage) (json.RawMessage, err
 				if refreshed, gerr := store.Get(resolved); gerr == nil {
 					cur = refreshed
 				}
-				return json.Marshal(cur)
+				return marshalIssue(cur)
 			}
 		}
 		// Find the first terminal state on the board.
@@ -648,7 +648,7 @@ func doClose(store native.BoardStore, raw json.RawMessage) (json.RawMessage, err
 	if refreshed, getErr := store.Get(resolved); getErr == nil {
 		iss = refreshed
 	}
-	return json.Marshal(iss)
+	return marshalIssue(iss)
 }
 
 func doList(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
@@ -673,7 +673,7 @@ func doList(store native.BoardStore, raw json.RawMessage) (json.RawMessage, erro
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(issues)
+	return marshalIssues(issues)
 }
 
 func doListLabels(store native.BoardStore, _ json.RawMessage) (json.RawMessage, error) {
@@ -702,7 +702,20 @@ func doGet(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(iss)
+	return marshalIssue(iss)
+}
+
+// marshalIssue is a card as a tool RESULT — the path that reaches an LLM, an
+// agent's in-process board tool and the operator MCP. The publish grant a card
+// still carries is masked here (native.IssueForRead), so no board tool hands a
+// live bearer to a model. Every operation returning a card goes through it.
+func marshalIssue(iss *native.Issue) (json.RawMessage, error) {
+	return json.Marshal(native.IssueForRead(iss))
+}
+
+// marshalIssues is marshalIssue for the list result.
+func marshalIssues(issues []*native.Issue) (json.RawMessage, error) {
+	return json.Marshal(native.IssuesForRead(issues))
 }
 
 func unmarshalArgs(raw json.RawMessage, dest any) error {

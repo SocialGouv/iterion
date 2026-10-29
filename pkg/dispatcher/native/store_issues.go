@@ -90,6 +90,10 @@ func (s *Store) createLocked(in Issue) (created *Issue, err error) {
 	}
 	in.Blockers = NormalizeBlockers(in.Blockers)
 	in.ParentID = strings.TrimSpace(in.ParentID)
+	// The publish grant is minted per launch and never rides a card
+	// (card_grant.go): whatever a writer sends under those names is dropped
+	// here, once for the four writers.
+	in.BotArgs = BotArgsForWrite(in.BotArgs)
 
 	if in.ID == "" {
 		in.ID = "native:" + uuid.NewString()
@@ -347,10 +351,14 @@ func (s *Store) Update(id string, p Patch) (updated *Issue, err error) {
 		changed = append(changed, "bot")
 	}
 	if p.BotArgs != nil {
+		// The publish grant never rides a card (card_grant.go). Dropped
+		// BEFORE the wholesale swap, so a patch carrying the grant and
+		// nothing else clears the args instead of storing it.
+		kept := BotArgsForWrite(*p.BotArgs)
 		var next map[string]string
-		if len(*p.BotArgs) > 0 {
-			next = make(map[string]string, len(*p.BotArgs))
-			for k, v := range *p.BotArgs {
+		if len(kept) > 0 {
+			next = make(map[string]string, len(kept))
+			for k, v := range kept {
 				next[k] = v
 			}
 		}

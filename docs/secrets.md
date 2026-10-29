@@ -106,7 +106,11 @@ of a body that names it, instead of writing the bearer into the script file
 as `bots/dep-update-guard` reads it). One form keeps the value in the text, by
 the author's own choice: the raw `{{!vars.x}}` form, whose quoting is theirs.
 The grant is also scoped (Layer 2) to the endpoints the server bound it to, so
-the egress gate refuses it toward any other host.
+the egress gate refuses it toward any other host. And it never rests on a
+board card: the board store drops those vars from `bot_args` at its write
+boundary on both twins, and every surface that hands a card out masks the
+bearer a card written before that boundary still holds
+([native-tracker](native-tracker.md#rest-surface)).
 
 ### Where a CLI backend's redaction stops (the hook-protocol limits)
 

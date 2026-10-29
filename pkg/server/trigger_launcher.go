@@ -73,7 +73,11 @@ func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (
 		return "", routeErr
 	}
 	spec := runview.LaunchSpec{
-		Vars:            plan.Vars,
+		// The spine mints nothing, so a grant var in a plan's vars came from
+		// outside — an emit payload, a promoted card — and naming an endpoint
+		// while the run keeps a bearer is how a live grant gets aimed
+		// elsewhere. The launch mints its own where it needs one.
+		Vars:            store.DropServerMintedVars(plan.Vars),
 		RepoURL:         plan.RepoURL,
 		RepoRef:         plan.RepoRef,
 		ProjectPath:     plan.Repo,

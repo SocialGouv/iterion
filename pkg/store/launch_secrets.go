@@ -164,6 +164,27 @@ func RedactLaunchVars(vars map[string]any) map[string]any {
 	return out
 }
 
+// RedactLaunchStringVars is RedactLaunchVars for a STRING-valued var map — a
+// board card's bot args, a tracker's vars: a copy with every server-minted
+// secret var that holds a value masked, or vars itself when it holds none.
+// vars is never mutated — the caller's map may be the stored record's own.
+//
+// Separate from RedactLaunchVars rather than generic over the value type: the
+// mask IS a string, so a map[string]V could not receive it.
+func RedactLaunchStringVars(vars map[string]string) map[string]string {
+	if !HasServerMintedSecret(vars) {
+		return vars
+	}
+	out := make(map[string]string, len(vars))
+	for k, v := range vars {
+		if IsServerMintedSecretVar(k) && mintedSecretValue(v) {
+			v = RedactedLaunchVar
+		}
+		out[k] = v
+	}
+	return out
+}
+
 // DropServerMintedVars returns vars without any VALUE sent under one of
 // ServerMintedLaunchVars — a copy when one was present, vars itself
 // otherwise. For the write paths a client drives (fork inputs, board-card bot

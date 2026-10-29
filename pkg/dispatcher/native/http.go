@@ -858,7 +858,20 @@ func statusForErr(err error) int {
 	}
 }
 
+// writeJSON answers one JSON body. Every /issues route ends here, which is
+// why the publish-grant mask (card_grant.go) lives in it rather than at each
+// route: a card hands out whatever bot args it carries, and a card written
+// before the write-boundary drop can still carry a live bearer.
+//
+// It knows the two shapes the board serves — one card and a list of them. A
+// response type that EMBEDS a card masks it itself, with IssueForRead.
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	switch t := v.(type) {
+	case *Issue:
+		v = IssueForRead(t)
+	case []*Issue:
+		v = IssuesForRead(t)
+	}
 	httpx.WriteJSON(w, status, v)
 }
 

@@ -89,7 +89,7 @@ func RunIssueCreate(p *Printer, opts IssueCreateOptions) error {
 		return err
 	}
 	if p.Format == OutputJSON {
-		p.JSON(got)
+		jsonIssue(p, got)
 		return nil
 	}
 	p.Line("Created %s", shortID(got.ID))
@@ -134,7 +134,7 @@ func RunIssueList(p *Printer, opts IssueListOptions) error {
 		return err
 	}
 	if p.Format == OutputJSON {
-		p.JSON(issues)
+		jsonIssues(p, issues)
 		return nil
 	}
 	rows := make([][]string, 0, len(issues))
@@ -173,7 +173,7 @@ func RunIssueShow(p *Printer, opts IssueRefOptions) error {
 		return err
 	}
 	if p.Format == OutputJSON {
-		p.JSON(iss)
+		jsonIssue(p, iss)
 		return nil
 	}
 	p.Header(iss.Title)
@@ -243,7 +243,7 @@ func RunIssueMove(p *Printer, opts IssueMoveOptions) error {
 		return err
 	}
 	if p.Format == OutputJSON {
-		p.JSON(iss)
+		jsonIssue(p, iss)
 		return nil
 	}
 	p.Line("Moved %s → %s", shortID(iss.ID), iss.State)
@@ -325,7 +325,7 @@ func RunIssueUpdate(p *Printer, opts IssueUpdateOptions) error {
 		}
 	}
 	if p.Format == OutputJSON {
-		p.JSON(iss)
+		jsonIssue(p, iss)
 		return nil
 	}
 	p.Line("Updated %s", shortID(iss.ID))
@@ -425,7 +425,7 @@ func RunIssueClose(p *Printer, opts IssueRefOptions) error {
 		iss = refreshed
 	}
 	if p.Format == OutputJSON {
-		p.JSON(iss)
+		jsonIssue(p, iss)
 		return nil
 	}
 	p.Line("Closed %s → %s", shortID(iss.ID), iss.State)
@@ -733,6 +733,19 @@ func parseFieldPairs(pairs []string) (map[string]any, error) {
 		requireRawKey: true,
 		conv:          func(v string) any { return inferTyped(v) },
 	})
+}
+
+// jsonIssue prints a card as the `--json` document, with the publish grant it
+// still carries masked (native.IssueForRead): `iterion issue` is a read
+// surface like the REST API and the board tools, and a card written before the
+// store-boundary drop can hold a live bearer.
+func jsonIssue(p *Printer, iss *native.Issue) {
+	p.JSON(native.IssueForRead(iss))
+}
+
+// jsonIssues is jsonIssue for `iterion issue list --json`.
+func jsonIssues(p *Printer, issues []*native.Issue) {
+	p.JSON(native.IssuesForRead(issues))
 }
 
 // parseBotArgs parses repeatable --bot-arg key=value flags into the

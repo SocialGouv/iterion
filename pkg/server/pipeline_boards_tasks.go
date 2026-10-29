@@ -260,7 +260,9 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 		return
 	}
 	s.reflectAllowedOrigin(w, r)
-	httpx.WriteJSON(w, http.StatusCreated, issue)
+	// Masked like every card this surface hands out (writeJSONFor): a
+	// 201 goes through httpx directly, so it says so itself.
+	httpx.WriteJSON(w, http.StatusCreated, native.IssueForRead(issue))
 }
 
 // uniquePipelineTitle keeps board card titles distinct: if `desired` is

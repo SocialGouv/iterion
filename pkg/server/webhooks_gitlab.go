@@ -1369,6 +1369,12 @@ func (s *Server) scheduledForgeOverrides(ctx context.Context, sb cloudsched.Sche
 // the pinned repo (mandatory for stateful bots persisting state to git) and
 // stamps the BotID for the publisher's credential-resolution path.
 func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string, retry *store.RunRetryPolicy, route *store.RunLLMRoutePolicy) runview.LaunchSpec {
+	// A schedule row mints no grant: the publish bearer and the three
+	// endpoints it is presented to are the server's own, minted per launch,
+	// so a value stored under those names on the row is a stale token or an
+	// endpoint of someone's choosing. Dropped before TrustedVarNames too —
+	// nothing is trusted by a name that no longer reaches the run.
+	vars := store.DropServerMintedVars(sb.Vars)
 	return runview.LaunchSpec{
 		// Tenant-configured vars ride blind (#1725's opt-out): the schedule
 		// editor owns them, the runview refusal is for operator-typed
@@ -1379,11 +1385,11 @@ func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string, r
 		// edited by team admins, its defaults come from the bot manifest,
 		// and no delivery payload ever writes here) — exactly the layer
 		// ADR-129 §4 rule 2 lets narrow the routing gate.
-		TrustedVarNames: trustedVarNames(sb.Vars),
+		TrustedVarNames: trustedVarNames(vars),
 		FilePath:        path,
 		Source:          source,
 		BotID:           sb.BotID,
-		Vars:            sb.Vars,
+		Vars:            vars,
 		RepoURL:         sb.RepoURL,
 		RepoRef:         sb.RepoRef,
 		// Resolved by the caller across the schedule row, the bot manifest

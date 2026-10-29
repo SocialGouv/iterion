@@ -234,6 +234,10 @@ func (s *Store) Create(in native.Issue) (*native.Issue, error) {
 		return nil, err
 	}
 	in.Blockers = native.NormalizeBlockers(in.Blockers)
+	// The publish grant is minted per launch and never rides a card
+	// (native/card_grant.go): the twin of the FS store's own drop, so a
+	// writer reaching either store gets the same card.
+	in.BotArgs = native.BotArgsForWrite(in.BotArgs)
 	if in.ID == "" {
 		in.ID = "native:" + uuid.NewString()
 	} else if err := validateIssueID(in.ID); err != nil {
@@ -1282,10 +1286,14 @@ func applyPatch(iss *native.Issue, p native.Patch, board *native.Board) patchRes
 		changed = append(changed, "bot")
 	}
 	if p.BotArgs != nil {
+		// The publish grant never rides a card (native/card_grant.go).
+		// Dropped BEFORE the wholesale swap, so a patch carrying the grant
+		// and nothing else clears the args instead of storing it.
+		kept := native.BotArgsForWrite(*p.BotArgs)
 		var next map[string]string
-		if len(*p.BotArgs) > 0 {
-			next = make(map[string]string, len(*p.BotArgs))
-			for k, v := range *p.BotArgs {
+		if len(kept) > 0 {
+			next = make(map[string]string, len(kept))
+			for k, v := range kept {
 				next[k] = v
 			}
 		}
