@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/skillshare"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
@@ -20,15 +21,11 @@ import (
 // the ticket's own verify step greps for it.
 const briefMarker = "CONTEXT_BRIEF"
 
-// durableMemoryWriters are the iterion tool declarations that can put bytes in
-// the workspace memory tree. `bash` counts: the tree is a directory, so a
-// shell reaches it as surely as a write tool, which is what the claude_code
-// recipe in session-continuity.md used to tell a model to do.
-//
-// Spelled in iterion aliases and compared through toolcatalog.CanonicalToolName,
-// never against a backend's native tool names: the projection from one to the
-// other is the backend's business, and a second table here would drift from it.
-var durableMemoryWriters = []string{"bash", "write_file", "edit", "multi_edit", "notebook_edit", "memory_write"}
+// clawMemoryTools are the three tools a `memory:` block installs on a claw
+// run (model.installWorkspaceMemory, from the node's MemorySpec). They exist
+// nowhere else — no `memory:` block, no tools — which is what makes a page
+// naming them a claim about the bundle that carries it.
+var clawMemoryTools = []string{"memory_read", "memory_write", "memory_list"}
 
 // briefPromiseExemptions are the pages whose mention of the brief is not a
 // promise the bundle makes, each with the reason it survives and, where the
@@ -208,12 +205,13 @@ func onlyClawRoutes(routes []string) bool {
 // returns the writers it names.
 func writersAmong(held []string) []string {
 	var out []string
+	// The shared set, never a second list: toolcatalog owns which concepts
+	// write, and DurableWriteCanonicals owns this question's reading of it
+	// (the shell and claw's own memory_write included).
+	writers := toolcatalog.DurableWriteCanonicals()
 	for _, name := range held {
-		canonical := toolcatalog.CanonicalToolName(name)
-		for _, writer := range durableMemoryWriters {
-			if canonical == toolcatalog.CanonicalToolName(writer) {
-				out = append(out, name)
-			}
+		if slices.Contains(writers, toolcatalog.CanonicalToolName(name)) {
+			out = append(out, name)
 		}
 	}
 	return out
@@ -360,4 +358,132 @@ func exemptionHolds(t *testing.T, page, marker string) bool {
 	}
 	collapsed := strings.Join(strings.Fields(strings.ReplaceAll(string(body), ">", " ")), " ")
 	return strings.Contains(collapsed, strings.Join(strings.Fields(marker), " "))
+}
+
+// memoryRootExemptions are the shared-skill family SOURCES whose page names
+// claw's memory tools in a bundle that cannot serve them, each with its reason
+// and the words the page must still carry for the exemption to hold.
+var memoryRootExemptions = map[string]struct {
+	reason string
+	marker string
+}{
+	"session-continuity.md": {
+		reason: "the family's other member is bots/evolve, whose claw node really does carry a `memory:` block: the page documents the write contract FOR that member, and its own note refuses the write for the source bundle",
+		marker: "This bundle cannot write the tree.",
+	},
+}
+
+// TestEverySharedMemorySkillIsRootedWhereItCanBeServed closes the root cause
+// #2773 reported, one layer under the promise: a shared skill whose SOURCE
+// page teaches claw's `memory_*` tools lives in a bundle that cannot serve
+// them, so every reader of that bundle reads a contract its own node cannot
+// honour.
+//
+// The source is where a family's text is authored and `task skills:sync`
+// copies mirrors FROM, so a family rooted in a bundle with no memory tree is
+// the defect; a VARIANT in such a bundle is not, since a variant diverges on
+// purpose. The capability is read from the declaration that installs the
+// tools — a `memory:` block on a claw route, which is the only thing
+// model.installWorkspaceMemory runs on — not from the page.
+//
+// An exemption is allowed, and it must be EARNED by a statement in the page
+// itself: the marker is asserted here, so deleting the scoping note reddens
+// the file it was protecting.
+func TestEverySharedMemorySkillIsRootedWhereItCanBeServed(t *testing.T) {
+	t.Parallel()
+
+	served := map[string]string{}
+	for _, sw := range shippedWorkflows(t) {
+		if slug := bundleSlug(sw.prefix); slug != "" {
+			served[slug] = clawMemoryToolPath(sw)
+		}
+	}
+	if served["evolve"] == "" {
+		t.Error("bots/evolve resolved as unable to serve the memory tools, but it ships a `memory:` block on a claw node — the capability half reads the wrong thing")
+	}
+
+	families := skillshare.Families()
+	if len(families) < 15 {
+		t.Fatalf("the declaration holds %d families of the 20 this tree carries — the subject moved and every verdict below is vacuous", len(families))
+	}
+	var unrooted []string
+	checked, exempt := 0, 0
+	for _, f := range families {
+		page := f.Path(f.Source) // repo-relative
+		body, err := os.ReadFile(filepath.Join("..", page))
+		if err != nil {
+			t.Fatalf("read the family source %s: %v", page, err)
+		}
+		if !namesAClawMemoryTool(string(body)) {
+			continue
+		}
+		checked++
+		if why, known := served[f.Source]; !known {
+			t.Errorf("family %s is rooted in %q, which this walk cannot resolve to a shipped bundle", f.Name, f.Source)
+			continue
+		} else if why != "" {
+			continue
+		}
+		ex, ok := memoryRootExemptions[f.Name]
+		if ok && strings.Contains(string(body), ex.marker) {
+			exempt++
+			continue
+		}
+		fix := "re-root the family on a member that carries a `memory:` block on a claw node, or scope the page with a note saying this bundle cannot reach the tree"
+		if ok {
+			fix = "the page no longer carries the note its exemption rests on (" + ex.marker + ") — restore it, or " + fix
+		}
+		unrooted = append(unrooted, fmt.Sprintf("%s teaches claw's memory tools and its source bundle %q has no `memory:` block on a claw node: %s", page, f.Source, fix))
+	}
+
+	if checked == 0 {
+		t.Fatal("no family source names claw's memory tools — this guard lost its subject; it must see session-continuity.md")
+	}
+	if exempt == 0 {
+		t.Errorf("no exemption was earned, yet %d family source(s) were checked: either every source can now serve the tools (retire the table) or a marker moved", checked)
+	}
+	if len(unrooted) > 0 {
+		sort.Strings(unrooted)
+		t.Errorf("%d shared memory skill(s) rooted where they cannot be served (iterion#2773):\n  %s", len(unrooted), strings.Join(unrooted, "\n  "))
+	}
+	t.Logf("%d family source(s) teaching the memory tools, %d exempt", checked, exempt)
+}
+
+// namesAClawMemoryTool reports whether a page names one of the three tools a
+// `memory:` block installs.
+func namesAClawMemoryTool(body string) bool {
+	for _, tool := range clawMemoryTools {
+		if strings.Contains(body, tool) {
+			return true
+		}
+	}
+	return false
+}
+
+// clawMemoryToolPath names the node that makes claw's `memory_*` tools exist
+// for one bundle, or returns "" when none does.
+//
+// The tools come from the node's `memory:` spec on a claw run
+// (model.installWorkspaceMemory) — `memory:` on any other backend is
+// diagnosed and ignored (pkg/dsl/ir, "memory_read/memory_write/memory_list
+// and autoload are claw-only"), so the block alone is not enough and neither
+// is the route.
+func clawMemoryToolPath(sw shippedWorkflow) string {
+	exec := model.NewProgramExecutor(sw.wf)
+	ids := make([]string, 0, len(sw.wf.Nodes))
+	for id := range sw.wf.Nodes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		llm, ok := sw.wf.Nodes[id].(ir.LLMNode)
+		if !ok || llm.GetMemory() == nil {
+			continue
+		}
+		routes := append([]string{exec.EffectiveBackendName(sw.wf.Nodes[id])}, exec.EffectiveFallbackBackends(sw.wf.Nodes[id])...)
+		if slices.Contains(routes, delegate.BackendClaw) {
+			return fmt.Sprintf("node %q carries a `memory:` block on a claw route", id)
+		}
+	}
+	return ""
 }
