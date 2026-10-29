@@ -289,7 +289,7 @@ func (s *Server) prepareWebhookRetry(ctx context.Context, d webhooks.Delivery) (
 	}
 	// The operator authorizes the retry, but the webhook's own tenant pays
 	// and passes admission. A super-admin request must not bypass its quotas.
-	actor := "webhook:" + cfg.ID
+	actor := webhookActor(cfg.ID)
 	ctx = auth.WithIdentity(ctx, auth.Identity{UserID: actor, TeamID: cfg.TenantID, Role: identity.RoleMember, Kind: auth.KindWebhook})
 	ctx = store.WithIdentity(ctx, cfg.TenantID, actor)
 	t := d.RetryTarget

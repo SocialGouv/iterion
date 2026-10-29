@@ -94,7 +94,7 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 			httpError(w, http.StatusBadRequest, "bot_id is not allowed by this webhook")
 			return
 		}
-		spec.OwnerID = "webhook:" + cfg.ID
+		spec.OwnerID = webhookActor(cfg.ID)
 		spec.Launch.KeyOverrides = cfg.KeyOverrides
 		// The repository the webhook serves rides the preview's context as
 		// it rides the launch's: a key restricted to repositories previews

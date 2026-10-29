@@ -36,7 +36,7 @@ func TestValidateKeyOverrides_RefusesAGatewayKeyUntilTheWalkSpendsIt(t *testing.
 	k := seedGatewayKey(t, keys, sealer, "t1", "")
 	s := &Server{apiKeys: keys}
 	ctx := store.WithTenant(t.Context(), "t1")
-	err := s.validateKeyOverrides(ctx, "t1", map[string]string{"openai_compatible": k.ID})
+	err := s.validateKeyOverrides(ctx, "t1", webhookActor("wh-gw"), map[string]string{"openai_compatible": k.ID})
 	if err == nil || !strings.Contains(err.Error(), "no run spends yet") {
 		t.Fatalf("a pin on a gateway key = %v, want a refusal naming the inert state", err)
 	}
@@ -46,7 +46,7 @@ func TestValidateKeyOverrides_RefusesAGatewayKeyUntilTheWalkSpendsIt(t *testing.
 	if err := keys.Create(ctx, vendor); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.validateKeyOverrides(ctx, "t1", map[string]string{"anthropic": vendor.ID}); err != nil {
+	if err := s.validateKeyOverrides(ctx, "t1", webhookActor("wh-gw"), map[string]string{"anthropic": vendor.ID}); err != nil {
 		t.Fatalf("a vendor pin refused: %v", err)
 	}
 }

@@ -343,7 +343,7 @@ func (s *Server) fireDeferredWebhookLaunch(ctx context.Context, d webhooks.Defer
 	// the original request's context: the launch tail's admission gate
 	// (gateLaunch) meters BY it, and a bare background context would be
 	// denied as teamless.
-	actor := "webhook:" + cfg.ID
+	actor := webhookActor(cfg.ID)
 	ctx = auth.WithIdentity(ctx, auth.Identity{
 		UserID: actor,
 		TeamID: cfg.TenantID,

@@ -429,8 +429,21 @@ mechanism; the wiring threads a webhook's pinned keys through to it:
 3. Set via the webhook create/PATCH API — `key_overrides` on
    `webhookConfigReq`. `validateKeyOverrides` rejects a `key_id` from
    another tenant or the wrong provider at config time (the resolver is
-   already tenant-scoped, so this is a fail-fast UX guard, not the
-   security boundary).
+   already tenant-scoped, so that arm is a fail-fast UX guard, not the
+   security boundary). It also rejects a key the lane could never spend —
+   a USER-scoped key, invisible to the synthetic `webhook:<id>` actor the
+   delivery fires under (`secrets.SpendableBy`, the predicate the
+   resolution walk itself applies). That arm is not UX: an unspendable pin
+   produces no refusal anywhere downstream, so the write is the only place
+   it can be said.
+
+**A pin is honoured or refused, never ignored.** Two shapes would be
+honoured by nobody: a provider the walk does not spend yet (the
+`openai_compatible` gateway, until #2005 PR-C') and a key the launching
+identity cannot see (a user-scoped key under a machine lane's synthetic
+actor). Both are refused where they are WRITTEN, because neither leaves a
+trace downstream — `Resolve` reports the keys it withholds, and an
+invisible key never becomes a candidate to withhold.
 
 **A pin bypasses the refusal skip, and says so.** The evidence predicate is
 consulted in Pass 2 only: an operator who names a key gets that key, even

@@ -1221,6 +1221,18 @@ webhook on a sandbox key). Mismatched provider, missing key, or a key
 that belongs to another org are 400s
 ([pkg/server/webhooks_routes.go:validateKeyOverrides](../pkg/server/webhooks_routes.go)).
 
+**Pin an org-scoped key, not a personal one.** A webhook fires under the
+synthetic identity `webhook:<webhook_id>`, and `secrets.Resolve` measures a
+key's visibility against the identity that spends it: a key scoped to a USER
+is never visible to that actor, so a pin on one would be dropped at launch
+and the run would seal the team's default instead — invisibly, because the
+walk reports a key it *withholds*, never a pin it never saw. Such a pin is a
+400 at write (`not spendable by this webhook`), like the `openai_compatible`
+gateway pin above and like its `secret_overrides` twin, which
+requires an org-scoped secret. The team key list an admin picks from
+includes their own user-scoped keys (`GET /api/teams/{id}/api-keys`), so this
+is the refusal that tells them which ones a webhook can actually spend.
+
 ### `launch_vars` — pin run vars from the org config
 
 Anything in `launch_vars` is merged into the run's variable map **after**

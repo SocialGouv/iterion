@@ -570,6 +570,26 @@ func keyRank(k ApiKey, currentUserID string) int {
 	return 99
 }
 
+// SpendableBy answers, for one key, the question the resolution walk asks
+// before that key may fund a launch for (teamID, userID): the store's
+// team+scope visibility (ListByTeam filters scope_team and drops a foreign
+// scope_user) and the rank the walk gives what remains (keyRank == 99 is
+// "never applies"). It reads the SAME fields through the SAME keyRank, so a
+// caller that must decide early — a config write pinning a key id — gets the
+// resolver's answer rather than a second opinion free to drift from it.
+//
+// Load-bearing for the machine lanes: a webhook fires under "webhook:<id>"
+// and the trigger spine under "trigger-spine", identities no key is ever
+// scoped to, so a user-scoped pin is unspendable there. Resolve does not and
+// must not report that: an invisible key never becomes a candidate, so it
+// never reaches onWithheld — hence the pin is refused where it is WRITTEN.
+func SpendableBy(k ApiKey, teamID, userID string) bool {
+	if teamID == "" || k.ScopeTeamID != teamID {
+		return false
+	}
+	return keyRank(k, userID) != 99
+}
+
 // buildResolution decrypts (when sealer != nil) and packages the key
 // for the publisher. AAD binds the sealed blob to its api_key id so
 // a sealed payload moved between records cannot be opened.

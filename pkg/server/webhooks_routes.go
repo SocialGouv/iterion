@@ -317,7 +317,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 		cfg.HMACSecretSealed = sealed
 	}
-	if err := s.validateKeyOverrides(teamTenantCtx(r.Context(), teamID), teamID, cfg.KeyOverrides); err != nil {
+	if err := s.validateKeyOverrides(teamTenantCtx(r.Context(), teamID), teamID, webhookActor(cfg.ID), cfg.KeyOverrides); err != nil {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
@@ -365,10 +365,19 @@ func validateForgeBaseURL(raw string) (string, error) {
 }
 
 // validateKeyOverrides rejects a webhook key override that references a BYOK
-// key the webhook's tenant doesn't own, or whose provider doesn't match. The
-// resolver is already tenant-scoped (a foreign key_id silently won't match in
-// secrets.Resolve), so this is a fail-fast UX guard, not the security boundary.
-func (s *Server) validateKeyOverrides(ctx context.Context, tenantID string, overrides map[string]string) error {
+// key the webhook's tenant doesn't own, whose provider doesn't match, or that
+// the lane's own actor could never spend. The resolver is already
+// tenant-scoped (a foreign key_id silently won't match in secrets.Resolve),
+// so the cross-org arm is a fail-fast UX guard, not the security boundary;
+// the spendability arm is the opposite — it is the ONLY place that arm can be
+// enforced, because an unspendable pin produces no refusal downstream at all.
+//
+// actor is the identity the launch will resolve credentials under
+// (webhookActor for this lane). It fails CLOSED: an empty actor matches no
+// key's scope, so an unknown lane is treated as a machine lane rather than
+// skipping the arm — a credential guard with an unused opt-out is a seam
+// for the next caller's false negative.
+func (s *Server) validateKeyOverrides(ctx context.Context, tenantID, actor string, overrides map[string]string) error {
 	if len(overrides) == 0 || s.apiKeys == nil {
 		return nil
 	}
@@ -391,6 +400,18 @@ func (s *Server) validateKeyOverrides(ctx context.Context, tenantID string, over
 		// silence.
 		if k.Provider == secrets.ProviderOpenAICompatible {
 			return fmt.Errorf("key_overrides[%s]: api key %q is an openai_compatible gateway key, which no run spends yet (#2005) — a pin on it would be dropped at launch", prov, keyID)
+		}
+		// The same reason as the gateway arm above, for the other key a
+		// launch cannot spend: this lane fires under a synthetic actor no
+		// key is scoped to, so secrets.Resolve never even lists a
+		// user-scoped key as a candidate — the pin is dropped and the run
+		// seals the team's default instead. Resolve cannot report it (an
+		// invisible key never reaches onWithheld, which answers for the bot
+		// and repository audiences only), so the write refuses it, and the
+		// operator's explicit choice is never replaced in silence. The
+		// secret twin below has always refused the same shape.
+		if !secrets.SpendableBy(k, tenantID, actor) {
+			return fmt.Errorf("key_overrides[%s]: api key %q is not spendable by this webhook — it launches as %q, which sees only this team's org-scoped keys, so the pin would be dropped at launch; pin an org-scoped key of this team or clear the pin", prov, keyID, actor)
 		}
 	}
 	return nil
@@ -532,7 +553,7 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		cfg.LaunchVars = req.LaunchVars
 	}
 	if req.KeyOverrides != nil {
-		if err := s.validateKeyOverrides(teamTenantCtx(r.Context(), teamID), teamID, req.KeyOverrides); err != nil {
+		if err := s.validateKeyOverrides(teamTenantCtx(r.Context(), teamID), teamID, webhookActor(cfg.ID), req.KeyOverrides); err != nil {
 			httpError(w, http.StatusBadRequest, "%s", err.Error())
 			return
 		}

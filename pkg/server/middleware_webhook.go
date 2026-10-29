@@ -16,6 +16,14 @@ import (
 
 type webhookCtxKey struct{}
 
+// webhookActor is the synthetic identity every webhook lane acts under: the
+// run's owner, the store identity that scopes its writes, and — the reason
+// this is one name rather than four spellings — the user id secrets.Resolve
+// measures a credential's visibility against. No BYOK key is ever scoped to
+// it, so what it may spend is exactly the team-scoped set
+// (secrets.SpendableBy).
+func webhookActor(configID string) string { return "webhook:" + configID }
+
 // webhookConfigFromContext returns the authenticated webhook Config a
 // provider handler should act on. Set by webhookAuth.
 func webhookConfigFromContext(ctx context.Context) (webhooks.Config, bool) {
@@ -178,7 +186,7 @@ func (s *Server) webhookAuth(provider webhooks.Provider, next http.Handler) http
 			}
 		}
 		// Stamp the tenant identity (synthetic webhook actor) + config.
-		actor := "webhook:" + cfg.ID
+		actor := webhookActor(cfg.ID)
 		ctx := auth.WithIdentity(r.Context(), auth.Identity{
 			UserID: actor,
 			TeamID: cfg.TenantID,
