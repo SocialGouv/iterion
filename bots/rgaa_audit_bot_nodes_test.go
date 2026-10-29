@@ -514,6 +514,34 @@ L.out({ ok: true, cases: out });
 		}
 	})
 
+	t.Run("static_audit_purges_the_page_captures_a_previous_run_left_in_the_workspace", func(t *testing.T) {
+		// The engine's audit ingests the captures already under
+		// .ultra11y/pages/ — a previous run's stale probes.json would anchor
+		// findings the fresh audit no longer produces (#2623). Nothing durable
+		// lives there (gitignored): the node purges the directory before
+		// auditing, and the coverage layer says how much it swept.
+		ws := rgaaCopyFixtureSite(t)
+		stale := filepath.Join(ws, ".ultra11y", "pages", "previous-run")
+		if err := os.MkdirAll(stale, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range []string{"dom.html", "probes.json"} {
+			if err := os.WriteFile(filepath.Join(stale, f), []byte("{}"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		dir := rgaaRunCopy(t, run)
+		rgaaOK(t, "static_audit", rgaaRunNode(t, scripts, "static_audit", site, env, in(map[string]any{"input.run_dir": dir, "input.workspace_dir": ws, "input.max_files": 4000, "input.audit_args": prep["audit_args"]})))
+		if _, err := os.Stat(filepath.Join(ws, ".ultra11y", "pages")); !os.IsNotExist(err) {
+			t.Fatalf("static_audit left a previous run's captures under %s: the audit ingested them", filepath.Join(ws, ".ultra11y", "pages"))
+		}
+		var layer map[string]any
+		rgaaReadJSON(t, filepath.Join(dir, "layers", "static.json"), &layer)
+		if rgaaInt(layer["pages_purged"]) != 1 {
+			t.Fatalf("the static layer records pages_purged=%v, want 1 (one stale page directory swept)", layer["pages_purged"])
+		}
+	})
+
 	t.Run("bank_static_publishes_the_findings", func(t *testing.T) {
 		out := rgaaOK(t, "bank_static", rgaaRunNode(t, scripts, "bank_static", site, env, in(nil)))
 		if out["banked"] != true || len(rgaaStrings(out["findings"])) != rgaaInt(auditOut["findings"]) {

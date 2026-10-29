@@ -52,7 +52,10 @@ The report, page grid, coverage annex and ledger land under
 exception: the engine writes them under the audited checkout's
 `.ultra11y/pages/` (gitignored, like the e2e workspace `serve.mjs`
 seeds under `studio/e2e/.tmp/`) — so don't run the demo while a studio
-e2e session is live. The audit reads the checkout AS IT IS: uncommitted
+e2e session is live. A previous demo's captures are not inherited:
+`static_audit` purges that directory before the audit, so a second run
+on the same checkout never ingests the first's stale probes. The audit
+reads the checkout AS IT IS: uncommitted
 edits to `studio/src` are part of what gets judged.
 
 ## Options and variants

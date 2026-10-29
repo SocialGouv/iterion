@@ -1241,6 +1241,16 @@ tool static_audit:
     const RUN = {{input.run_dir}};
     const L = require(path.join(RUN, "bin", "lib.js")).init(RUN);
     const WS = {{input.workspace_dir}};
+    // The engine's audit ingests the captures already under .ultra11y/pages/ —
+    // including a previous run's, whose stale probes anchor findings the fresh
+    // audit no longer produces. Nothing durable lives there (gitignored); this
+    // run's own render captures its pages after this node.
+    const pagesDir = path.join(WS, ".ultra11y", "pages");
+    let pagesPurged = 0;
+    if (L.exists(pagesDir)) {
+      try { pagesPurged = fs.readdirSync(pagesDir).length; } catch (e) { pagesPurged = 0; }
+      fs.rmSync(pagesDir, { recursive: true, force: true });
+    }
     // Remove the previous generation's audit BEFORE calling the engine: the
     // engine swallows a failed write of audit-latest.json, and the existence
     // check below would otherwise pass on the OLD — possibly folded —
@@ -1262,7 +1272,7 @@ tool static_audit:
     const sha = L.commitAudit();
     const auto = Math.round(Number(doc.conformancePct || 0));
     if (files === 0) L.refuse("EMPTY_SCOPE", "the engine found no auditable file in scope — an empty scope is NOT a clean audit: widen scope_globs, or check that this project has a user interface at all", { files: 0, findings: findings, residual: residual, auto_pct: 0, truncated: false, audit_path: L.auditPath(), audit_sha256: sha });
-    L.layer("static", { status: truncated ? "degraded" : "ok", files: files, findings: findings, residual: residual, auto_pct: auto, truncated: truncated, reason: truncated ? "périmètre tronqué à max_files=" + maxFiles : "" });
+    L.layer("static", { status: truncated ? "degraded" : "ok", files: files, findings: findings, residual: residual, auto_pct: auto, truncated: truncated, reason: truncated ? "périmètre tronqué à max_files=" + maxFiles : "", pages_purged: pagesPurged });
     L.out({ ok: true, fail_code: "", reason: "", files: files, findings: findings, residual: residual, auto_pct: auto, truncated: truncated, audit_path: L.auditPath(), audit_sha256: sha });
   language: js
   input: audit_input
@@ -2000,7 +2010,7 @@ tool final_report:
     a.push("");
     a.push("| Couche | État | Détail |");
     a.push("|---|---|---|");
-    a.push("| Analyse statique | " + st(layers.static) + " | " + (layers.static ? layers.static.files + " fichier(s), " + layers.static.findings + " constat(s) moteur, " + layers.static.residual + " critère(s) laissés au jugement" + (layers.static.reason ? " — " + layers.static.reason : "") : "") + " |");
+    a.push("| Analyse statique | " + st(layers.static) + " | " + (layers.static ? layers.static.files + " fichier(s), " + layers.static.findings + " constat(s) moteur, " + layers.static.residual + " critère(s) laissés au jugement" + (layers.static.reason ? " — " + layers.static.reason : "") + (layers.static.pages_purged ? " — " + layers.static.pages_purged + " capture(s) de page d'un run précédent écartée(s) avant l'audit" : "") : "") + " |");
     a.push("| Pages rendues | " + st(layers.rendered) + " | " + (layers.rendered ? (layers.rendered.reason || (layers.rendered.pages_recorded + " page(s) capturée(s), " + layers.rendered.pages_refused + " refusée(s)" + (layers.rendered.missing_kinds && layers.rendered.missing_kinds.length ? " ; types de page manquants : " + layers.rendered.missing_kinds.join(", ") : ""))) : "couche désactivée, ou pas de navigateur / d'échantillon de pages") + " |");
     a.push("| Registre de verdicts | " + st(layers.ledger) + " | " + (layers.ledger ? (layers.ledger.reason || (layers.ledger.replayed + " verdict(s) rejoués ; périmés : " + fmt(layers.ledger.stale) + " ; obsolètes : " + fmt(layers.ledger.obsolete) + " ; refusés par le gate moteur : " + fmt(layers.ledger.refused || []) + " ; recommandations non rejouées (non normatives) : " + Number(layers.ledger.recommendations_stripped || 0))) : "") + " |");
     a.push("| Adjudication par agents | " + st(layers.adjudication) + " | " + (layers.adjudication ? layers.adjudication.filled + " verdict(s) reçus, " + layers.adjudication.unfilled + " sans réponse, lots perdus : " + fmt(layers.adjudication.failed_batches) + ", verdicts écartés (hors lot, doublons, malformés) : " + layers.adjudication.foreign_dropped + ", citations renvoyées : " + layers.adjudication.citation_rejected + ", recommandations écartées (pas un objet ancré avec un message, ou hors de l'évidence du critère) : " + Number(layers.adjudication.recommendations_dropped || 0) : "") + " |");
