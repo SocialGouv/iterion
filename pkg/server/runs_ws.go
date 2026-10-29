@@ -113,6 +113,18 @@ func runWSMaxLifetime() time.Duration {
 	return envDurationOrDefault("ITERION_RUN_WS_MAX_LIFETIME", defaultRunWSMaxLifetime)
 }
 
+// runWSStandingTickPeriod is how often a SUBSCRIBED passive connection
+// re-derives its standing. The ADR-148 review's F1: subscribe and
+// subscribe_logs carry no envelope of their own, so without a tick a
+// stream would outlive the standing it was opened under until the
+// lifetime cap. Overridable like the lifetime cap; the standing read
+// inside a tick is bounded by runWSStandingTimeout.
+const defaultRunWSStandingTick = 5 * time.Minute
+
+func runWSStandingTickPeriod() time.Duration {
+	return envDurationOrDefault("ITERION_RUN_WS_STANDING_TICK", defaultRunWSStandingTick)
+}
+
 type wsSubscribeRequest struct {
 	FromSeq int64 `json:"from_seq,omitempty"`
 	// ReplayHistory tells the server whether to send disk-persisted
@@ -349,6 +361,7 @@ func (c *runConn) run() {
 	defer c.close()
 	errtrack.Go("server.runWS.writePump", c.writePump)
 	errtrack.Go("server.runWS.watchLifetime", c.watchLifetime)
+	errtrack.Go("server.runWS.watchStanding", c.watchStanding)
 	c.readPump()
 }
 
@@ -366,6 +379,85 @@ func (c *runConn) watchLifetime() {
 			c.server.logger.Info("server: ws of run %s reached its lifetime cap (%s) — closing", c.runID, lifetime)
 		}
 		c.closeWithReason(websocket.CloseNormalClosure, wsCloseLifetimeReached, "reopen the socket to present a credential again")
+	}
+}
+
+// watchStanding is the passive connection's half of the standing rule.
+// subscribe and subscribe_logs carry no envelope of their own, so the
+// mutating-envelope gate never re-derives their scope. Every tick, a
+// SUBSCRIBED connection re-asks what the upgrade answered once — does the
+// credential still stand, and does a viewer standing in the run's team
+// still hold? The run-visibility axis is part of that standing (ADR-148):
+// closing it, or removing the org-membership it leaned on, ends the
+// stream within one tick. An unreadable read is no verdict — the socket
+// stays and the failure is logged; the server's own failure is no
+// refusal. A connection no auth context ever reached (the local run
+// console) has nothing to re-derive.
+func (c *runConn) watchStanding() {
+	if c.identity.Credential == "" {
+		return
+	}
+	// A cross-store connection (?store=) watches a FOREIGN store's run:
+	// runTenant below reads the primary store and would answer not-found,
+	// closing the socket at the first tick with a reason that names no
+	// bound — the same exemption the mutating-envelope gate makes for
+	// c.xStore (the ADR-148 review's R63ff56).
+	if c.xStore != nil {
+		return
+	}
+	t := time.NewTicker(runWSStandingTickPeriod())
+	defer t.Stop()
+	for {
+		select {
+		case <-c.closed:
+			return
+		case <-t.C:
+		}
+		c.mu.Lock()
+		idle := !c.subscribed && !c.logSubscribed
+		c.mu.Unlock()
+		if idle {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(c.authCtx(), runWSStandingTimeout)
+		user, err := c.server.checkStanding(ctx, c.identity)
+		if err != nil {
+			cancel()
+			if mapAuthErrorStatus(err) >= http.StatusInternalServerError {
+				if c.server.logger != nil {
+					c.server.logger.Error("server: ws of run %s: the standing of its credential could not be read: %v", c.runID, err)
+				}
+				continue
+			}
+			c.closeWithReason(websocket.ClosePolicyViolation, wsCloseCredentialRefused, err.Error())
+			return
+		}
+		scoped := c.identity
+		scoped.IsSuperAdmin = user.IsSuperAdmin
+		team, terr := c.server.runTenant(ctx, c.runID)
+		if terr != nil {
+			cancel()
+			if errors.Is(terr, store.ErrRunNotFound) || errors.Is(terr, store.ErrRunDeleted) {
+				c.closeWithReason(websocket.CloseNormalClosure, wsCloseScopeLost, "the run this socket watches is gone")
+				return
+			}
+			if c.server.logger != nil {
+				c.server.logger.Error("server: ws of run %s: its team could not be resolved: %v", c.runID, terr)
+			}
+			continue
+		}
+		resolved, ok, serr := identityInTeamOn(c.server.authStore(), ctx, scoped, team, true)
+		cancel()
+		if serr != nil {
+			if c.server.logger != nil {
+				c.server.logger.Error("server: ws of run %s: the caller's standing in %s could not be read: %v", c.runID, team, serr)
+			}
+			continue
+		}
+		if !ok || !resolved.Role.AtLeast(identity.RoleViewer) {
+			c.closeWithReason(websocket.ClosePolicyViolation, wsCloseScopeLost, "your standing in the run's team no longer holds")
+			return
+		}
 	}
 }
 
@@ -547,7 +639,7 @@ func (c *runConn) mutationAllowed(env runWSEnvelope) bool {
 	}
 	envID := c.identity
 	envID.IsSuperAdmin = user.IsSuperAdmin
-	resolved, ok, serr := identityInTeamOn(c.server.authStore(), ctx, envID, team)
+	resolved, ok, serr := identityInTeamOn(c.server.authStore(), ctx, envID, team, true)
 	if serr != nil {
 		if c.server.logger != nil {
 			c.server.logger.Error("server: ws of run %s: the caller's standing in %s could not be read: %v", c.runID, team, serr)
@@ -597,6 +689,13 @@ func (c *runConn) handleSubscribe(env runWSEnvelope) {
 		c.mu.Unlock()
 		c.sendError("snapshot_failed", err.Error(), env.AckID)
 		return
+	}
+	// The caller's standing for THIS run (the ADR-148 review's F4): the
+	// upgrade resolved it; the studio derives its action affordances
+	// from it. Server-attached after the deterministic build, like the
+	// REST path.
+	if c.identity.Role != "" {
+		snap.Viewer = &runview.RunViewer{Role: string(c.identity.Role), Via: c.identity.Via}
 	}
 	c.sendEnvelope(wsTypeSnapshot, snap, env.AckID)
 

@@ -4967,6 +4967,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/teams/{id}/run-visibility": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /** PUT /api/teams/{id}/run-visibility */
+        put: operations["putTeamsByIdRunVisibility"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/secrets": {
         parameters: {
             query?: never;
@@ -7349,6 +7368,7 @@ export interface components {
             executions: components["schemas"]["ExecutionState"][];
             last_seq: number;
             run: components["schemas"]["RunHeader"];
+            viewer?: components["schemas"]["RunViewer"];
         };
         RunSource: {
             client_id?: string;
@@ -7404,6 +7424,10 @@ export interface components {
             updated_at: string;
             work_dir?: string;
             workflow_name: string;
+        };
+        RunViewer: {
+            role: string;
+            via?: string;
         };
         Sandbox: {
             default_image?: string;
@@ -8146,6 +8170,7 @@ export interface components {
             name: string;
             org_id?: string;
             personal?: boolean;
+            run_visibility?: string;
             runner_pool?: string;
             slug: string;
             status: string;
@@ -16163,6 +16188,26 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["routingPolicyView"];
                 };
+            };
+        };
+    };
+    putTeamsByIdRunVisibility: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

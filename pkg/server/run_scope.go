@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -201,16 +202,29 @@ func (s *Server) runTenant(ctx context.Context, runID string) (string, error) {
 //     Via: this GRANTS what the pinned-token path refused before (an org
 //     admin's PAT pinned to another team was unusable there), it does not
 //     widen a session beyond canViewTeam;
+//   - a plain org member of the team's parent org reads as a viewer too,
+//     but only when the team's run-visibility axis (ADR-148) is explicitly
+//     opened to the org — a per-team flag the org sets, marked Via:
+//     org-shared; every action stays behind the member rung;
 //   - everyone else: not authorized.
 //
+// The axis is a BY-ID grant: allowOrgShared marks the callers that sit on
+// the run-addressed/WS-scope paths, where the grant was decided. The
+// X-Iterion-Team header re-scope passes false — the header costs exactly
+// what a team switch would demand, and a plain org member's switch into
+// the team is refused; letting the axis ride the header would open the
+// team's run LISTS and stats to it (the ADR-148 review's R1141b0).
+//
 // A membership-store FAILURE is an error, never a silent degrade to viewer.
-func (s *Server) identityInTeam(ctx context.Context, id auth.Identity, teamID string) (auth.Identity, bool, error) {
-	return identityInTeamOn(s.authStore(), ctx, id, teamID)
+func (s *Server) identityInTeam(ctx context.Context, id auth.Identity, teamID string, allowOrgShared bool) (auth.Identity, bool, error) {
+	return identityInTeamOn(s.authStore(), ctx, id, teamID, allowOrgShared)
 }
 
 // identityInTeamOn is identityInTeam against an explicit identity store —
 // the same computation, testable against stubbed membership failures.
-func identityInTeamOn(st identity.Store, ctx context.Context, id auth.Identity, teamID string) (auth.Identity, bool, error) {
+// allowOrgShared carries the by-id contract line: true on the
+// run-addressed and WS-standing paths, false on the header re-scope.
+func identityInTeamOn(st identity.Store, ctx context.Context, id auth.Identity, teamID string, allowOrgShared bool) (auth.Identity, bool, error) {
 	if id.IsSynthetic() {
 		return auth.Identity{}, false, nil
 	}
@@ -281,14 +295,30 @@ func identityInTeamOn(st identity.Store, ctx context.Context, id auth.Identity, 
 		if oerr != nil && !errors.Is(oerr, identity.ErrNotFound) {
 			return auth.Identity{}, false, oerr
 		}
-		if oerr != nil || !om.Role.AtLeast(identity.OrgRoleAdmin) {
+		if oerr != nil || !om.Role.Valid() {
+			return auth.Identity{}, false, nil
+		}
+		// The org reach, narrowest grant first: an org admin/owner reads
+		// as a viewer on every team of their org (what canViewTeam would
+		// grant); a plain org member does too, but ONLY on a team whose
+		// run-visibility axis (ADR-148) is explicitly opened to the org —
+		// a per-team, org-gated flag read LIVE with the team above. Both
+		// land as a viewer: the ladder still refuses every action, and
+		// cdp/shell stay member-only.
+		via := ""
+		switch {
+		case om.Role.AtLeast(identity.OrgRoleAdmin):
+			via = "org-admin-lineage"
+		case allowOrgShared && t.RunVisibility == identity.RunVisibilityOrg:
+			via = "org-shared"
+		default:
 			return auth.Identity{}, false, nil
 		}
 		return withCredentialOf(auth.Identity{
 			UserID: id.UserID, Email: id.Email,
 			OrgID: t.OrgID, OrgRole: om.Role,
 			TeamID: teamID, Role: identity.RoleViewer,
-			Via: "org-admin-lineage",
+			Via: via,
 		}, id), true, nil
 	default:
 		// A transient store failure must NOT degrade into a verdict.
@@ -377,7 +407,7 @@ func (s *Server) scopeRunByID(w http.ResponseWriter, r *http.Request, id auth.Id
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "resolve run tenant: %v", err)
 		return nil, false
 	}
-	resolved, ok, err := s.identityInTeam(r.Context(), id, team)
+	resolved, ok, err := s.identityInTeam(r.Context(), id, team, true)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "resolve standing in team %s: %v", team, err)
 		return nil, false
@@ -417,6 +447,8 @@ func (s *Server) scopeRunByID(w http.ResponseWriter, r *http.Request, id auth.Id
 // issue's own board unchanged. An issue the caller cannot see answers 404
 // exactly like a missing one; a resolver that cannot read is a 500; an
 // ambiguous id prefix is not an address — the ambient stamp decides.
+// allowOrgShared=false: the run-visibility axis (ADR-148) is a RUNS grant —
+// it does not reach the board surface.
 func (s *Server) scopeIssueByID(w http.ResponseWriter, r *http.Request, id auth.Identity, issueID string, fixedSegments int) (context.Context, bool) {
 	if issueID == "" {
 		s.httpErrorFor(w, r, http.StatusNotFound, "issue not found")
@@ -434,7 +466,7 @@ func (s *Server) scopeIssueByID(w http.ResponseWriter, r *http.Request, id auth.
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "resolve issue tenant: %v", err)
 		return nil, false
 	}
-	resolved, ok, err := s.identityInTeam(r.Context(), id, team)
+	resolved, ok, err := s.identityInTeam(r.Context(), id, team, false)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "resolve standing in team %s: %v", team, err)
 		return nil, false
@@ -453,6 +485,20 @@ func (s *Server) scopeIssueByID(w http.ResponseWriter, r *http.Request, id auth.
 		s.superAdminRunRead(r, id, team, "issue.cross_team_read", issueID, nil)
 	}
 	return s.stampIdentity(w, r, resolved, true)
+}
+
+// attachRunViewer stamps the caller's effective standing for THIS run
+// onto a snapshot about to be served (the ADR-148 review's F4): the
+// choke point resolved it; the studio derives its action affordances
+// from it instead of guessing from run status. No identity (or none
+// with a role — a local, auth-less server), no field: today's
+// affordances stand.
+func attachRunViewer(r *http.Request, snap *runview.RunSnapshot) {
+	id, _ := auth.FromContext(r.Context())
+	if id.Role == "" {
+		return
+	}
+	snap.Viewer = &runview.RunViewer{Role: string(id.Role), Via: id.Via}
 }
 
 // socketStanding is what one tick of an open run socket (the Browser-Live
@@ -522,7 +568,7 @@ func (s *Server) runSocketStanding(ctx context.Context, runID string, opener aut
 	}
 	scoped := opener
 	scoped.IsSuperAdmin = user.IsSuperAdmin
-	resolved, ok, serr := identityInTeamOn(s.authStore(), ctx, scoped, team)
+	resolved, ok, serr := identityInTeamOn(s.authStore(), ctx, scoped, team, true)
 	if serr != nil {
 		if s.logger != nil {
 			s.logger.Error("server: run socket of %s: the caller's standing in %s could not be read: %v", runID, team, serr)

@@ -256,6 +256,10 @@ export interface RunStoreState {
   setSelectedAttemptID: (id: string | null) => void;
   runId: string | null;
   snapshot: RunSnapshot | null;
+  // The caller's effective standing for the open run (ADR-148), kept
+  // beside the snapshot because the client's local per-seq rebuilds
+  // never carry it. Null until a server payload names it.
+  viewer: { role: string; via?: string } | null;
   events: RunEvent[];
   // historyFetchedForRun is the runId whose persisted history has
   // been pulled via /events. Null means lazy-mode hydration is still
@@ -404,6 +408,7 @@ function freshInitial() {
     selectedAttemptID: null as string | null,
     runId: null as string | null,
     snapshot: null as RunSnapshot | null,
+    viewer: null,
     events: [] as RunEvent[],
     // historyFetchedForRun marks which run's persisted event log has
     // already been hydrated via the REST /events endpoint. The WS no
@@ -488,6 +493,7 @@ export function createRunStore() {
       if (newerEvents.length === 0) {
         return {
           snapshot: snap,
+          viewer: snap.viewer ?? state.viewer,
           executionsById: map,
           lastExecIDByNode,
           // Snapshots don't carry "currently in-flight tool" state, so
@@ -527,6 +533,7 @@ export function createRunStore() {
       );
       return {
         ...partial,
+        viewer: snap.viewer ?? state.viewer,
         // Preserve the full event history (snapshot + post-snapshot)
         // so timeline scrubbing and edge rendering have the full
         // record.

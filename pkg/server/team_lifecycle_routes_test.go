@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -84,6 +85,82 @@ func TestTeamLifecycle_statusRefusesPendingDeletion(t *testing.T) {
 	s.handleSetTeamStatus(w, teamReq(orgAdminCtx(), "POST", "/api/teams/t1/status", `{"status":"pending_deletion"}`, "t1", ""))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("pending_deletion: code=%d body=%s, want 400", w.Code, w.Body.String())
+	}
+}
+
+// The run-visibility axis (ADR-148) is a governance act like suspension:
+// an org decision, with "" an explicit reset and an unknown value refused
+// rather than read as the default.
+func TestTeamLifecycle_runVisibilityIsAnOrgDecision(t *testing.T) {
+	s := newOrgCredsTestServer(t)
+	s.auditStore = audit.NewMemoryStore()
+
+	w := httptest.NewRecorder()
+	s.handleSetTeamRunVisibility(w, teamReq(teamAdminCtx(), "PUT", "/api/teams/t1/run-visibility", `{"run_visibility":"org"}`, "t1", ""))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("axis as team admin: code=%d body=%s, want 403", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	s.handleSetTeamRunVisibility(w, teamReq(orgAdminCtx(), "PUT", "/api/teams/t1/run-visibility", `{"run_visibility":"org"}`, "t1", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("axis as org admin: code=%d body=%s", w.Code, w.Body.String())
+	}
+	got, err := s.authStore().GetTeam(context.Background(), "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RunVisibility != identity.RunVisibilityOrg {
+		t.Fatalf("run visibility = %q, want org", got.RunVisibility)
+	}
+
+	// The write is audited to BOTH scopes (the ADR-148 review's F9): the
+	// team's trail and the org's trail each carry the action — the org row
+	// is what the roster-curating operator reads. Writes are detached;
+	// poll briefly for both rows to land.
+	deadline := time.Now().Add(10 * time.Second)
+	var tenantEvs, orgEvs []audit.Event
+	for {
+		tenantEvs, _ = s.auditStore.ListByTenant(context.Background(), "t1", audit.Page{})
+		orgEvs, _ = s.auditStore.ListByTenant(context.Background(), "o1", audit.Page{})
+		if (len(tenantEvs) >= 1 && len(orgEvs) >= 1) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(tenantEvs) != 1 || tenantEvs[0].Action != "team.run_visibility_changed" {
+		t.Fatalf("tenant audit = %+v, want one team.run_visibility_changed row", tenantEvs)
+	}
+	if len(orgEvs) != 1 || orgEvs[0].Action != "team.run_visibility_changed" {
+		t.Fatalf("org audit = %+v, want one team.run_visibility_changed row", orgEvs)
+	}
+
+	// A PUT without the field is not a reset: refusing it keeps "" an
+	// explicit, audited act.
+	w = httptest.NewRecorder()
+	s.handleSetTeamRunVisibility(w, teamReq(orgAdminCtx(), "PUT", "/api/teams/t1/run-visibility", `{}`, "t1", ""))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("absent field: code=%d body=%s, want 400", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	s.handleSetTeamRunVisibility(w, teamReq(orgAdminCtx(), "PUT", "/api/teams/t1/run-visibility", `{"run_visibility":"public"}`, "t1", ""))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown value: code=%d body=%s, want 400", w.Code, w.Body.String())
+	}
+
+	// "" is the explicit reset — the revocation half of the axis.
+	w = httptest.NewRecorder()
+	s.handleSetTeamRunVisibility(w, teamReq(orgAdminCtx(), "PUT", "/api/teams/t1/run-visibility", `{"run_visibility":""}`, "t1", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("reset: code=%d body=%s", w.Code, w.Body.String())
+	}
+	got, err = s.authStore().GetTeam(context.Background(), "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RunVisibility != identity.RunVisibilityTeam {
+		t.Fatalf("run visibility = %q, want team-private", got.RunVisibility)
 	}
 }
 

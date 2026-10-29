@@ -1,4 +1,5 @@
 import { errorMessage } from "@/lib/errorHints";
+import { useRunCanAct } from "@/hooks/useRunCanAct";
 import { useEffect, useRef, useState } from "react";
 
 import { getRun, resumeRun } from "@/api/runs";
@@ -69,6 +70,7 @@ function ReviewMergeCardTurn({
   const [forceRetry, setForceRetry] = useState<ForceRetry | null>(null);
   const [reply, setReply] = useState("");
   const [strategy, setStrategy] = useState(review?.mergeStrategy ?? "squash");
+  const canAct = useRunCanAct();
   const [commitMsg, setCommitMsg] = useState("");
 
   const snapshotTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -256,21 +258,30 @@ function ReviewMergeCardTurn({
             disabled={busy}
           />
         )}
-        <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="primary" onClick={() => merge("approve_merge")} disabled={busy}>
-            {noMerge ? "Approve" : "Approve & merge"}
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => merge("force_merge")} disabled={busy}>
-            Force-merge
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => void requestChanges()} disabled={busy}>
-            Request changes
-          </Button>
-        </div>
-        <p className="text-body text-fg-muted">
-          Force-merge skips the reviewer&apos;s verdict (git safety checks still
-          apply). Request changes returns the run to the implementer.
-        </p>
+        {canAct ? (
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="primary" onClick={() => merge("approve_merge")} disabled={busy}>
+              {noMerge ? "Approve" : "Approve & merge"}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => merge("force_merge")} disabled={busy}>
+              Force-merge
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => void requestChanges()} disabled={busy}>
+              Request changes
+            </Button>
+          </div>
+        ) : (
+          <p className="text-body text-fg-muted" role="note">
+            Merge decisions come from a member of the run's team — you have
+            read-only access to this run.
+          </p>
+        )}
+        {canAct && (
+          <p className="text-body text-fg-muted">
+            Force-merge skips the reviewer&apos;s verdict (git safety checks still
+            apply). Request changes returns the run to the implementer.
+          </p>
+        )}
       </div>
 
       {error && (

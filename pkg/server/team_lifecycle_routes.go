@@ -28,6 +28,7 @@ func (s *Server) registerTeamLifecycleRoutes() {
 	s.mux.Handle("GET /api/teams/{id}", s.requireAuth(http.HandlerFunc(s.handleGetTeam)))
 	s.mux.Handle("PATCH /api/teams/{id}", s.requireAuth(http.HandlerFunc(s.handleUpdateTeam)))
 	s.mux.Handle("POST /api/teams/{id}/status", s.requireAuth(http.HandlerFunc(s.handleSetTeamStatus)))
+	s.mux.Handle("PUT /api/teams/{id}/run-visibility", s.requireAuth(http.HandlerFunc(s.handleSetTeamRunVisibility)))
 	s.mux.Handle("DELETE /api/teams/{id}", s.requireAuth(http.HandlerFunc(s.handleDeleteTeam)))
 	s.mux.Handle("PUT /api/teams/{id}/members/{user_id}", s.requireAuth(http.HandlerFunc(s.handlePutTeamMember)))
 	s.mux.Handle("PUT /api/orgs/{id}/members/{user_id}", s.requireAuth(http.HandlerFunc(s.handlePutOrgMember)))
@@ -206,6 +207,50 @@ func (s *Server) handleSetTeamStatus(w http.ResponseWriter, r *http.Request) {
 	s.auditTenant(r, teamID, "team.status_changed", "team", teamID, map[string]any{"status": string(st), "reason": req.Reason})
 	if t.OrgID != "" {
 		s.auditOrg(r, t.OrgID, "team.status_changed", "team", teamID, map[string]any{"status": string(st), "reason": req.Reason})
+	}
+	writeJSON(w, toTeamSummaryView(t))
+}
+
+// handleSetTeamRunVisibility writes Team.RunVisibility (ADR-148): who
+// beyond the team may READ its runs by id. Exposure of a team's run
+// contents to the org is a governance act exactly like suspension — the
+// same org gate, the same double audit — and resetting to team-private is
+// the revocation half of the axis: the choke point reads the field LIVE,
+// so closing it ends every org-shared read and passive socket within the
+// standing tick. An org membership is the audience, not a team roster:
+// removing a TEAM membership never revokes the sharing.
+func (s *Server) handleSetTeamRunVisibility(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	teamID := r.PathValue("id")
+	if !s.orgAdminOfTeam(r.Context(), id, teamID) && !id.IsSuperAdmin {
+		httpError(w, http.StatusForbidden, "org admin or owner required")
+		return
+	}
+	var req struct {
+		RunVisibility *string `json:"run_visibility"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	// A PUT without the field says nothing: refusing it keeps "" (the
+	// reset) an explicit, audited act instead of a client's omission.
+	if req.RunVisibility == nil {
+		httpError(w, http.StatusBadRequest, `run_visibility is required (send "" to reset to team-private)`)
+		return
+	}
+	if !identity.ValidRunVisibility(*req.RunVisibility) {
+		httpError(w, http.StatusBadRequest, `invalid run_visibility (use "" or "org")`)
+		return
+	}
+	t, err := s.authStore().PatchTeam(r.Context(), teamID, identity.TeamPatch{RunVisibility: req.RunVisibility})
+	if err != nil {
+		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		return
+	}
+	meta := map[string]any{"run_visibility": *req.RunVisibility}
+	s.auditTenant(r, teamID, "team.run_visibility_changed", "team", teamID, meta)
+	if t.OrgID != "" {
+		s.auditOrg(r, t.OrgID, "team.run_visibility_changed", "team", teamID, meta)
 	}
 	writeJSON(w, toTeamSummaryView(t))
 }

@@ -404,6 +404,21 @@ type RunSnapshot struct {
 	// additive and derived from the same run/events stream; callers may
 	// ignore it when they have not adopted the contract yet.
 	Diagnostic *DiagnosticProjection `json:"diagnostic,omitempty"`
+	// Viewer is the CALLER's effective standing for this run (ADR-148):
+	// attached by the server AFTER the deterministic build — the reducer
+	// stays a pure function of run+events, so the client's local per-seq
+	// rebuilds carry no viewer and the UI keeps the last server-set
+	// value. Nil on an auth-less (local) server: the UI keeps its
+	// unconditional affordances.
+	Viewer *RunViewer `json:"viewer,omitempty"`
+}
+
+// RunViewer is one caller's standing on one run: the role the ladder
+// judged (viewer reads, member acts) and the grant that carried it
+// (membership, org-admin-lineage, org-shared, super-admin).
+type RunViewer struct {
+	Role string `json:"role"`
+	Via  string `json:"via,omitempty"`
 }
 
 // SnapshotBuilder is a stateful incremental reducer: feed it events in

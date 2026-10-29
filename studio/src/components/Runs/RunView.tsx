@@ -449,7 +449,9 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
   // down). Gate every editor entry point on the server-computed flag so an
   // Edit affordance is simply absent rather than error-on-click. When
   // unavailable the file rows still open the read-only diff dialog.
-  const canEditFiles = snapshot.run.worktree_available === true;
+  const canEditFiles =
+    snapshot.run.worktree_available === true &&
+    (snapshot.viewer ? snapshot.viewer.role !== "viewer" : true);
   const onEditFile = canEditFiles ? handleEditFile : undefined;
   // Drive the EventLog filter from the canvas/detail selection so a
   // click on a node implicitly narrows the event stream.
@@ -469,7 +471,9 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
     snapshot.run.status === "cancelled";
   // The chat input is hidden when the run reached a terminal status,
   // but the transcript stays readable in the floating / docked panel.
-  const chatInputDisabled = isQueued || isTerminal;
+  const canAct = snapshot.viewer ? snapshot.viewer.role !== "viewer" : true;
+  const chatInputDisabled =
+    !canAct || isQueued || isTerminal;
 
   // The center column: the canvas + node-detail top split over the bottom
   // drawer, with the optional right-hand Side dock. Extracted to a const to
@@ -628,6 +632,7 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
             run={snapshot.run}
             active={active}
             wsState={wsState}
+            viewer={snapshot.viewer}
             onResetLayout={onResetLayout}
             bare
           />
