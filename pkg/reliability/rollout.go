@@ -219,6 +219,22 @@ type Baseline struct {
 	RetryArmed             int `json:"retry_armed"`
 	RunsWithCorrections    int `json:"runs_with_corrections"`
 	RunsWithWatcherCursors int `json:"runs_with_watcher_cursors"`
+	// The admission trio answers the acceptance criterion the pilot is
+	// judged on — "the pilot report includes the BLOCKED admissions" —
+	// which the status counters above cannot: a denied run is refused
+	// before execution and lands in `failed`, indistinguishable from a
+	// run that failed on its own work.
+	//
+	// AdmissionsRecorded is what makes AdmissionsDenied readable. Zero
+	// denials over a population the gate never visited is not the same
+	// fact as zero denials over a population it did, and a promotion
+	// decided on the second reading of the first number is a promotion
+	// decided on nothing. LegacyContextRuns completes it: those runs
+	// predate the versioned context contract, so the gate allows them by
+	// design and the pilot has nothing to say about them.
+	AdmissionsRecorded int `json:"admissions_recorded"`
+	AdmissionsDenied   int `json:"admissions_denied"`
+	LegacyContextRuns  int `json:"legacy_context_runs"`
 }
 
 func Summarize(runs []*store.Run) Baseline {
@@ -255,9 +271,29 @@ func Summarize(runs []*store.Run) Baseline {
 		if len(run.WatcherCursors) > 0 {
 			b.RunsWithWatcherCursors++
 		}
+		if run.Admission != nil {
+			b.AdmissionsRecorded++
+			// The vocabulary is store.AdmissionDecision.Decision, whose
+			// only refusing value the runtime writes is "denied"
+			// (pkg/runtime/admission.go). Counting the refusals rather
+			// than the allowances is deliberate: a decision this package
+			// has not seen must not silently join the allowed side of a
+			// promotion report.
+			if run.Admission.Decision == admissionDenied {
+				b.AdmissionsDenied++
+			}
+		}
+		if run.ExecutionContext == nil {
+			b.LegacyContextRuns++
+		}
 	}
 	return b
 }
+
+// admissionDenied is the one refusing verdict the runtime's admission gate
+// writes (store.AdmissionDecision.Decision). The field is a plain string
+// on the record, so this is a literal by necessity, not by choice.
+const admissionDenied = "denied"
 
 // RollbackPlan describes the non-destructive rollback contract. Rollback
 // disables new enforcement but retains evidence already written, so a pilot

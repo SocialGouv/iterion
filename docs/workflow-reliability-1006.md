@@ -144,3 +144,46 @@ absent value in both variables resolves to `legacy`.
 Legacy documents are always readable. Missing context, admission, correction
 or watcher fields mean “pre-pilot”, not “successful”; the compatibility report
 marks that state explicitly so a green status cannot be inferred by accident.
+
+## The divergence baseline (tranche 8 close-out)
+
+The eight implementation tranches landed in September 2026. What the design
+owes after them is this: state, against the code and not against the plan,
+which of its eleven acceptance criteria the tree actually meets. A criterion
+is `met` only when a named witness refuses its violation; anything else is
+`partial` or `open` and says what is missing. `verdict` is the measurement,
+not an intention.
+
+| # | Acceptance criterion | Owner | Witness | Verdict |
+| --- | --- | --- | --- | --- |
+| 1 | A missing prerequisite is diagnosed before any model call | [`pkg/runtime/admission.go`](../pkg/runtime/admission.go) (`admitRun`, reached from `engine_run.go` before attachments, workspace setup and the first executor call) | `TestAdmissionEnforceDeniesBeforeExecution` | met, for the contract the gate owns — see row 3 for what the gate does not compare |
+| 2 | CLI, Studio and Copi show the same structured cause for a parent or child failure | [`pkg/runview/diagnostic.go`](../pkg/runview/diagnostic.go) (one versioned projection) | `TestBuildDiagnostic_ProjectsNestedNodeOutputDetail`, `TestSnapshotBuilder_IncludesTheSameDiagnosticProjection` | met |
+| 3 | A deliberately isolated subbot is accepted; an UNDECLARED store divergence is blocked before fan-out | `ExecutionContext.BusinessStores` is declared and normalised ([`pkg/store/execution_context.go`](../pkg/store/execution_context.go)); the child keeps the parent's store declarations ([`pkg/runner/subbot.go`](../pkg/runner/subbot.go)) | first half: the subbot resolution; second half: **none** | **open** — `admitRun` names neither `RunStore` nor `BusinessStores`: the declaration is recorded and never compared with the effective stores, so no divergence can be blocked by it |
+| 4 | An eligible invalid output is corrected at its producer within a defined limit | [`pkg/runtime/node_output.go`](../pkg/runtime/node_output.go) + `WithOutputCorrectionBudget` | `TestSchemaValidation_BoundedCorrectionPersistsSuccess` | **partial** — bounded and tested, but no production path satisfies both of its conditions (validation enabled AND an executor implementing `runtime.OutputCorrector`): the only corrector in the tree is a test double, and `ClawExecutor` validates and retries upstream of this optional path |
+| 5 | An unchanged payload and unchanged violations cannot loop forever | the episode fingerprint comparison, same file | `TestSchemaValidation_UnchangedCorrectionStopsImmediately`, `TestSchemaValidation_UnchangedSemanticPayloadChargesFailedCorrection` | **partial** — proven on the engine path, which production does not reach (row 4) |
+| 6 | A resume explicitly refuses incompatible artifacts and destroys no effect without authorisation | [`pkg/runtime/artifact_contract.go`](../pkg/runtime/artifact_contract.go) (`ValidateArtifactContractsPreflight`, `ValidateResumeArtifacts`) + `Service.PreflightResume` | `TestValidateArtifactContractsRefusesIncompatibleRevisionInEnforce`, `TestForcedArtifactCompatibilitySurvivesWorkflowRestamp` | met |
+| 7 | A shared outage stops new waves without blocking a healthy scope | [`pkg/retrycoord`](../pkg/retrycoord) (durable circuit, tenant-scoped, keyed by workflow revision) | `TestKeyPrefersWorkflowRevision` | met — the key IS the scope, and a circuit-store outage falls back to the per-run retry rather than dropping work |
+| 8 | Budgets and attempt identities survive checkpoints and restarts without double counting | [`pkg/runner`](../pkg/runner) usage-window retry | `TestArmUsageWindowRetry_ALegacyRowGainsItsWallWithoutASecondBudget`, `TestArmUsageWindowRetry_AWindowDurationWindowIsOneWall` | met |
+| 9 | Watchers do not repeat the same action without new evidence | [`pkg/supervise`](../pkg/supervise) durable cursor per (run, supervisor, watched set) | `TestCoordinatorPersistsCursorAndSuppressesDuplicateWake`, `TestCoordinatorCursorLoadFailureStopsActionsAndWrites` | met — per launch surface: a coordinator persists only where one wired a cursor store, which is why the baseline reports `runs_with_watcher_cursors` per run instead of a global flag |
+| 10 | The automated scenarios produce zero duplicated effect, zero unauthorised destructive resume and zero unbounded identical loop | per-lot suites across `pkg/runtime`, `pkg/runview`, `pkg/runner`; `pkg/botreplay` for node contracts | **no single suite** | **open** — the coverage exists lot by lot, but the tranche-8 scenario suite (launch, fan-out, crash, resume, rewind, quota, repair over simulated `NodeExecutor`s, in one place) does not exist; botreplay is deliberately not a graph simulator |
+| 11 | The pilot report includes the BLOCKED admissions and compares cost, delay and interventions with the baseline | `reliability.Baseline` — `admissions_denied`, readable against `admissions_recorded`, with `legacy_context_runs` | `TestSummarizeCountsBlockedAdmissions`, `TestSummarizeDoesNotReadAnUnknownVerdictAsAllowed` | **partial** — the artifact can no longer hide a blocked admission (a denied run never executes and lands in `failed`, where the status counters cannot tell it apart from a run that failed on its own work); the comparison itself needs a pilot that has RUN |
+
+### What the baseline leaves open, named
+
+1. **The declared stores are inert.** `ExecutionContext.RunStore` and
+   `BusinessStores` are filled by the launch authority and compared by
+   nobody; `admitRun` compares the workflow revision, the lineage and the
+   runner's expected context only. Closing it is a behaviour change under
+   `enforce` — a run legitimately migrated between stores would start being
+   denied — so it belongs to the promotion decision, not to this close-out.
+2. **The correction capability has no production implementor.** Rows 4 and 5
+   describe a path only a test double reaches. Either an executor implements
+   `runtime.OutputCorrector`, or the two criteria are retired as describing a
+   capability the product does not ship.
+3. **The scenario suite of row 10 was never written.** The per-lot tests are
+   not a substitute for the end-to-end matrix the tranche names.
+
+Rows 1, 2, 6, 7, 8 and 9 are ticked on the ticket, each on the witness named
+above. Rows 3, 4, 5, 10 and 11 stay unticked: a criterion ticked on a path
+nothing reaches is the false green this document's own compatibility rule
+refuses.

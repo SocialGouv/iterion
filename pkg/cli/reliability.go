@@ -255,6 +255,18 @@ func emitReliabilityReport(out ReliabilityReport, p *Printer) error {
 				strconv.Itoa(b.RunsWithWatcherCursors),
 			}},
 		)
+		p.Blank()
+		// The admission row is printed separately, and denials are stated
+		// out of how many decisions were recorded: the pilot criterion is
+		// that a report cannot hide blocked admissions, and "0 denied"
+		// over a population the gate never visited would do exactly that.
+		p.Table(
+			[]string{"ADMISSIONS_RECORDED", "ADMISSIONS_DENIED", "LEGACY_CONTEXT_RUNS"},
+			[][]string{{
+				strconv.Itoa(b.AdmissionsRecorded), strconv.Itoa(b.AdmissionsDenied),
+				strconv.Itoa(b.LegacyContextRuns),
+			}},
+		)
 	}
 
 	if len(out.Unreadable) > 0 {

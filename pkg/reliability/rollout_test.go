@@ -249,3 +249,54 @@ func TestInvalidModeWarnsOnceAndKeepsValidAlias(t *testing.T) {
 		t.Fatalf("invalid mode warnings = %d, want one", calls)
 	}
 }
+
+// TestSummarizeCountsBlockedAdmissions is the acceptance criterion the
+// pilot is judged on: "the pilot report includes the blocked admissions".
+// The status counters cannot answer it — a denied run never executes and
+// lands in `failed`, where it is indistinguishable from a run that failed
+// on its own work — so a promotion decided on the status row alone is
+// decided without the refusals the gate produced.
+func TestSummarizeCountsBlockedAdmissions(t *testing.T) {
+	b := Summarize([]*store.Run{
+		{
+			Status:           store.RunStatusFailed,
+			ExecutionContext: &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyEnforce},
+			Admission:        &store.AdmissionDecision{Decision: "denied", Code: "context_mismatch"},
+		},
+		{
+			Status:           store.RunStatusFinished,
+			ExecutionContext: &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyReport},
+			Admission:        &store.AdmissionDecision{Decision: "allowed", Code: "context_match"},
+		},
+		// Pre-pilot: no context contract, so the gate allowed it by
+		// design and the pilot has nothing to say about it.
+		{Status: store.RunStatusFinished, Admission: &store.AdmissionDecision{Decision: "allowed", Code: "legacy_context"}},
+		// Never gated at all (a run the engine refused earlier, or one
+		// written before the gate existed): it must not read as allowed.
+		{Status: store.RunStatusQueued},
+	})
+	if b.AdmissionsDenied != 1 {
+		t.Fatalf("admissions_denied = %d, want 1 — a blocked admission is what the pilot report may not hide (baseline = %+v)", b.AdmissionsDenied, b)
+	}
+	if b.AdmissionsRecorded != 3 {
+		t.Fatalf("admissions_recorded = %d, want 3: zero denials over a population the gate never visited is not zero denials over one it did", b.AdmissionsRecorded)
+	}
+	if b.LegacyContextRuns != 2 {
+		t.Fatalf("legacy_context_runs = %d, want 2 (the pre-pilot run and the ungated one)", b.LegacyContextRuns)
+	}
+}
+
+// TestSummarizeDoesNotReadAnUnknownVerdictAsAllowed pins the closed set on
+// the refusing side: the rollout doc's rule one level up is that a missing
+// or unrecognised field means pre-pilot, never successful.
+func TestSummarizeDoesNotReadAnUnknownVerdictAsAllowed(t *testing.T) {
+	b := Summarize([]*store.Run{
+		{Status: store.RunStatusFailed, Admission: &store.AdmissionDecision{Decision: "", Code: "partially_written"}},
+	})
+	if b.AdmissionsRecorded != 1 {
+		t.Fatalf("admissions_recorded = %d, want 1: a recorded decision counts even when its verdict is unreadable", b.AdmissionsRecorded)
+	}
+	if b.AdmissionsDenied != 0 {
+		t.Fatalf("admissions_denied = %d, want 0: an unknown verdict is not a denial either — it is named by the gap between recorded and the verdicts that are readable", b.AdmissionsDenied)
+	}
+}
