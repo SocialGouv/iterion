@@ -160,6 +160,19 @@ property a bundle has to express — which three more facts constrain:
    miss, the pin), and lot 3's exemplar proves that a consumer bot compiles
    and runs with a fragment it does not carry.
 
+   *Amended 2026-10-29, when slices 1 and 2 landed:* the claim that a consumer
+   compiles and travels with a fragment it does not carry is proven by
+   [fragment_transport_test.go](../../pkg/botinstall/fragment_transport_test.go),
+   not by the exemplar — because it cannot be. An unresolved `import` is an
+   `E046` on the unit, and every gallery shape is held to clean parse, compile
+   and bundle diagnostics (`TestBotsCreate_EveryTemplateValidates`), so the
+   only place in this tree where a consumer legitimately lacks its copy is a
+   test: the witness reads the `E046` and the empty program first, then the
+   whole unit, the shared declaration in `Merged` and the snapshot carrying
+   the bytes at the recorded digest. Lot 3's exemplar is therefore
+   self-contained and shows the PATTERN — `group goal(condition, cap)` with a
+   judge running a deterministic check — where an author looks for it.
+
 ## Rejected alternatives
 
 - **A new import form resolved through the registry** —
@@ -213,6 +226,17 @@ property a bundle has to express — which three more facts constrain:
   whether a run that busts the cap should record digests instead of nothing —
   is one decision about `maxPersistedWorkflowSource`, owed by its own ticket,
   and deliberately not smuggled into this lane.
+- **That a resume notices a fragment arriving.** *Named 2026-10-29, when
+  slice 2 landed.* `bots.lock` pins what a producer published, so a
+  materialized fragment is recorded in the consumer's own note and left out
+  of `ContentHashDir` — otherwise resolving a declared dependency would read
+  as drift at the fifteen call sites that ask "is this install still what the
+  lock pinned" (the `bot://` resolver would refuse the consumer for good, and
+  `bots sync` could never short-circuit again). The sixteenth asks a different
+  question: `resume_bundle.go` asks whether the bundle changed since a run,
+  and under this rule it does not see a fragment APPEAR between two runs, even
+  though the compiled unit did change. That is the price of the pin keeping
+  its meaning, and it is a decision of its own to revisit — not an oversight.
 - **A token inside a shared fragment.** Substituting a per-bundle value would
   make a fragment a TEMPLATE, and `{{ }}` already belongs to the DSL: the same
   axis ADR-144 leaves open for skills, with the same consequences
