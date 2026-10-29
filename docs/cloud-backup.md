@@ -128,7 +128,9 @@ constraint applies.
 
 The artifact bucket (`config.s3.bucket`, `iterion-artifacts`) holds the
 artifact bodies, the attachments, the tool outputs, the backend sessions
-and the offloaded IR. Inside the cluster it is replicated — SeaweedFS
+and the offloaded IR — and, under `uploads/`, the uploads a launch form
+staged and no run has claimed yet, transient by construction (an hour)
+and nothing to keep. Inside the cluster it is replicated — SeaweedFS
 `002`, three copies on three volumes — which protects a disk or a node and
 nothing else: not a deletion (a human, a bug, a misplaced `deleteGone`),
 not the loss of the cluster or of the region. A copy OUTSIDE the cluster

@@ -71,6 +71,29 @@ func attachmentRunPrefix(runID string) (string, error) {
 	return fmt.Sprintf("attachments/%s/", runID), nil
 }
 
+// uploadKey is the blob key of a staged upload's bytes:
+// uploads/<upload_id>/<filename>. A staged upload belongs to no run yet, so
+// its family is keyed by the upload id the server minted; the record that
+// scopes it to a tenant lives in the run store, and nothing presigns it.
+func uploadKey(uploadID, filename string) (string, error) {
+	if err := store.SanitizePathComponent("upload_id", uploadID); err != nil {
+		return "", fmt.Errorf("blob: invalid upload_id: %w", err)
+	}
+	if err := store.SanitizePathComponent("upload_filename", filename); err != nil {
+		return "", fmt.Errorf("blob: invalid upload_filename: %w", err)
+	}
+	return fmt.Sprintf("uploads/%s/%s", uploadID, filename), nil
+}
+
+// uploadPrefix is the blob key prefix holding one staged upload. The
+// trailing slash keeps `uploads/<id>-other/` out of a sweep.
+func uploadPrefix(uploadID string) (string, error) {
+	if err := store.SanitizePathComponent("upload_id", uploadID); err != nil {
+		return "", fmt.Errorf("blob: invalid upload_id: %w", err)
+	}
+	return fmt.Sprintf("uploads/%s/", uploadID), nil
+}
+
 // toolBlobKey builds the canonical S3 key for a per-tool-call I/O body.
 // Format: tools/<run_id>/<tool_use_id>/<kind>, where kind ∈
 // {input,output}. Mirrors the filesystem store's

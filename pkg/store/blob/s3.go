@@ -358,6 +358,76 @@ func (c *S3Client) DeleteRunAttachments(ctx context.Context, runID string) error
 }
 
 // ---------------------------------------------------------------------------
+// Staged uploads (cloud StagingStore twin)
+// ---------------------------------------------------------------------------
+
+// PutUpload streams a staged upload under uploads/<uploadID>/<filename>.
+func (c *S3Client) PutUpload(ctx context.Context, uploadID, filename, contentType string, body io.Reader, size int64) error {
+	key, err := uploadKey(uploadID, filename)
+	if err != nil {
+		return err
+	}
+	if body == nil {
+		return fmt.Errorf("blob: put upload %s: nil body", key)
+	}
+	if size < 0 {
+		return fmt.Errorf("blob: put upload %s: negative size %d", key, size)
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	if _, err := c.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:        aws.String(c.bucket),
+		Key:           aws.String(key),
+		Body:          body,
+		ContentLength: aws.Int64(size),
+		ContentType:   aws.String(contentType),
+	}); err != nil {
+		return fmt.Errorf("blob: put upload %s: %w", key, err)
+	}
+	return nil
+}
+
+// GetUpload streams a staged upload's bytes, or ErrArtifactNotFound.
+func (c *S3Client) GetUpload(ctx context.Context, uploadID, filename string) (io.ReadCloser, AttachmentMeta, error) {
+	key, err := uploadKey(uploadID, filename)
+	if err != nil {
+		return nil, AttachmentMeta{}, err
+	}
+	out, err := c.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(c.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		if isS3NotFound(err) {
+			return nil, AttachmentMeta{}, fmt.Errorf("%w: %s", ErrArtifactNotFound, key)
+		}
+		return nil, AttachmentMeta{}, fmt.Errorf("blob: get upload %s: %w", key, err)
+	}
+	meta := AttachmentMeta{}
+	if out.ContentType != nil {
+		meta.ContentType = *out.ContentType
+	}
+	if out.ContentLength != nil {
+		meta.Size = *out.ContentLength
+	}
+	if out.LastModified != nil {
+		meta.LastModified = *out.LastModified
+	}
+	return out.Body, meta, nil
+}
+
+// DeleteUpload sweeps uploads/<uploadID>/ with deleteUnder's batched,
+// best-effort semantics.
+func (c *S3Client) DeleteUpload(ctx context.Context, uploadID string) error {
+	prefix, err := uploadPrefix(uploadID)
+	if err != nil {
+		return err
+	}
+	return c.deleteUnder(ctx, prefix, "upload")
+}
+
+// ---------------------------------------------------------------------------
 // Tool-call I/O blobs (cloud ToolBlobStore twin)
 // ---------------------------------------------------------------------------
 

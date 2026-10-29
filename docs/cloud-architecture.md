@@ -282,7 +282,8 @@ Four boundaries:
    and not where a row is reached by another key — `api_keys` and
    `generic_secrets` index `scope_team` first, a run's children (`interactions`,
    `user_messages`, `run_gitmeta`, `run_tags`) and `memory_docs` index
-   from their parent's id instead, and `org_usage` keys its
+   from their parent's id instead, `staged_uploads` is reached by its
+   `_id` (the upload id) under the tenant filter, and `org_usage` keys its
    (subject, month) in `_id` with no `tenant_id` at all.
    The credential lookups are the deliberate exception: for example
    `password_resets` and `personal_access_tokens` hold no `tenant_id`

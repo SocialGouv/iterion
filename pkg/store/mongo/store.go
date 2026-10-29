@@ -50,6 +50,7 @@ const (
 	colRunTurns       = "run_turns"
 	colRunTags        = "run_tags"
 	colRetryCircuits  = "retry_circuits"
+	colStagedUploads  = "staged_uploads"
 )
 
 // Config bundles the connection settings for a MongoRunStore.
@@ -115,6 +116,7 @@ type Store struct {
 	runTurns           *mongo.Collection
 	runTags            *mongo.Collection
 	retryCircuits      *mongo.Collection
+	stagedUploads      *mongo.Collection
 	blob               blob.Client
 	logger             *iterlog.Logger
 	lockProv           LockProvider
@@ -224,6 +226,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		runTurns:           db.Collection(colRunTurns),
 		runTags:            db.Collection(colRunTags),
 		retryCircuits:      db.Collection(colRetryCircuits),
+		stagedUploads:      db.Collection(colStagedUploads),
 		blob:               cfg.Blob,
 		logger:             cfg.Logger,
 		lockProv:           cfg.LockProvider,
@@ -542,6 +545,14 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 		return err
 	}
 
+	// staged_uploads: reached by _id (the upload id) under the tenant filter;
+	// created_at serves the reaper's "older than the TTL" scan. No Mongo TTL
+	// index: it would drop the record and leave the bytes in the bucket.
+	if err := s.ensureIndexes(ctx, s.stagedUploads, "staged_uploads", []mongo.IndexModel{
+		{Keys: bson.D{{Key: "created_at", Value: 1}}, Options: options.Index().SetName("created_at")},
+	}); err != nil {
+		return err
+	}
 	return nil
 }
 

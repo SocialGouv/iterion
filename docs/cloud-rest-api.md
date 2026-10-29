@@ -835,7 +835,7 @@ so a new id-addressed route cannot land unclassified:
 | `POST` | `/api/runs` | member | Launch a workflow |
 | `POST` | `/api/v1/pipeline-board/tasks/{id}/launch` | member | Launch the bot a pipeline-board task names, bypassing the ready-state ranking — the same `gateLaunch` admission as `POST /api/runs` |
 | `POST` | `/api/runs/preview-cost` | authenticated (no role) | Estimate cost before launch — of the whole program a launch of the same `file_path`/`source` compiles, so a bot in several files is priced across its unit, fragments included. A main handed over inline with no directory behind it carries `import` lines whose fragments did not travel: no price is answered and `notes` says `unit_not_loaded`. |
-| `POST` | `/api/runs/uploads` | authenticated (no role) | Upload an attachment |
+| `POST` | `/api/runs/uploads` | authenticated (no role) | Upload an attachment — staged through the run store's `StagingStore` seam (the `staged_uploads` collection + `uploads/<upload-id>/` in the bucket, under the caller's tenant; swept after an hour), then promoted by the launch that names the id |
 | `GET` | `/api/runs/{id}` | viewer (run tenant) | Run state |
 | `GET` | `/api/runs/{id}/events` | viewer | Event log |
 | `GET` | `/api/runs/{id}/workflow` | viewer | Workflow source attached to the run |

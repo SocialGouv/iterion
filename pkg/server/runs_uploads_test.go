@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 func uploadTestServer(t *testing.T) *Server {
@@ -86,7 +87,7 @@ func TestUploadAttachment_HappyPath(t *testing.T) {
 		t.Errorf("size = 0")
 	}
 	// Staged file must exist on disk.
-	dir := filepath.Join(srv.runs.StoreRoot(), uploadStagingSubdir, resp.UploadID)
+	dir := filepath.Join(srv.runs.StoreRoot(), store.UploadStagingSubdir, resp.UploadID)
 	if _, err := os.Stat(filepath.Join(dir, "logo.png")); err != nil {
 		t.Errorf("staged file missing: %v", err)
 	}
@@ -239,7 +240,7 @@ func TestPromoteStaged(t *testing.T) {
 		t.Errorf("output missing or empty: %+v", out)
 	}
 	// Staging dir for that upload must be gone.
-	if _, err := os.Stat(filepath.Join(rootDir, uploadStagingSubdir, staged.UploadID)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(rootDir, store.UploadStagingSubdir, staged.UploadID)); !os.IsNotExist(err) {
 		t.Errorf("staging dir not cleaned: %v", err)
 	}
 	// And the run must have the attachment persisted (read back via store).

@@ -33,6 +33,10 @@ var nonPerRunCollections = map[string]bool{
 	// top-level run_id: DeleteRun sweeps it with its own DeleteMany on that key
 	// (runs.go), before the children loop, so the run_id sweep is not its path.
 	"run_seq": true,
+	// staged_uploads holds uploads no run has claimed yet (POST /api/runs/uploads
+	// before the launch); the promotion discards the record and the reaper
+	// sweeps the rest after the TTL — a run has nothing of its own in it.
+	"staged_uploads": true,
 }
 
 func TestDeleteRunCoversEveryPerRunCollection(t *testing.T) {

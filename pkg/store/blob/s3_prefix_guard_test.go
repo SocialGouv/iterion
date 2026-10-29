@@ -28,6 +28,7 @@ func prefixSweeps() []prefixSweep {
 		{"DeleteRunBackendSessions", "sessions/run-a/ref-1", func(ctx context.Context, c *S3Client) error { return c.DeleteRunBackendSessions(ctx, "run-a") }},
 		{"DeleteRunToolBlobs", "tools/run-a/tu-1/output", func(ctx context.Context, c *S3Client) error { return c.DeleteRunToolBlobs(ctx, "run-a") }},
 		{"DeleteRunFiles", "runfiles/run-a/out/report.txt", func(ctx context.Context, c *S3Client) error { return c.DeleteRunFiles(ctx, "run-a") }},
+		{"DeleteUpload", "uploads/run-a/brief.pdf", func(ctx context.Context, c *S3Client) error { return c.DeleteUpload(ctx, "run-a") }},
 	}
 }
 
@@ -49,6 +50,7 @@ var foreignKeys = []string{
 	"sessions/run-a-b/ref-1",
 	"tools/run-a-b/tu-1/output",
 	"runfiles/run-a-b/out/report.txt",
+	"uploads/run-a-b/brief.pdf",
 	"artifacts/run-b/plan/0.json",
 	"README-real.txt",
 }

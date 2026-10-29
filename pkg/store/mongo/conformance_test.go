@@ -207,6 +207,47 @@ func (b *inMemoryBlob) DeleteRunAttachments(_ context.Context, runID string) err
 	return nil
 }
 
+func (b *inMemoryBlob) PutUpload(_ context.Context, uploadID, filename, _ string, body io.Reader, size int64) error {
+	key, err := blob.UploadKey(uploadID, filename)
+	if err != nil {
+		return err
+	}
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return err
+	}
+	if int64(len(data)) != size {
+		return fmt.Errorf("inMemoryBlob: upload %s: the body is %d bytes, size says %d", key, len(data), size)
+	}
+	b.data[key] = data
+	return nil
+}
+
+func (b *inMemoryBlob) GetUpload(_ context.Context, uploadID, filename string) (io.ReadCloser, blob.AttachmentMeta, error) {
+	key, err := blob.UploadKey(uploadID, filename)
+	if err != nil {
+		return nil, blob.AttachmentMeta{}, err
+	}
+	body, ok := b.data[key]
+	if !ok {
+		return nil, blob.AttachmentMeta{}, blob.ErrArtifactNotFound
+	}
+	return io.NopCloser(bytes.NewReader(body)), blob.AttachmentMeta{Size: int64(len(body))}, nil
+}
+
+func (b *inMemoryBlob) DeleteUpload(_ context.Context, uploadID string) error {
+	prefix, err := blob.UploadPrefix(uploadID)
+	if err != nil {
+		return err
+	}
+	for k := range b.data {
+		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
+			delete(b.data, k)
+		}
+	}
+	return nil
+}
+
 func (b *inMemoryBlob) PutToolBlob(_ context.Context, runID, toolUseID, kind string, body []byte) error {
 	key, err := blob.ToolBlobKey(runID, toolUseID, kind)
 	if err != nil {

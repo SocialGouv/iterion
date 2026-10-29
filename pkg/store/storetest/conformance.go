@@ -110,6 +110,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("BackendSessionStore", func(t *testing.T) { testBackendSessionStore(t, factory(t)) })
 	t.Run("ScratchBankStore", func(t *testing.T) { testScratchBankStore(t, factory(t)) })
 	t.Run("RunFilesStore", func(t *testing.T) { testRunFilesStore(t, factory(t)) })
+	t.Run("StagingStore", func(t *testing.T) { testStagingStore(t, factory(t)) })
 	t.Run("ParentedRunCreator", func(t *testing.T) { testParentedRunCreator(t, factory(t)) })
 	t.Run("RunListingProjection", func(t *testing.T) { testRunListingProjection(t, factory(t)) })
 	t.Run("RecordedSourceSetter", func(t *testing.T) { testSetRunRecordedSource(t, factory(t)) })
@@ -4196,5 +4197,86 @@ func testSaveRunVersionConflicts(t *testing.T, factory func(*testing.T) store.Ru
 				t.Fatalf("reuse advanced version: %v", err)
 			}
 		})
+	}
+}
+
+// testStagingStore exercises the optional StagingStore seam — the uploads
+// a launch form stages before a run exists — on backends that implement
+// it: the filesystem store under <root>/uploads/, the Mongo store in its
+// staged_uploads collection + the blob backend. One contract, two twins.
+// Skipped otherwise.
+func testStagingStore(t *testing.T, s store.RunStore) {
+	t.Helper()
+	st := store.AsStagingStore(s)
+	if st == nil {
+		t.Skip("backend does not implement StagingStore")
+	}
+	ctx := testCtx()
+	body := []byte("%PDF-1.4 staged bytes")
+	rec := store.StagedUpload{UploadID: "up_1700000000_0123456789abcdef", OriginalFilename: "brief.pdf", MIME: "application/pdf", Size: int64(len(body)), SHA256: "deadbeef"}
+	if err := st.StageUpload(ctx, rec, bytes.NewReader(body)); err != nil {
+		t.Fatalf("StageUpload: %v", err)
+	}
+	got, rc, err := st.OpenStagedUpload(ctx, rec.UploadID)
+	if err != nil {
+		t.Fatalf("OpenStagedUpload: %v", err)
+	}
+	data, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil || !bytes.Equal(data, body) {
+		t.Fatalf("bytes = %q, %v; want the staged body", data, err)
+	}
+	if got.UploadID != rec.UploadID || got.OriginalFilename != rec.OriginalFilename || got.MIME != rec.MIME || got.Size != rec.Size || got.SHA256 != rec.SHA256 {
+		t.Fatalf("record read back %+v, want %+v", got, rec)
+	}
+	if got.CreatedAt.IsZero() {
+		t.Fatal("the store stamped no CreatedAt")
+	}
+	if _, _, err := st.OpenStagedUpload(ctx, "up_1700000000_ffffffffffffffff"); !errors.Is(err, store.ErrUploadNotFound) {
+		t.Fatalf("open unknown = %v, want ErrUploadNotFound", err)
+	}
+	// A body shorter than its record keeps nothing.
+	short := store.StagedUpload{UploadID: "up_1700000000_0000000000000001", OriginalFilename: "short.txt", MIME: "text/plain", Size: 10, SHA256: "x"}
+	if err := st.StageUpload(ctx, short, bytes.NewReader([]byte("abc"))); err == nil {
+		t.Fatal("a body shorter than its record was staged")
+	}
+	if _, _, err := st.OpenStagedUpload(ctx, short.UploadID); !errors.Is(err, store.ErrUploadNotFound) {
+		t.Fatalf("the refused upload left something behind: %v", err)
+	}
+	// Discard, twice.
+	if err := st.DiscardStagedUpload(ctx, rec.UploadID); err != nil {
+		t.Fatalf("DiscardStagedUpload: %v", err)
+	}
+	if _, _, err := st.OpenStagedUpload(ctx, rec.UploadID); !errors.Is(err, store.ErrUploadNotFound) {
+		t.Fatalf("open after discard = %v, want ErrUploadNotFound", err)
+	}
+	if err := st.DiscardStagedUpload(ctx, rec.UploadID); err != nil {
+		t.Fatalf("a second discard errs: %v", err)
+	}
+	// Reap: nothing is due before its time; everything is due after.
+	two := []store.StagedUpload{
+		{UploadID: "up_1700000000_000000000000000a", OriginalFilename: "a.txt", MIME: "text/plain", Size: 1, SHA256: "a"},
+		{UploadID: "up_1700000000_000000000000000b", OriginalFilename: "b.txt", MIME: "text/plain", Size: 1, SHA256: "b"},
+	}
+	for _, u := range two {
+		if err := st.StageUpload(ctx, u, bytes.NewReader([]byte("x"))); err != nil {
+			t.Fatalf("stage %s: %v", u.UploadID, err)
+		}
+	}
+	if n, err := st.ReapStagedUploads(ctx, time.Now().Add(-time.Hour)); err != nil || n != 0 {
+		t.Fatalf("reap before due = %d, %v; want 0, nil", n, err)
+	}
+	if _, rc, err := st.OpenStagedUpload(ctx, two[0].UploadID); err != nil {
+		t.Fatalf("an upload not yet due was reaped: %v", err)
+	} else {
+		_ = rc.Close()
+	}
+	if n, err := st.ReapStagedUploads(ctx, time.Now().Add(time.Hour)); err != nil || n != 2 {
+		t.Fatalf("reap past due = %d, %v; want 2, nil", n, err)
+	}
+	for _, u := range two {
+		if _, _, err := st.OpenStagedUpload(ctx, u.UploadID); !errors.Is(err, store.ErrUploadNotFound) {
+			t.Fatalf("%s survived the reap: %v", u.UploadID, err)
+		}
 	}
 }

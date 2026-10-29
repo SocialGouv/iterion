@@ -401,6 +401,13 @@ func (nopBlob) GetBackendSession(context.Context, string, string) ([]byte, error
 	return nil, blob.ErrArtifactNotFound
 }
 func (nopBlob) DeleteBackendSession(context.Context, string, string) error { return nil }
+func (nopBlob) PutUpload(context.Context, string, string, string, io.Reader, int64) error {
+	return nil
+}
+func (nopBlob) GetUpload(context.Context, string, string) (io.ReadCloser, blob.AttachmentMeta, error) {
+	return nil, blob.AttachmentMeta{}, blob.ErrArtifactNotFound
+}
+func (nopBlob) DeleteUpload(context.Context, string) error { return nil }
 func (nopBlob) DeleteRunBackendSessions(context.Context, string) error     { return nil }
 
 var _ blob.Client = nopBlob{}

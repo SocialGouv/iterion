@@ -154,6 +154,19 @@ type Client interface {
 	// DeleteRunBackendSessions removes sessions/<runID>/, with DeleteRun's
 	// semantics.
 	DeleteRunBackendSessions(ctx context.Context, runID string) error
+
+	// PutUpload streams a staged upload's bytes under
+	// `uploads/<uploadID>/<filename>` with the given Content-Type; size is
+	// the exact byte length. Backs the cloud StagingStore twin: an upload
+	// waits here between POST /api/runs/uploads and the launch that
+	// promotes it to `attachments/<runID>/…`. Idempotent.
+	PutUpload(ctx context.Context, uploadID, filename, contentType string, body io.Reader, size int64) error
+	// GetUpload streams the bytes previously PUT under the same key, or
+	// ErrArtifactNotFound. Callers must Close the returned reader.
+	GetUpload(ctx context.Context, uploadID, filename string) (io.ReadCloser, AttachmentMeta, error)
+	// DeleteUpload removes every blob under `uploads/<uploadID>/` in a
+	// single sweep, with DeleteRun's semantics.
+	DeleteUpload(ctx context.Context, uploadID string) error
 }
 
 // IRBlobKey returns the canonical layout key for an out-of-band compiled
@@ -251,6 +264,16 @@ func RunFileKey(runID, relPath string) (string, error) {
 // file for a run. Used by DeleteRunFiles and retention sweepers.
 func RunFileRunPrefix(runID string) (string, error) {
 	return runFileRunPrefix(runID)
+}
+
+// UploadKey is uploads/<upload_id>/<filename>, a staged upload's bytes.
+func UploadKey(uploadID, filename string) (string, error) {
+	return uploadKey(uploadID, filename)
+}
+
+// UploadPrefix is uploads/<upload_id>/.
+func UploadPrefix(uploadID string) (string, error) {
+	return uploadPrefix(uploadID)
 }
 
 // BackendSessionKey is sessions/<run_id>/<ref>.

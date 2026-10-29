@@ -262,9 +262,18 @@ Content-Type: application/json
 }
 ```
 
-Staged uploads live under `<store>/uploads/<upload_id>/` until the
-launch promotes them to `<store>/runs/<run_id>/attachments/<name>/`.
-Unreferenced uploads are reaped after one hour (`uploadStagingTTL`).
+Where a staged upload waits is the run store's business — the
+`store.StagingStore` seam, a capability a store has or has not, like the
+run-files area. A local store keeps it under `<store>/uploads/<upload_id>/`
+(the bytes under the original filename, a `meta.json` sidecar) until the
+launch promotes it to `<store>/runs/<run_id>/attachments/<name>/`. The
+cloud store has no disk: the record lives in the `staged_uploads`
+collection, stamped with the tenant and the user that staged it, and the
+bytes in the bucket under `uploads/<upload_id>/<filename>`; the launch
+promotes them to `attachments/<run_id>/…`. A promotion from another
+tenant does not find the upload, and nothing presigns one. A store that
+stages nothing answers the upload with a typed 503. Unreferenced uploads
+are reaped after one hour (`uploadStagingTTL`), on every server replica.
 
 ### Limits
 
