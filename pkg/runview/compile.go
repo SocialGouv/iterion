@@ -452,6 +452,23 @@ func compileUnit(path, inline string, withHash bool, b *bundle.Bundle, workspace
 		// name, never as a parse error of a text that was YAML.
 		return nil, nil, nil, bundle.AuthorDocumentError(path)
 	}
+	u, parserPath, err := loadUnitFor(path, inline, b)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	wf, cs, err := compileLoadedUnit(u, path, parserPath, withHash, b, workspace)
+	return wf, cs, u, err
+}
+
+// loadUnitFor is the LOAD half of compileUnit: which files the source at
+// path belongs to, and the name the main is parsed under. It is a function
+// of its own so that every surface asking "which files would a launch of
+// this compile as one program" reads the SAME dispatch — a second copy
+// would price, preview or diagram a different bot than the one that runs.
+// The returned unit carries the merged program's AST, diagnostics and all;
+// what an error diagnostic means is the caller's (compileLoadedUnit refuses
+// on it, a cost preview prices what it can).
+func loadUnitFor(path, inline string, b *bundle.Bundle) (*unit.Unit, string, error) {
 	parserPath := path
 	if parserPath == "" {
 		parserPath = "<inline>"
@@ -469,13 +486,13 @@ func compileUnit(path, inline string, withHash bool, b *bundle.Bundle, workspace
 	case besideBundleMain(parserPath, b):
 		src, err := os.ReadFile(parserPath) // #nosec G304 -- the path the caller named
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("cannot read file: %w", err)
+			return nil, parserPath, fmt.Errorf("cannot read file: %w", err)
 		}
 		u, loadErr = unit.LoadDirWithMain(b.IterPath, parserPath, src)
 	case inline != "":
 		u, loadErr = unit.LoadMap(map[string]string{parserPath: inline}, parserPath)
 		if loadErr == nil && len(u.Files) > 0 && u.Files[0].AST != nil && len(u.Files[0].AST.Imports) > 0 {
-			return nil, nil, nil, fmt.Errorf("%s: %w", parserPath, ErrInlineImport)
+			return nil, parserPath, fmt.Errorf("%s: %w", parserPath, ErrInlineImport)
 		}
 	default:
 		u, loadErr = unit.LoadDir(parserPath)
@@ -483,7 +500,7 @@ func compileUnit(path, inline string, withHash bool, b *bundle.Bundle, workspace
 			// The main itself was not read: the error names the file the
 			// caller asked for, wrapped, as it always has.
 			if _, err := os.ReadFile(parserPath); err != nil {
-				return nil, nil, nil, fmt.Errorf("cannot read file: %w", err)
+				return nil, parserPath, fmt.Errorf("cannot read file: %w", err)
 			}
 		}
 	}
@@ -492,10 +509,53 @@ func compileUnit(path, inline string, withHash bool, b *bundle.Bundle, workspace
 		// past the size cap — is not compiled from what was read of it:
 		// the refusal, positioned, with its remedy (relLaunchError cuts
 		// the load's root from it on the launch path).
-		return nil, nil, nil, fmt.Errorf("parse error: %w", loadErr)
+		return nil, parserPath, fmt.Errorf("parse error: %w", loadErr)
 	}
-	wf, cs, err := compileLoadedUnit(u, path, parserPath, withHash, b, workspace)
-	return wf, cs, u, err
+	return u, parserPath, nil
+}
+
+// LoadLaunchUnit is the files a Launch / Resume of this candidate would
+// compile as ONE program, for a surface that compiles them its own way:
+// the LOAD half of compileForLaunch, reached through the same dispatch and
+// the same bundle resolution, so no second surface re-derives which files a
+// bot is made of. A bot in several files is its whole unit, merged — a main
+// read alone carries `import` lines the compiler refuses as such (C030), so
+// a surface that parses the main by itself sees no program at all.
+//
+// bundleDir is a launch-materialised stored bot bundle (LaunchSpec.BundleDir)
+// when the caller has one; empty, a path-driven candidate resolves its own
+// bundle the way every path-driven compile does, and inline text alone has
+// none — and inline text alone that imports is refused (ErrInlineImport).
+// The bundle the load read against is returned so the caller can merge its
+// prompts the way compileLoadedUnit does.
+//
+// The unit's diagnostics travel with it, unjudged: a caller that must run
+// the program refuses on them (compileForLaunch), one that only describes it
+// decides for itself.
+func LoadLaunchUnit(path, source, bundleDir string) (*unit.Unit, *bundle.Bundle, error) {
+	if workflowfile.IsAuthorDocument(path) {
+		return nil, nil, bundle.AuthorDocumentError(path)
+	}
+	var b *bundle.Bundle
+	switch {
+	case bundleDir != "":
+		opened, err := bundle.OpenDir(bundleDir)
+		if err != nil {
+			return nil, nil, fmt.Errorf("open stored bot bundle: %w", err)
+		}
+		b = opened
+	case source == "":
+		opened, err := bundleForPath(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		b = opened
+	}
+	u, _, err := loadUnitFor(path, source, b)
+	if err != nil {
+		return nil, b, err
+	}
+	return u, b, nil
 }
 
 // CompileLoadedUnit runs, on a unit the caller loaded, every stage a

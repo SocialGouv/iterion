@@ -1,13 +1,26 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"os"
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/runview"
 )
+
+// unitNoteFor names, for the chip, why there is no program to price. The
+// two notes are the client's whole contract (it hides on either), so they
+// stay apart for the operator reading the response: a source that could not
+// become one program is not a source that failed to parse, and a main whose
+// fragments did not travel parses perfectly.
+func unitNoteFor(err error) string {
+	if errors.Is(err, runview.ErrInlineImport) {
+		return "unit_not_loaded"
+	}
+	return "workflow_unparseable"
+}
 
 type previewCostRequest struct {
 	FilePath     string   `json:"file_path,omitempty"`
@@ -137,15 +150,18 @@ func (s *Server) handlePreviewCost(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusBadRequest, "resolve workflow: %v", err)
 			return
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
+		// The read proves the candidate is there and readable, with the 400
+		// the client expects for a path that is not. Its BYTES are not the
+		// program: the unit load below reads the file beside the fragments
+		// its `import` lines reach, which is what a launch of this path
+		// compiles.
+		if _, err := os.ReadFile(path); err != nil {
 			httpError(w, http.StatusBadRequest, "read workflow: %v", err)
 			return
 		}
-		src = string(data)
 		parserPath = path
 	}
-	if src == "" {
+	if src == "" && parserPath == "" {
 		httpError(w, http.StatusBadRequest, "missing source or file_path")
 		return
 	}
@@ -153,14 +169,42 @@ func (s *Server) handlePreviewCost(w http.ResponseWriter, r *http.Request) {
 		parserPath = "studio.bot"
 	}
 
-	pr, err := parser.Parse(parserPath, src)
-	if err != nil || pr.File == nil {
+	// The preview prices the program a LAUNCH of this candidate compiles,
+	// through the launch's own load: a bot in several files is its whole
+	// unit, merged. Parsing the main by itself leaves the `import` lines
+	// unresolved, which the compiler refuses as such (C030) — so the chip
+	// answered "incomplete" and showed NOTHING for every multi-file bot,
+	// the one shape whose price is worth previewing.
+	bundleDir := ""
+	if req.FilePath != "" {
+		// A path the server cannot place is a label with no bundle behind
+		// it, exactly as the launch reads it (launchBundleDirFor), and the
+		// load falls back to the candidate's own bundle resolution. A bundle
+		// that EXISTS and does not open is the launch's 422; here it is one
+		// more reason there is no price to answer, and a chip that hides is
+		// not where a broken manifest gets explained — /api/validate and the
+		// Launch button are.
+		if dir, derr := s.launchBundleDirFor(req.FilePath); derr == nil {
+			bundleDir = dir
+		}
+	}
+	u, _, err := runview.LoadLaunchUnit(parserPath, src, bundleDir)
+	if err != nil || u == nil || u.Merged == nil {
 		// Never 5xx on bad input — the chip silently hides and /api/validate
-		// remains the authoritative blocker for the Launch button.
-		writeJSON(w, previewCostResponse{Notes: []string{"workflow_unparseable"}})
+		// remains the authoritative blocker for the Launch button. A unit
+		// that does not load is one note, not a parse verdict on a file that
+		// may well parse: an inline main whose fragments did not travel is
+		// refused by name, and the chip is not where that is explained.
+		writeJSON(w, previewCostResponse{Notes: []string{unitNoteFor(err)}})
 		return
 	}
-	cr := ir.Compile(pr.File)
+	// The MERGED program, every file's declarations in it — not the main's
+	// own AST, whose `import` lines resolve against nothing. The bundle's
+	// prompts are deliberately NOT merged here: a `system:` naming a
+	// prompts/*.md leaves a C003 this endpoint's lenient verdict (a workflow
+	// or nothing) does not read, so merging them would change no answer it
+	// gives, and a line that changes no answer is one no test can hold.
+	cr := ir.Compile(u.Merged)
 	if cr.Workflow == nil {
 		writeJSON(w, previewCostResponse{Notes: []string{"workflow_incomplete"}})
 		return
