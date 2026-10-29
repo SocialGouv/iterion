@@ -12,8 +12,11 @@
 //
 // The lease is sticky: its holder renews it for as long as it runs (Run), so
 // the elected replica keeps its in-memory state — a cursor, a pass counter —
-// across passes, and a term ends only when the holder stops, loses the store,
-// or is outlived by its TTL.
+// across passes. A term ends when the holder stops, loses the store, or is
+// outlived by its TTL — and, where the net wires Spec.Health, when the work
+// itself keeps failing for a reason a peer may not share: a holder whose
+// egress is broken hands the lease on instead of renewing it through a store
+// it can still reach while every pass fails and no peer covers.
 package lease
 
 import (

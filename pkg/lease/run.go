@@ -28,6 +28,11 @@ type Spec struct {
 	// Info and Warn receive the term transitions and the store errors.
 	// Nil discards them.
 	Info, Warn func(format string, args ...any)
+	// Health, when set, lets a term end on the work failing: the net's pass
+	// loop asks it after every pass (Health.Observe) and returns when it says
+	// to, and the campaign then backs this replica off so a peer takes the
+	// lease. Nil keeps a term ending on lease loss or shutdown alone.
+	Health *Health
 }
 
 // releaseTimeout bounds the release a term ends with. It runs on a context
@@ -49,6 +54,11 @@ const releaseTimeout = 5 * time.Second
 // write landing after that release — keeps the lease for one TTL, the same
 // bound as a crash.
 //
+// A term also ends on the WORK failing, when spec.Health is set and fn
+// honours it: a holder whose passes keep failing for a reason a peer may not
+// share gives the lease up instead of blackholing the net, and waits out a
+// backoff before campaigning again (campaign.afterTerm).
+//
 // It returns an error only for an unusable spec; store failures are reported
 // through spec.Warn and retried, never turned into "elected".
 func Run(ctx context.Context, st Store, spec Spec, fn func(context.Context)) error {
@@ -69,15 +79,18 @@ func Run(ctx context.Context, st Store, spec Spec, fn func(context.Context)) err
 			return nil
 		}
 		sent, ok, answered := c.tryAcquire(ctx)
+		wait := retry
 		if ok {
+			spec.Health.beginTerm()
 			c.serveTerm(ctx, sent, fn)
+			wait = c.afterTerm(retry)
 		} else if !answered {
 			c.releaseUnanswered(ctx)
 		}
 		if ctx.Err() != nil {
 			return nil
 		}
-		t := time.NewTimer(retry)
+		t := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
 			t.Stop()
@@ -182,6 +195,32 @@ func (c *campaign) serveTerm(ctx context.Context, sent time.Time, fn func(contex
 		c.release(ctx, lost)
 	}()
 	fn(termCtx)
+}
+
+// afterTerm closes a term and reports how long to wait before campaigning
+// again: the plain retry, or retry plus a backoff when the term ended because
+// the work kept failing. The backoff is what makes the handover useful — a
+// holder that released a moment ago is the candidate already awake, and
+// without it, it races its peers for the lease it just gave up and often wins.
+//
+// A term the work ended is logged here and not where it was decided: the
+// handover is the campaign's transition, the same class as the election and
+// the step-down, and it belongs beside them in an operator's log.
+func (c *campaign) afterTerm(retry time.Duration) time.Duration {
+	spec := c.spec
+	ended, sickTerms, circuitOpened := spec.Health.endTerm()
+	if !ended {
+		return retry
+	}
+	backoff := spec.Health.backoff(retry)
+	st := spec.Health.Snapshot()
+	c.warn("lease %q: %s handing over — %d consecutive passes (of %d that end a term) attempted work and reached nothing, campaigning again in %s (%d term(s) in a row ended this way)",
+		spec.Name, spec.Owner, st.FailingPasses, st.Passes, retry+backoff, sickTerms)
+	if circuitOpened {
+		c.warn("lease %q: %s stops handing over and keeps serving — %d terms in a row ended on the work failing and the peers that took the lease gave it back the same way, so the far side, not this replica, is what cannot be reached",
+			spec.Name, spec.Owner, sickTerms)
+	}
+	return retry + backoff
 }
 
 // releaseUnanswered gives back what an attempt whose answer was lost may have
