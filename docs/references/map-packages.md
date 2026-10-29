@@ -50,6 +50,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/skillshare` | the sharing primitive for skills a bundle does not own alone. | — |
 | `internal/subbottest` | shares source-level bundle fixtures across the four launch surfaces. | — |
 | `internal/testfs` | removes only scratch paths inside a test-owned root. | — |
+| `internal/testparallel` | bounds how wide a test binary runs its parallel tests, from TestMain. | — |
 | `internal/treeskip` | names the trees this repository's generated artifacts never describe: vendored or installed third-party code, sibling worktrees, the engine's own run… | — |
 | `pkg/alert` | implements run-health alerting for the iterion studio / server. | `ErrorReportingSink`, `Sink` |
 | `pkg/artifactlabels` | derives semantic labels for a published artifact from the SHAPE of its output data — so an artifact groups under "Plans", "Verdicts", etc. | — |
