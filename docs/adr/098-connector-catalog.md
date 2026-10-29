@@ -201,6 +201,39 @@ the IR's (ADR-075). And an image `COPY` serves the server and runner but
 gives a standalone release binary nothing — CLI and desktop need their own
 asset delivery.
 
+**The git source exists, and it fetches at INSTALL time only** (#2757):
+`iterion connectors install <git url | repository path> --ref <sha>
+[--path <dir>]` materializes the source at that commit
+([`pkg/git.MaterializePin`](../../pkg/git/pinned.go)), loads it with the
+overlay-applying loader a run uses, hashes the bytes that passed, and copies
+them into `<iterion home>/connectors/<id>` — the tier `LocalCatalogPaths`
+names, asked rather than re-spelled, because an install that writes where
+resolution does not read is the one failure the command cannot report. The
+record lands beside the packages (`<root>/.pins/<id>.json`: source, commit,
+content hash, version), never inside one: inside, it would change the very
+hash it certifies and `FSCatalog.Connectors` would read its directory as a
+connector id.
+
+Three properties are load-bearing, and each is a refusal rather than a
+convention. The ref must be a COMMIT: a branch or a tag is a pointer whose
+publisher can move it, so the same command run twice would install different
+operations under the same connector id and the only word on which ones a run
+got would be the minute it ran — the fetch asks for the object id and proves
+`HEAD` against it, so a host that serves something else is an error, not a
+silent substitution. Nothing is fetched while a run RESOLVES: a tier that
+dialled out per node would make every action depend on a remote host, and the
+fetched package is what decides what an operation does and where a
+connection's credential goes on the wire. And the fetched tree is validated
+BEFORE it can serve — which needs no ordering discipline to enforce, since
+the load is what says which id the package installs under; a refusal
+therefore leaves the previous install serving, instead of emptying a tier of
+a connector nobody asked to remove.
+
+What a git source still does NOT do: there is no lockfile for connector
+packages, no `connectors update`, and no team-tier publication (2757.3/.4) —
+the install is an operator's deliberate act on one machine, and the pin
+record is what a later update story will read.
+
 ### 6. `tool` gains a third recipe rather than a new node type
 
 Proposed syntax — the grammar does not accept it yet, which is why the fence

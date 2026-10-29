@@ -25,7 +25,13 @@ do so, which is why --license and --redistributable are explicit inputs
 recorded in the package's provenance rather than inferred from the document.
 
 "validate" applies the overlay and runs the complete check — what a launch
-would do.`,
+would do.
+
+"install" is the same check at install time: it fetches a package from a git
+source AT A PINNED COMMIT, validates it with the loader a run uses, and installs
+the bytes that passed. Nothing is fetched while a run resolves an operation — a
+package decides where a connection's credential goes on the wire, so what serves
+is what an operator installed, never what the source serves today.`,
 }
 
 var connectorsGenCmd = &cobra.Command{
@@ -56,6 +62,21 @@ var connectorsValidateCmd = &cobra.Command{
 	},
 }
 
+var connectorsInstallCmd = &cobra.Command{
+	Use:   "install <git url | repository path>",
+	Short: "Install a connector package from a git source at a pinned commit",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var o cli.ConnectorsInstallOptions
+		o.Source = args[0]
+		o.Ref, _ = cmd.Flags().GetString("ref")
+		o.Path, _ = cmd.Flags().GetString("path")
+		o.Dest, _ = cmd.Flags().GetString("dest")
+		o.Force, _ = cmd.Flags().GetBool("force")
+		return cli.ConnectorsInstall(cmd.Context(), o, os.Stdout)
+	},
+}
+
 func init() {
 	connectorsGenCmd.Flags().String("spec", "", "path or https URL to the vendor's OpenAPI 3.x / Swagger 2.0 description")
 	connectorsGenCmd.Flags().String("id", "", "connector slug — the package name and the first segment of every operation id")
@@ -73,6 +94,13 @@ func init() {
 	// the end of the run rather than failing it.
 	connectorsGenCmd.Flags().Bool("validate-responses", false, "derive explicit response contracts and validate vendor answers against them (package format v2)")
 
-	connectorsCmd.AddCommand(connectorsGenCmd, connectorsValidateCmd)
+	// No default: an empty ref is refused rather than resolved to a branch,
+	// because the install that follows decides what every run resolves.
+	connectorsInstallCmd.Flags().String("ref", "", "the commit to install — a full 40-character sha, not a branch or a tag")
+	connectorsInstallCmd.Flags().String("path", "", "package directory inside the repository (default: the repository root)")
+	connectorsInstallCmd.Flags().String("dest", "", "catalog root to install into (default <iterion home>/connectors, the tier a run reads)")
+	connectorsInstallCmd.Flags().Bool("force", false, "replace a package already installed under that connector id")
+
+	connectorsCmd.AddCommand(connectorsGenCmd, connectorsValidateCmd, connectorsInstallCmd)
 	rootCmd.AddCommand(connectorsCmd)
 }
