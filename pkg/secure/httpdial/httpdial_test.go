@@ -113,3 +113,21 @@ func TestSafeClient_NoRedirectFollow(t *testing.T) {
 		t.Errorf("expected ErrUseLastResponse, got %v", err)
 	}
 }
+
+// #2338: the guard decides egress, never an ambient proxy. SafeTransport pins
+// Proxy nil — restoring http.ProxyFromEnvironment (the void the ticket names:
+// the guard validates the PROXY's public address while the proxy reaches a
+// private target the guard never saw, and a private proxy is refused
+// outright) turns this red.
+func TestSafeTransport_PinsNoProxy(t *testing.T) {
+	for _, strict := range []bool{true, false} {
+		if tr := SafeTransport(strict); tr.Proxy != nil {
+			t.Fatalf("SafeTransport(%v).Proxy is set — an ambient proxy would decide where guarded egress goes", strict)
+		}
+	}
+	c := SafeClient(true, 0)
+	tr, ok := c.Transport.(*http.Transport)
+	if !ok || tr.Proxy != nil {
+		t.Fatal("SafeClient's transport must pin Proxy nil like SafeTransport")
+	}
+}

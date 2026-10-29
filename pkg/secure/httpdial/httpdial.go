@@ -124,9 +124,20 @@ func ResolvePublicHostWith(ctx context.Context, res HostResolver, host string, s
 // discovery doc) are re-validated too — closing second-order SSRF. The
 // original host travels in the Host header / TLS SNI so virtual-hosted and
 // TLS-terminated upstreams behave correctly.
+//
+// Proxy is pinned nil, never http.ProxyFromEnvironment (#2338): the guard
+// must be the only voice on where a guarded byte goes. With an ambient
+// proxy the guard would validate the PROXY's address while the proxy itself
+// picks the target — a public proxy reaches a private target the guard never
+// saw (the SSRF guard voided by its own transport), a private one is refused
+// outright. A caller that legitimately crosses a proxy sets Proxy itself,
+// validating the request's host before any byte reaches it — the shape
+// pkg/backend/compatgw uses for the engine-provided sandbox proxy.
 func SafeTransport(strict bool) *http.Transport {
 	return &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		// Explicit, not the zero value left to reading: the guard decides
+		// egress, an ambient proxy never does (#2338).
+		Proxy: nil,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(addr)
 			if err != nil {
@@ -157,7 +168,8 @@ func PlainDialer() *net.Dialer {
 
 // SafeClient wraps SafeTransport in an *http.Client that does NOT auto-follow
 // redirects (each hop would re-target an unvalidated host; the caller decides
-// whether to chase a 3xx, re-entering the guard).
+// whether to chase a 3xx, re-entering the guard) and never consults a proxy
+// (SafeTransport pins Proxy nil).
 func SafeClient(strict bool, timeout time.Duration) *http.Client {
 	if timeout <= 0 {
 		timeout = 15 * time.Second

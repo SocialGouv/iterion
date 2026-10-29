@@ -66,16 +66,16 @@ func NewClient(cfg Config, modelID string, strict bool) (api.APIClient, error) {
 
 // guardedTransport is httpdial.SafeTransport: by default it dials only the
 // host the operator's env named, pinned to an address validated at every
-// new connection (DNS-rebinding-proof), and uses no proxy — an ambient
-// HTTPS_PROXY is never trusted for the gateway. The ONE exception is
-// engine-owned — a policy-isolated sandbox only lets egress through the
-// run's network proxy, and the engine hands that endpoint to the
-// in-container runner under SandboxProxyEndpointEnv (a name only the engine
-// sets; the container image and the operator's shell never speak for it).
-// With it, every request crosses that proxy once its gateway host has
-// passed the guard, and the proxy pins the gateway's name in turn
-// (sandboxProxyFunc), so the proxy is a path, never an authority that
-// bypasses the guard. The proxy road is SafeTransport too, every bound
+// new connection (DNS-rebinding-proof), and uses no proxy — SafeTransport
+// pins none (#2338), an ambient HTTPS_PROXY is never trusted for the
+// gateway. The ONE exception is engine-owned — a policy-isolated sandbox
+// only lets egress through the run's network proxy, and the engine hands
+// that endpoint to the in-container runner under SandboxProxyEndpointEnv (a
+// name only the engine sets; the container image and the operator's shell
+// never speak for it). With it, every request crosses that proxy once its
+// gateway host has passed the guard, and the proxy pins the gateway's name
+// in turn (sandboxProxyFunc), so the proxy is a path, never an authority
+// that bypasses the guard. The proxy road is SafeTransport too, every bound
 // included (connect timeout, TLS handshake, idle reap), save the guard on
 // its dial: the proxy's own address is private by nature — the runner pod
 // IP, the docker host gateway — so it is dialed through SafeTransport's
@@ -93,10 +93,6 @@ func guardedTransport(strict bool) (*http.Transport, error) {
 	t.ResponseHeaderTimeout = 60 * time.Second
 	endpoint := os.Getenv(SandboxProxyEndpointEnv)
 	if endpoint == "" {
-		// The SafeTransport ships http.ProxyFromEnvironment: an ambient
-		// HTTPS_PROXY would reach the gateway through it. Never: the
-		// gateway trusts the engine's variable only.
-		t.Proxy = nil
 		return t, nil
 	}
 	proxyURL, err := url.Parse(endpoint)
