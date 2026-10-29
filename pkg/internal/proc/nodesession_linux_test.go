@@ -190,6 +190,15 @@ func holdShSweep(t *testing.T, w *nodeWorld) *scanWindow {
 	}
 }
 
+// sweepProgramCeiling bounds how long a witness waits for the sweep PROGRAM
+// to come back — a ceiling, not an expectation: the program carries its own
+// bounds (sweepGrace, then sweepKillWait, both counted in whole seconds), so
+// fifteen times their sum is this machine starving it, not a sweep deciding
+// anything. Unbounded, ONE arm parks the WHOLE package until the test
+// binary's own timeout: a `panic: test timed out after 10m0s` in place of a
+// readable failure, and a landing gate spent on it.
+const sweepProgramCeiling = 2 * time.Minute
+
 // shSweep runs the sweep program the way the sandbox exec runs it — its own
 // environment does not carry the token — with env added to this process's.
 func shSweep(t *testing.T, w *nodeWorld, env []string) (SweepReport, error) {
@@ -202,9 +211,25 @@ func shSweep(t *testing.T, w *nodeWorld, env []string) (SweepReport, error) {
 	if err != nil {
 		t.Fatalf("NodeSessionSweepScript: %v", err)
 	}
-	cmd := exec.Command("sh", "-c", script)
+	ctx, cancel := context.WithTimeout(context.Background(), sweepProgramCeiling)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sh", "-c", script)
 	cmd.Env = append(os.Environ(), env...)
+	// The drain needs its own bound on top of the ceiling: CombinedOutput
+	// waits for the copiers of the child's output, and a copier ends only
+	// when EVERY holder of the pipe has closed it — a `ps` a starved shell
+	// left behind keeps the wait parked after the shell is reaped and after
+	// the context killed it. Set here rather than through SetWaitDelay
+	// because this is the witness's own bound, not an operator's knob (which
+	// this package's own tests set to "off").
+	cmd.WaitDelay = 5 * time.Second
 	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		// The fact travels with the result: check turns this into the test's
+		// verdict, on the test's own goroutine, and names the machine.
+		return SweepReport{}, fmt.Errorf("the sweep program did not come back within %s (its own bounds: %s grace, %s kill wait) — this machine starved it, and a witness cannot judge a sweep it never got back: %v\n%s",
+			sweepProgramCeiling, sweepGrace, sweepKillWait, err, out)
+	}
 	if err != nil {
 		return SweepReport{}, fmt.Errorf("sweep program: %v\n%s", err, out)
 	}
@@ -230,13 +255,18 @@ func grepWithoutZ(t *testing.T) []string {
 // nodeWorld is a set of processes started for one test: those of the session,
 // which a sweep must stop, and controls it must spare.
 type nodeWorld struct {
-	t              *testing.T
-	token          string
-	since          BootTicks
-	dir            string
-	marked         map[string]int // label → pid
-	controls       map[string]int
-	children       []*exec.Cmd
+	t        *testing.T
+	token    string
+	since    BootTicks
+	dir      string
+	marked   map[string]int // label → pid
+	controls map[string]int
+	children []*exec.Cmd
+	// strays are processes this test's own fixtures started that it does NOT
+	// judge — the respawner's replacement when the sweep ended before it
+	// joined the session. They are stopped with the rest at cleanup: a
+	// `sleep 301` left on a developer's desktop is this test's litter.
+	strays         []int
 	afterGuardScan func([]SessionProcess)
 }
 
@@ -452,19 +482,60 @@ func (w *nodeWorld) check(r SweepReport, err error) {
 	for _, p := range r.Stopped {
 		reported[p.PID] = true
 	}
-	if b, err := os.ReadFile(filepath.Join(w.dir, "respawner.pid.child")); err == nil {
-		child, _ := strconv.Atoi(strings.TrimSpace(string(b)))
-		w.marked["respawner's replacement"] = child
-	} else if _, ok := w.marked["respawner"]; ok {
-		w.t.Errorf("the respawner never forked its replacement: TERM did not reach it")
+	// What the sweep LOOKED at: a scan found it, and the sweep then stopped
+	// it or gave up on it. A process in neither list was never in the
+	// sweep's sight.
+	sighted := map[int]bool{}
+	for _, p := range r.Stopped {
+		sighted[p.PID] = true
 	}
-	waitGone := time.Now().Add(5 * time.Second)
-	for name, pid := range w.marked {
-		for isRunning(pid) && time.Now().Before(waitGone) {
-			time.Sleep(50 * time.Millisecond)
+	for _, p := range r.Survivors {
+		sighted[p.PID] = true
+	}
+	// The respawner forks its replacement when TERM reaches it, so the pid
+	// file is written DURING the sweep: wait for it as a condition, because a
+	// trap still running is a slow machine and not a supervisor that ignored
+	// TERM.
+	childFile := filepath.Join(w.dir, "respawner.pid.child")
+	_, hasRespawner := w.marked["respawner"]
+	if hasRespawner {
+		for deadline := time.Now().Add(goneWait); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			if b, err := os.ReadFile(childFile); err == nil && strings.TrimSpace(string(b)) != "" {
+				break
+			}
 		}
-		if isRunning(pid) {
-			w.t.Errorf("%s (pid %d) belongs to the session and is still running", name, pid)
+	}
+	if b, err := os.ReadFile(childFile); err == nil && strings.TrimSpace(string(b)) != "" {
+		child, err := strconv.Atoi(strings.TrimSpace(string(b)))
+		if err != nil {
+			w.t.Fatalf("respawner's replacement: unreadable pid file %q", b)
+		}
+		switch {
+		case sighted[child]:
+			w.marked["respawner's replacement"] = child
+		default:
+			// The sweep ended before the replacement joined the session: two
+			// scans in a row found nothing while it was still forking — its
+			// environ is unreadable for the instant of an exec, and its
+			// parent, the respawner, is gone by then, so neither the entry
+			// nor a live ancestor names it. Judging it here would be a
+			// verdict on how fast this machine starts a process. That the
+			// sweep stops a member which shows BETWEEN two scans is the
+			// claim of TestSweepStopsAProcessThatShowsAfterAnEmptyScan,
+			// which stages that window instead of racing it.
+			w.strays = append(w.strays, child)
+			w.t.Logf("the sweep returned before the respawner's replacement (pid %d) joined the session: not judged here, see TestSweepStopsAProcessThatShowsAfterAnEmptyScan", child)
+		}
+	} else if hasRespawner {
+		w.t.Errorf("the respawner never forked its replacement within %s: TERM did not reach it", goneWait)
+	}
+	for name, pid := range w.marked {
+		// Each process gets its OWN bounded wait: a signal is delivered at
+		// once and a process leaves a moment later, and one slow exit must
+		// not eat the budget of the next — which is how a shared deadline
+		// read "still running" for a process nobody had waited for yet.
+		if !awaitGone(pid) {
+			w.t.Errorf("%s (pid %d) belongs to the session and is still running %s after the sweep returned", name, pid, goneWait)
 		}
 		if !reported[pid] {
 			w.t.Errorf("%s (pid %d) was stopped but not reported", name, pid)
@@ -486,7 +557,28 @@ func isRunning(pid int) bool {
 	return ok && running(dir, st)
 }
 
+// goneWait bounds how long a witness waits for ONE process to leave after the
+// sweep returned — a ceiling, not an expectation: the wait ends the instant
+// the process is gone, so a loaded machine costs this test time and never a
+// verdict.
+const goneWait = 10 * time.Second
+
+// awaitGone reports whether pid left within goneWait.
+func awaitGone(pid int) bool {
+	deadline := time.Now().Add(goneWait)
+	for isRunning(pid) {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return true
+}
+
 func (w *nodeWorld) stopAll() {
+	for _, pid := range w.strays {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
 	for _, pid := range w.controls {
 		_ = syscall.Kill(pid, syscall.SIGKILL)
 	}
