@@ -387,7 +387,7 @@ workflow target:
 
 	// The delete-and-recreate lands BETWEEN the passes: same slug, NEW row
 	// id, and a graph where the node after `alpha` has been renamed.
-	if err := srv.botSources.Delete(store.WithTenant(ctx, "t1"), created.ID); err != nil {
+	if err := srv.botSources.Delete(store.WithTenant(ctx, "t1"), created.ID, 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := srv.botSources.Create(store.WithTenant(ctx, "t1"), botsource.BotSource{

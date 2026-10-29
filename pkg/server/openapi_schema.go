@@ -64,7 +64,7 @@ var ifMatchVersionParam = queryParam{
 // still honored (the identity is judged, the freshest version is deleted).
 var botIDParam = queryParam{
 	name:        "bot_id",
-	description: "The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted.",
+	description: "The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted. Present with an EMPTY value is refused with 400 rather than read as absent, so a caller that asked for the identity check never silently gets the one that does not check.",
 	schemaType:  "string",
 }
 
@@ -222,10 +222,13 @@ func routeSchemas() map[string]routeOp {
 		}{}},
 
 		// Platform bot overrides (super-admin) — the DB-backed bot catalog.
-		"GET /api/admin/bots":              {response: botSourceListView{}},
-		"GET /api/admin/bots/{slug}":       {response: botSourceView{}},
-		"PUT /api/admin/bots/{slug}":       {request: botSourcePutReq{}, response: botSourceView{}},
-		"DELETE /api/admin/bots/{slug}":    {},
+		"GET /api/admin/bots":        {response: botSourceListView{}},
+		"GET /api/admin/bots/{slug}": {response: botSourceView{}},
+		"PUT /api/admin/bots/{slug}": {request: botSourcePutReq{}, response: botSourceView{}},
+		// The whole-bot deletion takes the same two if-match tokens as the
+		// per-file one below: the heaviest write of the family cannot be the
+		// one with the weakest guarantee (#2689).
+		"DELETE /api/admin/bots/{slug}":    {query: []queryParam{ifMatchVersionParam, botIDParam}},
 		"POST /api/admin/bots/{slug}/fork": {request: botSourceForkReq{}, response: botSourceView{}},
 
 		// Team bot sources — the SAME handler (listBotSourcesFor), so the same
@@ -255,6 +258,14 @@ func routeSchemas() map[string]routeOp {
 		"DELETE /api/admin/bots/{slug}/files/{path...}": {
 			response: botSourceView{},
 			query:    []queryParam{ifMatchVersionParam, botIDParam},
+		},
+
+		// The WHOLE-bot deletion, on the same two tokens as the per-file one
+		// above: a bodyless route, so the tokens ride the query. A client
+		// generated from a spec that hid them would delete a bot it never
+		// read with no error anywhere (#2689).
+		"DELETE /api/teams/{id}/bot-sources/{slug}": {
+			query: []queryParam{ifMatchVersionParam, botIDParam},
 		},
 
 		// Forge integrations (connections + self-service OAuth/GitHub apps).

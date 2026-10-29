@@ -363,7 +363,7 @@ func TestACloudWriteCarriesTheDigestItsReadIssued(t *testing.T) {
 	// A bot deleted and re-created (a new id, version 1 again) takes no old
 	// client's write: the id names the bot, and the refusal says what
 	// happened.
-	if err := s.botSources.Delete(store.WithTenant(ctx, "t1"), storedID(t, s, ctx, "m")); err != nil {
+	if err := s.botSources.Delete(store.WithTenant(ctx, "t1"), storedID(t, s, ctx, "m"), 0); err != nil {
 		t.Fatal(err)
 	}
 	if rec := putBundle(s, ctx, "m", map[string]string{botsource.MainBotFile: "workflow other:\n  entry: done\n"}, 0); rec.Code != http.StatusOK {
@@ -379,7 +379,7 @@ func TestACloudWriteCarriesTheDigestItsReadIssued(t *testing.T) {
 	// The id is the guard on its own when the bytes coincide: a bot
 	// re-created with THE SAME files and digests is still not the bot the
 	// old read answered, and the write pinned to the old id is refused.
-	if err := s.botSources.Delete(store.WithTenant(ctx, "t1"), storedID(t, s, ctx, "m")); err != nil {
+	if err := s.botSources.Delete(store.WithTenant(ctx, "t1"), storedID(t, s, ctx, "m"), 0); err != nil {
 		t.Fatal(err)
 	}
 	if rec := putBundle(s, ctx, "m", map[string]string{botsource.MainBotFile: edited}, 0); rec.Code != http.StatusOK {

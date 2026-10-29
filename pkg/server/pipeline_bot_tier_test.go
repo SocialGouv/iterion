@@ -464,7 +464,7 @@ func TestPipelineBoardIgnoresADeletedOverrideStillInTheOverlay(t *testing.T) {
 	if _, _, err := env.srv.effectiveFindByNameForTeam(context.Background(), "t1", "probe"); err != nil {
 		t.Fatalf("warm the overlay: %v", err)
 	}
-	if err := env.srv.botSources.Delete(store.WithTenant(context.Background(), botsource.PlatformTenantID), created.ID); err != nil {
+	if err := env.srv.botSources.Delete(store.WithTenant(context.Background(), botsource.PlatformTenantID), created.ID, 0); err != nil {
 		t.Fatalf("delete the override: %v", err)
 	}
 

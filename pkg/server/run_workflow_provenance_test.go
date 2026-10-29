@@ -78,7 +78,7 @@ func TestRunWorkflowStoredLegacyAndImmutableAttempt(t *testing.T) {
 	}
 	assertEntry("legacy", "edited", "bot_source_legacy")
 	assertEntry("frozen", "work", "attempt_snapshot")
-	if err := s.botSources.Delete(ctx, row.ID); err != nil {
+	if err := s.botSources.Delete(ctx, row.ID, 0); err != nil {
 		t.Fatal(err)
 	}
 	assertEntry("frozen", "work", "attempt_snapshot")

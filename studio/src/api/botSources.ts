@@ -80,12 +80,6 @@ export function forkBotSource(
   });
 }
 
-export function deleteBotSource(teamID: string, slug: string): Promise<void> {
-  return apiRequest<void>(`${base(teamID)}/${encodeURIComponent(slug)}`, {
-    method: "DELETE",
-  });
-}
-
 // The if-match token every per-file write of a bundle presents: the
 // `version` of the bundle the caller READ. The store rejects a write whose
 // token no longer matches (409), so a second editor's change is a refusal
@@ -98,6 +92,38 @@ export type BotSourceVersion = number | "unchecked";
 
 function ifMatch(version: BotSourceVersion): number | undefined {
   return version === "unchecked" ? undefined : version;
+}
+
+// ifMatchQuery is how a BODYLESS write of the family presents its tokens: a
+// DELETE body is legal but not reliably forwarded, so the version and the
+// bot's identity ride the query. One helper for every such route — the
+// `?version=${token ?? ""}` an empty-string token produces is what the
+// server refuses rather than reads as absent, so no caller may build this
+// string its own way.
+function ifMatchQuery(version: BotSourceVersion, id?: string): string {
+  const match = ifMatch(version);
+  if (match === undefined) {
+    return "";
+  }
+  return `?version=${encodeURIComponent(String(match))}&bot_id=${encodeURIComponent(id ?? "")}`;
+}
+
+// deleteBotSource removes a WHOLE bot. It carries the same two tokens the
+// per-file delete does — the version the caller READ and the bot's id —
+// because the heaviest write of the family cannot be the one with the
+// weakest guarantee: a bot deleted and re-created is v1 again, so a version
+// alone cannot tell one incarnation of a slug from another. "unchecked" is
+// last-write-wins, said in the caller's own words.
+export function deleteBotSource(
+  teamID: string,
+  slug: string,
+  version: BotSourceVersion,
+  id?: string,
+): Promise<void> {
+  const query = ifMatchQuery(version, id);
+  return apiRequest<void>(`${base(teamID)}/${encodeURIComponent(slug)}${query}`, {
+    method: "DELETE",
+  });
 }
 
 // putBotSourceFile writes one raw file into an existing bundle (skills/*.md,
@@ -153,13 +179,8 @@ export function deleteBotSourceFile(
   id?: string,
 ): Promise<BotSourceFull> {
   const path = rel.split("/").map(encodeURIComponent).join("/");
-  const match = ifMatch(version);
-  const query =
-    match === undefined
-      ? ""
-      : `?version=${encodeURIComponent(String(match))}&bot_id=${encodeURIComponent(id ?? "")}`;
   return apiRequest<BotSourceFull>(
-    `${base(teamID)}/${encodeURIComponent(slug)}/files/${path}${query}`,
+    `${base(teamID)}/${encodeURIComponent(slug)}/files/${path}${ifMatchQuery(version, id)}`,
     { method: "DELETE" },
   );
 }

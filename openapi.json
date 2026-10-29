@@ -6290,6 +6290,26 @@
     "/api/admin/bots/{slug}": {
       "delete": {
         "operationId": "deleteAdminBotsBySlug",
+        "parameters": [
+          {
+            "description": "If-match token: the bundle version the caller read. Omit for last-write-wins. A value that is not a positive integer is refused with 400.",
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted. Present with an EMPTY value is refused with 400 rather than read as absent, so a caller that asked for the identity check never silently gets the one that does not check.",
+            "in": "query",
+            "name": "bot_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "401": {
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
@@ -6388,7 +6408,7 @@
             }
           },
           {
-            "description": "The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted.",
+            "description": "The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted. Present with an EMPTY value is refused with 400 rather than read as absent, so a caller that asked for the identity check never silently gets the one that does not check.",
             "in": "query",
             "name": "bot_id",
             "required": false,
@@ -12984,6 +13004,26 @@
     "/api/teams/{id}/bot-sources/{slug}": {
       "delete": {
         "operationId": "deleteTeamsByIdBotSourcesBySlug",
+        "parameters": [
+          {
+            "description": "If-match token: the bundle version the caller read. Omit for last-write-wins. A value that is not a positive integer is refused with 400.",
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted. Present with an EMPTY value is refused with 400 rather than read as absent, so a caller that asked for the identity check never silently gets the one that does not check.",
+            "in": "query",
+            "name": "bot_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response"
@@ -13051,7 +13091,7 @@
             }
           },
           {
-            "description": "The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted.",
+            "description": "The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted. Present with an EMPTY value is refused with 400 rather than read as absent, so a caller that asked for the identity check never silently gets the one that does not check.",
             "in": "query",
             "name": "bot_id",
             "required": false,

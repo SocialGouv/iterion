@@ -98,7 +98,7 @@ func assertVersionHistoryContract(t *testing.T, st Store, ctx context.Context, t
 	}
 
 	// (4) history is retained across Delete.
-	if err := st.Delete(scoped, v1.ID); err != nil {
+	if err := st.Delete(scoped, v1.ID, 0); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if _, err := st.GetBySlug(scoped, tenantID, v1.Slug); !errors.Is(err, ErrNotFound) {

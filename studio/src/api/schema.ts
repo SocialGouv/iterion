@@ -8333,7 +8333,12 @@ export interface operations {
     };
     deleteAdminBotsBySlug: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description If-match token: the bundle version the caller read. Omit for last-write-wins. A value that is not a positive integer is refused with 400. */
+                version?: number;
+                /** @description The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted. Present with an EMPTY value is refused with 400 rather than read as absent, so a caller that asked for the identity check never silently gets the one that does not check. */
+                bot_id?: string;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -8404,7 +8409,7 @@ export interface operations {
             query?: {
                 /** @description If-match token: the bundle version the caller read. Omit for last-write-wins. A value that is not a positive integer is refused with 400. */
                 version?: number;
-                /** @description The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted. */
+                /** @description The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted. Present with an EMPTY value is refused with 400 rather than read as absent, so a caller that asked for the identity check never silently gets the one that does not check. */
                 bot_id?: string;
             };
             header?: never;
@@ -14736,7 +14741,12 @@ export interface operations {
     };
     deleteTeamsByIdBotSourcesBySlug: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description If-match token: the bundle version the caller read. Omit for last-write-wins. A value that is not a positive integer is refused with 400. */
+                version?: number;
+                /** @description The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted. Present with an EMPTY value is refused with 400 rather than read as absent, so a caller that asked for the identity check never silently gets the one that does not check. */
+                bot_id?: string;
+            };
             header?: never;
             path: {
                 id: string;
@@ -14788,7 +14798,7 @@ export interface operations {
             query?: {
                 /** @description If-match token: the bundle version the caller read. Omit for last-write-wins. A value that is not a positive integer is refused with 400. */
                 version?: number;
-                /** @description The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted. */
+                /** @description The bot's id as the caller's read answered it. Required when version is presented — a bot deleted and re-created is a new id, and takes no old client's delete. Omit BOTH for last-write-wins. Presented without a version, the id is still honored: the identity is judged and the freshest version is deleted. Present with an EMPTY value is refused with 400 rather than read as absent, so a caller that asked for the identity check never silently gets the one that does not check. */
                 bot_id?: string;
             };
             header?: never;

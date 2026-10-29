@@ -124,7 +124,15 @@ type Store interface {
 	// gated, audit-trailed at the route. Returns the snapshots removed.
 	PurgeHistory(ctx context.Context, tenantID, id string) (int64, error)
 	Update(ctx context.Context, s BotSource) (BotSource, error)
-	Delete(ctx context.Context, id string) error
+	// Delete removes one row under the SAME optimistic-concurrency guard
+	// Update takes: a non-zero version is an if-match token — the version
+	// the caller's read answered — and a row stored at another version is
+	// ErrVersionConflict with the row intact. 0 is "no if-match", the
+	// last-write-wins a caller holding no token has to get. This is the
+	// only door that removes a row, so a deletion carrying a token can
+	// never be served by a weaker one. Version history is retained
+	// (GetByVersion above).
+	Delete(ctx context.Context, id string, version int) error
 	ListByTenant(ctx context.Context, tenantID string) ([]BotSource, error)
 }
 

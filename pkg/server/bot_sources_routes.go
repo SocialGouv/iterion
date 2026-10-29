@@ -481,7 +481,10 @@ func (s *Server) deleteBotSourceFileFor(w http.ResponseWriter, r *http.Request, 
 	// query as the version does; the store write carries it, so the
 	// identity guard judges the PRESENTED id against its own fresh read —
 	// a re-creation between this route's read and the store write is a 409.
-	botID := strings.TrimSpace(r.URL.Query().Get("bot_id"))
+	botID, ok := s.parseIfMatchBotID(w, r)
+	if !ok {
+		return
+	}
 	if version != 0 && botID == "" {
 		s.httpErrorFor(w, r, http.StatusConflict, "bot source %q carries no identity: a delete pinned to a version presents the id its read answered (the bundle response's), and none came — reload the bot and redo the edit", slug)
 		return
@@ -645,7 +648,37 @@ func (s *Server) deleteBotSourceFor(w http.ResponseWriter, r *http.Request, tena
 		s.botSourceError(w, r, err)
 		return
 	}
-	if err := s.botSources.Delete(ctx, bs.ID); err != nil {
+	// The if-match token and the identity the per-file DELETE beside this one
+	// takes, on the same query tokens and the same contract: removing a WHOLE
+	// bot is the heaviest write of the family, so it is held to no less than
+	// the removal of one of its files. Absent = last-write-wins, which is
+	// what a caller holding no token gets; malformed is refused rather than
+	// read as absent (parseIfMatchVersion).
+	version, ok := s.parseIfMatchVersion(w, r)
+	if !ok {
+		return
+	}
+	// The bot's identity as the caller's read answered it. Required when a
+	// version is presented — a version alone cannot tell one incarnation of
+	// a slug from another, since a bot deleted and re-created is v1 again
+	// (#2678's second sequence), so a stale client's delete would land on the
+	// NEW bot. Judged against the id this route's read resolved: a
+	// re-creation between the caller's read and this one is a 409 naming it,
+	// never a deletion of a bot the caller never saw. The store's own
+	// (id, version) filter then holds the removal to the row this id names.
+	botID, ok := s.parseIfMatchBotID(w, r)
+	if !ok {
+		return
+	}
+	if version != 0 && botID == "" {
+		s.httpErrorFor(w, r, http.StatusConflict, "bot source %q carries no identity: a delete pinned to a version presents the id its read answered (the bundle response's), and none came — reload the bot and redo the delete", slug)
+		return
+	}
+	if botID != "" && botID != bs.ID {
+		s.httpErrorFor(w, r, http.StatusConflict, "bot source %q is no longer the bot this delete was decided on: it was deleted and re-created since — reload the bot and redo the delete", slug)
+		return
+	}
+	if err := s.botSources.Delete(ctx, bs.ID, version); err != nil {
 		s.botSourceError(w, r, err)
 		return
 	}
@@ -900,6 +933,30 @@ func (s *Server) parseIfMatchVersion(w http.ResponseWriter, r *http.Request) (in
 		return 0, false
 	}
 	return v, true
+}
+
+// parseIfMatchBotID reads the `bot_id` token a bodyless bot-source write
+// presents beside its version: the bot's identity as the caller's read
+// answered it. An ABSENT key is "", which both delete doors read as "no
+// identity presented" — last-write-wins on the identity, the behaviour a
+// caller holding no id has to get.
+//
+// PRESENT AND EMPTY is refused, for the reason parseIfMatchVersion refuses a
+// malformed version: `?bot_id=` is what `?bot_id=${id ?? ""}` produces, and
+// `Get` cannot tell it from an absent key. Read as absent it would hand a
+// caller that asked for the identity check the one that does not check, with
+// no way to tell the two apart.
+func (s *Server) parseIfMatchBotID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	q := r.URL.Query()
+	if !q.Has("bot_id") {
+		return "", true
+	}
+	raw := strings.TrimSpace(q.Get("bot_id"))
+	if raw == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "bot_id must name the bot the caller's read answered, got %q", q.Get("bot_id"))
+		return "", false
+	}
+	return raw, true
 }
 
 // botSourceError maps store errors to actionable status codes.
