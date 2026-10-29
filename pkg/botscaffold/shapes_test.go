@@ -471,6 +471,55 @@ func TestGalleryShapes(t *testing.T) {
 				t.Errorf("without prompts/*.md want the two prompt refs refused (C003), got %d", unknown)
 			}
 		},
+		"goal-loop": func(t *testing.T, dir string, w *ir.Workflow, _ int) {
+			// The group is a COMPILE-TIME macro: what reaches the IR is the
+			// expanded instance, under its prefix. The prefixed ids are
+			// what prove the cluster was instantiated by `use`.
+			for _, id := range []string{"reach.check", "reach.advance"} {
+				if _, ok := w.Nodes[id]; !ok {
+					t.Errorf("the goal group was not instantiated as `reach`: %v", nodeIDs(w))
+				}
+			}
+			if _, ok := w.Nodes["goal"]; ok {
+				t.Error("a group reached the runtime; `use` expands it at compile time")
+			}
+			// The judge is the TOOL, never an LLM node: an evaluator that
+			// reads the transcript of the agent it judges is gameable, and
+			// the agent cannot make the world true by writing that it is.
+			check, ok := w.Nodes["reach.check"]
+			if !ok {
+				t.Fatalf("no reach.check node: %v", nodeIDs(w))
+			}
+			if check.NodeKind() != ir.NodeTool {
+				t.Errorf("reach.check is a %s node; the goal's verdict is a command's exit code", check.NodeKind())
+			}
+			if advance, ok := w.Nodes["reach.advance"]; ok && advance.NodeKind() != ir.NodeAgent {
+				t.Errorf("reach.advance is a %s node; the shape's worker is the agent", advance.NodeKind())
+			}
+			// The cap is the point of the shape: without a bounded
+			// back-edge the loop is unbounded, which is the defect this
+			// form exists to prevent.
+			src, err := os.ReadFile(filepath.Join(dir, "main.bot"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(src), "as goal_loop(") {
+				t.Errorf("the back-edge carries no loop bound; `cap` would be decoration:\n%s", src)
+			}
+			// An empty condition exits 0, so a DEFAULT would ship a goal
+			// that is reached before anything ran; the cap's default is the
+			// opposite — a cap nobody sets is no cap.
+			condition, cap := w.Vars["goal_condition"], w.Vars["goal_cap"]
+			if condition == nil || cap == nil {
+				t.Fatalf("the shape does not declare both vars (condition=%+v cap=%+v)", condition, cap)
+			}
+			if condition.Default != "" {
+				t.Errorf("goal_condition default = %v; an empty check exits 0, so any default ships a gate that passes", condition.Default)
+			}
+			if cap.Default == "" {
+				t.Error("goal_cap has no default; a cap nobody sets is no cap")
+			}
+		},
 		"library": func(t *testing.T, dir string, w *ir.Workflow, declared int) {
 			if declared != 0 {
 				t.Errorf("main.bot declares %d prompt(s); the shape keeps the nodes and their prompts in lib/", declared)
@@ -759,6 +808,7 @@ func TestGalleryShapesResolveTheWorktreeDialOff(t *testing.T) {
 		"async-questions":     "none",
 		"multi-file":          "none",
 		"library":             "none",
+		"goal-loop":           "none",
 		"contract":            "none",
 	}
 	seen := map[string]bool{}

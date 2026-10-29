@@ -61,8 +61,8 @@ func TestEveryTemplateDeclaresTheFloorItsSourcesNeed(t *testing.T) {
 			}
 		})
 	}
-	if taxonomyChecked != 13 {
-		t.Fatalf("checked %d categorized templates, want the gallery's 13", taxonomyChecked)
+	if taxonomyChecked != 14 {
+		t.Fatalf("checked %d categorized templates, want the gallery's 14", taxonomyChecked)
 	}
 }
 

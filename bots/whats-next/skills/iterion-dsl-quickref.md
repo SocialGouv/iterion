@@ -899,6 +899,7 @@ one whose graph matches, then edit the prompts, the vars and the edges:
 | `verified-action` | entry gates (unset or TAKEN `tag` = typed refusal) → an agent prepares → a `tool` with `goal` + `postcondition` + `policy: recover` + `recovery` |
 | `async-questions` | an `interaction: async` agent → an `await_answers` gate → a finalizer |
 | `multi-file` | the graph in `main.bot`, the prompts in `prompts/*.md`, the knowledge in `skills/` |
+| `goal-loop` | `group goal(condition, cap)`: check (`tool`, needs `jq`, pinned in the bundle's `devbox.json`) → done when it exits 0, else advance (agent) and check again, at most `goal_cap` times, then `GOAL_NOT_REACHED` — the verdict is a command, never the model on its own work |
 | `library` | the graph in `main.bot` (and its vars, when the spec has any), the schemas in `lib/schemas.bot`, the prompts and nodes in `lib/nodes.bot` — `import "lib/…"` at the head of the main, one program in three files |
 | `contract` | an entry gate (unset `goal` = typed refusal) → one agent with a typed, published output → a `contract` bound to the workflow: an input mirroring a var, outputs naming their producer (`from: work.summary`; a file port `from: work`), criteria on ports, effects |
 
