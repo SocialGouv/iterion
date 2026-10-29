@@ -34,6 +34,22 @@ server:
     rollingUpdate:
       maxSurge: 100%
       maxUnavailable: 0
+  # How long a server rollout may stay Progressing before k8s calls it
+  # Failed — and with it `helm install --wait` and an ArgoCD sync. Unset,
+  # so Kubernetes' own 600 s applies and an existing install keeps the
+  # behaviour it was deployed with. A cold cluster needs more: the kubelet
+  # serialises image pulls, so a store whose image waits behind the others
+  # fails the install while the pod turns Ready a minute later (measured on
+  # a fresh kind node: 7m15 of waiting for the nats image). values-dev.yaml
+  # raises it for that path; a production values file is free to set it
+  # explicitly, knowing the cost — a genuinely broken rollout (bad image,
+  # crash at boot) is reported as Progressing for as long as this says
+  # instead of failing at 10 minutes. A `0` is NOT how you remove the
+  # deadline: both templates render the key through a `with`, which skips a
+  # zero, so Kubernetes' default applies — a very large value is what
+  # practically removes it. Cloud mode only: mode=local renders a
+  # StatefulSet, which has no such field.
+  progressDeadlineSeconds:
   # Cloud-mode HTTP entry point — `iterion server` (T-30). Reads
   # ITERION_MODE + ITERION_MONGO_URI / ITERION_NATS_URL / ITERION_S3_*
   # from envFrom so no extra args are needed for the cloud wiring.
@@ -193,7 +209,9 @@ runner:
   # A lame-duck rollout stays "Progressing" until the last old pod drains
   # (possibly hours). Raise the Deployment progress deadline above the grace
   # period so k8s/ArgoCD don't flag the rollout degraded while the new pods
-  # already serve. 0 disables the deadline entirely.
+  # already serve. A `0` here renders nothing (the template's `with` skips
+  # it) and leaves Kubernetes' default in place, so it is not a way to
+  # remove the deadline — see the server's knob above.
   progressDeadlineSeconds: 30000
   keda:
     enabled: false

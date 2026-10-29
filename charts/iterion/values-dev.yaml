@@ -11,6 +11,12 @@ server:
   replicas: 1
   hpa:
     enabled: false  # disable HPA in dev, predictable single-pod
+  # A cold kind node serialises image pulls: the nats image waited 7m15
+  # behind the pinned mongo and seaweedfs pulls, and the 600 s default then
+  # failed `helm install --wait` on a server pod that was Ready a minute
+  # later. 30 min covers that with margin and still fails a genuinely broken
+  # rollout inside a coffee break.
+  progressDeadlineSeconds: 1800
 
 runner:
   enabled: true

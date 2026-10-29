@@ -36,6 +36,28 @@ For chart hacking against unreleased changes, install from a checkout:
 `helm install iterion ./charts/iterion -f values.yaml`. `task chart:kind`
 exercises this path end-to-end on a kind cluster.
 
+**A first install on a cold cluster.** `helm install --wait` waits on the
+Deployment's `progressDeadlineSeconds`, and Kubernetes' default 600 s is not
+a statement about iterion's boot: on a fresh node the kubelet serialises
+image pulls, so a store whose image waits behind the others fails the install
+while the server pod turns Ready a minute later (measured on kind: the nats
+image waited 7m15 behind the pinned mongo and seaweedfs pulls, iterion#2780).
+`server.progressDeadlineSeconds` is the knob, next to the runner's — **unset
+by default**, so an existing install keeps the behaviour it was deployed
+with, while `values-dev.yaml` (the `task chart:kind` path) sets 1800. It
+renders in cloud mode only: `mode=local` renders a StatefulSet, which has no
+such field. The cost of raising it is worth stating: a genuinely broken
+rollout (bad image, a crash at boot) then reads as Progressing for as long as
+the deadline says instead of failing at 10 minutes, so an ArgoCD sync or a CI
+install step hangs rather than reports. A `0` is not a way to remove the
+deadline — both templates render the key through a `with`, which skips a
+zero.
+
+One caveat on the smoke path: `task chart:kind` also caps its own wait with
+`helm --timeout 5m`, so a pull slower than that fails the smoke whatever this
+knob says. The deadline decides whether the Deployment is called **Failed**;
+the helm timeout decides how long the client is willing to watch.
+
 ## Topology
 
 ```mermaid
@@ -211,6 +233,29 @@ default).
 | `ITERION_NATS_ACK_WAIT` | Per-message ack deadline, refreshed by runner heartbeats |
 | `ITERION_NATS_MAX_AGE` / `ITERION_NATS_DLQ_MAX_AGE` | Runs-stream / DLQ retention |
 | `ITERION_NATS_MAX_PAYLOAD` | Max message size |
+
+**A broker that is not up yet is waited for, bounded.** On a fresh cluster the
+queue pod routinely starts after the processes that need it — the kubelet
+serialises image pulls, and a Service's DNS record appears when the Service
+does — so the boot dial retries for at most **30 s** (5 s per attempt, 500 ms
+between) while the failure means "not up yet": nothing listening (`nats: no
+servers available for connection`), an unresolved host, or a container that
+accepts TCP before it serves the protocol. That is the policy
+[pkg/store/mongo/ping.go](../pkg/store/mongo/ping.go) already applies to its
+primary ping, value for value. A failure no retry can cure (a malformed URI,
+a credentials refusal) is reported from the FIRST attempt, and a broker that
+never answers ends the boot with `connect NATS: queue/nats: connect: no
+broker after N attempt(s) (deadline …)` — never with a connection that looks
+live but is not (`nats.RetryOnFailedConnect` is deliberately unused: a
+readiness probe would pass on it).
+
+Neither wait is an operator knob, because the two of them plus the
+~28-collection schema pass share ONE budget: the startup probe's 30 × 5 s =
+150 s (`probes.startup`). Raising either is a decision about that 150 s. And
+what the wait buys on a cold cluster is one crash-loop backoff, not an
+arbitrarily late broker — the 7-minute image pull measured in iterion#2780 is
+far longer than the budget, and what `helm install --wait` concludes is the
+Deployment's `progressDeadlineSeconds` business.
 
 The queue's internal semantics (the `MaxAckPending` fleet ceiling, `AckWait`
 heartbeats, DLQ parking, the orphan sweeper) are covered in

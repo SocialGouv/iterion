@@ -17,6 +17,13 @@ spec:
   {{- if eq .Values.mode "cloud" }}
   strategy:
     {{- toYaml .Values.server.strategy | nindent 4 }}
+  {{- with .Values.server.progressDeadlineSeconds }}
+  # Past this deadline `helm install --wait` and ArgoCD read the rollout as
+  # Failed, which a cold cluster hits on image-pull time alone. Inside the
+  # cloud fence on purpose: mode=local renders a StatefulSet, which has no
+  # such field.
+  progressDeadlineSeconds: {{ . }}
+  {{- end }}
   {{- end }}
   selector:
     matchLabels:

@@ -1134,3 +1134,60 @@ func TestChartRenderDevStack(t *testing.T) {
 
 	judgeClean(t, out, 4)
 }
+
+// The server's progress deadline: a knob the cloud Deployment carries and
+// the local StatefulSet must never grow. `helm install --wait` reads a
+// Deployment past its deadline as Failed even when the pod turns Ready a
+// minute later — the install failure measured on a fresh kind node, where
+// the kubelet serialised the image pulls (iterion#2780) — and
+// progressDeadlineSeconds is a Deployment field only: rendered on a
+// StatefulSet, the API server rejects the whole manifest.
+//
+// The ticket's own witness, `helm install --wait` on a cold cluster, is a
+// live-cluster run and no gate member: it is named in the wave report as a
+// manual proof, never claimed from here.
+func TestChartRenderServerProgressDeadline(t *testing.T) {
+	serverDeadline := func(t *testing.T, kind string, args ...string) any {
+		t.Helper()
+		docs := manifests(t, mustRender(t, args...))
+		return dig(must(t, docs, kind, "iterion"), "spec", "progressDeadlineSeconds")
+	}
+
+	t.Run("unset renders nothing", func(t *testing.T) {
+		if got := serverDeadline(t, "Deployment"); got != nil {
+			t.Fatalf("spec.progressDeadlineSeconds = %v with the value unset, want absent — an install keeps the 600 s it was deployed with", got)
+		}
+	})
+
+	t.Run("cloud carries the value set", func(t *testing.T) {
+		got := serverDeadline(t, "Deployment", "--set", "server.progressDeadlineSeconds=1800")
+		if fmt.Sprint(got) != "1800" {
+			t.Fatalf("spec.progressDeadlineSeconds = %v, want 1800", got)
+		}
+	})
+
+	t.Run("local never carries it", func(t *testing.T) {
+		got := serverDeadline(t, "StatefulSet", "--set", "mode=local", "--set", "server.progressDeadlineSeconds=1800")
+		if got != nil {
+			t.Fatalf("the local StatefulSet grew progressDeadlineSeconds = %v — the API server rejects that manifest", got)
+		}
+	})
+
+	t.Run("the dev values raise it where the install broke", func(t *testing.T) {
+		got := serverDeadline(t, "Deployment", "-f", "values-dev.yaml")
+		if fmt.Sprint(got) != "1800" {
+			t.Fatalf("values-dev renders spec.progressDeadlineSeconds = %v, want 1800 (the cold-kind path `task chart:kind` installs)", got)
+		}
+	})
+
+	// A zero renders NOTHING: `with` skips it, so Kubernetes' default
+	// applies. Both values comments say so now — the runner's used to
+	// promise "0 disables the deadline entirely", which this knob cannot
+	// express and which this case pins.
+	t.Run("zero renders nothing rather than removing the deadline", func(t *testing.T) {
+		got := serverDeadline(t, "Deployment", "--set", "server.progressDeadlineSeconds=0")
+		if got != nil {
+			t.Fatalf("spec.progressDeadlineSeconds = %v for an explicit 0, want absent — `with` skips a zero and the values comment must keep saying so", got)
+		}
+	})
+}

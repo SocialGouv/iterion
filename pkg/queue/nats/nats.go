@@ -257,13 +257,17 @@ func Connect(ctx context.Context, cfg Config) (*Conn, error) {
 		return nil, fmt.Errorf("queue/nats: stream replicas %d invalid (want >= 1)", cfg.StreamReplicas)
 	}
 
-	nc, err := nats.Connect(cfg.URL,
+	// MaxReconnects + ReconnectWait govern RE-connection once a first
+	// connect succeeded; the first dial is the one waitForBroker bounds —
+	// a broker that is not up yet at boot is retried, anything no retry
+	// cures is returned straight away.
+	nc, err := waitForBroker(ctx, dialBroker(cfg.URL,
 		nats.MaxReconnects(-1),
 		nats.ReconnectWait(2*time.Second),
 		nats.Name("iterion"),
-	)
+	), defaultDialPolicy)
 	if err != nil {
-		return nil, fmt.Errorf("queue/nats: connect: %w", err)
+		return nil, err
 	}
 	js, err := jetstream.New(nc)
 	if err != nil {
