@@ -72,7 +72,11 @@ When the run terminates, iterion POSTs this JSON to `callback_url`:
 - **Fired once per terminal transition.** A run that pauses
   (`paused_waiting_human` / `paused_operator`) does **not** fire — it is
   waiting, not done. A later `resume` that actually terminates fires
-  then.
+  then. A **usage park** is the same shape: `failed_resumable` with a
+  retry armed on a provider wall delivers nothing while it waits (the
+  decision keys on the persisted wall, `RetryState.Wall`), and the run
+  delivers once at settlement — resumed and finished, or its retry
+  retired by the sweeper's abandonment.
 - **`final_answer` may be empty.** A workflow that legitimately produces
   no user-facing answer (e.g. a facilitator choosing silence) yields an
   empty string; receivers should treat that as "post nothing".

@@ -64,11 +64,13 @@ no probe ever pulled (one closer than the probe floor, or a deployment with
 most `max_attempts` of them, the behaviour that shipped before the wall
 existed.
 
-One observer of a usage park does NOT key on the wall: the run-completion
-callback a launch may ask for (`callback_url`, `pkg/notify`) POSTs
-`failed_resumable` once per park, because its predicate is the terminal-status
-set and a parked run is in it. An API consumer polling or listening there sees
-one delivery per park and per probe re-park.
+The run-completion callback a launch may ask for (`callback_url`,
+`pkg/notify`) keys on the wall too: a parked run is terminal for polling
+but not done, so the park delivers nothing, and the run delivers once at
+settlement — resumed and finished, or its retry retired (the sweeper's
+abandonment fires the callback the executing lanes never will). A row from
+before the wall was persisted keeps the per-transition behaviour, like
+every reader above.
 
 ## Configuration
 

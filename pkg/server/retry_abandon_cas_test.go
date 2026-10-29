@@ -2,11 +2,16 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/eventbus"
+	"github.com/SocialGouv/iterion/pkg/notify"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
@@ -176,5 +181,87 @@ func TestNoticeGate_ALegacyRowKeepsTheLedgerItShippedWith(t *testing.T) {
 	s.noticeGatePausedForRetry(context.Background(), run)
 	if len(comments.bodies) != 1 {
 		t.Fatalf("a probed re-park on a legacy row posted notice %d", len(comments.bodies))
+	}
+}
+
+// TestAbandonRetry_SettlementDeliversTheCompletionCallback is #2707's other
+// half: a run whose every park was SKIPPED by the completion callback (an
+// armed usage park is a wait, not a completion — pkg/notify keys on the
+// persisted wall) must still deliver at settlement. The outcome republish
+// reaches the bus consumers; the callback is fired by the lanes that
+// execute the run, and none of them ever sees an abandoned run again — so
+// the settlement fires it here.
+func TestAbandonRetry_SettlementDeliversTheCompletionCallback(t *testing.T) {
+	st := newFakeRetryStore()
+	var mu sync.Mutex
+	var payloads []map[string]any
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var p map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&p)
+		mu.Lock()
+		payloads = append(payloads, p)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(receiver.Close)
+
+	// The run as it stands AFTER the disarm: failed_resumable, the retry
+	// retired, the callback the launch asked for still on it.
+	st.loadRun["run-skipped"] = &store.Run{
+		ID:          "run-skipped",
+		TenantID:    "team-1",
+		Status:      store.RunStatusFailedResumable,
+		CallbackURL: receiver.URL,
+	}
+	s := newRetrySweeperServer(t, st, nil)
+	s.completionNotifier = notify.New(nil, 2*time.Second, notify.WithAllowPrivate(true))
+
+	armed := time.Now().UTC().Add(-time.Minute)
+	s.abandonRetry(context.Background(), st, dueRef("run-skipped", armed), "auto-retry abandoned: the bot is gone")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(payloads) != 1 {
+		t.Fatalf("the settled run delivered %d completion callbacks, want 1 — a run skipped while armed owes its callback at settlement", len(payloads))
+	}
+	if got := payloads[0]["status"]; got != string(store.RunStatusFailedResumable) {
+		t.Errorf("payload status = %v, want %q", got, store.RunStatusFailedResumable)
+	}
+	if got := payloads[0]["run_id"]; got != "run-skipped" {
+		t.Errorf("payload run_id = %v, want run-skipped", got)
+	}
+}
+
+// TestAbandonRetry_ALostRaceDeliversNothing is the same guard as the lost
+// CAS above, for the callback half: a row the settlement did not retire
+// belongs to whoever moved it, and its callback must not fire from the
+// pass that lost.
+func TestAbandonRetry_ALostRaceDeliversNothing(t *testing.T) {
+	st := newFakeRetryStore()
+	st.abandonCASLoses = true
+	hits := make(chan struct{}, 1)
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(receiver.Close)
+
+	st.loadRun["run-raced-cb"] = &store.Run{
+		ID:          "run-raced-cb",
+		TenantID:    "team-1",
+		Status:      store.RunStatusFailedResumable,
+		CallbackURL: receiver.URL,
+	}
+	s := newRetrySweeperServer(t, st, nil)
+	s.cfg.Metrics = nil
+	s.completionNotifier = notify.New(nil, 2*time.Second, notify.WithAllowPrivate(true))
+
+	armed := time.Now().UTC().Add(-time.Minute)
+	s.abandonRetry(context.Background(), st, dueRef("run-raced-cb", armed), "auto-retry abandoned: the bot is gone")
+
+	select {
+	case <-hits:
+		t.Fatal("the callback of a run whose settlement lost its race was delivered — the receiver now treats a run still waiting on its wall as done")
+	case <-time.After(300 * time.Millisecond):
 	}
 }

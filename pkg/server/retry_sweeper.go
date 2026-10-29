@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/notify"
 	"github.com/SocialGouv/iterion/pkg/retrycoord"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
@@ -417,6 +418,29 @@ func (s *Server) abandonRetry(ctx context.Context, retryStore store.RunRetryStor
 			s.warnf("retry sweeper: republish outcome for abandoned run %s: %v", runID, err)
 		}
 	}
+
+	// The outcome republish does NOT reach one consumer: the run-completion
+	// callback (pkg/notify) is fired by the lanes that EXECUTE the run, and
+	// this run's every park was skipped there — an armed usage park is a
+	// wait, not a completion (shouldNotify keys on the persisted wall, which
+	// the disarm above just removed). Settlement is the delivery the skipped
+	// run is owed; without this call a callback the launch asked for would
+	// never fire at all.
+	if s.cfg.Store != nil {
+		s.completionWebhook().FireForRun(ctx, s.cfg.Store, runID)
+	}
+}
+
+// completionWebhook resolves the notifier the settlement path delivers
+// through — the deployment's env-configured construction (the one the
+// executing lanes share) on first use, or the field a test injected.
+func (s *Server) completionWebhook() *notify.Notifier {
+	s.completionNotifierOnce.Do(func() {
+		if s.completionNotifier == nil {
+			s.completionNotifier = notify.NewFromEnv(s.logger, 0)
+		}
+	})
+	return s.completionNotifier
 }
 
 // disarmRetry is the abandon WITHOUT the outcome replay: the store write,

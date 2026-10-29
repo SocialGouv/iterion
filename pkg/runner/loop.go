@@ -1607,18 +1607,9 @@ func New(ctx context.Context, cfg Config) (*Runner, error) {
 			return nil, err
 		}
 	}
-	// Run-completion webhook notifier. ITERION_COMPLETION_WEBHOOK_ALLOW_PRIVATE=1
-	// relaxes the SSRF guard for self-hosted deployments whose callback
-	// receiver lives on a private network alongside the runner; off by
-	// default (cloud runners must not gateway into a private network).
-	allowPrivate := os.Getenv("ITERION_COMPLETION_WEBHOOK_ALLOW_PRIVATE") == "1"
-	// ITERION_COMPLETION_WEBHOOK_SECRET, when set, HMAC-signs every
-	// outbound payload (X-Iterion-Signature) so receivers can
-	// authenticate the delivery. Empty = unsigned.
-	secret := os.Getenv("ITERION_COMPLETION_WEBHOOK_SECRET")
-	notifier := notify.New(cfg.Logger, 0,
-		notify.WithAllowPrivate(allowPrivate),
-		notify.WithSigningSecret(secret))
+	// Run-completion webhook notifier (the env-configured construction
+	// every settling lane shares — see notify.NewFromEnv).
+	notifier := notify.NewFromEnv(cfg.Logger, 0)
 	return &Runner{cfg: cfg, consumer: cons, completionNotifier: notifier}, nil
 }
 
@@ -2377,9 +2368,12 @@ func (r *Runner) startProcessSpan(parent context.Context, delivery *natsq.Delive
 // fireCompletionNotifier fires the run-completion webhook (no-op unless
 // the run carries a callback URL). FireForRun re-reads the persisted run
 // and gates on the terminal status via shouldNotify — paused runs (the
-// run is not done, just waiting) are filtered there, so no error-type
-// guard is needed here. The resume that actually terminates fires it
-// then. Mirrors runview.spawnRun's in-process fire (same shouldNotify
+// run is not done, just waiting) and usage parks (failed_resumable with a
+// retry armed on a provider wall — the same wait, keyed on the persisted
+// wall) are filtered there, so no error-type guard is needed here. The
+// resume that actually terminates fires it then; a run whose retry is
+// abandoned never resumes, and the sweeper's settlement fires it instead.
+// Mirrors runview.spawnRun's in-process fire (same shouldNotify
 // authority) so cloud and local behave identically.
 func (r *Runner) fireCompletionNotifier(msg *queue.RunMessage) {
 	if r.completionNotifier == nil {

@@ -41,6 +41,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/lease"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/marketplace"
+	"github.com/SocialGouv/iterion/pkg/notify"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
@@ -137,6 +138,15 @@ type Server struct {
 	// configured (nil otherwise) — the outcome router's escalation
 	// channel rides its NotifyOperator.
 	opsAlerts *alert.OpsDispatcher
+	// completionNotifier delivers the run-completion callback a launch
+	// asked for to a run the retry sweeper SETTLES (abandonRetry): every
+	// park of that run was a wait the callback deliberately skipped, so
+	// the settlement is the delivery it is owed — the executing lanes
+	// (runview, runner) never see the run again. Lazily built from the
+	// deployment's environment (notify.NewFromEnv) behind
+	// completionNotifierOnce; tests inject the field directly.
+	completionNotifier     *notify.Notifier
+	completionNotifierOnce sync.Once
 	// opsAlertsCancel detaches the operator-alert dispatcher's bus
 	// subscription on Close.
 	opsAlertsCancel func(context.Context)

@@ -285,3 +285,90 @@ func TestNilNotifierIsNoop(t *testing.T) {
 	// Must not panic.
 	n.FireForRun(context.Background(), newTestStore(t), "missing")
 }
+
+// TestFireForRun_UsageParkWaitsForSettlement is #2707's witness: a run
+// parked on a provider usage wall is terminal for POLLING but not done —
+// the callback is keyed on the persisted wall (RetryState.Wall), so a run
+// parked twice on one wall delivers NOTHING while it waits, and ONE
+// callback at settlement, when the retry is retired and the wall is gone.
+func TestFireForRun_UsageParkWaitsForSettlement(t *testing.T) {
+	st := newTestStore(t)
+	cs := newCaptureServer(t)
+	seedRun(t, st, "run-parked", cs.URL, "thread-7", "", "", store.RunStatusFailedResumable)
+
+	ctx := context.Background()
+	wall := time.Now().UTC().Add(4 * 24 * time.Hour).Truncate(time.Second)
+	wake := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	run, err := st.LoadRun(ctx, "run-parked")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.RetryState = &store.RunRetryState{
+		RetryAfter: &wake, Wall: &wall,
+		Reason: store.RetryReasonUsageWindow, Code: "USAGE_LIMIT_BLOCKED", Attempts: 1,
+	}
+	if err := st.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+
+	n := allowPrivateNotifier()
+	// Parked, then re-parked on the SAME wall (a probe's free re-arm): the
+	// run is waiting, and the receiver that asked for "done" hears nothing.
+	n.FireForRun(ctx, st, "run-parked")
+	n.FireForRun(ctx, st, "run-parked")
+	if _, hits := cs.got(); hits != 0 {
+		t.Fatalf("a run parked twice on one wall delivered %d callbacks, want 0 — a usage park is a wait, not a completion", hits)
+	}
+
+	// Settlement: the retry is retired (the sweeper's abandon disarm), so
+	// the wall is gone and the run delivers — once, and as what it is.
+	run, err = st.LoadRun(ctx, "run-parked")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.RetryState.RetryAfter = nil
+	if err := st.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	n.FireForRun(ctx, st, "run-parked")
+	payload, hits := cs.got()
+	if hits != 1 {
+		t.Fatalf("the settled run delivered %d callbacks, want 1", hits)
+	}
+	if payload.Status != string(store.RunStatusFailedResumable) {
+		t.Errorf("status = %q, want %q", payload.Status, store.RunStatusFailedResumable)
+	}
+	if payload.CallbackToken != "thread-7" {
+		t.Errorf("callback_token = %q, want thread-7", payload.CallbackToken)
+	}
+}
+
+// TestFireForRun_LegacyParkedRowKeepsThePerTransitionBehaviour pins the
+// boundary the wall's contract states: a row armed before the wall was
+// persisted carries none, nothing can be told apart per wall, and it keeps
+// what it shipped with — a delivery per park — rather than going silent on
+// a run nobody will settle.
+func TestFireForRun_LegacyParkedRowKeepsThePerTransitionBehaviour(t *testing.T) {
+	st := newTestStore(t)
+	cs := newCaptureServer(t)
+	seedRun(t, st, "run-legacy", cs.URL, "", "", "", store.RunStatusFailedResumable)
+
+	ctx := context.Background()
+	wake := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	run, err := st.LoadRun(ctx, "run-legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.RetryState = &store.RunRetryState{
+		RetryAfter: &wake,
+		Reason:     store.RetryReasonUsageWindow, Code: "USAGE_LIMIT_BLOCKED", Attempts: 1,
+	}
+	if err := st.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+
+	allowPrivateNotifier().FireForRun(ctx, st, "run-legacy")
+	if _, hits := cs.got(); hits != 1 {
+		t.Fatalf("a legacy parked row (no persisted wall) delivered %d callbacks, want 1 — the per-transition behaviour it shipped with", hits)
+	}
+}

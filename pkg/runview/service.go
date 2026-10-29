@@ -1289,18 +1289,9 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 		// Run-completion webhooks are off-by-default in behaviour (no-op
 		// unless a launched run carries a callback URL) but the notifier
 		// itself is always present so spawnRun can fire unconditionally.
-		// ITERION_COMPLETION_WEBHOOK_ALLOW_PRIVATE=1 relaxes the SSRF
-		// guard for self-hosted deployments whose callback receiver lives
-		// on a private network alongside iterion.
-		allowPrivate := os.Getenv("ITERION_COMPLETION_WEBHOOK_ALLOW_PRIVATE") == "1"
-		// ITERION_COMPLETION_WEBHOOK_SECRET, when set, HMAC-signs every
-		// outbound payload (X-Iterion-Signature) so receivers can
-		// authenticate the delivery. Empty = unsigned (receiver must not
-		// require a signature).
-		secret := os.Getenv("ITERION_COMPLETION_WEBHOOK_SECRET")
-		s.completionNotifier = notify.New(s.logger, 0,
-			notify.WithAllowPrivate(allowPrivate),
-			notify.WithSigningSecret(secret))
+		// The env-configured construction every settling lane shares — see
+		// notify.NewFromEnv.
+		s.completionNotifier = notify.NewFromEnv(s.logger, 0)
 	}
 
 	if !s.recoveryPassive {
