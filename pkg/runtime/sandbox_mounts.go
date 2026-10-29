@@ -671,16 +671,50 @@ const runFilesEnvVar = "ITERION_ARTIFACT_FILES_DIR"
 // finalizeMountsForDriver drops every host bind mount the selected driver
 // cannot honour, and with them the promises the runtime made on their
 // behalf: the run-files variable (dropUnsupportedHostBinds) and the
-// attachments path handed to nodes, returned empty when its bind is gone —
-// nodes are then given the host path, which at least fails loudly instead of
-// resolving to an empty mount point. A driver with a host filesystem keeps
-// everything.
-func finalizeMountsForDriver(spec *sandbox.Spec, caps sandbox.Capabilities, attachmentsDir, botRunFilesDir string, logger *iterlog.Logger) string {
+// attachments path handed to nodes, returned empty when its bind is gone.
+// What went is returned as a report for the run's stream
+// (store.EventSandboxHostBindsDropped); the caller decides what an empty
+// attachments path means for a run that holds attachments. A driver with a
+// host filesystem keeps everything and reports nothing.
+func finalizeMountsForDriver(spec *sandbox.Spec, caps sandbox.Capabilities, attachmentsDir, botRunFilesDir string, logger *iterlog.Logger) (string, droppedBinds) {
 	if caps.SupportsHostBindMounts {
-		return attachmentsDir
+		return attachmentsDir, droppedBinds{}
 	}
-	dropUnsupportedHostBinds(spec, botRunFilesDir, logger)
-	return ""
+	return "", dropUnsupportedHostBinds(spec, botRunFilesDir, logger)
+}
+
+// droppedBinds is what dropUnsupportedHostBinds took away from a spec: the
+// container targets of the host binds it removed and the promises it
+// withdrew with them. It is the record the run's stream carries, so a reader
+// of the run — not only of the runner's log — sees what the container never
+// had.
+type droppedBinds struct {
+	Targets    []string          // cleaned container targets of the dropped host binds, sorted
+	Withdrawn  []string          // variables withdrawn because their bind went
+	HandedBack map[string]string // variable → the bot's own value handed back in the runtime's place
+}
+
+func (d droppedBinds) empty() bool {
+	return len(d.Targets) == 0 && len(d.Withdrawn) == 0 && len(d.HandedBack) == 0
+}
+
+// payload is the event data of store.EventSandboxHostBindsDropped.
+func (d droppedBinds) payload(driver string) map[string]any {
+	out := map[string]any{
+		"driver": driver,
+		"mounts": append([]string{}, d.Targets...),
+	}
+	if len(d.Withdrawn) > 0 {
+		out["withdrawn"] = append([]string{}, d.Withdrawn...)
+	}
+	if len(d.HandedBack) > 0 {
+		handed := make(map[string]string, len(d.HandedBack))
+		for k, v := range d.HandedBack {
+			handed[k] = v
+		}
+		out["handed_back"] = handed
+	}
+	return out
 }
 
 // dropUnsupportedHostBinds strips every host bind mount from spec — the
@@ -695,7 +729,10 @@ func finalizeMountsForDriver(spec *sandbox.Spec, caps sandbox.Capabilities, atta
 // no bind ever served is a promise the runtime never made. botRunFilesDir is
 // the value the runtime overwrote when it added its bind: handed back when
 // the runtime's promise is withdrawn, unless it names a dropped target too.
-func dropUnsupportedHostBinds(spec *sandbox.Spec, botRunFilesDir string, logger *iterlog.Logger) {
+// The returned report lists what went: every dropped bind's target, and the
+// variable withdrawn or handed back.
+func dropUnsupportedHostBinds(spec *sandbox.Spec, botRunFilesDir string, logger *iterlog.Logger) droppedBinds {
+	var report droppedBinds
 	// Targets compare cleaned: a trailing slash or a spaced field is the same
 	// directory, and a miss here recreates the incident this rule closes.
 	target := func(m string) string {
@@ -709,9 +746,11 @@ func dropUnsupportedHostBinds(spec *sandbox.Spec, botRunFilesDir string, logger 
 		if mountIsHostBind(m) {
 			if t := target(m); t != "" {
 				gone[t] = true
+				report.Targets = append(report.Targets, t)
 			}
 		}
 	}
+	sort.Strings(report.Targets)
 	spec.Mounts = dropHostBindMounts(spec.Mounts, logger)
 	for _, m := range spec.Mounts {
 		delete(gone, target(m))
@@ -729,19 +768,22 @@ func dropUnsupportedHostBinds(spec *sandbox.Spec, botRunFilesDir string, logger 
 	}
 	dir, set := spec.Env[runFilesEnvVar]
 	if !set || !underDropped(dir) {
-		return
+		return report
 	}
+	report.Withdrawn = append(report.Withdrawn, runFilesEnvVar)
 	if botRunFilesDir != "" && !underDropped(botRunFilesDir) {
 		spec.Env[runFilesEnvVar] = botRunFilesDir
+		report.HandedBack = map[string]string{runFilesEnvVar: botRunFilesDir}
 		if logger != nil {
 			logger.Warn("runtime: sandbox: %s handed back to the bot's own value %s — the runtime's bind serving %s was dropped with the other host binds", runFilesEnvVar, botRunFilesDir, dir)
 		}
-		return
+		return report
 	}
 	delete(spec.Env, runFilesEnvVar)
 	if logger != nil {
 		logger.Warn("runtime: sandbox: %s withdrawn — the bind serving %s was dropped with the other host binds; tools writing run files fall back to a temp dir", runFilesEnvVar, dir)
 	}
+	return report
 }
 
 // mountIsHostBind reports whether a docker-style mount string is a host bind

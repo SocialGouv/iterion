@@ -54,6 +54,16 @@ const (
 	// `sandbox_skipped` event when no runtime is present — see
 	// resolveAndStartSandbox. #1425.
 	ErrCodeSandboxDriverUnavailable = store.FailureSandboxDriverUnavailable
+	// Raised at sandbox start when the run carries attachments and the
+	// selected driver can neither bind-mount nor copy their directory in
+	// (sandbox_attachments.go). The operator attached the files on purpose;
+	// a run that went on without them would read as a run that never had
+	// them.
+	ErrCodeAttachmentsUndeliverable = store.FailureAttachmentsUndeliverable
+	// Raised before a node runs when it names an attachment's path and the
+	// run holds that attachment with no path a node can open
+	// (attachment_admission.go).
+	ErrCodeAttachmentPathUnavailable = store.FailureAttachmentPathUnavailable
 	// Raised before the first node when the attached bundle declares a
 	// `requires.iterion` this build is below (engine_requirement.go).
 	ErrCodeBotRequiresNewerEngine = store.FailureBotRequiresNewerEngine

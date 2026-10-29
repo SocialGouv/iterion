@@ -129,7 +129,16 @@ func TestFinalizeMountsForDriver(t *testing.T) {
 	}
 	t.Run("no host filesystem: binds, variable and attachments path all go", func(t *testing.T) {
 		spec := newSpec()
-		got := finalizeMountsForDriver(spec, sandbox.Capabilities{}, "/run/iterion/attachments", "", nil)
+		got, dropped := finalizeMountsForDriver(spec, sandbox.Capabilities{}, "/run/iterion/attachments", "", nil)
+		if want := []string{path, "/run/iterion/attachments"}; !reflect.DeepEqual(dropped.Targets, want) {
+			t.Fatalf("the report names %v as dropped, want %v", dropped.Targets, want)
+		}
+		if want := []string{runFilesEnvVar}; !reflect.DeepEqual(dropped.Withdrawn, want) {
+			t.Fatalf("the report names %v as withdrawn, want %v", dropped.Withdrawn, want)
+		}
+		if payload := dropped.payload("kubernetes"); payload["driver"] != "kubernetes" || !reflect.DeepEqual(payload["mounts"], dropped.Targets) {
+			t.Fatalf("the event payload does not carry the report: %v", payload)
+		}
 		if got != "" {
 			t.Fatalf("attachments path %q handed out although its bind was dropped", got)
 		}
@@ -142,7 +151,10 @@ func TestFinalizeMountsForDriver(t *testing.T) {
 	})
 	t.Run("a host filesystem: nothing moves", func(t *testing.T) {
 		spec := newSpec()
-		got := finalizeMountsForDriver(spec, sandbox.Capabilities{SupportsHostBindMounts: true}, "/run/iterion/attachments", "", nil)
+		got, dropped := finalizeMountsForDriver(spec, sandbox.Capabilities{SupportsHostBindMounts: true}, "/run/iterion/attachments", "", nil)
+		if !dropped.empty() {
+			t.Fatalf("a driver with a host filesystem reported a drop: %+v", dropped)
+		}
 		if got != "/run/iterion/attachments" {
 			t.Fatalf("attachments path withdrawn on a driver that honours binds: %q", got)
 		}

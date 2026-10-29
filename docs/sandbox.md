@@ -252,8 +252,19 @@ promise made on it must go with it. On the pod backend:
 |---|---|---|
 | `ITERION_ARTIFACT_FILES_DIR` (where an in-sandbox tool drops files for the artifact-files panel) | set, bind-mounted | **absent** — a tool falls back to a temp dir |
 | `ITERION_ENGINE_BIN` (the engine's own iterion binary, for a bot script that re-enters the CLI; never resolved from the workspace) | set — the container path the bind mount or the image bakes | set — the container path, via per-exec env, so no bind to drop |
-| Attachments path handed to nodes | the container path | the host path, which fails loudly rather than resolving to an empty mount point |
+| Attachments path handed to nodes | the container path | **the run is refused** when it holds attachments — `ATTACHMENTS_UNDELIVERABLE`, said on the run's stream as `sandbox_skipped` with `refused: true` and the names — because no node could open them, and a run that goes on without what it was given is the worst of the three outcomes (#2086) |
 | The bot's bundle `devbox.json` | provisioned from the mount | provisioned — the config is **carried** into the sandbox by the install prologue, since the bundle itself cannot be read from in-container (see [devbox provisioning](#best-effort-never-silent)) |
+
+Every drop is a **run event**, `sandbox_host_binds_dropped` — the driver,
+the container targets the dropped binds served, the variables withdrawn
+with them and any value handed back — so a reader of the run, not only of
+the runner's log, sees what the container never had. And a node that
+names an attachment's path (`{{attachments.<name>.path}}`, or the bare
+form) while the run holds the attachment with no path it can open fails
+**before it runs**, typed `ATTACHMENT_PATH_UNAVAILABLE`, instead of
+running on an empty string; `{{attachments.<name>.url}}` serves wherever
+the node runs. An attachment the run does not hold still renders empty —
+a declared optional attachment nobody uploaded is the bot's to test for.
 
 The measured cost of getting this wrong: the run-files variable once
 named a directory the pod never had, a gate wrapper redirecting its

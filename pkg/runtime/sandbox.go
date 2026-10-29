@@ -649,7 +649,35 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// sandboxed agent falls back to env creds + the workspace mount (skills are
 	// mirrored into <workspace>/.claude). type=secret/pvc/configmap pass through;
 	// docker keeps everything (the capability is true there).
-	attachmentsDir = finalizeMountsForDriver(spec, caps, attachmentsDir, botRunFilesDir, logger)
+	var dropped droppedBinds
+	attachmentsDir, dropped = finalizeMountsForDriver(spec, caps, attachmentsDir, botRunFilesDir, logger)
+	if !dropped.empty() {
+		_ = emitEvent(store.EventSandboxHostBindsDropped, dropped.payload(driver.Name()))
+	}
+	// The attachments are the one dropped bind nothing stands in for: a
+	// withdrawn variable sends a tool to a temp dir, a declined bundle
+	// provisions nothing, but a file the operator attached that no node can
+	// open is a run that goes on without what it was given. A run that holds
+	// attachments is refused here — typed, on its own stream, before any
+	// node — when the driver can neither bind their directory nor copy it in.
+	if attachmentsDir == "" && !caps.SupportsHostBindMounts {
+		if names := attachmentNamesIn(p.AttachmentsHostDir); len(names) > 0 {
+			refusal := attachmentsUndeliverable(driver.Name(), names)
+			_ = emitEvent(store.EventSandboxSkipped, map[string]any{
+				"mode":        string(spec.Mode),
+				"source":      source,
+				"reason":      refusal.Message,
+				"refused":     true,
+				"error_code":  string(refusal.Code),
+				"driver":      driver.Name(),
+				"attachments": names,
+			})
+			if logger != nil {
+				logger.Warn("runtime: sandbox refused [%s]: %s (run %s)", refusal.Code, refusal.Message, p.RunID)
+			}
+			return nil, refusal
+		}
+	}
 
 	// Phase 4 V1: claw nodes are forwarded to the iterion-claw-runner
 	// sub-process inside the container so their tool calls (Bash, file

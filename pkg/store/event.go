@@ -549,6 +549,19 @@ const (
 	//   - driver: the sandbox driver
 	//   - error: the export failure
 	EventSandboxWorkspaceExportFailed EventType = "sandbox_workspace_export_failed"
+	// EventSandboxHostBindsDropped fires when the selected driver has no
+	// host filesystem and the runtime removes the host bind mounts the run
+	// declared — a bot's own `sandbox.mounts:` type=bind entries and the
+	// runtime's optional binds (attachments, run-files) — together with
+	// the promises it made on them. The runner's log said so before; the
+	// run's own stream says it now, so a reader of the run sees what the
+	// container never had. Data:
+	//   - driver: the sandbox driver
+	//   - mounts: []string of the container targets the dropped binds served
+	//   - withdrawn: []string of the variables withdrawn with their bind
+	//   - handed_back: map of variable → the bot's own value handed back in
+	//     its place, present only when one was
+	EventSandboxHostBindsDropped EventType = "sandbox_host_binds_dropped"
 	// EventSandboxScratchBanked fires at the teardown of a sandbox whose
 	// ${PROJECT_SCRATCH_DIR} dies with it (kubernetes; docker without the
 	// host bind), when the run may resume (ADR-106). Data:

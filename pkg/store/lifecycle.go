@@ -134,6 +134,21 @@ const (
 	// why a scheduled run parked without executing.
 	FailureSandboxDriverUnavailable FailureCode = "SANDBOX_DRIVER_UNAVAILABLE"
 
+	// FailureAttachmentsUndeliverable: the run carries attachments and the
+	// selected sandbox driver can neither bind-mount their directory into
+	// the container nor copy it in, so no node could have opened them.
+	// Refused at sandbox start, before any node: the operator attached the
+	// files on purpose, and a run that went on without them would read as
+	// a run that never had them (#2086).
+	FailureAttachmentsUndeliverable FailureCode = "ATTACHMENTS_UNDELIVERABLE"
+	// FailureAttachmentPathUnavailable: a node names an attachment's path
+	// (`{{attachments.<name>.path}}`, or the bare form) while the run holds
+	// that attachment with no path a node can open — a store with no
+	// filesystem root whose attachments were not materialised for this
+	// run. The node fails before it runs instead of running on an empty
+	// string (#2086).
+	FailureAttachmentPathUnavailable FailureCode = "ATTACHMENT_PATH_UNAVAILABLE"
+
 	// FailureInterrupted: an INTERNAL stop (runner drain, dispatcher
 	// stall reap, server shutdown) parked the run failed_resumable.
 	// Previously only visible as the run_failed event's
@@ -263,6 +278,8 @@ var ReservedFailureCodes = []FailureCode{
 	FailureSchemaUnusable,
 	FailureCapabilityUnsupported,
 	FailureSandboxDriverUnavailable,
+	FailureAttachmentsUndeliverable,
+	FailureAttachmentPathUnavailable,
 	FailureInterrupted,
 	FailureFailNode,
 	FailureProcessOrphaned,
