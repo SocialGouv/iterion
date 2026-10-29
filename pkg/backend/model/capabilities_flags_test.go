@@ -124,13 +124,22 @@ func TestAGatewayIdResolvesWhatItsCatalogStatesAndNothingMore(t *testing.T) {
 		t.Fatalf("the projection reads %q / tool_call=%s, want unknown / unknown", rc.Source, flagWord(rc.ToolCall))
 	}
 
-	gatewayEnv(t, `{"glm-5.2": {"context_window": 200000, "reasoning": true, "tool_call": true}}`, "")
+	gatewayEnv(t, `{"glm-5.2": {"context_window": 200000, "max_output_tokens": 16384, "input_usd_per_mtok": 1.8, "output_usd_per_mtok": 5.5, "reasoning": true, "tool_call": true}}`, "")
 	caps = capabilitiesForModel(modelroute.OpenAICompatible, "glm-5.2")
 	if !yes(caps.Reasoning) || !yes(caps.ToolCall) || caps.Temperature != nil {
 		t.Fatalf("the operator's flags read %s/%s/%s, want yes/yes/unknown", flagWord(caps.Reasoning), flagWord(caps.ToolCall), flagWord(caps.Temperature))
 	}
 	if caps.Source != llmtypes.SourceOperator || caps.ContextWindow != 200000 {
 		t.Fatalf("the operator's record reads source %q, window %d", caps.Source, caps.ContextWindow)
+	}
+	// The record's numbers travel too — a gateway spec answered zeros for
+	// max output and both prices before the gateway catalog answered this
+	// route, and a caller sizes a request and prices a run from them.
+	if caps.MaxOutputTokens != 16384 {
+		t.Errorf("the operator's max output = %d, want 16384", caps.MaxOutputTokens)
+	}
+	if caps.InputCostPerM != 1.8 || caps.OutputCostPerM != 5.5 {
+		t.Errorf("the operator's prices = %v/%v, want 1.8/5.5", caps.InputCostPerM, caps.OutputCostPerM)
 	}
 
 	gatewayEnv(t, "", "scaleway")

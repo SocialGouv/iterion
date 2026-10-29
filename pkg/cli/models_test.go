@@ -166,7 +166,24 @@ func TestRunModels_AGatewayIdLeavesItsFlagsUnknown(t *testing.T) {
 	if err := RunModels(context.Background(), ModelsOptions{Spec: "openai_compatible/zz-unknown-gateway-model"}, p); err != nil {
 		t.Fatalf("RunModels (human): %v", err)
 	}
-	if !strings.Contains(buf.String(), "?") || strings.Contains(buf.String(), "zz-unknown-gateway-model  unknown") && false {
-		t.Errorf("the table does not read ? for an unknown flag:\n%s", buf.String())
+	// Every one of the three flag cells, not merely SOME "?" in the table:
+	// the columns are MODEL SOURCE CONTEXT "MAX OUT" REASON TOOLS TEMP, and
+	// a cell printing "no" for a flag nobody answered is the bug #2103
+	// closes.
+	var row []string
+	for line := range strings.Lines(buf.String()) {
+		if f := strings.Fields(line); len(f) > 0 && f[0] == "openai_compatible/zz-unknown-gateway-model" {
+			row = f
+			break
+		}
+	}
+	if len(row) < 9 {
+		t.Fatalf("no table row for the spec (got %v):\n%s", row, buf.String())
+	}
+	for i, want := range map[int]string{1: "unknown", 4: "?", 5: "?", 6: "?"} {
+		if row[i] != want {
+			t.Errorf("row cell %d (%s) = %q, want %q — the table must read ? for every unanswered flag:\n%s",
+				i, []string{"MODEL", "SOURCE", "CONTEXT", "MAX OUT", "REASON", "TOOLS", "TEMP"}[i], row[i], want, buf.String())
+		}
 	}
 }

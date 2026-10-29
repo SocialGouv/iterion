@@ -127,3 +127,55 @@ func TestCapabilitiesForModel_DisabledRegistryIsPureCurated(t *testing.T) {
 		t.Errorf("disabled resolution = %s, want curated %s", capabilitiesWords(got), capabilitiesWords(want))
 	}
 }
+
+// A PUBLISHED verdict wins over the curated heuristic for each of the three
+// flags, in BOTH directions — a published false over a curated true is the
+// direction that matters most: it is the only place a known "this model has
+// no tools" can reach a reader, and dropping it reports a known false as a
+// known true. Only Temperature's false-over-true was covered.
+func TestMergeSpec_APublishedFlagOverridesTheCuratedOneBothWays(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		published modelspecs.Spec
+		curated   ModelCapabilities
+		want      ModelCapabilities
+	}{
+		{
+			name:      "published false over curated true",
+			published: modelspecs.Spec{Reasoning: boolp(false), ToolCall: boolp(false), Temperature: boolp(false)},
+			curated:   ModelCapabilities{Reasoning: Known(true), ToolCall: Known(true), Temperature: Known(true)},
+			want:      ModelCapabilities{Reasoning: Known(false), ToolCall: Known(false), Temperature: Known(false)},
+		},
+		{
+			name:      "published true over curated false",
+			published: modelspecs.Spec{Reasoning: boolp(true), ToolCall: boolp(true), Temperature: boolp(true)},
+			curated:   ModelCapabilities{Reasoning: Known(false), ToolCall: Known(false), Temperature: Known(false)},
+			want:      ModelCapabilities{Reasoning: Known(true), ToolCall: Known(true), Temperature: Known(true)},
+		},
+		{
+			name:      "an unstated flag leaves the curated verdict standing",
+			published: modelspecs.Spec{},
+			curated:   ModelCapabilities{Reasoning: Known(false), ToolCall: Known(true), Temperature: Known(false)},
+			want:      ModelCapabilities{Reasoning: Known(false), ToolCall: Known(true), Temperature: Known(false)},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mergeSpec(tc.published, tc.curated)
+			for _, flag := range []struct {
+				what      string
+				got, want *bool
+			}{
+				{"reasoning", got.Reasoning, tc.want.Reasoning},
+				{"tool_call", got.ToolCall, tc.want.ToolCall},
+				{"temperature", got.Temperature, tc.want.Temperature},
+			} {
+				if flagWord(flag.got) != flagWord(flag.want) {
+					t.Errorf("%s = %s, want %s", flag.what, flagWord(flag.got), flagWord(flag.want))
+				}
+			}
+			if got.Source != SourceAggregator {
+				t.Errorf("source = %q, want aggregator", got.Source)
+			}
+		})
+	}
+}
