@@ -25,4 +25,4 @@ const CatalogTaxonomySince = "3.225.0"
 // keeps it strictly above every released build: a bundle declaring either
 // key needs a build that reads it, and any build that does not refuses the
 // whole manifest at its strict decode — the field is not one it knows.
-const SkillSharingSince = "next"
+const SkillSharingSince = "4.6.0"
