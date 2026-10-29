@@ -51,7 +51,11 @@ prepare ─► static_audit ─► bank_static ─► render_gate ─► [render
   (`ENGINE_HASH_MISMATCH` / `ENGINE_UNRESOLVED`), probes the browser and
   writes the run's helper library.
 - `static_audit` is THE finding set; an empty scope is `EMPTY_SCOPE`, never
-  a clean audit. `bank_static` publishes it before any model runs.
+  a clean audit. It first purges the workspace's `.ultra11y/pages/` (a
+  previous run's captures would anchor findings the fresh audit no longer
+  produces) and removes the previous generation's `audit-latest.json` (the
+  engine swallows a failed write: an old document must never stand in for
+  the new one). `bank_static` publishes it before any model runs.
 - `render` scans the page sample (`.ultra11yrc.json`) in a Playwright
   Chromium when `rendered=auto` finds one, serving the site with
   `serve_command` if given; `rendered=required` makes its absence a
@@ -61,12 +65,16 @@ prepare ─► static_audit ─► bank_static ─► render_gate ─► [render
   go back to the agents. Stored recommendations are not replayed: they are
   non-normative, and one whose element has since been edited would refuse
   the verdict it rides on. A ledger the engine cannot read is
-  `LEDGER_INVALID`, with the engine's own message.
+  `LEDGER_INVALID`, with the engine's own message. A ledger copy found at
+  the node's entry belongs to THIS audit (a fresh audit drops it), so a run
+  rewound to before the fold re-emits the recorded replay instead of
+  replaying over a folded audit — which would empty the copy.
 - `worklist` → `plan_batches` → `dispatch` (fan-out per batch) →
   `adjudicate` (read-only agent) → `write_fragment` (item-keyed) →
   `merge_verdicts` (one writer, later rounds win per criterion, citations
   checked against the shown evidence, recommendations kept only on the
-  criterion's own anchors — the others dropped and counted) →
+  criterion's own anchors — the others dropped and counted; a batch that
+  answered only part of its criteria is named apart from a dead one) →
   `fold_probe` (the fold on a copy, refusals named and re-asked once) →
   `fold_final` (the real audit folded exactly once, ledger merged; a retyped
   citation folded with its anchor's text where the engine accepts both).

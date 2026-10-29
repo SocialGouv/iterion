@@ -1,7 +1,23 @@
 name: rgaa-audit
 display_name: Acci
 icon: ♿
-version: 3.1.0
+version: 3.1.1
+## 3.1.1 — rewind safety and honest batch accounting. A ledger copy found at
+## ledger_replay's entry belongs to the current audit (static_audit drops it
+## with every fresh audit it writes), so a run rewound before the fold
+## re-emits the recorded replay instead of replaying over a folded audit —
+## which read every landed entry as obsolete and emptied the fold's copy
+## (#2438). static_audit also removes the previous generation's
+## audit-latest.json before calling the engine (the engine swallows a failed
+## write: the old folded document could stand in for the new one), and purges
+## the workspace's .ultra11y/pages/ so a previous run's captures are never
+## ingested (#2623). The adjudicate and refute prompts spell each batch's
+## absolute item and brief paths (a null brief path names a criterion the
+## engine decided statically) and the node's exact tool set; the read-only
+## agents attempt no MCP server of the audited repository; a batch that
+## answered only part of its criteria is reported as partial, apart from a
+## lost one, and each unanswered criterion is re-asked with the reason
+## (#2675).
 ## 3.1.0 — ultra11y 5.45.0: business summary and technical annex flow
 ## through both readers and integrity checks; export also preserves HTML
 ## and the JSON page grid. Historical runs keep their original engine.
