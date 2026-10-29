@@ -88,6 +88,35 @@ no agent, command or egress request can turn it back into the value, and it is
 passed through unchanged. Only the secrets a workflow declares (Layer 1)
 materialize.
 
+### Where a CLI backend's redaction stops (the hook-protocol limits)
+
+`claw` in-process, sandboxed `claw`, `claude_code` and `pi` run the same agent
+through different far sides, and each quotes far-side text back to iterion: a
+session error, an assistant block, a tool result, a rate-limit signal. That
+redaction is not each backend's own — ONE executor builds every task
+(`buildTask`) and hands each the same `Task.RedactSecrets` and
+`Task.RedactSecretsSpan`, so there is no per-backend branch to forget
+(`TestBuildTaskGivesEveryBackendTheSameSecretRedactor`), and the engine's
+record chokepoint sits above the backend choice entirely. Three bounds are
+deliberate, and worth knowing:
+
+- **How far the redactor reads on a stream.** The run log shows at most 64 KiB
+  of one value and the redactor reads at least 16 KiB past it — or as far as
+  the longest known value when that is longer (`redactForRunLog`,
+  `Task.RedactSecretsSpan`) — so a known value straddling the bound is
+  recognised whole. A value LONGER than that margin, or one only the heuristic
+  would catch, can straddle it. Redacting a multi-megabyte value on every
+  stream chunk costs seconds per turn, which is why the bound exists.
+- **The crossing redacts before its readers, not after.** A sandboxed claw's
+  far-side text goes through the pass at the crossing (`redactedFarSide`),
+  because the node's own scrub runs at `Execute` — after the `delegate_error`
+  event and the error tracker have already read it.
+- **A nil redactor is the run's kill switch, not a backend gap.**
+  `ITERION_SECRETS_REDACT=off` clears both sink passes (known values and the
+  heuristic) and leaves materialization working, so declared placeholders
+  still flow; `Task.RedactSecrets` is then nil and far-side text goes through
+  unchanged.
+
 **Deliberately NOT redacted:** persisted **artifacts** and the resume
 **checkpoint**. These are load-bearing — they feed `{{outputs.X}}` /
 `{{artifacts.X}}` and are re-read on resume; redacting them would corrupt

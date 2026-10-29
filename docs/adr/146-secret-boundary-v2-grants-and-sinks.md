@@ -1,6 +1,6 @@
 # ADR-146: Secret boundary v2 — a secret is granted to a sink, and what crosses a node boundary is a separate question
 
-- **Status**: Proposed — two axes are open questions for the operator, named below. Nothing in this record is implemented yet.
+- **Status**: Proposed — THREE axes are open questions for the operator, named below (axis 3 is the sandbox credential channel, measured and added after the record's first draft). Nothing in this record is implemented yet.
 - **Date**: 2026-10-29
 - **Authors**: devthejo (session with Claude Opus 5), orchestrator-arbitrated — debt-leap ARB-78 of 2026-10-29: "C — ADR-146 en `Proposed`, les deux axes contestés nommés comme questions ouvertes ; zéro code S2/S3"
 - **Landed by this change**: the record only. The slices behind it (outbound redaction at the model boundary, per-secret materialization sinks in the DSL, the sandboxed-run default) stay unwritten until the two open axes are answered — each then arrives with its own witness.
@@ -107,16 +107,49 @@ through a tool result or an `{{outputs.A}}` reference.
   opt-in. Nothing breaks; the protection only reaches the authors who ask
   for it, which is not where a secret leak comes from.
 
-Until both are answered, no slice of this ADR is implemented: the axes
+**Axis 3 — what channel delivers a secret to a SANDBOXED run, and may the
+launch refuse?** Consequence 3 above says a sandboxed run keeps plaintext out
+of the container by default. The measurement that makes it an operator
+decision rather than a fix: the plaintext channel is not an oversight, it is
+the MECHANISM by which a sandboxed node spends the credential the engine
+resolved for it. `forwardableProviderEnv` writes that credential into the
+container's environment (the call at
+[`pkg/backend/model/claw_backend.go`](../../pkg/backend/model/claw_backend.go)
+`:1590`, the forwarded set at `:2130-2210`), with a separate branch for a
+gateway node — iterion#2028, where the host sets a gateway's egress policy
+explicitly.
+
+- **(3a) Refuse by default.** A declared secret that neither the
+  egress-substitution path (Layer 2) nor the file-secret path can serve fails
+  the LAUNCH with a typed error naming the secret and the two paths. Strictly
+  stronger — and it refuses every sandboxed node that spends a provider
+  credential through the env channel today: the PLIAGE gateway lane
+  (iterion#2005) and every sandboxed bot carrying a provider key. A documented
+  rupture with a compat mode, not a bug fix.
+- **(3b) Warn by default, refuse on request.** The launch NAMES the secret and
+  the two paths that could not serve it (a C1xx-shaped warning — "warn rather
+  than reject"), and an explicit declaration asks for the refusal. Nothing
+  breaks, and the protection reaches the runs that ask for it.
+
+Axis 3 is why this record names three open questions and not two: it decides
+what a sandboxed run can DO, where axes 1 and 2 decide what it may PRINT and
+what a silent declaration grants.
+
+Until the three are answered, no slice of this ADR is implemented: the axes
 decide the witness, and a witness written against the wrong axis would
-have to be thrown away. The measurement above is the part that was owed
-today.
+have to be thrown away. The measurement is the part that was owed.
 
 ## Consequences
 
 - The ticket (iterion#1949) keeps a design half and an implementation
   half: this record IS the design half, and it is deliberately
-  under-determined on two axes rather than silently resolved.
+  under-determined on three axes rather than silently resolved.
+- What landed before the axes: the engine's recorded failure text now goes
+  through the same Layer-0 matcher as the event path (iterion#2037,
+  `pkg/runtime/failure_record.go`), and the redactor every backend receives is
+  the SAME one — one executor builds every task, so `claw` in-process,
+  sandboxed `claw`, `claude_code` and `pi` cannot drift apart. Neither answer
+  to the axes throws that away.
 - `pkg/secrets` is shared with the PLIAGE gateway lane (iterion#2005):
   the gateway env rides a separate branch of `forwardableProviderEnv` and
   is never merged into `providerCredentialEnvVars` — one source of truth
