@@ -19,6 +19,7 @@ const (
 	ConnectorFile = "connector.yaml"
 	SchemasFile   = "schemas.yaml"
 	ResponsesFile = "responses.json"
+	TriggersFile  = "triggers.yaml"
 	OpsDir        = "ops"
 )
 
@@ -213,6 +214,12 @@ func read(dir string) (*Package, error) {
 			return nil, err
 		}
 		p.Ops = append(p.Ops, f)
+	}
+	// LAST, because a trigger is checked against the operations: read here so
+	// every loader gets the inbound half, since the half a caller forgets to
+	// read is the half that goes silently inert.
+	if err := readTriggers(dir, p); err != nil {
+		return nil, err
 	}
 	return p, nil
 }

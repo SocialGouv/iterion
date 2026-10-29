@@ -454,6 +454,15 @@ func TestEveryDocumentIsVersionGuarded(t *testing.T) {
 			file: filepath.Join(spec.OpsDir, "issue.yaml"),
 			body: "schema_version: 99\nconnector: probe\ndomain: issue\noperations: []\n",
 		},
+		{
+			// Its version is its OWN (99 is newer than TriggersSchemaVersion,
+			// not than the package's), and the table's claim is EVERY
+			// document — a list that stops at the documents that existed when
+			// it was written guards one less file than it says.
+			name: "triggers.yaml",
+			file: spec.TriggersFile,
+			body: "schema_version: 99\nconnector: probe\ntriggers: []\n",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := writePackageDir(t)

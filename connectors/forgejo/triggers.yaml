@@ -1,0 +1,10 @@
+schema_version: 1
+connector: forgejo
+triggers:
+  - id: forgejo.issue.commented
+    event: issue_comment
+    description: >-
+      A comment was created, edited or deleted on an issue or a pull request.
+      Forgejo and Gitea both deliver it as X-Forgejo-Event/X-Gitea-Event
+      `issue_comment`, with the action in the payload; selecting one action
+      rather than another is a filter, which this format does not carry yet.

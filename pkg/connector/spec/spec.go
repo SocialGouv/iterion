@@ -9,13 +9,14 @@
 //	connector.yaml   identity, provenance/licence, base URL, auth schemes, maturity
 //	ops/*.yaml       operations, one file per domain
 //	overlay.yaml     the curation a machine cannot derive
-//	triggers.yaml    inbound webhooks / polling
+//	triggers.yaml    inbound events the package declares (curated, optional)
 //
 // Two properties are load-bearing and shape every type below.
 //
 // GENERATED IS NOT AUTHORED. Everything under ops/ is derivable from the
 // vendor's description, so it is disposable and re-derivable; everything in
-// overlay.yaml is iterion's own work. Provenance records which is which,
+// overlay.yaml and triggers.yaml is iterion's own work — no description states
+// which of a vendor's webhooks an engine will believe. Provenance records which is which,
 // because it decides what may be REDISTRIBUTED: a vendor spec under a
 // non-commercial licence may be generated from locally by an operator, but
 // its derived ops may not ship in iterion's own catalog.

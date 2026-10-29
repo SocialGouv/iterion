@@ -431,6 +431,47 @@ whole split rests on the generated half being disposable. It is also the
 install-time lane, which is why `--license` and `--redistributable` are
 explicit inputs recorded in the provenance rather than inferred.
 
+## What a triggers file carries
+
+The inbound half is declared by the package, like the outbound one:
+`triggers.yaml` lists the events a connector can receive, and the engine
+believes an event because a package says it exists rather than because a
+`switch` in `pkg/server` has an arm for it. The file was named in
+`pkg/connector/spec`'s own package layout before anything read it, which is the
+worst of the two positions — a format announced to package authors and ignored
+by the loader — so the minimum it needs to be true is settled here.
+
+A document carries `schema_version` (its OWN, starting at `1`, REQUIRED — the
+overlay's precedent: a curated file borrowing the package's constant lets a
+package-format bump silently widen what it may declare), the `connector` it
+belongs to, and a list of triggers. A trigger carries exactly three things: an
+`id` addressable by the same rule as an operation id
+(`<connector>.<resource>.<verb>`, first segment the package's own), the
+vendor's `event` name as a delivery carries it (`issue_comment` in Forgejo's
+`X-Forgejo-Event`), and an optional one-line `description`. The version is read
+by a tolerant pre-pass BEFORE the strict decode, so a file from a newer iterion
+is diagnosed as one instead of as an unknown field. `Validate` refuses a
+trigger that names no event, one whose id is not addressable or sits in another
+package's namespace, two sharing an id, and an id that is also an operation's —
+one id is one thing, and a collision this format allowed could never be removed
+afterwards.
+
+`triggers.yaml` is CURATED, on the overlay's side of the generated/authored
+line: no vendor description states which of its webhooks an engine will
+believe. So `spec.Write` does not emit it and `iterion connectors gen` does not
+scaffold one, which is also what makes a declaration survive a regeneration —
+only `ops/` is rewritten. An absent file is a valid package: most connectors
+have no inbound half.
+
+What is deliberately NOT in the format, and stays with the trigger-ingress
+family this ADR defers to a later lot of #1072: event FILTERS (an action, a
+branch, a label), payload MAPPING onto a run's vars, durable POLLING cursors,
+and the studio surfaces. Each would be a field invented before its reader, and
+a format grows by adding optional fields at a constant version — not by
+re-deciding what an existing one meant. The cloud twin owes nothing: a
+declaration is read from the package at load time and never persisted, so there
+is no durable state here to ship a Mongo half for.
+
 ## The execution profile — what schema v1 actually promises
 
 The review's F14/F15/F16 said the supported request/response semantics must be

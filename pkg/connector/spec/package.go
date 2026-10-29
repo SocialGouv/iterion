@@ -50,6 +50,10 @@ type Package struct {
 	// ResponseSchemas are explicit v2 contracts, read only from responses.json.
 	// The older Schemas projection is never used to validate a response.
 	ResponseSchemas map[string]ResponseSchema
+	// Triggers are the inbound events the package declares, read from
+	// triggers.yaml. Empty for every outbound-only package, which is most of
+	// them.
+	Triggers []Trigger
 }
 
 // Operations flattens every domain's operations, sorted by id, so callers
@@ -205,7 +209,10 @@ func (p *Package) Validate() error {
 			}
 		}
 	}
-	return nil
+	// The INBOUND half, checked by the same gate as the outbound one: a
+	// declaration that only `connectors validate` judged would be a format
+	// the catalog reads and nobody refuses.
+	return validateTriggers(p)
 }
 
 // checkRequirement verifies a requirement's terms against the declared
