@@ -2465,6 +2465,21 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 		// here: the reader takes it as no record at all and the local
 		// sources decide, as they did before this crossed (the catalog
 		// twin of providerRoutingEnvVars' explicit empties).
+		//
+		// The record is not the only road to the resolution it carries:
+		// the two LOCAL sources of the very same answer — the operator
+		// table and the models.dev qualifier — are what the in-container
+		// catalog reads when the record does not cover the id, so they
+		// cross as explicit empties beside it. Neither is a credential
+		// and empty is each one's own "the operator declared nothing", so
+		// the empty costs the container nothing the host does not answer
+		// for: its own resolution rides in the record beside them. This
+		// also closes the route that carries no
+		// provenance mark for any reader to refuse — the repository's own
+		// devcontainer.json, which becomes the env the container is
+		// STARTED with — because ExecOpts.Env outranks that environment.
+		env[compatgw.CatalogModelsEnv] = ""
+		env[compatgw.CatalogProviderEnv] = ""
 		env[compatgw.ResolvedEnvName] = ""
 		if resolved := compatgw.ResolveCatalog(modelroute.Parse(model).Wire, modelspecs.Default(), os.Getenv); resolved.Known() {
 			if raw, merr := json.Marshal(compatgw.ForwardableRecord(modelroute.Parse(model).Wire, resolved)); merr == nil {

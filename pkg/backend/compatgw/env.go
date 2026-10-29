@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/secure/httpdial"
 )
 
@@ -47,10 +48,25 @@ type Config struct {
 // FromEnv reads the gateway config through get (os.Getenv, or a test's map).
 // Both variables unset — or the base URL blank — is ErrNotConfigured; a set
 // base URL with no key is accepted (network-authenticated gateways exist).
+//
+// A key a project `.env` planted is not the operator's, and is dropped: a
+// keyless gateway is a supported configuration, so the host crosses no key
+// at all for one, and the in-container runner auto-loads the `.env` of the
+// repository under review over exactly the names the crossing left absent.
+// This key is the credential the gateway client presents on every call, so
+// on a router-style gateway it selects which virtual key — hence which
+// budget, model allowlist and tenant — its reviewer's calls are billed to.
+// Dropped rather than crossed or read as empty, which some gateways take
+// for an attempted auth; the endpoint is untouched, a gateway with no auth
+// being a configuration and not a refusal. The operator's own channel, the
+// environment this process inherited, answers exactly as before.
 func FromEnv(get func(string) string) (Config, error) {
 	base, key := strings.TrimSpace(get(BaseURLEnv)), strings.TrimSpace(get(APIKeyEnv))
 	if base == "" {
 		return Config{}, ErrNotConfigured
+	}
+	if envtrust.Planted(APIKeyEnv) {
+		key = ""
 	}
 	return Config{BaseURL: base, APIKey: key}, nil
 }

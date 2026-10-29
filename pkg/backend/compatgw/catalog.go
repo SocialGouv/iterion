@@ -28,6 +28,9 @@ import (
 // There is no bare-id, suffix, vendor or static fallback: a gateway id is
 // whatever the gateway serves, and matching it against a vendor's table by
 // name or prefix would hand an alias another model's window or price.
+//
+// All three env names are read through catalogEnv, the one place the
+// provenance question is asked for the class.
 
 // CatalogModelsEnv holds the operator's JSON table for the ids its gateway
 // serves. `{"scaleway/gpt-oss-120b": {"context_window": 131072, ...}}` —
@@ -48,8 +51,9 @@ const CatalogModelsEnv = "OPENAI_COMPATIBLE_MODELS"
 // an empty value when its own answer is unknown — because an absent name
 // is the one the workspace .env fills inside the container. The two halves
 // of that are one contract: the explicit empty leaves no gap for the
-// repository under review to fill, and resolvedEnvRecord refuses a record
-// this process's own .env planted, which is a record no host wrote.
+// repository under review to fill, and catalogEnv refuses a value this
+// process's own .env planted, which is a record no host wrote. The same
+// pair holds for the two local sources this record answers before.
 const ResolvedEnvName = "ITERION_OPENAI_COMPATIBLE_RESOLVED"
 
 // CatalogProviderEnv names the models.dev provider whose EXACT keys answer
@@ -99,13 +103,42 @@ var (
 	operatorTableErr  error
 )
 
+// catalogEnv reads one of the three names this catalog resolves from, and
+// answers "" — "nothing said about this" — for a value a project `.env`
+// planted. It is the ONE place the question is asked, because the three
+// names are one class: each decides the window a gateway node compacts at,
+// the max_tokens it asks for, the price it is billed at and the provenance
+// all of that is recorded under, and each is read on both sides of the
+// sandbox boundary. A `.env` sits in a repository — including the one under
+// review, mounted at /workspace, whose `.env` the in-container runner
+// auto-loads over every name the crossing left absent — so a planted value
+// is one no operator and no host stands behind: in the container it is the
+// resolution itself, and on the host it would be LAUNDERED into the record
+// the host crosses as its own answer, where the container has no mark left
+// to refuse. The question is about THIS process's environment, which is
+// the only one a value can arrive in and what every production caller
+// hands as `get`.
+//
+// Silent, like a wrong-shaped value: this read serves the capability READ
+// paths too (ResolveCatalogQuiet, one call per keystroke of a free-text
+// model field), where a line per call is the noise #2103 closed. The
+// unknown resolution it falls through to is what says it out loud, once, on
+// the launch path.
+func catalogEnv(get func(string) string, name string) string {
+	if envtrust.Planted(name) {
+		return ""
+	}
+	return strings.TrimSpace(get(name))
+}
+
 // operatorModels parses OPENAI_COMPATIBLE_MODELS once. A malformed table is
 // a REFUSAL at every seam that resolves a gateway route, not a silent
 // fallback to the catalog: the operator wrote a price, a typo must not
-// price the model differently.
+// price the model differently. A table the repository planted is not the
+// operator's, so it neither prices nor refuses anything (catalogEnv).
 func operatorModels(get func(string) string) (map[string]modelspecs.Spec, error) {
 	operatorTableOnce.Do(func() {
-		raw := strings.TrimSpace(get(CatalogModelsEnv))
+		raw := catalogEnv(get, CatalogModelsEnv)
 		if raw == "" {
 			operatorTable = map[string]modelspecs.Spec{}
 			return
@@ -233,7 +266,7 @@ func resolveCatalog(modelID string, live *modelspecs.Registry, get func(string) 
 	if e, ok := table[strings.ToLower(strings.TrimSpace(modelID))]; ok {
 		return Resolved{Spec: e, Source: SourceOperator}
 	}
-	prov := strings.TrimSpace(get(CatalogProviderEnv))
+	prov := catalogEnv(get, CatalogProviderEnv)
 	if prov == "" {
 		return Resolved{Source: SourceUnknown}
 	}
@@ -326,27 +359,11 @@ func ForwardableRecord(modelID string, r Resolved) ResolvedEnvRecord {
 // degrades to the local sources, it never invents one).
 func resolvedEnvRecord(get func(string) string) (ResolvedEnvRecord, bool) {
 	var rec ResolvedEnvRecord
-	// A record this process's own `.env` filled in has no host behind it.
-	// The in-container runner auto-loads /workspace/.env — the repository
-	// under review — which fills every name the crossing left absent, and
-	// this record decides the window the node compacts at, the max_tokens
-	// it asks for, the price it is billed at and the provenance all of
-	// that is recorded under. The host crosses the name explicitly for
-	// every gateway node it dispatches, empty answer included, so a
-	// PLANTED record is one no host wrote: refused here, and the local
-	// sources answer as they do for any id the record does not cover. The
-	// question is about THIS process's environment — the only one a record
-	// can arrive in, and what every production caller hands as `get`.
-	//
-	// Silent, like a wrong-shaped value: this same parse serves the
-	// capability READ paths (ResolveCatalogQuiet, one call per keystroke of
-	// a free-text model field), where a line per call is the noise #2103
-	// closed. The unknown resolution it falls through to is what says it
-	// out loud, once, on the launch path.
-	if envtrust.Planted(ResolvedEnvName) {
-		return rec, false
-	}
-	raw := strings.TrimSpace(get(ResolvedEnvName))
+	// Through catalogEnv: the host crosses this name explicitly for every
+	// gateway node it dispatches, empty answer included, so a PLANTED
+	// record is one no host wrote — it reads as no record at all, and the
+	// local sources answer as they do for any id the record does not cover.
+	raw := catalogEnv(get, ResolvedEnvName)
 	if raw == "" || json.Unmarshal([]byte(raw), &rec) != nil || rec.Model == "" {
 		return rec, false
 	}

@@ -177,6 +177,7 @@ var notEnvNames = map[string]string{}
 // reads.
 const (
 	whyCrossingSets = "set in the crossing by forwardableProviderEnv's gateway branch, for the in-container factory"
+	whyCatalogEmpty = "set in the crossing by forwardableProviderEnv's gateway branch as an explicit empty: a local source of the in-container catalog, which the host's own forwarded record answers for (the reader is pkg/backend/compatgw)"
 	whyForfaitDir   = "set in the crossing to where the run's forfait lands in the container"
 	whyCodexHome    = "set in the crossing to where a ChatGPT forfait lands in the container: the run's own, or the copy of the host's a dispatch writes"
 	whyHookEnv      = "the event a settings hook's command is told about, set in its env"
@@ -189,6 +190,8 @@ var envWrites = map[string]string{
 	"OPENAI_COMPATIBLE_API_KEY":          whyCrossingSets,
 	"ITERION_LLM_ENDPOINT_ALLOW_PRIVATE": whyCrossingSets,
 	"ITERION_OPENAI_COMPATIBLE_RESOLVED": whyCrossingSets,
+	"OPENAI_COMPATIBLE_MODELS":           whyCatalogEmpty,
+	"OPENAI_COMPATIBLE_CATALOG_PROVIDER": whyCatalogEmpty,
 	// The engine-owned sandbox proxy channel: this package only sets it in
 	// the runner env it hands on; the reader is pkg/backend/compatgw.
 	"ITERION_SANDBOX_PROXY_ENDPOINT": whyCrossingSets,

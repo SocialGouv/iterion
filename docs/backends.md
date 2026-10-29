@@ -1374,16 +1374,43 @@ what it did before they existed (the kubernetes driver runs the image's
 baked binary, so a lagging image is the normal case there, not an
 accident). The flags cross intact on an image at this version or later.
 
-The name crosses for every gateway node, **always** — an empty value when
-the host resolved nothing for the id. An absent name is the one a workspace
-`.env` fills inside the container (the runner auto-loads the nearest one,
-filling every name the crossing left unset), and this record is the first
-thing the in-container catalog answers from: whoever writes it picks the
-window the node compacts at, the `max_tokens` it asks for, the price it is
-billed at and the provenance all of that is recorded under. The explicit
-empty leaves no gap to fill, and the reader refuses a record a project
-`.env` planted — one with no host behind it — so a repository under review
-never writes the record its own reviewer runs on.
+**The resolution is the host's, all three names of it.** A gateway node's
+crossing carries the record *and* the two local sources above it —
+`OPENAI_COMPATIBLE_MODELS` and `OPENAI_COMPATIBLE_CATALOG_PROVIDER`, as
+explicit empties — for every gateway node, always. Each of the three
+decides the same four things: the window the node compacts at, the
+`max_tokens` it asks for, the price it is billed at and the provenance all
+of that is recorded under; and an ABSENT name is the one a workspace `.env`
+fills inside the container, the runner auto-loading the nearest one over
+every name the crossing left unset. The explicit empties leave no gap to
+fill, and they outrank the environment the container was STARTED with, so a
+repository's own `devcontainer.json` does not reach a gateway node's runner
+either.
+
+Provenance is asked once for the three (`internal/envtrust`): a value this
+process's own project `.env` planted is read as nothing said, wherever the
+read happens. That is what the container needs for a name no host wrote,
+and what the HOST needs for itself — an `iterion run` launched inside the
+repository loads that repository's `.env`, and a table taken for the
+operator's there would be laundered into the record the host then crosses
+as its own answer, carrying no mark the container could refuse. The
+gateway's API key is read the same way: a planted
+`OPENAI_COMPATIBLE_API_KEY` is dropped rather than presented, since a
+keyless gateway is a supported configuration and the crossing leaves the
+name absent for one — the repository would otherwise select which virtual
+key, hence which budget and tenant, its reviewer's calls are billed to. A
+deployment therefore keeps that key in the environment it exports, not in a
+project `.env`: planted, it is read as no key at all, and the gateway
+answers whatever it answers to an unauthenticated call. The endpoint stays
+the operator's, crossed for every gateway node.
+
+> **The host environment is the channel for these names.** The crossing
+> writes all three unconditionally, and `docker exec --env` / `env NAME=`
+> outrank the container's own environment, so a value an operator pins for
+> a gateway node through a workflow `sandbox:` block, the environment
+> overlay or a devcontainer no longer reaches the runner — silently, as for
+> the endpoint and routing names. Set them where the host reads them, and
+> the host's own resolution crosses in the record.
 
 > **Version skew.** The three flag keys are decoded strictly — this is the
 > operator table, not the forwarded record: an iterion older than their
