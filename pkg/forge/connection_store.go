@@ -38,7 +38,12 @@ type ConnectionStore interface {
 	ListByTenant(ctx context.Context, tenantID string) ([]Connection, error)
 	// ExpiringBefore returns refreshable connections whose access token
 	// expires at or before t (cross-tenant; the refresh worker's scan).
-	// KindPAT connections never expire and are excluded.
+	// KindPAT connections never expire and are excluded. So are
+	// StatusNeedsReauth and StatusRevoked rows: their credential is already
+	// dead, so handing one to the refresher is a guaranteed invalid_grant
+	// against the forge on every tick until an operator re-authorises it —
+	// exactly the hot retry loop #2698 names. A StatusDegraded row stays
+	// listed: the security-read lane still owes it a withdrawal/park pass.
 	ExpiringBefore(ctx context.Context, t time.Time) ([]Connection, error)
 	// ListByOAuthApp returns every connection (cross-tenant) that names the
 	// OAuth app — the guard that keeps an app in use from being deleted: a
@@ -148,12 +153,24 @@ func (m *MemoryConnectionStore) ExpiringBefore(_ context.Context, t time.Time) (
 		if c.Kind == KindPAT || c.AccessTokenExpiresAt == nil {
 			continue
 		}
+		if !refreshableStatus(c.Status) {
+			continue
+		}
 		if !c.AccessTokenExpiresAt.After(t) {
 			out = append(out, c)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].AccessTokenExpiresAt.Before(*out[j].AccessTokenExpiresAt) })
 	return out, nil
+}
+
+// refreshableStatus reports whether the sweep can still help a connection:
+// a refresh only has a chance on an active or degraded credential. A
+// needs_reauth/revoked row keeps its past expiry, so without the filter it
+// is swept on every tick and re-refused by the forge every time (#2698).
+// The empty status of rows predating the field stays sweepable.
+func refreshableStatus(s ConnectionStatus) bool {
+	return s != StatusNeedsReauth && s != StatusRevoked
 }
 
 // ---- Mongo store ----
@@ -239,6 +256,9 @@ func (s *MongoConnectionStore) ExpiringBefore(ctx context.Context, t time.Time) 
 	filter := bson.M{
 		"kind":                    bson.M{"$ne": string(KindPAT)},
 		"access_token_expires_at": bson.M{"$lte": t},
+		// The twin of refreshableStatus: $nin (not $in) so a row predating
+		// the status field — no "status" key at all — stays sweepable.
+		"status": bson.M{"$nin": bson.A{string(StatusNeedsReauth), string(StatusRevoked)}},
 	}
 	return mongoutil.FindAllSorted[Connection](ctx, s.coll, filter, "access_token_expires_at",
 		"forge: list expiring connections", "forge: decode expiring connections")
