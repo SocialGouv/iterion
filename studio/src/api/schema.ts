@@ -7711,6 +7711,7 @@ export interface components {
             stored?: components["schemas"]["BotRoles"];
         };
         botSourceFilePutReq: {
+            allow_fold?: boolean;
             content: string;
             id?: string;
             stored_sha256?: string;
@@ -7744,6 +7745,7 @@ export interface components {
             version: number;
         };
         botSourcePutReq: {
+            allow_fold?: boolean;
             files: {
                 [key: string]: string;
             };

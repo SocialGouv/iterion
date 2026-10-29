@@ -424,8 +424,8 @@ not enabled on this server`.
 |---|---|---|---|
 | `GET` | `/api/teams/{id}/bot-sources` | bot editor | List the team's bots (metadata only — file bodies omitted) |
 | `GET` | `/api/teams/{id}/bot-sources/{slug}` | bot editor | One bot with its full file map |
-| `PUT` | `/api/teams/{id}/bot-sources/{slug}` | bot editor | Create or replace the whole bundle (`{files, version?, id?, stored_sha256?}`) |
-| `PUT` | `/api/teams/{id}/bot-sources/{slug}/files/{path...}` | bot editor | Per-file save (`{content, version?, id?, stored_sha256?}`) |
+| `PUT` | `/api/teams/{id}/bot-sources/{slug}` | bot editor | Create or replace the whole bundle (`{files, version?, id?, stored_sha256?, allow_fold?}`) |
+| `PUT` | `/api/teams/{id}/bot-sources/{slug}/files/{path...}` | bot editor | Per-file save (`{content, version?, id?, stored_sha256?, allow_fold?}`) |
 | `DELETE` | `/api/teams/{id}/bot-sources/{slug}/files/{path...}` | bot editor | Delete one file (never `main.bot`) |
 | `DELETE` | `/api/teams/{id}/bot-sources/{slug}` | bot editor | Delete the bot |
 | `POST` | `/api/teams/{id}/bot-sources/{slug}/fork` | bot editor | Fork a baked catalog bot (`{from}`) into an editable copy |
@@ -440,7 +440,14 @@ holds such a key from before this rule is written again by deleting that file
 Every write **compiles the bundle before it persists** — a bot that fails to
 parse/compile is rejected `400 bot does not compile: <diagnostics>`, never
 left to fail at launch. A non-zero `version` is an optimistic if-match token
-(`409` if a concurrent editor advanced it); slug collisions are `409`.
+(`409` if a concurrent editor advanced it); slug collisions are `409`. A
+write that would fold a value the stored file writes over several lines onto
+one is `422` naming the file and the line (#1612) — on THESE two routes only,
+whose bytes are the author's own, the refusal keeps an explicit hatch:
+`allow_fold` on the request body (#1679), off by default; the write then
+lands, and each value it collapsed is named in the response's `warnings`. A
+fold the server's reader cannot tell (a stored file past the read budget) is
+refused either way.
 
 ### The digest rule — what a read decided, a write carries
 

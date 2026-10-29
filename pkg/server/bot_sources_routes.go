@@ -201,6 +201,14 @@ type botSourcePutReq struct {
 	// bytes, or none, is a 409 naming what changed. A file kept byte for
 	// byte asks nothing.
 	StoredSHA256 map[string]string `json:"stored_sha256,omitempty"`
+	// AllowFold is the escape hatch on the fold refusal (#1612, #1679), off
+	// by default: this route takes the author's OWN bytes, so an author who
+	// deliberately collapses every multi-line value of a file may say so —
+	// the write then lands and the response's warnings say what folded. A
+	// fold the reader cannot TELL (a stored file past the read budget) stays
+	// refused either way: no hatch asks a write to proceed on a question
+	// nobody could answer.
+	AllowFold bool `json:"allow_fold,omitempty"`
 }
 
 // handlePutBotSource creates or replaces a bot's whole bundle. The bundle is
@@ -268,8 +276,11 @@ func (s *Server) putBotSourceFor(w http.ResponseWriter, r *http.Request, tenantI
 	// whole bundle: this is where the studio's CLOUD save of a bot in
 	// several files lands, and where a push that folds a stored value
 	// would otherwise replace it with a text its author never wrote. A
-	// creation has no before and no claim.
-	if !s.bundleFoldsNothing(w, r, storedBundle, bs.Files) {
+	// creation has no before and no claim. The bytes are the author's own,
+	// so the refusal keeps an explicit hatch (allow_fold, #1679): the write
+	// then lands and each fold is a warning of the response.
+	foldsNothing, foldWarnings := s.bundleFoldsNothing(w, r, storedBundle, bs.Files, req.AllowFold)
+	if !foldsNothing {
 		return
 	}
 	if diags := validateBundleCompile(bs.Files); len(diags) > 0 {
@@ -286,7 +297,7 @@ func (s *Server) putBotSourceFor(w http.ResponseWriter, r *http.Request, tenantI
 	if !ok {
 		return
 	}
-	warnings := append(s.platformPushWarnings(tenantID, bs), engineWarnings...)
+	warnings := append(s.platformPushWarnings(tenantID, bs), append(foldWarnings, engineWarnings...)...)
 	presented := make(map[string]string, len(req.StoredSHA256))
 	for path, digest := range req.StoredSHA256 {
 		presented[path] = digest
@@ -349,6 +360,10 @@ type botSourceFilePutReq struct {
 	// refusal left empty was issued no digest, and its save carries none.
 	// A digest of other bytes than the stored ones is a 409.
 	StoredSHA256 string `json:"stored_sha256,omitempty"`
+	// AllowFold is the escape hatch on the fold refusal (#1612, #1679), off
+	// by default — see botSourcePutReq.AllowFold, the same hatch on the
+	// whole-bundle write.
+	AllowFold bool `json:"allow_fold,omitempty"`
 }
 
 // handlePutBotSourceFile writes one file into an existing bundle — the editor's
@@ -414,7 +429,11 @@ func (s *Server) putBotSourceFileFor(w http.ResponseWriter, r *http.Request, ten
 	// refusal canon.Text makes of a document (#1612), and it belongs here
 	// because this is the one write a CLIENT performs — the studio's cloud
 	// single-file save and the files drawer, neither of which goes through
-	// a save path of ours.
+	// a save path of ours. The bytes are the author's own, so the refusal
+	// has an explicit hatch (allow_fold, #1679): an author who collapses a
+	// value on purpose says so, and the write lands carrying the fold in
+	// its warnings rather than being refused.
+	var foldWarnings []string
 	if workflowfile.IsWorkflowFile(path) {
 		line, size, folds, err := canon.Folds(path, stored, body.Content)
 		if err != nil {
@@ -422,8 +441,11 @@ func (s *Server) putBotSourceFileFor(w http.ResponseWriter, r *http.Request, ten
 			return
 		}
 		if folds {
-			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%s cannot be written: the value at line %d is written over several lines and this write would fold it onto one, as a single line of %d characters (#1612). Push the file with that value over its lines, as its author wrote it", path, line, size)
-			return
+			if !body.AllowFold {
+				s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%s cannot be written: the value at line %d is written over several lines and this write would fold it onto one, as a single line of %d characters (#1612). Push the file with that value over its lines, as its author wrote it — or repeat the write with allow_fold set when the collapse is deliberate", path, line, size)
+				return
+			}
+			foldWarnings = append(foldWarnings, foldAllowedWarning(path, line, size))
 		}
 	}
 	// The file put is what is checked: a companion workflow through its
@@ -450,7 +472,7 @@ func (s *Server) putBotSourceFileFor(w http.ResponseWriter, r *http.Request, ten
 	if body.StoredSHA256 != "" {
 		presented = map[string]string{path: body.StoredSHA256}
 	}
-	s.writeBotSource(w, r, tenantID, userID, bs, presented, "", engineWarnings...)
+	s.writeBotSource(w, r, tenantID, userID, bs, presented, "", append(engineWarnings, foldWarnings...)...)
 }
 
 func (s *Server) handleDeleteBotSourceFile(w http.ResponseWriter, r *http.Request) {
@@ -994,11 +1016,14 @@ func (s *Server) botSourceError(w http.ResponseWriter, r *http.Request, err erro
 // bundleFoldsNothing reports whether a whole-bundle write leaves every
 // stored workflow's multi-line values over their lines, answering the
 // refusal itself when it does not. stored is the bundle as the write read
-// it; nil — nothing stored — is a creation, which folds nothing.
-func (s *Server) bundleFoldsNothing(w http.ResponseWriter, r *http.Request, stored *botsource.BotSource, files map[string]string) bool {
+// it; nil — nothing stored — is a creation, which folds nothing. With
+// allowFold the refusal lifts (#1679): each fold is returned as a warning
+// instead, so the write lands saying what it collapsed.
+func (s *Server) bundleFoldsNothing(w http.ResponseWriter, r *http.Request, stored *botsource.BotSource, files map[string]string, allowFold bool) (bool, []string) {
 	if stored == nil {
-		return true
+		return true, nil
 	}
+	var warnings []string
 	paths := make([]string, 0, len(files))
 	for path := range files {
 		paths = append(paths, path)
@@ -1011,12 +1036,23 @@ func (s *Server) bundleFoldsNothing(w http.ResponseWriter, r *http.Request, stor
 		line, size, folds, err := canon.Folds(path, stored.Files[path], files[path])
 		if err != nil {
 			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%s cannot be written: %v", path, err)
-			return false
+			return false, nil
 		}
 		if folds {
-			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%s cannot be written: the value at line %d is written over several lines and this write would fold it onto one, as a single line of %d characters (#1612). Push the file with that value over its lines, as its author wrote it", path, line, size)
-			return false
+			if !allowFold {
+				s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%s cannot be written: the value at line %d is written over several lines and this write would fold it onto one, as a single line of %d characters (#1612). Push the file with that value over its lines, as its author wrote it — or repeat the write with allow_fold set when the collapse is deliberate", path, line, size)
+				return false, nil
+			}
+			warnings = append(warnings, foldAllowedWarning(path, line, size))
 		}
 	}
-	return true
+	return true, warnings
+}
+
+// foldAllowedWarning is what a client-authored write says when allow_fold
+// let it collapse a value: the file, the line the stored text wrote it on,
+// and the line length it now has — the refusal's facts, carried by the write
+// that was allowed to make them true.
+func foldAllowedWarning(path string, line, size int) string {
+	return fmt.Sprintf("%s: the value at line %d was written over several lines and this write folded it onto one, as a single line of %d characters (#1612) — allowed because the write named allow_fold", path, line, size)
 }

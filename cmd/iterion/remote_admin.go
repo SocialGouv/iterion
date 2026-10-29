@@ -379,9 +379,10 @@ var remoteAdminLLMOAuthCmd = &cobra.Command{
 // --- platform bot overrides (DB-backed catalog) ---
 
 var (
-	remoteAdminBotSlug  string
-	remoteAdminBotOut   string
-	remoteAdminBotForce bool
+	remoteAdminBotSlug      string
+	remoteAdminBotOut       string
+	remoteAdminBotForce     bool
+	remoteAdminBotAllowFold bool
 )
 
 var remoteAdminBotsCmd = &cobra.Command{
@@ -420,7 +421,7 @@ every mutation lands on the platform audit log with a content digest.`,
 			if err != nil {
 				return err
 			}
-			return cli.RemoteAdminBotsPush(cmd.Context(), c, p, dir, remoteAdminBotSlug, remoteAdminBotForce)
+			return cli.RemoteAdminBotsPush(cmd.Context(), c, p, dir, remoteAdminBotSlug, remoteAdminBotForce, remoteAdminBotAllowFold)
 		case "show":
 			slug, err := needArg("slug")
 			if err != nil {
@@ -976,6 +977,7 @@ func init() {
 	remoteAdminBotsCmd.Flags().StringVar(&remoteAdminBotSlug, "slug", "", "Override slug (push; default: bundle dir basename)")
 	remoteAdminBotsCmd.Flags().StringVar(&remoteAdminBotOut, "out", "", "Output directory (pull; default: ./<slug>)")
 	remoteAdminBotsCmd.Flags().BoolVar(&remoteAdminBotForce, "force", false, "Push even when the deployment's engine is below the bundle's requires.iterion (the push then carries the warning)")
+	remoteAdminBotsCmd.Flags().BoolVar(&remoteAdminBotAllowFold, "allow-fold", false, "Push even when the bundle folds a stored multi-line value onto one line (#1612); each fold comes back as a warning")
 
 	for _, role := range []string{"reviewer", "revi_converse", "brancher", "implementer"} {
 		flag := strings.ReplaceAll(role, "_", "-")

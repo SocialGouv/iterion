@@ -4495,6 +4495,9 @@
       },
       "botSourceFilePutReq": {
         "properties": {
+          "allow_fold": {
+            "type": "boolean"
+          },
           "content": {
             "type": "string"
           },
@@ -4604,6 +4607,9 @@
       },
       "botSourcePutReq": {
         "properties": {
+          "allow_fold": {
+            "type": "boolean"
+          },
           "files": {
             "additionalProperties": {
               "type": "string"
