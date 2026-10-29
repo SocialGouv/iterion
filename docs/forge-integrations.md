@@ -185,6 +185,36 @@ background worker ([pkg/forge/refresh.go](../pkg/forge/refresh.go)) that
 re-seals the connection blob, then rewrites the managed secret's plaintext;
 PAT connections never refresh.
 
+### Renewing a token (in place, keeping the connection)
+
+A connection whose credential dies is repaired **in place** — the repository
+integrations, forge hooks, minted project bots and managed secret all stay
+put, and the row goes back to `active`. The studio's connection card carries
+the gesture (team admins); the API accepts the same two shapes.
+
+- **A PAT connection — Replace token.** GitLab project and group access
+  tokens MUST expire (365 days at most on a default instance): on the forge,
+  **Rotate** the token (GitLab keeps the same bot user and issues a new value
+  with a new expiry), then paste the new value into the connection card's
+  **Replace token** action, or `PATCH /connections/{conn_id}` with
+  `{"pat": "<token>"}` alone. The server WhoAmIs the new token BEFORE writing
+  anything and refuses (422) one that belongs to a different account — the
+  hooks were registered by the first account's token — unless the move is
+  deliberate (`"allow_account_change": true`, audited as such). The token is
+  resealed under the same connection id and the managed `forge_token` secret
+  is rewritten, the same two writes the refresh worker makes; the value is
+  never logged (audit: `forge.connection.token_replaced`).
+- **An OAuth connection — Re-authorise.** A connection whose grant died
+  (refresh refused, `needs_reauth`) shows **Re-authorise** on its card
+  (`POST /connections/{conn_id}/reauthorize`): the same OAuth flow with the
+  connection id pinned in the signed state. The callback verifies the
+  authorisation completed as the SAME forge account (a different one is
+  refused — the repositories' minted bots hang off the first account's
+  grant), seals the fresh token pair into the existing row, clears
+  `status_reason`, and audits `forge.connection.reauthorized`. The refresh
+  sweep skips `needs_reauth`/`revoked` rows — a dead credential is never
+  retried against the forge — so this gesture is the only way back.
+
 > Note on *identity* (vs envelope): "never what a bot posts with" means the
 > **sealing envelope** differs (`forge_conn:<id>` → `generic_secret:<id>`), not
 > the credential — the managed secret holds the **same token value**, so a bot
@@ -340,7 +370,8 @@ authenticated by signed state + an agent-binding cookie:
 |---|---|---|
 | GET | `/connections` | list connections |
 | POST | `/connections` | connect (`mode: pat` \| `oauth` \| `app`) → `{connection}`, `{authorize_url}`, or `{install_url}` (GitHub-only `app`) |
-| PATCH | `/connections/{conn_id}` | pin or clear the hook base (`{"webhook_base_url": "<base>" \| ""}`, sent alone), or toggle `security_read_enabled` |
+| PATCH | `/connections/{conn_id}` | pin or clear the hook base (`{"webhook_base_url": "<base>" \| ""}`, sent alone), toggle `security_read_enabled`, or replace a PAT connection's token (`{"pat": "<token>"}`, sent alone — see [Renewing a token](#renewing-a-token)) |
+| POST | `/connections/{conn_id}/reauthorize` | OAuth connections: start the re-authorisation of the EXISTING connection (dead grant, `needs_reauth`) → `{authorize_url}`; the callback seals the fresh pair into the same row |
 | DELETE | `/connections/{conn_id}` | disconnect (deprovisions every repo first) |
 | GET | `/connections/{conn_id}/health` | stored + live connection and token health |
 | POST | `/connections/{conn_id}/refresh` | GitHub App only: re-probe installation grants, persist them, and mint a fresh token |

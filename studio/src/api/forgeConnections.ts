@@ -12,7 +12,7 @@ import { apiGet, apiPost } from "./typed";
 // rename breaks the build — while these three fields stay narrowed.
 export type ForgeProvider = "gitlab" | "github" | "forgejo";
 export type ForgeKind = "oauth_app" | "github_app" | "pat";
-export type ForgeConnectionStatus = "active" | "needs_reauth" | "revoked";
+export type ForgeConnectionStatus = "active" | "needs_reauth" | "revoked" | "degraded";
 
 export type ForgeConnection = Omit<
   components["schemas"]["Connection"],
@@ -71,7 +71,7 @@ export interface ForgeIntegration {
 // RepoIntegration joined with its connection server-side.
 export interface ForgeTeamRepo {
   connection_id: string;
-  connection_status?: ForgeConnectionStatus | "degraded";
+  connection_status?: ForgeConnectionStatus;
   provider: ForgeProvider;
   repo_full_name: string;
   clone_url?: string;
@@ -304,6 +304,41 @@ export async function setForgeConnectionWebhookBase(
   return request(`/teams/${teamID}/forge/connections/${connID}`, {
     method: "PATCH",
     body: JSON.stringify({ webhook_base_url: base }),
+  });
+}
+
+// replaceForgeConnectionToken swaps a PAT connection's token IN PLACE
+// (#2488) — the renewal path for a GitLab project/group access token, which
+// must expire: Rotate on the forge, then paste the new value here. The server
+// WhoAmIs it first and refuses one that belongs to another account, so the
+// connection's hooks, enabled repos and managed secret survive the swap.
+// Sent ALONE, like every field of this PATCH (the server refuses a combined
+// body). The value is a write-only secret: it is never read back.
+export async function replaceForgeConnectionToken(
+  teamID: string,
+  connID: string,
+  pat: string,
+): Promise<ForgeConnection> {
+  return request(`/teams/${teamID}/forge/connections/${connID}`, {
+    method: "PATCH",
+    body: JSON.stringify({ pat }),
+  });
+}
+
+// reauthorizeForgeConnection starts the OAuth re-authorisation of an EXISTING
+// connection (#2698) — the repair for a needs_reauth (or degraded) oauth_app
+// connection, which re-running the connect wizard would otherwise strand: a
+// second connection next to the dead one that still owns every integration.
+// The caller redirects the window to the returned authorize_url; the callback
+// seals the fresh token pair into the same row and returns to `next`.
+export async function reauthorizeForgeConnection(
+  teamID: string,
+  connID: string,
+  next?: string,
+): Promise<{ authorize_url: string }> {
+  return request(`/teams/${teamID}/forge/connections/${connID}/reauthorize`, {
+    method: "POST",
+    body: JSON.stringify({ next }),
   });
 }
 
