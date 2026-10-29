@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -62,6 +63,9 @@ func TestDeniedEnvClassCoversTheCommandsIterionRunsInTheContainer(t *testing.T) 
 		{"docker", "a deploy-shaped workflow's step", "DOCKER_CONFIG", "a config whose credsStore names a program"},
 		{"iterion __claw-runner", "every sandboxed claw node", "ITERION_OPENAI_USE_OAUTH", "which instrument the node spends"},
 		{"iterion __claw-runner", "every sandboxed claw node", "SENTRY_DSN", "an outbound reporting channel, switched on"},
+		{"git", "the clone, commit and push of the run's work", "HOME", "the gitconfig ~/.gitconfig is, hence every insteadOf and helper"},
+		{"git", "the clone, commit and push of the run's work", "XDG_CONFIG_HOME", "the same config by its XDG road, $XDG_CONFIG_HOME/git/config"},
+		{"opencode", "an opencode node's agent CLI", "XDG_DATA_HOME", "the credential store its login is read from (detect's openCodeAuthPath)"},
 	} {
 		t.Run(tc.command+"/"+tc.env, func(t *testing.T) {
 			if !devcontainer.DeniedEnvKey(tc.env) {
@@ -72,7 +76,7 @@ func TestDeniedEnvClassCoversTheCommandsIterionRunsInTheContainer(t *testing.T) 
 	}
 }
 
-// A table is a claim; the two tests below RUN two of its rows. The deny
+// A table is a claim; the tests below RUN four of its rows. The deny
 // class is what keeps a reviewed repository's containerEnv out of the steps
 // the operator started, and a row that nobody ever drove is a sentence, not a
 // guarantee: #2316's hole was found twice at a program the table did not
@@ -285,4 +289,169 @@ func TestTheDevboxInstallIterionRunsNeverTakesTheRepositorysNixConfig(t *testing
 			t.Errorf("devbox started under NIX_CONFIG %q, want the workflow's %q: the operator's sandbox.env decides", got, operators)
 		}
 	})
+}
+
+// The home a program reads its configuration FROM is the same channel as the
+// configuration variables themselves (#2318): these two constants are the
+// remote the planted config rewrites, under a `.invalid` host (RFC 2606) so
+// nothing reachable and no operator's own `insteadOf` can decide the witness.
+const (
+	upstreamRemoteURL = "https://upstream.invalid/repo.git"
+	plantedMirrorBase = "https://attacker.invalid/mirror/"
+)
+
+// plantHostileGitConfig writes, at path, the git configuration a reviewed
+// repository committed: every URL under the upstream host rewritten to a
+// mirror of its own, and a credential helper that is a program — the shape
+// #2316's rva reproduced in rounds 5-6, where the helper RAN and was handed
+// the operator's token (Jo, 2026-10-12). canary is the file that program
+// appends to when git runs it.
+func plantHostileGitConfig(t *testing.T, path, canary string) {
+	t.Helper()
+	helper := filepath.Join(t.TempDir(), "planted-credential-helper")
+	// git takes the rest of the line as the helper's argv: a blank in the
+	// path would split it, and the scenario would die as a false negative.
+	if strings.ContainsAny(helper, " \t\n") || strings.ContainsAny(canary, " \t\n") {
+		t.Skipf("the test's temporary paths hold a blank: %q, %q", helper, canary)
+	}
+	if err := os.WriteFile(helper, []byte("#!/bin/sh\necho ran >> "+shellquote.Quote(canary)+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Whether the planted program CAN run here is the machine's business (a
+	// noexec temporary directory), and it is asked before the control, so a
+	// quiet canary below keeps one meaning.
+	if err := exec.Command(helper).Run(); err != nil {
+		t.Skipf("the planted helper does not run from %s (%v): this scenario needs an executable temporary directory", filepath.Dir(helper), err)
+	}
+	if err := os.Remove(canary); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := "[url \"" + plantedMirrorBase + "\"]\n\tinsteadOf = https://upstream.invalid/\n" +
+		"[credential]\n\thelper = " + helper + "\n"
+	if err := os.WriteFile(path, []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// gitUnderContainerEnv runs git the way the container runs it: under the
+// environment the drivers hand the container and nothing of the host's but
+// the PATH its binaries are found on (containerEnvRun's rule), from a
+// directory outside any repository so the only configuration in play is the
+// one the environment points at. GIT_TERMINAL_PROMPT=0 rides on BOTH arms: a
+// helper that answers nothing must fail, never reach for a terminal.
+func gitUnderContainerEnv(t *testing.T, env map[string]string, stdin string, args ...string) (string, error) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = t.TempDir()
+	cmd.Env = make([]string, 0, len(env)+2)
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	cmd.Env = append(cmd.Env, "PATH="+os.Getenv("PATH"), "GIT_TERMINAL_PROMPT=0")
+	cmd.Stdin = strings.NewReader(stdin)
+	out, err := cmd.Output()
+	return strings.TrimSpace(string(out)), err
+}
+
+// The table's git rows, run: a reviewed repository's devcontainer.json plants
+// the home git reads its configuration from, and a real git resolves a remote
+// URL and fills a credential under the container environment the run resolves
+// from that repository. ONE name per subtest, planted alone — two guards that
+// cover each other leave both untested, and the runtime's HOME pin is no
+// guard here at all: it yields to a value already set, it takes HOME only,
+// and it exists only where host_state binds a home (#2318).
+func TestGitNeverReadsTheHomeTheRepositoryPlanted(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("the witness drives a real git, and none is on PATH")
+	}
+	for _, tc := range []struct {
+		name    string // the env name the repository plants, alone
+		relPath string // where git reads the config from, under the planted dir
+	}{
+		{"HOME", ".gitconfig"},
+		{"XDG_CONFIG_HOME", "git/config"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The pin's own home is a scratch dir we own: with no HOME in
+			// the environment git falls through to the passwd entry, i.e.
+			// the OPERATOR's ~/.gitconfig — and would run a credential
+			// helper THEY configured.
+			hostHome := t.TempDir()
+			t.Setenv("HOME", hostHome)
+			planted := t.TempDir()
+			canary := filepath.Join(t.TempDir(), "helper-ran")
+			plantHostileGitConfig(t, filepath.Join(planted, tc.relPath), canary)
+
+			env, denied := resolveRepoContainerEnv(t, &ir.Workflow{Sandbox: &ir.SandboxSpec{Mode: string(sandbox.ModeAuto)}},
+				map[string]string{tc.name: planted})
+			if !slices.Contains(denied, tc.name) {
+				t.Errorf("deniedEnv = %v, want %s named: the event is how the operator learns what the repository tried", denied, tc.name)
+			}
+			// The container's HOME is iterion's own (the host_state pin) or
+			// the image's, never the repository's. Both arms get it, so the
+			// planted value is the ONLY difference between them. The map is
+			// nil when the planted name was the whole of the repository's
+			// env — which is exactly the refusal this witness wants.
+			if env == nil {
+				env = map[string]string{}
+			}
+			if _, pinned := env["HOME"]; !pinned {
+				env["HOME"] = hostHome
+			}
+			control := maps.Clone(env)
+			control[tc.name] = planted
+
+			// The control keeps the planted value in the container: git must
+			// then take the mirror AND run the helper, or this scenario has
+			// lost its premise and the quiet verdict below proves nothing.
+			if url, err := gitUnderContainerEnv(t, control, "", "ls-remote", "--get-url", upstreamRemoteURL); !strings.HasPrefix(url, plantedMirrorBase) {
+				t.Fatalf("control: with %s=%s in the container, git resolved %q (%v), want the planted mirror %s — this git does not read %s", tc.name, planted, url, err, plantedMirrorBase, tc.relPath)
+			}
+			// `credential fill` runs the helper, then fails for want of a
+			// username it never returned: the canary, not the exit code, is
+			// the effect this reads.
+			_, _ = gitUnderContainerEnv(t, control, "protocol=https\nhost=upstream.invalid\n\n", "credential", "fill")
+			if _, err := os.Stat(canary); err != nil {
+				t.Fatalf("control: the planted credential helper did not run (%v) — the premise is gone", err)
+			}
+			if err := os.Remove(canary); err != nil {
+				t.Fatal(err)
+			}
+
+			// The verdict: the container environment the run resolved.
+			if url, err := gitUnderContainerEnv(t, env, "", "ls-remote", "--get-url", upstreamRemoteURL); url != upstreamRemoteURL {
+				t.Errorf("git resolved %q (%v), want the upstream %s: the repository's %s reached the container environment %v", url, err, upstreamRemoteURL, tc.name, env)
+			}
+			_, _ = gitUnderContainerEnv(t, env, "protocol=https\nhost=upstream.invalid\n\n", "credential", "fill")
+			if _, err := os.Stat(canary); err == nil {
+				t.Errorf("the repository's credential helper RAN in iterion's own git step: its %s reached the container environment %v", tc.name, env)
+			}
+		})
+	}
+}
+
+// The table's opencode row: $XDG_DATA_HOME/opencode/auth.json is where that
+// CLI's login lives, and pkg/backend/detect reads it from the variable
+// (openCodeAuthPath, held by that package's own tests) — a planted store
+// answers the credential lookup of an agent iterion runs, which is what Jo
+// saw moved on 2026-10-12. Read at the seam and not through detect.Detect,
+// which shells out to the operator's own claude CLI; the control row proves
+// the seam dropped the name and not the whole map.
+func TestTheRepositorysPlantedXDGDataHomeNeverReachesTheContainer(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	planted := t.TempDir()
+	env, denied := resolveRepoContainerEnv(t, &ir.Workflow{Sandbox: &ir.SandboxSpec{Mode: string(sandbox.ModeAuto)}},
+		map[string]string{"XDG_DATA_HOME": planted, "MYTOOL_DATA": planted})
+	if !slices.Contains(denied, "XDG_DATA_HOME") {
+		t.Errorf("deniedEnv = %v, want XDG_DATA_HOME named", denied)
+	}
+	if got, present := env["XDG_DATA_HOME"]; present {
+		t.Errorf("XDG_DATA_HOME = %q in the container environment: the repository moved the store an agent's login is read from", got)
+	}
+	if env["MYTOOL_DATA"] != planted {
+		t.Fatalf("control: MYTOOL_DATA = %q, want %q — the seam dropped a name OUTSIDE the class, so the verdict above is not the class's doing", env["MYTOOL_DATA"], planted)
+	}
 }

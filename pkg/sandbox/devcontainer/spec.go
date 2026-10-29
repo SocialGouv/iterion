@@ -140,6 +140,17 @@ func usableRepoEnvEntry(name, value string) bool {
 //   - git's configuration is the operator's too: a planted variable
 //     rewrites its URLs, runs its transport or credential helper, points
 //     it at other objects or another repository, or names its commits;
+//   - the home those configurations are READ from is the same channel under
+//     another name: HOME and the XDG base directories under it. A planted
+//     HOME or XDG_CONFIG_HOME hands git the repository's own gitconfig —
+//     `insteadOf` rewrites every URL, and `credential.helper` is RUN and
+//     handed the operator's token (reproduced on #2316, Jo 2026-10-12) —
+//     plus the agents' settings and hooks when no forfait mount pins their
+//     config dir, and $HOME/.npmrc; XDG_DATA_HOME moves the credential
+//     store an agent logs into. The runtime's HOME pin is not the answer:
+//     it yields to a value already set, it takes HOME alone, and it exists
+//     only where host_state binds a home at all — so the refusal lives
+//     here, with the gitconfig variables it re-enters by (#2318);
 //   - the rest execute the planter's code or redirect the run's own
 //     tooling before any prompt is read: the dynamic loader and the
 //     modules glibc and OpenSSL load, the node and bun runtimes, the shell
@@ -168,8 +179,9 @@ func usableRepoEnvEntry(name, value string) bool {
 //     iterion's own nodes and provisioning run under them;
 //   - what needs a terminal nobody has there (PAGER, MANPAGER, LESSOPEN,
 //     BROWSER, PROMPT_COMMAND);
-//   - HOME and the XDG_* dirs, whose own road — a planted git config, an
-//     agent's credential store — is #2318's subject.
+//   - the *_HOME of a toolchain (JAVA_HOME, ANT_HOME, GEM_HOME, PYENV_ROOT):
+//     HOME is an exact name here, never a suffix, so a repository still
+//     points its own build at its own toolchain.
 //
 // A key outside the class still configures the repo's own sandbox — the
 // denylist removes trust, it does not review content.
@@ -215,8 +227,7 @@ var deniedEnvNamespaces = []string{
 	// a funded route.
 	"ANTHROPIC_",
 	// opencode: its config file, config dir, inline config, permissions.
-	// (Its credential STORE is under XDG_DATA_HOME, which the HOME/XDG
-	// family owns — #2318, not this class.)
+	// (Its credential STORE is under XDG_DATA_HOME, refused by XDG_ below.)
 	"OPENCODE_",
 	// The AWS SDK chain Bedrock authenticates through: credentials,
 	// profiles and their files, the container and instance credential
@@ -264,6 +275,14 @@ var deniedEnvNamespaces = []string{
 	// child it spawns — `npx <server>`, the documented way an MCP server
 	// starts, runs the planter's module in that server's own process.
 	"LD_", "OPENSSL_", "BASH_FUNC_", "BUN_", "NPM_CONFIG_",
+	// The XDG base directories, which are where the configuration and the
+	// credential stores of the programs iterion runs there LIVE: git reads
+	// $XDG_CONFIG_HOME/git/config (every `insteadOf` and helper of the
+	// GIT_CONFIG_* entries, by another road), and opencode's login sits
+	// under $XDG_DATA_HOME (pkg/backend/detect's openCodeAuthPath). The
+	// whole family, not the two names seen planted: a dir nobody reads
+	// today is a dir the next CLI release reads (#2318).
+	"XDG_",
 }
 
 // deniedEnvNames are the exact names outside the families above.
@@ -302,6 +321,11 @@ var deniedEnvNames = map[string]bool{
 	"KUBECONFIG": true, "DOCKER_HOST": true, "DOCKER_CONFIG": true,
 	// The agents' config homes (CLAUDE_CONFIG_DIR rides CLAUDE_).
 	"CODEX_HOME": true, "KIMI_CODE_HOME": true, "PI_CODING_AGENT_DIR": true,
+	// HOME itself: every file above is resolved from it when its own
+	// variable is unset — `~/.gitconfig` first. The EXACT name only: the
+	// *_HOME of a toolchain (JAVA_HOME, ANT_HOME) configures the
+	// repository's own build, which is a devcontainer doing its job.
+	"HOME": true,
 	// Endpoints, projects and regions off the suffix rule; the claude
 	// CLI's agent proxy and beta tracing.
 	"OPENAI_API_BASE": true, "BEDROCK_REGION": true, "CLOUD_ML_REGION": true,

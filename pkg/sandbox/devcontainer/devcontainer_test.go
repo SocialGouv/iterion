@@ -618,8 +618,14 @@ func TestDeniedEnvKey(t *testing.T) {
 		{"HTTPS_PROXY", true},
 		{"NO_PROXY", true},
 		{"http_proxy", true},
+		// The home the configurations above are read from, and the XDG
+		// base dirs under it: the gitconfig road of #2318, and the
+		// credential store opencode logs into.
+		{"HOME", true},
+		{"XDG_CONFIG_HOME", true},
+		{"XDG_DATA_HOME", true},
+		{"XDG_RUNTIME_DIR", true},
 		// Outside the class: the repository's own configuration.
-		{"HOME", false},
 		{"path", false},
 		{"TOKEN", false},
 		{"MYTOOL_ENDPOINT", false},
@@ -637,8 +643,10 @@ func TestDeniedEnvKey(t *testing.T) {
 		{"PYTHONPATH", false},
 		{"JAVA_HOME", false},
 		{"PAGER", false},
-		{"XDG_DATA_HOME", false},
+		// A toolchain's *_HOME: HOME is an exact name in the class, never a
+		// suffix, so these keep configuring the repository's own build.
 		{"ANT_HOME", false},
+		{"GEM_HOME", false},
 		{"ANT_OPTS", false},
 	}
 	for _, c := range cases {

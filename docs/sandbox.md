@@ -288,7 +288,9 @@ When `host_state: auto` (the default), iterion also bind-mounts:
 
 Both are RW. The container's `HOME` env var is set to the host home so
 processes that resolve `~` land in the mounted tree (no EACCES against
-a stock image's `/root`).
+a stock image's `/root`). The pin yields to a `HOME` already in the
+spec, which is the workflow's `sandbox.env:` alone: a devcontainer's is
+refused by the env deny class before it gets there (#2318).
 
 **UID remapping (Linux only):** when `host_state: auto` is active and
 the spec doesn't pin a `User`, the docker driver runs the container as
@@ -563,7 +565,11 @@ never lets the repository speak for the operator:
     the claude CLI's own process) and `NPM_CONFIG_*` (npm turns
     `NPM_CONFIG_NODE_OPTIONS` / `_SCRIPT_SHELL` into the options and
     the shell of every node child it spawns, `npx`-launched MCP
-    servers included);
+    servers included), and the XDG base dirs `XDG_*`, which is where
+    those configurations and credential stores LIVE (git reads
+    `$XDG_CONFIG_HOME/git/config`, opencode's login sits under
+    `$XDG_DATA_HOME`) — the whole family, not only the two names seen
+    planted;
   - the exact names `NODE_OPTIONS`, `NODE_PATH`,
     `GCONV_PATH`, `SHELL`, `BASH_ENV`, `SHELLOPTS`, `BASHOPTS`, `PS4`,
     `ENV`, `ZDOTDIR`, `PATH`, `GOFLAGS`, `SSH_ASKPASS`,
@@ -573,7 +579,11 @@ never lets the repository speak for the operator:
     first names a file that sets `GOFLAGS` itself), `KUBECONFIG` /
     `DOCKER_HOST` / `DOCKER_CONFIG` (a kubeconfig's `exec` plugin and a
     docker `credsStore` are programs); the agents' config homes `CODEX_HOME`,
-    `KIMI_CODE_HOME`, `PI_CODING_AGENT_DIR`; `OPENAI_API_BASE`,
+    `KIMI_CODE_HOME`, `PI_CODING_AGENT_DIR`, and `HOME` itself — every
+    one of those files is resolved from it when its own variable is
+    unset, `~/.gitconfig` first (the EXACT name only, so a toolchain's
+    `JAVA_HOME` or `ANT_HOME` still configures the repository's own
+    build); `OPENAI_API_BASE`,
     `BEDROCK_REGION`, `CLOUD_ML_REGION`, `GCLOUD_PROJECT` (and the
     lower-case `gcloud_project` the CLI also reads),
     `AGENT_PROXY_URL`, `SESSION_INGRESS_URL` (the claude CLI's API base
@@ -601,7 +611,27 @@ never lets the repository speak for the operator:
   they are denied because iterion's own nodes and provisioning run
   under them), what
   needs a terminal nobody has there (`PAGER`, `LESSOPEN`, `BROWSER`),
-  and `HOME` / the `XDG_*` dirs, whose own road is tracked separately.
+  and the `*_HOME` of a toolchain (`JAVA_HOME`, `ANT_HOME`, `GEM_HOME`):
+  `HOME` is an exact name in the class, never a suffix.
+
+  A planted `HOME` or `XDG_CONFIG_HOME` points git at a gitconfig the
+  repository committed: an `insteadOf` there rewrites every URL the
+  run's clone, fetch and push resolve (a review bot then reviews
+  attacker-picked content, and a push can land in an attacker's fork),
+  and a `credential.helper` there is RUN and handed the operator's
+  token — reproduced on #2316, rounds 5-6. The same road carries the
+  agents' `$HOME` settings and hooks where no forfait mount pins their
+  config dir, `$HOME/.npmrc`, and under `XDG_DATA_HOME` the credential
+  store an agent logs into. The runtime's own `HOME` pin is not the
+  guard: it yields to a value already set, it takes `HOME` alone, and
+  it exists only where `host_state` binds a home. So a devcontainer
+  that sets `HOME` or an `XDG_*` dir no longer gets it — the container
+  keeps iterion's pin (under `host_state`) or the image's own value,
+  and the `sandbox_env_denied` event names what was refused. A
+  repository that needs a home of its own says so in the IMAGE it
+  ships, which is its own artefact, or the workflow declares
+  `sandbox.env.HOME:` — the operator's reviewed channel, which still
+  wins.
 
   A planted `ANTHROPIC_BASE_URL` would re-route every LLM call the
   container makes to the planter's collector; a planted
