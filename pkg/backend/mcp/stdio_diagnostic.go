@@ -11,9 +11,15 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 )
 
 const startupStderrLimit = 8192
+
+// diagnosticStderrDrainBound is this site's default drain bound, overridable
+// through [proc.WaitDelayEnv].
+const diagnosticStderrDrainBound = 500 * time.Millisecond
 
 // startupStderr drains all writes but retains at most a small tail in memory.
 // Neither the tail nor arbitrary protocol errors may enter diagnostics: an
@@ -109,8 +115,10 @@ func newDiagnosticCommandTransport(cmd *exec.Cmd) *diagnosticCommandTransport {
 	// exec's stderr copier must finish even if a descendant inherits the pipe
 	// after the MCP process exits. Without WaitDelay, SDK Close could hang.
 	// Keep this below the SDK's termination grace: otherwise its timeout can
-	// race Wait's pipe cleanup and lose an already-exited process's status.
-	cmd.WaitDelay = 500 * time.Millisecond
+	// race Wait's pipe cleanup and lose an already-exited process's status —
+	// which is what an operator widening ITERION_PROC_WAIT_DELAY past that
+	// grace trades away here, deliberately, to keep a startup tail.
+	proc.SetWaitDelay(cmd, diagnosticStderrDrainBound)
 	return &diagnosticCommandTransport{
 		CommandTransport: &mcp.CommandTransport{Command: cmd, TerminateDuration: 2 * time.Second},
 		stderr:           stderr,
@@ -133,7 +141,10 @@ func (t *diagnosticCommandTransport) startupError(cause error) error {
 		closeErr := t.conn.Close()
 		var exited *exec.ExitError
 		switch {
-		case closeErr == nil, errors.Is(closeErr, exec.ErrWaitDelay):
+		// The drain bound expiring says the process exited 0 and only its
+		// stderr copy was abandoned (proc.DrainCutShort): the exit status is
+		// the one fact this diagnostic reports, and it is known.
+		case closeErr == nil, proc.DrainCutShort(closeErr):
 			exit = "0"
 		case errors.As(closeErr, &exited):
 			exit = fmt.Sprint(exited.ExitCode())

@@ -18,6 +18,12 @@
 // the group addressable. A cancellation path that stops at Setpgid stops
 // the WAIT, not the work.
 //
+// Neither primitive reaches what a finished child LEFT holding its output
+// pipes, which is the third thing every shell-out here shares:
+// [SetWaitDelay] is the one bound on that drain and [WaitDelayEnv] the one
+// override for it, [DrainCutShort] the one reader of the sentinel it
+// produces.
+//
 // The build-tagged Unix and Windows variants live alongside this file;
 // importers don't need to think about portability.
 package proc

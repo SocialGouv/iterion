@@ -343,6 +343,11 @@ var botVarsInfraExact = map[string]bool{
 	"ITERION_CLAUDE_CODE_BACKGROUND_FINALIZE_TIMEOUT": true,
 	"ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE":      true,
 	"ITERION_CLAUDE_CODE_BACKGROUND_RESULT_WAIT":      true,
+	// The drain bound on every child process the engine starts (#2469):
+	// at its edge (0, "off") it REMOVES the bound, so a stored value could
+	// park a node for as long as a descendant holds a pipe. Process
+	// supervision is the operator's environment, never a bot's variable.
+	"ITERION_PROC_WAIT_DELAY": true,
 	// Defaults a node that names nothing inherits and a bot's author may
 	// have relied on: its backend (what its tools and its gate can be),
 	// auto-memory, off so a run neither reads nor writes the operator's, and

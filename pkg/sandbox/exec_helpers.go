@@ -7,6 +7,7 @@ import (
 	"io"
 	"os/exec"
 
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -25,7 +26,11 @@ import (
 //
 // Errors other than [*exec.ExitError] are returned verbatim. ExitError
 // is normalised to (result with ExitCode set, nil error) so callers
-// can branch on res.ExitCode without a type assertion.
+// can branch on res.ExitCode without a type assertion. The drain bound
+// expiring is the one error given a sentence of its own: the command ran,
+// so the bare sentinel tells an operator nothing, while the bytes in the
+// result may be short of what it wrote — which is why it is not normalised
+// to success like a non-zero exit.
 func ExecCmd(c *exec.Cmd, opts ExecOpts) (ExecResult, error) {
 	var stdoutBuf, stderrBuf bytes.Buffer
 	if opts.Stdout != nil {
@@ -52,6 +57,13 @@ func ExecCmd(c *exec.Cmd, opts ExecOpts) (ExecResult, error) {
 	}
 	if _, isExit := err.(*exec.ExitError); isExit {
 		err = nil
+	}
+	if proc.DrainCutShort(err) {
+		// What a caller parses is res.Stdout, and the copy of it was
+		// abandoned mid-flight: an error, not a success with a hole in it,
+		// naming the bound that ran and the knob that widens it.
+		err = fmt.Errorf("the command exited 0 but a process it left kept its output open, so the read was cut %s: %w",
+			proc.WaitDelayHint(c.WaitDelay), err)
 	}
 	return res, err
 }

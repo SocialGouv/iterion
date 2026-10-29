@@ -611,6 +611,12 @@ func (r *Runner) runGitEnv(ctx context.Context, dir, tok string, extraEnv []stri
 	return err
 }
 
+// gitDrainBound is this site's default bound on the wait for a git helper
+// that still holds the output pipes (git-remote-https inherits them), once
+// git itself has gone. Overridable through [proc.WaitDelayEnv]; it is the
+// widest default in the tree because a clone's helper drains the slowest.
+const gitDrainBound = 10 * time.Second
+
 // runGitOutEnv is runGitEnv returning the command's combined output —
 // for the callers that need to READ git (ls-remote, rev-list), with the
 // same timeout, cancellation hardening and token redaction.
@@ -643,7 +649,7 @@ func (r *Runner) runGitOutEnv(ctx context.Context, dir, tok string, extraEnv []s
 	// CombinedOutput blocked on the helper's copy), and WaitDelay is the
 	// final unblock if a helper still holds them after the group kill.
 	proc.TerminateGroupOnCancel(cmd)
-	cmd.WaitDelay = 10 * time.Second
+	drainBound := proc.SetWaitDelay(cmd, gitDrainBound)
 	// Never prompt for credentials (fail fast instead of hanging), and ignore
 	// any host-level git config in the runner image.
 	// SanitizeEnv drops the variables that would override which repository,
@@ -665,6 +671,16 @@ func (r *Runner) runGitOutEnv(ctx context.Context, dir, tok string, extraEnv []s
 		}
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) && gitOpTimeout > 0 {
 			return "", fmt.Errorf("git %s: timed out after %s (ITERION_RUNNER_GIT_TIMEOUT bounds each git op): %w: %s", shown, gitOpTimeout, errors.Join(ctx.Err(), err), detail)
+		}
+		if proc.DrainCutShort(err) {
+			// git exited 0 and only the drain was cut, but THIS caller's
+			// answer is the output itself (a sha, a ref, a status), and what
+			// is in hand may be truncated: a short read passed off as
+			// success would hand a caller half a sha. So it stays an error
+			// — naming the bound and the knob that widens it, because the
+			// fix is an operator's, not a retry's.
+			return "", fmt.Errorf("git %s: exited 0 but a process it left kept its output open, so the read was cut %s: %w: %s",
+				shown, proc.WaitDelayHint(drainBound), err, detail)
 		}
 		return "", fmt.Errorf("git %s: %w: %s", shown, err, detail)
 	}

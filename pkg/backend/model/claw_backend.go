@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"slices"
 	"sort"
 	"strings"
@@ -1369,6 +1368,9 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 // when Wait observes the child's exit or when ctx is done, so it never
 // shortens a runner still working, and it covers the final drain and every
 // early abort at once.
+//
+// This is the DEFAULT; [proc.WaitDelayEnv] is the operator's override, and
+// the applied bound is what the report names.
 const clawRunnerWaitDelay = 2 * time.Second
 
 // clawPipeDrainGrace is how long the crossing's owned pipes outlive
@@ -1691,8 +1693,11 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// pipes), while the crossing's bound is the launcher's promise that THIS
 	// dispatch hands the node back. The crossing owns it, whatever the driver
 	// chose — pinned by a witness that hands this call a Cmd bounded at an
-	// hour and still expects the node back.
-	cmd.WaitDelay = clawRunnerWaitDelay
+	// hour and still expects the node back. The operator's bound
+	// (proc.WaitDelayEnv) is the one thing above it, and the applied value
+	// travels to the report below: a message quoting the default lies as
+	// soon as it is overridden.
+	drainBound := proc.SetWaitDelay(cmd, clawRunnerWaitDelay)
 
 	if err := cmd.Start(); err != nil {
 		// No reaper exists yet — ownership means releasing the ends here
@@ -1889,15 +1894,15 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	_ = stdinPipe.Close()
 
 	waitErr := wait()
-	if errors.Is(waitErr, exec.ErrWaitDelay) {
+	if proc.DrainCutShort(waitErr) {
 		// The runner exited on its own and only the drain was abandoned:
 		// [exec.Cmd.Wait] returns this sentinel instead of nil when
 		// WaitDelay closed the pipes of an otherwise successful command.
 		// The node's outcome is the result envelope the multiplexer already
 		// read, so the drain is reported, never charged to the node.
 		if b.logger != nil {
-			b.logger.Warn("[%s#%d/claw] the sandbox runner exited but left its pipes held; abandoned the drain after %s",
-				task.NodeID, task.Iteration, clawRunnerWaitDelay)
+			b.logger.Warn("[%s#%d/claw] the sandbox runner exited but left its pipes held; abandoned the drain %s",
+				task.NodeID, task.Iteration, proc.WaitDelayHint(drainBound))
 		}
 		waitErr = nil
 	}

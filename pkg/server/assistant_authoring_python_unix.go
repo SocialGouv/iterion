@@ -5,7 +5,8 @@ package server
 import (
 	"os/exec"
 	"syscall"
-	"time"
+
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 )
 
 // configureAuthoringPythonCommand keeps a parser timeout from leaving a
@@ -20,5 +21,5 @@ func configureAuthoringPythonCommand(cmd *exec.Cmd) {
 		}
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
-	cmd.WaitDelay = 500 * time.Millisecond
+	proc.SetWaitDelay(cmd, authoringPythonDrainBound)
 }

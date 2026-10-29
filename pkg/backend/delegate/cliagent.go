@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -318,7 +317,8 @@ const (
 	defaultCLIAgentTimeout = 20 * time.Minute
 	// cliAgentWaitDelay bounds the wait for the agent's output once the agent
 	// has exited, which a process it left running and holding the pipe would
-	// otherwise make endless.
+	// otherwise make endless. The DEFAULT: [proc.WaitDelayEnv] overrides it,
+	// and what the log names is the bound that ran.
 	cliAgentWaitDelay = 2 * time.Second
 )
 
@@ -1007,6 +1007,9 @@ func (b *CLIAgentBackend) runOnce(ctx context.Context, task Task, binary string,
 	}
 
 	var cmd *exec.Cmd
+	// The drain bound both arms apply, kept so the report below names the
+	// bound that actually ran and not this site's default.
+	var drainBound time.Duration
 	backend := b.Protocol.Name
 	if backend == "" {
 		backend = "cli_agent"
@@ -1029,7 +1032,7 @@ func (b *CLIAgentBackend) runOnce(ctx context.Context, task Task, binary string,
 		})
 		// As on the host: once the exec has exited, what holds its output
 		// does not hold the node.
-		cmd.WaitDelay = cliAgentWaitDelay
+		drainBound = proc.SetWaitDelay(cmd, cliAgentWaitDelay)
 	} else {
 		cmd = exec.CommandContext(runCtx, binary, args...) // #nosec G204 — binary/args are backend-configured, not attacker-controlled.
 		// Host arm only. A CLI agent forks its own tools (shells, language
@@ -1047,7 +1050,7 @@ func (b *CLIAgentBackend) runOnce(ctx context.Context, task Task, binary string,
 		cmd.Env = append(append([]string(nil), env...), proc.NodeSessionEntry(token))
 		// A process the agent detached may keep its stdout: once the agent has
 		// exited, its output is not waited for past this, and the run ends.
-		cmd.WaitDelay = cliAgentWaitDelay
+		drainBound = proc.SetWaitDelay(cmd, cliAgentWaitDelay)
 		if task.WorkDir != "" {
 			cmd.Dir = task.WorkDir
 		}
@@ -1069,12 +1072,12 @@ func (b *CLIAgentBackend) runOnce(ctx context.Context, task Task, binary string,
 	if cmd.ProcessState != nil {
 		exitCode = cmd.ProcessState.ExitCode()
 	}
-	if errors.Is(runErr, exec.ErrWaitDelay) {
+	if proc.DrainCutShort(runErr) {
 		// The agent exited successfully and its output was read; what kept
 		// the pipe open is a process it left, which the node session's end
 		// stops and reports.
-		b.Logger.Warn("[%s#%d/%s] the agent exited, and a process it left kept its output open: read what the agent wrote, stopped waiting after %s",
-			task.NodeID, task.Iteration, b.Protocol.Name, cliAgentWaitDelay)
+		b.Logger.Warn("[%s#%d/%s] the agent exited, and a process it left kept its output open: read what the agent wrote, stopped waiting %s",
+			task.NodeID, task.Iteration, b.Protocol.Name, proc.WaitDelayHint(drainBound))
 		runErr = nil
 	}
 	if runErr != nil {

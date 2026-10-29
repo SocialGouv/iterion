@@ -243,6 +243,11 @@ func (c *Completion) Sweep(run Run, budget time.Duration) SweepOutcome {
 	}
 }
 
+// sweepDrainBound is this site's default bound on the wait for a sweep
+// client's output once the client has gone, overridable through
+// [proc.WaitDelayEnv]. A driver that set its own bound keeps it.
+const sweepDrainBound = 2 * time.Second
+
 // sweepOnce runs one attempt of the sweep, bounded by deadline and by the
 // sweep's own bound, and reports whether its exec reached the container.
 func (c *Completion) sweepOnce(run Run, script string, deadline time.Time) (SweepOutcome, bool) {
@@ -254,14 +259,25 @@ func (c *Completion) sweepOnce(run Run, script string, deadline time.Time) (Swee
 	cmd := run.Command(ctx, []string{"sh", "-c", script}, ExecOpts{})
 	// A client killed at the deadline is not waited for past it, whatever
 	// still holds its output: the budget bounds the sweep on every driver.
-	if cmd.WaitDelay == 0 {
-		cmd.WaitDelay = 2 * time.Second
+	// A driver that bounded its own Cmd keeps its choice — it built that
+	// bound through the same override — and otherwise this site's default
+	// applies, with proc.WaitDelayEnv over it.
+	drainBound := cmd.WaitDelay
+	if drainBound == 0 {
+		drainBound = proc.SetWaitDelay(cmd, sweepDrainBound)
 	}
 	out, runErr := cmd.Output()
 	report, perr := proc.ParseNodeSessionSweep(string(out))
 	reached := true
 	if runErr != nil {
 		why := runErr.Error()
+		if proc.DrainCutShort(runErr) {
+			// The exec exited 0 and only the drain was cut. The sweep's
+			// answer is the REPORT it printed, so a truncated read is not a
+			// success: the parse below decides, and the operator gets the
+			// bound and the knob rather than a bare sentinel.
+			why = fmt.Sprintf("the exec exited 0 but a process it left kept its output open, so the read was cut %s", proc.WaitDelayHint(drainBound))
+		}
 		var exit *exec.ExitError
 		var stderr []byte
 		if errors.As(runErr, &exit) {

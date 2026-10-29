@@ -1061,7 +1061,8 @@ func (r *Run) cmdContext(ctx context.Context, args []string, streamPayload strin
 	// A cancelled context kills kubectl, not a child it spawned (the process
 	// group is detached): a credential plugin still holding the pipes would
 	// keep Wait blocked past the caller's deadline (kubectlCmdContext).
-	c.WaitDelay = 2 * time.Second
+	// proc.WaitDelayEnv is the operator's override of this default.
+	proc.SetWaitDelay(c, kubectlDrainBound)
 	return c
 }
 

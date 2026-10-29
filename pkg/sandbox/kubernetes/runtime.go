@@ -90,6 +90,11 @@ func Detect() (kubectl string, namespace string, err error) {
 	return binPath, ns, nil
 }
 
+// kubectlDrainBound is the default bound both kubectl command builders put
+// on the wait for the output pipes a credential plugin can hold after
+// kubectl itself is gone. Overridable through [proc.WaitDelayEnv].
+const kubectlDrainBound = 2 * time.Second
+
 // kubectlCmdContext wraps exec.CommandContext(kubectl, args...) with
 // LC_ALL=C so callers can branch on stderr substrings ("NotFound",
 // "AlreadyExists") stably across user locales. Mirrors the gitCmd /
@@ -102,8 +107,9 @@ func kubectlCmdContext(ctx context.Context, args ...string) *exec.Cmd {
 	// A cancelled context kills kubectl, not the children it spawned (the
 	// process group is detached): a credential plugin still holding the
 	// stdout/stderr pipes would keep Wait blocked for as long as it lives.
-	// WaitDelay bounds that orphan-pipe wait so a timeout is a timeout.
-	cmd.WaitDelay = 2 * time.Second
+	// WaitDelay bounds that orphan-pipe wait so a timeout is a timeout, and
+	// proc.WaitDelayEnv is the operator's override of it.
+	proc.SetWaitDelay(cmd, kubectlDrainBound)
 	return cmd
 }
 

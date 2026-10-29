@@ -883,7 +883,12 @@ func (t *authoringTarget) validateChangedBots(previews []authoringPreviewFile) e
 
 const (
 	authoringPythonSyntaxTimeout = 3 * time.Second
-	authoringPythonOutputLimit   = 8 << 10
+	// authoringPythonDrainBound is the default bound on the wait for the
+	// parser's output once the interpreter has gone — the invariant that it
+	// spawns nothing is the interpreter's, not ours, and
+	// [proc.WaitDelayEnv] overrides the bound on either platform.
+	authoringPythonDrainBound  = 500 * time.Millisecond
+	authoringPythonOutputLimit = 8 << 10
 )
 
 // authoringPythonProgram is deliberately constant. Candidate source is sent
