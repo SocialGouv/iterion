@@ -1888,15 +1888,23 @@ restores the previous behaviour — first result, the orchestration-stall
 guard's historical rule, no state events nor replays asked of the CLI — and
 keeps the reporting and the session ledger; the
 per-agent tool-error breaker applies either way. claw has no equivalent:
-its `agent` tool is registered and **typed-refused** — claw spawns a child
-conversation only where the host wires a subagent runner into its registry,
-and iterion wires none, so the call returns
-`backend "claw" cannot serve the agent tool (subagents)` naming this
-backend's native `Agent` tool (legacy name `Task`) as the way out
-(compile-time warning where a `.bot` names the tool: C159). The real
-wiring is tracked as
-[#1940](https://github.com/SocialGouv/iterion/issues/1940); the refusal is
-the typed-refused half of the parity rule, not the capability.
+its `agent` tool spawns a SYNCHRONOUS child conversation that returns a real
+result, where claude_code's is asynchronous. claw spawns one where the host
+wires a subagent runner into its registry, and iterion wires one at both of
+its hosts — in process and in the sandbox container, where the placement of
+`agent` puts it — so a delegation returns the child's answer rather than
+claw's own `{"status": "running"}` stub
+([#1940](https://github.com/SocialGouv/iterion/issues/1940)). The child is
+bounded by the NODE: its effective `tools:` (never the process registry),
+its permission policy, its step budget, and its spend, debited to the node
+so the run's budget counts it. `agent` itself and the node-scoped MCP tools
+stay out of a child's set — no grandchildren, and no server reached on the
+model's word. An embedding that wires no runner still earns the typed
+refusal `backend "claw" cannot serve the agent tool (subagents)`, naming
+this backend's native `Agent` tool (legacy name `Task`) as the way out;
+that is the typed-refused half of the parity rule, and no compile-time
+diagnostic predicts it, since the compiler cannot know which host will
+build the registry.
 
 ### `codex`
 

@@ -2439,10 +2439,16 @@ func TestLive_Lite_ClawLongContext(t *testing.T) {
 // Live E2E test — claw subagents tool registration
 // ---------------------------------------------------------------------------
 
-// TestLive_Lite_ClawSubagents is the live witness of the claw subagent
-// refusal (#1940): the parent agent receives the `agent` tool, calls it, and
-// must read a tool ERROR naming claw and the way out — never claw's own
-// {agent_id, status: "running"} metadata for a subagent nobody launched.
+// TestLive_Lite_ClawSubagents is the live witness of the UNWIRED claw
+// subagent refusal: this test's own registry wires no runner
+// (RegisterClawSubagents(reg, nil)), as an embedding that forgets would, and
+// the parent agent must read a tool ERROR naming claw and the way out — never
+// claw's own {agent_id, status: "running"} metadata for a subagent nobody
+// launched.
+//
+// iterion's own hosts wire a runner since #1940, so this is no longer the
+// production shape: the wired one is TestLive_ClawToolCoverage below, which
+// sets ClawDefaults.Subagent as pkg/runview and cmd/iterion do.
 //
 // It validates the registration + dispatch contract end-to-end:
 //
@@ -2453,8 +2459,9 @@ func TestLive_Lite_ClawLongContext(t *testing.T) {
 // tool_error event for the call, and the node still FINISHES — a refused tool
 // is not a dead node, so the model answers the topic itself.
 //
-// Wiring a real runner is the other half of #1940 and lives in
-// TestLive_ClawToolCoverage, which sets ClawDefaults.Subagent.
+// The refusal still has a home: the parity rule asks for a typed refusal
+// wherever a capability is not wired, and this is the only live witness that
+// the unwired path answers one instead of claw's stub.
 //
 // Requires ANTHROPIC_API_KEY (parent runs claude-haiku-4-5).
 func TestLive_Lite_ClawSubagents(t *testing.T) {

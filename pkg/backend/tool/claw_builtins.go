@@ -367,11 +367,15 @@ type SubagentRunner func(ctx context.Context, input map[string]any) (string, err
 // iterion does not drive. A node that delegated would wait on work
 // nobody began, or report on work nobody did, with no error anywhere.
 //
-// One toolcatalog lookup feeds both the description and the error, so the
-// two surfaces cannot tell the model different things. A catalog that
-// stopped refusing `agent` while nothing wires a runner is reported on
-// the CALL, explicitly: failing the registration instead would take every
-// other claw tool down with it, since RegisterClawAll is all-or-nothing.
+// iterion's own hosts wire a runner (pkg/runview in process, cmd/iterion in
+// the container), so the nil branch answers an embedding that does not —
+// which is why its sentence (toolcatalog.ClawUnwiredSubagentRefusal) blames
+// the host that built THIS registry rather than iterion, and why no
+// compile-time diagnostic predicts it: the compiler cannot know which host
+// will build the registry.
+//
+// One refusal feeds both the description and the error, so the two surfaces
+// cannot tell the model different things.
 func RegisterClawSubagents(reg *Registry, runner SubagentRunner) error {
 	t := clawtools.AgentTool()
 	if runner != nil {
@@ -379,13 +383,7 @@ func RegisterClawSubagents(reg *Registry, runner SubagentRunner) error {
 			return runner(ctx, input)
 		})
 	}
-	refusal, refused := toolcatalog.ClawRefusesBuiltin("agent")
-	if !refused {
-		return RegisterClawTool(reg, t, func(context.Context, map[string]any) (string, error) {
-			return "", fmt.Errorf("agent: no subagent runner is wired and the catalog no longer refuses " +
-				"`agent` — wire the runner through ClawDefaults.Subagent, or restore the catalog entry")
-		})
-	}
+	refusal := toolcatalog.ClawUnwiredSubagentRefusal
 	// The description and the error open on this one sentence. The ultracode
 	// grant conditions "that refusal is final, do not retry" on what the tool
 	// ANSWERS (delegate.ultracodeOrchestrationInstruction), and at retry-

@@ -488,11 +488,13 @@
         {
           "name": "subagents",
           "axis": "subagents",
-          "verdict": "typed-refused",
+          "verdict": "shipped",
           "evidence": [
-            "pkg/backend/tool/claw_subagent_refusal_test.go:TestTheProductionClawRegistryRefusesTheAgentTool"
+            "pkg/runview/claw_subagent_wiring_test.go:TestTheProductionHostWiresASubagentRunner",
+            "cmd/iterion/claw_runner_subagent_test.go:TestTheInContainerAgentToolReachesARunner",
+            "pkg/backend/model/subagent_parent_loop_test.go:TestAChildCannotExceedTheParentNodesToolSurface"
           ],
-          "detail": "No parity extension to the five CLI-agent backends is inferred; #1404 remains open."
+          "detail": "Synchronous, and bounded by the parent node: the child draws from the node's effective tools, inherits its permission policy and step budget, and its spend is debited to the node (#1940). Wired at both hosts, in process and in the sandbox container. No parity extension to the five CLI-agent backends is inferred; #1404 remains open."
         },
         {
           "name": "tool-list",

@@ -297,7 +297,7 @@ tasks:
       - go test -v -tags live -count=1 -run TestLive_Lite_ClawBuiltinTools -timeout 15m ./e2e/...
 
   test:live:claw-subagents:
-    desc: Run the claw subagent-refusal live e2e test — an `agent` call with no subagent runner wired comes back as a typed tool error and the node still finishes (requires ANTHROPIC_API_KEY; ~$0.02/run on haiku)
+    desc: Run the claw unwired-subagent live e2e test — an `agent` call on a registry whose host wired NO subagent runner comes back as a typed tool error and the node still finishes; the wired shape iterion ships is covered by test:live:coverage (requires ANTHROPIC_API_KEY; ~$0.02/run on haiku)
     cmds:
       - go test -v -tags live -count=1 -run TestLive_Lite_ClawSubagents -timeout 10m ./e2e/...
 

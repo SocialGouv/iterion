@@ -87,18 +87,18 @@ Code:
   honest by a conformance test against the real registry. `list_files` /
   `run_command` / `git_diff` / `search_codebase` circulate in older
   examples and have never been registered — use `glob` / `bash` / `grep`.
-  One registered name is **typed-refused** rather than served: `agent`.
-  claw spawns a child conversation only where the host wires a subagent
-  runner into the registry; iterion wires none, and claw's own executor
-  reports a started subagent while launching nothing — so every call
-  returns `backend "claw" cannot serve the agent tool (subagents)`,
-  naming claude_code's native `Agent` tool (legacy name `Task`) as the
-  way out, and the compiler warns first where the `.bot` names it
-  (C159). That refusal IS the parity rule's other half: a capability
-  wired for one backend is wired, or typed-refused, for the other —
-  never simulated. The refused names live beside the catalog
-  ([refused.go](../../../pkg/backend/toolcatalog/refused.go)), each
-  executed against the real registry by the same conformance test. The
+  Every registered name is served, `agent` included: iterion wires one
+  at both of its hosts, in process and in the container, and the child
+  is bounded by the NODE — its effective tools, its policy, its step
+  budget, its spend
+  ([#1940](https://github.com/SocialGouv/iterion/issues/1940),
+  [backends.md](../../backends.md#claw)). An embedding that wires none
+  earns the typed refusal, never claw's `{"status": "running"}` stub:
+  the parity rule's other half, a capability wired for one backend
+  wired or typed-refused for the other, never simulated. The list
+  behind the compile-time warning (C159) sits beside the catalog
+  ([refused.go](../../../pkg/backend/toolcatalog/refused.go)) and is
+  EMPTY — it stands for the next capability claw ships first. The
   `worker_*` family reads like the same case and is not: the MODEL drives
   that state machine — the node spawns the terminal through `bash` and
   feeds back what it shows via `worker_observe`, which advances

@@ -15,10 +15,7 @@ import (
 // same .bot delegates under a host that wires the runner (e2e does) and
 // refuses under iterion's own.
 func TestTheRefusalNamesTheOverrideThatServesIt(t *testing.T) {
-	refusal, refused := ClawRefusesBuiltin("agent")
-	if !refused {
-		t.Fatal("`agent` is no longer refused; this guard is about the sentence the refusal renders")
-	}
+	refusal := ClawUnwiredSubagentRefusal
 	for _, want := range []string{"ClawDefaults.Subagent", "subagent runner"} {
 		if !strings.Contains(refusal.String(), want) {
 			t.Errorf("the rendered refusal does not name %q: %s", want, refusal.String())
@@ -34,7 +31,7 @@ func TestTheRefusalNamesTheOverrideThatServesIt(t *testing.T) {
 // documented) — naming the legacy one alone sends a reader looking for a tool
 // under a name the current CLI no longer advertises.
 func TestTheRemedyNamesClaudeCodesCurrentSubagentTool(t *testing.T) {
-	remedy, _ := ClawRefusesBuiltin("agent")
+	remedy := ClawUnwiredSubagentRefusal
 	if !strings.Contains(remedy.Remedy, "Agent tool") {
 		t.Errorf("the remedy does not name claude_code's current subagent tool (`Agent`): %s", remedy.Remedy)
 	}
@@ -43,28 +40,29 @@ func TestTheRemedyNamesClaudeCodesCurrentSubagentTool(t *testing.T) {
 	}
 }
 
-// TestTheShippedPagesKeepTheRefusalScoped: the refusal carries two scopes, and
-// a page that drops either turns a per-deployment fact into a universal one.
+// TestTheShippedPagesSayTheCapabilityIsServed: the pages are the delivered
+// surface — there is no other check between this catalog and what a reader is
+// told — and #1940 turned every sentence about claw subagents on its head.
+// Each page below must now state the capability, and none may state the stale
+// fact that iterion wires no runner: a reader who believes it routes work to
+// claude_code it could have run in place, and an author who believes it reads
+// a diagnostic that no longer fires.
 //
-//   - WHO does not wire the runner. `ClawDefaults.Subagent` is a host's to
-//     set, and a host in this tree sets it (e2e/claw_tool_coverage_live_test.go
-//     builds one with model.NewSubagentRunner) — so the true sentence is that
-//     iterion wires none, never that no host does. The second form denies the
-//     escape hatch TestTheRefusalNamesTheOverrideThatServesIt exists to keep
-//     greppable (philosophy #1), and no page may state it: that one is checked
-//     against every page below, not against the one that happened to say it.
-//   - WHERE the compiler can warn. C159 reads the lists the AUTHOR writes; the
-//     grant that reaches every ultracode claw node comes from the engine
-//     (model.withClawOrchestrationTools), and no diagnostic sees that line. An
-//     unqualified "the compiler warns" promises a canary the dominant case
-//     never gets.
+// Two claims stay forbidden on every page:
 //
-// The pages are the delivered surface — there is no other check between this
-// catalog and what a reader is told. All seven that state the refusal are
-// here; a new one joins the table.
-func TestTheShippedPagesKeepTheRefusalScoped(t *testing.T) {
-	// The universal form of the WHO claim, refused on every page below.
-	const universalDenial = "no host wires"
+//   - "iterion wires no subagent runner" and its kin. The hosts wire one, in
+//     process (pkg/runview) and in the container (cmd/iterion), which is where
+//     the placement of `agent` puts it.
+//   - "no host wires" — the universal form, which denies the escape hatch
+//     TestTheRefusalNamesTheOverrideThatServesIt exists to keep greppable
+//     (philosophy #1): wiring the runner is a host's call, and an embedding
+//     that wires none earns the typed refusal rather than a stub.
+//
+// All seven pages that speak of claw subagents are here; a new one joins the
+// table.
+func TestTheShippedPagesSayTheCapabilityIsServed(t *testing.T) {
+	// Claims no page may make any more, each one false since #1940.
+	stale := []string{"no host wires", "iterion wires none", "iterion wires no subagent runner"}
 	for _, tc := range []struct {
 		page      string
 		forbidden string
@@ -72,33 +70,33 @@ func TestTheShippedPagesKeepTheRefusalScoped(t *testing.T) {
 	}{
 		{
 			page:     "docs/agents/backends/prompt-engineering-dials.md",
-			required: "iterion wires no subagent runner",
+			required: "iterion wires the subagent runner at both hosts",
 		},
 		{
 			page:      "docs/agents/backends/fallbacks-and-parity.md",
-			forbidden: "the compiler warns first (C159)",
-			required:  "where the `.bot` names it",
+			forbidden: "One registered name is typed-refused",
+			required:  "iterion wires one at both of its hosts",
 		},
 		{
 			page:      "docs/backends.md",
-			forbidden: "(compile-time warning: C159)",
-			required:  "where a `.bot` names the tool",
+			forbidden: "its `agent` tool is registered and **typed-refused**",
+			required:  "iterion wires one at both of its hosts",
 		},
 		{
 			page:     "docs/ultracode.md",
-			required: "on a declared `agent`",
+			required: "and claw **serves it**",
 		},
 		{
 			page:     "docs/references/diagnostics.md",
-			required: "The tools the ENGINE appends are out of scope",
+			required: "**No name is in that state today**",
 		},
 		{
 			page:     "docs/plugins.md",
-			required: "no iterion run wires a runner into it",
+			required: "claw serves the `agent` tool",
 		},
 		{
 			page:     "docs/sandbox.md",
-			required: "with no subagent runner wired, it refuses every call",
+			required: "wires the subagent runner there",
 		},
 	} {
 		b, err := os.ReadFile(filepath.Join("..", "..", "..", tc.page))
@@ -106,15 +104,16 @@ func TestTheShippedPagesKeepTheRefusalScoped(t *testing.T) {
 			t.Fatalf("%s: %v", tc.page, err)
 		}
 		page := collapseProse(b)
-		if strings.Contains(page, universalDenial) {
-			t.Errorf("%s states %q, denying the escape hatch a host in this tree uses", tc.page, universalDenial)
+		for _, claim := range stale {
+			if strings.Contains(page, claim) {
+				t.Errorf("%s still states %q, which #1940 made false", tc.page, claim)
+			}
 		}
 		if tc.forbidden != "" && strings.Contains(page, tc.forbidden) {
-			t.Errorf("%s states %q, which reads as a fact about every deployment or every call site",
-				tc.page, tc.forbidden)
+			t.Errorf("%s still states %q, so a reader is told the capability is refused", tc.page, tc.forbidden)
 		}
 		if !strings.Contains(page, tc.required) {
-			t.Errorf("%s no longer scopes the refusal: %q is gone", tc.page, tc.required)
+			t.Errorf("%s no longer states that claw serves subagents: %q is gone", tc.page, tc.required)
 		}
 	}
 }
@@ -131,14 +130,60 @@ func collapseProse(b []byte) string {
 	return strings.Join(strings.Fields(strings.Join(lines, "\n")), " ")
 }
 
-// TestTheRefusalCarriesNoBackticks: three doc pages and the live witness quote
-// the rendered sentence, and a backtick inside it would make every quotation
-// an inexact one.
+// TestTheRefusalCarriesNoBackticks: doc pages and the live witness quote the
+// rendered sentence, and a backtick inside it would make every quotation an
+// inexact one. The compile-time list is empty, so the unwired-subagent
+// refusal is taken explicitly rather than through a loop that would range
+// over nothing and pass.
 func TestTheRefusalCarriesNoBackticks(t *testing.T) {
+	refusals := map[string]ClawRefusal{"the unwired subagent runner": ClawUnwiredSubagentRefusal}
 	for _, name := range ClawRefusedBuiltins() {
 		r, _ := ClawRefusesBuiltin(name)
+		refusals[name] = r
+	}
+	for name, r := range refusals {
 		if strings.Contains(r.String(), "`") {
 			t.Errorf("%q: the rendered refusal carries a backtick, so the pages quoting it cannot be verbatim: %s", name, r.String())
 		}
+	}
+}
+
+// TestTheCompileTimeRefusalListIsEmpty is the flip of #1940 on this side: the
+// list drives C159, and `agent` left it when the subagent runner was wired at
+// both hosts. A name here warns an author about a tool that works.
+func TestTheCompileTimeRefusalListIsEmpty(t *testing.T) {
+	if names := ClawRefusedBuiltins(); len(names) != 0 {
+		t.Fatalf("the compile-time refusal list carries %v; every name claw registers, iterion serves", names)
+	}
+	if _, refused := ClawRefusesBuiltin("agent"); refused {
+		t.Error("`agent` is still refused at compile time, so every claw node declaring it warns about a capability both hosts serve")
+	}
+}
+
+// TestTheRefusalSeamStillFires: with an empty list, the readers of this
+// catalog (C159 in pkg/dsl/ir, the registry side in pkg/backend/tool) are fed
+// by nothing, and a mechanism no test can fire is a mechanism nobody knows
+// still works. The injection hook is what keeps them exercised, so it owes
+// its own guard: it must install, be read back, and restore.
+func TestTheRefusalSeamStillFires(t *testing.T) {
+	const probe = "web_search"
+	if !IsBuiltin(probe) {
+		t.Fatalf("%q is not a catalog builtin, so a refusal over it would describe a tool the registry does not hold", probe)
+	}
+	want := ClawRefusal{Reason: "a probe reason", Remedy: "A probe remedy"}
+	restore := SetClawRefusedBuiltinForTest(probe, want)
+	got, refused := ClawRefusesBuiltin(probe)
+	if !refused || got != want {
+		t.Fatalf("the injected refusal reads back as (%+v, %v); want (%+v, true)", got, refused, want)
+	}
+	if names := ClawRefusedBuiltins(); len(names) != 1 || names[0] != probe {
+		t.Errorf("the list reads %v while the probe is installed; want exactly [%s]", names, probe)
+	}
+	restore()
+	if _, refused := ClawRefusesBuiltin(probe); refused {
+		t.Errorf("%q is still refused after restore, so a test would leak a refusal into the next one", probe)
+	}
+	if names := ClawRefusedBuiltins(); len(names) != 0 {
+		t.Errorf("the list reads %v after restore; want the empty production list back", names)
 	}
 }

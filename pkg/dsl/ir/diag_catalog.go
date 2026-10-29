@@ -225,7 +225,7 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagEventNoListener:         {"Dangling event", "Pair each `wait` with an `emit` of the same event name (and vice versa)."},
 	DiagInvalidSkillRef:         {"Invalid skill reference", "Use a single path segment of letters/digits/`.`/`-`/`_`; quote kebab-case names (`skills: [\"changelog-writer\"]`)."},
 	DiagUnknownTool:             {"Unknown tool name", "Use a claw built-in (`read_file`, `write_file`, `file_edit`, `glob`, `grep`, `bash`, `web_fetch`, ...) or an MCP tool by its `mcp.<server>.<tool>` name; the message names the nearest match."},
-	DiagToolRefusedOnClaw:       {"Declared tool claw cannot serve", "Every call to this tool earns a typed refusal on claw unless the host wires a subagent runner (`ClawDefaults.Subagent`): do the work in the node itself, or route the node to `claude_code` (its native `Agent` tool, legacy name `Task`, spawns real subagents)."},
+	DiagToolRefusedOnClaw:       {"Declared tool claw cannot serve", "Every call to this tool earns a typed refusal on claw unless this deployment's host serves it: do the work in the node itself, or route the node to a backend that serves the capability. No name is in that state today — `agent` left the list when iterion wired real subagents (#1940)."},
 
 	// Async interaction, parallel branches, typed fails (C24x band).
 	DiagAsyncOnHuman:            {"Async interaction on human node", "Move `interaction: async` to the asking agent/judge and add an `await_answers` node as the sync point."},

@@ -397,10 +397,11 @@ class row restated in the child bot (the same workflow-local reading every
 permission diagnostic has — **C111**, **C154**, **C135**). A claw subagent
 is the opposite case, the same run: the child conversation the `agent` tool
 spawns inherits the policy the node's own loop is gated by, so a denied or
-asked class bounds the delegation too. Shipped hosts wire no child runner —
-the `agent` tool answers a typed refusal (**C159** names the shape) — so
-that inheritance is wired where the proxy is and takes effect the moment a
-host wires it.
+asked class bounds the delegation too. Both shipped hosts wire that child
+runner (#1940), in process and in the sandbox container, so the inheritance
+is live on every claw node that delegates — and the child's tool surface is
+the node's own effective `tools:`, never the process registry, so a policy
+row and a declared list bound it the same way they bound the parent.
 
 An operator grant outranks every row: approving a pause writes a grant into
 the run's policy, evaluated after a deny rule and before every ask or allow

@@ -91,9 +91,16 @@ func (c *compiler) validateNodeTools(w *Workflow) {
 }
 
 // validateRefusedClawTools reports a declared tool claw REGISTERS and iterion
-// cannot serve — today `agent`, whose subagent spawning needs a host runner no
-// iterion run wires (toolcatalog.ClawRefusesBuiltin holds the list and the
-// reason, and pkg/backend/tool refuses the call from the same entry).
+// cannot serve (toolcatalog.ClawRefusesBuiltin holds the list and the reason).
+//
+// The list is EMPTY today: `agent` left it when the subagent runner was wired
+// at both hosts (#1940), and nothing else claw registers is beyond iterion.
+// So this reports nothing on any shipped workflow, and the arms below are
+// exercised through toolcatalog.SetClawRefusedBuiltinForTest — the seam the
+// parity rule needs for the next capability claw ships before iterion serves
+// it. A deployment whose OWN host wires no subagent runner is a run-time fact
+// no compiler can know (toolcatalog.ClawUnwiredSubagentRefusal answers it),
+// which is why `agent` is not on the list for that case.
 //
 // It is disjoint from C135 by construction: that code decides names the
 // registry does NOT hold, this one a name it does. The two never fire together
@@ -134,7 +141,7 @@ func (c *compiler) validateRefusedClawTools(w *Workflow) {
 			for _, name := range refused {
 				r, _ := toolcatalog.ClawRefusesBuiltin(name)
 				c.warnfAt(DiagToolRefusedOnClaw, id, "",
-					"%s %q: tools: names %q, which backend %q registers but cannot serve — %s, so the call is refused at run time unless this deployment's host wires one. %s",
+					"%s %q: tools: names %q, which backend %q registers but cannot serve — %s, so the call is refused at run time unless this deployment's host serves it. %s",
 					kind, id, name, clawBackendName, r.Reason, r.Remedy)
 			}
 			continue
@@ -151,7 +158,7 @@ func (c *compiler) validateRefusedClawTools(w *Workflow) {
 			for _, name := range refused {
 				r, _ := toolcatalog.ClawRefusesBuiltin(name)
 				c.warnfAt(DiagToolRefusedOnClaw, id, "",
-					"%s %q: tools: names %q, which fallback %s cannot serve on backend %q — %s, so the call is refused at the moment the run is already falling back, unless this deployment's host wires one. %s",
+					"%s %q: tools: names %q, which fallback %s cannot serve on backend %q — %s, so the call is refused at the moment the run is already falling back, unless this deployment's host serves it. %s",
 					kind, id, name, fallbackLabel(fb), clawBackendName, r.Reason, r.Remedy)
 			}
 			break
@@ -180,7 +187,7 @@ func (c *compiler) validateRefusedRecoveryAgentTools(w *Workflow, tn *ToolNode) 
 	for _, name := range refusedToolNames(tn.Recovery.AgentTools) {
 		r, _ := toolcatalog.ClawRefusesBuiltin(name)
 		c.warnfAt(DiagToolRefusedOnClaw, tn.ID, "",
-			"tool %q: recovery agent_tools: names %q, which backend %q registers but cannot serve on the rung-4 recovery agent — %s, so the call is refused after the deterministic rungs already have, unless this deployment's host wires one. %s",
+			"tool %q: recovery agent_tools: names %q, which backend %q registers but cannot serve on the rung-4 recovery agent — %s, so the call is refused after the deterministic rungs already have, unless this deployment's host serves it. %s",
 			tn.ID, name, clawBackendName, r.Reason, r.Remedy)
 	}
 }
@@ -252,7 +259,7 @@ func (c *compiler) validateEmptyToolsEnforced(w *Workflow) {
 		backend := effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend)
 		if backend == clawBackendName && NodeInteraction(n) != InteractionNone {
 			c.warnfAt(DiagEmptyToolsNotEnforced, id, "",
-				"%s %q declares `tools: []` (no tools) and `interaction:` on claw — claw carries `ask_user` through its tool loop, so the list is re-populated with it, and that one entry unlocks every other runtime append the node qualifies for: `todo_write`, the `agent` spawner under ultracode (granted, and typed-refused on every call unless this deployment's host wires a subagent runner — C159), the board tools its `capabilities:` grant (`transition_issue` included), and `read_file`/`write_file`/`glob` under `auto_memory:`; drop one of the two declarations, or move the node to claude_code, where an empty list removes the whole native roster (MCP tools and Agent/TaskOutput/Monitor still reach it)",
+				"%s %q declares `tools: []` (no tools) and `interaction:` on claw — claw carries `ask_user` through its tool loop, so the list is re-populated with it, and that one entry unlocks every other runtime append the node qualifies for: `todo_write`, the `agent` spawner under ultracode (granted, and it spawns a real child conversation bounded by this node — its tools, its policy, its budget — #1940), the board tools its `capabilities:` grant (`transition_issue` included), and `read_file`/`write_file`/`glob` under `auto_memory:`; drop one of the two declarations, or move the node to claude_code, where an empty list removes the whole native roster (MCP tools and Agent/TaskOutput/Monitor still reach it)",
 				kind, id)
 			continue
 		}

@@ -1278,10 +1278,11 @@ carries). The crossing's words stay as the detail of the error.
 >   `file_edit`, `notebook_edit`, `glob`, `grep`, `workspace_grep`,
 >   `skill`, `read_image`, `web_fetch`, `remote_trigger`,
 >   `send_user_message`, `sleep`, `structured_output`, and `agent` (the
->   runner registers claw's agent tool in the container — and, with no
->   subagent runner wired, it refuses every call with the same typed
->   capability refusal an unsandboxed node gets, C159). A missing local
->   registration is a fatal runner error, never a proxy.
+>   runner registers claw's agent tool in the container AND wires the
+>   subagent runner there, so a sandboxed node's child conversation runs
+>   on the container's tools and the container's keys, bounded by the node
+>   exactly as an unsandboxed one is). A missing local registration is a
+>   fatal runner error, never a proxy.
 > - **launcher** — launcher-owned state, run with the launcher's process:
 >   `ask_user` and the async pair, every `mcp.*` / `mcp_*` / `mcp__*`
 >   tool, `list_mcp_resources`, `read_mcp_resource`, `mcp_auth`, the

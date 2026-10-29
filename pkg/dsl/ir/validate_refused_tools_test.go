@@ -3,26 +3,70 @@ package ir
 import (
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 )
 
 // refusedCode is the code under test.
 const refusedCode = DiagToolRefusedOnClaw
 
-// TestRefusedToolOnClawIsAWarning: `agent` resolves on claw — the registry
-// holds it, so C135 is silent — and every call earns a typed refusal because
-// iterion wires no subagent runner. The author pays a run to learn that;
+// refusedProbe is the name the scenarios below declare. The production list
+// is EMPTY — `agent` left it when iterion wired real subagents at both hosts
+// (#1940) — so C159's three arms are driven through an injected entry over a
+// name the catalog really holds. Without it the mechanism would be read by
+// nothing, and a mechanism no test can fire is a mechanism nobody knows still
+// works; with it, every reduction, scope and hedge below is exercised exactly
+// as the next refused capability will find them.
+const refusedProbe = "web_search"
+
+// probeRefusal is shaped like the refusals this list carries: a reason in the
+// present tense, and a remedy naming where the capability IS served.
+var probeRefusal = toolcatalog.ClawRefusal{
+	Reason: "iterion serves this name on no claw host, so claw registers it and answers nothing",
+	Remedy: "Do the work in this node, or route it to claude_code, whose native Agent tool " +
+		"(legacy name Task) serves it",
+}
+
+// withRefusedProbe installs probeRefusal for the duration of the test.
+func withRefusedProbe(t *testing.T) {
+	t.Helper()
+	t.Cleanup(toolcatalog.SetClawRefusedBuiltinForTest(refusedProbe, probeRefusal))
+}
+
+// TestTheRefusedClawListIsEmptyInProduction is the flip of #1940: with the
+// subagent runner wired at both hosts, no name claw registers is beyond
+// iterion, and `agent` in particular must draw no warning — a warning that
+// contradicts a working capability teaches authors to ignore diagnostics.
+func TestTheRefusedClawListIsEmptyInProduction(t *testing.T) {
+	if names := toolcatalog.ClawRefusedBuiltins(); len(names) != 0 {
+		t.Fatalf("the refused list carries %v; every name claw registers is served, so C159 fires on nothing", names)
+	}
+	cr := compileToolsSrc(t, toolsWorkflow(
+		"  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n  tools: [read_file, "+refusedProbe+"]\n"))
+	if got := diagsFor(cr, refusedCode); len(got) > 0 {
+		t.Fatalf("a claw node declaring `agent` still warns: %v — the capability is wired (#1940)", got)
+	}
+	if got := diagsFor(cr, DiagUnknownTool); len(got) > 0 {
+		t.Fatalf("`agent` must stay a name the registry HOLDS, so C135 has nothing to say: %v", got)
+	}
+}
+
+// TestRefusedToolOnClawIsAWarning: the probe resolves on claw — the registry
+// holds it, so C135 is silent — and every call would earn a typed refusal
+// because iterion serves it on no host. The author pays a run to learn that;
 // the compiler knows it from the source.
 //
-// A warning, not an error: a host MAY wire a runner (e2e does), and philosophy
-// #1 warns rather than rejects.
+// A warning, not an error: a host MAY serve the capability, and philosophy #1
+// warns rather than rejects.
 func TestRefusedToolOnClawIsAWarning(t *testing.T) {
+	withRefusedProbe(t)
 	cr := compileToolsSrc(t, toolsWorkflow(
-		"  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n  tools: [read_file, agent]\n"))
+		"  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n  tools: [read_file, "+refusedProbe+"]\n"))
 	got := diagsFor(cr, refusedCode)
 	if len(got) != 1 {
-		t.Fatalf("want exactly one C159 for `agent` on claw, got %+v", cr.Diagnostics)
+		t.Fatalf("want exactly one C159 for the probe on claw, got %+v", cr.Diagnostics)
 	}
-	if !strings.Contains(got[0], `"agent"`) {
+	if !strings.Contains(got[0], `"`+refusedProbe+`"`) {
 		t.Errorf("the message must name the tool: %s", got[0])
 	}
 	if !strings.Contains(got[0], "claude_code") {
@@ -32,15 +76,17 @@ func TestRefusedToolOnClawIsAWarning(t *testing.T) {
 		t.Error("C159 must be a warning — the node still runs, and a host may wire a runner")
 	}
 	if len(diagsFor(cr, DiagUnknownTool)) != 0 {
-		t.Error("C159 and C135 must stay disjoint: `agent` is a name claw HAS")
+		t.Error("C159 and C135 must stay disjoint: the probe is a name claw HAS")
 	}
 }
 
-// TestRefusedToolOnClaudeCodeIsSilent: the capability is real there (its Task
-// tool spawns subagents), so the parity doctrine has nothing to say.
+// TestRefusedToolOnClaudeCodeIsSilent: the list is claw's, so a node on
+// another backend has nothing to read from it — the parity doctrine says
+// nothing where the capability is served.
 func TestRefusedToolOnClaudeCodeIsSilent(t *testing.T) {
+	withRefusedProbe(t)
 	cr := compileToolsSrc(t, toolsWorkflow(
-		"  backend: \"claude_code\"\n  tools: [read_file, agent]\n"))
+		"  backend: \"claude_code\"\n  tools: [read_file, "+refusedProbe+"]\n"))
 	if got := diagsFor(cr, refusedCode); len(got) > 0 {
 		t.Fatalf("claude_code serves subagents; want no C159, got %v", got)
 	}
@@ -50,7 +96,8 @@ func TestRefusedToolOnClaudeCodeIsSilent(t *testing.T) {
 // resolver falls through to env and host credential detection, so the compiler
 // cannot know which backend serves — the same silence C135 keeps there.
 func TestRefusedToolUnresolvedBackendIsSilent(t *testing.T) {
-	cr := compileToolsSrc(t, toolsWorkflow("  tools: [read_file, agent]\n"))
+	withRefusedProbe(t)
+	cr := compileToolsSrc(t, toolsWorkflow("  tools: [read_file, "+refusedProbe+"]\n"))
 	if got := diagsFor(cr, refusedCode); len(got) > 0 {
 		t.Fatalf("want no C159 on an unresolved backend, got %v", got)
 	}
@@ -60,8 +107,9 @@ func TestRefusedToolUnresolvedBackendIsSilent(t *testing.T) {
 // exists to serve when the primary is already failing — a tool refused there
 // turns the safety net into a second disappointment.
 func TestRefusedToolOnClawFallbackRoute(t *testing.T) {
+	withRefusedProbe(t)
 	cr := compileToolsSrc(t, toolsWorkflow(
-		"  backend: \"claude_code\"\n  model: \"claude-opus-5\"\n  tools: [read_file, agent]\n"+
+		"  backend: \"claude_code\"\n  model: \"claude-opus-5\"\n  tools: [read_file, "+refusedProbe+"]\n"+
 			"  fallbacks:\n    api:\n      backend: \"claw\"\n      model: \"anthropic/claude-opus-5\"\n"))
 	got := diagsFor(cr, refusedCode)
 	if len(got) != 1 {
@@ -75,8 +123,9 @@ func TestRefusedToolOnClawFallbackRoute(t *testing.T) {
 // TestRefusedToolReportedOncePerNodeAcrossRoutes: several claw routes share
 // one tools list, so repeating the message per route says nothing new.
 func TestRefusedToolReportedOncePerNodeAcrossRoutes(t *testing.T) {
+	withRefusedProbe(t)
 	cr := compileToolsSrc(t, toolsWorkflow(
-		"  backend: \"claude_code\"\n  model: \"claude-opus-5\"\n  tools: [read_file, agent]\n"+
+		"  backend: \"claude_code\"\n  model: \"claude-opus-5\"\n  tools: [read_file, "+refusedProbe+"]\n"+
 			"  fallbacks:\n    api:\n      backend: \"claw\"\n      model: \"anthropic/claude-opus-5\"\n"+
 			"    gpt:\n      backend: \"claw\"\n      model: \"openai/gpt-5.5\"\n"))
 	if got := diagsFor(cr, refusedCode); len(got) != 1 {
@@ -87,8 +136,9 @@ func TestRefusedToolReportedOncePerNodeAcrossRoutes(t *testing.T) {
 // TestRefusedToolOnClawPrimaryNotDoubleReported: a claw node with a claw route
 // is reported for its own backend, once — the route adds no new fact.
 func TestRefusedToolOnClawPrimaryNotDoubleReported(t *testing.T) {
+	withRefusedProbe(t)
 	cr := compileToolsSrc(t, toolsWorkflow(
-		"  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n  tools: [agent]\n"+
+		"  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n  tools: ["+refusedProbe+"]\n"+
 			"  fallbacks:\n    gpt:\n      backend: \"claw\"\n      model: \"openai/gpt-5.5\"\n"))
 	got := diagsFor(cr, refusedCode)
 	if len(got) != 1 {
@@ -102,6 +152,7 @@ func TestRefusedToolOnClawPrimaryNotDoubleReported(t *testing.T) {
 // TestRefusedToolSilentWhenNotDeclared: the diagnostic reads the author's own
 // list. Nothing else on a claw node may raise it.
 func TestRefusedToolSilentWhenNotDeclared(t *testing.T) {
+	withRefusedProbe(t)
 	cr := compileToolsSrc(t, toolsWorkflow(
 		"  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n  tools: [read_file, bash]\n"))
 	if got := diagsFor(cr, refusedCode); len(got) > 0 {
@@ -138,12 +189,13 @@ workflow w:
 // already failed. The identical entry on an agent node's own `tools:` is
 // warned about, so silence here is the hole.
 func TestRefusedRecoveryAgentToolOnClaw(t *testing.T) {
-	cr := compileToolsSrc(t, recoveryAgentToolsWorkflow("read_file, agent", "  default_backend: \"claw\"\n"))
+	withRefusedProbe(t)
+	cr := compileToolsSrc(t, recoveryAgentToolsWorkflow("read_file, "+refusedProbe, "  default_backend: \"claw\"\n"))
 	got := diagsFor(cr, refusedCode)
 	if len(got) != 1 {
-		t.Fatalf("want exactly one C159 for `agent` on a rung-4 recovery agent, got %+v", cr.Diagnostics)
+		t.Fatalf("want exactly one C159 for the probe on a rung-4 recovery agent, got %+v", cr.Diagnostics)
 	}
-	for _, want := range []string{"agent_tools", `"agent"`, "claude_code"} {
+	for _, want := range []string{"agent_tools", `"` + refusedProbe + `"`, "claude_code"} {
 		if !strings.Contains(got[0], want) {
 			t.Errorf("the message must name %s: %s", want, got[0])
 		}
@@ -152,7 +204,7 @@ func TestRefusedRecoveryAgentToolOnClaw(t *testing.T) {
 		t.Error("C159 must stay a warning on the recovery list too")
 	}
 	if len(diagsFor(cr, DiagUnknownTool)) != 0 {
-		t.Error("C159 and C135 must stay disjoint: `agent` is a name claw HAS")
+		t.Error("C159 and C135 must stay disjoint: the probe is a name claw HAS")
 	}
 }
 
@@ -160,7 +212,8 @@ func TestRefusedRecoveryAgentToolOnClaw(t *testing.T) {
 // declares no backend of its own, so only the workflow default can make it
 // claw — the same silence C135 keeps on an unresolved backend.
 func TestRefusedRecoveryAgentToolSilentWithoutClawDefault(t *testing.T) {
-	cr := compileToolsSrc(t, recoveryAgentToolsWorkflow("read_file, agent", ""))
+	withRefusedProbe(t)
+	cr := compileToolsSrc(t, recoveryAgentToolsWorkflow("read_file, "+refusedProbe, ""))
 	if got := diagsFor(cr, refusedCode); len(got) > 0 {
 		t.Fatalf("an unresolved backend must not be guessed at, got %v", got)
 	}
@@ -169,6 +222,7 @@ func TestRefusedRecoveryAgentToolSilentWithoutClawDefault(t *testing.T) {
 // TestRefusedRecoveryAgentToolSilentWhenNotDeclared keeps the new arm narrow:
 // a recovery list naming only served tools says nothing.
 func TestRefusedRecoveryAgentToolSilentWhenNotDeclared(t *testing.T) {
+	withRefusedProbe(t)
 	cr := compileToolsSrc(t, recoveryAgentToolsWorkflow("read_file, bash", "  default_backend: \"claw\"\n"))
 	if got := diagsFor(cr, refusedCode); len(got) > 0 {
 		t.Fatalf("want no C159 for a recovery list of served tools, got %v", got)
@@ -182,11 +236,13 @@ func TestRefusedRecoveryAgentToolSilentWhenNotDeclared(t *testing.T) {
 // wired the runner must not read a warning whose text is false for their
 // deployment.
 //
-// Four messages make the claim, and the guard takes all four: C159's three
-// arms (the node's own backend, its first claw `fallbacks:` route, a Verified
-// Action's rung-4 `recovery: agent_tools:`) and C270's claw arm, which names
-// the `agent` spawner among the appends a re-populated `tools: []` unlocks.
+// Three messages make the claim, and the guard takes all three: C159's arms
+// (the node's own backend, its first claw `fallbacks:` route, a Verified
+// Action's rung-4 `recovery: agent_tools:`). C270's claw arm left the table
+// when the `agent` spawner stopped being refused (#1940) — it now describes a
+// capability that works, and has nothing to hedge.
 func TestEveryCompileTimeMessageHedgesWhatTheSeverityDeclined(t *testing.T) {
+	withRefusedProbe(t)
 	const hedge = "unless"
 	for _, tc := range []struct {
 		name string
@@ -194,14 +250,12 @@ func TestEveryCompileTimeMessageHedgesWhatTheSeverityDeclined(t *testing.T) {
 		cr   *CompileResult
 	}{
 		{"C159 node backend", refusedCode, compileToolsSrc(t, toolsWorkflow(
-			"  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n  tools: [agent]\n"))},
+			"  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n  tools: ["+refusedProbe+"]\n"))},
 		{"C159 fallback route", refusedCode, compileToolsSrc(t, toolsWorkflow(
-			"  backend: \"claude_code\"\n  model: \"claude-opus-5\"\n  tools: [agent]\n"+
+			"  backend: \"claude_code\"\n  model: \"claude-opus-5\"\n  tools: ["+refusedProbe+"]\n"+
 				"  fallbacks:\n    api:\n      backend: \"claw\"\n      model: \"anthropic/claude-opus-5\"\n"))},
 		{"C159 rung-4 recovery", refusedCode, compileToolsSrc(t,
-			recoveryAgentToolsWorkflow("agent", "  default_backend: \"claw\"\n"))},
-		{"C270 claw append", DiagEmptyToolsNotEnforced, compileSrc(t,
-			emptyToolsBotWith("claw", "", "  interaction: human\n"))},
+			recoveryAgentToolsWorkflow(refusedProbe, "  default_backend: \"claw\"\n"))},
 	} {
 		got := diagsFor(tc.cr, tc.code)
 		if len(got) != 1 {
@@ -211,7 +265,7 @@ func TestEveryCompileTimeMessageHedgesWhatTheSeverityDeclined(t *testing.T) {
 			t.Errorf("%s: the warning asserts the refusal as certain, with no %q clause for a host that wires the runner: %s",
 				tc.name, hedge, got[0])
 		}
-		if !strings.Contains(got[0], "subagent runner") {
+		if !strings.Contains(got[0], "host serves it") && !strings.Contains(got[0], "subagent runner") {
 			t.Errorf("%s: the message does not name the override that changes the outcome: %s", tc.name, got[0])
 		}
 	}
@@ -223,8 +277,9 @@ func TestEveryCompileTimeMessageHedgesWhatTheSeverityDeclined(t *testing.T) {
 // same source shape the same way — one row per refused NAME, not one per
 // occurrence of it on the line.
 func TestRefusedToolReportedOncePerRepeatedName(t *testing.T) {
+	withRefusedProbe(t)
 	cr := compileToolsSrc(t, toolsWorkflow(
-		"  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n  tools: [agent, read_file, agent]\n"))
+		"  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n  tools: ["+refusedProbe+", read_file, "+refusedProbe+"]\n"))
 	if got := diagsFor(cr, refusedCode); len(got) != 1 {
 		t.Fatalf("want one C159 for a name listed twice, got %d: %v", len(got), got)
 	}
@@ -233,9 +288,10 @@ func TestRefusedToolReportedOncePerRepeatedName(t *testing.T) {
 // TestRefusedRecoveryAgentToolReportedOncePerRepeatedName: the rung-4 recovery
 // list is reduced by the same helper, so it inherits the same guarantee.
 func TestRefusedRecoveryAgentToolReportedOncePerRepeatedName(t *testing.T) {
-	cr := compileToolsSrc(t, recoveryAgentToolsWorkflow("agent, read_file, agent", "  default_backend: \"claw\"\n"))
+	withRefusedProbe(t)
+	cr := compileToolsSrc(t, recoveryAgentToolsWorkflow(refusedProbe+", read_file, "+refusedProbe, "  default_backend: \"claw\"\n"))
 	if got := diagsFor(cr, refusedCode); len(got) != 1 {
-		t.Fatalf("want one C159 for a recovery list naming `agent` twice, got %d: %v", len(got), got)
+		t.Fatalf("want one C159 for a recovery list naming the probe twice, got %d: %v", len(got), got)
 	}
 }
 
@@ -249,13 +305,14 @@ func TestRefusedRecoveryAgentToolReportedOncePerRepeatedName(t *testing.T) {
 // call — pinned, for the production registry, by pkg/backend/model's
 // TestAPaddedToolEntryNeverReachesTheRefusal.
 func TestRefusedToolNameIsReportedTrimmed(t *testing.T) {
+	withRefusedProbe(t)
 	cr := compileToolsSrc(t, toolsWorkflow(
-		"  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n  tools: [\" agent \", read_file]\n"))
+		"  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n  tools: [\" "+refusedProbe+" \", read_file]\n"))
 	got := diagsFor(cr, refusedCode)
 	if len(got) != 1 {
 		t.Fatalf("want one C159 for a padded refused name, got %d: %v", len(got), got)
 	}
-	if !strings.Contains(got[0], `"agent"`) {
+	if !strings.Contains(got[0], `"`+refusedProbe+`"`) {
 		t.Errorf("the message quotes the author's padding instead of the tool name: %s", got[0])
 	}
 }

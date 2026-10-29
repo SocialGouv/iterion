@@ -613,13 +613,16 @@ func llmToolSurfaceCanWrite(
 	// The declared list is not the list the node holds. `assembleEffectiveTools`
 	// folds the runtime's own opt-ins over it, and two of them widen the
 	// workspace surface: `auto_memory: on` grants write_file on claw, and
-	// ultracode grants claw's unbounded `agent` subagent tool — unbounded
-	// wherever a host wires a subagent runner into the registry
-	// (`ClawDefaults.Subagent`, as the e2e coverage test does); iterion's own
-	// runs wire none, so there every `agent` call is typed-refused and this
-	// arm reads the worst case over hosts rather than this run. A node that
-	// declared `tools: [read_file]` and is admitted read-only on that basis
-	// then shares one worktree with N siblings while holding a writer.
+	// ultracode grants claw's `agent` subagent tool, which both shipped hosts
+	// serve (`ClawDefaults.Subagent`, #1940). A node that declared
+	// `tools: [read_file]` and is admitted read-only on that basis then shares
+	// one worktree with N siblings while holding a writer.
+	//
+	// Since #1940 a child conversation draws from the NODE's effective tools,
+	// so `agent` adds no reach the arms below do not already read off the
+	// node's own list. This arm keeps reading it as unsafe all the same: the
+	// over-approximation costs a shared worktree, never safety, and it is the
+	// reading an embedding with its own runner needs.
 	//
 	// Asked, never re-derived: both opt-ins resolve outside the IR.
 	if surfaces == nil {

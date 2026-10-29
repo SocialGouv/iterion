@@ -58,8 +58,9 @@ func assertSubagentRefusal(t *testing.T, out string, err error) {
 	}
 }
 
-// TestClawAgentToolRefusesWithoutASubagentRunner is the witness of #1940: with
-// no host runner the `agent` tool must refuse in the open, not report a start.
+// TestClawAgentToolRefusesWithoutASubagentRunner: with no host runner the
+// `agent` tool must refuse in the open, not report a start. The refusal blames
+// the host that built the registry, not iterion, whose hosts wire one (#1940).
 func TestClawAgentToolRefusesWithoutASubagentRunner(t *testing.T) {
 	r := NewRegistry()
 	if err := RegisterClawSubagents(r, nil); err != nil {
@@ -69,11 +70,14 @@ func TestClawAgentToolRefusesWithoutASubagentRunner(t *testing.T) {
 	assertSubagentRefusal(t, out, err)
 }
 
-// TestTheProductionClawRegistryRefusesTheAgentTool takes the shape every run
-// builds: RegisterClawAll over a ClawDefaults whose Subagent nobody sets —
-// pkg/runview/executor.go and cmd/iterion/claw_runner_proxy.go both leave it
-// nil, so this is the registry an agent node actually calls into.
-func TestTheProductionClawRegistryRefusesTheAgentTool(t *testing.T) {
+// TestAHostThatWiresNoRunnerRefusesTheAgentTool takes the shape an embedding
+// that forgets builds: RegisterClawAll over a ClawDefaults whose Subagent
+// nobody sets. iterion's own hosts DO set it since #1940 — pkg/runview for an
+// in-process run, cmd/iterion for the sandboxed one, each guarded in its own
+// package — so this is no longer the registry an agent node calls into here;
+// it is the parity rule's other half, kept honest for the hosts that wire
+// nothing.
+func TestAHostThatWiresNoRunnerRefusesTheAgentTool(t *testing.T) {
 	reg := NewRegistry()
 	if err := RegisterClawAll(reg, ClawDefaults{}); err != nil {
 		t.Fatalf("RegisterClawAll: %v", err)
@@ -130,7 +134,8 @@ func TestAWiredAgentToolKeepsClawsOwnDescription(t *testing.T) {
 }
 
 // TestAWiredSubagentRunnerStillServesTheAgentTool keeps the refusal narrow: a
-// host that supplies a runner (e2e/claw_tool_coverage_live_test.go does) must
+// host that supplies a runner — both of iterion's do, and
+// e2e/claw_tool_coverage_live_test.go builds one over the live registry — must
 // reach it untouched.
 func TestAWiredSubagentRunnerStillServesTheAgentTool(t *testing.T) {
 	reg := NewRegistry()

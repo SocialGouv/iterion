@@ -74,10 +74,11 @@ const asyncInteractionSystemInstruction = "\n\n[ASYNC QUESTIONS]\n" +
 // that keeps the tool, ultracode or not).
 //
 // A system prompt outranks a tool description, so the grant also has to say
-// what a REFUSED `agent` tool means: on claw the tool registers and every call
-// earns the typed capability refusal (toolcatalog.ClawRefusesBuiltin), and a
-// grant that orders the dispatch anyway buys one hard error per subagent per
-// stage. The clause is conditional on what the TOOL answers, never a claim
+// what a REFUSED `agent` tool means. iterion's own hosts serve subagents on
+// claw (#1940), but a host that wires no runner still registers the tool and
+// refuses every call (toolcatalog.ClawUnwiredSubagentRefusal), and a grant
+// that orders the dispatch anyway buys one hard error per subagent per stage.
+// The clause is conditional on what the TOOL answers, never a claim
 // about the serving backend — this one constant also reaches claude_code,
 // where the delegation works — and it quotes the refusal's own headline so
 // neither side can be reworded alone.
