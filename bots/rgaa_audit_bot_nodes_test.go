@@ -706,6 +706,8 @@ L.out({ ok: true, cases: out });
 		Theme       string            `json:"theme"`
 		IDs         []string          `json:"ids"`
 		PriorIssues map[string]string `json:"prior_issues"`
+		ItemPaths   []string          `json:"item_paths"`
+		BriefPaths  []string          `json:"brief_paths"`
 	}
 	planBatches := func(t *testing.T, dir string) []batch {
 		t.Helper()
@@ -771,11 +773,89 @@ L.out({ ok: true, cases: out });
 		if len(round0) < 3 {
 			t.Fatalf("the fixture yields %d batches, the hostile round needs three", len(round0))
 		}
+		// The agent opens the batch's own files, spelled out: one item and one
+		// brief path per criterion, in the ids' order, absolute and present —
+		// never a path it reconstructs from a directory and an id (#2675).
+		briefsDir := fmt.Sprint(wl["briefs_dir"])
+		for _, b := range round0 {
+			if len(b.ItemPaths) != len(b.IDs) || len(b.BriefPaths) != len(b.IDs) {
+				t.Fatalf("batch %s: %d ids, item_paths %v, brief_paths %v", b.ID, len(b.IDs), b.ItemPaths, b.BriefPaths)
+			}
+			for i, id := range b.IDs {
+				if b.ItemPaths[i] != filepath.Join(itemsDir, id+".json") || b.BriefPaths[i] != filepath.Join(briefsDir, id+".md") {
+					t.Fatalf("batch %s criterion %s: item %s, brief %s", b.ID, id, b.ItemPaths[i], b.BriefPaths[i])
+				}
+				for _, p := range []string{b.ItemPaths[i], b.BriefPaths[i]} {
+					if !filepath.IsAbs(p) {
+						t.Fatalf("batch %s carries the relative path %s", b.ID, p)
+					}
+					if _, err := os.Stat(p); err != nil {
+						t.Fatalf("batch %s names %s: %v", b.ID, p, err)
+					}
+				}
+			}
+		}
 		// A zero or negative batch size falls back to the default, never to
 		// one agent per criterion.
 		r := rgaaRunNode(t, scripts, "plan_batches", site, env, in(map[string]any{"input.batch_size": 0}))
 		if r.Code != 0 || rgaaInt(r.Out["count"]) != len(round0) {
 			t.Fatalf("batch_size 0 planned %v batches, the default plans %d", r.Out["count"], len(round0))
+		}
+	})
+	if t.Failed() {
+		return
+	}
+
+	t.Run("merge_verdicts_names_a_partial_batch_apart_from_a_lost_one", func(t *testing.T) {
+		// #2675: a batch whose fragment answers only part of its criteria is
+		// PARTIAL, not lost — reported apart from the dead branches, and each
+		// unanswered criterion is re-asked with the reason (answer every
+		// criteriaId, manual with its reason when undecidable).
+		dir := rgaaRunCopy(t, run)
+		var b batch
+		for _, cand := range planBatches(t, dir) {
+			if len(cand.IDs) >= 2 {
+				b = cand
+				break
+			}
+		}
+		if len(b.IDs) < 2 {
+			t.Fatal("no round-0 batch carries two criteria")
+		}
+		omitted := b.IDs[len(b.IDs)-1]
+		var verdicts []any
+		for _, id := range b.IDs {
+			if id == omitted {
+				continue
+			}
+			verdicts = append(verdicts, rgaaFixtureVerdict(t, itemsDir, id))
+		}
+		frag := writeFragment(t, dir, b, verdicts)
+		if rgaaInt(frag["missing"]) != 1 {
+			t.Fatalf("fragment: %v (want 1 missing)", frag)
+		}
+		merged := mergeVerdicts(t, dir, 0)
+		raw, _ := json.Marshal(merged["partial_batches"])
+		var partial []struct {
+			ID      string   `json:"id"`
+			Missing []string `json:"missing"`
+		}
+		if err := json.Unmarshal(raw, &partial); err != nil {
+			t.Fatal(err)
+		}
+		if len(partial) != 1 || partial[0].ID != b.ID || len(partial[0].Missing) != 1 || partial[0].Missing[0] != omitted {
+			t.Fatalf("partial_batches: %v (want exactly %s missing %s)", merged["partial_batches"], b.ID, omitted)
+		}
+		if rgaaContains(rgaaStrings(merged["failed_batches"]), b.ID) {
+			t.Fatalf("the partial batch %s reads as lost: %v", b.ID, merged["failed_batches"])
+		}
+		if !strings.Contains(fmt.Sprint(merged["reason"]), "no verdict for "+omitted) {
+			t.Fatalf("the merge's reason does not name the unanswered criterion: %v", merged["reason"])
+		}
+		var issues map[string]string
+		rgaaReadJSON(t, filepath.Join(dir, "issues.json"), &issues)
+		if !strings.Contains(issues[omitted], "answer EVERY criteriaId") {
+			t.Fatalf("the re-ask issue for %s: %q", omitted, issues[omitted])
 		}
 	})
 	if t.Failed() {
@@ -1950,10 +2030,11 @@ L.out({ ok: true, cases: out });
 	})
 
 	type rbatch struct {
-		ID    string           `json:"id"`
-		Round int              `json:"round"`
-		Ns    []int            `json:"ns"`
-		Items []map[string]any `json:"items"`
+		ID         string           `json:"id"`
+		Round      int              `json:"round"`
+		Ns         []int            `json:"ns"`
+		Items      []map[string]any `json:"items"`
+		BriefPaths []string         `json:"brief_paths"`
 	}
 	planRefute := func(t *testing.T) []rbatch {
 		t.Helper()
@@ -1965,6 +2046,32 @@ L.out({ ok: true, cases: out });
 		var batches []rbatch
 		if err := json.Unmarshal(raw, &batches); err != nil {
 			t.Fatal(err)
+		}
+		// The second reader opens each claim criterion's brief by the path the
+		// batch spells, in the claims' order — never one it reconstructs
+		// (#2675). A criterion the engine decided statically carries no brief:
+		// the batch says null there, never a path that does not exist.
+		briefsDir := fmt.Sprint(wl["briefs_dir"])
+		for _, b := range batches {
+			if len(b.BriefPaths) != len(b.Items) {
+				t.Fatalf("refute batch %s: %d claims, brief_paths %v", b.ID, len(b.Items), b.BriefPaths)
+			}
+			for i, it := range b.Items {
+				want := filepath.Join(briefsDir, fmt.Sprint(it["criteriaId"])+".md")
+				bp := b.BriefPaths[i]
+				if bp == "" {
+					if _, err := os.Stat(want); !os.IsNotExist(err) {
+						t.Fatalf("refute batch %s claim %v: brief path empty but %s exists", b.ID, it["n"], want)
+					}
+					continue
+				}
+				if bp != want {
+					t.Fatalf("refute batch %s claim %v: brief %s, want %s", b.ID, it["n"], bp, want)
+				}
+				if _, err := os.Stat(bp); err != nil {
+					t.Fatalf("refute batch %s names %s: %v", b.ID, bp, err)
+				}
+			}
 		}
 		return batches
 	}
@@ -3601,4 +3708,110 @@ func TestRgaaAuditPublishVerifyHoldsTheReportToThePlanBothWays(t *testing.T) {
 		// #2388 exists to close, and it cannot be closed here.
 		rgaaOK(t, "publish_verify", verify(t, map[string]any{"input.existing": titles}))
 	})
+}
+
+// #2675: the adjudicate and refute prompts spell the batch's own absolute
+// paths and the node's exact tool set, and the read-only agents attempt no
+// MCP server of the audited repository. A prompt that leaves the model to
+// reconstruct a path from memory — or silent about a tool it does not have
+// — is what the ticket's 159 tool errors on 1 445 calls measured. This test
+// is the compile-level witness; it needs no engine.
+func TestRgaaAuditAgentsSpellTheirPathsToolsAndMCPPosture(t *testing.T) {
+	wf := compilePlanPhaseBot(t, "rgaa-audit")
+	// Prompt prose wraps; match on whitespace-collapsed text.
+	prompt := func(name string) string {
+		t.Helper()
+		p, ok := wf.Prompts[name]
+		if !ok {
+			t.Fatalf("no prompt %s", name)
+		}
+		return strings.Join(strings.Fields(p.Body), " ")
+	}
+	// The batch's files, spelled out — never a template the model completes.
+	adjUser := prompt("adjudicate_user")
+	for _, ref := range []string{"{{input.item_paths}}", "{{input.brief_paths}}"} {
+		if !strings.Contains(adjUser, ref) {
+			t.Errorf("adjudicate_user does not spell %s", ref)
+		}
+	}
+	for _, gone := range []string{"items_dir}}/<id>.json", "briefs_dir}}/<id>.md"} {
+		if strings.Contains(adjUser, gone) {
+			t.Errorf("adjudicate_user still hands the model a path template to reconstruct: %s", gone)
+		}
+	}
+	refUser := prompt("refute_user")
+	if !strings.Contains(refUser, "{{input.brief_paths}}") || strings.Contains(refUser, "briefs_dir}}/<criteriaId>.md") {
+		t.Error("refute_user does not spell the batch's brief paths")
+	}
+	// The tool set, named; a skill is not a file.
+	for _, name := range []string{"adjudicate_system", "refute_system"} {
+		body := prompt(name)
+		for _, marker := range []string{"EXACTLY `read_file`, `glob` and `grep`", "no MCP server", "a skill is a name, never a path"} {
+			if !strings.Contains(body, marker) {
+				t.Errorf("%s lacks the marker %q", name, marker)
+			}
+		}
+	}
+	// Every item answered, explicitly: the missing one is manual/unsupported,
+	// never silence.
+	if !strings.Contains(prompt("adjudicate_system"), "`manual` with its reason, never silence") {
+		t.Error("adjudicate_system does not say an unanswered criterion reads as lost")
+	}
+	if !strings.Contains(refUser, "`unsupported`, never silence") {
+		t.Error("refute_user does not say an unanswered claim reads as lost")
+	}
+	// The edges carry the batch's paths to the agents.
+	edge := func(from, to string) *ir.Edge {
+		t.Helper()
+		for _, e := range wf.Edges {
+			if e.From == from && e.To == to {
+				return e
+			}
+		}
+		t.Fatalf("no edge %s -> %s", from, to)
+		return nil
+	}
+	for _, key := range []string{"item_paths", "brief_paths"} {
+		m := mappingOf(edge("dispatch", "adjudicate"), key)
+		if m == nil || m.Raw != "{{outputs.dispatch.batch."+key+"}}" {
+			t.Errorf("dispatch -> adjudicate maps %s from %v, want the batch's own %s", key, m, key)
+		}
+	}
+	if m := mappingOf(edge("refute_dispatch", "refute"), "brief_paths"); m == nil || m.Raw != "{{outputs.refute_dispatch.rbatch.brief_paths}}" {
+		t.Errorf("refute_dispatch -> refute maps brief_paths from %v, want the batch's own brief_paths", m)
+	}
+	// No MCP server is attempted on the read-only agents: the audited repo's
+	// own .mcp.json servers are not theirs to boot.
+	for _, id := range []string{"adjudicate", "refute"} {
+		var mcp *ir.MCPConfig
+		switch n := wf.Nodes[id].(type) {
+		case *ir.AgentNode:
+			mcp = n.MCP
+		case *ir.JudgeNode:
+			mcp = n.MCP
+		default:
+			t.Fatalf("node %s is not an agent/judge", id)
+		}
+		if mcp == nil || mcp.Inherit == nil || *mcp.Inherit {
+			t.Errorf("node %s does not pin mcp.inherit: false", id)
+		}
+	}
+	// The schemas carry what the prompts reference.
+	has := func(schema, field string) bool {
+		s := wf.Schemas[schema]
+		if s == nil {
+			return false
+		}
+		for _, f := range s.Fields {
+			if f.Name == field {
+				return true
+			}
+		}
+		return false
+	}
+	for _, ref := range []struct{ schema, field string }{{"adjudicate_input", "item_paths"}, {"adjudicate_input", "brief_paths"}, {"refute_input", "brief_paths"}, {"merge_output", "partial_batches"}} {
+		if !has(ref.schema, ref.field) {
+			t.Errorf("schema %s lacks %s", ref.schema, ref.field)
+		}
+	}
 }
