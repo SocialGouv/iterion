@@ -545,7 +545,10 @@ and evaluated by each gated backend before every tool runs:
   native `deny`, deliberately not wired — membership in the gate table is
   earned by a live denial, never declared. Note that a headless opencode
   run auto-*rejects* an `ask` verdict (measured on 1.1.19; later builds add
-  a `--auto` flag that auto-*allows* it instead).
+  a `--auto` flag that auto-*allows* it instead). The policy also fails
+  OPEN beside three operator configurations and an invalid policy string,
+  measured on 1.19.0 — which is why it is refused rather than merely
+  unwired: [backends.md](backends.md#opencode-permission-not-a-gate-alone).
 - **claude_code** — a broad PreToolUse hook (`wirePermissionHook` in
   claude_code.go) evaluates the policy. Under the always-on
   `bypassPermissions`, PreToolUse hooks still run and a `deny` decision

@@ -1874,18 +1874,20 @@
           "axis": "permission",
           "verdict": "typed-refused",
           "evidence": [
-            "pkg/dsl/ir/validate_fallbacks.go:52"
+            "pkg/dsl/ir/validate_fallbacks.go:52",
+            "docs/backends.md:2612"
           ],
-          "detail": "C176 preserves the existing compiler gate membership."
+          "detail": "C176 preserves the existing compiler gate membership. Refused rather than merely unwired: a headless opencode run auto-rejects an ask verdict and auto-allows it under --auto/--yolo, so its own policy cannot pause the iterion run."
         },
         {
           "name": "permission-deny",
           "axis": "permission",
           "verdict": "typed-refused",
           "evidence": [
-            "pkg/dsl/ir/validate_fallbacks.go:52"
+            "pkg/dsl/ir/validate_fallbacks.go:52",
+            "docs/backends.md:2612"
           ],
-          "detail": "C176 preserves the existing compiler gate membership."
+          "detail": "C176 preserves the existing compiler gate membership. Refused rather than merely unwired: the OPENCODE_PERMISSION deny holds alone but fails OPEN under four measured configurations, each one silent: three operator ones (an agent-level permission, a permission key placed after *, a default_agent) and an invalid policy string. Membership stays unearned until a live denial and the config-ownership refusal land together."
         },
         {
           "name": "permission-external-hook",

@@ -2583,7 +2583,9 @@ moves fast, so re-measure before trusting a claim against another build.
   denial, never declared, and no credential was available to witness one.
   Note also that in a headless run an `ask` verdict is auto-*rejected* (and
   later builds add a `--auto` flag that auto-*allows* it instead) — neither
-  is "pause and ask the operator".
+  is "pause and ask the operator". The policy's own measured limit is the
+  reason the cell is refused rather than merely unwired: it
+  [fails OPEN beside an operator config](#opencode-permission-not-a-gate-alone).
 - **No async questions.** `interaction: async` is refused by **C267**;
   `interaction:` in its synchronous form is inert, as on every CLI-agent
   backend, and **C271** now says so at compile time.
@@ -2606,6 +2608,55 @@ moves fast, so re-measure before trusting a claim against another build.
 - **No `provider:` hint.** opencode resolves its own credentials from its own
   auth store, so iterion's credential-routing hint has nowhere to land
   (**C088**).
+
+#### ⚠️ `OPENCODE_PERMISSION` is not a gate on its own
+
+<a id="opencode-permission-not-a-gate-alone"></a>
+Measured on **1.19.0** (the bullets above are 1.1.19): the real CLI, driven by
+a scripted local model whose one tool call is `bash` with
+`touch permission-sentinel`. The authority is the sentinel on disk, never
+model prose. A scripted model costs nothing and exercises opencode's real
+policy engine — it is NOT the live denial gate membership asks for, which is a
+real model's real tool call.
+
+| operator config (global `opencode.json`) | `OPENCODE_PERMISSION` | sentinel | reading |
+|---|---|---|---|
+| none | none | created | control: the bench does execute, so the rows below are not vacuous |
+| none | `{"bash":"deny"}` | absent | the tool is withheld from the model altogether |
+| none | `{"bash":{"*":"allow","touch *":"deny"}}` | absent | denied at the call |
+| none | `{"bash":"deny",}` (invalid JSON) | **created** | **fail-OPEN, silent**: nothing on stderr |
+| `agent.build.permission.bash=allow` | deny at the call | **created** | **fail-OPEN**: an agent-level permission merges after the top-level one |
+| `permission:{"*":"ask","bash":"allow"}` | `{"*":"deny"}` | **created** | **fail-OPEN**: the merge keeps key POSITION, and the last match wins |
+| `permission:{"bash":"allow","*":"ask"}` | `{"*":"deny"}` | absent | the same content with the two keys swapped — the verdict depends on the operator's key order |
+| `default_agent: "wide"`, `wide.permission.bash=allow` | deny at the call | **created** | **fail-OPEN** |
+| the three fail-OPEN configs together, plus an agent iterion defines and selects with `--agent` | — | absent | the dedicated agent merges last, so it wins |
+| the same, with an agent name the config does not define | — | **created** | **fail-OPEN**: stderr says it falls back to the default agent and the exit code is 0, and the JSON stream never names the agent it used |
+
+Four configurations therefore turn a deny into an allow, and each one is
+silent where it counts: three are the OPERATOR's (an agent-level `permission`,
+a `permission` key placed after `*`, a `default_agent`) and the fourth is a
+policy string iterion itself could emit invalid. So the env variable alone is
+not a gate, and wiring it is a doctrine question before it is a patch
+(iterion#1640). The doctrine iterion already holds answers it: the config it
+constrains has to be its own, which is the refusal shape of the section below
+— one question per directory level, a greppable env opt-in, never an
+enumeration of spellings.
+
+Beyond that refusal and the live denial, a flip owes: a policy marshalled so
+it cannot be invalid; a dedicated agent plus POSITIVE confirmation that the
+agent loaded, since the fallback to the default one is silent in the stream;
+`ask` still refused; and the `list` → `ls` row of
+`pkg/backend/toolcatalog/canonical.go`, which lands **with** the flip and
+never before — today it would grant a rule reach for a policy that never
+runs. A translation also inherits opencode's own pattern semantics, read from
+the 1.19.0 source: `*` becomes `.*` and **`?` becomes `.`** where iterion
+treats `?` as a literal, a trailing `" *"` becomes `( .*)?`, `\` becomes `/`,
+nothing escapes, integer-looking JSON keys are reordered to the front (which
+moves precedence under a last-match lookup),
+`write`/`edit`/`apply_patch` share the single
+`edit` key, sub-agents (`task`) run under THEIR agent's permission, and a bash
+command is split into sub-commands (tree-sitter) and judged one by one where
+iterion judges the whole line as one candidate.
 
 #### ⚠️ The target repository runs as code
 
