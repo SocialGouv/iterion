@@ -1,6 +1,7 @@
 // Package corpusreading reads the committed corpus the way internal/mdcode's
 // four first-party readers do — every tracked .md, .yaml and .yml outside the
-// skipped trees, hashed under mdcode.Mask and mdcode.FenceScanner.Code — and
+// skipped trees that git does not mark linguist-generated, hashed under
+// mdcode.Mask and mdcode.FenceScanner.Code — and
 // keeps the golden internal/mdcode's witness pins it against. One
 // implementation serves the witness, `task corpus:reading`, and the release
 // cut, which re-pins its own CHANGELOG.md and chart edits from release-it's
@@ -84,6 +85,16 @@ func Read(root string) ([]Entry, error) {
 	if err != nil {
 		return nil, err
 	}
+	var candidates []string
+	for rel := range tracked {
+		if inCorpus(rel) {
+			candidates = append(candidates, rel)
+		}
+	}
+	generated, err := generatedPaths(root, candidates)
+	if err != nil {
+		return nil, err
+	}
 	var out []Entry
 	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -100,7 +111,7 @@ func Read(root string) ([]Entry, error) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if !inCorpus(rel) || !tracked[rel] {
+		if !inCorpus(rel) || !tracked[rel] || generated[rel] {
 			return nil
 		}
 		if strings.ContainsAny(rel, "\n\r") {
@@ -137,6 +148,44 @@ func gitPaths(root string, args ...string) (map[string]bool, error) {
 		}
 	}
 	return set, nil
+}
+
+// generatedPaths returns the candidates git marks linguist-generated in
+// .gitattributes (set, or =true). A generated file's reading moves with every
+// regeneration — the repository maps move on nearly every landing — so a pin
+// on it pins churn, not a reader's verdict, and makes every change that
+// regenerates the file collide with the next one on the same golden line in
+// the merge queue. The declaration lives in .gitattributes, where GitHub
+// reads it as well.
+func generatedPaths(root string, candidates []string) (map[string]bool, error) {
+	generated := map[string]bool{}
+	if len(candidates) == 0 {
+		return generated, nil
+	}
+	cmd := exec.Command("git", gitlib.NoRunHooks("-C", root, "check-attr", "-z", "--stdin", "linguist-generated")...)
+	cmd.Env = gitlib.SanitizeEnv(os.Environ())
+	cmd.Stdin = strings.NewReader(strings.Join(candidates, "\x00") + "\x00")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("git check-attr linguist-generated in %s: %v: %s", root, err, strings.TrimSpace(stderr.String()))
+	}
+	if stdout.Len() == 0 {
+		return generated, nil
+	}
+	// -z prints path, attribute and value, each NUL-terminated.
+	fields := strings.Split(strings.TrimSuffix(stdout.String(), "\x00"), "\x00")
+	if len(fields)%3 != 0 {
+		return nil, fmt.Errorf("git check-attr in %s answered %d field(s), not path/attribute/value triplets", root, len(fields))
+	}
+	for i := 0; i+2 < len(fields); i += 3 {
+		switch fields[i+2] {
+		case "set", "true":
+			generated[fields[i]] = true
+		}
+	}
+	return generated, nil
 }
 
 func readingOf(path string, body []byte) Entry {

@@ -424,3 +424,25 @@ func TestRun_TheCutSeesARenameAsItsOwnEdit(t *testing.T) {
 		t.Fatalf("the cut refused its own rename as foreign drift: %v", err)
 	}
 }
+
+// A file git marks linguist-generated (.gitattributes) is not part of the
+// corpus: its reading moves with every regeneration, so a pin on it pins
+// churn and makes two changes that regenerate it collide on the same golden
+// line. Both spellings of the attribute mark; an explicit unset does not.
+func TestRead_SkipsAFileGitMarksGenerated(t *testing.T) {
+	root := corpusRepo(t,
+		map[string]string{
+			".gitattributes":   "maps/*.md linguist-generated\ndocs/g.yaml linguist-generated=true\nb.md -linguist-generated\n",
+			"a.md":             "# a\n",
+			"b.md":             "# b\n",
+			"maps/packages.md": "# generated\n",
+			"docs/g.yaml":      "k: v\n",
+		}, nil)
+	entries, err := Read(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(paths(entries), " "); got != "a.md b.md" {
+		t.Fatalf("Read returned %q, want %q: a file git marks linguist-generated entered the corpus, or an unmarked one left it", got, "a.md b.md")
+	}
+}
