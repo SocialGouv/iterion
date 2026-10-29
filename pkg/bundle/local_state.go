@@ -257,8 +257,18 @@ func ReadLocalState(dir string) ([]LocalStateEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bundle: read %s: %w", LocalStateFile, err)
 	}
+	return DecodeLocalState(raw)
+}
+
+// DecodeLocalState parses record BYTES, for a reader that holds the record
+// without holding the directory: the launch snapshot carries the live files
+// of a bundle directory (Snapshot.AddDir), so the cloud plane answers "is
+// this file the producer's, or a previous resolution's output" from the same
+// record and the same parse as the install — one record, one grammar, two
+// readers.
+func DecodeLocalState(body []byte) ([]LocalStateEntry, error) {
 	var entries []LocalStateEntry
-	for n, line := range strings.Split(string(raw), "\n") {
+	for n, line := range strings.Split(string(body), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -272,6 +282,16 @@ func ReadLocalState(dir string) ([]LocalStateEntry, error) {
 	return entries, nil
 }
 
+// DecodeLocalStateOfKind is [DecodeLocalState] narrowed to one kind, for the
+// reason [ReadLocalStateOfKind] states.
+func DecodeLocalStateOfKind(body []byte, kind LocalStateKind) ([]LocalStateEntry, error) {
+	entries, err := DecodeLocalState(body)
+	if err != nil {
+		return nil, err
+	}
+	return entriesOfKind(entries, kind)
+}
+
 // ReadLocalStateOfKind is [ReadLocalState] narrowed to one kind. The writer
 // of a kind reconciles its OWN entries and must never read another kind's as
 // its own: a sync's fragment pass would otherwise see a regenerated catalog
@@ -282,6 +302,13 @@ func ReadLocalStateOfKind(dir string, kind LocalStateKind) ([]LocalStateEntry, e
 	if err != nil {
 		return nil, err
 	}
+	return entriesOfKind(entries, kind)
+}
+
+// entriesOfKind is the narrowing both readers share: the kind of an entry is
+// the SHAPE of its path, so the filter cannot drift between the reader that
+// holds a directory and the one that holds bytes.
+func entriesOfKind(entries []LocalStateEntry, kind LocalStateKind) ([]LocalStateEntry, error) {
 	var of []LocalStateEntry
 	for _, e := range entries {
 		got, kindErr := e.kindOf()

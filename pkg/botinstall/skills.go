@@ -1,6 +1,7 @@
 package botinstall
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -61,9 +62,6 @@ func ResolveSkills(workdir, installedPath string) ([]bundle.LocalStateEntry, err
 		if srcErr != nil {
 			return nil, srcErr
 		}
-		if err := refuseARenamedSkill(source, dep); err != nil {
-			return nil, err
-		}
 		digest, copyErr := copyResolvedFile(source, dest)
 		if copyErr != nil {
 			return nil, fmt.Errorf("resolve shared skill %q of %q from %q: %w", dep.ExportedID(), filepath.Base(installedPath), dep.From, copyErr)
@@ -103,46 +101,80 @@ func locateExportedSkill(layers []string, dep bundle.SkillDependency) (string, e
 	for _, layer := range layers {
 		producerDir := filepath.Join(layer, dep.From)
 		tried = append(tried, producerDir)
-		producer, err := bundle.OpenDir(producerDir)
-		if err != nil {
+		source, err := ExportedSkillSource(producerDir, dep)
+		if errors.Is(err, ErrNoProducerBundle) {
 			continue
 		}
-		if producer.Manifest == nil || producer.Manifest.Name != dep.From {
-			actual := "<no manifest>"
-			if producer.Manifest != nil {
-				actual = producer.Manifest.Name
-			}
-			return "", fmt.Errorf("shared skill %q: bundle at %s declares manifest name %q, not %q", dep.ExportedID(), producerDir, actual, dep.From)
+		if err != nil {
+			return "", err
 		}
-		exports := producer.Manifest.Exports.Skills
-		for i := range exports {
-			if exports[i].ID != dep.ExportedID() {
-				continue
-			}
-			source := filepath.Join(producer.Dir, filepath.FromSlash(exports[i].Path))
-			info, statErr := os.Lstat(source)
-			if statErr != nil {
-				return "", fmt.Errorf("bundle %q exports skill %q at %s, which is not there: %w", dep.From, dep.ExportedID(), exports[i].Path, statErr)
-			}
-			if !info.Mode().IsRegular() {
-				// A symlink is refused by the snapshot as unportable and by
-				// the mirror inside the sandbox bind-mount (a target outside
-				// /workspace is ENOENT): a bundle that resolved on one disk
-				// would fail in the snapshot and in cloud.
-				return "", fmt.Errorf("bundle %q exports skill %q at %s, which is not a regular file", dep.From, dep.ExportedID(), exports[i].Path)
-			}
-			return source, nil
-		}
-		available := make([]string, 0, len(exports))
-		for i := range exports {
-			available = append(available, exports[i].ID)
-		}
-		if len(available) == 0 {
-			return "", fmt.Errorf("bundle %q at %s exports no skill, so it cannot provide %q", dep.From, producerDir, dep.ExportedID())
-		}
-		return "", fmt.Errorf("bundle %q at %s does not export skill %q (it exports: %s)", dep.From, producerDir, dep.ExportedID(), strings.Join(available, ", "))
+		return source, nil
 	}
 	return "", fmt.Errorf("shared skill %q comes from bundle %q, which is not materialized (looked in: %s); run `%s`", dep.ExportedID(), dep.From, strings.Join(tried, ", "), syncCommand)
+}
+
+// ErrNoProducerBundle marks a path that holds no readable bundle at all, so a
+// caller that walks candidate locations knows to keep walking. Every OTHER
+// error [ExportedSkillSource] returns is a verdict about a producer it DID
+// read, and stops the walk: a bundle that exports the wrong thing must not be
+// masked by the next layer silently answering instead.
+var ErrNoProducerBundle = errors.New("no bundle at that path")
+
+// ExportedSkillSource is the document one producer bundle DIRECTORY provides
+// for a dependency, with the refusals of ADR-144 clauses 4 and 5 that depend
+// on the producer alone: the manifest must be the bundle the consumer named,
+// the export must exist, its file must be a regular file, and its frontmatter
+// must not answer to another name.
+//
+// It is the chokepoint BOTH planes resolve through. The install walks the
+// locations a project materializes producers into (`locateExportedSkill`);
+// the server resolves the producer through its own tiers before asking here
+// (pkg/server/bot_snapshot.go, ADR-144's cloud twin, ARB-114 = A). What a
+// MISS reads differs by plane — one names `iterion bots sync`, the other the
+// tiers it searched — but what a FOUND producer is held to does not, or the
+// two planes would disagree about the same bundle.
+func ExportedSkillSource(producerDir string, dep bundle.SkillDependency) (string, error) {
+	producer, err := bundle.OpenDir(producerDir)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s: %v", ErrNoProducerBundle, producerDir, err)
+	}
+	if producer.Manifest == nil || producer.Manifest.Name != dep.From {
+		actual := "<no manifest>"
+		if producer.Manifest != nil {
+			actual = producer.Manifest.Name
+		}
+		return "", fmt.Errorf("shared skill %q: bundle at %s declares manifest name %q, not %q", dep.ExportedID(), producerDir, actual, dep.From)
+	}
+	exports := producer.Manifest.Exports.Skills
+	for i := range exports {
+		if exports[i].ID != dep.ExportedID() {
+			continue
+		}
+		source := filepath.Join(producer.Dir, filepath.FromSlash(exports[i].Path))
+		info, statErr := os.Lstat(source)
+		if statErr != nil {
+			return "", fmt.Errorf("bundle %q exports skill %q at %s, which is not there: %w", dep.From, dep.ExportedID(), exports[i].Path, statErr)
+		}
+		if !info.Mode().IsRegular() {
+			// A symlink is refused by the snapshot as unportable and by
+			// the mirror inside the sandbox bind-mount (a target outside
+			// /workspace is ENOENT): a bundle that resolved on one disk
+			// would fail in the snapshot and in cloud.
+			return "", fmt.Errorf("bundle %q exports skill %q at %s, which is not a regular file", dep.From, dep.ExportedID(), exports[i].Path)
+		}
+		if err := refuseARenamedSkill(source, dep); err != nil {
+			return "", err
+		}
+		return source, nil
+	}
+	available := make([]string, 0, len(exports))
+	for i := range exports {
+		available = append(available, exports[i].ID)
+	}
+	if len(available) == 0 {
+		return "", fmt.Errorf("bundle %q at %s exports no skill, so it cannot provide %q", dep.From, producerDir, dep.ExportedID())
+	}
+	return "", fmt.Errorf("bundle %q at %s does not export skill %q (it exports: %s)", dep.From, producerDir, dep.ExportedID(), strings.Join(available, ", "))
 }
 
 // refuseSkillShadow holds ADR-144 clause 5's no-shadow half: a dependency may
@@ -154,16 +186,35 @@ func locateExportedSkill(layers []string, dep bundle.SkillDependency) (string, e
 func refuseSkillShadow(dest, rel string, dep bundle.SkillDependency, recorded map[string]string) error {
 	info, err := os.Lstat(dest)
 	if os.IsNotExist(err) {
-		return nil
+		return RefuseSkillShadow(rel, "", false, dep, recorded)
 	}
 	if err != nil {
 		return fmt.Errorf("resolve shared skill %q: inspect %s: %w", dep.ExportedID(), rel, err)
 	}
-	digest, ok := recorded[rel]
-	if ok && info.Mode().IsRegular() {
-		if current, hashErr := bundle.FileSHA256(dest); hashErr == nil && current == digest {
-			return nil
+	current := ""
+	if info.Mode().IsRegular() {
+		if digest, hashErr := bundle.FileSHA256(dest); hashErr == nil {
+			current = digest
 		}
+	}
+	return RefuseSkillShadow(rel, current, true, dep, recorded)
+}
+
+// RefuseSkillShadow is ADR-144 clause 5's no-shadow verdict, over what is
+// ALREADY at rel rather than over a filesystem: present says whether
+// anything is there, currentDigest is its sha256 ("" when it could not be
+// hashed or is not a regular file), recorded is the bundle's own record of
+// what a previous resolution materialized.
+//
+// Pure, because the two planes hold the destination differently — the
+// install reads a file, the launch snapshot holds the frozen bytes — and a
+// rule recopied for the second reader is the rule that drifts.
+func RefuseSkillShadow(rel, currentDigest string, present bool, dep bundle.SkillDependency, recorded map[string]string) error {
+	if !present {
+		return nil
+	}
+	if digest, ok := recorded[rel]; ok && currentDigest != "" && currentDigest == digest {
+		return nil
 	}
 	return fmt.Errorf("dependencies.skills %q would shadow %s, which this bundle ships: rename the dependency or drop the shipped skill", dep.Name, rel)
 }

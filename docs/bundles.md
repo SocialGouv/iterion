@@ -156,6 +156,21 @@ specific to skills:
   `internal/skillshare` keeps declaring every copy the tree still carries,
   and a family loses a member only when a consumer adopts the dependency and
   deletes its copy — one reviewed change per bundle.
+- **The cloud plane resolves at the launch freeze, and the snapshot is the
+  pin.** A bundle that reaches the server never carries what an install
+  materialized — `PackDir` leaves the local-state record and its members out
+  of a `.botz`, and a bundle authored in the studio never had them — so the
+  launch resolves every declared skill while it freezes the bot's collection,
+  through the same team-scoped tiers (team → platform → baked catalog) a child
+  workflow's authority comes from, and injects the document at the same
+  `skills/<name>.md`. Every bundle of the collection is resolved, a child's
+  declarations included. Nothing durable is added: the document travels inside
+  the run's snapshot, whose digest answers "which version of the shared logic
+  did this run execute" at a tier that has no `bots.lock`. A producer that
+  resolves in no tier stops the launch, naming both sides — never a silently
+  short skills directory; a tier that errors is transient and the resume
+  retries it. There is no skill store on the server: the tree stays the only
+  place a shared skill's bytes come from.
 
 ## Quick start
 

@@ -131,6 +131,17 @@ func (s *Server) snapshotLaunchBot(ctx context.Context, teamID string, lb *launc
 			queue = append(queue, pending{key, current.depth + 1})
 		}
 	}
+	// Every bundle of the collection is frozen now, so a dependency declared
+	// by the launched bundle OR by a child resolves against the same loaded
+	// set — and a child that declares one is not a lesser bundle (ADR-144's
+	// twin, ARB-114 = A).
+	rootNames := make([]string, 0, len(loaded))
+	for name := range loaded {
+		rootNames = append(rootNames, name)
+	}
+	if err := s.resolveSnapshotSkills(ctx, teamID, snap, rootNames); err != nil {
+		return nil, err
+	}
 	body, digest, err := snap.Encode()
 	if err != nil {
 		return nil, err
