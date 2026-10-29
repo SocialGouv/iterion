@@ -238,6 +238,16 @@ WORKDIR /workspace
 # never at BUILD time — the published image ships exactly the pinned
 # deepsec, and an absent or drifted one fails here with the version it
 # found named.
+#
+# REQUIRE_DEEPSEC is that refusal's escape hatch, for the one case it
+# would otherwise take hostage: a LOCAL rebuild of this same file
+# (docs/agents/ops/security-selfaudit.md, scripts/bench/ci-build-bench.sh)
+# on a machine that cannot reach npm or NodeSource, where the Layer 4
+# install degrades and every MANDATORY scanner is nonetheless installed.
+# `--build-arg REQUIRE_DEEPSEC=0` downgrades the deepsec assertion to a
+# loud warning; the default is the refusal, and the published build
+# passes nothing, so :edge keeps shipping the pin or no image at all.
+ARG REQUIRE_DEEPSEC=1
 RUN semgrep --version \
  && gosec --version \
  && govulncheck -version \
@@ -256,10 +266,12 @@ RUN semgrep --version \
  && DEEPSEC_FOUND="$(deepsec --version 2>/dev/null || true)" \
  && if [ -z "$DEEPSEC_FOUND" ]; then \
         echo "deepsec: ABSENT — expected the pinned ${DEEPSEC_VERSION}; the Layer 4 install did not complete, and the published sec image does not ship without its pinned deepsec (#2350)" >&2; \
-        exit 1; \
+        [ "${REQUIRE_DEEPSEC}" = "0" ] || exit 1; \
+        echo "deepsec: ABSENT, allowed by --build-arg REQUIRE_DEEPSEC=0 — a DEGRADED local image, never the published one (#2350)" >&2; \
     elif [ "$DEEPSEC_FOUND" != "${DEEPSEC_VERSION}" ]; then \
         echo "deepsec: version drift — the image pinned ${DEEPSEC_VERSION} but installed ${DEEPSEC_FOUND}; rebuild with --build-arg DEEPSEC_VERSION=${DEEPSEC_VERSION} or fix the Layer 4 install (#2350)" >&2; \
-        exit 1; \
+        [ "${REQUIRE_DEEPSEC}" = "0" ] || exit 1; \
+        echo "deepsec: drift to ${DEEPSEC_FOUND}, allowed by --build-arg REQUIRE_DEEPSEC=0 — a DEGRADED local image, never the published one (#2350)" >&2; \
     else \
         echo "deepsec: present at the pinned ${DEEPSEC_FOUND} (optional, only used when enable_deepsec=true)"; \
     fi
