@@ -1811,3 +1811,77 @@ func (j *cloudTokenJar) applyRotation(accessCookie, refreshCookie string) error 
 	}
 	return nil
 }
+
+// desktopCallbackHandler is the SSO loopback listener's handler, named so a
+// test drives it directly. A cloud refusal arrives as ?sso_error=<code> (the
+// callback's redirectCallbackError): it is answered to the refusal channel at
+// once, mapped by desktopSSORefusal. An accepted sign-in arrives as the
+// one-time ticket.
+func desktopCallbackHandler(cloudURL string, ticketCh chan<- string, refusalCh chan<- error) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/desktop-callback" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if code := r.URL.Query().Get("sso_error"); code != "" {
+			msg := desktopSSORefusal(code, r.URL.Query().Get("sso_provider"))
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, ssoClosePage("Sign-in refused: "+msg+" You can close this window."))
+			select {
+			case refusalCh <- fmt.Errorf("sso sign-in refused by %s: %s", cloudURL, msg):
+			default:
+			}
+			return
+		}
+		ticket := r.URL.Query().Get("ticket")
+		if ticket == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, ssoClosePage("Sign-in failed — no ticket returned. You can close this window."))
+		} else {
+			_, _ = io.WriteString(w, ssoClosePage("Signed in. You can close this window and return to Iterion."))
+		}
+		select {
+		case ticketCh <- ticket:
+		default:
+		}
+	}
+}
+
+// ssoClosePage renders the minimal HTML the system browser shows after the SSO
+// round-trip completes on the loopback listener.
+func ssoClosePage(msg string) string {
+	return "<!doctype html><html><head><meta charset=\"utf-8\"><title>Iterion</title></head>" +
+		"<body style=\"font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0\">" +
+		"<p style=\"font-size:1rem;color:#333\">" + msg + "</p></body></html>"
+}
+
+// desktopSSORefusal maps the sso_error code the cloud's OIDC callback
+// redirects to the loopback listener (pkg/server redirectCallbackError) to
+// the operator-friendly sentence the shell shows, mirroring the studio
+// login page's own mapping (ssoErrorNotice).
+func desktopSSORefusal(code, provider string) string {
+	if provider == "" {
+		provider = "the SSO provider"
+	}
+	switch code {
+	case "link_required":
+		return "an account already exists with this email: sign in with your password, then connect " + provider + " from Account settings"
+	case "restricted":
+		return provider + " sign-in is limited to allow-listed teams, and yours didn't match — ask your administrator for access"
+	case "disabled":
+		return "that SSO provider is currently turned off — contact your administrator or sign in another way"
+	case "unknown_provider":
+		return "that SSO provider is no longer available — try signing in with your email and password"
+	case "provider_unavailable":
+		return provider + " sign-in is temporarily unavailable — please try again in a moment"
+	case "password_change_required":
+		return "your administrator requires a password change before your next sign-in — set one with the emailed reset link, or ask your administrator"
+	case "state_expired":
+		return "the sign-in took too long or the link was reused — please start again"
+	case "agent_binding":
+		return "the sign-in could not be completed safely (it may have started in another browser) — please try again"
+	default:
+		return provider + " sign-in didn't complete — please try again, or use your email and password"
+	}
+}

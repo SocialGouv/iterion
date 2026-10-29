@@ -22,8 +22,13 @@ const defaultShareTTLDays = 14
 // (Kind == user) is required; the RBAC gates reject a synthetic principal.
 func (s *Server) registerConfigShareAdminRoutes() {
 	s.mux.Handle("GET /api/teams/{id}/config-shares", s.requireAuth(http.HandlerFunc(s.handleListConfigShares)))
-	s.mux.Handle("POST /api/teams/{id}/config-shares", s.requireAuth(http.HandlerFunc(s.handleCreateConfigShare)))
-	s.mux.Handle("POST /api/teams/{id}/config-shares/{sid}/rotate", s.requireAuth(http.HandlerFunc(s.handleRotateConfigShare)))
+	// The create and the rotate mint a share-link token — a public read of
+	// the team's configuration that outlives the credential it is minted
+	// from — so they go through the derivation chokepoint
+	// (auth.MintTeamToken): the access token of a revoked session mints
+	// none (401), and a personal access token never does (403).
+	s.mux.Handle("POST /api/teams/{id}/config-shares", s.requireAuth(s.gateDerivation(auth.MintTeamToken, http.HandlerFunc(s.handleCreateConfigShare))))
+	s.mux.Handle("POST /api/teams/{id}/config-shares/{sid}/rotate", s.requireAuth(s.gateDerivation(auth.MintTeamToken, http.HandlerFunc(s.handleRotateConfigShare))))
 	s.mux.Handle("DELETE /api/teams/{id}/config-shares/{sid}", s.requireAuth(http.HandlerFunc(s.handleDeleteConfigShare)))
 	s.mux.Handle("GET /api/teams/{id}/config-shares/{sid}/deliveries", s.requireAuth(http.HandlerFunc(s.handleConfigShareDeliveries)))
 }

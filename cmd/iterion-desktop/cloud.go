@@ -387,26 +387,15 @@ func (a *App) ConnectCloudSSO(cloudURL, provider string) (*Project, error) {
 	redirect := fmt.Sprintf("http://127.0.0.1:%d/desktop-callback", port)
 
 	ticketCh := make(chan string, 1)
+	// refusalCh carries the sso_error the cloud's callback redirects to the
+	// loopback when it REFUSES the sign-in (e.g. an account pending a
+	// password change): the refusal reaches the app at once instead of the
+	// app waiting out its timeout while the reason sat in the browser tab
+	// (#2687).
+	refusalCh := make(chan error, 1)
 	srv := &http.Server{
 		ReadHeaderTimeout: 10 * time.Second,
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/desktop-callback" {
-				http.NotFound(w, r)
-				return
-			}
-			ticket := r.URL.Query().Get("ticket")
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			if ticket == "" {
-				w.WriteHeader(http.StatusBadRequest)
-				_, _ = io.WriteString(w, ssoClosePage("Sign-in failed — no ticket returned. You can close this window."))
-			} else {
-				_, _ = io.WriteString(w, ssoClosePage("Signed in. You can close this window and return to Iterion."))
-			}
-			select {
-			case ticketCh <- ticket:
-			default:
-			}
-		}),
+		Handler:           desktopCallbackHandler(cloudURL, ticketCh, refusalCh),
 	}
 	go func() { _ = srv.Serve(ln) }()
 	defer func() {
@@ -426,14 +415,15 @@ func (a *App) ConnectCloudSSO(cloudURL, provider string) (*Project, error) {
 	var ticket string
 	select {
 	case ticket = <-ticketCh:
+	case err := <-refusalCh:
+		return nil, err
 	case <-time.After(5 * time.Minute):
-		// The cloud hands this listener a ticket only for a sign-in it
-		// ACCEPTED: a refusal (an account whose administrator requires a
-		// password change, an identity linked to no account, a cancelled
-		// consent) redirects the browser to the instance's own sign-in page
-		// with the reason, and nothing reaches the desktop. So the only true
-		// thing to say is that no sign-in came back, and where the reason is.
-		return nil, fmt.Errorf("no SSO sign-in came back from the browser within 5 minutes — the browser tab says whether %s refused it (an account that must change its password, an identity to link first) or the sign-in was left unfinished", cloudURL)
+		// The cloud hands this listener a ticket for a sign-in it ACCEPTED
+		// and an sso_error for one it REFUSED (the callback redirects both
+		// to the loopback). Nothing arriving therefore means the sign-in
+		// never completed at all — the tab was closed, or the browser never
+		// came back — not that the cloud answered and was ignored.
+		return nil, fmt.Errorf("no SSO sign-in came back from the browser within 5 minutes — the browser flow was left unfinished (a refusal by %s would have been reported at once)", cloudURL)
 	case <-a.ctx.Done():
 		return nil, a.ctx.Err()
 	}
@@ -452,14 +442,6 @@ func (a *App) ConnectCloudSSO(cloudURL, provider string) (*Project, error) {
 		return nil, mapCloudLoginError(err)
 	}
 	return a.finishCloudConnect(cloudURL, res, prepared)
-}
-
-// ssoClosePage renders the minimal HTML the system browser shows after the SSO
-// round-trip completes on the loopback listener.
-func ssoClosePage(msg string) string {
-	return "<!doctype html><html><head><meta charset=\"utf-8\"><title>Iterion</title></head>" +
-		"<body style=\"font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0\">" +
-		"<p style=\"font-size:1rem;color:#333\">" + msg + "</p></body></html>"
 }
 
 // LoginCloud re-authenticates an EXISTING cloud connection (e.g. after

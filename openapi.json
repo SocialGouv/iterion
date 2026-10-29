@@ -6277,7 +6277,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/audit",
@@ -6304,7 +6304,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/bots",
@@ -6341,7 +6341,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/admin/bots/{slug}",
@@ -6366,7 +6366,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/bots/{slug}",
@@ -6411,7 +6411,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/admin/bots/{slug}",
@@ -6458,7 +6458,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/admin/bots/{slug}/files/{path...}",
@@ -6511,7 +6511,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/admin/bots/{slug}/files/{path...}",
@@ -6558,7 +6558,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/admin/bots/{slug}/fork",
@@ -6585,7 +6585,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/credentials/usage",
@@ -6623,7 +6623,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/forge/oauth-apps",
@@ -6658,7 +6658,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/admin/forge/oauth-apps",
@@ -6675,7 +6675,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/admin/forge/oauth-apps/{app_id}",
@@ -6723,7 +6723,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/llm/api-keys",
@@ -6758,7 +6758,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/admin/llm/api-keys",
@@ -6775,7 +6775,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/admin/llm/api-keys/{key_id}",
@@ -6820,7 +6820,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PATCH /api/admin/llm/api-keys/{key_id}",
@@ -6847,7 +6847,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/llm/oauth/connections",
@@ -6864,7 +6864,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/admin/llm/oauth/{kind}",
@@ -6889,7 +6889,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PATCH /api/admin/llm/oauth/{kind}",
@@ -6916,7 +6916,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/admin/llm/oauth/{kind}/authorize/complete",
@@ -6943,7 +6943,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/admin/llm/oauth/{kind}/authorize/start",
@@ -6970,7 +6970,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/admin/llm/oauth/{kind}/credentials",
@@ -6997,7 +6997,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/admin/llm/oauth/{kind}/refresh",
@@ -7035,7 +7035,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/orgs",
@@ -7070,7 +7070,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/admin/orgs",
@@ -7097,7 +7097,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/admin/orgs/{id}",
@@ -7122,7 +7122,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/orgs/{id}",
@@ -7167,7 +7167,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PATCH /api/admin/orgs/{id}",
@@ -7204,7 +7204,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/admin/orgs/{id}/restore",
@@ -7251,7 +7251,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/admin/orgs/{id}/status",
@@ -7289,7 +7289,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/orgs/{id}/teams",
@@ -7316,7 +7316,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/orgs/{id}/usage",
@@ -7343,7 +7343,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/runner-pools",
@@ -7358,7 +7358,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/admin/runner-pools",
@@ -7442,7 +7442,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           },
           "500": {
             "description": "Run store unavailable"
@@ -7472,7 +7472,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/settings/bot-roles",
@@ -7497,7 +7497,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/admin/settings/bot-roles",
@@ -7524,7 +7524,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/settings/bot-vars",
@@ -7549,7 +7549,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/admin/settings/bot-vars",
@@ -7566,7 +7566,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/settings/budget-floor",
@@ -7581,7 +7581,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/admin/settings/budget-floor",
@@ -7608,7 +7608,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/settings/maintenance",
@@ -7643,7 +7643,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/admin/settings/maintenance",
@@ -7670,7 +7670,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/settings/platform-credentials",
@@ -7695,7 +7695,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/admin/settings/platform-credentials",
@@ -7722,7 +7722,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/settings/sandbox",
@@ -7747,7 +7747,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/admin/settings/sandbox",
@@ -7774,7 +7774,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/settings/usage-caps",
@@ -7799,7 +7799,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/admin/settings/usage-caps",
@@ -7826,7 +7826,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/admin/teams/{id}/llm-fallback",
@@ -7853,7 +7853,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/admin/teams/{id}/runner-pool",
@@ -7870,7 +7870,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/admin/tenants/{tenant}/bot-sources/{slug}/history",
@@ -7915,7 +7915,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/admin/usage-readings/{fingerprint}",
@@ -7974,7 +7974,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/users",
@@ -8001,7 +8001,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/admin/users/{id}",
@@ -8046,7 +8046,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PATCH /api/admin/users/{id}",
@@ -8073,7 +8073,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/admin/users/{id}/reset-password",
@@ -8259,7 +8259,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/auth/me/org/{org_id}",
@@ -8296,7 +8296,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/auth/me/team/{team_id}",
@@ -9099,7 +9099,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           },
           "409": {
             "description": "The change conflicts with the account's state (see the error code in the body)."
@@ -9256,7 +9256,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           },
           "503": {
             "description": "The request's record landed but a later step failed; sign in again and repeat the request (every step is idempotent)."
@@ -9308,7 +9308,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           },
           "409": {
             "description": "The change conflicts with the account's state (see the error code in the body)."
@@ -9346,7 +9346,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "GET /api/me/sso/{provider}/link/start",
@@ -9435,7 +9435,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/me/tokens",
@@ -9452,7 +9452,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/me/tokens/{token_id}",
@@ -9818,8 +9818,11 @@
       "post": {
         "operationId": "postOrgsByIdInvitations",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/orgs/{id}/invitations",
@@ -10347,7 +10350,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/orgs/{id}/sso/domains",
@@ -10364,7 +10367,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/orgs/{id}/sso/domains/{domain_id}",
@@ -10417,7 +10420,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/orgs/{id}/sso/domains/{domain_id}/verify",
@@ -10456,7 +10459,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/orgs/{id}/sso/providers",
@@ -10473,7 +10476,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/orgs/{id}/sso/providers/{provider_id}",
@@ -10506,7 +10509,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PATCH /api/orgs/{id}/sso/providers/{provider_id}",
@@ -13497,8 +13500,11 @@
       "post": {
         "operationId": "postTeamsByIdConfigShares",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/teams/{id}/config-shares",
@@ -13593,8 +13599,11 @@
       "post": {
         "operationId": "postTeamsByIdConfigSharesBySidRotate",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/teams/{id}/config-shares/{sid}/rotate",
@@ -14356,8 +14365,11 @@
       "post": {
         "operationId": "postTeamsByIdInvitations",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/teams/{id}/invitations",
@@ -15025,8 +15037,11 @@
       "post": {
         "operationId": "postTeamsByIdWebhooks",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/teams/{id}/webhooks",
@@ -15145,8 +15160,11 @@
       "post": {
         "operationId": "postTeamsByIdWebhooksByWebhookIdRotate",
         "responses": {
-          "default": {
-            "description": "Response"
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/teams/{id}/webhooks/{webhook_id}/rotate",
@@ -16099,7 +16117,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/v1/plugins/install",
@@ -16116,7 +16134,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "DELETE /api/v1/plugins/{name}",
@@ -16165,7 +16183,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "PUT /api/v1/plugins/{name}/config",
@@ -16192,7 +16210,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/v1/plugins/{name}/disable",
@@ -16219,7 +16237,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/v1/plugins/{name}/enable",
@@ -16254,7 +16272,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/v1/plugins/{name}/lifecycle/{phase}",
@@ -16717,7 +16735,7 @@
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },
           "403": {
-            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
           }
         },
         "summary": "POST /api/ws/ticket",

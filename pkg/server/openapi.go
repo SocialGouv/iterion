@@ -248,7 +248,7 @@ func title(s string) string {
 // super-admin re-derivation at the identity) refuses, per status.
 var chokepointRefusalDescriptions = map[int]string{
 	http.StatusUnauthorized:       "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone.",
-	http.StatusForbidden:          "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route.",
+	http.StatusForbidden:          "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route.",
 	http.StatusConflict:           "The change conflicts with the account's state (see the error code in the body).",
 	http.StatusTooManyRequests:    "The proof is throttled like the sign-in it stands for; Retry-After names the wait.",
 	http.StatusServiceUnavailable: "The request's record landed but a later step failed; sign in again and repeat the request (every step is idempotent).",
@@ -276,6 +276,12 @@ var gatedRouteChokepointCodes = map[string][]int{
 	"POST /api/orgs/{id}/sso/domains":                    {http.StatusUnauthorized, http.StatusForbidden},
 	"POST /api/orgs/{id}/sso/domains/{domain_id}/verify": {http.StatusUnauthorized, http.StatusForbidden},
 	"DELETE /api/orgs/{id}/sso/domains/{domain_id}":      {http.StatusUnauthorized, http.StatusForbidden},
+	"POST /api/teams/{id}/webhooks":                      {http.StatusUnauthorized, http.StatusForbidden},
+	"POST /api/teams/{id}/webhooks/{webhook_id}/rotate":  {http.StatusUnauthorized, http.StatusForbidden},
+	"POST /api/teams/{id}/config-shares":                 {http.StatusUnauthorized, http.StatusForbidden},
+	"POST /api/teams/{id}/config-shares/{sid}/rotate":    {http.StatusUnauthorized, http.StatusForbidden},
+	"POST /api/teams/{id}/invitations":                   {http.StatusUnauthorized, http.StatusForbidden},
+	"POST /api/orgs/{id}/invitations":                    {http.StatusUnauthorized, http.StatusForbidden},
 }
 
 // chokepointResponses answers the refusal response objects a route carries:

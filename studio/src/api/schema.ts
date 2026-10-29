@@ -8260,7 +8260,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8294,7 +8294,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8330,7 +8330,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8370,7 +8370,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8402,7 +8402,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8443,7 +8443,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8485,7 +8485,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8525,7 +8525,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8559,7 +8559,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8595,7 +8595,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8633,7 +8633,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8660,7 +8660,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8696,7 +8696,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8734,7 +8734,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8761,7 +8761,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8801,7 +8801,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8835,7 +8835,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8862,7 +8862,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8889,7 +8889,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8916,7 +8916,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8943,7 +8943,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8970,7 +8970,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8997,7 +8997,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9033,7 +9033,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9071,7 +9071,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9107,7 +9107,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9143,7 +9143,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9183,7 +9183,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9219,7 +9219,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9259,7 +9259,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9297,7 +9297,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9324,7 +9324,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9349,7 +9349,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9374,7 +9374,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9421,7 +9421,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9462,7 +9462,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9496,7 +9496,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9530,7 +9530,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9564,7 +9564,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9589,7 +9589,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9614,7 +9614,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9648,7 +9648,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9686,7 +9686,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9720,7 +9720,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9754,7 +9754,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9788,7 +9788,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9822,7 +9822,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9856,7 +9856,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9890,7 +9890,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9917,7 +9917,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9944,7 +9944,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9972,7 +9972,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -10008,7 +10008,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -10047,7 +10047,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -10083,7 +10083,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -10123,7 +10123,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -10150,7 +10150,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -10328,7 +10328,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -10364,7 +10364,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11216,7 +11216,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11409,7 +11409,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11466,7 +11466,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11500,7 +11500,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11563,7 +11563,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11590,7 +11590,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11978,8 +11978,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12423,7 +12430,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -12451,7 +12458,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -12479,7 +12486,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -12526,7 +12533,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -12554,7 +12561,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -12582,7 +12589,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -15133,8 +15140,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15196,8 +15210,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15747,8 +15768,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -16347,8 +16375,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -16452,8 +16487,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -17391,7 +17433,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -17438,7 +17480,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -17465,7 +17507,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -17492,7 +17534,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -17519,7 +17561,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -17547,7 +17589,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -18030,7 +18072,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
                 headers: {
                     [name: string]: unknown;

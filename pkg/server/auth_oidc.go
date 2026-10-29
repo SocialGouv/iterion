@@ -79,6 +79,37 @@ func redirectSSOError(w http.ResponseWriter, r *http.Request, code string, extra
 	http.Redirect(w, r, "/login?"+q.Encode(), http.StatusFound)
 }
 
+// redirectCallbackError answers a failed OIDC callback whose flow is known.
+// A DESKTOP flow's refusal goes to the desktop's own loopback listener
+// (?sso_error=), so the app stops waiting and says why at once, instead of
+// leaving the reason in the browser tab while the desktop waits out its
+// five-minute timeout (#2687); every other flow lands on the SPA login
+// banner as before. The loopback target was validated at /start
+// (safeDesktopRedirect: http on 127.0.0.1/[::1]/localhost only, an explicit
+// port, no credentials), so this is no open redirect — it 302s only to the
+// address the desktop itself named when it began the flow. pending zero
+// (the flow could not be taken) is the SPA path.
+func redirectCallbackError(w http.ResponseWriter, r *http.Request, pending oidc.PendingAuth, code string, extra url.Values) {
+	if !pending.Desktop || pending.DesktopRedirect == "" {
+		redirectSSOError(w, r, code, extra)
+		return
+	}
+	q := url.Values{}
+	q.Set("sso_error", code)
+	for k, vs := range extra {
+		for _, v := range vs {
+			if v != "" {
+				q.Add(k, v)
+			}
+		}
+	}
+	sep := "?"
+	if strings.Contains(pending.DesktopRedirect, "?") {
+		sep = "&"
+	}
+	http.Redirect(w, r, pending.DesktopRedirect+sep+q.Encode(), http.StatusFound)
+}
+
 // ssoErrorForAuth maps an auth-service login error to its SPA error code.
 func ssoErrorForAuth(err error) string {
 	switch {
@@ -391,7 +422,17 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 			s.logger.Warn("oidc callback error from %s: code=%s description=%q",
 				name, oauthErr, r.URL.Query().Get("error_description"))
 		}
-		redirectSSOError(w, r, ssoErrProviderReturned, provQ)
+		// The flow is over, so its state is consumed here rather than left
+		// replayable — and taking it is what tells a DESKTOP flow apart, so
+		// the refusal reaches the desktop's loopback instead of sitting in
+		// the browser tab while the app waits out its timeout (#2687).
+		var flow oidc.PendingAuth
+		if st := r.URL.Query().Get("state"); st != "" && s.oidcStates != nil {
+			if p, terr := s.oidcStates.Take(r.Context(), st); terr == nil {
+				flow = p
+			}
+		}
+		redirectCallbackError(w, r, flow, ssoErrProviderReturned, provQ)
 		return
 	}
 	state := r.URL.Query().Get("state")
@@ -406,7 +447,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if pending.Provider != name {
-		redirectSSOError(w, r, ssoErrStateExpired, provQ)
+		redirectCallbackError(w, r, pending, ssoErrStateExpired, provQ)
 		return
 	}
 	// Verify the user-agent binding cookie matches the one issued at
@@ -426,7 +467,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		if s.logger != nil {
 			s.logger.Warn("oidc exchange failed for %s: %v", name, err)
 		}
-		redirectSSOError(w, r, ssoErrExchangeFailed, provQ)
+		redirectCallbackError(w, r, pending, ssoErrExchangeFailed, provQ)
 		return
 	}
 	// Link flow: an authenticated user is attaching this SSO identity to their
@@ -508,7 +549,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	// refresh token first exists. The refresh token thus never enters a URL.
 	if pending.Desktop {
 		if s.desktopTickets == nil {
-			redirectSSOError(w, r, ssoErrExchangeFailed, provQ)
+			redirectCallbackError(w, r, pending, ssoErrExchangeFailed, provQ)
 			return
 		}
 		var d auth.DesktopLogin
@@ -518,10 +559,15 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 			d, err = s.authSvc.LoginWithExternalDesktop(r.Context(), ext, r.UserAgent(), s.clientIP(r))
 		}
 		if err != nil {
+			// The refusal reaches the desktop that is waiting for it:
+			// redirectCallbackError sends a desktop flow's sso_error to the
+			// loopback listener, so an account pending a password change (or
+			// any other refusal) fails the app's sign-in at once instead of
+			// after its five-minute timeout (#2687).
 			if s.logger != nil {
 				s.logger.Warn("sso login failed via %s: %v", name, err)
 			}
-			redirectSSOError(w, r, ssoErrorForAuth(err), provQ)
+			redirectCallbackError(w, r, pending, ssoErrorForAuth(err), provQ)
 			return
 		}
 		ticket, mintErr := s.desktopTickets.Mint(r.Context(), d)
@@ -529,7 +575,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 			if s.logger != nil {
 				s.logger.Error("sso login via %s: mint the desktop ticket: %v", name, mintErr)
 			}
-			redirectSSOError(w, r, ssoErrExchangeFailed, provQ)
+			redirectCallbackError(w, r, pending, ssoErrExchangeFailed, provQ)
 			return
 		}
 		sep := "?"

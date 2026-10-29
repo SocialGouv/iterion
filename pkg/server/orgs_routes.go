@@ -23,7 +23,9 @@ func (s *Server) registerOrgRoutes() {
 	s.mux.Handle("PATCH /api/orgs/{id}/members/{user_id}", s.requireAuth(http.HandlerFunc(s.handleUpdateOrgMember)))
 	s.mux.Handle("DELETE /api/orgs/{id}/members/{user_id}", s.requireAuth(http.HandlerFunc(s.handleRemoveOrgMember)))
 	s.mux.Handle("GET /api/orgs/{id}/invitations", s.requireAuth(http.HandlerFunc(s.handleListOrgInvitations)))
-	s.mux.Handle("POST /api/orgs/{id}/invitations", s.requireAuth(http.HandlerFunc(s.handleCreateOrgInvitation)))
+	// The mint is gated exactly like the team-scoped twin
+	// (auth.MintTeamToken — see auth_routes.go).
+	s.mux.Handle("POST /api/orgs/{id}/invitations", s.requireAuth(s.gateDerivation(auth.MintTeamToken, http.HandlerFunc(s.handleCreateOrgInvitation))))
 	s.mux.Handle("DELETE /api/orgs/{id}/invitations/{invite_id}", s.requireAuth(http.HandlerFunc(s.handleDeleteOrgInvitation)))
 	s.mux.Handle("GET /api/orgs/{id}/usage", s.requireAuth(http.HandlerFunc(s.handleOrgUsage)))
 	s.mux.Handle("GET /api/orgs/{id}/teams", s.requireAuth(http.HandlerFunc(s.handleListOrgTeams)))

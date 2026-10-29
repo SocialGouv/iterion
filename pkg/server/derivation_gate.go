@@ -14,7 +14,9 @@ import (
 // not revoked, a personal access token's row usable — and its kind must be
 // one that may do what mint names, or the route answers the refusal before
 // next runs. Every route that changes or removes a credential of the account,
-// or how an org's accounts sign in, is registered through it.
+// or how an org's accounts sign in, or that mints a team-scoped token which
+// outlives the credential it is minted from (a webhook, share-link or
+// invitation token), is registered through it.
 func (s *Server) gateDerivation(mint auth.Mint, next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, _ := auth.FromContext(r.Context())

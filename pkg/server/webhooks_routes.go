@@ -32,11 +32,16 @@ func (s *Server) registerWebhookRoutes() {
 		s.authLimiter = newAuthRateLimiter()
 	}
 	s.mux.Handle("GET /api/teams/{id}/webhooks", s.requireAuth(http.HandlerFunc(s.handleListWebhooks)))
-	s.mux.Handle("POST /api/teams/{id}/webhooks", s.requireAuth(http.HandlerFunc(s.handleCreateWebhook)))
+	// The create and the rotate mint a self-authenticating token that
+	// outlives the credential it is minted from: they go through the
+	// derivation chokepoint (auth.MintTeamToken), so the access token of a
+	// revoked session mints none (401) and a personal access token never
+	// does (403).
+	s.mux.Handle("POST /api/teams/{id}/webhooks", s.requireAuth(s.gateDerivation(auth.MintTeamToken, http.HandlerFunc(s.handleCreateWebhook))))
 	s.mux.Handle("GET /api/teams/{id}/webhooks/{webhook_id}", s.requireAuth(http.HandlerFunc(s.handleGetWebhook)))
 	s.mux.Handle("PATCH /api/teams/{id}/webhooks/{webhook_id}", s.requireAuth(http.HandlerFunc(s.handleUpdateWebhook)))
 	s.mux.Handle("DELETE /api/teams/{id}/webhooks/{webhook_id}", s.requireAuth(http.HandlerFunc(s.handleDeleteWebhook)))
-	s.mux.Handle("POST /api/teams/{id}/webhooks/{webhook_id}/rotate", s.requireAuth(http.HandlerFunc(s.handleRotateWebhook)))
+	s.mux.Handle("POST /api/teams/{id}/webhooks/{webhook_id}/rotate", s.requireAuth(s.gateDerivation(auth.MintTeamToken, http.HandlerFunc(s.handleRotateWebhook))))
 	s.mux.Handle("GET /api/teams/{id}/webhooks/{webhook_id}/deliveries", s.requireAuth(http.HandlerFunc(s.handleListWebhookDeliveries)))
 }
 

@@ -56,6 +56,19 @@ const (
 	// a temporary password its holder signs in with. The reset of another
 	// account is ExercisePlatformAuthority.
 	MintPassword Mint = "a password"
+	// MintTeamToken is the mint of a team-scoped self-authenticating token
+	// that outlives the credential it is minted from and is bound to
+	// nothing of it: a webhook token (POST /api/teams/{id}/webhooks and its
+	// rotate), a config share-link token (POST /api/teams/{id}/config-shares
+	// and its rotate), a team invitation token (POST
+	// /api/teams/{id}/invitations, POST /api/orgs/{id}/invitations). None of
+	// them authenticates AS the account, but each opens a door that stays
+	// open after the minter's session is gone — a delivery channel that
+	// launches runs, a public read of the team's configuration, a
+	// membership whoever holds the token joins with — so the mint asks the
+	// chokepoint, and a personal access token (pinned to its team and its
+	// own expiry) does not make one.
+	MintTeamToken Mint = "a team token (webhook, share link or invitation)"
 	// ChangeCredential is a route that changes or removes a credential of
 	// the presented credential's account: POST /api/me/password, POST
 	// /api/me/sessions/revoke-all, DELETE /api/me/tokens/{id}, DELETE

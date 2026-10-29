@@ -196,7 +196,13 @@ presented to them (`auth.Service.CheckDerivation`):
   deleting the instance-wide (`global`) memory space, and revoking another
   account's personal access token;
 - the desktop SSO exchange, which hands out no session revoked since the
-  IdP callback.
+  IdP callback;
+- the mint of a team-scoped token that outlives the credential it is
+  minted from and is bound to nothing of it: a webhook token (the create
+  and the rotate), a config share-link token (the create and the rotate),
+  and a team invitation token (the team-scoped and the org-scoped mint).
+  None of them authenticates as the account, but each opens a door that
+  stays open after the minter's session is gone, so the mint is gated.
 
 The super-admin claim itself is re-derived where every request's identity
 is established, before any route runs: a token that claims the flag keeps
@@ -216,22 +222,26 @@ changed, disabled or pending a password change, and an access token that
 names no session asking for an SSO link; it refuses a personal access token
 revoked, expired or gone, and any personal access token asking for a
 credential of its own account — a switch, another token, an SSO link, a
-temporary password (`403`: a token is pinned to its team and its own
-expiry); and what a route mints for the same use never outlives the
+temporary password — or for a team token that would outlive it — a webhook,
+share-link or invitation token (`403`: a token is pinned to its team and
+its own expiry); and what a route mints for the same use never outlives the
 presented credential — a switched access token expires when the presented
 one does, and a WebSocket ticket opens no WebSocket past it.
 Everything else the access token of a revoked session does in its
 remaining minutes is done and persists: it reads what its account may
 read, launches, steers and cancels runs, edits bots and configurations, and
-creates team and org state — a webhook and its token, a share link, an
-invitation, a membership or a role, a team secret, an API key, a forge or
-OAuth connection — that outlives it, listed and revocable in the team's,
-the org's or the account's settings. A WebSocket opened before the
+creates team and org state — a membership or a role, a team secret, an API
+key, a forge or OAuth connection, a webhook's non-token settings — that
+outlives it, listed and revocable in the team's, the org's or the
+account's settings. What it no longer mints is the tokens of that state:
+the webhook and share-link tokens and the invitation are gated above, so
+the door that outlives the session is opened by a standing session only. A WebSocket opened before the
 revocation is asked again: every envelope that changes a run (cancel,
 pause, answer, queue a message or cancel a queued one, bump a loop, raise a
 budget) checks the standing of the credential the socket was opened with —
-its account, its session, a personal access token's row, its expiry left
-out — AND re-derives the scope the upgrade resolved once: the run's team,
+its account, its session, a personal access token's row (whose expiry and
+revocation both close the socket at the next tick), the access token's own
+expiry left out — AND re-derives the scope the upgrade resolved once: the run's team,
 the caller's standing there, the super-admin reach — read from the account
 as it stands now. A refused credential answers an error and closes the
 socket (close code `1008`, a reason starting `credential_refused`); a
@@ -279,7 +289,12 @@ SHA-256, never the ticket — and the session, its refresh token included, is
 minted when the desktop redeems the ticket. No refresh token exists while a
 ticket waits, so none rests in the collection, in the oplog, or in a backup
 ([cloud-backup.md](cloud-backup.md)), and an unredeemed ticket leaves no
-live session behind — there is none to revoke at its expiry. A document
+live session behind — there is none to revoke at its expiry. A REFUSED
+desktop sign-in (an account pending a password change, an IdP error) never
+leaves the desktop waiting out its timeout either: the callback redirects
+the refusal's `sso_error` code to the desktop's own loopback listener
+(validated at the flow's start, `safeDesktopRedirect`), so the app reports
+the reason at once. A document
 written before this shape (the ticket in plaintext as `_id`, a whole login
 with its refresh token as `result`) answers no redemption — its `_id` is no
 hash a redemption computes — and the TTL index reaps it.
