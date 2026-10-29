@@ -63,6 +63,27 @@ var ErrProvisionDiverged = errors.New("forge: provision wrote only one of the tw
 // retry-convergent flavors — their remedy is the retry itself.
 var ErrProvisionDivergedRetry = errors.New("forge: provision divergence is retry-convergent")
 
+// LaunchVarsRefusal carries, BESIDE the sentinel chain, the launch_vars keys
+// the remedy must NAME. The keys are the whole point of these two refusals —
+// an operator cannot echo pins nobody told it about — and a caller that has
+// to offer the gesture (the studio's repo-bots panel) reads them from the
+// typed cause with errors.As. Parsing them back out of the message is how a
+// surface loses them at the next rewording.
+type LaunchVarsRefusal struct {
+	// Keys are the pins the request would drop (ErrLaunchVarsDrop) or the
+	// keys the two stores disagree on (ErrProvisionDiverged), sorted.
+	Keys []string
+	// Cause is the refusal itself: the sentinel chain and the remedy text.
+	Cause error
+}
+
+func (e *LaunchVarsRefusal) Error() string { return e.Cause.Error() }
+
+// Unwrap keeps the sentinel chain readable: errors.Is(err, ErrLaunchVarsDrop)
+// and errors.Is(err, ErrProvisionDivergedRetry) answer the same as before the
+// keys travelled.
+func (e *LaunchVarsRefusal) Unwrap() error { return e.Cause }
+
 // ErrBotNotProvisionable marks a refusal that is a STATIC property of the
 // recorded bot set: a bot that declares neither a forge: block nor a
 // forge/command invocation (or a set that yields no forge events to subscribe
@@ -372,8 +393,8 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		}
 		if len(dropped) > 0 {
 			sort.Strings(dropped)
-			return ProvisionResult{}, fmt.Errorf("%w [%s] — echo them in launch_vars to keep them, or set launch_vars_replace to replace the whole map",
-				ErrLaunchVarsDrop, strings.Join(dropped, " "))
+			return ProvisionResult{}, &LaunchVarsRefusal{Keys: dropped, Cause: fmt.Errorf("%w [%s] — echo them in launch_vars to keep them, or set launch_vars_replace to replace the whole map",
+				ErrLaunchVarsDrop, strings.Join(dropped, " "))}
 		}
 	}
 
@@ -425,8 +446,8 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 				keys = append(keys, k)
 			}
 			sort.Strings(keys)
-			return ProvisionResult{}, fmt.Errorf("%w: launch_vars diverge between the integration and the webhook config on key(s) [%s] — a silent re-provision cannot tell a deliberate drop from a stale store; re-run with an explicit launch_vars (echo what stays) or launch_vars_replace: provisioning converges",
-				ErrProvisionDiverged, strings.Join(keys, " "))
+			return ProvisionResult{}, &LaunchVarsRefusal{Keys: keys, Cause: fmt.Errorf("%w: launch_vars diverge between the integration and the webhook config on key(s) [%s] — a silent re-provision cannot tell a deliberate drop from a stale store; re-run with an explicit launch_vars (echo what stays) or launch_vars_replace: provisioning converges",
+				ErrProvisionDiverged, strings.Join(keys, " "))}
 		}
 		operatorVars = existing.LaunchVars
 		if len(operatorVars) == 0 && hasPrevCfg {

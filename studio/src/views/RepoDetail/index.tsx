@@ -6,11 +6,13 @@ import { Link, useParams } from "wouter";
 import { FeatureUnavailableError } from "@/api/client";
 import {
   disableForgeIntegration,
+  launchVarsRefusalOf,
   updateForgeRepoBots,
   forgeTeamRepoKey,
   listForgeIntegrations,
   type ForgeIntegration,
   type ForgeTeamRepo,
+  type LaunchVarsRefusal,
 } from "@/api/forgeConnections";
 import { listTeamSchedules, type ScheduledBot } from "@/api/schedules";
 import { listTriggers, type TriggerSubscription } from "@/api/triggers";
@@ -39,6 +41,7 @@ import { botLaunchFile } from "@/views/Bots/botPaths";
 import { bindBotPath } from "@/views/integrations/wizard/bindModel";
 import { formatNextFire } from "@/views/Triggers/scheduleModel";
 import TriggerList from "@/views/Triggers/TriggerList";
+import LaunchVarsRefusalBanner from "@/views/RepoDetail/LaunchVarsRefusalBanner";
 import RepoRoutingSection from "@/views/RepoDetail/RepoRoutingSection";
 
 import {
@@ -241,6 +244,65 @@ function RepoDetail({ repo, teamID }: { repo: ForgeTeamRepo; teamID: string }) {
     }
   };
 
+  // Every launch_vars write of this page goes through writeLaunchVars: one
+  // chokepoint, so a refusal is read the same way whichever knob provoked it
+  // and the remedy is offered once instead of per card. A PATCH's launch_vars
+  // is the EXACT desired set, so each caller spreads the integration's whole
+  // map and changes one key — the bot set never travels (absent, it is kept
+  // server-side; this page's snapshot would unbind a bot bound since it
+  // loaded).
+  const [refusal, setRefusal] = useState<{
+    refusal: LaunchVarsRefusal;
+    vars: Record<string, string>;
+    send: (vars: Record<string, string>, replace?: boolean) => Promise<void>;
+    busy: boolean;
+  } | null>(null);
+  const writeLaunchVars = useCallback(
+    (setBusy: (v: boolean) => void) => {
+      const send = async (vars: Record<string, string>, replace?: boolean) => {
+        if (!integration) return;
+        setBusy(true);
+        setRefusal((r) => (r ? { ...r, busy: true } : r));
+        try {
+          // The replace gesture is the only caller that sends the flag, and it
+          // sends it as the 7th argument so the ordinary write keeps its exact
+          // shape (no `routing` key on a launch-vars-only PATCH).
+          if (replace) {
+            await updateForgeRepoBots(
+              teamID,
+              integration.id,
+              undefined,
+              undefined,
+              vars,
+              undefined,
+              true,
+            );
+          } else {
+            await updateForgeRepoBots(teamID, integration.id, undefined, undefined, vars);
+          }
+          setRefusal(null);
+          await reload();
+        } catch (e) {
+          const named = launchVarsRefusalOf(e);
+          if (named) {
+            // A refusal that names a gesture is not a failure to display: keep
+            // the exact write it refused so the gesture re-sends THAT, not a
+            // map recomputed from a page that may have reloaded since.
+            setRefusal({ refusal: named, vars, send, busy: false });
+            return;
+          }
+          setRefusal(null);
+          setErr(errorMessage(e));
+        } finally {
+          setBusy(false);
+          setRefusal((r) => (r ? { ...r, busy: false } : r));
+        }
+      };
+      return send;
+    },
+    [integration, teamID, reload],
+  );
+
   // Review tier (SocialGouv/iterion#685): a three-position preset for
   // review-pr's cost/thoroughness posture, pinned per repo through the
   // integration's launch_vars (durable across re-provisioning — the same
@@ -248,23 +310,11 @@ function RepoDetail({ repo, teamID }: { repo: ForgeTeamRepo; teamID: string }) {
   // when review-pr is actually bound here; irrelevant to every other bot.
   const [reviewTierBusy, setReviewTierBusy] = useState(false);
   const reviewTier = integration?.launch_vars?.review_tier ?? "guard";
-  const setReviewTier = async (tier: string) => {
-    if (!integration) return;
-    setReviewTierBusy(true);
-    try {
-      // No bot set: an absent bot_ids keeps the stored one server-side, while
-      // the page's snapshot would unbind whatever was bound since it loaded.
-      await updateForgeRepoBots(teamID, integration.id, undefined, undefined, {
-        ...integration.launch_vars,
-        review_tier: tier,
-      });
-      await reload();
-    } catch (e) {
-      setErr(errorMessage(e));
-    } finally {
-      setReviewTierBusy(false);
-    }
-  };
+  const setReviewTier = (tier: string) =>
+    writeLaunchVars(setReviewTierBusy)({
+      ...integration?.launch_vars,
+      review_tier: tier,
+    });
 
   // Merge gate: the posture of the bots that post a merge-gate commit status,
   // pinned per repo on the integration's launch_vars (`gate_enabled`), like
@@ -273,24 +323,11 @@ function RepoDetail({ repo, teamID }: { repo: ForgeTeamRepo; teamID: string }) {
   const [gateBusy, setGateBusy] = useState(false);
   const gateOn = mergeGateEnabled(integration?.launch_vars);
   const gatePinned = integration?.launch_vars?.gate_enabled !== undefined;
-  const setMergeGate = async (value: string) => {
-    if (!integration) return;
-    setGateBusy(true);
-    try {
-      // The whole map: a PATCH's launch_vars is the exact desired set, so the
-      // repo's other pins (review_tier, gate_context…) travel with the change.
-      // The bot set does not: absent, it is kept server-side (see setReviewTier).
-      await updateForgeRepoBots(teamID, integration.id, undefined, undefined, {
-        ...integration.launch_vars,
-        gate_enabled: value === "off" ? "false" : "true",
-      });
-      await reload();
-    } catch (e) {
-      setErr(errorMessage(e));
-    } finally {
-      setGateBusy(false);
-    }
-  };
+  const setMergeGate = (value: string) =>
+    writeLaunchVars(setGateBusy)({
+      ...integration?.launch_vars,
+      gate_enabled: value === "off" ? "false" : "true",
+    });
 
   const wording = forgeLabel(repo.provider);
   const status = connectionStatusMeta(repo.connection_status);
@@ -341,6 +378,24 @@ function RepoDetail({ repo, teamID }: { repo: ForgeTeamRepo; teamID: string }) {
         <InlineBanner tone="danger" title="Action failed">
           {action.error}
         </InlineBanner>
+      )}
+      {refusal && (
+        <LaunchVarsRefusalBanner
+          refusal={refusal.refusal}
+          pins={integration?.launch_vars ?? {}}
+          busy={refusal.busy}
+          onEcho={() => {
+            const pins = integration?.launch_vars ?? {};
+            const echoed = { ...refusal.vars };
+            for (const k of refusal.refusal.keys) {
+              if (pins[k] !== undefined) echoed[k] = pins[k];
+            }
+            void refusal.send(echoed);
+          }}
+          onReplace={() => void refusal.send(refusal.vars, true)}
+          onRetry={() => void refusal.send(refusal.vars)}
+          onDismiss={() => setRefusal(null)}
+        />
       )}
 
       {/* Bound bots */}

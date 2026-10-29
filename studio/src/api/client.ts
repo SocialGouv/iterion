@@ -526,11 +526,23 @@ export class ApiError extends Error {
   // The server's own message, without the "API error <status>: " prefix the
   // transport puts on `message` — for a surface that quotes the reason.
   detail?: string;
-  constructor(status: number, message: string, errorCode?: string, detail?: string) {
+  // The decoded JSON envelope, when the refusal had one. A coded refusal
+  // whose remedy needs STRUCTURED facts beside the code (the launch_vars keys
+  // to echo, a blocker list) reads them here; reconstructing them from
+  // `detail` means parsing prose the server is free to reword.
+  body?: Record<string, unknown>;
+  constructor(
+    status: number,
+    message: string,
+    errorCode?: string,
+    detail?: string,
+    body?: Record<string, unknown>,
+  ) {
     super(message);
     this.status = status;
     this.errorCode = errorCode;
     this.detail = detail;
+    this.body = body;
     this.name = "ApiError";
   }
 }
@@ -555,7 +567,7 @@ export class SessionRenewalUnavailableError extends ApiError {
 // apiErrorFrom is the error every non-2xx response throws. Exported so a test
 // can hand a caller the exact shape production produces, prefix included.
 export function apiErrorFrom(status: number, detail: ExtractedErrorDetail): ApiError {
-  return new ApiError(status, `API error ${status}: ${detail.message}`, detail.errorCode, detail.message);
+  return new ApiError(status, `API error ${status}: ${detail.message}`, detail.errorCode, detail.message, detail.body);
 }
 
 // is404 reports whether a thrown value represents an HTTP 404. Prefers
@@ -705,6 +717,9 @@ async function sendRequest<T>(fullPath: string, init: RequestInit | undefined, s
 interface ExtractedErrorDetail {
   message: string;
   errorCode?: string;
+  // The decoded envelope, kept whole for a caller whose remedy needs more
+  // than the code (see ApiError.body).
+  body?: Record<string, unknown>;
 }
 
 // extractErrorDetail decodes both the human-facing message and the optional
@@ -727,6 +742,7 @@ async function extractErrorDetail(res: Response): Promise<ExtractedErrorDetail> 
         typeof env.error_code === "string" && env.error_code
           ? env.error_code
           : undefined;
+      const envelope = body as Record<string, unknown>;
       // Quota/launch denial envelopes carry the human-readable copy in
       // `detail`; prefer it (with the short `error` token as a prefix)
       // so toasts read "monthly_run_quota_exceeded: 1000/1000 — resets …".
@@ -736,13 +752,14 @@ async function extractErrorDetail(res: Response): Promise<ExtractedErrorDetail> 
         return {
           message: token ? `${token}: ${env.detail}${tail}` : `${env.detail}${tail}`,
           errorCode,
+          body: envelope,
         };
       }
       if (typeof env.error === "string" && env.error) {
-        return { message: env.error, errorCode };
+        return { message: env.error, errorCode, body: envelope };
       }
       if (typeof env.message === "string" && env.message) {
-        return { message: env.message, errorCode };
+        return { message: env.message, errorCode, body: envelope };
       }
     }
   } catch {

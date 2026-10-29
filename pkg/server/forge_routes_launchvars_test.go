@@ -85,6 +85,22 @@ func TestForgeRepoBots_PartialLaunchVarsPatchNamesWhatToEcho(t *testing.T) {
 			t.Errorf("the refusal must name %q: %s", key, w.Body.String())
 		}
 	}
+	// Named for a READER is half the remedy: the studio offers the echo
+	// gesture over a list it can iterate, so the keys leave the REAL route as
+	// data beside the stable code, not only inside the prose (#2173).
+	var refusalBody struct {
+		Code string   `json:"error_code"`
+		Keys []string `json:"launch_vars_keys"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &refusalBody); err != nil {
+		t.Fatalf("refusal body %s: %v", w.Body.String(), err)
+	}
+	if refusalBody.Code != "launch_vars_drop" {
+		t.Errorf("error_code = %q, want launch_vars_drop: %s", refusalBody.Code, w.Body.String())
+	}
+	if len(refusalBody.Keys) != 2 || refusalBody.Keys[0] != "arm_automerge" || refusalBody.Keys[1] != "mono_family" {
+		t.Errorf("launch_vars_keys = %v, want [arm_automerge mono_family] sorted: %s", refusalBody.Keys, w.Body.String())
+	}
 	assertPins("after refused patch", map[string]string{
 		"gate_context": "iterion/review", "arm_automerge": "true", "mono_family": "revi",
 	})

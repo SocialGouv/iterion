@@ -59,9 +59,9 @@ import (
 //	  forge.ErrOAuthAppNotFound            0
 //	  forge.ErrBoardBindingNotFound        0
 //	  forge.ErrProvisionApprovalNotFound   0
-//	  forge.ErrLaunchVarsDrop              0  the provisioning route answers 400 itself
-//	  forge.ErrProvisionDiverged           0  the provisioning route answers 500 itself
-//	  forge.ErrProvisionDivergedRetry      0  rides beside ErrProvisionDiverged; the approval arm spares it
+//	  forge.ErrLaunchVarsDrop              0  the provisioning route answers 400 launch_vars_drop itself, keys listed
+//	  forge.ErrProvisionDiverged           0  the provisioning route answers 500 provision_diverged itself; the 5xx floor keeps that code, NOT the converge-on-rerun prose
+//	  forge.ErrProvisionDivergedRetry      0  rides beside ErrProvisionDiverged; the approval arm spares it, and the route says so with provision_diverged_retry + retryable
 //	  forge.ErrBotNotProvisionable         0  the approval arm consumes the dead-end record
 //
 //	OUTSIDE it, and never sent at all — the one 0 the caller never sees

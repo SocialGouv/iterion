@@ -535,6 +535,32 @@ func hookRefusedDetail(e *forge.HookRefusedError) string {
 	}
 }
 
+// The stable machine codes of the three launch_vars refusals a caller must
+// act on rather than display. A studio panel branches on these — not on the
+// prose, which is free to be reworded — and each one names a DIFFERENT
+// gesture: echo the pins or replace the map (launchVarsDropCode and
+// provisionDivergedCode), or simply re-send the same request
+// (provisionDivergedRetryCode, where provisioning converges on its own).
+const (
+	launchVarsDropCode         = "launch_vars_drop"
+	provisionDivergedCode      = "provision_diverged"
+	provisionDivergedRetryCode = "provision_diverged_retry"
+)
+
+// launchVarsRefusalBody is the envelope of a launch_vars refusal: the stable
+// code, the refusal's own words, and — read from the TYPED cause, never
+// parsed back out of the message — the keys the remedy must name. An absent
+// typed cause omits the list rather than inventing an empty one: "no keys"
+// and "this build did not say" are different facts to whatever renders them.
+func launchVarsRefusalBody(code string, err error) map[string]any {
+	body := map[string]any{"error_code": code, "error": err.Error()}
+	var refusal *forge.LaunchVarsRefusal
+	if errors.As(err, &refusal) && len(refusal.Keys) > 0 {
+		body["launch_vars_keys"] = refusal.Keys
+	}
+	return body
+}
+
 // writeForgeProvisionError maps orchestrator/admin failures to stable HTTP
 // shapes the studio can act on.
 func (s *Server) writeForgeProvisionError(w http.ResponseWriter, err error) {
@@ -579,12 +605,25 @@ func (s *Server) writeForgeProvisionError(w http.ResponseWriter, err error) {
 	case errors.Is(err, forge.ErrLaunchVarsDrop):
 		// The operator's own request is inadmissible as sent: it would drop
 		// pins it did not name. 400, with the echo and the escape hatch in
-		// the message — never a silent partial apply.
-		httpError(w, http.StatusBadRequest, "%v", err)
+		// the message — never a silent partial apply. A 4xx keeps its whole
+		// payload (internal/httpx.WriteErrorJSON), so the keys travel as a
+		// list a caller can offer gestures over, not only inside the prose.
+		writeJSONStatus(w, http.StatusBadRequest, launchVarsRefusalBody(launchVarsDropCode, err))
 	case errors.Is(err, forge.ErrProvisionDiverged):
-		// iterion's own stores diverged mid-write; the message carries the
-		// converge-on-rerun remedy. Not the forge's fault, so not a 502.
-		httpError(w, http.StatusInternalServerError, "%v", err)
+		// iterion's own stores diverged mid-write. Not the forge's fault, so
+		// not a 502 — and the two flavors are DIFFERENT remedies: the
+		// retry-convergent one lands on a plain re-run of the same request,
+		// the deterministic one needs the explicit launch_vars gesture. The
+		// 5xx floor keeps only error_code and retryable, so those two carry
+		// the distinction; the keys stay in the log, where a 500's
+		// driver-controlled detail belongs.
+		code, retryable := provisionDivergedCode, false
+		if errors.Is(err, forge.ErrProvisionDivergedRetry) {
+			code, retryable = provisionDivergedRetryCode, true
+		}
+		body := launchVarsRefusalBody(code, err)
+		body["retryable"] = retryable
+		writeJSONStatus(w, http.StatusInternalServerError, body)
 	case errors.Is(err, forge.ErrProjectBotNotPermitted):
 		// The forge refused to mint the repo's bot for the authorising
 		// account. GitLab answers one 400 for two causes, so both remedies

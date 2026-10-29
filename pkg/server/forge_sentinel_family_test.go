@@ -85,7 +85,7 @@ var forgeSentinelFamilies = map[string]forgeSentinelFamily{
 	},
 	"forge.ErrLaunchVarsDrop": {
 		err: forge.ErrLaunchVarsDrop, wantStatus: 0,
-		why: "a partial launch_vars write refused before any forge call — the provisioning route answers 400, naming the pins to echo",
+		why: "a partial launch_vars write refused before any forge call — the provisioning route answers 400 launch_vars_drop, naming the pins to echo both in the message and as launch_vars_keys",
 	},
 	"forge.ErrProjectBotNotPermitted": {
 		err: forge.ErrProjectBotNotPermitted, wantStatus: 0,
@@ -101,11 +101,11 @@ var forgeSentinelFamilies = map[string]forgeSentinelFamily{
 	},
 	"forge.ErrProvisionDiverged": {
 		err: forge.ErrProvisionDiverged, wantStatus: 0,
-		why: "iterion's own two-store settings write diverged — the provisioning route answers 500 with the converge-on-rerun remedy",
+		why: "iterion's own two-store settings write diverged — the provisioning route answers 500 provision_diverged; internal/httpx floors a 5xx to its code and retryability, so the converge-on-rerun prose reaches the LOG, not the caller",
 	},
 	"forge.ErrProvisionDivergedRetry": {
 		err: forge.ErrProvisionDivergedRetry, wantStatus: 0,
-		why: "the retry-convergent flavors of ErrProvisionDiverged, carried BESIDE it — the approval arm spares them (the retry lands), the provisioning route's 500 mapping is unchanged",
+		why: "the retry-convergent flavors of ErrProvisionDiverged, carried BESIDE it — the approval arm spares them (the retry lands), and the route's 500 says so with provision_diverged_retry + retryable: a client must not ask an operator to restate pins for a divergence that converges on its own",
 	},
 	"forge.ErrBotNotProvisionable": {
 		err: forge.ErrBotNotProvisionable, wantStatus: 0,

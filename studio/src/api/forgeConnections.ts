@@ -1,4 +1,4 @@
-import { guard404, request } from "./client";
+import { ApiError, guard404, request } from "./client";
 import type { components } from "./schema";
 import { apiGet, apiPost } from "./typed";
 
@@ -386,6 +386,10 @@ export async function enableForgeRepoBots(
 // server-side (forge.RepoIntegration.LaunchVars is not merged on PATCH) —
 // callers that want to change one key must spread the integration's
 // current launch_vars first (see RepoDetail's review tier and merge gate).
+// A map that would drop a pin the repo already holds is REFUSED 400
+// (launch_vars_drop) naming those pins, unless launchVarsReplace states the
+// whole-map replacement explicitly: read the refusal with
+// launchVarsRefusalOf and offer the gesture it names.
 //
 // routing, when passed, is the repo's routing policy (ADR-129): an object
 // REPLACES the stored block wholesale, null CLEARS it, UNDEFINED omits the
@@ -399,6 +403,7 @@ export async function updateForgeRepoBots(
   scheduleCrons?: Record<string, string>,
   launchVars?: Record<string, string>,
   routing?: Record<string, unknown> | null,
+  launchVarsReplace?: boolean,
 ): Promise<ForgeProvisionResult> {
   return request(`/teams/${teamID}/forge/repo-bots/${integrationID}`, {
     method: "PATCH",
@@ -410,6 +415,10 @@ export async function updateForgeRepoBots(
         scheduleCrons && Object.keys(scheduleCrons).length > 0 ? scheduleCrons : undefined,
       launch_vars: launchVars,
       routing,
+      // Only ever sent as `true`: the flag is a one-shot operator gesture
+      // ("replace the whole map, I know which pins go"), so a `false` on
+      // every ordinary write would read as a posture the operator never took.
+      launch_vars_replace: launchVarsReplace ? true : undefined,
     }),
   });
 }
@@ -585,4 +594,48 @@ export async function startGitHubManifest(
     params: { id: teamID },
     body: { provider: "github", ...input },
   })) as GitHubManifestStart;
+}
+
+// The three stable codes pkg/server answers for a launch_vars refusal of the
+// repo-bots routes (forge_provisioning_routes.go). A surface branches on
+// these, never on the message.
+export const LAUNCH_VARS_DROP_CODE = "launch_vars_drop";
+export const PROVISION_DIVERGED_CODE = "provision_diverged";
+export const PROVISION_DIVERGED_RETRY_CODE = "provision_diverged_retry";
+
+export type LaunchVarsRefusalKind = "drop" | "diverged" | "retry";
+
+// LaunchVarsRefusal is a provisioning refusal whose remedy is a gesture the
+// operator can make: echo the named pins, replace the whole map, or simply
+// re-send the same request.
+export interface LaunchVarsRefusal {
+  kind: LaunchVarsRefusalKind;
+  // keys are the pins the refusal named. EMPTY on a `diverged`/`retry`
+  // refusal: a 500's payload is floored to its code (internal/httpx), so the
+  // server's list does not travel — the surface names the pins it holds
+  // itself rather than claiming the server said nothing was at stake.
+  keys: string[];
+  // message is the server's own words, "" when the floor dropped them.
+  message: string;
+}
+
+// launchVarsRefusalOf reads a launch_vars refusal off a thrown error, or null
+// when the failure is any other kind. The kind comes from the stable
+// error_code and the keys from the envelope's `launch_vars_keys` — the typed
+// cause the server put there — so a reworded message never changes which
+// gesture is offered.
+export function launchVarsRefusalOf(err: unknown): LaunchVarsRefusal | null {
+  if (!(err instanceof ApiError)) return null;
+  const kind: LaunchVarsRefusalKind | null =
+    err.errorCode === LAUNCH_VARS_DROP_CODE
+      ? "drop"
+      : err.errorCode === PROVISION_DIVERGED_CODE
+        ? "diverged"
+        : err.errorCode === PROVISION_DIVERGED_RETRY_CODE
+          ? "retry"
+          : null;
+  if (!kind) return null;
+  const raw = err.body?.launch_vars_keys;
+  const keys = Array.isArray(raw) ? raw.filter((k): k is string => typeof k === "string") : [];
+  return { kind, keys, message: err.detail ?? "" };
 }
