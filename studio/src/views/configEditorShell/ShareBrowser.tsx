@@ -133,7 +133,7 @@ export function ShareBrowser({
   const botTotal = new Set(shares.map((s) => s.bot_id ?? "")).size;
 
   return (
-    <div className="flex flex-col gap-2" aria-label="Config-shares">
+    <div className="flex flex-col gap-2" role="region" aria-label="Config-shares">
       <label className="relative block">
         <MagnifyingGlassIcon className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-fg-subtle" />
         <input

@@ -110,9 +110,13 @@ export function Stat({
   }
 
   return (
+    // A name on a roleless span is prohibited (ARIA in HTML / axe
+    // aria-prohibited-attr, #2767): when a caller names the readout, the
+    // span declares the group role that name belongs to.
     <span
       className={`${layout} ${className}`.trim()}
       title={hint}
+      role={ariaLabel ? "group" : undefined}
       aria-label={ariaLabel}
     >
       {inner}

@@ -31,12 +31,11 @@ function styleFor(state: string): Style {
 export default function WSStatusDot({ state }: Props) {
   const { tone, label, pulse } = styleFor(state);
   return (
-    <span
-      className="inline-flex items-center"
-      title={`WebSocket: ${label}`}
-      aria-label={`WebSocket: ${label}`}
-    >
-      <LiveDot tone={tone} size="md" pulse={pulse} />
+    // No aria-label here: ARIA in HTML prohibits an accessible name on a
+    // roleless span (axe aria-prohibited-attr, #2767). LiveDot's label
+    // carries the state as sr-only text under role="status" instead.
+    <span className="inline-flex items-center" title={`WebSocket: ${label}`}>
+      <LiveDot tone={tone} size="md" pulse={pulse} label={`WebSocket: ${label}`} />
     </span>
   );
 }
