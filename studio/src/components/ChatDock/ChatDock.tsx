@@ -76,10 +76,7 @@ import {
 import { useNewSessionAction } from "@/lib/whats-next/useNewSessionAction";
 import { useQueryClient } from "@tanstack/react-query";
 
-import {
-  SIDEBAR_COLLAPSED_PX,
-  SIDEBAR_EXPANDED_PX,
-} from "@/components/shared/Sidebar";
+import { sidebarWidthPx } from "@/components/shared/sidebarWidth";
 import { useUIStore } from "@/store/ui";
 
 import { DraftBotOffer } from "@/components/ChatDock/draftBotOffer";
@@ -260,15 +257,13 @@ function AssistantDock({
   }, [dockCtx, activeConversation, session.messages]);
 
   // The floating panel grows leftward from its top-left handle, so its width
-  // budget must stop at the sidebar — not at the viewport edge. Focus mode
-  // drops the chrome entirely, so there is nothing to clear.
+  // budget must stop at the sidebar — not at the viewport edge. The rail's
+  // width is rem-based so it follows the operator's text size (RGAA 10.4.1);
+  // the clamp reads the live pixel value derived from that same source.
+  // Focus mode drops the chrome entirely, so there is nothing to clear.
   const focusMode = useUIStore((s) => s.expanded);
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed);
-  const leftInset = focusMode
-    ? 0
-    : sidebarCollapsed
-      ? SIDEBAR_COLLAPSED_PX
-      : SIDEBAR_EXPANDED_PX;
+  const leftInset = focusMode ? 0 : sidebarWidthPx(sidebarCollapsed);
 
   // What the operator DROPPED in, cleared once it has gone out with a
   // message. Held here rather than in the session because it belongs to the

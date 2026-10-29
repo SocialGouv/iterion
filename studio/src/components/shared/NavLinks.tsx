@@ -375,7 +375,7 @@ function NavRow({ href, label, icon: Icon, isActive, collapsed, sublistKind, sho
               />
             )}
           </span>
-          {!collapsed && <span className="truncate">{label}</span>}
+          {!collapsed && <span className="min-w-0 break-words">{label}</span>}
           {!collapsed && badgeCount > 0 && (
             <span
               className="ml-auto shrink-0 rounded-full bg-warning-soft border border-warning/40 px-1.5 text-caption font-semibold text-fg-default leading-4"

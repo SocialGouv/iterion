@@ -8,6 +8,7 @@ import NavLinks from "./NavLinks";
 import OrgSwitcher from "./OrgSwitcher";
 import RepoSwitcher from "./RepoSwitcher";
 import SidebarContext from "./SidebarContext";
+import { SIDEBAR_W_COLLAPSED, SIDEBAR_W_EXPANDED } from "./sidebarWidth";
 import { BrandMark } from "@/components/ui/BrandMark";
 import { BrandWordmark } from "@/components/ui/BrandWordmark";
 import { useUIStore } from "@/store/ui";
@@ -16,22 +17,12 @@ function openSettings() {
   window.dispatchEvent(new CustomEvent("iterion:open-settings"));
 }
 
-const SIDEBAR_W_EXPANDED = "w-[220px]";
-const SIDEBAR_W_COLLAPSED = "w-[56px]";
-
-// Numeric mirrors of the two widths above, for FIXED surfaces that must
-// clear the sidebar (the floating assistant's resize clamp, which grows
-// leftward). Tailwind only sees the string literals, so the numbers live
-// beside them — change them together.
-export const SIDEBAR_EXPANDED_PX = 220;
-export const SIDEBAR_COLLAPSED_PX = 56;
-
 // Sidebar is the persistent vertical chrome on the left of the studio.
 // It hosts the iterion logo, the project + ⌘K context block, primary
 // nav, and the footer with backend status / theme / user team chip.
 //
 // Collapse state is persisted in localStorage via the UI store. When
-// collapsed (56px) every row degrades to an icon-only square button
+// collapsed (3.5rem) every row degrades to an icon-only square button
 // with native tooltips that preserve the labels.
 export default function Sidebar() {
   const collapsed = useUIStore((s) => s.sidebarCollapsed);
