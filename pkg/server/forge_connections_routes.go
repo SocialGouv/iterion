@@ -497,6 +497,17 @@ type forgeConnectionPatchReq struct {
 	// hands the connection back to the public URL — which is why it is a
 	// pointer: absent and "cleared" are different intents.
 	WebhookBaseURL *string `json:"webhook_base_url,omitempty"`
+	// PAT replaces the token of a pat connection IN PLACE (#2488): a GitLab
+	// project/group access token must expire, and without this its expiry
+	// ended the connection (revoked on the first 401) and orphaned its hooks.
+	// The new token is WhoAmI'd before anything is written and refused when
+	// it belongs to a different account, unless AllowAccountChange says the
+	// move is deliberate.
+	PAT *string `json:"pat,omitempty"`
+	// AllowAccountChange is the escape hatch on the PAT replacement's
+	// identity check (repo philosophy: a bound with no override is a defect):
+	// false = the new token must authenticate as the connection's account.
+	AllowAccountChange bool `json:"allow_account_change,omitempty"`
 }
 
 // handlePatchForgeConnection updates a connection's operator-tunable flags.
@@ -524,22 +535,36 @@ func (s *Server) handlePatchForgeConnection(w http.ResponseWriter, r *http.Reque
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.SecurityReadEnabled == nil && req.WebhookBaseURL == nil {
-		httpError(w, http.StatusBadRequest, "nothing to update: patchable fields are security_read_enabled and webhook_base_url")
+	fields := 0
+	if req.SecurityReadEnabled != nil {
+		fields++
+	}
+	if req.WebhookBaseURL != nil {
+		fields++
+	}
+	if req.PAT != nil {
+		fields++
+	}
+	if fields == 0 {
+		httpError(w, http.StatusBadRequest, "nothing to update: patchable fields are security_read_enabled, webhook_base_url and pat")
 		return
 	}
-	// Refused rather than half-applied. The two fields are unrelated
-	// operations against different systems — one pins a URL, the other mints
-	// or withdraws a live org token on GitHub — and there is no transaction
-	// spanning them. Accepting both would mean that when the security-read
-	// half fails (wrong kind, an org clash, a mint that 502s), the URL change
-	// is dropped while the error names only security-read: the caller reads a
-	// single failure and cannot tell that half its intent was discarded.
-	if req.SecurityReadEnabled != nil && req.WebhookBaseURL != nil {
-		httpError(w, http.StatusBadRequest, "send security_read_enabled and webhook_base_url in separate requests: they are independent operations and nothing makes them atomic, so a failure of one would silently drop the other")
+	// Refused rather than half-applied. The three fields are unrelated
+	// operations against different systems — one pins a URL, one mints or
+	// withdraws a live org token on GitHub, one replaces the connection's own
+	// credential — and there is no transaction spanning them. Accepting two
+	// would mean that when one half fails, the other is dropped while the
+	// error names only one: the caller reads a single failure and cannot tell
+	// that half its intent was discarded.
+	if fields > 1 {
+		httpError(w, http.StatusBadRequest, "send security_read_enabled, webhook_base_url and pat in separate requests: they are independent operations and nothing makes them atomic, so a failure of one would silently drop the other")
 		return
 	}
 	ctx := store.WithTenant(r.Context(), teamID)
+	if req.PAT != nil {
+		s.patchForgeConnectionPAT(w, r, teamID, conn, req)
+		return
+	}
 	// Its own path, reached only when the request carries this field alone:
 	// pinning a hook base mints and withdraws nothing, and must not walk a
 	// token path at all.
@@ -675,6 +700,95 @@ func (s *Server) handlePatchForgeConnection(w http.ResponseWriter, r *http.Reque
 	}
 	s.auditTenant(r, teamID, "forge.connection.security_read", "forge_connection", conn.ID, map[string]any{
 		"enabled": enable, "account": securityReadOrgOf(conn),
+	})
+	writeJSON(w, conn)
+}
+
+// patchForgeConnectionPAT replaces a pat connection's token IN PLACE (#2488):
+// the new token is WhoAmI'd before anything is written, refused (422) when it
+// authenticates as a DIFFERENT account unless the operator explicitly allowed
+// the move, resealed under the same connection id, and the managed
+// forge_token secret rewritten — the same two writes the OAuth refresh worker
+// makes (pkg/forge/refresh.go) — so the connection, its hooks and every
+// enabled repo survive the old token's expiry. The value is never logged.
+func (s *Server) patchForgeConnectionPAT(w http.ResponseWriter, r *http.Request, teamID string, conn forge.Connection, req forgeConnectionPatchReq) {
+	token := strings.TrimSpace(*req.PAT)
+	if token == "" {
+		httpError(w, http.StatusBadRequest, "pat must not be empty")
+		return
+	}
+	if conn.Kind != forge.KindPAT {
+		httpError(w, http.StatusUnprocessableEntity, "only a pat connection takes a replacement token — an OAuth connection is re-authorised (POST …/reauthorize), a GitHub-App connection is re-installed")
+		return
+	}
+	admin, err := s.forgeAdminForToken(conn.Provider, conn.BaseURL(), token)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	ident, err := admin.WhoAmI(r.Context())
+	if err != nil {
+		if errors.Is(err, forge.ErrUnauthorized) {
+			httpError(w, http.StatusBadRequest, "the token was rejected by %s — check it has api scope", conn.Provider)
+			return
+		}
+		if !writeForgeUpstreamError(w, err, "could not reach %s: %v", conn.Provider, err) {
+			httpError(w, http.StatusBadGateway, "could not reach %s: %v", conn.Provider, err)
+		}
+		return
+	}
+	// GitLab's "Rotate" keeps the bot user and issues a new token value —
+	// the account check is what distinguishes that renewal from a move to
+	// another account, which the connection's hooks and display name would
+	// otherwise silently follow.
+	accountChange := !sameForgeAccount(conn, ident)
+	if accountChange && !req.AllowAccountChange {
+		httpError(w, http.StatusUnprocessableEntity,
+			"the new token belongs to @%s, but this connection belongs to @%s — rotating a token keeps the account; to move the connection to another account deliberately, re-send with \"allow_account_change\": true",
+			ident.Login, conn.AccountLogin)
+		return
+	}
+	sealed, err := forge.SealPAT(s.sealer, conn.ID, token)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "seal token: %v", err)
+		return
+	}
+	ctx := store.WithTenant(r.Context(), teamID)
+	now := time.Now().UTC()
+	conn.SealedPayload = sealed
+	// The WhoAmI just proved the credential live: a connection the old
+	// token's expiry revoked is active again.
+	conn.Status = forge.StatusActive
+	conn.StatusReason = ""
+	if accountChange {
+		// The move was asked for explicitly: re-stamp the identity the
+		// connection administers with. A display name that was just the old
+		// login follows the account; an operator-set name stands.
+		if conn.DisplayName == "" || conn.DisplayName == conn.AccountLogin {
+			conn.DisplayName = ident.Login
+		}
+		conn.AccountLogin = ident.Login
+		conn.AccountID = ident.ID
+		conn.Namespace = ident.Namespace
+		conn.AccountKind = ident.Kind
+	}
+	conn.UpdatedAt = now
+	if err := s.forgeConnections.Update(ctx, conn); err != nil {
+		httpError(w, http.StatusInternalServerError, "persist connection: %v", err)
+		return
+	}
+	// The second of the two writes: a PAT connection is never swept by the
+	// refresh worker, so a managed secret still holding the OLD token would
+	// stay dead forever — and this handler is idempotent, so a failure here
+	// is repaired by re-sending the same token.
+	if conn.ManagedSecretID != "" {
+		if err := forge.RewriteManagedSecret(ctx, s.genericSecrets, s.sealer, conn.ManagedSecretID, token, nil); err != nil {
+			httpError(w, http.StatusInternalServerError, "the token is replaced on the connection but its managed secret could not be rewritten: %v — retry with the same token", err)
+			return
+		}
+	}
+	s.auditTenant(r, teamID, "forge.connection.token_replaced", "forge_connection", conn.ID, map[string]any{
+		"provider": conn.Provider, "account": ident.Login, "account_changed": accountChange,
 	})
 	writeJSON(w, conn)
 }
