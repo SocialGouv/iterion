@@ -1660,7 +1660,7 @@ carries). The crossing's words stay as the detail of the error.
 >   model-supplied URL, so the runner executes it in-container:
 >   `bash`, `diagnostic_shell`, `repl`, `read_file`, `write_file`,
 >   `file_edit`, `notebook_edit`, `glob`, `grep`, `workspace_grep`,
->   `skill`, `read_image`, `web_fetch`, `remote_trigger`,
+>   `skill`, `command` (the workspace slash-command lookup), `read_image`, `web_fetch`, `remote_trigger`,
 >   `send_user_message`, `sleep`, `structured_output`, and `agent` (the
 >   runner registers claw's agent tool in the container AND wires the
 >   subagent runner there, so a sandboxed node's child conversation runs

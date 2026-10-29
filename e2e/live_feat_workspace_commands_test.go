@@ -19,9 +19,12 @@ const workspaceCommandToken = "KUMQUAT-7731"
 // "Workspace `/commands`" column of docs/backends.md, for BOTH proven
 // cells: the same workflow sends `/parity-probe` to a claude_code node and
 // to a claw node, and both must answer with the token that exists only
-// inside `<workspace>/.claude/commands/parity-probe.md`.
+// inside `<workspace>/.claude/commands/parity-probe.md`. A third node —
+// `via_claw_model_tool`, the #1716 half — asks its MODEL to invoke the
+// command mid-conversation: its prompt does not open with the invocation,
+// so the token can only arrive through claw's `command` tool.
 //
-// Both nodes declare `tools: []`, so no Read/Bash/Glob can reach the file:
+// Both parity nodes declare `tools: []`, so no Read/Bash/Glob can reach the file:
 // resolving the invocation into the command body is the only path to the
 // token. That is what makes this a parity test rather than a reachability
 // test — it fails if either backend stops resolving workspace commands.
@@ -73,8 +76,8 @@ func TestLive_Feat_WorkspaceCommands(t *testing.T) {
 		timeout:      10 * time.Minute,
 	})
 
-	assertNodesFinished(t, res.events, "via_claude_code", "via_claw")
-	for _, node := range []string{"via_claude_code", "via_claw"} {
+	assertNodesFinished(t, res.events, "via_claude_code", "via_claw", "via_claw_model_tool")
+	for _, node := range []string{"via_claude_code", "via_claw", "via_claw_model_tool"} {
 		out, ok := lastNodeOutput(res.events, node)
 		if !ok {
 			t.Errorf("node %q produced no output", node)
@@ -82,9 +85,12 @@ func TestLive_Feat_WorkspaceCommands(t *testing.T) {
 		}
 		got, _ := out["text"].(string)
 		if !strings.Contains(got, workspaceCommandToken) {
-			t.Errorf("%s answered %q — the contributed command never reached it; "+
-				"with tools: [] the body is the only path to %s",
-				node, got, workspaceCommandToken)
+			hint := "with tools: [] the body is the only path to " + workspaceCommandToken
+			if node == "via_claw_model_tool" {
+				hint = "its prompt does not open with the invocation — only the `command` tool carries " + workspaceCommandToken + " to the model"
+			}
+			t.Errorf("%s answered %q — the contributed command never reached it; %s",
+				node, got, hint)
 		}
 	}
 }

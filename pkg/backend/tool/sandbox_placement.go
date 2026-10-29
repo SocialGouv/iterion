@@ -147,6 +147,7 @@ var sandboxPlacements = map[string]placementRule{
 	"grep":              {PlacementSandbox, "it walks the workspace tree"},
 	"workspace_grep":    {PlacementSandbox, "it walks the workspace tree"},
 	"skill":             {PlacementSandbox, "it reads skill files from the workspace and the config directories"},
+	"command":           {PlacementSandbox, "it reads command files from the workspace's .claude/commands"},
 	"read_image":        {PlacementSandbox, "it reads a model-supplied path or fetches a model-supplied URL"},
 	"web_fetch":         {PlacementSandbox, "it opens a model-supplied URL, so the container's network policy must apply"},
 	"remote_trigger":    {PlacementSandbox, "it opens a model-supplied URL, so the container's network policy must apply"},

@@ -344,6 +344,14 @@ func registerSandboxLocalTools(reg *tool.Registry, workspace, scratchDir string,
 	if err := tool.RegisterClawSkill(reg, workspace); err != nil {
 		return err
 	}
+	// The `command` tool reads the CONTAINER's workspace through the same
+	// contained lookup; the ceiling is the built-in default here — the
+	// operator's override (ITERION_CLAW_SLASH_COMMAND_MAX_BYTES) is a
+	// host-side read that does not cross, and the kill switch's answer
+	// arrives as the tool's absence from the advertised set.
+	if err := tool.RegisterClawCommand(reg, workspace, tool.DefaultWorkspaceCommandMaxBytes); err != nil {
+		return err
+	}
 	// The subagent runner spawns its child conversation against THIS
 	// container's tools and this container's API keys, which is what the
 	// placement of `agent` asks for. A nil one still registers the tool and

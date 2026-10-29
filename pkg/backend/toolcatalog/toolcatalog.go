@@ -295,6 +295,7 @@ var clawBuiltins = map[string]bool{
 	// RegisterClawSubagents / RegisterClawConfig / RegisterClawLSP.
 	"todo_write":  true,
 	"skill":       true,
+	"command":     true, // RegisterClawCommand — the model-invoked workspace slash command (#1716)
 	"tool_search": true,
 	"agent":       true,
 	"config":      true,

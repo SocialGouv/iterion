@@ -701,6 +701,12 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		IncludeWebSearch:            tool.ResolveWebSearchEnabled(),
 		IncludeWorkspaceDiagnostics: workflowUsesWorkspaceDiagnostics(spec.Workflow),
 		ReadScope:                   readScope,
+
+		// The workspace-command capability's dials resolve HERE, on the
+		// host: the runner's environment carries neither, so the kill
+		// switch becomes the tool's absence and the ceiling a value.
+		DisableWorkspaceCommands: model.SlashCommandsDisabled(),
+		CommandMaxBytes:          slashCommandCeilingForRegistry(),
 	}
 	if planDir != "" {
 		clawDefaults.PlanMode = &clawtools.PlanModeState{Active: &planActive, Dir: planDir}
@@ -1452,6 +1458,17 @@ func recordedMintedSecrets(ctx context.Context, spec ExecutorSpec) map[string][]
 		}
 	}
 	return out
+}
+
+// slashCommandCeilingForRegistry adapts the ceiling dial's answer to the
+// registration's vocabulary: the dial's documented "0" means NO ceiling
+// (model.SlashCommandMaxBytesEnv), where tool.ClawDefaults.CommandMaxBytes
+// reads 0 as "the built-in default" and a negative value as unbounded.
+func slashCommandCeilingForRegistry() int {
+	if max := model.SlashCommandMaxBytes(); max > 0 {
+		return max
+	}
+	return -1
 }
 
 // resolveSourceIssueID returns the ticket that owns this run: explicit

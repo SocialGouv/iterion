@@ -111,7 +111,7 @@ var hostSideEnvReads = map[string]hostSideRead{
 	"ITERION_COMPRESS":                     {whyTaskField, []string{"NewClawExecutor"}},
 	"ITERION_AUTO_MEMORY":                  {whyTaskField, []string{"NewClawExecutor"}},
 	"ITERION_AMBIENT_CONTEXT":              {whyTaskField, []string{"NewClawExecutor"}},
-	"ITERION_CLAW_SLASH_COMMANDS":          {whyTaskField, []string{"expandWorkspaceSlashCommand"}},
+	"ITERION_CLAW_SLASH_COMMANDS":          {whyTaskField, []string{"SlashCommandsDisabled"}},
 	"ITERION_CLAW_SLASH_COMMAND_MAX_BYTES": {whyTaskField, []string{"slashCommandMaxBytes"}},
 	"ITERION_PERMISSION":                   {"resolved by the executor into the node's policy, which crosses as the permission_policy envelope", []string{"NewClawExecutor"}},
 	"ITERION_NODE_MAX_RETRIES":             {whyBudget, []string{"RetryPolicyFromEnv"}},

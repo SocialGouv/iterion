@@ -284,6 +284,11 @@ func assertEveryOptionalFamilyIsOn(t *testing.T, defaults ClawDefaults) {
 		"Subagent":     "nil registers the agent tool as a typed refusal, which IS the registered form",
 		"AskUser":      "nil keeps the pause/resume handler, which IS the registered form",
 		"Config":       "an empty config map still registers the `config` tool",
+		// The zero values REGISTER the `command` family: the switch is
+		// inverted (false = the tool registers; true is the kill switch)
+		// and 0 is the built-in ceiling, not an off.
+		"DisableWorkspaceCommands": "false registers the command tool — the disable is the non-zero value",
+		"CommandMaxBytes":          "0 is DefaultWorkspaceCommandMaxBytes, and the family registers either way",
 		// RegisterClawAll allocates a fresh empty registry for each of
 		// these when nil, so the family registers either way. Their doc
 		// comment says so; if that ever changes, the family stops

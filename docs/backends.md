@@ -219,6 +219,27 @@ The citations, per cell that is not self-evident from the table:
   receives the bytes on `claw` exactly as it does on `claude_code`. The
   attachment's path also survives as an argument.
 
+  The MODEL-invoked half (#1716): on `claw`, a node that grants `command`
+  in its `tools:` gives the model a tool that resolves
+  `<workspace>/.claude/commands/<name>.md` mid-conversation, through the
+  same contained `pkg/api/commands` lookup, under the same byte ceiling and
+  the same kill switch (`ITERION_CLAW_SLASH_COMMANDS=off` drops both
+  surfaces — the tool is not even registered, so a node declaring it fails
+  loudly at dispatch rather than half-living). The returned body is inert
+  text: executing anything it asks for takes the node's own declared tools,
+  so a `command` grant hands over no capability the node did not already
+  hold. `claude_code`'s native equivalent is its `SlashCommand` tool, which
+  iterion withholds from every headless spawn whatever the node declares:
+  a command THERE can be Bash-backed and would reach a shell the node never
+  declared — the asymmetry is deliberate, and claw's text-only body is the
+  safe form of the same capability. The frontmatter divergence below covers
+  both paths: `disable-model-invocation:` is among the keys the lookup
+  reads and discards, so on claw the model path is not bounded by it
+  (#1717 carries the enforcement). The deterministic witness is
+  `pkg/backend/tool/claw_command_test.go`; the live one is the
+  `via_claw_model_tool` node of `TestLive_Feat_WorkspaceCommands`, whose
+  prompt does not open with the invocation.
+
   A command whose body — **or whose expanded text** — exceeds
   `ITERION_CLAW_SLASH_COMMAND_MAX_BYTES` (256 KiB by default) is refused
   rather than substituted: on a review run that file belongs to a checkout
@@ -253,9 +274,16 @@ The citations, per cell that is not self-evident from the table:
   ways. So the flag does not *enable* project commands, it *scopes* them:
   iterion always passes it, and the ambient-context policy (above) decides
   which scopes accompany it. `workspace`, the default, keeps the project
-  scope that carries them; the operator's own `~/.claude/commands/` need
-  `all` — which also closes the old asymmetry where a `claude_code` node
-  saw them and a `claw` node never did (#1716).
+  scope that carries them and leaves the operator's own
+  `~/.claude/commands/` OUT on both backends — the default-posture
+  asymmetry #1716 measured is gone. What remains is deliberate: under
+  `operator` or `all` a `claude_code` node sees the operator's own
+  commands and a `claw` node never does, because claw's lookup is rooted at
+  the workspace by `os.Root` and a sandboxed or multi-tenant run does not
+  read the host's home. If that symmetry is ever wanted, the honest form is
+  an explicit opt-in that carries the operator scope into the lookup — not
+  a default, and not a silent read (#1716's (e), arbitrated to "documented
+  asymmetry" until an operator asks for the opt-in).
 
 - **claw, five proven cells.** Structured output:
   `TestLive_Feat_Cursors` asserts the reviewer's output against its

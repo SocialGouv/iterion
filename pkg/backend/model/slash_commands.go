@@ -16,11 +16,27 @@ import (
 // SlashCommandsEnv turns the workspace slash-command expansion off for
 // `claw` nodes, restoring the raw `/name` text the backend sent before the
 // capability existed. "off", "0" and "false" disable it; anything else
-// (including unset) leaves it on.
+// (including unset) leaves it on. The same answer gates the `command`
+// tool's registration (tool.ClawDefaults.DisableWorkspaceCommands): a host
+// that turns the capability off takes BOTH of its surfaces away.
 const SlashCommandsEnv = "ITERION_CLAW_SLASH_COMMANDS"
 
+// SlashCommandsDisabled reads the kill switch (SlashCommandsEnv). The one
+// reader, shared by the prompt path below and the host that builds the
+// tool registry — the two surfaces of one capability cannot disagree.
+func SlashCommandsDisabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(SlashCommandsEnv))) {
+	case "off", "0", "false":
+		return true
+	}
+	return false
+}
+
 // SlashCommandMaxBytesEnv overrides the ceiling on a workspace command's
-// body, in bytes. "0" removes the ceiling.
+// body, in bytes. "0" removes the ceiling. The one ceiling serves both
+// surfaces of the capability: this prompt path reads it directly, the
+// `command` tool receives the host's answer at registration
+// (tool.ClawDefaults.CommandMaxBytes).
 const SlashCommandMaxBytesEnv = "ITERION_CLAW_SLASH_COMMAND_MAX_BYTES"
 
 // defaultSlashCommandMaxBytes bounds the body a workspace command may
@@ -31,7 +47,9 @@ const SlashCommandMaxBytesEnv = "ITERION_CLAW_SLASH_COMMAND_MAX_BYTES"
 // orders of magnitude above any real command body (the largest in this
 // repo's own catalog is a few KB), so it bounds the abuse without bounding
 // the use — and it is an abstention, never a truncation, because half a
-// command body is an instruction nobody wrote.
+// command body is an instruction nobody wrote. tool.DefaultWorkspaceCommandMaxBytes
+// is the same number, for the `command` tool's registration where this
+// package cannot be imported.
 const defaultSlashCommandMaxBytes = 256 << 10
 
 // slashCommandArgsPrefix introduces the arguments appended to a command
@@ -66,8 +84,7 @@ func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, 
 	if backendName != delegate.BackendClaw || workDir == "" || userText == "" {
 		return userText, false
 	}
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(SlashCommandsEnv))) {
-	case "off", "0", "false":
+	if SlashCommandsDisabled() {
 		return userText, false
 	}
 	// The overwhelming majority of workspaces contribute no command at all;
@@ -215,6 +232,14 @@ func slashCommandMaxBytes() int {
 	}
 	return n
 }
+
+// SlashCommandMaxBytes is the ceiling's host-side answer for the host that
+// builds the tool registry (runview → tool.ClawDefaults.CommandMaxBytes):
+// the `command` tool's exec reads no environment — the runner's would not
+// carry the dial — so the value crosses as a registration parameter. The
+// dial's documented "0" (no ceiling) arrives as 0 here; the host maps it
+// to the registration's unbounded spelling (a negative value).
+func SlashCommandMaxBytes() int { return slashCommandMaxBytes() }
 
 // slashWarnOnce keeps the `$N` divergence notice to one line per command
 // file per run — noise suppression only. The frontmatter divergence is NOT

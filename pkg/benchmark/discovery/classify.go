@@ -62,6 +62,7 @@ var toolClass = map[string]Class{
 	"web_fetch":        ClassDiscovery,
 	"toolsearch":       ClassDiscovery,
 	"skill":            ClassDiscovery,
+	"command":          ClassDiscovery,
 	"memory_read":      ClassDiscovery,
 	"memory_list":      ClassDiscovery,
 	"browser_snapshot": ClassDiscovery,

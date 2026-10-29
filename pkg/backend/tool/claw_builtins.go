@@ -670,8 +670,9 @@ func mcpServerNamingSpecs(provider clawmcp.Provider) []clawBuiltinSpec {
 // Field zero-values are populated lazily by RegisterClawAll so callers
 // can opt into specific subsystems by leaving the rest at zero.
 type ClawDefaults struct {
-	// Workspace is forwarded to bash for command validation and to the
-	// skill tool for skill lookup. Leave empty to skip workspace
+	// Workspace is forwarded to bash for command validation, to the
+	// skill tool for skill lookup, and to the command tool for workspace
+	// slash-command lookup. Leave empty to skip workspace
 	// gating.
 	Workspace string
 
@@ -683,6 +684,20 @@ type ClawDefaults struct {
 	// instance to whatever attaches roots later (the engine's executor
 	// push), or the reads will not see them.
 	ReadScope *ReadScope
+
+	// DisableWorkspaceCommands drops the `command` tool (the model-invoked
+	// workspace slash-command surface, #1716) from the set. Hosts resolve
+	// the kill switch on the HOST (iterion: model.SlashCommandsDisabled,
+	// ITERION_CLAW_SLASH_COMMANDS) — the runner's environment does not
+	// carry it, so a registration reading it there would read nothing.
+	DisableWorkspaceCommands bool
+
+	// CommandMaxBytes is the `command` tool's body/expansion ceiling: 0 is
+	// DefaultWorkspaceCommandMaxBytes, a negative value removes the
+	// ceiling. Hosts resolve the dial host-side (iterion:
+	// model.SlashCommandMaxBytes, ITERION_CLAW_SLASH_COMMAND_MAX_BYTES —
+	// whose "0 removes the ceiling" maps to -1 here).
+	CommandMaxBytes int
 
 	// Tasks, Workers, Teams, Crons, LSP hold the registries each tool
 	// family needs. Leave nil to have RegisterClawAll allocate a fresh
@@ -821,6 +836,11 @@ func RegisterClawAll(reg *Registry, defaults ClawDefaults) error {
 	}
 	if err := RegisterClawSkill(reg, defaults.Workspace); err != nil {
 		return err
+	}
+	if !defaults.DisableWorkspaceCommands {
+		if err := RegisterClawCommand(reg, defaults.Workspace, defaults.CommandMaxBytes); err != nil {
+			return err
+		}
 	}
 	if defaults.IncludeWebSearch {
 		if err := RegisterClawWebSearch(reg); err != nil {

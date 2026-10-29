@@ -848,7 +848,7 @@ func TestRegisterClawAll_RegistersFullSet(t *testing.T) {
 	// Spot-check one tool from each family.
 	expected := []string{
 		"read_file", "write_file", "bash", "glob", "grep", "file_edit", "web_fetch",
-		"todo_write", "agent", "skill", "config",
+		"todo_write", "agent", "skill", "command", "config",
 		"send_user_message", "remote_trigger", "sleep", "notebook_edit", "repl", "structured_output",
 		"task_create", "worker_create", "team_create", "cron_create",
 		"list_mcp_resources", "lsp", "tool_search",
