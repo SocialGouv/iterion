@@ -165,6 +165,31 @@ func (s *MemoryDeliveryStore) Update(_ context.Context, d Delivery) error {
 	return s.kit.Replace(d.ID, d)
 }
 
+// MarkRunOutcome stamps the outcome of the run this delivery launched (see
+// DeliveryStore). Keep its semantics in lock-step with the mongo twin.
+func (s *MemoryDeliveryStore) MarkRunOutcome(_ context.Context, id, runID, status, errMsg, errCode string, at time.Time) error {
+	stamped := at.UTC()
+	_, err := s.kit.Mutate(id, func(d *Delivery) bool {
+		// The row's own run is the authority: a retry relaunched this
+		// delivery under another id, and the predecessor's late terminal
+		// describes a run this row no longer reports.
+		if d.RunID == "" || d.RunID != runID {
+			return false
+		}
+		// Monotonicity guard (twin of the mongo filter): an out-of-order
+		// delivery cannot move the health fields backwards.
+		if d.LastRunAt != nil && d.LastRunAt.After(stamped) {
+			return false
+		}
+		d.LastRunStatus = status
+		d.LastRunError = errMsg
+		d.LastRunErrorCode = errCode
+		d.LastRunAt = &stamped
+		return true
+	})
+	return err
+}
+
 // ClaimFailedRetry is the compare-and-set take-over of a failed row (see
 // DeliveryStore). Keep its semantics in lock-step with the Mongo twin.
 func (s *MemoryDeliveryStore) ClaimFailedRetry(_ context.Context, d Delivery, expectAttempts int) (bool, error) {

@@ -1378,10 +1378,10 @@ func (s *Server) prepareWebhookTarget(
 		launch := s.webhookLaunchBot
 		if launch == nil {
 			// A closure over cfg rather than a bare method reference: the real
-			// launcher needs the webhook's own retry policy, and threading it
-			// as a ninth positional parameter would churn every test fake of
-			// this seam for one field.
-			launch = s.webhookLauncherFor(cfg, t)
+			// launcher needs the webhook's own retry policy and the delivery
+			// row this launch answers, and threading those as further
+			// positional parameters would churn every test fake of this seam.
+			launch = s.webhookLauncherFor(cfg, t, delivery.ID)
 		}
 		// Hand the run any prior review of the same PR, if it asked for one. Done
 		// HERE, in the tail every lane funnels through, rather than per provider

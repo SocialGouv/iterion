@@ -114,7 +114,7 @@ func TestDirectLaneKeepsLaunchingTheUndecidedBot(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := store.WithIdentity(auth.WithIdentity(t.Context(), auth.Identity{UserID: "webhook:hook", TeamID: "t1", Kind: auth.KindWebhook}), "t1", "webhook:hook")
-	if _, err := s.launchWebhookBot(ctx, cfg, "probe", map[string]string{"lane_backend": "claw"}, "", "", "", nil, nil, store.RunTrustDefault, ""); err != nil {
+	if _, err := s.launchWebhookBot(ctx, cfg, "probe", map[string]string{"lane_backend": "claw"}, "", "", "", nil, nil, store.RunTrustDefault, "", ""); err != nil {
 		t.Fatalf("the direct lane refused what its shape launches: %v", err)
 	}
 }

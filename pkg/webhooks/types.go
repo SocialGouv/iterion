@@ -649,6 +649,24 @@ type Delivery struct {
 	NextAttemptAt *time.Time      `bson:"next_attempt_at,omitempty" json:"next_attempt_at,omitempty"`
 	// ClaimedAt is when the current attempt claimed the row (insert or retry claim).
 	ClaimedAt *time.Time `bson:"claimed_at,omitempty" json:"claimed_at,omitempty"`
+	// The outcome of the run this delivery launched — what the run DID, as
+	// opposed to Status/Error above, which are the DELIVERY's own verdict
+	// (accepted, filtered, launched, launch_error). Stamped by the
+	// run-outcome spine from the run's terminal status (#1501): a delivery
+	// that launched and whose run died read exactly like one that launched
+	// and worked.
+	//
+	// RunID above is this tuple's id half — a delivery launches ONE run, and
+	// a retry of a failed row replaces it — so there is no last_run_id here
+	// and no second source of truth for it. LastRunError/LastRunErrorCode are
+	// CLEARED by a successful outcome: this is a health signal, not an audit
+	// trail (the run record is the audit). LastRunAt is the run document's
+	// own instant and the monotonicity key: an out-of-order stamp can never
+	// move the fields backwards.
+	LastRunStatus    string     `bson:"last_run_status,omitempty" json:"last_run_status,omitempty"`
+	LastRunError     string     `bson:"last_run_error,omitempty" json:"last_run_error,omitempty"`
+	LastRunErrorCode string     `bson:"last_run_error_code,omitempty" json:"last_run_error_code,omitempty"`
+	LastRunAt        *time.Time `bson:"last_run_at,omitempty" json:"last_run_at,omitempty"`
 }
 
 // ClaimStart is when the row's current attempt claimed it — what every reader

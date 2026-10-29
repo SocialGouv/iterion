@@ -1408,20 +1408,21 @@ func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string, r
 // webhookLauncherFor builds the production launch path for one inbound
 // webhook config and ONE target of it. It is a closure rather than a plain
 // method because the launch needs facts the seam's positional signature does
-// not carry: the config's retry policy, and the target's own trust and
-// admitted commit. Those last two ride the closure rather than two more
-// positional parameters because the seam has 149 test doubles — and because a
-// test double that stands in for the launcher is not the thing that builds a
-// LaunchSpec, so widening it would prove nothing it does not already prove.
-func (s *Server) webhookLauncherFor(cfg webhooks.Config, t forgeLaunchTarget) func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+// not carry: the config's retry policy, the target's own trust and admitted
+// commit, and the id of the delivery row this launch answers. Those ride the
+// closure rather than more positional parameters because the seam has 149
+// test doubles — and because a test double that stands in for the launcher is
+// not the thing that builds a LaunchSpec, so widening it would prove nothing
+// it does not already prove.
+func (s *Server) webhookLauncherFor(cfg webhooks.Config, t forgeLaunchTarget, deliveryID string) func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
 	return func(ctx context.Context, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string) (string, error) {
-		return s.launchWebhookBot(ctx, cfg, botID, vars, repoURL, repoRef, projectPath, keyOverrides, secretOverrides, t.Trust, t.ExpectedSHA)
+		return s.launchWebhookBot(ctx, cfg, botID, vars, repoURL, repoRef, projectPath, keyOverrides, secretOverrides, t.Trust, t.ExpectedSHA, deliveryID)
 	}
 }
 
 // launchWebhookBot resolves the bot's source and submits it through the run
 // service (which, in cloud mode, routes to the publisher).
-func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string, trust store.RunTrust, expectedSHA string) (string, error) {
+func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string, trust store.RunTrust, expectedSHA, deliveryID string) (string, error) {
 	if s.runs == nil {
 		return "", errors.New("run service unavailable")
 	}
@@ -1470,6 +1471,17 @@ func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botI
 			Policy: cfg.RetryPolicy(),
 		}),
 		LLMRoutePolicy: routePolicy,
+	}
+	if deliveryID != "" {
+		// Typed provenance: the run-outcome spine is keyed by RUN, so the
+		// run is what carries the delivery it answers (#1501, ARB-41 option
+		// B). The Kind is the same classification the run list already
+		// derived from the "webhook:" owner prefix, so no reader changes;
+		// what the pair adds is the back-reference nothing else holds.
+		spec.SourceRef = &store.RunSource{
+			Kind:       store.RunSourceKindWebhook,
+			DeliveryID: deliveryID,
+		}
 	}
 	lb.Stamp(&spec)
 	res, err := s.runs.Launch(ctx, spec)

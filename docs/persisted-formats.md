@@ -68,6 +68,27 @@ The complete shape is [`store.Run`](../pkg/store/run.go). `omitempty` fields
 from local/cloud, worktree, webhook, secret, attachment, budget, and Studio
 features can legitimately be absent.
 
+`source` is the run's TYPED provenance — who launched it — and is absent for
+an ordinary CLI / Studio Launch / fork-spawned run. `kind` is one of
+`dispatcher`, `schedule`, `studio_chat`, `webhook`
+([`store.RunSourceKind*`](../pkg/store/run.go)), open-world like every other
+vocabulary here: a reader must accept a kind it does not know rather than
+treat the run as unlaunched. Beside it rides the id of the record that
+launched the run, one field per record kind — `issue_id` (+ the
+`issue_identifier` / `issue_title` snapshot), `schedule_id` (a
+`cloudsched.ScheduledBot` id OR a `trigger.Subscription` id,
+`schedule_name` for display), `client_id` + `conversation_id` for a chat
+tab, and `delivery_id` for an inbound webhook delivery
+(`webhook_deliveries._id`). Each is the run→record direction, which is the
+only one persisted: the records hold their own `run_id` pointers, and the
+consumers of this class are keyed by RUN (the run-outcome spine loads the
+terminal run, then asks each record kind whether the run is theirs), so
+opening the opposite direction would be a second way to find one record.
+**Deploy-order constraint**, the same one `outcome_seq` carries: an old
+binary's full-document `SaveRun` drops a `source` field it does not know, so
+a release that adds a CONSUMER of a new `source` field ships only after the
+fleet fully carries the writer.
+
 `failure_code` (ADR-095) is the machine-readable classification of `error`
 on a failure status (`failed` / `failed_resumable` / `cancelled`), written
 atomically with the status and cleared by every transition to a non-failure

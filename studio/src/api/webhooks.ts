@@ -70,6 +70,14 @@ export interface WebhookDelivery {
   source_ip?: string;
   received_at: string;
   launched_at?: string;
+  // The outcome of the run this delivery launched (#1501) — what the run
+  // DID, as opposed to `status`/`error`, which are the delivery's own
+  // verdict. Stamped by the server's run-outcome spine; absent until the run
+  // reaches a terminal status. `run_id` above is the tuple's id half.
+  last_run_status?: string;
+  last_run_error?: string;
+  last_run_error_code?: string;
+  last_run_at?: string;
 }
 
 export interface CreateWebhookInput {

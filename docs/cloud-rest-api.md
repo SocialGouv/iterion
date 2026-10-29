@@ -710,6 +710,20 @@ and on a board card ([native tracker](native-tracker.md)); `iterion remote
 triggers list` prints it with the record, and the studio's Automations table
 renders it in its `Last run` column.
 
+**And on an inbound delivery.** The delivery rows under
+`GET /api/teams/{id}/webhooks/{webhook_id}/deliveries` carry the same tuple,
+with one difference: `run_id` is its id half (a delivery launches ONE run, and
+a retry of a failed row replaces it), so the row adds `last_run_status`,
+`last_run_error`, `last_run_error_code` and `last_run_at` and no second id.
+Read it against the row's OWN `status`/`error`, which are the delivery's
+verdict — `launched` means the run started, nothing more. The stamp lands only
+while `run_id` still names the run being described, so a retried delivery is
+never labelled with its predecessor's outcome. The run carries the
+back-reference the writer follows (`source.kind` = `webhook`,
+`source.delivery_id` — [persisted formats](persisted-formats.md)); the
+delivery audit keeps its own TTL, so a row that aged out simply stops being
+stamped.
+
 Source: [pkg/server/triggers_routes.go](../pkg/server/triggers_routes.go).
 
 ## Personal access tokens (PATs)

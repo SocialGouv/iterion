@@ -60,6 +60,25 @@ type DeliveryStore interface {
 	// another caller got there first, and the loser must answer as a
 	// duplicate rather than launch. ErrNotFound when the row is gone.
 	ClaimFailedRetry(ctx context.Context, d Delivery, expectAttempts int) (claimed bool, err error)
+	// MarkRunOutcome stamps the OUTCOME of the run this delivery launched —
+	// the run-terminal counterpart of the delivery's own launch verdict, and
+	// the twin of cloudsched.Store.MarkRunOutcome,
+	// trigger.SubscriptionStore.MarkRunOutcome and
+	// native.BoardStore.SetRunOutcome (#1501). Called by the run-outcome
+	// spine, which holds no copy of the row, so it is a TARGETED field write.
+	//
+	// runID is a MATCH KEY, not a value to store: the stamp lands only while
+	// the row's own RunID still names that run. A retry of a failed delivery
+	// reuses the row and relaunches under a NEW run id, so the predecessor's
+	// late terminal must not describe the successor — the same discipline the
+	// board card's SetRunOutcome keys on.
+	//
+	// errMsg/errCode empty CLEAR the stored failure: a successful run must
+	// not leave the previous one's error on the row. `at` is the run
+	// document's instant and carries a MONOTONICITY GUARD — an out-of-order
+	// delivery is a silent no-op, never a backwards move. ErrNotFound when
+	// the row is gone.
+	MarkRunOutcome(ctx context.Context, id, runID, status, errMsg, errCode string, at time.Time) error
 	ListByWebhook(ctx context.Context, tenantID, webhookID string, limit int) ([]Delivery, error)
 	// CountLaunched counts the deliveries of one event kind on one subject
 	// that actually launched a run (RunID set). This is a CEILING query —

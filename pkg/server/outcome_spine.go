@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
+	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
 // The run-outcome spine: ONE back-writer for every record that launches a
@@ -32,7 +33,8 @@ import (
 // claims because routing — relabel, merge, relaunch — is not idempotent;
 // a stamp is.
 //
-// A fifth record kind is a fifth runOutcomeSink, never an engine `if`.
+// A fifth record kind is a fifth runOutcomeSink, never an engine `if` — the
+// inbound webhook delivery was added exactly that way (#1501 unit 1501.3).
 const (
 	// runOutcomeSpineName is the eventbus subscriber (and NATS queue
 	// group) name of the spine's fast path. One replica handles each
@@ -156,6 +158,23 @@ func (s *Server) runOutcomeSinks() []runOutcomeSink {
 			},
 		})
 	}
+	if deliveries := s.webhookDeliveries; deliveries != nil {
+		sinks = append(sinks, runOutcomeSink{
+			name:     "webhook-delivery",
+			recordID: deliveryOutcomeRecordID,
+			mark: func(ctx context.Context, _, id string, o runOutcome) error {
+				err := deliveries.MarkRunOutcome(ctx, id, o.RunID, o.Status, o.Error, o.ErrorCode, o.At)
+				if errors.Is(err, webhooks.ErrNotFound) {
+					// The audit row aged out of its TTL window (90 days by
+					// default) while the run it launched was still around, or
+					// the webhook config was deleted with its deliveries. Not
+					// an outage.
+					return nil
+				}
+				return err
+			},
+		})
+	}
 	if boardFor := s.cfg.CloudBoardFor; boardFor != nil {
 		sinks = append(sinks, runOutcomeSink{
 			name:     "board-card",
@@ -178,6 +197,18 @@ func (s *Server) runOutcomeSinks() []runOutcomeSink {
 		})
 	}
 	return sinks
+}
+
+// deliveryOutcomeRecordID is the inbound-delivery back-reference the webhook
+// launch path stamps (store.RunSource.DeliveryID, ARB-41 option B). Gated on
+// the Kind too, unlike the board's id-only reading: `delivery_id` has exactly
+// one producer, so a value without the webhook kind would be a corrupt
+// record rather than a launch path that stamped an id and no kind.
+func deliveryOutcomeRecordID(run *store.Run) string {
+	if run == nil || run.Source == nil || run.Source.Kind != store.RunSourceKindWebhook {
+		return ""
+	}
+	return run.Source.DeliveryID
 }
 
 // boardOutcomeRecordID is the card back-reference ADR-046 put on every

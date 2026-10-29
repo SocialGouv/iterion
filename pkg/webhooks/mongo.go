@@ -232,6 +232,65 @@ func (s *MongoDeliveryStore) ClaimFailedRetry(ctx context.Context, d Delivery, e
 	return res.MatchedCount > 0, nil
 }
 
+// MarkRunOutcome stamps the outcome of the run this delivery launched (see
+// DeliveryStore). Keep its semantics in lock-step with the memory twin.
+//
+// One conditional update carries both guards: `run_id` must still name the
+// run being described, and `last_run_at` must be absent or not newer than
+// `at`. A zero-match is therefore ambiguous — row gone, row relaunched under
+// another run, or stale outcome — and is disambiguated with one Get: the
+// first is ErrNotFound, the other two are a silent no-op.
+func (s *MongoDeliveryStore) MarkRunOutcome(ctx context.Context, id, runID, status, errMsg, errCode string, at time.Time) error {
+	if runID == "" {
+		// Nothing to match: a row whose run_id is empty launched no run, so
+		// there is no outcome of ITS run to stamp. Refused here rather than
+		// trusting the filter — `run_id: ""` would also match a row that
+		// never launched.
+		return nil
+	}
+	stamped := at.UTC()
+	set := bson.M{"last_run_status": status, "last_run_at": stamped}
+	unset := bson.M{}
+	if errMsg != "" {
+		set["last_run_error"] = errMsg
+	} else {
+		unset["last_run_error"] = ""
+	}
+	if errCode != "" {
+		set["last_run_error_code"] = errCode
+	} else {
+		unset["last_run_error_code"] = ""
+	}
+	update := bson.M{"$set": set}
+	if len(unset) > 0 {
+		update["$unset"] = unset
+	}
+	res, err := s.kit.Coll().UpdateOne(ctx, bson.M{
+		"_id": id, "run_id": runID,
+		"$or": bson.A{
+			bson.M{"last_run_at": bson.M{"$exists": false}},
+			bson.M{"last_run_at": bson.M{"$lte": stamped}},
+		},
+	}, update)
+	if err != nil {
+		return fmt.Errorf("webhooks: mark delivery run outcome %s: %w", id, err)
+	}
+	if res.MatchedCount == 0 {
+		if _, getErr := s.Get(ctx, id); getErr != nil {
+			if errors.Is(getErr, ErrNotFound) {
+				return ErrNotFound
+			}
+			// A transient store failure must not be laundered into
+			// ErrNotFound — the spine warns on real errors and stays silent
+			// only on a purged row.
+			return fmt.Errorf("webhooks: mark delivery run outcome %s: disambiguate zero-match: %w", id, getErr)
+		}
+		// The row exists but reports another run, or already holds a NEWER
+		// outcome. Not an error — it already says something truer.
+	}
+	return nil
+}
+
 func (s *MongoDeliveryStore) ListByWebhook(ctx context.Context, tenantID, webhookID string, limit int) ([]Delivery, error) {
 	if limit <= 0 {
 		limit = 50

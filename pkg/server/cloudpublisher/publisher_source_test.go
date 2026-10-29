@@ -56,6 +56,41 @@ func TestSubmitLaunchStampsSourceRef(t *testing.T) {
 	}
 }
 
+// The webhook delivery rides the same single carrier (#1501 unit 1501.3):
+// the queued doc. A generic copy is not proof that a NEW RunSource field
+// survives it — the run-outcome spine's delivery sink can only find its row
+// through source.delivery_id, so the field is pinned where it crosses.
+func TestSubmitLaunchStampsTheWebhookDelivery(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	p := &Publisher{
+		store:      st,
+		publishRun: func(context.Context, *queue.RunMessage) error { return nil },
+	}
+	ctx := store.WithIdentity(context.Background(), "team-a", "webhook:hook")
+	wf := &ir.Workflow{Name: "wf"}
+	spec := runview.LaunchSpec{
+		FilePath: "wf.bot",
+		Source:   "workflow wf:\n  start -> done\n",
+		SourceRef: &store.RunSource{
+			Kind:       store.RunSourceKindWebhook,
+			DeliveryID: "d-42",
+		},
+	}
+	if _, err := p.SubmitLaunch(ctx, "run-3", spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
+		t.Fatalf("SubmitLaunch: %v", err)
+	}
+	r, err := st.LoadRun(ctx, "run-3")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.Source == nil || r.Source.Kind != store.RunSourceKindWebhook || r.Source.DeliveryID != "d-42" {
+		t.Fatalf("run.Source = %+v, want {webhook d-42}", r.Source)
+	}
+}
+
 // A plain operator launch carries no SourceRef and must stay unstamped —
 // deriveSourceKind's "manual" default depends on a nil Source.
 func TestSubmitLaunchWithoutSourceRefLeavesSourceNil(t *testing.T) {
