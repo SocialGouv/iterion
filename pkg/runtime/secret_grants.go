@@ -67,7 +67,7 @@ type secretSinkService struct {
 
 // serves reports whether the run serves sink, and names the path that could
 // not when it does not. `prompt` resolves nothing on its own and is never a
-// service; the compiler refuses a list that names it alone (C321).
+// service; the compiler refuses a list that names it alone (C322).
 func (s secretSinkService) serves(sink string, wf *ir.Workflow, resolver effectiveBackendResolver) (bool, string) {
 	switch sink {
 	case secretsink.Command, secretsink.Params:
