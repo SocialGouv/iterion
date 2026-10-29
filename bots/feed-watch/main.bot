@@ -648,9 +648,12 @@ tool fetch_feeds:
     def _validate_host(host):
         # Strict SSRF check on a URL host (the attacker-controlled input):
         # resolve it and reject if ANY resolved address is non-public. Holds
-        # whether we connect directly or via the egress proxy. A host that IS
-        # the proxy is exempt — we route through it deliberately.
-        if allow_private or not host or host in _proxy_hosts:
+        # whether we connect directly or via the egress proxy. No proxy
+        # exemption: the TARGET host is what is validated here — routing
+        # through the proxy happens at the socket, never in the URL, and a
+        # proxy on a loopback or private address would otherwise exempt every
+        # target on that same address.
+        if allow_private or not host:
             return
         try:
             infos = _real_getaddrinfo(host, None)
