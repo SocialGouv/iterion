@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -526,5 +527,46 @@ func TestCheckGatewayEnv_AMalformedOperatorTableRefuses(t *testing.T) {
 	err := checkGatewayEnv(false)
 	if err == nil || !strings.Contains(err.Error(), "OPENAI_COMPATIBLE_MODELS") {
 		t.Fatalf("checkGatewayEnv = %v, want the malformed-table refusal naming the variable", err)
+	}
+}
+
+// A flag the host resolved KNOWN crosses the IPC as known: the forwarded
+// record answers first container-side, so a `tool_call:false` the operator
+// declared must read known-false there, not unknown under a record that
+// still claims `source=operator`. Red when the writer or the reader drops
+// the flags.
+func TestForwardableProviderEnv_CarriesTheHostFlagsAcrossTheHandOff(t *testing.T) {
+	t.Setenv("OPENAI_COMPATIBLE_MODELS", `{"gw/m":{"context_window":200000,"reasoning":true,"tool_call":false,"temperature":false}}`)
+	t.Setenv("OPENAI_COMPATIBLE_CATALOG_PROVIDER", "")
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://198.51.100.7")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "sk-test")
+	compatgw.ResetCatalogCaches()
+
+	host := compatgw.ResolveCatalog("gw/m", nil, os.Getenv)
+	if host.Spec.ToolCall == nil || *host.Spec.ToolCall {
+		t.Fatalf("host resolution tool_call = %v, want known false", host.Spec.ToolCall)
+	}
+	env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/gw/m")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+	forwarded := env["ITERION_OPENAI_COMPATIBLE_RESOLVED"]
+
+	// The container reads ONLY the forwarded record: no operator table, no
+	// provider, so the record is the single source.
+	container := map[string]string{"ITERION_OPENAI_COMPATIBLE_RESOLVED": forwarded}
+	compatgw.ResetCatalogCaches()
+	got := compatgw.ResolveCatalog("gw/m", nil, func(k string) string { return container[k] })
+	if got.Source != compatgw.SourceOperator {
+		t.Fatalf("container source = %q (record %s), want the host's provenance", got.Source, forwarded)
+	}
+	if got.Spec.ToolCall == nil || *got.Spec.ToolCall {
+		t.Errorf("container tool_call = %v (record %s), want known false", got.Spec.ToolCall, forwarded)
+	}
+	if got.Spec.Reasoning == nil || !*got.Spec.Reasoning {
+		t.Errorf("container reasoning = %v (record %s), want known true", got.Spec.Reasoning, forwarded)
+	}
+	if got.Spec.Temperature == nil || *got.Spec.Temperature {
+		t.Errorf("container temperature = %v (record %s), want known false", got.Spec.Temperature, forwarded)
 	}
 }

@@ -1286,10 +1286,23 @@ never merged across sources, and an answer carries its provenance:
 
 The snapshot is regenerated with `task models:snapshot` (the committed diff
 is the review; it carries the source digest and an as-of date, and an answer
-older than 180 days logs a warning). A sandboxed gateway node receives the
-host's own resolution (`ITERION_OPENAI_COMPATIBLE_RESOLVED`), which answers
-before the container's local sources — the image's snapshot can be older
-than the host's, and the two never disagree across the IPC.
+older than 180 days logs a warning). Its schema holds the four numerics
+only: **the snapshot tier answers no capability flag**, so an id models.dev
+publishes as `"tool_call": false` reads unknown — a warning, not a block —
+on an offline or cold-start replica resolving from the snapshot. A flag you
+need honoured without the live table goes in `OPENAI_COMPATIBLE_MODELS`,
+whose entry wins over both models.dev tiers. A sandboxed gateway node
+receives the host's own resolution (`ITERION_OPENAI_COMPATIBLE_RESOLVED`),
+which answers before the container's local sources, flags included — the
+image's snapshot can be older than the host's, and the two never disagree
+across the IPC.
+
+> **Version skew.** The three flag keys are decoded strictly: an iterion
+> older than their introduction refuses the WHOLE table with `unknown field
+> "tool_call"`, and that refusal fails every gateway route on that binary
+> (`checkGatewayEnv`). Put the keys in `OPENAI_COMPATIBLE_MODELS` only once
+> every replica, runner image and operator CLI reading that env is on a
+> version that knows them.
 
 The record's `max_output_tokens` is also the route's per-call output budget
 when the node sets no `max_tokens:` and the record knows the window too —

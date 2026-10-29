@@ -28,8 +28,14 @@ func capabilitiesForModel(provider, modelID string) ModelCapabilities {
 	// single-publisher bare name passes consensus trivially), reporting a
 	// vendor's window and prices as the gateway id's own. What the catalog
 	// does not say stays unknown: nil flags, zero numbers, SourceUnknown.
+	//
+	// Quietly: this is the READ path (`iterion models`, GET /api/models, GET
+	// /api/model-capabilities), where an unknown id is the normal case — the
+	// studio's free-text model fields query it per keystroke — and the
+	// unknown is already the answer those readers print. The launch seams
+	// resolve loudly.
 	if provider == modelroute.OpenAICompatible {
-		return gatewayCapabilities(compatgw.ResolveCatalog(modelID, modelspecs.Default(), os.Getenv))
+		return gatewayCapabilities(compatgw.ResolveCatalogQuiet(modelID, modelspecs.Default(), os.Getenv))
 	}
 	curated := curatedCapabilities(provider, modelID)
 	spec, ok := modelspecs.Default().Lookup(provider, modelID)

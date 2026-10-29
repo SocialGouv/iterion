@@ -17,8 +17,12 @@ var modelsCmd = &cobra.Command{
 	Short: "Inspect resolved model capabilities",
 	Long: `Show the ModelCapabilities iterion resolves for a model — context
 window plus reasoning / tool-call / temperature support — and where each value
-came from: the online aggregator (models.dev, cached under ~/.iterion) or the
-curated static fallback table.
+came from (SOURCE): the online aggregator (models.dev, cached under
+~/.iterion) or the curated static fallback table for a vendor model, and for a
+gateway id (openai_compatible/<id>) its catalog tier — operator,
+catalog-live, catalog-snapshot, or unknown when no table carries it.
+
+A flag cell reads "?" when no table answered it: unknown, never "no".
 
 With no argument, a representative set of known models is listed. Pass an
 explicit "provider/model-id" to resolve a single model. Use --refresh to

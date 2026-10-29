@@ -150,11 +150,16 @@ func CheckOperatorTable(get func(string) string) error {
 	return err
 }
 
-// ResetCatalogCaches drops the memoised operator table — tests only; a
-// production process reads its env once.
+// ResetCatalogCaches drops the memoised operator table and the per-id
+// unknown-warning memo — tests only; a production process reads its env
+// once and says each id once.
 func ResetCatalogCaches() {
 	operatorTableOnce = sync.Once{}
 	operatorTable, operatorTableErr = nil, nil
+	unknownWarns.Range(func(k, _ any) bool {
+		unknownWarns.Delete(k)
+		return true
+	})
 }
 
 var staleWarnOnce sync.Once
@@ -174,8 +179,25 @@ func warnStaleSnapshot() {
 
 // ResolveCatalog resolves one gateway model id. live is the process
 // models.dev registry (modelspecs.Default in production); when it has no
-// answer the embedded snapshot does, with its provenance attached.
+// answer the embedded snapshot does, with its provenance attached. An id no
+// table carries earns one WARN per id per process — the dispatch seams and
+// the launch path resolve this way, where an unknown id is about to cost a
+// run.
 func ResolveCatalog(modelID string, live *modelspecs.Registry, get func(string) string) Resolved {
+	return resolveCatalog(modelID, live, get, true)
+}
+
+// ResolveCatalogQuiet resolves the same way and says nothing about an id no
+// table carries: on the capability READ paths an unknown id is the normal
+// case — the studio's free-text model fields query the capability route with
+// whatever is typed so far, one request per keystroke, and the answer those
+// readers render (`?` cells, `source=unknown`) already states the fact. The
+// per-id memo is left untouched, so a later launch still warns once.
+func ResolveCatalogQuiet(modelID string, live *modelspecs.Registry, get func(string) string) Resolved {
+	return resolveCatalog(modelID, live, get, false)
+}
+
+func resolveCatalog(modelID string, live *modelspecs.Registry, get func(string) string, warnUnknown bool) Resolved {
 	// The host's resolution (sandbox forward) answers before anything
 	// local: agreement across the IPC beats any local freshness.
 	if rec, ok := resolvedEnvRecord(get); ok && rec.Model == strings.ToLower(strings.TrimSpace(modelID)) {
@@ -185,6 +207,9 @@ func ResolveCatalog(modelID string, live *modelspecs.Registry, get func(string) 
 				MaxOutputTokens: rec.MaxOutputTokens,
 				InputCostPerM:   rec.InputUSDPerMTok,
 				OutputCostPerM:  rec.OutputUSDPerMTok,
+				Reasoning:       rec.Reasoning,
+				ToolCall:        rec.ToolCall,
+				Temperature:     rec.Temperature,
 			},
 			Source: rec.Source,
 		}
@@ -222,8 +247,11 @@ func ResolveCatalog(modelID string, live *modelspecs.Registry, get func(string) 
 	}
 	// Said out loud, once per id per process: the record on the node
 	// output is easy to miss, and a mis-set OPENAI_COMPATIBLE_CATALOG_PROVIDER
-	// would otherwise be invisible in logs.
-	if _, loaded := unknownWarns.LoadOrStore(strings.ToLower(strings.TrimSpace(modelID)), true); !loaded {
+	// would otherwise be invisible in logs. A quiet caller keeps it at debug
+	// and does not consume the memo.
+	if !warnUnknown {
+		iterlog.NewFromEnv(os.Stderr).Debug("openai_compatible: id %q is in no table (read path, not a launch)", modelID)
+	} else if _, loaded := unknownWarns.LoadOrStore(strings.ToLower(strings.TrimSpace(modelID)), true); !loaded {
 		iterlog.NewFromEnv(os.Stderr).Warn("openai_compatible: id %q is in no table (set %s, or %s=<models.dev provider> — currently %q)", modelID, CatalogModelsEnv, CatalogProviderEnv, prov)
 	}
 	return Resolved{Source: SourceUnknown}
@@ -251,25 +279,45 @@ func qualifiedIDs(q, modelID string) []string {
 // workflow's templated model strings throw at the catalog.
 var unknownWarns sync.Map
 
-// resolvedEnvRecord parses ResolvedEnvName's single record, tolerating a
-// wrong-shaped value by ignoring it (the host wrote it; a garbage value
-// degrades to the local sources, it never invents one).
-func resolvedEnvRecord(get func(string) string) (struct {
+// ResolvedEnvRecord is the wire shape of ResolvedEnvName — the ONE struct
+// the host writes and the container reads, so a field added to the record
+// crosses the IPC by construction instead of by two mirrored literals
+// agreeing. The capability flags are `*bool,omitempty`: a flag no table
+// stated is absent from the record and reads unknown, a stated false
+// crosses as false.
+type ResolvedEnvRecord struct {
 	Model            string  `json:"model"`
 	Source           string  `json:"source"`
 	ContextWindow    int     `json:"context_window,omitempty"`
 	MaxOutputTokens  int     `json:"max_output_tokens,omitempty"`
 	InputUSDPerMTok  float64 `json:"input_usd_per_mtok,omitempty"`
 	OutputUSDPerMTok float64 `json:"output_usd_per_mtok,omitempty"`
-}, bool) {
-	var rec struct {
-		Model            string  `json:"model"`
-		Source           string  `json:"source"`
-		ContextWindow    int     `json:"context_window,omitempty"`
-		MaxOutputTokens  int     `json:"max_output_tokens,omitempty"`
-		InputUSDPerMTok  float64 `json:"input_usd_per_mtok,omitempty"`
-		OutputUSDPerMTok float64 `json:"output_usd_per_mtok,omitempty"`
+	Reasoning        *bool   `json:"reasoning,omitempty"`
+	ToolCall         *bool   `json:"tool_call,omitempty"`
+	Temperature      *bool   `json:"temperature,omitempty"`
+}
+
+// ForwardableRecord is the record the host forwards for one resolved
+// gateway id: the resolution as the host answered it, flags included.
+func ForwardableRecord(modelID string, r Resolved) ResolvedEnvRecord {
+	return ResolvedEnvRecord{
+		Model:            modelID,
+		Source:           r.Source,
+		ContextWindow:    r.Spec.ContextWindow,
+		MaxOutputTokens:  r.Spec.MaxOutputTokens,
+		InputUSDPerMTok:  r.Spec.InputCostPerM,
+		OutputUSDPerMTok: r.Spec.OutputCostPerM,
+		Reasoning:        r.Spec.Reasoning,
+		ToolCall:         r.Spec.ToolCall,
+		Temperature:      r.Spec.Temperature,
 	}
+}
+
+// resolvedEnvRecord parses ResolvedEnvName's single record, tolerating a
+// wrong-shaped value by ignoring it (the host wrote it; a garbage value
+// degrades to the local sources, it never invents one).
+func resolvedEnvRecord(get func(string) string) (ResolvedEnvRecord, bool) {
+	var rec ResolvedEnvRecord
 	raw := strings.TrimSpace(get(ResolvedEnvName))
 	if raw == "" || json.Unmarshal([]byte(raw), &rec) != nil || rec.Model == "" {
 		return rec, false

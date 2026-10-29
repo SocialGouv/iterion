@@ -50,9 +50,11 @@ type ModelCapabilities struct {
 	ToolCall    *bool
 	Temperature *bool
 
-	// Source is the table that answered this record, flags included
+	// Source is the table that answered this record's NUMBERS
 	// (CapabilitySource): what tells a reader a published fact from a
-	// curated heuristic, and an unknown from a false.
+	// curated heuristic, and an unknown from a false. It is record-level,
+	// not per-flag — `aggregator` means the aggregator had an entry, and a
+	// flag it left unsaid is still the curated table's.
 	Source CapabilitySource
 
 	// ContextWindow is the model's context window in tokens. Zero = unknown.

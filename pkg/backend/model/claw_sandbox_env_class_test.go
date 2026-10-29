@@ -158,9 +158,10 @@ var envEnumerations = map[string]string{
 const whyGatewayEnv = "the gateway's own env, which forwardableProviderEnv's gateway branch carries for a gateway node, with the host's catalog answer"
 
 var getterHandoffs = map[string]string{
-	"pkg/backend/compatgw.FromEnv":            whyGatewayEnv,
-	"pkg/backend/compatgw.ResolveCatalog":     whyGatewayEnv,
-	"pkg/backend/compatgw.CheckOperatorTable": whyGatewayEnv,
+	"pkg/backend/compatgw.FromEnv":             whyGatewayEnv,
+	"pkg/backend/compatgw.ResolveCatalog":      whyGatewayEnv,
+	"pkg/backend/compatgw.ResolveCatalogQuiet": whyGatewayEnv,
+	"pkg/backend/compatgw.CheckOperatorTable":  whyGatewayEnv,
 }
 
 // notEnvNames: constants this package spells like an env name, which no code

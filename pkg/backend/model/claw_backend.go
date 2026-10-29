@@ -2393,26 +2393,15 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 		}
 		// The host's OWN catalog resolution rides along, so the in-container
 		// catalog answers with the same record the host answered with — the
-		// image's snapshot can be older than the host's, and a window or a
-		// price quietly differing across the IPC is a lie one side tells the
-		// other. Top precedence container-side (compatgw.ResolvedEnvRecord).
+		// image's snapshot can be older than the host's, and a window, a
+		// price or a capability flag quietly differing across the IPC is a
+		// lie one side tells the other: a `tool_call:false` the operator
+		// declared must not read unknown container-side under a record that
+		// still claims `source=operator`. Top precedence container-side
+		// (compatgw.ResolvedEnvRecord, the shape both sides share).
 		if resolved := compatgw.ResolveCatalog(modelroute.Parse(model).Wire, modelspecs.Default(), os.Getenv); resolved.Known() {
-			if raw, merr := json.Marshal(struct {
-				Model            string  `json:"model"`
-				Source           string  `json:"source"`
-				ContextWindow    int     `json:"context_window,omitempty"`
-				MaxOutputTokens  int     `json:"max_output_tokens,omitempty"`
-				InputUSDPerMTok  float64 `json:"input_usd_per_mtok,omitempty"`
-				OutputUSDPerMTok float64 `json:"output_usd_per_mtok,omitempty"`
-			}{
-				Model:            modelroute.Parse(model).Wire,
-				Source:           resolved.Source,
-				ContextWindow:    resolved.Spec.ContextWindow,
-				MaxOutputTokens:  resolved.Spec.MaxOutputTokens,
-				InputUSDPerMTok:  resolved.Spec.InputCostPerM,
-				OutputUSDPerMTok: resolved.Spec.OutputCostPerM,
-			}); merr == nil {
-				env["ITERION_OPENAI_COMPATIBLE_RESOLVED"] = string(raw)
+			if raw, merr := json.Marshal(compatgw.ForwardableRecord(modelroute.Parse(model).Wire, resolved)); merr == nil {
+				env[compatgw.ResolvedEnvName] = string(raw)
 			}
 		}
 	}

@@ -1374,10 +1374,21 @@ export interface ModelCapabilities {
   spec: string;
   provider?: string;
   model: string;
-  // "aggregator" is a settled answer; "curated" is what a cold lookup
-  // returns while the background spec refresh is still in flight, so it
-  // can still improve and must not be cached for the whole session.
-  source: "aggregator" | "curated";
+  // The table that answered the record's numbers. "aggregator" is a
+  // settled answer; "curated" is what a cold lookup returns while the
+  // background spec refresh is still in flight, so it can still improve
+  // and must not be cached for the whole session. A gateway id
+  // (openai_compatible/…) answers with its catalog tier instead — the
+  // operator's table, the live models.dev registry, the embedded snapshot
+  // — or "unknown" when no table carries it, in which case the flags are
+  // absent and read as unknown.
+  source:
+    | "aggregator"
+    | "curated"
+    | "operator"
+    | "catalog-live"
+    | "catalog-snapshot"
+    | "unknown";
   context_window: number;
   max_output_tokens: number;
   // Per-million-token prices. Zero means the aggregator had no price —

@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -143,6 +144,22 @@ func TestAGatewayIdResolvesWhatItsCatalogStatesAndNothingMore(t *testing.T) {
 	if caps.Source != llmtypes.SourceCatalogLive || caps.ContextWindow != 128000 {
 		t.Fatalf("the catalog's record reads source %q, window %d", caps.Source, caps.ContextWindow)
 	}
+
+	// The SNAPSHOT tier answers the numbers and NO flag: its schema holds
+	// the four numerics only, so an id models.dev publishes as
+	// `tool_call:false` reads unknown — a warning, not a block — whenever
+	// the live table is not loaded. Honest for what the file holds, and
+	// pinned here so widening the schema is a deliberate change (the flag
+	// an operator needs offline goes in OPENAI_COMPATIBLE_MODELS).
+	gatewayEnv(t, "", "scaleway")
+	seedSpecs(t, nil)
+	caps = capabilitiesForModel(modelroute.OpenAICompatible, "bge-multilingual-gemma2")
+	if caps.Source != llmtypes.SourceCatalogSnapshot || caps.ContextWindow != 8191 {
+		t.Fatalf("the snapshot's record reads source %q, window %d; want %q, 8191", caps.Source, caps.ContextWindow, llmtypes.SourceCatalogSnapshot)
+	}
+	if caps.Reasoning != nil || caps.ToolCall != nil || caps.Temperature != nil {
+		t.Fatalf("the snapshot answered flags %s/%s/%s, want unknown for all three", flagWord(caps.Reasoning), flagWord(caps.ToolCall), flagWord(caps.Temperature))
+	}
 }
 
 // TestCapabilitySourceSpellingsAgreeWithTheGateway: one spelling per source
@@ -158,5 +175,66 @@ func TestCapabilitySourceSpellingsAgreeWithTheGateway(t *testing.T) {
 		if pair[0] != pair[1] {
 			t.Errorf("source spelled %q here and %q in the gateway", pair[0], pair[1])
 		}
+	}
+}
+
+// capturedStderr redirects os.Stderr for the caller's scope and returns
+// everything written to it. The gateway catalog's unknown-id line goes to
+// the process stderr through a fallback logger, so the stream is the only
+// place to read it.
+func capturedStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+	fn()
+	os.Stderr = orig
+	if cerr := w.Close(); cerr != nil {
+		t.Fatalf("close: %v", cerr)
+	}
+	out, rerr := io.ReadAll(r)
+	if rerr != nil {
+		t.Fatalf("read: %v", rerr)
+	}
+	if cerr := r.Close(); cerr != nil {
+		t.Fatalf("close read side: %v", cerr)
+	}
+	return string(out)
+}
+
+// The capability READ path resolves an unknown gateway id QUIETLY: the
+// studio's free-text model fields query GET /api/model-capabilities with
+// whatever is typed so far, so a warning per distinct id is a warning per
+// keystroke past the slash. The launch seams keep the warning — there an
+// unknown id is about to cost a run. Red when the read path warns, or when
+// the launch path stops warning.
+func TestAnUnknownGatewayIdIsQuietOnTheReadPathAndLoudOnTheLaunchPath(t *testing.T) {
+	gatewayEnv(t, "", "scaleway")
+	seedSpecs(t, nil)
+
+	typed := capturedStderr(t, func() {
+		for _, id := range []string{"m", "my", "my-", "my-mo", "my-model"} {
+			if _, err := ResolveSpec(modelroute.OpenAICompatible + "/" + id); err != nil {
+				t.Fatalf("ResolveSpec(%q): %v", id, err)
+			}
+		}
+	})
+	if strings.Contains(typed, "is in no table") {
+		t.Errorf("the read path logged while the operator typed:\n%s", typed)
+	}
+
+	// The same ids down the launch seam's resolver: one line each, once.
+	compatgw.ResetCatalogCaches()
+	launched := capturedStderr(t, func() {
+		for range 2 {
+			compatgw.ResolveCatalog("my-model", modelspecs.Default(), os.Getenv)
+		}
+	})
+	if n := strings.Count(launched, `id "my-model" is in no table`); n != 1 {
+		t.Errorf("the launch path logged the unknown id %d times, want exactly 1:\n%s", n, launched)
 	}
 }
