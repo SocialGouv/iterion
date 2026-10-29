@@ -100,12 +100,13 @@ func TestTheSharedSkillKeysOweTheirReleaseFloor(t *testing.T) {
 		exports, dependencies, floor string
 		wantOK                       bool
 	}{
-		"an export with no floor":        {"    - id: a\n      path: skills/a.md\n", "", "", false},
-		"an export with a numeric floor": {"    - id: a\n      path: skills/a.md\n", "", ">= 9.999.0", false},
-		"an export at the pin":           {"    - id: a\n      path: skills/a.md\n", "", ">= " + SkillSharingSince, true},
-		"a dependency with no floor":     {"", "    - name: a\n      from: x\n", "", false},
-		"a dependency at the pin":        {"", "    - name: a\n      from: x\n", ">= " + SkillSharingSince, true},
-		"neither key declared":           {"", "", "", true},
+		"an export with no floor":              {"    - id: a\n      path: skills/a.md\n", "", "", false},
+		"an export with a floor below the pin": {"    - id: a\n      path: skills/a.md\n", "", ">= 1.0.0", false},
+		"an export with a floor above the pin": {"    - id: a\n      path: skills/a.md\n", "", ">= 9.999.0", true},
+		"an export at the pin":                 {"    - id: a\n      path: skills/a.md\n", "", ">= " + SkillSharingSince, true},
+		"a dependency with no floor":           {"", "    - name: a\n      from: x\n", "", false},
+		"a dependency at the pin":              {"", "    - name: a\n      from: x\n", ">= " + SkillSharingSince, true},
+		"neither key declared":                 {"", "", "", true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			body := skillSharingManifest(tc.exports, tc.dependencies)
