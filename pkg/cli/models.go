@@ -19,12 +19,13 @@ type ModelsOptions struct {
 
 // RunModels resolves and prints the model catalog: for one model (--spec/arg)
 // or a representative known set, it reports the capabilities the runtime would
-// resolve, the table each record's numbers came from
+// resolve, the table that had an ENTRY for each model
 // (aggregator|curated for a vendor model;
 // operator|catalog-live|catalog-snapshot|unknown for a gateway id), and
 // whether this host can actually reach the model with the credentials it
-// holds. A flag cell reads "?" where no table answered it — unknown, never
-// "no".
+// holds. SOURCE is record-level: under `aggregator`, whatever the aggregator
+// left zero or unsaid is still the curated table's. A flag cell reads "?"
+// where no table answered it — unknown, never "no".
 //
 // It shares pkg/modelcatalog with GET /api/models on purpose — the CLI and the
 // studio picker answering "which models can I use here" differently is a bug

@@ -1294,15 +1294,22 @@ need honoured without the live table goes in `OPENAI_COMPATIBLE_MODELS`,
 whose entry wins over both models.dev tiers. A sandboxed gateway node
 receives the host's own resolution (`ITERION_OPENAI_COMPATIBLE_RESOLVED`),
 which answers before the container's local sources, flags included — the
-image's snapshot can be older than the host's, and the two never disagree
-across the IPC.
+image's snapshot can be older than the host's, and the numbers never
+disagree across the IPC. The record's reader is lenient, so skew costs
+nothing in either direction: an image predating the flags reads the same
+numbers and the same provenance and takes the flags as unknown, which is
+what it did before they existed (the kubernetes driver runs the image's
+baked binary, so a lagging image is the normal case there, not an
+accident). The flags cross intact on an image at this version or later.
 
-> **Version skew.** The three flag keys are decoded strictly: an iterion
-> older than their introduction refuses the WHOLE table with `unknown field
-> "tool_call"`, and that refusal fails every gateway route on that binary
-> (`checkGatewayEnv`). Put the keys in `OPENAI_COMPATIBLE_MODELS` only once
-> every replica, runner image and operator CLI reading that env is on a
-> version that knows them.
+> **Version skew.** The three flag keys are decoded strictly — this is the
+> operator table, not the forwarded record: an iterion older than their
+> introduction refuses the WHOLE table, naming the first of the new keys
+> the table uses (`unknown field "reasoning"` for a table that lists
+> `reasoning` first), and that refusal fails every gateway route on that
+> binary (`checkGatewayEnv`). Put the keys in `OPENAI_COMPATIBLE_MODELS`
+> only once every replica, runner image and operator CLI reading that env
+> is on a version that knows them.
 
 The record's `max_output_tokens` is also the route's per-call output budget
 when the node sets no `max_tokens:` and the record knows the window too —

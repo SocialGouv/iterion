@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -8,9 +9,11 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
+	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/llmtypes"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // yes and no read a capability flag the way a consumer must: a nil flag is
@@ -222,28 +225,84 @@ func capturedStderr(t *testing.T, fn func()) string {
 // unknown id is about to cost a run. Red when the read path warns, or when
 // the launch path stops warning.
 func TestAnUnknownGatewayIdIsQuietOnTheReadPathAndLoudOnTheLaunchPath(t *testing.T) {
+	// The verdict must not depend on the developer's ambient level: the
+	// quiet branch's DEBUG line carries the same phrase this greps, and
+	// `error` would filter the WARN the launch half counts.
+	t.Setenv(iterlog.EnvLevel, "info")
 	gatewayEnv(t, "", "scaleway")
 	seedSpecs(t, nil)
 
+	// Both roads a read takes for the same id: the capability resolution,
+	// and the PRICE — modelcatalog.Build and the pricing audit resolve each
+	// entry twice, and the second road ran through the loud pricer.
 	typed := capturedStderr(t, func() {
 		for _, id := range []string{"m", "my", "my-", "my-mo", "my-model"} {
 			if _, err := ResolveSpec(modelroute.OpenAICompatible + "/" + id); err != nil {
 				t.Fatalf("ResolveSpec(%q): %v", id, err)
 			}
+			cost.EffectiveRate(modelroute.OpenAICompatible + "/" + id)
+			// The cost preview's road: a workflow priced in an editor.
+			cost.EstimateUSDQuiet(modelroute.OpenAICompatible+"/"+id, 1000, 1000)
 		}
 	})
 	if strings.Contains(typed, "is in no table") {
 		t.Errorf("the read path logged while the operator typed:\n%s", typed)
 	}
 
-	// The same ids down the launch seam's resolver: one line each, once.
-	compatgw.ResetCatalogCaches()
+	// NO cache reset here: that is the point. A read must leave the per-id
+	// warning budget alone, so the launch that follows in the same process
+	// still says it — once.
 	launched := capturedStderr(t, func() {
 		for range 2 {
 			compatgw.ResolveCatalog("my-model", modelspecs.Default(), os.Getenv)
 		}
 	})
 	if n := strings.Count(launched, `id "my-model" is in no table`); n != 1 {
-		t.Errorf("the launch path logged the unknown id %d times, want exactly 1:\n%s", n, launched)
+		t.Errorf("the launch path logged the unknown id %d times after the read path saw it, want exactly 1:\n%s", n, launched)
+	}
+}
+
+// Loudness is a property of each launch SEAM, not of the function name: a
+// seam switched to the quiet form would otherwise be invisible. One
+// unknown id per seam (the warning is one line per id per process), one
+// line each.
+func TestEveryLaunchSeamSaysAnUnknownGatewayIdOutLoud(t *testing.T) {
+	t.Setenv(iterlog.EnvLevel, "info")
+	gatewayEnv(t, "", "scaleway")
+	seedSpecs(t, nil)
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://198.51.100.7")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "sk-test")
+
+	for _, seam := range []struct {
+		name string
+		id   string
+		call func(t *testing.T, id string)
+	}{{
+		name: "the mid-run compaction sizing",
+		id:   "zz-seam-compaction",
+		call: func(t *testing.T, id string) { gatewayCompactionConfig(id, 0, 0) },
+	}, {
+		name: "the sandbox hand-off",
+		id:   "zz-seam-handoff",
+		call: func(t *testing.T, id string) {
+			if _, _, err := forwardableProviderEnv(context.Background(), modelroute.OpenAICompatible+"/"+id); err != nil {
+				t.Fatalf("forwardableProviderEnv: %v", err)
+			}
+		},
+	}, {
+		// The usage reading of a finished call: the same estimator a
+		// preview calls, in its LOUD form.
+		name: "the usage estimate",
+		id:   "zz-seam-usage",
+		call: func(t *testing.T, id string) {
+			cost.EstimateUSD(modelroute.OpenAICompatible+"/"+id, 1000, 1000)
+		},
+	}} {
+		t.Run(seam.name, func(t *testing.T) {
+			out := capturedStderr(t, func() { seam.call(t, seam.id) })
+			if n := strings.Count(out, `id "`+seam.id+`" is in no table`); n != 1 {
+				t.Errorf("%s logged the unknown id %d times, want exactly 1:\n%s", seam.name, n, out)
+			}
+		})
 	}
 }

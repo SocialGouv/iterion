@@ -345,20 +345,38 @@ func init() {
 	// The estimator's gateway branch reads the same static sources this
 	// package owns (operator table + snapshot — never the live registry,
 	// whose background refresh would make a price depend on fetch timing).
-	cost.SetGatewayPricer(StaticPricer)
+	// Both forms are wired in ONE call: the quiet one is the read paths'
+	// only road to a gateway price, and a nil one there would silently
+	// price every gateway id at zero.
+	cost.SetGatewayPricer(StaticPricer, StaticPricerQuiet)
 }
 
 // StaticPricer prices one gateway WIRE id (the caller in cost.go has
 // already stripped the openai_compatible/ prefix — stripping here too would
 // cut a prefixed gateway id ("scaleway/<id>") at its own slash). Unknown
 // (or an unpriced operator entry) is ok=false — cost 0 is never a measured
-// zero.
+// zero. For a launch or a usage reading: an id in no table earns the
+// catalog's warning here.
 func StaticPricer(wireModelID string) (inputUSDPerMTok, outputUSDPerMTok float64, known bool) {
+	return staticPrice(wireModelID, ResolveCatalog)
+}
+
+// StaticPricerQuiet is StaticPricer for a READ — the same sources and the
+// same verdict, resolved through ResolveCatalogQuiet. A listing, a pricing
+// audit and a cost preview price ids an operator is still typing, and a
+// price lookup is not where an unknown id is news; it must not consume the
+// per-id memo either, or the launch that follows in the same process says
+// nothing.
+func StaticPricerQuiet(wireModelID string) (inputUSDPerMTok, outputUSDPerMTok float64, known bool) {
+	return staticPrice(wireModelID, ResolveCatalogQuiet)
+}
+
+func staticPrice(wireModelID string, resolve func(string, *modelspecs.Registry, func(string) string) Resolved) (inputUSDPerMTok, outputUSDPerMTok float64, known bool) {
 	// Live-aware, like every other catalog consumer: the stamp and the
 	// estimator must read the SAME sources, or one claims what the other
 	// declined (round-2's HIGH). The registry's refresh is background-only;
 	// this never blocks on a fetch.
-	res := ResolveCatalog(wireModelID, modelspecs.Default(), os.Getenv)
+	res := resolve(wireModelID, modelspecs.Default(), os.Getenv)
 	if !res.Priced() {
 		return 0, 0, false
 	}

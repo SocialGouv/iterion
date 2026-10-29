@@ -240,7 +240,10 @@ func (s *Server) handlePreviewCost(w http.ResponseWriter, r *http.Request) {
 		}
 		effort = ir.ResolveEffortLiteral(effort)
 		in, out := estimateNodeTokens(model, effort, maxTok)
-		costPer := cost.EstimateUSD(model, in, out)
+		// A preview prices a workflow nobody launched: the gateway catalog is
+		// read quietly, so a `.bot` naming an id this host has no table for
+		// does not log a warning each time the editor asks for a chip.
+		costPer := cost.EstimateUSDQuiet(model, in, out)
 		if costPer > 0 {
 			hasPricing = true
 		}

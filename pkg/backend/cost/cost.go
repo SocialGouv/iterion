@@ -149,13 +149,35 @@ var modelPriceTable = map[string]modelPricing{
 // stays a leaf, and an unpriced gateway is 0-that-is-not-a-measured-zero.
 var gatewayPricer func(modelID string) (inputUSDPerMTok, outputUSDPerMTok float64, known bool)
 
+// gatewayPricerQuiet prices the same id for a READ — a listing, a pricing
+// audit, a cost preview. Same sources and same verdict; the difference is
+// that an id in no table is not news there (the operator may still be
+// typing it), so the quiet form says nothing and leaves the catalog's
+// per-id warning budget to the launch.
+var gatewayPricerQuiet func(modelID string) (inputUSDPerMTok, outputUSDPerMTok float64, known bool)
+
 // SetGatewayPricer wires the gateway catalog into the estimator. Called by
 // the compatgw package's init — the catalog's owner — never by a caller.
-func SetGatewayPricer(f func(modelID string) (inputUSDPerMTok, outputUSDPerMTok float64, known bool)) {
-	gatewayPricer = f
+// BOTH forms in one call: a read path left with a nil quiet pricer would
+// price every gateway id at zero without saying so.
+func SetGatewayPricer(loud, quiet func(modelID string) (inputUSDPerMTok, outputUSDPerMTok float64, known bool)) {
+	gatewayPricer, gatewayPricerQuiet = loud, quiet
 }
 
+// EstimateUSD is the LAUNCH and usage-reading estimate: a gateway id in no
+// table earns the catalog's warning here, where it is about to cost a run.
 func EstimateUSD(model string, inputTokens, outputTokens int) float64 {
+	return estimateUSD(model, inputTokens, outputTokens, gatewayPricer)
+}
+
+// EstimateUSDQuiet is EstimateUSD for a READ — the same estimate, with a
+// gateway id resolved quietly. What a preview or a listing prices is a
+// model nobody launched yet.
+func EstimateUSDQuiet(model string, inputTokens, outputTokens int) float64 {
+	return estimateUSD(model, inputTokens, outputTokens, gatewayPricerQuiet)
+}
+
+func estimateUSD(model string, inputTokens, outputTokens int, gatewayPricer func(string) (float64, float64, bool)) float64 {
 	// FIRST: the gateway branch — a gateway id is whatever the gateway
 	// serves, and must never false-match a vendor table below, not even
 	// claw's live cache. Unknown or unpriced is 0 the budget reads as
@@ -370,9 +392,13 @@ func StaticTableModels() []string {
 // the committed table against the aggregator alone and declared GLM unpriced,
 // while the live registry was pricing it all along. Reporting on a source the
 // estimator does not use produces confident, false verdicts.
+//
+// Asking what a model WOULD cost is a read — the model listing, the pricing
+// audit — so the gateway catalog is resolved quietly: the rate is identical,
+// and an id in no table is left for the launch to say out loud.
 func EffectiveRate(model string) (inputPerM, outputPerM float64, ok bool) {
-	inputPerM = EstimateUSD(model, 1_000_000, 0)
-	outputPerM = EstimateUSD(model, 0, 1_000_000)
+	inputPerM = EstimateUSDQuiet(model, 1_000_000, 0)
+	outputPerM = EstimateUSDQuiet(model, 0, 1_000_000)
 	return inputPerM, outputPerM, inputPerM > 0 || outputPerM > 0
 }
 

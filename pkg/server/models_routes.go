@@ -256,15 +256,16 @@ type modelCapabilitiesResponse struct {
 	Spec     string `json:"spec"`
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model"`
-	// Source is the table that answered the record's numbers:
-	// "aggregator" when the online model-spec table contributed, "curated"
-	// when only the static heuristics did, and for a gateway id
-	// (openai_compatible/…) its catalog tier — "operator", "catalog-live",
-	// "catalog-snapshot", or "unknown" when no table carries it, which also
-	// omits all three flags. A client caches an aggregator answer
-	// indefinitely and any other briefly: a curated one is what a cold lookup
-	// returns while the background refresh is still in flight, so it can
-	// still improve.
+	// Source is the table that had an ENTRY for the model, record-level and
+	// never per-field: "aggregator" when the online model-spec table
+	// carried the id — whatever it left zero or unsaid, the window
+	// included, is still the curated table's — "curated" when only the
+	// static heuristics did, and for a gateway id (openai_compatible/…) its
+	// catalog tier: "operator", "catalog-live", "catalog-snapshot", or
+	// "unknown" when no table carries it, which also omits all three flags.
+	// A client caches an aggregator answer indefinitely and any other
+	// briefly: a curated one is what a cold lookup returns while the
+	// background refresh is still in flight, so it can still improve.
 	Source          string  `json:"source"`
 	ContextWindow   int     `json:"context_window"`
 	MaxOutputTokens int     `json:"max_output_tokens"`
