@@ -209,6 +209,42 @@ func TestStoreConformance(t *testing.T) {
 					t.Errorf("sealed payload = %v, want %v — a credential that does not survive storage is a connection that cannot authenticate", got.SealedPayload, c.SealedPayload)
 				}
 			})
+
+			// #2761: what may be BELIEVED is decided when the connection is
+			// entrusted, so the grant that decides it has to SURVIVE being
+			// stored — by both implementations. A store that dropped the
+			// third value would leave the record readable and the grant gone,
+			// which is the shape an operator cannot see.
+			t.Run("a connection carrying the trigger grant round-trips", func(t *testing.T) {
+				s := build()
+				c := conn("c1", "tenant-a", "main")
+				c.Capabilities = []connection.Capability{connection.CapAction, connection.CapTrigger}
+				// Through Create, which calls Validate: a capability this
+				// build did not admit would be refused here rather than
+				// stored and dropped.
+				if err := s.Create(ctx, c); err != nil {
+					t.Fatalf("create: %v", err)
+				}
+				got, err := s.Get(ctx, "tenant-a", "c1")
+				if err != nil {
+					t.Fatalf("get: %v", err)
+				}
+				if len(got.Capabilities) != 2 || got.Capabilities[0] != connection.CapAction || got.Capabilities[1] != connection.CapTrigger {
+					t.Fatalf("capabilities = %v, want [action trigger] in that order", got.Capabilities)
+				}
+				if !got.Has(connection.CapTrigger) {
+					t.Error("Has(trigger) = false on a record that declares it")
+				}
+				// And through the LIST path too, which is a different read on
+				// the file store.
+				listed, err := s.List(ctx, "tenant-a", "probe")
+				if err != nil {
+					t.Fatalf("list: %v", err)
+				}
+				if len(listed) != 1 || !listed[0].Has(connection.CapTrigger) {
+					t.Errorf("listed = %+v, want the trigger grant on it", listed)
+				}
+			})
 		})
 	}
 }

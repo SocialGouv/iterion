@@ -201,12 +201,12 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 	// tell an operator whether their PAT rides a header or a query string.
 	fmt.Fprintf(out, "  scheme: %s (%s) · capabilities: %s\n", scheme, placement.Describe(), capabilityNames(caps))
 	fmt.Fprintf(out, "  a .bot reaches it with `connection: %s`\n", alias)
-	// A grant nothing performs is said at the moment it is MADE. `agent` is
-	// accepted (it is a settled decision, and the operator's choice is not
-	// silently narrowed) and it is inert, so the one surface that could tell
-	// them must — the alternative is a connection that reads as attachable to
-	// an agent and is not.
-	if advice := connection.AgentGrantAdvice(caps); advice != "" {
+	// A grant nothing performs is said at the moment it is MADE. `agent` and
+	// `trigger` are accepted (each is a settled decision, and the operator's
+	// choice is not silently narrowed) and both are inert, so the one surface
+	// that could tell them must — the alternative is a connection that reads
+	// as attachable to an agent, or as vouching for a delivery, and is not.
+	if advice := connection.GrantAdvice(caps); advice != "" {
 		fmt.Fprintf(out, "  warning: %s\n", advice)
 	}
 	// A self-hosted instance is the common case for the connectors this
@@ -249,7 +249,7 @@ func ConnectionsList(storeDir string, out io.Writer) error {
 		// Said on EVERY list, not only at `add`: the grant outlives the
 		// command that wrote it, and the operator reading an inventory months
 		// later is the one deciding what this connection can be used for.
-		if advice := connection.AgentGrantAdvice(c.Capabilities); advice != "" {
+		if advice := connection.GrantAdvice(c.Capabilities); advice != "" {
 			fmt.Fprintf(out, "  warning: %s\n", advice)
 		}
 		if c.StatusReason != "" {
@@ -436,7 +436,7 @@ func parseCapabilities(vals []string) ([]connection.Capability, error) {
 	for _, v := range vals {
 		c := connection.Capability(strings.TrimSpace(v))
 		if !connection.ValidCapability(c) {
-			return nil, fmt.Errorf("unknown capability %q (want %q or %q)", v, connection.CapAction, connection.CapAgent)
+			return nil, fmt.Errorf("unknown capability %q (want one of %s)", v, strings.Join(connection.CapabilityNames(), ", "))
 		}
 		out = append(out, c)
 	}

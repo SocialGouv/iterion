@@ -66,12 +66,15 @@ func TestAGrantMismatchIsNotTheFacadeBeingUnwired(t *testing.T) {
 
 // The CLI's half reads the SAME answer: one place decides whether `agent` is
 // honoured, so the day the facade lands no surface keeps saying otherwise.
-func TestAgentGrantAdviceIsOwedExactlyWhenTheGrantIsInert(t *testing.T) {
+func TestGrantAdviceIsOwedExactlyWhenTheGrantIsInert(t *testing.T) {
 	// A TRIPWIRE, not a skip: the day AgentFacadeWired() flips, this reddens
 	// and whoever flipped it has to come back for the two readers that stop
 	// owing the warning (#2758 says so in its own Done-when).
 	if connection.AgentFacadeWired() {
 		t.Fatal("AgentFacadeWired() is true: the MCP facade landed — revisit `connections add` / `connections list` and this test together")
+	}
+	if connection.TriggerIngressWired() {
+		t.Fatal("TriggerIngressWired() is true: the connector webhook ingress landed — revisit the same two surfaces and this test together")
 	}
 	for _, tc := range []struct {
 		name string
@@ -82,9 +85,15 @@ func TestAgentGrantAdviceIsOwedExactlyWhenTheGrantIsInert(t *testing.T) {
 		{"action and agent", []connection.Capability{connection.CapAction, connection.CapAgent}, true},
 		{"action alone", []connection.Capability{connection.CapAction}, false},
 		{"nothing", nil, false},
+		// The third capability, which is why the advice is one function for
+		// the whole set rather than one per capability (#2761): a surface that
+		// had to remember a second call would have kept printing nothing here.
+		{"trigger alone", []connection.Capability{connection.CapTrigger}, true},
+		{"action and trigger", []connection.Capability{connection.CapAction, connection.CapTrigger}, true},
+		{"agent and trigger, both inert", []connection.Capability{connection.CapAgent, connection.CapTrigger}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			advice := connection.AgentGrantAdvice(tc.caps)
+			advice := connection.GrantAdvice(tc.caps)
 			if tc.want && advice == "" {
 				t.Fatal("a grant holding `agent` is owed the sentence that says it is inert")
 			}

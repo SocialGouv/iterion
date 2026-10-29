@@ -87,16 +87,41 @@ const (
 	// credential that automation may spend and an agent may not, and the two
 	// differ in who decides what is called.
 	CapAgent Capability = "agent"
+	// CapTrigger lets the connection be BELIEVED about an inbound delivery:
+	// an event this connector's package declares, vouched for by the secret
+	// the connection was entrusted with (trigger.go).
+	//
+	// Separate from the two above because it is the only one that is not a
+	// use of the credential: an operator may accept a vendor's events without
+	// granting anything the right to spend their token, and the reverse.
+	CapTrigger Capability = "trigger"
 )
+
+// knownCapabilities is the set, in the order every surface lists it.
+//
+// ONE list, so a capability cannot be understood by ValidCapability and
+// missing from the sentence that enumerates what this build understands —
+// which is what an operator reads when their record is refused.
+var knownCapabilities = []Capability{CapAction, CapAgent, CapTrigger}
+
+// CapabilityNames renders the known set for a message or a flag's help.
+func CapabilityNames() []string {
+	out := make([]string, 0, len(knownCapabilities))
+	for _, c := range knownCapabilities {
+		out = append(out, string(c))
+	}
+	return out
+}
 
 // ValidCapability reports whether c is one this build understands. An unknown
 // capability on a stored record is REFUSED rather than ignored: ignoring it
 // would silently narrow a connection an operator widened, and on a mixed-version
 // fleet the older replica would be the one deciding.
 func ValidCapability(c Capability) bool {
-	switch c {
-	case CapAction, CapAgent:
-		return true
+	for _, known := range knownCapabilities {
+		if c == known {
+			return true
+		}
 	}
 	return false
 }
@@ -249,12 +274,12 @@ func (c Connection) Validate() error {
 		return err
 	}
 	if len(c.Capabilities) == 0 {
-		return fmt.Errorf("connection %q: declares no capability, so nothing may use it — say `action`, `agent`, or both", c.ID)
+		return fmt.Errorf("connection %q: declares no capability, so nothing may use it — say one or more of %s", c.ID, strings.Join(CapabilityNames(), ", "))
 	}
 	seen := make(map[Capability]bool, len(c.Capabilities))
 	for _, cap := range c.Capabilities {
 		if !ValidCapability(cap) {
-			return fmt.Errorf("connection %q: unknown capability %q — this build understands %q and %q", c.ID, cap, CapAction, CapAgent)
+			return fmt.Errorf("connection %q: unknown capability %q — this build understands %s", c.ID, cap, strings.Join(CapabilityNames(), ", "))
 		}
 		if seen[cap] {
 			return fmt.Errorf("connection %q: capability %q is listed twice", c.ID, cap)

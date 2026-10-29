@@ -169,6 +169,72 @@ func TestConnectionsAddReportsTheGrantItStored(t *testing.T) {
 	}
 }
 
+// TestConnectionsSaysWhatATriggerGrantBuysToday is #2761 at the two surfaces
+// where a grant is MADE and read back.
+//
+// `trigger` decides what may be believed about an inbound delivery, and the
+// ingress that would read it is the next lot — so the grant is accepted (the
+// operator's choice is not silently narrowed) and both surfaces say it is
+// inert. Through the shared rendering and the shared advice, so a third
+// capability cannot be printed by one command and forgotten by the other.
+func TestConnectionsSaysWhatATriggerGrantBuysToday(t *testing.T) {
+	ws := connectionsWorkspace(t)
+	storeDir := filepath.Join(ws, ".iterion")
+
+	var add bytes.Buffer
+	err := cli.ConnectionsAdd(cli.ConnectionAddOptions{
+		Connector:    "forgejo",
+		Scheme:       "token",
+		Alias:        "inbound",
+		BaseURL:      "https://codeberg.org",
+		TokenEnv:     "FORGE_TEST_TOKEN",
+		Capabilities: []string{"action", "trigger"},
+		StoreDir:     storeDir,
+	}, &add)
+	if err != nil {
+		t.Fatalf("add: %v — `trigger` is a grant this build accepts", err)
+	}
+	for _, want := range []string{"action+trigger", "inert", "trigger"} {
+		if !strings.Contains(add.String(), want) {
+			t.Errorf("add must report %q, got:\n%s", want, add.String())
+		}
+	}
+
+	// Said on EVERY list, not only at `add`: the grant outlives the command
+	// that wrote it.
+	var list bytes.Buffer
+	if err := cli.ConnectionsList(storeDir, &list); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, want := range []string{"action+trigger", "inert"} {
+		if !strings.Contains(list.String(), want) {
+			t.Errorf("list must report %q, got:\n%s", want, list.String())
+		}
+	}
+
+	// And a value this build does not know names the WHOLE set it does: a
+	// message listing two of three sends an operator to widen a record with a
+	// value that would have been taken.
+	var bad bytes.Buffer
+	err = cli.ConnectionsAdd(cli.ConnectionAddOptions{
+		Connector:    "forgejo",
+		Scheme:       "token",
+		Alias:        "nope",
+		BaseURL:      "https://codeberg.org",
+		TokenEnv:     "FORGE_TEST_TOKEN",
+		Capabilities: []string{"webhook"},
+		StoreDir:     storeDir,
+	}, &bad)
+	if err == nil {
+		t.Fatal("an unknown capability must be refused")
+	}
+	for _, want := range connection.CapabilityNames() {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to name %q", err, want)
+		}
+	}
+}
+
 // An explicit grant is reported as given — the case that worked by accident,
 // pinned so the shared rendering cannot regress it while fixing the default.
 func TestConnectionsAddReportsAnExplicitGrant(t *testing.T) {

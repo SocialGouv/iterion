@@ -2,8 +2,10 @@ package main
 
 import (
 	"os"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/spf13/cobra"
 )
 
@@ -79,7 +81,8 @@ func init() {
 	connectionsAddCmd.Flags().String("base-url", "", "the instance to authenticate to (required for a self-hosted connector; otherwise the package's own)")
 	connectionsAddCmd.Flags().String("scheme", "", "which of the package's auth schemes the credential satisfies (required when it declares several)")
 	connectionsAddCmd.Flags().String("token-env", "", "name of the environment variable holding the credential")
-	connectionsAddCmd.Flags().StringSlice("capability", nil, "what the connection may serve: action (default), agent")
+	connectionsAddCmd.Flags().StringSlice("capability", nil,
+		"what the connection may serve, comma-separated: "+strings.Join(connection.CapabilityNames(), ", ")+" (action is the default)")
 	connectionsAddCmd.Flags().String("name", "", "display name")
 
 	connectionsCmd.AddCommand(connectionsAddCmd, connectionsListCmd, connectionsRemoveCmd)
