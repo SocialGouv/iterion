@@ -4756,6 +4756,139 @@
         ],
         "type": "object"
       },
+      "connectionCreateReq": {
+        "properties": {
+          "alias": {
+            "type": "string"
+          },
+          "base_url": {
+            "type": "string"
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "connector": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "scheme_id": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "connector",
+          "token"
+        ],
+        "type": "object"
+      },
+      "connectionDTO": {
+        "properties": {
+          "alias": {
+            "type": "string"
+          },
+          "base_url": {
+            "type": "string"
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "connector": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "granted_scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "type": "string"
+          },
+          "placement": {
+            "type": "string"
+          },
+          "scheme_id": {
+            "type": "string"
+          },
+          "scopes_known": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string"
+          },
+          "status_reason": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "connector",
+          "alias",
+          "base_url",
+          "scheme_id",
+          "placement",
+          "capabilities",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "connectionPatchReq": {
+        "properties": {
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "status_reason": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "createApiKeyReq": {
         "properties": {
           "base_url": {
@@ -13610,6 +13743,174 @@
           }
         },
         "summary": "POST /api/teams/{id}/config-shares/{sid}/rotate",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/connections": {
+      "get": {
+        "operationId": "getTeamsByIdConnections",
+        "parameters": [
+          {
+            "description": "Restrict the listing to one connector id (e.g. forgejo). Absent lists every connector's connections.",
+            "in": "query",
+            "name": "connector",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "connections": {
+                      "items": {
+                        "$ref": "#/components/schemas/connectionDTO"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "connections"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/teams/{id}/connections",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdConnections",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/connectionCreateReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/connectionDTO"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/teams/{id}/connections",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/connections/{conn_id}": {
+      "delete": {
+        "operationId": "deleteTeamsByIdConnectionsByConnId",
+        "responses": {
+          "404": {
+            "description": "connection not found (including another tenant's)"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/connections/{conn_id}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "get": {
+        "operationId": "getTeamsByIdConnectionsByConnId",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/connectionDTO"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "404": {
+            "description": "connection not found (including another tenant's)"
+          }
+        },
+        "summary": "GET /api/teams/{id}/connections/{conn_id}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "conn_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchTeamsByIdConnectionsByConnId",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/connectionPatchReq"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/connectionDTO"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "404": {
+            "description": "connection not found (including another tenant's)"
+          }
+        },
+        "summary": "PATCH /api/teams/{id}/connections/{conn_id}",
         "tags": [
           "teams"
         ]

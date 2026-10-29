@@ -4348,6 +4348,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/teams/{id}/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/connections */
+        get: operations["getTeamsByIdConnections"];
+        put?: never;
+        /** POST /api/teams/{id}/connections */
+        post: operations["postTeamsByIdConnections"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/connections/{conn_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                conn_id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/connections/{conn_id} */
+        get: operations["getTeamsByIdConnectionsByConnId"];
+        put?: never;
+        post?: never;
+        /** DELETE /api/teams/{id}/connections/{conn_id} */
+        delete: operations["deleteTeamsByIdConnectionsByConnId"];
+        options?: never;
+        head?: never;
+        /** PATCH /api/teams/{id}/connections/{conn_id} */
+        patch: operations["patchTeamsByIdConnectionsByConnId"];
+        trace?: never;
+    };
     "/api/teams/{id}/credentials/preview": {
         parameters: {
             query?: never;
@@ -7792,6 +7834,43 @@ export interface components {
             current_password: string;
             email: string;
             new_password: string;
+        };
+        connectionCreateReq: {
+            alias?: string;
+            base_url?: string;
+            capabilities?: string[];
+            connector: string;
+            display_name?: string;
+            scheme_id?: string;
+            token: string;
+        };
+        connectionDTO: {
+            alias: string;
+            base_url: string;
+            capabilities: string[];
+            connector: string;
+            /** Format: date-time */
+            created_at: string;
+            display_name?: string;
+            /** Format: date-time */
+            expires_at?: string;
+            granted_scopes?: string[];
+            id: string;
+            placement: string;
+            scheme_id: string;
+            scopes_known?: boolean;
+            status: string;
+            status_reason?: string;
+            /** Format: date-time */
+            updated_at: string;
+            warnings?: string[];
+        };
+        connectionPatchReq: {
+            capabilities?: string[];
+            display_name?: string;
+            status?: string;
+            status_reason?: string;
+            token?: string;
         };
         createApiKeyReq: {
             base_url?: string;
@@ -15226,6 +15305,144 @@ export interface operations {
             };
             /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdConnections: {
+        parameters: {
+            query?: {
+                /** @description Restrict the listing to one connector id (e.g. forgejo). Absent lists every connector's connections. */
+                connector?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        connections: components["schemas"]["connectionDTO"][];
+                    };
+                };
+            };
+        };
+    };
+    postTeamsByIdConnections: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["connectionCreateReq"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["connectionDTO"];
+                };
+            };
+        };
+    };
+    getTeamsByIdConnectionsByConnId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                conn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["connectionDTO"];
+                };
+            };
+            /** @description connection not found (including another tenant's) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteTeamsByIdConnectionsByConnId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                conn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description connection not found (including another tenant's) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchTeamsByIdConnectionsByConnId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                conn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["connectionPatchReq"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["connectionDTO"];
+                };
+            };
+            /** @description connection not found (including another tenant's) */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
