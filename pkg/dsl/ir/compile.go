@@ -2075,6 +2075,15 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 						existing.MaxIterations, was,
 						ae.Loop.MaxIterations, now)
 				}
+				// The guard clause is the loop's, so every edge that shares
+				// the loop must agree on it too — otherwise which word the
+				// guard obeys would depend on the edge the run happens to
+				// cross.
+				if existing.Guard != ae.Loop.Guard {
+					c.errorfOnEdge(DiagDuplicateLoop, ae,
+						"loop %q has conflicting guard settings: %q vs %q",
+						ae.Loop.Name, existing.Guard, ae.Loop.Guard)
+				}
 				if existing.MaxIterationsAST != nil && existing.capRecords > 0 {
 					// Every edge that carries the loop reads its cap again
 					// (validateLoopCapExpressions walks it per edge), so each
@@ -2096,6 +2105,18 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 					MaxIterationsExpr: ae.Loop.MaxIterationsExpr,
 					Unbounded:         ae.Loop.Unbounded,
 					FuelCap:           ae.Loop.FuelCap,
+					Guard:             ae.Loop.Guard,
+				}
+				// Same domain as the workflow's loop_budget_guard (C133):
+				// anything but on|off is a typo that would otherwise read
+				// as "inherit" and silently keep a guard the author meant
+				// to lift for this loop.
+				switch strings.ToLower(strings.TrimSpace(loop.Guard)) {
+				case "", "on", "off":
+				default:
+					c.errorfOnEdge(DiagInvalidLoopClauseGuard, ae,
+						"loop %q has invalid guard %q; valid values are on, off",
+						ae.Loop.Name, ae.Loop.Guard)
 				}
 				c.compileLoopCap(loop, ae)
 				loops[ae.Loop.Name] = loop

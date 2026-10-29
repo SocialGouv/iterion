@@ -142,6 +142,31 @@ func TestUnparseKeepsGroupsAndUses(t *testing.T) {
 	}
 }
 
+// The loop clause's `guard: off` is the loop's own word on the budget
+// guard (#2677): a loaded-then-saved .bot must not drop it, or a studio
+// save would silently re-arm a guard the author lifted for that loop.
+func TestUnparseKeepsTheLoopGuardClause(t *testing.T) {
+	src := "workflow w:\n  entry: a\n  a -> b when done_ok\n  a -> b as reask(2) guard: off\n  a -> done\n"
+	pr := parsertest.Parse("guard.bot", src)
+	for _, d := range pr.Diagnostics {
+		t.Fatalf("fixture does not parse: %s", d.Error())
+	}
+	text := unparse.Unparse(pr.File)
+	if !strings.Contains(text, "as reask(2) guard: off") {
+		t.Fatalf("the guard clause did not come out:\n%s", text)
+	}
+	pr2 := parsertest.Parse("guard.bot", text)
+	for _, d := range pr2.Diagnostics {
+		t.Fatalf("does not parse back: %s\n%s", d.Error(), text)
+	}
+	if got := pr2.File.Workflows[0].Edges[1].Loop.Guard; got != "off" {
+		t.Errorf("guard came back as %q, want off", got)
+	}
+	if err := unparse.Verify(pr.File, text); err != nil {
+		t.Errorf("Verify: %v", err)
+	}
+}
+
 // Every workflow in the repository must survive parse → unparse → parse as
 // the same program: that is what a studio save of an untouched document
 // promises.

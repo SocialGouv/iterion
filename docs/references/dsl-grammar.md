@@ -535,7 +535,7 @@ edge = node_ref "->" node_ref { "->" node_ref } { when_or_else | iteration | wit
 node_ref = IDENT { "." IDENT } | "done" | "fail" ;
 
 when_or_else = "when" ( [ "not" ] IDENT | STRING ) | "else" ;
-iteration = "as" IDENT "(" ( INT | STRING | "unbounded" [ INT ] ) ")"
+iteration = "as" IDENT "(" ( INT | STRING | "unbounded" [ INT ] ) ")" [ "guard" ":" ( "on" | "off" ) ]
           | "as foreach" IDENT "(" IDENT "in" STRING ")" ;
 with_block = "with" "{" { IDENT ":" ( STRING | INT | FLOAT | BOOL ) [ "," ] } "}" ;
 ```

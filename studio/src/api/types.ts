@@ -917,13 +917,15 @@ export interface WhenClause {
 // template bound (`as name("{{...}}")`) as `max_iterations_expr`, and
 // the unbounded form (`as name(unbounded [fuel])`) as `unbounded` (+
 // optional `fuel_cap`). Consumers must handle an absent bound instead
-// of assuming a number.
+// of assuming a number. `guard` carries the clause's budget-guard word
+// (`as name(3) guard: off`), absent when the loop inherits the chain.
 export interface LoopClause {
   name: string;
   max_iterations?: number;
   max_iterations_expr?: string;
   unbounded?: boolean;
   fuel_cap?: number;
+  guard?: string;
 }
 
 export interface WithEntry {

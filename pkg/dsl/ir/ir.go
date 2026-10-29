@@ -1643,6 +1643,14 @@ type Loop struct {
 	// resolved per-loop fuel: the clause's own fuel, else budget.max_iterations.
 	Unbounded bool
 	FuelCap   int
+	// Guard is the loop-clause opt-out of the back-edge affordability
+	// guard (`as name(3) guard: off`): "on" or "off", empty inherits the
+	// chain (--loop-budget-guard → workflow loop_budget_guard: →
+	// ITERION_LOOP_BUDGET_GUARD → on). The runtime reads it through
+	// loopBudgetGuardEnabledFor; the exit grace refuses itself when ANY
+	// loop opts out, because a graced run could take that loop's
+	// back-edge and keep looping on a spent budget.
+	Guard string
 	// Body is the set of node IDs that participate in the loop's cycle —
 	// each node from which the loop's edge target is reachable and which
 	// can reach the loop's edge source (i.e. nodes on a path that closes

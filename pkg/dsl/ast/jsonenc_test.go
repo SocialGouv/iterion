@@ -277,7 +277,8 @@ func TestLoopClauseRoundtrip(t *testing.T) {
 	// The loop bound has three wire forms (literal / expression / unbounded
 	// with optional fuel); each must survive marshal → unmarshal untouched,
 	// or a studio open→save silently rewrites `as name(unbounded)` to
-	// `as name(0)`.
+	// `as name(0)`. The `guard: off` opt-out (#2677) rides the same clause:
+	// dropped from the wire, a studio save would re-arm the guard.
 	original := &ast.File{
 		Workflows: []*ast.WorkflowDecl{
 			{
@@ -288,6 +289,7 @@ func TestLoopClauseRoundtrip(t *testing.T) {
 					{From: "b", To: "c", Loop: &ast.LoopClause{Name: "expr", MaxIterationsExpr: "{{vars.max}}"}},
 					{From: "c", To: "d", Loop: &ast.LoopClause{Name: "free", Unbounded: true}},
 					{From: "d", To: "e", Loop: &ast.LoopClause{Name: "fuelled", Unbounded: true, FuelCap: 40}},
+					{From: "e", To: "f", Loop: &ast.LoopClause{Name: "reask", MaxIterations: 2, Guard: "off"}},
 				},
 			},
 		},
@@ -305,6 +307,9 @@ func TestLoopClauseRoundtrip(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"unbounded"`) || !strings.Contains(string(data), `"fuel_cap"`) {
 		t.Errorf("unexpected JSON (missing unbounded/fuel_cap): %s", data)
+	}
+	if !strings.Contains(string(data), `"guard": "off"`) {
+		t.Errorf("unexpected JSON (missing guard): %s", data)
 	}
 }
 

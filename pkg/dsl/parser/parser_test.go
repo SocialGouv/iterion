@@ -472,6 +472,49 @@ func TestEdgeLoopQuotedIntLiteralCap(t *testing.T) {
 	assertEq(t, "Loop.MaxIterationsExpr", e.Loop.MaxIterationsExpr, "")
 }
 
+func TestEdgeLoopGuardClause(t *testing.T) {
+	// `as <name>(<cap>) guard: off` — the loop's own word on the budget
+	// guard (#2677): a re-ask of a shrinking subset is bounded by its cap
+	// alone and opts out of the affordability pricing. The value's domain
+	// is the compiler's (C168); the parser carries the text.
+	src := `workflow test:
+  entry: a
+
+  a -> b as reask("vars.max_reask") guard: off with { k: "{{outputs.a}}" }
+  b -> a as keep(3)
+`
+	res := parser.ParseLenient("test.bot", src)
+	assertNoDiags(t, res)
+
+	e := res.File.Workflows[0].Edges[0]
+	if e.Loop == nil {
+		t.Fatal("expected loop clause")
+	}
+	assertEq(t, "Loop.Name", e.Loop.Name, "reask")
+	assertEq(t, "Loop.MaxIterationsExpr", e.Loop.MaxIterationsExpr, "vars.max_reask")
+	assertEq(t, "Loop.Guard", e.Loop.Guard, "off")
+	if len(e.With) != 1 {
+		t.Fatalf("the with block must survive the guard clause, got %d entries", len(e.With))
+	}
+
+	plain := res.File.Workflows[0].Edges[1]
+	if plain.Loop == nil || plain.Loop.Guard != "" {
+		t.Fatalf("a loop without the clause inherits: Guard = %q, want empty", plain.Loop.Guard)
+	}
+}
+
+func TestEdgeLoopGuardClauseNeedsAValue(t *testing.T) {
+	src := `workflow test:
+  entry: a
+
+  a -> b as reask(2) guard:
+`
+	res := parser.ParseLenient("test.bot", src)
+	if len(res.Diagnostics) == 0 {
+		t.Fatal("guard: with no value must be a parse diagnostic")
+	}
+}
+
 func TestEdgeLoopMalformedExpressionCapRejected(t *testing.T) {
 	// A malformed expression must fail at the cap, before compilation.
 	src := `workflow test:

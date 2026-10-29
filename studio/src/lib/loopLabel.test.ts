@@ -42,6 +42,12 @@ describe("formatLoopBadge", () => {
     );
   });
 
+  it("shows the loop's guard opt-out", () => {
+    expect(formatLoopBadge({ name: "reask", max_iterations: 2, guard: "off" })).toBe(
+      "loop:reask(2) guard:off",
+    );
+  });
+
   it("never renders the string 'undefined'", () => {
     expect(formatLoopBadge({ name: "l" })).not.toContain("undefined");
   });

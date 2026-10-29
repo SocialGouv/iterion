@@ -107,8 +107,19 @@ func (e *Engine) withinSharedBudgetGrace(b *SharedBudget) (dimension string, ok 
 	// back-edge and keep looping on a spent budget, so the grace must
 	// not be offered.
 	//
+	// The same holds one loop down: a loop whose own clause lifts the
+	// guard (`as name(…) guard: off`) is a back-edge the run can still
+	// take past a spent cap, so ONE opted-out loop refuses the grace for
+	// the run.
 	if !e.loopBudgetGuardEnabled() {
 		return "", false
+	}
+	if e.workflow != nil {
+		for loopName := range e.workflow.Loops {
+			if !e.loopBudgetGuardEnabledFor(loopName) {
+				return "", false
+			}
+		}
 	}
 	ratio := budgetExitGraceRatio()
 	if ratio <= 0 {

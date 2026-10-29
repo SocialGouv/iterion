@@ -1065,7 +1065,11 @@ The decline is visible, never silent: a `budget_warning` event carrying
 remaining allowance, the price of the last iteration, and the axis's
 `used`/`limit` (durations in seconds, with an explicit `unit`). A
 conditional back-edge is only priced on a crossing where its `when`
-actually holds.
+actually holds. The event's `detail` says the decline in prose — the
+toast, the run report and the alert Reason render it, where the bare
+figures would read as "budget at 59%", the opposite of what happened —
+and names the escape hatches below, so an operator reading the decline
+knows the way through.
 
 The guard is **on by default** and switched off through the usual
 precedence chain — `--loop-budget-guard off` (on `run` and `resume`) →
@@ -1075,6 +1079,20 @@ run-until-you-hit-the-wall behaviour, hard failure included. An invalid
 value is diagnostic **C133**, not a silent fall back to the default. The
 90%-hard-limit and exceeded checks stay as the backstop for a single node
 that overruns on its own.
+
+One loop can lift the guard for **itself**, on the clause that declares
+it: `as reask("vars.max_reask") guard: off`. That is the answer for a
+loop whose iterations *shrink* — a re-ask of the still-pending subset, a
+retry of the failed batch — which the guard otherwise prices at its
+first, largest pass and declines even when the next iteration would fit:
+such a loop is bounded by its cap alone, so the affordability pricing
+adds nothing on it. The clause sits between the launch override and the
+workflow block in the chain (the operator's launch word outranks it), an
+invalid value is **C178**, and every edge sharing the loop must agree on
+it. Two honest costs: a run with an opted-out loop gets no exit grace
+(the grace borrows its "no further iteration" half from the guard), and
+the clause is the bot's word — an operator's hatch stays the run-wide
+chain.
 
 The run-level override **travels** — onto the cloud queue
 (`RunMessage.loop_budget_guard`, schema v7) and into a detached
@@ -1104,7 +1122,9 @@ The grace is **refused** in these cases:
 
 - **the loop budget guard is off** — the "no further iteration" half of the
   safety argument belongs to that guard, and with it lifted a graced run
-  could take a back-edge and keep looping on a spent budget;
+  could take a back-edge and keep looping on a spent budget. The clause
+  form counts too: ONE loop carrying `guard: off` refuses the grace for
+  the run, because that loop's back-edge stays crossable past a spent cap;
 
   The guard prices `loop`-named back-edges. A `foreach` back-edge is
   bounded by its collection rather than by affordability, so a graced run

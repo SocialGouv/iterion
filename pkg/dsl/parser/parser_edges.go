@@ -301,6 +301,19 @@ func (p *parser) parseLoopClause() *ast.LoopClause {
 		p.next()
 	}
 	p.expect(TokenRParen)
+	// `as <name>(<cap>) guard: off`: the loop's own word on the budget
+	// guard, the most specific layer of its precedence chain (the launch
+	// override aside). The value's domain (on|off) is the compiler's to
+	// check — C178, positioned on the edge.
+	if tokenAsIdent(p.peek()) == "guard" {
+		p.next() // consume "guard"
+		p.expect(TokenColon)
+		g := p.next()
+		lc.Guard = tokenAsIdent(g)
+		if lc.Guard == "" {
+			p.addError(DiagExpectedToken, g, "expected on or off after 'guard:' in the loop clause")
+		}
+	}
 	return lc
 }
 

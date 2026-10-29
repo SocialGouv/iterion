@@ -114,6 +114,7 @@ const (
 
 	// Loop back-edge affordability guard diagnostics.
 	DiagInvalidLoopBudgetGuard DiagCode = "C133" // loop_budget_guard: value not one of on|off (error)
+	DiagInvalidLoopClauseGuard DiagCode = "C178" // a loop clause's guard: value not one of on|off (error)
 
 	// Target-repo devbox provisioning switch diagnostics.
 	DiagInvalidRepoDevbox DiagCode = "C134" // repo_devbox: value not one of on|off (error)

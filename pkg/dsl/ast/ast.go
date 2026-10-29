@@ -1232,7 +1232,14 @@ type LoopClause struct {
 	// a runtime liveness monitor that halts a no-progress (fixpoint) loop.
 	Unbounded bool
 	FuelCap   int // optional per-loop fuel for the unbounded form (0 = inherit budget.max_iterations)
-	Span      Span
+	// Guard is the loop's own word on the budget guard (`as name(3)
+	// guard: off`): "on" or "off", empty inherits the chain
+	// (--loop-budget-guard → workflow loop_budget_guard: →
+	// ITERION_LOOP_BUDGET_GUARD → on). A loop whose iterations shrink —
+	// a re-ask of the still-pending subset, priced by the guard at its
+	// first, largest pass — opts out here: its cap alone bounds it.
+	Guard string
+	Span  Span
 }
 
 // WithEntry is a single key-value mapping inside a `with { ... }` block.

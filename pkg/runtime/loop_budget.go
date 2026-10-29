@@ -39,18 +39,33 @@ func (v loopBudgetVerdict) display() (spent, remaining, used, limit float64, uni
 }
 
 // loopBudgetGuardEnabled reports whether the back-edge affordability
-// guard is active, resolving the precedence chain the rest of the engine
-// uses: CLI/launch override → workflow block → ITERION_LOOP_BUDGET_GUARD
+// guard is active for the run as a whole — the chain without a loop in
+// scope: CLI/launch override → workflow block → ITERION_LOOP_BUDGET_GUARD
 // → on.
 //
 // It defaults ON because the behaviour it replaces loses work. Turning it
 // off is the escape hatch for an operator who would rather a loop run at
 // its cap head-on and take the hard failure.
 func (e *Engine) loopBudgetGuardEnabled() bool {
+	return e.loopBudgetGuardEnabledFor("")
+}
+
+// loopBudgetGuardEnabledFor resolves the chain for ONE loop: the launch
+// override (the operator's explicit word) decides first, then the loop's
+// own clause (`as name(3) guard: off` — the bot author's word for THAT
+// loop, the most specific layer), then the workflow block, the env, and
+// the default. A loop that is not declared in the workflow resolves the
+// bare chain.
+func (e *Engine) loopBudgetGuardEnabledFor(loopName string) bool {
 	if v, ok := parseLoopBudgetGuard(e.loopBudgetGuardOverride); ok {
 		return v
 	}
 	if e.workflow != nil {
+		if loop := e.workflow.Loops[loopName]; loop != nil {
+			if v, ok := parseLoopBudgetGuard(loop.Guard); ok {
+				return v
+			}
+		}
 		if v, ok := parseLoopBudgetGuard(e.workflow.LoopBudgetGuard); ok {
 			return v
 		}
@@ -101,7 +116,7 @@ func ValidateLoopBudgetGuardMode(v string) error {
 // exit path with what it has banked. The exceeded and hard-limit checks
 // stay as the backstop for a single node that overruns on its own.
 func (e *Engine) loopBudgetShortfall(loopName string, rs *runState) *loopBudgetVerdict {
-	if !e.loopBudgetGuardEnabled() || rs.branchLocal {
+	if !e.loopBudgetGuardEnabledFor(loopName) || rs.branchLocal {
 		return nil
 	}
 	axes := rs.budget.Axes()
@@ -153,6 +168,14 @@ func (e *Engine) loopBudgetShortfall(loopName string, rs *runState) *loopBudgetV
 // would_reach, at or past threshold (the hard-limit share of the limit),
 // which is where the engine refuses to start any node. A reader with more
 // remaining than needed is not left guessing why the loop stopped.
+//
+// The detail is the decline's prose for the surfaces that render a warning
+// without its figures (the operator toast, the run report, the alert
+// Reason): without it those read the ratio phrasing — "duration budget at
+// 59%" — the opposite of what happened. It names the pricing basis (the
+// LAST iteration's cost, so a shrinking loop reads priced by its first,
+// largest pass) and the escape hatches, so an operator reading the decline
+// knows the way through.
 func (v loopBudgetVerdict) eventData(loopName string) map[string]any {
 	spent, remaining, used, limit, unit := v.display()
 	data := map[string]any{
@@ -160,11 +183,22 @@ func (v loopBudgetVerdict) eventData(loopName string) map[string]any {
 		"dimension": v.dimension, "remaining": remaining, "needed": spent,
 		"used": used, "limit": limit,
 		"threshold": budgetHardThreshold * limit, "would_reach": used + spent,
+		"detail": v.detailText(loopName),
 	}
 	if unit != "" {
 		data["unit"] = unit
 	}
 	return data
+}
+
+// detailText renders the decline in one sentence of prose plus the way
+// through: the per-loop clause first (the shrinking-iteration case it
+// exists for), then the run-wide chain.
+func (v loopBudgetVerdict) detailText(loopName string) string {
+	spent, _, used, limit, unit := v.display()
+	u := unitSuffix(unit)
+	return fmt.Sprintf("loop %q declined its back-edge: another iteration, priced at the last one's cost (%.2f%s), would reach %.2f of the %.2f%s %s limit — at or past the %.2f%s threshold where the engine stops starting nodes; the run leaves by its other edges with what it banked. The price is the last iteration's, so a loop whose iterations shrink (a re-ask of the still-pending subset) is priced by its first, largest pass: lift the guard for this loop with `as %s(...) guard: off`, or run-wide with `loop_budget_guard: off` / `--loop-budget-guard off`.",
+		loopName, spent, u, used+spent, limit, u, v.dimension, budgetHardThreshold*limit, u, loopName)
 }
 
 // markLoopBudget re-bases a loop's price on the run's consumption right

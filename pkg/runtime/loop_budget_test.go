@@ -710,3 +710,128 @@ func TestLoopBudgetVerdict_EventDataInOperatorUnits(t *testing.T) {
 		t.Fatalf("tokens event = %v: want threshold 9000, would_reach 11000, no unit", pd)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The per-loop clause (`as name(…) guard: off`, #2677)
+// ---------------------------------------------------------------------------
+
+// TestLoopBudgetGuard_LoopClauseOptsOut is the clause's end-to-end witness:
+// a loop that lifts the guard for ITSELF runs at its cap head-on and takes
+// the hard failure — the behaviour the workflow-wide switch gives, scoped
+// to the one loop whose shrinking iterations the guard misprices (a re-ask
+// of the still-pending subset is bounded by the cap alone).
+func TestLoopBudgetGuard_LoopClauseOptsOut(t *testing.T) {
+	wf := campaignShapedWorkflow(10_000)
+	wf.Loops["continuation"].Guard = "off"
+	exec, _, delivered := costingExecutor(3_000)
+
+	eng := New(wf, tmpStore(t), exec)
+	if err := eng.Run(context.Background(), "run-clause-guard-off", nil); err == nil {
+		t.Fatal("expected the opted-out loop to run at its cap and die on the token budget")
+	}
+	if *delivered != 0 {
+		t.Errorf("delivery tail ran %d times with the loop's guard off, want 0", *delivered)
+	}
+}
+
+// TestLoopBudgetGuard_LoopClauseOnBeatsWorkflowOff pins the layer's place
+// in the chain: the clause is more specific than the workflow block, so a
+// loop that names `guard: on` keeps the guard under a workflow that lifted
+// it — and only the launch override outranks the clause.
+func TestLoopBudgetGuard_LoopClauseOnBeatsWorkflowOff(t *testing.T) {
+	wf := campaignShapedWorkflow(10_000)
+	wf.LoopBudgetGuard = "off"
+	wf.Loops["continuation"].Guard = "on"
+	exec, _, delivered := costingExecutor(3_000)
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+	if err := eng.Run(context.Background(), "run-clause-guard-on", nil); err != nil {
+		t.Fatalf("the clause kept the guard: the run should leave through its delivery tail, got: %v", err)
+	}
+	if *delivered != 1 {
+		t.Fatalf("delivery tail ran %d times, want 1 — the clause's `guard: on` did not reach the decision", *delivered)
+	}
+}
+
+// TestLoopBudgetGuard_LaunchOverrideBeatsTheClause: the operator's explicit
+// launch word outranks the bot author's clause — a run launched with the
+// guard forced on declines the back-edge even for a loop that opted out.
+func TestLoopBudgetGuard_LaunchOverrideBeatsTheClause(t *testing.T) {
+	wf := campaignShapedWorkflow(10_000)
+	wf.Loops["continuation"].Guard = "off"
+	exec, _, delivered := costingExecutor(3_000)
+
+	eng := New(wf, tmpStore(t), exec, WithLoopBudgetGuard("on"))
+	if err := eng.Run(context.Background(), "run-override-beats-clause", nil); err != nil {
+		t.Fatalf("the override re-armed the guard: the run should leave through its delivery tail, got: %v", err)
+	}
+	if *delivered != 1 {
+		t.Fatalf("delivery tail ran %d times, want 1 — the launch override lost to the clause", *delivered)
+	}
+}
+
+// TestLoopBudgetGuard_OneOptedOutLoopRefusesTheExitGrace: the grace borrows
+// its "no further iteration" half from the guard. A loop whose clause lifts
+// it is a back-edge a graced run could still take past a spent cap, so ONE
+// opted-out loop refuses the grace for the run — while a workflow whose
+// loops all keep the guard graces exactly as before.
+func TestLoopBudgetGuard_OneOptedOutLoopRefusesTheExitGrace(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		guard string
+		want  bool
+	}{
+		{"every loop guarded: grace stands", "", true},
+		{"one loop opted out: no grace", "off", false},
+		{"one loop explicitly on: grace stands", "on", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wf := campaignShapedWorkflow(10_000)
+			wf.Loops["continuation"].Guard = tc.guard
+			eng := New(wf, tmpStore(t), newStubExecutor())
+			b := newSharedBudget(wf.Budget, eng.logger)
+			// Past the cap but inside the grace room (cap × 1.1).
+			b.RecordUsage(spendOf(10_100, 0))
+			if _, ok := eng.withinSharedBudgetGrace(b); ok != tc.want {
+				t.Fatalf("grace = %v, want %v", ok, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoopBudgetGuard_DeclineNamesItsEscapeHatches is the honest-decline
+// half of #2677: the budget_warning's detail says the price is the LAST
+// iteration's (so a shrinking loop reads priced by its first, largest
+// pass) and names the ways through — the per-loop clause and the run-wide
+// switch. Without the detail the toast and the report render the ratio
+// phrasing ("duration budget at 59%") — the opposite of what happened.
+func TestLoopBudgetGuard_DeclineNamesItsEscapeHatches(t *testing.T) {
+	wf := campaignShapedWorkflow(10_000)
+	exec, _, _ := costingExecutor(3_000)
+	st := tmpStore(t)
+	eng := New(wf, st, exec)
+	if err := eng.Run(context.Background(), "rule-detail", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	evs, err := st.LoadEvents(context.Background(), "rule-detail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range evs {
+		if ev.Type != store.EventBudgetWarning || ev.Data["reason"] != "loop_budget_guard" {
+			continue
+		}
+		detail, _ := ev.Data["detail"].(string)
+		if detail == "" {
+			t.Fatal("the guard's budget_warning carries no detail: the toast and the report render the ratio phrasing, the opposite of what happened")
+		}
+		for _, marker := range []string{"guard: off", "loop_budget_guard: off", "the last one's cost", "continuation"} {
+			if !strings.Contains(detail, marker) {
+				t.Errorf("detail does not name %q:\n%s", marker, detail)
+			}
+		}
+		return
+	}
+	t.Fatal("no loop_budget_guard warning was emitted")
+}
