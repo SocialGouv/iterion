@@ -568,13 +568,38 @@ func TestGuardFoundIgnoresOnlyAnUnknownProcessThatHasLeft(t *testing.T) {
 	}
 }
 
+// intruderPIDLine is how the helper half below tells its parent which process
+// it started, so the parent asserts the guard refused THAT process and not a
+// stranger that happened to be running on the shard.
+var intruderPIDLine = regexp.MustCompile(`intruder pid (\d+)`)
+
 func TestGuardFoundRefusesALiveIntruder(t *testing.T) {
 	const helper = "ITERION_TEST_GUARD_FOUND_LIVE_INTRUDER"
 	if os.Getenv(helper) == "1" {
 		w := newNodeWorld(t)
 		intruder := w.sh("intruder", []string{w.entry()}, true, false, `exec sleep 300`)
+		fmt.Printf("intruder pid %d\n", intruder)
 		awaitSessionHolds(t, w.token, "intruder", intruder)
-		w.guardFound()
+		// The verdict is read off a scan that PROVABLY held the intruder,
+		// alive, at the instant the guard judged it: a scan that missed it
+		// judged nothing, and a scan CAN miss it — a process in the middle of
+		// its exec takes its /proc/<pid>/environ with it for an instant, which
+		// lands it in the scan's unreadable set instead of the session, and a
+		// loaded shard widens that window. So the premise is awaited at the
+		// guard's own seam and the scan is taken again when it was not met,
+		// instead of reading the guard's silence as acceptance: load changes
+		// how long this half takes, never what it decides.
+		judged := false
+		w.afterGuardScan = func(found []SessionProcess) {
+			judged = slices.ContainsFunc(found, func(p SessionProcess) bool { return p.PID == intruder }) &&
+				isRunning(intruder)
+		}
+		awaitPremise(t, fmt.Sprintf("no scan of session %s held the intruder (pid %d) alive for the guard to judge", w.token, intruder), func() bool {
+			w.guardFound() // refuses — and ends this helper — when it judges that scan
+			return judged
+		})
+		// Reached only when the guard ACCEPTED an intruder the scan it judged
+		// held alive: the helper exits 0, which is what the half below reads.
 		return
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestGuardFoundRefusesALiveIntruder$")
@@ -583,8 +608,13 @@ func TestGuardFoundRefusesALiveIntruder(t *testing.T) {
 	if err == nil {
 		t.Fatal("guardFound accepted a live process this test did not start")
 	}
-	if !strings.Contains(string(out), "which this test did not start") {
-		t.Fatalf("the live-intruder helper failed for another reason: %v\n%s", err, out)
+	m := intruderPIDLine.FindSubmatch(out)
+	if m == nil {
+		t.Fatalf("the live-intruder helper failed before it started its intruder: %v\n%s", err, out)
+	}
+	refused := fmt.Sprintf("the session holds pid %s", m[1])
+	if !strings.Contains(string(out), "which this test did not start") || !strings.Contains(string(out), refused) {
+		t.Fatalf("the helper failed for another reason, or refused a process other than the intruder it started (%q): %v\n%s", refused, err, out)
 	}
 }
 
