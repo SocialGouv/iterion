@@ -78,6 +78,72 @@ type Corpus struct {
 	// measurement is still guessing at.
 	TopVerbs     map[string]int `json:"top_verbs,omitempty"`
 	UnknownVerbs map[string]int `json:"unknown_verbs,omitempty"`
+
+	// Reconciliation is the corpus's view of UsageFeeds. Every other
+	// number in this report describes a corpus and moves with it; this
+	// one states an invariant, which is why it is the part of the
+	// measurement a gate can hold.
+	Reconciliation Reconciliation `json:"reconciliation"`
+}
+
+// Reconciliation aggregates the per-node comparison of the two usage
+// recordings (see UsageFeeds).
+type Reconciliation struct {
+	Steps                int `json:"steps"`
+	StepsWithoutUsage    int `json:"steps_without_usage"`
+	StepsUsageUnreported int `json:"steps_usage_unreported"`
+	StepsOutsideANode    int `json:"steps_outside_a_node"`
+	NodesWithSteps       int `json:"nodes_with_steps"`
+	// ReconcilableNodes is the comparison's coverage: nodes where both
+	// recordings carry usage and the checkpoints reported a real split.
+	// UnsplitAggregateNodes are excluded from it and stated apart — a
+	// backend that could not split its total leaves no field-by-field
+	// baseline, which is a limit of the recording, not a gap.
+	ReconcilableNodes     int `json:"reconcilable_nodes"`
+	ReconciledNodes       int `json:"reconciled_nodes"`
+	NodesWithGap          int `json:"nodes_with_gap"`
+	UnsplitAggregateNodes int `json:"unsplit_aggregate_nodes"`
+	// The gap totals sum MAGNITUDES, so a node short by 500 and a node
+	// over by 500 do not cancel into "the corpus reconciles".
+	GapInputTokens  int `json:"gap_input_tokens"`
+	GapOutputTokens int `json:"gap_output_tokens"`
+	// The cache fields the feed carries and the checkpoint has no column
+	// for: reported, never reconciled.
+	StepCacheReadTokens  int `json:"step_cache_read_tokens"`
+	StepCacheWriteTokens int `json:"step_cache_write_tokens"`
+}
+
+// fold adds one node's feeds to the corpus comparison.
+func (r *Reconciliation) fold(u UsageFeeds) {
+	r.Steps += u.Steps
+	r.StepsWithoutUsage += u.Steps - u.StepsWithUsage
+	r.StepsUsageUnreported += u.StepsUsageUnreported
+	r.StepCacheReadTokens += u.StepCacheReadTokens
+	r.StepCacheWriteTokens += u.StepCacheWriteTokens
+	if u.Steps > 0 {
+		r.NodesWithSteps++
+	}
+	if u.StepsWithUsage > 0 && u.TurnAggregateTokens > 0 {
+		r.UnsplitAggregateNodes++
+	}
+	if !u.Reconcilable {
+		return
+	}
+	r.ReconcilableNodes++
+	if u.Reconciled() {
+		r.ReconciledNodes++
+		return
+	}
+	r.NodesWithGap++
+	r.GapInputTokens += abs(u.GapInputTokens)
+	r.GapOutputTokens += abs(u.GapOutputTokens)
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 // Aggregate folds run profiles into a corpus.
@@ -95,6 +161,7 @@ func Aggregate(profiles []*RunProfile) Corpus {
 		c.Runs++
 		c.StartedNotFinished += p.StartedNotFinished
 		c.CompletionsWithoutStart += p.CompletionsWithoutStart
+		c.Reconciliation.StepsOutsideANode += p.StepsOutsideANode
 		if len(p.Nodes) > 0 {
 			hadCalls := false
 			for _, n := range p.Nodes {
@@ -109,6 +176,7 @@ func Aggregate(profiles []*RunProfile) Corpus {
 		}
 		for _, n := range p.Nodes {
 			c.Nodes++
+			c.Reconciliation.fold(n.Usage)
 			c.Calls += n.Calls
 			c.CallsBeforeMutation += n.CallsBeforeMutation
 			c.InputBytes += n.InputBytes
@@ -234,6 +302,7 @@ func RenderMarkdown(c Corpus, profiles []*RunProfile, opts RenderOptions) string
 		b.WriteString("No mutating node recorded turn usage: the split has nothing to attribute.\n")
 	}
 	b.WriteString("\n")
+	renderReconciliation(&b, c, profiles, topN)
 
 	b.WriteString("## Tool calls\n\n")
 	b.WriteString("| Class | All calls | Before the node's first write |\n|---|---:|---:|\n")
@@ -379,6 +448,59 @@ func shortID(id string) string {
 		return id[:8]
 	}
 	return id
+}
+
+// renderReconciliation writes the comparison of the two usage recordings
+// and names every node whose recordings disagree. A corpus-level "they
+// reconcile" would hide the one node that does not, which is the only
+// thing this section exists to find.
+func renderReconciliation(b *strings.Builder, c Corpus, profiles []*RunProfile, topN int) {
+	r := c.Reconciliation
+	b.WriteString("## Token reconciliation: the per-step feed against the turn checkpoints\n\n")
+	if r.Steps == 0 {
+		b.WriteString("No run in this corpus recorded a per-step usage feed: there is nothing to reconcile, and no claim is made that the producing sites are honoured.\n\n")
+		return
+	}
+	b.WriteString("Two independent recordings of the same spend: one `llm_step_finished` event per model message, against the turn checkpoints the node writes. A producing site that stops emitting — or that emits a zero-valued usage struct — shows up as a gap on its node, where counting events stays green. A gap is the CHECKPOINT minus the FEED, so a positive one means the feed is short and a negative one means it recorded the same spend twice. A node whose backend writes only one of the two recordings is not comparable and claims nothing.\n\n")
+	b.WriteString("| Reconciliation | Value |\n|---|---|\n")
+	fmt.Fprintf(b, "| Steps recorded | %d, on %d of the %d nodes |\n", r.Steps, r.NodesWithSteps, c.Nodes)
+	fmt.Fprintf(b, "| Steps carrying no usage field at all | %d of %d |\n", r.StepsWithoutUsage, r.Steps)
+	fmt.Fprintf(b, "| Steps whose producer reported no usage (`usage_unreported`) | %d of %d |\n", r.StepsUsageUnreported, r.Steps)
+	fmt.Fprintf(b, "| Steps naming no node (a supervised session has none) | %d |\n", r.StepsOutsideANode)
+	fmt.Fprintf(b, "| Nodes where both recordings carry a split usage | %d of %d |\n", r.ReconcilableNodes, c.Nodes)
+	fmt.Fprintf(b, "| Nodes that reconcile field by field | %d of %d comparable |\n", r.ReconciledNodes, r.ReconcilableNodes)
+	fmt.Fprintf(b, "| Nodes whose recordings disagree | %d (input %d, output %d tokens apart, magnitudes) |\n",
+		r.NodesWithGap, r.GapInputTokens, r.GapOutputTokens)
+	fmt.Fprintf(b, "| Nodes with a feed whose checkpoints carry an unsplit total | %d (no field-by-field baseline) |\n", r.UnsplitAggregateNodes)
+	fmt.Fprintf(b, "\nThe feed's cache fields are carried and never reconciled — the checkpoint has no column for them: %d read, %d written.\n\n",
+		r.StepCacheReadTokens, r.StepCacheWriteTokens)
+
+	if r.NodesWithGap == 0 {
+		return
+	}
+	b.WriteString("### Nodes whose two recordings disagree\n\n")
+	b.WriteString("| Run | Node | Steps | Turns | Input gap | Output gap |\n|---|---|---:|---:|---:|---:|\n")
+	shown := 0
+	for _, p := range profiles {
+		if p == nil {
+			continue
+		}
+		for _, n := range p.Nodes {
+			if n.Usage.Reconciled() || !n.Usage.Reconcilable {
+				continue
+			}
+			if shown == topN {
+				fmt.Fprintf(b, "\n%d more node(s) disagree; raise `--top` to see them.\n", r.NodesWithGap-shown)
+				b.WriteString("\n")
+				return
+			}
+			fmt.Fprintf(b, "| `%s` | %s | %d | %d | %+d | %+d |\n",
+				shortID(p.RunID), n.NodeID, n.Usage.Steps, n.Usage.Turns,
+				n.Usage.GapInputTokens, n.Usage.GapOutputTokens)
+			shown++
+		}
+	}
+	b.WriteString("\n")
 }
 
 func humanBytes(n int) string {
