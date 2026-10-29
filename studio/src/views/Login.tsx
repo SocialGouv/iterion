@@ -43,6 +43,14 @@ function ssoErrorNotice(
         tone: "danger",
         text: "That SSO provider is no longer available. Try signing in with your email and password.",
       };
+    // A provider the server could not READ is not one that is gone: telling
+    // the user to stop waiting for an SSO that is merely down sends them to
+    // a password they may not have (pkg/server oidc.ErrProviderUnavailable).
+    case "provider_unavailable":
+      return {
+        tone: "danger",
+        text: `${provider} sign-in is temporarily unavailable — we couldn't read its configuration. Please try again in a moment; if it persists, contact your administrator.`,
+      };
     case "password_change_required":
       return {
         tone: "warning",

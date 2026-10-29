@@ -157,10 +157,14 @@ list's `403 not a member`, the team creation's `403 org admin or owner
 required` — and a row the store could not read answers the 500 above. The
 SSO routes refuse on a failed read too, and say so in their flow
 ([flow-auth-login.md](diagrams/flow-auth-login.md)): `GET
-/api/auth/oidc/{provider}/start` answers `404 unknown provider` whatever
-stopped the provider's resolution, and its callback redirects with
-`unknown_provider` likewise, or with `state_expired` when the sign-in state
-cannot be taken. Any
+/api/auth/oidc/{provider}/start` answers `404 unknown provider` only for a
+provider its store says is absent, and the 500 above when the provider row
+could not be READ or its client secret could not be unsealed; its callback
+redirects with `unknown_provider` and `provider_unavailable` on the same
+split, or with `state_expired` when the sign-in state cannot be taken. `GET
+/api/orgs/{id}/members` and `GET /api/me/github-orgs` answer the 500 above
+when the accounts they render cannot be read — a member with no name and an
+empty org list are facts, and only an answered read states them. Any
 authenticated route reached with an `iap_` PAT answers that same 500 when
 one of the rows the middleware resolves for it — the token, its owner, the
 owner's membership of the token's team, and that team — cannot be read. The team-management routes below keep 500 bodies that name the row a

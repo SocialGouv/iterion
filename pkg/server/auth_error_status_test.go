@@ -93,6 +93,7 @@ var sentinelAnsweredElsewhere = map[string]struct {
 	"auth/wsticket.ErrTicketNotFound":   {wsticket.ErrTicketNotFound, "wsTicketIdentity: errWSTicketRefused, the 401 of requireAuth's WS-ticket branch"},
 	"auth/oidc.ErrUnknownProvider":      {oidc.ErrUnknownProvider, "resolveConnector and LoginWithExternalForOrg: 404 at /start, an sso_error redirect at the callback, 400 on the GitHub-orgs routes"},
 	"auth/oidc.ErrProviderDisabled":     {oidc.ErrProviderDisabled, "resolveConnector: 404 at /start, sso_error=disabled at the callback, 400 on the GitHub-orgs routes"},
+	"auth/oidc.ErrProviderUnavailable":  {oidc.ErrProviderUnavailable, "resolveConnector wraps the failed provider read and the unsealable secret in it: identityFailure (500, the cause logged) at /start, sso_error=provider_unavailable at the callback"},
 	"auth/oidc.ErrStateNotFound":        {oidc.ErrStateNotFound, "the OIDC state stores' Take: sso_error=state_expired at the callback"},
 	"auth/oidc.ErrEmailMissing":         {oidc.ErrEmailMissing, "the connectors' ExchangeCode and the SSO logins: an sso_error redirect at the callback, identityFailure on the GitHub-orgs callback"},
 	"auth/oidc.ErrEmailNotVerified":     {oidc.ErrEmailNotVerified, "the Google and generic connectors' ExchangeCode: sso_error=exchange_failed at the callback"},

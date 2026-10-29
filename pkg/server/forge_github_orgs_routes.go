@@ -66,7 +66,10 @@ func (s *Server) handleStartGitHubOrgs(w http.ResponseWriter, r *http.Request) {
 	}
 	authURL, err := conn.AuthorizeURL(r.Context(), s.githubOrgsRedirectURI(), state, "")
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, "%v", err)
+		// The connector's own text (a failed issuer discovery carries the
+		// URL it dialled and the upstream body) is no more a client's
+		// business than the store's: generic body, cause in the log.
+		s.identityFailure(w, r, fmt.Errorf("build the github orgs authorize URL: %w", err))
 		return
 	}
 	writeJSON(w, map[string]any{"authorize_url": authURL})
@@ -130,11 +133,22 @@ func (s *Server) handleGitHubOrgsCallback(w http.ResponseWriter, r *http.Request
 }
 
 // handleListMyGitHubOrgs returns the caller's persisted GitHub org logins.
+//
+// An empty list is a FACT — "this account has connected no GitHub org yet",
+// which the form reads as "re-run the connect flow". A read that FAILED is
+// not that fact: answering it as an empty list hid the outage behind a form
+// that offered to redo work already done. Only an account the store ANSWERED
+// is absent for (ErrNotFound) keeps the empty list.
 func (s *Server) handleListMyGitHubOrgs(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	orgs := []string{}
 	if st := s.authStore(); st != nil {
-		if u, err := st.GetUser(r.Context(), id.UserID); err == nil && len(u.GitHubOrgs) > 0 {
+		u, err := st.GetUser(r.Context(), id.UserID)
+		if err != nil && !errors.Is(err, identity.ErrNotFound) {
+			s.identityFailure(w, r, fmt.Errorf("read the github orgs of account %s: %w", id.UserID, err))
+			return
+		}
+		if err == nil && len(u.GitHubOrgs) > 0 {
 			orgs = u.GitHubOrgs
 		}
 	}

@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
 	"github.com/SocialGouv/iterion/pkg/auth/orgsso"
@@ -55,6 +57,14 @@ func (s *Server) resolveConnector(ctx context.Context, slug string) (oidc.Connec
 		return nil, "", "", oidc.ErrUnknownProvider
 	}
 	row, err := s.orgSSO.Get(ctx, id)
+	// A read that FAILED is not the fact "no such provider": only the
+	// store's own ErrNotFound says the row is absent. Collapsing the two
+	// answered every unreachable store with a 404 at /start and an
+	// "unknown_provider" banner at /callback, with nothing logged — the
+	// tenant's whole SSO looked deleted for as long as the store was down.
+	if err != nil && !errors.Is(err, orgsso.ErrNotFound) {
+		return nil, "", "", fmt.Errorf("%w: read the SSO provider %s: %w", oidc.ErrProviderUnavailable, id, err)
+	}
 	if err != nil || row.Kind != orgsso.KindOIDC {
 		return nil, "", "", oidc.ErrUnknownProvider
 	}
@@ -67,7 +77,9 @@ func (s *Server) resolveConnector(ctx context.Context, slug string) (oidc.Connec
 	}
 	conn, err := s.buildOrgOIDCConnector(row)
 	if err != nil {
-		return nil, "", "", oidc.ErrUnknownProvider
+		// The row is there and enabled: a secret this deployment's sealer
+		// cannot open is ITS failure, which the operator has to see.
+		return nil, "", "", fmt.Errorf("%w: build the OIDC connector of provider %s: %w", oidc.ErrProviderUnavailable, id, err)
 	}
 	return conn, row.TenantID, row.ID, nil
 }

@@ -47,6 +47,13 @@ const (
 	ssoErrLinkRequired     = "link_required"
 	ssoErrRestricted       = "restricted"
 	ssoErrLoginFailed      = "login_failed"
+	// ssoErrProviderUnavailable is the banner of a provider resolution that
+	// FAILED — an unreachable provider store, a secret the sealer could not
+	// open (oidc.ErrProviderUnavailable). It is distinct from
+	// ssoErrUnknownProvider on purpose: "no longer available" tells the user
+	// to stop waiting for an SSO that is merely down, where "try again in a
+	// moment" is the truth and the cause is in the server log.
+	ssoErrProviderUnavailable = "provider_unavailable"
 	// ssoErrPasswordChangeRequired refuses the SSO sign-in of an account an
 	// administrator set pending a password change: the SPA names the exits
 	// (the forced change, or the emailed reset for an SSO-only account).
@@ -208,6 +215,15 @@ func (s *Server) beginOIDCFlow(w http.ResponseWriter, r *http.Request, name stri
 	linkUserID := link.UserID
 	c, tenantID, providerID, err := s.resolveConnector(r.Context(), name)
 	if err != nil {
+		// A resolution that FAILED is not the fact "unknown provider": the
+		// start of a flow whose provider store is unreachable owes the
+		// identity contract — 5xx, generic body, the cause in the log — so
+		// the operator sees an outage instead of users reading a 404 as a
+		// deleted SSO.
+		if errors.Is(err, oidc.ErrProviderUnavailable) {
+			s.identityFailure(w, r, fmt.Errorf("resolve the SSO provider %q: %w", name, err))
+			return
+		}
 		httpError(w, http.StatusNotFound, "unknown provider")
 		return
 	}
@@ -349,8 +365,17 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		// The callback is a top-level navigation, so surface failures as a
 		// friendly SPA banner rather than a bare API error page.
 		code := ssoErrUnknownProvider
-		if errors.Is(err, oidc.ErrProviderDisabled) {
+		switch {
+		case errors.Is(err, oidc.ErrProviderDisabled):
 			code = ssoErrProviderDisabled
+		case errors.Is(err, oidc.ErrProviderUnavailable):
+			// A resolution that failed says nothing about the provider's
+			// existence: the banner says "try again", and the cause — the
+			// only place it survives — goes to the log.
+			code = ssoErrProviderUnavailable
+			if s.logger != nil {
+				s.logger.Error("oidc callback: resolve the provider %s: %v", name, err)
+			}
 		}
 		redirectSSOError(w, r, code, nil)
 		return

@@ -69,6 +69,15 @@ var (
 	ErrStateNotFound    = errors.New("oidc: state expired or unknown")
 	ErrEmailMissing     = errors.New("oidc: provider returned no email")
 	ErrEmailNotVerified = errors.New("oidc: provider returned an unverified email")
+	// ErrProviderUnavailable is the answer of a resolution that FAILED: a
+	// provider row the store could not read, a client secret the sealer
+	// could not open. It is NOT a statement about the provider's existence
+	// — ErrUnknownProvider is the store's answer "that row is not there",
+	// ErrProviderDisabled an administrator's choice — so the HTTP layer
+	// owes it a 5xx and a logged cause, never a 404 the caller would read
+	// as "no such provider". Wrap it with the cause (%w twice) so a
+	// handler can both classify and log.
+	ErrProviderUnavailable = errors.New("oidc: provider is unavailable")
 )
 
 // PendingAuth captures the per-flow state held server-side between
