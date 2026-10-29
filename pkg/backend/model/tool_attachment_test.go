@@ -14,6 +14,7 @@ import (
 )
 
 func TestScanToolAttachmentsParsesNameAndMIME(t *testing.T) {
+	t.Parallel()
 	out := `building the mix…
 [iterion] attachment=/tmp/mix.mp3 name=audio_fr mime=audio/mpeg
 some other log line
@@ -37,6 +38,7 @@ done`
 }
 
 func TestAttachmentMIMEPrefersTheDeclaredValueThenTheExtension(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		dir  AttachmentDirective
@@ -82,6 +84,7 @@ func (nopEmitter) AppendEvent(context.Context, string, store.Event) (*store.Even
 }
 
 func TestPublishToolAttachmentStoresTheBytesUnderAUsableName(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mix preview.mp3")
 	if err := os.WriteFile(path, []byte("ID3 fake audio"), 0o600); err != nil {
@@ -110,6 +113,7 @@ func TestPublishToolAttachmentStoresTheBytesUnderAUsableName(t *testing.T) {
 }
 
 func TestPublishToolAttachmentDerivesTheNameAndSurvivesFailures(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "final cut.mp4")
 	if err := os.WriteFile(path, []byte("mp4"), 0o600); err != nil {
@@ -139,6 +143,7 @@ func TestPublishToolAttachmentDerivesTheNameAndSurvivesFailures(t *testing.T) {
 }
 
 func TestSplitAttachmentTailKeepsSpacesInThePath(t *testing.T) {
+	t.Parallel()
 	// Exported media routinely carries spaces. Before this, the shared
 	// whitespace scanner truncated the path and the file was skipped with
 	// a warning — the exact empty gate this verb removes.
@@ -163,6 +168,7 @@ func TestSplitAttachmentTailKeepsSpacesInThePath(t *testing.T) {
 }
 
 func TestActiveMIMEIsNeutralisedBeforeStorage(t *testing.T) {
+	t.Parallel()
 	// The serve route replies `Content-Disposition: inline` with no
 	// nosniff and no CSP, so an executable type would run in the
 	// studio's own origin. Tool stdout is not a trusted channel.
@@ -202,6 +208,7 @@ func (s *listingSink) ListAttachments(
 }
 
 func TestPublishToolAttachmentRefusesToClobberAnExistingName(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "final.mp4")
 	if err := os.WriteFile(path, []byte("new bytes"), 0o600); err != nil {
@@ -231,6 +238,7 @@ func TestPublishToolAttachmentRefusesToClobberAnExistingName(t *testing.T) {
 }
 
 func TestPublishToolAttachmentSkipsWhatIsTooLargeOrNotAFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	logger := iterlog.New(iterlog.LevelError, os.Stderr)
 
@@ -312,6 +320,7 @@ func (e *recordingEmitter) hasType(typ store.EventType) bool {
 // Every exit of publishToolAttachment that does not publish is covered,
 // because the defect is the CLASS and not one site.
 func TestEveryDeclaredFileLostIsRecordedOnTheRun(t *testing.T) {
+	t.Parallel()
 	logger := iterlog.New(iterlog.LevelError, os.Stderr)
 
 	t.Run("unreadable: the pod case, the host cannot stat it", func(t *testing.T) {
@@ -437,6 +446,7 @@ func TestEveryDeclaredFileLostIsRecordedOnTheRun(t *testing.T) {
 // same class lives in captureBrowserScreenshot, so a fix that only
 // taught the attachment path to speak would leave half the class mute.
 func TestScreenshotDirectiveLossIsRecordedToo(t *testing.T) {
+	t.Parallel()
 	logger := iterlog.New(iterlog.LevelError, os.Stderr)
 
 	t.Run("unreadable", func(t *testing.T) {

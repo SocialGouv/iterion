@@ -28,6 +28,7 @@ func drainAggregate(t *testing.T, events []api.StreamEvent) aggregatedResponse {
 // matters beyond analysis, since a metered key's spend is computed
 // input×rate + output×rate and feeds an org's monthly cap.
 func TestAggregateStream_TakesInputTokensFromTheDeltaWhenThatIsWhereTheyAre(t *testing.T) {
+	t.Parallel()
 	agg := drainAggregate(t, []api.StreamEvent{
 		{Type: api.EventMessageStart},
 		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "text", Index: 0}},
@@ -48,6 +49,7 @@ func TestAggregateStream_TakesInputTokensFromTheDeltaWhenThatIsWhereTheyAre(t *t
 // bedrock answer on message_start and send a delta whose input count is
 // zero. Taking the delta unconditionally would erase the real number.
 func TestAggregateStream_DeltaZeroDoesNotEraseTheMessageStartCount(t *testing.T) {
+	t.Parallel()
 	agg := drainAggregate(t, []api.StreamEvent{
 		{Type: api.EventMessageStart, InputTokens: 100, CacheReadInputTokens: 7},
 		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "text", Index: 0}},

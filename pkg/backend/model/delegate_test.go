@@ -64,6 +64,7 @@ func newDelegateTestExecutor(backend delegate.Backend, hooks EventHooks) *ClawEx
 // ---------------------------------------------------------------------------
 
 func TestDelegation_EmitsStartedAndFinished(t *testing.T) {
+	t.Parallel()
 	backend := &stubBackend{
 		results: []delegate.Result{{
 			Output:          map[string]any{"result": "ok"},
@@ -154,6 +155,7 @@ func TestDelegation_EmitsStartedAndFinished(t *testing.T) {
 // docs/bot-runs/evolve.md. The fix moves the interaction short-circuit
 // ahead of schema validation in executor.go.
 func TestDelegation_InteractionSignalSkipsSchemaValidation(t *testing.T) {
+	t.Parallel()
 	backend := &stubBackend{
 		results: []delegate.Result{{
 			Output: map[string]any{
@@ -210,6 +212,7 @@ func TestDelegation_InteractionSignalSkipsSchemaValidation(t *testing.T) {
 }
 
 func TestDelegation_EmitsErrorOnFailure(t *testing.T) {
+	t.Parallel()
 	// Non-retryable error (no "exit status" or "signal:" in message).
 	backend := &stubBackend{
 		errors: []error{fmt.Errorf("delegate: parse error: invalid JSON")},
@@ -250,6 +253,7 @@ func TestDelegation_EmitsErrorOnFailure(t *testing.T) {
 }
 
 func TestDelegation_EmitsRetryOnTransientError(t *testing.T) {
+	t.Parallel()
 	// First call fails with retryable error (signal-based exit), second succeeds.
 	backend := &stubBackend{
 		errors: []error{fmt.Errorf("delegate: exit status 137")},
@@ -302,6 +306,7 @@ func TestDelegation_EmitsRetryOnTransientError(t *testing.T) {
 }
 
 func TestDelegation_ParseFallbackMetadata(t *testing.T) {
+	t.Parallel()
 	backend := &stubBackend{
 		results: []delegate.Result{{
 			Output:        map[string]any{"text": "plain text response"},
@@ -347,6 +352,7 @@ func TestDelegation_ParseFallbackMetadata(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLLMRouterDelegated_SelectsRoute(t *testing.T) {
+	t.Parallel()
 	backend := &stubBackend{
 		results: []delegate.Result{{
 			Output: map[string]any{
@@ -384,6 +390,7 @@ func TestLLMRouterDelegated_SelectsRoute(t *testing.T) {
 }
 
 func TestLLMRouterDelegated_MultiRoute(t *testing.T) {
+	t.Parallel()
 	backend := &stubBackend{
 		results: []delegate.Result{{
 			Output: map[string]any{
@@ -426,6 +433,7 @@ func TestLLMRouterDelegated_MultiRoute(t *testing.T) {
 }
 
 func TestLLMRouterDelegated_ParseFallbackJSON(t *testing.T) {
+	t.Parallel()
 	// Backend returns text-wrapped output, but text contains valid JSON.
 	backend := &stubBackend{
 		results: []delegate.Result{{
@@ -458,6 +466,7 @@ func TestLLMRouterDelegated_ParseFallbackJSON(t *testing.T) {
 }
 
 func TestLLMRouterDelegated_ParseFallbackPlainTextFails(t *testing.T) {
+	t.Parallel()
 	// Backend returns plain text that isn't JSON — should fail.
 	backend := &stubBackend{
 		results: []delegate.Result{{
@@ -493,6 +502,7 @@ func TestLLMRouterDelegated_ParseFallbackPlainTextFails(t *testing.T) {
 // of max_cost_usd and the daily-cap ledger. Unlike a dispatch failure, here
 // the model DID answer — the bill is certain.
 func TestLLMRouterKeepsSpendOnPostGenerationFailure(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		result delegate.Result

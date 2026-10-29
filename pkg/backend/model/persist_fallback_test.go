@@ -69,6 +69,7 @@ func assertPersistentRoutePolicy(t *testing.T, task delegate.Task) {
 }
 
 func TestClawPersistFallbackSurvivesColdResume(t *testing.T) {
+	t.Parallel()
 	for _, failure := range []struct {
 		name string
 		err  error
@@ -129,6 +130,7 @@ func TestClawPersistFallbackSurvivesColdResume(t *testing.T) {
 }
 
 func TestClawPersistResumeAcrossProviderRoutes(t *testing.T) {
+	t.Parallel()
 	for _, route := range []struct {
 		name, fingerprint, destination string
 		cooldown                       bool
@@ -214,6 +216,7 @@ func TestClawPersistResumeAcrossProviderRoutes(t *testing.T) {
 }
 
 func TestClawPersistDoesNotFallbackOnAuth(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	failure := &delegate.ErrAuthFailed{Provider: "openai", Detail: "expired"}
 	e, n := newPersistFallbackExecutor(t, func(context.Context, delegate.Task) (delegate.Result, error) {
@@ -227,6 +230,7 @@ func TestClawPersistDoesNotFallbackOnAuth(t *testing.T) {
 }
 
 func TestClawPersistProviderChangeSanitizesWarmSlot(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		fingerprint, model string
 		preserve           bool
@@ -264,6 +268,7 @@ func TestClawPersistProviderChangeSanitizesWarmSlot(t *testing.T) {
 }
 
 func TestClawPersistRejectsInvalidPendingResume(t *testing.T) {
+	t.Parallel()
 	for _, conversation := range []string{
 		``,
 		`{`,
@@ -295,6 +300,7 @@ func TestClawPersistRejectsInvalidPendingResume(t *testing.T) {
 // fall-through dropped everything — is reversed; a CROSS-backend fall
 // still drops, and the screen refuses it on session-bearing nodes.)
 func TestChainSameBackendClawCarriesTheResume(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{}
 	build := e.newElementBuilder("author", "claw", &backendScriptedBackend{name: "claw"}, func(context.Context, string) (*delegate.Task, error) {
 		return &delegate.Task{NodeID: "author", Model: "openai/gpt-5.6-terra", SessionID: "session", SessionFingerprint: "claw:openai",

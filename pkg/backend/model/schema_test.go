@@ -30,6 +30,7 @@ import (
 // providers that require one (bug 2), and every JSON shape stays valid
 // (bug 1).
 func TestSchemaToJSON_JSONFieldIsAnyType(t *testing.T) {
+	t.Parallel()
 	schema := &ir.Schema{
 		Name: "stack_profile",
 		Fields: []*ir.SchemaField{

@@ -12,6 +12,7 @@ import (
 // — resolves like the tight one: the renderer reads the parsed reference,
 // not its raw text.
 func TestABangReferenceWithASpaceResolvesLikeATightOne(t *testing.T) {
+	t.Parallel()
 	td := &TemplateData{Attachments: map[string]AttachmentInfo{"spec": {Path: "/p/a"}}}
 	for _, body := range []string{"p = {{!attachments.spec}}", "p = {{! attachments.spec}}", "p = {{ ! attachments.spec }}"} {
 		refs, err := ir.ParseRefs(body)
@@ -30,6 +31,7 @@ func TestABangReferenceWithASpaceResolvesLikeATightOne(t *testing.T) {
 // body (the hole kept as written) and a script body (the hole a null) alike
 // — and a value that carries braces is not re-read as a reference.
 func TestTheRendererNamesWhatItLeaves(t *testing.T) {
+	t.Parallel()
 	td := &TemplateData{Outputs: map[string]map[string]any{"survey": {"note": "fill {{vars.goal}} in"}}}
 	body := "echo {{outputs.survey.note}} {{input.missing}} {{ ! vars.absent }} {{each.items.item}}"
 	refs, err := ir.ParseRefs(body)
@@ -55,6 +57,7 @@ func TestTheRendererNamesWhatItLeaves(t *testing.T) {
 // An attachment URL that cannot be signed is not found — no signer wired,
 // or the signer failing, said to Warn — never an empty value.
 func TestAnUnsignedAttachmentURLIsNotFound(t *testing.T) {
+	t.Parallel()
 	var warned []string
 	r := &TemplateResolver{Warn: func(format string, args ...any) { warned = append(warned, format) }}
 	unsigned := &TemplateData{Attachments: map[string]AttachmentInfo{"spec": {Path: "/p/a"}}}
@@ -89,6 +92,7 @@ func TestAnUnsignedAttachmentURLIsNotFound(t *testing.T) {
 // in a script, and a declared loop resolves before and after its first
 // crossing.
 func TestAnUndeclaredLoopResolvesToNothing(t *testing.T) {
+	t.Parallel()
 	td := &TemplateData{LoopMaxIterations: map[string]int{"retry": 3}}
 	r := &TemplateResolver{}
 	if v, ok := r.ResolveValue("loop.retry.iteration", nil, td); !ok || v != int64(0) {
@@ -112,6 +116,7 @@ func TestAnUndeclaredLoopResolvesToNothing(t *testing.T) {
 // A dotted input reference drills to the leaf in a tool body as it does in
 // a prompt: `{{input.a.b}}` is the field, `{{input.a}}` the whole map.
 func TestADottedInputReferenceDrillsInAToolBody(t *testing.T) {
+	t.Parallel()
 	input := map[string]any{"a": map[string]any{"b": "leaf", "n": 2}}
 	body := "echo {{input.a.b}} {{input.a.n}} {{input.a}} {{input.a.nope}}"
 	var left []string

@@ -17,6 +17,7 @@ import (
 // A CROSS-backend fall-through still starts fresh (the conversation belongs
 // to the element that paused).
 func TestElementBuilder_SameBackendFallThroughKeepsTheSession(t *testing.T) {
+	t.Parallel()
 	registry := NewRegistry()
 	registry.Register("codex", func(modelID string) (api.APIClient, error) {
 		return nil, errors.New("not dispatched in this test")

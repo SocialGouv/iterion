@@ -59,6 +59,7 @@ func itoa(n int) string { return string(rune('0' + n)) }
 // If the gate below ever stops honouring an empty run id, fan-out items
 // start sharing one session slot and this test is what says so.
 func TestPerNodeSessionFollowsTheRunIdentity(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		withRunID   bool

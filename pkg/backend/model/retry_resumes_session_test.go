@@ -13,6 +13,7 @@ import (
 // session the task never carried — which is exactly what an in-process
 // retry now does, and where a cumulative report would be billed twice.
 func TestFoldSameSessionReadsWhereTheWorkRan(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		prev, next delegate.Result
@@ -38,6 +39,7 @@ func TestFoldSameSessionReadsWhereTheWorkRan(t *testing.T) {
 // node_started, 1 sandbox_started), and the node began again from zero —
 // throwing away context that was still on the pod's disk.
 func TestInProcessRetryResumesTheSessionTheDeadAttemptOpened(t *testing.T) {
+	t.Parallel()
 	e := newTestExecutorForRetry(3)
 	var seen []delegate.Task
 	task := &delegate.Task{NodeID: "n"}
@@ -112,6 +114,7 @@ func (b *resumeScriptedBackend) Execute(_ context.Context, task delegate.Task) (
 // the call site leaves every other test in this file green while the node
 // goes on starting over from zero — the defect this exists to close.
 func TestDispatchWiresTheResumingRetry(t *testing.T) {
+	t.Parallel()
 	be := &resumeScriptedBackend{name: delegate.BackendClaudeCode}
 	reg := delegate.NewRegistry()
 	reg.Register(delegate.BackendClaudeCode, be)
@@ -170,6 +173,7 @@ func (b *poisonedSessionBackend) Execute(_ context.Context, task delegate.Task) 
 // burning the retry budget with the only guard that would drop it switched
 // off for its category.
 func TestACarriedSessionGetsOneChanceThenTheBudgetGoesToACleanAttempt(t *testing.T) {
+	t.Parallel()
 	be := &poisonedSessionBackend{name: delegate.BackendClaudeCode}
 	reg := delegate.NewRegistry()
 	reg.Register(delegate.BackendClaudeCode, be)
@@ -218,6 +222,7 @@ func TestACarriedSessionGetsOneChanceThenTheBudgetGoesToACleanAttempt(t *testing
 // that shape is now a CROSS-backend fall, which the screen refuses on
 // session-bearing nodes).
 func TestFallThroughCarriesTheOptionalFlagWithTheSessionItQualifies(t *testing.T) {
+	t.Parallel()
 	// SAME backend on both elements — a provider chain, the common shape —
 	// because the builder CACHES one task per backend NAME
 	// (executor_retry.go: `tasks := map[string]*delegate.Task{}`). Fall

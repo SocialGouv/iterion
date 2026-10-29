@@ -3,6 +3,7 @@ package model
 import "testing"
 
 func TestToLLMStepInfo_PropagatesCacheTokens(t *testing.T) {
+	t.Parallel()
 	step := StepResult{
 		Number: 2,
 		Text:   "hello",
@@ -35,6 +36,7 @@ func TestToLLMStepInfo_PropagatesCacheTokens(t *testing.T) {
 }
 
 func TestToLLMStepInfo_PropagatesThinking(t *testing.T) {
+	t.Parallel()
 	step := StepResult{
 		Number:   1,
 		Thinking: "Let me reason about this.",
@@ -55,6 +57,7 @@ func TestToLLMStepInfo_PropagatesThinking(t *testing.T) {
 }
 
 func TestToLLMResponseInfo_PropagatesCacheTokens(t *testing.T) {
+	t.Parallel()
 	resp := ResponseInfo{
 		Usage: Usage{
 			InputTokens:      200,
@@ -81,6 +84,7 @@ func TestToLLMResponseInfo_PropagatesCacheTokens(t *testing.T) {
 // context captured once at engine.Run, so every claw line was tagged #0
 // and the studio's per-(node,iteration) Logs filter never matched them.
 func TestApplyHooks_StampsIteration(t *testing.T) {
+	t.Parallel()
 	const wantIter = 3
 	var (
 		gotReq     int

@@ -23,6 +23,7 @@ import (
 // shares wantDispatch's column: both resolve the span and keep what the
 // drill misses — where the screen collapses undecided to "".
 func TestVarsDrill_ScreenAndDispatchAgree(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name         string
 		doc          string

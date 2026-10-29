@@ -43,6 +43,7 @@ func charNoopTool(name string) (GenerationTool, *int) {
 // (the loop breaks before appending it; only the OnTurnCapture snapshot gets
 // the synthesized final message).
 func TestGenerateTextDirect_DoesNotMutateCallerMessages(t *testing.T) {
+	t.Parallel()
 	client := newMockClient(
 		toolUseEvents("tu_1", "noop", `{}`, 10, 5),
 		textEvents("done", 10, 5),
@@ -92,6 +93,7 @@ func TestGenerateTextDirect_DoesNotMutateCallerMessages(t *testing.T) {
 // non-nil best-effort result (steps so far, accumulated usage, the message
 // history the failed call would have seen) AND the error.
 func TestGenerateTextDirect_PartialResultOnMidLoopError(t *testing.T) {
+	t.Parallel()
 	// One script only: the SECOND StreamResponse call fails.
 	client := newMockClient(toolUseEvents("tu_1", "noop", `{}`, 100, 30))
 	noop, execCalls := charNoopTool("noop")
@@ -136,6 +138,7 @@ func TestGenerateTextDirect_PartialResultOnMidLoopError(t *testing.T) {
 // for it, and (c) the original question. PostToolUse/PostToolUseFailure do
 // not fire for the suspension; Stop still fires (deferred).
 func TestGenerateTextDirect_AskUserPauseCapturesConversation(t *testing.T) {
+	t.Parallel()
 	client := newMockClient(toolUseEvents("tu_1", "ask_user", `{"question":"which env?"}`, 10, 5))
 	askTool := GenerationTool{
 		Name:        "ask_user",
@@ -208,6 +211,7 @@ func TestGenerateTextDirect_AskUserPauseCapturesConversation(t *testing.T) {
 // NOT tool_use (e.g. end_turn), the loop exits WITHOUT executing the tools —
 // the calls are still reported on the result.
 func TestGenerateTextDirect_ToolUseBlocksWithNonToolUseStopReason(t *testing.T) {
+	t.Parallel()
 	events := []api.StreamEvent{
 		{Type: api.EventMessageStart, InputTokens: 10},
 		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "tool_use", Index: 0, ID: "tu_1", Name: "noop"}},
@@ -245,6 +249,7 @@ func TestGenerateTextDirect_ToolUseBlocksWithNonToolUseStopReason(t *testing.T) 
 // quirk: stop reason tool_use with ZERO tool_use blocks also exits the loop
 // (no infinite spin), reporting FinishToolCalls with an empty ToolCalls.
 func TestGenerateTextDirect_ToolUseStopReasonWithoutBlocks(t *testing.T) {
+	t.Parallel()
 	events := []api.StreamEvent{
 		{Type: api.EventMessageStart, InputTokens: 10},
 		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "text", Index: 0}},
@@ -281,6 +286,7 @@ func TestGenerateTextDirect_ToolUseStopReasonWithoutBlocks(t *testing.T) {
 // carries [user, assistant(tool_use), user(tool_result)]; the final capture
 // synthesizes the assistant text message that the live history never gets.
 func TestGenerateTextDirect_TurnCaptureSnapshots(t *testing.T) {
+	t.Parallel()
 	client := newMockClient(
 		toolUseEvents("tu_1", "noop", `{}`, 10, 5),
 		textEvents("done", 10, 5),
@@ -331,6 +337,7 @@ func TestGenerateTextDirect_TurnCaptureSnapshots(t *testing.T) {
 // final-step synthesis: an empty assistant text appends NO synthetic message
 // to the snapshot.
 func TestGenerateTextDirect_TurnCaptureFinalStepEmptyText(t *testing.T) {
+	t.Parallel()
 	events := []api.StreamEvent{
 		{Type: api.EventMessageStart, InputTokens: 5},
 		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{Reported: true, OutputTokens: 1}},
@@ -391,6 +398,7 @@ func (s *charStubInbox) Drain(context.Context) []string {
 // lost); the final drain here returns nothing, so the run still ends at
 // step 2.
 func TestGenerateTextDirect_InboxDrainedBetweenIterations(t *testing.T) {
+	t.Parallel()
 	client := newMockClient(
 		toolUseEvents("tu_1", "noop", `{}`, 10, 5),
 		textEvents("done", 10, 5),
@@ -441,6 +449,7 @@ func TestGenerateTextDirect_InboxDrainedBetweenIterations(t *testing.T) {
 // compaction appends the todo-reseed user turn; without todo_write, no
 // reseed message ever appears.
 func TestGenerateTextDirect_CompactionReseedsTodoOnlyWithTodoTool(t *testing.T) {
+	t.Parallel()
 	const reseedMarker = "conversation history was just compacted"
 	bigOutput := strings.Repeat("filler word ", 1000) // ~12 KB per tool round
 
@@ -510,6 +519,7 @@ func TestGenerateTextDirect_CompactionReseedsTodoOnlyWithTodoTool(t *testing.T) 
 // TestGenerateTextDirect_DefaultMaxSteps pins the implicit step cap:
 // MaxSteps <= 0 falls back to 10 tool-loop iterations.
 func TestGenerateTextDirect_DefaultMaxSteps(t *testing.T) {
+	t.Parallel()
 	scripts := make([][]api.StreamEvent, 12)
 	for i := range scripts {
 		scripts[i] = toolUseEvents(fmt.Sprintf("tu_%d", i), "noop", `{}`, 10, 5)
@@ -544,6 +554,7 @@ func TestGenerateTextDirect_DefaultMaxSteps(t *testing.T) {
 // aggregation: input/output/cache tokens sum across steps and TotalTokens is
 // recomputed as input+output.
 func TestGenerateTextDirect_UsageAccumulationAcrossSteps(t *testing.T) {
+	t.Parallel()
 	step1 := []api.StreamEvent{
 		{Type: api.EventMessageStart, InputTokens: 100, CacheReadInputTokens: 40, CacheCreationInputTokens: 10},
 		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "tool_use", Index: 0, ID: "tu_1", Name: "noop"}},
@@ -596,6 +607,7 @@ func TestGenerateTextDirect_UsageAccumulationAcrossSteps(t *testing.T) {
 // as malformed JSON — the tool never executes and the model sees an isError
 // tool_result — yet the loop continues to the next model turn.
 func TestGenerateTextDirect_EmptyToolInputQuirks(t *testing.T) {
+	t.Parallel()
 	events := []api.StreamEvent{
 		{Type: api.EventMessageStart, InputTokens: 10},
 		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "tool_use", Index: 0, ID: "tu_1", Name: "noop"}},

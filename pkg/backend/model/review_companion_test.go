@@ -9,6 +9,7 @@ import (
 )
 
 func TestReviewCompanionJSONSchemaBoundsHumanMessage(t *testing.T) {
+	t.Parallel()
 	raw, err := reviewCompanionJSONSchema(&ir.Schema{
 		Name: "verdict",
 		Fields: []*ir.SchemaField{
@@ -75,6 +76,7 @@ func TestReviewCompanionJSONSchemaBoundsHumanMessage(t *testing.T) {
 }
 
 func TestReviewCompanionJSONSchemaRejectsReservedFieldCollision(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"needs_human_input", "message"} {
 		t.Run(name, func(t *testing.T) {
 			_, err := reviewCompanionJSONSchema(&ir.Schema{

@@ -98,6 +98,7 @@ func eventsOfType(evts []*store.Event, typ store.EventType) []*store.Event {
 // sample a supervisor's cost_gt monitor arms on). Before the relay, a
 // sandboxed claw node left none of these on the host.
 func TestSandboxRelay_StepEventsCrossTheWireIntoTheHostStore(t *testing.T) {
+	t.Parallel()
 	b, load := relayHost(t, "run-relay")
 	handler := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "plan_review", Model: "openai/gpt-5.6-sol"}, sessionSeed{})
 	if handler.OnEvent == nil {
@@ -205,6 +206,7 @@ func TestSandboxRelay_StepEventsCrossTheWireIntoTheHostStore(t *testing.T) {
 // dropped, never fatal; a payload of a known type that does not decode is
 // an error the caller must surface — the node's metering is incomplete.
 func TestApplyRelayedEvent_UnknownIsDroppedMalformedIsAnError(t *testing.T) {
+	t.Parallel()
 	var fired int
 	hooks := EventHooks{OnLLMStepFinish: func(string, LLMStepInfo) { fired++ }}
 
@@ -224,6 +226,7 @@ func TestApplyRelayedEvent_UnknownIsDroppedMalformedIsAnError(t *testing.T) {
 // The launcher-side handler surfaces a decode failure instead of dropping
 // it: the run log names the node and the event type.
 func TestSandboxRelay_HostWarnsOnAnUndecodableRelayedEvent(t *testing.T) {
+	t.Parallel()
 	var logBuf strings.Builder
 	b := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}, WithClawLogger(iterlog.New(iterlog.LevelWarn, &logBuf)))
 	handler := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "plan_review"}, sessionSeed{})
@@ -239,6 +242,7 @@ func TestSandboxRelay_HostWarnsOnAnUndecodableRelayedEvent(t *testing.T) {
 // an in-process one to maxFieldSize. Two constants for one promise drift
 // the moment either moves.
 func TestToolPayloadCeiling_IsTheSameSandboxedAndInProcess(t *testing.T) {
+	t.Parallel()
 	if maxFieldSize != delegate.MaxToolResultBytes {
 		t.Fatalf("in-process ceiling maxFieldSize = %d, IPC ceiling delegate.MaxToolResultBytes = %d — a sandboxed node and an unsandboxed one would show the model different amounts of the same tool output",
 			maxFieldSize, delegate.MaxToolResultBytes)
@@ -252,6 +256,7 @@ func TestToolPayloadCeiling_IsTheSameSandboxedAndInProcess(t *testing.T) {
 // A write that fails is reported, not swallowed: the runner cannot return
 // an error from a hook, and a dead channel must leave a trace.
 func TestSandboxRelayHooks_ReportsAFailedWrite(t *testing.T) {
+	t.Parallel()
 	var reported []error
 	hooks := SandboxRelayHooks(
 		func(delegate.Envelope) error { return errors.New("broken pipe") },

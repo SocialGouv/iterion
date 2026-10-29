@@ -12,6 +12,7 @@ import (
 )
 
 func TestLiteralTemplateRenderingIsSinglePass(t *testing.T) {
+	t.Parallel()
 	const source = `{{"{{"}}vars.x}} / {{vars.x}} / {{"{{"}}`
 	const want = `{{vars.x}} / {{vars.y}} / {{`
 	refs, err := ir.ParseRefs(source)
@@ -34,6 +35,7 @@ func TestLiteralTemplateRenderingIsSinglePass(t *testing.T) {
 }
 
 func TestLiteralTemplateRealShellCommandAndPostcondition(t *testing.T) {
+	t.Parallel()
 	const command = `printf '%s' '{{"{{"}}vars.missing}}' | tee literal.txt`
 	const post = `test -f literal.txt && test "$(cat literal.txt)" = '{{"{{"}}vars.missing}}'`
 	refs, err := ir.ParseRefs(command)
@@ -59,6 +61,7 @@ func TestLiteralTemplateRealShellCommandAndPostcondition(t *testing.T) {
 }
 
 func TestLiteralTemplateMultimodalAndImages(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "image.png")
 	if err := os.WriteFile(path, []byte("image bytes"), 0600); err != nil {
 		t.Fatal(err)
@@ -85,6 +88,7 @@ func TestLiteralTemplateMultimodalAndImages(t *testing.T) {
 }
 
 func TestLiteralTemplateRealScriptAndRecipe(t *testing.T) {
+	t.Parallel()
 	const script = `console.log(JSON.stringify({text: "{{"{{"}}vars.missing}}", value: {{vars.x}}}))`
 	refs, err := ir.ParseRefs(script)
 	if err != nil {

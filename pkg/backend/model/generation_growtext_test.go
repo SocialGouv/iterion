@@ -11,6 +11,7 @@ import (
 // loud (never silently truncates) once a single content block would
 // exceed maxTextBlockSize.
 func TestGrowText_BoundsAndAppends(t *testing.T) {
+	t.Parallel()
 	bs := &blockState{}
 	if err := bs.growText("hello"); err != nil {
 		t.Fatalf("growText under cap: unexpected err %v", err)

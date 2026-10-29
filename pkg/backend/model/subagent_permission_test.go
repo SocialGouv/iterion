@@ -94,6 +94,7 @@ func runChild(t *testing.T, ctx context.Context) (int, *subagentPolicyClient, er
 // stands down on exactly the delegation the parent's deny was written to
 // bound.
 func TestSubagentChildInheritsTheParentPolicy(t *testing.T) {
+	t.Parallel()
 	policy, err := permission.NewPolicy(permission.ModeDeny, nil, nil, []string{"class:shell"})
 	if err != nil {
 		t.Fatalf("policy: %v", err)
@@ -117,6 +118,7 @@ func TestSubagentChildInheritsTheParentPolicy(t *testing.T) {
 // shell rule lets the child run bash — the bound is the parent's rules, not
 // a blanket refusal of the child loop.
 func TestSubagentChildWithoutTheDenyStillRuns(t *testing.T) {
+	t.Parallel()
 	policy, err := permission.NewPolicy(permission.ModeAsk, []string{"bash"}, nil, nil)
 	if err != nil {
 		t.Fatalf("policy: %v", err)
@@ -135,6 +137,7 @@ func TestSubagentChildWithoutTheDenyStillRuns(t *testing.T) {
 // TestSubagentChildWithoutAPolicyRunsUnGated: no parent policy (the gate
 // off) leaves the child ungated, exactly like the parent's own loop.
 func TestSubagentChildWithoutAPolicyRunsUnGated(t *testing.T) {
+	t.Parallel()
 	calls, _, err := runChild(t, context.Background())
 	if err != nil {
 		t.Fatalf("subagent: %v", err)
@@ -221,6 +224,7 @@ func executeDelegation(t *testing.T, denyClass bool) (int, []api.CreateMessageRe
 // delegation, the refusal naming the task's own row; the read-level tests
 // above build their own armed ctx, so they cannot see this line dropped.
 func TestExecuteArmsTheChildGateWithTheTaskPolicy(t *testing.T) {
+	t.Parallel()
 	calls, reqs := executeDelegation(t, true)
 	if calls != 0 {
 		t.Fatalf("the child's bash executed %d times under the task's deny class; want 0", calls)
@@ -244,6 +248,7 @@ func TestExecuteArmsTheChildGateWithTheTaskPolicy(t *testing.T) {
 // with only the deny row removed — the child's bash runs, so the bound was
 // the task's row, not the delegation itself.
 func TestExecuteWithoutTheDenyRowDelegatesUnbounded(t *testing.T) {
+	t.Parallel()
 	calls, reqs := executeDelegation(t, false)
 	if calls != 1 {
 		t.Fatalf("the child's bash executed %d times with no deny row; want 1", calls)

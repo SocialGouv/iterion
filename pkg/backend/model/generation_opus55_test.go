@@ -10,6 +10,7 @@ import (
 )
 
 func TestOpus55StructuredAutoTool(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, tool, payload string
 		wantError           bool
@@ -54,6 +55,7 @@ func TestOpus55StructuredAutoTool(t *testing.T) {
 }
 
 func TestOpus55RequiresExecutedInitialTool(t *testing.T) {
+	t.Parallel()
 	announced := toolUseEvents("t1", "read", `{}`, 11, 7)
 	for i := range announced {
 		if announced[i].Type == api.EventMessageDelta {

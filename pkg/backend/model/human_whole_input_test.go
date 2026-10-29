@@ -19,6 +19,7 @@ import (
 // user message built from a prompt instead would turn a true verdict there
 // into a false one.
 func TestHumanLLMUserMessageIsTheWholeInput(t *testing.T) {
+	t.Parallel()
 	reg := NewRegistry()
 	mock := &captureRequestClient{stream: mockStreamEvents(`{"approve":true}`, "end_turn")}
 	reg.Register("anthropic", func(string) (api.APIClient, error) { return mock, nil })

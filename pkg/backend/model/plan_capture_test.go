@@ -10,6 +10,7 @@ import (
 // (id/content/status=done/priority), plus status canonicalisation and
 // the no-todos / unparsable guards.
 func TestParsePlanTodos(t *testing.T) {
+	t.Parallel()
 	t.Run("claude_code TodoWrite shape", func(t *testing.T) {
 		in := json.RawMessage(`{"todos":[
 			{"content":"build it","status":"in_progress","activeForm":"building it"},
@@ -74,6 +75,7 @@ func TestParsePlanTodos(t *testing.T) {
 }
 
 func TestIsPlanTool(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"TodoWrite", "todo_write"} {
 		if !isPlanTool(name) {
 			t.Errorf("%q should be a plan tool", name)

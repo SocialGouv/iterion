@@ -14,6 +14,7 @@ import (
 // its — whatever earlier element spent, and never an empty route. Red when
 // the error outcomes stop carrying the route, or take another element's.
 func TestDelegateError_NamesTheLastElementThatExecuted(t *testing.T) {
+	t.Parallel()
 	twoRoutes := []chainElement{{Label: "primary"}, {Label: "api", Backend: delegate.BackendClaw, Model: "openai/gpt-5.5"}}
 	cases := []struct {
 		name             string
@@ -49,6 +50,7 @@ func TestDelegateError_NamesTheLastElementThatExecuted(t *testing.T) {
 
 // A cancelled dispatch names the route it abandoned.
 func TestDelegateError_ACancelledDispatchNamesItsRoute(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	reg := delegate.NewRegistry()
 	reg.Register(delegate.BackendClaw, &cancellingBackend{cancel: cancel})
@@ -114,6 +116,7 @@ func (b *sequencedBackend) Execute(_ context.Context, task delegate.Task) (deleg
 // backend, route and fingerprint. Red when the degrade path does not mark its
 // attempt as the spender.
 func TestSkip_ADegradedAttemptIsTheSpender(t *testing.T) {
+	t.Parallel()
 	wall := func() error {
 		return &delegate.ErrRateLimited{Provider: "x", Kind: delegate.RateLimitKindUsageWindow, ResetAt: time.Now().Add(time.Hour)}
 	}

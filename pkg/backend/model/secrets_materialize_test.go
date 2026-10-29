@@ -15,6 +15,7 @@ import (
 // command text handed to the hooks/logs only ever carries the
 // placeholder.
 func TestToolNodeShellMaterializesSecret(t *testing.T) {
+	t.Parallel()
 	const realVal = "sk-REAL-abcdef0123456789ABCDEF"
 	const ph = "__ITERION_SECRET_mytoken__"
 
@@ -68,6 +69,7 @@ func TestToolNodeShellMaterializesSecret(t *testing.T) {
 // command rewrite and env materialization seams. Undeclared literals stay in
 // the command itself; checking restored stdout alone misses substitutions.
 func TestToolNodeKeepsUndeclaredIterionLiterals(t *testing.T) {
+	t.Parallel()
 	wf := &ir.Workflow{Secrets: map[string]*ir.Secret{
 		"TOKEN": {Value: "declared-value-12345"},
 	}}

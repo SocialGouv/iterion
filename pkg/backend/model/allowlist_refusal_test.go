@@ -11,6 +11,7 @@ import (
 // forbidden primary names node, provider and level. Mutant: the two checks
 // swapped → the both-set case names the provider instead of the span.
 func TestAllowlistRefusal_UnreadableFirstThenForbiddenPrimary(t *testing.T) {
+	t.Parallel()
 	if err := AllowlistRefusal(ProviderResolution{}, "team"); err != nil {
 		t.Fatalf("a clean walk refused: %v", err)
 	}
@@ -31,6 +32,7 @@ func TestAllowlistRefusal_UnreadableFirstThenForbiddenPrimary(t *testing.T) {
 
 // The vocabulary is one list, lower-cased as the walk reads it.
 func TestKnownProviderSet_IsTheLowerCasedVocabulary(t *testing.T) {
+	t.Parallel()
 	set := KnownProviderSet()
 	if len(set) != len(KnownRoutingProviders) {
 		t.Fatalf("set has %d entries, want %d", len(set), len(KnownRoutingProviders))

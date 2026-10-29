@@ -10,6 +10,7 @@ import (
 // sides can reach it: a gate that judges the tree's cleanliness must never
 // read the engine's own instrument as uncommitted work of the run.
 func TestScriptScratchDir(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name           string
 		sharedStateDir string

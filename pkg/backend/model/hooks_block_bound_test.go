@@ -50,6 +50,7 @@ func farSideBoundHooks(level iterlog.Level, logs *strings.Builder) *storeHooks {
 }
 
 func TestStoreEventHooks_ResponseTextBlockBoundedOnRenderedSize(t *testing.T) {
+	t.Parallel()
 	var logs strings.Builder
 	h := farSideBoundHooks(iterlog.LevelInfo, &logs)
 
@@ -60,6 +61,7 @@ func TestStoreEventHooks_ResponseTextBlockBoundedOnRenderedSize(t *testing.T) {
 }
 
 func TestStoreEventHooks_ToolInputBlocksBoundedOnRenderedSize(t *testing.T) {
+	t.Parallel()
 	body := boundWitnessBody()
 	input, err := json.Marshal(map[string]string{"command": body})
 	if err != nil {
@@ -81,6 +83,7 @@ func TestStoreEventHooks_ToolInputBlocksBoundedOnRenderedSize(t *testing.T) {
 }
 
 func TestStoreEventHooks_ThinkingBlockBoundedOnRenderedSize(t *testing.T) {
+	t.Parallel()
 	var logs strings.Builder
 	h := farSideBoundHooks(iterlog.LevelInfo, &logs)
 

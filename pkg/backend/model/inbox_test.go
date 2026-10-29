@@ -16,6 +16,7 @@ import (
 //   - a second drain immediately after returns empty (no re-delivery)
 //   - delivered + consumed events are published in lockstep
 func TestStoreInboxBinder_DrainAndConsume(t *testing.T) {
+	t.Parallel()
 	t.Helper()
 	dir := t.TempDir()
 	s, err := store.New(dir)
@@ -103,6 +104,7 @@ func TestStoreInboxBinder_DrainAndConsume(t *testing.T) {
 // (nil, nil) on missing config so the backend's generation loop runs
 // unaffected.
 func TestStoreInboxBinder_NilSafety(t *testing.T) {
+	t.Parallel()
 	t.Helper()
 	t.Run("nil receiver", func(t *testing.T) {
 		var b *StoreInboxBinder
@@ -128,6 +130,7 @@ func TestStoreInboxBinder_NilSafety(t *testing.T) {
 // the content carries user authority) and concatenates multiple texts
 // with a separator so the LLM can distinguish them.
 func TestBuildOperatorMessage_FormatsBlock(t *testing.T) {
+	t.Parallel()
 	t.Helper()
 	msg := buildOperatorMessage([]string{"first", "second"})
 	if msg.Role != "user" {

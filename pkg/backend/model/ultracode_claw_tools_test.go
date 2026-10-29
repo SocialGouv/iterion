@@ -9,6 +9,7 @@ import (
 // Ultracode on claw grants the subagent tool to a node that restricts its
 // tools, once.
 func TestWithClawOrchestrationTools(t *testing.T) {
+	t.Parallel()
 	got := withClawOrchestrationTools([]string{"bash", "agent"})
 	has := map[string]int{}
 	for _, name := range got {
@@ -24,6 +25,7 @@ func TestWithClawOrchestrationTools(t *testing.T) {
 // node at dispatch, so granting a name iterion does not register is a hard,
 // deterministic failure rather than a degrade.
 func TestClawGrantedToolsAreRegistered(t *testing.T) {
+	t.Parallel()
 	for _, name := range withClawOrchestrationTools(nil) {
 		if !toolcatalog.IsBuiltin(name) {
 			t.Fatalf("ultracode grants %q to a claw node, but no such tool is registered — "+

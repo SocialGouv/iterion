@@ -14,6 +14,7 @@ import (
 // (context overflow, quota), and every other verdict is a typed *APIError,
 // which isRetryable reads as is.
 func TestClassifyStreamEventError_OpenAIProviderCodes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		msg       string
@@ -121,6 +122,7 @@ func TestClassifyStreamEventError_OpenAIProviderCodes(t *testing.T) {
 // which Codex holds terminal, is a capacity condition OpenAI documents as
 // retryable with backoff.
 func TestClassifyStreamEventError_ResponsesErrorCodes(t *testing.T) {
+	t.Parallel()
 	permanent := []string{
 		"invalid_prompt", "data_residency_mismatch", "bio_policy", "misalignment_policy_violation",
 		"invalid_image", "invalid_image_format", "invalid_base64_image", "invalid_image_url", "image_too_large",
@@ -151,6 +153,7 @@ func TestClassifyStreamEventError_ResponsesErrorCodes(t *testing.T) {
 // A status the provider names as its code travels as the error's HTTP status,
 // which the retry event reports.
 func TestClassifyStreamEventError_CarriesTheStatusItNames(t *testing.T) {
+	t.Parallel()
 	for msg, want := range map[string]int{
 		"openai stream error: upstream unavailable (code=503)": 503,
 		"openai response failed: 429: slow down":               429,

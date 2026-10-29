@@ -24,6 +24,7 @@ func skipChain(onSkip []delegate.FallbackCategory) []chainElement {
 // the skip route accepts it, and the chain completes WITHOUT error — a
 // Skipped outcome carrying the failed route's spend, never content.
 func TestChainSkipServesSkippedOutcome(t *testing.T) {
+	t.Parallel()
 	head := &backendScriptedBackend{
 		name:   delegate.BackendClaudeCode,
 		fail:   &delegate.ErrRateLimited{Provider: delegate.BackendClaudeCode, Detail: "weekly cap", Kind: delegate.RateLimitKindUsageWindow, ResetAt: time.Now().Add(time.Hour)},
@@ -67,6 +68,7 @@ func TestChainSkipServesSkippedOutcome(t *testing.T) {
 // with ADR-091's terminal degrade. The second node must neither spawn the
 // refused backend nor report that a backend will serve the skip route.
 func TestChainCooldownFallsThroughToSkip(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 26, 10, 0, 0, 0, time.UTC)
 	reset := now.Add(time.Hour)
 	head := &backendScriptedBackend{
@@ -119,6 +121,7 @@ func TestChainCooldownFallsThroughToSkip(t *testing.T) {
 // survive an unbuildable rescue route so the filtered terminal skip still
 // implements the operator's degrade policy on later nodes.
 func TestChainCooldownBuildErrorKeepsRememberedCategory(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 26, 10, 0, 0, 0, time.UTC)
 	head := &backendScriptedBackend{
 		name: delegate.BackendClaudeCode,
@@ -161,6 +164,7 @@ func TestChainCooldownBuildErrorKeepsRememberedCategory(t *testing.T) {
 // route on ANOTHER backend burns and fails, then skip — the outcome must
 // name the LAST executed route (the spend's origin), not the first.
 func TestChainSkipNamesTheSpendingRoute(t *testing.T) {
+	t.Parallel()
 	winErr := &delegate.ErrRateLimited{Provider: "x", Kind: delegate.RateLimitKindUsageWindow, ResetAt: time.Now().Add(time.Hour)}
 	head := &backendScriptedBackend{name: delegate.BackendClaw, fail: winErr, tokens: 10}
 	second := &backendScriptedBackend{name: delegate.BackendPi, fail: winErr, tokens: 4242, costUSD: 3.5}
@@ -190,6 +194,7 @@ func TestChainSkipNamesTheSpendingRoute(t *testing.T) {
 // NOT swallow an unrelated failure — the node still fails (resumable),
 // which is the "pause and retry" policy.
 func TestChainSkipRespectsOnFilter(t *testing.T) {
+	t.Parallel()
 	head := &backendScriptedBackend{
 		name: delegate.BackendClaudeCode,
 		fail: &delegate.ErrAuthFailed{Provider: delegate.BackendClaudeCode, Detail: "revoked"},
@@ -214,6 +219,7 @@ func TestChainSkipRespectsOnFilter(t *testing.T) {
 // try another BACKEND, but it must never be CONVERTED INTO A SUCCESS by
 // a filtered skip route. Only an explicit `on: [any]` opts into that.
 func TestChainSkipRefusesUnclassifiedFailure(t *testing.T) {
+	t.Parallel()
 	head := &backendScriptedBackend{
 		name: delegate.BackendClaudeCode,
 		fail: errors.New("claude_code: exit status 1: prompt too long"),
@@ -246,6 +252,7 @@ func TestChainSkipRefusesUnclassifiedFailure(t *testing.T) {
 // not fall into a filtered skip either — the walk consults the same
 // on: acceptance as the execute-failure path.
 func TestChainSkipNotReachableViaBuildError(t *testing.T) {
+	t.Parallel()
 	head := &backendScriptedBackend{
 		name: delegate.BackendClaudeCode,
 		fail: &delegate.ErrRateLimited{Provider: delegate.BackendClaudeCode, Kind: delegate.RateLimitKindUsageWindow, ResetAt: time.Now().Add(time.Hour)},
@@ -277,6 +284,7 @@ func TestChainSkipNotReachableViaBuildError(t *testing.T) {
 // EXECUTE failure's category, not on Unclassified (which would disarm
 // the operator's skip policy and turn it into wait).
 func TestChainSkipBuildErrorKeepsOriginalCategory(t *testing.T) {
+	t.Parallel()
 	head := &backendScriptedBackend{
 		name: delegate.BackendClaudeCode,
 		fail: &delegate.ErrRateLimited{Provider: delegate.BackendClaudeCode, Kind: delegate.RateLimitKindUsageWindow, ResetAt: time.Now().Add(time.Hour)},
@@ -303,6 +311,7 @@ func TestChainSkipBuildErrorKeepsOriginalCategory(t *testing.T) {
 // set per run from vars, and a skip route survives dedupe despite its
 // empty backend/model.
 func TestResolveChain_SkipRouteAndWhenGate(t *testing.T) {
+	t.Parallel()
 	fbs := []ir.Fallback{
 		{Name: "give_up", Action: ir.FallbackActionSkip, When: "vars.policy == 'skip'", On: []string{"usage_window"}},
 	}
@@ -326,6 +335,7 @@ func TestResolveChain_SkipRouteAndWhenGate(t *testing.T) {
 // TestFillZeroValues: the synthesized skip output covers every schema
 // field with its zero value and leaves already-present keys alone.
 func TestFillZeroValues(t *testing.T) {
+	t.Parallel()
 	schema := &ir.Schema{Name: "s", Fields: []*ir.SchemaField{
 		{Name: "concerns", Type: ir.FieldTypeString},
 		{Name: "blocking", Type: ir.FieldTypeBool},

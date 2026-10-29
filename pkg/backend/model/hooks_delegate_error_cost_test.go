@@ -16,6 +16,7 @@ import (
 // gives a reader closing the org-metering gap something to read. Mutating
 // the serialization away reddens the readback.
 func TestDelegateErrorCarriesItsCost(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st, err := store.New(t.TempDir())
 	if err != nil {

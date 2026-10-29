@@ -18,6 +18,7 @@ func mustSafetyHook(t *testing.T, patterns []string) hooks.Handler {
 }
 
 func TestSafetyHook_BlocksRmRfRoot(t *testing.T) {
+	t.Parallel()
 	h := mustSafetyHook(t, DefaultDangerousCommandPatterns())
 	dec, err := h(context.Background(), hooks.Context{
 		Event:     hooks.PreToolUse,
@@ -33,6 +34,7 @@ func TestSafetyHook_BlocksRmRfRoot(t *testing.T) {
 }
 
 func TestSafetyHook_BlocksForkBomb(t *testing.T) {
+	t.Parallel()
 	h := mustSafetyHook(t, DefaultDangerousCommandPatterns())
 	dec, err := h(context.Background(), hooks.Context{
 		Event:     hooks.PreToolUse,
@@ -48,6 +50,7 @@ func TestSafetyHook_BlocksForkBomb(t *testing.T) {
 }
 
 func TestSafetyHook_AllowsBenignCommand(t *testing.T) {
+	t.Parallel()
 	h := mustSafetyHook(t, DefaultDangerousCommandPatterns())
 	dec, err := h(context.Background(), hooks.Context{
 		Event:     hooks.PreToolUse,
@@ -63,6 +66,7 @@ func TestSafetyHook_AllowsBenignCommand(t *testing.T) {
 }
 
 func TestSafetyHook_NoCommandKey_Continues(t *testing.T) {
+	t.Parallel()
 	h := mustSafetyHook(t, DefaultDangerousCommandPatterns())
 	dec, err := h(context.Background(), hooks.Context{
 		Event:     hooks.PreToolUse,
@@ -78,6 +82,7 @@ func TestSafetyHook_NoCommandKey_Continues(t *testing.T) {
 }
 
 func TestSafetyHook_InvalidPatternErrors(t *testing.T) {
+	t.Parallel()
 	h, err := SafetyHook([]string{"[invalid("})
 	if err == nil {
 		t.Fatal("expected error for invalid regex pattern")
@@ -91,6 +96,7 @@ func TestSafetyHook_InvalidPatternErrors(t *testing.T) {
 }
 
 func TestSafetyHook_PartialFailureRejects(t *testing.T) {
+	t.Parallel()
 	// Even one bad pattern should fail loudly so operators do not run
 	// with an incomplete safety net.
 	h, err := SafetyHook([]string{`(?i)\brm -rf /`, "[invalid("})
@@ -103,6 +109,7 @@ func TestSafetyHook_PartialFailureRejects(t *testing.T) {
 }
 
 func TestNewDefaultLifecycleHooks_BlocksDangerousCommand(t *testing.T) {
+	t.Parallel()
 	r := NewDefaultLifecycleHooks(EventHooks{})
 	dec, _ := r.Fire(context.Background(), hooks.Context{
 		Event:     hooks.PreToolUse,

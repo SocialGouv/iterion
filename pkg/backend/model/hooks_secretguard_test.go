@@ -18,6 +18,7 @@ import (
 // secret value — and its base64 encoding — never reach events.jsonl or
 // run.log, while the placeholder does.
 func TestStoreEventHooks_RedactsSecretsAtSinks(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-ant-SUPERSECRET-abcdef0123456789ABCDEF"
 	b64 := base64.StdEncoding.EncodeToString([]byte(secret))
 	const ph = "__ITERION_SECRET_api_key__"
@@ -78,6 +79,7 @@ func TestStoreEventHooks_RedactsSecretsAtSinks(t *testing.T) {
 // TestStoreEventHooks_NilGuardNoRedaction confirms the kill-switch
 // (ITERION_SECRETS_REDACT=off ⇒ nil guard) leaves content untouched.
 func TestStoreEventHooks_NilGuardNoRedaction(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-ant-PLAINTEXT-0123456789abcdefABCDEF"
 
 	st, err := store.New(t.TempDir())

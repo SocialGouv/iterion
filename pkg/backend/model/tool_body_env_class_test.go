@@ -329,6 +329,7 @@ func (pc *packageCalls) requireDeclared(t *testing.T, names ...string) {
 // not only a call — a package-level `var f = expandBracedEnv` is a second
 // reader whose call site names nothing.
 func TestToolBodyEnvIsTheOnlyExpander(t *testing.T) {
+	t.Parallel()
 	pc := readPackageCalls(t)
 	pc.requireDeclared(t, append([]string{"ToolBodyEnv"}, toolBodyEnvFamily...)...)
 	mentioners := pc.mentionersOf(toolBodyEnvFamily...)
@@ -364,6 +365,7 @@ func TestToolBodyEnvIsTheOnlyExpander(t *testing.T) {
 // function body is attributed to packageLevel, which has no caller to climb
 // to and is refused where it names a renderer.
 func TestEveryToolBodyPreparerGoesThroughTheChokepoint(t *testing.T) {
+	t.Parallel()
 	pc := readPackageCalls(t)
 	pc.requireDeclared(t, append([]string{"ToolBodyEnv"}, renderRoots...)...)
 	pc.requireDeclared(t, sortedKeys(renderPassThrough)...)
@@ -426,6 +428,7 @@ func TestEveryToolBodyPreparerGoesThroughTheChokepoint(t *testing.T) {
 // an LLM-proposed command (rung 3) and is expanded by nobody — the property
 // is about the author's text, and a model's answer is not it.
 func TestSelfRepairCommandIsNotEnvExpanded(t *testing.T) {
+	t.Parallel()
 	pc := readPackageCalls(t)
 	pc.requireDeclared(t, "ToolBodyEnv", "ClawExecutor.selfRepair")
 	callers := pc.callersOf("ToolBodyEnv")

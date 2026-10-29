@@ -19,6 +19,7 @@ import (
 // drop the cache_control field, otherwise the prompt cache will silently
 // miss in production with no error.
 func TestSystemBlockCacheControlMarshals(t *testing.T) {
+	t.Parallel()
 	block := api.ContentBlock{
 		Type:         "text",
 		Text:         "You are a careful assistant.",

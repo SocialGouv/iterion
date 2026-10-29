@@ -15,6 +15,7 @@ import (
 // what a naive empty intersection would have meant given secretguard's
 // "empty Hosts == any host" rule).
 func TestEffectiveSecretHosts(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name              string
 		workflow, binding []string
@@ -46,6 +47,7 @@ func TestEffectiveSecretHosts(t *testing.T) {
 // exact case the review flagged — without the wiring an org credential
 // bound to a bot was exfiltratable anywhere.
 func TestBuildSecretGuard_BindingHostsNarrowEgress(t *testing.T) {
+	t.Parallel()
 	const val = "glpat-SPECIMEN-abcdef0123456789wxyz"
 	wf := &ir.Workflow{Secrets: map[string]*ir.Secret{
 		"forge_token": {}, // empty value -> resolved from Generic; no workflow hosts
@@ -75,6 +77,7 @@ func TestBuildSecretGuard_BindingHostsNarrowEgress(t *testing.T) {
 // empty intersection would have meant allow-everywhere under secretguard's
 // empty==any rule — the regression effectiveSecretHosts guards against.
 func TestBuildSecretGuard_DisjointHostsDenyAll(t *testing.T) {
+	t.Parallel()
 	const val = "glpat-SPECIMEN-fedcba9876543210stuv"
 	wf := &ir.Workflow{Secrets: map[string]*ir.Secret{
 		"forge_token": {Value: val, Hosts: []string{"example.com"}},

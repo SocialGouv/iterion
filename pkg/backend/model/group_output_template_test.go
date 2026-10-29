@@ -6,6 +6,7 @@ import (
 )
 
 func TestGroupOutputTemplatesUseDeclaredIdentity(t *testing.T) {
+	t.Parallel()
 	td := &TemplateData{
 		Nodes: map[string]ir.Node{"r1": &ir.ComputeNode{}, "r1.gate": &ir.ComputeNode{}, "r2.gate": &ir.ComputeNode{}},
 		Outputs: map[string]map[string]any{

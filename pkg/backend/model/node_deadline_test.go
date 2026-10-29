@@ -56,6 +56,7 @@ func executorWithCrossing(t *testing.T, b delegate.Backend, policy RetryPolicy) 
 // defer from executeBackend (executor_build_task.go) — the error that comes
 // back is the far side's bare sentence and the type assertion fails.
 func TestANodeCutByItsOwnTimeoutNamesTheCutInItsChainAndNotInItsWords(t *testing.T) {
+	t.Parallel()
 	// MaxAttempts 1: no in-place budget, so the FAR SIDE's words are what
 	// comes back — the cell the ticket names, where the chain carries the
 	// cut and the text carries none of it.
@@ -92,6 +93,7 @@ func TestANodeCutByItsOwnTimeoutNamesTheCutInItsChainAndNotInItsWords(t *testing
 // itself. The type still carries the cut, and the classification no longer
 // depends on which of the two came back (recovery.Classify reads the type).
 func TestANodeCutMidBackoffStillNamesTheCutByType(t *testing.T) {
+	t.Parallel()
 	b := &crossingCutByItsBound{words: "claw backend: runner exited with error: signal: killed (stderr: )"}
 	exec := executorWithCrossing(t, b, RetryPolicy{MaxAttempts: 3, BackoffBase: time.Hour})
 
@@ -109,6 +111,7 @@ func TestANodeCutMidBackoffStillNamesTheCutByType(t *testing.T) {
 // only where the executor itself froze a deadline, so an unbounded node's
 // failure keeps its own classification.
 func TestANodeWithoutATimeoutIsNeverNamedAsCutByOne(t *testing.T) {
+	t.Parallel()
 	b := &refusingBackend{err: errors.New("claw backend: runner: boom")}
 	exec := executorWithCrossing(t, b, RetryPolicy{MaxAttempts: 1, BackoffBase: time.Millisecond})
 
@@ -123,6 +126,7 @@ func TestANodeWithoutATimeoutIsNeverNamedAsCutByOne(t *testing.T) {
 // node's bound did not fire, and the cut the engine knows about at its node
 // boundary must not be re-modelled as this node's own deadline.
 func TestARunCancelledUnderABoundedNodeIsNotTheNodesOwnDeadline(t *testing.T) {
+	t.Parallel()
 	b := &crossingCutByItsBound{words: "claw backend: runner exited with error: signal: killed (stderr: )"}
 	exec := executorWithCrossing(t, b, RetryPolicy{MaxAttempts: 1, BackoffBase: time.Millisecond})
 
@@ -156,6 +160,7 @@ func (b *refusingBackend) Execute(context.Context, delegate.Task) (delegate.Resu
 // would take that reading away from it (the shape measured and reverted as
 // #2456's patch 2).
 func TestTheRunsOwnDeadlineUnderABoundedNodeIsNotTheNodesOwnDeadline(t *testing.T) {
+	t.Parallel()
 	b := &crossingCutByItsBound{words: "claw backend: runner exited with error: signal: killed (stderr: )"}
 	exec := executorWithCrossing(t, b, RetryPolicy{MaxAttempts: 1, BackoffBase: time.Millisecond})
 
@@ -176,6 +181,7 @@ func TestTheRunsOwnDeadlineUnderABoundedNodeIsNotTheNodesOwnDeadline(t *testing.
 // every failure a bounded node can have. Without this reading the catch-all
 // retry would disappear for every node that declares a `timeout:`.
 func TestABoundedNodeThatFailsInsideItsBoundIsNotNamedAsCutByIt(t *testing.T) {
+	t.Parallel()
 	b := &refusingBackend{err: errors.New("claw backend: runner: boom")}
 	exec := executorWithCrossing(t, b, RetryPolicy{MaxAttempts: 1, BackoffBase: time.Millisecond})
 

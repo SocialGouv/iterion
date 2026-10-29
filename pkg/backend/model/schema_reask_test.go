@@ -112,6 +112,7 @@ func lastUserText(t *testing.T, msgs []api.Message) string {
 // the mode to a restart puts the prompt back in the last turn (twice in the
 // conversation), which is what the two occurrence assertions refuse.
 func TestSchemaReask_ClawContinuesTheCompletedConversation(t *testing.T) {
+	t.Parallel()
 	mock := newMockClient(
 		toolUseEvents("tu_1", "structured_output", `{"verdict":true}`, 50, 20),
 		toolUseEvents("tu_2", "structured_output", `{"verdict":true,"reason":"because"}`, 30, 10),
@@ -178,6 +179,7 @@ func TestSchemaReask_ClawContinuesTheCompletedConversation(t *testing.T) {
 // transcript found there is residue and never the answer being re-asked
 // about.
 func TestSchemaReask_ClawContinuesASharedSlotsConversation(t *testing.T) {
+	t.Parallel()
 	const (
 		siblingTurn = "DRAFT-TURN: the outline the other node wrote"
 		residueTurn = "RESIDUE-TURN: a transcript under the bare node id"
@@ -252,6 +254,7 @@ func pauseConversation(t *testing.T) json.RawMessage {
 // second time behind the stored history (measured: 91 + 11 messages) and
 // never drop the feedback (the resume form discards the prompt).
 func TestSchemaReask_ResumedClawNodeGetsTheFeedbackWithoutReplayingThePause(t *testing.T) {
+	t.Parallel()
 	mock := newMockClient(
 		// The post-pause turn: the model answers on the spot, JSON lacking `reason`.
 		textEvents(`{"verdict":true}`, 50, 20),
@@ -323,6 +326,7 @@ func TestSchemaReask_ResumedClawNodeGetsTheFeedbackWithoutReplayingThePause(t *t
 // resumed claw node (measured 11 → 22 → 33 messages on the primary route of
 // the same run). A retry re-sends the resumed conversation, once.
 func TestClawResumedNodeTransientRetryDoesNotReplayTheHistoryTwice(t *testing.T) {
+	t.Parallel()
 	mock := newMockClient(
 		// The first attempt dies mid-stream after the request went out, so
 		// the partial result carries the request's messages — what the
@@ -369,6 +373,7 @@ func TestClawResumedNodeTransientRetryDoesNotReplayTheHistoryTwice(t *testing.T)
 // in — resumed, never forked, never optional — with nothing of the original
 // prompt repeated.
 func TestSchemaReask_ResumesTheSessionOnBackendsThatResumeById(t *testing.T) {
+	t.Parallel()
 	for _, backendName := range []string{delegate.BackendClaudeCode, delegate.BackendCodex, delegate.BackendOpenCode} {
 		t.Run(backendName, func(t *testing.T) {
 			backend := &capturingBackend{results: []delegate.Result{
@@ -420,6 +425,7 @@ func TestSchemaReask_ResumesTheSessionOnBackendsThatResumeById(t *testing.T) {
 // or one that reported no session id — the re-ask restarts the turn with the
 // error appended to the prompt, and says so.
 func TestSchemaReask_RestartsWhereNothingCanBeContinued(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, backend, sessionID string
 	}{
@@ -464,6 +470,7 @@ func TestSchemaReask_RestartsWhereNothingCanBeContinued(t *testing.T) {
 // A claw node with no captured conversation (no run wired the session
 // store) restarts too — the floor, never a refusal.
 func TestSchemaReask_ClawWithoutACapturedConversationRestarts(t *testing.T) {
+	t.Parallel()
 	mock := newMockClient(
 		toolUseEvents("tu_1", "structured_output", `{"verdict":true}`, 50, 20),
 		toolUseEvents("tu_2", "structured_output", `{"verdict":true,"reason":"because"}`, 30, 10),
@@ -494,6 +501,7 @@ func TestSchemaReask_ClawWithoutACapturedConversationRestarts(t *testing.T) {
 // during the re-ask is still what the run-level retry keys on — and its
 // delegate_error names the attempt.
 func TestSchemaReask_SurfacesTheReaskFailureBesideTheValidationError(t *testing.T) {
+	t.Parallel()
 	window := &delegate.ErrRateLimited{Provider: delegate.BackendClaudeCode, Kind: delegate.RateLimitKindUsageWindow, Detail: "weekly cap"}
 	backend := &stubBackend{
 		results: []delegate.Result{{Output: map[string]any{"verdict": true}, SessionID: "sess-1", BackendName: delegate.BackendClaudeCode}},
@@ -531,6 +539,7 @@ func TestSchemaReask_SurfacesTheReaskFailureBesideTheValidationError(t *testing.
 // A second identical answer is the model's verdict: the node fails on it,
 // naming the field still missing, after exactly one re-ask.
 func TestSchemaReask_AsksOnceThenFails(t *testing.T) {
+	t.Parallel()
 	backend := &capturingBackend{results: []delegate.Result{
 		{Output: map[string]any{"verdict": true}, SessionID: "sess-1", BackendName: delegate.BackendClaudeCode},
 		{Output: map[string]any{"verdict": false}, SessionID: "sess-1", BackendName: delegate.BackendClaudeCode},
@@ -554,6 +563,7 @@ func TestSchemaReask_AsksOnceThenFails(t *testing.T) {
 // decided on an incomplete verdict is a run lost to the same missing field,
 // so it gets the same single re-ask.
 func TestLLMRouter_ReasksOnceOnAnIncompleteVerdict(t *testing.T) {
+	t.Parallel()
 	backend := &stubBackend{results: []delegate.Result{
 		{Output: map[string]any{"selected_route": "agent_a"}, Tokens: 100},
 		{Output: map[string]any{"selected_route": "agent_a", "reasoning": "it fits"}, Tokens: 40},
@@ -586,6 +596,7 @@ func TestLLMRouter_ReasksOnceOnAnIncompleteVerdict(t *testing.T) {
 // The re-ask's own delegate_finished carries what the re-ask ADDED: on a
 // backend whose cost is a session total, the difference; elsewhere its own.
 func TestReaskMarginalCost(t *testing.T) {
+	t.Parallel()
 	first := delegate.Result{
 		CostUSD: 1.50, Output: map[string]any{"_cost_usd": 1.50}, CostIsSessionTotal: true}
 	reask := delegate.Result{
@@ -610,6 +621,7 @@ func TestReaskMarginalCost(t *testing.T) {
 // Delay — only the loop sets one. Mutating the marker away reddens the
 // mid-re-ask assertion while the announce stays marked.
 func TestSchemaReask_TransportRetryInsideTheReaskCarriesTheMarker(t *testing.T) {
+	t.Parallel()
 	transient := errors.New("fetch failed")
 	backend := &stubBackend{
 		results: []delegate.Result{

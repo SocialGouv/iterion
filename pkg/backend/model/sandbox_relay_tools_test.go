@@ -29,6 +29,7 @@ func relayCarries(pick func(EventHooks) bool) bool {
 // steps and no tools, the permission gate's denials leave no audit, and a
 // supervisor's tool monitor never arms.
 func TestSandboxRelay_ToolEventsCrossTheWireIntoTheHostStore(t *testing.T) {
+	t.Parallel()
 	if !relayCarries(func(h EventHooks) bool { return h.OnToolStarted != nil && h.OnToolCall != nil }) {
 		t.Fatal("the runner's relay carries no tool hooks: the in-container builtins are invisible to the host")
 	}
@@ -98,6 +99,7 @@ func TestSandboxRelay_ToolEventsCrossTheWireIntoTheHostStore(t *testing.T) {
 // both fire on the runner's hooks; without the relay a run that retried
 // three times or compacted its history reads as a silent gap.
 func TestSandboxRelay_RetryAndCompactionCrossTheWireIntoTheHostStore(t *testing.T) {
+	t.Parallel()
 	if !relayCarries(func(h EventHooks) bool { return h.OnLLMRetry != nil && h.OnLLMCompacted != nil }) {
 		t.Fatal("the runner's relay carries neither llm_retry nor llm_compacted: the in-container loop's health is invisible")
 	}
@@ -154,6 +156,7 @@ func clawTurnConversation() []api.Message {
 // store.TurnCheckpoint an in-process node writes — the record
 // `iterion fork --turn` resolves and rehydrates from.
 func TestSandboxRelay_TurnCaptureCrossesIntoTheRunsTurnStore(t *testing.T) {
+	t.Parallel()
 	if !relayCarries(func(h EventHooks) bool { return h.OnLLMTurnCapture != nil }) {
 		t.Fatal("the runner's relay carries no turn capture: `iterion fork --turn` has nothing to anchor on for a sandboxed claw node")
 	}
@@ -216,6 +219,7 @@ func TestSandboxRelay_TurnCaptureCrossesIntoTheRunsTurnStore(t *testing.T) {
 // silence and never written as a line the launcher cannot parse. The
 // event still lands, and the honest size travels beside the cut.
 func TestSandboxRelay_OversizeToolPayloadsAreMarkedNotDropped(t *testing.T) {
+	t.Parallel()
 	if !relayCarries(func(h EventHooks) bool { return h.OnToolStarted != nil && h.OnToolCall != nil }) {
 		t.Fatal("the runner's relay carries no tool hooks: nothing to size-check")
 	}
@@ -280,6 +284,7 @@ func TestSandboxRelay_OversizeToolPayloadsAreMarkedNotDropped(t *testing.T) {
 // carry is OMITTED whole (a truncated one is not a conversation), and the
 // turn still lands, naming the bytes that stayed in the container.
 func TestSandboxRelay_OversizeConversationIsOmittedAndNamed(t *testing.T) {
+	t.Parallel()
 	if !relayCarries(func(h EventHooks) bool { return h.OnLLMTurnCapture != nil }) {
 		t.Fatal("the runner's relay carries no turn capture: nothing to size-check")
 	}
@@ -316,6 +321,7 @@ func TestSandboxRelay_OversizeConversationIsOmittedAndNamed(t *testing.T) {
 // a sandboxed claw node that call happens in the container, so the plan
 // store stays empty until the relay carries the input across.
 func TestSandboxRelay_RelayedTodoWriteFeedsThePlanStore(t *testing.T) {
+	t.Parallel()
 	if !relayCarries(func(h EventHooks) bool { return h.OnToolStarted != nil }) {
 		t.Fatal("the runner's relay carries no tool_started: a sandboxed node's plan never reaches the studio")
 	}
@@ -351,6 +357,7 @@ func TestSandboxRelay_RelayedTodoWriteFeedsThePlanStore(t *testing.T) {
 // the delegation total the launcher deliberately stops counting once it
 // has seen steps.
 func TestSandboxRelay_ABulkyStepStillDeliversItsTokenCounts(t *testing.T) {
+	t.Parallel()
 	b, load := relayHost(t, "run-relay-bulky-step")
 	// Six tool inputs, each just under the per-field budget: no single
 	// field is clamped, their sum is past the IPC's per-line cap.
@@ -386,6 +393,7 @@ func TestSandboxRelay_ABulkyStepStillDeliversItsTokenCounts(t *testing.T) {
 // lost observation never fails the node. The one lossy case in the relay
 // is never a silent one.
 func TestSandboxRelay_AnUnshrinkablePayloadIsRefusedAndReported(t *testing.T) {
+	t.Parallel()
 	b, load := relayHost(t, "run-relay-unshrinkable")
 	calls := make([]ToolCallEntry, 60000)
 	for i := range calls {

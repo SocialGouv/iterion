@@ -12,6 +12,7 @@ import (
 )
 
 func TestNodeSessionStore_LoadSaveEvict(t *testing.T) {
+	t.Parallel()
 	s := newNodeSessionStore()
 
 	// Empty store returns nil.
@@ -59,6 +60,7 @@ func TestNodeSessionStore_LoadSaveEvict(t *testing.T) {
 }
 
 func TestClawPersistEnvelope_RoundTripNamedSlot(t *testing.T) {
+	t.Parallel()
 	source := &ClawExecutor{sessions: newNodeSessionStore()}
 	messages := []api.Message{
 		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "remember correction A"}}},
@@ -81,6 +83,7 @@ func TestClawPersistEnvelope_RoundTripNamedSlot(t *testing.T) {
 }
 
 func TestClawPersistEnvelope_CompactsLargeToolResultsForReplay(t *testing.T) {
+	t.Parallel()
 	const runID, slot, sessionID = "run-large-tool-results", "assistant_conversation", "session-large-tool-results"
 	largeResult := strings.Repeat("tool output that token estimation must not replay verbatim\n", 1_300)
 	messages := []api.Message{
@@ -140,6 +143,7 @@ func TestClawPersistEnvelope_CompactsLargeToolResultsForReplay(t *testing.T) {
 }
 
 func TestNodeSessionStore_CompactNoOpWhenSmall(t *testing.T) {
+	t.Parallel()
 	s := newNodeSessionStore()
 	// 3 short messages — well under MaxEstimatedTokens=10000.
 	msgs := []api.Message{
@@ -159,6 +163,7 @@ func TestNodeSessionStore_CompactNoOpWhenSmall(t *testing.T) {
 }
 
 func TestNodeSessionStore_CompactRunsOnLargeSession(t *testing.T) {
+	t.Parallel()
 	s := newNodeSessionStore()
 	// Build a session that exceeds the compactor's heuristic so it
 	// actually fires. Each message carries enough text to push the
@@ -189,6 +194,7 @@ func TestNodeSessionStore_CompactRunsOnLargeSession(t *testing.T) {
 }
 
 func TestRunIDContext_RoundTrip(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	if got := RunIDFromContext(ctx); got != "" {
 		t.Fatalf("empty ctx returned runID %q", got)
@@ -205,6 +211,7 @@ func TestRunIDContext_RoundTrip(t *testing.T) {
 }
 
 func TestApplyAndCaptureSession(t *testing.T) {
+	t.Parallel()
 	store := newNodeSessionStore()
 	ctx := withRuntimeContext(context.Background(), "run-1", store)
 
@@ -250,6 +257,7 @@ func TestApplyAndCaptureSession(t *testing.T) {
 }
 
 func TestClawExecutorCompact_AppliesToStoredSession(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{sessions: newNodeSessionStore()}
 
 	// Build a large session and stash it as if a prior attempt had run.
@@ -277,6 +285,7 @@ func TestClawExecutorCompact_AppliesToStoredSession(t *testing.T) {
 }
 
 func TestClawExecutorCompact_NoSessionReturnsErrCompactionUnsupported(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{sessions: newNodeSessionStore()}
 	ctx := WithRunID(context.Background(), "run-1")
 	err := e.Compact(ctx, "node-without-session")
@@ -289,6 +298,7 @@ func TestClawExecutorCompact_NoSessionReturnsErrCompactionUnsupported(t *testing
 }
 
 func TestClawExecutorCompact_NoRunIDReturnsErrCompactionUnsupported(t *testing.T) {
+	t.Parallel()
 	e := &ClawExecutor{sessions: newNodeSessionStore()}
 	err := e.Compact(context.Background(), "node-1")
 	if !errors.Is(err, ErrCompactionUnsupported) {

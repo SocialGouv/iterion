@@ -10,6 +10,7 @@ import (
 // body's own renderer, like every other namespace; a prompt shows the text
 // of it, as before.
 func TestToolBodiesGetTheValueNotThePromptsText(t *testing.T) {
+	t.Parallel()
 	td := &TemplateData{
 		LoopCounters:      map[string]int{"r": 3},
 		LoopMaxIterations: map[string]int{"r": 10},

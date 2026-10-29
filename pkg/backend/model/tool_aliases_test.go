@@ -12,6 +12,7 @@ import (
 )
 
 func TestToolAliasesAndPolicyUseTheSameMCPResolution(t *testing.T) {
+	t.Parallel()
 	for _, count := range []int{0, 1, 2} {
 		t.Run(string(rune('0'+count)), func(t *testing.T) {
 			registry := tool.NewRegistry()
@@ -74,6 +75,7 @@ func TestToolAliasesAndPolicyUseTheSameMCPResolution(t *testing.T) {
 }
 
 func TestAmbiguousAliasPolicyDeniesCanonicalTool(t *testing.T) {
+	t.Parallel()
 	tr := tool.NewRegistry()
 	_ = tr.RegisterBuiltin("read_file", "", nil, jsonExec("should not run"))
 	_ = tr.RegisterMCP("a", "Read", "", nil, jsonExec("a"))
@@ -92,6 +94,7 @@ func TestAmbiguousAliasPolicyDeniesCanonicalTool(t *testing.T) {
 }
 
 func TestAliasAndCanonicalToolAreAdvertisedOnce(t *testing.T) {
+	t.Parallel()
 	tr := tool.NewRegistry()
 	_ = tr.RegisterBuiltin("read_file", "", nil, jsonExec("ok"))
 	ex := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithToolRegistry(tr))
@@ -102,6 +105,7 @@ func TestAliasAndCanonicalToolAreAdvertisedOnce(t *testing.T) {
 }
 
 func TestAliasDedupDoesNotHideDifferentToolsWithTheSameProviderName(t *testing.T) {
+	t.Parallel()
 	tr := tool.NewRegistry()
 	_ = tr.RegisterMCP("a_b", "Read", "", nil, jsonExec("one"))
 	_ = tr.RegisterMCP("a", "b_Read", "", nil, jsonExec("two"))
@@ -113,6 +117,7 @@ func TestAliasDedupDoesNotHideDifferentToolsWithTheSameProviderName(t *testing.T
 }
 
 func TestAliasPolicyUsesRegistryIdentityNotProviderName(t *testing.T) {
+	t.Parallel()
 	tr := tool.NewRegistry()
 	_ = tr.RegisterMCP("one", "Read", "", nil, jsonExec("MCP"))
 	_ = tr.RegisterBuiltin("mcp_one_Read", "", nil, jsonExec("different builtin"))

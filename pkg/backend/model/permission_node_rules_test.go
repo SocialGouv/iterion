@@ -75,6 +75,7 @@ func assertDecision(t *testing.T, pol *permission.Policy, tool string, input map
 // list, and only per kind — the node declared no allow:, so the workflow's
 // allow: is still in force.
 func TestBuiltTaskPolicyTakesTheNodeListOverTheWorkflowList(t *testing.T) {
+	t.Parallel()
 	e := nodeRulesExecutor(t, nodeRulesWorkflow())
 	task := buildNodeTask(t, e, nodeRulesAgent([]string{"Bash"}))
 	if !task.Permission.Enabled() {
@@ -93,6 +94,7 @@ func TestBuiltTaskPolicyTakesTheNodeListOverTheWorkflowList(t *testing.T) {
 // other half: no node list means the workflow's applies unchanged. Mutating
 // EffectivePermissionRules to always return the node list reddens it.
 func TestBuiltTaskPolicyInheritsTheWorkflowListWhenTheNodeDeclaresNone(t *testing.T) {
+	t.Parallel()
 	e := nodeRulesExecutor(t, nodeRulesWorkflow())
 	task := buildNodeTask(t, e, nodeRulesAgent(nil))
 	assertDecision(t, task.Permission, "Read", map[string]any{"file_path": ".env"},
@@ -108,6 +110,7 @@ func TestBuiltTaskPolicyInheritsTheWorkflowListWhenTheNodeDeclaresNone(t *testin
 // evaluated right in-process but shipped the workflow's rules would gate the
 // host run and not the container's.
 func TestBuiltTaskPolicyConfigCarriesExactlyTheResolvedLists(t *testing.T) {
+	t.Parallel()
 	e := nodeRulesExecutor(t, nodeRulesWorkflow())
 	cfg := buildNodeTask(t, e, nodeRulesAgent([]string{"Bash"})).Permission.Config()
 
@@ -130,6 +133,7 @@ func TestBuiltTaskPolicyConfigCarriesExactlyTheResolvedLists(t *testing.T) {
 // the operator's live escape hatch over a .bot they may not own, and a node
 // list must not be able to take it away.
 func TestRunLevelRulesStayAdditiveOverANodeList(t *testing.T) {
+	t.Parallel()
 	// All THREE kinds are asserted, and each with a verdict only its own kind
 	// can produce: swapping the run-level allow and ask lists at the
 	// resolution site left the whole suite green when only deny was pinned.
@@ -155,6 +159,7 @@ func TestRunLevelRulesStayAdditiveOverANodeList(t *testing.T) {
 // duplicated arms — so a judge wired at three of four sites reads as working
 // until a judge is the node that needs the bound.
 func TestJudgeNodeRulesReachThePolicy(t *testing.T) {
+	t.Parallel()
 	e := nodeRulesExecutor(t, nodeRulesWorkflow())
 	j := &ir.JudgeNode{
 		BaseNode:       ir.BaseNode{ID: "verdict"},

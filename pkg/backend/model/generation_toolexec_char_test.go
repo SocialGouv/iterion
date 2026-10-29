@@ -37,6 +37,7 @@ func charToolResultText(t *testing.T, b api.ContentBlock) string {
 }
 
 func TestShapeToolOutcome_DiagnosticNonzeroPreservesCapturedOutput(t *testing.T) {
+	t.Parallel()
 	r := hooks.NewRunner()
 	var postResult string
 	var failureCount int
@@ -74,6 +75,7 @@ func TestShapeToolOutcome_DiagnosticNonzeroPreservesCapturedOutput(t *testing.T)
 }
 
 func TestShapeToolOutcome_DiagnosticOnlySoftensKnownCompletedExit(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		toolName  string
@@ -134,6 +136,7 @@ func TestShapeToolOutcome_DiagnosticOnlySoftensKnownCompletedExit(t *testing.T) 
 }
 
 func TestDiagnosticShellFailureOutputDeclaresPartialOutput(t *testing.T) {
+	t.Parallel()
 	got, ok := diagnosticShellFailureOutput("diagnostic_shell", "first bytes\n... [output truncated]", errors.New("command exited with error: exit status 2"))
 	if !ok {
 		t.Fatal("truncated completed diagnostic was not exposed")
@@ -149,6 +152,7 @@ func TestDiagnosticShellFailureOutputDeclaresPartialOutput(t *testing.T) {
 // ToolUseIDs; onToolStarted fires before each executed tool with the raw
 // input; onToolCall fires after each with output/error.
 func TestExecuteToolsDirect_ResultShapesAndOrder(t *testing.T) {
+	t.Parallel()
 	var order []string
 	toolMap := map[string]*GenerationTool{
 		"ok_a": {Name: "ok_a", Execute: func(_ context.Context, _ json.RawMessage) (string, error) {
@@ -236,6 +240,7 @@ func TestExecuteToolsDirect_ResultShapesAndOrder(t *testing.T) {
 // onToolStarted — and the quirk that the OnToolCall info for an unknown tool
 // carries NO ToolUseID (all other error paths stamp it).
 func TestExecuteToolsDirect_UnknownToolResultAndCallbackQuirk(t *testing.T) {
+	t.Parallel()
 	var startedCount int
 	var completed []ToolCallInfo
 	results, err := executeToolsDirect(context.Background(),
@@ -276,6 +281,7 @@ func TestExecuteToolsDirect_UnknownToolResultAndCallbackQuirk(t *testing.T) {
 // skips BOTH the lifecycle hooks and execution — the PreToolUse hook never
 // observes the call.
 func TestExecuteToolsDirect_MalformedInputShortCircuitsBeforeHooks(t *testing.T) {
+	t.Parallel()
 	r := hooks.NewRunner()
 	var preCount int
 	r.Register(hooks.PreToolUse, func(_ context.Context, _ hooks.Context) (hooks.Decision, error) {
@@ -320,6 +326,7 @@ func TestExecuteToolsDirect_MalformedInputShortCircuitsBeforeHooks(t *testing.T)
 // when a PreToolUse hook blocks WITHOUT a reason: "tool refused: blocked by
 // lifecycle hook". onToolStarted must not fire for a blocked call.
 func TestExecuteToolsDirect_HookBlockDefaultReason(t *testing.T) {
+	t.Parallel()
 	r := hooks.NewRunner()
 	r.Register(hooks.PreToolUse, func(_ context.Context, _ hooks.Context) (hooks.Decision, error) {
 		return hooks.Decision{Action: hooks.ActionBlock}, nil // no Reason
@@ -361,6 +368,7 @@ func TestExecuteToolsDirect_HookBlockDefaultReason(t *testing.T) {
 // returned, later tools never run, PostToolUseFailure does NOT fire for the
 // suspension while PostToolUse fired for the earlier success.
 func TestExecuteToolsDirect_WrappedAskUserUnwrappedAndAborts(t *testing.T) {
+	t.Parallel()
 	inner := &delegate.ErrAskUser{Question: "prod or staging?"}
 	var laterExecuted bool
 	toolMap := map[string]*GenerationTool{
@@ -427,6 +435,7 @@ func TestExecuteToolsDirect_WrappedAskUserUnwrappedAndAborts(t *testing.T) {
 // PreToolUse gets the PARSED input map, PostToolUse the tool's output,
 // PostToolUseFailure the execution error.
 func TestExecuteToolsDirect_HookPayloads(t *testing.T) {
+	t.Parallel()
 	r := hooks.NewRunner()
 	var preInputs []map[string]any
 	var postResult string
@@ -478,6 +487,7 @@ func TestExecuteToolsDirect_HookPayloads(t *testing.T) {
 // EXECUTES with, while both callbacks (started + completed) keep observing
 // the placeholder form.
 func TestExecuteToolsDirect_MaterializeOnlyAffectsExecution(t *testing.T) {
+	t.Parallel()
 	const placeholderJSON = `{"token":"__ITERION_SECRET_apikey__"}`
 	var execInput string
 	toolMap := map[string]*GenerationTool{
@@ -520,6 +530,7 @@ func TestExecuteToolsDirect_MaterializeOnlyAffectsExecution(t *testing.T) {
 // operator-facing question AND the structured permission marker the runtime
 // parses to compute the grant on resume.
 func TestExecuteToolsDirect_PermissionAskCarriesMarkerAndQuestion(t *testing.T) {
+	t.Parallel()
 	pol, err := permission.NewPolicy(permission.ModeAsk, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -550,6 +561,7 @@ func TestExecuteToolsDirect_PermissionAskCarriesMarkerAndQuestion(t *testing.T) 
 // lifecycle errors ("context canceled" / "context deadline exceeded") do NOT
 // classify as window overflows (they must not trigger compaction retries).
 func TestIsContextWindowError_MarkerTable(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		err  error
@@ -612,6 +624,7 @@ func charMessagesOfSize(n, chars int) []api.Message {
 // over the target shrinks (preserving the recent window verbatim), a
 // transcript already under the target is returned unchanged with ok=false.
 func TestForceCompactToTokens(t *testing.T) {
+	t.Parallel()
 	t.Run("shrinks oversized transcript", func(t *testing.T) {
 		msgs := charMessagesOfSize(12, 2000) // ~24k chars ≈ ~6k estimated tokens
 		out, ok := forceCompactToTokens(msgs, 500, 0)

@@ -20,6 +20,7 @@ import (
 // used to REFUSE the only spelling a question key has, and C308 prescribed a
 // `with` mapping the text never reads.
 func TestAnInteractionPromptRendersTheQuestionsNotTheNodesInput(t *testing.T) {
+	t.Parallel()
 	reg := NewRegistry()
 	mock := &captureRequestClient{stream: mockStreamEvents(`{"q1":"4"}`, "end_turn")}
 	reg.Register("anthropic", func(string) (api.APIClient, error) { return mock, nil })

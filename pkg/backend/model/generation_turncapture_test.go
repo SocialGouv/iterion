@@ -22,6 +22,7 @@ import (
 // path: the failure was one mode silently lacking what the other had, so a
 // test that exercised only one would have stayed green through it.
 func TestTurnCaptureIsUniformAcrossGenerationModes(t *testing.T) {
+	t.Parallel()
 	type out struct {
 		OK bool `json:"ok"`
 	}

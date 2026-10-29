@@ -41,6 +41,7 @@ func sealForTest(t *testing.T, rec *HandoffRecorder, nodeID string, data map[str
 // Mutants: add EventLLMPrompt to the set → the ignored case reds; drop
 // the dedup → the double-capture case reds.
 func TestHandoffRecorderVocabulary(t *testing.T) {
+	t.Parallel()
 	rec := newTestRecorder(t)
 	rec.Observe(store.EventLLMPrompt, "n", map[string]any{"user_message": "hello"})
 	rec.Observe(store.EventLLMStepFinished, "n", map[string]any{"response_text": "mid-turn narration", "number": 1})
@@ -67,6 +68,7 @@ func TestHandoffRecorderVocabulary(t *testing.T) {
 // head, the omission marker with the count, and the tail.
 // Mutant: drop the middle-drops → the oversize case reds.
 func TestHandoffRecorderTruncation(t *testing.T) {
+	t.Parallel()
 	rec := newTestRecorder(t)
 	first := "HEAD-MARKER"
 	last := "TAIL-MARKER"
@@ -93,6 +95,7 @@ func TestHandoffRecorderTruncation(t *testing.T) {
 // goroutines append to per-node buffers; nothing crosses.
 // Mutant: one shared buffer → the cross-node leak reds.
 func TestHandoffRecorderPerNodeIsolationConcurrent(t *testing.T) {
+	t.Parallel()
 	rec := newTestRecorder(t)
 	var wg sync.WaitGroup
 	for _, node := range []string{"a", "b"} {
@@ -120,6 +123,7 @@ func TestHandoffRecorderPerNodeIsolationConcurrent(t *testing.T) {
 // crossing re-renders from the fuller buffer over the same path.
 // Mutant: one-shot seal → the re-seal case reds.
 func TestHandoffSealAndReseal(t *testing.T) {
+	t.Parallel()
 	rec := newTestRecorder(t)
 	rec.Observe(store.EventAssistantText, "n", map[string]any{"text": "before the crossing"})
 	p := sealForTest(t, rec, "n", map[string]any{"cross_harness": "restart"})
@@ -148,6 +152,7 @@ func TestHandoffSealAndReseal(t *testing.T) {
 // redacting(recorder(store)) — so a secret in an event lands redacted in
 // the file. Mutant: recorder outside redactingEmitter → this test reds.
 func TestHandoffRedactionBoundary(t *testing.T) {
+	t.Parallel()
 	const secret = "supersecret-handler-value"
 	g := secretguard.New([]secretguard.Secret{{Name: "MAPS_KEY", Value: secret}}, secretguard.DefaultConfig())
 	rec := newTestRecorder(t)
@@ -173,6 +178,7 @@ func TestHandoffRedactionBoundary(t *testing.T) {
 // Mutants: seal on every fallback → the no-posture case reds; drop the
 // stamp → the path case reds.
 func TestHandoffEmitterSealsOnFallback(t *testing.T) {
+	t.Parallel()
 	rec := newTestRecorder(t)
 	storeEmitter := &capturingEmitter{}
 	em := HandoffEmitter(storeEmitter, rec)
@@ -221,6 +227,7 @@ func TestHandoffEmitterSealsOnFallback(t *testing.T) {
 // TestHandoffEmitterNilByDefault: no recorder, no wrapper — the emitter
 // is the store's, byte-identical. Mutant: construct on emptiness → reds.
 func TestHandoffEmitterNilByDefault(t *testing.T) {
+	t.Parallel()
 	storeEmitter := &capturingEmitter{}
 	if got := HandoffEmitter(storeEmitter, nil); got != EventEmitter(storeEmitter) {
 		t.Fatal("a nil recorder must return the inner emitter unchanged")
@@ -233,6 +240,7 @@ func TestHandoffEmitterNilByDefault(t *testing.T) {
 // (mux.Run drains inline), so a partial handoff can only come from a
 // buffer-then-flush break, which is what this pins.
 func TestHandoffFreshnessDelayedRelay(t *testing.T) {
+	t.Parallel()
 	rec := newTestRecorder(t)
 	type relayed struct {
 		typ  store.EventType
@@ -264,6 +272,7 @@ func TestHandoffFreshnessDelayedRelay(t *testing.T) {
 // TestHandoffRecorderNoRootSealsNothing: no state dir, no artifact dir —
 // the recorder is inert and removes nothing at Cleanup.
 func TestHandoffRecorderNoRootSealsNothing(t *testing.T) {
+	t.Parallel()
 	rec := &HandoffRecorder{nodes: map[string]*handoffNode{}, now: time.Now}
 	rec.Observe(store.EventAssistantText, "n", map[string]any{"text": "work"})
 	if p := rec.Seal("n", map[string]any{"cross_harness": "restart"}); p != "" {
@@ -276,6 +285,7 @@ func TestHandoffRecorderNoRootSealsNothing(t *testing.T) {
 // and nothing else (deletion safety).
 // Mutant: drop the created guard → the not-created case reds.
 func TestHandoffCleanup(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	rec := NewHandoffRecorder(root)
 	rec.Observe(store.EventAssistantText, "n", map[string]any{"text": "work"})
@@ -333,6 +343,7 @@ func renderHandoffFileForTest(t *testing.T, rec *HandoffRecorder, nodeID string)
 // Mutants: a posture-only gate → this test reds on rung 3; dropping the
 // unconditional clears → rung 3 keeps rung 2's stale fields, same red.
 func TestElementBuilderHandoffAttach(t *testing.T) {
+	t.Parallel()
 	tail := &backendScriptedBackend{name: delegate.BackendClaw}
 	head := &backendScriptedBackend{name: delegate.BackendClaudeCode}
 	reg := delegate.NewRegistry()
@@ -395,6 +406,7 @@ func TestElementBuilderHandoffAttach(t *testing.T) {
 // back into the task; an unreadable file is said, not silently dropped.
 // Mutant: restart rewriting the prompt → the byte-preservation case reds.
 func TestHandoffPromptRender(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	path := filepath.Join(root, "handoff.md")
 	if err := os.WriteFile(path, []byte("## assistant_text\n\nthe work\n"), 0o600); err != nil {
@@ -447,6 +459,7 @@ func TestHandoffPromptRender(t *testing.T) {
 // Mutant: the handoff wrap moved OUTSIDE NewStoreEventHooks (the caller
 // wraps the emitter) → this test reds on the turn never landing.
 func TestNewStoreEventHooks_capabilityDetectionSurvivesTheHandoffWrap(t *testing.T) {
+	t.Parallel()
 	fs := &turnRecordingEmitter{store: &capturingEmitter{}}
 	rec := NewHandoffRecorder(t.TempDir())
 	hooks := NewStoreEventHooks(context.Background(), fs, "run-cap", iterlog.New(iterlog.LevelError, nil), nil, rec)
@@ -490,6 +503,7 @@ func (e *turnRecordingEmitter) WriteTurn(_ context.Context, tc *store.TurnCheckp
 // reds on the last event; the append clamp dropped → the oversize case
 // reds on the truncated marker.
 func TestHandoffRecorder_tailSurvivesAnOversizedHead(t *testing.T) {
+	t.Parallel()
 	rec := newTestRecorder(t)
 	big := strings.Repeat("H", handoffHeadBytes+40*1024) // 72 KiB first event: alone exceeds the 32 KiB head
 	rec.Observe(store.EventAssistantText, "n", map[string]any{"text": big})

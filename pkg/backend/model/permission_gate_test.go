@@ -32,6 +32,7 @@ func bashCall(cmd string) []toolUseBlock {
 }
 
 func TestExecuteToolsDirect_GateDenyBlocksExecution(t *testing.T) {
+	t.Parallel()
 	pol, err := permission.NewPolicy(permission.ModeAsk, []string{"Bash(go test:*)"}, nil, []string{"Bash(rm:*)"})
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +57,7 @@ func TestExecuteToolsDirect_GateDenyBlocksExecution(t *testing.T) {
 }
 
 func TestExecuteToolsDirect_GateAllowExecutes(t *testing.T) {
+	t.Parallel()
 	pol, _ := permission.NewPolicy(permission.ModeAsk, []string{"Bash(go test:*)"}, nil, nil)
 	var executed bool
 	_, gErr := executeToolsDirect(context.Background(), bashCall("go test ./..."),
@@ -69,6 +71,7 @@ func TestExecuteToolsDirect_GateAllowExecutes(t *testing.T) {
 }
 
 func TestExecuteToolsDirect_GateAskSuspends(t *testing.T) {
+	t.Parallel()
 	// ask mode, no rule matches → Ask → loop aborts with ErrAskUser so the
 	// run pauses for human approval. The tool must NOT execute.
 	pol, _ := permission.NewPolicy(permission.ModeAsk, nil, nil, nil)
@@ -88,6 +91,7 @@ func TestExecuteToolsDirect_GateAskSuspends(t *testing.T) {
 }
 
 func TestFindPendingToolUse(t *testing.T) {
+	t.Parallel()
 	msgs := []api.Message{
 		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "do it"}}},
 		{Role: "assistant", Content: []api.ContentBlock{
@@ -105,6 +109,7 @@ func TestFindPendingToolUse(t *testing.T) {
 }
 
 func TestExecuteToolsDirect_NilPolicyNoGate(t *testing.T) {
+	t.Parallel()
 	var executed bool
 	_, gErr := executeToolsDirect(context.Background(), bashCall("rm -rf /"),
 		bashTool(&executed), nil, nil, nil, nil, nil)

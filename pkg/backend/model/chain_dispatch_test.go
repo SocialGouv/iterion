@@ -70,6 +70,7 @@ func crossBackendChain(t *testing.T, headErr error) (*ClawExecutor, *backendScri
 // executed on claw yields an agent with ZERO tools that still carries an
 // output schema — a schema-valid verdict it never verified.
 func TestChainRebuildsTaskPerBackend(t *testing.T) {
+	t.Parallel()
 	e, head, tail, chain := crossBackendChain(t, &delegate.ErrTransient{Reason: "boom"})
 
 	assembled := map[string]int{}
@@ -119,6 +120,7 @@ func TestChainRebuildsTaskPerBackend(t *testing.T) {
 // still assemble exactly once, so adding the chain machinery costs
 // existing bots nothing.
 func TestChainReusesTaskWithinOneBackend(t *testing.T) {
+	t.Parallel()
 	head := &backendScriptedBackend{name: delegate.BackendClaudeCode, fail: &delegate.ErrTransient{Reason: "boom"}}
 	reg := delegate.NewRegistry()
 	reg.Register(delegate.BackendClaudeCode, head)
@@ -144,6 +146,7 @@ func TestChainReusesTaskWithinOneBackend(t *testing.T) {
 // session, invisible to max_cost_usd, the org monthly cap and a lending
 // donor's ledger.
 func TestChainAccumulatesFailedElementSpend(t *testing.T) {
+	t.Parallel()
 	e, _, _, chain := crossBackendChain(t, &delegate.ErrTransient{Reason: "boom"})
 	build := e.newElementBuilder("review", delegate.BackendClaudeCode, nil,
 		func(_ context.Context, bn string) (*delegate.Task, error) {
@@ -169,6 +172,7 @@ func TestChainAccumulatesFailedElementSpend(t *testing.T) {
 // the same executor must enter the chain at the accepting fallback without
 // spawning the refused primary again.
 func TestChainCooldownSkipsRefusedRouteAcrossNodes(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	reset := now.Add(time.Hour)
 	head := &backendScriptedBackend{
@@ -241,6 +245,7 @@ func TestChainCooldownSkipsRefusedRouteAcrossNodes(t *testing.T) {
 // historical refused spawn on every node instead of silently keeping a route
 // dark until the remembered instant.
 func TestChainCooldownCanBeDisabled(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	head := &backendScriptedBackend{
 		name: delegate.BackendClaudeCode,
@@ -277,6 +282,7 @@ func TestChainCooldownCanBeDisabled(t *testing.T) {
 }
 
 func TestChainCooldownFailsOpenWithoutResetOrAcceptingFallback(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name  string
@@ -344,6 +350,7 @@ func TestChainCooldownFailsOpenWithoutResetOrAcceptingFallback(t *testing.T) {
 // refuses the category — cannot USE the cooldown, but it must still ARM it,
 // or the next node with a richer chain pays for the same refused spawn.
 func TestChainCooldownLearnsFromANodeThatCannotUseIt(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	reset := now.Add(time.Hour)
 	tests := []struct {
@@ -411,6 +418,7 @@ func TestChainCooldownLearnsFromANodeThatCannotUseIt(t *testing.T) {
 // primary dark for the whole run and stamp every later node `_fallback_used`.
 // The ledger declines the entry instead and dispatch stays fail-open.
 func TestChainCooldownRefusesAnImplausibleReset(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	for _, tt := range []struct {
 		name  string
@@ -456,6 +464,7 @@ func TestChainCooldownRefusesAnImplausibleReset(t *testing.T) {
 }
 
 func TestChainCooldownSupportsResettableUnavailable(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	head := &backendScriptedBackend{
 		name: delegate.BackendClaudeCode,
@@ -489,6 +498,7 @@ func TestChainCooldownSupportsResettableUnavailable(t *testing.T) {
 // If the serving fallback then fails, downstream run-level recovery must still
 // see the remembered usage-window cause and park until its reset instant.
 func TestChainCooldownPreservesRememberedCauseWhenFallbackFails(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	reset := now.Add(time.Hour)
 	head := &backendScriptedBackend{
@@ -550,6 +560,7 @@ func TestChainCooldownPreservesRememberedCauseWhenFallbackFails(t *testing.T) {
 // error; a chain that surfaced only its LAST failure would silently
 // disarm both whenever the forfait wall was followed by anything else.
 func TestErrChainExhaustedPreservesEveryCause(t *testing.T) {
+	t.Parallel()
 	head := &backendScriptedBackend{name: delegate.BackendClaudeCode, fail: usageWindowErr()}
 	tail := &backendScriptedBackend{
 		name: delegate.BackendClaw,
@@ -592,6 +603,7 @@ func TestErrChainExhaustedPreservesEveryCause(t *testing.T) {
 // filter. When the only remaining route refuses the category, the walk
 // ends rather than burning a route that cannot help.
 func TestChainStopsWhenNoRemainingRouteAccepts(t *testing.T) {
+	t.Parallel()
 	head := &backendScriptedBackend{
 		name: delegate.BackendClaudeCode,
 		fail: &delegate.ErrAuthFailed{Provider: "claude_code", Detail: "invalid bearer token"},
@@ -625,6 +637,7 @@ func TestChainStopsWhenNoRemainingRouteAccepts(t *testing.T) {
 // accepts transient_exhausted) must reach gpt when the primary dies of
 // a transient that exhausted its budget — not stop at api.
 func TestChainSkipsNonAcceptingRouteAndTriesLater(t *testing.T) {
+	t.Parallel()
 	head := &backendScriptedBackend{
 		name: delegate.BackendClaudeCode,
 		// ClassifyFallback maps *ErrTransient with exhausted retries via
@@ -689,6 +702,7 @@ func TestChainSkipsNonAcceptingRouteAndTriesLater(t *testing.T) {
 // all. A missing classifier must degrade to a fall-through, never to a
 // dead end.
 func TestChainAdvancesOnUnclassifiedDespiteFilter(t *testing.T) {
+	t.Parallel()
 	head := &backendScriptedBackend{
 		name: delegate.BackendClaudeCode,
 		fail: errors.New("claw backend: runner: something opaque"),
@@ -718,6 +732,7 @@ func TestChainAdvancesOnUnclassifiedDespiteFilter(t *testing.T) {
 // last-good conversation. The fallback sees the baseline, while any partial
 // state captured by the failed route is discarded by the rollback helper.
 func TestChainRollsBackSessionOnFallThrough(t *testing.T) {
+	t.Parallel()
 	const runID, nodeID = "run-1", "review"
 	sessions := newNodeSessionStore()
 	sessions.SaveSnapshot(runID, nodeID, []byte(`[{"role":"assistant"}]`))
@@ -742,6 +757,7 @@ func TestChainRollsBackSessionOnFallThrough(t *testing.T) {
 // A cooled route executes no provider call and therefore must leave the
 // last-good conversation untouched for the fallback.
 func TestChainPreservesSessionOnCooldownFallThrough(t *testing.T) {
+	t.Parallel()
 	const runID, nodeID = "run-1", "review"
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	head := &backendScriptedBackend{
@@ -796,6 +812,7 @@ func TestChainPreservesSessionOnCooldownFallThrough(t *testing.T) {
 // into another backend re-sends one provider's turn to a provider that
 // never issued it.
 func TestChainDropsResumeContinuityOnFallThrough(t *testing.T) {
+	t.Parallel()
 	e, _, tail, chain := crossBackendChain(t, &delegate.ErrTransient{Reason: "boom"})
 	build := e.newElementBuilder("review", delegate.BackendClaudeCode, nil,
 		func(_ context.Context, bn string) (*delegate.Task, error) {
@@ -822,6 +839,7 @@ func TestChainDropsResumeContinuityOnFallThrough(t *testing.T) {
 // TestBuildFailureDoesNotVetoLaterElements: an unresolvable backend or
 // an uncredentialed element is that element's failure, not the node's.
 func TestBuildFailureDoesNotVetoLaterElements(t *testing.T) {
+	t.Parallel()
 	tail := &backendScriptedBackend{name: delegate.BackendClaw}
 	reg := delegate.NewRegistry()
 	reg.Register(delegate.BackendClaw, tail)
@@ -848,6 +866,7 @@ func TestBuildFailureDoesNotVetoLaterElements(t *testing.T) {
 // lose its in-place budget on a usage window AND then stop at the
 // filter — strictly worse off than before the chain existed.
 func TestUsageWindow_KeepsRetryBudgetWhenNextRouteRejectsIt(t *testing.T) {
+	t.Parallel()
 	head := &backendScriptedBackend{name: delegate.BackendClaudeCode, fail: usageWindowErr()}
 	tail := &backendScriptedBackend{name: delegate.BackendClaw}
 	reg := delegate.NewRegistry()
@@ -878,6 +897,7 @@ func TestUsageWindow_KeepsRetryBudgetWhenNextRouteRejectsIt(t *testing.T) {
 // element as the terminal result. That element must NOT also sit in
 // `spent` — applyTo would then count its tokens twice (R5180a7).
 func TestFilterStopDoesNotDoubleCountSpend(t *testing.T) {
+	t.Parallel()
 	head := &backendScriptedBackend{
 		name: delegate.BackendClaudeCode, fail: &delegate.ErrTransient{Reason: "boom"},
 		tokens: 1000, costUSD: 0.40,
@@ -926,6 +946,7 @@ func TestFilterStopDoesNotDoubleCountSpend(t *testing.T) {
 // what its routes burned. Dropping it under-reports whole agentic
 // sessions to max_cost_usd, the org monthly cap and a donor's ledger.
 func TestExhaustedChainCarriesEverySpend(t *testing.T) {
+	t.Parallel()
 	head := &backendScriptedBackend{
 		name: delegate.BackendClaudeCode, fail: &delegate.ErrTransient{Reason: "boom"},
 		tokens: 1000, costUSD: 0.40,
@@ -973,6 +994,7 @@ func TestExhaustedChainCarriesEverySpend(t *testing.T) {
 // merely because an unrelated route exists re-issues an identical call
 // with a second full retry budget — the waste the guard exists for.
 func TestCollapseHintOnlyChain_TrimsPrefixNotWholeChain(t *testing.T) {
+	t.Parallel()
 	chain := []chainElement{
 		{Provider: "zai"},
 		{Provider: "anthropic"},
@@ -1041,6 +1063,7 @@ func claudeCodeChain(t *testing.T, task *delegate.Task, head delegate.Backend) c
 // direction that parks a run that still had budget. Nothing else pins this
 // wire: the fold's own tests call the loop directly.
 func TestChainCarriesTheTaskSessionIntoTheSpendFold(t *testing.T) {
+	t.Parallel()
 	head := &sessionScriptedBackend{
 		name: delegate.BackendClaudeCode, failFor: 1,
 		tokens: []int{1000, 300}, cost: []float64{0.10, 0.13},
@@ -1063,6 +1086,7 @@ func TestChainCarriesTheTaskSessionIntoTheSpendFold(t *testing.T) {
 // even though the id is non-empty throughout. A fold reading only the id
 // MAXes them and loses a whole attempt's spend.
 func TestChainDoesNotShareTheSessionItForks(t *testing.T) {
+	t.Parallel()
 	head := &sessionScriptedBackend{
 		name: delegate.BackendClaudeCode, failFor: 1,
 		tokens: []int{1000, 300}, cost: []float64{0.10, 0.13},
@@ -1086,6 +1110,7 @@ func TestChainDoesNotShareTheSessionItForks(t *testing.T) {
 // is neither kept nor silently evicted. Same-backend carries, delivery-1
 // routes and the "off" posture mark nothing.
 func TestChainCrossHarnessMarksTheFallbackEvent(t *testing.T) {
+	t.Parallel()
 	mkChain := func(mode string) (*ClawExecutor, *fallbackRecorder, []chainElement, func(context.Context, string, []chainElement) (chainOutcome, error)) {
 		rec := &fallbackRecorder{}
 		head := &backendScriptedBackend{name: delegate.BackendClaudeCode, fail: &delegate.ErrTransient{Reason: "boom"}, tokens: 10}

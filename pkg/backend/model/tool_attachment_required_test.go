@@ -87,6 +87,7 @@ func lossEvents(evts []*store.Event) []*store.Event {
 // Both halves run through the same body and the same executor, so the
 // token is the only difference between a green node and a red one.
 func TestARequiredDeliverableLostFailsTheNode(t *testing.T) {
+	t.Parallel()
 	t.Run("required: the node fails and names the file", func(t *testing.T) {
 		// The pod case in miniature: the path the tool declares cannot be
 		// read from here, so the bytes never reach the run.
@@ -200,6 +201,7 @@ func TestARequiredDeliverableLostFailsTheNode(t *testing.T) {
 // deliverable has to end it there too, or the guarantee holds on one
 // kind of tool node and not the other.
 func TestARequiredDeliverableLostFailsAVerifiedNode(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "done")
 	absent := filepath.Join(dir, "report.md")
@@ -236,6 +238,7 @@ func TestARequiredDeliverableLostFailsAVerifiedNode(t *testing.T) {
 // contains spaces, and an explicit `false` is honoured as the opt-out
 // it reads as.
 func TestTheRequiredTokenIsParsedFromTheDirective(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		line string
