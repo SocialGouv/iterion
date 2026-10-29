@@ -3,6 +3,185 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [4.5.0](https://github.com/SocialGouv/iterion/compare/v4.4.0...v4.5.0) (2026-10-29)
+
+### Features
+
+* **bench:** reconcile the per-step usage feed against the turn checkpoints ([6f2a1ab](https://github.com/SocialGouv/iterion/commit/6f2a1abe203631cc057b52bd9e8e6a1d7fa24e96)), references [#1481](https://github.com/SocialGouv/iterion/issues/1481) [#2806](https://github.com/SocialGouv/iterion/issues/2806) [post-#2295](https://github.com/post-/issues/2295) [#1481](https://github.com/SocialGouv/iterion/issues/1481) [#2806](https://github.com/SocialGouv/iterion/issues/2806)
+
+    <details><summary>why</summary>
+
+    `bench discovery` reported the within-node split and its coverage, and a coverage percentage cannot say whether every producing site was honoured: a site that emits a zero-valued usage struct passes it. The report now compares the two INDEPENDENT recordings of the same spend field by field — one `llm_step_finished` event per model message against the turn checkpoints the node writes — so a site that stopped emitting, or that emitted twice, shows up as a signed gap on its own node.
+
+    </details>
+* **ci:** make the ARC canary's verdict a program a harness can redden ([2f9b281](https://github.com/SocialGouv/iterion/commit/2f9b2819754f8d96516248dbf88e4a8c284cd874)), references [iterion#2816](https://github.com/iterion/issues/2816) [#983](https://github.com/SocialGouv/iterion/issues/983) [#2816](https://github.com/SocialGouv/iterion/issues/2816)
+
+    <details><summary>why</summary>
+
+    The canary probes runner dispatch on arc-runners every 30 minutes and its watchdog decides whether iterion pages on its own scale set going deaf. That decision — the 25-minute threshold, the exemption that keeps a cancelled probe from alerting, what to do with a date the API did not answer — lived as inline workflow bash, so nothing in the tree could redden on it. The outage it exists to catch went unseen for eight minutes on 2026-09-29, and the nights of 2026-10-14..18 waited 5-8 hours for a…
+
+    </details>
+* **ci:** take the measurement cloud-e2e's routing has been waiting on ([b3904d8](https://github.com/SocialGouv/iterion/commit/b3904d8727a937ed5809f87d4f7f46a0c4604312)), references [#1955](https://github.com/SocialGouv/iterion/issues/1955) [#981](https://github.com/SocialGouv/iterion/issues/981) [#981](https://github.com/SocialGouv/iterion/issues/981)
+
+    <details><summary>why</summary>
+
+    Six of the nine Tests jobs run on the arc-runners scale set; `race` and `mongo-conformance` joined them on 2026-09-29 (#1955). `cloud-e2e` is the one left, and what keeps it GitHub-hosted is not a decision — it is a fact nobody has established: "kind comes up, kubectl cannot authenticate to it". The first hypothesis, an image whose user is not in the docker group, is refuted by the tree itself (`nats-conformance` and `mongo-conformance` reach the daemon from that same image), so the remaining…
+
+    </details>
+* **claw:** spawn real subagents at both production hosts, bounded by the node ([59c79d3](https://github.com/SocialGouv/iterion/commit/59c79d359efa2cbb0ff8f613db7a86414feba196)), references [#1940](https://github.com/SocialGouv/iterion/issues/1940)
+
+    <details><summary>why</summary>
+
+    claw's `agent` tool reached no runner in production: with ClawDefaults.Subagent nil, claw's own executor answers {"status": "running"} and launches nothing, so the engine refused the call to avoid reporting work nobody did. Wire model.NewSubagentRunner at the two hosts that build the claw tool set — the in-process one (pkg/runview) and the in-container one (cmd/iterion, where tool.SandboxPlacementOf puts `agent`, and the default path for every sandboxed run) — so a delegation returns a real…
+
+    </details>
+* **cli,studio:** report what the run DID on every surface of the four records ([8a68d93](https://github.com/SocialGouv/iterion/commit/8a68d9380d86384c859ed6f3380f91d47d471ae4)), references [#1501](https://github.com/SocialGouv/iterion/issues/1501) [#1501](https://github.com/SocialGouv/iterion/issues/1501)
+
+    <details><summary>why</summary>
+
+    Unit 1501.5 of #1501 — the surfaces half. The spine (units 1501.1/.2/.4) stamps the outcome tuple onto a cloud schedule, a trigger subscription and a board card; every reader still showed only the DECISION, so a record that fired and whose run died read exactly like one that fired and worked.
+
+    </details>
+* **cli:** `validate --connectors` resolves each action against the installed catalogue ([f16ff5e](https://github.com/SocialGouv/iterion/commit/f16ff5e483403dbeff83c1994f7bd6da0ac613ae)), references [#2762](https://github.com/SocialGouv/iterion/issues/2762)
+
+    <details><summary>why</summary>
+
+    A compile checks the SHAPE of an `action:` id and says so in its own doc — whether the operation EXISTS is the connector package's answer, and nothing asked it. `--connectors` asks: every action node of a program that compiles is resolved against the package tiers of this install, and what they cannot serve is named — a connector no tier holds, with the tiers that were consulted, or an operation the installed package does not declare, with the operation and the version of the package that…
+
+    </details>
+* **cloud:** the boot wait for a late NATS broker, and a progress-deadline knob for the server ([c6afec9](https://github.com/SocialGouv/iterion/commit/c6afec9ba49d55615501700065cd7833e8d78f40)), references [iterion#2780](https://github.com/iterion/issues/2780) [#2780](https://github.com/SocialGouv/iterion/issues/2780)
+
+    <details><summary>why</summary>
+
+    Two halves of iterion#2780, both measured on the wave-21 kind smoke runs where `helm install --wait` failed on pods that were Ready a minute later.
+
+    </details>
+* **connection:** a connection says what may be BELIEVED, not only what may be sent ([dd69cae](https://github.com/SocialGouv/iterion/commit/dd69caed4cb46b2819224a19ac9ba353536d101c)), references [#2761](https://github.com/SocialGouv/iterion/issues/2761) [#2761](https://github.com/SocialGouv/iterion/issues/2761)
+
+    <details><summary>why</summary>
+
+    A connection declares what it may be used FOR, and the set stopped at the two uses of the credential: `action` for a deterministic node, `agent` for the MCP facade. An inbound event is the same question read backwards — a delivery arrives claiming to be a vendor's, and something must have decided BEFORE it arrived that this connection is the one whose secret may vouch for it. That decision belongs where the credential's is, at the moment an operator entrusts the connection. `trigger` is that…
+
+    </details>
+* **connection:** the answer names the tier that served the package ([0d41cd7](https://github.com/SocialGouv/iterion/commit/0d41cd7f18ed1245eba49cb054bd2e6fb1ccf25a)), references [#2769](https://github.com/SocialGouv/iterion/issues/2769) [#2757](https://github.com/SocialGouv/iterion/issues/2757)
+
+    <details><summary>why</summary>
+
+    Two tiers can hold the same connector id, at the same version, with the same scheme id and the same placement — what differs is what the operation DOES. So an operator debugging an operation they did not expect cannot tell which copy answered: not from the package (`spec.Package` carries no provenance) and not from the search either, since a layered lookup asks its tiers in order and only the one that answered knows it did.
+
+    </details>
+* **connector:** the connector package declares its inbound events ([7ca4dbc](https://github.com/SocialGouv/iterion/commit/7ca4dbca71cbfcae9928ad39a5e99e90fb7f7594)), references [#1072](https://github.com/SocialGouv/iterion/issues/1072) [#2761](https://github.com/SocialGouv/iterion/issues/2761)
+
+    <details><summary>why</summary>
+
+    `triggers.yaml` was named in pkg/connector/spec's own package layout and read by nothing — a format announced to package authors and ignored by the loader, which is the worse of the two positions. It is now a read part of the format, at the minimum that makes it true: a document with its OWN required schema_version (the overlay's precedent — a curated file borrowing the package constant lets a package-format bump silently widen what it may declare), the connector it belongs to, and triggers…
+
+    </details>
+* **store:** RunSource carries the webhook delivery ([66e6323](https://github.com/SocialGouv/iterion/commit/66e63234647ae5d772cd1c104a2b2b6f674eb78d)), references [#1501](https://github.com/SocialGouv/iterion/issues/1501) [#1501](https://github.com/SocialGouv/iterion/issues/1501)
+
+    <details><summary>why</summary>
+
+    #1501 unit 1501.3 needs the run->delivery direction, and nothing had it: `webhooks.Delivery.RunID` points delivery->run while every consumer of the outcome class is keyed by RUN — the run-outcome spine loads the terminal run, then asks each record kind whether the run is theirs. The alternative, a fifth index on a hot TTL'd `webhook_deliveries` plus a by-run lookup, would be a second way to find one record (philosophy 5) and an index build on a live collection. Arbitrated as fleet ARB-41 option…
+
+    </details>
+* **studio:** a refused forge provision offers the gesture it names ([3d052b6](https://github.com/SocialGouv/iterion/commit/3d052b6f2a9db7ec48f7d44c8ca1777b70c381cc)), references [#2173](https://github.com/SocialGouv/iterion/issues/2173)
+
+    <details><summary>why</summary>
+
+    The provisioning endpoint refuses two launch_vars writes an operator can fix and names the fix in the refusal — a request that would drop pins it did not mention, and a repo whose two settings stores disagree. The studio could make neither gesture: forgeConnections never sent launch_vars_replace, so a 400 demanding it was a dead end, and the operator dropped to curl.
+
+    </details>
+* **studio:** an editor for a webhook's key_overrides credential pins ([72c1ac4](https://github.com/SocialGouv/iterion/commit/72c1ac4bf9052f57324cbf53627e20a26fa031cb)), references [#2005](https://github.com/SocialGouv/iterion/issues/2005) [#2005](https://github.com/SocialGouv/iterion/issues/2005) [#2648](https://github.com/SocialGouv/iterion/issues/2648)
+
+    <details><summary>why</summary>
+
+    key_overrides — the per-repo credential pin of #2005/ADR-131 — was typed in the studio's API layer and referenced by no .tsx: the only way to set it was `iterion remote webhooks update --data`. The webhooks tab gains a Credential pins dialog per webhook, with the stored count on its button.
+
+    </details>
+* **webhooks,server:** the delivery reports what its run did ([b2102bc](https://github.com/SocialGouv/iterion/commit/b2102bccf4eb6b167dcecc403d2e393aa4cb8a58)), references [#1501](https://github.com/SocialGouv/iterion/issues/1501)
+
+    <details><summary>why</summary>
+
+    Unit 1501.3, the last of #1501's five. The spine landed with three record kinds; the inbound delivery was the one the ticket could not reach, because it held no back-reference a run-keyed writer could follow. With `store.RunSource.DeliveryID` in place (previous commit, ARB-41 option B), the delivery becomes the FOURTH runOutcomeSink — the shape the spine documents for a new record kind, never an engine `if`.
+
+    </details>
+
+### Bug Fixes
+
+* **ci:** read a merge-queue rebuild's cause from its group's base, not a clock ([d12a6c2](https://github.com/SocialGouv/iterion/commit/d12a6c291fdea768aeeeff5ad229165f1e99b233)), references [#1967](https://github.com/SocialGouv/iterion/issues/1967) [#1979](https://github.com/SocialGouv/iterion/issues/1979) [#1979](https://github.com/SocialGouv/iterion/issues/1979)
+
+    <details><summary>why</summary>
+
+    `task ci:queue-stats` blamed a push for a rebuild only when the push's commit date fell within 90 seconds of it. GitHub rebuilt #1967's group 114 s after v3.217.0's commit (06:30:01Z then 06:31:55Z) and counted the build it discarded as the queue's own churn — the undercount the 2026-09-30 measurement named, on the one line the release hold exists to shrink.
+
+    </details>
+* **claw:** the sandbox crossing refuses an ambient credential header line ([aa5db08](https://github.com/SocialGouv/iterion/commit/aa5db08b78d3d2c33ebe1d34d4a24e7736159595)), references [#2813](https://github.com/SocialGouv/iterion/issues/2813) [#2244](https://github.com/SocialGouv/iterion/issues/2244)
+
+    <details><summary>why</summary>
+
+    ANTHROPIC_CUSTOM_HEADERS crossed into every claw sandbox whole, and the CLI applies that block LAST on every request it sends, for every provider (claw identity.go Identity.Apply) — so an ambient "Authorization: Bearer …" on the launcher authenticated the in-container runner at the vendor's gateway the engine had chosen, in place of the credential the engine resolved for the node. variable); it stayed open one backend away.
+
+    </details>
+* **connection:** the workspace tier is not consulted for a run whose code the tenant does not control ([fb0544e](https://github.com/SocialGouv/iterion/commit/fb0544e9ad873f2b888f27e7e7fac1bde83247b3)), references [#2810](https://github.com/SocialGouv/iterion/issues/2810) [#2769](https://github.com/SocialGouv/iterion/issues/2769)
+
+    <details><summary>why</summary>
+
+    The project tier — `<workspace>/connectors/<id>`, granted by ITERION_CONNECTOR_PROJECT_CATALOG=1 — outranks every other, and on a fork-lane run the workspace IS the outsider's checkout. #1802's refusal reads `spec.Effect.Mutating()` on the operation THE CATALOG RESOLVED, so a deployment that granted the tier and also served review forks let the reviewed tree ship `connectors/<id>/` declaring `effect: read` on a DELETE and have the guard read the attacker's own word for what the operation does.
+
+    </details>
+* **corpusreading:** the reading corpus pins no file git marks generated ([#2819](https://github.com/SocialGouv/iterion/issues/2819)) ([a7da89f](https://github.com/SocialGouv/iterion/commit/a7da89fd09a9ff187bf47ddb7d22f9bb4f7f485f)), closes [#2818](https://github.com/SocialGouv/iterion/issues/2818), references [#2750](https://github.com/SocialGouv/iterion/issues/2750)
+
+    <details><summary>why</summary>
+
+    The committed-reading golden pinned the three repository maps `iterion map gen` rewrites on nearly every landing (map-packages.md: 19 commits in 14 days; the golden itself: 125). A PR touching a Go package regenerates map-packages.md too, so its golden carried the one line main kept rewriting — a guaranteed merge conflict: #2750 was evicted from the merge queue three times in one afternoon on that line alone.
+
+    </details>
+* **dsl:** an expression is read on the read budget, the expressions of a bot together ([4d63d80](https://github.com/SocialGouv/iterion/commit/4d63d8011d9129d125d02db983b5a695a5f273d1)), references [#2774](https://github.com/SocialGouv/iterion/issues/2774) [#2775](https://github.com/SocialGouv/iterion/issues/2775) [#2776](https://github.com/SocialGouv/iterion/issues/2776) [#2627](https://github.com/SocialGouv/iterion/issues/2627)
+
+    <details><summary>why</summary>
+
+    An expression — a compute field's, a quoted when's, a loop cap's, a fallback route's when: — lives inside one string token, which the lexer's read budget counts as a single record: a 10 MiB `a+a+…` passed the budget unseen, expr.Parse built millions of nodes (480 MiB retained), and the compiler's recursive walks then died on the goroutine stack limit — a fatal error, not a diagnostic, from one uploaded bot.
+
+    </details>
+* **dsl:** the deliverables rules are said once per node, the entries listed by excerpt ([a3a0e37](https://github.com/SocialGouv/iterion/commit/a3a0e3760e12823153b2ba89c6611d53c74278e6)), references [#2779](https://github.com/SocialGouv/iterion/issues/2779)
+
+    <details><summary>why</summary>
+
+    C317 and C318 (validateDeliverables) were said once per entry, the first path of a collision quoted whole each time: a list is the one thing the read budget does not bound, so a 2.6 MB bot of refused entries ran `iterion validate --json` out of memory (414 MB of JSON before the OOM), and a thousand entries behind one long path were a thousand copies of it.
+
+    </details>
+* **mcp:** a launcher-started stdio server receives what it declares, not the launcher's environment ([c94acbf](https://github.com/SocialGouv/iterion/commit/c94acbf49d131dc6c00aa45d6077e4f120306e7f)), references [#2809](https://github.com/SocialGouv/iterion/issues/2809) [#2018](https://github.com/SocialGouv/iterion/issues/2018)
+
+    <details><summary>why</summary>
+
+    The stdio transport handed every child the launcher's whole environment: os.Environ() merged under the server's own `env:` when that map was non-empty and, when it was empty, a nil cmd.Env — which Go resolves the same way. The CLI fills every unset variable from the nearest `.env`, a file that sits in the repository under review, so a planted NODE_OPTIONS, npm_config_registry or HTTPS_PROXY decided what the npx-based operator servers (firecrawl, codeindex) load and where they fetch from: the…
+
+    </details>
+* **model:** the credentials and OAuth-dir lookup installs give the previous reader back ([7d29f50](https://github.com/SocialGouv/iterion/commit/7d29f50fcc7b16a124627e41c8ffe6a97af9c884)), references [#2789](https://github.com/SocialGouv/iterion/issues/2789) [#2808](https://github.com/SocialGouv/iterion/issues/2808)
+
+    <details><summary>why</summary>
+
+    `credentialsLookupFn` and `oauthDirLookupFn` are process globals: pkg/runner installs a reader at boot, and a test that installs a double has to give the previous one back or every test running after it in the same binary resolves through the double. "Idempotent; the latest call wins" was not a restore contract — it was the clobber, stated in a doc comment.
+
+    </details>
+* **server:** the cost preview prices the whole unit, not the main read alone ([c807c9c](https://github.com/SocialGouv/iterion/commit/c807c9c83c564041b87f0db84f9031598efbd4af)), references [#1648](https://github.com/SocialGouv/iterion/issues/1648)
+
+    <details><summary>why</summary>
+
+    The chip asked `parser.Parse` for the candidate's main and compiled THAT file. A bot in several files carries `import "lib/x.bot"` lines the compiler refuses as such (C030, `the file imports N fragment(s) not merged into it`), so the preview answered `workflow_incomplete` and the chip rendered NOTHING for the one shape whose price is worth previewing — the price it did show was never the main's nodes alone, it was no price at all.
+
+    </details>
+
+### Performance Improvements
+
+* **parser:** the broken-list resync reads each consumed token once for its open-block stack ([461d6bd](https://github.com/SocialGouv/iterion/commit/461d6bdb745e97ce8a490410294cf5c566dd738f)), references [#2771](https://github.com/SocialGouv/iterion/issues/2771) [#2768](https://github.com/SocialGouv/iterion/issues/2768) [#2626](https://github.com/SocialGouv/iterion/issues/2626)
+
+    <details><summary>why</summary>
+
+    The recovery of an inline list left open at the end of its line asked openBlocks for the stack of open block columns, and openBlocks replayed the whole consumed token stream on every call — quadratic in the number of broken lists: 40 000 agents each leaving a list open took 66 s of CPU to parse, on every route that parses an uploaded source. The stack is now kept current (openBlockStack): a call reads only the tokens consumed since the last one, an INDENT's column is read lazily off the first…
+
+    </details>
+
 ## [4.4.0](https://github.com/SocialGouv/iterion/compare/v4.3.0...v4.4.0) (2026-10-29)
 
 ### Features
