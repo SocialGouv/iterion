@@ -5,8 +5,10 @@
 // The server's editors take this lock around every save. The writers outside
 // them — the catalogue regeneration, the CLI formatters and migrators, the
 // package installers — reach it from here, because the lock was born in
-// pkg/server, the composition root no pkg package may import
-// (internal/layerguard/layering_test.go).
+// pkg/server, the composition root a pkg package reaches through cmd/ and
+// the seams rather than by importing it: the crossings review has accepted
+// are listed, each with its reason, in internal/layerguard/layering_test.go,
+// and this package is not one of them.
 //
 // The lock is per FILE: its name is the hash of the file's own name, so two
 // writers of two different files never wait on each other, and two spellings
