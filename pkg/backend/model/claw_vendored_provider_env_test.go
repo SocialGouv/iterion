@@ -86,7 +86,7 @@ const clawWebSearchSource = "vendor/github.com/SocialGouv/claw-code-go/internal/
 // provider packages read and requires each to be forwarded with its class, or
 // declared launcher-side with a reason.
 func TestEveryVendoredProviderEnvNameIsDecided(t *testing.T) {
-	root := moduleRootForVendorWalk(t)
+	root := moduleRoot(t)
 	dirs, providers := vendoredProviderDirs(t, root)
 	// The providers the registry builds today. A rename or a prune that
 	// hides one shrinks the derivation, so the floor is pinned: this is the
@@ -142,7 +142,7 @@ func TestEveryVendoredProviderEnvNameIsDecided(t *testing.T) {
 // the placement table rather than quoted — a web_search served in the
 // container would make this a hole, and the test says so in that voice.
 func TestClawsWebSearchCredentialsStayOnTheLauncher(t *testing.T) {
-	root := moduleRootForVendorWalk(t)
+	root := moduleRoot(t)
 	source := filepath.Join(root, clawWebSearchSource)
 	names := envNamesReadIn(t, []string{source})
 	for _, want := range webSearchLauncherEnv {
@@ -347,9 +347,10 @@ func nonTestGoFilesIn(t *testing.T, dir string) []string {
 	return out
 }
 
-// moduleRootForVendorWalk walks up from the test's working directory to the
-// module root, so the walk reads the vendored tree it is built against.
-func moduleRootForVendorWalk(t *testing.T) string {
+// moduleRoot walks up from the test's working directory to the module root, so
+// a walk reads the tree it is built against (the vendored providers here, the
+// callers of this package's global lookups in registry_global_lookup_test.go).
+func moduleRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := filepath.Abs(".")
 	if err != nil {

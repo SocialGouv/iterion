@@ -726,15 +726,20 @@ var credentialsLookupFn = func(ctx context.Context) (credentialsResolver, bool) 
 	return nil, false
 }
 
-// SetCredentialsLookup wires a per-ctx credentials lookup. The
-// runner calls this at boot once with a closure that reads from
-// secrets.CredentialsFromContext and returns the per-provider key.
-// Idempotent; the latest call wins.
-func SetCredentialsLookup(fn func(ctx context.Context) (func(provider string) string, bool)) {
+// SetCredentialsLookup wires a per-ctx credentials lookup and returns a
+// function restoring the previous one. The runner calls this at boot once with
+// a closure that reads from secrets.CredentialsFromContext and returns the
+// per-provider key, and has nothing to give back; a test calls it through
+// t.Cleanup, which is what keeps the install from outliving the test that
+// wanted it. Same seam contract as modelspecs.SetDefault: the restore is the
+// way back, not a hand-written no-op that destroys whatever was underneath.
+func SetCredentialsLookup(fn func(ctx context.Context) (func(provider string) string, bool)) (restore func()) {
+	previous := credentialsLookupFn
 	credentialsLookupFn = func(ctx context.Context) (credentialsResolver, bool) {
 		f, ok := fn(ctx)
 		return credentialsResolver(f), ok
 	}
+	return func() { credentialsLookupFn = previous }
 }
 
 func credentialsLookup(ctx context.Context) (credentialsResolver, bool) {
@@ -955,14 +960,16 @@ var oauthDirLookupFn = func(ctx context.Context) (oauthDirResolver, bool) {
 	return nil, false
 }
 
-// SetOAuthDirLookup wires a per-ctx OAuth-dir reader. The runner calls this at
-// boot with a closure over secrets.CredentialsFromContext(ctx).OAuthDir.
-// Idempotent; latest call wins.
-func SetOAuthDirLookup(fn func(ctx context.Context) (func(kind string) string, bool)) {
+// SetOAuthDirLookup wires a per-ctx OAuth-dir reader and returns a function
+// restoring the previous one (mirrors SetCredentialsLookup: the runner installs
+// once at boot, a test installs through t.Cleanup).
+func SetOAuthDirLookup(fn func(ctx context.Context) (func(kind string) string, bool)) (restore func()) {
+	previous := oauthDirLookupFn
 	oauthDirLookupFn = func(ctx context.Context) (oauthDirResolver, bool) {
 		f, ok := fn(ctx)
 		return oauthDirResolver(f), ok
 	}
+	return func() { oauthDirLookupFn = previous }
 }
 
 func oauthDirLookup(ctx context.Context, kind string) string {

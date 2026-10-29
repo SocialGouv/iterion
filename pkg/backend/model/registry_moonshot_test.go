@@ -90,19 +90,14 @@ func TestRegistry_MoonshotProviderWithKey(t *testing.T) {
 	t.Setenv("MOONSHOT_API_KEY", "")
 	r := NewRegistry()
 
-	SetCredentialsLookup(func(ctx context.Context) (func(string) string, bool) {
+	t.Cleanup(SetCredentialsLookup(func(ctx context.Context) (func(string) string, bool) {
 		return func(provider string) string {
 			if provider == "moonshot" {
 				return "byok-moonshot-key"
 			}
 			return ""
 		}, true
-	})
-	t.Cleanup(func() {
-		SetCredentialsLookup(func(context.Context) (func(string) string, bool) {
-			return nil, false
-		})
-	})
+	}))
 
 	client, err := r.ResolveWithContext(context.Background(), "moonshot/kimi-k2")
 	if err != nil {

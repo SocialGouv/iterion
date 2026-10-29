@@ -26,16 +26,12 @@ import (
 func TestOpenAIStreamUsageKnob(t *testing.T) {
 	// Neutralise the credential lookups so the env factory resolves through
 	// its env path (OPENAI_API_KEY), never the ctx codex forfait.
-	SetCredentialsLookup(func(context.Context) (func(string) string, bool) {
+	t.Cleanup(SetCredentialsLookup(func(context.Context) (func(string) string, bool) {
 		return func(string) string { return "" }, true
-	})
-	SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
+	}))
+	t.Cleanup(SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
 		return func(string) string { return "" }, true
-	})
-	t.Cleanup(func() {
-		SetCredentialsLookup(func(context.Context) (func(string) string, bool) { return nil, false })
-		SetOAuthDirLookup(func(context.Context) (func(string) string, bool) { return nil, false })
-	})
+	}))
 
 	cases := []struct {
 		name      string

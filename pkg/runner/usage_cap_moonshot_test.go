@@ -430,12 +430,8 @@ func TestCredentialSlotForRoute_AClawOpenAISpecFollowsClawsOrder(t *testing.T) {
 // runner installs — for every combination of the run's key, a pinned key, a
 // ChatGPT forfait and this runner's OAuth settings.
 func TestCredentialSlotForRoute_AClawOpenAIRouteIsBookedWhereClawSpent(t *testing.T) {
-	model.SetCredentialsLookup(model.RunCredentialsLookup)
-	model.SetOAuthDirLookup(model.RunOAuthDirLookup)
-	t.Cleanup(func() {
-		model.SetCredentialsLookup(func(context.Context) (func(string) string, bool) { return nil, false })
-		model.SetOAuthDirLookup(func(context.Context) (func(string) string, bool) { return nil, false })
-	})
+	t.Cleanup(model.SetCredentialsLookup(model.RunCredentialsLookup))
+	t.Cleanup(model.SetOAuthDirLookup(model.RunOAuthDirLookup))
 	blob := t.TempDir()
 	if err := os.WriteFile(filepath.Join(blob, "auth.json"), []byte(`{"auth_mode":"chatgpt","tokens":{"access_token":"tok-abc","account_id":"acct-xyz"}}`), 0o600); err != nil {
 		t.Fatal(err)

@@ -248,13 +248,13 @@ func TestCtxFundsProvider(t *testing.T) {
 // — the env-only path — cannot build it). The runner wires the
 // credentials lookup at boot; the test wires the same canonical closure.
 func TestEvaluatorClientResolvesFromCtxCredentials(t *testing.T) {
-	model.SetCredentialsLookup(func(ctx context.Context) (func(provider string) string, bool) {
+	t.Cleanup(model.SetCredentialsLookup(func(ctx context.Context) (func(provider string) string, bool) {
 		creds, ok := secrets.CredentialsFromContext(ctx)
 		if !ok {
 			return nil, false
 		}
 		return func(provider string) string { return creds.APIKeys[secrets.Provider(provider)] }, true
-	})
+	}))
 	e := NewLLMEvaluator()
 	ctx := secrets.WithCredentials(context.Background(),
 		secrets.Credentials{APIKeys: map[secrets.Provider]string{"anthropic": "sk-test"}})

@@ -76,24 +76,20 @@ func TestClawPinnedProviderForGLMIsZAI(t *testing.T) {
 // not even consulted.
 func TestClawInProcessGLMSpendsTheZAIKey(t *testing.T) {
 	forfaitConsulted := false
-	SetCredentialsLookup(func(context.Context) (func(string) string, bool) {
+	t.Cleanup(SetCredentialsLookup(func(context.Context) (func(string) string, bool) {
 		return func(provider string) string {
 			if provider == string(secrets.ProviderZAI) {
 				return "sk-zai-run"
 			}
 			return ""
 		}, true
-	})
-	SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
+	}))
+	t.Cleanup(SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
 		return func(string) string {
 			forfaitConsulted = true
 			return "/nonexistent/forfait"
 		}, true
-	})
-	t.Cleanup(func() {
-		SetCredentialsLookup(func(context.Context) (func(string) string, bool) { return nil, false })
-		SetOAuthDirLookup(func(context.Context) (func(string) string, bool) { return nil, false })
-	})
+	}))
 
 	client, err := NewRegistry().ResolveWithContext(context.Background(), "anthropic/glm-5.3")
 	if err != nil {
@@ -220,15 +216,14 @@ func TestGLMHonoursTheOperatorsBaseURL(t *testing.T) {
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
 	t.Setenv("ZAI_API_KEY", "sk-zai-fixture")
 	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
-	SetCredentialsLookup(func(context.Context) (func(string) string, bool) {
+	t.Cleanup(SetCredentialsLookup(func(context.Context) (func(string) string, bool) {
 		return func(p string) string {
 			if p == string(secrets.ProviderZAI) {
 				return "sk-zai-run"
 			}
 			return ""
 		}, true
-	})
-	t.Cleanup(func() { SetCredentialsLookup(func(context.Context) (func(string) string, bool) { return nil, false }) })
+	}))
 
 	for _, tc := range []struct{ base, want string }{
 		{"https://zai.internal.example/api/anthropic", "https://zai.internal.example/api/anthropic"},

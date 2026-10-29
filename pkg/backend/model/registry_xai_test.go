@@ -69,19 +69,14 @@ func TestRegistry_XAIProviderWithKey(t *testing.T) {
 	t.Setenv("XAI_API_KEY", "")
 	r := NewRegistry()
 
-	SetCredentialsLookup(func(ctx context.Context) (func(string) string, bool) {
+	t.Cleanup(SetCredentialsLookup(func(ctx context.Context) (func(string) string, bool) {
 		return func(provider string) string {
 			if provider == "xai" {
 				return "byok-xai-key"
 			}
 			return ""
 		}, true
-	})
-	t.Cleanup(func() {
-		SetCredentialsLookup(func(context.Context) (func(string) string, bool) {
-			return nil, false
-		})
-	})
+	}))
 
 	client, err := r.ResolveWithContext(context.Background(), "xai/grok-3-mini")
 	if err != nil {

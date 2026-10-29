@@ -45,21 +45,17 @@ func writeClaudeCodeCreds(t *testing.T) string {
 // tests stayed green.
 func TestResolveWithContext_AnthropicForfaitFromCtx(t *testing.T) {
 	dir := writeClaudeCodeCreds(t)
-	SetCredentialsLookup(func(ctx context.Context) (func(string) string, bool) {
+	t.Cleanup(SetCredentialsLookup(func(ctx context.Context) (func(string) string, bool) {
 		return func(string) string { return "" }, true
-	})
-	SetOAuthDirLookup(func(ctx context.Context) (func(string) string, bool) {
+	}))
+	t.Cleanup(SetOAuthDirLookup(func(ctx context.Context) (func(string) string, bool) {
 		return func(kind string) string {
 			if kind == "claude_code" {
 				return dir
 			}
 			return ""
 		}, true
-	})
-	t.Cleanup(func() {
-		SetCredentialsLookup(func(context.Context) (func(string) string, bool) { return nil, false })
-		SetOAuthDirLookup(func(context.Context) (func(string) string, bool) { return nil, false })
-	})
+	}))
 	// No ambient anthropic auth: the ctx forfait is the only possible signal.
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
@@ -127,13 +123,13 @@ func TestResolve_AnthropicDiskForfaitNotSentToRedirectedWire(t *testing.T) {
 func TestAnthropicFromCtxForfait_DisabledAndAbsent(t *testing.T) {
 	reg := NewRegistry()
 	clear := func() {
-		SetOAuthDirLookup(func(context.Context) (func(string) string, bool) { return nil, false })
+		t.Cleanup(SetOAuthDirLookup(func(context.Context) (func(string) string, bool) { return nil, false }))
 	}
 
 	t.Run("no oauth dir → not ok", func(t *testing.T) {
-		SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
+		t.Cleanup(SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
 			return func(string) string { return "" }, true
-		})
+		}))
 		t.Cleanup(clear)
 		if _, ok, _ := reg.anthropicFromCtxForfait(context.Background(), "claude-haiku-4-5"); ok {
 			t.Error("expected ok=false with no claude_code dir")
@@ -142,9 +138,9 @@ func TestAnthropicFromCtxForfait_DisabledAndAbsent(t *testing.T) {
 
 	t.Run("z.ai base URL → not ok (the token is not a forfait bearer there)", func(t *testing.T) {
 		dir := writeClaudeCodeCreds(t)
-		SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
+		t.Cleanup(SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
 			return func(string) string { return dir }, true
-		})
+		}))
 		t.Cleanup(clear)
 		t.Setenv("ANTHROPIC_BASE_URL", "https://api.z.ai/api/anthropic")
 		if _, ok, _ := reg.anthropicFromCtxForfait(context.Background(), "claude-haiku-4-5"); ok {
@@ -154,9 +150,9 @@ func TestAnthropicFromCtxForfait_DisabledAndAbsent(t *testing.T) {
 
 	t.Run("FORBID_SUBSCRIPTION_OAUTH=1 → refused, loudly", func(t *testing.T) {
 		dir := writeClaudeCodeCreds(t)
-		SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
+		t.Cleanup(SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
 			return func(string) string { return dir }, true
-		})
+		}))
 		t.Cleanup(clear)
 		t.Setenv("ANTHROPIC_BASE_URL", "")
 		// Sole candidate: with an ambient key present the flag means "look
@@ -176,9 +172,9 @@ func TestAnthropicFromCtxForfait_DisabledAndAbsent(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte("{nope"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
+		t.Cleanup(SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
 			return func(string) string { return dir }, true
-		})
+		}))
 		t.Cleanup(clear)
 		t.Setenv("ANTHROPIC_BASE_URL", "")
 		t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
@@ -198,21 +194,17 @@ func TestAnthropicFromCtxForfait_DisabledAndAbsent(t *testing.T) {
 // "look elsewhere" — the two halves must agree.
 func TestAnthropicFromCtxForfait_ForbidFallsThroughToAmbientKey(t *testing.T) {
 	dir := writeClaudeCodeCreds(t)
-	SetCredentialsLookup(func(context.Context) (func(string) string, bool) {
+	t.Cleanup(SetCredentialsLookup(func(context.Context) (func(string) string, bool) {
 		return func(string) string { return "" }, true
-	})
-	SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
+	}))
+	t.Cleanup(SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
 		return func(kind string) string {
 			if kind == "claude_code" {
 				return dir
 			}
 			return ""
 		}, true
-	})
-	t.Cleanup(func() {
-		SetCredentialsLookup(func(context.Context) (func(string) string, bool) { return nil, false })
-		SetOAuthDirLookup(func(context.Context) (func(string) string, bool) { return nil, false })
-	})
+	}))
 	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "1")
 	t.Setenv("ANTHROPIC_BASE_URL", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
@@ -233,10 +225,9 @@ func TestAnthropicFromCtxForfait_ForbidFallsThroughToAmbientKey(t *testing.T) {
 // function exists to prevent, and 401 per call is what #687 was.
 func TestAnthropicFromCtxForfait_ForbidRefusesWhenSoleCandidate(t *testing.T) {
 	dir := writeClaudeCodeCreds(t)
-	SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
+	t.Cleanup(SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
 		return func(string) string { return dir }, true
-	})
-	t.Cleanup(func() { SetOAuthDirLookup(func(context.Context) (func(string) string, bool) { return nil, false }) })
+	}))
 	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "1")
 	t.Setenv("ANTHROPIC_BASE_URL", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
@@ -255,10 +246,9 @@ func TestAnthropicFromCtxForfait_ForbidRefusesWhenSoleCandidate(t *testing.T) {
 // the consent gap is strictly wider than on a laptop.
 func TestAnthropicFromCtxForfait_DeclinesCorporateGateway(t *testing.T) {
 	dir := writeClaudeCodeCreds(t)
-	SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
+	t.Cleanup(SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
 		return func(string) string { return dir }, true
-	})
-	t.Cleanup(func() { SetOAuthDirLookup(func(context.Context) (func(string) string, bool) { return nil, false }) })
+	}))
 	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
 	t.Setenv("ANTHROPIC_BASE_URL", "https://llm-gateway.corp.example")
 
@@ -322,10 +312,9 @@ func TestAnthropicFromCtxForfait_ExpiredSurfacesInsteadOfDegrading(t *testing.T)
 	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(blob), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
+	t.Cleanup(SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
 		return func(string) string { return dir }, true
-	})
-	t.Cleanup(func() { SetOAuthDirLookup(func(context.Context) (func(string) string, bool) { return nil, false }) })
+	}))
 	t.Setenv("ANTHROPIC_BASE_URL", "")
 	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
 
@@ -341,10 +330,9 @@ func TestAnthropicFromCtxForfait_ExpiredSurfacesInsteadOfDegrading(t *testing.T)
 // An ABSENT or malformed blob keeps degrading quietly: nothing was provisioned,
 // so there is a legitimate fall-back to try.
 func TestAnthropicFromCtxForfait_AbsentStillDegradesQuietly(t *testing.T) {
-	SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
+	t.Cleanup(SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
 		return func(string) string { return t.TempDir() }, true
-	})
-	t.Cleanup(func() { SetOAuthDirLookup(func(context.Context) (func(string) string, bool) { return nil, false }) })
+	}))
 	t.Setenv("ANTHROPIC_BASE_URL", "")
 	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
 
@@ -364,10 +352,9 @@ func TestAnthropicFromCtxForfait_ExpiredRefusesEvenWithAmbientKey(t *testing.T) 
 	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(blob), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
+	t.Cleanup(SetOAuthDirLookup(func(context.Context) (func(string) string, bool) {
 		return func(string) string { return dir }, true
-	})
-	t.Cleanup(func() { SetOAuthDirLookup(func(context.Context) (func(string) string, bool) { return nil, false }) })
+	}))
 	t.Setenv("ANTHROPIC_BASE_URL", "")
 	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-ambient")

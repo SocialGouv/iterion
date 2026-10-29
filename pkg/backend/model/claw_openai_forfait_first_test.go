@@ -33,12 +33,8 @@ func openAIClientAuth(t *testing.T, client any) (apiKey, oauthToken string) {
 // ResolveWithContext reads the run's credentials exactly as it does on a pod.
 func installRunLookups(t *testing.T) {
 	t.Helper()
-	SetCredentialsLookup(RunCredentialsLookup)
-	SetOAuthDirLookup(RunOAuthDirLookup)
-	t.Cleanup(func() {
-		SetCredentialsLookup(func(context.Context) (func(string) string, bool) { return nil, false })
-		SetOAuthDirLookup(func(context.Context) (func(string) string, bool) { return nil, false })
-	})
+	t.Cleanup(SetCredentialsLookup(RunCredentialsLookup))
+	t.Cleanup(SetOAuthDirLookup(RunOAuthDirLookup))
 }
 
 // claw spends, for an `openai/…` route: the run's default openai key, then its
