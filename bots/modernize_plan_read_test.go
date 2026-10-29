@@ -173,7 +173,7 @@ func modernizePlanRead(t *testing.T, script, planYAML, onlyLot string, wantExit 
 	if err := os.WriteFile(scriptPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("python3", scriptPath)
+	cmd := modernizeChild(t, "python3", scriptPath)
 	// stderr quoted in every failure message, never merged into the parsed
 	// stream — the blind spot #2232 names, closed for the whole family.
 	var sbuf strings.Builder

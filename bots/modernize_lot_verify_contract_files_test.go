@@ -202,6 +202,7 @@ func acceptedAndJudged(t *testing.T, ws string, res modernizeLotVerifyOut) {
 }
 
 func TestModernizeLotVerifyRefusesEveryContractFileRewrite(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 
@@ -411,6 +412,7 @@ func TestModernizeLotVerifyRefusesEveryContractFileRewrite(t *testing.T) {
 }
 
 func TestModernizeLotVerifyAcceptsTheLotsOwnContractWrites(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 
@@ -528,6 +530,7 @@ func TestModernizeLotVerifyAcceptsTheLotsOwnContractWrites(t *testing.T) {
 // once for the entry its base never assigned to it. Each guard is asserted
 // on its own cause, so neither can hide behind the other.
 func TestModernizeLotVerifyRemediatesIsReadAtTheBase(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 
@@ -563,6 +566,7 @@ func TestModernizeLotVerifyRemediatesIsReadAtTheBase(t *testing.T) {
 // committed, and each is exercised on its own: the references' diff in
 // lot_verify, and the plan mark_done commits under the gate's subject.
 func TestModernizeGateReadsHistoryAsCommitted(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 
 	t.Run("lot_verify: a moved reference, the base's tree answered by the moved one", func(t *testing.T) {

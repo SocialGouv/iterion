@@ -1,13 +1,10 @@
 package model
 
 import (
-	"go/ast"
-	"go/parser"
-	"go/token"
-	"os"
-	"sort"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/testparallel"
 )
 
 // The t.Parallel campaign of this package, and the reason the rest of it is
@@ -158,180 +155,19 @@ var globalMutators = map[string]bool{
 	"SetOAuthDirLookup":    true,
 }
 
-type campaign struct {
-	files    []string            // base names, sorted
-	declares map[string][]string // base name -> functions it declares
-	owner    map[string]string   // function -> base name of the file declaring it
-	calls    map[string][]string // function -> names it calls
-	direct   map[string]string   // function -> the global mutator it calls itself
-	tests    map[string][]*ast.FuncDecl
-}
-
-// liveOnly marks the files the deterministic layer never compiles: the live
-// layer costs real LLM money and no CI job runs it, so its wall is not the
-// race leg's and its serialisation is a spend decision, not a speed one.
-func liveOnly(src string) bool {
-	for _, line := range strings.Split(src, "\n") {
-		if strings.HasPrefix(line, "//go:build ") {
-			return strings.Contains(line, "live")
-		}
-		if strings.TrimSpace(line) != "" && !strings.HasPrefix(line, "//") {
-			return false
-		}
-	}
-	return false
-}
-
-func readCampaign(t *testing.T) *campaign {
+// readCampaign reads this package's own test files through the shared reader
+// (internal/testparallel): the graph walk is the same one the bots modernize
+// campaign needs, and a second copy of it is where a recopied guard drifts.
+func readCampaign(t *testing.T) *testparallel.Campaign {
 	t.Helper()
-	entries, err := os.ReadDir(".")
+	c, err := testparallel.ReadCampaign(".", testparallel.LiveOnly)
 	if err != nil {
-		t.Fatalf("read the package directory: %v", err)
+		t.Fatalf("read this package's test files: %v", err)
 	}
-	c := &campaign{
-		declares: map[string][]string{}, owner: map[string]string{},
-		calls: map[string][]string{}, direct: map[string]string{},
-		tests: map[string][]*ast.FuncDecl{},
-	}
-	fset := token.NewFileSet()
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		raw, err := os.ReadFile(name)
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		if liveOnly(string(raw)) {
-			continue
-		}
-		f, err := parser.ParseFile(fset, name, raw, parser.SkipObjectResolution)
-		if err != nil {
-			t.Fatalf("parse %s: %v", name, err)
-		}
-		c.files = append(c.files, name)
-		for _, d := range f.Decls {
-			fn, ok := d.(*ast.FuncDecl)
-			if !ok || fn.Body == nil {
-				continue
-			}
-			key := fn.Name.Name
-			c.declares[name] = append(c.declares[name], key)
-			if _, seen := c.owner[key]; !seen {
-				c.owner[key] = name
-			}
-			if isTopLevelTest(fn) {
-				c.tests[name] = append(c.tests[name], fn)
-			}
-			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				var called string
-				switch fun := call.Fun.(type) {
-				case *ast.SelectorExpr:
-					called = fun.Sel.Name
-				case *ast.Ident:
-					called = fun.Name
-				default:
-					return true
-				}
-				c.calls[key] = append(c.calls[key], called)
-				if globalMutators[called] && c.direct[key] == "" {
-					c.direct[key] = called
-				}
-				return true
-			})
-		}
-	}
-	sort.Strings(c.files)
-	if len(c.files) < 100 {
-		t.Fatalf("the walk read %d test files — it is judging nothing, so no verdict below means anything", len(c.files))
+	if got := len(c.Files()); got < 100 {
+		t.Fatalf("the walk read %d test files — it is judging nothing, so no verdict below means anything", got)
 	}
 	return c
-}
-
-func isTopLevelTest(fn *ast.FuncDecl) bool {
-	if fn.Recv != nil || !strings.HasPrefix(fn.Name.Name, "Test") || fn.Name.Name == "TestMain" {
-		return false
-	}
-	if fn.Type.Params == nil || len(fn.Type.Params.List) != 1 {
-		return false
-	}
-	star, ok := fn.Type.Params.List[0].Type.(*ast.StarExpr)
-	if !ok {
-		return false
-	}
-	sel, ok := star.X.(*ast.SelectorExpr)
-	return ok && sel.Sel.Name == "T"
-}
-
-// derivedSerial returns, for each file the code itself keeps serial, the
-// reason: the global mutator a function of that file calls, or the tainted
-// helper it borrows from another file. The transitive half is what a per-file
-// grep misses — memory_global_gate_test.go holds no t.Setenv of its own.
-//
-// The call graph is keyed by NAME, so two methods called Cleanup on different
-// fixture types are one node: a file can be pulled serial by a namesake it
-// never calls. That over-approximates toward SERIAL, which is the safe
-// direction (a wrongly-serial file costs wall time; a wrongly-parallel one
-// panics the binary), and the table records whatever comes out — so an
-// over-approximation is visible as a line, not as a silent loss.
-func (c *campaign) derivedSerial() map[string]string {
-	taint := map[string]string{}
-	for fn, mutator := range c.direct {
-		taint[fn] = mutator
-	}
-	for changed := true; changed; {
-		changed = false
-		for fn, callees := range c.calls {
-			if taint[fn] != "" {
-				continue
-			}
-			for _, callee := range callees {
-				if taint[callee] != "" && c.owner[callee] != "" {
-					taint[fn] = "via " + callee + "() in " + c.owner[callee]
-					changed = true
-					break
-				}
-			}
-		}
-	}
-	out := map[string]string{}
-	for _, f := range c.files {
-		// The whole set of blockers, sorted: a file held by BOTH t.Setenv and a
-		// package global is the fact #2808 needs, and a set does not depend on
-		// the order the walk read the file's functions in. Direct mutators win
-		// over borrowed ones — a borrowed reason is only informative when the
-		// file touches nothing itself.
-		direct, borrowed := map[string]bool{}, map[string]bool{}
-		for _, fn := range c.declares[f] {
-			why := taint[fn]
-			switch {
-			case why == "":
-			case strings.HasPrefix(why, "via "):
-				borrowed[why] = true
-			default:
-				direct[why] = true
-			}
-		}
-		chosen := direct
-		if len(chosen) == 0 {
-			chosen = borrowed
-		}
-		if len(chosen) == 0 {
-			continue
-		}
-		reasons := make([]string, 0, len(chosen))
-		for why := range chosen {
-			reasons = append(reasons, why)
-		}
-		sort.Strings(reasons)
-		out[f] = strings.Join(reasons, ", ")
-	}
-	return out
 }
 
 // TestTheSerialFamilyTableSaysWhatTheCodeDoes keeps the table and the code in
@@ -342,7 +178,7 @@ func (c *campaign) derivedSerial() map[string]string {
 func TestTheSerialFamilyTableSaysWhatTheCodeDoes(t *testing.T) {
 	t.Parallel()
 	c := readCampaign(t)
-	derived := c.derivedSerial()
+	derived := c.FilesReaching(globalMutators)
 
 	for f, why := range derived {
 		if _, listed := serialFamily[f]; listed {
@@ -371,7 +207,7 @@ func TestASerialTestFileNeverGoesParallel(t *testing.T) {
 	t.Parallel()
 	c := readCampaign(t)
 
-	for _, f := range c.files {
+	for _, f := range c.Files() {
 		why, serial := serialFamily[f]
 		if !serial {
 			why, serial = serialByDesign[f]
@@ -379,8 +215,8 @@ func TestASerialTestFileNeverGoesParallel(t *testing.T) {
 		if !serial {
 			continue
 		}
-		for _, fn := range c.tests[f] {
-			if opensWithParallel(fn) {
+		for _, fn := range c.Tests(f) {
+			if testparallel.OpensWithParallel(fn) {
 				t.Errorf("%s:%s calls t.Parallel() in a serial file (%s) — a t.Setenv anywhere in its goroutine tree panics the whole test binary, and the panic names the test only if the binary gets that far",
 					f, fn.Name.Name, why)
 			}
@@ -395,15 +231,15 @@ func TestEveryParallelisableTestFileIsParallel(t *testing.T) {
 	c := readCampaign(t)
 
 	var missing []string
-	for _, f := range c.files {
+	for _, f := range c.Files() {
 		if _, serial := serialFamily[f]; serial {
 			continue
 		}
 		if _, byDesign := serialByDesign[f]; byDesign {
 			continue
 		}
-		for _, fn := range c.tests[f] {
-			if !opensWithParallel(fn) {
+		for _, fn := range c.Tests(f) {
+			if !testparallel.OpensWithParallel(fn) {
 				missing = append(missing, f+":"+fn.Name.Name)
 			}
 		}
@@ -421,7 +257,7 @@ func TestTheSerialByDesignExemptionsAreLive(t *testing.T) {
 	t.Parallel()
 	c := readCampaign(t)
 	present := map[string]bool{}
-	for _, f := range c.files {
+	for _, f := range c.Files() {
 		present[f] = true
 	}
 	for f, why := range serialByDesign {
@@ -430,40 +266,8 @@ func TestTheSerialByDesignExemptionsAreLive(t *testing.T) {
 			t.Errorf("serialByDesign names %s, which this package no longer has — drop the line", f)
 		case strings.TrimSpace(why) == "":
 			t.Errorf("serialByDesign[%s] carries no reason", f)
-		case len(c.tests[f]) == 0:
+		case len(c.Tests(f)) == 0:
 			t.Errorf("serialByDesign names %s, which declares no top-level test — the exemption covers nothing", f)
 		}
 	}
-}
-
-// opensWithParallel reads the file-level rule the way a reader does: the test
-// declares itself parallel before it does anything else. A t.Helper() first is
-// still opening with t.Parallel().
-func opensWithParallel(fn *ast.FuncDecl) bool {
-	if fn.Body == nil {
-		return false
-	}
-	for _, stmt := range fn.Body.List {
-		expr, ok := stmt.(*ast.ExprStmt)
-		if !ok {
-			return false
-		}
-		call, ok := expr.X.(*ast.CallExpr)
-		if !ok {
-			return false
-		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok {
-			return false
-		}
-		switch sel.Sel.Name {
-		case "Parallel":
-			return true
-		case "Helper":
-			continue
-		default:
-			return false
-		}
-	}
-	return false
 }

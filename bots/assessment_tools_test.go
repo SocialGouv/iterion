@@ -57,7 +57,7 @@ func assessmentRun(t *testing.T, node string, quoted, raw map[string]string) (ma
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("python3", path)
+	cmd := modernizeChild(t, "python3", path)
 	stdout, err := cmd.Output()
 	exit := 0
 	if err != nil {

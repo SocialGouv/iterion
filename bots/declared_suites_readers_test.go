@@ -12,6 +12,7 @@ import (
 // text, so one corpus runs through the four real scripts: the three that
 // execute agree both ways, and the lint never accepts what they refuse.
 func TestDeclaredSuitesReadAlikeByEveryReader(t *testing.T) {
+	t.Parallel()
 	requireAssessmentTools(t, "python3", "git", "yq", "bash")
 	requireModernizeTools(t)
 	planRead := toolScript(t, "modernize/main.bot", "plan_read")

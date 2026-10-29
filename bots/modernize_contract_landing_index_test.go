@@ -43,6 +43,7 @@ func forgedOutcomes() string {
 }
 
 func TestModernizeContractIsJudgedInTheIndex(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 
@@ -104,6 +105,7 @@ func TestModernizeContractIsJudgedInTheIndex(t *testing.T) {
 }
 
 func TestModernizeContractRefusesAFilterOnItsPaths(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 
@@ -156,6 +158,7 @@ func programmeWithRecords(t *testing.T) (string, string, func(args ...string) st
 }
 
 func TestModernizeContractIsTheWholeDirectory(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 
@@ -227,6 +230,7 @@ func TestModernizeContractIsTheWholeDirectory(t *testing.T) {
 }
 
 func TestModernizeContractFilesAreRegularAtTheBase(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	ws, _, git := programmeRepo(t)
 	writeContract(t, ws, "docs/outcomes.json", contractOutcomes)
@@ -249,6 +253,7 @@ func TestModernizeContractFilesAreRegularAtTheBase(t *testing.T) {
 }
 
 func TestModernizePlanReadRefusesANonRegularPlan(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "plan_read")
 	for _, tc := range []struct {
@@ -332,6 +337,7 @@ func addLots(t *testing.T, ws string, ids ...string) {
 // them, refused when the lot creates them. A link stands for every path
 // beneath it: a lot creates one only under its own id.
 func TestModernizeContractRecordsBelongToTheLotTheyAreNamedFor(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 
@@ -497,6 +503,7 @@ func TestModernizeContractRecordsBelongToTheLotTheyAreNamedFor(t *testing.T) {
 // base whose `lots` is not a list of lots leaves every name unowned, and a
 // judge that cannot tell whose a record is must say so, not guess.
 func TestModernizeContractLotsUnreadableAtTheBase(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	ws, _, git := modernizeRepo(t, "version: 1\nlots:\n  L1:\n    status: todo\n")
 	modernizeNet(t, ws)

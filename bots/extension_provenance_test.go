@@ -25,6 +25,7 @@ import (
 // before any subbot ran, which is exactly the pass that judges a self-act —
 // and a forged act comes back typed (`extension_forged`), never as a repair.
 func TestModernizeLotVerifyHandsProvenanceToTheCertifier(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 	const plan = `version: 1

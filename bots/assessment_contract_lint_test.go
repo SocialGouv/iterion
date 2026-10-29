@@ -394,7 +394,7 @@ func modernizePlanReadAt(t *testing.T, script, ws string) modernizePlanReadOut {
 // as JSON, never a tool failure.
 func runPlanReadScript(t *testing.T, path string) modernizePlanReadOut {
 	t.Helper()
-	out, err := exec.Command("python3", path).Output()
+	out, err := modernizeChild(t, "python3", path).Output()
 	if err != nil {
 		ee, ok := err.(*exec.ExitError)
 		if !ok {

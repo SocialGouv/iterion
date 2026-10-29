@@ -14,6 +14,7 @@ import (
 // and on a cloud run HEAD alone is the landing. A record the commit does not
 // carry as a non-empty file fails the gate, by name.
 func TestModernizeGateRecordPredicateHoldsOnWhatLands(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	const record = ".modernize/sweeps/L1.md"
 	const gate = "test -s " + record
@@ -158,6 +159,7 @@ func TestModernizeGateRecordPredicateHoldsOnWhatLands(t *testing.T) {
 // with the attribute, and goes back to the worker: the contract is readable,
 // what git would store from it is not.
 func TestModernizeContractNamesTheConversionItCannotStore(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	script := toolScript(t, "modernize/main.bot", "lot_verify")
 	withRecord := func(t *testing.T) (string, string, func(args ...string) string) {
@@ -210,6 +212,7 @@ func TestModernizeContractNamesTheConversionItCannotStore(t *testing.T) {
 // table's files and holds the rest of the directory — the lot's captures
 // included — by count and digest, whatever their number.
 func TestModernizeVerdictIsBoundedWhateverTheDirectory(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	ws, base, _ := programmeOfLots(t)
 	dir := filepath.Join(ws, ".modernize", "L1-captures")
@@ -235,6 +238,7 @@ func TestModernizeVerdictIsBoundedWhateverTheDirectory(t *testing.T) {
 // earlier lot's record named so, rewritten while the lot writes its twin with
 // the record's old bytes, is still a rewrite.
 func TestModernizeContractHashesANameEndingInCRAsItself(t *testing.T) {
+	t.Parallel()
 	requireModernizeTools(t)
 	ws, _, git := programmeOfLots(t)
 	writeContract(t, ws, ".modernize/L0-note.md\r", "what L0 noted\n")

@@ -237,7 +237,7 @@ func finalizeOn(t *testing.T, plan string, files map[string]string, after func(w
 		t.Fatal(err)
 	}
 	var stderr strings.Builder
-	cmd := exec.Command("python3", p)
+	cmd := modernizeChild(t, "python3", p)
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
@@ -271,6 +271,7 @@ func handoffLine(handoff, needle string) string {
 // is green on the final tree requalifies only when the repository's suites
 // are green there too, and the handoff says what the suites gave.
 func TestCampaignFinalizeRequalifiesOverTheSuites(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, suite, verdict, handoff string
 	}{
@@ -293,6 +294,7 @@ func TestCampaignFinalizeRequalifiesOverTheSuites(t *testing.T) {
 // — a stray tab, a bad merge — is said in the handoff and the notice, never
 // read as a programme of zero lots that declares no suite.
 func TestCampaignFinalizeSaysAnUnreadPlan(t *testing.T) {
+	t.Parallel()
 	for name, plan := range map[string]string{
 		"a plan that does not parse":   campaignSuitesPlan + "  bad: [unclosed\n",
 		"a plan that is not a mapping": "- id: L1\n",
@@ -313,6 +315,7 @@ func TestCampaignFinalizeSaysAnUnreadPlan(t *testing.T) {
 // TestCampaignFinalizeReadsOutputThatIsNotUTF8: a legacy application's test
 // log in Latin-1 is read with replacement characters, never raised on.
 func TestCampaignFinalizeReadsOutputThatIsNotUTF8(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ suite, want string }{
 		{"printf 'R\\351sultat OK\\n'", "GREEN"},
 		{"printf 'R\\351sultat KO\\n'; exit 1", "RED"},
@@ -330,6 +333,7 @@ func TestCampaignFinalizeReadsOutputThatIsNotUTF8(t *testing.T) {
 // command past its wall is a red the handoff names, never a crash that leaves
 // no handoff.
 func TestCampaignFinalizeRunsUnderTheContractsWalls(t *testing.T) {
+	t.Parallel()
 	plan := func(top, status, lotWall, gate string) string {
 		return "version: 1\n" + top + "oracle:\n  refs_dir: .golden-master/refs\nlots:\n  - id: L1\n" +
 			"    title: \"move the route\"\n    status: " + status + "\n" + lotWall +

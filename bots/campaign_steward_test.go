@@ -3,7 +3,6 @@ package bots
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -50,7 +49,7 @@ func stewardOn(t *testing.T, plan, verify string, after func(ws string, git func
 		t.Fatal(err)
 	}
 	var stderr strings.Builder
-	cmd := exec.Command("python3", p)
+	cmd := modernizeChild(t, "python3", p)
 	cmd.Stderr = &stderr
 	if out, err := cmd.Output(); err != nil {
 		t.Fatalf("steward: %v (out %q, stderr %q)", err, out, stderr.String())
@@ -82,6 +81,7 @@ func campaignSteward(t *testing.T, plan, verify string) ([]map[string]any, strin
 // that is not an act that failed. A wall lot_verify would refuse is named, and
 // nothing runs under one guessed.
 func TestCampaignStewardActsUnderTheLotsWall(t *testing.T) {
+	t.Parallel()
 	verify := "#!/bin/sh\nsleep 2\nif [ \"$1\" = --record ]; then echo 'STATUS 201' > .golden-master/refs/001.txt; fi\nexit 0\n"
 	plan := func(top, lotWall string) string {
 		return "version: 1\n" + top + "oracle:\n  refs_dir: .golden-master/refs\nlots:\n  - id: L1\n    title: t\n" +
@@ -142,6 +142,7 @@ func TestCampaignStewardActsUnderTheLotsWall(t *testing.T) {
 // with everything it started, so nothing writes a reference after the steward
 // has reported the record failed and handed the tree back.
 func TestCampaignStewardStopsWhatARecordStarted(t *testing.T) {
+	t.Parallel()
 	verify := "#!/bin/sh\nif [ \"$1\" = --record ]; then\n" +
 		"  (sleep 3; echo 'STATUS 201' > .golden-master/refs/001.txt) &\n  wait\nfi\nexit 0\n"
 	plan := "version: 1\noracle:\n  refs_dir: .golden-master/refs\nlots:\n  - id: L1\n    title: t\n" +
@@ -160,6 +161,7 @@ func TestCampaignStewardStopsWhatARecordStarted(t *testing.T) {
 // TestCampaignStewardJournalTakesOnlyItsOwnFiles: what a child run left in the
 // index is not the supervisor's to land under "campaign: run N".
 func TestCampaignStewardJournalTakesOnlyItsOwnFiles(t *testing.T) {
+	t.Parallel()
 	verify := "#!/bin/sh\nexit 0\n"
 	plan := "version: 1\noracle:\n  refs_dir: .golden-master/refs\nlots:\n  - id: L1\n    title: t\n" +
 		"    status: done\n    rebaseline_allowed: true\n    exit_gate:\n      - \"true\"\n"
@@ -179,6 +181,7 @@ func TestCampaignStewardJournalTakesOnlyItsOwnFiles(t *testing.T) {
 // lots is plan_unreadable — an escalation — where a rebaseline request was
 // pending, not a crash that leaves no journal and no commit.
 func TestCampaignStewardHoldsLotsToBeLists(t *testing.T) {
+	t.Parallel()
 	verify := "#!/bin/sh\nexit 0\n"
 	for name, plan := range map[string]string{
 		"lots as a mapping": "version: 1\noracle:\n  refs_dir: .golden-master/refs\nlots:\n  L1:\n    status: done\n",
@@ -204,6 +207,7 @@ func TestCampaignStewardHoldsLotsToBeLists(t *testing.T) {
 // counter-test's writes do not stay in the tree — the next request and the
 // next child run see the committed tree.
 func TestCampaignStewardRestoresWhatItsCounterTestWrote(t *testing.T) {
+	t.Parallel()
 	verify := "#!/bin/sh\nif [ \"$1\" = --record ]; then echo 'STATUS 201' > .golden-master/refs/001.txt; else echo probe > probe.txt; exit 1; fi\nexit 0\n"
 	plan := "version: 1\noracle:\n  refs_dir: .golden-master/refs\nlots:\n  - id: L1\n    title: t\n" +
 		"    status: done\n    rebaseline_allowed: true\n    exit_gate:\n      - \"true\"\n"
