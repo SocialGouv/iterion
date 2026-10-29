@@ -17,6 +17,9 @@ import (
 //   - a fragment materialized from `dependencies.fragments` (ADR-145
 //     clause 2) under lib/ — a path the producer never shipped, which
 //     [ContentHashDir] leaves out exactly as the producer's archive did;
+//   - a skill document materialized from `dependencies.skills` (ADR-144
+//     clause 2) under skills/ — the same ADDED shape, for the artefact kind
+//     a `skills:` list names;
 //   - the generated bot catalog of a materialized router bundle (ARB-109) —
 //     a path the producer DOES ship, which the regeneration overwrites with
 //     the consumer workspace's routing table. The producer's bytes are kept
@@ -24,8 +27,10 @@ import (
 //     path, so the identity of the install stays the content it was pinned
 //     at while the run reads the live table on disk.
 //
-// One record, two shapes: a second registry would be a second truth about
-// the same bundle. It exists because `bots.lock` pins what a producer
+// One record, two FORMS — a path the producer never shipped, and a path
+// whose producer bytes are kept aside — and one shape per artefact kind
+// inside them: a second registry would be a second truth about the same
+// bundle. It exists because `bots.lock` pins what a producer
 // published and [ContentHashDir] is the verdict every pin check reads.
 // Without it an idempotent reconciliation moves that hash, and everything
 // built on it reads a change nobody made: the post-install verification
@@ -59,6 +64,11 @@ const (
 	// LocalStateFragment is a `.bot` fragment an install materialized under
 	// lib/ from `dependencies.fragments`.
 	LocalStateFragment LocalStateKind = "fragment"
+	// LocalStateSkill is a skill document an install materialized under
+	// skills/ from `dependencies.skills`. Directly under it: the mirror
+	// that hands skills to an agent reads that one directory, so a nested
+	// path is a file no `skills:` reference resolves.
+	LocalStateSkill LocalStateKind = "skill"
 	// LocalStateCatalog is the generated bot catalog a regeneration wrote
 	// into a materialized router bundle's skills/.
 	LocalStateCatalog LocalStateKind = "catalog"
@@ -110,10 +120,26 @@ func localStateKindOf(path string) (LocalStateKind, bool) {
 	switch {
 	case strings.HasPrefix(path, DirFragments+"/") && strings.HasSuffix(strings.ToLower(path), fragmentExtension):
 		return LocalStateFragment, true
+	// The catalog FIRST: its path is also a skill document under skills/,
+	// and it is the one the regeneration owns with kept producer bytes.
+	// Classifying it as a skill would hand one line to two writers.
 	case path == DirSkills+"/"+GeneratedCatalogFile:
 		return LocalStateCatalog, true
+	case isMaterializedSkillPath(path):
+		return LocalStateSkill, true
 	}
 	return "", false
+}
+
+// isMaterializedSkillPath is the shape of a resolved `dependencies.skills`
+// entry: a skill document DIRECTLY under skills/, which is the only place
+// the install writes one and the only place the run-start mirror reads.
+func isMaterializedSkillPath(path string) bool {
+	rel, ok := strings.CutPrefix(path, DirSkills+"/")
+	if !ok || strings.Contains(rel, "/") {
+		return false
+	}
+	return strings.HasSuffix(strings.ToLower(rel), skillExtension)
 }
 
 // kindOf is [localStateKindOf] as a refusal, named with the record and the
@@ -121,7 +147,7 @@ func localStateKindOf(path string) (LocalStateKind, bool) {
 func (e LocalStateEntry) kindOf() (LocalStateKind, error) {
 	kind, ok := localStateKindOf(e.Path)
 	if !ok {
-		return "", fmt.Errorf("bundle: %s: %q is not a path an install writes (a %s fragment under %s/, or %s/%s)", LocalStateFile, e.Path, fragmentExtension, DirFragments, DirSkills, GeneratedCatalogFile)
+		return "", fmt.Errorf("bundle: %s: %q is not a path an install writes (a %s fragment under %s/, or a %s skill directly under %s/, which includes %s/%s)", LocalStateFile, e.Path, fragmentExtension, DirFragments, skillExtension, DirSkills, DirSkills, GeneratedCatalogFile)
 	}
 	return kind, nil
 }

@@ -55,16 +55,16 @@ func TestInstallRefusesBeforeRemovingAnExistingTarget(t *testing.T) {
 }
 
 // TestDeferredFragmentsLetTheCallerOwnTheOrder is the other half of the
-// refusal: botdeps sets DeferFragments because it materializes the whole
+// refusal: botdeps sets DeferSharedDeps because it materializes the whole
 // lockfile first, so the install itself must go through.
 func TestDeferredFragmentsLetTheCallerOwnTheOrder(t *testing.T) {
 	workdir := t.TempDir()
 	source := filepath.Join(workdir, "src")
 	writeConsumerBundle(t, source, "a-bot", "z-lib")
 
-	res, err := Install(t.Context(), Options{Source: source, Workdir: workdir, SkipCatalog: true, DeferFragments: true})
+	res, err := Install(t.Context(), Options{Source: source, Workdir: workdir, SkipCatalog: true, DeferSharedDeps: true})
 	if err != nil {
-		t.Fatalf("Install with DeferFragments: %v", err)
+		t.Fatalf("Install with DeferSharedDeps: %v", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(res.InstalledPath, "main.bot")); statErr != nil {
 		t.Fatalf("the bundle was not installed: %v", statErr)

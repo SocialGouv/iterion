@@ -105,6 +105,58 @@ reads now. What that costs is written down rather than hidden:
   (drift a `bots sync` repairs), never make a modified install read as
   pristine.
 
+## Shared skill dependencies
+
+The same two-sided key shares a SKILL document — what a node's
+`skills: [...]` list names — so a bot stops carrying a copy of a playbook
+another bundle already publishes
+([ADR-144](adr/144-shared-skills-are-bundle-dependencies.md)):
+
+```yaml
+# producer bundle
+exports:
+  skills:
+    - id: verify-build
+      path: skills/verify-build.md
+# consumer bundle
+dependencies:
+  skills:
+    - name: verify-build   # the name this bundle's `skills:` lists reference
+      from: app-dev        # the exact manifest name of the exporting bundle
+      id: verify-build     # the exported id; defaults to name
+```
+
+Resolution is the fragment path with one directory changed: `bots sync`
+materializes every pinned bundle first and resolves in a second pass, a lone
+`iterion bots install` of a consumer is refused and names `bots sync`, a miss
+is reported at the install with the bundle, the skill and every directory
+looked in, and the copy lands at `skills/<name>.md` — where a shipped one
+would have been, so the run-start mirror, the install's skill count and
+`validate`'s `C231`–`C234` lints read it without learning that a skill can be
+a dependency. The materialized document is recorded in the bundle's local
+state and left out of the content hash, like a materialized fragment. What is
+specific to skills:
+
+- **A dependency may not shadow a shipped skill, nor an operator-attached
+  name.** The first is refused at the install, as it is for a fragment. The
+  second is a catalogue rule (`bots/catalog_skill_refs_test.go`): a bot that
+  deliberately references a skill the OPERATOR supplies — a platform playbook
+  a repo-agnostic bot must not pin — may not turn that choice into a
+  dependency, and the gate reddens on a declaration that does.
+- **A shared document keeps its name.** A skill is addressed by the `name:`
+  in its frontmatter as much as by its file name, so resolving an export
+  under a name the document contradicts is refused, naming both sides:
+  rewriting anything INSIDE the document is the per-bundle token
+  substitution ADR-144 leaves undecided.
+- **`skills/iterion-bot-catalog.md` cannot be a dependency.** That path is
+  the generated catalogue's, owned by `iterion bots regen-catalog` with the
+  producer's bytes kept aside; two writers reconciling one line would erase
+  each other, so the name is refused in the manifest.
+- **The declaration shrinks the inventory, nothing else does.**
+  `internal/skillshare` keeps declaring every copy the tree still carries,
+  and a family loses a member only when a consumer adopts the dependency and
+  deletes its copy — one reviewed change per bundle.
+
 ## Quick start
 
 ```bash

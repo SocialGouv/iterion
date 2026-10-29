@@ -35,6 +35,11 @@ type SyncResult struct {
 	// `dependencies.fragments` (ADR-145). Zero for the bundles that declare
 	// none, which is every bundle that carries its own fragments.
 	Fragments int `json:"fragments,omitempty"`
+	// Skills counts the shared skill documents the same pass materialized
+	// into this dependency's own skills/ from its `dependencies.skills`
+	// (ADR-144). Zero for the bundles that declare none, which is every
+	// bundle that carries a copy of every skill it references.
+	Skills int `json:"skills,omitempty"`
 }
 
 // Sync materializes every project-root bots.lock dependency into .botz.
@@ -77,15 +82,16 @@ func Sync(ctx context.Context, workdir string) ([]SyncResult, error) {
 		}
 		results = append(results, result)
 	}
-	// Shared fragments resolve in a SECOND pass, once every bundle of the
-	// lockfile is materialized. The first pass walks names alphabetically,
+	// Shared fragments and skills resolve in a SECOND pass, once every
+	// bundle of the lockfile is materialized. The first pass walks names
+	// alphabetically,
 	// so a consumer `a-bot` is installed before `.botz/z-lib` exists: a
 	// resolution inside it would refuse a correct configuration whenever the
 	// consumer sorts before its producer, and succeed on the other order.
 	// The order a verdict depends on is a fact the machine owes, not one the
 	// operator should have to supply.
 	for i := range results {
-		resolved, err := resolveFragmentsInto(absWorkdir, results[i])
+		resolved, err := resolveSharedDepsInto(absWorkdir, results[i])
 		if err != nil {
 			return results, err
 		}
@@ -95,7 +101,7 @@ func Sync(ctx context.Context, workdir string) ([]SyncResult, error) {
 }
 
 // SyncOne materializes one already-validated lock dependency, and resolves
-// its shared fragments. A single-bundle request is EXPLICIT, so a producer
+// its shared dependencies. A single-bundle request is EXPLICIT, so a producer
 // the project has not materialized yet is a true miss, named with the
 // command that fixes it; Sync defers the resolution to its second pass
 // instead, where no producer can still be missing by an accident of order.
@@ -104,18 +110,25 @@ func SyncOne(ctx context.Context, workdir, name string, dep botlock.Dependency) 
 	if err != nil {
 		return result, err
 	}
-	return resolveFragmentsInto(workdir, result)
+	return resolveSharedDepsInto(workdir, result)
 }
 
-// resolveFragmentsInto is the ONE place a materialized bundle's
-// `dependencies.fragments` are resolved, so every entry point that
-// materializes one gets the same reconciliation and the same refusals.
-func resolveFragmentsInto(workdir string, result SyncResult) (SyncResult, error) {
-	resolved, err := botinstall.ResolveFragments(workdir, result.InstalledPath)
+// resolveSharedDepsInto is the ONE place a materialized bundle's shared
+// dependencies are resolved, so every entry point that materializes one gets
+// the same reconciliation and the same refusals — for every artefact kind of
+// the sharing key, in one place, rather than one pass per kind that a new
+// entry point can forget half of.
+func resolveSharedDepsInto(workdir string, result SyncResult) (SyncResult, error) {
+	fragments, err := botinstall.ResolveFragments(workdir, result.InstalledPath)
 	if err != nil {
 		return result, fmt.Errorf("bot dependencies: %q: %w", result.Name, err)
 	}
-	result.Fragments = len(resolved)
+	result.Fragments = len(fragments)
+	skills, err := botinstall.ResolveSkills(workdir, result.InstalledPath)
+	if err != nil {
+		return result, fmt.Errorf("bot dependencies: %q: %w", result.Name, err)
+	}
+	result.Skills = len(skills)
 	return result, nil
 }
 
@@ -138,7 +151,7 @@ func StageOne(ctx context.Context, workdir, dest, name string, dep botlock.Depen
 	if err != nil {
 		return result, err
 	}
-	return resolveFragmentsInto(workdir, result)
+	return resolveSharedDepsInto(workdir, result)
 }
 
 func materializeOne(ctx context.Context, workdir, dest, name string, dep botlock.Dependency, private bool) (SyncResult, error) {
@@ -177,11 +190,11 @@ func materializeOne(ctx context.Context, workdir, dest, name string, dep botlock
 	installed, installErr := botinstall.Install(ctx, botinstall.Options{
 		Source: fetched, Name: name, Force: !private, Workdir: workdir, Dest: dest, SkipCatalog: private,
 		Origin: origin,
-		// Shared fragments are resolved by the caller, after the whole
+		// Shared dependencies are resolved by the caller, after the whole
 		// lockfile is materialized: Sync's second pass, or StageOne for the
 		// single bundle it stages. Install refusing here would make every
 		// sync of a consumer fail on the order its producer sorts in.
-		DeferFragments: true,
+		DeferSharedDeps: true,
 		// bots.lock IS the record of management for .botz/<name>: the pin
 		// names the dependency in a committed file, and the hash check above
 		// has already proven the installed copy is not what that pin says.

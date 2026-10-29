@@ -1344,8 +1344,8 @@ func validateSkillSharing(exports *BundleExports, dependencies *BundleDependenci
 		if filepath.IsAbs(exp.Path) || strings.HasPrefix(exp.Path, "../") || exp.Path == ".." {
 			return fmt.Errorf("exports.skills[%d].path %q must stay inside the bundle", i, exp.Path)
 		}
-		if !strings.HasSuffix(strings.ToLower(exp.Path), ".md") {
-			return fmt.Errorf("exports.skills[%d].path %q must name a .md skill document", i, exp.Path)
+		if !strings.HasSuffix(strings.ToLower(exp.Path), skillExtension) {
+			return fmt.Errorf("exports.skills[%d].path %q must name a %s skill document", i, exp.Path, skillExtension)
 		}
 	}
 
@@ -1360,6 +1360,9 @@ func validateSkillSharing(exports *BundleExports, dependencies *BundleDependenci
 		}
 		if strings.ContainsAny(dep.Name, `/\`) || dep.Name == "." || dep.Name == ".." {
 			return fmt.Errorf("dependencies.skills[%d].name %q must not contain path separators", i, dep.Name)
+		}
+		if err := refuseUnmaterializableSkillName(i, *dep); err != nil {
+			return err
 		}
 		if _, duplicate := dependencyNames[dep.Name]; duplicate {
 			return fmt.Errorf("dependencies.skills[%d].name %q is duplicated", i, dep.Name)

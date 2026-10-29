@@ -157,3 +157,8 @@ leaves open, because a templated skill is an authoring surface of its own
 copy whose generated region a per-bundle generator rebuilds
 (`iterion bots regen-catalog`) can never be a byte-mirror.
 
+Sharing a skill BETWEEN bundles is a bundle dependency, not a copy:
+`exports.skills` / `dependencies.skills`, resolved at install into the
+consumer's own `skills/` — shape, refusals and the pin in
+[bundles.md](../../bundles.md#shared-skill-dependencies).
+

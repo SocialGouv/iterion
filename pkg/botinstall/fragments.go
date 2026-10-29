@@ -68,7 +68,7 @@ func ResolveFragments(workdir, installedPath string) ([]bundle.LocalStateEntry, 
 		if srcErr != nil {
 			return nil, srcErr
 		}
-		digest, copyErr := copyFragment(source, dest)
+		digest, copyErr := copyResolvedFile(source, dest)
 		if copyErr != nil {
 			return nil, fmt.Errorf("resolve shared fragment %q of %q from %q: %w", dep.ExportedID(), filepath.Base(installedPath), dep.From, copyErr)
 		}
@@ -87,7 +87,7 @@ func ResolveFragments(workdir, installedPath string) ([]bundle.LocalStateEntry, 
 	for _, f := range resolved {
 		declared[f.Path] = struct{}{}
 	}
-	if err := dropUndeclaredFragments(installedPath, previous, declared); err != nil {
+	if err := dropUndeclaredLocalState(installedPath, sharedFragments, previous, declared); err != nil {
 		return nil, err
 	}
 	if err := bundle.WriteLocalStateOfKind(installedPath, bundle.LocalStateFragment, resolved); err != nil {
@@ -198,71 +198,13 @@ func refuseFragmentShadow(dest, rel string, dep bundle.FragmentDependency, recor
 	return fmt.Errorf("dependencies.fragments %q would shadow %s, which this bundle ships: rename the dependency or drop the shipped fragment", dep.Name, rel)
 }
 
-// dropUndeclaredFragments removes what a previous resolution materialized
-// and the manifest no longer declares. It deletes only a path the bundle's
-// own note still describes exactly — under lib/, bytes unchanged — because
-// leaving it would let a dropped dependency keep answering an `import` with
-// a stale copy, and deleting anything else would destroy a file this
-// installer never wrote.
-func dropUndeclaredFragments(installedPath string, previous []bundle.LocalStateEntry, declared map[string]struct{}) error {
-	for _, f := range previous {
-		if _, keep := declared[f.Path]; keep {
-			continue
-		}
-		if !strings.HasPrefix(f.Path, bundle.DirFragments+"/") || strings.Contains(f.Path, "../") {
-			return fmt.Errorf("resolve shared fragments for %s: recorded fragment %q is not a path this installer writes", filepath.Base(installedPath), f.Path)
-		}
-		stale := filepath.Join(installedPath, filepath.FromSlash(f.Path))
-		info, err := os.Lstat(stale)
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("resolve shared fragments for %s: inspect %s: %w", filepath.Base(installedPath), f.Path, err)
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("resolve shared fragments for %s: %s is no longer a regular file; remove it by hand", filepath.Base(installedPath), f.Path)
-		}
-		current, hashErr := bundle.FileSHA256(stale)
-		if hashErr != nil {
-			return fmt.Errorf("resolve shared fragments for %s: hash %s: %w", filepath.Base(installedPath), f.Path, hashErr)
-		}
-		if current != f.SHA256 {
-			return fmt.Errorf("resolve shared fragments for %s: %s was edited after it was materialized and is no longer declared; remove it by hand", filepath.Base(installedPath), f.Path)
-		}
-		if err := os.Remove(stale); err != nil {
-			return fmt.Errorf("resolve shared fragments for %s: remove %s: %w", filepath.Base(installedPath), f.Path, err)
-		}
-	}
-	return nil
-}
-
-func copyFragment(source, dest string) (string, error) {
-	data, err := os.ReadFile(source)
-	if err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(dest, data, 0o644); err != nil {
-		return "", err
-	}
-	return bundle.SHA256Bytes(data), nil
-}
-
 // fragmentDependenciesRefusal is Install's answer to a bundle that declares
-// `dependencies.fragments`: one install cannot resolve them, because the
-// producer may be a bundle the same sync has not materialized yet — the
-// order a lockfile is walked in is alphabetical, so a consumer `a-bot` is
-// installed before `.botz/z-lib` exists. Resolving here would make a refusal
-// depend on an accident of sorting; refusing names the command that does it
-// in the right order.
+// `dependencies.fragments`, for the reason sharedDependencyRefusal states.
 func fragmentDependenciesRefusal(name string, deps []bundle.FragmentDependency) error {
 	names := make([]string, 0, len(deps))
 	for _, dep := range deps {
 		names = append(names, fmt.Sprintf("%s (from %s)", dep.Name, dep.From))
 	}
 	sort.Strings(names)
-	return fmt.Errorf("bundle %q declares dependencies.fragments %s: a single install cannot resolve them, because their producers are materialized by the project lockfile; add it to bots.lock and run `%s`", name, strings.Join(names, ", "), syncCommand)
+	return sharedDependencyRefusal(sharedFragments, name, names)
 }
