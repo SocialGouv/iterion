@@ -680,30 +680,44 @@ const (
 	// judge whether such an image belongs in the run at all. Data:
 	//   - image: the inspected image reference ("" when the driver's
 	//     prepared spec exposes none)
-	//   - neutralized: []string, sorted — the credential and routing
-	//     sub-class the driver ACTUALLY overrode, which the container
-	//     starts with `--env NAME=`: set and EMPTY, which every one of
-	//     those consumers reads as absent. The driver reports what it
+	//   - neutralized: []string, sorted — the sub-class the driver
+	//     ACTUALLY overrode, which the container starts with
+	//     `--env NAME=`: set and EMPTY, which every one of those
+	//     consumers reads as absent. It is the credential and routing
+	//     names, and the ones that lead to CODE at the startup of a
+	//     process iterion runs there (the loader, the shells' startup
+	//     channels, node's and npm's and bun's options, git's
+	//     config-from-the-environment). The driver reports what it
 	//     emptied and this list is that answer, never the set the screen
-	//     decided on: the two differ for a name the run's own env
-	//     already sets (operator_set below). Always present, empty list
-	//     included
-	//   - reported: []string, sorted — the rest of the class, which
-	//     KEEPS its value because an empty one would break an image
-	//     doing its job (`PATH`, `HOME`, a loader path, `KUBECONFIG`),
-	//     plus any planted name no driver could pass and no process
-	//     could resolve. Always present, empty list included
+	//     decided on: the two differ for a name the run's own env or the
+	//     driver's own Start already sets (operator_set and driver_set
+	//     below). Always present, empty list included
+	//   - reported: []string, sorted — the rest of the class, whose
+	//     value the container's processes DO read: an empty one would
+	//     break an image doing its job (`PATH`, `HOME`, a loader library
+	//     path, `KUBECONFIG`), or nothing a process iterion starts reads
+	//     the name — plus any planted name no driver could pass and no
+	//     process could resolve. Always present, empty list included
 	//   - allowed: []string, sorted — names the host-side
 	//     ITERION_SANDBOX_IMAGE_ENV_ALLOW let through untouched;
 	//     absent when the knob named none
-	//   - operator_set: []string, sorted — names of the neutralise
-	//     sub-class the RUN's own reviewed env already sets (the
-	//     workflow's `sandbox.env:`, the launch overlay, the forfait
-	//     config dirs). The container starts with the OPERATOR's value:
-	//     the image's is never read, and iterion does not override the
-	//     reviewed channel with an empty string — so they are neither
-	//     `neutralized` (set and EMPTY) nor `reported` (the image's
-	//     value kept). Absent when none collided
+	//   - operator_set: []string, sorted — names of the class, EITHER
+	//     half, the RUN's own reviewed env already sets (the workflow's
+	//     `sandbox.env:`, the launch overlay, the forfait config dirs).
+	//     The container starts with the OPERATOR's value: the image's is
+	//     never read, and iterion does not override the reviewed channel
+	//     with an empty string — so they are neither `neutralized` (set
+	//     and EMPTY) nor `reported` (the image's value kept). Absent when
+	//     none collided
+	//   - driver_set: []string, sorted — names of the class the DRIVER's
+	//     own Start sets: the pairs it appends after the spec's env, the
+	//     egress proxy's six spellings and the per-run CA bundles among
+	//     them. The container reads ITERION's value, so the same two
+	//     claims would both be false — `docker inspect` of a container
+	//     started under an enforced network policy shows the proxy URL,
+	//     not an empty string. Its own key rather than operator_set's: an
+	//     operator finds one of those names in their own `.bot`, and one
+	//     of these nowhere. Absent when none collided
 	//   - unscreened: string — why nothing was screened: a driver that
 	//     cannot read an image's config (kubernetes, whose images the
 	//     kubelet pulls) or a failed read. The run PROCEEDS under that

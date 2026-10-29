@@ -168,13 +168,19 @@ func UsableEnvName(name string) bool {
 //     tooling before any prompt is read: the dynamic loader and the
 //     modules glibc and OpenSSL load, the node and bun runtimes, the shell
 //     the claude CLI picks and bash's, sh's and zsh's startup variables,
-//     PATH, `go build -toolexec`, and the TLS trust of the connections
-//     that carry credentials.
+//     its imported functions and its config-from-the-environment, PATH,
+//     `go build -toolexec`, tar's own options, and the TLS trust of the
+//     connections that carry credentials.
 //
-// All three forms match case-insensitively (http_proxy routes as much as
-// HTTP_PROXY, and `bash_env` is read by the same bash as BASH_ENV): case is
-// nowhere a membership rule, so no entry needs a lower-case twin of its
-// own.
+// All three forms match case-insensitively. That is a MARGIN, not a claim
+// about a consumer: an environment name is case-sensitive to the program
+// that reads it — measured, a lower-case `bash_env` is sourced by no bash —
+// and the exceptions are deliberate on the consumer's side, curl picking up
+// a lower-case `http_proxy` (measured: `Uses proxy env variable http_proxy`)
+// and the claude CLI reading both spellings of the gcloud project. Refusing
+// every spelling costs a repository nothing it could not write in the
+// workflow's own `sandbox.env:`, and it is one rule rather than a twin per
+// row — so no entry needs a lower-case twin of its own.
 //
 // Where the class STOPS, and why — the claude CLI carries Anthropic's own
 // 192-name list of environment that executes code (its `f$` set), which is
@@ -185,7 +191,14 @@ func UsableEnvName(name string) bool {
 //   - the toolchain variables NO process iterion starts reads — compilers
 //     and their flags, build systems, language runtimes, version managers
 //     (CC, CFLAGS, MAVEN_OPTS, RUSTC*, PYTHON*, GEM_HOME, JAVA_HOME,
-//     PYENV_ROOT, …): they configure builds of the repository's own code,
+//     PYENV_ROOT, …). PYTHON* is the measured one, and it is measured
+//     because the family DOES carry code channels — a `sitecustomize.py`
+//     on PYTHONPATH, a stdlib under PYTHONHOME, a `usercustomize.py` under
+//     PYTHONUSERBASE all run at interpreter startup: iterion's own python
+//     tool node runs `python3 -I`, whose isolated mode ignores the whole
+//     family (measured both ways on a built image), so what is left is the
+//     bare `python3` of an operator-authored command — the repository's own
+//     build. They configure builds of the repository's own code,
 //     which already runs in that container (its postCreateCommand, its
 //     tests), and a devcontainer that sets them is doing its job. That
 //     question, not the family, is the membership test: GOFLAGS, PATH and
@@ -212,10 +225,14 @@ func DeniedEnvKey(name string) bool {
 // list of "the credential ones" would be a copy, and a copy drifts.
 //
 // PRECEDENCE, when a name is caught by more than one guard: the exact names
-// first, then the suffixes, then the namespaces. The order is the rule, not
-// an accident, and it tilts toward neutralising — `ITERION_SOMETHING_TOKEN`
-// is caught by the reported-only `ITERION_` namespace and by the
-// neutralised `_TOKEN` suffix, and the suffix answers.
+// first, then the suffixes, then the namespaces, and within the namespaces
+// the FIRST entry that matches. The order is the rule, not an accident, and
+// it tilts toward neutralising — `ITERION_SOMETHING_TOKEN` is caught by the
+// reported-only `ITERION_` namespace and by the neutralised `_TOKEN`
+// suffix, and the suffix answers. The last clause is what lets a NARROWER
+// namespace refine a family: `GIT_CONFIG_KEY_` is listed before `GIT_` and
+// answers for its own members, so the family keeps its answer for the
+// rest.
 func ScreenImageEnvName(name string) (denied, neutralize bool) {
 	switch screenEnvName(name) {
 	case neutralizeInImage:
@@ -235,7 +252,9 @@ func ScreenImageEnvName(name string) (denied, neutralize bool) {
 // membership rule: a table that matched its exact names as written applied
 // the case rule at one row (`gcloud_project`) and left every sibling
 // spelling — `openai_api_base`, `imds_endpoint`, `bash_env` — answering
-// "outside the class".
+// "outside the class". It is a margin and [DeniedEnvKey] says what it costs
+// the repository channel, where a lower-case spelling of an exact name is
+// dropped from `containerEnv` like its upper-case twin.
 func screenEnvName(name string) imageEnvDisposition {
 	upper := strings.ToUpper(name)
 	if d, exact := deniedEnvNames[upper]; exact {
@@ -270,24 +289,36 @@ const (
 
 	// reportedOnly tells the operator and leaves the image's value in
 	// place. It is the answer wherever an EMPTY value would break an image
-	// doing its job, or would be read as presence rather than as a value:
-	// the command search path, the code loaders and runtimes, the shells
-	// and their startup files, the toolchains, the homes every
-	// configuration is resolved from, the TLS bundles an image may legally
-	// bake for its own tooling, and the names of binaries a CLI spawns.
+	// doing its job, would be read as presence rather than as a value, or
+	// where nothing a process iterion starts reads the name at all: the
+	// command search path, the loader's and the runtimes' library paths,
+	// the shells and the startup files they do read, the toolchains, the
+	// homes every configuration is resolved from, the TLS bundles an image
+	// may legally bake for its own tooling, and the names of binaries a CLI
+	// spawns.
 	// iterion's own published images set three of these on purpose (`PATH`,
 	// `GOFLAGS`, `ITERION_VERSION`/`_COMMIT`/`_BOTS_PATH`), which is the
 	// measurement that killed screening the class as a whole.
 	reportedOnly
 
 	// neutralizeInImage overrides the name with an EMPTY value in the
-	// container, and reports it. It is the answer for the sub-class that
-	// chooses WHERE a model call goes and WHAT credential it carries — the
-	// endpoint, region, project and identity names, the credential
-	// suffixes, and the provider/agent namespaces. Those consumers all read
-	// a value (a truthiness, a URL, a key), so an empty one is inert; none
-	// is set by an image iterion publishes, so no working image loses
-	// anything. The operator's own channels still win: the workflow's
+	// container, and reports it. It is the answer for two sub-classes. The
+	// first chooses WHERE a model call goes and WHAT credential it carries
+	// — the endpoint, region, project and identity names, the credential
+	// suffixes, and the provider/agent namespaces. The second leads to
+	// CODE, or to a configuration a program EXECUTES, at the startup of a
+	// process iterion starts there: the loader, the shells' own startup
+	// channels, node's and npm's and bun's options, glibc's and OpenSSL's
+	// modules, git's config-from-the-environment, tar's options. A member
+	// of the second re-plants everything the first empties, which is why
+	// they share an answer (ARB-119).
+	//
+	// Three measurements decide a row, on a disposable image through the
+	// program's own startup path: the planted value RUNS, the empty value
+	// is inert, and no image iterion publishes bakes the name. Those
+	// consumers all read a value (a truthiness, a URL, a key, an option
+	// string), so an empty one is inert; none is set by an image iterion
+	// publishes, so no working image loses anything. The operator's own channels still win: the workflow's
 	// `sandbox.env:`, the launch environment and the driver's own flags are
 	// applied on top, and the host-side allow knob lets a named variable
 	// through (see pkg/runtime's image env screen).
@@ -383,25 +414,40 @@ var deniedEnvNamespaces = []envGuard{
 	// load into iterion's own step. NIX_SSL_CERT_FILE (nix does not honour
 	// SSL_CERT_FILE) and the store's NIX_PATH/NIX_REMOTE ride along.
 	{"NIX_", reportedOnly},
+	// git's configuration by the road that needs NO file and no HOME:
+	// GIT_CONFIG_COUNT (an exact row below) with GIT_CONFIG_KEY_<n> and
+	// GIT_CONFIG_VALUE_<n> is `git -c` spelled in the environment, so a
+	// planted `core.sshCommand` or `credential.helper` is a program git
+	// RUNS — measured on a built image: git fetch executed the planter's
+	// program with the operator's remote on its argv, and `--env
+	// GIT_CONFIG_COUNT=` leaves `git config --get core.sshCommand`
+	// answering nothing. Listed BEFORE `GIT_`, because the first matching
+	// namespace answers.
+	{"GIT_CONFIG_KEY_", neutralizeInImage},
+	{"GIT_CONFIG_VALUE_", neutralizeInImage},
 	// git and its forge siblings: its config (GIT_CONFIG_*), transport (GIT_SSH_COMMAND,
 	// GIT_PROXY_COMMAND, GIT_EXEC_PATH, GIT_ALLOW_PROTOCOL), credential
 	// prompt (GIT_ASKPASS) and TLS trust, the repository and object store
 	// it acts on, its trace files, its identity.
 	{"GIT_", reportedOnly},
-	// The dynamic loader (LD_PRELOAD, LD_AUDIT, LD_LIBRARY_PATH) loads the
-	// planter's shared object into every process, OpenSSL's configuration
-	// (a provider or engine module) into every OpenSSL-linked one; a
-	// non-root bash imports a function from every BASH_FUNC_<name>%% — a
-	// planted `git` function runs in place of git in every `bash -c`; the
-	// bun runtime the claude CLI is built on takes its options from
-	// BUN_OPTIONS, where --preload runs the planter's script inside the
-	// CLI's own process; and npm turns NPM_CONFIG_NODE_OPTIONS /
-	// NPM_CONFIG_SCRIPT_SHELL into the options and the shell of every node
-	// child it spawns — `npx <server>`, the documented way an MCP server
-	// starts, runs the planter's module in that server's own process.
+	// Every member of this one is a shell FUNCTION definition, which bash
+	// imports into every NON-interactive shell — the shape of a tool node
+	// and of an agent's Bash tool — so a planted `BASH_FUNC_git%%` runs in
+	// place of git there. Nothing legitimate bakes one and an empty
+	// definition defines nothing: measured on a built image, the planted
+	// function answered `git --version` and `--env BASH_FUNC_git%%=`
+	// restored git's own.
+	{"BASH_FUNC_", neutralizeInImage},
+	// The FAMILIES of the loader, of glibc's and OpenSSL's module paths,
+	// of the bun runtime and of npm's config stay reported: LD_LIBRARY_PATH
+	// is how a CUDA-style image finds its own runtime, OPENSSL_MODULES and
+	// BUN_INSTALL name directories an image legally bakes, NPM_CONFIG_PREFIX
+	// the global root it installs into. The members that reach CODE —
+	// LD_PRELOAD, LD_AUDIT, OPENSSL_CONF, BUN_OPTIONS,
+	// NPM_CONFIG_NODE_OPTIONS, NPM_CONFIG_SCRIPT_SHELL — are exact rows of
+	// [deniedEnvNames], which is consulted first.
 	{"LD_", reportedOnly},
 	{"OPENSSL_", reportedOnly},
-	{"BASH_FUNC_", reportedOnly},
 	{"BUN_", reportedOnly},
 	{"NPM_CONFIG_", reportedOnly},
 	// The XDG base directories, which are where the configuration and the
@@ -442,27 +488,64 @@ var deniedEnvNames = map[string]imageEnvDisposition{
 	// `node -e` run normally with all three empty, where the planted
 	// values otherwise come back (#2317, ARB-119).
 	"BASH_ENV": neutralizeInImage, "NODE_OPTIONS": neutralizeInImage, "NODE_PATH": neutralizeInImage,
-	// glibc's iconv modules, the shell the claude CLI picks, bash's
-	// options (in a non-root bash, SHELLOPTS=xtrace runs a planted PS4's
-	// command substitutions), sh's and zsh's startup files, the command
-	// search path, `go build -toolexec`, ssh's askpass helper. An image
-	// that bakes one of these is doing its job, and an empty value breaks
-	// it — the difference with the three above, where empty IS the
-	// default.
-	"GCONV_PATH": reportedOnly,
-	"SHELL":      reportedOnly, "SHELLOPTS": reportedOnly, "BASHOPTS": reportedOnly, "PS4": reportedOnly,
+	// The rest of that sub-class: a name that leads to CODE, or to a
+	// configuration a program EXECUTES, at the startup of a process
+	// iterion starts in the container — and whose empty value is inert,
+	// measured on a disposable image through the program's own startup
+	// path, all of them at once (#2317, round 3).
+	//
+	//   - the loader runs the planter's shared object in EVERY process:
+	//     LD_PRELOAD's and LD_AUDIT's constructors ran in pid 1 and
+	//     re-exported the four credential names this screen had just
+	//     emptied, to bash, to node and to an npm-started MCP server
+	//     alike. LD_LIBRARY_PATH keeps the family's answer: a CUDA-style
+	//     image finds its own runtime through it;
+	//   - GCONV_PATH is glibc's: a planted gconv-modules is dlopened by
+	//     the charset conversion python does at interpreter startup —
+	//     through `python3 -I`, the argv of iterion's OWN python tool
+	//     node, which ignores every PYTHON* variable;
+	//   - OPENSSL_CONF is a configuration file that dlopens the provider
+	//     module it names: the planter's code ran in curl and in the
+	//     openssl CLI;
+	//   - SHELLOPTS=xtrace makes bash run the command substitutions of a
+	//     planted PS4 once per traced command, in every `bash -c`;
+	//   - npm turns NPM_CONFIG_NODE_OPTIONS into the NODE_OPTIONS of
+	//     every node child it spawns — `npm run` and `npm exec`, the
+	//     documented way an MCP server starts — which undoes NODE_OPTIONS
+	//     above, and NPM_CONFIG_SCRIPT_SHELL makes the planter's program
+	//     the shell those scripts run under;
+	//   - the bun runtime the claude CLI is built on reads BUN_OPTIONS:
+	//     `--preload` ran the planter's module inside the CLI's own
+	//     process (measured on `claude --version` in the default image);
+	//   - GNU tar prepends TAR_OPTIONS to its own arguments, and
+	//     --checkpoint-action=exec= is one: the planter's program ran in
+	//     a tar ITERION starts — the scratch bank and its restore, the
+	//     kubernetes workspace populate and export;
+	//   - GIT_CONFIG_COUNT is the head of the no-file config road above.
+	//
+	// The control for all of them, measured in the same image: with every
+	// one emptied, bash, sh, node, npm, npx, git, python3, the claude CLI,
+	// tar, openssl, curl and perl all run normally.
+	"LD_PRELOAD": neutralizeInImage, "LD_AUDIT": neutralizeInImage,
+	"GCONV_PATH": neutralizeInImage, "OPENSSL_CONF": neutralizeInImage,
+	"SHELLOPTS": neutralizeInImage, "PS4": neutralizeInImage,
+	"NPM_CONFIG_NODE_OPTIONS": neutralizeInImage, "NPM_CONFIG_SCRIPT_SHELL": neutralizeInImage,
+	"BUN_OPTIONS": neutralizeInImage, "TAR_OPTIONS": neutralizeInImage,
+	"GIT_CONFIG_COUNT": neutralizeInImage,
+	// The shell the claude CLI picks, bash's other option set, sh's and
+	// zsh's startup files, the command search path, `go build -toolexec`,
+	// ssh's askpass helper. An image that bakes one of these is doing its
+	// job and an empty value breaks it — or the name is read as presence,
+	// or nothing reads it at the startup of a process iterion starts:
+	// `ENV` is the measured one, which neither dash (the default image's
+	// /bin/sh) nor bash-as-sh sources for a NON-interactive `sh -c`.
+	"SHELL": reportedOnly, "BASHOPTS": reportedOnly,
 	"ENV": reportedOnly, "ZDOTDIR": reportedOnly, "PATH": reportedOnly, "GOFLAGS": reportedOnly,
 	"SSH_ASKPASS": reportedOnly, "SSH_ASKPASS_REQUIRE": reportedOnly,
 	// git's editor chain is GIT_EDITOR (denied by GIT_), core.editor,
 	// VISUAL, EDITOR: the last two run the planter's program in a `git
 	// commit` an agent makes with no message of its own.
 	"EDITOR": reportedOnly, "VISUAL": reportedOnly,
-	// GNU tar prepends TAR_OPTIONS to its own arguments, and
-	// --checkpoint-action=exec= is one: the planter's program runs in each
-	// of the tar steps ITERION starts in the container — the kubernetes
-	// driver's workspace populate and export, the scratch bank and its
-	// restore.
-	"TAR_OPTIONS": reportedOnly,
 	// The go command a bot's build step runs: GOENV names a file that sets
 	// every go variable the env leaves unset — GOFLAGS included, so it
 	// re-opens that one — GOTOOLCHAIN downloads and runs another toolchain,

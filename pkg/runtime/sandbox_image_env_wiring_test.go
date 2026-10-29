@@ -41,8 +41,7 @@ const driverStartArity = 3
 // out of that promise.
 //
 // A call this guard flags that is not a sandbox start at all belongs here
-// too, with that as its reason: an over-approximating shape is the price
-// of a set no renaming can shrink.
+// too, with that as its reason.
 var imageEnvScreenExemptStarts = map[string]string{
 	"startNoopSandbox": "the noop passthrough runs its commands on the host, " +
 		"so Capabilities().SupportsImage is false and there is no image env to read; " +
@@ -112,10 +111,19 @@ func TestEveryDriverStartScreensTheImagesEnv(t *testing.T) {
 // non-test sources that hand a prepared spec to a sandbox driver, and
 // which of them start the spec the image env screen RETURNED.
 //
-// A start is read by the SHAPE of its call — `<ident>.Start(a, b, c)` —
-// never by the spelling of the local the driver is bound to: a renamed
-// receiver would otherwise drop out of the set silently, and the
-// anti-vacuity floor only notices when the set empties.
+// A start is read by the SHAPE of its call, never by the spelling of the
+// local the driver is bound to: a renamed receiver would otherwise drop out
+// of the set silently, and the anti-vacuity floor only notices when the set
+// empties. Three shapes, because the first alone under-approximated — a
+// driver held in a struct FIELD and a start through a bound method VALUE
+// were both invisible, and the floor cannot see a third site:
+//
+//   - `d.Start(a, b, c)`, a driver bound to a local;
+//   - `s.driver.Start(a, b, c)`, any chain of identifiers — a field of the
+//     receiver, a field of a field — which is the shape a booter struct
+//     would take;
+//   - `start(a, b, c)` where `start` was bound to a `.Start` method value
+//     in the same function.
 //
 // Screened means BOUND: every start of the function passes, as its
 // prepared-spec argument, an identifier the seam's result was assigned to
@@ -189,18 +197,29 @@ func identsAssignedFromTheScreen(body *ast.BlockStmt) map[string]bool {
 // screen at both.
 func readStartCalls(body *ast.BlockStmt, screened map[string]bool) (startsHere, bound bool) {
 	bound = true
+	methodValues := identsBoundToAStartMethodValue(body)
 	ast.Inspect(body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
-		if !ok {
+		if !ok || len(call.Args) != driverStartArity {
 			return true
 		}
-		target, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || target.Sel.Name != "Start" || len(call.Args) != driverStartArity {
-			return true
-		}
-		// A selector on anything but a local — `otel.Tracer(x).Start(…)`
-		// — is not a driver bound to a variable.
-		if _, ok := target.X.(*ast.Ident); !ok {
+		switch fun := call.Fun.(type) {
+		case *ast.SelectorExpr:
+			// A selector on a chain of identifiers — `d.Start`,
+			// `s.driver.Start`, `a.b.c.Start`. A selector on anything else
+			// — `otel.Tracer(x).Start(…)` — is not a driver held in a
+			// variable or a field.
+			if fun.Sel.Name != "Start" || !isIdentChain(fun.X) {
+				return true
+			}
+		case *ast.Ident:
+			// `start := d.Start` then `start(ctx, prepared, info)`: the
+			// call names no selector at all, and the driver is whatever
+			// the method value was taken from.
+			if !methodValues[fun.Name] {
+				return true
+			}
+		default:
 			return true
 		}
 		startsHere = true
@@ -211,6 +230,53 @@ func readStartCalls(body *ast.BlockStmt, screened map[string]bool) (startsHere, 
 		return true
 	})
 	return startsHere, bound
+}
+
+// isIdentChain reports whether e is an identifier or a selector chain of
+// identifiers — `d`, `s.driver`, `s.inner.driver` — as opposed to a call,
+// an index or a literal.
+func isIdentChain(e ast.Expr) bool {
+	for {
+		switch x := e.(type) {
+		case *ast.Ident:
+			return true
+		case *ast.SelectorExpr:
+			e = x.X
+		case *ast.ParenExpr:
+			e = x.X
+		case *ast.StarExpr:
+			e = x.X
+		default:
+			return false
+		}
+	}
+}
+
+// identsBoundToAStartMethodValue collects the identifiers this body binds
+// to a `.Start` METHOD VALUE — `start := d.Start`, `boot = s.driver.Start`.
+// Calling one of them starts a driver with no `.Start` in the call at all,
+// which is how a start hides from a guard that reads selectors only.
+func identsBoundToAStartMethodValue(body *ast.BlockStmt) map[string]bool {
+	bound := map[string]bool{}
+	ast.Inspect(body, func(n ast.Node) bool {
+		assign, ok := n.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for i, rhs := range assign.Rhs {
+			sel, ok := rhs.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "Start" || !isIdentChain(sel.X) {
+				continue
+			}
+			if i < len(assign.Lhs) {
+				if lhs, ok := assign.Lhs[i].(*ast.Ident); ok {
+					bound[lhs.Name] = true
+				}
+			}
+		}
+		return true
+	})
+	return bound
 }
 
 // TestTheWiringGuardReadsAStartWhateverItsReceiverIsCalled is the guard's
@@ -228,7 +294,7 @@ func TestTheWiringGuardReadsAStartWhateverItsReceiverIsCalled(t *testing.T) {
 		name: "a renamed receiver is still a start, and an unassigned screen is not bound",
 		src: `package p
 func boot(ctx C, d D, prepared P, info I) {
-	screenAndReportSandboxImageEnv(ctx, d, prepared, nil, nil, "")
+	screenAndReportSandboxImageEnv(ctx, d, prepared, info, nil, nil, "")
 	_, _ = d.Start(ctx, prepared, info)
 }`,
 		wantStarts: []string{"boot"},
@@ -237,7 +303,7 @@ func boot(ctx C, d D, prepared P, info I) {
 		name: "the seam's result assigned and started is bound",
 		src: `package p
 func boot(ctx C, driver D, prepared P, info I) {
-	prepared, err = screenAndReportSandboxImageEnv(ctx, driver, prepared, nil, nil, "")
+	prepared, err = screenAndReportSandboxImageEnv(ctx, driver, prepared, info, nil, nil, "")
 	_ = err
 	_, _ = driver.Start(ctx, prepared, info)
 }`,
@@ -247,7 +313,7 @@ func boot(ctx C, driver D, prepared P, info I) {
 		name: "the seam's result assigned and the ORIGINAL started is not bound",
 		src: `package p
 func boot(ctx C, driver D, prepared P, info I) {
-	screened, err = screenAndReportSandboxImageEnv(ctx, driver, prepared, nil, nil, "")
+	screened, err = screenAndReportSandboxImageEnv(ctx, driver, prepared, info, nil, nil, "")
 	_, _ = screened, err
 	_, _ = driver.Start(ctx, prepared, info)
 }`,
@@ -262,10 +328,60 @@ func listen(prx P, bind string) {
 		wantStarts: nil,
 		wantBound:  map[string]bool{},
 	}, {
-		name: "a start on a method chain is not a driver bound to a local",
+		name: "a start on the result of a CALL is not a driver held in a variable",
 		src: `package p
 func trace(ctx C, name string, opt O) {
 	_, _ = otel.Tracer(name).Start(ctx, name, opt)
+}`,
+		wantStarts: nil,
+		wantBound:  map[string]bool{},
+	}, {
+		name: "a driver held in a struct FIELD is a start, and the screen binds it",
+		src: `package p
+func (s *booter) boot(ctx C, prepared P, info I) {
+	prepared, err = screenAndReportSandboxImageEnv(ctx, s.driver, prepared, info, nil, nil, "")
+	_ = err
+	_, _ = s.driver.Start(ctx, prepared, info)
+}`,
+		wantStarts: []string{"boot"},
+		wantBound:  map[string]bool{"boot": true},
+	}, {
+		name: "a driver held in a struct field, started UNSCREENED, is not bound",
+		src: `package p
+func (s *booter) boot(ctx C, prepared P, info I) {
+	screened, err = screenAndReportSandboxImageEnv(ctx, s.driver, prepared, info, nil, nil, "")
+	_, _ = screened, err
+	_, _ = s.driver.Start(ctx, prepared, info)
+}`,
+		wantStarts: []string{"boot"},
+		wantBound:  map[string]bool{"boot": false},
+	}, {
+		name: "a start through a bound method VALUE is a start, screened or not",
+		src: `package p
+func boot(ctx C, d D, prepared P, info I) {
+	screened, err = screenAndReportSandboxImageEnv(ctx, d, prepared, info, nil, nil, "")
+	_, _ = screened, err
+	start := d.Start
+	_, _ = start(ctx, prepared, info)
+}`,
+		wantStarts: []string{"boot"},
+		wantBound:  map[string]bool{"boot": false},
+	}, {
+		name: "a bound method value handed the screened spec is bound",
+		src: `package p
+func boot(ctx C, d D, prepared P, info I) {
+	prepared, err = screenAndReportSandboxImageEnv(ctx, d, prepared, info, nil, nil, "")
+	_ = err
+	start := d.Start
+	_, _ = start(ctx, prepared, info)
+}`,
+		wantStarts: []string{"boot"},
+		wantBound:  map[string]bool{"boot": true},
+	}, {
+		name: "a three-argument call through an ident bound to nothing is not a start",
+		src: `package p
+func render(a A, b B, c C) {
+	_ = fmt.Sprintf(a, b, c)
 }`,
 		wantStarts: nil,
 		wantBound:  map[string]bool{},

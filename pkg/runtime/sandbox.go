@@ -819,7 +819,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// container, so the boot stops here with the names on it rather than
 	// starting under a guard that did not take (ARB-119). The event is
 	// already out, so the run's record says what the image planted.
-	prepared, err = screenAndReportSandboxImageEnv(ctx, driver, prepared, logger, emitEvent, p.RunID)
+	prepared, err = screenAndReportSandboxImageEnv(ctx, driver, prepared, info, logger, emitEvent, p.RunID)
 	if err != nil {
 		if proxy != nil {
 			_ = proxy.Shutdown(ctx)

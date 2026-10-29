@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -99,7 +100,7 @@ func TestTheImageEnvEventCarriesBothHalvesOfTheClass(t *testing.T) {
 	}
 	rec := &imageEnvRecorder{}
 
-	_, _ = screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), nil, rec.emit, "run-77")
+	_, _ = screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-77")
 
 	payload := rec.planted(t)
 	if got := payload["image"]; got != "planter/dev:1" {
@@ -139,7 +140,7 @@ func TestTheScreenedSpecAndTheEventComeFromTheSameScreen(t *testing.T) {
 	}
 	rec := &imageEnvRecorder{}
 
-	started, screenErr := screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), nil, rec.emit, "run-78")
+	started, screenErr := screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-78")
 	if screenErr != nil {
 		t.Fatalf("a screen that neutralised everything it decided on refused the boot: %v", screenErr)
 	}
@@ -173,7 +174,7 @@ func TestAnImageThatPlantsNothingEmitsNoEvent(t *testing.T) {
 	}
 	rec := &imageEnvRecorder{}
 
-	_, _ = screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("clean/dev:1"), nil, rec.emit, "run-79")
+	_, _ = screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("clean/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-79")
 
 	if len(rec.events) != 0 {
 		t.Fatalf("a clean image must emit nothing, got %v", rec.types())
@@ -188,7 +189,7 @@ func TestTheImageEnvEventSaysWhenNothingWasScreened(t *testing.T) {
 	t.Setenv(EnvSandboxImageEnvAllow, "")
 	rec := &imageEnvRecorder{}
 
-	_, _ = screenAndReportSandboxImageEnv(context.Background(), &blindDriver{supports: true}, newScreenedSpec("planter/dev:1"), nil, rec.emit, "run-80")
+	_, _ = screenAndReportSandboxImageEnv(context.Background(), &blindDriver{supports: true}, newScreenedSpec("planter/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-80")
 
 	payload := rec.planted(t)
 	reason, ok := payload["unscreened"].(string)
@@ -226,7 +227,7 @@ func TestARefusedNeutralisationTravelsUnderItsOwnKeyAndStopsTheBoot(t *testing.T
 	}
 	rec := &imageEnvRecorder{}
 
-	_, screenErr := screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), nil, rec.emit, "run-81")
+	_, screenErr := screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-81")
 
 	var refusal *ImageEnvNeutralisationRefusedError
 	if !errors.As(screenErr, &refusal) {
@@ -271,7 +272,7 @@ func TestTheImageEnvEventNamesWhatTheHostKnobLetThrough(t *testing.T) {
 	}
 	rec := &imageEnvRecorder{}
 
-	_, _ = screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("corp/dev:1"), nil, rec.emit, "run-82")
+	_, _ = screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("corp/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-82")
 
 	payload := rec.planted(t)
 	if got := names(t, payload, "allowed"); !slices.Equal(got, []string{"HTTPS_PROXY"}) {
@@ -316,7 +317,7 @@ func TestAStoreThatRefusesTheEventDoesNotStopTheBoot(t *testing.T) {
 	}
 	rec := &imageEnvRecorder{err: errors.New("store is down")}
 
-	started, screenErr := screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), nil, rec.emit, "run-84")
+	started, screenErr := screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-84")
 
 	spec, ok := started.(*screenedSpec)
 	if !ok || !slices.Equal(spec.Neutralized(), []string{"CLAUDE_CODE_USE_BEDROCK"}) {
@@ -347,7 +348,7 @@ func TestADoubledPlantedNameIsOneFinding(t *testing.T) {
 	}
 	rec := &imageEnvRecorder{}
 
-	_, _ = screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), nil, rec.emit, "run-85")
+	_, _ = screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-85")
 
 	payload := rec.planted(t)
 	if got := names(t, payload, "neutralized"); !slices.Equal(got, []string{"CLAUDE_CODE_USE_BEDROCK"}) {

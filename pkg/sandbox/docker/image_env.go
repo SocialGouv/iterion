@@ -58,7 +58,16 @@ func (d *Driver) ImageConfigEnv(ctx context.Context, prepared sandbox.PreparedSp
 // the operator's wins; but the container is not created with `NAME=`, so a
 // caller that reported it as emptied would publish a container state that is
 // not the one started.
-func (d *Driver) NeutralizeImageEnv(prepared sandbox.PreparedSpec, names []string) (sandbox.PreparedSpec, []string, error) {
+//
+// A name [Driver.StartEnvNames] declares is skipped for the same reason, and
+// it is the reason that method exists: Start appends its own `--env` pairs —
+// the egress proxy's variables, the per-run CA bundles — AFTER the spec's, so
+// the container is created with the DRIVER's value for those names. Writing
+// `NAME=` into the spec would be harmless (the later pair wins) and the
+// audit record would be false, which is the whole defect: `docker inspect`
+// of a container started under an enforced network policy reads
+// `HTTP_PROXY=http://host.docker.internal:<port>`, not an empty string.
+func (d *Driver) NeutralizeImageEnv(prepared sandbox.PreparedSpec, info sandbox.RunInfo, names []string) (sandbox.PreparedSpec, []string, error) {
 	p, ok := prepared.(*Prepared)
 	if !ok {
 		return nil, nil, fmt.Errorf("docker driver: neutralize image env: prepared spec is %T, not this driver's", prepared)
@@ -66,12 +75,19 @@ func (d *Driver) NeutralizeImageEnv(prepared sandbox.PreparedSpec, names []strin
 	if len(names) == 0 {
 		return prepared, nil, nil
 	}
+	driverSets := make(map[string]bool, 16)
+	for _, name := range d.StartEnvNames(info) {
+		driverSets[name] = true
+	}
 	cp := *p
 	cp.spec.Env = make(map[string]string, len(p.spec.Env)+len(names))
 	maps.Copy(cp.spec.Env, p.spec.Env)
 	emptied := make([]string, 0, len(names))
 	for _, name := range names {
 		if _, operators := cp.spec.Env[name]; operators {
+			continue
+		}
+		if driverSets[name] {
 			continue
 		}
 		// The same guard Start applies to every --env pair, applied here so

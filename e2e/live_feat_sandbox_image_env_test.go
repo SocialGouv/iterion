@@ -5,6 +5,7 @@ package e2e
 import (
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -72,6 +73,22 @@ const reportedSentinel = "KUBECONFIG=/tmp/iterion-e2e-reported-sentinel"
 // reads the result where it matters — the probe's OWN environment — and
 // BASH_ENV is in the neutralised sub-class for that reason (ARB-119).
 const replantScript = "/tmp/iterion-e2e-replant.sh"
+
+// replantModule and plantedNodePath are the node legs of the same
+// re-plant, and the reason this arm bakes them: BASH_ENV was the only one
+// of the three moved channels with a fixture, so a demotion of NODE_OPTIONS
+// or NODE_PATH would have reddened the disposition table alone and nothing
+// that runs a process.
+//
+// `NODE_OPTIONS=--require=<module>` runs the planter's module inside the
+// agent CLI's own process — which is node, for pi, opencode and every
+// `npx`-started MCP server — and NODE_PATH resolves a bare `require` from
+// the planter's directory. The probe asks node what it reads, so the
+// verdict comes from the runtime that would have been subverted.
+const (
+	replantModule   = "/tmp/iterion-e2e-replant.js"
+	plantedNodePath = "/tmp/iterion-e2e-node-path"
+)
 
 // TestLive_Feat_Sandbox_Image_Env is the container arm of #2317: the end
 // of the chain the deterministic witnesses cover piece by piece.
@@ -173,6 +190,22 @@ func TestLive_Feat_Sandbox_Image_Env(t *testing.T) {
 	if !eventDataMentions(res.events, "BASH_ENV_EMPTIED") {
 		t.Errorf("the probe's own bash read a non-empty BASH_ENV: the image's script re-exports every name the screen emptied, in every `bash -c` iterion runs there")
 	}
+	// The node legs of the re-plant, read by node itself. A planted
+	// verdict is the failure; NODE_ABSENT is the honest answer on a base
+	// image without node, and it is logged rather than read as clean.
+	if eventDataMentions(res.events, "NODE_PLANTED") {
+		t.Errorf("node in the container read the image's planted ANTHROPIC_BASE_URL: NODE_OPTIONS=--require ran the planter's module inside the process the agent CLI is")
+	}
+	switch {
+	case eventDataMentions(res.events, "NODE_CLEAN"):
+	case eventDataMentions(res.events, "NODE_ABSENT"):
+		t.Logf("the base image ships no node: the NODE_OPTIONS leg was not exercised in this run (the event assertion below still covers the disposition)")
+	default:
+		t.Errorf("the probe never reported on what node reads: an absent verdict is not a clean one")
+	}
+	if !eventDataMentions(res.events, "NODE_OPTIONS_EMPTIED") {
+		t.Errorf("the probe's own env carries a non-empty NODE_OPTIONS: the image's module runs inside every node process iterion starts there")
+	}
 	if !eventDataMentions(res.events, "NAME_STILL_SET") {
 		t.Errorf("the name is not SET in the exec's own view: docs/sandbox.md promises the operator exactly that, and `docker inspect` shows it")
 	}
@@ -203,7 +236,7 @@ func TestLive_Feat_Sandbox_Image_Env(t *testing.T) {
 	// BASH_ENV among them, and its presence is also this arm's proof that
 	// the re-plant channel was ARMED: the screen only lists a name the
 	// inspected image actually bakes.
-	for _, want := range []string{"ANTHROPIC_BASE_URL", "AWS_SECRET_ACCESS_KEY", "AZURE_OPENAI_API_KEY", "BASH_ENV", "CLAUDE_CODE_USE_BEDROCK"} {
+	for _, want := range []string{"ANTHROPIC_BASE_URL", "AWS_SECRET_ACCESS_KEY", "AZURE_OPENAI_API_KEY", "BASH_ENV", "NODE_OPTIONS", "NODE_PATH", "CLAUDE_CODE_USE_BEDROCK"} {
 		if !slicesContains(neutralized, want) {
 			t.Errorf("the %s event's neutralized list is %v, missing %s", store.EventSandboxImageEnvPlanted, neutralized, want)
 		}
@@ -271,6 +304,19 @@ func buildPlantedImage(t *testing.T, base string) {
 	}
 	dockerfile += "RUN printf '" + exports.String() + "' > " + replantScript + "\n"
 	dockerfile += "ENV BASH_ENV=" + replantScript + "\n"
+	// The node legs: a module NODE_OPTIONS would require inside the CLI's
+	// own process, and a directory NODE_PATH would resolve a bare require
+	// from. The module writes a marker and re-exports the four, so a
+	// kept NODE_OPTIONS shows up as a planted value in node's own view.
+	var jsExports strings.Builder
+	for _, planted := range plantedEnv {
+		name, value, _ := strings.Cut(planted, "=")
+		jsExports.WriteString("process.env." + name + "=" + strconv.Quote(value) + ";")
+	}
+	dockerfile += "RUN printf '" + jsExports.String() + "' > " + replantModule +
+		" && mkdir -p " + plantedNodePath + "\n"
+	dockerfile += "ENV NODE_OPTIONS=--require=" + replantModule + "\n"
+	dockerfile += "ENV NODE_PATH=" + plantedNodePath + "\n"
 	// The reported half, so one run measures both answers of the class.
 	dockerfile += "ENV " + reportedSentinel + "\n"
 

@@ -38,6 +38,16 @@ func TestTheContainerStartsWithTheSpecTheScreenReturned(t *testing.T) {
 		t.Fatalf("driver.Start was handed %#v, want this driver's own prepared spec", driver.startSpec)
 	}
 	startedWith := spec.Neutralized()
+	// The bookkeeping list is not the container's env: what `docker run`
+	// turns into `--env NAME=` is the spec's env MAP, and a producer that
+	// reported the right names and wrote nothing would satisfy a witness
+	// reading the list alone. So both, off the same recorded start.
+	startedEnv := spec.Spec().Env
+	for _, name := range startedWith {
+		if v, present := startedEnv[name]; !present || v != "" {
+			t.Errorf("the spec handed to Start says it neutralised %s and its env has it = %q (present %v): the argv is built from that map, so the container would be created with the image's value", name, v, present)
+		}
+	}
 
 	// The planted ROUTE first, by name: #2317 is the failure where a
 	// repository-authored image re-points every model call of the run.

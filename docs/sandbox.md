@@ -561,8 +561,17 @@ never lets the repository speak for the operator:
   removed outright with a `sandbox_env_denied` event naming each key
   whose repository value the screen refused (`containerEnv` wins a
   collision with `remoteEnv`, so a refused `containerEnv` value
-  removes the name). The class, matched case-insensitively except for
-  the exact names:
+  removes the name). The class, matched **case-insensitively in all
+  three forms** — suffixes, namespaces and exact names alike, so a
+  repository's lower-case `path`, `env`, `editor` or `kubeconfig` key is
+  dropped like its upper-case twin. That is a margin, not a claim about a
+  consumer: an environment name is case-sensitive to the program that
+  reads it (measured, a lower-case `bash_env` is sourced by no bash), and
+  the exceptions are deliberate on the consumer's side — curl picks up a
+  lower-case `http_proxy`, and the claude CLI reads both spellings of the
+  gcloud project. Refusing every spelling costs the repository nothing it
+  cannot write in the workflow's own `sandbox.env:`, and it is one rule
+  instead of a twin per row. The class:
   - the suffixes `*_BASE_URL`, `*_API_KEY`, `*_TOKEN`, `*_SECRET`,
     `*_PROXY` (covering `NO_PROXY`);
   - the configuration namespaces of the agents iterion runs, of the
@@ -579,7 +588,9 @@ never lets the repository speak for the operator:
     `SENTRY_*` (the iterion binary is its own in-container runner and
     wires error tracking at startup: unset the package is off, so a
     planted DSN switches an outbound channel on), `GIT_*`, the forge
-    CLIs' `GH_*` and `GLAB_*`, the dynamic loader's `LD_*`,
+    CLIs' `GH_*` and `GLAB_*`, git's config-from-the-environment
+    `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*` (listed before `GIT_*`,
+    which they refine), the dynamic loader's `LD_*`,
     `OPENSSL_*`, nix's `NIX_*` (a `plugin-files` in `NIX_CONFIG` is
     dlopened by the `devbox install` iterion itself runs), bash's
     exported functions `BASH_FUNC_*`, the bun
@@ -592,7 +603,10 @@ never lets the repository speak for the operator:
     `$XDG_CONFIG_HOME/git/config`, opencode's login sits under
     `$XDG_DATA_HOME`) — the whole family, not only the two names seen
     planted;
-  - the exact names `NODE_OPTIONS`, `NODE_PATH`,
+  - the exact names `NODE_OPTIONS`, `NODE_PATH`, `LD_PRELOAD`,
+    `LD_AUDIT`, `OPENSSL_CONF`, `BUN_OPTIONS`,
+    `NPM_CONFIG_NODE_OPTIONS`, `NPM_CONFIG_SCRIPT_SHELL`,
+    `GIT_CONFIG_COUNT`,
     `GCONV_PATH`, `SHELL`, `BASH_ENV`, `SHELLOPTS`, `BASHOPTS`, `PS4`,
     `ENV`, `ZDOTDIR`, `PATH`, `GOFLAGS`, `SSH_ASKPASS`,
     `SSH_ASKPASS_REQUIRE`, `EDITOR`, `VISUAL`, `TAR_OPTIONS` (GNU tar
@@ -716,22 +730,54 @@ two halves of the class get different answers:
   `OTEL_`, `SENTRY_`, `GH_`, `GLAB_`, `CLAW_`, `CLAWD_`, `HOOK_`, …)
   and the exact endpoint, region, project and managed-identity names
   (`OPENAI_API_BASE`, `BEDROCK_REGION`, `IMDS_ENDPOINT`, …);
-- **and the three channels that RESTORE a name the screen just emptied**,
-  which belong to that sub-class for exactly that reason: `BASH_ENV`,
-  which bash reads for every *non-interactive* shell — the shape of a
-  tool node (`bash -c`) and of an agent's Bash tool — so a planted script
-  re-exports every neutralised name inside the very processes iterion
-  runs; `NODE_OPTIONS`, whose `--require=…` runs a planted module in the
-  agent CLI's own process, which is node; and `NODE_PATH`, which resolves
-  a bare `require` from the planter's directory. Empty is their default,
-  measured on built images: `bash -c` and `node -e` run normally with all
-  three empty, where a kept `BASH_ENV` brings the planted values back
-  (#2317, ARB-119). The cost is stated: an image that bakes `NODE_PATH`
-  for its own global modules loses that resolution, and the escape hatch
-  below is the operator's answer;
+- **and every channel that leads to CODE, or to a configuration a
+  program EXECUTES, at the startup of a process iterion runs there** —
+  which belongs to that sub-class for exactly one reason: a member of it
+  re-plants everything the first half empties. The measured case is
+  `LD_PRELOAD`, whose constructor ran in **pid 1** of a container created
+  with `--env ANTHROPIC_BASE_URL= --env AWS_ACCESS_KEY_ID= …` and put the
+  planter's route and keys back — for `bash`, for `node` and for an
+  `npm`-started MCP server alike. The set is enumerated from the
+  PROGRAMS the image ships, and each name was measured on a disposable
+  image through that program's own startup path (#2317, ARB-119):
+  - the loader, in every process: `LD_PRELOAD`, `LD_AUDIT`;
+  - the shells iterion runs a tool node and an agent's Bash tool with:
+    `BASH_ENV` (every *non-interactive* bash), `SHELLOPTS` with `PS4`
+    (xtrace runs the substitutions of a planted `PS4` once per traced
+    command), and the whole `BASH_FUNC_*` namespace (a planted
+    `BASH_FUNC_git%%` answered `git --version`);
+  - node and the two npm roads into a node child: `NODE_OPTIONS`
+    (`--require=…`, in the CLI's own process), `NODE_PATH`,
+    `NPM_CONFIG_NODE_OPTIONS` (npm re-exports it as `NODE_OPTIONS` to
+    every `npm run` and `npm exec` child, which is how an MCP server
+    starts) and `NPM_CONFIG_SCRIPT_SHELL`;
+  - the bun runtime the claude CLI is built on: `BUN_OPTIONS`, whose
+    `--preload` ran inside `claude --version` itself;
+  - glibc's and OpenSSL's module roads: `GCONV_PATH`, dlopened by the
+    charset conversion python does at interpreter startup — including
+    under `python3 -I`, the argv of iterion's own python node — and
+    `OPENSSL_CONF`, a config file that dlopens the provider module it
+    names, measured in `curl` and in the `openssl` CLI;
+  - git's config with no file and no `HOME`: `GIT_CONFIG_COUNT` with
+    `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*`, which is `git -c` spelled
+    in the environment — a planted `core.sshCommand` ran on
+    `git ls-remote`, and `credential.helper` is the same two lines;
+  - GNU tar's own options: `TAR_OPTIONS`, whose
+    `--checkpoint-action=exec=` ran in a `tar -czf` iterion starts.
+
+  Empty is the default for every one of them, measured in the same
+  image: with all of them emptied, `bash`, `sh`, `node`, `npm`, `npx`,
+  `git`, `python3`, the claude CLI, `tar`, `openssl`, `curl` and `perl`
+  all run normally. The cost is stated: an image that bakes `NODE_PATH`
+  for its own global modules, or `OPENSSL_CONF` for its own provider,
+  loses it — and the escape hatch below is the operator's answer. The
+  FAMILIES keep their own answer where a member is legitimate:
+  `LD_LIBRARY_PATH` is how a CUDA-style image finds its runtime,
+  `OPENSSL_MODULES`, `BUN_INSTALL` and `NPM_CONFIG_PREFIX` name
+  directories, and the rest of `GIT_*` is reported;
 - the **rest of the class is reported only, and keeps its value**.
-  Emptying `PATH`, `HOME`, `GOROOT`, a loader path or an `XDG_` dir
-  breaks an image doing its job — iterion's own `full` variant bakes
+  Emptying `PATH`, `HOME`, `GOROOT`, a loader library path or an `XDG_`
+  dir breaks an image doing its job — iterion's own `full` variant bakes
   `PATH`, and its runner image bakes `ITERION_VERSION` — and emptying
   `KUBECONFIG`, `DOCKER_HOST` or `DOCKER_CONFIG` would send the client
   to its DEFAULT, which under `host_state` is the operator's own,
@@ -740,8 +786,10 @@ two halves of the class get different answers:
   legally bake them, and their consumers read presence as much as value.
 
 Membership is **case-insensitive in all three forms** — suffixes,
-namespaces and exact names alike — so `bash_env` is read by the same bash
-as `BASH_ENV` and no entry needs a lower-case twin.
+namespaces and exact names alike — so no entry needs a lower-case twin.
+It is a margin and not a claim about a consumer: see the devcontainer
+channel above, where the same rule is stated with what it costs a
+repository.
 
 Every screen that finds something says so **twice**: a warning per
 disposition in the run's log, and one `sandbox_image_env_planted` event
@@ -752,19 +800,46 @@ those hold. The two name lists always travel, the empty one included, so
 that half". An image that plants nothing of the class emits nothing.
 
 `neutralized` is what the driver **actually** emptied, not what the class
-decided: a name the run's own reviewed env already carries — the
-workflow's `sandbox.env:`, the launch overlay, the forfait config dirs —
-is left at the **operator's** value and travels under `operator_set`
-instead. The planted value reaches nothing either way, because the
-reviewed channel wins; but the container is not created with `NAME=`, and
-an audit record that said otherwise would describe a container
-`docker inspect` contradicts.
+decided, and two dispositions carry the difference.
 
-**A neutralisation the driver refuses stops the run.** The override IS
-the guard, so the screen is closed by default: when the class decides a
-name must be emptied and the driver will not take the pair, the boot
-refuses with `FailureCode = CAPABILITY_UNSUPPORTED`, naming the image and
-the variables, and **no container starts** — the event goes out first,
+A name the run's own reviewed env already carries — the workflow's
+`sandbox.env:`, the launch overlay, the forfait config dirs — is left at
+the **operator's** value and travels under `operator_set`. A name the
+**driver's own Start** sets travels under `driver_set`: it appends
+`--env` pairs of its own *after* the spec's — the egress proxy's six
+spellings when a network policy is enforced, the six CA bundles and the
+JVM truststore when that proxy inspects TLS — and the last pair for a
+name is the one the container gets. The planted value reaches nothing in
+either case, because both of those channels win; but the container is not
+created with `NAME=`, and an audit record that said otherwise would
+describe a container `docker inspect` contradicts. Measured: of nine
+names a planted image contributed on a run with an enforced policy, four
+(`HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, `NO_PROXY`) read the proxy
+URL in `docker inspect -f '{{json .Config.Env}}'`, not an empty string.
+
+Both partitions cover the **whole** class, the reported half included:
+iterion sets seven of those names itself — `HOME` under `host_state`, and
+the six CA bundles under TLS inspection — so a `reported` list that held
+them would promise the image controls the TLS trust of the connections
+that carry the run's credentials, when iterion's per-run CA is what the
+container got. The driver DECLARES the names its own Start will set
+(`sandbox.ImageEnvScreener.StartEnvNames`, read from the same lists the
+argv is built from), because nothing else can know: those values come
+from the RunInfo inside `Start` and appear in no spec.
+
+**A neutralisation the driver refuses stops the run** — and **no docker
+image can trigger it today**, which is proved rather than assumed: the
+screen only hands over names a driver could pass and a process could
+resolve, and docker's own `--env` guard refuses on exactly those
+characters, an empty value being refused for nothing else (walked over
+1039 names, 0 usable-but-refused, in pkg/sandbox/docker's
+`TestUsableEnvNameImpliesTheDockerEnvGuardAccepts`). So read what follows
+as the shape of the branch, not as an outcome to watch for: it is kept
+closed by default for the NEXT screener, whose guard may be narrower.
+The override IS the guard, so the screen is closed by default: when the
+class decides a name must be emptied and the driver will not take the
+pair, the boot refuses with `FailureCode = CAPABILITY_UNSUPPORTED`,
+naming the image and the variables, and **no container starts** — the event goes out first,
 under its own `refused` / `refused_names` keys, so the run's record says
 what the image planted even though nothing ran. That is a different fact
 from `unscreened`, which says the channel was never read (a driver whose
@@ -788,15 +863,38 @@ also receives the run's own env layer, and that layer may legitimately
 set one of these names to the OPERATOR's value — the reviewed channel
 winning, which is the point.
 
-So the promise is precise, and it is **about the neutralised sub-class
-only**: for a name of that sub-class the repository's value never reaches
-a process — the name may still be *set*, to the operator's own value, and
-`operator_set` says when. For the **reported** half the image's value
-*does* reach every process in the container, by design: that half is told,
-not emptied. Measured on the same run, in the same container, with a
-reported name the image alone sets (`KUBECONFIG`): `/proc/1/environ` and a
-tool node's own environment both read back the image's exact value, while
-the four planted credentials read empty.
+So the promise is precise, and it is **about the neutralised sub-class,
+through the ENV road, only**: for a name of that sub-class the
+repository's value never reaches a process *by way of the image's `ENV`*
+— the name may still be *set*, to the operator's own value or to the
+driver's, and `operator_set` / `driver_set` say when. For the
+**reported** half the image's value *does* reach every process in the
+container, **unless this run sets the name itself**: that half is told,
+not emptied, and the two dispositions above are what take iterion's own
+seven names out of it. Measured on the same run, in the same container,
+with a reported name neither iterion nor the operator sets
+(`KUBECONFIG`): `/proc/1/environ` and a tool node's own environment both
+read back the image's exact value, while the four planted credentials
+read empty.
+
+**What the ENV road does not close, measured.** A FILE the image lays
+down can re-plant a neutralised name with **no environment variable at
+all**: an image that writes `node-options=--require=/planted/replant.js`
+into npm's own global config — `/usr/etc/npmrc` in the default image's
+npm, which `npm config get globalconfig` names and no variable points at
+— had `npm run` and `npm exec` children start with
+`NODE_OPTIONS=--require=…` and the planted module re-export the
+credentials, with every neutralisation of the table applied. The screen
+does not chase it, deliberately: forcing `NPM_CONFIG_GLOBALCONFIG` would
+break an image that legitimately configures a corporate registry mirror
+there. The residue is the contract rather than a hole — **the files and
+binaries an image ships, and its `postCreateCommand`, ARE the
+repository's code by the same contract that makes "the devcontainer's
+image/build, mounts, user, `workspaceFolder` and `postCreateCommand`
+still define the container" auto mode's rule**: the workspace is trusted
+to the extent admission allows it (a fork's head never reaches this
+code), and what this screen closes is the ENV road into the *operator's
+own* credentials and model routes, not a malicious image.
 
 **Not screened, said out loud.** `image inspect` is a local-store read,
 so only a driver that resolves images locally can do it: the **docker**

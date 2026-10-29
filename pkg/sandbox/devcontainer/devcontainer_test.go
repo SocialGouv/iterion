@@ -558,6 +558,9 @@ func TestDeniedEnvKey(t *testing.T) {
 		{"BASH_ENV", true},
 		{"BASH_FUNC_git%%", true},
 		{"NPM_CONFIG_NODE_OPTIONS", true},
+		{"NPM_CONFIG_SCRIPT_SHELL", true},
+		{"NPM_CONFIG_PREFIX", true},
+		{"LD_AUDIT", true},
 		{"npm_config_script_shell", true},
 		{"EDITOR", true},
 		{"VISUAL", true},
@@ -586,6 +589,8 @@ func TestDeniedEnvKey(t *testing.T) {
 		{"GIT_EXEC_PATH", true},
 		{"GIT_ALLOW_PROTOCOL", true},
 		{"GIT_CONFIG_COUNT", true},
+		{"GIT_CONFIG_KEY_0", true},
+		{"GIT_CONFIG_VALUE_0", true},
 		{"GIT_CONFIG_GLOBAL", true},
 		{"GIT_CONFIG_SYSTEM", true},
 		{"GIT_CONFIG_PARAMETERS", true},
@@ -667,26 +672,34 @@ func TestDeniedEnvKey(t *testing.T) {
 	// guard added without one is the shape that let three names in without
 	// a witness.
 	for _, guard := range deniedEnvSuffixes {
-		assertGuardHasItsOwnRow(t, "suffix "+guard.pattern, cases, func(key string) bool {
+		assertGuardHasItsOwnRow(t, "suffix "+guard.pattern, "suffix", guard.pattern, cases, func(key string) bool {
 			return strings.HasSuffix(strings.ToUpper(key), guard.pattern)
 		})
 	}
 	for _, guard := range deniedEnvNamespaces {
-		assertGuardHasItsOwnRow(t, "namespace "+guard.pattern, cases, func(key string) bool {
+		assertGuardHasItsOwnRow(t, "namespace "+guard.pattern, "namespace", guard.pattern, cases, func(key string) bool {
 			return strings.HasPrefix(strings.ToUpper(key), guard.pattern)
 		})
 	}
 	for name := range deniedEnvNames {
-		assertGuardHasItsOwnRow(t, "exact "+name, cases, func(key string) bool {
+		assertGuardHasItsOwnRow(t, "exact "+name, "exact", name, cases, func(key string) bool {
 			return strings.EqualFold(key, name)
 		})
 	}
 }
 
-// assertGuardHasItsOwnRow fails unless some `want: true` row is caught by
-// this guard and by nothing else in the class — the row that reddens when
-// the guard is removed.
-func assertGuardHasItsOwnRow(t *testing.T, guard string, cases []struct {
+// assertGuardHasItsOwnRow fails unless some `want: true` row is one this
+// guard DECIDES: removing the guard from the class's walk changes the
+// answer for it.
+//
+// Not "no other guard catches it": a narrower guard refines a family that
+// already refuses — `GIT_CONFIG_KEY_` inside `GIT_`, the exact
+// `LD_PRELOAD` inside `LD_` — and the refinement decides the IMAGE
+// disposition rather than membership. Counting matches called those
+// un-witnessed while a deleted refinement would silently downgrade the
+// name; the walk with one guard removed is the mutation itself
+// (screenEnvNameSkipping, image_env_disposition_test.go).
+func assertGuardHasItsOwnRow(t *testing.T, guard string, kind, pattern string, cases []struct {
 	key  string
 	want bool
 }, caughtByGuard func(string) bool) {
@@ -695,26 +708,11 @@ func assertGuardHasItsOwnRow(t *testing.T, guard string, cases []struct {
 		if !c.want || !caughtByGuard(c.key) {
 			continue
 		}
-		// Would the class still refuse it with this guard gone?
-		others := 0
-		for _, suffix := range deniedEnvSuffixes {
-			if strings.HasSuffix(strings.ToUpper(c.key), suffix.pattern) {
-				others++
-			}
-		}
-		for _, prefix := range deniedEnvNamespaces {
-			if strings.HasPrefix(strings.ToUpper(c.key), prefix.pattern) {
-				others++
-			}
-		}
-		if _, exact := deniedEnvNames[strings.ToUpper(c.key)]; exact {
-			others++
-		}
-		if others == 1 {
+		if screenEnvNameSkipping(c.key, kind, pattern) != screenEnvName(c.key) {
 			return
 		}
 	}
-	t.Errorf("%s catches no row of its own: removing it would redden nothing — add a name only it refuses", guard)
+	t.Errorf("%s decides the answer for no row of its own: removing it would redden nothing — add a name whose verdict it alone sets", guard)
 }
 
 // A malformed entry would fail the docker driver's --env guard and kill

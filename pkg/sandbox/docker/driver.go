@@ -274,13 +274,61 @@ func validateEnvVar(k, v string) error {
 // the host and cannot itself resolve host.docker.internal, so proxying
 // an MCP call would fail the connect. It also lets inner localhost-only
 // services (e.g. an inner devbox cache) bypass the proxy.
+// proxyEnvNames and noProxyEnvNames are the variables [hostNetworkArgs]
+// points at the per-run egress proxy. Both spellings, as the clone-guard
+// proxy sets them: curl, wget and git (libcurl) read only the lower-case
+// http_proxy for an http:// URL, and prefer the lower-case forms.
+//
+// Named once because two readers share them: the argv above, and
+// [Driver.StartEnvNames], which the image env screen asks what this
+// driver's own Start will set. A pair added here is declared there by
+// construction.
+var (
+	proxyEnvNames   = []string{"HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"}
+	noProxyEnvNames = []string{"NO_PROXY", "no_proxy"}
+)
+
+// caBundleEnvNames are the CA-bundle variables [caInjectionArgs] points at
+// the per-run egress CA, and javaTrustEnvNames the JVM's keystore trio.
+// Same two readers as the proxy names above.
+var (
+	caBundleEnvNames = []string{
+		"NODE_EXTRA_CA_CERTS", // Node / Claude Code (additive)
+		"SSL_CERT_FILE",       // OpenSSL: python ssl, git-over-openssl, ruby, …
+		"CURL_CA_BUNDLE",      // curl
+		"GIT_SSL_CAINFO",      // git
+		"REQUESTS_CA_BUNDLE",  // python requests
+		"NIX_SSL_CERT_FILE",   // nix : sa propre variable, il n'honore pas SSL_CERT_FILE
+	}
+	javaTrustEnvNames = []string{"ITERION_JAVA_TRUSTSTORE", "ITERION_JAVA_TRUSTSTORE_PASSWORD", "JAVA_TOOL_OPTIONS"}
+)
+
+// StartEnvNames implements [sandbox.ImageEnvScreener]: the names
+// [Driver.Start] sets with a value of its own for this RunInfo, read from
+// the same lists the argv is built from.
+//
+// Conditioned exactly as those appends are — a name this returns for a
+// RunInfo whose Start would not set it would be filed as "the driver's
+// value" in an audit record while the container carried the image's.
+func (d *Driver) StartEnvNames(info sandbox.RunInfo) []string {
+	var names []string
+	if info.ProxyEndpoint != "" {
+		names = append(names, proxyEnvNames...)
+	}
+	if info.ProxyEndpoint != "" || info.HostGatewayAlias {
+		names = append(names, noProxyEnvNames...)
+	}
+	if len(info.ProxyCACert) > 0 {
+		names = append(names, caBundleEnvNames...)
+		names = append(names, javaTrustEnvNames...)
+	}
+	return names
+}
+
 func hostNetworkArgs(info sandbox.RunInfo, specEnv map[string]string) []string {
 	var args []string
-	// Both spellings, as the clone-guard proxy sets them: curl, wget and git
-	// (libcurl) read only the lower-case http_proxy for an http:// URL, and
-	// prefer the lower-case forms.
 	if info.ProxyEndpoint != "" {
-		for _, k := range []string{"HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"} {
+		for _, k := range proxyEnvNames {
 			args = append(args, "--env", k+"="+info.ProxyEndpoint)
 		}
 	}
@@ -288,12 +336,70 @@ func hostNetworkArgs(info sandbox.RunInfo, specEnv map[string]string) []string {
 		// Both spellings get the union of what the spec carried under either,
 		// so an operator's exceptions survive and the two never disagree.
 		noProxy := sandbox.MergeNoProxy(specEnv["NO_PROXY"]+","+specEnv["no_proxy"], "host.docker.internal")
-		for _, k := range []string{"NO_PROXY", "no_proxy"} {
+		for _, k := range noProxyEnvNames {
 			args = append(args, "--env", k+"="+noProxy)
 		}
 		args = append(args, "--add-host", "host.docker.internal:host-gateway")
 	}
 	return args
+}
+
+// caInjectionArgs returns the `docker run` args that make the in-container
+// clients trust the per-run egress CA, and the temp dirs it created (which
+// the caller cleans up, error or not).
+//
+// Egress TLS-inspection CA (Layer 2 secret substitution): when the proxy
+// runs in inspection mode it mints leaves the in-container clients must
+// trust. Bind-mount the per-run CA cert and point every common client's
+// CA-bundle env var at it. This works WITHOUT root or
+// update-ca-certificates (the slim image runs as uid 1000): in inspection
+// mode the proxy terminates ALL egress TLS, so the only certificate any
+// in-container client ever sees is our leaf — pointing the bundle at our CA
+// alone is correct (NO_PROXY=localhost is the only exception, and localhost
+// rarely speaks TLS in a sandbox). NODE_EXTRA_CA_CERTS is additive; the rest
+// replace, which is fine here. See docs/secrets.md.
+//
+// Its own function so the `--env` names it sets are read from
+// [caBundleEnvNames] and [javaTrustEnvNames], which
+// [Driver.StartEnvNames] declares to the image env screen: a pair built
+// inline in Start would be invisible to that declaration.
+func caInjectionArgs(info sandbox.RunInfo) (args []string, dirs []string, err error) {
+	caDir, err := os.MkdirTemp("", "iterion-egress-ca-")
+	if err != nil {
+		return nil, nil, fmt.Errorf("docker driver: egress CA dir: %w", err)
+	}
+	dirs = []string{caDir}
+	caHostPath := filepath.Join(caDir, "egress-ca.pem")
+	if err := os.WriteFile(caHostPath, info.ProxyCACert, 0o644); err != nil {
+		return nil, dirs, fmt.Errorf("docker driver: write egress CA: %w", err)
+	}
+	const caContainerPath = "/run/iterion/egress-ca.pem"
+	args = append(args, "-v", caHostPath+":"+caContainerPath+":ro")
+	for _, caEnv := range caBundleEnvNames {
+		args = append(args, "--env", caEnv+"="+caContainerPath)
+	}
+	// JVMs read none of those — their trust is a keystore-typed file.
+	// Same store as the kubernetes driver ships; see
+	// netproxy.JavaTrustStorePKCS12.
+	trustStore, _, tsErr := netproxy.JavaTrustStorePKCS12(info.ProxyCACert)
+	if tsErr != nil {
+		return nil, dirs, fmt.Errorf("docker driver: java truststore: %w", tsErr)
+	}
+	tsHostPath := filepath.Join(caDir, "egress-truststore.p12")
+	if err := os.WriteFile(tsHostPath, trustStore, 0o644); err != nil {
+		return nil, dirs, fmt.Errorf("docker driver: write java truststore: %w", err)
+	}
+	const tsContainerPath = "/run/iterion/egress-truststore.p12"
+	args = append(args, "-v", tsHostPath+":"+tsContainerPath+":ro")
+	for i, value := range []string{
+		tsContainerPath,
+		netproxy.JavaTrustStorePassword,
+		"-Djavax.net.ssl.trustStore=" + tsContainerPath +
+			" -Djavax.net.ssl.trustStorePassword=" + netproxy.JavaTrustStorePassword,
+	} {
+		args = append(args, "--env", javaTrustEnvNames[i]+"="+value)
+	}
+	return args, dirs, nil
 }
 
 func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info sandbox.RunInfo) (sandbox.Run, error) {
@@ -399,56 +505,17 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	args = append(args, specEnvArgs...)
 	args = append(args, hostNetworkArgs(info, p.spec.Env)...)
 
-	// Egress TLS-inspection CA (Layer 2 secret substitution): when the
-	// proxy runs in inspection mode it mints leaves the in-container
-	// clients must trust. Bind-mount the per-run CA cert and point every
-	// common client's CA-bundle env var at it. This works WITHOUT root or
-	// update-ca-certificates (the slim image runs as uid 1000): in
-	// inspection mode the proxy terminates ALL egress TLS, so the only
-	// certificate any in-container client ever sees is our leaf — pointing
-	// the bundle at our CA alone is correct (NO_PROXY=localhost is the
-	// only exception, and localhost rarely speaks TLS in a sandbox).
-	// NODE_EXTRA_CA_CERTS is additive; the rest replace, which is fine
-	// here. See docs/secrets.md.
+	// The CA bundles and the truststore, when the proxy inspects
+	// ([caInjectionArgs]).
 	if len(info.ProxyCACert) > 0 {
-		caDir, err := os.MkdirTemp("", "iterion-egress-ca-")
-		if err != nil {
-			return nil, fmt.Errorf("docker driver: egress CA dir: %w", err)
+		caArgs, caDirs, caErr := caInjectionArgs(info)
+		// Appended before the error check: a dir that was created and a
+		// write that then failed must still be cleaned up.
+		tempDirs = append(tempDirs, caDirs...)
+		if caErr != nil {
+			return nil, caErr
 		}
-		tempDirs = append(tempDirs, caDir)
-		caHostPath := filepath.Join(caDir, "egress-ca.pem")
-		if err := os.WriteFile(caHostPath, info.ProxyCACert, 0o644); err != nil {
-			return nil, fmt.Errorf("docker driver: write egress CA: %w", err)
-		}
-		const caContainerPath = "/run/iterion/egress-ca.pem"
-		args = append(args, "-v", caHostPath+":"+caContainerPath+":ro")
-		for _, caEnv := range []string{
-			"NODE_EXTRA_CA_CERTS", // Node / Claude Code (additive)
-			"SSL_CERT_FILE",       // OpenSSL: python ssl, git-over-openssl, ruby, …
-			"CURL_CA_BUNDLE",      // curl
-			"GIT_SSL_CAINFO",      // git
-			"REQUESTS_CA_BUNDLE",  // python requests
-			"NIX_SSL_CERT_FILE",   // nix : sa propre variable, il n'honore pas SSL_CERT_FILE
-		} {
-			args = append(args, "--env", caEnv+"="+caContainerPath)
-		}
-		// JVMs read none of those — their trust is a keystore-typed file.
-		// Same store as the kubernetes driver ships; see
-		// netproxy.JavaTrustStorePKCS12.
-		trustStore, _, tsErr := netproxy.JavaTrustStorePKCS12(info.ProxyCACert)
-		if tsErr != nil {
-			return nil, fmt.Errorf("docker driver: java truststore: %w", tsErr)
-		}
-		tsHostPath := filepath.Join(caDir, "egress-truststore.p12")
-		if err := os.WriteFile(tsHostPath, trustStore, 0o644); err != nil {
-			return nil, fmt.Errorf("docker driver: write java truststore: %w", err)
-		}
-		const tsContainerPath = "/run/iterion/egress-truststore.p12"
-		args = append(args, "-v", tsHostPath+":"+tsContainerPath+":ro",
-			"--env", "ITERION_JAVA_TRUSTSTORE="+tsContainerPath,
-			"--env", "ITERION_JAVA_TRUSTSTORE_PASSWORD="+netproxy.JavaTrustStorePassword,
-			"--env", "JAVA_TOOL_OPTIONS=-Djavax.net.ssl.trustStore="+tsContainerPath+
-				" -Djavax.net.ssl.trustStorePassword="+netproxy.JavaTrustStorePassword)
+		args = append(args, caArgs...)
 	}
 
 	// The container's command is `sleep infinity`, under the image's

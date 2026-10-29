@@ -39,12 +39,15 @@ type imageEnvScreen struct {
 	// neutralized are the names the runtime overrode with an empty value,
 	// sorted. They are the credential/routing sub-class of the deny class.
 	neutralized []string
-	// reported are the names of the class the image plants that keep their
-	// value, sorted — an empty one would break the image doing its job.
+	// reported are the names of the class the image plants whose value the
+	// container's processes DO read, sorted — an empty one would break the
+	// image doing its job. The promise is exactly that, and it holds only
+	// because the two sets below are taken out of it first: nothing else
+	// in the boot gives those names a value.
 	reported []string
-	// operatorSet are the names of the neutralise sub-class the image
-	// plants that the RUN's own reviewed env already sets, sorted: the
-	// workflow's `sandbox.env:`, the launch overlay, or the runtime's own
+	// operatorSet are the names of the class the image plants that the
+	// RUN's own reviewed env already sets, sorted: the workflow's
+	// `sandbox.env:`, the launch overlay, or the runtime's own
 	// `exportForfaitConfigDirs`. The driver leaves those alone, so the
 	// container starts with the OPERATOR's value — not the image's, and
 	// not empty.
@@ -55,7 +58,26 @@ type imageEnvScreen struct {
 	// IMAGE's value was kept, which is the one thing that did not happen.
 	// The planted value reaches nothing either way — the reviewed channel
 	// wins — so this is an audit fact, not a hole.
+	//
+	// The WHOLE class, not the neutralise sub-class alone: `reported`
+	// promises the image's value reaches every process, and iterion sets
+	// seven of those names itself — `HOME` under host_state, and the six
+	// CA bundles when the egress proxy inspects.
 	operatorSet []string
+	// driverSet are the names of the class the image plants that the
+	// DRIVER's own Start sets, sorted — the pairs it appends after the
+	// spec's env: the egress proxy's six spellings, the per-run CA
+	// bundles and the JVM truststore trio.
+	//
+	// Apart from operatorSet because the two answer different questions
+	// for whoever reads the record: an operator finds an operatorSet name
+	// in their own `.bot` or launch env, and a driverSet name nowhere —
+	// it is iterion's own infrastructure, applied because the run has an
+	// enforced network policy. Read from the driver
+	// ([sandbox.ImageEnvScreener.StartEnvNames]), never guessed: the
+	// value comes from [sandbox.RunInfo] inside Start and appears in no
+	// spec.
+	driverSet []string
 	// allowed are the names the host knob let through, sorted.
 	allowed []string
 	// unscreened, when non-empty, says WHY nothing was screened: the driver
@@ -65,6 +87,16 @@ type imageEnvScreen struct {
 	// refused, when non-empty, says WHY a neutralisation this screen
 	// DECIDED on could not be installed, and refusedNames are the names it
 	// covered, sorted.
+	//
+	// No docker image can produce it today, and that is proved rather
+	// than assumed: the screen only hands over names passing
+	// [devcontainer.UsableEnvName], and docker's own `--env` guard
+	// refuses on exactly the characters that predicate excludes, with an
+	// empty value refused for nothing else — pkg/sandbox/docker's
+	// TestUsableEnvNameImpliesTheDockerEnvGuardAccepts walks the
+	// implication. It is kept closed-by-default for the next screener,
+	// whose guard may be narrower, and both docs pages say so rather
+	// than describing an outcome an operator could observe.
 	//
 	// Its own field, never folded into unscreened: the two are different
 	// facts with different consequences. Unscreened says the channel was
@@ -80,7 +112,7 @@ type imageEnvScreen struct {
 // anyFinding reports whether the screen has something to tell the operator.
 func (s imageEnvScreen) anyFinding() bool {
 	return len(s.neutralized) > 0 || len(s.reported) > 0 || len(s.allowed) > 0 ||
-		len(s.operatorSet) > 0 || s.unscreened != "" || s.refused != ""
+		len(s.operatorSet) > 0 || len(s.driverSet) > 0 || s.unscreened != "" || s.refused != ""
 }
 
 // refusal is the typed error a refused neutralisation stops the boot with,
@@ -118,6 +150,9 @@ func (s imageEnvScreen) eventPayload(runID string) map[string]any {
 	}
 	if len(s.operatorSet) > 0 {
 		payload["operator_set"] = envNameList(s.operatorSet)
+	}
+	if len(s.driverSet) > 0 {
+		payload["driver_set"] = envNameList(s.driverSet)
 	}
 	if s.unscreened != "" {
 		payload["unscreened"] = s.unscreened
@@ -169,11 +204,12 @@ func screenAndReportSandboxImageEnv(
 	ctx context.Context,
 	driver sandbox.Driver,
 	prepared sandbox.PreparedSpec,
+	info sandbox.RunInfo,
 	logger *iterlog.Logger,
 	emit func(store.EventType, map[string]any) error,
 	runID string,
 ) (sandbox.PreparedSpec, error) {
-	screened, screen := screenSandboxImageEnv(ctx, driver, prepared, logger)
+	screened, screen := screenSandboxImageEnv(ctx, driver, prepared, info, logger)
 	emitImageEnvScreen(emit, screen, runID)
 	return screened, screen.refusal()
 }
@@ -219,10 +255,12 @@ func emitImageEnvScreen(
 //     loader path would break an image doing its job — iterion's own `full`
 //     variant bakes `PATH`, and its runner image bakes `ITERION_VERSION` —
 //     so the operator is told and the value stays;
-//   - a name of the neutralise sub-class the RUN's own env already sets is
-//     left to the operator's value and reported as such, under its own
-//     disposition: the driver skips it, so the container is not created
-//     with `NAME=` and the audit record must not claim it was;
+//   - a name of the class the RUN's own env already sets, or that the
+//     DRIVER's own Start sets, is left to that value and reported under
+//     its own disposition — `operator_set` or `driver_set`: the container
+//     is not created with `NAME=`, nor with the image's value, and the
+//     audit record must claim neither. The RunInfo is an argument for
+//     exactly that reason: the driver's own pairs depend on it;
 //   - a driver that cannot read an image's config is reported as NOT
 //     screened, with the reason. Nothing is inferred from a silence.
 //
@@ -235,6 +273,7 @@ func screenSandboxImageEnv(
 	ctx context.Context,
 	driver sandbox.Driver,
 	prepared sandbox.PreparedSpec,
+	info sandbox.RunInfo,
 	logger *iterlog.Logger,
 ) (sandbox.PreparedSpec, imageEnvScreen) {
 	screen := imageEnvScreen{image: preparedImageRef(prepared)}
@@ -250,7 +289,7 @@ func screenSandboxImageEnv(
 	// claiming a name was overridden before the driver accepted the override
 	// would be a log that lies, and the branch that could not neutralise is
 	// exactly the one the operator must hear about.
-	defer func() { warnImageEnvScreen(logger, screen) }()
+	defer func() { warnImageEnvScreen(logger, driver.Name(), screen) }()
 	screener, ok := driver.(sandbox.ImageEnvScreener)
 	if !ok {
 		screen.unscreened = "the " + driver.Name() + " driver cannot read an image's baked-in env"
@@ -264,6 +303,14 @@ func screenSandboxImageEnv(
 		return prepared, screen
 	}
 	allow := imageEnvAllowList(os.Getenv(EnvSandboxImageEnvAllow))
+	// Who ELSE gives these names a value when the container is created:
+	// the run's own reviewed env, which the prepared spec carries, and the
+	// driver's own `--env` pairs, which it alone knows. Read once, before
+	// the walk, because every disposition below is "what the container
+	// will have" and these two outrank the image on both halves of the
+	// class.
+	runEnv := preparedSpecEnv(prepared)
+	driverSets := driverStartEnvNames(screener, info)
 	for _, entry := range env {
 		name, _, ok := strings.Cut(entry, "=")
 		if !ok || name == "" {
@@ -280,6 +327,13 @@ func screenSandboxImageEnv(
 			screen.allowed = append(screen.allowed, name)
 		case neutralize && devcontainer.UsableEnvName(name):
 			screen.neutralized = append(screen.neutralized, name)
+		case driverSets[name]:
+			// The driver's own pair is appended AFTER the spec's env, so
+			// it wins even over the run's own value: the container reads
+			// iterion's, which is why this case comes first of the two.
+			screen.driverSet = append(screen.driverSet, name)
+		case mapHasKey(runEnv, name):
+			screen.operatorSet = append(screen.operatorSet, name)
 		default:
 			// Reported, never handed to the driver: either the class says
 			// so, or the name is one no driver could pass and no process
@@ -298,11 +352,13 @@ func screenSandboxImageEnv(
 	screen.neutralized = sortedSet(screen.neutralized)
 	screen.reported = sortedSet(screen.reported)
 	screen.allowed = sortedSet(screen.allowed)
+	screen.operatorSet = sortedSet(screen.operatorSet)
+	screen.driverSet = sortedSet(screen.driverSet)
 	if len(screen.neutralized) == 0 {
 		return prepared, screen
 	}
 	decided := screen.neutralized
-	neutralized, emptied, err := screener.NeutralizeImageEnv(prepared, decided)
+	neutralized, emptied, err := screener.NeutralizeImageEnv(prepared, info, decided)
 	if err != nil {
 		// The neutralisation IS the guard, so this is the closed-by-default
 		// branch: the names it covered move to their own disposition, where
@@ -322,17 +378,26 @@ func screenSandboxImageEnv(
 	// started (`docker inspect` shows the operator's value), and the
 	// warning below would promise an override that never happened.
 	//
-	// Keyed on what the screen ASKED — `decided` is already a sorted set,
-	// so both halves come out sorted — so a name the driver echoes that
-	// was never decided on cannot enter a disposition.
+	// Keyed on what the screen ASKED, so a name the driver echoes that was
+	// never decided on cannot enter a disposition — and the skip is
+	// ATTRIBUTED rather than assumed: the driver's own declaration first,
+	// because its pair is appended last and wins, then the run's own env,
+	// which is the only other rule a driver skips under.
 	screen.neutralized = nil
 	for _, name := range decided {
-		if slices.Contains(emptied, name) {
+		switch {
+		case slices.Contains(emptied, name):
 			screen.neutralized = append(screen.neutralized, name)
-			continue
+		case driverSets[name]:
+			screen.driverSet = append(screen.driverSet, name)
+		default:
+			screen.operatorSet = append(screen.operatorSet, name)
 		}
-		screen.operatorSet = append(screen.operatorSet, name)
 	}
+	// Re-sorted: the two attributed lists took entries from the walk and
+	// then from this partition, and each disposition travels in name order.
+	screen.operatorSet = sortedSet(screen.operatorSet)
+	screen.driverSet = sortedSet(screen.driverSet)
 	return neutralized, screen
 }
 
@@ -345,6 +410,43 @@ func preparedImageRef(prepared sandbox.PreparedSpec) string {
 		return ""
 	}
 	return sp.Spec().Image
+}
+
+// preparedSpecEnv is the RUN's own env the prepared spec carries — the
+// workflow's `sandbox.env:`, the launch overlay, the forfait config dirs —
+// read back through the same `Spec()` accessor [preparedImageRef] reads the
+// image through. nil when the driver's prepared spec exposes no spec.
+//
+// A read of a documented public field, not a copy of the driver's skip
+// rule: the driver stays the authority on what it emptied, and this is how
+// the screen ATTRIBUTES a name nothing emptied, on the half of the class
+// the driver is never asked about.
+func preparedSpecEnv(prepared sandbox.PreparedSpec) map[string]string {
+	sp, ok := prepared.(interface{ Spec() sandbox.Spec })
+	if !ok {
+		return nil
+	}
+	return sp.Spec().Env
+}
+
+// driverStartEnvNames is the set of names the driver's own Start will set
+// for this run, asked of the driver because nothing else can know: the
+// values come from [sandbox.RunInfo] inside Start and appear in no spec.
+func driverStartEnvNames(screener sandbox.ImageEnvScreener, info sandbox.RunInfo) map[string]bool {
+	names := screener.StartEnvNames(info)
+	set := make(map[string]bool, len(names))
+	for _, name := range names {
+		set[name] = true
+	}
+	return set
+}
+
+// mapHasKey reports whether m carries name at all — a key with an EMPTY
+// value is still the operator's choice, and `v, ok :=` is the only read
+// that says so.
+func mapHasKey(m map[string]string, name string) bool {
+	_, ok := m[name]
+	return ok
 }
 
 // imageEnvAllowList parses [EnvSandboxImageEnvAllow]: comma-separated exact
@@ -364,7 +466,7 @@ func imageEnvAllowList(raw string) map[string]bool {
 // switch is visible in the run's own stream — the operator-facing half of
 // the guard, which the `sandbox_image_env_planted` event carries to the
 // studio.
-func warnImageEnvScreen(logger *iterlog.Logger, screen imageEnvScreen) {
+func warnImageEnvScreen(logger *iterlog.Logger, driverName string, screen imageEnvScreen) {
 	if logger == nil || !screen.anyFinding() {
 		return
 	}
@@ -377,12 +479,16 @@ func warnImageEnvScreen(logger *iterlog.Logger, screen imageEnvScreen) {
 			image, quotedEnvNames(screen.neutralized), EnvSandboxImageEnvAllow)
 	}
 	if len(screen.reported) > 0 {
-		logger.Warn("sandbox: image %s bakes in %s — kept, because an empty value would break the image: the container's processes read the image's value, not iterion's",
+		logger.Warn("sandbox: image %s bakes in %s — kept, because an empty value would break the image: the container's processes read the image's value, and nothing of this run sets those names",
 			image, quotedEnvNames(screen.reported))
 	}
 	if len(screen.operatorSet) > 0 {
 		logger.Warn("sandbox: image %s bakes in %s — the run's own env already sets them, so the container starts with the OPERATOR's value: the image's is never read, and iterion does not override the reviewed channel with an empty one",
 			image, quotedEnvNames(screen.operatorSet))
+	}
+	if len(screen.driverSet) > 0 {
+		logger.Warn("sandbox: image %s bakes in %s — the %s driver sets them itself when it starts the container (the egress proxy's variables, the per-run CA bundles), so the container reads ITERION's value: the image's is never read, and it is not emptied either",
+			image, quotedEnvNames(screen.driverSet), driverName)
 	}
 	if len(screen.allowed) > 0 {
 		logger.Warn("sandbox: image %s bakes in %s — let through by %s",

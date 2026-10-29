@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/sandbox/docker"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -71,13 +72,20 @@ func (d *plantingDriver) ImageConfigEnv(context.Context, sandbox.PreparedSpec) (
 	}, nil
 }
 
-func (d *plantingDriver) NeutralizeImageEnv(prepared sandbox.PreparedSpec, names []string) (sandbox.PreparedSpec, []string, error) {
+func (d *plantingDriver) NeutralizeImageEnv(prepared sandbox.PreparedSpec, info sandbox.RunInfo, names []string) (sandbox.PreparedSpec, []string, error) {
 	d.asked = append([]string(nil), names...)
 	if d.refuseWith != nil {
 		return nil, nil, d.refuseWith
 	}
-	out, emptied := neutralizeLikeTheRealDriver(prepared.(*screenedSpec), names)
+	out, emptied := neutralizeLikeTheRealDriver(prepared.(*screenedSpec), info, names)
 	return out, emptied, nil
+}
+
+// StartEnvNames is the real docker driver's, for the reason the screening
+// double delegates too: this driver stands in for docker, and the boot
+// witnesses read the dispositions the screen files from this answer.
+func (d *plantingDriver) StartEnvNames(info sandbox.RunInfo) []string {
+	return (&docker.Driver{}).StartEnvNames(info)
 }
 
 // bootOnPlantedImage runs the REAL boot — resolveAndStartSandbox — against

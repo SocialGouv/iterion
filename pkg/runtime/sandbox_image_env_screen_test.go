@@ -11,6 +11,7 @@ import (
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/sandbox/docker"
 )
 
 // screeningDriver is a driver whose image bakes in env — the fake inspector
@@ -40,13 +41,22 @@ func (d *screeningDriver) ImageConfigEnv(context.Context, sandbox.PreparedSpec) 
 	return d.imageEnv, nil
 }
 
-func (d *screeningDriver) NeutralizeImageEnv(prepared sandbox.PreparedSpec, names []string) (sandbox.PreparedSpec, []string, error) {
+func (d *screeningDriver) NeutralizeImageEnv(prepared sandbox.PreparedSpec, info sandbox.RunInfo, names []string) (sandbox.PreparedSpec, []string, error) {
 	d.asked = slices.Clone(names)
 	if d.refuse != nil {
 		return nil, nil, d.refuse
 	}
-	out, emptied := neutralizeLikeTheRealDriver(prepared.(*screenedSpec), names)
+	out, emptied := neutralizeLikeTheRealDriver(prepared.(*screenedSpec), info, names)
 	return out, emptied, nil
+}
+
+// StartEnvNames is the REAL docker driver's declaration, delegated rather
+// than re-written: these doubles stand in for the only driver that
+// screens, and a stub that answered a list of its own would let the screen
+// file a name under a disposition the real producer never gives it. The
+// zero Driver reads nothing but the RunInfo.
+func (d *screeningDriver) StartEnvNames(info sandbox.RunInfo) []string {
+	return (&docker.Driver{}).StartEnvNames(info)
 }
 
 // blindDriver honours images but cannot read what they bake in — the
@@ -87,16 +97,34 @@ func newScreenedSpec(image string) *screenedSpec { return &screenedSpec{image: i
 // reviewed value and is left alone — and the names actually emptied are
 // what comes back.
 //
+// A name the DRIVER's own Start sets is skipped the same way and for the
+// same reason, which is why this double takes the RunInfo: the real
+// driver's declaration is read, never re-stated.
+//
 // A double that answered "all of them" would be more generous than the
-// real producer, and the witnesses of the disposition the skip feeds
-// (operator_set) could not see it. The real driver's own witness is
-// docker's TestNeutralizeImageEnvLeavesTheOperatorsOwnValueAlone.
-func neutralizeLikeTheRealDriver(p *screenedSpec, names []string) (*screenedSpec, []string) {
+// real producer, and the witnesses of the dispositions the skips feed
+// (operator_set, driver_set) could not see it. The real driver's own
+// witnesses are docker's TestNeutralizeImageEnvLeavesTheOperatorsOwnValueAlone
+// and TestNeutralizeImageEnvLeavesTheNamesTheDriversOwnStartSetsAlone.
+func neutralizeLikeTheRealDriver(p *screenedSpec, info sandbox.RunInfo, names []string) (*screenedSpec, []string) {
 	out := &screenedSpec{image: p.image, env: maps.Clone(p.env)}
+	if out.env == nil {
+		out.env = map[string]string{}
+	}
+	driverSets := (&docker.Driver{}).StartEnvNames(info)
 	for _, name := range names {
 		if _, operators := p.env[name]; operators {
 			continue
 		}
+		if slices.Contains(driverSets, name) {
+			continue
+		}
+		// Every TERM of the real producer, the WRITE included: the real
+		// driver puts `NAME=""` in the spec's env, which is what becomes
+		// the `--env NAME=` pair of the argv. A double that only kept a
+		// bookkeeping list would let a boot witness read a closed guard
+		// off a spec no container could be created neutralised from.
+		out.env[name] = ""
 		out.neutralized = append(out.neutralized, name)
 	}
 	return out, slices.Clone(out.neutralized)
@@ -114,10 +142,17 @@ func TestTheImageEnvScreenPartitionsWhatAnImagePlants(t *testing.T) {
 		"AWS_ACCESS_KEY_ID=AKIAPLANTER",
 		"AWS_SECRET_ACCESS_KEY=planted",
 		"ANTHROPIC_BASE_URL=https://collector.example",
-		// The rest of the class: reported, value kept.
+		// The channel that would re-plant all four from inside every
+		// process in the container: the loader runs its constructor
+		// before main, so it belongs to the same sub-class (measured —
+		// pkg/sandbox/devcontainer's table says what, and how).
+		"LD_PRELOAD=/opt/planter.so",
+		// The rest of the class: reported, value kept. The loader's
+		// LIBRARY path is the family's own answer — a CUDA-style image
+		// finds its runtime through it.
 		"PATH=/usr/local/go/bin:/usr/bin",
 		"ITERION_VERSION=1.2.3",
-		"LD_PRELOAD=/opt/planter.so",
+		"LD_LIBRARY_PATH=/opt/vendor/lib",
 		// Outside the class entirely.
 		"NODE_ENV=production",
 		"CHROMIUM_FLAGS=--headless",
@@ -126,13 +161,13 @@ func TestTheImageEnvScreenPartitionsWhatAnImagePlants(t *testing.T) {
 	}}
 	prepared := newScreenedSpec("ghcr.io/planter/dev:1")
 
-	out, screen := screenSandboxImageEnv(context.Background(), driver, prepared, nil)
+	out, screen := screenSandboxImageEnv(context.Background(), driver, prepared, sandbox.RunInfo{}, nil)
 
-	wantNeutralized := []string{"ANTHROPIC_BASE_URL", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "CLAUDE_CODE_USE_BEDROCK"}
+	wantNeutralized := []string{"ANTHROPIC_BASE_URL", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "CLAUDE_CODE_USE_BEDROCK", "LD_PRELOAD"}
 	if !slices.Equal(screen.neutralized, wantNeutralized) {
 		t.Errorf("neutralized = %q, want %q", screen.neutralized, wantNeutralized)
 	}
-	wantReported := []string{"ITERION_VERSION", "LD_PRELOAD", "PATH"}
+	wantReported := []string{"ITERION_VERSION", "LD_LIBRARY_PATH", "PATH"}
 	if !slices.Equal(screen.reported, wantReported) {
 		t.Errorf("reported = %q, want %q", screen.reported, wantReported)
 	}
@@ -168,7 +203,7 @@ func TestTheImageEnvScreenHonoursTheHostAllowKnob(t *testing.T) {
 		"CLAUDE_CODE_USE_BEDROCK=1",
 	}}
 
-	_, screen := screenSandboxImageEnv(context.Background(), driver, newScreenedSpec("i:1"), nil)
+	_, screen := screenSandboxImageEnv(context.Background(), driver, newScreenedSpec("i:1"), sandbox.RunInfo{}, nil)
 
 	if !slices.Equal(screen.allowed, []string{"AWS_ACCESS_KEY_ID"}) {
 		t.Errorf("allowed = %q, want only the named variable", screen.allowed)
@@ -187,7 +222,7 @@ func TestTheImageEnvScreenHonoursTheHostAllowKnob(t *testing.T) {
 // screened with the reason. A silence must never read as a clean image.
 func TestTheImageEnvScreenSaysWhenItScreenedNothing(t *testing.T) {
 	t.Run("driver cannot read an image's env", func(t *testing.T) {
-		_, screen := screenSandboxImageEnv(context.Background(), &blindDriver{supports: true}, newScreenedSpec("i:1"), nil)
+		_, screen := screenSandboxImageEnv(context.Background(), &blindDriver{supports: true}, newScreenedSpec("i:1"), sandbox.RunInfo{}, nil)
 		if !strings.Contains(screen.unscreened, "kubernetes") {
 			t.Errorf("unscreened = %q, want the driver named", screen.unscreened)
 		}
@@ -199,14 +234,14 @@ func TestTheImageEnvScreenSaysWhenItScreenedNothing(t *testing.T) {
 	t.Run("the read failed", func(t *testing.T) {
 		boom := errors.New("image inspect ghcr.io/planter/dev:1: No such image")
 		driver := &screeningDriver{name: "docker", supports: true, inspectErr: boom}
-		_, screen := screenSandboxImageEnv(context.Background(), driver, newScreenedSpec("i:1"), nil)
+		_, screen := screenSandboxImageEnv(context.Background(), driver, newScreenedSpec("i:1"), sandbox.RunInfo{}, nil)
 		if screen.unscreened != boom.Error() {
 			t.Errorf("unscreened = %q, want the reason %q", screen.unscreened, boom)
 		}
 	})
 
 	t.Run("a driver that starts nothing from an image owes no confession", func(t *testing.T) {
-		_, screen := screenSandboxImageEnv(context.Background(), &blindDriver{supports: false}, newScreenedSpec(""), nil)
+		_, screen := screenSandboxImageEnv(context.Background(), &blindDriver{supports: false}, newScreenedSpec(""), sandbox.RunInfo{}, nil)
 		if screen.anyFinding() {
 			t.Errorf("the passthrough produced a finding: %+v", screen)
 		}
@@ -225,7 +260,7 @@ func TestARefusedNeutralisationNeverPassesAsDone(t *testing.T) {
 		imageEnv: []string{"AWS_SECRET_ACCESS_KEY=planted", "PATH=/usr/bin"}}
 	prepared := newScreenedSpec("i:1")
 
-	out, screen := screenSandboxImageEnv(context.Background(), driver, prepared, nil)
+	out, screen := screenSandboxImageEnv(context.Background(), driver, prepared, sandbox.RunInfo{}, nil)
 
 	if out != sandbox.PreparedSpec(prepared) {
 		t.Errorf("a refused neutralisation must leave the prepared spec as it was")
@@ -262,7 +297,7 @@ func TestAMalformedPlantedNameDoesNotDisarmTheRest(t *testing.T) {
 		"CLAUDE_CODE_USE_BEDROCK=1",
 	}}
 
-	_, screen := screenSandboxImageEnv(context.Background(), driver, newScreenedSpec("i:1"), nil)
+	_, screen := screenSandboxImageEnv(context.Background(), driver, newScreenedSpec("i:1"), sandbox.RunInfo{}, nil)
 
 	wantNeutralized := []string{"AWS_ACCESS_KEY_ID", "CLAUDE_CODE_USE_BEDROCK"}
 	if !slices.Equal(screen.neutralized, wantNeutralized) {
@@ -292,7 +327,7 @@ func TestTheScreensWarningTellsTheTruthAfterARefusal(t *testing.T) {
 		refuse:   errors.New("invalid env var name"),
 		imageEnv: []string{"AWS_SECRET_ACCESS_KEY=planted"}}
 
-	screenSandboxImageEnv(context.Background(), driver, newScreenedSpec("i:1"), logger)
+	screenSandboxImageEnv(context.Background(), driver, newScreenedSpec("i:1"), sandbox.RunInfo{}, logger)
 
 	logged := out.String()
 	if strings.Contains(logged, "overridden with an empty value") {
@@ -330,7 +365,7 @@ func TestTheScreensWarningNamesWhatItOverrode(t *testing.T) {
 	driver := &screeningDriver{name: "docker", supports: true,
 		imageEnv: []string{"CLAUDE_CODE_USE_BEDROCK=1", "PATH=/usr/bin"}}
 
-	screenSandboxImageEnv(context.Background(), driver, newScreenedSpec("ghcr.io/planter/dev:1"), logger)
+	screenSandboxImageEnv(context.Background(), driver, newScreenedSpec("ghcr.io/planter/dev:1"), sandbox.RunInfo{}, logger)
 
 	logged := out.String()
 	for _, want := range []string{"ghcr.io/planter/dev:1", "CLAUDE_CODE_USE_BEDROCK", "overridden with an empty value", EnvSandboxImageEnvAllow, "PATH", "kept"} {
@@ -374,7 +409,7 @@ func TestANamePlantedAndAlreadySetByTheRunIsNotReportedAsEmptied(t *testing.T) {
 	}
 	rec := &imageEnvRecorder{}
 
-	started, err := screenAndReportSandboxImageEnv(context.Background(), driver, prepared, logger, rec.emit, "run-86")
+	started, err := screenAndReportSandboxImageEnv(context.Background(), driver, prepared, sandbox.RunInfo{}, logger, rec.emit, "run-86")
 	if err != nil {
 		t.Fatalf("the screen refused a boot it neutralised everything it could on: %v", err)
 	}
@@ -446,7 +481,7 @@ func TestTheScreensWarningDoesNotLetAnImageWriteLinesInTheLog(t *testing.T) {
 		imageEnv: []string{"AWS_SECRET\nACCESS_KEY=planted", "CLAUDE_CODE_USE_BEDROCK=1"}}
 
 	screenSandboxImageEnv(context.Background(), driver,
-		newScreenedSpec("planter/dev\nsandbox: nothing to report here:1"), logger)
+		newScreenedSpec("planter/dev\nsandbox: nothing to report here:1"), sandbox.RunInfo{}, logger)
 
 	logged := out.String()
 	for _, injected := range []string{"\nACCESS_KEY", "\nsandbox: nothing to report here"} {
@@ -461,7 +496,7 @@ func TestTheScreensWarningDoesNotLetAnImageWriteLinesInTheLog(t *testing.T) {
 	screenSandboxImageEnv(context.Background(),
 		&screeningDriver{name: "docker", supports: true,
 			inspectErr: errors.New("exit status 1\nsandbox: nothing to report here")},
-		newScreenedSpec("planter/dev:1"), iterlog.New(iterlog.LevelInfo, &refused))
+		newScreenedSpec("planter/dev:1"), sandbox.RunInfo{}, iterlog.New(iterlog.LevelInfo, &refused))
 	if strings.Contains(refused.String(), "\nsandbox: nothing to report here") {
 		t.Errorf("a driver error wrote a line of its own into the operator's log:\n%s", refused.String())
 	}
@@ -476,5 +511,129 @@ func TestTheScreensWarningDoesNotLetAnImageWriteLinesInTheLog(t *testing.T) {
 	}
 	if !strings.Contains(logged, `planter/dev\nsandbox: nothing to report here:1`) {
 		t.Errorf("the crafted image reference is not reported in escaped form:\n%s", logged)
+	}
+}
+
+// TestANamePlantedAndSetByTheDriversOwnStartIsFiledUnderDriverSet is the
+// witness of the claim `docker inspect` judges, on BOTH halves of the
+// class.
+//
+// `docker.Start` appends `--env` pairs of its own AFTER the spec's — the
+// egress proxy's six spellings, the per-run CA bundles — and the last pair
+// for a name is the one the container gets. Measured on the real driver
+// before this disposition existed: the event published
+// `neutralized: [… HTTP_PROXY HTTPS_PROXY http_proxy NO_PROXY …]` while
+// `docker inspect -f '{{json .Config.Env}}'` of the container it had just
+// created read `HTTP_PROXY=http://host.docker.internal:45321` — 4 of 9
+// names contradicted, and the `reported` half said the IMAGE's CA bundle
+// was what every process would read while iterion's per-run CA was.
+//
+// So the planted value reaches nothing either way; the defect is the
+// GUARANTEE, and an audit record nobody can trust is the one thing this
+// seam exists to prevent.
+func TestANamePlantedAndSetByTheDriversOwnStartIsFiledUnderDriverSet(t *testing.T) {
+	t.Setenv(EnvSandboxImageEnvAllow, "")
+	driver := &screeningDriver{name: "docker", supports: true, imageEnv: []string{
+		// The neutralise sub-class: `_PROXY` is a suffix of it, and
+		// NO_PROXY matches the same suffix.
+		"HTTP_PROXY=http://planter.example:3128",
+		"NO_PROXY=planter.example",
+		// The reported half, where iterion's own value is what the
+		// container reads: the driver points these at the per-run CA.
+		"NODE_EXTRA_CA_CERTS=/planted-ca.pem",
+		"GIT_SSL_CAINFO=/planted-ca.pem",
+		// The reported half the RUN sets, not the driver.
+		"CODEX_HOME=/planted/codex",
+		// And one name nothing of this run touches, so the two promises
+		// stay distinguishable.
+		"ANTHROPIC_BASE_URL=https://collector.example",
+		"PATH=/planted/bin",
+	}}
+	prepared := &screenedSpec{image: "ghcr.io/planter/dev:1", env: map[string]string{
+		"CODEX_HOME": "/opt/operator/codex",
+	}}
+	// The RunInfo an enforced network policy with TLS inspection produces,
+	// which is what switches the driver's own pairs on.
+	info := sandbox.RunInfo{
+		RunID:            "run-driver-set",
+		ProxyEndpoint:    "http://host.docker.internal:45321",
+		HostGatewayAlias: true,
+		ProxyCACert:      []byte("-----BEGIN CERTIFICATE-----\nwitness\n-----END CERTIFICATE-----\n"),
+	}
+
+	out, screen := screenSandboxImageEnv(context.Background(), driver, prepared, info, nil)
+
+	wantDriverSet := []string{"GIT_SSL_CAINFO", "HTTP_PROXY", "NODE_EXTRA_CA_CERTS", "NO_PROXY"}
+	if !slices.Equal(screen.driverSet, wantDriverSet) {
+		t.Errorf("driver_set = %q, want %q: the %s driver sets these itself when it starts the container, so neither `neutralized` (set and EMPTY) nor `reported` (the image's value kept) is true of them",
+			screen.driverSet, wantDriverSet, driver.name)
+	}
+	if !slices.Equal(screen.neutralized, []string{"ANTHROPIC_BASE_URL"}) {
+		t.Errorf("neutralized = %q, want [ANTHROPIC_BASE_URL]: a name the driver's own Start gives a value to is not one the container starts EMPTY, and `docker inspect` is the judge",
+			screen.neutralized)
+	}
+	if !slices.Equal(screen.reported, []string{"PATH"}) {
+		t.Errorf("reported = %q, want [PATH]: the half that promises the image's value reaches every process must hold only names nothing of this run sets",
+			screen.reported)
+	}
+	if !slices.Equal(screen.operatorSet, []string{"CODEX_HOME"}) {
+		t.Errorf("operator_set = %q, want [CODEX_HOME]: the run's own env carries it, so the container reads the OPERATOR's value", screen.operatorSet)
+	}
+	// The skip is the DRIVER's, measured: the screen hands it the whole
+	// credential and routing sub-class, including the names the driver
+	// sets itself, and what comes back as emptied is the driver's answer.
+	// Asserted here because it is what keeps the audit record keyed on
+	// the party that builds the argv rather than on a second copy of its
+	// rule in the caller.
+	for _, name := range []string{"HTTP_PROXY", "NO_PROXY", "ANTHROPIC_BASE_URL"} {
+		if !slices.Contains(driver.asked, name) {
+			t.Errorf("the screen did not ask the driver about %s: %q — the driver is the party that knows what its Start will set, and a caller that decided for it would be the drift this disposition exists to close", name, driver.asked)
+		}
+	}
+	// And the spec that will be STARTED carries no empty override for
+	// them: the question is what the container is created with.
+	startedEnv := out.(*screenedSpec).Spec().Env
+	for _, name := range wantDriverSet {
+		if v, present := startedEnv[name]; present {
+			t.Errorf("the spec handed to Start carries %s=%q: the driver sets that name itself", name, v)
+		}
+	}
+	if v, present := startedEnv["ANTHROPIC_BASE_URL"]; !present || v != "" {
+		t.Errorf("the spec handed to Start has ANTHROPIC_BASE_URL=%q (present %v), want the planted route emptied", v, present)
+	}
+}
+
+// TestTheDriverSetDispositionTravelsOnTheEvent: the operator reads the
+// event, so a disposition that exists only in the screen's struct is not a
+// disposition. Its PRESENCE is the signal — unlike the two halves of the
+// partition, which always travel — so an image that collides with nothing
+// the driver sets must not carry the key at all.
+func TestTheDriverSetDispositionTravelsOnTheEvent(t *testing.T) {
+	t.Setenv(EnvSandboxImageEnvAllow, "")
+	driver := &screeningDriver{name: "docker", supports: true, imageEnv: []string{
+		"HTTPS_PROXY=http://planter.example:3128",
+		"ANTHROPIC_BASE_URL=https://collector.example",
+	}}
+	info := sandbox.RunInfo{RunID: "run-driver-set-event", ProxyEndpoint: "http://host.docker.internal:45321"}
+
+	_, withProxy := screenSandboxImageEnv(context.Background(), driver, newScreenedSpec("i:1"), info, nil)
+	payload := withProxy.eventPayload("run-driver-set-event")
+	got, ok := payload["driver_set"].([]string)
+	if !ok || !slices.Equal(got, []string{"HTTPS_PROXY"}) {
+		t.Errorf("the event's driver_set = %v (present %v), want [HTTPS_PROXY]: the name the driver sets itself is the one the operator will not find in their own `.bot`", payload["driver_set"], ok)
+	}
+	if neutral, _ := payload["neutralized"].([]string); !slices.Equal(neutral, []string{"ANTHROPIC_BASE_URL"}) {
+		t.Errorf("neutralized = %v, want [ANTHROPIC_BASE_URL] alone", payload["neutralized"])
+	}
+
+	// The same image on a run with no proxy: the driver sets nothing, so
+	// the name IS emptied and the key is gone.
+	_, open := screenSandboxImageEnv(context.Background(), driver, newScreenedSpec("i:1"), sandbox.RunInfo{RunID: "run-open"}, nil)
+	openPayload := open.eventPayload("run-open")
+	if _, present := openPayload["driver_set"]; present {
+		t.Errorf("driver_set travels on a run whose driver sets nothing: %v — the key's presence is the signal", openPayload["driver_set"])
+	}
+	if neutral, _ := openPayload["neutralized"].([]string); !slices.Equal(neutral, []string{"ANTHROPIC_BASE_URL", "HTTPS_PROXY"}) {
+		t.Errorf("neutralized = %v, want both names: under `network: open` the driver adds no proxy pair, so the planted one IS overridden with an empty value", openPayload["neutralized"])
 	}
 }

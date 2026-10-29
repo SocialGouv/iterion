@@ -390,12 +390,36 @@ type ImageEnvScreener interface {
 	// second copy of this rule, and the audit record the caller publishes
 	// says "set and EMPTY" of every name it lists.
 	//
+	// Names the driver's OWN Start will set — [StartEnvNames] — are left
+	// alone and absent from that list for the same reason: the pair the
+	// driver appends after the spec's wins, so the container starts with
+	// the DRIVER's value. The RunInfo is passed because that set depends
+	// on it.
+	//
 	// The returned names are a subset of `names`, in any order; the caller
 	// keys its partition on what it ASKED, so a name it never asked about
 	// cannot enter a disposition.
 	//
 	// Implementations must not mutate the PreparedSpec they are handed.
-	NeutralizeImageEnv(prepared PreparedSpec, names []string) (PreparedSpec, []string, error)
+	NeutralizeImageEnv(prepared PreparedSpec, info RunInfo, names []string) (PreparedSpec, []string, error)
+
+	// StartEnvNames returns the names [Driver.Start] gives a value of its
+	// OWN for this RunInfo — the `--env` pairs it appends AFTER the
+	// prepared spec's, which no caller can see from the spec: the egress
+	// proxy's variables, the per-run CA bundles, a truststore.
+	//
+	// It exists because the audit record the caller publishes says what
+	// the CONTAINER has, and `docker inspect` is the judge: a name the
+	// driver's own argv sets is neither emptied nor left at the image's
+	// value, and a screen that could not ask would publish one of those
+	// two as true. Read where those pairs are BUILT, so the declaration
+	// and the argv cannot drift; a screener with no pairs of its own
+	// returns nil.
+	//
+	// It is part of this interface rather than an optional sibling
+	// because a screener that cannot answer it has no honest audit
+	// record to publish.
+	StartEnvNames(info RunInfo) []string
 }
 
 // SchedulingPolicyReporter is implemented by drivers that stamp a

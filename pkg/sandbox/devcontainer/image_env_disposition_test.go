@@ -74,17 +74,27 @@ var dispositionCases = []dispositionCase{
 	{"Node_Options", neutralizeInImage},
 	{"path", reportedOnly},
 
+	// Every member of this namespace is a shell function definition bash
+	// imports into every non-interactive shell, so the whole namespace
+	// neutralises.
+	{"BASH_FUNC_git%%", neutralizeInImage},
+	// git's config with no file and no HOME: `git -c` spelled in the
+	// environment. The two namespaces refine `GIT_`, which keeps its own
+	// answer for the rest of the family.
+	{"GIT_CONFIG_KEY_0", neutralizeInImage},
+	{"GIT_CONFIG_VALUE_0", neutralizeInImage},
+
 	// The loader, toolchain and home namespaces: reported, because an empty
-	// value breaks the image. ITERION_ is the measured one — iterion's own
-	// images bake ITERION_VERSION, ITERION_COMMIT and ITERION_BOTS_PATH.
+	// value breaks the image or nothing a process iterion starts reads the
+	// name. ITERION_ is the measured one — iterion's own images bake
+	// ITERION_VERSION, ITERION_COMMIT and ITERION_BOTS_PATH.
 	{"ITERION_VERSION", reportedOnly},
 	{"NIX_CONFIG", reportedOnly},
 	{"GIT_SSH_COMMAND", reportedOnly},
-	{"LD_PRELOAD", reportedOnly},
-	{"OPENSSL_CONF", reportedOnly},
-	{"BASH_FUNC_git%%", reportedOnly},
-	{"BUN_OPTIONS", reportedOnly},
-	{"NPM_CONFIG_NODE_OPTIONS", reportedOnly},
+	{"LD_LIBRARY_PATH", reportedOnly},
+	{"OPENSSL_MODULES", reportedOnly},
+	{"BUN_INSTALL", reportedOnly},
+	{"NPM_CONFIG_PREFIX", reportedOnly},
 	{"XDG_CONFIG_HOME", reportedOnly},
 
 	// Outside the class: no disposition to give.
@@ -123,50 +133,113 @@ func TestScreenImageEnvNameAnswersItsRows(t *testing.T) {
 // guard added without a row of its own reddens here.
 func TestEveryPatternGuardHasADispositionRowOnlyItCatches(t *testing.T) {
 	for _, guard := range deniedEnvSuffixes {
-		assertGuardHasItsOwnDispositionRow(t, "suffix "+guard.pattern, guard.image, func(key string) bool {
+		assertGuardHasItsOwnDispositionRow(t, "suffix "+guard.pattern, "suffix", guard.pattern, guard.image, func(key string) bool {
 			return strings.HasSuffix(strings.ToUpper(key), guard.pattern)
 		})
 	}
 	for _, guard := range deniedEnvNamespaces {
-		assertGuardHasItsOwnDispositionRow(t, "namespace "+guard.pattern, guard.image, func(key string) bool {
+		assertGuardHasItsOwnDispositionRow(t, "namespace "+guard.pattern, "namespace", guard.pattern, guard.image, func(key string) bool {
 			return strings.HasPrefix(strings.ToUpper(key), guard.pattern)
 		})
 	}
+	// The exact names need no loop here: every one of them is declared,
+	// name by name, in [TestTheImageDispositionOfEveryExactNameIsDeclared],
+	// which reddens on a row deleted, added or flipped.
 }
 
 // assertGuardHasItsOwnDispositionRow fails unless some row of
-// [dispositionCases] is caught by this guard alone — no other pattern, no
-// exact entry — and the class answers want for it.
-func assertGuardHasItsOwnDispositionRow(t *testing.T, guard string, want imageEnvDisposition, caughtByGuard func(string) bool) {
+// [dispositionCases] is LOAD-BEARING for this guard: the class answers the
+// guard's own disposition for it, and removing the guard from the walk
+// changes that answer.
+//
+// "Removing it changes the answer" rather than "no other guard catches it":
+// a NARROWER guard refines a family that already answers — `GIT_CONFIG_KEY_`
+// inside `GIT_`, the exact `LD_PRELOAD` inside `LD_` — so counting the
+// guards that match would call every refinement un-witnessed while a
+// deleted refinement silently downgrades a name from neutralised to
+// reported. The measurement is the mutation this guard would suffer.
+func assertGuardHasItsOwnDispositionRow(t *testing.T, guard string, kind, pattern string, want imageEnvDisposition, caughtByGuard func(string) bool) {
 	t.Helper()
 	for _, c := range dispositionCases {
 		if c.want == notDenied || !caughtByGuard(c.key) {
 			continue
 		}
-		upper := strings.ToUpper(c.key)
-		others := 0
-		for _, g := range deniedEnvSuffixes {
-			if strings.HasSuffix(upper, g.pattern) {
-				others++
-			}
-		}
-		for _, g := range deniedEnvNamespaces {
-			if strings.HasPrefix(upper, g.pattern) {
-				others++
-			}
-		}
-		if _, exact := deniedEnvNames[upper]; exact {
-			others++
-		}
-		if others != 1 {
-			continue // some other guard would answer for this row too
-		}
 		if got := screenEnvName(c.key); got != want {
-			t.Errorf("%s: its own row %q answers %v, want the guard's %v", guard, c.key, got, want)
+			continue // another guard answers for this row, with another disposition
+		}
+		if screenEnvNameSkipping(c.key, kind, pattern) == want {
+			continue // the answer survives without this guard: not its own row
 		}
 		return
 	}
-	t.Errorf("%s has no disposition row only it catches — add one to dispositionCases", guard)
+	t.Errorf("%s has no row whose answer it alone decides — add one to dispositionCases, or drop the guard", guard)
+}
+
+// screenEnvNameSkipping answers [screenEnvName]'s walk with ONE guard left
+// out — kind is "suffix", "namespace" or "exact" — so a test can measure
+// whether a guard decides anything.
+//
+// A copy of the walk, and [TestTheGuardSkippingWalkIsTheRealWalk] is what
+// keeps it from drifting: with nothing skipped it must answer exactly what
+// the production walk answers, for every row of the table.
+func screenEnvNameSkipping(name, kind, pattern string) imageEnvDisposition {
+	upper := strings.ToUpper(name)
+	if kind != "exact" || !strings.EqualFold(pattern, upper) {
+		if d, exact := deniedEnvNames[upper]; exact {
+			return d
+		}
+	}
+	for _, guard := range deniedEnvSuffixes {
+		if kind == "suffix" && guard.pattern == pattern {
+			continue
+		}
+		if strings.HasSuffix(upper, guard.pattern) {
+			return guard.image
+		}
+	}
+	for _, guard := range deniedEnvNamespaces {
+		if kind == "namespace" && guard.pattern == pattern {
+			continue
+		}
+		if strings.HasPrefix(upper, guard.pattern) {
+			return guard.image
+		}
+	}
+	return notDenied
+}
+
+// TestTheGuardSkippingWalkIsTheRealWalk holds the copy above to the
+// production walk: skipping nothing must answer exactly [screenEnvName],
+// or every "this guard is load-bearing" verdict is about another function.
+func TestTheGuardSkippingWalkIsTheRealWalk(t *testing.T) {
+	for _, c := range dispositionCases {
+		if got, want := screenEnvNameSkipping(c.key, "", ""), screenEnvName(c.key); got != want {
+			t.Errorf("screenEnvNameSkipping(%q, nothing) = %v, screenEnvName = %v — the copy has drifted from the walk it measures", c.key, got, want)
+		}
+	}
+	for name := range deniedEnvNames {
+		if got, want := screenEnvNameSkipping(name, "", ""), screenEnvName(name); got != want {
+			t.Errorf("screenEnvNameSkipping(%q, nothing) = %v, screenEnvName = %v", name, got, want)
+		}
+	}
+}
+
+// TestNoNamespaceIsShadowedByABroaderOneBeforeIt is the order the
+// precedence doc promises: within the namespaces the first match answers,
+// so a namespace that REFINES another must be listed before it. Reversed,
+// the refinement would be dead code that reads like a guard.
+func TestNoNamespaceIsShadowedByABroaderOneBeforeIt(t *testing.T) {
+	for i, narrow := range deniedEnvNamespaces {
+		for j, broad := range deniedEnvNamespaces {
+			if i == j || !strings.HasPrefix(narrow.pattern, broad.pattern) {
+				continue
+			}
+			if j < i {
+				t.Errorf("namespace %q is listed after %q, which prefixes it: the first match answers, so %q is never consulted — a guard the walk cannot reach",
+					narrow.pattern, broad.pattern, narrow.pattern)
+			}
+		}
+	}
 }
 
 // TestTheImageDispositionOfEveryExactNameIsDeclared is the third loop: the
@@ -196,7 +269,7 @@ func TestTheImageDispositionOfEveryExactNameIsDeclared(t *testing.T) {
 		"MSAL_FORCE_REGION":              neutralizeInImage,
 
 		// Reported: an empty value breaks the container outright.
-		"PATH": reportedOnly, "HOME": reportedOnly, "SHELL": reportedOnly,
+		"PATH": reportedOnly, "HOME": reportedOnly,
 		"GOROOT": reportedOnly, "GOFLAGS": reportedOnly,
 
 		// Neutralised: the three channels that RESTORE a name the screen
@@ -206,15 +279,29 @@ func TestTheImageDispositionOfEveryExactNameIsDeclared(t *testing.T) {
 		"BASH_ENV": neutralizeInImage, "NODE_OPTIONS": neutralizeInImage,
 		"NODE_PATH": neutralizeInImage,
 
-		// Reported: code loaders, shells and their startup files,
-		// toolchains, editors — the execution half of the class, where an
-		// empty value is read as presence or breaks the image's own build.
-		"GCONV_PATH": reportedOnly,
-		"SHELLOPTS":  reportedOnly, "BASHOPTS": reportedOnly,
-		"PS4": reportedOnly, "ENV": reportedOnly, "ZDOTDIR": reportedOnly,
+		// Neutralised: the rest of the sub-class that leads to CODE, or
+		// to a configuration a program EXECUTES, at the startup of a
+		// process iterion starts there — each measured on a disposable
+		// image through that program's own startup path, with the empty
+		// value measured inert in the same image (#2317 round 3).
+		"LD_PRELOAD": neutralizeInImage, "LD_AUDIT": neutralizeInImage,
+		"GCONV_PATH": neutralizeInImage, "OPENSSL_CONF": neutralizeInImage,
+		"SHELLOPTS": neutralizeInImage, "PS4": neutralizeInImage,
+		"NPM_CONFIG_NODE_OPTIONS": neutralizeInImage,
+		"NPM_CONFIG_SCRIPT_SHELL": neutralizeInImage,
+		"BUN_OPTIONS":             neutralizeInImage,
+		"TAR_OPTIONS":             neutralizeInImage,
+		"GIT_CONFIG_COUNT":        neutralizeInImage,
+
+		// Reported: shells and the startup files they DO read, toolchains,
+		// editors — where an empty value is read as presence, breaks the
+		// image's own build, or nothing a process iterion starts reads the
+		// name (`ENV`, measured on dash and on bash-as-sh).
+		"BASHOPTS": reportedOnly,
+		"ENV":      reportedOnly, "ZDOTDIR": reportedOnly,
 		"SSH_ASKPASS": reportedOnly, "SSH_ASKPASS_REQUIRE": reportedOnly,
 		"EDITOR": reportedOnly, "VISUAL": reportedOnly,
-		"TAR_OPTIONS": reportedOnly, "GOENV": reportedOnly,
+		"GOENV": reportedOnly, "SHELL": reportedOnly,
 		"GOTOOLCHAIN": reportedOnly, "GOAUTH": reportedOnly,
 
 		// Reported: emptying these sends the client to its DEFAULT, which

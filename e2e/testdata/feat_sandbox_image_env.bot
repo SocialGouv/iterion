@@ -36,11 +36,21 @@
 ## half KEEPS the image's value by design, and docs/sandbox.md's promise is scoped
 ## to the neutralised sub-class because of it.
 ##
+## The image also points NODE_OPTIONS at a module that re-exports the four and
+## NODE_PATH at a directory of its own: node reads both at startup, inside the
+## process every agent CLI and every `npx`-started MCP server is. The probe asks
+## NODE ITSELF what it reads, so the verdict comes from the runtime that would
+## have been subverted; a base image without node answers NODE_ABSENT, which the
+## test logs rather than reads as clean. The sentinel travels in an env var and
+## the verdict comes from node's EXIT CODE: a `"` in a `command:` would reach
+## the shell as a literal quote character, so the node script carries no string
+## literal at all.
+##
 ## The probe prints verdict words and never a value — a planted credential that
 ## survived must not become a log line.
 
 tool env_probe:
-  command: "env > /tmp/exec.env; tr '\\0' '\\n' < /proc/1/environ > /tmp/pid1.env 2>/dev/null || echo PID1_UNREADABLE; for pair in CLAUDE_CODE_USE_BEDROCK=1 ANTHROPIC_BASE_URL=https://collector.invalid AWS_SECRET_ACCESS_KEY=e2e-planted-sentinel AZURE_OPENAI_API_KEY=e2e-planted-sentinel; do n=$(echo $pair | cut -d= -f1); grep -qxF $pair /tmp/pid1.env && echo PID1_PLANTED_$n || echo PID1_CLEAN_$n; grep -qxF $pair /tmp/exec.env && echo EXEC_PLANTED_$n || echo EXEC_CLEAN_$n; grep -qxF $n= /tmp/pid1.env && echo PID1_EMPTY_$n || echo PID1_NOTEMPTY_$n; done; cut -d= -f1 < /tmp/exec.env | grep -qx CLAUDE_CODE_USE_BEDROCK && echo NAME_STILL_SET || echo NAME_ABSENT; grep -q '^PATH=/' /tmp/pid1.env && echo PID1_PATH_KEPT || echo PID1_PATH_EMPTIED; case x$PATH in x) echo PATH_EMPTIED;; *) echo PATH_KEPT;; esac; case x$BASH_ENV in x) echo BASH_ENV_EMPTIED;; *) echo BASH_ENV_KEPT;; esac; grep -qxF KUBECONFIG=/tmp/iterion-e2e-reported-sentinel /tmp/pid1.env && echo PID1_REPORTED_KEPT || echo PID1_REPORTED_LOST; grep -qxF KUBECONFIG=/tmp/iterion-e2e-reported-sentinel /tmp/exec.env && echo EXEC_REPORTED_KEPT || echo EXEC_REPORTED_LOST"
+  command: "env > /tmp/exec.env; tr '\\0' '\\n' < /proc/1/environ > /tmp/pid1.env 2>/dev/null || echo PID1_UNREADABLE; for pair in CLAUDE_CODE_USE_BEDROCK=1 ANTHROPIC_BASE_URL=https://collector.invalid AWS_SECRET_ACCESS_KEY=e2e-planted-sentinel AZURE_OPENAI_API_KEY=e2e-planted-sentinel; do n=$(echo $pair | cut -d= -f1); grep -qxF $pair /tmp/pid1.env && echo PID1_PLANTED_$n || echo PID1_CLEAN_$n; grep -qxF $pair /tmp/exec.env && echo EXEC_PLANTED_$n || echo EXEC_CLEAN_$n; grep -qxF $n= /tmp/pid1.env && echo PID1_EMPTY_$n || echo PID1_NOTEMPTY_$n; done; cut -d= -f1 < /tmp/exec.env | grep -qx CLAUDE_CODE_USE_BEDROCK && echo NAME_STILL_SET || echo NAME_ABSENT; grep -q '^PATH=/' /tmp/pid1.env && echo PID1_PATH_KEPT || echo PID1_PATH_EMPTIED; case x$PATH in x) echo PATH_EMPTIED;; *) echo PATH_KEPT;; esac; case x$BASH_ENV in x) echo BASH_ENV_EMPTIED;; *) echo BASH_ENV_KEPT;; esac; grep -qxF KUBECONFIG=/tmp/iterion-e2e-reported-sentinel /tmp/pid1.env && echo PID1_REPORTED_KEPT || echo PID1_REPORTED_LOST; grep -qxF KUBECONFIG=/tmp/iterion-e2e-reported-sentinel /tmp/exec.env && echo EXEC_REPORTED_KEPT || echo EXEC_REPORTED_LOST; case x$NODE_OPTIONS in x) echo NODE_OPTIONS_EMPTIED;; *) echo NODE_OPTIONS_KEPT;; esac; if command -v node > /dev/null 2>&1; then if SENT=https://collector.invalid node -e 'process.exit(process.env.ANTHROPIC_BASE_URL === process.env.SENT ? 1 : 0)'; then echo NODE_CLEAN; else echo NODE_PLANTED; fi; else echo NODE_ABSENT; fi"
 
 workflow main:
   sandbox:
