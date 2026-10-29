@@ -38,14 +38,26 @@ rule.
   live). That list is not the promise: a file no context compiles is refused
   by `TestEveryNonTestFileIsSeenByAListingContext`, which measured 1704 of
   them on 2026-10-29, and `testdata/crossbuild` replays both attacks on a
-  module of its own.
+  module of its own. Three shapes sit outside that count because the go tool
+  compiles them in no context either — `testdata/`, a directory named `_x`
+  or `.x`, and a `//go:build ignore` generator: demanding a context for one
+  of them is a red nobody can clear, and forcing `ignore` as a tag makes
+  `go list` fail for the whole tree, so every test of the guard fatals over
+  a sound tree. `testdata/neverbuilt` is the module that says so, under
+  `TestTheGuardSkipsWhatTheToolchainNeverCompiles`.
 - **Direct imports, one hop.** A rule hit is one import edge; a banned
   family reached THROUGH another package is not one. `pkg/dsl/ir` is a leaf
-  in that sense only: its direct imports name no `pkg/forge` and no
-  `pkg/dispatcher` package, while `go list -deps ./pkg/dsl/ir` holds
-  `pkg/forge`, `pkg/dispatcher/native`, `pkg/dispatcher/tracker` and
-  `pkg/backend/tool/privacy/detector` — the weight filed as iterion#2857.
-  Read "must not import" above as the one hop the guard checks.
+  in that sense only: its direct imports name no `pkg/forge` package and, of
+  the `pkg/dispatcher` family, only the accepted
+  `pkg/dispatcher/native/boardops` — seven `boardops.CapBoard*` constants
+  one hop away, not a weight reached through something else. What
+  `go list -deps ./pkg/dsl/ir` adds on top of the one hop is
+  `pkg/backend/tool/privacy/detector`, `pkg/dispatcher/native`,
+  `pkg/dispatcher/tracker` and `pkg/forge`: four packages of those same
+  banned families, the weight filed as iterion#2857. Neither half is prose —
+  `TestTheLeafsOneHopReadingIsWhatThePageSays` reads this sentence off this
+  page and faces both halves with the tree. Read "must not import" above as
+  the one hop the guard checks.
 - **Test files are out of scope, by decision** — `go list` runs without
   `-test`, so a coupling that lives only in a `_test.go` file is none of the
   guard's business: `pkg/backend/model`'s test variant imports

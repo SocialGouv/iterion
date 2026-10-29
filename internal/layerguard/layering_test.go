@@ -72,13 +72,14 @@ type layerRule struct {
 // ./pkg/... and ./internal/..., unioned over every context listContexts
 // names (the host, GOOS=windows, GOOS=darwin, GOOS=freebsd, and the build
 // tags the tree's own non-test files carry). A family reached THROUGH
-// another package is not a rule hit: pkg/dsl/ir's direct imports name no
-// pkg/forge and no pkg/dispatcher package, and its transitive closure holds
-// four of them (iterion#2857). A coupling that exists only in a _test.go
-// file is out of scope by decision. docs/layering.md carries the same three
-// bounds; the contexts are judged by
-// TestEveryNonTestFileIsSeenByAListingContext, the one-hop reading by
-// TestTheGuardJudgesDirectImportsOnly.
+// another package is not a rule hit — what pkg/dsl/ir's direct imports
+// really name, against what only its closure holds (iterion#2857), is one
+// sentence of docs/layering.md rather than a second copy of the fact here,
+// and TestTheLeafsOneHopReadingIsWhatThePageSays faces that sentence with
+// the tree. A coupling that exists only in a _test.go file is out of scope
+// by decision. docs/layering.md carries the same three bounds; the contexts
+// are judged by TestEveryNonTestFileIsSeenByAListingContext, the one-hop
+// evaluation by TestTheGuardJudgesDirectImportsOnly.
 //
 // Verdict faced on 2026-10-29 at e59110ed5, over the 213 packages and 974
 // module-internal import edges the union named there: 12 violating pairs,
@@ -217,7 +218,10 @@ func listContexts(root string) ([]buildContext, error) {
 //
 // A name that is neither — a platform this guard lists no context for — is
 // passed as a tag: that widens what the listing sees, and a file it hides
-// instead is what TestEveryNonTestFileIsSeenByAListingContext reports.
+// instead is what TestEveryNonTestFileIsSeenByAListingContext reports. A
+// name the toolchain RESERVES never reaches a context, because
+// walkNonTestFiles hands out no file the toolchain compiles nowhere — the
+// one door `ignore` had (TestTheGuardSkipsWhatTheToolchainNeverCompiles).
 func projectTags(root string) ([]string, error) {
 	decided := map[string]bool{"unix": true, runtime.GOOS: true, runtime.GOARCH: true}
 	for _, c := range platformContexts {
@@ -228,11 +232,7 @@ func projectTags(root string) ([]string, error) {
 		}
 	}
 	tags := map[string]bool{}
-	err := walkNonTestFiles(root, func(rel string, src []byte) error {
-		names, err := buildTagsOf(string(src))
-		if err != nil {
-			return fmt.Errorf("%s: %w", rel, err)
-		}
+	err := walkNonTestFiles(root, func(_ string, names []string) error {
 		for _, name := range names {
 			if !decided[name] {
 				tags[name] = true
@@ -246,14 +246,23 @@ func projectTags(root string) ([]string, error) {
 	return slices.Sorted(maps.Keys(tags)), nil
 }
 
-// buildTagsOf returns every name the //go:build lines of a Go source use,
-// negated ones included — BOTH sides of every && and ||, or a tag of a
-// conjunction asks for a context nobody lists. The expression is walked
-// through its own node types rather than evaluated: Expr.Eval calls its
-// callback "as needed to find out whether a given build tag is satisfied",
-// which is a contract about the verdict, not about the names it visits.
-func buildTagsOf(src string) ([]string, error) {
-	var names []string
+// reservedIgnoreTag is the name the toolchain keeps for a file no build
+// compiles: `//go:build ignore` over a `package main` generator that
+// `go generate` runs with `go run`. Nothing sets it, which is the whole
+// point — forced as a -tags value it becomes an ordinary tag, the generator
+// lands in its neighbour's package, and `go list` fails for the module.
+const reservedIgnoreTag = "ignore"
+
+// buildConstraintsOf reads the //go:build lines of a Go source and answers
+// two things about the file. Its names: every one the lines use, negated
+// ones included — BOTH sides of every && and ||, or a tag of a conjunction
+// asks for a context nobody lists. And whether one of those lines is the
+// bare reservedIgnoreTag, which marks a file no context compiles. The
+// expression is walked through its own node types rather than evaluated:
+// Expr.Eval calls its callback "as needed to find out whether a given build
+// tag is satisfied", which is a contract about the verdict, not about the
+// names it visits.
+func buildConstraintsOf(src string) (names []string, neverCompiled bool, err error) {
 	for line := range strings.SplitSeq(src, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "package ") {
@@ -264,11 +273,14 @@ func buildTagsOf(src string) ([]string, error) {
 		}
 		expr, err := constraint.Parse(line)
 		if err != nil {
-			return nil, fmt.Errorf("unreadable build constraint %q: %w", line, err)
+			return nil, false, fmt.Errorf("unreadable build constraint %q: %w", line, err)
+		}
+		if tag, ok := expr.(*constraint.TagExpr); ok && tag.Tag == reservedIgnoreTag {
+			neverCompiled = true
 		}
 		names = append(names, tagsOf(expr)...)
 	}
-	return names, nil
+	return names, neverCompiled, nil
 }
 
 // tagsOf collects the tag names of a parsed build constraint.
@@ -286,24 +298,37 @@ func tagsOf(e constraint.Expr) []string {
 	return nil
 }
 
-// walkNonTestFiles hands fn every non-test .go file under root's pkg/ and
-// internal/ trees, by its module-relative path. testdata/ is skipped: the
-// go tool lists no package there, so a fixture's build tag would ask for a
-// context no listing can use, and a fixture's file would be reported as
-// unseen for ever.
-func walkNonTestFiles(root string, fn func(rel string, src []byte) error) error {
+// walkNonTestFiles hands fn every non-test .go file the toolchain compiles
+// SOMEWHERE under root's pkg/ and internal/ trees, by its module-relative
+// path, with the build-constraint names it carries. Its three skips are the
+// go tool's own conventions, and they cost the rules nothing: this walk
+// feeds the tag contexts and the coverage proof, never the layer rules,
+// which read what `go list` answers — a file the toolchain compiles nowhere
+// is in no listing of any context either way.
+//
+//   - testdata/: the go tool lists no package there, so a fixture's build tag
+//     would ask for a context no listing can use, and a fixture's file would
+//     be reported as unseen for ever.
+//   - a directory named _x or .x: `go list ./pkg/...` skips it too, so no
+//     context can compile its files and "add the context that compiles them"
+//     is a remedy nobody can carry out.
+//   - a file carrying the reserved `ignore`: passed as a tag it stops being
+//     reserved, the generator's `package main` collides with its neighbour's
+//     package, and `go list` fails for the whole tree — every test that
+//     lists it fatals, which is louder than the red it would replace.
+func walkNonTestFiles(root string, fn func(rel string, tags []string) error) error {
 	for _, tree := range []string{"pkg", "internal"} {
 		err := filepath.WalkDir(filepath.Join(root, tree), func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
+			name := d.Name()
 			if d.IsDir() {
-				if d.Name() == "testdata" {
+				if name == "testdata" || strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".") {
 					return fs.SkipDir
 				}
 				return nil
 			}
-			name := d.Name()
 			if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 				return nil
 			}
@@ -315,7 +340,15 @@ func walkNonTestFiles(root string, fn func(rel string, src []byte) error) error 
 			if err != nil {
 				return err
 			}
-			return fn(filepath.ToSlash(rel), src)
+			rel = filepath.ToSlash(rel)
+			tags, neverCompiled, err := buildConstraintsOf(string(src))
+			if err != nil {
+				return fmt.Errorf("%s: %w", rel, err)
+			}
+			if neverCompiled {
+				return nil
+			}
+			return fn(rel, tags)
 		})
 		if err != nil {
 			return err
@@ -427,6 +460,35 @@ func listIn(root, modulePrefix string, env []string, ctx buildContext) (listing,
 		return listing{}, fmt.Errorf("go list in context %s named no package of %s — the guard would certify an empty tree", ctx.name, modulePrefix)
 	}
 	return got, nil
+}
+
+// depsOf returns the module-relative transitive closure of one package of
+// root, the reading the one-hop sentence is measured AGAINST: `go list
+// -deps` is what publishes a transitive dependency, and the guard's own
+// listing stops at one hop by decision. stdout alone, for listIn's reason.
+func depsOf(root, pkg string) ([]string, error) {
+	prefix, err := modulePrefixOf(root)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}", "./"+pkg)
+	cmd.Dir = root
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("go list -deps ./%s failed: %w\nstderr:\n%s", pkg, err, stderr.String())
+	}
+	var deps []string
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if rel, ok := strings.CutPrefix(strings.TrimSpace(line), prefix); ok {
+			deps = append(deps, rel)
+		}
+	}
+	if len(deps) == 0 {
+		return nil, fmt.Errorf("go list -deps ./%s named no package of %s — an empty closure certifies nothing", pkg, prefix)
+	}
+	return deps, nil
 }
 
 // treeUnion lists root in every context listContexts names and unions what
@@ -624,13 +686,11 @@ func TestARuleDoesNotForbidAFamilyFromImportingItself(t *testing.T) {
 
 // TestTheGuardJudgesDirectImportsOnly executes the bound docs/layering.md
 // publishes with the table: a rule reads the DIRECT imports of a package,
-// so a banned family reached through a third package is no rule hit. The
-// tree pays this today: `go list -deps ./pkg/dsl/ir` holds four packages of
-// three banned families its direct imports do not name — pkg/forge,
-// pkg/dispatcher/native, pkg/dispatcher/tracker and
-// pkg/backend/tool/privacy/detector (iterion#2857) — so a reader who takes
-// "is a leaf" for a transitive contract reads a promise this guard does not
-// make.
+// so a banned family reached through a third package is no rule hit — a
+// reader who takes "is a leaf" for a transitive contract reads a promise
+// this guard does not make. What the tree pays for that today is measured,
+// not restated here: theLeafClosureOnly and
+// TestTheLeafsOneHopReadingIsWhatThePageSays (iterion#2857).
 func TestTheGuardJudgesDirectImportsOnly(t *testing.T) {
 	pairs := map[string][]string{
 		"pkg/dsl/ir":     {"pkg/vocabulary"},
@@ -642,6 +702,109 @@ func TestTheGuardJudgesDirectImportsOnly(t *testing.T) {
 	direct := map[string][]string{"pkg/dsl/ir": {"pkg/forge"}}
 	if got := violationsOf(layers, direct, nil); len(got) != 1 {
 		t.Errorf("the same edge taken DIRECTLY named %d hit(s), want the one rule that bans pkg/forge: %v", len(got), got)
+	}
+}
+
+// theLeafOneHopSentence is what docs/layering.md publishes about the one
+// hop, in the page's own words minus its code ticks. The fact lives on the
+// page once and this guard faces it with the tree — the reading it replaces
+// ("its direct imports name no pkg/forge and no pkg/dispatcher package")
+// was false the day it landed: pkg/dsl/ir imports pkg/dispatcher/native/boardops
+// DIRECTLY, which is the very pair allowExceptions accepts below.
+const theLeafOneHopSentence = "its direct imports name no pkg/forge package and, of the pkg/dispatcher family, only the accepted pkg/dispatcher/native/boardops"
+
+// theLeafClosureOnly are the packages of the leaf rule's banned families
+// that `go list -deps ./pkg/dsl/ir` holds and its direct imports do not —
+// the other half of the same bullet, and the weight filed as iterion#2857.
+// When that weight is lifted the measurement moves, this list and the page's
+// sentence are edited together, and a reviewer sees both.
+var theLeafClosureOnly = []string{
+	"pkg/backend/tool/privacy/detector",
+	"pkg/dispatcher/native",
+	"pkg/dispatcher/tracker",
+	"pkg/forge",
+}
+
+// proseText normalizes a page, or a sentence, to what it SAYS: markdown code
+// ticks off, every run of whitespace one space. The line breaks a page needs
+// for its width then hide nothing from a comparison.
+func proseText(s string) string {
+	return strings.Join(strings.Fields(strings.ReplaceAll(s, "`", "")), " ")
+}
+
+// andList spells a list the way a page does: "a, b and c".
+func andList(items []string) string {
+	switch len(items) {
+	case 0:
+		return ""
+	case 1:
+		return items[0]
+	}
+	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
+}
+
+// TestTheLeafsOneHopReadingIsWhatThePageSays executes the bullet
+// docs/layering.md publishes about the one hop, both halves, against the
+// union the rules are judged on. A page that says the leaf's direct imports
+// name no pkg/dispatcher package tells a reader of iterion#2857 that the
+// coupling is transitive, when seven boardops.CapBoard* constants are one
+// hop away — and the page is where #2829 ends, so a sentence on it is a
+// claim this guard owes a verdict on, not prose.
+func TestTheLeafsOneHopReadingIsWhatThePageSays(t *testing.T) {
+	const leaf = "pkg/dsl/ir"
+	leafRule := layers[0]
+	if !slices.Equal(leafRule.sources, []string{leaf}) {
+		t.Fatalf("layers[0] binds %q, not %s — this test reads the banned families off that rule", leafRule.sources, leaf)
+	}
+	direct := treeListing(t).imports[leaf]
+	if len(direct) == 0 {
+		t.Fatalf("the union named no import of %s — the sentence below would be about nothing", leaf)
+	}
+	var forge, dispatcher []string
+	for _, imp := range direct {
+		if underPrefix(imp, "pkg/forge") {
+			forge = append(forge, imp)
+		}
+		if underPrefix(imp, "pkg/dispatcher") {
+			dispatcher = append(dispatcher, imp)
+		}
+	}
+	if len(forge) != 0 {
+		t.Errorf("%s imports %v one hop away, and the page says it names no pkg/forge package: accept the pair with its reason and edit the sentence, or drop the import", leaf, forge)
+	}
+	accepted := []string{"pkg/dispatcher/native/boardops"}
+	if !slices.Equal(dispatcher, accepted) {
+		t.Errorf("%s's direct pkg/dispatcher imports are %v, want exactly %v — the page names that one and no other", leaf, dispatcher, accepted)
+	}
+	for _, imp := range dispatcher {
+		if _, ok := allowExceptions[leaf+" -> "+imp]; !ok {
+			t.Errorf("%s -> %s is a direct crossing allowExceptions does not hold, and the page calls it accepted", leaf, imp)
+		}
+	}
+	closure, err := depsOf(repoRoot(t), leaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var closureOnly []string
+	for _, pkg := range closure {
+		if pkg != leaf && inFamily(pkg, leafRule.banned) && !slices.Contains(direct, pkg) {
+			closureOnly = append(closureOnly, pkg)
+		}
+	}
+	slices.Sort(closureOnly)
+	if !slices.Equal(closureOnly, theLeafClosureOnly) {
+		t.Errorf("go list -deps ./%s holds %v of the rule's banned families that its direct imports do not name, want the pinned %v — iterion#2857 moved: edit this list and the page's sentence with it", leaf, closureOnly, theLeafClosureOnly)
+	}
+	page, err := os.ReadFile(filepath.Join(repoRoot(t), "docs", "layering.md")) // #nosec G304 -- the page of the module the test climbed to
+	if err != nil {
+		t.Fatal(err)
+	}
+	said := proseText(string(page))
+	if !strings.Contains(said, proseText(theLeafOneHopSentence)) {
+		t.Errorf("docs/layering.md does not carry the sentence this guard executes:\n%s\nthe page and the tree owe the same reading of the one hop (iterion#2829)", theLeafOneHopSentence)
+	}
+	if list := andList(theLeafClosureOnly); !strings.Contains(said, proseText(list)) {
+		t.Errorf("docs/layering.md does not name the closure the measurement holds:\n%s", list)
 	}
 }
 
@@ -689,6 +852,28 @@ func TestEveryAcceptedExceptionIsALiveViolation(t *testing.T) {
 	}
 }
 
+// unseenFiles walks root's non-test files and reports the ones seen does
+// not hold — compiled by no listing context — with the number walked, so a
+// caller can say how many WERE compiled. THE reading of coverage: the tree
+// guard and the fixture guard call this one, neither re-walks the tree with
+// its own idea of what counts.
+func unseenFiles(root string, seen map[string]bool) (unseen []string, total int, err error) {
+	err = walkNonTestFiles(root, func(rel string, _ []string) error {
+		total++
+		if !seen[rel] {
+			unseen = append(unseen, rel)
+		}
+		return nil
+	})
+	return unseen, total, err
+}
+
+// coverageLine is what the coverage guard may claim about its own reach: the
+// files a context compiled, which is the walk MINUS the unseen.
+func coverageLine(total int, unseen []string, contexts []string) string {
+	return fmt.Sprintf("%d of %d non-test files seen across %d contexts (%s)", total-len(unseen), total, len(contexts), strings.Join(contexts, ", "))
+}
+
 // TestEveryNonTestFileIsSeenByAListingContext executes the scope sentence
 // of docs/layering.md: the contexts listContexts names compile every
 // non-test Go file under pkg/ and internal/, so "walks every non-test
@@ -697,23 +882,28 @@ func TestEveryAcceptedExceptionIsALiveViolation(t *testing.T) {
 // file through that hole, green under linux, red under GOOS=windows on the
 // same tree and the same binary.
 func TestEveryNonTestFileIsSeenByAListingContext(t *testing.T) {
-	seen := treeListing(t).files
-	var unseen []string
-	total := 0
-	if err := walkNonTestFiles(repoRoot(t), func(rel string, _ []byte) error {
-		total++
-		if !seen[rel] {
-			unseen = append(unseen, rel)
-		}
-		return nil
-	}); err != nil {
+	unseen, total, err := unseenFiles(repoRoot(t), treeListing(t).files)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if len(unseen) > 0 {
 		t.Errorf("%d of the %d non-test files under pkg/ and internal/ are compiled by none of the listed contexts (%s) — add the context that compiles them, or their imports are judged by nothing:\n%s",
 			len(unseen), total, strings.Join(treeContexts, ", "), strings.Join(unseen, "\n"))
 	}
-	t.Logf("%d non-test files seen across %d contexts (%s)", total, len(treeContexts), strings.Join(treeContexts, ", "))
+	t.Log(coverageLine(total, unseen, treeContexts))
+}
+
+// TestTheCoverageLineCountsOnlyWhatAContextCompiled pins the only count the
+// guard above may claim. Logging the files WALKED as "seen" had it answer,
+// two lines under a verdict naming three files no context compiles, "1704
+// non-test files seen across 3 contexts" — a line that contradicts the
+// verdict it accompanies, in a guard whose whole subject is an honest count.
+func TestTheCoverageLineCountsOnlyWhatAContextCompiled(t *testing.T) {
+	got := coverageLine(3, []string{"pkg/a/_old/old.go"}, []string{"host", "windows"})
+	const want = "2 of 3 non-test files seen across 2 contexts (host, windows)"
+	if got != want {
+		t.Errorf("coverageLine(3 walked, 1 unseen, 2 contexts) = %q, want %q — the files a context compiled, never the files the walk handed out", got, want)
+	}
 }
 
 // TestAWindowsOnlyAndATagOnlyCrossingAreNamed replays iterion#2829's review
@@ -763,4 +953,53 @@ func TestAWindowsOnlyAndATagOnlyCrossingAreNamed(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("the union of %v named:\n%s\nwant the windows-only and the tag-only crossing:\n%s", names, strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
+}
+
+// TestTheGuardSkipsWhatTheToolchainNeverCompiles replays, on a module of its
+// own, the three shapes the go tool compiles in no context at all: a
+// `//go:build ignore` generator, a `_old/` directory and a `.hidden/` one.
+// Walked as ordinary files they break this guard two ways at once, and the
+// fixture keeps the two apart — only the generator carries a constraint, so
+// the tag assertion and the coverage assertion cannot cover for each other.
+// The generator's tag, forced into a -tags context, stops being reserved: its
+// `package main` collides with its neighbour's package, `go list` exits 1,
+// and EVERY test that lists the tree fatals on the error listIn returns —
+// over a tree that is perfectly sound. The two directories are reported as
+// compiled by no context, with "add the context that compiles them" for a
+// remedy, which no context can satisfy. Both reds would be the guard's own,
+// and iterion is one idiomatic generator away from either.
+func TestTheGuardSkipsWhatTheToolchainNeverCompiles(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("testdata", "neverbuilt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix, err := modulePrefixOf(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fixture is its own module: GOWORK=off and an empty GOFLAGS keep an
+	// operator's workspace or -mod=vendor from reaching into it.
+	hermetic := []string{"GOWORK=off", "GOFLAGS="}
+	tags, err := projectTags(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tags) != 0 {
+		t.Fatalf("projectTags(fixture) = %q, want none: `ignore` is the toolchain's reserved name, and the generator that carries it is the fixture's only constrained file", tags)
+	}
+	union, names, err := treeUnion(root, prefix, hermetic)
+	if err != nil {
+		t.Fatalf("listing the fixture failed, which is how a reserved tag fatals every test of this guard: %v", err)
+	}
+	unseen, total, err := unseenFiles(root, union.files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unseen) != 0 {
+		t.Errorf("the guard demands a listing context for %d file(s) of the fixture that no context of %v can compile:\n%s", len(unseen), names, strings.Join(unseen, "\n"))
+	}
+	if want := 2; total != want {
+		t.Errorf("the walk handed out %d non-test file(s) of the fixture, want the %d the toolchain compiles (pkg/a/a.go and internal/b/b.go)", total, want)
+	}
+	t.Log(coverageLine(total, unseen, names))
 }
