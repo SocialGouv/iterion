@@ -90,8 +90,24 @@ func TestFanOutStopsOnUndecidedEffects(t *testing.T) {
 					case "drain":
 						stop = func() { cancel(ErrRunInterrupted) }
 					case "deadline":
+						// The budget has to cover the entry node, the router
+						// and the branch start before it may expire, since
+						// what this case measures is a deadline reached while
+						// a branch is UNDECIDED. At 200 ms a loaded CI shard
+						// lost that race twice in one hour (2026-10-29,
+						// race-shard (0) on #2751 and #2764: "[TIMEOUT]
+						// timeout: context deadline exceeded (node: entry)",
+						// i.e. the run died before any fan-out). Two seconds
+						// is a tenfold margin over the worst measured
+						// pre-branch stretch, and the guard below names the
+						// environment if even that is ever lost — a faked
+						// context is NOT the alternative: the engine derives
+						// branchCtx with context.WithCancel, Go propagates the
+						// parent's error verbatim, so a stub would hand the
+						// branches Canceled and quietly turn this case into a
+						// duplicate of "cancel".
 						var deadlineCancel context.CancelFunc
-						ctx, deadlineCancel = context.WithTimeout(ctx, 200*time.Millisecond)
+						ctx, deadlineCancel = context.WithTimeout(ctx, 2*time.Second)
 						defer deadlineCancel()
 						stop = func() {}
 					case "sibling":
@@ -120,6 +136,17 @@ func TestFanOutStopsOnUndecidedEffects(t *testing.T) {
 						}
 					}()
 					err := New(wf, s, x).Run(ctx, "r", nil)
+					if trigger == "deadline" {
+						// A deadline that fired before the branches were up
+						// measured the budget, not the classification: say so
+						// instead of failing on a verdict this run never had
+						// the chance to reach.
+						select {
+						case <-x.started:
+						default:
+							t.Fatalf("the deadline fired before the fan-out started (err = %v) — this run measured the 2s budget, not the undecided-effect classification; the machine, not the code, is what to look at", err)
+						}
+					}
 					var rt *RuntimeError
 					if !errors.As(err, &rt) || rt.Code != ErrCodeAmbiguousEffect {
 						t.Errorf("returned %v, want AMBIGUOUS_EFFECT", err)
