@@ -95,7 +95,8 @@ func TestPoolTier_apiKeyGrantIsStampedAndLabelled(t *testing.T) {
 	if !found {
 		t.Fatalf("run-doc fingerprints = %v, want the lent key's %s", creds.fingerprints, wantFP)
 	}
-	rec, err := rs.Get(ctx, creds.secretsRef)
+	// The read is scoped by the owning team, like the runner's fetch.
+	rec, err := rs.Get(store.WithTenant(ctx, poolTeam), creds.secretsRef)
 	if err != nil {
 		t.Fatalf("RunSecrets.Get: %v", err)
 	}

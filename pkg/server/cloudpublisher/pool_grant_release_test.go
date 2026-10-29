@@ -111,7 +111,9 @@ func rvaGatewayPoolLaunch(t *testing.T, drift bool) (msg *queue.RunMessage, open
 	msg = published[len(published)-1]
 	open, _ = leases.ListOpenByRun(ctx, runID)
 	if msg.SecretsRef != "" {
-		rec, err := pub.runSecrets.Get(ctx, msg.SecretsRef)
+		// lctx carries the launching team: the run-secrets store scopes
+		// its reads by tenant, as the runner's fetch does.
+		rec, err := pub.runSecrets.Get(lctx, msg.SecretsRef)
 		if err != nil {
 			t.Fatal(err)
 		}
