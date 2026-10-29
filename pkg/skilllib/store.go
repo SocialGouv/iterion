@@ -210,10 +210,35 @@ func ValidName(name string) error {
 	return nil
 }
 
-// listDir enumerates the skills directly under dir (directory form
-// <name>/SKILL.md and flat <name>.md), tagging each with scope. A missing dir
-// yields no skills (not an error).
-func listDir(dir, scope string) ([]LibrarySkill, error) {
+// DirPage is one skill page found directly under a skills/ directory, in
+// either canonical form.
+type DirPage struct {
+	// Name is the on-disk identifier: the directory name, or the file
+	// basename without its extension. A frontmatter `name:` never overrides
+	// it, so resolution and listing agree.
+	Name string
+	// Rel is the page's SLASH path relative to the scanned directory —
+	// "<name>.md" or "<name>/SKILL.md". The form travels with the page so a
+	// caller reporting a path names the file an operator must open, never the
+	// directory.
+	Rel string
+	// Path is the page's on-disk path (the scanned directory joined with
+	// Rel, in the host's separator).
+	Path string
+}
+
+// ListDirPages enumerates the skill pages directly under dir in BOTH
+// canonical forms — flat `<name>.md` and the directory `<name>/SKILL.md` —
+// and is THE reading of that layout: the library store, the bundle lint
+// (pkg/cli.scanBundleSkills) and the catalogue guards all ask here, so none
+// of them can go blind to a form the engine accepts
+// (runtime.mirrorBundleSkills copies a directory source through unchanged).
+//
+// A missing dir yields no pages (not an error): a bundle without skills is
+// ordinary. A dotted entry, a non-.md file and a directory with no SKILL.md
+// are not pages. The order is the directory's own (os.ReadDir sorts by
+// name), so a caller reporting them is deterministic.
+func ListDirPages(dir string) ([]DirPage, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -221,28 +246,41 @@ func listDir(dir, scope string) ([]LibrarySkill, error) {
 		}
 		return nil, fmt.Errorf("skilllib: read %s: %w", dir, err)
 	}
-	var out []LibrarySkill
+	var out []DirPage
 	for _, e := range entries {
 		raw := e.Name()
 		if strings.HasPrefix(raw, ".") {
 			continue
 		}
-		var name, path string
+		var name, rel string
 		if e.IsDir() {
-			p := filepath.Join(dir, raw, "SKILL.md")
-			if !fileExists(p) {
+			if !fileExists(filepath.Join(dir, raw, "SKILL.md")) {
 				continue
 			}
-			name, path = raw, p
+			name, rel = raw, raw+"/SKILL.md"
 		} else {
 			if !strings.EqualFold(filepath.Ext(raw), ".md") {
 				continue
 			}
-			name = strings.TrimSuffix(raw, filepath.Ext(raw))
-			path = filepath.Join(dir, raw)
+			name, rel = strings.TrimSuffix(raw, filepath.Ext(raw)), raw
 		}
-		sk := LibrarySkill{Name: name, Path: path, Scope: scope}
-		if f, err := os.Open(path); err == nil {
+		out = append(out, DirPage{Name: name, Rel: rel, Path: filepath.Join(dir, filepath.FromSlash(rel))})
+	}
+	return out, nil
+}
+
+// listDir enumerates the skills directly under dir (both forms, through
+// ListDirPages), tagging each with scope and reading its frontmatter
+// description. A missing dir yields no skills (not an error).
+func listDir(dir, scope string) ([]LibrarySkill, error) {
+	pages, err := ListDirPages(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []LibrarySkill
+	for _, p := range pages {
+		sk := LibrarySkill{Name: p.Name, Path: p.Path, Scope: scope}
+		if f, err := os.Open(p.Path); err == nil {
 			_, sk.Description = ScanFrontmatter(f)
 			_ = f.Close()
 		}

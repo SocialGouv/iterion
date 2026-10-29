@@ -1085,12 +1085,17 @@ func lintMainOfBundle(b *bundle.Bundle) (*ir.Workflow, *bundle.Frontmatter, stri
 	return mcr.Workflow, fm, mainPath, err
 }
 
-// scanBundleSkills reads a bundle's skills/*.md for the routability lint
+// scanBundleSkills reads a bundle's skill pages for the routability lint
 // (C231–C234) and the durable-memory reference check (C274), using the shared
-// skilllib parser for the frontmatter so it never drifts from run-time
-// discovery. An empty or missing dir yields no docs (the checks then no-op).
-// Non-.md entries and unreadable files are skipped silently — the lint judges
-// the skills that exist, not filesystem health.
+// skilllib reading — BOTH canonical forms (`skills/<name>.md` and
+// `skills/<name>/SKILL.md`, which the engine's own mirror copies through
+// unchanged) plus its frontmatter parser — so the lint never drifts from
+// run-time discovery. An empty or missing dir yields no docs (the checks then
+// no-op), and an unreadable file is skipped silently: the lint judges the
+// skills that exist, not filesystem health.
+//
+// The reported path is the PAGE, directory form included, so an operator
+// opens the file the diagnostic names.
 //
 // The page's text travels with its frontmatter because C274 asks which TOOLS
 // the page names; bundlelint stays I/O-free, so the bytes are read here.
@@ -1098,22 +1103,19 @@ func scanBundleSkills(skillsDir string) []bundlelint.SkillDoc {
 	if skillsDir == "" {
 		return nil
 	}
-	entries, err := os.ReadDir(skillsDir)
+	pages, err := skilllib.ListDirPages(skillsDir)
 	if err != nil {
 		return nil
 	}
 	var docs []bundlelint.SkillDoc
-	for _, e := range entries {
-		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".md") {
-			continue
-		}
-		body, err := os.ReadFile(filepath.Join(skillsDir, e.Name()))
+	for _, p := range pages {
+		body, err := os.ReadFile(p.Path)
 		if err != nil {
 			continue
 		}
 		name, desc := skilllib.ScanFrontmatter(strings.NewReader(string(body)))
 		docs = append(docs, bundlelint.SkillDoc{
-			Path:        filepath.Join(bundle.DirSkills, e.Name()),
+			Path:        bundle.DirSkills + "/" + p.Rel,
 			Name:        name,
 			Description: desc,
 			Body:        string(body),

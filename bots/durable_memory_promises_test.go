@@ -10,9 +10,11 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/skillshare"
+	"github.com/SocialGouv/iterion/pkg/backend/automemory"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
+	"github.com/SocialGouv/iterion/pkg/bundlelint"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -167,9 +169,23 @@ func durableMemoryWritePath(sw shippedWorkflow) string {
 		}
 		routes := append([]string{exec.EffectiveBackendName(sw.wf.Nodes[id])}, exec.EffectiveFallbackBackends(sw.wf.Nodes[id])...)
 		// `memory:` and autoload are claw-only (C047, ir.validate_nodes), so
-		// the block is a path exactly on a claw route.
-		if llm.GetMemory() != nil && slices.Contains(routes, delegate.BackendClaw) {
-			return fmt.Sprintf("node %q carries a `memory:` block on a claw route", id)
+		// the block is a path exactly on a claw route — and only where the
+		// run gets the store's WRITE tool: `write: false` and the
+		// instance-wide `global` space both withhold it
+		// (ir.Memory.InstallsWriteTool, the predicate pkg/bundlelint's C274
+		// reads, so this guard and the lint cannot disagree).
+		if llm.GetMemory().InstallsWriteTool() && slices.Contains(routes, delegate.BackendClaw) {
+			return fmt.Sprintf("node %q carries a `memory:` block that installs the write tool, on a claw route", id)
+		}
+		// `auto_memory: on` is per-bot memory too — ordinary file tools over
+		// a mirror the executor folds back into the store — so a node
+		// running it keeps a durable tree with no store builtin at all.
+		if automemory.Resolve("", llm.GetAutoMemory(), sw.wf.AutoMemory, "").Enabled() {
+			for _, route := range routes {
+				if automemory.SupportsBackend(route) {
+					return fmt.Sprintf("node %q runs auto_memory: on, on backend %q", id, route)
+				}
+			}
 		}
 		// An UNDECLARED list is not an empty one: on the CLI backends it means
 		// "no restriction", so the native roster keeps Bash, Write and Edit.
@@ -183,7 +199,7 @@ func durableMemoryWritePath(sw shippedWorkflow) string {
 		// Taken over the pessimistic reading of the node's effort: an incoming
 		// edge may raise it to ultracode, which appends `agent` on claw.
 		for _, writer := range writersAmong(exec.EffectiveToolNames(sw.wf.Nodes[id], true)) {
-			if deniedByPermissionRules(llm, sw.wf, writer) {
+			if !bundlelint.PermissionGateLeaves(llm, sw.wf, writer) {
 				continue
 			}
 			return fmt.Sprintf("node %q holds %q", id, writer)
@@ -218,34 +234,6 @@ func writersAmong(held []string) []string {
 		}
 	}
 	return out
-}
-
-// deniedByPermissionRules reports whether the runtime permission gate removes
-// one tool the declaration granted. The gate bounds what RUNS, independently
-// of what exists, so a bundle whose policy denies `Write` has no write path
-// even where its list names one.
-//
-// An unset mode is off (ir.Workflow.Permission), and an off gate makes the
-// rule lists inert — read as "not denied" rather than guessed.
-func deniedByPermissionRules(llm ir.LLMNode, wf *ir.Workflow, tool string) bool {
-	mode := llm.GetPermission()
-	if mode == "" {
-		mode = wf.Permission
-	}
-	if mode == "" || mode == "off" {
-		return false
-	}
-	for _, rule := range ir.EffectivePermissionRules(llm.GetPermissionDeny(), wf.PermissionDeny) {
-		// A rule is `Tool` or `Tool(pattern)`; a scoped rule bounds a subset
-		// of the calls, so only the bare form removes the tool outright.
-		if strings.Contains(rule, "(") {
-			continue
-		}
-		if toolcatalog.CanonicalToolName(strings.TrimSpace(rule)) == toolcatalog.CanonicalToolName(tool) {
-			return true
-		}
-	}
-	return false
 }
 
 // briefPromise is one mention of the durable brief: where it is written, and

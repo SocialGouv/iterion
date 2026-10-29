@@ -180,6 +180,11 @@ run — claw-only, which is the whole reason the family is rooted where it is:
 - `memory_write` — write or overwrite a document.
 - `memory_list` — list documents under an optional dir prefix.
 
+The write tool is the one a declaration can withhold: `write:` defaults to
+true, so the read-only shape is an explicit `write: false`, and the
+instance-wide `visibility: "global"` space is refused to every run (C319). A
+block that withholds it is not a write path, and C274 reads it as none.
+
 A document path is relative, stays inside the space (no `..`, no absolute
 form), and must be **canonical** — `MEMORY.md`, not `./MEMORY.md`;
 `topics/deploy.md`, not `topics//deploy.md`. One document, one spelling: the

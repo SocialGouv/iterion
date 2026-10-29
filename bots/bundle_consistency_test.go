@@ -107,36 +107,32 @@ func TestCatalogBotsBundleConsistencyClean(t *testing.T) {
 	}
 }
 
-// bundleSkillDocs reads one bundle's skills/*.md the way `iterion validate`
-// does (pkg/cli.scanBundleSkills): the shared frontmatter parser, plus the
+// bundleSkillDocs reads one bundle's skill pages the way `iterion validate`
+// does (pkg/cli.scanBundleSkills): skilllib.ListDirPages — THE reading of a
+// skills/ directory, both canonical forms — its frontmatter parser, plus the
 // page's text for the checks that ask which tools a page NAMES. A bundle with
 // no skills/ dir yields none, and the skill checks then no-op.
 //
-// It mirrors the CLI rather than sharing it because scanBundleSkills is
-// unexported and pkg/cli is the composition layer; the shape it builds is the
-// contract, and bundlelint.SkillDoc is where a drift would show.
+// The FORM comes from the shared enumerator rather than a loop of its own:
+// the copy this replaced skipped directory entries, which left the lint's
+// whole skill family (C231–C234, C274) blind to `skills/<name>/SKILL.md` on
+// both sides at once (iterion#2832).
 func bundleSkillDocs(t *testing.T, dir string) []bundlelint.SkillDoc {
 	t.Helper()
 	skillsDir := filepath.Join(dir, bundle.DirSkills)
-	entries, err := os.ReadDir(skillsDir)
+	pages, err := skilllib.ListDirPages(skillsDir)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			t.Fatalf("read %s: %v", skillsDir, err)
-		}
-		return nil
+		t.Fatalf("read %s: %v", skillsDir, err)
 	}
 	var docs []bundlelint.SkillDoc
-	for _, e := range entries {
-		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".md") {
-			continue
-		}
-		body, err := os.ReadFile(filepath.Join(skillsDir, e.Name()))
+	for _, p := range pages {
+		body, err := os.ReadFile(p.Path)
 		if err != nil {
-			t.Fatalf("read %s/%s: %v", skillsDir, e.Name(), err)
+			t.Fatalf("read %s: %v", p.Path, err)
 		}
 		name, desc := skilllib.ScanFrontmatter(strings.NewReader(string(body)))
 		docs = append(docs, bundlelint.SkillDoc{
-			Path:        filepath.Join(bundle.DirSkills, e.Name()),
+			Path:        bundle.DirSkills + "/" + p.Rel,
 			Name:        name,
 			Description: desc,
 			Body:        string(body),

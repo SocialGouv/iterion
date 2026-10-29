@@ -21,6 +21,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/automemory"
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -718,10 +720,15 @@ func checkSkills(diags *[]Diag, skills []SkillDoc) {
 //     which is exactly what a claude_code recipe once told a bot to do.
 //
 // The capability is read from the DECLARATION, the surface bundlelint judges,
-// and it is read GENEROUSLY: a `memory:` block on a backend that cannot serve
-// it is ir's own diagnostic, and a warning speaking over another diagnostic's
-// defect would name the wrong fix. bots.TestABundleSellsADurableBriefOnlyWhereItCanWriteOne
-// is the corpus twin, which reads the RESOLVED routes an executor computes.
+// and from what the RUNTIME INSTALLS for it rather than from the presence of
+// a block or a list entry (iterion#2832) — see anyNodeCanWriteDurably for the
+// four arms. It is read GENEROUSLY where another diagnostic owns the defect:
+// a `memory:` block on a backend that cannot serve it, and a permission mode
+// no gate can parse, are ir's own diagnostics, and a warning speaking over
+// them would name the wrong fix.
+// bots.TestABundleSellsADurableBriefOnlyWhereItCanWriteOne is the corpus
+// twin, which reads the RESOLVED routes an executor computes and asks THIS
+// package's gate predicate (PermissionGateLeaves) so the two cannot drift.
 //
 // The question is asked of ONE workflow, not of a bundle's every entrypoint,
 // because a skill is mirrored into the workspace of ONE run: a bundle's
@@ -759,7 +766,7 @@ func checkDurableMemoryPromises(diags *[]Diag, skills []SkillDoc, w *ir.Workflow
 				"the page names %s, but no node of this bundle can put bytes in a durable memory tree: %s",
 				strings.Join(quotedNames(named), ", "), describeNodes(w, readers),
 			),
-			Hint: "give a node a `memory:` block on `backend: \"claw\"`, or a `tools:` list naming a writer its permission gate leaves — or scope the page to say this bundle has no memory tree",
+			Hint: "give a node a `memory:` block on `backend: \"claw\"` that KEEPS its write tool (not `write: false`, not the instance-wide `visibility: \"global\"`), or `auto_memory: on`, or a `tools:` list naming a writer its permission gate leaves — or scope the page to say this bundle has no memory tree",
 		})
 	}
 }
@@ -806,33 +813,92 @@ func llmNodeIDs(w *ir.Workflow) []string {
 }
 
 // anyNodeCanWriteDurably reports whether one node of the workflow could put
-// bytes in a durable memory tree. Three declarations are a path, and each is
-// a different question:
+// bytes in a durable memory tree. Four declarations are a path, and each is a
+// different question:
 //
-//   - a `memory:` block installs the store's own tools (claw-only; a block
-//     declared elsewhere is ir's diagnostic, not this one's);
-//   - an UNDECLARED `tools:` list is not an empty one — on the CLI backends it
-//     means "no restriction", so the native roster keeps the shell and the
-//     writers, while `tools: []` IS a declaration;
+//   - a `memory:` block whose WRITE TOOL a run gets — the block is not the
+//     path, `memory_write` is (ir.Memory.InstallsWriteTool, the reading
+//     model.installWorkspaceMemory performs). The backend is NOT asked: a
+//     block on a backend that cannot serve it is ir's own diagnostic (C047),
+//     and a warning speaking over another's defect would name the wrong fix;
+//   - `auto_memory: on` — per-bot memory too, maintained with ORDINARY FILE
+//     TOOLS the executor appends to a restricted claw list and folded back
+//     into the store by the mirror, so the node keeps a durable tree with no
+//     store builtin at all;
+//   - an UNDECLARED `tools:` list is not an empty one — on the CLI backends
+//     it means "no restriction", so the native roster keeps the shell and the
+//     writers, while `tools: []` IS a declaration. The GATE still bounds that
+//     roster, so it is asked about the roster rather than credited for the
+//     absence of a list;
 //   - a declared tool of the durable-write vocabulary its permission gate
 //     leaves.
+//
+// Every arm reads what the RUNTIME INSTALLS, never the mere presence of a
+// block or a list entry: that reading is what let `write: false`,
+// `visibility: "global"` and a `permission: deny` gate silence the warning on
+// bundles with no write path at all (iterion#2832).
 func anyNodeCanWriteDurably(w *ir.Workflow, ids []string) bool {
 	for _, id := range ids {
 		llm, ok := w.Nodes[id].(ir.LLMNode)
 		if !ok {
 			continue
 		}
-		if llm.GetMemory() != nil {
+		if llm.GetMemory().InstallsWriteTool() {
+			return true
+		}
+		if autoMemoryServesNode(llm, w) {
 			return true
 		}
 		if !toolcatalog.ToolsDeclared(llm.GetTools()) {
-			return true
+			if nativeDurableWriterLeft(llm, w) != "" {
+				return true
+			}
+			continue
 		}
 		if declaredDurableWriter(llm, w) != "" {
 			return true
 		}
 	}
 	return false
+}
+
+// autoMemoryServesNode reports whether a node runs with auto-memory on a
+// backend that serves it — the two questions the engine asks
+// (model.ClawExecutor.autoMemoryMode and automemory.SupportsBackend), read
+// from the declaration.
+//
+// The mode is resolved by the SHARED resolver, so the node's own value wins
+// over the workflow's exactly as it does at dispatch; the run override and
+// the env default are not the declaration's to know, and are left empty.
+// An effective backend of "" is read generously: the resolver falls through
+// to env and host credentials, so the declaration genuinely cannot say — the
+// same reading C132 performs.
+func autoMemoryServesNode(llm ir.LLMNode, w *ir.Workflow) bool {
+	if !automemory.Resolve("", llm.GetAutoMemory(), w.AutoMemory, "").Enabled() {
+		return false
+	}
+	backend := ir.SourceNodeBackendName(llm.GetLLMFields().Backend, w.DefaultBackend)
+	return backend == "" || automemory.SupportsBackend(backend)
+}
+
+// nativeDurableWriterLeft returns the first durable writer an undeclared
+// `tools:` list keeps through the gate, or "" when the gate removes them all.
+//
+// The roster is the shared vocabulary minus the store's own builtins (a CLI
+// backend has no `memory_write`), asked of the SAME gate predicate a declared
+// list is asked of: a node under `permission: deny` whose allow list names no
+// writer runs none of them, however complete its native roster is.
+func nativeDurableWriterLeft(llm ir.LLMNode, w *ir.Workflow) string {
+	store := durableMemoryWriteTools()
+	for _, canonical := range toolcatalog.DurableWriteCanonicals() {
+		if slices.Contains(store, canonical) {
+			continue
+		}
+		if PermissionGateLeaves(llm, w, canonical) {
+			return canonical
+		}
+	}
+	return ""
 }
 
 // declaredDurableWriter returns the first tool a node declares that could
@@ -856,7 +922,7 @@ func declaredDurableWriter(llm ir.LLMNode, w *ir.Workflow) string {
 		if !slices.Contains(writers, canonical) || slices.Contains(store, canonical) {
 			continue
 		}
-		if deniedByPermissionRules(llm, w, tool) {
+		if !PermissionGateLeaves(llm, w, tool) {
 			continue
 		}
 		return tool
@@ -864,27 +930,63 @@ func declaredDurableWriter(llm ir.LLMNode, w *ir.Workflow) string {
 	return ""
 }
 
-// deniedByPermissionRules reports whether the runtime permission gate removes
-// a tool the declaration granted — the gate bounds what RUNS, independently of
-// what exists.
+// PermissionGateLeaves reports whether the runtime permission gate lets a tool
+// the declaration granted RUN. The gate bounds what runs, independently of
+// what exists, so every reader asking "can this node reach a writer" must ask
+// it — bundlelint's durable-memory check and its corpus twin
+// (bots.TestABundleSellsADurableBriefOnlyWhereItCanWriteOne) read THIS
+// predicate, exported so the two cannot drift.
 //
-// An unset mode is off (ir.Workflow.Permission), and an off gate leaves the
-// rule lists inert: read as "not denied" rather than guessed. A scoped rule
-// (`Tool(pattern)`) bounds a subset of the calls, so only the bare form
-// removes the tool outright.
-func deniedByPermissionRules(llm ir.LLMNode, w *ir.Workflow, tool string) bool {
-	mode := llm.GetPermission()
-	if mode == "" {
-		mode = w.Permission
+// The effective MODE decides which question the rule lists answer
+// (pkg/backend/permission.Policy.Evaluate):
+//
+//   - off, or unset: the gate is disabled and the lists are inert — read as
+//     "left", never guessed;
+//   - a mode no gate can parse is C110's error; a warning that read it as a
+//     bound would name the wrong fix, so it is read as off;
+//   - `ask`: everything no rule denies pauses for the human, who may approve,
+//     so the capability EXISTS. Only a rule bounding every call of the tool
+//     removes it — a bare row, or a scope that leaves no call out
+//     (`Write(**)`); `Write(docs/**)` bounds a subset, and the node writes
+//     everywhere else;
+//   - `deny`: the mode HARD-DENIES everything no allow row matches, so a
+//     writer is left only where an allow row — or an ask row, which a deny
+//     mode still pauses on (Policy.CanAsk) — covers the tool at all. A scoped
+//     allow is enough: some calls pass, so the capability exists.
+//
+// Rules are read with the grammar that ENFORCES them (permission.RuleCovers /
+// RuleRemovesTool), never a second spelling here: a class row (`class:shell`)
+// and a tool glob bind exactly as they do at dispatch.
+// A nil workflow is the node alone: every list falls back to what the node
+// declares, the way ir.EffectiveAskRules reads one.
+func PermissionGateLeaves(llm ir.LLMNode, w *ir.Workflow, tool string) bool {
+	var wfMode string
+	var wfAllow, wfDeny []string
+	if w != nil {
+		wfMode, wfAllow, wfDeny = w.Permission, w.PermissionAllow, w.PermissionDeny
 	}
-	if mode == "" || mode == "off" {
-		return false
+	raw := llm.GetPermission()
+	if raw == "" {
+		raw = wfMode
 	}
-	for _, rule := range ir.EffectivePermissionRules(llm.GetPermissionDeny(), w.PermissionDeny) {
-		if strings.Contains(rule, "(") {
-			continue
+	mode, err := permission.ParseMode(raw)
+	if err != nil || mode == permission.ModeOff {
+		return true
+	}
+	for _, rule := range ir.EffectivePermissionRules(llm.GetPermissionDeny(), wfDeny) {
+		if permission.RuleRemovesTool(rule, tool) {
+			return false
 		}
-		if toolcatalog.CanonicalToolName(strings.TrimSpace(rule)) == toolcatalog.CanonicalToolName(tool) {
+	}
+	if mode != permission.ModeDeny {
+		return true
+	}
+	granted := append(
+		ir.EffectivePermissionRules(llm.GetPermissionAllow(), wfAllow),
+		ir.EffectiveAskRules(llm, w)...,
+	)
+	for _, rule := range granted {
+		if permission.RuleCovers(rule, tool) {
 			return true
 		}
 	}
@@ -957,12 +1059,14 @@ func describeNodes(w *ir.Workflow, ids []string) string {
 		if toolcatalog.ToolsDeclared(llm.GetTools()) {
 			declared = fmt.Sprintf("tools: [%s]", strings.Join(llm.GetTools(), ", "))
 		}
-		// Read, never assumed: the `memory:` arm of the capability makes a
-		// block impossible here today, and a message that restated that
-		// coupling would start lying the day an arm is added.
+		// Read, never assumed: a node reaches this message only where its
+		// block installs no write tool, and saying WHICH declaration
+		// withheld it is what makes the fix readable off the message —
+		// `write: false` and the instance-wide `global` space are both
+		// doors C319 sends an author through.
 		block := "carries no `memory:` block"
-		if llm.GetMemory() != nil {
-			block = "carries a `memory:` block its backend cannot serve"
+		if mem := llm.GetMemory(); mem != nil {
+			block = fmt.Sprintf("carries a `memory:` block that installs no write tool (write: %t, visibility: %q)", mem.Write, mem.Visibility)
 		}
 		parts = append(parts, fmt.Sprintf("node %q (backend %s) declares %s and %s", id, backend, declared, block))
 	}

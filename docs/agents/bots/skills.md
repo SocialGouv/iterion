@@ -7,7 +7,9 @@ Read it when editing a bundle's `skills/` — the mirror into `.claude/skills`, 
 Claude Code-style skills ship inside the `.botz` bundle they
 support, not at a repo-global location. Iterion's runtime mirrors
 `<bundle>/skills/*.md` into `<workspace>/.claude/skills/` at run
-start (and on each resume), regardless of backend. Three backends
+start (and on each resume), regardless of backend. A page may equally
+ship as the directory form `skills/<name>/SKILL.md`, copied through
+unchanged and judged by the same checks (C231-C234, C274). Three backends
 consume the same directory: `claude_code` through its native lookup,
 `claw` through the `skill` tool (registered by
 [pkg/backend/tool/claw_builtins.go:RegisterClawSkill](../../../pkg/backend/tool/claw_builtins.go)),

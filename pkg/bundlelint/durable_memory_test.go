@@ -174,11 +174,16 @@ func TestEveryDurableWriteConceptSilencesTheWarning(t *testing.T) {
 func TestTheTwoOtherPathsToTheTreeSilenceTheWarning(t *testing.T) {
 	page := skillPage(pageTeaching(durableStoreTools(t)[0]))
 
+	// `Write: true` is what the compiler PRODUCES for a block that does not
+	// say otherwise (ir.compileMemory defaults read and write to true), so a
+	// hand-built block must carry it or it stands for `write: false` — the
+	// one shape that is NOT a path. TestCompileMemoryWriteToolInstallation
+	// (pkg/dsl/ir) holds that default against the real compiler.
 	withBlock := &ir.AgentNode{
 		BaseNode:  ir.BaseNode{ID: "evoly"},
 		LLMFields: ir.LLMFields{Backend: "claw"},
 		Tools:     []string{"read_file"},
-		Memory:    &ir.Memory{Enabled: true, Scope: "session-continuity"},
+		Memory:    &ir.Memory{Enabled: true, Scope: "session-continuity", Read: true, Write: true},
 	}
 	if got := durableMemoryDiags(wf("probe", nil, nil, nil, withBlock), page); len(got) != 0 {
 		t.Errorf("a node carrying a `memory:` block still draws %+v", got)
@@ -242,31 +247,6 @@ func TestTheToolMustBeNamedAsTheTool(t *testing.T) {
 	}
 }
 
-// TestADeniedWriterIsNoPathToTheTree reads the gate that bounds what RUNS: a
-// bundle whose policy denies the writer its own list names has no write path,
-// and a SCOPED rule bounds a subset of the calls rather than removing the
-// tool.
-func TestADeniedWriterIsNoPathToTheTree(t *testing.T) {
-	page := skillPage(pageTeaching(durableStoreTools(t)[0]))
-	build := func(mode string, deny []string) *ir.Workflow {
-		w := wf("probe", nil, nil, nil, agentDeclaring("worker", "claude_code", []string{"write_file"}))
-		w.Permission = mode
-		w.PermissionDeny = deny
-		return w
-	}
-	if got := durableMemoryDiags(build("enforce", []string{"Write"}), page); len(got) != 1 {
-		t.Errorf("a denied `write_file` was still read as a write path: got %d diagnostics, want 1", len(got))
-	}
-	if got := durableMemoryDiags(build("enforce", []string{"Write(docs/**)"}), page); len(got) != 0 {
-		t.Errorf("a SCOPED deny removed the tool outright: %+v", got)
-	}
-	// An unset gate leaves the rule lists inert: read as "not denied", never
-	// guessed.
-	if got := durableMemoryDiags(build("", []string{"Write"}), page); len(got) != 0 {
-		t.Errorf("a deny rule under an unset gate removed the tool: %+v", got)
-	}
-}
-
 // TestABundleWithNoReaderAsksNothingOfItsSkills keeps the check off the two
 // shapes where it would speak into the void: a workflow with no LLM node (no
 // model reads a mirrored skill at all) and a caller that supplied no page
@@ -308,5 +288,209 @@ func TestTheWarningNamesEveryReadingNodeBounded(t *testing.T) {
 	}
 	if strings.Contains(msg, `node "n4"`) || !strings.Contains(msg, "+2 more") {
 		t.Errorf("the list is not bounded at four with a count: %s", msg)
+	}
+}
+
+// agentWithMemory is one LLM node declaring a `memory:` block beside a
+// `tools:` list that names no writer — the shape C319's remedies produce.
+func agentWithMemory(id string, mem *ir.Memory) ir.Node {
+	return &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: id},
+		LLMFields: ir.LLMFields{Backend: "claw"},
+		Tools:     []string{"read_file", "glob", "grep"},
+		Memory:    mem,
+	}
+}
+
+// TestAMemoryBlockIsAPathOnlyWhereItInstallsTheWriteTool is the reading
+// iterion#2832 asks of the `memory:` arm: a BLOCK is not a write path, the
+// write TOOL is. The runtime installs it on `spec.Write && the space is
+// writable by a run` (model.installWorkspaceMemory), so the two declarations
+// that withhold it must leave the warning on:
+//
+//   - `write: false` — a first-class property, and the very remedy C319
+//     prescribes;
+//   - `visibility: "global"` — the instance-wide space no run may write (a
+//     run holds no platform authority), which C319 says in words: memory_write
+//     is NOT installed for a run. Crediting the block there made C274 and C319
+//     contradict each other in the same output.
+//
+// The positive control is the same block with the write tool kept: quiet.
+func TestAMemoryBlockIsAPathOnlyWhereItInstallsTheWriteTool(t *testing.T) {
+	page := skillPage(pageTeaching(durableStoreTools(t)[0]))
+	cases := []struct {
+		what string
+		mem  *ir.Memory
+		want int
+	}{
+		{"write: false (the remedy C319 prescribes)", &ir.Memory{Enabled: true, Scope: "vision", Read: true, Visibility: "bot"}, 1},
+		{`visibility: "global" (C319: memory_write is NOT installed for a run)`, &ir.Memory{Enabled: true, Scope: "catalogue", Read: true, Write: true, Visibility: "global"}, 1},
+		{"a block that keeps its write tool", &ir.Memory{Enabled: true, Scope: "vision", Read: true, Write: true, Visibility: "bot"}, 0},
+		{"a block with no visibility (the legacy per-bot space)", &ir.Memory{Enabled: true, Scope: "vision", Read: true, Write: true}, 0},
+	}
+	for _, c := range cases {
+		got := durableMemoryDiags(wf("probe", nil, nil, nil, agentWithMemory("nexie", c.mem)), page)
+		if len(got) != c.want {
+			t.Errorf("%s: got %d durable-memory diagnostics, want %d: %+v", c.what, len(got), c.want, got)
+			continue
+		}
+		if c.want == 1 && !strings.Contains(got[0].Message, "memory:") {
+			t.Errorf("%s: the message does not say what the block is missing: %s", c.what, got[0].Message)
+		}
+	}
+}
+
+// TestAutoMemoryIsAPathToTheTree closes the false POSITIVE half: `auto_memory:
+// on` IS a durable memory, maintained with ordinary file tools the executor
+// appends to a restricted claw list (model.ClawExecutor.effectiveTools) and
+// folded back into the store by the mirror. A bundle whose page teaches the
+// store's tool while auto-memory is on keeps a tree, so the warning is wrong
+// there.
+//
+// The mode is resolved as the runtime resolves it (node over workflow), and
+// the backend must be one that serves it — the same two questions
+// pkg/backend/automemory answers for the engine.
+func TestAutoMemoryIsAPathToTheTree(t *testing.T) {
+	page := skillPage(pageTeaching(durableStoreTools(t)[0]))
+	build := func(backend, node, workflow string) *ir.Workflow {
+		n := &ir.AgentNode{
+			BaseNode:   ir.BaseNode{ID: "nexie"},
+			LLMFields:  ir.LLMFields{Backend: backend},
+			Tools:      []string{"read_file", "glob", "grep"},
+			AutoMemory: node,
+		}
+		w := wf("probe", nil, nil, nil, n)
+		w.AutoMemory = workflow
+		return w
+	}
+	cases := []struct {
+		what                    string
+		backend, node, workflow string
+		want                    int
+	}{
+		{"auto_memory: on, on the node", "claw", "on", "", 0},
+		{"auto_memory: on, inherited from the workflow", "claw", "", "on", 0},
+		{"auto_memory: on on a backend that serves it", "claude_code", "on", "", 0},
+		{"the node's off wins over the workflow's on", "claw", "off", "on", 1},
+		{"auto_memory: on on a backend that does NOT serve it (C132)", "codex", "on", "", 1},
+		{"no auto_memory at all", "claw", "", "", 1},
+	}
+	for _, c := range cases {
+		got := durableMemoryDiags(build(c.backend, c.node, c.workflow), page)
+		if len(got) != c.want {
+			t.Errorf("%s: got %d durable-memory diagnostics, want %d: %+v", c.what, len(got), c.want, got)
+		}
+	}
+}
+
+// TestTheGateIsReadInTheModeThatRuns is the permission arm, exercised in the
+// two modes a .bot may actually declare — C110 refuses anything else, so a
+// case written in an invented mode exercises nothing:
+//
+//   - `ask` bounds nothing by itself (the human is asked), so only a rule
+//     removes a writer: a bare rule, or a scope that covers every call
+//     (`Write(**)`, which permission.Evaluate denies for every path);
+//   - `deny` HARD-DENIES everything no allow rule matches
+//     (permission.Evaluate → `case ModeDeny: return Deny`), so a declared
+//     writer is a path only where an allow (or ask) row covers it.
+//
+// Each case names a real shape: bots/whats-next and bots/copilot both ship
+// `permission: deny` with a writer-free allow list.
+func TestTheGateIsReadInTheModeThatRuns(t *testing.T) {
+	page := skillPage(pageTeaching(durableStoreTools(t)[0]))
+	build := func(mode string, allow, ask, deny []string) *ir.Workflow {
+		w := wf("probe", nil, nil, nil, agentDeclaring("worker", "claude_code", []string{"write_file"}))
+		w.Permission = mode
+		w.PermissionAllow = allow
+		w.PermissionAsk = ask
+		w.PermissionDeny = deny
+		return w
+	}
+	cases := []struct {
+		what             string
+		mode             string
+		allow, ask, deny []string
+		want             int
+	}{
+		{"ask + a bare deny of the writer", "ask", nil, nil, []string{"Write"}, 1},
+		{"ask + a deny scoped to a subset", "ask", nil, nil, []string{"Write(docs/**)"}, 0},
+		{"ask + a deny scoped to every call", "ask", nil, nil, []string{"Write(**)"}, 1},
+		{"ask + no rule at all (the human may approve)", "ask", nil, nil, nil, 0},
+		{"deny + an allow list naming no writer (whats-next's shape)", "deny", []string{"Read(**)", "Glob"}, nil, nil, 1},
+		{"deny + an allow row covering the writer", "deny", []string{"Write(**)"}, nil, nil, 0},
+		{"deny + a bare allow of the writer", "deny", []string{"Write"}, nil, nil, 0},
+		{"deny + an ask row covering the writer (the run can still ask)", "deny", nil, []string{"Write"}, nil, 0},
+		{"deny + an allow row AND a bare deny (deny wins in every mode)", "deny", []string{"Write"}, nil, []string{"Write"}, 1},
+		{"deny + no rule at all", "deny", nil, nil, nil, 1},
+		{"an unset gate leaves the rule lists inert", "", nil, nil, []string{"Write"}, 0},
+		{"off is off", "off", nil, nil, []string{"Write"}, 0},
+	}
+	for _, c := range cases {
+		got := durableMemoryDiags(build(c.mode, c.allow, c.ask, c.deny), page)
+		if len(got) != c.want {
+			t.Errorf("%s: got %d durable-memory diagnostics, want %d: %+v", c.what, len(got), c.want, got)
+		}
+	}
+}
+
+// TestAnInvalidPermissionModeIsNotThisWarningsDefect keeps the warning off a
+// defect another diagnostic owns: a mode no gate can parse is C110's error,
+// and a warning that read it as a bound would name the wrong fix.
+func TestAnInvalidPermissionModeIsNotThisWarningsDefect(t *testing.T) {
+	page := skillPage(pageTeaching(durableStoreTools(t)[0]))
+	w := wf("probe", nil, nil, nil, agentDeclaring("worker", "claude_code", []string{"write_file"}))
+	w.Permission = "enforce"
+	w.PermissionDeny = []string{"Write"}
+	if got := durableMemoryDiags(w, page); len(got) != 0 {
+		t.Errorf("an unparseable permission mode (C110's error) was read as a gate: %+v", got)
+	}
+}
+
+// TestAnUndeclaredToolListIsStillBoundedByTheGate reads the arm that credits
+// the ABSENCE of a `tools:` list: on a CLI route the native roster keeps the
+// shell and the writers, but the gate still bounds them — under
+// `permission: deny` with a writer-free allow list, nothing of that roster
+// runs.
+func TestAnUndeclaredToolListIsStillBoundedByTheGate(t *testing.T) {
+	page := skillPage(pageTeaching(durableStoreTools(t)[0]))
+	build := func(mode string, allow []string) *ir.Workflow {
+		n := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "worker"}, LLMFields: ir.LLMFields{Backend: "claude_code"}}
+		w := wf("probe", nil, nil, nil, n)
+		w.Permission = mode
+		w.PermissionAllow = allow
+		return w
+	}
+	if got := durableMemoryDiags(build("deny", []string{"Read(**)", "Glob"}), page); len(got) != 1 {
+		t.Errorf("an unrestricted roster under `permission: deny` with no writer allowed was read as a write path: got %d diagnostics, want 1", len(got))
+	}
+	if got := durableMemoryDiags(build("deny", []string{"Bash"}), page); len(got) != 0 {
+		t.Errorf("an unrestricted roster whose allow list keeps the shell still draws %+v", got)
+	}
+	if got := durableMemoryDiags(build("", nil), page); len(got) != 0 {
+		t.Errorf("an unrestricted roster under no gate still draws %+v", got)
+	}
+}
+
+// TestThePermissionPredicateReadsANodeAlone keeps the exported predicate
+// usable by the corpus twin and by any later reader with no workflow in hand:
+// a nil workflow is the node alone, not a panic, and the node's own mode and
+// rule lists still decide.
+func TestThePermissionPredicateReadsANodeAlone(t *testing.T) {
+	node := &ir.AgentNode{
+		BaseNode:   ir.BaseNode{ID: "worker"},
+		LLMFields:  ir.LLMFields{Backend: "claude_code"},
+		Tools:      []string{"write_file"},
+		Permission: "deny",
+	}
+	if bundlelint.PermissionGateLeaves(node, nil, "write_file") {
+		t.Error("a node in `deny` mode with no allow row was read as keeping its writer")
+	}
+	node.PermissionAllow = []string{"Write(**)"}
+	if !bundlelint.PermissionGateLeaves(node, nil, "write_file") {
+		t.Error("a node whose own allow row covers the writer was read as denied")
+	}
+	node.PermissionDeny = []string{"Write"}
+	if bundlelint.PermissionGateLeaves(node, nil, "write_file") {
+		t.Error("a bare deny row did not win over the allow row")
 	}
 }

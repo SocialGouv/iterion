@@ -444,6 +444,11 @@ type rule struct {
 	// separately from argRe so permission precedence never has to infer
 	// specificity from the rule spelling or regex shape.
 	literalArg bool
+	// anyArg is true when the argument scope leaves no call out — `Write(**)`
+	// bounds every path, so the rule removes the tool as a bare one does.
+	// Kept here, beside the parse that reads the pattern, so no caller has to
+	// re-read a rule's spelling to learn how wide it is.
+	anyArg bool
 }
 
 // parseRule parses `Tool` or `Tool(content)` into a rule.
@@ -469,6 +474,7 @@ func parseRule(raw string) (rule, error) {
 		r.argRe = argRe
 		trimmedArg := strings.TrimSpace(argContent)
 		r.literalArg = !strings.HasSuffix(trimmedArg, ":*") && !strings.Contains(trimmedArg, "*")
+		r.anyArg = trimmedArg == "*" || trimmedArg == "**"
 	}
 	toolPart = strings.TrimSpace(toolPart)
 	if toolPart == "" {
@@ -547,6 +553,28 @@ func RuleCovers(rawRule, toolName string) bool {
 	}
 	canon := canonicalToolName(toolName)
 	return r.matchesTool(toolName, canon)
+}
+
+// RuleRemovesTool reports whether one rule bounds EVERY call of a tool — the
+// question a reader asking "is this tool gone" must ask, as opposed to
+// RuleCovers' "does any row bound this tool".
+//
+// The two differ exactly on an argument scope: `Write(docs/**)` denies a
+// subset, so a node holding it still writes everywhere else, while
+// `Write(**)` leaves no call out and removes the tool as a bare `Write` does.
+// A class row (`class:shell`) with no scope removes every member.
+//
+// It parses with the REAL grammar Evaluate matches with, so it has no
+// spelling of its own to keep in step.
+func RuleRemovesTool(rawRule, toolName string) bool {
+	r, err := parseRule(rawRule)
+	if err != nil {
+		return false
+	}
+	if !r.matchesTool(toolName, canonicalToolName(toolName)) {
+		return false
+	}
+	return r.argRe == nil || r.anyArg
 }
 
 // compileArg compiles the `(content)` part of a rule into one anchored
