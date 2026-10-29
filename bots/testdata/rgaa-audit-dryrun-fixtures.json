@@ -18,5 +18,5 @@
   "write_undecidable": {"written": 1, "path": "/scratch/rgaa-audit/run-1/undecidable-rgaa.json"},
   "final_report": {"ok": true, "fail_code": "", "reason": "", "report_path": "/scratch/rgaa-audit/run-1/out/rgaa-2026-10-13.md", "grid_path": "", "annex_path": "/scratch/rgaa-audit/run-1/out/rgaa-2026-10-13-couverture.md", "ledger_path": "/scratch/rgaa-audit/run-1/out/ledger/rgaa.json", "conformance_pct": 94, "provisional": true, "complete": false, "undecided": 1, "undecided_ids": ["1.4"], "degraded": {}, "audit_sha256": "a3", "technical_annex_path": "/scratch/rgaa-audit/run-1/out/annexe-technique-rgaa-2026-10-13.md", "html_path": "", "html_single_path": "", "grid_json_path": "", "report_files": []},
   "deliver": {"ok": true, "fail_code": "", "reason": "", "issues": [{"title": "[a11y] RGAA 2.1 — Chaque cadre a-t-il un titre de cadre ?", "body": "…", "labels": ["accessibility", "rgaa", "bloquant", "source:rgaa-audit", "criterion:2.1"], "state": "inbox", "severity": "bloquant", "advisory": false, "criteriaId": "2.1", "occurrences": 1}], "total": 4, "capped": 0, "blocking": 3, "advisory": 0},
-  "publish_verify": {"ok": true, "fail_code": "", "reason": "", "missing": [], "created": 4, "existing": 0}
+  "publish_verify": {"ok": true, "fail_code": "", "reason": "", "missing": [], "foreign": [], "created": 4, "existing": 0}
 }

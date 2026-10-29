@@ -89,8 +89,11 @@ prepare ─► static_audit ─► bank_static ─► render_gate ─► [render
 - `deliver` builds the issue plan from the engine's own tickets (one per
   criterion, severity-sorted, capped); `publish` files it when
   `post_to_board` is true; `publish_verify` holds the judge's own report to
-  the plan and fails typed when a planned title is neither created nor found
-  (a self-report: a tool node has no board action to read the board with).
+  the plan in BOTH directions and fails typed when a planned title is neither
+  created nor found (`BOARD_PUBLISH_INCOMPLETE`) and when a reported title is
+  not in the plan (`BOARD_PUBLISH_FOREIGN`) — still a self-report: a tool node
+  has no board action to read the board with (#2388), so the contract over
+  that report is the whole guarantee.
 
 Every node that rewrites `audit-latest.json` records its hash in the run's
 `state/` directory and its own output; every later node refuses a document
@@ -101,7 +104,7 @@ Every refusal the bot makes is a typed `fail` node (`ENGINE_UNRESOLVED`,
 `ENGINE_HASH_MISMATCH`, `EMPTY_SCOPE`, `RENDER_UNAVAILABLE`,
 `LEDGER_INVALID`, `AUDIT_INTEGRITY`, `ADJUDICATION_INCOMPLETE`,
 `REFUTE_INCOMPLETE`, `HUMAN_REJECTED`, `REPORT_INTEGRITY_FAILED`,
-`GRID_INCOMPLETE`, `BOARD_PUBLISH_INCOMPLETE`); an engine crash stays an
+`GRID_INCOMPLETE`, `BOARD_PUBLISH_INCOMPLETE`, `BOARD_PUBLISH_FOREIGN`); an engine crash stays an
 untyped, resumable error — except on a committed ledger the engine cannot
 replay, which is `LEDGER_INVALID` with the engine's own message.
 

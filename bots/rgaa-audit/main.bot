@@ -325,8 +325,13 @@ prompt publish_system:
 
   STEP 3 — report exactly: `created` (titles you created), `existing`
   (titles already present), `failed` (titles whose creation failed, with
-  the error in `summary`). If the board tools are unavailable, say so in
-  the summary and leave `failed` complete rather than pretending.
+  the error in `summary`). All three name ITEMS OF THE PLAN and nothing
+  else: a board issue the plan does not contain is not reported at all —
+  not under `existing`, not anywhere — however the label search found it.
+  The verifier refuses a report carrying a title outside the plan, so a
+  wider list fails a publication that worked. If the board tools are
+  unavailable, say so in the summary and leave `failed` complete rather
+  than pretending.
 
 prompt publish_user:
   Issue plan ({{input.total}} items, severity-sorted, capped; {{input.capped}} held back by the cap):
@@ -817,6 +822,10 @@ schema publish_verify_output:
   fail_code: string
   reason: string
   missing: json
+  ## Titles the judge reported that the plan does not contain. Declared
+  ## alongside `missing` because the verdict has two halves and an operator
+  ## reads the second one from the node, not only from the refusal text.
+  foreign: json
   created: int
   existing: int
 
@@ -859,8 +868,8 @@ judge refute:
 ## claude_code roster, the capability-gated board MCP tools still reach it.
 ## It decides nothing; the plan it receives is already the engine's,
 ## de-duplicated, severity-sorted and capped. Its report of what it created
-## is held to the plan by publish_verify — a self-report, not a board read:
-## a tool node has no board action today.
+## is held to the plan by publish_verify, in both directions — a self-report,
+## not a board read: a tool node has no board action today (#2388).
 judge publish:
   model: "${ITERION_RGAA_MODEL_PUBLISH:-claude-opus-5-5}"
   backend: "claude_code"
@@ -2030,22 +2039,43 @@ tool deliver:
   output: deliver_output
   publish: a11y_findings
 
-## The judge's report of the board write is held to the plan: created ∪
-## existing must cover every title and nothing may have failed. It is the
-## judge's own report, not a board read — a tool node has no board action.
+## The judge's report of the board write is held to the plan, BOTH ways:
+## created ∪ existing must cover every planned title, nothing may have
+## failed, and nothing may be reported that the plan does not contain. It
+## is still the judge's own report, not a board read — a tool node has no
+## board action (#2388), so the contract over that report is the whole
+## guarantee: a claim outside the plan is coverage nobody asked for, and
+## counting it let a report cover the plan with foreign rows.
 tool publish_verify:
   script: |
     const path = require("path");
     const RUN = {{input.run_dir}};
     const L = require(path.join(RUN, "bin", "lib.js")).init(RUN);
-    const norm = (x) => { if (typeof x === "string") { try { x = JSON.parse(x); } catch (e) { x = [x]; } } if (!Array.isArray(x)) return []; return x.map((v) => typeof v === "string" ? v : String((v && (v.title || v.name)) || "")); };
-    const plan = ({{input.issues}} || []).map((i) => String(i.title || ""));
-    const created = norm({{input.created}}), existing = norm({{input.existing}}), failed = norm({{input.failed}});
+    // ONE reading for the plan and for the claims. A `json` field arrives
+    // either as the array its producer printed or as the string a mapping
+    // carried, and reading the plan with `.map` alone made that second
+    // shape a TypeError — an untyped node crash where the graph routes a
+    // typed refusal.
+    const titles = (x) => { if (typeof x === "string") { try { x = JSON.parse(x); } catch (e) { x = [x]; } } if (!Array.isArray(x)) return []; return x.map((v) => typeof v === "string" ? v : String((v && (v.title || v.name)) || "")); };
+    const show = (t) => t === "" ? "(untitled)" : t;
+    const plan = titles({{input.issues}});
+    const created = titles({{input.created}}), existing = titles({{input.existing}}), failed = titles({{input.failed}});
+    const planned = new Set(plan);
     const have = new Set(created.concat(existing));
     const missing = plan.filter((t) => !have.has(t));
-    L.layer("board", { status: missing.length || failed.length ? "degraded" : "ok", created: created.length, existing: existing.length, failed: failed, missing: missing, source: "rapport du juge de transcription tenu au plan" });
-    if (missing.length || failed.length) L.refuse("BOARD_PUBLISH_INCOMPLETE", missing.length + " planned issue(s) neither created nor found on the board (" + missing.slice(0, 5).join(" ; ") + (missing.length > 5 ? " …" : "") + "); " + failed.length + " failed", { missing: missing, created: created.length, existing: existing.length });
-    L.out({ ok: true, fail_code: "", reason: "", missing: [], created: created.length, existing: existing.length });
+    // The judge's own contract is "for EACH item of the plan" (publish_system
+    // STEP 2). A title it reports created or already present that the plan
+    // does not contain is a transcription nobody planned — and an untitled
+    // claim (an object with neither `title` nor `name`) lands here too,
+    // instead of inflating the created count with an empty string.
+    const foreign = Array.from(new Set(created.concat(existing))).filter((t) => !planned.has(t));
+    L.layer("board", { status: missing.length || failed.length || foreign.length ? "degraded" : "ok", created: created.length, existing: existing.length, failed: failed, missing: missing, foreign: foreign, source: "rapport du juge de transcription tenu au plan, dans les deux sens" });
+    // Incomplete first: the plan not reaching the board is the deliverable
+    // failing, and `refuse` exits, so the foreign list travels WITH it
+    // rather than waiting for a second refusal that never runs.
+    if (missing.length || failed.length) L.refuse("BOARD_PUBLISH_INCOMPLETE", missing.length + " planned issue(s) neither created nor found on the board (" + missing.slice(0, 5).map(show).join(" ; ") + (missing.length > 5 ? " …" : "") + "); " + failed.length + " failed" + (foreign.length ? "; " + foreign.length + " reported title(s) are not in the plan" : ""), { missing: missing, foreign: foreign, created: created.length, existing: existing.length });
+    if (foreign.length) L.refuse("BOARD_PUBLISH_FOREIGN", foreign.length + " reported title(s) are not in the plan (" + foreign.slice(0, 5).map(show).join(" ; ") + (foreign.length > 5 ? " …" : "") + ") — the transcription judge reports what the plan asked for and nothing else", { missing: [], foreign: foreign, created: created.length, existing: existing.length });
+    L.out({ ok: true, fail_code: "", reason: "", missing: [], foreign: [], created: created.length, existing: existing.length });
   language: js
   input: publish_verify_input
   output: publish_verify_output
@@ -2161,6 +2191,15 @@ fail grid_incomplete:
 fail board_publish_incomplete:
   description: "the board does not carry every planned issue"
   code: BOARD_PUBLISH_INCOMPLETE
+  message: "{{outputs.publish_verify.reason}}"
+
+## A SECOND code rather than a wider first one: "the plan is not on the
+## board" and "the board carries what the plan never asked for" are
+## different incidents with different remedies — resume the publication for
+## the first, audit what the transcription filed for the second.
+fail board_publish_foreign:
+  description: "the transcription reported titles the plan does not contain"
+  code: BOARD_PUBLISH_FOREIGN
   message: "{{outputs.publish_verify.reason}}"
 
 ## ─── Workflow ─────────────────────────────────────────────────────────
@@ -2505,5 +2544,7 @@ workflow rgaa_audit:
   }
 
   publish_verify -> done when ok
+
+  publish_verify -> board_publish_foreign when "outputs.publish_verify.fail_code == 'BOARD_PUBLISH_FOREIGN'"
 
   publish_verify -> board_publish_incomplete else
