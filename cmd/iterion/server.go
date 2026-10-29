@@ -913,6 +913,12 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		{"assistant_run_watches", func(c context.Context) error { return runwatch.NewMongoStore(st.DB()).EnsureSchema(c) }},
 		{"scheduled_bots", func(c context.Context) error { return cloudsched.EnsureSchema(c, st.DB()) }},
 		{"config_shares", func(c context.Context) error { return configshare.EnsureSchema(c, st.DB()) }},
+		// The server READS and WRITES the usage-cap records (the admin
+		// settings routes and the cap gate), so it owes their indexes too:
+		// before this line only the runner ensured them, and a deployment
+		// whose runner had never booted served the cap surface on an
+		// unindexed collection.
+		{"usage_caps", func(c context.Context) error { return usagecap.EnsureSchema(c, st.DB()) }},
 	}
 	if marketplaceEnabled {
 		schemas = append(schemas, schemaEnsurer{"marketplace", func(c context.Context) error { return marketplace.EnsureSchema(c, st.DB()) }})

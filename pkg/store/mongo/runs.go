@@ -165,12 +165,28 @@ func (s *Store) DeleteRun(ctx context.Context, id string) error {
 			return fmt.Errorf("store/mongo: remove run files scratch %s: %w", id, err)
 		}
 	}
+	// run_seq is keyed by the COMPOUND _id {tenant_id, run_id} (events.go) and
+	// carries no top-level run_id, so the run_id sweep below never matched it:
+	// every deleted run left its sequence counter behind, for the lifetime of
+	// the database. Deleted here, by the key the counter is actually written
+	// under. The legacy plain-string _id (the pre-compound cohort named in
+	// events.go) is included: it is the same counter under its old key, and a
+	// counter is self-healing — allocSeqField re-seeds it from the persisted
+	// tail — so the one shape this cannot distinguish costs a re-seed, not
+	// data.
+	compoundSeq := bson.M{"_id.run_id": id}
+	if tenantID, ok := store.TenantFromContext(ctx); ok && tenantID != "" {
+		compoundSeq["_id.tenant_id"] = tenantID
+	}
+	seqFilter := bson.M{"$or": bson.A{compoundSeq, bson.M{"_id": id}}}
+	if _, err := s.runSeq.DeleteMany(ctx, seqFilter); err != nil {
+		return fmt.Errorf("store/mongo: delete run_seq for run %s: %w", id, err)
+	}
 	children := []struct {
 		name string
 		coll *mongo.Collection
 	}{
 		{"events", s.events},
-		{"run_seq", s.runSeq},
 		{"interactions", s.interactions},
 		{"user_messages", s.userMessages},
 		{"run_gitmeta", s.runGitMeta},

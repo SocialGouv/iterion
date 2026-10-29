@@ -40,18 +40,90 @@ var teamScopedCollections = []string{
 	"api_keys", "generic_secrets", "run_secrets", "bot_secret_bindings",
 	// org SSO (pkg/auth/orgsso) — keyed on the org's primary team
 	"org_sso_providers", "org_verified_domains",
+	// run store, the per-run side tables (pkg/store/mongo)
+	"run_gitmeta", "run_plans", "run_notes", "run_turns", "run_logs",
+	"run_tags", "run_route_decisions", "retry_circuits",
 	// event triggers (pkg/trigger)
 	"trigger_subscriptions",
 	// inbound webhooks (pkg/webhooks)
 	"webhook_configs", "webhook_deliveries", "webhook_quotas",
+	"webhook_deferred_launches",
 	// native board (pkg/dispatcher/boardmongo)
-	"board_issues", "board_config", "board_events",
+	"board_issues", "board_config", "board_events", "trigger_effects",
+	// cloud schedules (pkg/cloudsched)
+	"scheduled_bots",
+	// config shares (pkg/configshare)
+	"config_shares", "config_share_deliveries",
+	// user notifications (pkg/usernotify, pkg/usernotify/webpush)
+	"notification_prefs", "push_subscriptions",
+	// plugin sources (pkg/pluginsource)
+	"plugin_sources",
+	// bot sources (pkg/botsource)
+	"bot_sources", "bot_source_versions",
+	// assistant dock (pkg/assistantmission, pkg/runwatch)
+	"assistant_missions", "assistant_run_watches", "assistant_run_watch_episodes",
+	// model preferences (pkg/modelprefs)
+	"model_prefs",
+	// mutualised credential pool (pkg/credpool)
+	"cred_pools", "cred_pledges", "cred_leases", "cred_pool_usage",
+	// per-credential usage views (pkg/credusage)
+	"credential_usage",
+	// forge, the records keyed on the team rather than the connection
+	"forge_board_bindings", "forge_provision_approvals",
+	// personal access tokens (pkg/pat) — a token is minted FOR a team
+	"personal_access_tokens",
 }
 
 // orgScopedCollections are partitioned by the org id (org_id or tenant_id ==
 // the org's ID).
 var orgScopedCollections = []string{
 	"audit_events", // pkg/audit (control-plane log; tenant == org)
+	"marketplace",  // pkg/marketplace (a listing is published by an org)
+}
+
+// purgedByBespokeFilter name the collections PurgeOrg deletes from with a
+// filter of their own, because the tenant is not a plain top-level field: it
+// rides a composite _id, a reserved owner key, or a nested document. Reading
+// the reason here is how the next reader knows the loops above are not where
+// to look.
+var purgedByBespokeFilter = map[string]string{
+	"oauth_credentials":       "keyed by an owner in its own namespace (secrets.OrgOwnerKey / OrgTierOwnerKey), not by a tenant id",
+	"llm_routing_policies":    "composite _id (\"team:<id>\" / \"org:<id>\"), ADR-121 delivery 2",
+	"org_usage":               "composite _id (\"org|<id>|<month>\", \"forkauthor|<id>|…\"), purged by the id-prefix alternation",
+	"schedule_launch_intents": "the tenant rides the embedded schedule document (schedule.tenant_id), not a top-level field",
+}
+
+// purgedByCascade name the identity records the auth-service cascade removes
+// (Cascade, called last): deleting them here would race the cascade's own
+// referential order.
+var purgedByCascade = map[string]string{
+	"orgs":            "the org row itself",
+	"teams":           "every team of the org",
+	"memberships":     "team memberships",
+	"org_memberships": "org memberships",
+	"invitations":     "pending invitations",
+	"oidc_links":      "SSO identity links of the deleted users",
+	"users":           "the user rows the cascade owns",
+}
+
+// notPurged name the collections an org purge deliberately LEAVES, each with
+// the reason. They are the answer to "this collection is tenant-shaped, why
+// does the sweep ignore it" — a question that otherwise gets re-asked by
+// every reader of this file, and silently answered wrong by the next one.
+var notPurged = map[string]string{
+	// Credentials of a USER, who outlives the org (they may hold others).
+	"sessions":            "a user's refresh sessions: the user outlives the org",
+	"session_revocations": "revocation markers of a user's sessions, TTL-reaped",
+	"password_resets":     "a user's reset tokens, TTL-reaped",
+	"oidc_states":         "in-flight OIDC states, TTL-reaped, carry no tenant",
+	"ws_tickets":          "single-use WebSocket tickets, TTL-reaped",
+	"desktop_sso_tickets": "single-use desktop SSO tickets, TTL-reaped",
+	"oauth_pending":       "in-flight OAuth authorizations, TTL-reaped; the sealed result lands in oauth_credentials, which IS purged",
+	// Deployment-wide records with no tenant dimension.
+	"leases":             "deployment-wide coordination leases keyed by resource name, expiry-reaped",
+	"usage_windows":      "per-credential provider readings keyed by the credential, not the tenant; the credential itself is purged",
+	"platform_settings":  "the deployment's own settings record",
+	"sent_notifications": "idempotency claims keyed by notification key, TTL-reaped, carry no tenant",
 }
 
 // Cascade hard-deletes an org's identity records (teams, memberships,
@@ -122,6 +194,14 @@ func (p *Purger) PurgeOrg(ctx context.Context, orgID string) (int64, error) {
 	for _, tm := range teams {
 		deleted += p.deleteMany(ctx, platformcfg.ColRoutingPolicies,
 			bson.M{"_id": platformcfg.TeamRoutingPolicyID(tm.ID)})
+	}
+	// A launch intent carries its tenant INSIDE the schedule it embeds
+	// (cloudsched.LaunchIntent.Schedule), so neither loop above reaches it —
+	// and an intent is a pending LAUNCH: left behind, it names a schedule of
+	// a team that no longer exists.
+	for _, t := range teams {
+		deleted += p.deleteMany(ctx, "schedule_launch_intents",
+			bson.M{"schedule.tenant_id": t.ID})
 	}
 	orgTier := secrets.OrgTierTenantID(orgID)
 	deleted += p.deleteMany(ctx, "api_keys",

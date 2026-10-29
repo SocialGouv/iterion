@@ -274,3 +274,132 @@ func TestPurgeOrg_Mongo(t *testing.T) {
 		t.Errorf("PurgeOrg(A) second call = (%d, %v), want (0, nil)", n, err)
 	}
 }
+
+// TestPurgeOrg_Mongo_EveryClassifiedCollection is the witness the completeness
+// guard needs beside it: the guard proves every collection of the tree is
+// CLASSIFIED, this proves the classification is TRUE of a real Mongo — one
+// document per swept collection goes in for the purged team and for a second
+// team, and after the purge the first team has none left and the second has
+// all of them.
+//
+// Table-driven ON THE PRODUCTION TABLES, so a collection added there is
+// witnessed by the next run without anyone remembering to extend this test —
+// and a collection added there whose rows the filter cannot reach fails here
+// rather than passing as fiction.
+func TestPurgeOrg_Mongo_EveryClassifiedCollection(t *testing.T) {
+	uri := os.Getenv("ITERION_TEST_MONGO_URI")
+	if uri == "" {
+		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo orgsweep suite")
+	}
+	ctx, cancel := mongotest.Ctx(t)
+	defer cancel()
+	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	if err != nil {
+		t.Fatalf("mongo connect: %v", err)
+	}
+	nonce := make([]byte, 4)
+	_, _ = rand.Read(nonce)
+	db := client.Database("iterion_orgsweep_all_" + hex.EncodeToString(nonce))
+	t.Cleanup(func() {
+		drop, dropCancel := mongotest.TeardownCtx()
+		defer dropCancel()
+		_ = db.Drop(drop)
+		_ = client.Disconnect(drop)
+	})
+
+	st := identity.NewMongoStore(db)
+	if err := st.EnsureSchema(ctx); err != nil {
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+	seed := func(tag string, pending bool) (orgID, teamID string) {
+		orgID, teamID = "org-"+tag, "team-"+tag
+		org := identity.Org{ID: orgID, Name: "Org " + tag, Slug: "org-" + tag}
+		if pending {
+			org.Status = identity.TeamStatusPendingDeletion
+			past := time.Now().UTC().Add(-time.Hour)
+			org.PurgeAfter = &past
+		}
+		if _, err := st.CreateOrg(ctx, org); err != nil {
+			t.Fatalf("CreateOrg %s: %v", tag, err)
+		}
+		if _, err := st.CreateTeam(ctx, identity.Team{ID: teamID, OrgID: orgID, Name: "Team " + tag, Slug: "team-" + tag}); err != nil {
+			t.Fatalf("CreateTeam %s: %v", tag, err)
+		}
+		return
+	}
+	orgA, teamA := seed("x", true)
+	orgB, teamB := seed("y", false)
+
+	ins := func(coll string, doc bson.M) {
+		if _, err := db.Collection(coll).InsertOne(ctx, doc); err != nil {
+			t.Fatalf("insert %s: %v", coll, err)
+		}
+	}
+	for _, coll := range teamScopedCollections {
+		ins(coll, bson.M{"_id": coll + "-a", "tenant_id": teamA})
+		ins(coll, bson.M{"_id": coll + "-b", "tenant_id": teamB})
+	}
+	for _, coll := range orgScopedCollections {
+		ins(coll, bson.M{"_id": coll + "-a", "tenant_id": orgA})
+		ins(coll, bson.M{"_id": coll + "-b", "tenant_id": orgB})
+	}
+	// The one bespoke filter this test can seed from its own shape: the
+	// launch intent that carries its tenant inside the embedded schedule.
+	ins("schedule_launch_intents", bson.M{"_id": "li-a", "schedule": bson.M{"tenant_id": teamA}})
+	ins("schedule_launch_intents", bson.M{"_id": "li-b", "schedule": bson.M{"tenant_id": teamB}})
+	// A collection the tables deliberately LEAVE: it must still be there.
+	ins("sessions", bson.M{"_id": "sess-user", "user_id": "u-in-org-x"})
+
+	cascade := func(ctx context.Context, orgID string) error {
+		teams, err := st.ListTeamsByOrg(ctx, orgID)
+		if err != nil {
+			return err
+		}
+		for _, tm := range teams {
+			if err := st.DeleteTeam(ctx, tm.ID); err != nil {
+				return err
+			}
+		}
+		return st.DeleteOrg(ctx, orgID)
+	}
+	p := &Purger{DB: db, Store: st, Cascade: cascade}
+	if _, err := p.PurgeOrg(ctx, orgA); err != nil {
+		t.Fatalf("PurgeOrg(A): %v", err)
+	}
+
+	count := func(coll string, filter bson.M) int64 {
+		n, err := db.Collection(coll).CountDocuments(ctx, filter)
+		if err != nil {
+			t.Fatalf("count %s: %v", coll, err)
+		}
+		return n
+	}
+	if len(teamScopedCollections) < 40 {
+		t.Fatalf("the team table holds %d collection(s) — it shrank, and this witness now covers almost nothing", len(teamScopedCollections))
+	}
+	for _, coll := range teamScopedCollections {
+		if n := count(coll, bson.M{"tenant_id": teamA}); n != 0 {
+			t.Errorf("%s: %d document(s) of the purged team survive — the collection is in teamScopedCollections and the purge did not reach it", coll, n)
+		}
+		if n := count(coll, bson.M{"tenant_id": teamB}); n != 1 {
+			t.Errorf("%s: the untouched team has %d document(s), want 1 — over-deletion", coll, n)
+		}
+	}
+	for _, coll := range orgScopedCollections {
+		if n := count(coll, bson.M{"tenant_id": orgA}); n != 0 {
+			t.Errorf("%s: %d document(s) of the purged org survive", coll, n)
+		}
+		if n := count(coll, bson.M{"tenant_id": orgB}); n != 1 {
+			t.Errorf("%s: the untouched org has %d document(s), want 1 — over-deletion", coll, n)
+		}
+	}
+	if n := count("schedule_launch_intents", bson.M{"schedule.tenant_id": teamA}); n != 0 {
+		t.Errorf("schedule_launch_intents: %d pending launch(es) of the purged team survive", n)
+	}
+	if n := count("schedule_launch_intents", bson.M{"schedule.tenant_id": teamB}); n != 1 {
+		t.Errorf("schedule_launch_intents: the untouched team has %d, want 1 — over-deletion", n)
+	}
+	if n := count("sessions", bson.M{"user_id": "u-in-org-x"}); n != 1 {
+		t.Errorf("sessions: got %d, want 1 — notPurged says a user's sessions outlive the org, and the purge took them", n)
+	}
+}
