@@ -286,7 +286,12 @@ func (s *Server) routes() {
 
 	// Connector connections (ADR-098, #2759): tenant-scoped CRUD over
 	// pkg/connection. Needs the store (Mongo twin in cloud), the catalog the
-	// credential is pinned against, the sealer, and the auth stack.
+	// credential is pinned against, the sealer, and the auth stack — which is
+	// the CLOUD gate in practice: team membership is what canManageTeam reads,
+	// and a local process has no auth service (there is no team for the path's
+	// {id} to name; `iterion connections` is the local surface). Local mode
+	// still wires the store for the facade (which reads it under
+	// connection.LocalTenant), so this family must not register on nil auth.
 	if s.connectionStore != nil && s.connectorCatalog != nil && s.sealer != nil && s.authSvc != nil {
 		s.registerConnectionRoutes()
 	}
