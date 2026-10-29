@@ -85,6 +85,7 @@ func delegatingNode(t *testing.T) (delegate.Result, error) {
 // result then reports 145 tokens for a node that burned 405, and a declared
 // max_tokens would never see the difference.
 func TestADelegationIsBilledToTheNodeThatSpawnedIt(t *testing.T) {
+	t.Parallel()
 	res, err := delegatingNode(t)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -112,6 +113,7 @@ func TestADelegationIsBilledToTheNodeThatSpawnedIt(t *testing.T) {
 // re-priced at the node's model — a haiku child of an opus node would then be
 // overcharged, and this one undercharged by a factor of five.
 func TestAChildIsPricedAtItsOwnModel(t *testing.T) {
+	t.Parallel()
 	res, err := delegatingNode(t)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -139,6 +141,7 @@ func TestAChildIsPricedAtItsOwnModel(t *testing.T) {
 // TestTheNodesOwnModelStaysTheReportedOne: `_model` describes the node, which
 // ran on its own model; a child's model travels in the child's result text.
 func TestTheNodesOwnModelStaysTheReportedOne(t *testing.T) {
+	t.Parallel()
 	res, err := delegatingNode(t)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -152,6 +155,7 @@ func TestTheNodesOwnModelStaysTheReportedOne(t *testing.T) {
 // a node with no delegation keeps the exact account it had before, including
 // the absence of a cost key when nothing is priced.
 func TestANodeThatDelegatesNothingReportsWhatItAlwaysDid(t *testing.T) {
+	t.Parallel()
 	mock := newMockClient(textEvents("no delegation here", 11, 7))
 	reg := NewRegistry()
 	reg.Register("openai", func(string) (api.APIClient, error) { return mock, nil })
@@ -181,6 +185,7 @@ func TestANodeThatDelegatesNothingReportsWhatItAlwaysDid(t *testing.T) {
 // failed delegation (the tool error reaches the model) and still owes what
 // the child burned.
 func TestAFailedChildIsStillBilled(t *testing.T) {
+	t.Parallel()
 	const failingChildModel = "anthropic/claude-haiku-4-5"
 	agentInput := `{"description":"summarise","prompt":"Summarise","subagent_type":"general-purpose","model":"` + failingChildModel + `"}`
 	parentMock := newMockClient(

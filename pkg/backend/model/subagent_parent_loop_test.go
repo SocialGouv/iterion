@@ -117,6 +117,7 @@ func parentTool(name string) GenerationTool {
 // the registry under a parent node — the shape that turns `tools:
 // [read_file]` into "read_file for me, everything for my children".
 func TestAChildCannotExceedTheParentNodesToolSurface(t *testing.T) {
+	t.Parallel()
 	run, client := parentLoopRunner(t, "")
 	ctx := WithParentLoop(context.Background(), ParentLoop{
 		Model: "test/parent-model",
@@ -136,6 +137,7 @@ func TestAChildCannotExceedTheParentNodesToolSurface(t *testing.T) {
 // when the fallback keys on an empty slice instead of on the presence of a
 // parent loop — a tool-less node would then hand its child the registry.
 func TestAToolLessParentNodeHandsItsChildNothing(t *testing.T) {
+	t.Parallel()
 	run, client := parentLoopRunner(t, "")
 	ctx := WithParentLoop(context.Background(), ParentLoop{Model: "test/parent-model"})
 	if _, err := run(ctx, map[string]any{"description": "probe", "prompt": "go"}); err != nil {
@@ -151,6 +153,7 @@ func TestAToolLessParentNodeHandsItsChildNothing(t *testing.T) {
 // registry-selected set — the bound is the node's when there is a node, never
 // a blanket refusal of the child's tools.
 func TestAStandAloneHostStillSelectsFromItsRegistry(t *testing.T) {
+	t.Parallel()
 	run, client := parentLoopRunner(t, "test/host-model")
 	if _, err := run(context.Background(), map[string]any{"description": "probe", "prompt": "go"}); err != nil {
 		t.Fatalf("subagent: %v", err)
@@ -169,6 +172,7 @@ func TestAStandAloneHostStillSelectsFromItsRegistry(t *testing.T) {
 // call then fails for want of a model, which is what a wired-but-modelless
 // runner did before.
 func TestAChildRunsOnTheParentNodesModel(t *testing.T) {
+	t.Parallel()
 	run, client := parentLoopRunner(t, "")
 	ctx := WithParentLoop(context.Background(), ParentLoop{
 		Model: "test/parent-model",
@@ -191,6 +195,7 @@ func TestAChildRunsOnTheParentNodesModel(t *testing.T) {
 // under an opus parent) — the parent's model is the LAST resort, not the
 // first.
 func TestTheHostsOwnDefaultOutranksTheParentNodesModel(t *testing.T) {
+	t.Parallel()
 	run, client := parentLoopRunner(t, "test/host-default")
 	ctx := WithParentLoop(context.Background(), ParentLoop{
 		Model: "test/parent-model",
@@ -207,6 +212,7 @@ func TestTheHostsOwnDefaultOutranksTheParentNodesModel(t *testing.T) {
 // TestTheModelsOwnArgumentStillWins: the agent tool takes a model, and an
 // explicit one outranks both defaults.
 func TestTheModelsOwnArgumentStillWins(t *testing.T) {
+	t.Parallel()
 	run, client := parentLoopRunner(t, "test/host-default")
 	ctx := WithParentLoop(context.Background(), ParentLoop{Model: "test/parent-model"})
 	_, err := run(ctx, map[string]any{"description": "probe", "prompt": "go", "model": "test/asked-for"})
@@ -221,6 +227,7 @@ func TestTheModelsOwnArgumentStillWins(t *testing.T) {
 // TestAModellessDelegationSaysWhatIsMissing: no argument, no host default and
 // no parent node — the error names all three rather than inventing a model.
 func TestAModellessDelegationSaysWhatIsMissing(t *testing.T) {
+	t.Parallel()
 	run, _ := parentLoopRunner(t, "")
 	_, err := run(context.Background(), map[string]any{"description": "probe", "prompt": "go"})
 	if err == nil {
@@ -238,6 +245,7 @@ func TestAModellessDelegationSaysWhatIsMissing(t *testing.T) {
 // allowed two would spend five times the node's budget inside one tool call.
 // Red when the child keeps the runner's own default.
 func TestAChildInheritsTheParentNodesStepBudget(t *testing.T) {
+	t.Parallel()
 	run, client := parentLoopRunner(t, "")
 	client.loopForever = true
 	ctx := WithParentLoop(context.Background(), ParentLoop{
@@ -256,6 +264,7 @@ func TestAChildInheritsTheParentNodesStepBudget(t *testing.T) {
 // TestAChildNeverRecursesIntoItself: `agent` is withheld whatever set the
 // child draws from — a node declaring it gets children, not grandchildren.
 func TestAChildNeverRecursesIntoItself(t *testing.T) {
+	t.Parallel()
 	run, client := parentLoopRunner(t, "")
 	ctx := WithParentLoop(context.Background(), ParentLoop{
 		Model: "test/parent-model",
