@@ -141,6 +141,43 @@ unset the older variable. An unrecognised value emits a one-time warning; an
 invalid new mode falls back to the older valid policy, while an invalid or
 absent value in both variables resolves to `legacy`.
 
+### The tiers above those variables: a level, and the env as a floor
+
+The promotion step is `enforce` **by level**: a run-affecting setting belongs
+to a database level above the bot, not to a process variable (ADR-132,
+[#2699](https://github.com/SocialGouv/iterion/issues/2699)). That resolver
+does not exist yet, so what ships here is the half that can be true today —
+the resolution is TIERED, and the process environment is its documented
+FLOOR:
+
+1. an explicit `ITERION_RELIABILITY_MODE=legacy` is a **cap**, not a floor.
+   No level overrules it. Step 4 above promises an emergency lever, and
+   under plain floor arithmetic a level resolving to `enforce` would raise
+   the gate straight back over the operator pulling that lever;
+2. otherwise the stricter of the level and the floor wins
+   (`legacy` < `report` < `enforce`): a level may **raise** the gate above
+   what the operator set on the process, and may not lower it — a database
+   row must not quietly un-enforce a host an operator set to `enforce`;
+3. a level value the resolution cannot parse is not an answer. The floor
+   stands, exactly as it does for an unparseable variable;
+4. `ITERION_EXECUTION_CONTEXT_POLICY=legacy` is **not** the lever. That
+   variable is the narrower switch this rollout generalises, the rollback is
+   performed through the authoritative one, and treating it as a cap would
+   make every deployment still carrying it un-promotable by a level.
+
+Today every caller passes `reliability.ModeUnset` for the level, so the
+floor is the whole answer and the resolved mode is exactly what the two
+variables said before this tier existed. `ModeUnset` is the greppable seam:
+when the level resolver lands, its caller passes the level-resolved mode to
+`ModeFloor.Resolve` instead of adding a second resolution the launch
+surfaces could disagree with.
+
+`report` is the hatch this ordering makes usable: a scope promoted too far
+is walked back by lowering its level to `report` — admission decisions keep
+being recorded and surfaced, and not one run is refused — without touching
+the process floor, and the floor itself remains the one place an operator
+stops everything.
+
 Legacy documents are always readable. Missing context, admission, correction
 or watcher fields mean “pre-pilot”, not “successful”; the compatibility report
 marks that state explicitly so a green status cannot be inferred by accident.

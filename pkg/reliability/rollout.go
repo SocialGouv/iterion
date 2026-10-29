@@ -42,24 +42,95 @@ var emitInvalidModeWarning = func(name, value string) {
 	)
 }
 
-// ModeFromEnv resolves the ONE rollout mode every surface must agree on.
-// A recognised EnvMode is authoritative, including an explicit legacy
-// rollback. An unset or invalid value falls back to the compatibility alias;
-// invalid values are warned once so a typo cannot silently change the gate.
-func ModeFromEnv() Mode {
+// ModeUnset is the absence of an answer from a tier. Every caller passes it
+// for the level tier today: the run-affecting settings a database level
+// owns (ADR-132 territory, #2699) have no resolver yet, so the process
+// floor below is the whole answer. The parameter is the seam — when that
+// resolver lands, its caller passes the level-resolved mode HERE rather
+// than adding a second resolution the launch surfaces could disagree with.
+const ModeUnset Mode = ""
+
+// strictness orders the modes by how much the gate refuses. It is what
+// makes the process env a FLOOR rather than a value a level overwrites: a
+// level may raise the gate above what the operator set on the process, and
+// may not lower it.
+//
+// A value this package does not recognise is NOT an answer (-1): the floor
+// stands, exactly as it does for an unparseable variable.
+func (m Mode) strictness() int {
+	switch m {
+	case ModeLegacy:
+		return 0
+	case ModeReport:
+		return 1
+	case ModeEnforce:
+		return 2
+	default:
+		return -1
+	}
+}
+
+// ModeFloor is the PROCESS tier of the rollout mode: the mode an operator
+// set on this process, plus whether they set the authoritative variable to
+// legacy — which is a CAP, not a floor.
+//
+// The distinction is the whole value of the record. Step 4 of
+// docs/workflow-reliability-1006.md promises that
+// ITERION_RELIABILITY_MODE=legacy is an emergency lever; under plain floor
+// arithmetic a level resolving to enforce would raise the gate straight
+// back over the operator pulling it, and the documented rollback would
+// stop being a rollback.
+type ModeFloor struct {
+	Mode Mode
+	// Rollback is true only for an EXPLICIT legacy on EnvMode. The older
+	// alias does not set it: that variable is the narrower switch this
+	// rollout generalises, and the doc states the rollback is performed
+	// through EnvMode alone.
+	Rollback bool
+}
+
+// FloorFromEnv resolves the process tier. A recognised EnvMode is
+// authoritative, including an explicit legacy rollback. An unset or invalid
+// value falls back to the compatibility alias; invalid values are warned
+// once so a typo cannot silently change the gate.
+func FloorFromEnv() ModeFloor {
 	if raw := strings.TrimSpace(os.Getenv(EnvMode)); raw != "" {
 		if mode, ok := parseMode(raw); ok {
-			return mode
+			return ModeFloor{Mode: mode, Rollback: mode == ModeLegacy}
 		}
 		warnInvalidModeOnce(EnvMode, raw)
 	}
 	if raw := strings.TrimSpace(os.Getenv(EnvContextPolicyAlias)); raw != "" {
 		if mode, ok := parseMode(raw); ok {
-			return mode
+			return ModeFloor{Mode: mode}
 		}
 		warnInvalidModeOnce(EnvContextPolicyAlias, raw)
 	}
-	return ModeLegacy
+	return ModeFloor{Mode: ModeLegacy}
+}
+
+// Resolve folds a level-resolved mode onto the process floor: the rollback
+// cap first, then the stricter of level and floor. ModeUnset for level —
+// today's only caller — returns the floor unchanged.
+func (f ModeFloor) Resolve(level Mode) Mode {
+	if f.Rollback {
+		return ModeLegacy
+	}
+	floor := f.Mode
+	if floor.strictness() < 0 {
+		floor = ModeLegacy
+	}
+	if level.strictness() > floor.strictness() {
+		return level
+	}
+	return floor
+}
+
+// ModeFromEnv resolves the ONE rollout mode every surface must agree on,
+// from the tiers that exist today: the process floor, with no level above
+// it.
+func ModeFromEnv() Mode {
+	return FloorFromEnv().Resolve(ModeUnset)
 }
 
 func parseMode(raw string) (Mode, bool) {
@@ -309,7 +380,7 @@ func (c Config) Rollback() RollbackPlan {
 		DisableEnforcement: true,
 		PreserveEvidence:   true,
 		Actions: []string{
-			"set " + EnvMode + "=legacy (authoritative; it overrides " + EnvContextPolicyAlias + ", which does not need unsetting)",
+			"set " + EnvMode + "=legacy (authoritative; it overrides " + EnvContextPolicyAlias + ", which does not need unsetting, and caps any level-resolved mode)",
 			"keep execution_context, admission, correction and watcher ledgers for audit",
 		},
 	}

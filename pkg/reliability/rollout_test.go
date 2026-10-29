@@ -300,3 +300,91 @@ func TestSummarizeDoesNotReadAnUnknownVerdictAsAllowed(t *testing.T) {
 		t.Fatalf("admissions_denied = %d, want 0: an unknown verdict is not a denial either — it is named by the gap between recorded and the verdicts that are readable", b.AdmissionsDenied)
 	}
 }
+
+// TestResolveKeepsTheRollbackLeverAgainstALevel is the load-bearing law of
+// the tiered resolution. Step 4 of the rollout doc promises that
+// ITERION_RELIABILITY_MODE=legacy stops the pilot; a level that could raise
+// the gate back over the operator pulling that lever would make the
+// documented rollback a suggestion.
+func TestResolveKeepsTheRollbackLeverAgainstALevel(t *testing.T) {
+	t.Setenv(EnvMode, string(ModeLegacy))
+	t.Setenv(EnvContextPolicyAlias, string(ModeEnforce))
+	floor := FloorFromEnv()
+	if !floor.Rollback {
+		t.Fatalf("floor = %+v, want the explicit legacy recorded as a rollback", floor)
+	}
+	for _, level := range []Mode{ModeUnset, ModeReport, ModeEnforce} {
+		if got := floor.Resolve(level); got != ModeLegacy {
+			t.Fatalf("level %q over an explicit rollback = %q, want legacy", level, got)
+		}
+	}
+}
+
+// TestResolveLetsALevelRaiseButNeverLowerTheFloor pins the floor semantics
+// G65 asks for: the process variable is the MINIMUM an operator declared,
+// not a default a level overwrites. Lowering it from a level would let a
+// database row quietly un-enforce a host the operator set to enforce.
+func TestResolveLetsALevelRaiseButNeverLowerTheFloor(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		env   string
+		level Mode
+		want  Mode
+	}{
+		{name: "a level raises report to enforce", env: "report", level: ModeEnforce, want: ModeEnforce},
+		{name: "a level raises the legacy default", env: "", level: ModeReport, want: ModeReport},
+		{name: "a level may not lower enforce", env: "enforce", level: ModeReport, want: ModeEnforce},
+		{name: "a level may not lower to legacy", env: "report", level: ModeLegacy, want: ModeReport},
+		{name: "an unparseable level is not an answer", env: "report", level: Mode("enforced-by-typo"), want: ModeReport},
+		{name: "no level leaves the floor alone", env: "enforce", level: ModeUnset, want: ModeEnforce},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(EnvMode, tc.env)
+			t.Setenv(EnvContextPolicyAlias, "")
+			if got := FloorFromEnv().Resolve(tc.level); got != tc.want {
+				t.Fatalf("resolve(level=%q, floor=%q) = %q, want %q", tc.level, tc.env, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestTheAliasIsNotTheRollbackLever states the one asymmetry on purpose:
+// the older variable is the narrower switch this rollout generalises, and
+// the doc performs the rollback through the authoritative one. A legacy
+// alias is a floor like any other value, so a level may still raise it —
+// otherwise every deployment carrying the old variable would be
+// un-promotable by a level without an edit the doc never asked for.
+func TestTheAliasIsNotTheRollbackLever(t *testing.T) {
+	t.Setenv(EnvMode, "")
+	t.Setenv(EnvContextPolicyAlias, string(ModeLegacy))
+	floor := FloorFromEnv()
+	if floor.Rollback {
+		t.Fatalf("floor = %+v: only an explicit %s=legacy is the documented lever", floor, EnvMode)
+	}
+	if got := floor.Resolve(ModeEnforce); got != ModeEnforce {
+		t.Fatalf("level enforce over a legacy alias = %q, want enforce", got)
+	}
+	if got := floor.Resolve(ModeUnset); got != ModeLegacy {
+		t.Fatalf("no level over a legacy alias = %q, want legacy (today's resolution, unchanged)", got)
+	}
+}
+
+// TestModeFromEnvIsTheFloorWithNoLevel keeps the live path and the tiers in
+// one piece: the resolution every launch surface shares must BE the tiered
+// one with no level, not a second implementation beside it.
+func TestModeFromEnvIsTheFloorWithNoLevel(t *testing.T) {
+	for _, tc := range []struct{ mode, alias string }{
+		{},
+		{mode: "report"},
+		{mode: "enforce", alias: "legacy"},
+		{mode: "legacy", alias: "enforce"},
+		{alias: "report"},
+		{mode: "nonsense", alias: "enforce"},
+	} {
+		t.Setenv(EnvMode, tc.mode)
+		t.Setenv(EnvContextPolicyAlias, tc.alias)
+		if got, want := ModeFromEnv(), FloorFromEnv().Resolve(ModeUnset); got != want {
+			t.Fatalf("mode=%q alias=%q: ModeFromEnv = %q, tiered resolution = %q", tc.mode, tc.alias, got, want)
+		}
+	}
+}
