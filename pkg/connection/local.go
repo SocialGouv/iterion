@@ -165,19 +165,36 @@ func ProjectCatalogGranted() bool {
 // disappear — it becomes a tier that reports WHY it did not answer, which is
 // what keeps a repository-shipped catalog from reading as a feature nobody
 // configured.
-func LocalCatalogs(paths LocalPaths) ([]Catalog, error) {
+//
+// TRUST is the second condition on that tier, and it is read HERE rather than
+// at the resolution for the reason the paragraph above already gives (#2769).
+// The grant answers "does this deployment consult workspace packages at all";
+// the run's trust answers "is the workspace of THIS run the tenant's own code".
+// A deployment that grants the tier and also serves a review lane would
+// otherwise let the reviewed tree ship `connectors/<id>/` declaring `effect:
+// read` on a DELETE — and that package's own word is what #1802's refusal
+// reads, so the guard would consult the thing it is guarding against. There is
+// no shape that pins the tier onto the resolved package (spec.Package carries
+// no provenance and NewLayeredCatalog hands back no tier), so the tier that
+// must not win is simply not built for that run.
+func LocalCatalogs(paths LocalPaths, trust ActionTrust) ([]Catalog, error) {
 	var out []Catalog
 	for i, root := range []string{paths.Project, paths.Home} {
 		if root == "" {
 			continue
 		}
 		project := i == 0
+		// ONE answer per root, read by all three decisions below — an
+		// unreadable root, a present-but-closed tier, a live one. A tier that
+		// is skipped for one of them and consulted for another is how a
+		// stranger's `connectors/` directory would decide something.
+		closed := project && !projectTierConsulted(trust)
 		fi, err := os.Stat(root)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			if project && !ProjectCatalogGranted() {
+			if closed {
 				// Not consulted, so its readability is nobody's problem.
 				continue
 			}
@@ -188,8 +205,8 @@ func LocalCatalogs(paths LocalPaths) ([]Catalog, error) {
 			// hold one, so this is an absence rather than a refusal.
 			continue
 		}
-		if project && !ProjectCatalogGranted() {
-			out = append(out, disabledCatalog{root: root})
+		if closed {
+			out = append(out, disabledCatalog{root: root, untrusted: !trust.tenantsOwnCode()})
 			continue
 		}
 		out = append(out, NewFSCatalog(root))
@@ -197,16 +214,42 @@ func LocalCatalogs(paths LocalPaths) ([]Catalog, error) {
 	return out, nil
 }
 
-// disabledCatalog is a project tier that is present and not granted.
+// projectTierConsulted reports whether this process serves workspace packages
+// to a run with this trust: the deployment's grant AND the run's own trust.
+//
+// Both halves in one predicate so the two can never be asked in two places
+// with two answers, and so the reason a tier was skipped stays derivable from
+// the same inputs (disabledCatalog says which of the two it was).
+func projectTierConsulted(trust ActionTrust) bool {
+	return ProjectCatalogGranted() && trust.tenantsOwnCode()
+}
+
+// disabledCatalog is a project tier that is present and not consulted.
 //
 // It holds nothing, so it never serves a package and never widens what a run
 // can reach — its whole job is to put the reason into the layered lookup's own
 // "no such connector" text, at every surface at once. Without it a repository
 // that ships `connectors/` gets the message for a catalog that is not there,
 // which is the silently-inert-capability shape this repo calls a defect.
-type disabledCatalog struct{ root string }
+//
+// It carries WHICH of the two conditions closed it, because the two readers
+// are different people: an operator whose own project tier is not granted has
+// a one-variable fix, while a run over code the tenant does not control has
+// none and must not be told otherwise (#2769).
+type disabledCatalog struct {
+	root string
+	// untrusted: the tier is closed by the RUN's trust rather than by the
+	// deployment's grant. Checked first when wording the refusal — the grant
+	// is an operator's to flip, this is not, so advising it would hand a
+	// reviewed tree the one sentence that gets it served.
+	untrusted bool
+}
 
 func (c disabledCatalog) Package(connectorID string) (*spec.Package, error) {
+	if c.untrusted {
+		return nil, fmt.Errorf("a project connector catalog exists at %s and this run's workspace holds code the tenant does not control, so it is not consulted for this run (a repository under review must not be able to redefine what an operation does): %w",
+			c.root, errNoSuchConnector)
+	}
 	return nil, fmt.Errorf("a project connector catalog exists at %s but this process does not consult one (a repository under review must not be able to redefine what an operation does); set %s=1 to grant it: %w",
 		c.root, ProjectCatalogEnv, errNoSuchConnector)
 }
@@ -228,7 +271,7 @@ func (c disabledCatalog) Connectors() []string { return nil }
 // spec, a parent's document. Defaulting it to "trusted" inside the builder
 // would be the whole defect #1802 names, so the compiler asks instead.
 func LocalResolver(paths LocalPaths, storeDir string, sealer secrets.Sealer, trust ActionTrust) (*Resolver, error) {
-	catalogs, err := LocalCatalogs(paths)
+	catalogs, err := LocalCatalogs(paths, trust)
 	if err != nil {
 		return nil, err
 	}

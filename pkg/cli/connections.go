@@ -293,7 +293,14 @@ func localCatalog(storeDir string) (connection.Catalog, error) {
 	// had drifted into one shared defect (an unreadable root read as an absent
 	// one), and a command whose whole job is to refuse what a run would refuse
 	// cannot answer that question from its own reading of the disk.
-	tiers, err := connection.LocalCatalogs(paths)
+	// TRUST stated as the OPERATOR's own, which is the honest answer here and
+	// not a default: there is no run to read it from, and the workspace this
+	// command reads is the one the operator typed the command in. Answering
+	// TrustUnknown() would close the project tier for the very case the grant
+	// exists for — an operator who generated a connector into their own
+	// project — and would break the invariant this function is written for,
+	// that `connections add` refuses exactly what a granted run refuses.
+	tiers, err := connection.LocalCatalogs(paths, connection.TrustOfRun(store.RunTrustDefault))
 	if err != nil {
 		return nil, err
 	}

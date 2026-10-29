@@ -74,16 +74,28 @@ func TrustOfRun(t store.RunTrust) ActionTrust { return ActionTrust{trust: t, sta
 // instead of accusing a lane that is not involved.
 func TrustUnknown() ActionTrust { return ActionTrust{} }
 
-// mayMutate reports whether a resolution serving this run may hand over a
-// credential for an operation that changes remote state.
+// tenantsOwnCode reports whether the code in this run's workspace is the
+// tenant's own.
 //
-// ONE predicate, read by the refusal and by the sentence the refusal carries.
 // Written in the POSITIVE form, like store.RunTrust.Trusted(): it admits
 // exactly the two facts that must both hold, so an unstated trust and a trust
 // value this binary does not recognise (a document written by a newer replica
 // mid-rollout, a hand-edited row) are refused by construction rather than by
 // enumeration.
-func (t ActionTrust) mayMutate() bool { return t.stated && t.trust.Trusted() }
+//
+// ONE predicate for the two decisions that rest on this single fact — whether a
+// mutating action resolves (mayMutate) and whether the workspace's own
+// connector packages may be BELIEVED about what an operation does
+// (projectTierConsulted). Two copies would let a resolver refuse the mutation
+// and still read the effect from the package the reviewed tree declared, which
+// is #2769 exactly: the refusal's predicate is `effect:` as the catalog served
+// it, so the tier that serves and the verdict that reads it cannot answer to
+// different rules.
+func (t ActionTrust) tenantsOwnCode() bool { return t.stated && t.trust.Trusted() }
+
+// mayMutate reports whether a resolution serving this run may hand over a
+// credential for an operation that changes remote state.
+func (t ActionTrust) mayMutate() bool { return t.tenantsOwnCode() }
 
 // TrustError is the resolution chokepoint's typed refusal of an action whose
 // effect this run's trust does not buy.

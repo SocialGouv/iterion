@@ -154,8 +154,17 @@ func TestNoCatalogYieldsANilINTERFACE(t *testing.T) {
 // the store's refusal again.
 func TestTheLaunchSurfacesTrustReachesTheResolution(t *testing.T) {
 	workspace := t.TempDir()
-	t.Setenv(connection.ProjectCatalogEnv, "1")
-	writeTrustProbePackage(t, filepath.Join(workspace, "connectors"))
+	// The OPERATOR's own tier holds the package, which is both what a real
+	// install has and the only tier that can answer the question this test
+	// asks: since #2769 the workspace tier is not consulted at all for a run
+	// whose trust is not the tenant's own, so a project-tier fixture would
+	// make the fork arms fail on the TIER and prove nothing about whether the
+	// trust arrived. The tier rule has its own witnesses in pkg/connection and
+	// in TestAForkLaunchIsNotServedTheWorkspacesOwnPackage below.
+	home := t.TempDir()
+	t.Setenv("ITERION_HOME", home)
+	t.Setenv(connection.ProjectCatalogEnv, "")
+	writeTrustProbePackage(t, filepath.Join(home, "connectors"))
 	sealer := secrets.NewLazyLocalSealer(t.TempDir(), nil)
 
 	for _, tc := range []struct {
@@ -174,7 +183,7 @@ func TestTheLaunchSurfacesTrustReachesTheResolution(t *testing.T) {
 				t.Fatalf("build: %v", err)
 			}
 			if r == nil {
-				t.Fatal("the project tier is granted and holds the package, so a resolver must be built")
+				t.Fatal("the operator's own tier holds the package, so a resolver must be built")
 			}
 			_, _, _, _, err = r.ResolveAction(context.Background(), tc.action, "main")
 			if err == nil {
@@ -187,6 +196,61 @@ func TestTheLaunchSurfacesTrustReachesTheResolution(t *testing.T) {
 				t.Errorf("error = %v, want the tenant's connection store to have been consulted", err)
 			}
 		})
+	}
+}
+
+// TestAForkLaunchIsNotServedTheWorkspacesOwnPackage is #2769 at the surface
+// where the trust is REAL.
+//
+// pkg/connection proves the rule on the tiers it builds; what it cannot prove
+// is that the composition closes at a launch surface — the grant open, the
+// workspace holding a package of its own, and the lane's trust arriving from
+// the run document. Under the defect this launch resolved `probe.issue.comment`
+// from the reviewed checkout's own package, and #1802's refusal read that
+// package's `effect:` to decide whether the credential was owed.
+//
+// The DEFAULT-trust arm over the same workspace is what keeps this honest: the
+// tier is withheld by trust, not removed, so the grant still works for the
+// operator it exists for.
+func TestAForkLaunchIsNotServedTheWorkspacesOwnPackage(t *testing.T) {
+	workspace := t.TempDir()
+	// An empty home tier, so the workspace's package is the only answer
+	// available and the arms cannot be confused by a second one.
+	t.Setenv("ITERION_HOME", t.TempDir())
+	t.Setenv(connection.ProjectCatalogEnv, "1")
+	writeTrustProbePackage(t, filepath.Join(workspace, "connectors"))
+	sealer := secrets.NewLazyLocalSealer(t.TempDir(), nil)
+
+	resolve := func(t *testing.T, trust store.RunTrust) error {
+		t.Helper()
+		r, _, err := LocalConnectors(actionWorkflow(), workspace, t.TempDir(), sealer, connection.TrustOfRun(trust))
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		if r == nil {
+			t.Fatal("the tier is present, so a resolver is built — a withheld tier is not an absent catalog")
+		}
+		// A READ, deliberately: the mutating one would be refused by #1802
+		// even if the tier had served it, so only the read can tell "the tier
+		// did not answer" from "the trust refused the effect".
+		_, _, _, _, err = r.ResolveAction(context.Background(), "probe.issue.get", "main")
+		if err == nil {
+			t.Fatal("no connection is seeded, so nothing may resolve")
+		}
+		return err
+	}
+
+	forkErr := resolve(t, store.RunTrustFork)
+	if !strings.Contains(forkErr.Error(), "does not control") {
+		t.Errorf("fork launch error = %v, want the workspace tier to report that it was not consulted for this run", forkErr)
+	}
+	if strings.Contains(forkErr.Error(), "connection named") {
+		t.Errorf("fork launch error = %v, want the tier refusal rather than the connection store's: the outsider's package must not be resolved at all", forkErr)
+	}
+	// The falsifier: the operator's own launch over the SAME workspace gets
+	// past the catalog and is refused by the tenant's connection store.
+	if ownErr := resolve(t, store.RunTrustDefault); !strings.Contains(ownErr.Error(), "connection named") {
+		t.Errorf("default-trust launch error = %v, want the granted workspace tier to have served the package", ownErr)
 	}
 }
 

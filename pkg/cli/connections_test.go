@@ -49,6 +49,92 @@ func connectionsWorkspace(t *testing.T) string {
 	return ws
 }
 
+// connectionsProjectTierWorkspace puts the package in the WORKSPACE tier —
+// `connectors/<id>`, where `iterion connectors gen` writes by default — and
+// leaves the home tier empty, so the only thing that can answer is the tier
+// the grant and the trust both gate.
+func connectionsProjectTierWorkspace(t *testing.T) string {
+	t.Helper()
+	src, err := filepath.Abs(filepath.Join("..", "..", "connectors", "forgejo"))
+	if err != nil {
+		t.Fatalf("abs: %v", err)
+	}
+	if _, err := os.Stat(src); err != nil {
+		t.Skipf("the shipped Forgejo package is not present: %v", err)
+	}
+	ws := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ws, "connectors"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Symlink(src, filepath.Join(ws, "connectors", "forgejo")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	home := filepath.Join(ws, "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Setenv("ITERION_SECRETS_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("ITERION_HOME", home)
+	t.Setenv("FORGE_TEST_TOKEN", "probe-token")
+	t.Chdir(ws)
+	return ws
+}
+
+// TestConnectionsAddReadsTheOperatorsOwnWorkspaceTier is #2769's fourth site.
+//
+// `LocalCatalogs` now takes the run's trust, and this command has no run: it is
+// the operator, in their own checkout, at their own keyboard. Answering "nobody
+// stated it" here would close the workspace tier for the very case the grant
+// exists for — `iterion connectors gen` writes `connectors/<id>` by default —
+// and would break the invariant the shared tier builder exists for
+// (docs/adr/098-connector-catalog.md): this command refuses exactly what a
+// granted, trusted run refuses. Pinned so the signature change cannot silently
+// make an operator's own command read as untrusted.
+func TestConnectionsAddReadsTheOperatorsOwnWorkspaceTier(t *testing.T) {
+	t.Run("granted, so the operator's own project tier answers", func(t *testing.T) {
+		ws := connectionsProjectTierWorkspace(t)
+		t.Setenv(connection.ProjectCatalogEnv, "1")
+
+		var add bytes.Buffer
+		err := cli.ConnectionsAdd(cli.ConnectionAddOptions{
+			Connector: "forgejo",
+			Scheme:    "token",
+			BaseURL:   "https://codeberg.org",
+			TokenEnv:  "FORGE_TEST_TOKEN",
+			StoreDir:  filepath.Join(ws, ".iterion"),
+		}, &add)
+		if err != nil {
+			t.Fatalf("add: %v — the granted workspace tier is the operator's own, so their command must read it", err)
+		}
+		if !strings.Contains(add.String(), "capabilities: action") {
+			t.Errorf("add must report the grant it stored, got:\n%s", add.String())
+		}
+	})
+
+	// The falsifier: the same workspace with the grant closed is refused, and
+	// the refusal names the variable — so the arm above proves the GRANT was
+	// read, not that this command accepts anything.
+	t.Run("ungranted, so it refuses exactly what a run would", func(t *testing.T) {
+		ws := connectionsProjectTierWorkspace(t)
+		t.Setenv(connection.ProjectCatalogEnv, "")
+
+		var add bytes.Buffer
+		err := cli.ConnectionsAdd(cli.ConnectionAddOptions{
+			Connector: "forgejo",
+			Scheme:    "token",
+			BaseURL:   "https://codeberg.org",
+			TokenEnv:  "FORGE_TEST_TOKEN",
+			StoreDir:  filepath.Join(ws, ".iterion"),
+		}, &add)
+		if err == nil {
+			t.Fatal("an ungranted workspace tier must not serve `connections add` either")
+		}
+		if !strings.Contains(err.Error(), connection.ProjectCatalogEnv) {
+			t.Errorf("error = %v, want it to name %s", err, connection.ProjectCatalogEnv)
+		}
+	})
+}
+
 // TestConnectionsAddReportsTheGrantItStored.
 //
 // With no --capability the default is `action`, and `add` echoed the empty

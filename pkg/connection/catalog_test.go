@@ -1,6 +1,7 @@
 package connection_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // TestTheCatalogServesTheEFFECTIVEPackage — generated half plus overlay, which
@@ -142,7 +144,7 @@ func TestAnUnreadableTierIsNotAnAbsentOne(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
 
-	_, err := connection.LocalCatalogs(connection.LocalPaths{Project: project, Home: t.TempDir()})
+	_, err := connection.LocalCatalogs(connection.LocalPaths{Project: project, Home: t.TempDir()}, trustedRun())
 	if err == nil {
 		t.Fatal("a catalog root that exists and cannot be read must be an error, not a tier that quietly disappears")
 	}
@@ -154,7 +156,7 @@ func TestAnUnreadableTierIsNotAnAbsentOne(t *testing.T) {
 	tiers, err := connection.LocalCatalogs(connection.LocalPaths{
 		Project: filepath.Join(t.TempDir(), "nothing-here"),
 		Home:    t.TempDir(),
-	})
+	}, trustedRun())
 	if err != nil {
 		t.Fatalf("an absent root must not be an error: %v", err)
 	}
@@ -168,8 +170,19 @@ func TestAnUnreadableTierIsNotAnAbsentOne(t *testing.T) {
 	// directory iterion may not stat — a refusal bought for a tier that would
 	// not have been consulted.
 	t.Setenv(connection.ProjectCatalogEnv, "")
-	if _, err := connection.LocalCatalogs(connection.LocalPaths{Project: project, Home: t.TempDir()}); err != nil {
+	if _, err := connection.LocalCatalogs(connection.LocalPaths{Project: project, Home: t.TempDir()}, trustedRun()); err != nil {
 		t.Errorf("an ungranted project root must not decide anything: %v", err)
+	}
+
+	// And the THIRD, which is the same rule reached by the other condition
+	// (#2769): a tier the GRANT opens but this run's trust closes is not
+	// consulted either, so its readability is nobody's problem here too. A
+	// fork-lane run would otherwise be failed outright by an unreadable
+	// directory in the very checkout it is reviewing.
+	t.Setenv(connection.ProjectCatalogEnv, "1")
+	if _, err := connection.LocalCatalogs(connection.LocalPaths{Project: project, Home: t.TempDir()},
+		connection.TrustOfRun(store.RunTrustFork)); err != nil {
+		t.Errorf("a granted root this run's trust closes must not decide anything either: %v", err)
 	}
 }
 
@@ -180,9 +193,21 @@ func TestAnUnreadableTierIsNotAnAbsentOne(t *testing.T) {
 // nothing about, so it is what distinguishes the operator's installed package
 // from a repository-shipped one claiming the same id.
 func tierPackage(base, method, path string) *spec.Package {
+	return tierPackageAs("probe", base, method, path, spec.EffectCreate)
+}
+
+// tierPackageAs is tierPackage with the connector id and the declared EFFECT
+// as variables too.
+//
+// Both are what the untrusted-tier case turns on (#2769): the effect is the
+// lie the attack rests on — #1802's refusal reads `effect:` as the catalog
+// served it, so a DELETE declaring `read` buys the whole mutation — and a
+// second id present in ONE tier only is the only way a LISTING can be
+// asserted at all (an id both tiers hold is listed either way).
+func tierPackageAs(id, base, method, path string, effect spec.Effect) *spec.Package {
 	return &spec.Package{
 		Connector: spec.Connector{
-			SchemaVersion: spec.SchemaVersion, ID: "probe", Version: "1.0.0",
+			SchemaVersion: spec.SchemaVersion, ID: id, Version: "1.0.0",
 			DisplayName: "Probe",
 			BaseURL:     spec.BaseURL{Default: base},
 			Auth: []spec.AuthScheme{{
@@ -192,11 +217,11 @@ func tierPackage(base, method, path string) *spec.Package {
 			Maturity: spec.MaturityQualified,
 		},
 		Ops: []spec.OpsFile{{
-			SchemaVersion: spec.SchemaVersion, Connector: "probe", Domain: "issue",
+			SchemaVersion: spec.SchemaVersion, Connector: id, Domain: "issue",
 			Operations: []spec.Operation{{
-				ID: "probe.issue.comment", Resource: "issue", Verb: "comment",
+				ID: id + ".issue.comment", Resource: "issue", Verb: "comment",
 				HTTP:   spec.HTTPBinding{Method: method, Path: path},
-				Effect: spec.EffectCreate, Deterministic: true,
+				Effect: effect, Deterministic: true,
 				Params: []spec.Param{
 					{Key: "owner", Name: "owner", In: spec.InPath, Type: "string", Required: true},
 					{Key: "repo", Name: "repo", In: spec.InPath, Type: "string", Required: true},
@@ -210,13 +235,27 @@ func tierPackage(base, method, path string) *spec.Package {
 // writeTierPackage puts that package in a catalog root, as a tier serves it.
 func writeTierPackage(t *testing.T, root, method, path string) {
 	t.Helper()
-	dir := filepath.Join(root, "probe")
+	writeTierPackageAs(t, root, "probe", method, path, spec.EffectCreate)
+}
+
+// writeTierPackageAs puts a package under its OWN id, which is also the
+// directory name a `.bot` addresses (FSCatalog refuses the two disagreeing).
+func writeTierPackageAs(t *testing.T, root, id, method, path string, effect spec.Effect) {
+	t.Helper()
+	dir := filepath.Join(root, id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := spec.Write(dir, tierPackage("https://example.invalid", method, path)); err != nil {
+	if err := spec.Write(dir, tierPackageAs(id, "https://example.invalid", method, path, effect)); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// trustedRun is the trust the tier tests that predate #2769 already meant: the
+// workspace is the operator's own checkout, which is what every run that
+// exists today is (store.RunTrust's zero value).
+func trustedRun() connection.ActionTrust {
+	return connection.TrustOfRun(store.RunTrustDefault)
 }
 
 // TestTheProjectTierIsAGrantRatherThanADefault.
@@ -239,7 +278,7 @@ func TestTheProjectTierIsAGrantRatherThanADefault(t *testing.T) {
 
 	method := func(t *testing.T) string {
 		t.Helper()
-		tiers, err := connection.LocalCatalogs(paths)
+		tiers, err := connection.LocalCatalogs(paths, trustedRun())
 		if err != nil {
 			t.Fatalf("tiers: %v", err)
 		}
@@ -284,7 +323,7 @@ func TestASkippedProjectTierSaysWhyItDidNotAnswer(t *testing.T) {
 	project := t.TempDir()
 	writeTierPackage(t, project, "DELETE", "/repos/{owner}/{repo}")
 
-	tiers, err := connection.LocalCatalogs(connection.LocalPaths{Project: project, Home: t.TempDir()})
+	tiers, err := connection.LocalCatalogs(connection.LocalPaths{Project: project, Home: t.TempDir()}, trustedRun())
 	if err != nil {
 		t.Fatalf("tiers: %v", err)
 	}
@@ -296,5 +335,195 @@ func TestASkippedProjectTierSaysWhyItDidNotAnswer(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %v, want it to name %q", err, want)
 		}
+	}
+}
+
+// TestTheWorkspaceTierIsNotConsultedForAnUntrustedRun is #2769.
+//
+// The project tier outranks every other, and on a fork-lane run the workspace
+// IS the outsider's checkout. #1802 refuses a MUTATING action on such a run,
+// but its predicate is spec.Effect.Mutating() on the operation THE CATALOG
+// RESOLVED — so a reviewed tree only had to ship `connectors/probe/` declaring
+// `effect: read` on a DELETE and the guard read the attacker's own word for
+// what the operation does. Nothing pins the tier onto the resolved package
+// (spec.Package carries no provenance, NewLayeredCatalog hands back no tier),
+// so the tier that must not win is not BUILT for that run — decided where the
+// tiers are built, which is where the trust already is.
+//
+// The TRUSTED arm is what makes the untrusted ones mean something: the same
+// workspace, the same grant, serving the DELETE. And the fix is "that tier is
+// not consulted" rather than "no catalog" — an untrusted run still resolves
+// the operator's OWN package, and a review lane still reads.
+//
+// Asserted through the RESOLUTION, which is what a run reaches: the operation
+// handed to the executor is the oracle, and under the defect it was the
+// outsider's DELETE carrying a read's licence.
+func TestTheWorkspaceTierIsNotConsultedForAnUntrustedRun(t *testing.T) {
+	// GRANTED throughout: a closed tier is not consulted for anybody, so it
+	// could not prove anything about the trust. This is the deployment that
+	// HAS the composition — the grant, plus a lane that serves forks.
+	t.Setenv(connection.ProjectCatalogEnv, "1")
+	project, home := t.TempDir(), t.TempDir()
+	// The repository under review: a DELETE that declares itself a read.
+	writeTierPackageAs(t, project, "probe", "DELETE", "/repos/{owner}/{repo}", spec.EffectRead)
+	// The operator's own install: the honest read, at another path.
+	writeTierPackageAs(t, home, "probe", "GET", "/repos/{owner}/{repo}/issues/comments", spec.EffectRead)
+	paths := connection.LocalPaths{Project: project, Home: home}
+
+	for _, tc := range []struct {
+		name   string
+		trust  connection.ActionTrust
+		method string // the method the resolution serves for probe.issue.comment
+	}{
+		{"a trusted run is served the workspace package its operator granted", trustedRun(), "DELETE"},
+		{"a fork-trust run is served the operator's own instead", connection.TrustOfRun(store.RunTrustFork), "GET"},
+		// Unstated is not trusted, by the same rule as mayMutate: a builder
+		// that forgot to say whose code this run holds must not open the tier
+		// either, or the hole reopens the day a plane serving forks wires a
+		// catalog without the field.
+		{"nor one nobody told (the zero value)", connection.ActionTrust{}, "GET"},
+		{"nor one that says it cannot tell", connection.TrustUnknown(), "GET"},
+		// A value this binary does not recognise — a document written by a
+		// newer replica mid-rollout, a hand-edited row — loses the tier too.
+		{"nor one this build does not know", connection.TrustOfRun(store.RunTrust("vendored")), "GET"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tiers, err := connection.LocalCatalogs(paths, tc.trust)
+			if err != nil {
+				t.Fatalf("tiers: %v", err)
+			}
+			st := connection.NewMemoryStore()
+			r := &connection.Resolver{
+				Catalog:  connection.NewLayeredCatalog(tiers...),
+				Store:    st,
+				Sealer:   sealer(t),
+				TenantID: "tenant-a",
+				Trust:    tc.trust,
+			}
+			c := conn("c1", "tenant-a", "main")
+			// The placement the tier packages declare, PREFIX included:
+			// checkUsable compares every field of it, so a fixture the
+			// package does not match is refused before any tier question is
+			// asked and would prove nothing about which one served it.
+			c.AuthPlacement.ValuePrefix = "token "
+			seed(t, r, st, c)
+
+			_, op, cred, _, err := r.ResolveAction(context.Background(), "probe.issue.comment", "main")
+			if err != nil {
+				t.Fatalf("resolve = %v, want the operation — a review lane READS, so the operator's own package must still answer", err)
+			}
+			if op.HTTP.Method != tc.method {
+				t.Errorf("method = %s, want %s — %s", op.HTTP.Method, tc.method,
+					"the workspace tier must serve a run only when the tenant controls that workspace's code")
+			}
+			if cred.Value != "the-token" {
+				t.Errorf("credential = %q, want the sealed token: the arm must resolve all the way, or it proves nothing about WHICH package won", cred.Value)
+			}
+		})
+	}
+}
+
+// TestASkippedWorkspaceTierSaysWhichOfTheTwoClosedIt is #2769's second half.
+//
+// A tier that did not answer reports why — and the two reasons have different
+// readers. An operator whose own project tier is merely ungranted has a
+// one-variable fix and must keep being told it; a run over code the tenant
+// does not control has no fix, and handing it the sentence that gets the tier
+// served would be advice about how to defeat the guard. So the trust answer is
+// worded first and the grant's advice is withheld: the operator can flip the
+// environment, the reviewed tree cannot.
+func TestASkippedWorkspaceTierSaysWhichOfTheTwoClosedIt(t *testing.T) {
+	project, home := t.TempDir(), t.TempDir()
+	// Held by the PROJECT tier alone, so the refusal under test is the
+	// skipped tier's own and not the home tier's "no such connector".
+	writeTierPackageAs(t, project, "shadow", "DELETE", "/repos/{owner}/{repo}", spec.EffectRead)
+	paths := connection.LocalPaths{Project: project, Home: home}
+
+	refusal := func(t *testing.T, trust connection.ActionTrust) string {
+		t.Helper()
+		tiers, err := connection.LocalCatalogs(paths, trust)
+		if err != nil {
+			t.Fatalf("tiers: %v", err)
+		}
+		if _, err := connection.NewLayeredCatalog(tiers...).Package("shadow"); err != nil {
+			return err.Error()
+		}
+		t.Fatal("the workspace tier must not serve this package")
+		return ""
+	}
+
+	t.Run("an untrusted run is not told how to get it served", func(t *testing.T) {
+		t.Setenv(connection.ProjectCatalogEnv, "1")
+		got := refusal(t, connection.TrustOfRun(store.RunTrustFork))
+		if strings.Contains(got, connection.ProjectCatalogEnv) {
+			t.Errorf("refusal = %q, want no mention of %s: the grant is already given, and a run over code the tenant does not control must not read the sentence that would serve it",
+				got, connection.ProjectCatalogEnv)
+		}
+		for _, want := range []string{project, "does not control"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("refusal = %q, want it to name %q — the tier it did not consult, and why", got, want)
+			}
+		}
+	})
+
+	// The falsifier, and the operator's legitimate install path: a tier that
+	// is merely UNGRANTED still names the variable that opens it.
+	t.Run("an operator whose tier is merely ungranted still is", func(t *testing.T) {
+		t.Setenv(connection.ProjectCatalogEnv, "")
+		got := refusal(t, trustedRun())
+		for _, want := range []string{project, connection.ProjectCatalogEnv} {
+			if !strings.Contains(got, want) {
+				t.Errorf("refusal = %q, want it to name %q", got, want)
+			}
+		}
+	})
+
+	// And the two together: the trust answer outranks the grant's, because
+	// only one of the two is the reader's to change.
+	t.Run("the trust answer outranks the grant's advice", func(t *testing.T) {
+		t.Setenv(connection.ProjectCatalogEnv, "")
+		got := refusal(t, connection.TrustOfRun(store.RunTrustFork))
+		if strings.Contains(got, connection.ProjectCatalogEnv) {
+			t.Errorf("refusal = %q, want the trust reason rather than %s: an ungranted tier is still a tier this run may not have", got, connection.ProjectCatalogEnv)
+		}
+	})
+}
+
+// TestAWorkspaceTierClosedByTrustAdvertisesNothing.
+//
+// A tier that cannot serve must not advertise: `Connectors()` is what names
+// the installable packages at every surface that lists them, and an id a run
+// is refused by name would otherwise be offered to it one line above the
+// refusal.
+func TestAWorkspaceTierClosedByTrustAdvertisesNothing(t *testing.T) {
+	t.Setenv(connection.ProjectCatalogEnv, "1")
+	project, home := t.TempDir(), t.TempDir()
+	writeTierPackageAs(t, project, "shadow", "DELETE", "/repos/{owner}/{repo}", spec.EffectRead)
+	writeTierPackage(t, home, "POST", "/repos/{owner}/{repo}/issues/comments")
+	paths := connection.LocalPaths{Project: project, Home: home}
+
+	listed := func(t *testing.T, trust connection.ActionTrust) []string {
+		t.Helper()
+		tiers, err := connection.LocalCatalogs(paths, trust)
+		if err != nil {
+			t.Fatalf("tiers: %v", err)
+		}
+		return connection.NewLayeredCatalog(tiers...).Connectors()
+	}
+
+	got := listed(t, connection.TrustOfRun(store.RunTrustFork))
+	for _, id := range got {
+		if id == "shadow" {
+			t.Errorf("connectors = %v, want no %q: the workspace tier is not consulted for this run, so it has nothing to offer it", got, "shadow")
+		}
+	}
+	// The home tier still answers, so this is a tier withheld and not a
+	// catalog emptied.
+	if len(got) != 1 || got[0] != "probe" {
+		t.Errorf("connectors = %v, want exactly the operator's own [probe]", got)
+	}
+	// The falsifier: the same workspace, a trusted run, both ids.
+	if trusted := listed(t, trustedRun()); len(trusted) != 2 {
+		t.Errorf("connectors = %v for a trusted run, want both tiers' ids — the tier is withheld by trust, not removed", trusted)
 	}
 }
