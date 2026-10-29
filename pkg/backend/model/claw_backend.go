@@ -21,6 +21,7 @@ import (
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
 
+	"github.com/SocialGouv/iterion/internal/credheader"
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -1522,9 +1523,17 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// finds nothing and bails with "API key required for OpenAI-
 	// compatible provider". Pass through only the keys we know
 	// providers consume: anything else stays on the host.
-	runnerEnv, err := forwardableProviderEnv(ctx, task.Model)
+	runnerEnv, refusedHeaders, err := forwardableProviderEnv(ctx, task.Model)
 	if err != nil {
 		return delegate.Result{}, err
+	}
+	// Said out loud, by name: the custom-header channel has documented uses
+	// (client identity on a self-hosted gateway), so a silent drop reads as
+	// the header never having been written. The credential's VALUE is never
+	// named — the refused line is where it lives.
+	if len(refusedHeaders) > 0 && b.logger != nil {
+		b.logger.Warn("[%s#%d/claw] the sandbox crossing refused %s: a header line of that name replaces the credential the engine resolved for this node on every request the container sends. Put the credential in the route's own variable (ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY) if this node must spend it; the block's other lines crossed",
+			task.NodeID, task.Iteration, strings.Join(refusedHeaders, ", "))
 	}
 	runnerEnv["HOME"] = clawRunnerHome(ctx, task)
 	// A policy-isolated sandbox only lets egress through the run's network
@@ -2095,6 +2104,10 @@ var providerCredentialEnvVars = []string{
 	// (docs/backends.md § Client identity).
 	"ITERION_LLM_USER_AGENT",
 	"CLAW_USER_AGENT",
+	// A header block, so it crosses FILTERED and EXPLICIT (the
+	// headerBlockEnvName branch of forwardableProviderEnv): its identity
+	// lines are the operator's, its credential lines would authenticate the
+	// node's requests in place of the credential the engine resolved for it.
 	"ANTHROPIC_CUSTOM_HEADERS",
 	// The ChatGPT-forfait wire gates model availability on the codex-cli
 	// `version:` header. The sandbox image ships no codex binary, so the
@@ -2169,6 +2182,30 @@ var providerRoutingEnvVars = []string{
 	"CLAW_OPENAI_REASONING_SUMMARY",
 }
 
+// headerBlockEnvName reports that a forwarded name's VALUE is a block of HTTP
+// header lines the CLI applies over the headers its own auth set —
+// ANTHROPIC_CUSTOM_HEADERS today. Such a value carries whatever the operator
+// (or a workspace .env) wrote in it, including a credential of its own, which
+// is why forwardableProviderEnv treats the CLASS rather than the one name: the
+// shape is in the name, so the next such variable is covered the day it joins
+// the forwarding list, not the day someone remembers this rule
+// (TestEveryHeaderBlockForwardCrossesFilteredAndExplicit derives it).
+//
+// The reading is the engine's own, on a HEADER/HEADERS segment: the same one
+// the cloud process-env policy refuses a name on, for the same stated reason —
+// "a header block carries whatever authenticates the call it rides on"
+// (platformcfg.CredentialShapedName). A segment, not a substring: it answers
+// about the name's parts, so a name that merely contains the letters is not
+// mistaken for a block of headers.
+func headerBlockEnvName(name string) bool {
+	for _, segment := range strings.Split(strings.ToUpper(name), "_") {
+		if segment == "HEADER" || segment == "HEADERS" {
+			return true
+		}
+	}
+	return false
+}
+
 // sandboxProxyEnv returns the single engine-owned entry the in-container
 // runner needs when its sandbox is policy-isolated: the network proxy is
 // the ONLY egress the sandbox's network policy allows, and the gateway
@@ -2208,10 +2245,44 @@ func sandboxProxyEnv(handle sandbox.Run) map[string]string {
 // entirely while its donor's lease has already been taken. The failure is
 // invisible whenever the ambient key happens to work, which is the worst
 // possible shape for a billing boundary.
-func forwardableProviderEnv(ctx context.Context, model string) (map[string]string, error) {
+//
+// refusedHeaders names what the crossing would not carry: for each
+// header-block variable, the variable and the credential header line it
+// dropped (never a value — that value IS the credential). The fact travels
+// with the env rather than being re-derived by the caller from a second read
+// of the host environment, and the caller says it out loud: the channel has
+// documented uses, so a silent drop reads as the header never having been
+// written.
+func forwardableProviderEnv(ctx context.Context, model string) (map[string]string, []string, error) {
 	env := map[string]string{}
+	var refusedHeaders []string
 	for _, name := range providerCredentialEnvVars {
-		if v := os.Getenv(name); v != "" {
+		v := os.Getenv(name)
+		if headerBlockEnvName(name) {
+			// A header block is applied LAST by the CLI, over the headers its
+			// own auth set (claw identity.go Identity.Apply), for every
+			// provider — so an ambient "Authorization: Bearer …" on the
+			// launcher authenticates the in-container runner's requests in
+			// place of the credential the engine resolved for this node, at
+			// the vendor's gateway the engine chose. #1476 closed that shape
+			// for the claude_code delegate (facadeRouteEnv clears the
+			// variable); it stayed open one backend away (#2244). The
+			// credential LINES are refused and the identity ones cross: the
+			// documented use of the channel is client identity, not auth.
+			//
+			// And the name crosses EXPLICITLY, empty included: the runner
+			// auto-loads the workspace .env, which fills names missing from
+			// the process env, so an absent name lets the repository under
+			// review write the headers of every request the node sends —
+			// including, inside the container, the very line refused here.
+			kept, refused := credheader.StripCredentialLines(v)
+			for _, header := range refused {
+				refusedHeaders = append(refusedHeaders, name+"/"+header)
+			}
+			env[name] = kept
+			continue
+		}
+		if v != "" {
 			env[name] = v
 		}
 	}
@@ -2243,11 +2314,11 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	if modelroute.Parse(model).Gateway() {
 		cfg, err := compatgw.FromEnv(os.Getenv)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		allowPrivate := secrets.LLMEndpointAllowPrivate()
 		if err := cfg.Validate(!allowPrivate); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		env[compatgw.BaseURLEnv] = cfg.BaseURL
 		if cfg.APIKey != "" {
@@ -2306,7 +2377,7 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	}
 	creds, ok := secrets.CredentialsFromContext(ctx)
 	if !ok {
-		return env, nil
+		return env, refusedHeaders, nil
 	}
 	for provider, key := range creds.APIKeys {
 		if key == "" {
@@ -2378,10 +2449,10 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	// provider otherwise.
 	if clawPinnedProvider(model) == secrets.ProviderAnthropic {
 		if err := applyForfaitAcrossSandbox(env, creds, model); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return env, nil
+	return env, refusedHeaders, nil
 }
 
 // claw declares no forfait-first provider (delegate.RegisterForfaitFirst).

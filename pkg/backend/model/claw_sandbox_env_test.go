@@ -192,7 +192,7 @@ func forfaitDirForTest(t *testing.T) string {
 // fails the test on error.
 func envFor(t *testing.T, ctx context.Context) map[string]string {
 	t.Helper()
-	env, err := forwardableProviderEnv(ctx, "anthropic/claude-haiku-4-5")
+	env, _, err := forwardableProviderEnv(ctx, "anthropic/claude-haiku-4-5")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestForwardableProviderEnv_GLMNodeKeepsItsZAIKey(t *testing.T) {
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): forfaitDirForTest(t)},
 	})
-	env, err := forwardableProviderEnv(ctx, "anthropic/glm-5.2")
+	env, _, err := forwardableProviderEnv(ctx, "anthropic/glm-5.2")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestForwardableProviderEnv_OtherProviderIgnoresTheForfait(t *testing.T) {
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): dir},
 	})
-	env, err := forwardableProviderEnv(ctx, "openrouter/anthropic/claude-sonnet-5")
+	env, _, err := forwardableProviderEnv(ctx, "openrouter/anthropic/claude-sonnet-5")
 	if err != nil {
 		t.Fatalf("an openrouter node failed on the run's expired Claude forfait: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestForwardableProviderEnv_ExpiredForfaitRefusesInsteadOfBlinding(t *testin
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): dir},
 	})
-	_, err := forwardableProviderEnv(ctx, "anthropic/claude-haiku-4-5")
+	_, _, err := forwardableProviderEnv(ctx, "anthropic/claude-haiku-4-5")
 	if !errors.Is(err, secrets.ErrAnthropicForfaitExpired) {
 		t.Fatalf("expected a named expiry refusal, got %v", err)
 	}
@@ -290,7 +290,7 @@ func TestForwardableProviderEnv_CarriesTheMoonshotRoute(t *testing.T) {
 	t.Setenv("MOONSHOT_BASE_URL", "https://api.moonshot.cn/anthropic")
 	hostBase := moonshotBaseURL()
 
-	env, err := forwardableProviderEnv(context.Background(), "moonshot/kimi-k2")
+	env, _, err := forwardableProviderEnv(context.Background(), "moonshot/kimi-k2")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestForwardableProviderEnv_CarriesTheStreamUsageKnob(t *testing.T) {
 	t.Setenv("OPENAI_BASE_URL", "https://gateway.operator.example/v1")
 	t.Setenv("ITERION_OPENAI_STREAM_USAGE", "1")
 
-	env, err := forwardableProviderEnv(context.Background(), "openai/gpt-5")
+	env, _, err := forwardableProviderEnv(context.Background(), "openai/gpt-5")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -337,7 +337,7 @@ func TestForwardableProviderEnv_CarriesTheXAIRoute(t *testing.T) {
 	t.Setenv("XAI_BASE_URL", "https://xai-proxy.operator.example/v1")
 	hostBase := xaiBaseURL()
 
-	env, err := forwardableProviderEnv(context.Background(), "xai/grok-4")
+	env, _, err := forwardableProviderEnv(context.Background(), "xai/grok-4")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -480,7 +480,7 @@ func TestForwardableProviderEnv_MoonshotBYOKBeatsTheAmbientKey(t *testing.T) {
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		APIKeys: map[secrets.Provider]string{secrets.ProviderMoonshot: "moonshot-tenant-key"},
 	})
-	env, err := forwardableProviderEnv(ctx, "moonshot/kimi-k2")
+	env, _, err := forwardableProviderEnv(ctx, "moonshot/kimi-k2")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -530,7 +530,7 @@ func TestForwardableProviderEnv_ForfaitCrossingKeepsAMoonshotNodesKey(t *testing
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): forfaitDirForTest(t)},
 	})
-	env, err := forwardableProviderEnv(ctx, "moonshot/kimi-k2")
+	env, _, err := forwardableProviderEnv(ctx, "moonshot/kimi-k2")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -558,7 +558,7 @@ func TestForwardableProviderEnv_APinnedKeyCrossesOnlyForTheNodeThatNamesIt(t *te
 		PinnedAPIKeys: map[secrets.Provider]string{secrets.ProviderMoonshot: "platform-moonshot"},
 	})
 
-	pinnedNode, err := forwardableProviderEnv(ctx, "moonshot/kimi-k2")
+	pinnedNode, _, err := forwardableProviderEnv(ctx, "moonshot/kimi-k2")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -572,7 +572,7 @@ func TestForwardableProviderEnv_APinnedKeyCrossesOnlyForTheNodeThatNamesIt(t *te
 	}
 	t.Setenv("MOONSHOT_API_KEY", "")
 
-	other, err := forwardableProviderEnv(ctx, "anthropic/claude-haiku-4-5")
+	other, _, err := forwardableProviderEnv(ctx, "anthropic/claude-haiku-4-5")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}

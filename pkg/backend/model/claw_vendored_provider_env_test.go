@@ -176,7 +176,7 @@ func TestASandboxedFoundryNodeCarriesTheLaunchersAzureRouting(t *testing.T) {
 		t.Setenv(name, "launcher-search-secret")
 	}
 
-	env, err := forwardableProviderEnv(context.Background(), "foundry/gpt-4o-mini")
+	env, _, err := forwardableProviderEnv(context.Background(), "foundry/gpt-4o-mini")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestASandboxedFoundryNodeCarriesTheLaunchersAzureRouting(t *testing.T) {
 	// empty, never absent: the runner auto-loads the workspace .env, which
 	// fills only what is missing.
 	t.Setenv("AZURE_OPENAI_DEPLOYMENT", "")
-	env, err = forwardableProviderEnv(context.Background(), "foundry/gpt-4o-mini")
+	env, _, err = forwardableProviderEnv(context.Background(), "foundry/gpt-4o-mini")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}

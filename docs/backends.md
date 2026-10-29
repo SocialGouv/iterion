@@ -2888,6 +2888,30 @@ X-My-Header: value"
 A malformed `ANTHROPIC_CUSTOM_HEADERS` line (no `Name:` part) fails the
 request with an explicit parse error rather than being silently dropped.
 
+**A credential is not a client identity.** The block is applied *last*, so a
+line named `Authorization`, `x-api-key` or `api-key` replaces the credential
+the engine resolved for the node — at whichever vendor's gateway that node was
+routed to. On the claude_code delegate a funded facade route therefore clears
+the variable outright ([#1476](https://github.com/SocialGouv/iterion/issues/1476)),
+and the claw **sandbox crossing** refuses those lines by name
+([#2244](https://github.com/SocialGouv/iterion/issues/2244)): the in-container
+runner receives the block without them, with every other line intact, and the
+launcher logs which line it would not carry (never its value). Put such a
+credential in the route's own variable — `ANTHROPIC_AUTH_TOKEN` for a bearer,
+`ANTHROPIC_API_KEY` for a key — which crosses as the node's real credential and
+is accounted for as one.
+
+The variable also crosses **explicitly, empty included**: the in-container
+runner auto-loads the reviewed workspace's `.env`, which fills only names the
+process environment leaves unset, so an absent name would let the repository
+under review write the headers of every request the node sends. The host
+environment is the supported channel for it; a value set through the sandbox
+spec or a repository's `devcontainer.json` does not reach the runner.
+
+An in-process (non-sandboxed) claw node still reads the variable through claw's
+own identity resolution, for every provider: that half is claw's to close
+(`api.ResolveExplicitIdentity` is the seam) and needs a `claw-code-go` bump.
+
 **ToS caveat.** Presenting as another tool is a decision between you
 and the endpoint you target (e.g. your z.ai subscription's supported-
 tools policy) — iterion/claw default to the honest identity and never

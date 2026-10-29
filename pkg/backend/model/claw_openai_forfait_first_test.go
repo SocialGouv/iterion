@@ -110,7 +110,7 @@ func TestForwardableProviderEnv_OpenAIForfaitBeforeAPinnedKey(t *testing.T) {
 		PinnedAPIKeys:        map[secrets.Provider]string{secrets.ProviderOpenAI: "sk-pinned"},
 		OAuthCredentialFiles: codex,
 	})
-	env, err := forwardableProviderEnv(pinnedOnly, "openai/gpt-6")
+	env, _, err := forwardableProviderEnv(pinnedOnly, "openai/gpt-6")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestForwardableProviderEnv_OpenAIForfaitBeforeAPinnedKey(t *testing.T) {
 		PinnedAPIKeys:        map[secrets.Provider]string{secrets.ProviderOpenAI: "sk-pinned"},
 		OAuthCredentialFiles: codex,
 	})
-	env, err = forwardableProviderEnv(withDefault, "openai/gpt-6")
+	env, _, err = forwardableProviderEnv(withDefault, "openai/gpt-6")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestClawOpenAICredentialParity(t *testing.T) {
 							hostClient, hostErr := NewRegistry().ResolveWithContext(ctx, "openai/gpt-6")
 							host := pick(t, hostClient, hostErr)
 
-							env, err := forwardableProviderEnv(ctx, "openai/gpt-6")
+							env, _, err := forwardableProviderEnv(ctx, "openai/gpt-6")
 							if err != nil {
 								t.Fatalf("forwardableProviderEnv: %v", err)
 							}
@@ -245,7 +245,7 @@ func TestClawOpenAIRefusalParityWithoutRunCredentials(t *testing.T) {
 			t.Setenv("ITERION_OPENAI_USE_OAUTH", useOAuth)
 			hostClient, hostErr := NewRegistry().ResolveWithContext(context.Background(), "openai/gpt-6")
 
-			env, err := forwardableProviderEnv(context.Background(), "openai/gpt-6")
+			env, _, err := forwardableProviderEnv(context.Background(), "openai/gpt-6")
 			if err != nil {
 				t.Fatalf("forwardableProviderEnv: %v", err)
 			}

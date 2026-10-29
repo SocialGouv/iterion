@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/credheader"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
@@ -853,14 +854,16 @@ func spawnCustomHeaders(credEnv map[string]string, sandboxed bool) bool {
 // variable is in the spawn's path in every one of those cases, the engine did
 // not clear it, and a malformed block is itself what the operator has to go and
 // fix: sending them to it is the answer each time.
+//
+// The walk itself lives in internal/credheader, which the claw sandbox
+// crossing reads the same block with (forwardableProviderEnv refuses a
+// credential line rather than carrying it into a container): one reader, so
+// the two cannot disagree about a \r line ending, a colon in a value or the
+// word in a value instead of a name. The claim made HERE stays the strong,
+// narrow one — the name the route's own bearer travels in — while the
+// crossing refuses every name a provider's auth sets.
 func carriesAuthorizationHeader(headers string) bool {
-	for _, line := range strings.Split(headers, "\n") {
-		name, _, found := strings.Cut(strings.TrimSpace(strings.TrimSuffix(line, "\r")), ":")
-		if found && strings.EqualFold(strings.TrimSpace(name), "authorization") {
-			return true
-		}
-	}
-	return false
+	return credheader.CarriesName(headers, credheader.NameAuthorization)
 }
 
 // facadeKeyFromProcessEnv reports that the key a facade route spends is the one

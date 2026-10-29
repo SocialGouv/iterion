@@ -270,7 +270,7 @@ func TestForwardableProviderEnv_GatewayEnvRidesOnlyGatewayNodes(t *testing.T) {
 		// this test dials nothing.
 		t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://93.184.216.34/v1")
 		t.Setenv("OPENAI_COMPATIBLE_API_KEY", "gw-secret")
-		env, err := forwardableProviderEnv(context.Background(), "openai_compatible/m")
+		env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/m")
 		if err != nil {
 			t.Fatalf("forwardableProviderEnv: %v", err)
 		}
@@ -289,7 +289,7 @@ func TestForwardableProviderEnv_GatewayEnvRidesOnlyGatewayNodes(t *testing.T) {
 		clearGatewayEnv(t)
 		t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "http://127.0.0.1:9/v1")
 		t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
-		env, err := forwardableProviderEnv(context.Background(), "openai_compatible/m")
+		env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/m")
 		if err != nil {
 			t.Fatalf("forwardableProviderEnv: %v", err)
 		}
@@ -305,7 +305,7 @@ func TestForwardableProviderEnv_GatewayEnvRidesOnlyGatewayNodes(t *testing.T) {
 		clearGatewayEnv(t)
 		t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://93.184.216.34/v1")
 		t.Setenv("OPENAI_COMPATIBLE_API_KEY", "gw-secret")
-		env, err := forwardableProviderEnv(context.Background(), "anthropic/claude-x")
+		env, _, err := forwardableProviderEnv(context.Background(), "anthropic/claude-x")
 		if err != nil {
 			t.Fatalf("forwardableProviderEnv: %v", err)
 		}
@@ -495,7 +495,7 @@ func TestForwardableProviderEnv_CarriesTheHostResolution(t *testing.T) {
 	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "sk-test")
 	compatgw.ResetCatalogCaches()
 
-	env, err := forwardableProviderEnv(context.Background(), "openai_compatible/gw/m")
+	env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/gw/m")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -504,7 +504,7 @@ func TestForwardableProviderEnv_CarriesTheHostResolution(t *testing.T) {
 		t.Errorf("env carries %v, want the forwarded record", raw)
 	}
 	// A vendor node never sees it.
-	env, err = forwardableProviderEnv(context.Background(), "anthropic/claude-opus-5")
+	env, _, err = forwardableProviderEnv(context.Background(), "anthropic/claude-opus-5")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}

@@ -32,6 +32,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/automaintguard` | holds the acceptance witness of scripts/auto-maintenance-check.sh — the preflight that decides whether a repository's dependency loop is safe to… | — |
 | `internal/ciguard` | holds tests that keep this repository's CI configuration honest from inside the test suite, where a required check can see them. | — |
 | `internal/corpusreading` | reads the committed corpus the way internal/mdcode's four first-party readers do — every tracked .md, .yaml and .yml outside the skipped trees,… | — |
+| `internal/credheader` | reads ANTHROPIC_CUSTOM_HEADERS-format text — the newline-separated "Name: Value" lines a Claude-Code-compatible CLI applies LAST on every request… | — |
 | `internal/docsguard` | holds tests that keep this repository's documentation honest from inside the test suite, where a required check can see them. | `FS` |
 | `internal/envtrust` | tells apart the environment iterion INHERITED from the part a project `.env` filled in. | — |
 | `internal/floorsalign` | realigns the syntax-floor pins at the release cut. | — |
