@@ -21,18 +21,25 @@
 // design. What the sandbox genuinely needs to WRITE stays writable: the
 // run store and memory under the iterion home, Claude Code's sessions and
 // credential refresh under ~/.claude, codex's auth.json under ~/.codex,
-// git's objects/refs/HEAD under .git, the caches. What the host EXECUTES
-// is shadowed:
+// git's objects/refs/HEAD under .git. What the host EXECUTES or LOADS AS
+// INSTRUCTIONS is shadowed:
 //
-//   - files the in-sandbox tools may legitimately write (Claude Code
-//     persists state into ~/.claude.json and settings.local.json; a bot
-//     may `git config --global`) bind a PER-RUN COPY seeded from the host
-//     content — reads see the operator's config, writes land in the copy
-//     and die with the sandbox;
-//   - directories the sandbox never writes (plugins/, .git/hooks/) bind
-//     READ-ONLY — and when the host has none, an EMPTY read-only overlay
-//     pre-created on the host, so the agent cannot plant the directory
-//     fresh through the read-write parent bind.
+//   - files the in-sandbox tools write in place (Claude Code persists
+//     state into ~/.claude.json and settings.local.json) bind a PER-RUN
+//     COPY seeded from the host content — reads see the operator's
+//     config, writes land in the copy and die with the sandbox;
+//   - directories the sandbox never writes bind READ-ONLY — the ones the
+//     host EXECUTES (hooks/ scripts, the local CLI install, plugins/) and
+//     the ones it LOADS AS INSTRUCTIONS (skills/, commands/, agents/,
+//     output-styles/, rules/): hostExecutedClaudeHomeEntries is the list,
+//     and the enumeration rule lives with it. When the host has none, an
+//     EMPTY read-only overlay pre-created on the host, so the agent
+//     cannot plant the directory fresh through the read-write parent bind;
+//   - the host's warm caches are not shadowed but REPLACED: the sandbox
+//     gets its own, under the iterion home, because the host EXECUTES
+//     ($PNPM_HOME's global bins, the Go toolchain in the module cache)
+//     and COMPILES (the build cache's objects, trusted unhashed) what
+//     they hold — sandboxCacheRoot in sandbox_mounts.go.
 //
 // Docker mounts nested binds by destination depth, parents first, so the
 // overlay wins over the parent bind wherever it is appended (measured,
@@ -40,15 +47,27 @@
 // <dir>, and a read-only bind of <dir>/hooks refuses the plant). The
 // per-run copies live in a scratch directory removed at sandbox teardown.
 //
-// Write semantics of a copy-bound file, stated because they differ: a
-// streaming write (O_TRUNC) lands in the copy and dies with the run, but
-// an ATOMIC write — write a sibling, rename over the file, git's
-// config.lock pattern — fails loudly with EBUSY (a mountpoint cannot be
-// renamed over). An in-sandbox `git config user.name …` is exactly that
-// pattern, so a bot that edits workspace-local git config (the
-// golden-master extend identity swap) refuses loudly instead of writing
-// — the safe direction, and ITERION_SANDBOX_HOST_STATE_GUARD=off restores
-// the old reachability for a bot that needs it.
+// Write semantics of a copy-bound file, stated because the two shapes do
+// NOT agree — measured on docker 29.9.2 with the real binaries:
+//
+//   - a streaming write (O_TRUNC, write in place) lands in the copy and
+//     dies with the run — measured on a copy-bound
+//     ~/.claude/settings.json, whose rewrite from inside the container
+//     landed in the copy with the host file byte-identical. The image's
+//     claude 2.1.175 starts and runs against a copy-bound ~/.claude.json
+//     (measured, inode and bytes of the host file unchanged after the
+//     run), which is the state file it updates;
+//   - an ATOMIC write — write a sibling, rename over the file — FAILS,
+//     because a mountpoint cannot be renamed over. It does not land in
+//     the copy: `git config --global user.email …` on a copy-bound
+//     ~/.gitconfig dies with "could not write config file …: Device or
+//     resource busy" and exit 4, and so does `--unset`. Reads work. A
+//     bot that must write git config per run points GIT_CONFIG_GLOBAL at
+//     a path of its own; the same EBUSY is what a workspace-local
+//     `git config` (the golden-master extend identity swap) now gets —
+//     the safe direction, refused loudly instead of written, and
+//     ITERION_SANDBOX_HOST_STATE_GUARD=off restores the old reachability
+//     for a bot that needs it.
 //
 // Audit: every shadowed path rides the sandbox_host_state_mounted event's
 // `guarded` list, so `docker inspect` never shows a host bind the run's
@@ -62,6 +81,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -71,6 +92,60 @@ import (
 // disables the guard (the ticket's "require explicit opt-in", inverted:
 // the guard is the default and opting OUT is the explicit act).
 const HostStateGuardEnvVar = "ITERION_SANDBOX_HOST_STATE_GUARD"
+
+// sandboxCacheRoot is where the sandbox's OWN warm caches live, under the
+// operator's iterion home: <iterion home>/sandbox-caches/<the path they are
+// served at under $HOME>. Bound at the container's $HOME path so
+// GOCACHE/GOMODCACHE/PNPM_HOME resolve to them with no variable set, they
+// survive from one sandboxed run to the next — and no tool of the HOST ever
+// reads them, which is the whole point: the host executes what
+// $PNPM_HOME/<bin> and $GOMODCACHE/golang.org/toolchain@…/bin/go hold, and
+// relinks what the build cache holds without re-hashing it.
+const sandboxCacheRoot = "sandbox-caches"
+
+// hostExecutedClaudeHomeEntries are the ~/.claude directories a read-only
+// overlay must cover, because the HOST — the operator's own CLI, and
+// iterion itself — either EXECUTES them or LOADS THEM AS INSTRUCTIONS on
+// its next turn. Membership is decided by that verb, never by what a
+// sandboxed CLI happens to need:
+//
+//   - executed as code: hooks/ holds the scripts a settings `command:`
+//     names (shadowing settings.json shadows the POINTER, the script is
+//     the POINTEE); local/ is the CLI install iterion's own probe resolves
+//     and runs (pkg/internal/clilocate.ClaudeLocalFallback); plugins/
+//     carries hooks and MCP servers the launcher starts;
+//   - loaded as instructions, which steers the operator's next session
+//     into running whatever the instruction says: skills/, commands/,
+//     agents/, output-styles/, and rules/ — the latter pair being exactly
+//     what iterion's own ambient-context policy withholds from a spawn
+//     (pkg/backend/delegate/claude_code_ambient.go names ~/.claude/CLAUDE.md
+//     and ~/.claude/rules/** as the operator's memory); workflows/ and
+//     routines/ hold the harness's own scripted surfaces.
+//
+// ~/.claude/CLAUDE.md is the same class and a FILE, so it rides
+// copyFileOver beside the settings files rather than this list.
+//
+// What is deliberately NOT here: the state the in-sandbox CLI must write
+// (projects/, todos/, statsig/, shell-snapshots/, backups/, logs/,
+// .credentials.json). Those stay read-write, and the residual that leaves
+// is written down in docs/sandbox.md rather than implied — measured on the
+// image's own claude 2.1.175: an unauthenticated `--version` already
+// writes backups/, and in a home shape one state away it does not, so the
+// write set is not a list this file can hold. A future CLI version that
+// loads a NEW directory as code is covered by extending THIS list; there
+// is no pattern to infer it from.
+var hostExecutedClaudeHomeEntries = []string{
+	"agents",
+	"commands",
+	"hooks",
+	"local",
+	"output-styles",
+	"plugins",
+	"routines",
+	"rules",
+	"skills",
+	"workflows",
+}
 
 // hostConfigGuard builds the per-run copies and read-only overlays, and
 // collects the audit list. Nil is the disabled guard: every method on a
@@ -95,14 +170,28 @@ type hostConfigGuard struct {
 // a driver whose binds are all dropped (kubernetes) has nothing to guard,
 // and creating copies there would be pure waste.
 func newHostConfigGuard(logger *iterlog.Logger) *hostConfigGuard {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(HostStateGuardEnvVar))) {
-	case "off", "none", "0", "false":
+	sweepStaleHostGuardScratch()
+	off, planted := isolationHatchOff(HostStateGuardEnvVar)
+	if off {
 		return nil
 	}
-	return &hostConfigGuard{logger: logger}
+	g := &hostConfigGuard{logger: logger}
+	// The hatch the repository under review wrote is read as unset, and the
+	// run that was supposed to open it says so: a guard that stays on
+	// without a word reads, in a run log, exactly like a hatch that works.
+	if planted {
+		g.warn("%s", plantedHatchWarning(HostStateGuardEnvVar))
+	}
+	return g
 }
 
 // cleanup removes the per-run copy scratch. Idempotent; safe on nil.
+//
+// resolveAndStartSandbox arms this in a defer the moment the guard exists
+// and disarms it only once the live sandbox owns it, so EVERY return
+// between the two — including the ones that are not errors — takes the
+// copies with it. A SIGKILL of the engine runs no defer at all, which is
+// what sweepStaleHostGuardScratch answers.
 func (g *hostConfigGuard) cleanup() {
 	if g == nil || g.dir == "" {
 		return
@@ -111,12 +200,61 @@ func (g *hostConfigGuard) cleanup() {
 	g.dir = ""
 }
 
-// scratch returns the per-run copy dir, creating it on first use.
+// hostGuardScratchPrefix is iterion's MARK on a per-run copy scratch: the
+// one thing that tells a directory under the system temp dir apart from
+// every other process's, and therefore the only thing
+// sweepStaleHostGuardScratch is allowed to remove.
+const hostGuardScratchPrefix = "iterion-hostguard-"
+
+// hostGuardScratchStaleAfter is how long a marked scratch must have been
+// untouched to count as abandoned. A live sandbox holds its copies bound
+// for the whole run, so the window must exceed any run's duration — the
+// same reasoning, and the same figure, as the delegate's ambient-overlay
+// sweep (pkg/backend/delegate/ambient_home.go).
+const hostGuardScratchStaleAfter = 24 * time.Hour
+
+// sweepStaleHostGuardScratch removes the copy scratches of runs whose
+// engine died without a teardown — a SIGKILL, a container OOM — once per
+// process, at the first guard built. Each scratch holds copies of the
+// operator's config: ~/.claude.json (account userID), ~/.gitconfig,
+// ~/.codex/config.toml, owner-only, in a dir no other run mounts.
+//
+// Three facts are required of every path before it is removed, and a
+// failure of any one of them keeps the directory rather than guessing: a
+// DIRECT child of the system temp dir, a name carrying iterion's own
+// prefix, and a modification time older than the staleness window. A live
+// run's scratch is younger; a directory iterion did not create does not
+// carry the prefix.
+func sweepStaleHostGuardScratch() {
+	hostGuardSweepOnce.Do(func() {
+		tmp := os.TempDir()
+		entries, err := os.ReadDir(tmp)
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			if !e.IsDir() || !strings.HasPrefix(e.Name(), hostGuardScratchPrefix) {
+				continue
+			}
+			info, err := e.Info()
+			if err != nil || time.Since(info.ModTime()) < hostGuardScratchStaleAfter {
+				continue
+			}
+			_ = os.RemoveAll(filepath.Join(tmp, e.Name()))
+		}
+	})
+}
+
+var hostGuardSweepOnce sync.Once
+
+// scratch returns the per-run copy dir, creating it on first use. 0700
+// (os.MkdirTemp's mode) so the copies are readable by this user alone —
+// they carry the operator's own config.
 func (g *hostConfigGuard) scratch() (string, error) {
 	if g.dir != "" {
 		return g.dir, nil
 	}
-	dir, err := os.MkdirTemp("", "iterion-hostguard-")
+	dir, err := os.MkdirTemp("", hostGuardScratchPrefix)
 	if err != nil {
 		return "", err
 	}
@@ -193,10 +331,15 @@ func (g *hostConfigGuard) copyFileOverExisting(mounts []hostStateMount, hostPath
 	return g.copyFileOver(mounts, hostPath, "")
 }
 
-// note records the audit line: kind is "copy", "copy-seeded", "ro" or
-// "ro-created" — the vocabulary the sandbox_host_state_mounted event's
-// `guarded` field carries.
+// note records the audit line: kind is "copy", "copy-seeded", "ro",
+// "ro-created" or "private" — the vocabulary the
+// sandbox_host_state_mounted event's `guarded` field carries. No-op on a
+// nil guard, like every other method: the type's contract is that callers
+// thread it without a nil check.
 func (g *hostConfigGuard) note(kind, hostPath string) {
+	if g == nil {
+		return
+	}
 	g.guarded = append(g.guarded, kind+":"+hostPath)
 }
 
@@ -249,8 +392,9 @@ func (g *hostConfigGuard) warn(format string, args ...any) {
 
 // guardWorktreeGit shadows the host-executed files of the worktree's
 // mounted .git tree (#2069): config as a per-run copy — an in-sandbox
-// `git config --local` writes the copy and dies with the run, while refs
-// and objects, which a commit needs, stay writable — and hooks/ as a
+// `git config --local` is the lock-and-rename shape, so it does not write
+// the copy, it fails EBUSY (the warn below says so), while refs and
+// objects, which a commit needs, stay writable — and hooks/ as a
 // read-only overlay, created empty on the host when absent so the agent
 // cannot plant the directory fresh. applyHostStateMounts calls it (with
 // SandboxParams.WorktreeGitDir) so the shadows ride the one

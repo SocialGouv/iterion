@@ -344,12 +344,24 @@ every intermediate ancestor re-laid (`$HOME/.local/share/pnpm` →
 `$HOME/.local/share/fnm` stay writable too.
 
 **Warm package caches.** Alongside the Go build/module caches, the Node
-package caches (`~/.npm`, `~/.local/share/pnpm`, `~/.cache/yarn`) are
-bind-mounted read-write at the same path when they exist on the host —
-without them every sandboxed run re-downloads its packages over the
-network on a cold `npm ci`/`pnpm install`. All content-addressed and
-safe to share across parallel runs; gated under `host_state` and
-skipped when absent.
+package caches (`~/.npm`, `~/.local/share/pnpm`, `~/.cache/yarn`) are served
+at the same path inside the container — without them every sandboxed run
+re-downloads its packages over the network on a cold `npm ci`/`pnpm install`.
+They are the sandbox's OWN caches, not the host's: the source is
+`<iterion home>/sandbox-caches/<the path under $HOME>`, created on demand,
+shared by every sandboxed run and read by no tool of the host (#2069 —
+`$PNPM_HOME` holds the global bins `pnpm setup` puts on the operator's PATH,
+the module cache holds the toolchain binary `GOTOOLCHAIN=auto` executes, and
+the build cache holds objects `go build` relinks without re-hashing them, so
+binding the host's own read-write handed a sandboxed agent the host's next
+build). Gated under `host_state`, and on the iterion home being the
+operator's own — with no home iterion owns, the run simply builds cold.
+
+Measured cost of the switch: the FIRST sandboxed run after it compiles cold
+(12.1 s for `./pkg/runtime` on a dedicated cache, against 0.1 s on the
+second run through the same directory), and the caches are stored twice on
+disk. Residual, stated: a sandboxed run can still poison the cache the NEXT
+sandboxed run uses — they share one store, as parallel runs always did.
 
 **Overlap handling:** when the workspace bind-mount already contains
 one of the candidate paths (typically a project-local `<repo>/.iterion/`
@@ -376,16 +388,25 @@ must not be able to plant it. Under the guard — on by default wherever
 the driver has host bind mounts —
 
 - `~/.gitconfig`, `~/.claude.json`, `~/.claude/settings.json`,
-  `~/.claude/settings.local.json`, `~/.codex/config.toml`,
-  `<iterion home>/plugins.yaml` and the worktree `.git`'s `config` bind
-  a **per-run copy** seeded from the host content: reads see the
-  operator's config, writes (Claude Code's own state updates included)
-  land in the copy and die with the sandbox teardown;
-- `<iterion home>/plugins/`, `~/.claude/plugins/` and the worktree
-  `.git`'s `hooks/` bind **read-only** — created empty on the host first
-  when absent, so the agent cannot plant the directory fresh through the
-  read-write parent bind (and docker's root-owned mountpoint never
-  appears: the runtime pre-creates the path itself, user-owned).
+  `~/.claude/settings.local.json`, `~/.claude/CLAUDE.md`,
+  `~/.codex/config.toml`, `~/.codex/AGENTS.md`,
+  `~/.codex/AGENTS.override.md`, `<iterion home>/plugins.yaml` and the
+  worktree `.git`'s `config` bind a **per-run copy** seeded from the host
+  content: reads see the operator's config, writes (Claude Code's own state
+  updates included) land in the copy and die with the sandbox teardown.
+  The copies live in a `0700` scratch dir of `0600` files, removed on every
+  exit path of the sandbox start and at teardown; a scratch orphaned by a
+  killed engine is swept at the next run's guard (iterion's own prefix,
+  older than 24 h);
+- the `~/.claude` entries the HOST executes or loads as instructions bind
+  **read-only**: `hooks/` (the scripts a settings `command:` names — a hook
+  is a pointer, the script is what runs), `local/` (the CLI install
+  iterion's own probe resolves and runs), `plugins/`, `skills/`,
+  `commands/`, `agents/`, `output-styles/`, `rules/`, `workflows/` and
+  `routines/`; likewise `~/.codex/prompts/`, `<iterion home>/plugins/` and
+  the worktree `.git`'s `hooks/`. The host tree stays READABLE — an
+  in-container CLI keeps the operator's plugins and skills — and
+  unwritable.
 
 Docker mounts nested binds by destination depth, parents first, so the
 overlays win over the parent binds regardless of list order (measured on
@@ -396,17 +417,53 @@ explain. `ITERION_SANDBOX_HOST_STATE_GUARD=off` disables the guard and
 restores the all-writable posture, for the operator whose bots
 deliberately manage host config.
 
-One write shape changes under the guard, loudly: a copy-bound file
-absorbs streaming writes into the copy, but an ATOMIC write — write a
-sibling, rename over the file, the `config.lock` pattern of
-`git config <key> <value>` — fails with EBUSY, because a mountpoint
-cannot be renamed over. A bot that edits workspace-local git config
-(golden-master's extend identity swap is the catalog case) refuses
-loudly instead of writing; the hatch above restores the writable config.
-Residual, deliberately out of scope: prompt-level files the host's
-tools *read* (`~/.claude/CLAUDE.md`, `~/.claude/agents/`) stay writable —
-they carry no host code execution — and the worktree `.git` keeps
-objects/refs writable, which a commit needs.
+An absent path is still created on the host, user-owned, before it is
+overlaid — otherwise the agent plants the directory fresh through the
+read-write parent bind, and docker would leave a root-owned mountpoint
+there. A guarded run therefore ADDS to the operator's home: empty
+`~/.claude/{hooks,local,skills,commands,agents,output-styles,rules,workflows,routines,plugins}`,
+an empty `~/.codex/prompts/`, an empty `~/.claude/settings.local.json`,
+`<iterion home>/plugins/` and `.git/hooks/`. They are inert (an empty
+plugin registry file leaves every plugin's state exactly as its absence
+did) and they are never removed.
+
+One write shape changes under the guard, loudly: a copy-bound file absorbs
+STREAMING writes into the copy — measured on `~/.claude/settings.json`,
+rewritten from inside the container with the host file left byte-identical,
+and the image's claude 2.1.175 starts and runs against a copy-bound
+`~/.claude.json` — but an ATOMIC write, write a sibling and rename over the
+file, FAILS with EBUSY, because a
+mountpoint cannot be renamed over. It does not fall back to the copy:
+`git config --global user.email …` on a guarded home dies with
+`could not write config file …: Device or resource busy` and exit 4, and so
+does `--unset` (measured, docker 29.9.2). A bot that must write git config
+per run points `GIT_CONFIG_GLOBAL` at a path of its own; a bot that edits
+workspace-local git config (golden-master's extend identity swap is the
+catalog case) refuses loudly instead of writing, and the hatch above
+restores the writable config.
+
+Residual, deliberately out of scope and NOT free of host code execution:
+the state the in-sandbox CLI must keep writing stays read-write —
+`~/.claude/projects/` (session transcripts), `todos/`, `statsig/`,
+`shell-snapshots/`, `backups/`, `logs/`, `.credentials.json` — and a
+transcript a sandboxed run wrote is read back by a later `claude --resume`
+on the host, which is an instruction surface, while a shell snapshot is
+sourced by the host CLI's own Bash tool. Those entries are not overlaid
+because the write set of a real authenticated run cannot be enumerated
+reliably: on the image's claude 2.1.175 an unauthenticated `--version`
+already writes `backups/`, and in a home one state away it does not. The
+worktree `.git` likewise keeps objects/refs writable, which a commit needs.
+A future CLI version that loads a NEW directory as code is covered by
+extending `hostExecutedClaudeHomeEntries`; nothing infers it.
+
+Both isolation hatches — `ITERION_SANDBOX_HOST_STATE_GUARD` here and
+`ITERION_SANDBOX_FLOOR` for the isolation floor — are read from the
+environment iterion INHERITED, never from a project `.env`: the nearest
+`.env` walking up from the working directory is a file in the repository
+under review, which a sandboxed agent of a previous run had as its
+workspace. A planted hatch is ignored, with a warn naming it (and
+`hatch_ignored` on the `sandbox_floor_applied` event) — export the variable
+in the operator's own environment to open it.
 
 **host_state mounts only the state the operator chose.** The iterion home
 (`$ITERION_HOME`, else `~/.iterion`) and the scratch dir under it are
@@ -1145,10 +1202,26 @@ fails closed on vocabulary it does not know.
 
 The tier rides the queue message (schema v28) and the run document, so a
 resume and a subbot child are judged by the source the launch resolved,
-on every attempt. The one decision lives in `runtime.ApplySandboxFloor`;
-the engine applies it before admission so the admission probe and the
-sandbox start judge the same workflow. `ITERION_SANDBOX_FLOOR=off` is the
-greppable escape hatch for an operator who trusts their team tier.
+on every attempt — the in-process lane stamps it on the document too, or a
+local resume would read the empty tier as the operator's own. The one
+decision lives in `runtime.ApplySandboxFloor`; the engine applies it before
+admission so the admission probe and the sandbox start judge the same
+workflow. `ITERION_SANDBOX_FLOOR=off` is the greppable escape hatch for an
+operator who trusts their team tier — read from the operator's own
+environment, never from a project `.env` (a planted value is ignored with a
+warn, and the event says `hatch_ignored`).
+
+**What the floor does NOT promise.** Neutralizing the opt-out removes the
+bot's word on the question; it does not guarantee isolation. Resolution
+falls through to the operator's tiers, whose default is `auto`, and `auto`
+on a host with no container runtime degrades to an unsandboxed run with its
+own `sandbox_skipped` event (#1425). The `sandbox_floor_applied` event says
+so in its `isolation` field: read `sandbox_started` / `sandbox_skipped` for
+what actually happened. Two publisher-side screens (the run-fallback and
+policy-ladder predictions in `pkg/server/cloudpublisher`) read the
+workflow's own block UNFLOORED, stated at their sites: they are also reached
+from a credential preview that has resolved no source, so they hold no tier
+to judge; they are advisory, and the runner's screen is the authority.
 
 ## Default image
 

@@ -21,9 +21,9 @@ package runtime
 
 import (
 	"context"
-	"os"
 	"strings"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -35,15 +35,39 @@ import (
 // the pre-#1959 behaviour, for the operator who trusts their team tier.
 const SandboxFloorEnvVar = "ITERION_SANDBOX_FLOOR"
 
-// sandboxFloorDisabled reports whether the operator switched the floor
-// off. Read per call so a process-level change between attempts (a runner
-// restart is not required to reason about a single run) reads one answer.
-func sandboxFloorDisabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(SandboxFloorEnvVar))) {
+// isolationHatchOff is the ONE reader of an isolation escape hatch —
+// SandboxFloorEnvVar and [HostStateGuardEnvVar], the two variables that can
+// switch an isolation control off. It reports whether the hatch is open, and
+// whether a project `.env` is what set it.
+//
+// INHERITED, not live: which isolation an agent runs under is an authority
+// decision, and iterion fills unset variables from the nearest `.env` walking
+// up from the working directory (cmd/iterion applyDotEnv, no denylist) — a
+// file that sits in the repository under review, which the sandboxed agent of
+// a previous run had as its workspace. Read with os.Getenv, both hatches
+// disarm themselves from inside the blast radius: the agent writes
+// `ITERION_SANDBOX_FLOOR=off` into the repository's `.env` and the operator's
+// next `iterion run` from that checkout honours the bot's own `sandbox: none`.
+// envtrust.Inherited returns the empty string for a planted value, which
+// every hatch reads as "the operator said nothing" — the closed answer.
+//
+// planted is returned rather than logged here: the warn belongs where a run
+// logger exists and only where the hatch would have CHANGED the outcome, so
+// the line names a consequence instead of a setting.
+func isolationHatchOff(name string) (off, planted bool) {
+	planted = envtrust.Planted(name)
+	switch strings.ToLower(strings.TrimSpace(envtrust.Inherited(name))) {
 	case "off", "none", "0", "false":
-		return true
+		off = true
 	}
-	return false
+	return off, planted
+}
+
+// plantedHatchWarning is the one sentence both hatches say when a `.env`
+// planted them: what was ignored, and that the operator's own environment is
+// the only place the hatch is read from.
+func plantedHatchWarning(name string) string {
+	return name + " was set by a project .env, not by the operator — the hatch is IGNORED and the isolation control stays on; export it in the operator's own environment to open it"
 }
 
 // operatorTrustedBotSource reports whether the given bot-resolution tier
@@ -81,12 +105,19 @@ func operatorTrustedBotSource(tier string) bool {
 // Callers that predict a run's sandbox posture WITHOUT an engine (the
 // cloud runner's file-secret materialization and usage-cap ladder) must
 // apply this to the workflow they probe with, or the prediction and the
-// engine's start disagree on exactly the runs the floor exists for.
+// engine's start disagree on exactly the runs the floor exists for. One
+// class of predictor cannot, and says so at its own site: a publisher
+// screen reachable from a credential PREVIEW, which runs before any source
+// is resolved and therefore holds no tier to judge
+// (pkg/server/cloudpublisher). Such a screen is advisory, the runner's is
+// authoritative, and a reader must find the asymmetry written where the
+// reading is made — never infer agreement from this contract.
 func ApplySandboxFloor(wf *ir.Workflow, botSourceTier, cliOverride string) (effective *ir.Workflow, neutralized bool) {
 	if wf == nil || wf.Sandbox == nil || wf.Sandbox.Mode != string(sandbox.ModeNone) {
 		return wf, false
 	}
-	if operatorTrustedBotSource(botSourceTier) || cliOverride != "" || sandboxFloorDisabled() {
+	floorOff, _ := isolationHatchOff(SandboxFloorEnvVar)
+	if operatorTrustedBotSource(botSourceTier) || cliOverride != "" || floorOff {
 		return wf, false
 	}
 	out := *wf
@@ -121,10 +152,29 @@ func (e *Engine) applySandboxFloor(ctx context.Context, runID string, run *store
 	if e.logger != nil {
 		e.logger.Warn("runtime: run %s: sandbox floor (#1959) neutralized the workflow's `sandbox: none` — bot source tier %q is not operator-controlled, so isolation falls to the operator's own tiers (%s=off restores the opt-out)", runID, tier, SandboxFloorEnvVar)
 	}
-	_ = e.emit(ctx, runID, store.EventSandboxFloorApplied, "", map[string]any{
+	payload := map[string]any{
 		"tier":            tier,
 		"overridden_mode": string(sandbox.ModeNone),
 		"reason":          "bot source the operator does not control declared a sandbox opt-out; the run resolves its sandbox from the operator's tiers instead",
 		"escape_hatch":    SandboxFloorEnvVar + "=off",
-	})
+		// What "falls to the operator's own tiers" is NOT a promise of
+		// isolation, and an operator reads this event as one: the default
+		// tier is `auto`, and `auto` on a host with no container runtime
+		// degrades to an unsandboxed run with its own sandbox_skipped
+		// event (#1425). The floor removes the bot's word on the question;
+		// the run's isolation is settled by sandbox_started /
+		// sandbox_skipped, which is where to read it.
+		"isolation": "resolved from the operator's tiers, not guaranteed: a `auto` default still degrades to an unsandboxed run (sandbox_skipped) on a host with no container runtime — sandbox_started/sandbox_skipped is the authority",
+	}
+	// A `.env` in the repository under review cannot open the hatch
+	// (isolationHatchOff reads the inherited environment), and the one run
+	// where that mattered says so: the floor fired against a planted
+	// opt-out.
+	if _, planted := isolationHatchOff(SandboxFloorEnvVar); planted {
+		if e.logger != nil {
+			e.logger.Warn("runtime: %s (run %s)", plantedHatchWarning(SandboxFloorEnvVar), runID)
+		}
+		payload["hatch_ignored"] = "planted by a project .env, not exported by the operator"
+	}
+	_ = e.emit(ctx, runID, store.EventSandboxFloorApplied, "", payload)
 }

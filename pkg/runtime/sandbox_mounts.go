@@ -365,14 +365,25 @@ func applyHostStateMounts(
 			// host's settings.
 			mounts = guard.copyFileOver(mounts, filepath.Join(claudeDir, "settings.json"), "{}\n")
 			mounts = guard.copyFileOver(mounts, filepath.Join(claudeDir, "settings.local.json"), "{}\n")
-			// Installed plugins (hooks, MCP servers) stay VISIBLE to the
-			// in-container CLI but unwritable.
-			mounts = guard.roDirOver(mounts, filepath.Join(claudeDir, "plugins"))
+			// Shadowing settings.json alone shadows a POINTER: a hook is a
+			// `command:` naming a SCRIPT, and the script is what runs. The
+			// whole executed-or-loaded surface of the home is overlaid,
+			// including the memory file the host's own agent reads.
+			mounts = guard.copyFileOver(mounts, filepath.Join(claudeDir, "CLAUDE.md"), "")
+			for _, entry := range hostExecutedClaudeHomeEntries {
+				mounts = guard.roDirOver(mounts, filepath.Join(claudeDir, entry))
+			}
 		}
 		if mounted[codexDir] {
 			// auth.json refresh needs the dir writable; config.toml's MCP
-			// servers are the host's to execute, so it is a copy.
+			// servers are the host's to execute, so it is a copy — and so
+			// are the instruction files codex reads from CODEX_HOME whatever
+			// the working directory (delegate.codexInstructionFiles is the
+			// same list, read by the ambient-context policy).
 			mounts = guard.copyFileOver(mounts, filepath.Join(codexDir, "config.toml"), "")
+			mounts = guard.copyFileOver(mounts, filepath.Join(codexDir, "AGENTS.md"), "")
+			mounts = guard.copyFileOver(mounts, filepath.Join(codexDir, "AGENTS.override.md"), "")
+			mounts = guard.roDirOver(mounts, filepath.Join(codexDir, "prompts"))
 		}
 		if mounted[iterionHomeDir] {
 			mounts = guard.copyFileOver(mounts, filepath.Join(iterionHomeDir, "plugins.yaml"), "")
@@ -402,18 +413,30 @@ func applyHostStateMounts(
 	// (the host_state HOME tmpfs is per-run), so the first `go build` is a
 	// full cold compile — AND it re-downloads the go1.26 toolchain, which
 	// lives at $HOME/go/pkg/mod/golang.org/toolchain@…. Observed stalling
-	// dispatched feature_dev/improve-loop runs for minutes in `act`. Bind
-	// the host's caches read-write (Go's build + module caches are
-	// concurrency-safe, so parallel runs sharing them is fine) at the same
-	// absolute path; they nest on the tmpfs HOME like the .iterion/.claude
-	// binds. Gated under host_state (off for host_state=none / cloud), and
-	// best-effort — a missing cache dir is simply skipped (cold, as before).
-	// Same rationale for the Node package caches: without them every
-	// sandboxed run re-downloads its packages over the network (session
-	// mining showed agents burning whole turns on cold `pnpm install`
-	// failures — the one sandbox-provisioning complaint still live in
-	// 2026-07). npm/pnpm/yarn caches are content-addressed and safe to
-	// share; same host_state gate + best-effort skip when absent.
+	// dispatched feature_dev/improve-loop runs for minutes in `act`. Same
+	// rationale for the Node package caches: without them every sandboxed
+	// run re-downloads its packages over the network (session mining showed
+	// agents burning whole turns on cold `pnpm install` failures — the one
+	// sandbox-provisioning complaint still live in 2026-07).
+	//
+	// The warmth is kept; the SOURCE is not the host's own cache (#2069).
+	// Each of these is a store whose content the HOST runs: $PNPM_HOME holds
+	// the global bins `pnpm setup` puts on the operator's PATH, the module
+	// cache holds the toolchain binary GOTOOLCHAIN=auto executes, and the
+	// build cache holds objects `go build` relinks without re-hashing
+	// (verification is GODEBUG=gocacheverify=1, off by default). Bound at
+	// the host's own path, read-write, a sandboxed agent writes what the
+	// host runs next. So the sandbox gets its OWN caches under the iterion
+	// home, bound at the same CONTAINER path (GOCACHE/GOMODCACHE/PNPM_HOME
+	// resolve from $HOME, which is the host home path in-container):
+	// persistent from one sandboxed run to the next, iterion-owned, and
+	// never read by the host's own tools. Gated under host_state (off for
+	// host_state=none / cloud) and on the operator's iterion home being
+	// mounted — without it there is nowhere iterion owns to keep them, and
+	// the run is cold, which is the pre-existing "cache absent" state.
+	// With the guard off (the hatch, or a driver with no host binds) the
+	// operator asked for the pre-guard posture, and that includes the host's
+	// own caches at their own path — best-effort, skipped when absent.
 	if homeDir != "" {
 		for _, rel := range []string{
 			".cache/go-build", "go/pkg/mod", // Go build + module caches
@@ -421,11 +444,28 @@ func applyHostStateMounts(
 			".local/share/pnpm", // pnpm home: store + global bins
 			".cache/yarn",       // yarn cache
 		} {
-			p := filepath.Join(homeDir, rel)
-			if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-				spec.Mounts = append(spec.Mounts, fmt.Sprintf("source=%s,target=%s,type=bind", p, p))
-				mountPairs = append(mountPairs, p+":"+p)
+			target := filepath.Join(homeDir, rel)
+			source := target
+			switch {
+			case guard == nil:
+				if fi, err := os.Stat(source); err != nil || !fi.IsDir() {
+					continue
+				}
+			case iterionHomeDir == "":
+				// No home iterion owns (a `.env` chose it, or it is the
+				// shared <tmp> fallback — already warned above): the run is
+				// cold rather than warmed from a store the host executes.
+				continue
+			default:
+				source = filepath.Join(iterionHomeDir, sandboxCacheRoot, rel)
+				if err := os.MkdirAll(source, 0o700); err != nil {
+					logger.Warn("runtime: cannot create the sandbox's own cache %s (%v) — this run builds cold rather than sharing the host's cache", source, err)
+					continue
+				}
+				guard.note("private", target)
 			}
+			spec.Mounts = append(spec.Mounts, fmt.Sprintf("source=%s,target=%s,type=bind", source, target))
+			mountPairs = append(mountPairs, source+":"+target)
 		}
 	}
 

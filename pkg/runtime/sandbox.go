@@ -621,12 +621,25 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// bind itself stays BELOW, out of the HOME-tmpfs layering: a tmpfs laid
 	// at a bind's own destination shadows the bind in either argument order
 	// (measured, docker 29), so the .git tree must never feed
-	// homeNestedBindParents. hostGuard.cleanup is wired into the sandbox
-	// teardown below; on every error path until then it runs at the return.
+	// homeNestedBindParents.
 	hostGuard := newHostConfigGuard(logger)
 	if !caps.SupportsHostBindMounts {
 		hostGuard = nil
 	}
+	// The copies are per-RUN state staged on the host: a dir holding
+	// ~/.claude.json (the account's userID), ~/.gitconfig and
+	// ~/.codex/config.toml. Armed here, the moment the guard exists, and
+	// disarmed at the single point where the live sandbox takes ownership of
+	// the teardown — so every return in between carries them away, errors
+	// and non-errors alike (the noop driver's early return staged copies no
+	// container ever mounted). Enumerating the returns instead is what left
+	// three of them leaking.
+	hostGuardAdopted := false
+	defer func() {
+		if !hostGuardAdopted {
+			hostGuard.cleanup()
+		}
+	}()
 	sharedStateDir := applyHostStateMounts(spec, p.Workflow, p, hostGuard, emitEvent, logger)
 	// Back ${PROJECT_SCRATCH_DIR} with a host dir so a parent and its
 	// sub-bot children — separate runs in separate containers — can hand
@@ -663,7 +676,6 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		addWorktreeGitMount(spec, p.WorktreeGitDir, logger)
 	}
 	if err := addSecretFileMounts(ctx, spec, p.Workflow, p.SecretVars); err != nil {
-		hostGuard.cleanup()
 		return nil, err
 	}
 
@@ -793,7 +805,6 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// (fuseDevcontainerSpec).
 	proxy, proxyEndpoint, proxyCACert, err := startNetworkProxy(spec, driver, p.RunID, p.SecretRewriter, emitEvent, logger)
 	if err != nil {
-		hostGuard.cleanup()
 		return nil, fmt.Errorf("runtime: sandbox: network proxy: %w", err)
 	}
 
@@ -820,7 +831,6 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 
 	prepared, err := driver.Prepare(ctx, *spec)
 	if err != nil {
-		hostGuard.cleanup()
 		if proxy != nil {
 			_ = proxy.Shutdown(ctx)
 		}
@@ -829,7 +839,6 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 
 	prepared, err = buildSandboxImageIfRequested(ctx, driver, prepared, spec, info, emitEvent)
 	if err != nil {
-		hostGuard.cleanup()
 		if proxy != nil {
 			_ = proxy.Shutdown(ctx)
 		}
@@ -854,7 +863,6 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// failed on its own, and the event is out either way.
 	run, prepared, err := startScreenedSandbox(ctx, driver, prepared, info, logger, emitEvent, p.RunID)
 	if err != nil {
-		hostGuard.cleanup()
 		if proxy != nil {
 			_ = proxy.Shutdown(ctx)
 		}
@@ -882,6 +890,10 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		// per-run scratch they were staged in.
 		hostGuardCleanup: hostGuard.cleanup,
 	}
+	// The ONE transfer of ownership: from here on the live sandbox's
+	// teardown removes the copies (active.shutdown, which the error paths
+	// below also call), so the armed defer stands down.
+	hostGuardAdopted = true
 
 	// Second half of the Claude forfait delivery: copy the read-only mount
 	// into the writable CLAUDE_CONFIG_DIR the claude_code delegate points
