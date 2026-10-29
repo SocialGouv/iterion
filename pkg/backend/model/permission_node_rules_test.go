@@ -70,6 +70,32 @@ func assertDecision(t *testing.T, pol *permission.Policy, tool string, input map
 	}
 }
 
+// TestTheBuiltPolicyNormalisesAgainstTheNodesWorkDir is the wiring half of
+// #1710's path normalisation: the gate resolves a model-supplied RELATIVE
+// path against the directory the agent's tools run in, so a deny written as
+// an absolute path bounds `secrets/key` too. The root has to come from the
+// executor and travel in the serialised policy — for a sandboxed runner the
+// gate is rebuilt in another process, where the ambient directory is not the
+// node's workspace.
+func TestTheBuiltPolicyNormalisesAgainstTheNodesWorkDir(t *testing.T) {
+	t.Parallel()
+	work := t.TempDir()
+	wf := &ir.Workflow{
+		Permission:      "deny",
+		PermissionAllow: []string{"Read(**)"},
+		PermissionDeny:  []string{"Read(" + work + "/secrets/**)"},
+	}
+	task := buildNodeTask(t, nodeRulesExecutor(t, wf, WithWorkDir(work)), nodeRulesAgent(nil))
+
+	assertDecision(t, task.Permission, "Read", map[string]any{"file_path": "secrets/key"},
+		permission.Deny, "a relative path under the node's workDir meets the absolute deny")
+	assertDecision(t, task.Permission, "Read", map[string]any{"file_path": "pkg/x.go"},
+		permission.Allow, "a relative path outside the denied directory still reads")
+	if got := task.Permission.Config().PathRoot; got != work {
+		t.Errorf("serialised path root = %q, want the node's workDir %q — a child-process gate would normalise differently", got, work)
+	}
+}
+
 // TestBuiltTaskPolicyTakesTheNodeListOverTheWorkflowList is the runtime half
 // of the feature: the policy the backend receives is built from the node's
 // list, and only per kind — the node declared no allow:, so the workflow's

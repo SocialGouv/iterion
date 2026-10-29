@@ -319,13 +319,47 @@ bound a `ToolSearch` call.
 Matching semantics (`pkg/backend/permission`):
 
 - **Bash** patterns match the `command`; `prefix:*` is a prefix match,
-  a bare wildcard `*`/`**` is a greedy match, no wildcard is exact.
+  a bare wildcard `*`/`**` is a greedy match, no wildcard is exact. The
+  command is ONE candidate whatever it contains, so an exact allow never
+  approves shell text appended after a newline.
 - **Read / Edit / Write / NotebookEdit** patterns match the file path;
-  `pkg/**`, `*.go` etc. work as gitignore-style globs.
+  `pkg/**`, `*.go` etc. work as gitignore-style globs. Every spelling of
+  that one path is matched: as the model sent it, lexically cleaned
+  (`/run//iterion/./secrets/x`), absolute against the directory the agent
+  runs in (so an absolute rule bounds `./secrets/key`, and a relative path
+  cannot climb out of the workspace past a deny), and with the symlinks of
+  its existing prefix resolved — `/tmp/s` → `/run/iterion/secrets` does not
+  walk past a deny, not even for a file that does not exist yet.
+- **Glob / Grep** (and claw's `workspace_grep`) patterns match the search
+  pattern OR the search ROOT, each spelling of the root offered bare and
+  under a `path:` prefix: `Grep(path:/run/iterion/secrets/**)` names the
+  dimension explicitly, and a `dir/**` rule covers the call rooted AT `dir`
+  because such a call reads what is under it. **LS**'s `path` reads the
+  same way.
 - **WebFetch** patterns match `domain:<host>`, `<host>`, or the full URL.
 - **Tool-name globs**: `*` (any tool) and `mcp__<server>__*`.
 - **Tool classes**: `class:shell` matches by the registry's capability
   metadata — the member set, not a spelling ([tool classes](#tool-classes)).
+- A rule matches if it matches ANY candidate, and a **deny** is matched
+  against one wider set: every path key the call carries, not only the one
+  the tool is expected to honour (claw's `read_file` reads `path`,
+  claude_code's `Read` reads `file_path`). An `allow` stays on the single
+  path, or naming an allowed file beside a forbidden one would authorise the
+  forbidden one.
+- The gate never rewrites the RULE — it matches what the operator wrote. A
+  rule naming a path FRAGMENT still wraps it in stars (`Read(**.env)`);
+  `Read(.env*)` remains inert against `/home/u/repo/.env`.
+
+**Behaviour break (#1710).** Two shapes reach a different verdict than they
+did for workflows written before this. A `deny:` rule naming a directory for
+`Grep`/`Glob`/`LS` now BITES the call rooted there — it used to be compared
+to the search pattern only, so `deny: ["Grep(/run/iterion/secrets/**)"]`
+read as a bound and was inert, and a bare `Grep` allow let an agent read any
+file's content. And a path-scoped `allow:` rule now matches a call whose
+pattern does not, which is what makes `allow: ["Grep(path:src/**)"]` a usable
+bound. A pattern-shaped rule keeps matching the pattern: a scoped rule on a
+search tool matches EITHER dimension, so the way to bound a directory for
+certain is the `deny:` side, which wins in every mode.
 
 **Cross-backend parity.** The same rule gates the matching tool on every
 supported route: a single `Bash(...)` rule covers claude_code's `Bash`,
@@ -613,6 +647,10 @@ decode the native event and spell the native verdict.
   (`allow` = argument-scoped, `allow always` = whole-tool) and feeds it
   back into the resolved policy, so the agent's re-issued call passes the
   gate and executes after the generic `[PERMISSION GRANTED]` resume reminder.
+  For a search tool the argument scope is the **directory**
+  (`Grep(path:/work/pkg)`), not the pattern the model chose: an approved
+  search cannot be replayed against another directory, and inside the
+  approved one the pattern may vary.
   `deny` refuses the call and the agent adapts. The `--permission-allow`
   flags on `resume` remain available for scripted/headless approval.
 - The marker also lets a `permission: ask` node pause **without** needing

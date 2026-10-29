@@ -100,13 +100,27 @@ func GrantRuleFor(toolName string, input map[string]any, always bool) string {
 // authorization rule. Unlike briefArg, it must not truncate: Evaluate matches
 // its scoped rules against the full summary of the re-issued tool call.
 func grantArg(toolName string, input map[string]any) string {
-	s := summarize(canonicalToolName(toolName), input)
-	// summarize may join several candidates with '\n'; scope the approval to
-	// the same first candidate presented to the operator.
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		s = s[:i]
+	canon := canonicalToolName(toolName)
+	// A search tool's approval binds the DIRECTORY, under the same `path:`
+	// prefix a rule uses. The pattern is the weaker half of the identity:
+	// an approval scoped to it let an agent replay the approved search
+	// against any other directory, which turns the approval prompt into an
+	// exfiltration path. Inside the root the operator saw, the pattern may
+	// vary — that is the scope they granted.
+	if searchesByPattern(canon) {
+		if root := primaryPath(canon, input); root != "" {
+			return "path:" + root
+		}
 	}
-	return s
+	// No path root: an approval quotes the argument the MODEL wrote, which
+	// is summarize's first candidate — the normalised spellings exist for
+	// matching, and a rule carrying one would read as a path the agent
+	// never named.
+	cands := summarize(canon, input, "")
+	if len(cands) == 0 {
+		return ""
+	}
+	return cands[0]
 }
 
 // briefArg renders the most identifying argument of a tool call for

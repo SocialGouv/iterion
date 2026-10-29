@@ -24,10 +24,11 @@
 package permission
 
 import (
-	"cmp"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -149,6 +150,11 @@ type Policy struct {
 	// MCP namespace IsInfrastructureTool recognises). Keyed by canonical
 	// name. See MarkExempt.
 	exempt map[string]bool
+	// pathRoot is the directory a model-supplied RELATIVE path resolves
+	// against — the working directory the gated agent's tools run in. Empty
+	// (or non-absolute) means "no root captured": a relative path is then
+	// matched on its own spelling only. See SetPathRoot.
+	pathRoot string
 }
 
 // PolicyConfig is the serialisable form of a Policy. It deliberately carries
@@ -162,6 +168,11 @@ type PolicyConfig struct {
 	Deny   []string `json:"deny,omitempty"`
 	Grants []string `json:"grants,omitempty"`
 	Exempt []string `json:"exempt,omitempty"`
+	// PathRoot travels with the rules because path normalisation is part of
+	// matching: a gate reconstructed without it would resolve a relative
+	// path differently from the engine, and the same call would reach two
+	// verdicts on the two sides of the process boundary.
+	PathRoot string `json:"path_root,omitempty"`
 }
 
 // Config returns a detached, serialisable snapshot of the policy.
@@ -182,12 +193,13 @@ func (p *Policy) Config() PolicyConfig {
 	}
 	sort.Strings(exempt)
 	return PolicyConfig{
-		Mode:   p.Mode.String(),
-		Allow:  raw(p.allow),
-		Ask:    raw(p.ask),
-		Deny:   raw(p.deny),
-		Grants: raw(p.grants),
-		Exempt: exempt,
+		Mode:     p.Mode.String(),
+		Allow:    raw(p.allow),
+		Ask:      raw(p.ask),
+		Deny:     raw(p.deny),
+		Grants:   raw(p.grants),
+		Exempt:   exempt,
+		PathRoot: p.pathRoot,
 	}
 }
 
@@ -205,6 +217,7 @@ func NewPolicyFromConfig(cfg PolicyConfig) (*Policy, error) {
 		p.AddGrantRule(rule)
 	}
 	p.MarkExempt(cfg.Exempt...)
+	p.SetPathRoot(cfg.PathRoot)
 	return p, nil
 }
 
@@ -295,6 +308,21 @@ func (p *Policy) MarkExempt(names ...string) {
 	}
 }
 
+// SetPathRoot records the directory the gated agent's tools run in, so a
+// rule written as an absolute path bounds a call that names the same file
+// relatively. The executor passes the node's working directory; the root
+// then travels to a gate rebuilt in another process through PolicyConfig.
+//
+// A root that is not absolute is ignored rather than guessed at: joining a
+// relative root onto a relative path would invent a third path, matched
+// against rules the operator wrote for neither.
+func (p *Policy) SetPathRoot(dir string) {
+	if p == nil {
+		return
+	}
+	p.pathRoot = strings.TrimSpace(dir)
+}
+
 // isExempt reports whether a tool call must bypass the gate — either the
 // runtime explicitly marked it (MarkExempt) or it lives in iterion's
 // reserved MCP namespace (IsInfrastructureTool).
@@ -335,13 +363,13 @@ func (p *Policy) Evaluate(toolName string, input map[string]any) (Decision, stri
 	if r, ok := p.matchingDeny(toolName, input); ok {
 		return Deny, r.raw
 	}
-	canon, summary := p.toolSummary(toolName, input)
-	if r, ok := matchAny(p.grants, toolName, canon, summary); ok {
+	canon, cands := p.toolSummary(toolName, input)
+	if r, ok := matchAny(p.grants, toolName, canon, cands); ok {
 		return Allow, r.raw
 	}
 	// A scoped ask is deliberately stronger than every allow. This lets an
 	// operator re-gate a single otherwise auto-allowed command.
-	if r, ok := matchScoped(p.ask, toolName, canon, summary, false); ok {
+	if r, ok := matchScoped(p.ask, toolName, canon, cands, false); ok {
 		return Ask, r.raw
 	}
 	// A bare exact-tool ask is a generic fallback, so an authored literal
@@ -349,15 +377,15 @@ func (p *Policy) Evaluate(toolName string, input map[string]any) (Decision, stri
 	// automatic. Do not extend this to tool globs, wildcard/prefix arguments,
 	// or catch-all asks: those remain approval gates.
 	if r, ok := matchBareExactTool(p.ask, toolName, canon); ok {
-		if allow, ok := matchScoped(p.allow, toolName, canon, summary, true); ok {
+		if allow, ok := matchScoped(p.allow, toolName, canon, cands, true); ok {
 			return Allow, allow.raw
 		}
 		return Ask, r.raw
 	}
-	if r, ok := matchAny(p.ask, toolName, canon, summary); ok {
+	if r, ok := matchAny(p.ask, toolName, canon, cands); ok {
 		return Ask, r.raw
 	}
-	if r, ok := matchAny(p.allow, toolName, canon, summary); ok {
+	if r, ok := matchAny(p.allow, toolName, canon, cands); ok {
 		return Allow, r.raw
 	}
 	switch p.Mode {
@@ -380,19 +408,23 @@ func (p *Policy) HasExplicitDeny(toolName string, input map[string]any) bool {
 }
 
 func (p *Policy) matchingDeny(toolName string, input map[string]any) (rule, bool) {
-	canon, summary := p.toolSummary(toolName, input)
-	return matchAny(p.deny, toolName, canon, summary)
+	canon := canonicalToolName(toolName)
+	var cands []string
+	if p.scoped {
+		cands = atLeastOne(denyCandidates(canon, input, p.pathRoot))
+	}
+	return matchAny(p.deny, toolName, canon, cands)
 }
 
-func (p *Policy) toolSummary(toolName string, input map[string]any) (string, string) {
+func (p *Policy) toolSummary(toolName string, input map[string]any) (string, []string) {
 	canon := canonicalToolName(toolName)
 	// summarize is only needed by scoped (arg-pattern) rules; skip the work
 	// entirely when every rule is bare (the common deny: [Bash] shape).
-	summary := ""
+	var cands []string
 	if p.scoped {
-		summary = summarize(canon, input)
+		cands = atLeastOne(summarize(canon, input, p.pathRoot))
 	}
-	return canon, summary
+	return canon, cands
 }
 
 // rule is a parsed permission entry: a tool matcher plus an optional
@@ -534,18 +566,20 @@ func compileArg(content string) (*regexp.Regexp, error) {
 }
 
 // matchAny returns the first rule in rs that matches the tool (by its raw
-// name + canonical key) and, for scoped rules, the input summary.
+// name + canonical key) and, for scoped rules, one of the input candidates.
 //
-// A few summaries deliberately expose multiple safe candidates (for example
-// WebFetch's domain and full URL). Shell commands are different: a newline is
-// part of one command payload, not a second candidate. Splitting it would let
-// an exact allow for the first line approve arbitrary trailing shell text.
-func matchAny(rs []rule, rawName, canon, summary string) (rule, bool) {
+// A few calls deliberately expose multiple safe candidates (WebFetch's
+// domain and full URL, a path's spellings, a search's pattern and root —
+// see summarize). Shell commands are different: a newline is part of one
+// command payload, not a second candidate, which is why summarize returns
+// a shell command as a single candidate instead of a joined string a
+// matcher would have to remember not to split.
+func matchAny(rs []rule, rawName, canon string, cands []string) (rule, bool) {
 	for _, r := range rs {
 		if !r.matchesTool(rawName, canon) {
 			continue
 		}
-		if r.matchesSummary(canon, summary) {
+		if r.matchesSummary(cands) {
 			return r, true
 		}
 	}
@@ -554,12 +588,12 @@ func matchAny(rs []rule, rawName, canon, summary string) (rule, bool) {
 
 // matchScoped returns a matching argument-scoped rule. When literalOnly is
 // true, it accepts neither wildcard/prefix argument scopes nor tool globs.
-func matchScoped(rs []rule, rawName, canon, summary string, literalOnly bool) (rule, bool) {
+func matchScoped(rs []rule, rawName, canon string, cands []string, literalOnly bool) (rule, bool) {
 	for _, r := range rs {
 		if r.argRe == nil || (literalOnly && (!r.literalArg || r.toolRe != nil)) {
 			continue
 		}
-		if r.matchesTool(rawName, canon) && r.matchesSummary(canon, summary) {
+		if r.matchesTool(rawName, canon) && r.matchesSummary(cands) {
 			return r, true
 		}
 	}
@@ -579,19 +613,16 @@ func matchBareExactTool(rs []rule, rawName, canon string) (rule, bool) {
 	return rule{}, false
 }
 
-func (r rule) matchesSummary(canon, summary string) bool {
+func (r rule) matchesSummary(cands []string) bool {
 	if r.argRe == nil {
 		return true // bare tool rule matches any invocation
 	}
-	// summarize may emit several candidate strings (one per line) — e.g.
-	// WebFetch yields "domain:<host>", "<host>" and the full URL — and a
-	// scoped rule matches if it matches ANY candidate. A shell command must
-	// instead remain a single opaque candidate (see matchAny's contract).
-	candidates := strings.Split(summary, "\n")
-	if canon == "bash" || canon == "diagnostic_shell" {
-		candidates = []string{summary}
-	}
-	for _, cand := range candidates {
+	// summarize may emit several candidates — e.g. WebFetch yields
+	// "domain:<host>", "<host>" and the full URL — and a scoped rule
+	// matches if it matches ANY of them. The candidate set is the whole
+	// contract: a matcher cannot re-split one here without re-deciding,
+	// per tool, what a separator means (see matchAny).
+	for _, cand := range cands {
 		if r.argRe.MatchString(cand) {
 			return true
 		}
@@ -627,24 +658,44 @@ func globToRegexp(glob string) (*regexp.Regexp, error) {
 	return regexp.Compile("^" + strings.Join(parts, ".*") + "$")
 }
 
-// summarize renders a tool's input into the string(s) that scoped rule
+// summarize renders a tool's input into the candidates that scoped rule
 // patterns match against, mirroring Claude Code's per-tool summaries
-// (Bash → command, Read/Edit/Write → path, WebFetch → domain + url).
-// Multiple candidates are joined with '\n' so a rule pattern matches if
-// it matches ANY candidate (e.g. WebFetch by domain OR full url). canon
-// is the already-canonicalised tool name. The per-tool argument keys
+// (Bash → command, Read/Edit/Write → path, WebFetch → domain + url). A
+// rule matches if it matches ANY candidate, so a candidate is only ever
+// offered for something the call genuinely does: another SPELLING of the
+// same path (pathCandidates), or another DIMENSION of the same call
+// (WebFetch's host beside its URL, a search's root beside its pattern).
+// A second path the call merely carries is NOT one of them — an allow for
+// the harmless one would authorise the other; denyCandidates is where
+// every path a call names is read, because deny wins.
+//
+// canon is the already-canonicalised tool name. The per-tool argument keys
 // mirror tooldisplay's header-detail extraction; keep the two in sync
-// when adding a tool.
-func summarize(canon string, input map[string]any) string {
+// when adding a tool. The FIRST candidate is the one an operator approval
+// is scoped to and the one messages quote (messages.go), so a new
+// candidate is appended, never prepended.
+func summarize(canon string, input map[string]any, root string) []string {
 	switch canon {
 	case "bash", "diagnostic_shell":
-		return str(input, "command")
+		// One opaque candidate whatever it contains: a newline is part of
+		// the command payload, and splitting it would let an exact allow
+		// for the first line approve arbitrary trailing shell text.
+		return []string{str(input, "command")}
 	case "read", "write", "edit", "notebookedit":
-		return cmp.Or(str(input, "file_path"), str(input, "path"), str(input, "notebook_path"))
-	case "glob", "grep":
-		return cmp.Or(str(input, "pattern"), str(input, "path"))
+		return pathDimension(canon, primaryPath(canon, input), root)
 	case "ls":
-		return str(input, "path")
+		return pathDimension(canon, primaryPath(canon, input), root)
+	case "glob", "grep", "workspace_grep":
+		// Two dimensions: WHAT is searched for and WHERE. Without the
+		// second, a rule naming a directory is compared to the search
+		// pattern only — so a `deny: ["Grep(/run/iterion/secrets/**)"]`
+		// read as a bound was inert, and a bare Grep allow let an agent
+		// read any file's content (#1710).
+		cands := []string{}
+		if pattern := str(input, "pattern"); pattern != "" {
+			cands = append(cands, pattern)
+		}
+		return append(cands, pathDimension(canon, primaryPath(canon, input), root)...)
 	case "webfetch":
 		u := str(input, "url")
 		host := ""
@@ -658,9 +709,9 @@ func summarize(canon string, input map[string]any) string {
 		if u != "" {
 			cands = append(cands, u)
 		}
-		return strings.Join(cands, "\n")
+		return cands
 	case "websearch":
-		return str(input, "query")
+		return []string{str(input, "query")}
 	default:
 		// Generic fallback: a sorted "k=v" join so a pattern can still
 		// scope MCP/custom tools by an argument value if needed.
@@ -673,8 +724,204 @@ func summarize(canon string, input map[string]any) string {
 		for _, k := range keys {
 			parts = append(parts, k+"="+fmt.Sprint(input[k]))
 		}
-		return strings.Join(parts, " ")
+		return []string{strings.Join(parts, " ")}
 	}
+}
+
+// denyCandidates renders the candidates a DENY rule is matched against:
+// everything summarize offers, plus every OTHER filesystem path the call
+// carries. A tool call is free to name two — `{"file_path": "/work/ok",
+// "path": "/run/iterion/secrets/x"}` — and which one the tool honours
+// depends on the backend: claw's read_file reads `path`, claude_code's
+// Read reads `file_path`. Reading all of them keeps "a deny wins in every
+// mode" true whichever key the tool picks, while an allow stays on the
+// single path summarize chose, or naming an allowed path beside a
+// forbidden one would authorise the forbidden one.
+func denyCandidates(canon string, input map[string]any, root string) []string {
+	cands := summarize(canon, input, root)
+	// The primary path is already expanded; expanding a repeated value
+	// again would pay its filesystem walk twice for the same spellings.
+	expanded := []string{primaryPath(canon, input)}
+	for _, key := range pathInputKeys(canon) {
+		raw := str(input, key)
+		if raw == "" || slices.Contains(expanded, raw) {
+			continue
+		}
+		expanded = append(expanded, raw)
+		for _, c := range pathDimension(canon, raw, root) {
+			cands = appendUnique(cands, c)
+		}
+	}
+	return cands
+}
+
+// pathInputKeys names every input key that holds a filesystem path for a
+// tool family, primaryPath the one summarize reads — the first present,
+// in the order the gate has always read them. A deny is matched against
+// all of them, so the two must not drift: one table, read twice.
+func pathInputKeys(canon string) []string {
+	switch canon {
+	case "read", "write", "edit", "notebookedit":
+		return []string{"file_path", "path", "notebook_path"}
+	case "glob", "grep", "workspace_grep", "ls":
+		return []string{"path"}
+	}
+	return nil
+}
+
+func primaryPath(canon string, input map[string]any) string {
+	for _, key := range pathInputKeys(canon) {
+		if v := str(input, key); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// pathDimension renders the candidates one filesystem path contributes
+// for this tool family: every spelling of the path, the same spellings
+// with a trailing separator when the tool reads the whole tree under the
+// path, and — for the search tools, whose bare argument is otherwise the
+// search PATTERN — all of them under a `path:` prefix, so a rule can name
+// the dimension explicitly (`Grep(path:/run/iterion/secrets/**)`), the
+// way WebFetch rules name a host with `domain:`.
+func pathDimension(canon, raw, root string) []string {
+	out := []string{}
+	for _, s := range pathCandidates(raw, root) {
+		out = appendUnique(out, s)
+		if readsADirectoryTree(canon) {
+			// A call ROOTED at a directory reads what is under it, which
+			// is exactly what a `dir/**` rule names. Without the trailing
+			// separator, `deny: ["Grep(/run/iterion/secrets/**)"]` would
+			// miss the one call that walks the whole directory.
+			out = appendUnique(out, strings.TrimSuffix(s, "/")+"/")
+		}
+	}
+	if !searchesByPattern(canon) {
+		return out
+	}
+	named := make([]string, 0, 2*len(out))
+	named = append(named, out...)
+	for _, s := range out {
+		named = appendUnique(named, "path:"+s)
+	}
+	return named
+}
+
+// searchesByPattern reports whether a tool's bare argument scope is read
+// as a search pattern rather than a path, which is what makes the `path:`
+// prefix necessary to name the other dimension.
+func searchesByPattern(canon string) bool {
+	switch canon {
+	case "glob", "grep", "workspace_grep":
+		return true
+	}
+	return false
+}
+
+// readsADirectoryTree reports whether a tool's path argument is a
+// container it reads THROUGH (a search root, a listing) rather than the
+// single file it opens.
+func readsADirectoryTree(canon string) bool {
+	return searchesByPattern(canon) || canon == "ls"
+}
+
+// pathCandidates renders the spellings of ONE filesystem path a scoped
+// rule may legitimately match: the string the model sent, its lexical
+// cleanup (`/run//iterion/./secrets/x` → `/run/iterion/secrets/x`), its
+// absolute form against the directory the agent runs in, and the form
+// with the symlinks of its existing prefix resolved. Every spelling names
+// the SAME file, so offering them can only make a rule that names that
+// file match; none of them can make a rule that matched stop matching.
+//
+// The rule's own text is never rewritten — the gate matches what the
+// operator wrote — so a rule naming a path FRAGMENT still wraps it in
+// stars (`Read(**.env)`, docs/permissions.md).
+func pathCandidates(raw, root string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	out := []string{raw}
+	cleaned := filepath.Clean(raw)
+	out = appendUnique(out, cleaned)
+	abs := cleaned
+	if !filepath.IsAbs(abs) && filepath.IsAbs(root) {
+		abs = filepath.Join(root, cleaned)
+		out = appendUnique(out, abs)
+	}
+	return appendUnique(out, resolveExistingPrefix(abs))
+}
+
+// resolveExistingPrefix resolves the symlinks of the longest EXISTING
+// prefix of an absolute path and re-joins the rest, returning "" when
+// there is nothing to add. A plain EvalSymlinks answers nothing for a
+// path that does not exist yet — which is every Write to a new file, the
+// call that needs the check most: with `/tmp/s` a symlink to
+// `/run/iterion/secrets`, a write to `/tmp/s/new` must still meet the
+// deny that names the real directory.
+//
+// A relative path is left alone: EvalSymlinks would resolve it against
+// THIS process's directory, which is not the directory the agent runs in
+// (and in a sandboxed backend not even the same filesystem).
+//
+// The climb is bounded because the path is MODEL-supplied: each step is a
+// symlink resolution of its own, so a path with thousands of segments
+// would buy the agent a quadratic pile of lstats per gated call. Past the
+// bound the lexical spellings still apply — the gate loses a candidate,
+// never a rule.
+func resolveExistingPrefix(p string) string {
+	if !filepath.IsAbs(p) {
+		return ""
+	}
+	rest := ""
+	for cur, climbed := p, 0; climbed < maxPrefixClimb; climbed++ {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			if rest != "" {
+				resolved = filepath.Join(resolved, rest)
+			}
+			if resolved == p {
+				return "" // nothing a symlink hid
+			}
+			return resolved
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return "" // walked to the root without a readable prefix
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = parent
+	}
+	return "" // deeper than the bound
+}
+
+// maxPrefixClimb bounds resolveExistingPrefix's climb. A workspace path
+// is a dozen segments deep; the bound is there for a path that was
+// written to exhaust the gate, not for a real one.
+const maxPrefixClimb = 64
+
+// appendUnique appends s unless it is empty or already present. The
+// candidate list is short (a handful of spellings), so a linear scan is
+// cheaper than a map and keeps the order meaningful.
+func appendUnique(dst []string, s string) []string {
+	if s == "" {
+		return dst
+	}
+	for _, existing := range dst {
+		if existing == s {
+			return dst
+		}
+	}
+	return append(dst, s)
+}
+
+// atLeastOne keeps the empty candidate that a call with no argument has
+// always offered: a scoped wildcard rule (`Bash(*)`, `Read(*)`) matches
+// it, and a deny spelled that way must keep matching it.
+func atLeastOne(cands []string) []string {
+	if len(cands) == 0 {
+		return []string{""}
+	}
+	return cands
 }
 
 func str(m map[string]any, key string) string {

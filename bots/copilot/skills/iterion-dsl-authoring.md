@@ -133,7 +133,10 @@ spelling and indented under its key.
 
 The matcher anchors `^…$` and turns both `*` and `**` into `.*` with no
 segment semantics. Read/Write/Edit patterns are matched against the
-**absolute** path the agent emits.
+**absolute** path the agent emits — and against every other spelling of
+that same path: lexically cleaned, made absolute against the directory the
+agent runs in, symlinks of its existing prefix resolved. The RULE is never
+rewritten, which is why a path fragment still has to be wrapped in stars.
 
 ```
 deny: ["Read(.env*)"]      # INERT — never matches /home/u/repo/.env
@@ -145,9 +148,11 @@ An over-broad deny is safe; an under-broad deny is invisible. Precedence
 is **deny > ask > allow**, so a broad `allow: ["Read(**)"]` bounded by a
 precise deny list is a valid shape.
 
-`Grep` and `Glob` are **not** path-scopable: the matcher sees the
-*pattern*, which the model supplies. The only reliable control is
-denying the bare tool.
+`Grep` and `Glob` **are** path-scopable: the matcher sees the search
+*pattern* and the search ROOT, the root both bare and under a `path:`
+prefix (`deny: ["Grep(path:/run/iterion/secrets/**)"]`). A scoped rule
+matches EITHER dimension and the pattern is the model's to choose, so a
+directory is bounded on the `deny:` side, which wins in every mode.
 
 Mode matters: `deny` blocks headlessly, `ask` **pauses the run** for
 human approval. In a conversational bot, `ask` looks like a freeze —

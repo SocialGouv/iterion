@@ -180,11 +180,22 @@ func (e *ClawExecutor) resolvePermissionPolicy(f backendFields) (*permission.Pol
 	if mode == permission.ModeOff {
 		return &permission.Policy{}, nil
 	}
-	return permission.NewPolicy(mode,
+	pol, err := permission.NewPolicy(mode,
 		slices.Concat(ir.EffectivePermissionRules(f.permAllow, e.wfPermAllow), e.permAllowRules),
 		slices.Concat(ir.EffectivePermissionRules(f.permAsk, e.wfPermAsk), e.permAskRules),
 		slices.Concat(ir.EffectivePermissionRules(f.permDeny, e.wfPermDeny), e.permDenyRules),
 	)
+	if err != nil {
+		return nil, err
+	}
+	// The gate resolves a model-supplied relative path against the very
+	// directory the agent's tools run in, so a rule written as an absolute
+	// path bounds `./secrets/key` too. The root is read here rather than
+	// from the ambient process: the engine updates workDir at run start for
+	// `worktree: auto`, and the gate rebuilt in a child process receives
+	// this value through PolicyConfig.
+	pol.SetPathRoot(e.workDir)
+	return pol, nil
 }
 
 // GateCanAsk reports whether the permission gate this executor arms for node
