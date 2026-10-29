@@ -388,7 +388,7 @@ func TestBoardSyncPasses_SpendOnItsOwnForgeLane(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.boardSyncPasses(ctx, time.Hour) // one opening pass
+		s.boardSyncPasses(ctx, time.Hour, nil) // one opening pass
 	}()
 	waitForCond(t, 5*time.Second, "the opening pass", func() bool {
 		_, pages := gh.served()

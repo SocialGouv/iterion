@@ -67,7 +67,13 @@ func TestForgeTokenRefresh_OnlyTheLeaseHolderSweeps(t *testing.T) {
 		rs[i] = r
 		go func() {
 			defer close(r.done)
-			r.s.runElectedForgeTokenRefresh(ctx, 200*time.Millisecond, func(context.Context) { r.n.Add(1) })
+			r.s.runElectedForgeTokenRefresh(ctx, 200*time.Millisecond, func(context.Context) lease.PassVerdict {
+				r.n.Add(1)
+				// A pass that found nothing due: this isolate is about WHO
+				// sweeps, and an idle verdict is what a healthy fleet with
+				// fresh tokens reports.
+				return lease.VerdictIdle
+			})
 		}()
 	}
 	t.Cleanup(func() {
@@ -103,7 +109,10 @@ func TestForgeRefreshPasses_ATermOpensWithAPass(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		forgeRefreshPasses(ctx, time.Hour, func(context.Context) { n.Add(1) })
+		forgeRefreshPasses(ctx, time.Hour, nil, func(context.Context) lease.PassVerdict {
+			n.Add(1)
+			return lease.VerdictIdle
+		})
 	}()
 	waitForCond(t, 5*time.Second, "the term's opening pass", func() bool { return n.Load() >= 1 })
 	cancel()

@@ -908,7 +908,7 @@ func TestBoardSyncPasses_ATermOpensWithAPass(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.boardSyncPasses(ctx, time.Hour)
+		s.boardSyncPasses(ctx, time.Hour, nil)
 	}()
 	waitForCond(t, 5*time.Second, "the term's opening pass", func() bool { return ints.n.Load() >= 1 })
 	cancel()

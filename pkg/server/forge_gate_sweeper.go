@@ -136,7 +136,8 @@ type gateSweepLister interface {
 // its way out, one that dies is outlived by the TTL, and each term opens with
 // a deep pass.
 func (s *Server) runElectedGateSweeper(ctx context.Context, lister gateSweepLister) {
-	err := lease.Run(ctx, s.leases, s.gateSweepLeaseSpec(), func(ctx context.Context) { s.runGateSweeper(ctx, lister) })
+	spec := s.gateSweepLeaseSpec()
+	err := lease.Run(ctx, s.leases, spec, func(ctx context.Context) { s.runGateSweeper(ctx, lister, spec.Health) })
 	if err != nil {
 		s.warnf("merge-gate sweeper NOT started: %v — a review whose outcome event is dropped will leave its required check absent forever", err)
 	}
@@ -149,12 +150,13 @@ func (s *Server) runElectedGateSweeper(ctx context.Context, lister gateSweepList
 func (s *Server) gateSweepLeaseSpec() lease.Spec {
 	pace := min(s.gateSweepEvery(), gateSweepInterval)
 	return lease.Spec{
-		Name:  leaseMergeGateSweeper,
-		Owner: s.replicaID,
-		TTL:   gateSweepLeaseTTLFactor * pace,
-		Retry: pace,
-		Info:  s.infof,
-		Warn:  s.warnf,
+		Name:   leaseMergeGateSweeper,
+		Owner:  s.replicaID,
+		TTL:    gateSweepLeaseTTLFactor * pace,
+		Retry:  pace,
+		Info:   s.infof,
+		Warn:   s.warnf,
+		Health: s.newLeaseHealth(),
 	}
 }
 
@@ -308,7 +310,7 @@ func (s *Server) gateSweepWindow(pass int) (window time.Duration, deep bool) {
 // It announces itself for the reason the retry sweeper does: "no PR is stuck"
 // and "every stuck PR is invisible" produce identical silence otherwise. The
 // line also names the replica holding the term.
-func (s *Server) runGateSweeper(ctx context.Context, lister gateSweepLister) {
+func (s *Server) runGateSweeper(ctx context.Context, lister gateSweepLister, health *lease.Health) {
 	every := s.gateSweepEvery()
 	lookback, deepEvery := s.gateSweepCadence()
 	s.infof("merge-gate sweeper: %s re-offering dead gating runs to the reconciler (every %s, %s grace, %s lookback, %s horizon reached every %d passes) — the net under the lossy outcome event",
@@ -345,7 +347,22 @@ func (s *Server) runGateSweeper(ctx context.Context, lister gateSweepLister) {
 	// the next pass retries; a page that keeps failing — two in a row — waits
 	// for the next deep pass instead of failing at every tick.
 	deepMisses := 0
-	sweep := func() {
+	// What the pass is worth, for the handover (#2685). The sweep's verdict
+	// today is its SCAN's: a pass that cannot list the candidates of its
+	// window attempted work and reached nothing, which is the signal a peer
+	// whose egress is intact can act on. The offers the pass then makes are
+	// not part of it — reconcileGateForRunID answers nil both for a run that
+	// owed nothing (the vast majority of any window) and for one it posted,
+	// so neither its nil nor its error can say whether this replica reaches
+	// the forge. Pairing the reconciler's own forge outcome with this verdict
+	// is the follow-up; counting its nils as reach would read a quiet window
+	// as proof, and counting its errors alone would hand the lease over on a
+	// window where most offers landed.
+	sweep := func() lease.PassVerdict {
+		// Named apart from the pass COUNTER above, which paces the deep
+		// windows: this one is what the pass was worth.
+		var passOutcome lease.Pass
+		ctx := withGatePass(ctx, &passOutcome)
 		now := time.Now().UTC()
 		_, deep := s.gateSweepWindow(pass)
 		parked := !deepCursor.IsZero()
@@ -364,16 +381,39 @@ func (s *Server) runGateSweeper(ctx context.Context, lister gateSweepLister) {
 			}
 		}
 		pass++
+		return passOutcome.Verdict()
 	}
-	sweep()
+	if health.Observe(sweep()) {
+		return
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			sweep()
+			if health.Observe(sweep()) {
+				return
+			}
 		}
 	}
+}
+
+// gatePassKey carries the pass a sweep is accounting into, the way
+// forgeLaneKey carries the lane its requests are charged to: sweepGates is
+// called twice per pass — a fast window and a deep one — and both have to
+// land in ONE verdict, while its signature stays what 25 call sites spell.
+type gatePassKey struct{}
+
+// withGatePass installs the pass the sweeps under ctx report into.
+func withGatePass(ctx context.Context, pass *lease.Pass) context.Context {
+	return context.WithValue(ctx, gatePassKey{}, pass)
+}
+
+// gatePassOf reads it back; nil when no pass is accounting, which is what a
+// sweep called outside an elected term (a test, the event path) sees.
+func gatePassOf(ctx context.Context) *lease.Pass {
+	pass, _ := ctx.Value(gatePassKey{}).(*lease.Pass)
+	return pass
 }
 
 // sweepGates performs one pass over the window `lookback` reaches back to,
@@ -405,6 +445,10 @@ func (s *Server) sweepGates(ctx context.Context, lister gateSweepLister, now tim
 	for page := 0; page < gateSweepMaxPages; page++ {
 		refs, err := lister.ListNotifiableRuns(store.WithoutTenantFilter(ctx), since, before, gateSweepBatch)
 		if err != nil {
+			// The pass could not reach the rows it sweeps: one item
+			// attempted, none done, and the store's failure is the cause it
+			// carries to the handover decision.
+			gatePassOf(ctx).Failed(err)
 			s.warnf("merge-gate sweeper: scan: %v", err)
 			// A failed scan proved nothing about what lies past `before`, so
 			// keep the cursor: restarting at the newest end would re-walk
@@ -445,6 +489,9 @@ func (s *Server) sweepGates(ctx context.Context, lister gateSweepLister, now tim
 				oldest = ref.UpdatedAt
 			}
 		}
+		// The scan answered: whatever the window held, this replica reaches
+		// the rows it sweeps.
+		gatePassOf(ctx).Succeeded()
 		if len(refs) < gateSweepBatch {
 			return time.Time{} // window exhausted — next pass starts fresh
 		}

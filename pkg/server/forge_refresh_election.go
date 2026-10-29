@@ -26,23 +26,30 @@ const forgeRefreshLeaseTTLFactor = 3
 // ticker, and a token about to be refreshed must not sit dying until the
 // first tick of a new term.
 //
-// Like every leased net here, the term ends on lease loss or shutdown, not on
-// the work failing: a holder whose forge egress is broken keeps the lease
-// while every refresh fails, and no peer covers. Handing over after a run of
-// failed passes is the follow-up that belongs to lease.Run's callers as a
-// class (#2685).
-func (s *Server) runElectedForgeTokenRefresh(ctx context.Context, every time.Duration, sweep func(context.Context)) {
-	err := lease.Run(ctx, s.leases, s.forgeRefreshLeaseSpec(every), func(ctx context.Context) {
-		forgeRefreshPasses(ctx, every, sweep)
+// The term also ends on the WORK failing: a holder whose forge egress is
+// broken used to keep the lease while every refresh failed with a healthy
+// fleet standing by — the defect of #2685, whose blast radius here is every
+// GitHub-App installation token (1 h) and GitLab access token (2 h) the sweep
+// renews. The sweep's own verdict is what ends it (lease.Health), never the
+// absence of progress: a pass that finds nothing due is the normal state of a
+// fleet whose tokens are all fresh.
+func (s *Server) runElectedForgeTokenRefresh(ctx context.Context, every time.Duration, sweep func(context.Context) lease.PassVerdict) {
+	spec := s.forgeRefreshLeaseSpec(every)
+	err := lease.Run(ctx, s.leases, spec, func(ctx context.Context) {
+		forgeRefreshPasses(ctx, every, spec.Health, sweep)
 	})
 	if err != nil {
 		s.warnf("forge token refresh NOT started: %v — no forge connection token (oauth_app, github_app installation, security-read) and no project bot will be renewed", err)
 	}
 }
 
-// forgeRefreshPasses sweeps once on entry, then on every tick, until ctx ends.
-func forgeRefreshPasses(ctx context.Context, every time.Duration, sweep func(context.Context)) {
-	sweep(ctx)
+// forgeRefreshPasses sweeps once on entry, then on every tick, until ctx ends
+// — or until the health says to hand over, in which case returning here is
+// what releases the lease (lease.Run) so a peer campaigns.
+func forgeRefreshPasses(ctx context.Context, every time.Duration, health *lease.Health, sweep func(context.Context) lease.PassVerdict) {
+	if health.Observe(sweep(ctx)) {
+		return
+	}
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
@@ -50,7 +57,9 @@ func forgeRefreshPasses(ctx context.Context, every time.Duration, sweep func(con
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			sweep(ctx)
+			if health.Observe(sweep(ctx)) {
+				return
+			}
 		}
 	}
 }
@@ -61,11 +70,12 @@ func forgeRefreshPasses(ctx context.Context, every time.Duration, sweep func(con
 func (s *Server) forgeRefreshLeaseSpec(every time.Duration) lease.Spec {
 	pace := min(every, forgeRefreshLeasePace)
 	return lease.Spec{
-		Name:  leaseForgeTokenRefresh,
-		Owner: s.replicaID,
-		TTL:   forgeRefreshLeaseTTLFactor * pace,
-		Retry: pace,
-		Info:  s.infof,
-		Warn:  s.warnf,
+		Name:   leaseForgeTokenRefresh,
+		Owner:  s.replicaID,
+		TTL:    forgeRefreshLeaseTTLFactor * pace,
+		Retry:  pace,
+		Info:   s.infof,
+		Warn:   s.warnf,
+		Health: s.newLeaseHealth(),
 	}
 }

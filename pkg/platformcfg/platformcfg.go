@@ -175,6 +175,10 @@ var botVarsInfraPrefixes = []string{
 	// The merge-gate sweep's cadence: the server's net under the lossy
 	// outcome event, and what it spends of the forge's request budget.
 	"ITERION_GATE_SWEEP_",
+	// Whether a leased net's term may end on the work failing: a knob over
+	// the election itself, which decides which REPLICA runs a net, not what
+	// a run does.
+	"ITERION_LEASE_",
 	// Endpoints and identities presented outside: the metrics listener,
 	// the CLI's remote instance, the forge app, web push, scan shards.
 	"ITERION_PROMETHEUS_", "ITERION_REMOTE_", "ITERION_FORGE_GITHUB_APP_",

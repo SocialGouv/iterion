@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"os"
+	"strconv"
 	"strings"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -86,6 +87,50 @@ func (s *Server) gateSweepStarts() bool {
 // read. Same two readers as gateSweepStart.
 func (s *Server) boardIssueSyncStarts() bool {
 	return s.cfg.CloudBoardFor != nil && s.forgeIntegrations != nil
+}
+
+// leaseHandoverEnv is the operator's override over the handover: a term that
+// ends on the work failing gives work up, so the mechanism keeps a greppable
+// escape hatch rather than an implicit one. It takes "off" (or "0", "false",
+// "no") to disarm it on every net, or a pass count to replace K.
+const leaseHandoverEnv = "ITERION_LEASE_HANDOVER"
+
+// leaseHandoverFromEnv reads leaseHandoverEnv. A value that is neither a
+// disarming word nor a positive pass count keeps the default and warns naming
+// the variable: an operator's explicit choice is never replaced in silence,
+// and a typo must not silently disarm a net's cover.
+func leaseHandoverFromEnv(getenv func(string) string, warnf func(format string, args ...any)) (off bool, passes int) {
+	raw := strings.TrimSpace(getenv(leaseHandoverEnv))
+	if raw == "" {
+		return false, 0
+	}
+	switch strings.ToLower(raw) {
+	case "off", "0", "false", "no":
+		if warnf != nil {
+			warnf("leases: %s=%s — no leased net will hand its term over on the work failing; a replica whose egress is broken keeps renewing while every pass fails", leaseHandoverEnv, raw)
+		}
+		return true, 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		if warnf != nil {
+			warnf("leases: %s=%q is neither off nor a positive pass count — keeping the default of %d consecutive failing passes", leaseHandoverEnv, raw, lease.DefaultHandoverPasses)
+		}
+		return false, 0
+	}
+	return false, n
+}
+
+// newLeaseHealth is the handover policy of ONE leased net: K consecutive
+// passes that attempted work and reached nothing end its term, this replica
+// backs off so a peer takes the lease, and the fleet circuit breaker stops the
+// churn when every peer gives it back just as sick.
+//
+// One per net, never shared: what it keeps is this replica's reach through
+// THAT net's far side, and one policy behind two nets would let a broken forge
+// end the board sync's term on the gate sweep's failures.
+func (s *Server) newLeaseHealth() *lease.Health {
+	return &lease.Health{Passes: s.leaseHandoverPasses, Off: s.leaseHandoverOff}
 }
 
 // newReplicaID names this process as a lease owner: the host — the pod name

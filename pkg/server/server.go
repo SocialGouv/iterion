@@ -353,6 +353,11 @@ type Server struct {
 	// gateSweep is the operator-configured sweep cadence
 	// (gateSweepSettingsFromEnv), resolved once in New.
 	gateSweep gateSweepSettings
+	// leaseHandoverOff and leaseHandoverPasses are the operator's override
+	// over every leased net's handover (leaseHandoverFromEnv), resolved once
+	// in New so one warning is logged per process rather than one per net.
+	leaseHandoverOff    bool
+	leaseHandoverPasses int
 	// sweepDegraded brackets the orphan sweeper's degradation episode
 	// (edge-triggered Warn on entry, Info on recovery). The two failing
 	// stages are tracked as INDEPENDENT flags because they recover on
@@ -1171,6 +1176,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	}
 	s.replicaID = newReplicaID()
 	s.gateSweep = gateSweepSettingsFromEnv(os.Getenv, s.warnf)
+	s.leaseHandoverOff, s.leaseHandoverPasses = leaseHandoverFromEnv(os.Getenv, s.warnf)
 	// Wire the same Origin allowlist used for HTTP CORS into the WebSocket
 	// upgrader so cross-origin browser tabs can't subscribe to file events.
 	SetWebSocketOriginCheck(s.isAllowedOrigin)

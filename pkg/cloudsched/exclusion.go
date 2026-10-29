@@ -16,6 +16,13 @@ import (
 // alone is insufficient: the run publisher must commit under the ownership
 // check installed on this context, in the SAME transaction as its run write.
 // An expired worker therefore cannot persist behind a successor's overlap read.
+//
+// No handover policy (lease.Spec.Health), decided rather than omitted: TryRun
+// serves ONE term for ONE schedule launch, so there is no run of passes to
+// classify and nothing a term could hand over to — the work either commits
+// under this claim or does not, and the scheduler's next tick campaigns again
+// on its own cadence. The handover of #2685 is for the repeating nets, whose
+// holder keeps a term across passes and can therefore blackhole one.
 func (s *MongoStore) WithSchedule(ctx context.Context, id string, fn func(context.Context)) (bool, error) {
 	db := s.kit.Coll().Database()
 	name, owner := "schedule-launch:"+id, intentClaim()

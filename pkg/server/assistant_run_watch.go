@@ -60,8 +60,9 @@ type assistantWatchCoordinator struct {
 	worker               string
 	clock                clock.Clock
 	healthMu             sync.RWMutex
-	elected              bool      // this replica holds the sweep's lease (runElectedAssistantWatchSweep)
-	termStartedAt        time.Time // when the current term began (setElected), or the runtime was switched under it (setRuntime)
+	elected              bool          // this replica holds the sweep's lease (runElectedAssistantWatchSweep)
+	termStartedAt        time.Time     // when the current term began (setElected), or the runtime was switched under it (setRuntime)
+	handover             *lease.Health // the handover policy of this replica's campaign, for the health answer (setHealth)
 	lastSweepStartedAt   time.Time
 	lastSweepCompletedAt time.Time
 	lastSweepDuration    time.Duration
@@ -295,10 +296,12 @@ func (s *Server) startAssistantRunWatches() {
 func (s *Server) runElectedAssistantWatchSweep(ctx context.Context, c *assistantWatchCoordinator) {
 	campaign, endCampaign := context.WithCancel(ctx)
 	defer endCampaign()
-	err := lease.Run(campaign, s.leases, s.assistantWatchLeaseSpec(), func(term context.Context) {
+	spec := s.assistantWatchLeaseSpec()
+	c.setHealth(spec.Health)
+	err := lease.Run(campaign, s.leases, spec, func(term context.Context) {
 		c.setElected(true)
 		defer c.setElected(false)
-		c.sweepLoop(term, s.shutdown)
+		c.sweepLoop(term, s.shutdown, spec.Health)
 		// A term the shutdown signal ended ends the campaign too: the loop
 		// used to return for good on that signal, and re-campaigning here
 		// would sweep once per retry until the process exits.
@@ -324,12 +327,13 @@ func (s *Server) assistantWatchLeaseSpec() lease.Spec {
 		pace = assistantWatchSweepInterval
 	}
 	return lease.Spec{
-		Name:  leaseAssistantWatchSweep,
-		Owner: s.replicaID,
-		TTL:   assistantWatchLeaseTTLFactor * pace,
-		Retry: pace,
-		Info:  s.infof,
-		Warn:  s.warnf,
+		Name:   leaseAssistantWatchSweep,
+		Owner:  s.replicaID,
+		TTL:    assistantWatchLeaseTTLFactor * pace,
+		Retry:  pace,
+		Info:   s.infof,
+		Warn:   s.warnf,
+		Health: s.newLeaseHealth(),
 	}
 }
 
@@ -356,7 +360,20 @@ func (c *assistantWatchCoordinator) setElected(elected bool) {
 	c.healthMu.Unlock()
 }
 
-func (c *assistantWatchCoordinator) sweepLoop(ctx context.Context, shutdown <-chan struct{}) {
+// setHealth records the campaign's handover policy so the health answer can
+// report it. It lands on the root coordinator for the reason setElected's
+// writes do: the policy is the REPLICA's, not the project's, and a project
+// switch must not drop it.
+func (c *assistantWatchCoordinator) setHealth(h *lease.Health) {
+	if c.origin != nil {
+		c = c.origin
+	}
+	c.healthMu.Lock()
+	c.handover = h
+	c.healthMu.Unlock()
+}
+
+func (c *assistantWatchCoordinator) sweepLoop(ctx context.Context, shutdown <-chan struct{}, health *lease.Health) {
 	ticker := time.NewTicker(assistantWatchSweepInterval)
 	defer ticker.Stop()
 	for {
@@ -365,7 +382,12 @@ func (c *assistantWatchCoordinator) sweepLoop(ctx context.Context, shutdown <-ch
 		}
 		// Reconcile persisted watches immediately, including those created
 		// while the server was stopped. Every subsequent wake coalesces here.
-		c.sweep(ctx)
+		// A term K passes of which reached nothing ends here: returning
+		// releases the lease (lease.Run) so a replica that can read the store
+		// arms, observes and delivers instead (#2685).
+		if health.Observe(c.sweep(ctx)) {
+			return
+		}
 		if ctx.Err() != nil {
 			return
 		}
@@ -402,9 +424,16 @@ func (c *assistantWatchCoordinator) handleEvent(ctx context.Context, ev trigger.
 	return nil
 }
 
-func (c *assistantWatchCoordinator) sweep(ctx context.Context) {
+// sweep runs one pass and reports what it was worth, for the handover
+// (#2685). The pass's far side is the run store it reads — the watches, their
+// targets, the trees — so the verdict is the store's answers: a replica whose
+// node cannot reach it attempted work and reached nothing, while a store that
+// answers "no such run" has ANSWERED, and a fleet with no armed watch is an
+// idle pass rather than a sick one.
+func (c *assistantWatchCoordinator) sweep(ctx context.Context) lease.PassVerdict {
+	var pass lease.Pass
 	if err := ctx.Err(); err != nil {
-		return
+		return pass.Verdict()
 	}
 	c = c.snapshot()
 	ctx = c.withBotPaths(ctx)
@@ -414,24 +443,30 @@ func (c *assistantWatchCoordinator) sweep(ctx context.Context) {
 	upper, err := ws.ActiveWatchUpperBound(ctx)
 	if err != nil {
 		c.server.logWarn("assistant run watch: active watch upper bound: %v", err)
-		return
+		pass.Failed(err)
+		return pass.Verdict()
 	}
 	var after *runwatch.WatchCursor
 	for upper != nil {
 		if ctx.Err() != nil {
-			return
+			return pass.Verdict()
 		}
 		watches, err := ws.ListActivePage(ctx, after, *upper, 500)
 		if err != nil {
 			c.server.logWarn("assistant run watch: list active page: %v", err)
-			return
+			pass.Failed(err)
+			return pass.Verdict()
+		}
+		if len(watches) > 0 {
+			// The store answered with the page: this replica reaches it.
+			pass.Succeeded()
 		}
 		if len(watches) == 0 {
 			break
 		}
 		for _, w := range watches {
 			if ctx.Err() != nil {
-				return
+				return pass.Verdict()
 			}
 			if c.server.cfg.Mode == "cloud" && w.TenantID == "" {
 				c.server.logWarn("assistant run watch: skip watch %s without cloud tenant", w.ID)
@@ -440,7 +475,14 @@ func (c *assistantWatchCoordinator) sweep(ctx context.Context) {
 			rctx := store.WithIdentity(ctx, w.TenantID, w.OwnerID)
 			target, err := c.runs.LoadRunCtx(rctx, w.TargetRunID)
 			if assistantWatchCanceled(ctx, err) {
-				return
+				return pass.Verdict()
+			}
+			if err != nil && !errors.Is(err, store.ErrRunNotFound) && !errors.Is(err, store.ErrRunDeleted) {
+				// A target the store could not answer for at all: the item
+				// was attempted and did not complete. An absent or deleted
+				// run IS an answer, and the stop below is this pass doing
+				// its work.
+				pass.Failed(err)
 			}
 			if errors.Is(err, store.ErrRunNotFound) || errors.Is(err, store.ErrRunDeleted) {
 				_ = c.stopWatch(rctx, w, runwatch.WatchStopped, "target_missing", time.Now().UTC())
@@ -482,14 +524,15 @@ func (c *assistantWatchCoordinator) sweep(ctx context.Context) {
 		}
 	}
 	if ctx.Err() != nil {
-		return
+		return pass.Verdict()
 	}
 	c.reconcileArmedWatches(ctx)
 	c.deliverDue(ctx, 100)
 	if ctx.Err() != nil {
-		return
+		return pass.Verdict()
 	}
 	c.markSweepCompleted(c.now(), c.now().Sub(started))
+	return pass.Verdict()
 }
 
 type assistantWatchTree struct {

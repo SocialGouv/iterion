@@ -78,7 +78,7 @@ func TestLeasedNets_EveryCampaigningNetIsRegistered(t *testing.T) {
 		}
 	}
 	// Pass 2 — every lease.Spec the package builds.
-	var found, offenders []string
+	var found, offenders, unguarded []string
 	for _, f := range parsed {
 		ast.Inspect(f, func(n ast.Node) bool {
 			lit, ok := n.(*ast.CompositeLit)
@@ -93,6 +93,17 @@ func TestLeasedNets_EveryCampaigningNetIsRegistered(t *testing.T) {
 				return true
 			}
 			where := fset.Position(lit.Pos()).String()
+			armed := false
+			for _, elt := range lit.Elts {
+				if kv, ok := elt.(*ast.KeyValueExpr); ok {
+					if key, ok := kv.Key.(*ast.Ident); ok && key.Name == "Health" {
+						armed = true
+					}
+				}
+			}
+			if !armed {
+				unguarded = append(unguarded, where)
+			}
 			for _, elt := range lit.Elts {
 				kv, ok := elt.(*ast.KeyValueExpr)
 				if !ok {
@@ -126,6 +137,19 @@ func TestLeasedNets_EveryCampaigningNetIsRegistered(t *testing.T) {
 	}
 	for _, o := range offenders {
 		t.Errorf("%s, which is not in leasedNets — the no-shared-database warning will name every other net and stay silent about this one", o)
+	}
+	// And every one of them arms the handover (lease.Spec.Health): a net
+	// whose term can only end on lease loss or shutdown is blackholed by one
+	// replica whose passes all fail, with the healthy ones standing by —
+	// #2685, measured at 60 failed passes and 0 healthy passes over 20 TTLs.
+	// The next net added here would reintroduce it in silence otherwise.
+	//
+	// The declared exception is NOT in this package: pkg/cloudsched's
+	// WithSchedule serves one TryRun term for one schedule launch, where
+	// there is no run of passes to classify — the decision is written beside
+	// its spec.
+	for _, where := range unguarded {
+		t.Errorf("%s: a lease.Spec with no Health — this net's term cannot end on the work failing, so one replica whose egress is broken keeps renewing while every pass fails and no peer covers (#2685)", where)
 	}
 	// The sweep must be able to see the nets that DO exist: a refactor that
 	// moved spec construction out of this package would otherwise leave it

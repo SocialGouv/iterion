@@ -398,6 +398,18 @@ func TestHealth_aTermStartsWithACleanRunOfFailures(t *testing.T) {
 	}
 }
 
+// A nil *Pass accounts into nothing and crashes nothing: the same repair
+// functions run outside an elected term, where no pass is open.
+func TestPass_aNilPassAccountsIntoNothing(t *testing.T) {
+	var p *Pass
+	p.Succeeded()
+	p.Failed(unreachable())
+	p.Attempted(3, 0, unreachable())
+	if got := p.Verdict(); got != VerdictIdle {
+		t.Fatalf("verdict = %s, want %s", got, VerdictIdle)
+	}
+}
+
 // A nil *Health is the behaviour before #2685, in full: nothing ends a term
 // but lease loss and shutdown, and the campaign's pace is untouched.
 func TestHealth_aNilHealthIsTheBehaviourWithoutIt(t *testing.T) {

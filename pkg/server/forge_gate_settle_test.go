@@ -816,7 +816,7 @@ func testAPagedDeepTraversalContinues(t *testing.T, deepEvery int) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.runGateSweeper(ctx, l)
+		s.runGateSweeper(ctx, l, nil)
 	}()
 	waitForCond(t, 20*time.Second, "a deep traversal of the whole window", func() bool {
 		l.mu.Lock()
@@ -932,7 +932,7 @@ func sweepAWhile(t *testing.T, s *Server, l *pagedWindowLister, passes int) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.runGateSweeper(ctx, l)
+		s.runGateSweeper(ctx, l, nil)
 	}()
 	waitForCond(t, 30*time.Second, fmt.Sprintf("%d ordinary listings", passes), func() bool {
 		l.mu.Lock()

@@ -1367,14 +1367,16 @@ const (
 // way out, one that dies is outlived by the TTL, and each term opens with a
 // pass.
 func (s *Server) runBoardSyncWorker(ctx context.Context, interval time.Duration) {
+	health := s.newLeaseHealth()
 	err := lease.Run(ctx, s.leases, lease.Spec{
-		Name:  leaseBoardIssueSync,
-		Owner: s.replicaID,
-		TTL:   forgeBoardSyncLeaseTTLFactor * interval,
-		Retry: interval,
-		Info:  s.infof,
-		Warn:  s.warnf,
-	}, func(ctx context.Context) { s.boardSyncPasses(ctx, interval) })
+		Name:   leaseBoardIssueSync,
+		Owner:  s.replicaID,
+		TTL:    forgeBoardSyncLeaseTTLFactor * interval,
+		Retry:  interval,
+		Info:   s.infof,
+		Warn:   s.warnf,
+		Health: health,
+	}, func(ctx context.Context) { s.boardSyncPasses(ctx, interval, health) })
 	if err != nil {
 		s.warnf("forge→board issue sync NOT started: %v — a forge issue whose webhook was dropped never reaches its team board", err)
 	}
@@ -1389,44 +1391,70 @@ func (s *Server) runBoardSyncWorker(ctx context.Context, interval time.Duration)
 // lease-store blip, a rollout — would otherwise leave the net never actually
 // sweeping. Terms are paced by the campaign's retry (one interval), so this
 // cannot sweep faster than the interval either.
-func (s *Server) boardSyncPasses(ctx context.Context, interval time.Duration) {
+func (s *Server) boardSyncPasses(ctx context.Context, interval time.Duration, health *lease.Health) {
 	// Every forge request of every pass is charged to the sweep's own lane:
 	// the hourly tally is where an operator reads what this net spends, and
 	// that request budget is what the lease exists to protect.
 	ctx = withForgeLane(ctx, forgeLaneBoardIssueSync)
 	t := time.NewTicker(interval)
 	defer t.Stop()
-	s.syncAllEnabledIntegrations(ctx)
+	// A term the passes end — K of them in a row that reached nothing — is a
+	// handover: returning here releases the lease so a peer, whose egress to
+	// the forge may be intact, sweeps instead (#2685).
+	if health.Observe(s.syncAllEnabledIntegrations(ctx)) {
+		return
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			s.syncAllEnabledIntegrations(ctx)
+			if health.Observe(s.syncAllEnabledIntegrations(ctx)) {
+				return
+			}
 		}
 	}
 }
 
-func (s *Server) syncAllEnabledIntegrations(ctx context.Context) {
+// syncAllEnabledIntegrations runs one pass and reports what it was worth. Each
+// integration is one item of the pass: syncOneIntegration reads that repo's
+// issue window from the forge, so its answer — not the absence of a created
+// or updated card — is what says whether this replica reaches the forge at
+// all. A fleet with nothing to mirror is an idle pass, not a sick one.
+func (s *Server) syncAllEnabledIntegrations(ctx context.Context) lease.PassVerdict {
+	var pass lease.Pass
 	ris, err := s.forgeIntegrations.ListSyncEnabled(ctx)
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Warn("board sync: list sync-enabled integrations: %v", err)
 		}
-		return
+		// The pass could not even learn what to sweep: one item attempted,
+		// none done, and the store's own failure is the cause it carries.
+		pass.Failed(err)
+		return pass.Verdict()
 	}
 	for _, ri := range ris {
 		// Short-circuit on a term that ended — a step-down, a rollout, a
 		// SIGTERM — so a pass that matched N repos does not run N connection
-		// reads each failing on ctx.Done, one warn line apiece.
+		// reads each failing on ctx.Done, one warn line apiece. What the pass
+		// did before that is what it reports: the term is over either way,
+		// and a pass cut short is not evidence of anything.
 		if err := ctx.Err(); err != nil {
-			return
+			return pass.Verdict()
 		}
 		_, c, u, err := s.syncOneIntegration(ctx, ri.TenantID, ri)
-		if err != nil && s.logger != nil {
-			s.logger.Warn("board sync: %s/%s: %v", ri.TenantID, ri.RepoFullName, err)
-		} else if (c > 0 || u > 0) && s.logger != nil {
-			s.logger.Info("board sync: %s %s → %d created, %d updated", ri.TenantID, ri.RepoFullName, c, u)
+		switch {
+		case err != nil:
+			pass.Failed(err)
+			if s.logger != nil {
+				s.logger.Warn("board sync: %s/%s: %v", ri.TenantID, ri.RepoFullName, err)
+			}
+		default:
+			pass.Succeeded()
+			if (c > 0 || u > 0) && s.logger != nil {
+				s.logger.Info("board sync: %s %s → %d created, %d updated", ri.TenantID, ri.RepoFullName, c, u)
+			}
 		}
 	}
+	return pass.Verdict()
 }

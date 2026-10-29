@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/lease"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 	"github.com/SocialGouv/iterion/pkg/usernotify"
@@ -310,13 +311,34 @@ func (s *Server) ListenAndServe() error {
 		// tokens, then the per-repository bots whose expiry falls within the
 		// rotation lead — the same ticker, since each sweep is one cheap
 		// expiry query when nothing is due.
-		sweep := func(ctx context.Context) {
-			if _, err := worker.RunOnce(ctx); err != nil && s.logger != nil {
-				s.logger.Warn("forge token refresh: %v", err)
+		// The pass reports what it did, which is what decides whether this
+		// replica keeps the term (#2685): both workers already count what
+		// they renewed and name the first failure they met, so the verdict
+		// travels from the pass instead of being guessed from the absence of
+		// progress — nothing due is the normal state here, not a symptom.
+		sweep := func(ctx context.Context) lease.PassVerdict {
+			var pass lease.Pass
+			// Both workers answer how many credentials they renewed and the
+			// FIRST failure they met, not how many they tried — so an error
+			// means at least one more item was attempted and did not
+			// succeed. Nothing due is (0, nil): an idle pass, which says
+			// nothing about this replica's reach and is the normal state of
+			// a fleet whose tokens are all fresh.
+			record := func(what string, renewed int, err error) {
+				if err != nil && s.logger != nil {
+					s.logger.Warn("%s: %v", what, err)
+				}
+				attempted := renewed
+				if err != nil {
+					attempted++
+				}
+				pass.Attempted(attempted, renewed, err)
 			}
-			if _, err := s.forgeOrchestrator.RotateDueProjectBots(ctx, 0); err != nil && s.logger != nil {
-				s.logger.Warn("forge project bot rotation: %v", err)
-			}
+			renewed, err := worker.RunOnce(ctx)
+			record("forge token refresh", renewed, err)
+			rotated, err := s.forgeOrchestrator.RotateDueProjectBots(ctx, 0)
+			record("forge project bot rotation", rotated, err)
+			return pass.Verdict()
 		}
 		s.goUntilShutdown("server.forgeTokenRefresh", func(ctx context.Context) {
 			s.runElectedForgeTokenRefresh(ctx, forgeRefreshTick, sweep)

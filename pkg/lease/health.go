@@ -78,6 +78,12 @@ func (v PassVerdict) String() string {
 // from the pass instead of being inferred by its observer. The zero value is
 // an idle pass. Safe for concurrent use: a pass whose items run in parallel
 // records from several goroutines.
+//
+// A nil *Pass accounts into nothing, the way a nil *Health decides nothing:
+// the same work runs outside an elected term — the event path that shares a
+// net's repair function, a test calling one pass directly — and it must
+// neither account nor crash. Recording into a pass the caller did not open is
+// the normal case there, not a defect.
 type Pass struct {
 	mu        sync.Mutex
 	attempted int
@@ -89,7 +95,7 @@ type Pass struct {
 // first failure it met — nil when none did. It is the shape of a worker that
 // already counts, like forge.RefreshWorker.RunOnce's (refreshed, firstErr).
 func (p *Pass) Attempted(n, s int, firstErr error) {
-	if n <= 0 {
+	if p == nil || n <= 0 {
 		return
 	}
 	p.mu.Lock()
@@ -123,6 +129,9 @@ var errUnnamedFailure = errors.New("lease: a pass recorded a failure without nam
 // neither a success nor a failure for them is idle: a verdict guessed from
 // that silence is exactly what this type exists to refuse.
 func (p *Pass) Verdict() PassVerdict {
+	if p == nil {
+		return VerdictIdle
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	switch {
