@@ -645,6 +645,27 @@ describe("source discipline", () => {
       'aria-label={group.label && collapsed ? group.label : undefined}',
     );
   });
+
+  it("a hidden run tab marks its subtree hidden, and the run keyboard consults the flag (#1812)", () => {
+    // RunsTabsView keeps every hydrated run tab MOUNTED (the per-run store
+    // and websocket accumulate in the background), so the run console of a
+    // hidden tab must reach nothing on screen — the #1788 class. What the
+    // kit's portals do inside a hidden subtree is pinned by
+    // ui/hiddenSubtree.test.tsx, and the keyboard's gate by
+    // hooks/useRunKeyboard.test.tsx; what holds the WIRING is the source:
+    // the host provides the flag per tab, and the hook consults it.
+    const host = readFileSync(
+      resolve(process.cwd(), "src/components/Runs/RunsTabsView.tsx"),
+      "utf8",
+    );
+    expect(host).toContain("HiddenSubtreeContext.Provider value={!visible}");
+    const keyboard = readFileSync(
+      resolve(process.cwd(), "src/hooks/useRunKeyboard.ts"),
+      "utf8",
+    );
+    expect(keyboard).toContain("useHiddenSubtree");
+    expect(keyboard).toContain("if (hidden) return;");
+  });
 });
 
 // The clickable-row pair's own discipline, over the real tree (#2766). One
