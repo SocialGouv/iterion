@@ -239,6 +239,13 @@ func (s *Server) putBotSourceFor(w http.ResponseWriter, r *http.Request, tenantI
 		s.botSourceError(w, r, err)
 		return
 	}
+	// The write compiles the bundle before it persists: a reading like the
+	// editor's, taking its share of the aggregate bound (#2693).
+	release, admitted := s.admitDSLRead(w, r, mapBytes(req.Files))
+	if !admitted {
+		return
+	}
+	defer release()
 	// The bundle as stored, read once: every check below is asked of it,
 	// and the write is pinned to its version (storeBotSource), so a write
 	// that landed meanwhile makes this one a conflict rather than a write
@@ -420,7 +427,14 @@ func (s *Server) putBotSourceFileFor(w http.ResponseWriter, r *http.Request, ten
 		}
 	}
 	// The file put is what is checked: a companion workflow through its
-	// own unit, a fragment through every workflow that may import it.
+	// own unit, a fragment through every workflow that may import it. That
+	// compile reads the WHOLE bundle, so the aggregate bound (#2693) weighs
+	// the bundle, not the file.
+	release, admitted := s.admitDSLRead(w, r, mapBytes(bs.Files))
+	if !admitted {
+		return
+	}
+	defer release()
 	if diags := validateBundleCompileSelected(bs.Files, []string{path}); len(diags) > 0 {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bot does not compile: %s", strings.Join(diags, "; "))
 		return

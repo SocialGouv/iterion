@@ -99,7 +99,11 @@ type Server struct {
 	// cfg.WorkDir. Surfaced by /api/server/info (polled by the SPA);
 	// caching it here avoids a disk read on every poll.
 	currentProjectID string
-	cfg              Config
+	// readAdmission bounds the aggregate estimated memory of concurrent DSL
+	// readings (#2693): nil when the operator removed the bound
+	// (ITERION_DSL_READ_ADMISSION_MAX_BYTES=0).
+	readAdmission *readAdmissionGate
+	cfg           Config
 	// extraOrigins are allowed environment origins resolved at construction.
 	extraOrigins           []string
 	logger                 *iterlog.Logger
@@ -798,6 +802,9 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		mux:          newRecordingMux(),
 		addrReady:    make(chan struct{}),
 		shutdown:     make(chan struct{}),
+		// The DSL-read admission gate (#2693): resolved from the environment
+		// like the read budget it complements, one per process.
+		readAdmission: readAdmissionFromEnv(),
 		// Pre-allocate the projection semaphore so its ACQUIRE stays
 		// lock-free — a per-webhook send to a pre-built chan is atomic.
 		// scheduleForgeBoardProjection still enters tryGoUntilShutdown

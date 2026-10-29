@@ -183,11 +183,11 @@ func (s *Server) handleParse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.File != "" {
-		s.parseUnitWithFile(w, req)
+		s.parseUnitWithFile(w, r, req)
 		return
 	}
 	if len(req.Files) > 0 {
-		s.parseUnitFiles(w, req)
+		s.parseUnitFiles(w, r, req)
 		return
 	}
 
@@ -196,6 +196,11 @@ func (s *Server) handleParse(w http.ResponseWriter, r *http.Request) {
 	// of it (the empty one), bindable false, the refusal said
 	// (read_refusal): the studio writes none of it, and applies none of it
 	// over a document it holds (applyParsedSource).
+	release, ok := s.admitDSLRead(w, r, int64(len(req.Source)))
+	if !ok {
+		return
+	}
+	defer release()
 	pr, err := parser.Parse("studio.bot", req.Source)
 	var refused *parser.ReadRefusal
 	if errors.As(err, &refused) {
@@ -245,6 +250,15 @@ func (s *Server) handleUnparse(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+
+	// The aggregate bound (#2693) is taken BEFORE the document unmarshal:
+	// the document is the reading's input, and it dominates the unit's
+	// files and the on-disk before-text beside it.
+	release, ok := s.admitDSLRead(w, r, int64(len(req.Document))+mapBytes(req.Files)+s.diskUnitBytes(req.Path))
+	if !ok {
+		return
+	}
+	defer release()
 
 	f, err := ast.UnmarshalFile(req.Document)
 	if err != nil {
@@ -310,6 +324,12 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+
+	release, ok := s.admitDSLRead(w, r, int64(len(req.Document)))
+	if !ok {
+		return
+	}
+	defer release()
 
 	f, err := ast.UnmarshalFile(req.Document)
 	if err != nil {

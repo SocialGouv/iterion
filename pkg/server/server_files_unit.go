@@ -1087,7 +1087,12 @@ type unitOpenResponse struct {
 // parseUnitFiles parses a bot in several files, given as a files map, as its
 // unit: one document with each declaration's file on it, and the unit's
 // revision — what the cloud editor opens a bundle's main with.
-func (s *Server) parseUnitFiles(w http.ResponseWriter, req parseRequest) {
+func (s *Server) parseUnitFiles(w http.ResponseWriter, r *http.Request, req parseRequest) {
+	release, ok := s.admitDSLRead(w, r, mapBytes(req.Files))
+	if !ok {
+		return
+	}
+	defer release()
 	main := req.Main
 	if main == "" {
 		main = "main.bot"
@@ -1706,7 +1711,14 @@ func (s *Server) unparseUnitPart(w http.ResponseWriter, req unparseRequest, doc 
 // unit's (storedUnitVerdict), not the overlay's: the launch gate refuses a
 // bot whose files do not parse or do not load as one, and an apply has
 // stored nothing for it to lift.
-func (s *Server) parseUnitWithFile(w http.ResponseWriter, req parseRequest) {
+func (s *Server) parseUnitWithFile(w http.ResponseWriter, r *http.Request, req parseRequest) {
+	// The reading below is the unit load (disk or the files map) plus the
+	// staged file's own parse — the aggregate bound (#2693) weighs both.
+	release, ok := s.admitDSLRead(w, r, int64(len(req.Source))+mapBytes(req.Files)+s.diskUnitBytes(req.Path))
+	if !ok {
+		return
+	}
+	defer release()
 	// A stored unit the read budget cuts short is refused first, and so
 	// for every file it names: a file past the cut is in no list of a load
 	// cut short, and "not a file of this bot" would blame the name for the

@@ -178,6 +178,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/log` | provides a leveled logger with emoji-rich console output for the iterion workflow engine. | — |
 | `pkg/mail` | iterion's minimal transactional mailer: stdlib SMTP (explicit STARTTLS) + embedded templates for the two flows that need email — invitations and… | `Mailer` |
 | `pkg/marketplace` | the hosted bot registry that sits on top of pkg/botinstall. | `Store` |
+| `pkg/memlimit` | derives the Go GC's memory limit from the container's cgroup ceiling at startup (#2693), so the collector works harder as the pod nears its limit… | — |
 | `pkg/memory` | provides the per-workspace iterion memory tree at ~/.iterion/projects/<encoded-workdir>/memory/<scope>/. | — |
 | `pkg/modelcatalog` | crosses the four sources that together answer "which models can I actually use here": 	model.KnownModelSpecs() — what iterion knows about (curated… | — |
 | `pkg/modelprefs` | persists an operator's chosen model/backend/effort for a long-lived surface, so the choice survives the surface rather than being re-made every time… | `Store` |

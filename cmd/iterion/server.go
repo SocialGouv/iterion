@@ -43,6 +43,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/mail"
 	"github.com/SocialGouv/iterion/pkg/marketplace"
+	"github.com/SocialGouv/iterion/pkg/memlimit"
 	"github.com/SocialGouv/iterion/pkg/modelprefs"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
@@ -264,6 +265,11 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// filesystem store, which doesn't make sense when persistence
 	// lives in Mongo.
 	logger := cfg.Log.NewLogger(cmd.ErrOrStderr())
+	// The GC's memory limit tracks the pod's cgroup ceiling (#2693), so the
+	// collector works before the OOM-killer does. The operator's GOMEMLIMIT
+	// wins; ITERION_MEMLIMIT=off removes the derivation. Local mode above is
+	// untouched: a studio shares the operator's machine, no pod limit.
+	memlimit.Apply(logger.Info)
 	// Couple the process logger to the error tracker (no-op unless
 	// SENTRY_DSN is set): every error line becomes an event, every warn
 	// line a breadcrumb on the next one. Init already ran at the root.

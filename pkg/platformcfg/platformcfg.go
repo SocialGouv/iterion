@@ -320,6 +320,14 @@ var botVarsInfraExact = map[string]bool{
 	// twin: a bound on what an uploaded bot may cost the server that reads
 	// it, 0 removing it.
 	"ITERION_DSL_READ_BUDGET": true,
+	// The server-wide aggregate of concurrent readings and its refusal grace
+	// (#2693): bounds on what untrusted input may cost the PROCESS, 0
+	// removing the first. A stored bot var must never widen either.
+	"ITERION_DSL_READ_ADMISSION_MAX_BYTES": true,
+	"ITERION_DSL_READ_ADMISSION_WAIT":      true,
+	// The boot-time GOMEMLIMIT derivation's off switch (#2693): the
+	// process's own memory posture, never a bot's run.
+	"ITERION_MEMLIMIT": true,
 	// Bounds on work that spends: node re-executions (no DSL field sets
 	// them), schema-correction re-asks, a session spinning without progress
 	// or failing its tools in a streak (0 disables the last three).

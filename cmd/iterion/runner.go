@@ -20,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
+	"github.com/SocialGouv/iterion/pkg/memlimit"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
@@ -81,6 +82,10 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	errtrack.AttachLogHook(logger)
 	defer errtrack.Flush()
 	logger.Info("runner: starting")
+	// Same derivation as the server (#2693): the runner compiles every
+	// workflow it executes, and its pod's ceiling is the chart's 4Gi —
+	// the GC works before the OOM-killer. GOMEMLIMIT wins; ITERION_MEMLIMIT=off disables.
+	memlimit.Apply(logger.Info)
 
 	rootCtx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
