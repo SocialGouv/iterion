@@ -49,6 +49,13 @@ const (
 	DirPresets = "presets"
 )
 
+// DirDeps is the workspace directory a project's `bots.lock` dependencies
+// are materialized into — the record of management for what lives there, so
+// a bundle under it is a pinned install and not an authored source tree.
+// Named here because the packer skips it, discovery lists it as a root, and
+// the catalogue regeneration asks whether the owner it refreshes is pinned.
+const DirDeps = ".botz"
+
 // LayoutDirs is the canonical order of the layout directories, shared by
 // the loader (which resolves them), the packer (which archives them),
 // and pkg/botscaffold (which creates them). Kept as one list so adding a

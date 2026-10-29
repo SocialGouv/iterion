@@ -93,6 +93,17 @@ reads now. What that costs is written down rather than hidden:
   honoured only for a `lib/*.bot` path whose bytes still match the recorded
   digest — a fragment edited after the install is hashed back in, because the
   bundle on disk is then no longer what any producer published.
+- **The note is the bundle's local-state record**, and it holds the other file
+  an install changes: the generated bot catalogue
+  (`skills/iterion-bot-catalog.md`) that a catalogue owner vendored under
+  `.botz/` has rewritten with the consumer workspace's routing table. That
+  path IS one the producer ships, so leaving it out would not keep the pin
+  true: the bytes it replaced are kept under `.iterion/kept/` — a directory no
+  walker of a bundle's content counts — and the content hash is computed from
+  them. A kept copy is honoured only while its own bytes match the recorded
+  digest, so kept bytes that are not the producer's can make the hash move
+  (drift a `bots sync` repairs), never make a modified install read as
+  pristine.
 
 ## Quick start
 

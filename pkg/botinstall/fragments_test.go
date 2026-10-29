@@ -141,7 +141,7 @@ func TestResolveFragmentsFallsBackToTheWorkspaceLayer(t *testing.T) {
 	if readErr != nil || string(body) != producerFragmentBody {
 		t.Fatalf("materialized bytes = %q %v, want the producer's", body, readErr)
 	}
-	note, noteErr := bundle.ReadMaterializedFragments(consumer)
+	note, noteErr := bundle.ReadLocalStateOfKind(consumer, bundle.LocalStateFragment)
 	if noteErr != nil || len(note) != 1 || note[0].Path != "lib/shared.bot" || note[0].SHA256 != bundle.SHA256Bytes([]byte(producerFragmentBody)) {
 		t.Fatalf("note = %+v, err=%v; want one lib/shared.bot entry at the producer's digest", note, noteErr)
 	}
@@ -274,7 +274,7 @@ func TestADroppedDependencyStopsAnsweringTheImport(t *testing.T) {
 	if _, err := os.Stat(materialized); !os.IsNotExist(err) {
 		t.Fatalf("a dropped dependency still answers the import: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(consumer, bundle.MaterializedFragmentsFile)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(consumer, bundle.LocalStateFile)); !os.IsNotExist(err) {
 		t.Fatalf("the note outlived the dependency it recorded: %v", err)
 	}
 }
@@ -301,7 +301,7 @@ func TestResolveFragmentsLeavesABundleWithNothingDeclaredAlone(t *testing.T) {
 	if readErr != nil || string(body) != "schema its_own {}\n" {
 		t.Fatalf("the pass touched a fragment the bundle ships: %q %v", body, readErr)
 	}
-	if _, statErr := os.Stat(filepath.Join(consumer, bundle.MaterializedFragmentsFile)); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(filepath.Join(consumer, bundle.LocalStateFile)); !os.IsNotExist(statErr) {
 		t.Fatalf("the pass wrote a note for a bundle that declares nothing: %v", statErr)
 	}
 }
@@ -316,15 +316,54 @@ func TestAFileUnderTheReservedNoteNameIsNamed(t *testing.T) {
 	consumer := filepath.Join(workdir, ".botz", "plain")
 	writeInstallTestFile(t, filepath.Join(consumer, "main.bot"), "workflow plain {}\n")
 	writeInstallTestFile(t, filepath.Join(consumer, "manifest.yaml"), "name: plain\nschema_version: 1\nenabled: false\n")
-	writeInstallTestFile(t, filepath.Join(consumer, bundle.MaterializedFragmentsFile), "shipped by the producer\n")
+	writeInstallTestFile(t, filepath.Join(consumer, bundle.LocalStateFile), "shipped by the producer\n")
 
 	_, err := ResolveFragments(workdir, consumer)
 	if err == nil {
 		t.Fatal("ResolveFragments read an arbitrary file as its own record")
 	}
-	for _, want := range []string{bundle.MaterializedFragmentsFile, "line 1", "shipped by the producer"} {
+	for _, want := range []string{bundle.LocalStateFile, "line 1", "shipped by the producer"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error = %q, want it to contain %q", err, want)
 		}
+	}
+}
+
+// TestResolveFragmentsLeavesACatalogRecordAlone: the local-state record is
+// shared, and this pass owns its fragment lines only. A materialized router
+// bundle whose regenerated catalogue is recorded there declares no fragment,
+// so the pass has nothing to do — and reading that line as a fragment it no
+// longer declares would make it refuse the sync over a file it does not own.
+func TestResolveFragmentsLeavesACatalogRecordAlone(t *testing.T) {
+	workdir := t.TempDir()
+	consumer := filepath.Join(workdir, ".botz", "routerbot")
+	writeInstallTestFile(t, filepath.Join(consumer, "main.bot"), "workflow routerbot {}\n")
+	writeInstallTestFile(t, filepath.Join(consumer, "manifest.yaml"), "name: routerbot\nschema_version: 1\nenabled: false\n")
+	live := "the live routing table\n"
+	rel := bundle.DirSkills + "/" + bundle.GeneratedCatalogFile
+	writeInstallTestFile(t, filepath.Join(consumer, filepath.FromSlash(rel)), live)
+	writeInstallTestFile(t, filepath.Join(consumer, filepath.FromSlash(bundle.KeptPathFor(rel))), "the table the packer froze\n")
+	recorded := bundle.LocalStateEntry{
+		Path:       rel,
+		SHA256:     bundle.SHA256Bytes([]byte(live)),
+		KeptSHA256: bundle.SHA256Bytes([]byte("the table the packer froze\n")),
+	}
+	if err := bundle.WriteLocalStateOfKind(consumer, bundle.LocalStateCatalog, []bundle.LocalStateEntry{recorded}); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := ResolveFragments(workdir, consumer)
+	if err != nil {
+		t.Fatalf("ResolveFragments refused a bundle whose only local state is a catalog: %v", err)
+	}
+	if len(resolved) != 0 {
+		t.Fatalf("resolved = %+v, want none", resolved)
+	}
+	entries, err := bundle.ReadLocalStateOfKind(consumer, bundle.LocalStateCatalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0] != recorded {
+		t.Fatalf("catalog record after the fragment pass = %+v, want the line it does not own left as it was (%+v)", entries, recorded)
 	}
 }

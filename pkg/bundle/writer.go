@@ -223,13 +223,15 @@ type packEntry struct {
 }
 
 func collectEntries(srcDir string, dropDrafts bool) (entries []packEntry, totalBytes int64, drafts int, err error) {
-	// A fragment an install materialized from `dependencies.fragments`, and
-	// the note that records it, are not the producer's content: neither the
-	// logical hash nor a redistributed archive carries them, because the
-	// install that resolves a dependency is what materializes it. The run's
-	// snapshot walks the directory itself (Snapshot.AddDir) and does carry
-	// them, as the compiled unit needs them.
-	materialized, exclErr := materializedFragmentExclusions(srcDir)
+	// What an install put into a bundle that its producer did not ship is
+	// not the producer's content ([LocalStateFile]): a materialized fragment
+	// and the record itself are left out, because neither the logical hash
+	// nor a redistributed archive carries them, and a regenerated catalog is
+	// read from the producer's KEPT bytes, because its path is one the
+	// producer ships. The run's snapshot walks the directory itself
+	// (Snapshot.AddDir) and does carry the live files, as the compiled unit
+	// needs them.
+	skipLocal, keptLocal, exclErr := localStateOverrides(srcDir)
 	if exclErr != nil {
 		return nil, 0, 0, exclErr
 	}
@@ -251,7 +253,7 @@ func collectEntries(srcDir string, dropDrafts bool) (entries []packEntry, totalB
 			}
 			return nil
 		}
-		if materialized[rel] {
+		if skipLocal[rel] {
 			return nil
 		}
 		info, infoErr := d.Info()
@@ -276,14 +278,27 @@ func collectEntries(srcDir string, dropDrafts bool) (entries []packEntry, totalB
 			drafts++
 			return nil
 		}
+		absPath, size := path, info.Size()
+		if keptAbs, replaced := keptLocal[rel]; replaced && !d.IsDir() {
+			// The bytes at rel are local state; the producer's are kept
+			// aside and are what this bundle IS. Validated by
+			// localStateOverrides (regular file, recorded digest), so a stat
+			// that fails here lost a race with a writer: refused, never
+			// silently read from the live file the record disowns.
+			keptInfo, statErr := os.Stat(keptAbs)
+			if statErr != nil {
+				return fmt.Errorf("bundle/pack: the copy kept for %s went away while reading it: %w", rel, statErr)
+			}
+			absPath, size = keptAbs, keptInfo.Size()
+		}
 		entries = append(entries, packEntry{
 			rel:     rel,
 			isDir:   d.IsDir(),
-			size:    info.Size(),
-			absPath: path,
+			size:    size,
+			absPath: absPath,
 		})
 		if !d.IsDir() {
-			totalBytes += info.Size()
+			totalBytes += size
 		}
 		return nil
 	})

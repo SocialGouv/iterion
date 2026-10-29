@@ -34,12 +34,12 @@ const syncCommand = "iterion bots sync"
 // and the manifest no longer declares is removed — but only when the
 // bundle's own note still describes it exactly (under lib/, digest
 // unchanged), so nothing this installer did not write is ever deleted.
-func ResolveFragments(workdir, installedPath string) ([]bundle.MaterializedFragment, error) {
+func ResolveFragments(workdir, installedPath string) ([]bundle.LocalStateEntry, error) {
 	consumer, err := bundle.OpenDir(installedPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolve shared fragments: open %s: %w", installedPath, err)
 	}
-	previous, err := bundle.ReadMaterializedFragments(installedPath)
+	previous, err := bundle.ReadLocalStateOfKind(installedPath, bundle.LocalStateFragment)
 	if err != nil {
 		return nil, fmt.Errorf("resolve shared fragments for %s: %w", filepath.Base(installedPath), err)
 	}
@@ -57,7 +57,7 @@ func ResolveFragments(workdir, installedPath string) ([]bundle.MaterializedFragm
 		recorded[f.Path] = f.SHA256
 	}
 
-	resolved := make([]bundle.MaterializedFragment, 0, len(sorted))
+	resolved := make([]bundle.LocalStateEntry, 0, len(sorted))
 	for _, dep := range sorted {
 		rel := dep.FragmentRelPath()
 		dest := filepath.Join(installedPath, filepath.FromSlash(rel))
@@ -72,12 +72,14 @@ func ResolveFragments(workdir, installedPath string) ([]bundle.MaterializedFragm
 		if copyErr != nil {
 			return nil, fmt.Errorf("resolve shared fragment %q of %q from %q: %w", dep.ExportedID(), filepath.Base(installedPath), dep.From, copyErr)
 		}
-		resolved = append(resolved, bundle.MaterializedFragment{Path: rel, SHA256: digest})
+		resolved = append(resolved, bundle.LocalStateEntry{Path: rel, SHA256: digest})
 	}
 
 	if len(resolved) == 0 && len(previous) == 0 {
-		// Nothing declared, nothing recorded: the bundle owns every file it
-		// has, and this pass has no business writing or removing one.
+		// Nothing declared, nothing recorded as a fragment: the bundle owns
+		// every file it has under lib/, and this pass has no business
+		// writing or removing one — nor touching a record that exists for
+		// another kind of local state (a regenerated catalog).
 		return nil, nil
 	}
 
@@ -88,7 +90,7 @@ func ResolveFragments(workdir, installedPath string) ([]bundle.MaterializedFragm
 	if err := dropUndeclaredFragments(installedPath, previous, declared); err != nil {
 		return nil, err
 	}
-	if err := bundle.WriteMaterializedFragments(installedPath, resolved); err != nil {
+	if err := bundle.WriteLocalStateOfKind(installedPath, bundle.LocalStateFragment, resolved); err != nil {
 		return nil, fmt.Errorf("resolve shared fragments for %s: %w", filepath.Base(installedPath), err)
 	}
 	return resolved, nil
@@ -202,7 +204,7 @@ func refuseFragmentShadow(dest, rel string, dep bundle.FragmentDependency, recor
 // leaving it would let a dropped dependency keep answering an `import` with
 // a stale copy, and deleting anything else would destroy a file this
 // installer never wrote.
-func dropUndeclaredFragments(installedPath string, previous []bundle.MaterializedFragment, declared map[string]struct{}) error {
+func dropUndeclaredFragments(installedPath string, previous []bundle.LocalStateEntry, declared map[string]struct{}) error {
 	for _, f := range previous {
 		if _, keep := declared[f.Path]; keep {
 			continue

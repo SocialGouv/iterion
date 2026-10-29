@@ -27,9 +27,10 @@ const (
 
 	// catalogStaticName is the hand-authored source the generated catalog
 	// is spliced into; catalogGeneratedName is the file Nexie actually
-	// reads (mirrored into <workspace>/.claude/skills/ at run start).
+	// reads (mirrored into <workspace>/.claude/skills/ at run start), named
+	// from pkg/bundle so the layout and this writer cannot disagree.
 	catalogStaticName    = "iterion-bot-catalog-static.md"
-	catalogGeneratedName = "iterion-bot-catalog.md"
+	catalogGeneratedName = bundle.GeneratedCatalogFile
 )
 
 // RenderCatalogBlock renders the generated catalog region: a persona ↔
@@ -518,6 +519,12 @@ func refreshCatalogOwner(ctx context.Context, bundles []EntryWithSchema, owner E
 		return "", fmt.Errorf("botregistry: mkdir %s: %w", skillsDir, err)
 	}
 	dest := filepath.Join(skillsDir, catalogGeneratedName)
+	// An owner materialized under .botz is a PINNED install: bots.lock is
+	// the record of management for what lives there, and this write replaces
+	// a file its producer ships. An owner in its own source tree is the
+	// PRODUCER of that file — `task gen` keeps it true there and the packer
+	// must ship it, so nothing is kept or recorded for it.
+	pinned := pathUnder(owner.Path, filepath.Join(workdir, bundle.DirDeps))
 	held := false
 	// Hold releases on every path out of the closure, a panic included;
 	// the flag tells a refused TAKE — where nothing was written and the
@@ -535,10 +542,21 @@ func refreshCatalogOwner(ctx context.Context, bundles []EntryWithSchema, owner E
 			return fmt.Errorf("botregistry: %s: %w", staticPath, err)
 		}
 		out = reanchorForDepth(out, filepath.Dir(staticPath), skillsDir)
+		entry, keepErr := catalogLocalState(owner.Path, dest, []byte(out), pinned)
+		if keepErr != nil {
+			return keepErr
+		}
 		if err := store.WriteFileAtomic(dest, []byte(out), 0o644); err != nil {
 			return fmt.Errorf("botregistry: write catalog %s: %w", dest, err)
 		}
 		catalogStep("written")
+		// Recorded AFTER the write, with the digest of what landed: a record
+		// that ran ahead of a failed write would describe bytes no file has,
+		// and an unrecorded write is read as drift — loud, and repaired by
+		// the next sync.
+		if err := recordCatalogLocalState(owner.Path, entry, pinned); err != nil {
+			return err
+		}
 		return nil
 	})
 	switch {
@@ -548,6 +566,84 @@ func refreshCatalogOwner(ctx context.Context, bundles []EntryWithSchema, owner E
 		return "", err
 	}
 	return dest, nil
+}
+
+// catalogLocalState preserves the bytes this refresh is about to overwrite
+// in a PINNED install, and returns the local-state entry that will record
+// the write (ARB-109). A regenerated catalog is derived state: it must not
+// move bundle.ContentHashDir, which is the verdict every pin check reads —
+// the post-install verification, `bots sync`'s "already at its pin"
+// short-circuit, the bot:// resolver, the studio's dependency views.
+//
+// The bytes it keeps are the ones the INSTALL put there, and it asks the
+// record before the disk: a second regeneration replaces a file this writer
+// wrote, so reading the live bytes every time would keep a derived copy as
+// if its producer had shipped it. A record that no longer describes the file
+// on disk is no answer (a re-install replaced both), and then what is on
+// disk is what the install put there.
+//
+// Kept bytes that are not the producer's can only make the hash MOVE — drift
+// a sync repairs by re-materializing — never make a modified install read as
+// pristine: the hash is compared against a pin computed from the producer's
+// own tree.
+func catalogLocalState(ownerDir, dest string, out []byte, pinned bool) (bundle.LocalStateEntry, error) {
+	rel := bundle.DirSkills + "/" + catalogGeneratedName
+	entry := bundle.LocalStateEntry{Path: rel, SHA256: bundle.SHA256Bytes(out)}
+	if !pinned {
+		return entry, nil
+	}
+	recorded, err := bundle.ReadLocalStateOfKind(ownerDir, bundle.LocalStateCatalog)
+	if err != nil {
+		return entry, fmt.Errorf("botregistry: read the local-state record of %s: %w", ownerDir, err)
+	}
+	live, liveErr := os.ReadFile(dest)
+	switch {
+	case errors.Is(liveErr, os.ErrNotExist):
+		// The producer ships no generated catalog: this write ADDS a path,
+		// and a path no producer shipped is left out of the hash — nothing
+		// to keep.
+		return entry, nil
+	case liveErr != nil:
+		return entry, fmt.Errorf("botregistry: read the catalog this refresh replaces %s: %w", dest, liveErr)
+	}
+	liveDigest := bundle.SHA256Bytes(live)
+	for _, e := range recorded {
+		if e.Path != rel || e.SHA256 != liveDigest {
+			continue
+		}
+		// The record still describes the file: these bytes are this writer's
+		// own output, and the producer's are already kept (or there were
+		// none).
+		entry.KeptSHA256 = e.KeptSHA256
+		return entry, nil
+	}
+	keptAbs := filepath.Join(ownerDir, filepath.FromSlash(bundle.KeptPathFor(rel)))
+	if err := os.MkdirAll(filepath.Dir(keptAbs), 0o755); err != nil {
+		return entry, fmt.Errorf("botregistry: mkdir %s: %w", filepath.Dir(keptAbs), err)
+	}
+	if err := store.WriteFileAtomic(keptAbs, live, 0o644); err != nil {
+		return entry, fmt.Errorf("botregistry: keep the catalog bytes %s ships at %s: %w", ownerDir, keptAbs, err)
+	}
+	entry.KeptSHA256 = liveDigest
+	return entry, nil
+}
+
+// recordCatalogLocalState records the write in the bundle's local-state
+// record — the SAME record the materialized fragments use, each kind owning
+// its own lines.
+//
+// An owner that is not a pinned install has its catalog line REMOVED instead
+// of written: a bundle an operator moved out of .botz would otherwise keep a
+// record that hides its own generated file from the pin it no longer has.
+func recordCatalogLocalState(ownerDir string, entry bundle.LocalStateEntry, pinned bool) error {
+	entries := []bundle.LocalStateEntry{entry}
+	if !pinned {
+		entries = nil
+	}
+	if err := bundle.WriteLocalStateOfKind(ownerDir, bundle.LocalStateCatalog, entries); err != nil {
+		return fmt.Errorf("botregistry: record the regenerated catalog of %s as local state: %w", ownerDir, err)
+	}
+	return nil
 }
 
 // spliceGeneratedBlock replaces the content between the generated markers

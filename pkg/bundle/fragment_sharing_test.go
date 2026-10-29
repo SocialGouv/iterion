@@ -122,7 +122,7 @@ func TestAMaterializedFragmentLeavesTheContentHashWhereItWas(t *testing.T) {
 		t.Fatal("an unrecorded file under lib/ left the content hash alone; the note is not what excludes it")
 	}
 
-	if err := WriteMaterializedFragments(dir, []MaterializedFragment{{Path: "lib/shared.bot", SHA256: SHA256Bytes(body)}}); err != nil {
+	if err := WriteLocalStateOfKind(dir, LocalStateFragment, []LocalStateEntry{{Path: "lib/shared.bot", SHA256: SHA256Bytes(body)}}); err != nil {
 		t.Fatal(err)
 	}
 	recorded, err := ContentHashDir(dir)
@@ -153,14 +153,14 @@ func TestTheMaterializedFragmentNoteOnlyHidesFragments(t *testing.T) {
 	dir := t.TempDir()
 	writeFragmentFixture(t, dir, "main.bot", "workflow consumer {}\n")
 	writeFragmentFixture(t, dir, "manifest.yaml", "name: consumer\nschema_version: 1\n")
-	if err := os.WriteFile(filepath.Join(dir, MaterializedFragmentsFile), []byte(SHA256Bytes([]byte("workflow consumer {}\n"))+" main.bot\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, LocalStateFile), []byte(SHA256Bytes([]byte("workflow consumer {}\n"))+" main.bot\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := ContentHashDir(dir)
 	if err == nil {
 		t.Fatal("ContentHashDir honoured a note that named main.bot")
 	}
-	if !strings.Contains(err.Error(), "is not a .bot fragment under lib/") {
+	if !strings.Contains(err.Error(), "is not a path an install writes") {
 		t.Fatalf("error = %q", err)
 	}
 }
@@ -171,14 +171,14 @@ func TestTheMaterializedFragmentNoteOnlyHidesFragments(t *testing.T) {
 func TestAnUnreadableMaterializedFragmentNoteIsAnError(t *testing.T) {
 	dir := t.TempDir()
 	writeFragmentFixture(t, dir, "main.bot", "workflow consumer {}\n")
-	if err := os.WriteFile(filepath.Join(dir, MaterializedFragmentsFile), []byte("not-a-digest lib/x.bot\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, LocalStateFile), []byte("not-a-digest lib/x.bot\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ContentHashDir(dir); err == nil {
 		t.Fatal("ContentHashDir accepted a malformed note")
 	}
-	if _, err := ReadMaterializedFragments(dir); err == nil {
-		t.Fatal("ReadMaterializedFragments accepted a malformed note")
+	if _, err := ReadLocalState(dir); err == nil {
+		t.Fatal("ReadLocalState accepted a malformed note")
 	}
 }
 
@@ -188,18 +188,18 @@ func TestAnEmptyMaterializedFragmentListRemovesTheNote(t *testing.T) {
 	dir := t.TempDir()
 	body := []byte("schema shared {}\n")
 	writeFragmentFixture(t, dir, filepath.Join(DirFragments, "shared.bot"), string(body))
-	if err := WriteMaterializedFragments(dir, []MaterializedFragment{{Path: "lib/shared.bot", SHA256: SHA256Bytes(body)}}); err != nil {
+	if err := WriteLocalStateOfKind(dir, LocalStateFragment, []LocalStateEntry{{Path: "lib/shared.bot", SHA256: SHA256Bytes(body)}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteMaterializedFragments(dir, nil); err != nil {
+	if err := WriteLocalStateOfKind(dir, LocalStateFragment, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, MaterializedFragmentsFile)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, LocalStateFile)); !os.IsNotExist(err) {
 		t.Fatalf("note still there: %v", err)
 	}
-	frags, err := ReadMaterializedFragments(dir)
+	frags, err := ReadLocalState(dir)
 	if err != nil || frags != nil {
-		t.Fatalf("ReadMaterializedFragments = %v, %v; want nil, nil", frags, err)
+		t.Fatalf("ReadLocalState = %v, %v; want nil, nil", frags, err)
 	}
 }
 

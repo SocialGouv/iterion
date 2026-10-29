@@ -17,10 +17,10 @@ uncommitted edit to a tracked file of the workspace every time the running
 generator renders differently from the checkout, the standing case for a
 review run whose binary is older than the head it reviews. Three
 consequences worth knowing: a run whose bundle ships no template writes
-nothing; a bundle rooted OUTSIDE the workspace (a materialized `.botz`)
-writes nothing either and keeps the copy its packer froze, since the
-regeneration renders from the workspace's manifests and never writes
-outside it; a bundle under the workspace that ships the template but is
+nothing; a bundle rooted OUTSIDE the workspace (a clone beside it, a
+privately staged copy) writes nothing either and keeps the copy its packer
+froze, since the regeneration renders from the workspace's manifests and
+never writes outside it; a bundle under the workspace that ships the template but is
 not one of the bundles discovered there (a `manifest.yml` spelling, which
 `bundle.OpenDir` honours and bot discovery does not) is reported as a
 `bot catalog regen` warning rather than traded for a write into another
@@ -32,6 +32,20 @@ runner resolves none when the id does not resolve or its directory fails
 to open, and none at all — silently — when `ITERION_BOTS_PATH` is unset)
 mirrors no skill whatsoever, so it refreshes nothing: every owner's copy
 is a file that run cannot read.
+
+## A materialized owner keeps its pin
+
+A router bot vendored under `.botz/<dep>` IS an owner under the workspace, so
+the refresh gives it the consumer's routing table — the point of vendoring a
+router. Its identity must not move with it: `bots.lock` pins what the producer
+published and `bundle.ContentHashDir` is the verdict every pin check reads
+(the post-install verification refuses outright on a moved hash). So the
+refresh keeps the bytes it replaces under `.iterion/kept/`, which no walker of
+a bundle's content counts, and records the write in the bundle's local-state
+record — the one the materialized fragments use, each kind owning its lines.
+The hash is then computed from the kept bytes: the run reads the live table,
+`bots.lock` stays true and nothing re-materializes (ARB-109; the record's
+rules are in [bundles.md](../../bundles.md)).
 
 ## An overlay that is not read
 

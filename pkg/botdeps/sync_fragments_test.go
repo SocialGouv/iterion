@@ -60,7 +60,7 @@ func TestSyncResolvesASharedFragmentInBothOrders(t *testing.T) {
 			if string(got) != sharedFragmentBody {
 				t.Fatalf("materialized bytes = %q, want the producer's %q", got, sharedFragmentBody)
 			}
-			note, noteErr := bundle.ReadMaterializedFragments(filepath.Join(workdir, ".botz", consumer))
+			note, noteErr := bundle.ReadLocalStateOfKind(filepath.Join(workdir, ".botz", consumer), bundle.LocalStateFragment)
 			if noteErr != nil || len(note) != 1 || note[0].Path != "lib/shared.bot" {
 				t.Fatalf("note = %+v, err=%v; want one lib/shared.bot entry", note, noteErr)
 			}
@@ -127,7 +127,7 @@ func TestADroppedFragmentDependencyStopsAnsweringTheImport(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(workdir, ".botz", "a-bot", "lib", "shared.bot")); !os.IsNotExist(err) {
 		t.Fatalf("a dropped dependency still answers the import: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(workdir, ".botz", "a-bot", bundle.MaterializedFragmentsFile)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(workdir, ".botz", "a-bot", bundle.LocalStateFile)); !os.IsNotExist(err) {
 		t.Fatalf("the note outlived the dependency it recorded: %v", err)
 	}
 }
