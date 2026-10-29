@@ -527,6 +527,7 @@ func (d *Driver) Capabilities() sandbox.Capabilities {
 		SupportsBuild:          false, // local-only feature; cloud users build via CI + sandbox.image:
 		SupportsMounts:         true,  // V2-7 — type=pvc / type=configmap / type=secret
 		SupportsHostBindMounts: false, // pods have no host filesystem — type=bind is rejected; the iterion/rtk binaries are baked into the sandbox image
+		SupportsHostDirCopy:    true,  // a directory streams into the pod the way the workspace does (RunInfo.SeedDirs → an emptyDir per seed + tar over kubectl exec)
 		SupportsNetworkPolicy:  true,  // V2-5 — synthesised per-run; CNI must enforce
 		SupportsPostCreate:     true,
 		SupportsRemoteUser:     true,
@@ -656,6 +657,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		FriendlyName:          info.FriendlyName,
 		Spec:                  p.spec,
 		WorkspaceMount:        p.workspace,
+		SeedMounts:            seedMountTargets(info.SeedDirs),
 		ProxyEndpoint:         info.ProxyEndpoint,
 		CASecretName:          caSecretName,
 		SecretFilesSecretName: secretFilesSecretName,
@@ -770,8 +772,8 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	// max_duration fires. resolveWorkspaceCopyTimeout is the budget
 	// (DefaultWorkspaceCopyTimeout; ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT
 	// overrides).
+	copyTimeout := resolveWorkspaceCopyTimeout()
 	if info.WorkspacePath != "" {
-		copyTimeout := resolveWorkspaceCopyTimeout()
 		if err := sandbox.RunWithPhaseTimeout(ctx, d.logger, "workspace copy", workspaceCopyTimeoutEnv, copyTimeout, func(ctx context.Context) error {
 			return r.populateWorkspace(ctx, info.WorkspacePath, p.workspace)
 		}); err != nil {
@@ -783,6 +785,17 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		}); err != nil {
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: fixup workspace git: %w", err)
+		}
+	}
+	// The seeds the runtime could not bind — the run's attachments — land
+	// the same way the workspace does, each in the emptyDir the manifest
+	// declared for it, under the same bounded phase.
+	for _, seed := range info.SeedDirs {
+		if err := sandbox.RunWithPhaseTimeout(ctx, d.logger, "seed copy "+seed.ContainerPath, workspaceCopyTimeoutEnv, copyTimeout, func(ctx context.Context) error {
+			return r.seedDir(ctx, seed)
+		}); err != nil {
+			_ = r.Cleanup(ctx)
+			return nil, fmt.Errorf("kubernetes: seed %s: %w", seed.ContainerPath, err)
 		}
 	}
 
@@ -1152,7 +1165,45 @@ func (r *Run) runPostCreate(ctx context.Context, snippet string) error {
 func (r *Run) populateWorkspace(ctx context.Context, hostSrc, podDst string) error {
 	src := resolveCloneRoot(ctx, hostSrc)
 	r.driver.logger.Info("sandbox: copying workspace %s into pod %s:%s", src, r.podName, podDst)
+	return r.streamDirIntoPod(ctx, src, podDst)
+}
 
+// seedMountTargets is the container path of every seed: the manifest
+// declares an emptyDir there so the copy lands on a volume the sandbox user
+// can write into (the image's own directories are root-owned).
+func seedMountTargets(seeds []sandbox.SeedDir) []string {
+	out := make([]string, 0, len(seeds))
+	for _, s := range seeds {
+		out = append(out, s.ContainerPath)
+	}
+	return out
+}
+
+// seedDir copies one seed into the pod and, when the seed is read-only,
+// takes the write bit off every copied file. The directory itself is the
+// emptyDir — root-owned, group-writable through fsGroup — and its mode is
+// not the sandbox user's to change, so read-only is per file here. A
+// chmod that fails leaves the files writable and says so; the copy stands.
+func (r *Run) seedDir(ctx context.Context, seed sandbox.SeedDir) error {
+	r.driver.logger.Info("sandbox: copying %s into pod %s:%s", seed.HostDir, r.podName, seed.ContainerPath)
+	if err := r.streamDirIntoPod(ctx, seed.HostDir, seed.ContainerPath); err != nil {
+		return err
+	}
+	if !seed.ReadOnly {
+		return nil
+	}
+	chmod := kubectlCmdContext(ctx, "--namespace", r.namespace,
+		"exec", r.podName, "--", "find", seed.ContainerPath, "-type", "f", "-exec", "chmod", "a-w", "{}", "+")
+	if out, err := chmod.CombinedOutput(); err != nil {
+		r.driver.logger.Warn("sandbox: the files copied under %s stay writable — chmod in pod %s: %v\n%s", seed.ContainerPath, r.podName, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// streamDirIntoPod archives the CONTENTS of src on the host and extracts
+// them into podDst in the pod: one tar pipeline over kubectl exec, nothing
+// staged on either side.
+func (r *Run) streamDirIntoPod(ctx context.Context, src, podDst string) error {
 	// Archive the worktree CONTENTS by name, never the "." root entry. A "./"
 	// archive member makes the in-pod tar restore the source dir's mode+mtime
 	// onto podDst itself — the pod's /workspace emptyDir, which is root-owned

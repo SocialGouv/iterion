@@ -562,6 +562,14 @@ const (
 	//   - handed_back: map of variable → the bot's own value handed back in
 	//     its place, present only when one was
 	EventSandboxHostBindsDropped EventType = "sandbox_host_binds_dropped"
+	// EventSandboxAttachmentsCopied fires when a driver with no host
+	// filesystem receives the run's attachments as a directory to copy in
+	// (RunInfo.SeedDirs) instead of a bind it cannot honour: the path
+	// handed to nodes is then the container path, as on docker. Data:
+	//   - driver: the sandbox driver
+	//   - target: the container path the directory lands at
+	//   - attachments: []string of the attachment names copied
+	EventSandboxAttachmentsCopied EventType = "sandbox_attachments_copied"
 	// EventSandboxScratchBanked fires at the teardown of a sandbox whose
 	// ${PROJECT_SCRATCH_DIR} dies with it (kubernetes; docker without the
 	// host bind), when the run may resume (ADR-106). Data:

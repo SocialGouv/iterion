@@ -101,7 +101,11 @@ type PodManifestInput struct {
 	FriendlyName   string
 	Spec           sandbox.Spec
 	WorkspaceMount string // in-pod path; defaults to /workspace
-	ProxyEndpoint  string // optional HTTPS_PROXY URL
+	// SeedMounts are the container paths the driver will copy a host
+	// directory into after start (RunInfo.SeedDirs): each gets an emptyDir,
+	// so the copy lands on a volume the sandbox user can write.
+	SeedMounts    []string
+	ProxyEndpoint string // optional HTTPS_PROXY URL
 	// CASecretName, when non-empty, is the name of a Secret (created by
 	// the driver before the pod) holding the egress TLS-inspection CA
 	// under key caSecretKey. The manifest mounts it and points the
@@ -359,6 +363,15 @@ func BuildPodManifest(in PodManifestInput) ([]byte, error) {
 	for _, vm := range extraVolumeMounts {
 		volumeMounts = append(volumeMounts, vm)
 	}
+	seedVolumes := make([]any, 0, len(in.SeedMounts))
+	for i, target := range in.SeedMounts {
+		if !path.IsAbs(target) {
+			return nil, fmt.Errorf("kubernetes: seed mount %q: the container path must be absolute", target)
+		}
+		name := fmt.Sprintf("seed-%d", i)
+		volumeMounts = append(volumeMounts, map[string]any{"name": name, "mountPath": target})
+		seedVolumes = append(seedVolumes, map[string]any{"name": name, "emptyDir": map[string]any{}})
+	}
 	volumeMounts = append(volumeMounts, secretFileVolumeMounts...)
 	volumeMounts = append(volumeMounts, caVolumeMounts...)
 
@@ -371,6 +384,7 @@ func BuildPodManifest(in PodManifestInput) ([]byte, error) {
 	for _, v := range extraVolumes {
 		volumes = append(volumes, v)
 	}
+	volumes = append(volumes, seedVolumes...)
 	volumes = append(volumes, secretFileVolumes...)
 	volumes = append(volumes, caVolumes...)
 

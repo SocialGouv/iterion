@@ -381,11 +381,29 @@ not exist inside the container, and handing it to an agent produces a
 plausible-looking path that fails to open. The mount is read-only by
 construction: a malicious agent cannot corrupt the run store.
 
+A driver with no host filesystem (kubernetes) cannot bind the directory;
+it receives it as a **seed** instead (`sandbox.RunInfo.SeedDirs`): the
+pod declares an `emptyDir` at `/run/iterion/attachments`, the directory
+streams in with the workspace's tar pipeline after the pod is ready, and
+the copied files are made read-only (the volume itself stays writable —
+an `emptyDir` is root-owned and the sandbox user cannot change its
+mode). The run's stream says so (`sandbox_attachments_copied`), and
+`{{attachments.<name>.path}}` resolves to the same container path as on
+docker. A driver that can neither bind nor copy refuses a run that holds
+attachments (`ATTACHMENTS_UNDELIVERABLE`); a node that names a path the
+run cannot hand it fails before it runs (`ATTACHMENT_PATH_UNAVAILABLE`).
+
 ## Cloud notes
 
-- The runner pod reads the bytes through `blob.GetAttachment` (the S3
-  store) when a node opens an attachment by URL or path. No shared
-  filesystem is required.
+- The runner pod **materialises** the run's attachments before the
+  sandbox: the engine lists them on the Mongo store, streams each from
+  the blob backend into a directory of the run's own (`<name>/<filename>`,
+  read-only files) and removes it with the sandbox. That directory is
+  what the kubernetes driver seeds into the pod, and what the nodes open
+  by path when the run executes in the runner's own process; the
+  presigned URL (`{{attachments.<name>.url}}`) serves either way. A fetch
+  that fails stops the run typed (`ATTACHMENTS_UNDELIVERABLE`) instead of
+  running it without its files. No shared filesystem is required.
 - Upload limits are advisory at the SPA level; the server pod
   re-validates each upload with its compiled server configuration.
   Today the cloud command has no upload-limit surface in `pkg/config`

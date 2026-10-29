@@ -150,6 +150,7 @@ below as one that does not.
 | Pod Ready wait | kubernetes | 10 min | `ITERION_SANDBOX_K8S_POD_READY_TIMEOUT` |
 | Workspace copy (host tar → `kubectl exec` tar) | kubernetes | 15 min | `ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT` |
 | Workspace git fixup | kubernetes | 15 min (shares the copy budget) | `ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT` |
+| Seed copy (the run's attachments: host tar → `kubectl exec` tar, one phase per seed) | kubernetes | 15 min (shares the copy budget) | `ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT` |
 | `post_create` snippet | kubernetes | 30 min | `ITERION_SANDBOX_POST_CREATE_TIMEOUT` |
 | Image pull | docker | 10 min | `ITERION_SANDBOX_PULL_TIMEOUT` |
 | `post_create` snippet | docker | 30 min (the same knob as kubernetes) | `ITERION_SANDBOX_POST_CREATE_TIMEOUT` |
@@ -252,8 +253,16 @@ promise made on it must go with it. On the pod backend:
 |---|---|---|
 | `ITERION_ARTIFACT_FILES_DIR` (where an in-sandbox tool drops files for the artifact-files panel) | set, bind-mounted | **absent** — a tool falls back to a temp dir |
 | `ITERION_ENGINE_BIN` (the engine's own iterion binary, for a bot script that re-enters the CLI; never resolved from the workspace) | set — the container path the bind mount or the image bakes | set — the container path, via per-exec env, so no bind to drop |
-| Attachments path handed to nodes | the container path | **the run is refused** when it holds attachments — `ATTACHMENTS_UNDELIVERABLE`, said on the run's stream as `sandbox_skipped` with `refused: true` and the names — because no node could open them, and a run that goes on without what it was given is the worst of the three outcomes (#2086) |
+| Attachments path handed to nodes | the container path | the container path — the directory is **copied in** at start (`RunInfo.SeedDirs`, an `emptyDir` per seed, the workspace's tar pipeline; `sandbox_attachments_copied` on the run's stream), its files read-only. A driver that can neither bind nor copy **refuses the run** that holds attachments: `ATTACHMENTS_UNDELIVERABLE`, `sandbox_skipped` with `refused: true` and the names — a run that goes on without what it was given is the worst of the three outcomes (#2086) |
 | The bot's bundle `devbox.json` | provisioned from the mount | provisioned — the config is **carried** into the sandbox by the install prologue, since the bundle itself cannot be read from in-container (see [devbox provisioning](#best-effort-never-silent)) |
+
+The attachments are the one dropped bind that is carried, not withdrawn:
+a driver that cannot bind the directory but can copy it
+(`Capabilities.SupportsHostDirCopy`, kubernetes) receives it as a seed at
+the same container path, and on a store with no filesystem root (cloud)
+the engine first fetches the run's attachments into a directory of the
+run's own, which is what the sandbox binds or seeds — and what the nodes
+open when the run executes in the runner's own process.
 
 Every drop is a **run event**, `sandbox_host_binds_dropped` — the driver,
 the container targets the dropped binds served, the variables withdrawn

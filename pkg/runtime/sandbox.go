@@ -660,8 +660,24 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// open is a run that goes on without what it was given. A run that holds
 	// attachments is refused here — typed, on its own stream, before any
 	// node — when the driver can neither bind their directory nor copy it in.
+	var seeds []sandbox.SeedDir
 	if attachmentsDir == "" && !caps.SupportsHostBindMounts {
-		if names := attachmentNamesIn(p.AttachmentsHostDir); len(names) > 0 {
+		if names := attachmentNamesIn(p.AttachmentsHostDir); len(names) > 0 && caps.SupportsHostDirCopy {
+			// No bind, but a copy: the driver seeds the directory at the same
+			// container path a bind would have served, and the path handed to
+			// nodes is that path — a fact once Start lands it, like a bind.
+			target := p.AttachmentsContainerPath
+			if target == "" {
+				target = attachmentsContainerPath
+			}
+			seeds = append(seeds, sandbox.SeedDir{HostDir: p.AttachmentsHostDir, ContainerPath: target, ReadOnly: true})
+			attachmentsDir = target
+			_ = emitEvent(store.EventSandboxAttachmentsCopied, map[string]any{
+				"driver":      driver.Name(),
+				"target":      target,
+				"attachments": names,
+			})
+		} else if len(names) > 0 {
 			refusal := attachmentsUndeliverable(driver.Name(), names)
 			_ = emitEvent(store.EventSandboxSkipped, map[string]any{
 				"mode":        string(spec.Mode),
@@ -760,6 +776,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		ProxyCACert:        proxyCACert,
 		MaxDurationSeconds: workflowMaxDurationSeconds(p.Workflow),
 		HostGatewayAlias:   wantsBoardListener || wantsAskUserListener,
+		SeedDirs:           seeds,
 	}
 
 	prepared, err := driver.Prepare(ctx, *spec)
@@ -2119,8 +2136,27 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		}
 	}
 	var attachHost string
-	if e.store != nil && e.store.Root() != "" {
-		attachHost = filepath.Join(e.store.Root(), "runs", runID, "attachments")
+	localAttachmentsCleanup := noopCleanup
+	if e.store != nil {
+		if root := e.store.Root(); root != "" {
+			attachHost = filepath.Join(root, "runs", runID, "attachments")
+		} else {
+			// No root to bind from: the attachments the run holds are fetched
+			// into a directory of this run's own, which is what the sandbox
+			// binds or seeds — and what the nodes open when there is none.
+			dir, err := e.materializeAttachments(ctx, runID)
+			if err != nil {
+				return noopCleanup, err
+			}
+			if dir != "" {
+				attachHost = dir
+				e.attachmentsLocalDir = dir
+				localAttachmentsCleanup = func() {
+					e.attachmentsLocalDir = ""
+					_ = os.RemoveAll(dir)
+				}
+			}
+		}
 	}
 	// Pre-create the per-run artifact-files directory so the bind mount
 	// has a source to point at. Both the filesystem store and the Mongo
@@ -2179,6 +2215,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		EffectiveBackend:         e.backendResolver(),
 	})
 	if sbErr != nil {
+		localAttachmentsCleanup()
 		return noopCleanup, sbErr
 	}
 	// No sandbox → every command of this run executes directly on this
@@ -2264,6 +2301,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 	}
 	cleanup := func() {
 		hostDevboxCleanup()
+		localAttachmentsCleanup()
 		if active == nil {
 			return
 		}

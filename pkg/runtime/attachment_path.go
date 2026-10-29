@@ -145,8 +145,10 @@ func (e *Engine) predictAttachmentsDir() string {
 		return ""
 	}
 	// noop is "opted into a sandbox that isn't one" — it starts no
-	// container, so nothing is mounted anywhere.
-	if driver.Name() == "noop" || !driver.Capabilities().SupportsHostBindMounts {
+	// container, so nothing is mounted anywhere. A driver that binds and
+	// one that copies (kubernetes) land the directory at the same path.
+	caps := driver.Capabilities()
+	if driver.Name() == "noop" || !(caps.SupportsHostBindMounts || caps.SupportsHostDirCopy) {
 		return ""
 	}
 	return attachmentsContainerPath
@@ -165,46 +167,58 @@ func (e *Engine) predictAttachmentsDir() string {
 // it, gets ENOENT, and improvises — usually by inventing a substitute
 // file and reporting success.
 //
-// Returns "" when the store has no filesystem root (cloud/S3-backed
-// stores); those callers fall back to the presigned URL accessor, which
-// is why AttachmentInfo carries both.
+// On a store with no filesystem root (cloud) the bytes the engine
+// materialised for this run (materializeAttachments) stand in for the
+// store's directory: the container path when the sandbox mounted or copied
+// them, the local copy when the nodes run in this process, and "" — the
+// URL accessor alone — when neither exists, which is why AttachmentInfo
+// carries both.
+//
 // attachmentHostPath returns where the ITERION PROCESS can read an
 // attachment's bytes. Always a host path — never the container one
 // attachmentPath may hand the nodes — because the readers are in-process
-// (image inlining for a vision content block). Empty for a
-// non-filesystem store, whose consumers use the presigned URL instead.
+// (image inlining for a vision content block). On a store with no root it
+// is the run's materialised copy, or empty when there is none, and the
+// consumers use the presigned URL instead.
 func (e *Engine) attachmentHostPath(rec store.AttachmentRecord) string {
 	if e == nil || e.store == nil || rec.StorageRef == "" {
 		return ""
 	}
-	root := e.store.Root()
-	if root == "" {
-		return ""
+	if root := e.store.Root(); root != "" {
+		return filepath.Join(root, filepath.FromSlash(rec.StorageRef))
 	}
-	return filepath.Join(root, filepath.FromSlash(rec.StorageRef))
+	if e.attachmentsLocalDir != "" {
+		return filepath.Join(e.attachmentsLocalDir, rec.Name, attachmentFilename(rec))
+	}
+	return ""
+}
+
+// attachmentFilename is the file an attachment's bytes sit under — in the
+// store's directory, a mount, a copy or a seed alike: the original name,
+// or the attachment name when none was kept.
+func attachmentFilename(rec store.AttachmentRecord) string {
+	if rec.OriginalFilename != "" {
+		return rec.OriginalFilename
+	}
+	return rec.Name
 }
 
 func (e *Engine) attachmentPath(rec store.AttachmentRecord) string {
 	if e == nil || e.store == nil || rec.StorageRef == "" {
 		return ""
 	}
-	root := e.store.Root()
-	if root == "" {
-		// Non-FS store: nothing is bind-mounted and there is no host
-		// path to hand out. URL accessor only.
-		return ""
-	}
 	if dir := e.attachmentsDir(); dir != "" {
-		// The mount is the attachments DIRECTORY, so the in-container
-		// path mirrors the on-disk layout below it: <name>/<filename>.
+		// The mount — or the seed — is the attachments DIRECTORY, so the
+		// in-container path mirrors the layout below it: <name>/<filename>.
 		// Built with path (not filepath) — the container is POSIX even
 		// when the host is Windows.
-		name := rec.Name
-		file := rec.OriginalFilename
-		if file == "" {
-			file = name
-		}
-		return path.Join(dir, name, file)
+		return path.Join(dir, rec.Name, attachmentFilename(rec))
 	}
-	return filepath.Join(root, filepath.FromSlash(rec.StorageRef))
+	if root := e.store.Root(); root != "" {
+		return filepath.Join(root, filepath.FromSlash(rec.StorageRef))
+	}
+	if e.attachmentsLocalDir != "" {
+		return filepath.Join(e.attachmentsLocalDir, rec.Name, attachmentFilename(rec))
+	}
+	return ""
 }

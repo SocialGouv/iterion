@@ -221,6 +221,14 @@ type WorkspaceFileRefresher interface {
 	RefreshWorkspaceFile(ctx context.Context, relPath string, value []byte) error
 }
 
+// SeedDir is a host directory a driver copies into the container at Start
+// ([RunInfo.SeedDirs]).
+type SeedDir struct {
+	HostDir       string // the directory on the host the driver reads
+	ContainerPath string // where its contents land in the container (absolute)
+	ReadOnly      bool   // make the copied files read-only once landed
+}
+
 // Capabilities advertises a driver's supported feature set.
 //
 // The engine compares a [Spec] against capabilities at Prepare time:
@@ -248,6 +256,14 @@ type Capabilities struct {
 	// the worktree .git — on this; where it's false those binaries are
 	// instead baked into the sandbox image.
 	SupportsHostBindMounts bool
+
+	// SupportsHostDirCopy means the driver can seed a container directory
+	// from a host directory by COPYING it at Start ([RunInfo.SeedDirs]) —
+	// the way kubernetes streams the workspace into its pod. Where a
+	// driver has no host filesystem to bind, the runtime hands it the
+	// directories it would have bound (the run's attachments) as seeds
+	// instead; a driver with neither capability is refused those runs.
+	SupportsHostDirCopy bool
 
 	// SupportsNetworkPolicy means the driver enforces
 	// [Spec.Network] rules. False on noop and on cloud V1 (where
@@ -382,6 +398,15 @@ type RunInfo struct {
 	// the kubernetes default before that override, for bots that
 	// declare it explicitly.
 	WorkspacePath string
+
+	// SeedDirs are host directories the driver copies into the container
+	// at Start, after the workspace, each at its ContainerPath. The
+	// runtime fills it only for a driver that cannot bind-mount
+	// ([Capabilities.SupportsHostBindMounts] false) and can copy
+	// ([Capabilities.SupportsHostDirCopy] true); a driver that binds never
+	// receives a seed. A ReadOnly seed's files are made read-only once
+	// copied — the directory itself stays whatever the driver's volume is.
+	SeedDirs []SeedDir
 
 	// ProxyEndpoint, if non-empty, is the URL of the iterion network
 	// proxy (HTTPS_PROXY value) injected into the sandbox by drivers
