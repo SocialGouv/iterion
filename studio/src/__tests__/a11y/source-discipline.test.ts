@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { absoluteTargetHits } from "./_adminNestLinks";
+import { scanClickableRows, where } from "./_clickableRows";
 import { hit, isIntrinsic, jsxAncestral, jsxClassed } from "./_jsx";
 import { files, scan, scanWhole } from "./_scanner";
 
@@ -643,5 +644,105 @@ describe("source discipline", () => {
     expect(src).toContain(
       'aria-label={group.label && collapsed ? group.label : undefined}',
     );
+  });
+});
+
+// The clickable-row pair's own discipline, over the real tree (#2766). One
+// scan every call site crosses, rather than one strict axe entry per
+// surface: fourteen surfaces each prove themselves and let the fifteenth
+// call site drift. The rules the scan applies — and the shapes it must stay
+// quiet on — are exercised on purpose-written sources in
+// clickable-rows.test.ts; this is where they judge what the tree does.
+const ROWS = scanClickableRows();
+
+/**
+ * A descendant the scan cannot follow (an external package's component) is
+ * reported, never assumed harmless — and a decision about one lives here,
+ * with what was read to make it. A waiver that matches nothing FAILS: it is
+ * a live claim about a call site, and a dead one is how a list like this
+ * stops describing the tree it guards.
+ */
+const UNFOLLOWED: { path: string; detail: string; reason: string }[] = [
+  {
+    path: "/src/components/Canvas/AuxiliaryNode.tsx",
+    detail: "<Handle>",
+    reason:
+      "React Flow's connection handle renders a plain <div> with no role and no tabIndex (measured in @xyflow/react's bundle: data-handleid, the nodrag class, onMouseDown/onTouchStart/onClick) — a pointer-only connection affordance, outside the tab order, so it is no nested control; the call site passes no tabIndex of its own, which the scan would have read",
+  },
+  {
+    path: "/src/components/Canvas/DetailSubNode.tsx",
+    detail: "<Handle>",
+    reason:
+      "same React Flow handle, same reading: a div with no role and no tabIndex, and no tabIndex from the call site",
+  },
+];
+
+describe("clickable rows (#2766)", () => {
+  it("scans the rows it claims to scan, in both shapes", () => {
+    // Non-vacuity: an empty scan satisfies every rule below.
+    expect(ROWS.sites.length).toBeGreaterThanOrEqual(10);
+    const helpers = new Set(ROWS.sites.map((h) => h.helper));
+    expect([...helpers].sort()).toEqual(["clickableRowProps", "pointerRowProps"]);
+  });
+
+  it("leaves no row that IS a control holding another one", () => {
+    if (ROWS.nested.length) {
+      throw new Error(
+        `clickableRowProps rows holding a focusable descendant — a button inside a button (axe nested-interactive, WCAG 4.1.2). Such a row takes pointerRowProps, and its keyboard path becomes a real control inside it:\n${ROWS.nested
+          .map(where)
+          .join("\n")}`,
+      );
+    }
+    expect(ROWS.nested).toHaveLength(0);
+  });
+
+  it("leaves no pointer row mouse-only", () => {
+    if (ROWS.mouseOnly.length) {
+      throw new Error(
+        `pointerRowProps rows with nothing focusable inside: the row's click is the only way in, which is mouse-only (RGAA 7.3). Either the row holds a real control, or it takes clickableRowProps and becomes the control itself:\n${ROWS.mouseOnly
+          .map(where)
+          .join("\n")}`,
+      );
+    }
+    expect(ROWS.mouseOnly).toHaveLength(0);
+  });
+
+  it("leaves no row shadowing the props the helper spreads", () => {
+    if (ROWS.shadowed.length) {
+      throw new Error(
+        `rows writing their own role / tabIndex / onClick / onKeyDown beside the helper's spread: a later JSX prop WINS, so the helper's handler silently stops running (this is how one row opened on Enter and selected on click). Pass what the site needs THROUGH the helper — the activation carries the cursor position:\n${ROWS.shadowed
+          .map(where)
+          .join("\n")}`,
+      );
+    }
+    expect(ROWS.shadowed).toHaveLength(0);
+  });
+
+  it("decides every descendant it could not follow", () => {
+    const undecided = ROWS.unresolved.filter(
+      (h) => !UNFOLLOWED.some((w) => w.path === h.path && w.detail === h.detail),
+    );
+    if (undecided.length) {
+      throw new Error(
+        `rows holding a descendant this scan cannot follow — decide each one in UNFOLLOWED with what you read, or give the component a definition the scan can reach:\n${undecided
+          .map(where)
+          .join("\n")}`,
+      );
+    }
+    expect(undecided).toHaveLength(0);
+  });
+
+  it("carries no decision the tree no longer needs", () => {
+    const dead = UNFOLLOWED.filter(
+      (w) => !ROWS.unresolved.some((h) => h.path === w.path && h.detail === w.detail),
+    );
+    if (dead.length) {
+      throw new Error(
+        `entries matching nothing — the scan follows that descendant now, drop them:\n${dead
+          .map((w) => `  ${w.path}  ${w.detail}: ${w.reason}`)
+          .join("\n")}`,
+      );
+    }
+    expect(dead).toHaveLength(0);
   });
 });
