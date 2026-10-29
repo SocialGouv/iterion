@@ -229,6 +229,10 @@ func TestClawBackendExecute_GatewayRouteResolvesItsEndpointAtTheHead(t *testing.
 	t.Run("a private endpoint is refused before dispatch", func(t *testing.T) {
 		clearGatewayEnv(t)
 		t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "http://127.0.0.1:9/v1")
+		// The key with it: a gateway with none is refused by its own name
+		// (compatgw.ErrNoKey) before the endpoint is ever resolved, and this
+		// case is about the endpoint.
+		t.Setenv("OPENAI_COMPATIBLE_API_KEY", "gw-secret")
 		_, err := newBackend(t).Execute(context.Background(), task)
 		if err == nil {
 			t.Fatal("a private gateway endpoint executed with the escape hatch unset")
@@ -244,6 +248,7 @@ func TestClawBackendExecute_GatewayRouteResolvesItsEndpointAtTheHead(t *testing.
 	t.Run("allow-private lifts the refusal and dispatch proceeds", func(t *testing.T) {
 		clearGatewayEnv(t)
 		t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "http://127.0.0.1:9/v1")
+		t.Setenv("OPENAI_COMPATIBLE_API_KEY", "gw-secret")
 		t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
 		_, err := newBackend(t).Execute(context.Background(), task)
 		if err == nil || !strings.Contains(err.Error(), stubSentinel) {
@@ -259,7 +264,8 @@ func TestClawBackendExecute_GatewayRouteResolvesItsEndpointAtTheHead(t *testing.
 // OPENAI_COMPATIBLE_* pair. Mutations that must redden it:
 //   - delete the gateway block → the gateway subtests miss their entries;
 //   - make the block unconditional → the vendor subtest finds the endpoint;
-//   - drop the APIKey!= "" guard → the lifted subtest finds name=<empty>;
+//   - make the key's crossing conditional again → the lifted subtest misses
+//     it, and an absent name is the one the workspace `.env` fills;
 //   - drop the ALLOW_PRIVATE forwarding → the lifted subtest misses it.
 func TestForwardableProviderEnv_GatewayEnvRidesOnlyGatewayNodes(t *testing.T) {
 	// Keep the codex version probe off the process: no exec, no clock.
@@ -289,6 +295,7 @@ func TestForwardableProviderEnv_GatewayEnvRidesOnlyGatewayNodes(t *testing.T) {
 	t.Run("a lifted private endpoint tells the in-container factory", func(t *testing.T) {
 		clearGatewayEnv(t)
 		t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "http://127.0.0.1:9/v1")
+		t.Setenv("OPENAI_COMPATIBLE_API_KEY", "gw-secret")
 		t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
 		env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/m")
 		if err != nil {
@@ -297,8 +304,12 @@ func TestForwardableProviderEnv_GatewayEnvRidesOnlyGatewayNodes(t *testing.T) {
 		if env["ITERION_LLM_ENDPOINT_ALLOW_PRIVATE"] != "1" {
 			t.Errorf("the lifted escape hatch did not cross (=%q) — the in-container factory would re-derive and refuse it", env["ITERION_LLM_ENDPOINT_ALLOW_PRIVATE"])
 		}
-		if _, ok := env["OPENAI_COMPATIBLE_API_KEY"]; ok {
-			t.Error("an unset gateway key crossed as a name=<empty> pair — some providers read that as an attempted auth")
+		// Both halves cross for every gateway node: FromEnv refuses a
+		// gateway with no key, so there is no keyless crossing to leave the
+		// name ABSENT for — and absent is the one state the workspace `.env`
+		// of the repository under review gets to fill.
+		if got := env["OPENAI_COMPATIBLE_API_KEY"]; got != "gw-secret" {
+			t.Errorf("gateway key in the sandbox env = %q, want the operator's", got)
 		}
 	})
 

@@ -736,10 +736,11 @@ func detectProviders() []ProviderStatus {
 
 // detectGatewayProvider reports the LOCAL OpenAI-compatible gateway row
 // (#2646 — the cloud presence row is #2005's, claw-only and never pi): the
-// host serves `openai_compatible/<id>` when the operator's environment names
-// one (compatgw.FromEnv: the base URL is the presence signal, the key is
-// optional — a gateway may sit behind network auth alone). It is a provider
-// row, not a backend: claw is the backend that drives it.
+// host serves `openai_compatible/<id>` when the operator's own environment
+// names one AND authenticates it (compatgw.FromEnv, which refuses a keyless
+// gateway by name and a pair a project `.env` filled). Available says what a
+// node would get, so it answers no for a gateway no client can be built for.
+// It is a provider row, not a backend: claw is the backend that drives it.
 //
 // No SuggestedModel: the model id is the deployment's own naming, so nothing
 // here can guess one — and an empty suggestion is what keeps the row out of

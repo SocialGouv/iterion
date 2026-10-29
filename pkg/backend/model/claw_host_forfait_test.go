@@ -810,6 +810,9 @@ func TestOnlyAnOpenAINodeGetsTheHostForfait(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-fixture")
 	t.Setenv("XAI_API_KEY", "xai-fixture")
 	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "http://127.0.0.1:1/v1")
+	// The gateway's key with its endpoint: the pair is the configuration,
+	// and a gateway node's crossing refuses a gateway with no key by name.
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "gw-fixture")
 	t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
 	for _, model := range []string{"anthropic/claude-haiku-4-5", "xai/grok-4", "openai_compatible/qwen", "openaix/gpt-6"} {
 		t.Run(model, func(t *testing.T) {

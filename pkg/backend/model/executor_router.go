@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
@@ -372,11 +372,27 @@ func providerOptsForNode(effort string) map[string]any {
 	return map[string]any{"reasoning_effort": effort}
 }
 
+// The deployment-wide compaction defaults, the env layer of the cascade
+// below. Named constants because the provenance question is asked about
+// them: a workflow that sets neither falls through to here, so these two
+// decide when a node's context is compacted and how much of the recent turn
+// survives it.
+const (
+	EnvCompactThresholdRatio = "ITERION_CLAW_COMPACT_THRESHOLD_RATIO"
+	EnvCompactPreserveRecent = "ITERION_CLAW_COMPACT_PRESERVE_RECENT"
+)
+
 // resolveCompaction returns the effective compaction threshold ratio and
 // preserve_recent count for a node, walking the cascade
 // node → workflow → env → built-in (0 falls through). The backend treats 0
 // as "use default", so callers can pass the result straight through to
 // delegate.Task.
+//
+// The env layer is the INHERITED environment: a value a project `.env`
+// planted is read as nothing said, and the cascade falls through to the
+// built-in. The repository a run is reviewing would otherwise choose the
+// window its reviewer compacts at — the same effect class as the window its
+// catalog answers with, decided in the same words (internal/envtrust).
 func resolveCompaction(node, workflow *ir.Compaction) (ratio float64, preserveRecent int) {
 	if node != nil {
 		ratio = node.Threshold
@@ -391,14 +407,14 @@ func resolveCompaction(node, workflow *ir.Compaction) (ratio float64, preserveRe
 		}
 	}
 	if ratio == 0 {
-		if env := os.Getenv("ITERION_CLAW_COMPACT_THRESHOLD_RATIO"); env != "" {
+		if env := envtrust.Inherited(EnvCompactThresholdRatio); env != "" {
 			if v, err := strconv.ParseFloat(env, 64); err == nil && v > 0 && v <= 1 {
 				ratio = v
 			}
 		}
 	}
 	if preserveRecent == 0 {
-		if env := os.Getenv("ITERION_CLAW_COMPACT_PRESERVE_RECENT"); env != "" {
+		if env := envtrust.Inherited(EnvCompactPreserveRecent); env != "" {
 			if v, err := strconv.Atoi(env); err == nil && v > 0 {
 				preserveRecent = v
 			}

@@ -66,6 +66,11 @@ func gatewayPinChild(t *testing.T) {
 		var d net.Dialer
 		return d.DialContext(ctx, "udp", dns.addr())
 	}}
+	// A configured gateway is the PAIR: the pin reads it through
+	// compatgw.FromEnv, which refuses a gateway with no key by name. Set
+	// once for every case below — what is pinned is the host, and nothing
+	// here authenticates anything.
+	t.Setenv(compatgw.APIKeyEnv, "gw-pin-fixture")
 	drv, err := noop.New()
 	if err != nil {
 		t.Fatal(err)

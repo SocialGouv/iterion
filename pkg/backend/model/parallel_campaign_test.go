@@ -113,6 +113,7 @@ var serialFamily = map[string]string{
 	"openai_stream_usage_test.go":              "SetCredentialsLookup, Setenv",
 	"override_fold_test.go":                    "Setenv",
 	"permission_recovery_rung_test.go":         "Setenv",
+	"planted_endpoint_class_test.go":           "Setenv",
 	"process_env_policy_test.go":               "Setenv",
 	"provider_allowlist_test.go":               "Setenv",
 	"provider_hint_test.go":                    "Setenv",

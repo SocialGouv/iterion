@@ -143,6 +143,11 @@ var launcherOnly = map[string]string{
 // pair it names alone: the function that reads, and the reader it calls.
 var dynamicEnvReads = map[[2]string]string{
 	{"forwardableProviderEnv", "os.Getenv"}: "the forwarding loop itself, over providerCredentialEnvVars",
+	// The same loop, asking provenance on the routing subset: the name is
+	// the list's, and what crosses is the value the HOST inherited — a
+	// routing name this host's project `.env` planted would spend the run's
+	// own credential at a host the repository under review chose.
+	{"forwardableProviderEnv", "internal/envtrust.Inherited"}: "the same forwarding loop, over providerRoutingEnvVars",
 	// The `${NAME}` references a tool command spells are read through the
 	// lookup its reader is handed, so they are classified where that lookup
 	// is passed: templateExpanders' ToolBodyEnv / expandBracedEnvSteps.

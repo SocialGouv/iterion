@@ -1366,9 +1366,21 @@ never merged across sources, and an answer carries its provenance:
 > `ITERION_MODEL_SPECS_REFRESH`, and `ITERION_HOME`, which roots the cache
 > file): `_CACHE` names the FILE the live table is read back from, which is
 > the table every model — vendor ids included — is then resolved from. And
-> for the gateway's credential: a planted `OPENAI_COMPATIBLE_API_KEY` is
-> dropped, and so is an inherited key when a `.env` planted the BASE URL,
-> since the pair is one credential presentation.
+> for the gateway: a planted half of the `OPENAI_COMPATIBLE_*` pair refuses
+> the gateway by name instead of configuring it, since the endpoint and the
+> key presented there are one credential presentation.
+>
+> One class is refused outright rather than read as nothing said: an
+> endpoint. A `.env` line naming a `<VENDOR>_BASE_URL` or
+> `AZURE_OPENAI_ENDPOINT` is **not applied at all** while the key presented
+> there is one iterion inherited — the loader says which variable and which
+> credential, and the remedy is to export the endpoint too. The question is
+> asked at the plant, not at each read, because the reads are not all
+> iterion's: the vendored claw provider packages read these names
+> themselves, and every child process inherits a planted value. With no
+> inherited credential for it, the line still applies: a `.env` naming both
+> halves is a project configuring its own gateway, and a key next to a
+> project still reaches the published endpoint it was always spent at.
 
 The snapshot is regenerated with `task models:snapshot` (the committed diff
 is the review; it carries the source digest and an as-of date, and an answer
@@ -1418,22 +1430,25 @@ the operator's there would be laundered into the record the host then crosses
 as its own answer, carrying no mark the container could refuse. A repository
 naming the live tier's cache FILE is that same laundering one step out: every
 exact lookup is then answered from a file in the tree under review, under the
-provenance `catalog-live`. The
-gateway's API key is read the same way: a planted
-`OPENAI_COMPATIBLE_API_KEY` is dropped rather than presented, since a
-keyless gateway is a supported configuration and the crossing leaves the
-name absent for one — the repository would otherwise select which virtual
-key, hence which budget and tenant, its reviewer's calls are billed to. A
-deployment therefore keeps that key in the environment it exports, not in a
-project `.env`: planted, it is read as no key at all, and the gateway
-answers whatever it answers to an unauthenticated call. The endpoint is kept
-as given — a project `.env` naming a gateway is a supported laptop
-configuration, the crossing carries the host's for every gateway node, and
-what it dials is guarded whoever named it — but a planted endpoint is not
-presented an inherited key either: `.env` loading stops at the first file
-found walking up, so an operator who exports the key while the endpoint comes
-from the repository under review would otherwise have their own gateway
-credential sent to a host that repository chose.
+provenance `catalog-live`.
+
+The gateway's pair is asked the same question, and answered by a REFUSAL
+rather than by a degraded config: a planted `OPENAI_COMPATIBLE_API_KEY` or
+`OPENAI_COMPATIBLE_BASE_URL` refuses the gateway, naming the variable and
+the file. A planted key would select which virtual key — hence which budget
+and tenant — its reviewer's calls are billed to; a planted endpoint would
+send the operator's own key to a host that repository chose, since `.env`
+loading stops at the first file found walking up and an operator may well
+export the key while no endpoint is set yet. Refused rather than
+half-applied because the degradation does not exist: claw's OpenAI provider,
+the one client the gateway factory builds, refuses an empty key outright, so
+dropping the key bought a dead node whose message named `OPENAI_API_KEY` and
+Codex's `auth.json` — neither of which serves a gateway. For the same
+reason a gateway the environment names but authenticates with nothing is
+refused on the launch seam, by its own variable's name, rather than at
+dispatch. A deployment therefore keeps BOTH names in the environment it
+exports; a laptop whose own `.env` carries both is configuring its own
+gateway, which is what that file is for.
 
 > **The host environment is the channel for these names.** The crossing
 > writes all three unconditionally, and `docker exec --env` / `env NAME=`

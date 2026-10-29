@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
@@ -103,13 +104,16 @@ func TestAWorkspaceDotenvCannotPlantTheGatewayCatalogSources(t *testing.T) {
 	}
 }
 
-// The adjacent name in the same crossing: a keyless operator gateway is a
-// supported configuration, so the host crosses no key and the `.env` of the
-// repository under review fills it — and that value is the credential the
-// in-container registry's gateway factory presents on every call
-// (registry.go, compatgw.FromEnv(os.Getenv)). The endpoint stays the host's
-// (crossed always), so what the repository would be choosing is which
-// virtual key its reviewer's calls are billed to.
+// The adjacent name in the same crossing: the `.env` of the repository under
+// review fills a gateway key the host has none for — and that value is the
+// credential the in-container registry's gateway factory presents on every
+// call (registry.go, compatgw.FromEnv(os.Getenv)), so what the repository
+// would be choosing is which virtual key, hence which budget and tenant, its
+// reviewer's calls are billed to.
+//
+// Refused, not dropped: a Config with no key builds no client (claw's OpenAI
+// provider refuses one), so the gateway is named in the refusal instead of
+// dying at dispatch on a message about OPENAI_API_KEY and Codex's auth.json.
 func TestAWorkspaceDotenvCannotPlantTheGatewayApiKey(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.WriteFile(filepath.Join(repo, ".env"),
@@ -130,14 +134,21 @@ func TestAWorkspaceDotenvCannotPlantTheGatewayApiKey(t *testing.T) {
 	t.Chdir(repo)
 	loadDotEnvFromCwd()
 
+	// The value is set, as a `.env` always sets what it fills — only its
+	// authority is in question.
+	if got := os.Getenv(compatgw.APIKeyEnv); got == "" {
+		t.Fatal("the .env did not set the key at all: the rest of this case proves nothing")
+	}
 	cfg, err := compatgw.FromEnv(os.Getenv)
-	if err != nil {
-		t.Fatalf("FromEnv: %v", err)
+	if err == nil {
+		t.Fatalf("the repository under review chose the credential its reviewer's gateway calls present: base=%q key=%q", cfg.BaseURL, cfg.APIKey)
 	}
-	if cfg.APIKey != "" {
-		t.Fatalf("the repository under review chose the credential its reviewer's gateway calls present: %q", cfg.APIKey)
+	for _, want := range []string{compatgw.APIKeyEnv, "project `.env`"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not say %q: %v", want, err)
+		}
 	}
-	if cfg.BaseURL != "https://198.51.100.7" {
-		t.Fatalf("BaseURL = %q, want the host's: the refusal must cost the endpoint nothing", cfg.BaseURL)
+	if strings.Contains(err.Error(), "sk-chosen-by-the-repo-under-review") {
+		t.Error("the refusal printed the credential")
 	}
 }

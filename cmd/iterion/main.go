@@ -35,8 +35,12 @@ var rootCmd = &cobra.Command{
 		"every variable left unset: a convenience for API keys next to a project. It does not\n" +
 		"CONFIGURE iterion — a name a `.env` filled speaks for that project, not for the\n" +
 		"deployment, so it decides nothing an operator answers for: where plugins are\n" +
-		"installed, which table prices a model and where that table is cached, which\n" +
-		"credential a gateway is presented. Export those in the environment iterion runs with.",
+		"installed, which table prices a model and where that table is cached, when a node\n" +
+		"compacts, and which credential a gateway is presented. An endpoint it names\n" +
+		"(a <VENDOR>_BASE_URL, AZURE_OPENAI_ENDPOINT) is not applied at all while the key\n" +
+		"presented there is one iterion inherited — it would pick the host that key is spent\n" +
+		"on — and the refusal names the variable. Export those in the environment iterion\n" +
+		"runs with.",
 	SilenceUsage:  true,
 	SilenceErrors: true,
 }
@@ -71,10 +75,12 @@ func main() {
 		// every key it sets (internal/envtrust), and the reads that
 		// need the operator's own answer — the plugin home, the model
 		// table that prices a run and the cache file it is read from,
-		// the gateway catalog and the credential it presents — resolve
-		// the INHERITED value and take a planted one as nothing said.
-		// The file sits in a repository, including the one a run is
-		// reviewing.
+		// the window a node compacts at, the gateway catalog and the
+		// credential it presents — resolve the INHERITED value and take
+		// a planted one as nothing said. One name is refused outright
+		// rather than marked: an endpoint whose credential the operator
+		// exported, since a key once presented is spent. The file sits
+		// in a repository, including the one a run is reviewing.
 		if shouldLoadWorkspaceDotEnv() {
 			loadDotEnvFromCwd()
 		}
@@ -348,6 +354,20 @@ func applyDotEnv(path string) bool {
 			continue
 		}
 		if _, exists := os.LookupEnv(key); !exists {
+			// An endpoint this file names is NOT applied while the
+			// credential presented there is the operator's own: the
+			// repository would otherwise pick the host their key is spent
+			// on, and a key already presented cannot be taken back. Refused
+			// at the plant because the reads are not all iterion's — claw's
+			// vendored provider packages read these names themselves, and
+			// every child inherits a planted value — so the one name that
+			// closes them all is the one never set
+			// (internal/envtrust.InheritedCredentialsAt).
+			if redirected := envtrust.InheritedCredentialsAt(key); len(redirected) > 0 {
+				iterlog.NewFromEnv(os.Stderr).Warn("%s comes from a project `.env`, so it is not applied: %s is the operator's own and would be presented to the host that file names — export %s in the environment iterion runs with to choose the wire a credential is spent on",
+					key, strings.Join(redirected, " / "), key)
+				continue
+			}
 			_ = os.Setenv(key, val)
 			// A `.env` sits in a repository — including one under review — so
 			// what it plants must not later speak for the operator. The value

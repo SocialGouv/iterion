@@ -2376,6 +2376,19 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	var refusedHeaders []string
 	for _, name := range providerCredentialEnvVars {
 		v := os.Getenv(name)
+		if slices.Contains(providerRoutingEnvVars, name) {
+			// A routing name decides WHERE the credential crossing beside it
+			// is spent, and the credential that crosses here is the RUN's —
+			// a tenant's BYOK key, a lent subscription — not only the
+			// ambient one. So the value that crosses is the one the HOST
+			// inherited: a value this host's own project `.env` planted would
+			// send the run's credential to a host the repository under
+			// review chose, which is the laundering the explicit-empty rule
+			// below exists against, one hop out. A planted value therefore
+			// crosses as that same explicit empty, which every registry
+			// reads as "use the published default".
+			v = envtrust.Inherited(name)
+		}
 		if headerBlockEnvName(name) {
 			// A header block is applied LAST by the CLI, over the headers its
 			// own auth set (claw identity.go Identity.Apply), for every
@@ -2439,9 +2452,11 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 			return nil, nil, err
 		}
 		env[compatgw.BaseURLEnv] = cfg.BaseURL
-		if cfg.APIKey != "" {
-			env[compatgw.APIKeyEnv] = cfg.APIKey
-		}
+		// Both halves, always: FromEnv above refuses a gateway with no key
+		// rather than returning one, so there is no keyless crossing left to
+		// leave the name absent for — and absent is the one state the
+		// workspace `.env` of the repository under review gets to fill.
+		env[compatgw.APIKeyEnv] = cfg.APIKey
 		if allowPrivate {
 			env["ITERION_LLM_ENDPOINT_ALLOW_PRIVATE"] = "1"
 		}

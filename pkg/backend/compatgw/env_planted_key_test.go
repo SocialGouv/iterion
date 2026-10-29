@@ -1,73 +1,26 @@
 package compatgw
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+)
 
-// A keyless operator gateway is a supported configuration — the base URL is
-// the presence signal, and a gateway may sit behind network auth alone — so
-// the host crosses no key and the name is ABSENT in the container. The
-// in-container runner auto-loads the `.env` of the repository under review,
-// which fills exactly the absent names, and this key is the credential the
-// gateway factory presents on every call: on a LiteLLM-style gateway it
-// picks which virtual key — hence which budget, model allowlist and tenant
-// — its reviewer's calls are billed to. A planted key is therefore not the
-// operator's: it is dropped, and the gateway is dialled with no auth.
-//
-// Dropped, never replaced by an explicit empty: an empty key reads as "auth
-// attempted, invalid" to some gateways, where no key at all reads as "no
-// auth".
-func TestFromEnv_APlantedApiKeyIsNotTheOperators(t *testing.T) {
-	const (
-		base    = "https://198.51.100.7"
-		repoKey = "sk-chosen-by-the-repo-under-review"
-	)
-	get := mapGet(map[string]string{BaseURLEnv: base, APIKeyEnv: repoKey})
-
-	// Inherited, the key authenticates as it always did.
-	inheritEnv(t)
-	cfg, err := FromEnv(get)
-	if err != nil {
-		t.Fatalf("FromEnv: %v", err)
-	}
-	if cfg.APIKey != repoKey {
-		t.Fatalf("an inherited key read %q, want the operator's: the deployment lost its gateway auth", cfg.APIKey)
-	}
-
-	// The same bytes, planted by a workspace `.env`.
-	plantEnv(t, APIKeyEnv)
-	cfg, err = FromEnv(get)
-	if err != nil {
-		t.Fatalf("FromEnv with a planted key: %v", err)
-	}
-	if cfg.APIKey != "" {
-		t.Fatalf("the repository under review chose the credential its reviewer's gateway calls present: %q", cfg.APIKey)
-	}
-	// The endpoint is the operator's own — crossed by the host for every
-	// gateway node — and the gateway stays configured: no auth is a
-	// gateway state, not a refusal.
-	if cfg.BaseURL != base {
-		t.Fatalf("BaseURL = %q, want %q: the refusal must cost the endpoint nothing", cfg.BaseURL, base)
-	}
-}
-
-// The other half of the same presentation: the ENDPOINT planted, the key
-// exported. `.env` loading stops at the first file found walking up, so a
-// repository's `.env` shadows a deployment one higher in the tree; an
-// operator who exports the gateway key and has no endpoint set yet would
-// have that credential presented to the endpoint the repository under review
-// named — the key leaving the deployment, to a host of the repository's
-// choosing.
-//
-// The endpoint itself is kept: a project `.env` naming a gateway is a
-// supported laptop configuration, and what it dials is guarded at dial time
-// whoever named it. What it does not get is the key.
-func TestFromEnv_APlantedBaseURLIsNotPresentedTheOperatorsKey(t *testing.T) {
+// The gateway pair is the environment's own or it is refused. Both halves of
+// the presentation are checked, and so is the WORDING: a refusal that does
+// not name the variable and the file leaves the operator reading claw's
+// "provide either OPENAI_API_KEY or a (OAuthToken + OpenAIChatGPTAccountID)
+// pair sourced from Codex CLI auth.json", two channels that serve no gateway.
+func TestFromEnv_APlantedHalfRefusesTheGatewayByName(t *testing.T) {
 	const (
 		repoBase    = "https://gw.attacker.example"
 		operatorKey = "sk-operator-real-key"
 	)
 	get := mapGet(map[string]string{BaseURLEnv: repoBase, APIKeyEnv: operatorKey})
 
-	// Inherited, the pair authenticates as it always did.
+	// The control FIRST: inherited, the pair authenticates as it always did.
+	// Without this the narrowing could have cost every deployment its
+	// gateway and the cases below would still pass.
 	inheritEnv(t)
 	cfg, err := FromEnv(get)
 	if err != nil {
@@ -77,16 +30,58 @@ func TestFromEnv_APlantedBaseURLIsNotPresentedTheOperatorsKey(t *testing.T) {
 		t.Fatalf("an inherited pair read %q/%q: the deployment lost its gateway", cfg.BaseURL, cfg.APIKey)
 	}
 
-	// The endpoint, and only the endpoint, planted by a workspace `.env`.
-	plantEnv(t, BaseURLEnv)
-	cfg, err = FromEnv(get)
-	if err != nil {
-		t.Fatalf("FromEnv with a planted base URL: %v", err)
+	for _, planted := range []string{BaseURLEnv, APIKeyEnv} {
+		t.Run(planted, func(t *testing.T) {
+			// A `.env` fills a name the operator left unset; `.env` loading
+			// stops at the first file found walking up, so a repository's
+			// file shadows a deployment one higher in the tree. Planting the
+			// ENDPOINT would present the operator's own key to a host that
+			// repository chose; planting the KEY would bill its reviewer's
+			// calls to the virtual key it chose.
+			plantEnv(t, planted)
+			cfg, err := FromEnv(get)
+			if err == nil {
+				t.Fatalf("a planted %s configured the gateway: base=%q key=%q", planted, cfg.BaseURL, cfg.APIKey)
+			}
+			if cfg != (Config{}) {
+				t.Errorf("the refusal came back with a config too: %+v", cfg)
+			}
+			for _, want := range []string{planted, "project `.env`", "export it in the environment the deployment runs with"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal does not say %q, so the operator cannot act on it: %v", want, err)
+				}
+			}
+			if strings.Contains(err.Error(), operatorKey) {
+				t.Error("the refusal printed the credential")
+			}
+		})
 	}
-	if cfg.APIKey != "" {
-		t.Fatalf("the operator's gateway credential %q was presented to the endpoint the repository under review chose (%q)", cfg.APIKey, cfg.BaseURL)
+}
+
+// A gateway the environment names but authenticates with nothing is refused
+// HERE, by the name the operator set. The degradation this replaces did not
+// exist: claw's OpenAI provider — the one client this package builds —
+// refuses an empty key unconditionally, so a Config carrying one bought a
+// dead node whose message named neither this gateway nor the file that
+// caused it. NewClient is driven in the same case, so the premise is read
+// from the producer rather than asserted.
+func TestFromEnv_AGatewayWithNoKeyIsRefusedByItsOwnName(t *testing.T) {
+	inheritEnv(t)
+	const base = "https://198.51.100.7"
+	_, err := FromEnv(mapGet(map[string]string{BaseURLEnv: base}))
+	if !errors.Is(err, ErrNoKey) {
+		t.Fatalf("a keyless gateway = %v, want ErrNoKey", err)
 	}
-	if cfg.BaseURL != repoBase {
-		t.Fatalf("BaseURL = %q, want %q: a project .env naming a gateway stays a configuration", cfg.BaseURL, repoBase)
+	if !strings.Contains(err.Error(), APIKeyEnv) {
+		t.Errorf("the refusal does not name %s: %v", APIKeyEnv, err)
+	}
+
+	// The producer, on the config FromEnv refuses to return.
+	if _, err := NewClient(Config{BaseURL: base}, "gw/m", false); err == nil {
+		t.Fatal("claw's provider accepted an empty key: a keyless gateway builds a client after all, and ErrNoKey is now a limit of iterion's own making")
+	}
+	// And the control: the same endpoint with a key does build.
+	if _, err := NewClient(Config{BaseURL: base, APIKey: "sk-real"}, "gw/m", false); err != nil {
+		t.Fatalf("NewClient with a key: %v", err)
 	}
 }

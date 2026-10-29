@@ -392,10 +392,12 @@ func TestDetect_MoonshotProvider(t *testing.T) {
 }
 
 // The local OpenAI-compatible gateway row (#2646): the host serves
-// `openai_compatible/<id>` when the operator's environment names one — the
-// base URL is the presence signal, the key optional (network-authenticated
-// gateways exist). The row is what lets `iterion models` answer a gateway
-// spec instead of reporting "no credential probe".
+// `openai_compatible/<id>` when the operator's own environment names one AND
+// authenticates it. Available says what a NODE would get, so the row answers
+// no for a gateway no client can be built for — claw's OpenAI provider
+// refuses an empty key outright (compatgw.ErrNoKey). The row is what lets
+// `iterion models` answer a gateway spec instead of reporting "no credential
+// probe".
 func TestDetect_GatewayProvider(t *testing.T) {
 	find := func(t *testing.T, r Report) ProviderStatus {
 		t.Helper()
@@ -416,16 +418,33 @@ func TestDetect_GatewayProvider(t *testing.T) {
 		}
 	})
 
-	t.Run("the base URL alone is enough", func(t *testing.T) {
+	// The base URL alone names a gateway and funds no call: the row says so
+	// rather than reporting a provider whose every node would die at
+	// dispatch, and the SOURCE still names the variable that is set, so
+	// `iterion models` can tell a half-configured gateway from none.
+	t.Run("the base URL alone is not enough", func(t *testing.T) {
 		isolateEnv(t)
 		t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://gateway.example.com")
-		r := Detect(context.Background())
-		p := find(t, r)
-		if !p.Available {
-			t.Fatal("gateway must be available once OPENAI_COMPATIBLE_BASE_URL is set")
+		p := find(t, Detect(context.Background()))
+		if p.Available {
+			t.Errorf("gateway reported available with no key: %+v — every node on it is refused by claw's provider", p)
 		}
 		if p.Source != "OPENAI_COMPATIBLE_BASE_URL" {
 			t.Errorf("gateway source = %q, want OPENAI_COMPATIBLE_BASE_URL", p.Source)
+		}
+	})
+
+	t.Run("the pair is enough, and the key names the credential", func(t *testing.T) {
+		isolateEnv(t)
+		t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://gateway.example.com")
+		t.Setenv("OPENAI_COMPATIBLE_API_KEY", "gw-test-secret")
+		r := Detect(context.Background())
+		p := find(t, r)
+		if !p.Available || p.Source != "OPENAI_COMPATIBLE_API_KEY" {
+			t.Errorf("gateway = %+v, want available with source OPENAI_COMPATIBLE_API_KEY", p)
+		}
+		if strings.Contains(p.Source, "gw-test-secret") {
+			t.Fatal("detect report leaks OPENAI_COMPATIBLE_API_KEY value")
 		}
 		if p.SuggestedModel != "" {
 			t.Errorf("gateway suggested model = %q, want none — the model id is the deployment's naming", p.SuggestedModel)
@@ -437,21 +456,8 @@ func TestDetect_GatewayProvider(t *testing.T) {
 				claw = b
 			}
 		}
-		if !claw.Available || !slices.Contains(claw.Sources, "OPENAI_COMPATIBLE_BASE_URL") {
+		if !claw.Available || !slices.Contains(claw.Sources, "OPENAI_COMPATIBLE_API_KEY") {
 			t.Errorf("claw = %+v, want available with the gateway source", claw)
-		}
-	})
-
-	t.Run("the key names the credential when set", func(t *testing.T) {
-		isolateEnv(t)
-		t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://gateway.example.com")
-		t.Setenv("OPENAI_COMPATIBLE_API_KEY", "gw-test-secret")
-		p := find(t, Detect(context.Background()))
-		if !p.Available || p.Source != "OPENAI_COMPATIBLE_API_KEY" {
-			t.Errorf("gateway = %+v, want available with source OPENAI_COMPATIBLE_API_KEY", p)
-		}
-		if strings.Contains(p.Source, "gw-test-secret") {
-			t.Fatal("detect report leaks OPENAI_COMPATIBLE_API_KEY value")
 		}
 	})
 

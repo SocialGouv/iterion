@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -114,26 +115,40 @@ func TestForwardableProviderEnv_DoesNotLaunderAPlantedTableIntoTheCrossedRecord(
 	}
 }
 
-// A keyless operator gateway is a supported configuration — the base URL is
-// the presence signal — and the crossing leaves the key name ABSENT for
-// one, which is the state the workspace `.env` of the repository under
-// review fills. An explicit empty is deliberately NOT the answer here: an
-// empty key reads as "auth attempted, invalid" to some gateways where no
-// key at all reads as "no auth", so the refusal lives at the in-container
-// read instead (compatgw.FromEnv drops a planted key).
-func TestForwardableProviderEnv_AKeylessGatewayCrossesNoKeyAtAll(t *testing.T) {
+// A gateway the host names but authenticates with nothing crosses NOTHING:
+// the crossing refuses it by name, where leaving the key name absent would
+// have handed the state the workspace `.env` of the repository under review
+// fills — and for a credential, filling it is choosing which virtual key the
+// reviewer's calls are billed to.
+//
+// There is no keyless gateway to serve: claw's OpenAI provider, the one
+// client the gateway factory builds, refuses an empty key outright, so the
+// absent name bought nothing on either side of the boundary
+// (compatgw.ErrNoKey states it, TestFromEnv_AGatewayWithNoKeyIsRefusedByItsOwnName
+// drives the producer).
+func TestForwardableProviderEnv_AGatewayWithNoKeyCrossesNothing(t *testing.T) {
 	hostGatewayEnv(t)
 	t.Setenv(compatgw.APIKeyEnv, "")
 
 	env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/no-table-has-this-id")
-	if err != nil {
-		t.Fatalf("forwardableProviderEnv: %v", err)
+	if err == nil {
+		t.Fatalf("a gateway with no key crossed: %s=%q, %s=%q", compatgw.BaseURLEnv, env[compatgw.BaseURLEnv], compatgw.APIKeyEnv, env[compatgw.APIKeyEnv])
+	}
+	if !errors.Is(err, compatgw.ErrNoKey) {
+		t.Fatalf("the crossing refused with %v, want ErrNoKey — the refusal has to name the variable the operator sets", err)
 	}
 	if v, ok := env[compatgw.APIKeyEnv]; ok {
-		t.Fatalf("%s crossed as %q for a keyless gateway, want the name absent", compatgw.APIKeyEnv, v)
+		t.Errorf("%s crossed anyway, as %q", compatgw.APIKeyEnv, v)
 	}
-	if got := env[compatgw.BaseURLEnv]; got == "" {
-		t.Fatal("a keyless gateway crossed no endpoint either: the base URL is the presence signal")
+
+	// The control, same seam: the pair the operator exported does cross.
+	hostGatewayEnv(t)
+	env, _, err = forwardableProviderEnv(context.Background(), "openai_compatible/no-table-has-this-id")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv with the pair: %v", err)
+	}
+	if env[compatgw.BaseURLEnv] == "" || env[compatgw.APIKeyEnv] == "" {
+		t.Fatalf("the operator's own gateway did not cross: %s=%q %s=%q", compatgw.BaseURLEnv, env[compatgw.BaseURLEnv], compatgw.APIKeyEnv, env[compatgw.APIKeyEnv])
 	}
 }
 

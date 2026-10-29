@@ -18,17 +18,23 @@ func TestFromEnv(t *testing.T) {
 	if !strings.Contains(ErrNotConfigured.Error(), BaseURLEnv) {
 		t.Error("the refusal must name the variable to set")
 	}
-	cfg, err := FromEnv(func(name string) string {
-		if name == BaseURLEnv {
-			return "https://gw.example.com\n"
-		}
-		return ""
-	})
-	if err != nil {
-		t.Fatalf("a base URL with no key: %v", err)
+	// A base URL with no key is ErrNoKey, not a keyless configuration: the
+	// client builder refuses an empty key whatever this returns
+	// (TestFromEnv_AGatewayWithNoKeyIsRefusedByItsOwnName drives it), so the
+	// refusal belongs here, where it can still name the variable the
+	// operator set.
+	if _, err := FromEnv(mapGet(map[string]string{BaseURLEnv: "https://gw.example.com\n"})); !errors.Is(err, ErrNoKey) {
+		t.Errorf("a base URL with no key = %v, want ErrNoKey", err)
 	}
-	if cfg.BaseURL != "https://gw.example.com" || cfg.APIKey != "" {
-		t.Errorf("config = %+v, want the trimmed URL and no key", cfg)
+	cfg, err := FromEnv(mapGet(map[string]string{
+		BaseURLEnv: "https://gw.example.com\n",
+		APIKeyEnv:  " sk-real\n",
+	}))
+	if err != nil {
+		t.Fatalf("the pair: %v", err)
+	}
+	if cfg.BaseURL != "https://gw.example.com" || cfg.APIKey != "sk-real" {
+		t.Errorf("config = %+v, want both values trimmed", cfg)
 	}
 }
 
