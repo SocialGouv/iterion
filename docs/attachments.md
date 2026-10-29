@@ -399,6 +399,8 @@ exists, and needs no path. A `{{!…}}` spelling, a user prompt that is also
 the node's system or interaction prompt, and a router's prompt render the
 path as text, and are admitted on it.
 
+On a store with no root, the engine materialises the attachments before the sandbox starts (`materializeAttachments`). The guards live in `pkg/runtime/sandbox_attachments.go` and `pkg/runtime/attachment_admission.go`.
+
 `meta.json` is nobody's filename: the filesystem layout keeps each
 attachment's record under that name beside its bytes, so a file under it
 would be read back as the record. Both stores refuse it, typed, whoever
