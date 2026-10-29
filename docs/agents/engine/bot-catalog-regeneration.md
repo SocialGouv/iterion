@@ -134,45 +134,6 @@ What carries no cause, and why:
 
 ## The lock a refresh holds
 
-A generated catalogue (`<owner>/skills/iterion-bot-catalog.md`) is a stored
-bot file: the studio, the assistant and the unit editor all replace it
-through the server's authoring lock. The refresh takes that same lock —
-`pkg/authoringlock`, the per-file `flock` beside the file it governs — and
-holds it from before it reads the owner's template until after its rename.
-So a save decided on the file's bytes can no longer land in the middle of a
-refresh and be replaced: it waits for the refresh and then refuses on its own
-stored-file check, or the refresh waits for it.
-
-What the grain buys is the hot path. The lock is per FILE, and a run
-regenerates only the catalogue its own bundle owns, so two runs of different
-bots never wait on each other, and a save of one owner's catalogue costs that
-owner's refresh alone — the workspace-wide refresh joins per-owner failures
-and keeps the healthy owners refreshed.
-
-Each caller bounds its own wait, because each knows what it may spend:
-
-- a **run** start waits `runtime.catalogLockWait` and then goes on with the
-  catalogue on disk (the refresh is best effort, and the mirror falls back to
-  it) — a run start is not a gate an editor gets to hold;
-- the **server** waits as long as the request it serves, so a client that
-  hangs up stops the wait;
-- the **operator's** `iterion bots regen-catalog` waits as long as the
-  command, and reports the file it left alone.
-
-A refusal names the file and says the lock was not taken, which is the
-difference that matters: the file keeps the bytes its editor decided on
-instead of the ones this build renders.
-
-The control directory the lock needs (`.iterion/authoring/` beside the file)
-lands inside the bundle, and is no member of it: every walker of a bundle's
-content skips `.iterion` (`bundle.IsPackSkipped`), so a refresh does not move
-`bundle.ContentHashDir` and cannot make a materialized dependency drift from
-the hash its `bots.lock` pins. The repository ignores the directory too.
-
-An open question, measured and not yet decided (ARB-109 of the leap): a
-dependency materialized under `.botz/` that ships the template is an owner
-like any other, so a workspace-wide refresh rewrites ITS generated catalogue
-with the calling workspace's routing table — and that write does move
-`ContentHashDir`, which is the hash `bots.lock` pins and `botdeps.Sync`
-compares. Either the dependency keeps the table its packer froze, or the
-generated copy becomes local state excluded from the hash.
+The refresh takes the server's authoring lock from the template read to the
+rename — its grain, each caller's bounded wait and the refusal that names the
+file are in [authoring-lock.md](../../authoring-lock.md).

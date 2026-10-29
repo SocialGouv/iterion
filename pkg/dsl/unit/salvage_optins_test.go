@@ -820,6 +820,7 @@ func TestEveryReadingAPIIsListed(t *testing.T) {
 // as the unit it wraps — and no type rule holds it.
 var unsafeFiles = map[string]string{
 	"pkg/server/assistant_authoring_local_windows.go": "the NT rename's FILE_RENAME_INFORMATION buffer (NtSetInformationFile)",
+	"pkg/authoringlock/platform_windows.go":           "the NT object attributes' Length (unsafe.Sizeof) and the ACL entry's SID read through unsafe.Pointer",
 	"pkg/cli/tty_darwin.go":                           "the terminal's ioctl (TIOCGETA) argument",
 	"pkg/cli/tty_linux.go":                            "the terminal's ioctl (TCGETS) argument",
 	"pkg/cli/tty_windows.go":                          "the console mode's syscall argument",

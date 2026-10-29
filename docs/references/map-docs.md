@@ -215,6 +215,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/asymptote-bench.md`](../asymptote-bench.md) | 📈 Asymptote benchmark | `iterion bench asymptote` measures the **inter-session quality stabilisation curve** of a workflow: rerun the same task in N independent… | — |
 | [`docs/async-interaction.md`](../async-interaction.md) | Async human interaction — ask, keep working, sync later | ADR: [081-async-human-interaction](../adr/081-async-human-interaction.md) | — |
 | [`docs/attachments.md`](../attachments.md) | Attachments — file & image inputs | The `attachments:` block lets a workflow declare binary inputs (files, | — |
+| [`docs/authoring-lock.md`](../authoring-lock.md) | The authoring lock — one lock for every writer of a stored bot file | A stored bot file has several writers — the studio, the assistant, the unit | — |
 | [`docs/auto-maintenance.md`](../auto-maintenance.md) | Auto-maintenance — wiring a repository so its dependencies update themselves | The goal: a repository receives its dependency updates, aligns its own code | — |
 | [`docs/backend-capability-registry.md`](../backend-capability-registry.md) | Backend capability registry — seed and review contract | `pkg/backend/backendcaps` is the declarative leaf shared by compiler and runtime. | — |
 | [`docs/backends.md`](../backends.md) | 🤝 Backends and credential auto-detection | A backend is the executor iterion routes a node to — either the in-process | — |
