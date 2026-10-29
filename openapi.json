@@ -3400,6 +3400,9 @@
           "conversation_id": {
             "type": "string"
           },
+          "delivery_id": {
+            "type": "string"
+          },
           "issue_id": {
             "type": "string"
           },

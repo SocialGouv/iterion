@@ -1704,12 +1704,19 @@ const (
 	RunSourceKindDispatcher = "dispatcher"
 	RunSourceKindSchedule   = "schedule"
 	RunSourceKindStudioChat = "studio_chat"
+	// RunSourceKindWebhook is an inbound forge delivery (GitHub, GitLab,
+	// Forgejo). It names the same classification the run list already
+	// derived STRUCTURALLY from the "webhook:" owner prefix, so no reader
+	// learns a new word; what the typed form adds is DeliveryID, the
+	// run->delivery back-reference the run-outcome spine needs.
+	RunSourceKindWebhook = "webhook"
 )
 
 // RunSource captures who originated this run. Populated by the
 // dispatcher when an issue is claimed, by scheduled-launch paths
-// (host-cron, trigger spine, cloudsched), and by typed Studio chat launches;
-// empty for ordinary CLI / Studio Launch / fork-spawned runs.
+// (host-cron, trigger spine, cloudsched), by typed Studio chat launches and
+// by inbound webhook deliveries; empty for ordinary CLI / Studio Launch /
+// fork-spawned runs.
 type RunSource struct {
 	// Kind is the producer of this run (see RunSourceKind* consts).
 	Kind string `json:"kind,omitempty" bson:"kind,omitempty"`
@@ -1741,6 +1748,13 @@ type RunSource struct {
 	// missing tab→run link and cancel runs whose owning tab disappeared.
 	ClientID       string `json:"client_id,omitempty" bson:"client_id,omitempty"`
 	ConversationID string `json:"conversation_id,omitempty" bson:"conversation_id,omitempty"`
+	// DeliveryID is the inbound webhook delivery that launched this run
+	// (webhooks.Delivery._id) when Kind == webhook. It is the run->delivery
+	// direction: the delivery's own RunID points the other way, and every
+	// consumer of this class is keyed by RUN (the run-outcome spine loads
+	// the terminal run, then asks each record kind "is this yours"). One
+	// direction of provenance, never a second way to find a record.
+	DeliveryID string `json:"delivery_id,omitempty" bson:"delivery_id,omitempty"`
 }
 
 // ForkAnchor identifies where a forked run resumes inside the parent's
