@@ -107,7 +107,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/budgetfloor` | holds capacity back from unreserved work so a named workload keeps a shared credential longer — a PREFERENCE at admission, and deliberately not… | — |
 | `pkg/bundle` | implements the `.botz` archive format: a ZIP archive that packages an iterion workflow (`main.bot`) with adjacent resources (skills, prompts,… | — |
 | `pkg/bundlelint` | cross-checks a bot bundle's manifest.yaml against its compiled main.bot workflow, surfacing structural inconsistencies that neither the manifest… | — |
-| `pkg/cli` | implements the iterion command-line interface. | — |
+| `pkg/cli` | implements the iterion command-line interface. | `ReliabilityRunSource` |
 | `pkg/clock` | provides a small Clock abstraction so time-dependent logic (notably the per-day spend-cap reset) can be driven by a fake clock in tests. | `Clock` |
 | `pkg/cloud/metrics` | centralises the Prometheus metrics exposed by the cloud-mode iterion server and runner pods. | — |
 | `pkg/cloud/orgsweep` | nightly-purges organizations that were soft-deleted (Status == pending_deletion) once their grace window (Org.PurgeAfter) has elapsed. | — |
