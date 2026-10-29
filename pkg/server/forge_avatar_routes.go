@@ -57,7 +57,10 @@ func brandLogoPath(v brand.Variant) string { return "/brand/" + v.Filename() }
 // caller that gives up must not leave its avatar state half-written, and a
 // hanging forge must not hold a connect or a click for longer than this.
 // Server.avatarApplyTimeout overrides it (a test shortens it against a forge
-// that hangs).
+// that hangs). THIS constant is the bound a caller is promised; the override
+// is test ergonomics, so a witness that needs the forge's partial answer to
+// arrive inside the budget raises its own until it does, instead of reading a
+// short one as a bound the route guarantees.
 const defaultAvatarApplyTimeout = 20 * time.Second
 
 func (s *Server) avatarApplyDeadline() time.Duration {

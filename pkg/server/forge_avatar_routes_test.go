@@ -697,27 +697,64 @@ func TestForgeConnectionAvatar_SpentBudgetErrorMeansTheExpiryNotTheSentinel(t *t
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	conn := seedAvatarConn(t, s, forge.Connection{ID: "c-meaning", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "svc", ForgeBaseURL: srv.URL})
-	s.avatarApplyTimeout = 200 * time.Millisecond
 
+	// The apply budget is TEST ERGONOMICS — the route's contract is
+	// defaultAvatarApplyTimeout, and avatarApplyTimeout exists to shorten it
+	// against a forge that hangs — so this witness does not borrow a clock it
+	// cannot control. What a spent budget MEANS holds whatever the forge
+	// managed to send, and is judged on every attempt; that the partial
+	// answer is RENDERED needs the partial answer to have arrived first, so
+	// the budget GROWS until it has. A fixed 200 ms read the shard instead:
+	// under the race detector on a loaded runner the 403 arrives after it,
+	// and the test blamed the route for dropping an answer it never received
+	// (CI run 40902722060, race-shard (2)). Load now changes how long this
+	// test takes and never what it decides.
+	for budget := avatarPartialAnswerBudget; ; budget *= 2 {
+		s.avatarApplyTimeout = budget
+		err := spentAvatarBudgetMeaning(t, s, conn)
+		// The forge's partial answer stays readable: diagnostic, not routing.
+		if strings.Contains(err.Error(), "insufficient scope") {
+			return
+		}
+		if budget >= avatarPartialAnswerCeiling {
+			t.Fatalf("up to a %s budget, no attempt carried the forge's partial answer: it was dropped instead of rendered, or this machine never delivered the 403 the witness needs: %v", budget, err)
+		}
+	}
+}
+
+// avatarPartialAnswerBudget is where the search for a budget that expires
+// AFTER the forge's partial answer starts — enough on a quiet machine — and
+// avatarPartialAnswerCeiling is where the witness stops doubling it and calls
+// the premise unobtainable: a ceiling, not an expectation.
+const (
+	avatarPartialAnswerBudget  = 200 * time.Millisecond
+	avatarPartialAnswerCeiling = 5 * time.Second
+)
+
+// spentAvatarBudgetMeaning applies the avatar against a forge that never
+// finishes answering and asserts what a spent budget MEANS, whatever the forge
+// managed to send: the error carries the expiry and never the forge's
+// sentinel, which the shared classifier routes on. Returns the error so the
+// caller can read what it rendered. The apply records nothing on this path, so
+// one attempt leaves the connection exactly as the next one needs it.
+func spentAvatarBudgetMeaning(t *testing.T, s *Server, conn forge.Connection) error {
+	t.Helper()
 	_, _, err := s.applyBotAvatar(context.Background(), conn, brand.VariantPlain, false)
 	if err == nil {
 		t.Fatal("a forge that never finishes answering must fail the apply")
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("the error does not carry the expiry it is about: %v", err)
+		t.Fatalf("the error does not carry the expiry it is about: %v", err)
 	}
 	for name, sentinel := range map[string]error{"ErrForbidden": forge.ErrForbidden, "ErrUnauthorized": forge.ErrUnauthorized} {
 		if errors.Is(err, sentinel) {
-			t.Errorf("a spent budget still matches forge.%s (%v) — the shared classifier would answer the forge's status for a dead context", name, err)
+			t.Fatalf("a spent budget still matches forge.%s (%v) — the shared classifier would answer the forge's status for a dead context", name, err)
 		}
 	}
 	if code, _ := forgeUpstreamStatus(err); code != 0 {
-		t.Errorf("forgeUpstreamStatus(%v) = %d, want 0 — an expiry is not an answer the forge gave", err, code)
+		t.Fatalf("forgeUpstreamStatus(%v) = %d, want 0 — an expiry is not an answer the forge gave", err, code)
 	}
-	// The forge's partial answer stays readable: diagnostic, not routing.
-	if !strings.Contains(err.Error(), "insufficient scope") {
-		t.Errorf("the forge's partial answer was dropped instead of rendered: %v", err)
-	}
+	return err
 }
 
 // A forge that does not answer at all is not a vouch matter either: the
