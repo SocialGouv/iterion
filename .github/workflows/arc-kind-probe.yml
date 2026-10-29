@@ -1,0 +1,63 @@
+# Settles why `cloud-e2e` cannot run on the arc-runners scale set (#981).
+#
+# Six of the nine Tests jobs run on the scale set; `race` and
+# `mongo-conformance` joined them on 2026-09-29 (#1955). `cloud-e2e` is the
+# one left, and the reason has never been established: "kind comes up, kubectl
+# cannot authenticate to it". The first hypothesis (the image's user is not in
+# the docker group) is refuted by the tree — `nats-conformance` and
+# `mongo-conformance` reach the daemon from that same image — so the remaining
+# work on that ticket is a measurement, not an image change.
+#
+# WHY A DISPATCH, not a job in tests.yml: the answer is needed once, from a
+# real pod, and a diagnostic job on every push and pull request would hold an
+# ARC pod for a question already answered. `gh workflow run arc-kind-probe.yml`
+# takes it. Nothing requires this workflow, and it can fail freely: its
+# verdict IS its exit status, and `scripts/ci/arc-kind-probe.sh` names which
+# hypothesis the capture supports.
+#
+# WHY IT PINS `arc-runners` with a plain label, against the three-clause
+# routing expression the required jobs carry: that expression exists for
+# event-driven runs — a fork's pull request, a dependency bot's branch — and
+# carries the operator's `CI_SELF_HOSTED=off` lever. This workflow has ONE
+# trigger, `workflow_dispatch`, which only an account with write access can
+# fire, so there is no fork or bot code to keep off the cluster. And the lever
+# must NOT apply: a probe of the scale set that the lever quietly moves to
+# ubuntu-latest measures the wrong machine and reports a meaningless green.
+# `internal/ciguard/arc_kind_probe_test.go` holds both halves of that: the
+# single trigger, and the routing it owes the day it gains another.
+#
+# The cluster comes up through the SAME pinned action `cloud-e2e` uses, so
+# this measures the failing path rather than a re-implementation of it.
+name: ARC kind probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kind-on-arc:
+    runs-on: arc-runners
+    timeout-minutes: 20
+    env:
+      KIND_CLUSTER: iterion-arc-probe
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up kind cluster
+        id: kind
+        # A cluster that does not come up is one of the answers, so the
+        # capture below must still run and name it.
+        continue-on-error: true
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          cluster_name: ${{ env.KIND_CLUSTER }}
+          wait: 120s
+
+      - name: Capture what kind wrote and what this container can reach
+        if: always()
+        env:
+          KIND_SETUP_OUTCOME: ${{ steps.kind.outcome }}
+        run: ./scripts/ci/arc-kind-probe.sh

@@ -72,3 +72,22 @@ Only after approved image/dind activation and actual ARC runs should the
 local smoke check is not a full `go test -race ./...`, not a `services:` job,
 and does not establish the cause of cloud-e2e's historical failure. Record each
 of those proofs on #981; this image PR alone does not close it.
+
+`race` and `mongo-conformance` moved on 2026-09-29 (#1955). `cloud-e2e` has
+not, and the reason is still a measurement nobody has taken — the image's
+docker access is not it (two sibling jobs use it). Take it before touching
+anything:
+
+```
+gh workflow run arc-kind-probe.yml   # then read the run's summary
+```
+
+[`.github/workflows/arc-kind-probe.yml`](../../.github/workflows/arc-kind-probe.yml)
+brings a kind cluster up on an `arc-runners` pod through the same pinned
+action `cloud-e2e` uses, captures what kind wrote into the kubeconfig and what
+the runner container can actually reach — including whether an egress proxy
+takes a loopback API server with it, which `kubectl` would honour and the
+docker CLI would not — and names the hypothesis those facts support
+(`scripts/ci/arc-kind-probe.sh`, exit 0 only on `usable`). Its routing is a
+plain label on purpose: a probe of the scale set must not follow the
+`CI_SELF_HOSTED` lever away from it.
