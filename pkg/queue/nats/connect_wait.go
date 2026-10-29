@@ -52,7 +52,17 @@ func dialBroker(url string, opts ...natsgo.Option) brokerDialer {
 	return func(ctx context.Context) (*natsgo.Conn, error) {
 		bounded := opts
 		if deadline, ok := ctx.Deadline(); ok {
-			bounded = append([]natsgo.Option{natsgo.Timeout(time.Until(deadline))}, opts...)
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				// The attempt expired between the loop's check and this
+				// dial (a slow runner under the race detector measured
+				// it): a non-positive natsgo.Timeout is an option error
+				// reading like a configuration mistake, so answer as a
+				// dialer that honours its context does and let the loop
+				// name the bound.
+				return nil, context.DeadlineExceeded
+			}
+			bounded = append([]natsgo.Option{natsgo.Timeout(remaining)}, opts...)
 		}
 		return natsgo.Connect(url, bounded...)
 	}

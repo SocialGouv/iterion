@@ -349,3 +349,21 @@ func TestDialBrokerWithoutADeadlineKeepsTheLibrarysOwnBound(t *testing.T) {
 		t.Fatalf("err = %v — a missing deadline became a negative natsgo timeout", err)
 	}
 }
+
+// The attempt context can expire between the loop's check and the dial (a
+// slow CI runner under the race detector measured it, run 40829856051). A
+// non-positive natsgo.Timeout is an option error — "nats: timeout invalid" —
+// that is not retryable, so Connect would report the library error alone;
+// the dialer answers as one that honours its context instead, and the loop
+// keeps naming the bound.
+func TestDialBrokerWithAnExpiredAttemptReportsTheDeadline(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Millisecond))
+	defer cancel()
+	_, err := dialBroker("nats://127.0.0.1:1")(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded: a negative natsgo.Timeout reads like a configuration mistake", err)
+	}
+	if !retryableDial(err) {
+		t.Fatalf("err = %v must stay retryable so the loop reports the bounded wait", err)
+	}
+}
