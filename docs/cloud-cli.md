@@ -71,18 +71,19 @@ bindings, and the run reads — `runs list`, `runs stats`, `runs repos`,
 1. `--team <id|slug>` flag (a slug resolves against the org tree, an
    unknown one is refused naming it)
 2. `ITERION_REMOTE_TEAM`
-3. the default persisted by a `--team` login (or by `teams switch` from a session credential)
+3. the default persisted by a `--team` login (or by `teams switch`)
 4. the account's active team (from `/api/auth/me`)
 
 A PAT's *identity* team is pinned at mint time, and a PAT may not mint
-another credential (the instance answers `403`), so `teams switch` cannot
-run from a stored token: pin the team at login —
-`iterion remote login <url> --email <you> --team <id>` — or switch team in
-the studio and run `iterion remote login <url>` (the browser approval pins
-the studio's active team). From a session credential it still mints a new
-token pinned to the target team, stores it, and revokes the previous CLI
-token (matched by fingerprint — tokens you minted for other purposes are
-never touched). `iterion remote tokens create` is refused the same way
+another credential (the instance answers `403`). So `teams switch` re-opens
+the browser approval (the studio's `/cli-auth` page) with the team pinned:
+the approving live session mints the team-pinned token — never the stored
+PAT — and the CLI stores it and revokes the previous CLI token (matched by
+fingerprint — tokens you minted for other purposes are never touched).
+Headless, pin the team at login instead:
+`iterion remote login <url> --email <you> --team <id>`. From a session
+credential the switch still mints directly, stores, and revokes the same
+way. `iterion remote tokens create` is refused the same way
 from a stored token: create the token in the studio (Account → Access
 tokens) or from a fresh login. Both refusals happen before anything is
 sent. Org-scoped commands (`--org` / `ITERION_REMOTE_ORG` /

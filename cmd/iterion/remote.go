@@ -292,16 +292,35 @@ func tokenLoginRefusal(base string, code int, idErr error) error {
 // instance's /cli-auth page (where the signed-in user approves and a token is
 // minted), and wait for it to redirect back to the loopback with the token.
 func loginViaBrowser(ctx context.Context, base string) (string, error) {
+	res, err := approveViaBrowser(ctx, base, "")
+	return res.token, err
+}
+
+// browserApprovalResult is what the /cli-auth page handed the loopback
+// listener: the minted token and, for a team-pinned approval, the org the
+// server states for the team (empty from a pre-org_id instance).
+type browserApprovalResult struct {
+	token string
+	orgID string
+}
+
+// approveViaBrowser is the browser-approval flow of `remote login` and —
+// with team non-empty — of `remote teams switch` (#2674): the /cli-auth page
+// is opened with ?team=<id>, the approving LIVE SESSION mints the team-pinned
+// token (a stored PAT mints nothing since #1668), and the loopback callback
+// hands the token back. The page echoes the pin, and a callback answering a
+// different team than asked is refused rather than stored.
+func approveViaBrowser(ctx context.Context, base, team string) (browserApprovalResult, error) {
 	state := randHex(16)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return "", fmt.Errorf("start local listener: %w", err)
+		return browserApprovalResult{}, fmt.Errorf("start local listener: %w", err)
 	}
 	defer ln.Close()
 	port := ln.Addr().(*net.TCPAddr).Port
 	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", port)
 
-	tokenCh := make(chan string, 1)
+	resCh := make(chan browserApprovalResult, 1)
 	errCh := make(chan error, 1)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
@@ -323,27 +342,44 @@ func loginViaBrowser(ctx context.Context, base string) (string, error) {
 			errCh <- fmt.Errorf("callback returned no token")
 			return
 		}
+		if team != "" && q.Get("team_id") != team {
+			fmt.Fprint(w, htmlMsg("Token pinned to another team — you can close this tab."))
+			errCh <- fmt.Errorf("the approval minted a token pinned to team %q, not %q — retry the switch", q.Get("team_id"), team)
+			return
+		}
 		fmt.Fprint(w, htmlMsg("iterion CLI authorized ✓ — return to your terminal."))
-		tokenCh <- tok
+		resCh <- browserApprovalResult{token: tok, orgID: q.Get("org_id")}
 	})
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
 	defer srv.Close()
 
 	authURL := base + "/cli-auth?redirect_uri=" + url.QueryEscape(redirectURI) + "&state=" + state
+	if team != "" {
+		authURL += "&team=" + url.QueryEscape(team)
+	}
 	fmt.Println("Opening your browser to authorize the iterion CLI…")
 	fmt.Println("If it doesn't open, visit:\n  " + authURL)
-	_ = openBrowser(authURL)
+	_ = browserOpener(authURL)
 
 	select {
-	case tok := <-tokenCh:
-		return tok, nil
+	case res := <-resCh:
+		return res, nil
 	case err := <-errCh:
-		return "", err
+		return browserApprovalResult{}, err
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return browserApprovalResult{}, ctx.Err()
 	case <-time.After(5 * time.Minute):
-		return "", fmt.Errorf("timed out waiting for browser authorization")
+		return browserApprovalResult{}, fmt.Errorf("timed out waiting for browser authorization")
+	}
+}
+
+// cliTeamApproval is the pkg/cli TeamApproval seam `remote teams switch`
+// runs through: the browser approval of the instance the client points at.
+func cliTeamApproval(c *cli.RemoteClient) cli.TeamApproval {
+	return func(ctx context.Context, teamID string) (string, string, error) {
+		res, err := approveViaBrowser(ctx, c.BaseURL(), teamID)
+		return res.token, res.orgID, err
 	}
 }
 
@@ -454,6 +490,10 @@ func init() {
 func htmlMsg(msg string) string {
 	return "<!doctype html><meta charset=utf-8><body style=\"font-family:system-ui;padding:3rem;text-align:center\"><h2>" + msg + "</h2>"
 }
+
+// browserOpener opens the approval URL in the system browser. A var so a
+// test drives the loopback itself instead of spawning xdg-open.
+var browserOpener = openBrowser
 
 func openBrowser(u string) error {
 	var name string

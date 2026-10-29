@@ -500,7 +500,7 @@ func TestRemoteTeamsSwitch_ResolvesSlugToTheUUID(t *testing.T) {
 	}
 	c := cli.NewRemoteClientFor(cli.RemoteConfig{BaseURL: ts.URL, Token: remoteSessionToken})
 	p, _ := remotePrinter(cli.OutputHuman)
-	if err := cli.RemoteTeamsSwitch(context.Background(), c, p, "pic-graal", "cli"); err != nil {
+	if err := cli.RemoteTeamsSwitch(context.Background(), c, p, "pic-graal", "cli", nil); err != nil {
 		t.Fatalf("switch by slug: %v", err)
 	}
 	if mintedWith != "87a2ee99-6b91-43ca-bb51-659a8ce7f705" {
@@ -553,7 +553,7 @@ func TestRemoteTeamsSwitch_MintsPersistsRevokes(t *testing.T) {
 	}
 	c := cli.NewRemoteClientFor(cli.RemoteConfig{BaseURL: ts.URL, Token: oldToken})
 	p, _ := remotePrinter(cli.OutputHuman)
-	if err := cli.RemoteTeamsSwitch(context.Background(), c, p, "team-b", "cli"); err != nil {
+	if err := cli.RemoteTeamsSwitch(context.Background(), c, p, "team-b", "cli", nil); err != nil {
 		t.Fatalf("switch: %v", err)
 	}
 	if revoked != "p-old" {
@@ -583,11 +583,11 @@ func TestRemoteTeamsSwitch_RejectsNonMember(t *testing.T) {
 		fmt.Fprint(w, `{"error":"not a member of team \"team-x\""}`)
 	}))
 	p, _ := remotePrinter(cli.OutputHuman)
-	if err := cli.RemoteTeamsSwitch(context.Background(), c, p, "  ", "cli"); err == nil ||
+	if err := cli.RemoteTeamsSwitch(context.Background(), c, p, "  ", "cli", nil); err == nil ||
 		!strings.Contains(err.Error(), "team id required") {
 		t.Fatalf("blank team id must be rejected before any mint, got %v", err)
 	}
-	err := cli.RemoteTeamsSwitch(context.Background(), c, p, "team-x", "cli")
+	err := cli.RemoteTeamsSwitch(context.Background(), c, p, "team-x", "cli", nil)
 	if err == nil || !strings.Contains(err.Error(), "not a member") {
 		t.Fatalf("want the server's membership rejection, got %v", err)
 	}

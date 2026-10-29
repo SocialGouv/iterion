@@ -10,6 +10,12 @@ import { InlineBanner } from "@/components/ui/InlineBanner";
 // approves, a personal access token is minted, and the page redirects to the
 // CLI's local loopback listener with the token. Standalone (no AppShell).
 //
+// A `?team=<id>` query (sent by `iterion remote teams switch`) pins the minted
+// token to that team: the mint runs under THIS live session — never under the
+// CLI's stored token — so the derivation rule holds (#2674). The redirect then
+// echoes team_id and the server-stated org_id, and the CLI refuses a callback
+// whose team_id is not the one it asked for.
+//
 // Security: the redirect target MUST be loopback (http://127.0.0.1|localhost) so
 // the minted token can only reach a process on this machine.
 export default function CliAuthPage() {
@@ -18,6 +24,7 @@ export default function CliAuthPage() {
   const params = new URLSearchParams(search);
   const redirectURI = params.get("redirect_uri") ?? "";
   const state = params.get("state") ?? "";
+  const team = params.get("team") ?? "";
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -34,8 +41,11 @@ export default function CliAuthPage() {
     setBusy(true);
     setError(null);
     try {
-      const { token } = await createPAT("iterion CLI");
-      finish({ token });
+      const { token, org_id } = await createPAT("iterion CLI", 0, team);
+      const extra: Record<string, string> = { token };
+      if (team) extra.team_id = team;
+      if (org_id) extra.org_id = org_id;
+      finish(extra);
     } catch (e) {
       setError((e as Error).message);
       setBusy(false);
@@ -57,6 +67,13 @@ export default function CliAuthPage() {
               A command-line tool on this machine is requesting access to your iterion
               account{user?.email ? ` (${user.email})` : ""}. Approving creates a personal
               access token and hands it to the CLI.
+              {team && (
+                <>
+                  {" "}
+                  The token is pinned to team <code>{team}</code> — the
+                  team the CLI switches to.
+                </>
+              )}
             </p>
             {error && (
               <InlineBanner tone="danger" layout="inline">

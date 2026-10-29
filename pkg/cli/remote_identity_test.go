@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // countingServer is a cloud that records every request it is asked, so a
@@ -40,10 +42,12 @@ func patMintRefused(w http.ResponseWriter, _ *http.Request) {
 
 // TestRemoteMintCommands_RefuseAPersonalAccessTokenBeforeSendingAnything: the
 // instance refuses a personal access token at every route that mints another
-// credential, and a PAT is what the CLI stores. The two commands that mint
-// one — `teams switch` (a team-pinned token) and `tokens create` — therefore
-// refuse first, send nothing, and name the login that does the job. A request
-// sent anyway would come back 403 and read as the instance failing.
+// credential, and a PAT is what the CLI stores. The commands that mint one
+// therefore refuse first, send nothing, and name the login that does the job:
+// `tokens create`, and `teams switch` when its caller wires no browser
+// approval (a nil seam — the CLI command wires the /cli-auth approval, which
+// is the mint that does work, #2674). A request sent anyway would come back
+// 403 and read as the instance failing.
 func TestRemoteMintCommands_RefuseAPersonalAccessTokenBeforeSendingAnything(t *testing.T) {
 	ctx := context.Background()
 	p := NewPrinter(OutputHuman)
@@ -54,7 +58,7 @@ func TestRemoteMintCommands_RefuseAPersonalAccessTokenBeforeSendingAnything(t *t
 			http.NotFound(w, r)
 		})
 		c := NewRemoteClientFor(RemoteConfig{BaseURL: srv.URL, Token: "iap_stored"})
-		err := RemoteTeamsSwitch(ctx, c, p, "t-target", "iterion-cli (host)")
+		err := RemoteTeamsSwitch(ctx, c, p, "t-target", "iterion-cli (host)", nil)
 		if err == nil {
 			t.Fatal("a teams switch from a personal access token reported success")
 		}
@@ -136,4 +140,67 @@ func TestRemoteMintCommands_RefuseAPersonalAccessTokenBeforeSendingAnything(t *t
 			t.Fatalf("a mint from a session credential was refused: %v", err)
 		}
 	})
+}
+
+// TestRemoteTeamsSwitch_TheStoredPATApprovesThroughTheBrowser is the #2674
+// witness at the client seam: with a personal access token stored, the switch
+// mints NOTHING from it — no POST /api/me/tokens leaves the CLI — and the new
+// token is the one the browser approval (the approving live session's mint)
+// hands back, pinned to the resolved team UUID; the previous CLI token is
+// revoked by fingerprint.
+func TestRemoteTeamsSwitch_TheStoredPATApprovesThroughTheBrowser(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ITERION_REMOTE_URL", "")
+
+	const teamUUID = "87a2ee99-6b91-43ca-bb51-659a8ce7f705"
+	oldToken := "iap_stored"
+	oldFP := secrets.FingerprintSHA256(oldToken)
+	var revoked string
+	srv := newCountingServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/auth/me":
+			_, _ = io.WriteString(w, `{"user":{"id":"u1"},"orgs":[{"org_id":"o1","teams":[{"team_id":"`+teamUUID+`","team_name":"Team B","team_slug":"team-b"}]}]}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/me/tokens":
+			_, _ = io.WriteString(w, `{"tokens":[{"id":"p-old","name":"cli","fingerprint":"`+oldFP+`"}]}`)
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/me/tokens/"):
+			revoked = strings.TrimPrefix(r.URL.Path, "/api/me/tokens/")
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("the switch sent %s %s with the stored PAT: a PAT mints nothing, the mint is the approval's", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	})
+	if err := SaveRemoteConfig(RemoteConfig{BaseURL: srv.URL, Token: oldToken}); err != nil {
+		t.Fatal(err)
+	}
+	c := NewRemoteClientFor(RemoteConfig{BaseURL: srv.URL, Token: oldToken})
+
+	var approvedTeam string
+	approve := func(_ context.Context, teamID string) (string, string, error) {
+		approvedTeam = teamID
+		return "iap_browser_minted", "o1", nil
+	}
+	p := NewPrinter(OutputHuman)
+	if err := RemoteTeamsSwitch(context.Background(), c, p, "team-b", "iterion-cli (host)", approve); err != nil {
+		t.Fatalf("the switch through the browser approval: %v", err)
+	}
+	if approvedTeam != teamUUID {
+		t.Fatalf("the approval was asked for team %q, want the UUID the slug resolves to", approvedTeam)
+	}
+	cfg, err := LoadRemoteConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Token != "iap_browser_minted" || cfg.TeamID != teamUUID || cfg.OrgID != "o1" {
+		t.Fatalf("the stored credential is %+v, want the approval's token pinned to %s in o1", cfg, teamUUID)
+	}
+	if revoked != "p-old" {
+		t.Fatalf("revoked = %q, want p-old (the fingerprint match)", revoked)
+	}
+	for _, line := range srv.log {
+		if strings.HasPrefix(line, "POST /api/me/tokens") {
+			t.Fatalf("the CLI minted from the stored credential: %v", srv.log)
+		}
+	}
 }

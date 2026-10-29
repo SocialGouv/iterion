@@ -217,16 +217,17 @@ var remoteTeamsCreateCmd = &cobra.Command{
 
 var remoteTeamsSwitchCmd = &cobra.Command{
 	Use:   "switch <team-id>",
-	Short: "Switch the CLI's default team (mints a team-pinned token)",
+	Short: "Switch the CLI's default team (mints a team-pinned token via a browser approval)",
 	Long: "Switch the CLI's default team.\n\n" +
 		"A token's team is fixed when it is minted, so switching means minting a\n" +
-		"new one — which a token may not do: the instance refuses it. From a\n" +
-		"stored token, pin the team at login instead:\n" +
-		"  iterion remote login <url> --email <you> --team <id>\n" +
-		"or switch team in the studio and run `iterion remote login <url>`.",
+		"new one pinned to the target team — and a stored token may not mint one\n" +
+		"(the instance refuses it), so the switch re-opens the browser approval\n" +
+		"(the studio's /cli-auth page) with the team pinned: the approving session\n" +
+		"mints the token, the CLI stores it, and the previous CLI token is revoked.\n" +
+		"Headless: `iterion remote login <url> --email <you> --team <id>`.",
 	Args: cobra.ExactArgs(1),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
-		return cli.RemoteTeamsSwitch(cmd.Context(), c, p, args[0], cliTokenName())
+		return cli.RemoteTeamsSwitch(cmd.Context(), c, p, args[0], cliTokenName(), cliTeamApproval(c))
 	}),
 }
 

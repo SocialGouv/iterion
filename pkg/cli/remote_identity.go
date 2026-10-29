@@ -72,6 +72,15 @@ func teamSwitchAdvice(base, teamID string) string {
 		"` (the browser approval pins the studio's active team)."
 }
 
+// TeamApproval mints a team-pinned CLI token through a fresh browser
+// approval: the instance's /cli-auth page opened with ?team=<id>, where the
+// APPROVING live session — never the stored credential — mints the token
+// (#2674: a personal access token cannot mint another credential since
+// #1668, so the switch re-runs the approval instead of presenting its PAT
+// to POST /api/me/tokens). It answers the minted token's plaintext and the
+// org the server states for the team (empty from a pre-org_id instance).
+type TeamApproval func(ctx context.Context, teamID string) (token, orgID string, err error)
+
 // tokenCreateAdvice names the two ways to get a new token.
 func tokenCreateAdvice(base string) string {
 	return "Create the token in the studio (Account → Access tokens),\n" +
@@ -267,25 +276,31 @@ func ResolveRemoteRunScopeTeam(ctx context.Context, c *RemoteClient, flag string
 	return resolveRemoteTeamID(ctx, c, arg)
 }
 
-// RemoteTeamsSwitch changes the CLI's default team. A PAT's identity
-// team is pinned at mint time, so switching means minting a NEW token
-// pinned to the target team, persisting it, and revoking the previous
-// CLI token (identified deterministically by its SHA-256 fingerprint;
-// an env-provided or unmatched token is left alone with a notice).
+// RemoteTeamsSwitch changes the CLI's default team. A token's identity team
+// is pinned at mint time, so switching means minting a NEW token pinned to
+// the target team, persisting it, and revoking the previous CLI token
+// (identified deterministically by its SHA-256 fingerprint; an env-provided
+// or unmatched token is left alone with a notice).
 //
-// That mint is exactly what a personal access token may not do
-// (patCannotMint), and a PAT is what the CLI stores: the refusal comes first,
-// before any request, and names the login that does pin a team.
-func RemoteTeamsSwitch(ctx context.Context, c *RemoteClient, p *Printer, teamID, tokenName string) error {
+// The mint's path depends on what the CLI holds. A session credential mints
+// directly (the instance allows it). A personal access token may not mint
+// another credential (patCannotMint — #1668), and a PAT is what the CLI
+// stores, so the switch re-runs the browser approval with ?team=<id>
+// (approve): the page's live session mints the pinned token and hands it to
+// the CLI's loopback, the derivation rule holds, and the command stays
+// one step (#2674). A nil approve with a PAT stored is the old refusal —
+// advice included, nothing sent.
+func RemoteTeamsSwitch(ctx context.Context, c *RemoteClient, p *Printer, teamID, tokenName string, approve TeamApproval) error {
 	if strings.TrimSpace(teamID) == "" {
 		return fmt.Errorf("team id required (see `iterion remote teams list`)")
 	}
-	// Before resolution, which reads /api/auth/me: a credential that cannot
-	// mint must send nothing at all. The advice therefore carries the
-	// argument as typed — a slug or a UUID — and the login it names resolves
-	// it the same way this command would (resolveRemoteTeamID).
-	if err := c.refuseIfPAT(teamSwitchAdvice(c.BaseURL(), strings.TrimSpace(teamID))); err != nil {
-		return err
+	viaBrowser := c.presentsPAT()
+	if viaBrowser && approve == nil {
+		// Before resolution, which reads /api/auth/me: a credential that
+		// cannot mint must send nothing at all. The advice therefore carries
+		// the argument as typed — a slug or a UUID — and the login it names
+		// resolves it the same way this command would (resolveRemoteTeamID).
+		return fmt.Errorf("%s\n%s", patCannotMint, teamSwitchAdvice(c.BaseURL(), strings.TrimSpace(teamID)))
 	}
 	// Resolution is read-only and comes before the env-mode refusal so the
 	// advice it prints carries the UUID, not the raw argument.
@@ -296,40 +311,58 @@ func RemoteTeamsSwitch(ctx context.Context, c *RemoteClient, p *Printer, teamID,
 	if os.Getenv("ITERION_REMOTE_URL") != "" {
 		return fmt.Errorf("teams switch mutates the stored credential and cannot run in ITERION_REMOTE_URL env mode — pin a team at login instead: `iterion remote login %s --email <you> --team %s`", c.BaseURL(), teamID)
 	}
-	// No client-side membership pre-check: the mint endpoint's canViewTeam
-	// is the authority (it also grants org-admins and super-admins teams a
-	// plain membership listing may not carry). The server states the
-	// team’s org in the mint response — it owns that fact.
 	oldFingerprint := secrets.FingerprintSHA256(c.cfg.Token)
 
-	var minted struct {
-		PAT   remotePAT `json:"pat"`
-		Token string    `json:"token"`
-		OrgID string    `json:"org_id"`
-	}
-	req := map[string]any{"name": tokenName, "team_id": teamID, "expires_in_days": 0}
-	if _, err := c.Call(ctx, "POST", "/api/me/tokens", req, &minted); err != nil {
-		if refusal, ok := asPATMintRefusal(err, teamSwitchAdvice(c.BaseURL(), teamID)); ok {
-			return refusal
+	var newToken, orgID string
+	if viaBrowser {
+		// The approval mints from the approving live session — never from
+		// the stored PAT, which is presented to nothing here but the
+		// read-only resolution above and the revocation below.
+		newToken, orgID, err = approve(ctx, teamID)
+		if err != nil {
+			return err
 		}
-		return fmt.Errorf("%w (see `iterion remote teams list`)", err)
-	}
-	if minted.Token == "" {
-		return fmt.Errorf("token endpoint returned no token")
+		if newToken == "" {
+			return fmt.Errorf("the browser approval returned no token")
+		}
+	} else {
+		// No client-side membership pre-check: the mint endpoint's canViewTeam
+		// is the authority (it also grants org-admins and super-admins teams a
+		// plain membership listing may not carry). The server states the
+		// team’s org in the mint response — it owns that fact.
+		var minted struct {
+			PAT   remotePAT `json:"pat"`
+			Token string    `json:"token"`
+			OrgID string    `json:"org_id"`
+		}
+		req := map[string]any{"name": tokenName, "team_id": teamID, "expires_in_days": 0}
+		if _, err := c.Call(ctx, "POST", "/api/me/tokens", req, &minted); err != nil {
+			if refusal, ok := asPATMintRefusal(err, teamSwitchAdvice(c.BaseURL(), teamID)); ok {
+				return refusal
+			}
+			return fmt.Errorf("%w (see `iterion remote teams list`)", err)
+		}
+		if minted.Token == "" {
+			return fmt.Errorf("token endpoint returned no token")
+		}
+		newToken, orgID = minted.Token, minted.OrgID
+		p.Line("Switched to team %s (new CLI token %s)", teamID, minted.PAT.ID)
 	}
 
 	cfg := c.cfg
-	cfg.Token = minted.Token
+	cfg.Token = newToken
 	cfg.TeamID = teamID
 	// Follow the team into its org so org-scoped commands aim where the
 	// new token lives (empty from a pre-org_id server: scope unchanged).
-	if minted.OrgID != "" {
-		cfg.OrgID = minted.OrgID
+	if orgID != "" {
+		cfg.OrgID = orgID
 	}
 	if err := SaveRemoteConfig(cfg); err != nil {
 		return err
 	}
-	p.Line("Switched to team %s (new CLI token %s)", teamID, minted.PAT.ID)
+	if viaBrowser {
+		p.Line("Switched to team %s (token approved in the browser)", teamID)
+	}
 
 	// Revoke the replaced CLI token — matched by fingerprint so we never
 	// revoke a token the operator minted for something else.
