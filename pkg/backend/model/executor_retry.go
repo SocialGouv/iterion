@@ -1197,7 +1197,7 @@ func (e *ClawExecutor) dispatchChain(
 		// can be undone: only a session we introduced is ours to drop.
 		carriedSession := false
 		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, sharesSession(task), accepts, func() (delegate.Result, error) {
-			return backend.Execute(ctx, *task)
+			return e.executeDelegate(ctx, backend, *task)
 		}, "", func(prev delegate.Result) {
 			// An in-process retry stays in the SAME sandbox — the engine
 			// starts one per run, never per node (runtime: startSandbox is
@@ -1288,7 +1288,7 @@ func (e *ClawExecutor) dispatchChain(
 				fresh.ForkSession = false
 				fresh.SessionFingerprint = ""
 				freshResult, freshErr := e.retryDelegateLoopChain(ctx, nodeID, backendName, sharesSession(&fresh), accepts, func() (delegate.Result, error) {
-					return backend.Execute(ctx, fresh)
+					return e.executeDelegate(ctx, backend, fresh)
 				}, "")
 				if freshErr == nil {
 					task = &fresh

@@ -953,7 +953,7 @@ func (e *ClawExecutor) validateAndRetry(
 	// backend.Execute here skipped the retry budget and gave up on the
 	// first transient SDK hiccup.
 	retryResult, retryErr := e.retryDelegateLoopReask(ctx, f.id, backendName, sharesSession(&retryTask), reask.mode, func() (delegate.Result, error) {
-		return backend.Execute(ctx, retryTask)
+		return e.executeDelegate(ctx, backend, retryTask)
 	})
 	// Whether the two attempts share one session decides how their figures
 	// fold (a session TOTAL folds at the max, per-call figures sum) — read
@@ -1123,7 +1123,7 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 	// The recovery is a claw call on the model this function picked, not on
 	// the node's own — pricing its usage is the task's only role here.
 	recoveryTask := delegate.Task{Model: modelSpec}
-	obj, err := GenerateObjectDirect[map[string]any](ctx, client, genOpts)
+	obj, err := GenerateObjectDirect[map[string]any](ctx, client, e.generationForModel(genOpts))
 	if err != nil {
 		e.logger.Warn("[%s] structured-output recovery via claw (%s) failed: %v", nodeID, modelSpec, err)
 		return delegate.Result{}, meteredFailure(recoveryTask, objectUsage(obj)), false

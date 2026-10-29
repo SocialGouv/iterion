@@ -10,6 +10,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
@@ -30,12 +31,18 @@ func (e *ClawExecutor) buildUserMessage(userPrompt string, input map[string]any,
 		}
 	}
 
-	// Fallback: serialize input as the user message.
+	// Fallback: serialize input as the user message. The leaves take the
+	// model-boundary pass BEFORE the marshal: a value holding a quote or a
+	// backslash comes out escaped twice, a form the matcher does not register.
 	if len(input) == 0 {
 		return ""
 	}
 
-	b, err := json.Marshal(input)
+	payload := any(input)
+	if e.secretGuard != nil {
+		payload = secretguard.RedactLeaves(input, e.secretGuard.RedactForModel)
+	}
+	b, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Sprintf("%v", input)
 	}

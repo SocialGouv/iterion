@@ -220,6 +220,34 @@ form in every hook/log:
   a prompt or the run store — a background task's label is the CLI's command
   after materialisation. It is not a sink pass: `ITERION_SECRETS_REDACT=off`
   leaves it on.
+- **The model boundary.** What a model READS goes out in placeholder form
+  whatever produced it: the rendered system and user prompts, the user
+  content blocks and the preset focus of every task cross into a backend
+  through one seam (`ClawExecutor.executeDelegate`, `Guard.RedactForModel`),
+  which turns every known value back into its placeholder — a value an
+  upstream node printed and a prompt reads through `{{outputs.A.x}}`, an
+  input an edge mapped from it, a `{{vars.x}}` holding one. The crossing
+  itself keeps the real values: the live output map still feeds the nodes
+  downstream and the resume checkpoint, so a tool node of B can spend what
+  A obtained while B's model only reads the placeholder (ADR-146, axis 1a).
+  The boundary follows the placeholder switch — `ITERION_SECRETS_PLACEHOLDERS=off`
+  renders values in prompts by the operator's choice, and the boundary
+  renders them too — and it matches known values only: a token shape only
+  the heuristic would catch is the workspace's, and the model reads it as
+  the workspace readers return it. A value split across two references is
+  not one value, the same bound as the egress scan's. Two more bounds are
+  deliberate: a value registered on the NAME of a host variable (the
+  `TOKEN`/`KEY`/`AUTH` heuristic, which matches `GIT_AUTHOR_EMAIL` and
+  `KEYCLOAK_URL` too) is left alone at the boundary — a placeholder there
+  breaks the commit the agent was asked for, where a marker in a log costs
+  nothing — and a declared secret whose `sinks:` keep it off prompts goes
+  out as `__ITERION_SECRET_<name>_redacted__`, a token that resolves
+  nowhere, so a model cannot have the proxy spend on the wire a secret its
+  author withheld from it. The operator's answer at a resume takes the pass
+  on every backend (the record keeps it whole), and the executor's DIRECT
+  model calls — the human stand-in, the interaction stand-in, the review
+  companion, the self-repair rung, the structured-output recovery — cross
+  it too (`generationForModel`).
 - A verified action's self-repair (`policy: recover`) quotes the failing
   command and its output to a model: both in placeholder form.
 - Both turn known values back into placeholders in the output of every tool

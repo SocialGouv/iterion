@@ -133,7 +133,7 @@ func (e *ClawExecutor) executeHumanLLMWithSpend(ctx context.Context, node *ir.Hu
 	}
 	genOpts.ExplicitSchema = jsonSchema
 
-	result, err := GenerateObjectDirect[map[string]any](ctx, client, genOpts)
+	result, err := GenerateObjectDirect[map[string]any](ctx, client, e.generationForModel(genOpts))
 	if err != nil {
 		// The llm half of a human node is a real LLM call, and the engine
 		// books what it burned from the map returned beside the error (it

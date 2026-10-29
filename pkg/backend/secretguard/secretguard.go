@@ -704,6 +704,35 @@ func (g *Guard) Holds(name string) bool {
 	return g.SecretFilePath(name) != ""
 }
 
+// RedactForModel is the model boundary's pass (ADR-146, axis 1a): every
+// known value in text a MODEL is about to read goes back to its
+// placeholder, and nothing else — the executor applies it to the rendered
+// prompts at the one seam a task crosses into a backend, so a value an
+// upstream node produced (`{{outputs.A.x}}`, an input an edge mapped) never
+// reaches a model's context in clear while the live output map keeps it for
+// the nodes downstream. It follows the Layer 1 switch: with placeholders
+// off (ITERION_SECRETS_PLACEHOLDERS=off) a prompt renders values by the
+// operator's explicit choice, and the boundary renders them too. Safe on a
+// nil Guard.
+//
+// A secret whose `sinks:` keep it off prompts maps to its redact-only form
+// instead of the resolvable placeholder: a model that reads the placeholder
+// of a `[command, egress]` secret could still have the proxy spend it on the
+// wire — the token it reads here resolves nowhere.
+func (g *Guard) RedactForModel(s string) string {
+	if g == nil || s == "" || !g.cfg.Placeholders || g.matcher == nil {
+		return s
+	}
+	out := g.matcher.ReplaceAllStringFunc(s, func(m string) string {
+		ph, ok := g.literalPlaceholder[m]
+		if !ok || g.ambientPlaceholder[ph] {
+			return m
+		}
+		return ph
+	})
+	return g.DefuseUngranted(secretsink.Prompt, out)
+}
+
 // RedactBytes is a convenience wrapper for []byte sinks.
 func (g *Guard) RedactBytes(b []byte) []byte {
 	if g == nil || len(b) == 0 {

@@ -319,7 +319,7 @@ STDERR:
 %s
 
 Return only the corrected command (one shell invocation, may use && / pipes). Do not explain in the command itself.`,
-		strings.TrimSpace(node.Goal), e.secretGuard.Redact(strings.TrimSpace(lastCmd)),
+		strings.TrimSpace(node.Goal), e.secretGuard.Redact(e.secretGuard.RedactForModel(strings.TrimSpace(lastCmd))),
 		// A prompt: the command's output goes back to placeholders — Layer 1,
 		// which the sink switch leaves on — and a value that never was a
 		// placeholder (a minted launch var) is redacted outright.
@@ -333,7 +333,7 @@ Return only the corrected command (one shell invocation, may use && / pipes). Do
 		ExplicitSchema: json.RawMessage(selfRepairSchema),
 	}
 
-	result, err := GenerateObjectDirect[map[string]any](ctx, client, genOpts)
+	result, err := GenerateObjectDirect[map[string]any](ctx, client, e.generationForModel(genOpts))
 	if err != nil {
 		return "", recipeResult{}, fmt.Errorf("self-repair generation: %w", err)
 	}

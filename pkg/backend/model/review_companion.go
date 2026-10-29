@@ -67,7 +67,7 @@ func (e *ClawExecutor) ExecuteReviewCompanion(ctx context.Context, node *ir.Huma
 	}
 	applyHooks(node.ID, LoopIterationFromContext(ctx), e.hooks, &genOpts)
 
-	result, err := GenerateObjectDirect[map[string]any](ctx, client, genOpts)
+	result, err := GenerateObjectDirect[map[string]any](ctx, client, e.generationForModel(genOpts))
 	if err != nil {
 		return nil, fmt.Errorf("model: review node %q: companion generation: %w", node.ID, err)
 	}
