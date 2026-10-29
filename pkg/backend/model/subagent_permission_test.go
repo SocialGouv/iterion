@@ -147,15 +147,33 @@ func TestSubagentChildWithoutAPolicyRunsUnGated(t *testing.T) {
 	}
 }
 
+// delegationCalls counts the two bash closures this harness plants, which is
+// how a test tells the child's SOURCE of tools apart: the process registry
+// the host handed the runner, or the node's own effective set.
+type delegationCalls struct {
+	// registryBash is the closure in the process registry — the whole
+	// surface of the run, which a child must NOT reach through a node that
+	// declared less (ParentLoop).
+	registryBash int
+	// nodeBash is the closure on the task's own ToolDefs: the node's bash,
+	// the one its author declared and the one its child inherits.
+	nodeBash int
+}
+
 // executeDelegation drives the full host shape through ClawBackend.Execute
-// itself: the backend arms its loop with the task's policy, the `agent`
-// tool's Execute is the runner a host wires (the child's bash lives in the
-// process registry), and one scripted client serves both conversations in
-// order — the parent dispatch, the child's bash call, the child's final
-// text, the parent's final text. Returns how many times bash executed for
-// real and every recorded model request, parent and child alike.
-func executeDelegation(t *testing.T, denyClass bool) (int, []api.CreateMessageRequest) {
+// itself: the backend arms its loop with the task's policy AND its effective
+// tools, the `agent` tool's Execute is the runner a host wires, and one
+// scripted client serves both conversations in order — the parent dispatch,
+// the child's bash call, the child's final text, the parent's final text.
+//
+// Two DIFFERENT bash closures are planted on purpose — one in the process
+// registry, one on the task — so the returned counts say which surface the
+// child drew from. In production the two are the same closure (the executor
+// puts the registry's resolved tools on the task); here they are distinct so
+// a widening is visible.
+func executeDelegation(t *testing.T, denyClass bool) (delegationCalls, []api.CreateMessageRequest) {
 	t.Helper()
+	var counts delegationCalls
 	client := newMockClient(
 		toolUseEvents("tu_parent", "agent", `{"description":"probe","prompt":"run the command"}`, 10, 5),
 		toolUseEvents("tu_child", "bash", `{"command":"echo hi"}`, 10, 5),
@@ -166,10 +184,9 @@ func executeDelegation(t *testing.T, denyClass bool) (int, []api.CreateMessageRe
 	modelReg.Register("test", func(string) (api.APIClient, error) { return client, nil })
 
 	toolReg := tool.NewRegistry()
-	bashCalls := 0
 	if err := toolReg.RegisterBuiltin("bash", "test shell", json.RawMessage(`{"type":"object"}`),
 		func(context.Context, json.RawMessage) (string, error) {
-			bashCalls++
+			counts.registryBash++
 			return "ran", nil
 		}); err != nil {
 		t.Fatalf("register bash: %v", err)
@@ -197,7 +214,10 @@ func executeDelegation(t *testing.T, denyClass bool) (int, []api.CreateMessageRe
 		ToolMaxSteps: 5,
 		ToolDefs: []delegate.ToolDef{
 			{Name: "bash", Description: "test shell", InputSchema: json.RawMessage(`{"type":"object"}`),
-				Execute: func(context.Context, json.RawMessage) (string, error) { return "parent ran", nil }},
+				Execute: func(context.Context, json.RawMessage) (string, error) {
+					counts.nodeBash++
+					return "node ran", nil
+				}},
 			{Name: "agent", Description: "delegate to a child", InputSchema: json.RawMessage(`{"type":"object"}`),
 				// Host wiring: the runner takes the model's decoded arguments,
 				// the tool surface carries them as raw JSON.
@@ -214,7 +234,7 @@ func executeDelegation(t *testing.T, denyClass bool) (int, []api.CreateMessageRe
 	if _, err := backend.Execute(context.Background(), task); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	return bashCalls, client.getCalls()
+	return counts, client.getCalls()
 }
 
 // TestExecuteArmsTheChildGateWithTheTaskPolicy: the arm lives in
@@ -226,8 +246,9 @@ func executeDelegation(t *testing.T, denyClass bool) (int, []api.CreateMessageRe
 func TestExecuteArmsTheChildGateWithTheTaskPolicy(t *testing.T) {
 	t.Parallel()
 	calls, reqs := executeDelegation(t, true)
-	if calls != 0 {
-		t.Fatalf("the child's bash executed %d times under the task's deny class; want 0", calls)
+	if calls.nodeBash != 0 || calls.registryBash != 0 {
+		t.Fatalf("the child's bash executed under the task's deny class (node %d, registry %d); want neither",
+			calls.nodeBash, calls.registryBash)
 	}
 	denied := false
 	for _, req := range reqs {
@@ -244,14 +265,23 @@ func TestExecuteArmsTheChildGateWithTheTaskPolicy(t *testing.T) {
 	}
 }
 
-// TestExecuteWithoutTheDenyRowDelegatesUnbounded: the same Execute shape
+// TestExecuteWithoutTheDenyRowDelegatesWithinTheNode: the same Execute shape
 // with only the deny row removed — the child's bash runs, so the bound was
 // the task's row, not the delegation itself.
-func TestExecuteWithoutTheDenyRowDelegatesUnbounded(t *testing.T) {
+//
+// And it runs the NODE's closure, never the registry's: the child inherits
+// the surface the node's author declared, which is what keeps `tools:
+// [read_file]` from meaning "read_file for me, the whole registry for my
+// children" (#1940, ParentLoop).
+func TestExecuteWithoutTheDenyRowDelegatesWithinTheNode(t *testing.T) {
 	t.Parallel()
 	calls, reqs := executeDelegation(t, false)
-	if calls != 1 {
-		t.Fatalf("the child's bash executed %d times with no deny row; want 1", calls)
+	if calls.nodeBash != 1 {
+		t.Fatalf("the child ran the node's bash %d times with no deny row; want 1", calls.nodeBash)
+	}
+	if calls.registryBash != 0 {
+		t.Fatalf("the child reached the process registry's bash %d times; the node's own surface is its bound",
+			calls.registryBash)
 	}
 	for _, req := range reqs {
 		b, _ := json.Marshal(req.Messages)

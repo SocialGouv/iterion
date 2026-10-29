@@ -324,7 +324,7 @@ func relaySessionMirrorGap(d *proxyDispatcher, stderr io.Writer, reason string, 
 // bashExtraEnv is nil here on purpose: a sandboxed task carries no env
 // additions (delegate.Task.ExtraEnv is host-only, and IOTask has no such
 // field) — bash sees the container's environment, settled at its creation.
-func registerSandboxLocalTools(reg *tool.Registry, workspace string) error {
+func registerSandboxLocalTools(reg *tool.Registry, workspace string, subagent tool.SubagentRunner) error {
 	if err := tool.RegisterClawBuiltinsWithEnv(reg, workspace, nil); err != nil {
 		return err
 	}
@@ -337,11 +337,12 @@ func registerSandboxLocalTools(reg *tool.Registry, workspace string) error {
 	if err := tool.RegisterClawSkill(reg, workspace); err != nil {
 		return err
 	}
-	// No subagent runner: the `agent` tool registers and refuses every call
-	// with the typed capability refusal, in-container as on the host. One
-	// wired here would run its child conversation against this container's
-	// tools.
-	if err := tool.RegisterClawSubagents(reg, nil); err != nil {
+	// The subagent runner spawns its child conversation against THIS
+	// container's tools and this container's API keys, which is what the
+	// placement of `agent` asks for. A nil one still registers the tool and
+	// refuses every call in the open — the shape a host that wires none
+	// keeps.
+	if err := tool.RegisterClawSubagents(reg, subagent); err != nil {
 		return err
 	}
 	return tool.RegisterClawReadImage(reg)
@@ -361,8 +362,32 @@ func registerSandboxLocalTools(reg *tool.Registry, workspace string) error {
 // cwd and filesystem, so every failure here is fatal rather than a fallback to
 // the proxy. The boundary itself is held on the launcher side, which refuses
 // any tool that is not launcher-placed whatever this routing asks for.
-func makeHybridToolDefs(defs []delegate.IOToolDef, d *proxyDispatcher, workspace string) ([]delegate.ToolDef, error) {
-	return buildHybridToolDefs(defs, d, workspace, registerSandboxLocalTools)
+func makeHybridToolDefs(
+	defs []delegate.IOToolDef,
+	d *proxyDispatcher,
+	workspace string,
+	modelReg *model.Registry,
+	hooks model.EventHooks,
+) ([]delegate.ToolDef, error) {
+	return buildHybridToolDefs(defs, d, workspace, sandboxLocalToolRegistrar(modelReg, hooks))
+}
+
+// sandboxLocalToolRegistrar closes the in-container registration over what a
+// child conversation needs: the model registry that resolves this container's
+// API clients, and the hooks that relay the child's turns to the launcher so
+// a sandboxed delegation is metered and auditable like an unsandboxed one.
+//
+// The subagent runner is built per registration, over the very registry it is
+// registered into: a child spawned in here draws from the container's own
+// tools when no parent node bounds it, and from the node's effective set when
+// one does (model.ParentLoop, which the in-container Execute fills from the
+// forwarded task). Lifecycle hooks are nil, as they are for this runner's own
+// loop — the launcher owns that layer.
+func sandboxLocalToolRegistrar(modelReg *model.Registry, hooks model.EventHooks) func(*tool.Registry, string) error {
+	return func(reg *tool.Registry, workspace string) error {
+		return registerSandboxLocalTools(reg, workspace,
+			model.NewSubagentRunner(modelReg, reg, hooks, nil, ""))
+	}
 }
 
 // buildHybridToolDefs is makeHybridToolDefs with the local registration

@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	clawhooks "github.com/SocialGouv/claw-code-go/pkg/api/hooks"
 	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
 
+	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 )
@@ -32,11 +34,127 @@ func ParentPermission(ctx context.Context) *permission.Policy {
 	return policy
 }
 
+// parentLoopCtxKey carries the shape of the claw loop a delegation is
+// spawned from — the model it bills, the tools its author declared and the
+// step budget it runs under — to the tool executors that loop invokes.
+type parentLoopCtxKey struct{}
+
+// ParentLoop is what a child conversation inherits from the NODE that spawned
+// it. The claw backend fills it where it arms its own loop; NewSubagentRunner
+// reads it off the ctx every tool call already carries.
+//
+// Tools is the node's EFFECTIVE set — what the author declared, plus what the
+// engine granted it — never the process registry: a node restricting itself
+// to `tools: [read_file]` must not reach bash through a child, and the
+// registry a host hands the runner holds every tool every node of the run can
+// call. The distinction is load-bearing, which is why the presence of a
+// parent loop (ParentLoopFromContext's second return) decides where the
+// child's tools come from rather than the slice being empty or not: a node
+// that declared `tools: []` hands its child nothing, it does not fall back to
+// the registry.
+type ParentLoop struct {
+	// Model is the parent node's resolved model spec, the default a child
+	// runs on when neither the model's own argument nor the host names one.
+	Model string
+	// Tools is the parent node's effective tool set.
+	Tools []GenerationTool
+	// MaxSteps is the parent node's tool-loop step budget; 0 leaves the
+	// child on the runner's own default.
+	MaxSteps int
+}
+
+// WithParentLoop attaches the parent node's loop shape.
+func WithParentLoop(ctx context.Context, p ParentLoop) context.Context {
+	return context.WithValue(ctx, parentLoopCtxKey{}, p)
+}
+
+// ParentLoopFromContext returns the parent node's loop shape and whether a
+// claw loop declared one. The boolean is the authority on "a node spawned
+// this", not the fields: a tool-less node yields a zero Tools slice.
+func ParentLoopFromContext(ctx context.Context) (ParentLoop, bool) {
+	p, ok := ctx.Value(parentLoopCtxKey{}).(ParentLoop)
+	return p, ok
+}
+
+// subagentSpendCtxKey carries the per-node accumulator a delegation debits.
+type subagentSpendCtxKey struct{}
+
+// SubagentSpend accumulates what the child conversations of ONE node cost.
+// The node's own result reports the parent's turns only — a child runs inside
+// a tool call, after the parent's usage is already counted — so without this
+// a claw node could spend without limit through subagents while the run's
+// budget (pkg/runtime.SharedBudget, fed by delegate.Result) saw nothing.
+//
+// Each child is priced on the model IT ran, not the parent's: a haiku child
+// of an opus node is cheaper, and the single cost figure a Result carries
+// cannot say so after the fact. A child whose model has no known price adds
+// its tokens and no cost, exactly as an unpriced node does.
+//
+// Safe for concurrent use: a parent loop may execute several tool calls at
+// once, and each delegation debits from its own goroutine.
+type SubagentSpend struct {
+	mu      sync.Mutex
+	usage   Usage
+	costUSD float64
+}
+
+// WithSubagentSpend attaches the accumulator the delegations of one node
+// debit. The claw backend arms one per Execute and folds the total into the
+// node's result.
+func WithSubagentSpend(ctx context.Context, s *SubagentSpend) context.Context {
+	return context.WithValue(ctx, subagentSpendCtxKey{}, s)
+}
+
+// SubagentSpendFromContext returns the accumulator for this node, or nil when
+// the caller is not a metered loop.
+func SubagentSpendFromContext(ctx context.Context) *SubagentSpend {
+	s, _ := ctx.Value(subagentSpendCtxKey{}).(*SubagentSpend)
+	return s
+}
+
+// Record debits one child conversation: its usage, and its cost at the price
+// of the model that served it. Nil-safe, so a caller with no accumulator
+// needs no branch of its own.
+func (s *SubagentSpend) Record(modelSpec string, u Usage) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	accumulateUsage(&s.usage, u)
+	s.costUSD += cost.EstimateUSD(modelSpec, u.InputTokens, u.OutputTokens)
+}
+
+// Total is what the children of this node consumed: the summed usage, and the
+// summed cost of the models that served them. Nil-safe.
+func (s *SubagentSpend) Total() (Usage, float64) {
+	if s == nil {
+		return Usage{}, 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.usage, s.costUSD
+}
+
+// defaultSubagentMaxSteps bounds a child's tool loop when the parent node
+// declares no step budget of its own.
+const defaultSubagentMaxSteps = 10
+
 // NewSubagentRunner returns a closure suitable as the executor for
 // the claw `agent` tool. When the LLM dispatches the agent tool, the
-// closure spins up a child conversation against the same model
-// registry, filters the tool registry by AllowedToolsForSubagent, and
-// returns the child's final text alongside its agent_id.
+// closure spins up a SYNCHRONOUS child conversation against the same
+// model registry and returns the child's final text alongside its
+// agent_id — a real result, never a start the host did not make.
+//
+// Everything the child is bounded by comes from the node that spawned it,
+// read off the context the tool call already carries:
+//
+//   - its tools, the node's effective set (ParentLoop.Tools), minus `agent`
+//     itself and the node-scoped MCP tools;
+//   - its permission policy (ParentPermission), so a deny or ask row the
+//     parent answers to stops at the delegation too;
+//   - its step budget (ParentLoop.MaxSteps);
+//   - its spend, debited to the node through SubagentSpendFromContext.
 //
 // Hooks are propagated to the parent's event stream with a
 // "subagent:<agent_id>" nodeID so a live test can observe the full
@@ -44,9 +162,9 @@ func ParentPermission(ctx context.Context) *permission.Policy {
 //
 // The returned executor never recurses into itself: the `agent` tool
 // is filtered out of the child's tool set, regardless of the
-// subagent type's allowlist. defaultModel is used when the input
-// omits the model field; pass an empty string to force an explicit
-// model on every call.
+// subagent type's allowlist. defaultModel is the HOST's default, used
+// when the model's own argument omits one; pass an empty string to let
+// the parent node's model serve, which is what a production host does.
 func NewSubagentRunner(
 	modelReg *Registry,
 	toolReg *tool.Registry,
@@ -66,13 +184,21 @@ func NewSubagentRunner(
 		// "provider/model-id". Treat an unset input["model"] as
 		// "use our defaultModel" so workflow authors don't have to
 		// specify the model on every agent call.
+		parent, fromParentLoop := ParentLoopFromContext(ctx)
 		raw, _ := input["model"].(string)
 		modelSpec := raw
 		if modelSpec == "" {
 			modelSpec = defaultModel
 		}
+		// Last, so a host that names a cheap default keeps it: the parent
+		// node's model is what a production host leaves this runner to find,
+		// since the model is a property of the NODE and this closure is built
+		// once per run.
 		if modelSpec == "" {
-			return "", fmt.Errorf("subagent: no model specified and no default")
+			modelSpec = parent.Model
+		}
+		if modelSpec == "" {
+			return "", fmt.Errorf("subagent: no model specified, no host default and no parent node model")
 		}
 
 		client, err := modelReg.Resolve(modelSpec)
@@ -84,7 +210,19 @@ func NewSubagentRunner(
 		}
 
 		allowed := clawtools.AllowedToolsForSubagent(spec.SubagentType)
+		// Spawned from a node, the child selects from the NODE's effective
+		// tools; spawned by a stand-alone host, from the registry that host
+		// handed us. Never both: the registry holds every tool every node of
+		// the run can call, so reading it under a node would widen the
+		// author's declared surface at the delegation.
 		genTools := buildSubagentTools(toolReg, allowed)
+		if fromParentLoop {
+			genTools = filterSubagentTools(parent.Tools, allowed)
+		}
+		maxSteps := defaultSubagentMaxSteps
+		if parent.MaxSteps > 0 {
+			maxSteps = parent.MaxSteps
+		}
 
 		opts := GenerationOptions{
 			Model:  modelSpec,
@@ -94,7 +232,7 @@ func NewSubagentRunner(
 				Content: []api.ContentBlock{{Type: "text", Text: spec.Prompt}},
 			}},
 			Tools:    genTools,
-			MaxSteps: 10,
+			MaxSteps: maxSteps,
 			Hooks:    lifecycle,
 			// The child inherits the policy the parent loop answers to: a
 			// deny or ask row over a tool class bounds the calls the child
@@ -106,6 +244,10 @@ func NewSubagentRunner(
 		applyHooks("subagent:"+spec.AgentID, LoopIterationFromContext(ctx), eventHooks, &opts)
 
 		result, err := GenerateTextDirect(ctx, client, opts)
+		// Debited before the error branch: tokens a child burned are billed
+		// whether or not it answered, and GenerateTextDirect returns the
+		// usage it accumulated with its error.
+		SubagentSpendFromContext(ctx).Record(modelSpec, partialUsage(result))
 		if err != nil {
 			return "", fmt.Errorf("subagent %s: %w", spec.AgentID, err)
 		}
@@ -135,32 +277,43 @@ func NewSubagentRunner(
 // `mcp.<server>.<tool>` tools, and the three builtins that take a server NAME
 // the model writes (list_mcp_resources, read_mcp_resource, mcp_auth). Which
 // MCP servers may be reached is a property of the NODE — its `mcp:` block —
-// and this runner has no node: it selects from the process registry, so a
-// child conversation would inherit every server every node of the run can
-// reach, and claw's own per-type allowlist does not help (nil means "all").
-//
-// When a host wires this runner for real, the parent node's active MCP set is
-// what has to come with it; until then, withholding is the honest answer
-// rather than a scope silently wider than the node that spawned the child.
+// and a child conversation is not that node: it answers a prompt the parent
+// MODEL wrote, so a server reached there is reached on the model's word
+// rather than on the author's. The parent relays what the child needs
+// instead. Withholding also covers the stand-alone host below, which selects
+// from the process registry, where the set spans every node of the run and
+// claw's own per-type allowlist does not help (nil means "all").
 func buildSubagentTools(reg *tool.Registry, allowed map[string]bool) []GenerationTool {
 	defs := reg.List()
-	out := make([]GenerationTool, 0, len(defs))
+	tools := make([]GenerationTool, 0, len(defs))
 	for _, td := range defs {
-		if td.QualifiedName == "agent" {
-			continue
-		}
-		if isNodeScopedMCPTool(td.QualifiedName) {
-			continue
-		}
-		if allowed != nil && !allowed[td.QualifiedName] {
-			continue
-		}
-		out = append(out, GenerationTool{
+		tools = append(tools, GenerationTool{
 			Name:        td.QualifiedName,
 			Description: td.Description,
 			InputSchema: td.InputSchema,
 			Execute:     td.Execute,
 		})
+	}
+	return filterSubagentTools(tools, allowed)
+}
+
+// filterSubagentTools is the withholding rule, applied to whichever set the
+// child draws from: no recursion into `agent`, no node-scoped MCP tool, and
+// claw's per-type allowlist on top (nil = general-purpose, every name
+// allowed).
+func filterSubagentTools(tools []GenerationTool, allowed map[string]bool) []GenerationTool {
+	out := make([]GenerationTool, 0, len(tools))
+	for _, t := range tools {
+		if t.Name == "agent" {
+			continue
+		}
+		if isNodeScopedMCPTool(t.Name) {
+			continue
+		}
+		if allowed != nil && !allowed[t.Name] {
+			continue
+		}
+		out = append(out, t)
 	}
 	return out
 }

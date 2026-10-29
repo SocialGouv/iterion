@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 )
 
@@ -164,7 +165,7 @@ func newBoundaryProbe(t *testing.T, advertised []string) (map[string]delegate.To
 
 	dispatcher, stub := newStubLauncher(t)
 
-	hybrid, err := makeHybridToolDefs(advertise(advertised), dispatcher, t.TempDir())
+	hybrid, err := makeHybridToolDefs(advertise(advertised), dispatcher, t.TempDir(), model.NewRegistry(), model.EventHooks{})
 	if err != nil {
 		t.Fatalf("makeHybridToolDefs refused the advertised set, so the probe cannot tell the paths apart: %v", err)
 	}
@@ -317,7 +318,7 @@ func TestHybridToolDefs_RefusesWhatTheContainerCannotExecute(t *testing.T) {
 		// refused, never proxied.
 		{"some_future_claw_tool", "no sandbox placement is declared"},
 	} {
-		_, err := makeHybridToolDefs(advertise([]string{tc.name}), dispatcher, t.TempDir())
+		_, err := makeHybridToolDefs(advertise([]string{tc.name}), dispatcher, t.TempDir(), model.NewRegistry(), model.EventHooks{})
 		if err == nil {
 			t.Errorf("%q was accepted by the runner; it has no in-container form, so accepting it means proxying it to the host", tc.name)
 			continue
@@ -390,7 +391,7 @@ func TestHybridToolDefs_LocalRegistrationFailureIsFatal(t *testing.T) {
 // refuses a node it should have run.
 func TestRegisterSandboxLocalTools_CoversTheWholeSandboxSet(t *testing.T) {
 	reg := tool.NewRegistry()
-	if err := registerSandboxLocalTools(reg, t.TempDir()); err != nil {
+	if err := registerSandboxLocalTools(reg, t.TempDir(), nil); err != nil {
 		t.Fatalf("registerSandboxLocalTools: %v", err)
 	}
 

@@ -160,7 +160,15 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	workspace, _ := os.Getwd() // docker exec --workdir lands us at the
 	// bind-mount target (default /workspace); fall back gracefully when
 	// Getwd fails — bash/read_file relative paths still work via cwd.
-	toolDefs, toolErr := makeHybridToolDefs(ioTask.ToolDefs, dispatcher, workspace)
+	// The model registry and the relay hooks are built HERE, before the
+	// backend below, because the in-container `agent` tool needs both to
+	// spawn a real child conversation and it is registered while the tool
+	// set is assembled (tool.SandboxPlacementOf puts `agent` in the
+	// container: a sandboxed node's subagent must reach the container's
+	// tools, never the launcher's). Both are used once more below.
+	registry := model.NewRegistry()
+	relayHooks := relayEventHooks(dispatcher, stderr)
+	toolDefs, toolErr := makeHybridToolDefs(ioTask.ToolDefs, dispatcher, workspace, registry, relayHooks)
 	if toolErr != nil {
 		return emitFatal(dispatcher, stderr, fmt.Errorf("build the in-container tool set: %w", toolErr))
 	}
@@ -209,8 +217,7 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	// claw backend retries them for an unsandboxed node, and the budget
 	// bounds billed attempts — so it is never read from this process's env,
 	// where a variable a repository's devcontainer declares would set it.
-	registry := model.NewRegistry()
-	backend := model.NewClawBackend(registry, relayEventHooks(dispatcher, stderr), model.RetryPolicyFromWire(ioTask.Retry),
+	backend := model.NewClawBackend(registry, relayHooks, model.RetryPolicyFromWire(ioTask.Retry),
 		model.WithClawLogger(iterlog.NewFromEnv(stderr)))
 
 	start := time.Now()

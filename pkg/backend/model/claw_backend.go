@@ -609,6 +609,24 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// subagent runner gates a child conversation with the policy this loop
 	// answers to — a deny row must stop at the delegation, not before it.
 	ctx = WithParentPermission(ctx, task.Permission)
+	// And the loop's own shape, for the same reader: a child conversation
+	// runs on this node's model, within this node's effective tools, under
+	// this node's step budget. Set once, here, for every strategy below —
+	// and in the sandboxed runner's own process, which re-enters this
+	// function with the forwarded task, so an in-container child is bounded
+	// by the same node.
+	ctx = WithParentLoop(ctx, ParentLoop{
+		Model:    task.Model,
+		Tools:    opts.Tools,
+		MaxSteps: opts.MaxSteps,
+	})
+	// A child conversation spends inside a tool call, after this node's own
+	// usage is counted: without this accumulator the run's budget would
+	// never see it. Armed before any tool can run, folded into the result on
+	// every exit path (subagentSpendFold).
+	subagentSpend := &SubagentSpend{}
+	ctx = WithSubagentSpend(ctx, subagentSpend)
+	defer func() { subagentSpendFold(&result, task.Model, subagentSpend) }()
 
 	// Wire the operator-chatbox inbox if the runtime configured one.
 	// Resolved per-call so a backend shared across runs picks up the
@@ -832,6 +850,52 @@ func meteredFailure(task delegate.Task, usage Usage) delegate.Result {
 func annotateUsage(output map[string]any, model string, u Usage) int {
 	cost.SetUnreportedCalls(output, u.UnreportedCalls)
 	return cost.Annotate(output, model, u.InputTokens, u.OutputTokens)
+}
+
+// clawCostEstimate is the backend's own price lookup, named so a test can
+// read a call's cost from the same table the result is built from.
+func clawCostEstimate(modelSpec string, inputTokens, outputTokens int) float64 {
+	return cost.EstimateUSD(modelSpec, inputTokens, outputTokens)
+}
+
+// subagentSpendFold adds what this node's child conversations consumed to the
+// result the node reports, so the run's budget (pkg/runtime.SharedBudget,
+// which reads delegate.Result) counts a delegation's tokens and cost as the
+// node's own. The accounting keys on the output map carry the same figures:
+// `_tokens` is what a `.bot` reads and what the studio renders, and a total
+// that disagreed with Result.Tokens would make one of the two lie.
+//
+// Each child's cost was already estimated at ITS model's price (SubagentSpend
+// .Record) — re-pricing the sum at the parent's would overcharge a cheap
+// child of an expensive node and undercharge the reverse — so the costs are
+// summed, never recomputed. `_model` stays the node's: the node ran on it,
+// and a child's model travels in the child's own result text.
+//
+// A child that burned tokens on a model with no known price contributes its
+// tokens and no cost, exactly as an unpriced node does (cost.EstimateUSD
+// returns 0, which the budget reads as unpriced spend, never as free).
+func subagentSpendFold(result *delegate.Result, nodeModel string, spend *SubagentSpend) {
+	usage, costUSD := spend.Total()
+	spent := usage.InputTokens + usage.OutputTokens
+	if spent == 0 && costUSD == 0 && usage.UnreportedCalls == 0 {
+		return
+	}
+	result.Tokens += spent
+	result.CostUSD += costUSD
+	result.UnreportedCalls += usage.UnreportedCalls
+	result.ThinkingTokens += usage.ReasoningTokens
+	result.ThinkingMs += usage.ThinkingMs
+	if result.Output == nil {
+		return
+	}
+	cost.SetUnreportedCalls(result.Output, result.UnreportedCalls)
+	result.Output["_tokens"] = result.Tokens
+	if _, named := result.Output["_model"]; !named {
+		result.Output["_model"] = nodeModel
+	}
+	if result.CostUSD > 0 {
+		result.Output["_cost_usd"] = result.CostUSD
+	}
 }
 
 // partialUsage reads the usage off a best-effort partial result, tolerating

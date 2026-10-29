@@ -667,6 +667,18 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	if mcpManager != nil {
 		clawDefaults.MCPProvider = mcpManager.ClawProvider(oauthBroker)
 	}
+	// Synchronous subagents (#1940). The `agent` tool spawns a real child
+	// conversation against this run's model registry and returns its result;
+	// with no runner here claw's own executor would answer {"status":
+	// "running"} and start nothing. The child is bounded by the node that
+	// spawned it — its effective tools, its permission policy, its step
+	// budget and its spend all ride the context (model.ParentLoop,
+	// model.WithParentPermission, model.SubagentSpend) — so the empty default
+	// model is deliberate: the node's own model serves, resolved per call,
+	// since this closure is built once per RUN and the model is a property of
+	// the node. The sandboxed path wires its own against the container's
+	// tools (cmd/iterion registerSandboxLocalTools).
+	clawDefaults.Subagent = model.NewSubagentRunner(reg, toolReg, hooks, lifecycle, "")
 	// Privacy tools — pure-Go detector, always available when a
 	// store directory is wired. No external process or model
 	// download; activating the pair surfaces privacy_filter and

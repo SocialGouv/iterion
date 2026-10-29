@@ -25,7 +25,7 @@ func launcherProxies(t *testing.T, d *proxyDispatcher, defs ...delegate.IOToolDe
 			t.Fatalf("launcherProxies(%q): placement %s — only launcher-placed tools come back as proxies", def.Name, placement)
 		}
 	}
-	out, err := makeHybridToolDefs(defs, d, t.TempDir())
+	out, err := makeHybridToolDefs(defs, d, t.TempDir(), model.NewRegistry(), model.EventHooks{})
 	if err != nil {
 		t.Fatalf("makeHybridToolDefs: %v", err)
 	}
