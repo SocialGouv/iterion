@@ -1,139 +1,48 @@
 ---
 name: session-continuity
 description: >
-  How to use the iterion workspace memory tools (memory_read,
-  memory_write, memory_list) to keep a compact, frontmatter-tagged
-  knowledge tree that survives claw's heuristic context compaction.
+  Why this bundle keeps nothing of its own across sessions, where its
+  durable record lives instead, and how to read the cross-bot findings/
+  inbox another bot's run left behind.
 disable-model-invocation: true
 ---
 
-# Session Continuity — iterion workspace memory
+# Session Continuity — this bundle has no memory tree
 
-Three tools, scoped to this bot's memory tree:
+**This bundle cannot write the tree.** iterion's workspace memory
+tools, and the auto-index and autoload they feed, are claw-only, and
+`whats-next` runs its turn on `backend: "claude_code"` with no
+`memory:` block. The write surface that would reach the tree directly
+is withheld twice over: the node's `tools:` list does not name it, and
+a declaration withholds every native tool it omits; the runtime
+permission gate denies `Bash`, `Write` and `Edit` on top of that.
 
-- **memory_read(path)** — read a file from the scope.
-- **memory_write(path, content)** — write/replace a file in the scope.
-- **memory_list(path)** — list files in a scope subdirectory.
+So keep no durable brief here, and promise none — **the board is this
+bundle's durable record**: the epic body, a ticket, or a comment on the
+ticket a fact belongs to. The next session reads it there.
 
-> **This bundle cannot write the tree.** The `memory_*` tools (and the
-> auto-index/autoload described below) are claw-only, and `whats-next`
-> runs its turn on `backend: "claude_code"` with no `memory:` block. The
-> write surface that would reach the tree directly is withheld twice
-> over: the node's `tools:` list does not name it, and a declaration
-> withholds every native tool it omits; the runtime permission gate
-> denies `Bash`, `Write` and `Edit` on top of that. So **do not keep a
-> `CONTEXT_BRIEF.md` here, and do not promise one** — the board is this
-> bundle's durable record. Reading stays open (`allow: ["Read(**)"]`):
-> a file another bot left in a scope is yours to read with `read_file`,
-> at an absolute path. The scope directory is iterion's store encoding
-> of the workspace path — every `/`, `:` and `\` becomes `-`, a leading
-> `-` is added if the result lacks one, e.g. workspace `/home/u/repo`
-> under `$ITERION_HOME` (default `~/.iterion`) is
-> `~/.iterion/projects/-home-u-repo/memory/<scope>/`. What follows is
-> the write contract for a bundle that DOES carry a `memory:` block on
-> `backend: "claw"`.
+Reading stays open (`allow: ["Read(**)"]`): a file another bot left in
+a scope is yours to read with `read_file`, at an absolute path. The
+scope directory is iterion's store encoding of the workspace path —
+every `/`, `:` and `\` becomes `-`, a leading `-` is added if the
+result lacks one, e.g. workspace `/home/u/repo` under `$ITERION_HOME`
+(default `~/.iterion`) is
+`~/.iterion/projects/-home-u-repo/memory/<scope>/`.
 
-The scope lives **outside the repo**, under
-`~/.iterion/projects/<encoded-workspace>/memory/<scope>/`. Iterion
-**auto-generates an index** of every `.md` file in the scope at
-node start (one line per file: path + title + tags + optional
-description) and prepends it to your system prompt. You do NOT
-maintain an `INDEX.md` by hand — the auto-index always reflects
-ground truth.
-
-The bot config may additionally **autoload** the full content of
-specific files (e.g. `CONTEXT_BRIEF.md`) on top of the index.
-Those are the files you should keep current.
-
-## Writing files
-
-When you call `memory_write`, prefix the body with YAML
-frontmatter. The auto-index reads these three keys:
-
-```
----
-title: "Operator hard constraints"
-description: Running list of constraints captured from feedback.
-tags: [constraint, operator, hard]
----
-
-# Body H1 (optional; falls back to frontmatter title)
-…
-```
-
-- **title** — short label shown in the index.
-- **description** — one sentence; surfaces in the index.
-- **tags** — kebab-case keywords. Use them so other iterations can
-  grep mentally through the index. Conventions:
-  - `kind:*` — `kind:decision`, `kind:learning`, `kind:brief`, `kind:question`
-  - `topic:*` — `topic:auth`, `topic:roadmap`, `topic:scope`
-  - `status:*` — `status:open`, `status:resolved`, `status:revisited`
-
-Frontmatter is **optional**. Without it the index falls back to
-the first `# heading` as title, no tags. But tags are the cheapest
-way to make a growing memory tree navigable.
-
-## CONTEXT_BRIEF.md (the always-loaded brief)
-
-This is the only file that's typically autoloaded in full. Keep
-it under 400 words. Sections:
-
-- **Objective** — one sentence, operator-facing.
-- **Hard constraints** — bullets the operator made explicit.
-- **Decisions** — durable choices, one-line rationale each.
-- **Active files / paths** — recently referenced source files.
-- **Open questions** — unresolved items blocking progress.
-- **Next action** — single verb-led step.
-
-Update it after every major decision or operator revision. Don't
-restate raw artifacts (roadmap JSON, schemas) — those live in
-iterion's artifact store.
-
-## When to grow the tree
-
-Beyond CONTEXT_BRIEF.md, create dated/topic-tagged files when:
-
-- A decision has rationale worth preserving (e.g.
-  `decisions/2026-05-18-dropped-feature-X.md`).
-- A pattern recurs across operator feedback worth noting as a
-  learning (e.g. `learnings/code-style.md`).
-- You want a long-form note that would bloat the brief.
-
-The auto-index will surface all of these on the next iteration —
-no manual bookkeeping needed.
-
-## Updating, superseding, deleting
-
-Memory is long-lived: across many iterations the same fact gets revisited.
-Before you write a fact, **reconcile it against what's already there** — read
-the related file(s) first (the index makes them cheap to find), then classify:
-
-- **New** — nothing covers it. Write a fresh file.
-- **Covered** — an existing file already says this, correctly. Do nothing;
-  don't write a near-duplicate.
-- **Refines** — an existing file is right but incomplete. Edit it in place
-  (`memory_write` the same path with the fuller content). One fact, one home.
-- **Supersedes** — a new fact *contradicts* an old one (a decision reversed, a
-  value changed). Do NOT delete the old file. Instead:
-  - mark the old file `status:superseded` in its tags and add a
-    `superseded_by: <new-path>` line to its frontmatter;
-  - give the new file a `supersedes: <old-path>` line.
-  The trail stays legible (why the change happened), and a future iteration
-  reading the old file sees at a glance that it is stale and where to look.
-  (`status:superseded` shows in the index; the two link lines are ignored by
-  the indexer and read by humans/agents.)
-
-**Delete only a memory that was outright *wrong*** — never one that merely
-aged out. A superseded fact carries history; a wrong fact is noise. When in
-doubt, supersede (reversible) rather than delete (destructive).
-
-This keeps the tree from accreting silent contradictions — the failure mode
-that makes a long-lived memory untrustworthy.
+The write contract itself — the tools, the frontmatter the auto-index
+reads, when to grow the tree, how to supersede a fact instead of
+deleting it — belongs to a bundle that carries a `memory:` block on
+`backend: "claw"`. It is authored in that bundle's copy of this skill,
+the family's source
+([bots/evolve/skills/session-continuity.md](../../evolve/skills/session-continuity.md)),
+and this copy deliberately does not restate it — a page teaching a
+write its own node cannot perform is what makes this copy a variant
+rather than the family's source.
 
 ## The findings/ scope (cross-bot inbox)
 
-`findings/` is a **distinct memory scope** — a sibling of this
-bot's own scope under `…/memory/`, not a subfolder of it. It is a
+`findings/` is a **distinct memory scope** under `…/memory/` — a
+sibling of the per-bot scopes, not a subfolder of one. It is a
 shared inbox where dispatcher-spawned bots drop one Markdown file
 per observation they want a later session (or the operator) to act
 on. Filenames are date-prefixed, `YYYY-MM-DD-<slug>.md`, and the
@@ -188,13 +97,10 @@ API/function names). You do **not** need a `status:` field — the
 hygiene pass infers resolution from git, and an unresolved finding
 simply survives to the next session.
 
-## Path discipline
-
-- Paths are scope-relative. Never absolute, never `../...`.
-- Use kebab-case filenames. Date-prefix dated entries.
-- One topic per file.
-
 ## Do not record
+
+Whatever you make durable — a board comment, an epic body, a quote
+from a finding you read — leaves out:
 
 - Secrets (API keys, tokens, OAuth credentials, signed URLs).
 - Verbatim schema-typed outputs (artifacts cover that).

@@ -7,7 +7,7 @@ shared knowledge, and operators wiring multi-tenant isolation.
 Memory is how iterion agents carry knowledge across runs — what they
 learned, where they left off — persisted as a per-org, quota-governed
 tree of markdown documents with tenant-isolated visibility scopes. The session-continuity skill
-([bots/whats-next/skills/session-continuity.md](../bots/whats-next/skills/session-continuity.md))
+([bots/evolve/skills/session-continuity.md](../bots/evolve/skills/session-continuity.md))
 is the canonical consumer.
 
 Diagram: [diagrams/data-model-knowledge.md](diagrams/data-model-knowledge.md) — the memory, config-share and notification data model.
@@ -163,10 +163,18 @@ reads one (stdin when `--in` is omitted) and merges under `--strategy`
 
 ## How bots use memory
 
-The canonical consumer is the **session-continuity** skill shipped in
-the `whats-next` bundle
-([bots/whats-next/skills/session-continuity.md](../bots/whats-next/skills/session-continuity.md)).
-It exposes three tools that every catalog bot can use:
+The canonical consumer is the **session-continuity** skill, rooted in the
+`evolve` bundle
+([bots/evolve/skills/session-continuity.md](../bots/evolve/skills/session-continuity.md)) —
+the member of its `internal/skillshare` family that carries a `memory:`
+block on a claw node, and so owns the write contract the others read. A
+member that cannot reach the tree carries a variant saying so and nothing
+more: `iterion validate` names a skill teaching a write its own bundle
+cannot serve (C274), and a family rooted in such a bundle would make that
+warning unclosable.
+
+The skill documents the three tools a `memory:` block installs on a claw
+run — claw-only, which is the whole reason the family is rooted where it is:
 
 - `memory_read` — read a document from the configured space.
 - `memory_write` — write or overwrite a document.

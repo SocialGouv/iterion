@@ -24,9 +24,10 @@ Current bundles and their skills:
   `iterion-dsl-quickref`, `iterion-board` (reference for the
   capability-gated board MCP tools on claude_code, claw, and pi RPC),
   `iterion-label-vocabulary`, `repo-survey`, `roadmap-synthesis`,
-  `session-continuity` (iterion workspace memory — `memory_read` /
-  `memory_write` / `memory_list` for the cross-run knowledge tree under
-  `~/.iterion/projects/<key>/memory/<scope>/`), and `dogfood-cycle`
+  `session-continuity` (the VARIANT: this bundle has no memory tree, so
+  its copy carries the refusal, the board as its durable record and the
+  read-only `findings/` inbox — the write contract is rooted in
+  `bots/evolve`), and `dogfood-cycle`
   (the operator's measured ritual for validating a bot by a real run).
   Unlisted: `factory-ops`, `operator-arbitrage` — 11 files; the generated
   [map-bots.md](../../references/map-bots.md) is the inventory.
@@ -37,7 +38,7 @@ Current bundles and their skills:
   Six of the original eight were produced by a dogfood run of claw +
   `openai/gpt-5.5` against this repo; `iterion-board` was added by
   the board-capabilities work and `session-continuity` by the
-  workspace-memory work — see
+  workspace-memory work (rooted on `evolve` since iterion#2832) — see
   [scripts/adhoc/whats-next-skills-gen.bot](../../../scripts/adhoc/whats-next-skills-gen.bot)
   for the generator (the seed for a future formalised
   `generate-skills.bot`).

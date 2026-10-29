@@ -17,9 +17,11 @@ package bundlelint
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -177,6 +179,16 @@ const (
 	// seed (bundle.KnownBotTags). The set is open on purpose; the warning
 	// exists so a new facet is a deliberate act, not a drift.
 	DiagBotTagUnknown Code = "C273"
+
+	// Durable memory (C274). A warning, never an error: a skill teaching a
+	// write the bundle cannot perform is an authoring gap, and `iterion
+	// validate` does not change its exit code on one.
+
+	// DiagSkillDurableMemoryUnserved: a bundle's skill names the durable
+	// memory store's own write tool while no node of the bundle can put
+	// bytes in a memory tree, so every reader of that page is taught a
+	// contract the bot carrying it cannot honour.
+	DiagSkillDurableMemoryUnserved Code = "C274"
 )
 
 // minRoutableDescription is the shortest `description:` the skill lint treats
@@ -265,6 +277,12 @@ type SkillDoc struct {
 	Path        string
 	Name        string
 	Description string
+	// Body is the page's text, for the reference check that reads which
+	// TOOLS a page names (C274). Empty skips that check: the routability
+	// checks above need the frontmatter alone, so a caller that has not
+	// read the body still asks them. It is never read for prose style —
+	// checkSkills' contract forbids that, and C274 matches a tool's name.
+	Body string
 }
 
 // CheckConsistency cross-checks a bot's manifest against its compiled
@@ -282,6 +300,10 @@ func CheckConsistency(in Input) []Diag {
 	checkProfileUnread(&diags, in.Syntax.Unread)
 	checkProfileShort(&diags, in.Syntax.Short)
 	checkSubbotContracts(&diags, in.Workflow, in.SubbotContracts)
+	// Manifest-free, like the checks above it: the question is the skills
+	// against the workflow's own nodes, and a bundle known by its skills/
+	// and its main.bot alone is owed the same answer.
+	checkDurableMemoryPromises(&diags, in.Skills, in.Workflow)
 	if m != nil {
 		checkContractManifest(&diags, m, in.Workflow)
 		checkVarMaps(&diags, m, in.Workflow)
@@ -670,6 +692,290 @@ func checkSkills(diags *[]Diag, skills []SkillDoc) {
 			})
 		}
 	}
+}
+
+// checkDurableMemoryPromises holds a bundle's skills to what its own nodes
+// can do with a DURABLE store (C274): a page naming the memory store's write
+// tool, in a bundle where no node can put bytes in a memory tree, teaches
+// every reader a contract the bot cannot honour.
+//
+// It is a REFERENCE check, which is why it lives here and not in checkSkills,
+// whose contract forbids prose rules: the page must NAME the tool, and the
+// vocabulary is read from toolcatalog rather than listed.
+//
+// The two halves are asymmetric, and the asymmetry is the question's own:
+//
+//   - what the page NAMES is the tool of the DURABLE store — the member of
+//     toolcatalog.DurableWriteCanonicals the spelling table does not project
+//     onto any backend roster, claw's own `memory_write`. `Write` and `bash`
+//     name a write to the workspace, which no run keeps, so a page
+//     documenting the DSL's `bash -c` recipe, or naming the writers a
+//     permission gate DENIES, promises nothing — bots/whats-next ships both,
+//     and both must stay quiet.
+//   - what a node can SERVE is the whole durable-write vocabulary, shell
+//     included: the memory tree is a directory under `$ITERION_HOME`, so a
+//     node holding the shell keeps a durable file with no builtin at all —
+//     which is exactly what a claude_code recipe once told a bot to do.
+//
+// The capability is read from the DECLARATION, the surface bundlelint judges,
+// and it is read GENEROUSLY: a `memory:` block on a backend that cannot serve
+// it is ir's own diagnostic, and a warning speaking over another diagnostic's
+// defect would name the wrong fix. bots.TestABundleSellsADurableBriefOnlyWhereItCanWriteOne
+// is the corpus twin, which reads the RESOLVED routes an executor computes.
+//
+// The question is asked of ONE workflow, not of a bundle's every entrypoint,
+// because a skill is mirrored into the workspace of ONE run: a bundle's
+// sibling entry is its own bot, and the page it loads is owed to the nodes
+// that will read it there.
+func checkDurableMemoryPromises(diags *[]Diag, skills []SkillDoc, w *ir.Workflow) {
+	if w == nil || len(skills) == 0 {
+		return
+	}
+	tools := durableMemoryWriteTools()
+	// No durable store in the vocabulary, no question to ask.
+	if len(tools) == 0 {
+		return
+	}
+	// A bundle with no LLM node has no model reading a skill at all.
+	readers := llmNodeIDs(w)
+	if len(readers) == 0 {
+		return
+	}
+	if anyNodeCanWriteDurably(w, readers) {
+		return
+	}
+	ordered := append([]SkillDoc(nil), skills...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Path < ordered[j].Path })
+	for _, s := range ordered {
+		named := namedTools(s.Body, tools)
+		if len(named) == 0 {
+			continue
+		}
+		*diags = append(*diags, Diag{
+			Code:     DiagSkillDurableMemoryUnserved,
+			Severity: SeverityWarning,
+			Field:    s.Path,
+			Message: fmt.Sprintf(
+				"the page names %s, but no node of this bundle can put bytes in a durable memory tree: %s",
+				strings.Join(quotedNames(named), ", "), describeNodes(w, readers),
+			),
+			Hint: "give a node a `memory:` block on `backend: \"claw\"`, or a `tools:` list naming a writer its permission gate leaves — or scope the page to say this bundle has no memory tree",
+		})
+	}
+}
+
+// durableMemoryWriteTools are the durable-write concepts that name the
+// durable STORE itself, derived from the shared vocabulary instead of listed:
+// a member toolcatalog.DurableWriteCanonicals carries that its spelling table
+// does not know is one no backend roster projects, which is exactly how that
+// set describes claw's `memory_write`. A second store builtin added there is
+// read here the day it lands.
+//
+// The projected members are left out of the NAMING half for a measured
+// reason, not a tidy one: their names are also words. Read whole, the
+// vocabulary fires on 57 of the 194 skill pages this repository ships,
+// blaming `write`, `edit` and `bash` — the English verbs, and the DSL's own
+// recipe vocabulary in a quick reference that names `run_command` as
+// something that is NOT a tool. A store builtin is a tool identifier and
+// nothing else, which is what makes a reference check precise here;
+// TestAPageNamingAWorkspaceWriterPromisesNoDurableMemory and the catalogue
+// gate (bots.TestCatalogBotsBundleConsistencyClean) are what keep it so.
+func durableMemoryWriteTools() []string {
+	rows := toolcatalog.CanonicalRows()
+	var out []string
+	for _, canonical := range toolcatalog.DurableWriteCanonicals() {
+		if _, projected := rows[canonical]; !projected {
+			out = append(out, canonical)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// llmNodeIDs are the workflow's LLM node ids, sorted: the nodes a mirrored
+// skill reaches, and the only ones that can hold a tool.
+func llmNodeIDs(w *ir.Workflow) []string {
+	var out []string
+	for id, n := range w.Nodes {
+		if _, ok := n.(ir.LLMNode); ok {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// anyNodeCanWriteDurably reports whether one node of the workflow could put
+// bytes in a durable memory tree. Three declarations are a path, and each is
+// a different question:
+//
+//   - a `memory:` block installs the store's own tools (claw-only; a block
+//     declared elsewhere is ir's diagnostic, not this one's);
+//   - an UNDECLARED `tools:` list is not an empty one — on the CLI backends it
+//     means "no restriction", so the native roster keeps the shell and the
+//     writers, while `tools: []` IS a declaration;
+//   - a declared tool of the durable-write vocabulary its permission gate
+//     leaves.
+func anyNodeCanWriteDurably(w *ir.Workflow, ids []string) bool {
+	for _, id := range ids {
+		llm, ok := w.Nodes[id].(ir.LLMNode)
+		if !ok {
+			continue
+		}
+		if llm.GetMemory() != nil {
+			return true
+		}
+		if !toolcatalog.ToolsDeclared(llm.GetTools()) {
+			return true
+		}
+		if declaredDurableWriter(llm, w) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// declaredDurableWriter returns the first tool a node declares that could
+// write a durable file, or "" for none. The vocabulary is the shared set —
+// never a second list — folded through the spelling table, so `write_file`
+// and `apply_patch` count exactly as `write` and `edit` do.
+//
+// The store's OWN builtins are excluded, and the exclusion is the heart of
+// the question: a `memory:` block installs them, a `tools:` entry cannot —
+// naming one there asks claw for a tool it does not have (C135). A bundle
+// that read the skill page and answered it with `tools: [memory_write]` is
+// precisely the confusion this diagnostic exists to name, so reading that
+// list as a path would silence the warning on its own best example. Which
+// members are the store's is the SAME derivation the naming half reads, from
+// the same chokepoint.
+func declaredDurableWriter(llm ir.LLMNode, w *ir.Workflow) string {
+	writers := toolcatalog.DurableWriteCanonicals()
+	store := durableMemoryWriteTools()
+	for _, tool := range llm.GetTools() {
+		canonical := toolcatalog.CanonicalToolName(tool)
+		if !slices.Contains(writers, canonical) || slices.Contains(store, canonical) {
+			continue
+		}
+		if deniedByPermissionRules(llm, w, tool) {
+			continue
+		}
+		return tool
+	}
+	return ""
+}
+
+// deniedByPermissionRules reports whether the runtime permission gate removes
+// a tool the declaration granted — the gate bounds what RUNS, independently of
+// what exists.
+//
+// An unset mode is off (ir.Workflow.Permission), and an off gate leaves the
+// rule lists inert: read as "not denied" rather than guessed. A scoped rule
+// (`Tool(pattern)`) bounds a subset of the calls, so only the bare form
+// removes the tool outright.
+func deniedByPermissionRules(llm ir.LLMNode, w *ir.Workflow, tool string) bool {
+	mode := llm.GetPermission()
+	if mode == "" {
+		mode = w.Permission
+	}
+	if mode == "" || mode == "off" {
+		return false
+	}
+	for _, rule := range ir.EffectivePermissionRules(llm.GetPermissionDeny(), w.PermissionDeny) {
+		if strings.Contains(rule, "(") {
+			continue
+		}
+		if toolcatalog.CanonicalToolName(strings.TrimSpace(rule)) == toolcatalog.CanonicalToolName(tool) {
+			return true
+		}
+	}
+	return false
+}
+
+// namedTools are the tools a page NAMES, in the order given, each at most
+// once.
+func namedTools(body string, tools []string) []string {
+	if body == "" {
+		return nil
+	}
+	lower := strings.ToLower(body)
+	var out []string
+	for _, tool := range tools {
+		if namesTool(lower, strings.ToLower(tool)) {
+			out = append(out, tool)
+		}
+	}
+	return out
+}
+
+// namesTool reports whether a (lower-cased) page names a tool AS the tool:
+// the token bounded by characters a tool identifier cannot carry, so
+// `memory_write` and `memory_write(path, content)` both count while
+// `memory_writer` and `team_memory_write` do not.
+func namesTool(lowerBody, tool string) bool {
+	for i := 0; i+len(tool) <= len(lowerBody); {
+		j := strings.Index(lowerBody[i:], tool)
+		if j < 0 {
+			return false
+		}
+		at := i + j
+		beforeOK := at == 0 || !identByte(lowerBody[at-1])
+		end := at + len(tool)
+		afterOK := end == len(lowerBody) || !identByte(lowerBody[end])
+		if beforeOK && afterOK {
+			return true
+		}
+		i = at + 1
+	}
+	return false
+}
+
+// identByte reports whether a byte can be part of a tool identifier.
+func identByte(b byte) bool {
+	return b == '_' || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+// describeNodes says what each reading node declares, so the fix is read off
+// the message instead of hunted in the .bot. Bounded: past the fourth node
+// the list says how many more there are.
+func describeNodes(w *ir.Workflow, ids []string) string {
+	const shown = 4
+	var parts []string
+	for i, id := range ids {
+		if i == shown {
+			parts = append(parts, fmt.Sprintf("+%d more", len(ids)-shown))
+			break
+		}
+		llm, ok := w.Nodes[id].(ir.LLMNode)
+		if !ok {
+			continue
+		}
+		backend := llm.GetLLMFields().Backend
+		if backend == "" {
+			backend = "the workflow default"
+		}
+		declared := "no `tools:` list"
+		if toolcatalog.ToolsDeclared(llm.GetTools()) {
+			declared = fmt.Sprintf("tools: [%s]", strings.Join(llm.GetTools(), ", "))
+		}
+		// Read, never assumed: the `memory:` arm of the capability makes a
+		// block impossible here today, and a message that restated that
+		// coupling would start lying the day an arm is added.
+		block := "carries no `memory:` block"
+		if llm.GetMemory() != nil {
+			block = "carries a `memory:` block its backend cannot serve"
+		}
+		parts = append(parts, fmt.Sprintf("node %q (backend %s) declares %s and %s", id, backend, declared, block))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// quotedNames renders names for a message, each in Go quotes.
+func quotedNames(names []string) []string {
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		out = append(out, fmt.Sprintf("%q", n))
+	}
+	return out
 }
 
 // usesPerBotMemory reports whether any node opts into per-bot memory.

@@ -34,15 +34,18 @@ var clawMemoryTools = []string{"memory_read", "memory_write", "memory_list"}
 // read like any other.
 //
 // Keyed by path relative to the repository root.
+//
+// EMPTY, and that is the verdict: its one row was the shared mechanism page
+// in a bundle that cannot write the tree, and rooting the family on the
+// member that CAN (internal/skillshare/families.go, iterion#2832) left that
+// bundle's copy with no brief to mention. Every row is audited by
+// reportUnearnedExemptions, so a row that stops being read is a finding
+// rather than a silent pardon — the list can only shrink without a
+// review.
 var briefPromiseExemptions = map[string]struct {
 	reason string
 	marker string
-}{
-	"bots/whats-next/skills/session-continuity.md": {
-		reason: "the shared mechanism page (internal/skillshare family, source whats-next, variant evolve): it documents the claw write contract for the bundles that carry a `memory:` block, and its own note refuses the write for THIS bundle",
-		marker: "do not keep a `CONTEXT_BRIEF.md` here, and do not promise one",
-	},
-}
+}{}
 
 // TestABundleSellsADurableBriefOnlyWhereItCanWriteOne is the agreement #2773
 // asks for, as a guard rather than a grep: a bundle may sell a durable
@@ -92,18 +95,20 @@ func TestABundleSellsADurableBriefOnlyWhereItCanWriteOne(t *testing.T) {
 	}
 
 	promises := briefPromises(t)
-	// Both of the honest shapes must be in the corpus, or the verdict below
-	// proves nothing: a bundle that may promise (evolve) and a page exempted
-	// by its own note (whats-next's mechanism page).
+	// The honest shape must be in the corpus, or the verdict below proves
+	// nothing: a bundle that MAY promise (evolve, which carries the family's
+	// source page since iterion#2832). The exempted shape is gone with the
+	// table — the rooting removed the one page that needed a pardon.
 	if len(promises) == 0 {
 		t.Fatal("no mention of the durable brief anywhere under bots/ — this guard lost its subject")
 	}
 
 	var unbacked, unattributed []string
-	sawPermitted, sawExempt := 0, 0
+	sawPermitted := 0
+	usedBriefExemptions := map[string]bool{}
 	for _, p := range promises {
 		if ex, ok := briefPromiseExemptions[p.file]; ok && exemptionHolds(t, p.file, ex.marker) {
-			sawExempt++
+			usedBriefExemptions[p.file] = true
 			continue
 		}
 		why, known := canWrite[p.about]
@@ -118,10 +123,7 @@ func TestABundleSellsADurableBriefOnlyWhereItCanWriteOne(t *testing.T) {
 		sawPermitted++
 	}
 
-	if sawExempt == 0 {
-		t.Errorf("no exempted page was read — %s claims to be exempt by its own note, so either the note or the page moved, and the exemption table is stale",
-			"bots/whats-next/skills/session-continuity.md")
-	}
+	reportUnearnedExemptions(t, "briefPromiseExemptions", briefExemptionReasons(), usedBriefExemptions)
 	if sawPermitted == 0 {
 		t.Error("no promise was backed by a real write path — the permitting arm of this guard never ran, so it cannot be trusted to permit evolve's card")
 	}
@@ -134,7 +136,8 @@ func TestABundleSellsADurableBriefOnlyWhereItCanWriteOne(t *testing.T) {
 		t.Errorf("%d page(s) sell a durable %s a bundle cannot write (iterion#2773) — drop the promise, or give the node a path to the tree (`backend: \"claw\"` with a `memory:` block, or a `tools:` list that names a writer):\n  %s",
 			len(unbacked), briefMarker, strings.Join(unbacked, "\n  "))
 	}
-	t.Logf("%d bundles, %d brief mention(s): %d permitted, %d exempt", len(canWrite), len(promises), sawPermitted, sawExempt)
+	t.Logf("%d bundles, %d brief mention(s): %d permitted, %d exempt (of %d exemptions declared)",
+		len(canWrite), len(promises), sawPermitted, len(usedBriefExemptions), len(briefPromiseExemptions))
 }
 
 // bundleSlug turns a shippedWorkflow key into the bundle directory name, and
@@ -363,15 +366,18 @@ func exemptionHolds(t *testing.T, page, marker string) bool {
 // memoryRootExemptions are the shared-skill family SOURCES whose page names
 // claw's memory tools in a bundle that cannot serve them, each with its reason
 // and the words the page must still carry for the exemption to hold.
+//
+// EMPTY, and that is the point: its one row pardoned the session-continuity
+// family for being rooted in bots/whats-next, which cannot serve the tools its
+// source page teaches. Rooting the family on bots/evolve
+// (internal/skillshare/families.go, iterion#2832) removed the exemption
+// instead of encoding it, which is what let the same rule be carried into
+// `iterion validate` (C274) — a universal lint has nowhere to keep a pardon
+// for one bundle. reportUnearnedExemptions audits what survives.
 var memoryRootExemptions = map[string]struct {
 	reason string
 	marker string
-}{
-	"session-continuity.md": {
-		reason: "the family's other member is bots/evolve, whose claw node really does carry a `memory:` block: the page documents the write contract FOR that member, and its own note refuses the write for the source bundle",
-		marker: "This bundle cannot write the tree.",
-	},
-}
+}{}
 
 // TestEverySharedMemorySkillIsRootedWhereItCanBeServed closes the root cause
 // #2773 reported, one layer under the promise: a shared skill whose SOURCE
@@ -407,7 +413,8 @@ func TestEverySharedMemorySkillIsRootedWhereItCanBeServed(t *testing.T) {
 		t.Fatalf("the declaration holds %d families of the 20 this tree carries — the subject moved and every verdict below is vacuous", len(families))
 	}
 	var unrooted []string
-	checked, exempt := 0, 0
+	checked := 0
+	usedRootExemptions := map[string]bool{}
 	for _, f := range families {
 		page := f.Path(f.Source) // repo-relative
 		body, err := os.ReadFile(filepath.Join("..", page))
@@ -426,7 +433,7 @@ func TestEverySharedMemorySkillIsRootedWhereItCanBeServed(t *testing.T) {
 		}
 		ex, ok := memoryRootExemptions[f.Name]
 		if ok && strings.Contains(string(body), ex.marker) {
-			exempt++
+			usedRootExemptions[f.Name] = true
 			continue
 		}
 		fix := "re-root the family on a member that carries a `memory:` block on a claw node, or scope the page with a note saying this bundle cannot reach the tree"
@@ -439,14 +446,13 @@ func TestEverySharedMemorySkillIsRootedWhereItCanBeServed(t *testing.T) {
 	if checked == 0 {
 		t.Fatal("no family source names claw's memory tools — this guard lost its subject; it must see session-continuity.md")
 	}
-	if exempt == 0 {
-		t.Errorf("no exemption was earned, yet %d family source(s) were checked: either every source can now serve the tools (retire the table) or a marker moved", checked)
-	}
+	reportUnearnedExemptions(t, "memoryRootExemptions", rootExemptionReasons(), usedRootExemptions)
 	if len(unrooted) > 0 {
 		sort.Strings(unrooted)
 		t.Errorf("%d shared memory skill(s) rooted where they cannot be served (iterion#2773):\n  %s", len(unrooted), strings.Join(unrooted, "\n  "))
 	}
-	t.Logf("%d family source(s) teaching the memory tools, %d exempt", checked, exempt)
+	t.Logf("%d family source(s) teaching the memory tools, %d exempt (of %d exemptions declared)",
+		checked, len(usedRootExemptions), len(memoryRootExemptions))
 }
 
 // namesAClawMemoryTool reports whether a page names one of the three tools a
@@ -486,4 +492,85 @@ func clawMemoryToolPath(sw shippedWorkflow) string {
 		}
 	}
 	return ""
+}
+
+// reportUnearnedExemptions names every declared exemption the walk did not
+// read. A row nobody earns is not a harmless leftover: it is a pardon the
+// tree no longer needs, and leaving it would let the next real promise hide
+// behind it. The rule is the ratchet both tables carry — the list can only
+// SHRINK without a review — and it is why an EMPTY table is the healthy
+// state rather than a disabled guard: with no rows, there is nothing to earn
+// and nothing pardoned.
+//
+// Each table's reasons are passed in so the message can say what the row was
+// kept FOR, which is the half of an exemption a reader needs in order to
+// retire it.
+func reportUnearnedExemptions(t *testing.T, table string, reasons map[string]string, used map[string]bool) {
+	t.Helper()
+	stale := unearnedExemptions(reasons, used)
+	if len(stale) == 0 {
+		return
+	}
+	t.Errorf("%d row(s) of %s were not earned by this walk — the page moved, its marker moved, or the exemption is no longer needed; delete the row (the list may only shrink) or restore what it rests on:\n  %s",
+		len(stale), table, strings.Join(stale, "\n  "))
+}
+
+// unearnedExemptions is the auditor's predicate, sorted, separated from the
+// reporting so it can be held to examples itself: an auditor nobody ever saw
+// name a row is an assertion about an empty map, which both tables now carry.
+func unearnedExemptions(reasons map[string]string, used map[string]bool) []string {
+	var stale []string
+	for key, reason := range reasons {
+		if used[key] {
+			continue
+		}
+		stale = append(stale, fmt.Sprintf("%s (kept for: %s)", key, reason))
+	}
+	sort.Strings(stale)
+	return stale
+}
+
+// TestTheExemptionAuditorNamesOnlyUnearnedRows holds the auditor to examples,
+// because the two tables it guards are EMPTY: with no rows, the walks above
+// exercise it over nothing, and a broken auditor would read as a clean tree.
+// The day a row returns, this is what says the audit still works.
+func TestTheExemptionAuditorNamesOnlyUnearnedRows(t *testing.T) {
+	t.Parallel()
+
+	if got := unearnedExemptions(map[string]string{}, map[string]bool{}); len(got) != 0 {
+		t.Errorf("an empty table reported %v — an empty exemption list pardons nothing and must audit clean", got)
+	}
+	reasons := map[string]string{
+		"a.md": "the family source, refused by its own note",
+		"b.md": "a generated card about another bundle",
+	}
+	if got := unearnedExemptions(reasons, map[string]bool{"a.md": true, "b.md": true}); len(got) != 0 {
+		t.Errorf("rows the walk earned were reported stale: %v", got)
+	}
+	got := unearnedExemptions(reasons, map[string]bool{"b.md": true})
+	if len(got) != 1 || !strings.Contains(got[0], "a.md") || !strings.Contains(got[0], "refused by its own note") {
+		t.Errorf("the unearned row is not named with its reason: %v", got)
+	}
+	// Sorted: two stale rows must read the same on every run.
+	if got := unearnedExemptions(reasons, nil); len(got) != 2 || !strings.HasPrefix(got[0], "a.md") {
+		t.Errorf("the stale rows are not in a stable order: %v", got)
+	}
+}
+
+// briefExemptionReasons is briefPromiseExemptions keyed for the auditor.
+func briefExemptionReasons() map[string]string {
+	out := make(map[string]string, len(briefPromiseExemptions))
+	for key, ex := range briefPromiseExemptions {
+		out[key] = ex.reason
+	}
+	return out
+}
+
+// rootExemptionReasons is memoryRootExemptions keyed for the auditor.
+func rootExemptionReasons() map[string]string {
+	out := make(map[string]string, len(memoryRootExemptions))
+	for key, ex := range memoryRootExemptions {
+		out[key] = ex.reason
+	}
+	return out
 }

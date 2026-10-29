@@ -147,9 +147,9 @@ func Families() []Family {
 		},
 		{
 			Name:   "session-continuity.md",
-			Source: "whats-next",
+			Source: "evolve",
 			Variants: []Variant{
-				{"evolve", "Evoly's memory scopes and write cadence differ from Nexie's: it reads the tree a campaign left behind, where whats-next writes the operator's own session trail."},
+				{"whats-next", "the one member that CANNOT reach the memory tree: its turn runs on claude_code with no `memory:` block, so its copy drops the write contract entirely and carries the refusal, the board as its durable record, and the read-only `findings/` inbox it does share. The capability owns the canonical text (iterion#2832): a family rooted in a bundle that cannot serve its own tools teaches every reader a contract the bundle cannot honour."},
 			},
 		},
 		{

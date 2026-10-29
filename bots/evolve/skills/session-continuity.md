@@ -7,11 +7,10 @@ description: >
 disable-model-invocation: true
 ---
 
-<!-- TODO: duplicated from bots/whats-next/skills/session-continuity.md
-     (iterion has no skill-sharing primitive yet — see CLAUDE.md "Skills
-     ... live with their bundle"). Keep in sync with that copy until a
-     shared-skill mechanism exists. Evoly-specific layout is in
-     evolve-memory-layout.md. -->
+<!-- The source of the `session-continuity.md` family
+     (internal/skillshare/families.go): this bundle carries a `memory:`
+     block on a claw node, so it owns the write contract every member
+     reads. Evoly-specific layout is in evolve-memory-layout.md. -->
 
 # Session Continuity — iterion workspace memory
 

@@ -1085,12 +1085,15 @@ func lintMainOfBundle(b *bundle.Bundle) (*ir.Workflow, *bundle.Frontmatter, stri
 	return mcr.Workflow, fm, mainPath, err
 }
 
-// scanBundleSkills reads a bundle's skills/*.md frontmatter (name +
-// description) for the routability lint (C231–C234), using the shared
-// skilllib parser so it never drifts from run-time discovery. An empty or
-// missing dir yields no docs (the checks then no-op). Non-.md entries and
-// unreadable files are skipped silently — the lint judges routability of the
-// skills that exist, not filesystem health.
+// scanBundleSkills reads a bundle's skills/*.md for the routability lint
+// (C231–C234) and the durable-memory reference check (C274), using the shared
+// skilllib parser for the frontmatter so it never drifts from run-time
+// discovery. An empty or missing dir yields no docs (the checks then no-op).
+// Non-.md entries and unreadable files are skipped silently — the lint judges
+// the skills that exist, not filesystem health.
+//
+// The page's text travels with its frontmatter because C274 asks which TOOLS
+// the page names; bundlelint stays I/O-free, so the bytes are read here.
 func scanBundleSkills(skillsDir string) []bundlelint.SkillDoc {
 	if skillsDir == "" {
 		return nil
@@ -1104,16 +1107,16 @@ func scanBundleSkills(skillsDir string) []bundlelint.SkillDoc {
 		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".md") {
 			continue
 		}
-		f, err := os.Open(filepath.Join(skillsDir, e.Name()))
+		body, err := os.ReadFile(filepath.Join(skillsDir, e.Name()))
 		if err != nil {
 			continue
 		}
-		name, desc := skilllib.ScanFrontmatter(f)
-		_ = f.Close()
+		name, desc := skilllib.ScanFrontmatter(strings.NewReader(string(body)))
 		docs = append(docs, bundlelint.SkillDoc{
 			Path:        filepath.Join(bundle.DirSkills, e.Name()),
 			Name:        name,
 			Description: desc,
+			Body:        string(body),
 		})
 	}
 	return docs

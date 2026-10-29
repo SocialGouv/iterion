@@ -3,11 +3,14 @@ package bots
 import (
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/bundlelint"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/skilllib"
 	"github.com/SocialGouv/iterion/pkg/subbotcontracts"
 )
 
@@ -84,6 +87,12 @@ func TestCatalogBotsBundleConsistencyClean(t *testing.T) {
 			// compiled for their contract (C255): the gate holds a shipped
 			// parent to what its child declares, as `iterion validate` does.
 			SubbotContracts: subbotcontracts.Read(dir, mainBot, cr.Workflow),
+			// The bundle's own skill pages, read as `iterion validate` reads
+			// them (cli.scanBundleSkills): without them the routability
+			// checks (C231–C234) and the durable-memory reference check
+			// (C274) were SKIPPED here, so this gate spoke for six of the
+			// lint's checks while four of them judged nothing.
+			Skills: bundleSkillDocs(t, dir),
 		})
 		checked++
 		for _, d := range diags {
@@ -96,4 +105,43 @@ func TestCatalogBotsBundleConsistencyClean(t *testing.T) {
 	if checked == 0 {
 		t.Fatal("no bundles cross-checked — discovery glob likely broke")
 	}
+}
+
+// bundleSkillDocs reads one bundle's skills/*.md the way `iterion validate`
+// does (pkg/cli.scanBundleSkills): the shared frontmatter parser, plus the
+// page's text for the checks that ask which tools a page NAMES. A bundle with
+// no skills/ dir yields none, and the skill checks then no-op.
+//
+// It mirrors the CLI rather than sharing it because scanBundleSkills is
+// unexported and pkg/cli is the composition layer; the shape it builds is the
+// contract, and bundlelint.SkillDoc is where a drift would show.
+func bundleSkillDocs(t *testing.T, dir string) []bundlelint.SkillDoc {
+	t.Helper()
+	skillsDir := filepath.Join(dir, bundle.DirSkills)
+	entries, err := os.ReadDir(skillsDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			t.Fatalf("read %s: %v", skillsDir, err)
+		}
+		return nil
+	}
+	var docs []bundlelint.SkillDoc
+	for _, e := range entries {
+		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".md") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(skillsDir, e.Name()))
+		if err != nil {
+			t.Fatalf("read %s/%s: %v", skillsDir, e.Name(), err)
+		}
+		name, desc := skilllib.ScanFrontmatter(strings.NewReader(string(body)))
+		docs = append(docs, bundlelint.SkillDoc{
+			Path:        filepath.Join(bundle.DirSkills, e.Name()),
+			Name:        name,
+			Description: desc,
+			Body:        string(body),
+		})
+	}
+	sort.Slice(docs, func(i, j int) bool { return docs[i].Path < docs[j].Path })
+	return docs
 }

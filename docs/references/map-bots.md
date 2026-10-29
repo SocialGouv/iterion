@@ -241,7 +241,7 @@ The pair a model sees before it decides to open the file.
 | `whats-next` | `operator-arbitrage` | How Nexie unlocks operator decisions — grouped decision blocks with sharp options and a named recommendation in the turn-end… |
 | `whats-next` | `repo-survey` | Read-only survey method for Nexie — a tight single-pass survey for scoped questions, and a 3-audit parallel fan-out (docs/ADRs,… |
 | `whats-next` | `roadmap-synthesis` | Compose a roadmap study's synthesis — 6-9 named chantiers tiered now/next/later, quick-wins, an argued top-3, explicit blind… |
-| `whats-next` | `session-continuity` | How to use the iterion workspace memory tools (memory_read, memory_write, memory_list) to keep a compact, frontmatter-tagged… |
+| `whats-next` | `session-continuity` | Why this bundle keeps nothing of its own across sessions, where its durable record lives instead, and how to read the cross-bot… |
 | `whats-next` | `whats-next` | Operating playbook for Nexie, the conversational co-CTO — recommendation-first board intelligence, ticket curation against code… |
 | `whole-improve-loop` | `forge-mr-create` | How to push the current run's branch and open ONE pull request (merge request on GitLab) on GitHub (gh), GitLab (glab) or… |
 | `whole-improve-loop` | `lang-js-fallow` | Static analysis for JavaScript/TypeScript repos using fallow (dead code, duplication, complexity). |
