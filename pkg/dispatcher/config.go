@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"go.yaml.in/yaml/v2"
+	"gopkg.in/yaml.v3"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"go.yaml.in/yaml/v2"
+	"github.com/SocialGouv/iterion/internal/yamlx"
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
@@ -1176,7 +1176,7 @@ func DecodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 // a loaded one.
 func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 	var m Manifest
-	if err := yaml.UnmarshalStrict(body, &m); err != nil {
+	if err := yamlx.UnmarshalStrict(body, &m); err != nil {
 		return nil, fmt.Errorf("bundle: parse manifest %s: %w", srcLabel, err)
 	}
 	if m.SchemaVersion == 0 {

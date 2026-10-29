@@ -11,7 +11,8 @@ import (
 	"sort"
 	"strings"
 
-	yaml "go.yaml.in/yaml/v2"
+	"github.com/SocialGouv/iterion/internal/yamlx"
+	yaml "gopkg.in/yaml.v3"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -475,7 +476,7 @@ func (r *Registry) saveState() error {
 			cfg[name] = vals
 		}
 	}
-	data, err := yaml.Marshal(struct {
+	data, err := yamlx.Marshal(struct {
 		Enabled map[string]bool              `yaml:"enabled"`
 		Config  map[string]map[string]string `yaml:"config,omitempty"`
 	}{Enabled: r.state, Config: cfg})

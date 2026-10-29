@@ -26,7 +26,7 @@ import (
 	"strings"
 	"syscall"
 
-	"go.yaml.in/yaml/v2"
+	"gopkg.in/yaml.v3"
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
@@ -95,7 +95,7 @@ var genericManifestKeys = map[string]bool{
 }
 
 // manifestStructKeys are the Manifest's top-level yaml keys, derived from
-// the struct's tags (yaml.v2 reads an untagged field under its lowercased
+// the struct's tags (yaml.v3 reads an untagged field under its lowercased
 // name), so a field added to the struct is known here without a second
 // list to keep.
 var manifestStructKeys = func() map[string]bool {

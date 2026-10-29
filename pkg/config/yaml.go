@@ -5,11 +5,11 @@ import (
 	"os"
 	"time"
 
-	"go.yaml.in/yaml/v2"
+	"gopkg.in/yaml.v3"
 )
 
 // loadYAML reads path and overlays its contents onto cfg. Unknown keys
-// are silently ignored (yaml.v2 default); a malformed file is an error.
+// are silently ignored (the yaml.v3 default); a malformed file is an error.
 // The resulting cfg keeps any defaults for fields the YAML didn't set.
 func loadYAML(path string, cfg *Config) error {
 	body, err := os.ReadFile(path)
