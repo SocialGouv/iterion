@@ -828,7 +828,9 @@ so a new id-addressed route cannot land unclassified:
 | `GET` | `/api/runs/{id}/artifacts/{node}` | viewer | Artifact versions for a node |
 | `GET` | `/api/runs/{id}/artifacts/{node}/{version}` | viewer | One artifact |
 | `GET` | `/api/runs/{id}/files` / `…/files/content` / `…/files/diff` | viewer | Working-tree views |
-| `GET` | `/api/runs/{id}/commits` etc. | viewer | Worktree commit history |
+| `GET` | `/api/runs/{id}/commits` | viewer | Worktree commit history |
+| `GET` | `/api/runs/{id}/commits/{sha}` | viewer | One commit |
+| `GET` | `/api/runs/{id}/commits/{sha}/diff` | viewer | That commit's diff |
 | `GET` | `/api/runs/{id}/attachments/{name}` | viewer | Download an attachment |
 | `GET` | `/api/runs/{id}/attachments/{name}/url` | viewer | Pre-signed S3 URL |
 | `POST` | `/api/runs/{id}/cancel` | member | Cancel a running run |
@@ -847,7 +849,9 @@ so a new id-addressed route cannot land unclassified:
 | `GET` | `/api/runs/{id}/review/scope` / `…/review/diff` | viewer | Human-gate review scope and its diff ([review-scope.md](review-scope.md)) |
 | `GET` | `/api/runs/{id}/session-board` | viewer | Session-board widgets ([session-board.md](session-board.md)) |
 | `GET` | `/api/runs/{id}/interactions/pending` | viewer | Unanswered `ask_user_async` questions |
-| `GET`/`POST`/`DELETE` | `/api/runs/{id}/queue-messages`, `…/queue-message`, `…/queue-message/{msgID}` | viewer (GET) · member (POST, DELETE) | Pending steering messages for the run |
+| `GET` | `/api/runs/{id}/queue-messages` | viewer | Pending steering messages for the run |
+| `POST` | `/api/runs/{id}/queue-message` | member | Queue one steering message |
+| `DELETE` | `/api/runs/{id}/queue-message/{msgID}` | member | Drop a message still pending |
 | `GET` | `/api/runs/{id}/log` | viewer | Streamed run log |
 | `GET` | `/api/runs/{id}/preview` | viewer | Preview proxy (SSRF-guarded) |
 | `GET` | `/api/ws/runs/{id}/shell` | member | Post-mortem PTY in a preserved worktree — a local-mode operation: cloud answers `403` before the upgrade ([post-mortem-shell.md](post-mortem-shell.md)); while open, it asks again every 30 s whether its credential still stands |
