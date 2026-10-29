@@ -423,17 +423,21 @@ func claudePermissionToolName(task Task, toolName string, input map[string]any) 
 // the real value is spliced in here and never enters the prompt, the event
 // stream, or the run store. Matches all tools (Matcher nil); a no-op for
 // input that carries no placeholder.
+//
+// The two hooks are independent: the PreToolUse one needs a materialiser
+// (nil when no secret resolves at the agent sink), the PostToolUse one needs
+// the mirror alone — a run whose secrets are all kept off the agent
+// (`sinks: [prompt, egress]`, `[command]`) still turns the values an echoing
+// tool quotes back into placeholders, as claw does with the same closures.
 func installMaterializeSecretsHook(task Task, opts []claudesdk.Option) []claudesdk.Option {
-	materialize := task.MaterializeSecrets
-	if materialize == nil {
-		return opts
+	if task.MaterializeSecrets != nil {
+		opts = append(opts, claudesdk.WithHook(claudesdk.HookPreToolUse, claudesdk.HookMatcher{
+			Handler: materializeSecretsHandler(task.MaterializeSecrets),
+		}))
 	}
-	opts = append(opts, claudesdk.WithHook(claudesdk.HookPreToolUse, claudesdk.HookMatcher{
-		Handler: materializeSecretsHandler(materialize),
-	}))
 	if task.UnmaterializeSecrets != nil {
 		opts = append(opts, claudesdk.WithHook(claudesdk.HookPostToolUse, claudesdk.HookMatcher{
-			Handler: unmaterializeOutputHandler(task.MaterializeSecrets, task.UnmaterializeSecrets, task.WorkDir),
+			Handler: unmaterializeOutputHandler(task.MaterializeSecrets, task.UnmaterializeSecrets, task.NamesSecret, task.WorkDir),
 		}))
 	}
 	return opts
@@ -454,12 +458,12 @@ var rawOutputTools = map[string]bool{
 // secret values a tool's output quotes back into their placeholders. It
 // replaces the output only when that changed anything: the CLI applies
 // sibling hooks' replacements last-write-wins.
-func unmaterializeOutputHandler(materialize, unmaterialize func(string) string, workspace string) func(context.Context, claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
+func unmaterializeOutputHandler(materialize, unmaterialize func(string) string, names func(string) bool, workspace string) func(context.Context, claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
 	own := workspaceRef(workspace)
 	return func(_ context.Context, in claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
 		// A workspace reader keeps what the workspace holds — unless its call
 		// carried a secret (a command using a credential may print it back).
-		if rawOutputTools[in.ToolName] && !carriesSecret(in.ToolInput, materialize, unmaterialize) && !namesTaskOutput(in.ToolInput, own) {
+		if rawOutputTools[in.ToolName] && !carriesSecret(in.ToolInput, materialize, unmaterialize, names) && !namesTaskOutput(in.ToolInput, own) {
 			return claudesdk.HookOutput{}, nil
 		}
 		out, changed := secretguard.MaterializeLeaves(in.ToolResponse, unmaterialize)
@@ -484,7 +488,22 @@ func unmaterializeOutputHandler(materialize, unmaterialize func(string) string, 
 // carriesSecret reports whether a tool call's input named a secret — a
 // placeholder, or the value the PreToolUse hook materialised it into (the
 // CLI hands PostToolUse the input the tool ran with).
-func carriesSecret(input map[string]any, materialize, unmaterialize func(string) string) bool {
+func carriesSecret(input map[string]any, materialize, unmaterialize func(string) string, names func(string) bool) bool {
+	// A placeholder in the call names a secret whatever resolves it — the
+	// agent's materialiser, or the proxy on the wire for a secret kept off
+	// the agent: the grant-agnostic reading comes first.
+	if names != nil {
+		hit := false
+		secretguard.MaterializeLeaves(input, func(s string) string {
+			if names(s) {
+				hit = true
+			}
+			return s
+		})
+		if hit {
+			return true
+		}
+	}
 	for _, f := range []func(string) string{materialize, unmaterialize} {
 		if f == nil {
 			continue

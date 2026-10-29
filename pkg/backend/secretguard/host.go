@@ -3,6 +3,8 @@ package secretguard
 import (
 	"math"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
 )
 
 // MaterializeForHost is MaterializeForHostWithin unbounded: the
@@ -14,10 +16,12 @@ func (g *Guard) MaterializeForHost(s, host string) string {
 }
 
 // MaterializeForHostWithin swaps secret placeholders for their real values,
-// but ONLY for secrets whose Hosts permit `host` (empty Hosts = any host).
-// This is the egress-substitution half of Layer 2 (Deno-style host scoping):
-// a placeholder destined for a host the secret isn't scoped to is left
-// untouched, so it never resolves there.
+// but ONLY for secrets whose Hosts permit `host` (empty Hosts = any host)
+// and whose Sinks grant `egress` (empty Sinks = every sink). This is the
+// egress-substitution half of Layer 2 (Deno-style host scoping): a
+// placeholder destined for a host the secret isn't scoped to, or of a secret
+// its declaration keeps off the wire, is left untouched, so it never
+// resolves there.
 //
 // The caller holds the result in memory, so it is bounded: a result longer
 // than limit bytes is refused (s returned as given, false). A placeholder
@@ -37,7 +41,7 @@ func (g *Guard) MaterializeForHostWithin(s, host string, limit int) (string, boo
 	// order two substitutions happen to be declared in.
 	for _, grows := range [2]bool{false, true} {
 		for _, sec := range g.secrets {
-			if sec.RedactOnly || grows != (len(sec.Value) > len(sec.Placeholder)) || !hostAllowed(sec.Hosts, host) {
+			if sec.RedactOnly || grows != (len(sec.Value) > len(sec.Placeholder)) || !hostAllowed(sec.Hosts, host) || !secretsink.Grants(sec.Sinks, secretsink.Egress) {
 				continue
 			}
 			// A value may carry another secret's placeholder, so the count

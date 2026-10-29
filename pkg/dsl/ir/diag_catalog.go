@@ -288,6 +288,9 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagSessionSlotNamesANode:        {"Session slot named like another node", "Rename the slot to a name no node of the workflow carries, or drop `session_slot:` so the node keys its conversation on its own id."},
 	DiagCodexToolsListBoundsNothing:  {"A codex node's tools: list bounds nothing", "Lock the node with `readonly: true`, or declare a list codex reads as read-only (`tools: [read_file]`, `grep`, `glob`, `ls`, `web_search`, `toolsearch`, `todo_write`, `skill`); any other name buys codex's workspace-write sandbox."},
 	DiagExprPastReadBudget:           {"Expression past the read budget", expr.BudgetHint},
+	DiagSecretSinkInvalid:            {"Invalid secret sink grant", "Name only prompt, agent, command, params, file, egress in `sinks:`, each once and never `prompt` alone; a file secret's list carries `file`, a value secret's never does — or omit the list to grant every sink."},
+	DiagSecretSinkUngranted:          {"Secret reference reaches an ungranted sink", "Add the sink the diagnostic names to the secret's `sinks:` list, or move the reference to a sink the secret grants (docs/secrets.md, « sinks »)."},
+	DiagSecretEgressUnscoped:         {"Egress granted toward any host", "Add `hosts:` naming the hosts the proxy may substitute the secret toward, or drop `egress` from `sinks:`."},
 }
 
 // HintFor returns the catalogue fix line for code, or "" when the code has

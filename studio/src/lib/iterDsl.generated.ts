@@ -466,6 +466,7 @@ export const iterDslPropertiesByKind = {
     "hosts",
     "mount_path",
     "optional",
+    "sinks",
     "value"
   ],
   "secrets": [],

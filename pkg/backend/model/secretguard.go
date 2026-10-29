@@ -88,6 +88,7 @@ func BuildSecretGuard(ctx context.Context, wf *ir.Workflow, vars map[string]stri
 			Name:       "env_" + name,
 			Value:      val,
 			RedactOnly: true,
+			Ambient:    true,
 		})
 	}
 
@@ -245,6 +246,9 @@ func declaredWorkflowSecrets(wf *ir.Workflow, vars map[string]string, generic ma
 			// with the binding's allowed hosts; a binding can only restrict,
 			// never broaden.
 			Hosts: effectiveSecretHosts(s.Hosts, genericHosts[name]),
+			// The declaration's sink grants, carried as declared: the guard
+			// honours the two the compiler cannot see (ADR-146).
+			Sinks: append([]string(nil), s.Sinks...),
 		})
 	}
 	return out

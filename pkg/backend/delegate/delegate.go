@@ -715,6 +715,14 @@ type Task struct {
 	// a value straddling the cut is recognised whole. 0 when unknown.
 	RedactSecretsSpan int
 
+	// NamesSecret reports whether a text carries the placeholder of a secret
+	// that resolves at SOME sink, whatever the grants: the question a backend
+	// asks of a tool call before deciding that its output may quote a value
+	// — a call that carried a placeholder the proxy resolved on the wire
+	// carried a secret as much as one the agent materialised. Nil when the
+	// run holds no materialisable secret.
+	NamesSecret func(string) bool
+
 	// UnmaterializeSecrets is MaterializeSecrets' mirror: a known secret
 	// value, in any registered encoding, back to its placeholder — nothing
 	// else. Backends apply it

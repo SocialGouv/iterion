@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/connector/exec"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
 )
 
 // Connector-action execution (ADR-098) — the third `tool` recipe.
@@ -444,8 +445,9 @@ func (e *ClawExecutor) renderActionParams(ctx context.Context, node *ir.ToolNode
 		// did not, so the literal text `__ITERION_SECRET_NAME__` travelled to
 		// the vendor as the argument. The raw form is right here: nothing on
 		// this path reaches a shell, so the shell-escaping variants would
-		// corrupt the value.
-		rendered = e.secretGuard.Materialize(rendered)
+		// corrupt the value. The `params` sink: an authored value, named so a
+		// secret kept off the vendor call by its declaration stays off it.
+		rendered = e.secretGuard.MaterializeFor(secretsink.Params, rendered)
 		decl, known := declared[p.Key]
 		if !known {
 			// exec refuses this too, and its message lists what the operation

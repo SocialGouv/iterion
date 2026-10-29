@@ -212,7 +212,7 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 
 		// Execute tools and append tool_result message.
 		toolResults, toolErr := executeToolsDirect(ctx, agg.toolUses, toolMap, opts.OnToolStarted, opts.OnToolCall, opts.Hooks, opts.MaterializeSecrets, opts.Permission)
-		unmaterializeEchoingResults(toolResults, agg.toolUses, opts.MaterializeSecrets, opts.UnmaterializeSecrets)
+		unmaterializeEchoingResults(toolResults, agg.toolUses, opts.MaterializeSecrets, opts.UnmaterializeSecrets, opts.NamesSecret)
 		if toolErr != nil {
 			// ErrAskUser (and any future suspension signal) bubbles up to
 			// the backend, which converts it into iterion's pause flow.
@@ -783,17 +783,21 @@ var clawRawTools = regexp.MustCompile(`^(read_file|bash|repl|grep|workspace_grep
 
 // unmaterializeEchoingResults turns the known secret values an echoing
 // tool's result quotes back into their placeholders, in place.
-func unmaterializeEchoingResults(results []api.ContentBlock, uses []toolUseBlock, materialize, unmaterialize func(string) string) {
+func unmaterializeEchoingResults(results []api.ContentBlock, uses []toolUseBlock, materialize, unmaterialize func(string) string, namesSecret func(string) bool) {
 	if unmaterialize == nil {
 		return
 	}
 	// A workspace reader keeps what the workspace holds — unless its call
 	// carried a secret (a grep's pattern, an image's URL): it may quote it.
+	// Carried is read grant-agnostically first: a placeholder the proxy
+	// resolves on the wire is a secret the call carried as much as one the
+	// agent's materialiser resolved.
 	names := make(map[string]string, len(uses))
 	given := make(map[string]bool, len(uses))
 	for _, tu := range uses {
 		names[tu.ID] = tu.Name
-		given[tu.ID] = materialize != nil && string(secretguard.MaterializeJSON([]byte(tu.PartialJSON), materialize)) != tu.PartialJSON
+		given[tu.ID] = (namesSecret != nil && namesSecret(tu.PartialJSON)) ||
+			(materialize != nil && string(secretguard.MaterializeJSON([]byte(tu.PartialJSON), materialize)) != tu.PartialJSON)
 	}
 	for i := range results {
 		if clawRawTools.MatchString(names[results[i].ToolUseID]) && !given[results[i].ToolUseID] {

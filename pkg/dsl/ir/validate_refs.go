@@ -9,6 +9,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
+	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
 )
 
 // ---------------------------------------------------------------------------
@@ -61,6 +62,13 @@ type refContext struct {
 	// and C151 fire there too. The check stays separate from InWith so
 	// the two positions can carry their own phrasing.
 	InComputeExpr bool
+	// Sink names the materialization sink the text that holds the reference
+	// feeds (pkg/dsl/secretsink): a prompt body, a tool node's authored
+	// command/postcondition/script, an action's params. Empty where the
+	// site materialises nothing (a data mapping, a compute expression, an
+	// edge condition) — those have their own refusals. A `{{secrets.X}}`
+	// reference is refused where its secret does not grant the sink.
+	Sink string
 }
 
 // refErrorf / refWarnf emit a template-reference diagnostic with the
@@ -102,6 +110,7 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 					Location:    fmt.Sprintf("prompt %q (node %q)", p.Name, nodeID),
 					Span:        promptSpans[p.Name],
 					OnQuestions: interactionPromptOnly(w.Nodes[nodeID], p.Name),
+					Sink:        secretsink.Prompt,
 				})
 			}
 		}
@@ -211,6 +220,7 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 					Ref:      ref,
 					NodeID:   t.ID,
 					Location: fmt.Sprintf("tool node %q command", t.ID),
+					Sink:     secretsink.Command,
 				})
 			}
 			for _, ref := range t.ScriptRefs {
@@ -218,6 +228,20 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 					Ref:      ref,
 					NodeID:   t.ID,
 					Location: fmt.Sprintf("tool node %q script", t.ID),
+					Sink:     secretsink.Command,
+				})
+			}
+			// The postcondition is rendered exactly as the command is
+			// (postconditionBody) and materialises the same secrets, so it is
+			// the same sink — and its references are validated here like the
+			// command's, instead of resolving a typo at the one moment the
+			// recipe's verdict depends on it.
+			for _, ref := range t.PostcondRefs {
+				out = append(out, refContext{
+					Ref:      ref,
+					NodeID:   t.ID,
+					Location: fmt.Sprintf("tool node %q postcondition", t.ID),
+					Sink:     secretsink.Command,
 				})
 			}
 			// The third recipe's arguments, for the reason the script comment
@@ -232,6 +256,7 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 						Ref:      ref,
 						NodeID:   t.ID,
 						Location: fmt.Sprintf("tool node %q action param %q", t.ID, p.Key),
+						Sink:     secretsink.Params,
 					})
 				}
 			}
@@ -400,6 +425,7 @@ func (c *compiler) validateSecrets(w *Workflow) {
 	if w == nil || len(w.Secrets) == 0 {
 		return
 	}
+	c.validateSecretPlaceholders(w)
 	for name, s := range w.Secrets {
 		if s == nil {
 			continue
@@ -433,6 +459,82 @@ func (c *compiler) validateSecrets(w *Workflow) {
 					"secret %q: hosts entry %q must be a bare hostname, parent domain, or IP without scheme/path", name, h)
 			}
 		}
+		c.validateSecretSinks(name, s)
+	}
+}
+
+// validateSecretSinks checks a secret's `sinks:` grants against the
+// vocabulary and against the declaration's own shape: a grant must name a
+// sink that exists, once; a file secret must grant `file` when it grants
+// anything (the mount IS its materialisation), and a value secret cannot
+// grant `file` (nothing mounts it). An absent list grants every sink
+// (ADR-146, axis 2) and is never refused here.
+func (c *compiler) validateSecretSinks(name string, s *Secret) {
+	if len(s.Sinks) == 0 {
+		// No list, or the empty one: every sink (the parser reads `[]` as
+		// no list, so no writer or transport can change its meaning).
+		return
+	}
+	seen := map[string]bool{}
+	for _, sink := range s.Sinks {
+		if !secretsink.Known(sink) {
+			c.errorf(DiagSecretSinkInvalid,
+				"secret %q: sinks entry %q is not a materialization sink (known: %s)", name, sink, secretsink.List())
+			continue
+		}
+		if seen[sink] {
+			c.errorf(DiagSecretSinkInvalid,
+				"secret %q: sinks names %q twice", name, sink)
+		}
+		seen[sink] = true
+	}
+	if s.IsFile() && !seen[secretsink.File] {
+		c.errorf(DiagSecretSinkInvalid,
+			"secret %q: as: file materialises the secret as a mounted file, which its sinks do not grant — add `file` to sinks: [%s], or drop the list", name, strings.Join(s.Sinks, ", "))
+	}
+	if !s.IsFile() && seen[secretsink.File] {
+		c.errorf(DiagSecretSinkInvalid,
+			"secret %q: sinks grants `file`, but the secret is a value (as: value) that nothing mounts — declare as: file, or drop `file` from the list", name)
+	}
+	// `prompt` hands a model the placeholder and resolves nothing: a list
+	// that names it alone grants the secret to no sink that spends it, and
+	// the run would carry a placeholder nothing resolves.
+	if len(seen) == 1 && seen[secretsink.Prompt] {
+		c.errorf(DiagSecretSinkInvalid,
+			"secret %q: sinks names `prompt` alone, which hands a model the placeholder and resolves it nowhere — add the sink that spends the secret (agent, command, params, file or egress)", name)
+	}
+	// An explicit `egress` grant with no `hosts:` is substituted toward ANY
+	// host, and the content DLP has no approval list to refuse against: the
+	// author asked for the wire and left it open. A warning, not a refusal —
+	// a secret with no `sinks:` has always gone toward any host.
+	if seen[secretsink.Egress] && len(s.Hosts) == 0 {
+		c.warnf(DiagSecretEgressUnscoped,
+			"secret %q: sinks grants `egress` with no hosts: — the sandbox proxy substitutes the placeholder toward ANY host it is sent to; scope it with hosts: [\"api.example.com\"]", name)
+	}
+}
+
+// validateSecretPlaceholders refuses two declarations whose names derive the
+// same placeholder (`tok` and `_tok` both become `__ITERION_SECRET_tok__`):
+// the guard would register one value under the token both references
+// render, and the grants of one would govern the other's placeholder.
+func (c *compiler) validateSecretPlaceholders(w *Workflow) {
+	if w == nil || len(w.Secrets) == 0 {
+		return
+	}
+	names := make([]string, 0, len(w.Secrets))
+	for name := range w.Secrets {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	owner := map[string]string{}
+	for _, name := range names {
+		ph := secretsink.PlaceholderFor(name)
+		if first, taken := owner[ph]; taken {
+			c.errorf(DiagDuplicateSecret,
+				"secrets %q and %q share the placeholder %s — rename one so each declaration renders its own token", first, name, ph)
+			continue
+		}
+		owner[ph] = name
 	}
 }
 
@@ -627,6 +729,18 @@ func (c *compiler) validateSecretsRef(w *Workflow, rc refContext) {
 		return
 	}
 	if len(rc.Ref.Path) == 1 {
+		// The grant check: a VALUE secret's reference materialises the value
+		// at the sink the text feeds, so the secret must grant that sink. A
+		// file secret's reference renders its mounted path wherever it
+		// stands — the value reaches the run through the mount, which the
+		// `file` grant on the declaration covers — so it is not checked per
+		// reference. A sub-field reference is judged below first: one the
+		// secret has not (C095) is refused for that alone.
+		if rc.Sink != "" && !secret.IsFile() && !secret.Grants(rc.Sink) {
+			c.refErrorf(rc, DiagSecretSinkUngranted,
+				"%s: reference %s reaches the %s sink, which secret %q does not grant (sinks: [%s]) — add `%s` to its sinks: list, or move the reference to a sink it grants",
+				rc.Location, expr.Excerpt(rc.Ref.Raw), rc.Sink, expr.Excerpt(name), strings.Join(secret.Sinks, ", "), rc.Sink)
+		}
 		return
 	}
 	sub := rc.Ref.Path[1]

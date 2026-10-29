@@ -26,6 +26,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/backend/tooldisplay"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -718,11 +719,11 @@ func (e *ClawExecutor) ScrubOutput(output map[string]any) map[string]any {
 }
 
 // secretMaterializer returns the placeholder→value substitution used to
-// populate Task.MaterializeSecrets. Returns nil when no registered secret is
-// materialisable (secretguard.Guard.Materializes) so backends skip the work
-// entirely.
+// populate Task.MaterializeSecrets — the `agent` sink: what a MODEL emits in
+// its own tool input. Returns nil when no registered secret resolves there
+// (secretguard.Guard.MaterializesFor) so backends skip the work entirely.
 func (e *ClawExecutor) secretMaterializer() func(string) string {
-	if !e.secretGuard.Materializes() {
+	if !e.secretGuard.MaterializesFor(secretsink.Agent) {
 		return nil
 	}
 	return e.secretGuard.Materialize
@@ -742,6 +743,16 @@ func (e *ClawExecutor) secretUnmaterializer() func(string) string {
 		return nil
 	}
 	return e.secretGuard.Unmaterialize
+}
+
+// secretNamer answers delegate.Task.NamesSecret: whether a text carries the
+// placeholder of a secret that resolves at some sink, whatever the grants.
+// Nil when nothing resolves anywhere.
+func (e *ClawExecutor) secretNamer() func(string) bool {
+	if !e.secretGuard.Materializes() {
+		return nil
+	}
+	return e.secretGuard.NamesMaterializableSecret
 }
 
 func (e *ClawExecutor) secretFileHints() []delegate.SecretFileHint {
@@ -785,6 +796,13 @@ func (e *ClawExecutor) ExfiltratesTo(s, host string) bool {
 // protect.
 func (e *ClawExecutor) SecretsInspectActive() bool {
 	return e.secretGuard != nil && e.secretGuard.HasKnownSecrets()
+}
+
+// HoldsSecret reports whether the declared secret resolved to something this
+// run carries — the launch gate behind `sinks:` reads it to leave an absent
+// optional secret alone (runtime.secretHolder).
+func (e *ClawExecutor) HoldsSecret(name string) bool {
+	return e.secretGuard.Holds(name)
 }
 
 // WithExecutorInbox installs the operator-chatbox binder on the

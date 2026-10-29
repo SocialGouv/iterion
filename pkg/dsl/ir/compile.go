@@ -2336,6 +2336,7 @@ func (c *compiler) compileSecrets(block *ast.SecretsBlock, vars map[string]*Var)
 			Env:         f.Env,
 			Optional:    f.Optional,
 			Hosts:       f.Hosts,
+			Sinks:       f.Sinks,
 			Description: f.Description,
 		}
 	}

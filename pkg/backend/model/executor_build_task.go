@@ -1291,6 +1291,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		RedactSecrets:         e.secretRedactor(),
 		RedactSecretsSpan:     e.secretGuard.LongestLiteral(),
 		UnmaterializeSecrets:  e.secretUnmaterializer(),
+		NamesSecret:           e.secretNamer(),
 		CompactThresholdRatio: compactRatio,
 		CompactPreserveRecent: compactPreserve,
 		Sandbox:               e.sandbox,

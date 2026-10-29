@@ -22,6 +22,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/treenoise"
@@ -508,7 +509,7 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			// command line and never rewrites.
 			// A command naming a secret is not compressed: the compressor
 			// runs it with the value (rtk records every command it runs).
-			if m := rewrite.ResolveToolNode(e.compressOverride, node.Compress); m.Enabled() && e.secretGuard.Materialize(resolved) == resolved && !e.secretGuard.NamesEnvOnlySecret(resolved) {
+			if m := rewrite.ResolveToolNode(e.compressOverride, node.Compress); m.Enabled() && !e.secretGuard.NamesMaterializableSecret(resolved) && !e.secretGuard.NamesEnvOnlySecret(resolved) {
 				if rewritten, changed := e.chain.Rewrite(ctx, m, resolved); changed {
 					resolved = rewritten
 				}
@@ -1392,6 +1393,15 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 			subs[ref.Raw] = rawTemplateValue(val, ShapeUndeclared)
 		} else {
 			subs[ref.Raw] = defaultRender(val, shape)
+		}
+		// A placeholder that arrives through DATA — an input an edge mapped
+		// from a model's output, an upstream output, a launch var — was
+		// written by a model, not by the author: it is the agent sink's,
+		// whatever body it lands in. A secret kept off the agent is defused
+		// here, before the body's materialiser scans the rendered text and
+		// would resolve it under the body's own grant.
+		if ref.Kind != ir.RefSecrets {
+			subs[ref.Raw] = guard.DefuseUngranted(secretsink.Agent, subs[ref.Raw])
 		}
 	}
 	if len(subs) == 0 {

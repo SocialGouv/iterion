@@ -87,6 +87,7 @@ secret_prop = "value" ":" str_value NEWLINE
             | "env" ":" string_or_ident NEWLINE
             | "optional" ":" BOOL_LIT NEWLINE
             | "hosts" ":" string_list NEWLINE
+            | "sinks" ":" string_list NEWLINE
             | "description" ":" str_value NEWLINE ;
 
 (* A prompt, schema, mcp_server, cursor, supervisor, group or workflow

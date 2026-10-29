@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
+	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
 	"github.com/SocialGouv/iterion/pkg/dsl/types"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
@@ -1471,18 +1472,29 @@ type Var struct {
 // (As=file). Hosts scopes which egress destinations the secret may be
 // materialised toward (Layer 2).
 type Secret struct {
-	Name        string
-	Value       string
-	As          string
-	MountPath   string
-	Env         string
-	Optional    bool // file secret: skip the mount (no error) when unresolved
-	Hosts       []string
+	Name      string
+	Value     string
+	As        string
+	MountPath string
+	Env       string
+	Optional  bool // file secret: skip the mount (no error) when unresolved
+	Hosts     []string
+	// Sinks names the materialization sinks the secret is granted to
+	// (pkg/dsl/secretsink); nil grants every sink. The compiler refuses a
+	// reference that reaches an ungranted sink, and the guard honours the
+	// grants the compiler cannot see (ADR-146).
+	Sinks       []string
 	Description string
 }
 
 func (s *Secret) IsFile() bool {
 	return s != nil && s.As == "file"
+}
+
+// Grants reports whether the secret may reach sink: every sink when the
+// declaration names none, the named ones otherwise.
+func (s *Secret) Grants(sink string) bool {
+	return s != nil && secretsink.Grants(s.Sinks, sink)
 }
 
 // VarType enumerates variable types.

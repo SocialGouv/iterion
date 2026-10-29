@@ -117,6 +117,12 @@ type GenerationOptions struct {
 	// conversation — claude_code's PostToolUse twin.
 	UnmaterializeSecrets func(string) string
 
+	// NamesSecret, when non-nil, reports whether a tool call's input carries
+	// the placeholder of a secret that resolves at some sink — the proxy's
+	// on the wire included — so a workspace reader's output is turned back
+	// to placeholders when its call carried one, whatever materialised it.
+	NamesSecret func(string) bool
+
 	// CompactThresholdRatio overrides the default compaction trigger as a
 	// fraction of the model's context window. 0 falls back to the built-in
 	// default (0.85). Values outside (0, 1] fall back to the default.

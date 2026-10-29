@@ -249,6 +249,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 			RedactSecrets:        e.secretRedactor(),
 			RedactSecretsSpan:    e.secretGuard.LongestLiteral(),
 			UnmaterializeSecrets: e.secretUnmaterializer(),
+			NamesSecret:          e.secretNamer(),
 			// What the router's spawn left and its end stopped reaches the run
 			// as the agent path's does (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md).
 			Hooks: delegate.TaskHooks{OnBackgroundWork: e.delegateHooksFor(node.ID, bn, LoopIterationFromContext(ctx)).OnBackgroundWork},

@@ -80,6 +80,7 @@ secret_property = "value:" STRING
                 | "env:" string_or_ident
                 | "optional:" BOOL
                 | "hosts:" string_list
+                | "sinks:" string_list
                 | "description:" STRING ;
 ```
 

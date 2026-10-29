@@ -2249,6 +2249,13 @@
                 "description": "A missing secret does not fail the launch",
                 "type": "boolean"
               },
+              "sinks": {
+                "description": "Materialization sinks the secret may reach — prompt, agent, command, params, file, egress; omitted = every sink (docs/secrets.md)",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
               "value": {
                 "description": "Inline value — the same field the sub-block's `value:` sets; prefer the stored secret, resolved by name",
                 "type": "string"

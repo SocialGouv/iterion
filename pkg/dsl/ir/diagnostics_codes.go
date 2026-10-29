@@ -424,4 +424,14 @@ const (
 	// a bot that compiles. The refusal lives where the image is known and
 	// names it (pkg/runtime's admitSandboxImageBackends).
 	DiagBackendAbsentFromSandboxImage DiagCode = "C321" // a node's backend has no CLI in the published sandbox images (warning — refused at start only where the resolved image is one of them)
+
+	// Secret sink grants (ADR-146): a secret's `sinks:` names the
+	// materialization sinks it may reach — prompt, agent, command, params,
+	// file, egress (pkg/dsl/secretsink); an absent list grants every sink.
+	// The compiler refuses the grants it can read (C322) and the references
+	// it can see reach an ungranted sink (C323); the guard honours the two
+	// sinks the compiler cannot see (a model's own tool input, the wire).
+	DiagSecretSinkInvalid    DiagCode = "C322" // a `sinks:` entry outside the vocabulary or named twice, `prompt` alone, a file secret whose grants lack `file`, a value secret granting `file` (error)
+	DiagSecretSinkUngranted  DiagCode = "C323" // a `{{secrets.X}}` reference in a prompt body, a tool command/postcondition/script or an action param whose secret does not grant that sink (error)
+	DiagSecretEgressUnscoped DiagCode = "C324" // a `sinks:` list granting `egress` on a secret with no `hosts:` — the proxy substitutes it toward any host (warning)
 )

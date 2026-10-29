@@ -183,11 +183,12 @@ secrets:
     mount_path: "/run/iterion/secrets/deploy_key"
     env: "GIT_SSH_KEY_PATH"
     hosts: ["github.com", "api.github.com"]
+    sinks: [file, prompt]
     optional: false
     description: "SSH key used by the deploy step"
 ```
 
-Value secrets render as opaque placeholders and are materialised only at execution sinks. File secrets render as their mounted path. A declaration without `value:` resolves by name from the local/cloud store. Use `{{secrets.forge_token}}` or `{{secrets.deploy_key.path}}`; undeclared references are compile errors. A var the SERVER mints for the run (`forge_publish_token`) is the same kind of placeholder in a tool node's `command:` or `postcondition:`, materialised into the child process's environment rather than the command line — the raw `{{!vars.x}}` form keeps the value in the text, and a `script:` body reads the variable by name in its own language (see [secrets](secrets.md)). The protection layers, egress scoping, stores, and limitations are documented in [secrets](secrets.md) and the [secrets reference](secrets-reference.md).
+Value secrets render as opaque placeholders and are materialised only at execution sinks. File secrets render as their mounted path. `sinks:` names the materialization sinks the secret may reach — `prompt` (a prompt body hands the model the placeholder), `agent` (the model's own tool input is materialised), `command` (a tool node's `command:` / `postcondition:` / `script:`), `params` (an action's `params:`), `file` (`as: file`), `egress` (the sandbox proxy substitutes it on the wire toward `hosts:`); omitted, the secret reaches every sink. A reference that reaches a sink its secret does not grant is a compile error (C323), and the two sinks the compiler cannot see — `agent`, `egress` — are honoured at run time from the same declaration ([secrets](secrets.md#sinks--where-a-declared-secret-may-be-materialised)). A declaration without `value:` resolves by name from the local/cloud store. Use `{{secrets.forge_token}}` or `{{secrets.deploy_key.path}}`; undeclared references are compile errors. A var the SERVER mints for the run (`forge_publish_token`) is the same kind of placeholder in a tool node's `command:` or `postcondition:`, materialised into the child process's environment rather than the command line — the raw `{{!vars.x}}` form keeps the value in the text, and a `script:` body reads the variable by name in its own language (see [secrets](secrets.md)). The protection layers, egress scoping, stores, and limitations are documented in [secrets](secrets.md) and the [secrets reference](secrets-reference.md).
 
 ## Prompts, schemas, and templates
 

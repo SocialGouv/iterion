@@ -232,6 +232,7 @@ An entry opened by `secrets:` inside `secrets`.
 | `env` | string\|ident | Environment variable that receives the value |
 | `optional` | bool | A missing secret does not fail the launch |
 | `hosts` | string list | Hosts the secret may be sent to |
+| `sinks` | string list | Materialization sinks the secret may reach — prompt, agent, command, params, file, egress; omitted = every sink (docs/secrets.md) |
 | `description` | string | Free-text description shown by the studio and the reports |
 
 ### agent

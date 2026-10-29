@@ -456,6 +456,7 @@ var Kinds = append([]Kind{
 			word(prop("env", StringOrIdent, "Environment variable that receives the value")),
 			prop("optional", Bool, "A missing secret does not fail the launch"),
 			prop("hosts", StringList, "Hosts the secret may be sent to"),
+			prop("sinks", StringList, "Materialization sinks the secret may reach — prompt, agent, command, params, file, egress; omitted = every sink (docs/secrets.md)"),
 			pDescription,
 		}},
 

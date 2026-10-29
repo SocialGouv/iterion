@@ -573,7 +573,7 @@ func (w *writer) attachments(ab *ast.AttachmentsBlock) *yaml.Node {
 func (w *writer) secrets(sb *ast.SecretsBlock) *yaml.Node {
 	m := w.named("secrets")
 	for _, s := range sb.Fields {
-		bare := s.As == "" && s.MountPath == "" && s.Env == "" && !s.Optional && len(s.Hosts) == 0 && s.Description == ""
+		bare := s.As == "" && s.MountPath == "" && s.Env == "" && !s.Optional && len(s.Hosts) == 0 && len(s.Sinks) == 0 && s.Description == ""
 		switch {
 		case bare && s.Value == "":
 			m.set(s.Name, nullNode())
@@ -587,6 +587,7 @@ func (w *writer) secrets(sb *ast.SecretsBlock) *yaml.Node {
 			p.str("env", s.Env)
 			p.bool("optional", s.Optional)
 			p.set("hosts", strList(s.Hosts))
+			p.set("sinks", strList(s.Sinks))
 			p.str("description", s.Description)
 			m.set(s.Name, p.node())
 		}

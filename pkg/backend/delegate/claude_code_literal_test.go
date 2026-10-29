@@ -33,7 +33,7 @@ func TestToolRewritePreservesUndeclaredLiterals(t *testing.T) {
 		Invoke: plugin.InvokeSpec{Argv: []string{"{{command}}"}, ApplyExitCodes: []int{0}}}})
 	compress := rewriteCommandHandler(chain, rewrite.On, g.Materialize)
 	materialize := materializeSecretsHandler(g.Materialize)
-	unmaterialize := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, t.TempDir())
+	unmaterialize := unmaterializeOutputHandler(g.Materialize, g.Unmaterialize, g.NamesMaterializableSecret, t.TempDir())
 	for _, tc := range []struct {
 		name, command, wantCommand, wantOutput string
 		template                               bool

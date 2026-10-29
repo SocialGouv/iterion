@@ -381,6 +381,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		CompactPreserveRecent: task.CompactPreserveRecent,
 		MaterializeSecrets:    task.MaterializeSecrets,
 		UnmaterializeSecrets:  task.UnmaterializeSecrets,
+		NamesSecret:           task.NamesSecret,
 	}
 
 	// Reasoning effort via ProviderOptions. Coerce against the model's

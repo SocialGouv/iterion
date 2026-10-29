@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
 )
 
 // SecretRefResolver resolves `{{secrets.<name>}}` to what a node may see —
@@ -11,6 +12,16 @@ import (
 // secret guard implements it.
 type SecretRefResolver interface {
 	ResolveSecretRef(name string) string
+}
+
+// SinkSecretRefResolver is a SecretRefResolver that reads the sink a text is
+// rendered at: the guard resolves nothing for a value secret whose `sinks:`
+// keep it off that sink. The prompt path renders at the prompt sink, so a
+// prompt-like surface the compiler never walked (a bundle preset's prompt,
+// an `images:` path) reaches a model only with what the declaration grants.
+type SinkSecretRefResolver interface {
+	SecretRefResolver
+	ResolveSecretRefAt(sink, name string) string
 }
 
 // TemplateResolver renders the `{{…}}` references of a prompt body the way
@@ -145,7 +156,13 @@ func (r *TemplateResolver) ResolveValue(ref string, input map[string]any, td *Te
 			if dot := strings.IndexByte(key, '.'); dot >= 0 {
 				name = key[:dot]
 			}
-			if v := r.Secrets.ResolveSecretRef(name); v != "" {
+			v := ""
+			if at, ok := r.Secrets.(SinkSecretRefResolver); ok {
+				v = at.ResolveSecretRefAt(secretsink.Prompt, name)
+			} else {
+				v = r.Secrets.ResolveSecretRef(name)
+			}
+			if v != "" {
 				return v, true
 			}
 		}

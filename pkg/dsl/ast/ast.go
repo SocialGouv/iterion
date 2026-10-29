@@ -448,6 +448,7 @@ type SecretField struct {
 	Env         string   // optional env var pointing at MountPath for file secrets
 	Optional    bool     // file secret: skip the mount (no error) when unresolved
 	Hosts       []string // approved egress hosts (nil = no restriction)
+	Sinks       []string // granted materialization sinks (nil = every sink; see pkg/dsl/secretsink)
 	Description string
 	Span        Span
 }

@@ -1545,7 +1545,7 @@ func writeSecretsBlock(b *buf, sb *ast.SecretsBlock, indent string) {
 		// Short form when only a value is set; block form when egress
 		// hosts, file materialisation, env wiring, or a description
 		// accompany it.
-		hasProps := s.As != "" || s.MountPath != "" || s.Env != "" || len(s.Hosts) > 0 || s.Description != ""
+		hasProps := s.As != "" || s.MountPath != "" || s.Env != "" || len(s.Hosts) > 0 || len(s.Sinks) > 0 || s.Description != ""
 		if !hasProps && b.blockScalarOK(s.Value) {
 			b.writeBlockScalar(indent+"  ", s.Name, s.Value)
 			continue
@@ -1575,6 +1575,11 @@ func writeSecretsBlock(b *buf, sb *ast.SecretsBlock, indent string) {
 		}
 		if len(s.Hosts) > 0 {
 			fmt.Fprintf(b, "%s    hosts: [%s]\n", indent, quoteList(b, s.Hosts))
+		}
+		if len(s.Sinks) > 0 {
+			// Sink names are identifiers of a closed vocabulary: written bare,
+			// as the parser reads them.
+			fmt.Fprintf(b, "%s    sinks: [%s]\n", indent, strings.Join(s.Sinks, ", "))
 		}
 		if s.Description != "" {
 			writeStrProp(b, indent+"    ", "description", s.Description)

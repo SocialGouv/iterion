@@ -41,6 +41,7 @@ secrets:
     env: DEPLOY_KEY_PATH
     optional: true
     hosts: [github.com]
+    sinks: [file, prompt]
     description: The deploy key
 schemas:
   verdict: {ok: bool, notes: string}

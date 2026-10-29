@@ -162,12 +162,16 @@ secrets:
     hosts: ["api.github.com", "github.com"] # egress scoping (Layer 2)
 ```
 
-Reference as `{{secrets.deploy_key}}` in prompts and tool/shell commands.
+Reference as `{{secrets.deploy_key}}` in prompts and tool/shell commands —
+at the sinks the declaration grants ([sinks](#sinks--where-a-declared-secret-may-be-materialised)).
 Materialization happens immediately before exec, keeping the placeholder
 form in every hook/log:
 
-- **claw** `tool` nodes (shell + script) and the in-process tool loop
-  (`executeToolsDirect`) call `Guard.Materialize` before exec.
+- **claw** `tool` nodes (shell + script) materialise the author's own body
+  through the `command` sink's materialisers (`MaterializeAuthoredShellEnv`,
+  `MaterializeShell`), an action's `params:` through the `params` sink, and
+  the in-process tool loop (`executeToolsDirect`) calls `Guard.Materialize`
+  — the `agent` sink — on the model's tool input before exec.
 - **claude_code** uses a `PreToolUse` hook returning `UpdatedInput` with
   the materialised tool input (the SDK-supported substitution path). The
   placeholders are swapped in the input's decoded strings, never in its JSON
@@ -269,6 +273,82 @@ handling" system-prompt clause tells the agent not to read/exfiltrate
 credential files and to pass placeholders through verbatim. This is never the
 primary control — where supported, the structural boundary is the
 materialization above.
+
+### Sinks — where a declared secret may be materialised
+
+A secret is granted to the **sinks** it may reach, and the grant is part of
+its declaration: `sinks:` beside `hosts:` names the materialization kinds
+([ADR-146](adr/146-secret-boundary-v2-grants-and-sinks.md)). The unit of
+the boundary is the pair `(secret, sink)`, not the secret alone.
+
+| sink | what reaches it | enforced |
+|---|---|---|
+| `prompt` | a prompt body renders the reference as the placeholder: the model HOLDS the placeholder from then on | compile time, on the reference (C323) |
+| `agent` | the placeholder a model emits in its own tool input is materialised (claude_code's `PreToolUse` hook, claw's in-process tool loop, a self-repair command a model proposed) | run time, by the guard (`Materialize`) |
+| `command` | a tool node's authored `command:`, `postcondition:` or `script:` is materialised before exec | compile time, on the reference (C323); run time, by the guard |
+| `params` | a tool action's `params:` value is materialised before the vendor call | compile time, on the reference (C323); run time, by the guard |
+| `file` | the secret is written as a file the run mounts (`as: file`) | compile time, on the declaration (C322) |
+| `egress` | the placeholder is substituted on the wire toward `hosts:` by the sandbox's inspecting proxy (Layer 2) | run time, by the egress rewriter |
+
+**The default is every sink.** A secret that declares no `sinks:` reaches
+all six, exactly as before the grants existed; the restriction is opt-in,
+and a leak does not come from an authored reference site in the first place.
+The ask is short where it matters:
+
+```iter fragment
+secrets:
+  github_token:
+    hosts: ["api.github.com"]
+    sinks: [prompt, egress]     # the model holds the placeholder; only the proxy resolves it
+  db_password:
+    sinks: [command]            # the author's own tool commands; never a model
+```
+
+`sinks: [prompt, egress]` keeps a token out of every command line and every
+container: the agent's `curl` carries the placeholder, the proxy substitutes
+it toward the approved host, and nothing in the workspace ever holds the
+value — short of the clone credential of a cloud run, below. `sinks:
+[command]` keeps a password off the model's path entirely: the placeholder
+a model would emit is left as written, and one a model wrote into DATA — an
+output a prompt or an edge carries into a tool body through
+`{{outputs.x}}`, `{{input.x}}`, `{{vars.x}}` — is defused before the body's
+materialiser scans it (`DefuseUngranted`: the agent sink's, whatever body
+it lands in). Only the author's own `{{secrets.X}}` resolves under
+`command` and `params`. `sinks: []` reads as no list — every sink — since
+the printers and the JSON transport drop an empty list, and a meaning they
+could not keep would change on the way.
+
+Three things the grants do NOT govern, said here rather than discovered: the
+clone credential of a cloud run (`forge_token`, `gitlab_token`,
+`github_token`, read from the store by name) is the runner's own channel,
+written to the workspace's git credential store whatever the declaration
+says — keep a secret the grants should keep out of the workspace under
+another name than the one the runner clones with; `ITERION_SECRETS_PLACEHOLDERS=off`
+renders a declared secret's VALUE wherever its grants let it render, prompts
+included, since the switch asks for values; and an explicit `egress` grant
+on a secret with no `hosts:` is substituted toward ANY host (C324 says so
+at compile time — scope it).
+
+What the compiler refuses: a `sinks:` entry outside the vocabulary, a sink
+named twice, `prompt` alone (it hands a model the placeholder and resolves
+it nowhere), an `as: file` secret whose list lacks `file`, a value secret
+granting `file` (C322); two declarations whose names derive one placeholder
+(`tok`, `_tok` — C090); a reference in a prompt body, a tool `command:` /
+`postcondition:` / `script:` or an action `params:` whose secret does not
+grant that sink (C323, naming the sink and the grant). A file secret's
+reference renders its mounted path and is never refused per reference — the
+`file` grant on the declaration covers the mount. What the guard refuses at
+run time, from the same declaration: `Materialize` (the `agent` sink) and
+the authored-body materialisers leave a placeholder its secret does not
+grant AS WRITTEN; the prompt path renders a value secret only when it grants
+`prompt`, so a prompt-like surface the compiler never walked (a bundle
+preset's prompt, an `images:` path) keeps the reference as written; and the
+inspecting proxy substitutes on the wire only a secret granting `egress` —
+content DLP still refuses a real value toward an unapproved host, whatever
+the grants. A call that carried the placeholder of a secret the proxy — not
+the agent — resolves is a call that carried a secret: a raw tool's output
+goes back to placeholders on both backends. A bot-secret binding or the
+cloud transport does not narrow sinks yet (they narrow `hosts:`).
 
 ### File secrets
 
@@ -651,4 +731,5 @@ to the LLMs, not what a bot uses inside a run.
 malformed egress host (Layer 2) · `C093` `{{secrets.X}}` references an
 undeclared secret · `C094` invalid file-secret declaration · `C095`
 invalid secret subfield reference (for example `.path` on a value
-secret).
+secret) · `C322` invalid `sinks:` grant · `C323` a reference reaches a
+sink its secret does not grant.
