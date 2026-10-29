@@ -233,7 +233,7 @@ type storeHooks struct {
 	// reaches an event, a checkpoint, or a sink the redactingEmitter does
 	// not wrap, and bodies this file cuts before logging (a secret
 	// straddling the cut must be redacted first). Plain log lines owe no
-	// pass: the run logger redacts every record it keeps (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458.
+	// pass: the run logger redacts every record it keeps (docs/adr/149-the-run-logger-redacts-what-it-keeps.md, #2458.
 	red            func(string) string
 	attachmentSink AttachmentWriter
 	toolBlobSink   ToolBlobWriter
@@ -327,7 +327,7 @@ func (h *storeHooks) emit(nodeID string, evType store.EventType, data map[string
 // logFarSideBlock writes one log block whose BODY is text from outside this
 // process — the model's answer, a container's relayed step, a tool's payload.
 //
-// The run's logger is the redaction chokepoint (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458): it
+// The run's logger is the redaction chokepoint (docs/adr/149-the-run-logger-redacts-what-it-keeps.md, #2458): it
 // scans every record it keeps, so a block site owes no pass of its own for
 // the log. This helper keeps TWO things the chokepoint cannot do for it.
 // The gate: a block body is a string the caller builds and this helper
@@ -365,7 +365,7 @@ func (h *storeHooks) onLLMPrompt(nodeID string, systemPrompt string, userMessage
 	// in the studio's run log. Pass the full text — truncating
 	// at the source loses signal (the studio already provides
 	// a Wrap toggle + per-block expand/collapse). The run logger
-	// redacts the whole record (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458).
+	// redacts the whole record (docs/adr/149-the-run-logger-redacts-what-it-keeps.md, #2458).
 	if userMessage != "" {
 		h.logger.LogBlock(iterlog.LevelInfo, "💬",
 			fmt.Sprintf("Prompt [%s]:", nodeID), userMessage)
@@ -398,7 +398,7 @@ func (h *storeHooks) onLLMRequest(nodeID string, info LLMRequestInfo) {
 	// The model string and the effort are the far side's account of the call
 	// it made — a relayed llm_request carries whatever the container wrote
 	// (pkg/backend/model/sandbox_relay.go re-fires this hook from an `event`
-	// envelope). The run logger redacts the record whole (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458; the event's copies cross Layer 0 at the emitter.
+	// envelope). The run logger redacts the record whole (docs/adr/149-the-run-logger-redacts-what-it-keeps.md, #2458; the event's copies cross Layer 0 at the emitter.
 	if h.logger.IsEnabled(iterlog.LevelInfo) {
 		toolInfo := ""
 		if info.ToolCount > 0 {
@@ -430,7 +430,7 @@ func (h *storeHooks) onLLMRetry(nodeID string, info RetryInfo) {
 	// A relayed retry carries the CONTAINER's account of the provider call
 	// (pkg/backend/model/sandbox_relay.go re-fires this hook from an `event`
 	// envelope), and an in-process one carries the provider's — third-party
-	// text either way. The run logger redacts the record whole (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458; the event's copy crosses Layer 0 at the emitter.
+	// text either way. The run logger redacts the record whole (docs/adr/149-the-run-logger-redacts-what-it-keeps.md, #2458; the event's copy crosses Layer 0 at the emitter.
 	errMsg := ""
 	if info.Error != nil {
 		errMsg = info.Error.Error()
@@ -519,7 +519,7 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 	// the LLMStepInfo arrives only for claw's direct loop.
 	// Nothing in this loop leaves the operator's log, so the sink is asked
 	// once for the display formatting below (HeaderDetail / BlockBody read
-	// the raw input); redaction itself is the run logger's (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458, applied to every record it keeps. The block bodies ask again
+	// the raw input); redaction itself is the run logger's (docs/adr/149-the-run-logger-redacts-what-it-keeps.md, #2458, applied to every record it keeps. The block bodies ask again
 	// through [storeHooks.logFarSideBlock] — one owner for the bound, one
 	// IsEnabled compare for the repetition.
 	if len(step.ToolCalls) > 0 && h.logger.IsEnabled(iterlog.LevelInfo) {
@@ -1087,7 +1087,7 @@ func (h *storeHooks) onToolCall(nodeID string, info LLMToolCallInfo) {
 		// The NAME is as third-party as the error text beside it — the
 		// model wrote it, and a relayed tool_called carries what the
 		// container sent — and the run logger redacts the record whole
-		// (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458); errText was redacted eagerly because the
+		// (docs/adr/149-the-run-logger-redacts-what-it-keeps.md, #2458); errText was redacted eagerly because the
 		// EVENT carries it too. (The input preview crossed the guard
 		// already, at rememberInput, where the cut would split a value it
 		// recognises.)
@@ -1311,7 +1311,7 @@ func (h *storeHooks) onDelegateFinished(nodeID string, info DelegateInfo) {
 	}
 	if info.Stderr != "" {
 		// Whole body, no cut: the run logger's chokepoint redacts it
-		// (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458).
+		// (docs/adr/149-the-run-logger-redacts-what-it-keeps.md, #2458).
 		h.logger.LogBlock(iterlog.LevelDebug, "⚠️",
 			fmt.Sprintf("Delegation stderr [%s]:", nodeID), info.Stderr)
 	}

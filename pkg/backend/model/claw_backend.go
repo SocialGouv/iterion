@@ -1447,7 +1447,7 @@ func (e *errDrainBoundCut) Unwrap() error { return e.cause }
 // redacted by Layer 0 at the emitter.
 //
 // The LOG is no longer one of this pass's sinks: the run logger redacts
-// every record it keeps (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458), so a line that merely
+// every record it keeps (docs/adr/149-the-run-logger-redacts-what-it-keeps.md, #2458), so a line that merely
 // prints third-party text owes nothing here. The ERROR this backend returns
 // still owes the pass: the hooks that report a failed delegation read that
 // error where it is raised — the delegate_error event, the error tracker —
@@ -2737,7 +2737,7 @@ func evaluateForwardedCall(p *permission.Policy, spellings []string, args map[st
 // is logged and emitted from here — not left to the runner's event relay,
 // which whatever forged the call also controls. Its text quotes the call the
 // other side sent, argument included; the run logger redacts the record
-// (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458). The error itself travels to two readers that
+// (docs/adr/149-the-run-logger-redacts-what-it-keeps.md, #2458). The error itself travels to two readers that
 // already handle it: back over the IPC as the refused call's result, to the
 // side that wrote the argument, and to the OnToolCall hook, whose own sink
 // redacts its text.
@@ -3017,7 +3017,7 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 			// that failed to decode matched a case on one of this host's
 			// constants ([ApplyRelayedEvent] raises an error from nowhere
 			// else). The run logger redacts every record it keeps
-			// (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458), which is what keeps a sink of this
+			// (docs/adr/149-the-run-logger-redacts-what-it-keeps.md, #2458), which is what keeps a sink of this
 			// class honest when a new arm quotes a type the far side chose.
 			switch {
 			case err != nil:

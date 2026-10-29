@@ -1,4 +1,4 @@
-# ADR-148: The run logger redacts every record it keeps — one chokepoint, not N sink passes
+# ADR-149: The run logger redacts every record it keeps — one chokepoint, not N sink passes
 
 - **Status**: Accepted — the operator picked this option on [#2458](https://github.com/SocialGouv/iterion/issues/2458) on 2026-10-22 ("option A — an ADR first, then redaction at the run logger"); this record is the ADR, and the change that carries it is the implementation.
 - **Date**: 2026-10-29

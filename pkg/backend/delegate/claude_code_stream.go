@@ -1103,7 +1103,7 @@ func (b *ClaudeCodeBackend) handleAssistantMessage(m *claudesdk.AssistantMessage
 		// LogBlock so the reasoning text folds under the header in the
 		// studio's run log (expand/collapse), like tool I/O and 💬 text.
 		// The gate asks the sink before paying for the BOUND (the redactor
-		// is the run logger's own, docs/adr/148-the-run-logger-redacts-what-it-keeps.md, and runs only on a kept
+		// is the run logger's own, docs/adr/149-the-run-logger-redacts-what-it-keeps.md, and runs only on a kept
 		// record): the body is bounded on what the LOGGER WRITES, not on
 		// the bytes handed over — every block line carries the continuation
 		// prefix, so an unbounded 1 MiB body of single-byte lines is ~7.5
@@ -1336,7 +1336,7 @@ func redactWith(redact func(string) string, s string) string {
 func logAssistantContent(logger *iterlog.Logger, nodeID string, iteration int, blocks []claudesdk.ContentBlock, redact func(string) string, redactSpan int) {
 	// The run log is an observational sink: known secret values go back to
 	// their placeholders, token shapes to [redacted]. The run logger's own
-	// redactor (docs/adr/148-the-run-logger-redacts-what-it-keeps.md) covers whole records; this pass stays because
+	// redactor (docs/adr/149-the-run-logger-redacts-what-it-keeps.md) covers whole records; this pass stays because
 	// redactForRunLog CUTS what it shows (64 KiB), and a value straddling
 	// the cut must be redacted before it, not after.
 	red := func(s string) string { return redactWith(redact, s) }

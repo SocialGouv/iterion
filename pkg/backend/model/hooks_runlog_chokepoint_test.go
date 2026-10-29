@@ -98,7 +98,7 @@ func TestStoreHooks_NonCrossingErrorsAreRedactedAtTheRunLogger(t *testing.T) {
 	}
 }
 
-// The ADR's measurement (docs/adr/148-the-run-logger-redacts-what-it-keeps.md): what the chokepoint costs per kept
+// The ADR's measurement (docs/adr/149-the-run-logger-redacts-what-it-keeps.md): what the chokepoint costs per kept
 // line on a chatty debug run — a realistic guard (a run's provider keys,
 // declared secrets and minted grants) over a typical tool-loop line, and
 // over a 4 KiB block body, against the same logger with no redactor.

@@ -81,7 +81,7 @@ sink, before persistence:
   punctuation included,
 - run.log — every record the run's logger keeps, at the logger itself
   (`Logger.WithRedactor`, wired by `runview.BuildExecutor` from this guard;
-  [ADR-148](adr/148-the-run-logger-redacts-what-it-keeps.md)) — block bodies,
+  [ADR-149](adr/149-the-run-logger-redacts-what-it-keeps.md)) — block bodies,
   tool sidecar blobs, and turn-snapshot conversations keep their own eager
   pass (their stores bypass the redacting wrapper, or the text is cut before
   it is logged).

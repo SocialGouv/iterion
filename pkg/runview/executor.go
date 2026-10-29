@@ -430,7 +430,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// scrubbed before persistence.
 	guard := model.BuildSecretGuard(ctx, spec.Workflow, spec.Vars, recordedMintedSecrets(ctx, spec))
 	// …and through the run's LOGGER, the redaction chokepoint
-	// (docs/adr/148-the-run-logger-redacts-what-it-keeps.md, #2458): every record this fork keeps crosses
+	// (docs/adr/149-the-run-logger-redacts-what-it-keeps.md, #2458): every record this fork keeps crosses
 	// guard.Redact before the write and before the warn+ hook, so a
 	// producer hands the log third-party text raw and no per-sink pass is
 	// owed. Built before the FIRST line this run logs, so the fallback /
