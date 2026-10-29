@@ -342,6 +342,37 @@ func TestE2ECoverageMatrixGate(t *testing.T) {
 		}
 	})
 
+	t.Run("escaped_pipe_in_a_cell_keeps_six_cells", func(t *testing.T) {
+		// GFM defines \| as a literal pipe inside a cell — the contract
+		// parser split on it anyway, shifting every cell right of it (the
+		// Status column landed on the tail of the escaped text).
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		greenVerify(t, scratch)
+		writeFile(t, ws, matrixRel, header+
+			"| cli.remote | mission start\\|get\\|list | cli | uncovered | | plan |\n")
+		res := run(t, ws, scratch)
+		if !res.MatrixOK || res.MatrixRows != 1 || res.UncoveredRows != 1 {
+			t.Fatalf("a row whose cell carries an escaped pipe must parse as six cells with its Status read correctly: %+v", res)
+		}
+	})
+
+	t.Run("over_wide_row_names_the_unescaped_pipe", func(t *testing.T) {
+		// A row with a raw extra pipe has MORE than six cells; it used to be
+		// read silently with every cell shifted — the Status column landed on
+		// whatever text followed the pipe (a committed row read 'list').
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		greenVerify(t, scratch)
+		writeFile(t, ws, matrixRel, header+
+			"| a.b | Thing | a | uncovered | start|get|list | plan |\n")
+		res := run(t, ws, scratch)
+		if res.MatrixOK || !strings.Contains(res.LogTail, "unescaped pipe") {
+			t.Fatalf("an over-wide row must be red naming the unescaped pipe: %+v", res)
+		}
+		if !strings.Contains(res.LogTail, "8 cells, contract needs 6") {
+			t.Fatalf("the message must name the cell counts, got %q", res.LogTail)
+		}
+	})
+
 	t.Run("bypass_blank_line_truncates_the_table", func(t *testing.T) {
 		// The row scan stopped at the first blank line, hiding every row
 		// after it — uncovered rows included.

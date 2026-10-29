@@ -180,7 +180,10 @@ func TestTheMatrixContractSliceStillRefusesWhatTheGateRefuses(t *testing.T) {
 		{
 			name: "an_unescaped_pipe_shifts_the_cells",
 			rows: "| a.thing | a promise `start|stop` | a | covered-deterministic | TestRealThing (e2e_test.go) | |\n",
-			says: "invalid status",
+			// The refusal names the CAUSE (an over-wide row), not the
+			// symptom the shifted Status column used to surface as
+			// (#2800). The escape form `\|` keeps the row at six cells.
+			says: "an unescaped pipe splits a row",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

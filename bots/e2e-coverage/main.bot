@@ -1442,6 +1442,15 @@ if mtext:
             # parenthesised name-in-file form.
             r = r.strip()
             return bool(rx.search(r)) or r.endswith(')')
+        def row_cells(s):
+            # Split a table row on its DELIMITER pipes only: GFM escapes a
+            # pipe a cell legitimately carries as [backslash]| (chr(92) --
+            # this body is backslash-free), so blank the escape to a
+            # placeholder before the split and restore it after. Splitting on
+            # every pipe shifts each cell right of the escape -- the Status
+            # column then lands on the tail of the escaped text.
+            ph = chr(1)
+            return [c.strip().replace(ph, '|') for c in s.replace(chr(92) + '|', ph).strip('|').split('|')]
         allowed = ['covered-deterministic', 'covered-live', 'unit-only', 'excluded', 'uncovered']
         need_note = ['covered-live', 'unit-only', 'excluded']
         need_tests = ['covered-deterministic', 'covered-live']
@@ -1459,8 +1468,8 @@ if mtext:
                 break
             if s.replace('|', '').replace('-', '').replace(':', '').replace(' ', '') == '':
                 continue
-            cells = [c.strip() for c in s.strip('|').split('|')]
-            if len(cells) < len(contract_cols):
+            cells = row_cells(s)
+            if len(cells) != len(contract_cols):
                 matrix_ok = False
                 problems.append('malformed row (' + str(len(cells)) + ' cells, contract needs ' + str(len(contract_cols)) + ' -- an unescaped pipe splits a row): ' + s[:110])
                 continue
@@ -1527,7 +1536,7 @@ if mtext:
                 s = l.strip()
                 if not s.startswith('|'):
                     continue
-                c = [x.strip() for x in s.strip('|').split('|')]
+                c = row_cells(s)
                 j = cols.get('status', -1)
                 if len(c) >= len(contract_cols) and 0 <= j < len(c) and c[j].strip(chr(96)).strip().lower() in allowed:
                     matrix_ok = False
