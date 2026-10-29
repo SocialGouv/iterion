@@ -22,7 +22,10 @@ host):
   the MODE decides, not the tier that named it. One cost the event
   states explicitly (`file_secrets_dropped: true`): an unsandboxed run
   has nowhere to mount `as: file` secrets, so a workflow that declares
-  them will not find them. (The resolver degrades the same way when it
+  them will not find them — and a secret whose `sinks:` grants nothing an
+  unsandboxed run serves (`egress` with no `command`, `params` or `file`
+  beside it; `agent` with no claude_code or in-process claw node) is refused
+  at the launch, typed ([secrets](secrets.md#sinks--where-a-declared-secret-may-be-materialised)). (The resolver degrades the same way when it
   can resolve no repository root, or no image at all for a
   `devcontainer.json` it cannot read — both need a library caller that
   supplies neither, since `iterion run`, studio and the runner always

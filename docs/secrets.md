@@ -378,6 +378,33 @@ the agent — resolves is a call that carried a secret: a raw tool's output
 goes back to placeholders on both backends. A bot-secret binding or the
 cloud transport does not narrow sinks yet (they narrow `hosts:`).
 
+**What the launch refuses (ADR-146, axis 3).** A declared secret whose
+grants resolve at no sink the run can serve fails the LAUNCH — before
+anything is mounted or started, on every launch path (a subbot child
+adopting its parent's sandbox included), above the backend choice
+(`claude_code`, in-process `claw` and sandboxed `claw` reach the same
+verdict) — with a typed error (`CAPABILITY_UNSUPPORTED`, cause
+`runtime.SecretGrantUnservableError`) naming every such secret, its grants
+and the path that could not serve each. What a run serves: `command`,
+`params` and `file` always (a file secret is mounted by a real driver and
+materialised on the host otherwise); `egress` on a sandboxed run whose proxy
+inspects TLS (a rewriter wired, a driver that injects the CA) — never
+unsandboxed, never for a child in its parent's sandbox, whose rewriter is
+the parent's; `agent` when an agent or judge node resolves to `claude_code`
+(its hook materialises on the host, sandboxed or not), or to in-process
+`claw` on an unsandboxed run — a sandboxed `claw` runs through the
+in-container runner, a router carries no materialiser, codex, pi, kimi,
+grok and opencode never read one. Never a run that carries a placeholder
+nothing resolves. A secret with no `sinks:` is never refused here, nor an
+`optional: true` one the run does not hold (a launch that must proceed
+without it is not refused for the sinks it would have reached), nor
+anything on a dry run (its sandbox is the simulation's), and the provider credential a sandboxed node spends to talk to its
+model keeps its channel — the container's environment
+([sandbox](sandbox.md), `forwardableProviderEnv`): that credential is
+`RedactOnly` in the guard, an OAuth forfait cannot be substituted at all,
+and "provider API keys crossing as placeholders the proxy substitutes" is a
+follow-up, not this record.
+
 ### File secrets
 
 Some credentials are safer and more ergonomic as files (`kubeconfig`,

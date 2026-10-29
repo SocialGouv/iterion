@@ -178,9 +178,13 @@ would have to opt out by construction, which annuls the rule.
   `params:` whose secret does not grant that sink is a compile error on the
   REFERENCE, naming the sink and the grant. The guard carries the grants:
   `agent` gates `Materialize` of model-emitted tool input, `egress` gates
-  the egress rewriter. Witness: a bundle referencing a `sinks: [prompt]`
-  secret in a `command:` is refused at compile time; mutating the grant
-  check reddens the test on its assertion.
+  the egress rewriter. A placeholder a MODEL wrote into data that a tool
+  body renders (`{{outputs.x}}`, `{{input.x}}`) is the agent sink's whatever
+  body it lands in: defused before the body's materialiser, so `sinks:
+  [command]` keeps a secret off every model's path, not only off its
+  prompts. Witness: a bundle referencing a `sinks: [agent]` secret in a
+  `command:` is refused at compile time; mutating the grant check reddens
+  the test on its assertion.
 - **S2 — the model boundary**: the rendered prompt text goes through
   `Guard.Unmaterialize` (known values → placeholders) under the Layer 1
   switch, at the one rendering path. Witness: a sentinel a tool node prints
@@ -188,10 +192,14 @@ would have to opt out by construction, which annuls the rule.
   and never as the value — on `claude_code` and on `claw`, one `NodeExecutor`
   builds both tasks; mutating the boundary reddens the prompt assertion.
 - **S4 — the launch refusal**: one check in the runtime, above the backend
-  choice, run on every launch path; a typed error carrying the secret and
-  the paths. Witness: a sandboxed bundle with a `sinks: [egress]` secret on
-  a sandbox that cannot inspect is refused before any node runs; mutating
-  the check reddens the test on its typed-error assertion.
+  choice, run on every launch path (a child adopting its parent's sandbox
+  included) and never on a dry run; a typed error carrying every refused
+  secret and the paths. What a run serves: `command`, `params`, `file`
+  always; `egress` on an inspecting sandbox; `agent` through a claude_code
+  agent or judge node, or in-process claw unsandboxed. Witness: a sandboxed
+  bundle with a `sinks: [egress]` secret on a sandbox that cannot inspect is
+  refused before anything starts; mutating the check reddens the test on
+  its typed-error assertion.
 
 ## Consequences
 
@@ -217,6 +225,13 @@ would have to opt out by construction, which annuls the rule.
 - A bot-secret binding or the cloud transport may NARROW a secret's sinks
   the way it narrows `hosts:` (never broaden); that narrowing is a follow-up
   on the binding store, not part of these slices.
+- Two bounds the adversarial rounds measured and this record states: the
+  clone credential of a cloud run (the stored `forge_token` / `gitlab_token`
+  / `github_token` the runner writes to the workspace's git credential
+  store) is the runner's channel and the grants do not govern it — a
+  follow-up names it; and the model boundary leaves the ambient name
+  heuristic's values (`GIT_AUTHOR_EMAIL` matches `AUTH`) alone, since a
+  placeholder in a prompt there breaks the commit the agent was asked for.
 - The path-rooted permission rules (iterion#1710) are the BELT, not the
   guarantee: a bot that reads untrusted input still gates its OUTPUT
   deterministically with a known-value scan, as `bots/prod-watch` does.

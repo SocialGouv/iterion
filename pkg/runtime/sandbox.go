@@ -294,6 +294,15 @@ type SandboxParams struct {
 	// inspection also forces a proxy to run even under network: open.
 	SecretRewriter netproxy.SecretRewriter
 
+	// Simulation marks a dry run: its sandbox is the simulation's, never
+	// the run's, so a declared secret's grants are not judged against it.
+	Simulation bool
+
+	// SecretHeld reports whether a declared secret resolved to something
+	// this run carries (a value, a mounted file); nil reads every optional
+	// secret as absent. The launch gate behind `sinks:` reads it.
+	SecretHeld func(name string) bool
+
 	// BoardMCPHandler, when non-nil, serves the dedicated board/runs MCP
 	// routes for a per-run gateway-reachable listener started alongside the
 	// egress proxy (C082). The historical name remains for compatibility.
@@ -451,6 +460,13 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 				logger.Warn("runtime: %s (run %s)", payload["reason"], p.RunID)
 			}
 		}
+		// An unsandboxed run serves no `egress` grant, and `agent` only on
+		// a backend whose tool input is materialised on the host: a secret
+		// granted nothing the host serves is refused here, before any node
+		// runs (ADR-146, axis 3b).
+		if err := refuseUnservableSecretGrants(p.Workflow, p.EffectiveBackend, p.hostSecretService()); err != nil {
+			return nil, err
+		}
 		return nil, nil
 	}
 	// The operator's env overlay never loses to the target repo's
@@ -493,6 +509,10 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 			if logger != nil {
 				logger.Warn("runtime: %s (run %s)", payload["reason"], p.RunID)
 			}
+			// Degraded to the host: the same service as an unsandboxed run.
+			if gerr := refuseUnservableSecretGrants(p.Workflow, p.EffectiveBackend, p.hostSecretService()); gerr != nil {
+				return nil, gerr
+			}
 			return nil, nil
 		}
 		if errors.Is(err, sandbox.ErrDriverUnavailable) {
@@ -527,6 +547,20 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		return nil, err
 	}
 	caps := driver.Capabilities()
+	// What this sandbox serves a declared secret's grants with, judged here
+	// — the driver and the proxy's inspection are known, nothing is mounted
+	// or started yet, so a refusal leaves nothing behind. Egress reads the
+	// two facts startNetworkProxy reads (a rewriter is wired, the driver
+	// injects the CA); the noop driver runs the nodes on the host.
+	realDriver := driver.Name() != "noop"
+	if err := refuseUnservableSecretGrants(p.Workflow, p.EffectiveBackend, secretSinkService{
+		sandboxed:  realDriver,
+		egress:     realDriver && p.SecretRewriter != nil && caps.SupportsTLSInspection,
+		simulation: p.Simulation,
+		held:       p.SecretHeld,
+	}); err != nil {
+		return nil, err
+	}
 
 	// Configure all mounts BEFORE the driver prepares resources. Each
 	// helper is a silent no-op when its host source is missing, so
@@ -826,6 +860,29 @@ func workflowHasInteractiveNode(wf *ir.Workflow) bool {
 		}
 	}
 	return false
+}
+
+// hostSecretService is the service of a run on the host: no sandbox, no
+// proxy, `agent` through claude_code or in-process claw.
+func (p SandboxParams) hostSecretService() secretSinkService {
+	return secretSinkService{simulation: p.Simulation, held: p.SecretHeld}
+}
+
+// secretHolder is the structural view of the executor's guard the launch
+// gate reads: whether a declared secret resolved to something this run
+// carries. ClawExecutor implements it.
+type secretHolder interface {
+	HoldsSecret(name string) bool
+}
+
+// secretHeld returns the executor's answer to "does this run hold the
+// declared secret", or nil when the executor keeps no guard.
+func (e *Engine) secretHeld() func(string) bool {
+	h, ok := e.executor.(secretHolder)
+	if !ok {
+		return nil
+	}
+	return h.HoldsSecret
 }
 
 // secretEgressRewriter is the structural view of the executor's secret
@@ -2018,6 +2075,18 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 			return noopCleanup, err
 		}
 		if adopt {
+			// A child adopting the parent's sandbox goes out through the
+			// parent's proxy, whose rewriter is the parent's guard — the
+			// child's secrets are unknown to it — and mounts nothing of its
+			// own: `egress` and `file` serve none of the child's grants there,
+			// `agent` only through a claude_code node.
+			if err := refuseUnservableSecretGrants(e.workflow, e.backendResolver(), secretSinkService{
+				sandboxed:  true,
+				simulation: e.simulation != (Simulation{}),
+				held:       e.secretHeld(),
+			}); err != nil {
+				return noopCleanup, err
+			}
 			return e.adoptSharedSandbox(ctx, runID, emitForSandbox)
 		}
 	}
@@ -2076,6 +2145,8 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		BundleContainerPath:      "/run/iterion/bundle",
 		WorktreeGitDir:           worktreeGitDir,
 		SecretRewriter:           e.resolveSecretRewriter(),
+		Simulation:               e.simulation != (Simulation{}),
+		SecretHeld:               e.secretHeld(),
 		BoardMCPHandler:          e.boardMCPHandler,
 		EffectiveBackend:         e.backendResolver(),
 	})
