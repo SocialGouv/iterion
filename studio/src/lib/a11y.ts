@@ -1,4 +1,23 @@
-import type { KeyboardEvent } from "react";
+import type { KeyboardEvent, MouseEvent } from "react";
+
+/**
+ * What activated a row. `pointer` carries the cursor position of the click
+ * that activated it, and is null when a key did — a call site that needs
+ * coordinates reads them from here instead of writing its own `onClick`
+ * beside the spread, which would SHADOW the helper's (a later JSX prop wins)
+ * and silently drop whatever the helper's handler also does.
+ */
+export interface RowActivation {
+  pointer: { x: number; y: number } | null;
+}
+
+const pointerOf = (e: MouseEvent<HTMLElement>): RowActivation => ({
+  pointer: { x: e.clientX, y: e.clientY },
+});
+
+// A fresh object per activation, never a shared one: a call site that reads
+// it keeps whatever it stores, and nothing it does reaches the next row.
+const keyActivation = (): RowActivation => ({ pointer: null });
 
 // Props that promote a non-button element (a table row, list item, or card)
 // to a keyboard-operable button: click + Enter/Space activation, plus the
@@ -6,13 +25,20 @@ import type { KeyboardEvent } from "react";
 // its own className/key/title. Replaces the ~5-line Enter/Space onKeyDown
 // idiom that had drifted across a dozen clickable-row/card call-sites.
 //
+// ONLY for a row with NO focusable descendant. A role="button" that holds a
+// control is a button containing a button: invalid ARIA, reported by axe as
+// `nested-interactive` (WCAG 4.1.2), and the inner control's Enter also
+// activates the row. Such a row takes `pointerRowProps` and hands its
+// keyboard path to a real control inside it. Neither half is a review
+// convention: the source guard `_clickableRows.ts` holds both.
+//
 // `label` is optional on purpose (RGAA 7.1): an aria-label OVERRIDES the
 // element's content as the accessible name, so a row with visible text
 // must NOT carry one — its name is its visible content, which contains
 // the visible label by construction. Only a row with no usable visible
 // text passes a label.
 export function clickableRowProps(
-  onActivate: () => void,
+  onActivate: (activation: RowActivation) => void,
   label?: string,
   opts?: { disabled?: boolean },
 ) {
@@ -23,14 +49,36 @@ export function clickableRowProps(
     // and focusable-but-inert is a keyboard trap (RGAA 7.1).
     tabIndex: disabled ? -1 : 0,
     ...(label ? { "aria-label": label } : {}),
-    onClick: disabled ? undefined : onActivate,
+    onClick: disabled ? undefined : (e: MouseEvent<HTMLElement>) => onActivate(pointerOf(e)),
     onKeyDown: (e: KeyboardEvent<HTMLElement>) => {
       if (disabled) return;
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
-        onActivate();
+        onActivate(keyActivation());
       }
     },
+  };
+}
+
+/**
+ * Props for a row whose click is a POINTER CONVENIENCE — the row reacts to a
+ * click, and a real control INSIDE it carries the same action for the
+ * keyboard. No role, no tabIndex, no key handler, on purpose: this is the
+ * shape for a row that holds a focusable descendant, where `role="button"`
+ * would be `nested-interactive` (WCAG 4.1.2) and would put the row AND each
+ * nested control in the tab order for one row's worth of actions.
+ *
+ * The inner control is what makes the pointer-only row legal (RGAA 7.3): a
+ * row with nothing focusable inside is mouse-only, so it takes
+ * `clickableRowProps` instead. `_clickableRows.ts` refuses both mistakes.
+ */
+export function pointerRowProps(
+  onActivate: (activation: RowActivation) => void,
+  opts?: { disabled?: boolean },
+) {
+  const { disabled } = opts ?? {};
+  return {
+    onClick: disabled ? undefined : (e: MouseEvent<HTMLElement>) => onActivate(pointerOf(e)),
   };
 }
 

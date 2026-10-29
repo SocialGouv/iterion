@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
-import { clickableRowProps } from "@/lib/a11y";
+import { pointerRowProps } from "@/lib/a11y";
 
 import { orgStatusMeta } from "./orgStatusMeta";
 
@@ -43,7 +43,12 @@ export function OrgsTable({
                 <Tr
                   key={o.id}
                   className="cursor-pointer"
-                  {...clickableRowProps(() => onOpen(o))}
+                  // Pointer convenience only: the row holds the Open
+                  // button, so a role="button" here would be
+                  // `nested-interactive` (WCAG 4.1.2) and would give one
+                  // row two tab stops for one action. The Open button is
+                  // the keyboard path (RGAA 7.3).
+                  {...pointerRowProps(() => onOpen(o))}
                 >
                   <Td>
                     {o.name}
@@ -55,7 +60,16 @@ export function OrgsTable({
                   </Td>
                   <Td className="text-fg-muted">{fmtQuotaGiB(o.memory_quota_bytes)}</Td>
                   <Td align="right">
-                    <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); onOpen(o); }}>
+                    {/* One Open per row, all reading "Open": the name
+                        carries the org the button acts on, and the slug is
+                        the row's own discriminator (two orgs can share a
+                        display name). Visible word first, for SC 2.5.3. */}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      aria-label={`Open ${o.name} ${o.slug}`}
+                      onClick={(e) => { e.stopPropagation(); onOpen(o); }}
+                    >
                       Open
                     </Button>
                   </Td>

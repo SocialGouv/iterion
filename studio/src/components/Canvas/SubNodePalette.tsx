@@ -2,7 +2,7 @@ import { type DragEvent, useCallback, useMemo, useRef, useState } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useUIStore } from "@/store/ui";
 import { useAddSubNode, type SubNodeDragData } from "@/hooks/useAddSubNode";
-import { clickableRowProps } from "@/lib/a11y";
+import { clickableRowProps, type RowActivation } from "@/lib/a11y";
 import { findNodeDecl } from "@/lib/defaults";
 import { SUB_COLORS, SUB_ICONS, softColor } from "@/lib/constants";
 import type { SubNodeRelation } from "@/lib/docMutations";
@@ -68,20 +68,22 @@ function DraggableItem({
 }) {
   const color = SUB_COLORS[item.subKind];
   const icon = SUB_ICONS[item.subKind];
-  // Anchor the dialog at the item's right edge on keyboard activation
-  // (no cursor coords available); mouse-click still uses cursor coords.
+  // Anchor the dialog at the cursor when a pointer activated the item, at
+  // the item's right edge when a key did (no cursor coords to read). Both
+  // paths go through the helper's one handler: an `onClick` written beside
+  // the spread would SHADOW it, so the helper's handler — and anything it
+  // later grows — would silently stop running on the mouse path.
   const ref = useRef<HTMLDivElement | null>(null);
-  const activateFromKeyboard = () => {
+  const activate = ({ pointer }: RowActivation) => {
     const rect = ref.current?.getBoundingClientRect();
-    onActivate(dragData, { x: rect?.right ?? 0, y: rect?.top ?? 0 });
+    onActivate(dragData, pointer ?? { x: rect?.right ?? 0, y: rect?.top ?? 0 });
   };
   return (
     <div
       ref={ref}
-      {...clickableRowProps(activateFromKeyboard)}
+      {...clickableRowProps(activate)}
       draggable
       onDragStart={(e) => onDragStart(e, dragData)}
-      onClick={(e) => onActivate(dragData, { x: e.clientX, y: e.clientY })}
       className="flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer hover:brightness-125 transition-all border border-border-strong focus:outline-none focus:ring-1 focus:ring-accent"
       style={{ backgroundColor: softColor(color, 9), borderColor: softColor(color, 40) }}
       title={`Click or drag to add ${item.label}`}

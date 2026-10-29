@@ -4,6 +4,7 @@ import { useState } from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { CrossCircledIcon } from "@radix-ui/react-icons";
 
+import { clickableRowProps, pointerRowProps } from "@/lib/a11y";
 import { Icon } from "@/components/ui/Icon";
 import { LiveDot } from "@/components/ui/LiveDot";
 import { ResizeSeparator } from "@/components/ui/ResizeSeparator";
@@ -200,5 +201,98 @@ describe("a11y / chokepoints", () => {
           "the window-splitter pattern: role=separator with aria-valuenow IS a widget (ARIA 1.2) and axe's role list predates it — the keyboard contract is pinned by 'ResizeSeparator — full splitter contract on one axis' in this file",
       },
     ]);
+  });
+});
+
+// The two row shapes lib/a11y offers (#2766). A clickable row is either the
+// control itself — and then it holds nothing focusable — or a pointer
+// convenience whose keyboard path is a real control inside it. The pair
+// exists so the third shape, a role="button" row holding a button, has no
+// call site left to be written at.
+describe("a11y / row activation shapes", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("clickableRowProps — a row with nothing focusable inside IS the control", () => {
+    const onActivate = vi.fn();
+    const { container } = render(
+      <div {...clickableRowProps(onActivate)}>
+        <span>only text here</span>
+      </div>,
+    );
+    const row = container.firstElementChild as HTMLElement;
+    expect(row.getAttribute("role")).toBe("button");
+    expect(row.tabIndex).toBe(0);
+    fireEvent.keyDown(row, { key: "Enter" });
+    fireEvent.keyDown(row, { key: " " });
+    expect(onActivate).toHaveBeenCalledTimes(2);
+    // A key has no cursor to anchor anything at, and the activation says so
+    // rather than reporting (0, 0) — which is a place on the screen.
+    expect(onActivate).toHaveBeenLastCalledWith({ pointer: null });
+    fireEvent.click(row, { clientX: 12, clientY: 34 });
+    expect(onActivate).toHaveBeenLastCalledWith({ pointer: { x: 12, y: 34 } });
+  });
+
+  it("pointerRowProps — the row is no control: no role, no tab stop, no key path", () => {
+    const onActivate = vi.fn();
+    const { container } = render(
+      <div {...pointerRowProps(onActivate)}>
+        <button type="button">the keyboard path</button>
+      </div>,
+    );
+    const row = container.firstElementChild as HTMLElement;
+    expect(row.getAttribute("role")).toBeNull();
+    expect(row.hasAttribute("tabindex")).toBe(false);
+    fireEvent.keyDown(row, { key: "Enter" });
+    fireEvent.keyDown(row, { key: " " });
+    expect(onActivate).not.toHaveBeenCalled();
+    fireEvent.click(row, { clientX: 7, clientY: 9 });
+    expect(onActivate).toHaveBeenCalledWith({ pointer: { x: 7, y: 9 } });
+  });
+
+  it("both shapes refuse every path while disabled", () => {
+    const widgetRow = vi.fn();
+    const pointerRow = vi.fn();
+    render(
+      <div>
+        <div data-testid="widget" {...clickableRowProps(widgetRow, undefined, { disabled: true })} />
+        <div data-testid="pointer" {...pointerRowProps(pointerRow, { disabled: true })} />
+      </div>,
+    );
+    const widget = screen.getByTestId("widget");
+    expect(widget.tabIndex).toBe(-1);
+    fireEvent.click(widget);
+    fireEvent.keyDown(widget, { key: "Enter" });
+    expect(widgetRow).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("pointer"));
+    expect(pointerRow).not.toHaveBeenCalled();
+  });
+
+  it("the shape they replace is what axe calls nested-interactive", async () => {
+    // The positive control for the pair: the net still sees the defect the
+    // surfaces were cleaned of, so a green suite means the rows changed —
+    // not that the net stopped looking for this.
+    const { container } = render(
+      <main>
+        <div {...clickableRowProps(() => {})}>
+          <button type="button">Resume</button>
+        </div>
+      </main>,
+    );
+    await expect(expectNoViolationsStrict(container, "a row holding a button")).rejects.toThrow(
+      /nested-interactive/,
+    );
+  });
+
+  it("a pointer row with its inner control is axe-clean", async () => {
+    const { container } = render(
+      <main>
+        <div {...pointerRowProps(() => {})}>
+          <button type="button">Open the thing</button>
+        </div>
+      </main>,
+    );
+    await expectNoViolationsStrict(container, "pointer row");
   });
 });

@@ -19,8 +19,13 @@ test("board renders the native tracker's columns and the seeded card", async ({
     await expect(page.getByText(state, { exact: true })).toBeVisible();
   }
 
-  const card = page.getByRole("button", { name: "Fixture card in inbox" });
+  // The card is no deeper a control than a <div>: it holds the label chips
+  // and the run links, so a role="button" around them was
+  // nested-interactive (#2766). Its title is the control, and the card
+  // itself is addressed by the marker it renders for exactly this.
+  const card = page.locator("[data-issue-card]").filter({ hasText: "Fixture card in inbox" });
   await expect(card).toBeVisible();
+  await expect(card.getByRole("button", { name: "Fixture card in inbox" })).toBeVisible();
   // The card carries the label the CLI created it with and its short id.
   await expect(card).toContainText("ui-e2e");
   await expect(card).toContainText(issueId.replace("native:", "").slice(0, 10));
@@ -36,7 +41,13 @@ test("moving a card in the UI persists to the native store", async ({
   // Selecting the card reveals the bulk-move toolbar; moving it there is
   // the deterministic equivalent of the drag-and-drop gesture (same
   // mutation, same endpoint).
-  await page.getByRole("button", { name: "Fixture card in inbox" }).click();
+  // Click the card's short id — a plain text region, so the click reaches
+  // the card's selection handler. The title inside it opens the modal.
+  await page
+    .locator("[data-issue-card]")
+    .filter({ hasText: "Fixture card in inbox" })
+    .locator("code")
+    .click();
   // Backlog, not an eligible column: the dispatcher spec starts a real
   // dispatcher later in the run, and a card parked in a claimable state
   // would be launched out from under the other specs' assertions.
@@ -67,6 +78,6 @@ test("moving a card in the UI persists to the native store", async ({
   await expect(page.getByLabel("Select all in Backlog")).toBeVisible();
   await expect(page.getByLabel("Select all in Inbox")).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: "Fixture card in inbox" }),
+    page.locator("[data-issue-card]").filter({ hasText: "Fixture card in inbox" }),
   ).toBeVisible();
 });

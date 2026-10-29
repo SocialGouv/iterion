@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { RunSummary } from "@/api/runs";
@@ -113,14 +113,75 @@ describe("runs list naming", () => {
     // deliberately out: every row's avatar runs the same filter, and two
     // controls with one name doing one thing is not a defect.
     const rowSpecific = [
+      ...screen.getAllByRole("button", { name: /^Open / }),
       ...screen.getAllByRole("button", { name: /^Resume / }),
       ...screen.getAllByRole("checkbox"),
       ...screen.getAllByRole("img", { name: /onto the assistant$/ }),
     ];
-    expect(rowSpecific.length).toBe(6);
+    expect(rowSpecific.length).toBe(8);
     const names = rowSpecific.map((el) => el.getAttribute("aria-label"));
     expect(names.every((n) => n && n.length > 0)).toBe(true);
     expect(new Set(names).size).toBe(names.length);
+  });
+});
+
+describe("runs list keyboard paths (#2766)", () => {
+  it("the card opens from a real control, and the card itself is no button", () => {
+    const onOpen = vi.fn();
+    const { container } = render(
+      <RunListCard
+        run={run("0199cccc-3333-7000-8000-000000000003")}
+        resuming={false}
+        onOpen={onOpen}
+        onFilterBot={noop}
+        onResume={noop}
+      />,
+    );
+    const card = container.firstElementChild as HTMLElement;
+    // The card holds the bot-avatar and Resume buttons: a role="button"
+    // here is a button containing buttons, and its Enter raced theirs.
+    expect(card.getAttribute("role")).toBeNull();
+    expect(card.hasAttribute("tabindex")).toBe(false);
+    fireEvent.keyDown(card, { key: "Enter" });
+    fireEvent.keyDown(card, { key: " " });
+    expect(onOpen).not.toHaveBeenCalled();
+    // The keyboard reaches the run through the title, a native control —
+    // which is what makes the card's own click a pointer convenience and
+    // not the only way in (RGAA 7.3).
+    const title = screen.getByRole("button", { name: "Open deploy 0199cccc-3333-" });
+    expect(title.tagName).toBe("BUTTON");
+    expect(title.textContent).toBe("deploy");
+    fireEvent.click(title);
+    expect(onOpen).toHaveBeenCalledWith("0199cccc-3333-7000-8000-000000000003");
+    // ... and the pointer convenience still works, once per click.
+    fireEvent.click(card);
+    expect(onOpen).toHaveBeenCalledTimes(2);
+  });
+
+  it("the table row opens from a real control too — one list, two layouts", () => {
+    const onOpen = vi.fn();
+    render(
+      <table>
+        <tbody>
+          <RunListRow
+            run={run("0199aaaa-1111-7000-8000-000000000001")}
+            selected={false}
+            resuming={false}
+            onOpen={onOpen}
+            onFilterBot={noop}
+            onToggleSelect={noop}
+            onResume={noop}
+          />
+        </tbody>
+      </table>,
+    );
+    const row = screen.getByRole("row");
+    expect(row.getAttribute("role")).toBeNull();
+    expect(row.hasAttribute("tabindex")).toBe(false);
+    const title = screen.getByRole("button", { name: "Open deploy 0199aaaa-1111-" });
+    expect(title.tagName).toBe("BUTTON");
+    fireEvent.click(title);
+    expect(onOpen).toHaveBeenCalledWith("0199aaaa-1111-7000-8000-000000000001");
   });
 });
 
@@ -130,10 +191,23 @@ describe("runs list axe", () => {
     await expectNoViolationsStrict(container, "RunListRow");
   });
 
-  // No axe entry for RunListCard yet, and the reason is greppable rather
-  // than silent: the card spreads `clickableRowProps` (role="button" +
-  // tabindex) on a container that holds the bot-avatar and Resume buttons,
-  // so axe reports `nested-interactive` — a real defect, shared by the 14
-  // call sites of that helper, tracked as #2766. Its entry lands with the
-  // fix; the naming pin above holds in the meantime.
+  // The card's entry, owed since #2766: it holds the bot-avatar and Resume
+  // buttons, so while it spread `clickableRowProps` (role="button" +
+  // tabindex) axe reported `nested-interactive` on it — the defect shared
+  // by that helper's call sites. The row above and the card below are the
+  // same list in two layouts, and both are judged.
+  it("Runs · list card — axe smoke, incompletes included", async () => {
+    const { container } = render(
+      <main>
+        <RunListCard
+          run={run("0199cccc-3333-7000-8000-000000000003")}
+          resuming={false}
+          onOpen={noop}
+          onFilterBot={noop}
+          onResume={noop}
+        />
+      </main>,
+    );
+    await expectNoViolationsStrict(container, "RunListCard");
+  });
 });

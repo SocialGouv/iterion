@@ -4,7 +4,7 @@ import type { RunSummary } from "@/api/runs";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { LiveDot } from "@/components/ui/LiveDot";
-import { clickableRowProps } from "@/lib/a11y";
+import { pointerRowProps } from "@/lib/a11y";
 import { formatRelative } from "@/lib/format";
 
 import { STATUS_VARIANT, labelForStatus } from "../runStatusMeta";
@@ -35,11 +35,14 @@ export const RunListCard = memo(function RunListCard({
   onFilterBot: (botKey: string) => void;
   onResume: (id: string) => void;
 }) {
-  // A div (not a <button>) so the bot-avatar button can nest validly;
-  // keyboard semantics are restored via clickableRowProps (role + Enter/Space).
+  // The card holds the bot-avatar and Resume buttons, so it carries no
+  // widget role of its own: a role="button" around them is
+  // `nested-interactive` (WCAG 4.1.2). Its click stays a pointer
+  // convenience, and the keyboard path to open the run is the title
+  // button below — one tab stop per action, none for the card itself.
   return (
     <div
-      {...clickableRowProps(() => onOpen(run.id))}
+      {...pointerRowProps(() => onOpen(run.id))}
       className="w-full text-left px-4 py-3 flex flex-col gap-1 min-h-[44px] cursor-pointer hover:bg-surface-2 active:bg-surface-3"
     >
       <div className="flex items-center gap-2 min-w-0 flex-wrap">
@@ -58,9 +61,22 @@ export const RunListCard = memo(function RunListCard({
         {run.active && (
           <LiveDot tone="live" size="sm" label="Active in this process" />
         )}
-        <span className="font-medium truncate">
+        {/* The card's own action, as a real control: the keyboard reaches
+            the run here, and the accessible name carries the short id
+            because friendlyLabel falls back to workflow_name and a list of
+            `deploy` runs would otherwise offer N identical controls.
+            Visible word first, for SC 2.5.3. */}
+        <button
+          type="button"
+          className="font-medium truncate text-left hover:underline focus-visible:underline"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpen(run.id);
+          }}
+          aria-label={`Open ${friendlyLabel(run)} ${runRowQualifier(run)}`}
+        >
           {friendlyLabel(run)}
-        </span>
+        </button>
         {/* Permanent (not hover-revealed) on cards — touch has no hover. */}
         {isResumable(run.status) && (
           <Button
@@ -72,9 +88,6 @@ export const RunListCard = memo(function RunListCard({
               e.stopPropagation();
               onResume(run.id);
             }}
-            // Keep Enter/Space on the button from bubbling to the card's
-            // clickableRowProps handler (which would navigate instead).
-            onKeyDown={(e) => e.stopPropagation()}
             // One Resume per card, qualified like the row's: friendlyLabel
             // falls back to workflow_name, so the short id the card also
             // shows is what separates two runs of one workflow.

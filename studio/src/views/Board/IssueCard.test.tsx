@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { expectNoViolationsStrict } from "@/__tests__/a11y/axeHelpers";
 
 import { IssueCard } from "./IssueCard";
 import type { NativeIssue } from "@/api/native";
@@ -135,5 +137,102 @@ describe("IssueCard last-run outcome", () => {
     const chip = screen.getByRole("button", { name: /live run/i });
     expect(chip.textContent).toBe("▶ live run");
     expect(chip.className).toContain("text-info");
+  });
+});
+
+// The card used to be a role="button" named after its title while holding
+// the label chips, the run links and the banner buttons (#2766): invalid
+// ARIA, and the two activation paths had drifted apart — the JSX's own
+// `onClick` (selection) shadowed the one `clickableRowProps` spread, while
+// its `onKeyDown` survived, so Enter opened the modal where a click
+// selected the card. The card is no control now; the title is.
+describe("IssueCard activation paths", () => {
+  it("leaves the card roleless and unnamed — the title is the control", () => {
+    const { container } = renderCard(baseIssue);
+    const card = container.querySelector("[data-issue-card]") as HTMLElement;
+    expect(card.getAttribute("role")).toBeNull();
+    expect(card.hasAttribute("tabindex")).toBe(false);
+    // An aria-label on the card overrode its own content as the accessible
+    // name, and a roleless element cannot carry one at all (RGAA 7.1).
+    expect(card.getAttribute("aria-label")).toBeNull();
+    const title = screen.getByRole("button", { name: "needs a decision" });
+    expect(title.tagName).toBe("BUTTON");
+    expect(title.textContent).toBe("needs a decision");
+  });
+
+  it("opens from the title by pointer, and selects from the card — never the reverse", () => {
+    const onClick = vi.fn();
+    const onOpen = vi.fn();
+    const { container } = render(
+      <IssueCard
+        iss={baseIssue}
+        selected={false}
+        activeLabels={new Set()}
+        onClick={onClick}
+        onOpen={onOpen}
+        onDragStart={() => {}}
+        onLabelClick={() => {}}
+        onCancelRun={() => {}}
+        onOpenRun={() => {}}
+        onShowRetryDetails={() => {}}
+      />,
+    );
+    const card = container.querySelector("[data-issue-card]") as HTMLElement;
+    // No key on the card does anything a click on it would not do: the
+    // card's Enter used to open the modal while its click selected.
+    fireEvent.keyDown(card, { key: "Enter" });
+    fireEvent.keyDown(card, { key: " " });
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(onClick).not.toHaveBeenCalled();
+    fireEvent.click(card);
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(onOpen).not.toHaveBeenCalled();
+    // The modal's path is the title control — a native button, so the
+    // platform's own Enter/Space reach it (RGAA 7.3).
+    fireEvent.click(screen.getByRole("button", { name: "needs a decision" }));
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls through to multi-select on a modified click of the title", () => {
+    const onClick = vi.fn();
+    const onOpen = vi.fn();
+    render(
+      <IssueCard
+        iss={baseIssue}
+        selected={false}
+        activeLabels={new Set()}
+        onClick={onClick}
+        onOpen={onOpen}
+        onDragStart={() => {}}
+        onLabelClick={() => {}}
+        onCancelRun={() => {}}
+        onOpenRun={() => {}}
+        onShowRetryDetails={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "needs a decision" }), { shiftKey: true });
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("Board · IssueCard — axe smoke, incompletes included", async () => {
+    const { container } = render(
+      <main>
+        <IssueCard
+          iss={{ ...baseIssue, labels: ["bug", "a11y"], last_run_id: "run-1", last_run_status: "finished" }}
+          selected={false}
+          activeLabels={new Set(["bug"])}
+          onClick={() => {}}
+          onOpen={() => {}}
+          onDragStart={() => {}}
+          onLabelClick={() => {}}
+          onCancelRun={() => {}}
+          onOpenRun={() => {}}
+          onShowRetryDetails={() => {}}
+        />
+      </main>,
+    );
+    await expectNoViolationsStrict(container, "IssueCard");
   });
 });

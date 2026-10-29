@@ -1,5 +1,6 @@
 import { memo } from "react";
 import { referenceDragProps } from "@/lib/chatDock/dragReference";
+import { pointerRowProps } from "@/lib/a11y";
 
 import type { RunSummary } from "@/api/runs";
 import { Badge } from "@/components/ui/Badge";
@@ -42,9 +43,13 @@ export const RunListRow = memo(function RunListRow({
   onResume: (id: string) => void;
 }) {
   return (
+    // The row's click is a pointer convenience — it holds the selection
+    // checkbox, the bot avatar and Resume, so it carries no widget role
+    // (that would be `nested-interactive`, WCAG 4.1.2). The keyboard path
+    // to open the run is the title button in the second cell.
     <tr
       className="group border-b border-border-default hover:bg-surface-2 cursor-pointer"
-      onClick={() => onOpen(run.id)}
+      {...pointerRowProps(() => onOpen(run.id))}
     >
       {/* Selection cell swallows its clicks so toggling never navigates. */}
       <td className="pl-4 pr-1 py-2 w-8" onClick={(e) => e.stopPropagation()}>
@@ -72,7 +77,21 @@ export const RunListRow = memo(function RunListRow({
             ⋮⋮
           </span>
           <BotAvatar run={run} onFilter={onFilterBot} />
-          <span className="font-medium truncate">{friendlyLabel(run)}</span>
+          {/* The row's action, as a real control: same name shape as this
+              row's Resume, because friendlyLabel falls back to
+              workflow_name and the short id is what separates two runs of
+              one workflow. Visible word first, for SC 2.5.3. */}
+          <button
+            type="button"
+            className="font-medium truncate text-left hover:underline focus-visible:underline"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpen(run.id);
+            }}
+            aria-label={`Open ${friendlyLabel(run)} ${runRowQualifier(run)}`}
+          >
+            {friendlyLabel(run)}
+          </button>
         </div>
       </td>
       <td className="px-4 py-2">
