@@ -256,7 +256,7 @@ func TestAHeaderBlockWithNoCredentialCrossesUntouched(t *testing.T) {
 // Mutation: drop "x-api-key" from credheader's set and this test names it as
 // an auth header the strip would carry.
 func TestTheCredentialHeaderNamesCoverClawsOwnAuthHeaders(t *testing.T) {
-	root := moduleRootForVendorWalk(t)
+	root := moduleRoot(t)
 	// The block is applied by the API clients' own identity pass
 	// (internal/api: ResolveIdentity, then Identity.Apply on the request), so
 	// the derivation reads exactly the tree whose requests it rides. Named

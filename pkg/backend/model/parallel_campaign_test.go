@@ -62,6 +62,7 @@ var serialFamily = map[string]string{
 	"async_backend_test.go":                    "Setenv",
 	"braced_env_reads_pin_test.go":             "Setenv",
 	"capabilities_public_test.go":              "SetDefault",
+	"claw_ambient_credential_header_test.go":   "Setenv",
 	"claw_ambient_test.go":                     "Setenv",
 	"claw_automem_note_test.go":                "Setenv",
 	"claw_automem_secret_test.go":              "Setenv",
