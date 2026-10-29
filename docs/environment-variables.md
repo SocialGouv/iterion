@@ -267,8 +267,20 @@ longer runs it, and in prose it renders the same (inside a code block the
 backslash shows). A one-click suggestion whose replacement holds such a line
 is shown as text instead, since changing it would change the code the click
 applies; when the guard rewrites a finding's own text, the suggestion fences
-that text opens at the top level become `text` blocks. Text a bot posts itself with its own forge token (a skill calling
-the GitLab API or `glab`) does not go through this guard.
+that text opens at the top level become `text` blocks.
+
+Text a bot posts itself with its own forge token (a skill calling the GitLab
+API or `glab`) cannot cross this guard, so every skill that posts to GitLab —
+the `forge-mr-create` copies, revi-converse's `forge-reply`, the supply-shield
+`forge-report`s, dep-update-guard's note — applies the same rewrite to its
+bodies before posting (#2422), pinned and witnessed by
+`TestEveryGitLabPostingSkillCarriesTheQuickActionGuard` and
+`TestQuickActionGuardSedLeavesNothingGitLabRuns` in
+[bots/forge_quickactions_test.go](../bots/forge_quickactions_test.go). The
+skill-side sed escapes `/` after optional leading blanks too (a superset of
+the column-0 rule) and uses `[^[:print:]]`, not `[^[:ascii:]]`, for the
+non-ASCII letters Onigmo folds onto command names: GNU sed rejects
+`[:ascii:]`.
 
 | Variable | Effect | Default |
 |---|---|---|

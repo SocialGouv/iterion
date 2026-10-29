@@ -160,6 +160,16 @@ PR URL host:
 - **GitLab** `…/-/merge_requests/<iid>`: `POST
   /api/v4/projects/<urlencoded path>/merge_requests/<iid>/notes` with
   `PRIVATE-TOKEN: <token>` (or `Authorization: Bearer`), body `{ "body": … }`.
+  **Quick-action guard (mandatory):** GitLab runs `/merge`, `/approve`, …
+  written at the start of a line of a note, with the posting account's
+  rights — and the comment quotes an untrusted changelog. Escape first, the
+  same rewrite the server-side guard applies (#2413, #2422; the
+  `[^[:print:]]` branch covers what `[[:alpha:]]` misses under `LC_ALL=C`,
+  e.g. `/ſpend 1h`; `[:print:]`, not `[:ascii:]` — GNU sed rejects
+  `[:ascii:]`, and `[^[:print:]]` catches the same bytes on GNU and BSD):
+  ```sh
+  BODY="$(printf '%s' "$BODY" | sed -E 's#^([[:blank:]]*)/([[:alpha:]]|[^[:print:]])#\1\\/\2#')"
+  ```
 - **Forgejo/Gitea** `…/pulls/<n>`: `POST
   /api/v1/repos/<owner>/<repo>/issues/<n>/comments` with
   `Authorization: token <token>`.

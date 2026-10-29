@@ -69,6 +69,27 @@ Find an existing marker comment, then UPDATE vs CREATE:
 - Forgejo: `GET /repos/{o}/{r}/issues/{num}/comments`; `PATCH
   …/issues/comments/{id}` or `POST …/issues/{num}/comments`.
 
+### GitLab quick-action guard — mandatory on every GitLab-bound body
+
+GitLab runs quick actions (`/merge`, `/approve`, `/label`, …) written at
+the start of a line of a note or discussion, with the rights of the
+account that posted it — API posts included. The report quotes untrusted
+package metadata, and a `/approve` landing at a line start would run with
+this bot's token. Before EVERY GitLab write in this skill (the sticky
+comment above, the §4 discussions), escape the body — the same rewrite
+the server-side guard applies (#2413, #2422):
+
+```sh
+body="$(printf '%s' "$body" | sed -E 's#^([[:blank:]]*)/([[:alpha:]]|[^[:print:]])#\1\\/\2#')"
+```
+
+The `[^[:print:]]` branch is load-bearing: under `LC_ALL=C` `[[:alpha:]]`
+leaves `/ſpend 1h` and `/ﬆatus done` raw, and Onigmo case-folds them onto
+real command names. The class is `[:print:]`,
+not `[:ascii:]`: GNU sed rejects `[:ascii:]`, and `[^[:print:]]` catches the
+same non-ASCII bytes on GNU and BSD. GitHub and Forgejo run no quick actions — no escape
+needed on those paths.
+
 ### The run footer — mandatory, and the last line of the body
 
 The comment ends with the run that produced it:

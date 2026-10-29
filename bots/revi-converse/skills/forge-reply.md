@@ -66,6 +66,22 @@ Reply to an existing MR discussion thread via:
 POST projects/:id/merge_requests/:iid/discussions/:discussion_id/notes
 ```
 
+**Quick-action guard (mandatory):** GitLab runs quick actions (`/merge`,
+`/approve`, `/label`, …) written at the start of a line of a note, with
+the rights of the account that posted it — API posts included. The answer
+is model-written over untrusted thread content, and a `/approve` quoted
+faithfully at a line start would run with this bot's token. Escape the
+body before posting — the same rewrite the server-side guard applies
+(#2413, #2422); the `[^[:print:]]` branch is load-bearing (under
+`LC_ALL=C`, `[[:alpha:]]` leaves `/ſpend 1h` and `/ﬆatus done` raw, and
+Onigmo case-folds them onto real command names; `[:print:]`, not
+`[:ascii:]` — GNU sed rejects `[:ascii:]`, and `[^[:print:]]` catches the
+same non-ASCII bytes on GNU and BSD):
+
+```sh
+BODY="$(printf '%s' "$BODY" | sed -E 's#^([[:blank:]]*)/([[:alpha:]]|[^[:print:]])#\1\\/\2#')"
+```
+
 Reuse the curl + nested-JSON pattern (avoids glab's flat-key bug for
 position objects; mirrors the post pattern in `forge-pr-review.md`):
 
@@ -76,6 +92,7 @@ PROJECT="<URL-encoded group%2Fproject>"
 IID=<mr-iid>
 DISCUSSION="{{vars.discussion_id}}"
 BODY="$(cat /tmp/revi-answer.md)"      # the answer text — see §6
+BODY="$(printf '%s' "$BODY" | sed -E 's#^([[:blank:]]*)/([[:alpha:]]|[^[:print:]])#\1\\/\2#')"  # quick-action guard, above
 
 jq -nc --arg body "$BODY" '{body: $body}' \
   | curl -sS -H "PRIVATE-TOKEN: $TOKEN" -H 'Content-Type: application/json' \
@@ -84,10 +101,12 @@ jq -nc --arg body "$BODY" '{body: $body}' \
 ```
 
 If `jq` is missing (exit 127 on a minimal host), build the payload with
-python3 instead — same POST, no other change:
+python3 instead — same POST, no other change (the sed escape writes the
+guarded text the payload reads):
 
 ```sh
-python3 -I -c 'import json; print(json.dumps({"body": open("/tmp/revi-answer.md").read()}))' > /tmp/revi-payload.json
+sed -E 's#^([[:blank:]]*)/([[:alpha:]]|[^[:print:]])#\1\\/\2#' /tmp/revi-answer.md > /tmp/revi-answer.guarded.md
+python3 -I -c 'import json; print(json.dumps({"body": open("/tmp/revi-answer.guarded.md").read()}))' > /tmp/revi-payload.json
 curl -sS -H "PRIVATE-TOKEN: $TOKEN" -H 'Content-Type: application/json' \
   -X POST "https://${HOST}/api/v4/projects/${PROJECT}/merge_requests/${IID}/discussions/${DISCUSSION}/notes" \
   -d @/tmp/revi-payload.json
