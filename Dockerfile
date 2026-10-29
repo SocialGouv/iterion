@@ -69,6 +69,9 @@ COPY --exclude=**/*_test.go internal ./internal
 # embedded by ./cmd/iterion, so they are deliberately not copied — keeps the build
 # layer from invalidating on test/example edits.)
 COPY bots ./bots
+# connectors/ is a Go package the binary imports (pkg/connection reads the
+# shipped connector packages through connectors/embed.go), not data.
+COPY --exclude=**/*_test.go connectors ./connectors
 # Embed the freshly-built studio assets the Go binary serves at GET /.
 COPY --from=studio-builder /app/studio/dist ./pkg/server/static
 ENV CGO_ENABLED=0 GOFLAGS="-mod=vendor -trimpath"

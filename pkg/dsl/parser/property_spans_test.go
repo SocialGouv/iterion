@@ -133,9 +133,15 @@ func TestARefusedPropertyIsNotRecorded(t *testing.T) {
 	if _, ok := table.Lookup("zz_bogus"); ok || len(table) != 2 {
 		t.Fatalf("the refused property is recorded: %+v", table)
 	}
+	// The race detector multiplies the constant, not the exponent: a tenth
+	// of the strays under it, the same budget, the same linear claim.
+	strays := 100000
+	if raceEnabled {
+		strays = 10000
+	}
 	var b strings.Builder
 	b.WriteString("agent a:\n  model: \"m\"\n")
-	for i := 0; i < 100000; i++ {
+	for i := 0; i < strays; i++ {
 		fmt.Fprintf(&b, "  zz_stray_%d: 1\n", i)
 	}
 	t.Setenv(ReadBudgetEnv, "0")
@@ -145,7 +151,7 @@ func TestARefusedPropertyIsNotRecorded(t *testing.T) {
 		t.Fatal(err)
 	}
 	if took := time.Since(start); took > 10*time.Second {
-		t.Fatalf("a hundred thousand strays took %s to parse: the table grows with them", took)
+		t.Fatalf("%d strays took %s to parse: the table grows with them", strays, took)
 	}
 	if n := len(res.File.Agents[0].Properties); n != 1 {
 		t.Fatalf("the table holds %d entries for one accepted property", n)
