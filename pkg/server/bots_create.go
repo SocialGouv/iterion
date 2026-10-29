@@ -69,7 +69,7 @@ func (s *Server) handleBotCreate(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, scaffoldStatus(err), "bots: scaffold: %v", err)
 		return
 	}
-	catalogError := s.regenCatalog(spec.Slug, "create")
+	catalogError := s.regenCatalog(r.Context(), spec.Slug, "create")
 
 	entry, ok, err := s.findBot(spec.Slug)
 	if err != nil || !ok {

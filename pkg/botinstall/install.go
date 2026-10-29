@@ -199,7 +199,7 @@ func Install(ctx context.Context, opts Options) (*Result, error) {
 	//    so every consumer can show it.
 	catalogError := ""
 	if !opts.SkipCatalog {
-		if _, err := botregistry.RegenerateWhatsNextCatalog(workdir); err != nil {
+		if _, err := botregistry.RegenerateWhatsNextCatalog(ctx, workdir); err != nil {
 			catalogError = err.Error()
 		}
 	}
@@ -312,7 +312,7 @@ func InstallFromBotzBytes(ctx context.Context, r io.Reader, opts Options) (*Resu
 // refresh — which leaves the removal done and the catalog stale — comes
 // back on the RemoveResult instead, so no caller can read one as the
 // other.
-func Remove(_ context.Context, opts Options) (*RemoveResult, error) {
+func Remove(ctx context.Context, opts Options) (*RemoveResult, error) {
 	name := opts.Name
 	if err := validateRemoveName(name); err != nil {
 		return nil, err
@@ -345,7 +345,7 @@ func Remove(_ context.Context, opts Options) (*RemoveResult, error) {
 	}
 	_ = os.Remove(originPath(target))
 	res := &RemoveResult{}
-	if _, err := botregistry.RegenerateWhatsNextCatalog(workdir); err != nil {
+	if _, err := botregistry.RegenerateWhatsNextCatalog(ctx, workdir); err != nil {
 		res.CatalogError = err.Error()
 	}
 	return res, nil

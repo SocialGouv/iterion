@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -41,7 +42,7 @@ func TestBotsCreate_ProducesDiscoverableBundle(t *testing.T) {
 	inTempWorkspace(t)
 	p, out := testPrinter()
 
-	if err := BotsCreate(BotsCreateOptions{Slug: "my-bot"}, p); err != nil {
+	if err := BotsCreate(context.Background(), BotsCreateOptions{Slug: "my-bot"}, p); err != nil {
 		t.Fatalf("BotsCreate: %v", err)
 	}
 
@@ -74,7 +75,7 @@ func TestBotsCreate_TemplateAppliesAndOverridesWin(t *testing.T) {
 		Template:    "code-reviewer",
 		DisplayName: display,
 	}
-	if err := BotsCreate(opts, p); err != nil {
+	if err := BotsCreate(context.Background(), opts, p); err != nil {
 		t.Fatalf("BotsCreate: %v", err)
 	}
 
@@ -114,9 +115,9 @@ func TestBotsCreate_Rejects(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			inTempWorkspace(t)
 			p, _ := testPrinter()
-			err := BotsCreate(tt.opts, p)
+			err := BotsCreate(context.Background(), tt.opts, p)
 			if err == nil {
-				t.Fatalf("BotsCreate(%+v) = nil, want error", tt.opts)
+				t.Fatalf("BotsCreate(context.Background(), %+v) = nil, want error", tt.opts)
 			}
 			if !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("error = %q, want it to mention %q", err, tt.want)
@@ -129,10 +130,10 @@ func TestBotsCreate_RefusesExistingName(t *testing.T) {
 	inTempWorkspace(t)
 	p, _ := testPrinter()
 
-	if err := BotsCreate(BotsCreateOptions{Slug: "dup-bot"}, p); err != nil {
+	if err := BotsCreate(context.Background(), BotsCreateOptions{Slug: "dup-bot"}, p); err != nil {
 		t.Fatalf("first BotsCreate: %v", err)
 	}
-	err := BotsCreate(BotsCreateOptions{Slug: "dup-bot"}, p)
+	err := BotsCreate(context.Background(), BotsCreateOptions{Slug: "dup-bot"}, p)
 	if err == nil {
 		t.Fatal("second BotsCreate = nil, want a collision error (must never clobber an authored bot)")
 	}
@@ -154,14 +155,14 @@ func TestBotsCreate_RefusesNameTakenInAnotherRoot(t *testing.T) {
 	p, _ := testPrinter()
 
 	// Land a bot in .botz/ (a discovery root that is NOT --dest).
-	if err := BotsCreate(BotsCreateOptions{Slug: "taken", Dest: ".botz"}, p); err != nil {
+	if err := BotsCreate(context.Background(), BotsCreateOptions{Slug: "taken", Dest: ".botz"}, p); err != nil {
 		t.Fatalf("seed BotsCreate: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".botz", "taken", "main.bot")); err != nil {
 		t.Fatalf("seed bot not written: %v", err)
 	}
 
-	err := BotsCreate(BotsCreateOptions{Slug: "taken"}, p)
+	err := BotsCreate(context.Background(), BotsCreateOptions{Slug: "taken"}, p)
 	if err == nil {
 		t.Fatal("BotsCreate = nil, want a collision with the bot already in .botz/")
 	}
@@ -177,7 +178,7 @@ func TestBotsCreate_JSONOutput(t *testing.T) {
 	dir := inTempWorkspace(t)
 	p, out := jsonPrinter()
 
-	if err := BotsCreate(BotsCreateOptions{Slug: "json-bot"}, p); err != nil {
+	if err := BotsCreate(context.Background(), BotsCreateOptions{Slug: "json-bot"}, p); err != nil {
 		t.Fatalf("BotsCreate: %v", err)
 	}
 	var res botscaffold.Result
@@ -203,7 +204,7 @@ func TestBotsCreate_WorkdirAnchorsDest(t *testing.T) {
 	p, _ := testPrinter()
 
 	opts := BotsCreateOptions{Slug: "anchored", Workdir: elsewhere}
-	if err := BotsCreate(opts, p); err != nil {
+	if err := BotsCreate(context.Background(), opts, p); err != nil {
 		t.Fatalf("BotsCreate: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(elsewhere, "bots", "anchored", "main.bot")); err != nil {
@@ -215,7 +216,7 @@ func TestBotsCreate_HonoursDest(t *testing.T) {
 	inTempWorkspace(t)
 	p, _ := testPrinter()
 
-	if err := BotsCreate(BotsCreateOptions{Slug: "elsewhere", Dest: "custom"}, p); err != nil {
+	if err := BotsCreate(context.Background(), BotsCreateOptions{Slug: "elsewhere", Dest: "custom"}, p); err != nil {
 		t.Fatalf("BotsCreate: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join("custom", "elsewhere", "main.bot")); err != nil {

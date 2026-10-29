@@ -1,6 +1,7 @@
 package botregistry
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/internal/mdcode"
+	"github.com/SocialGouv/iterion/pkg/authoringlock"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -306,8 +308,12 @@ func lexicallyUnder(path, root string) bool {
 // Every owner is the right write set for an operator gesture (the CLI, a
 // studio save, the freshness gate): it refreshes the whole checkout. A
 // caller acting on behalf of ONE run wants RegenerateCatalogForBundle.
-func RegenerateWhatsNextCatalog(workdir string) (string, error) {
-	return regenerateCatalogs(workdir, "")
+//
+// A generated catalog is written under its authoring lock, so a wait on an
+// editor's save of the same file is possible: ctx bounds that wait and
+// nothing else does (refreshCatalogOwner says what the lock answers for).
+func RegenerateWhatsNextCatalog(ctx context.Context, workdir string) (string, error) {
+	return regenerateCatalogs(ctx, workdir, "")
 }
 
 // RegenerateCatalogForBundle refreshes ONLY the catalog owned by the
@@ -331,7 +337,7 @@ func RegenerateWhatsNextCatalog(workdir string) (string, error) {
 // (a directory with manifest.yaml and main.bot), and refreshing the other
 // owners instead is exactly the collateral write this entry point exists
 // to prevent.
-func RegenerateCatalogForBundle(workdir, bundleDir string) (string, error) {
+func RegenerateCatalogForBundle(ctx context.Context, workdir, bundleDir string) (string, error) {
 	shipped, err := catalogTemplateShipped(bundleDir)
 	if err != nil {
 		return "", err
@@ -342,7 +348,7 @@ func RegenerateCatalogForBundle(workdir, bundleDir string) (string, error) {
 	if !pathUnder(bundleDir, workdir) {
 		return "", nil
 	}
-	return regenerateCatalogs(workdir, bundleDir)
+	return regenerateCatalogs(ctx, workdir, bundleDir)
 }
 
 // regenerateCatalogs renders the generated region from the manifests
@@ -356,7 +362,7 @@ func RegenerateCatalogForBundle(workdir, bundleDir string) (string, error) {
 // DISCOVERY is the opposite case and still refuses everything before the
 // first write: it would silently delete the skipped bundle's row from
 // every catalog it rewrote.
-func regenerateCatalogs(workdir, onlyBundleDir string) (string, error) {
+func regenerateCatalogs(ctx context.Context, workdir, onlyBundleDir string) (string, error) {
 	abs, err := filepath.Abs(workdir)
 	if err != nil {
 		return "", fmt.Errorf("botregistry: resolve workdir %s: %w", workdir, err)
@@ -440,7 +446,7 @@ func regenerateCatalogs(workdir, onlyBundleDir string) (string, error) {
 		if onlyBundleDir != "" && !samePath(owner.Path, onlyBundleDir) {
 			continue
 		}
-		dest, err := refreshCatalogOwner(bundles, owner, abs)
+		dest, err := refreshCatalogOwner(ctx, bundles, owner, abs)
 		if err != nil {
 			// One bundle's filesystem problem is charged to that
 			// bundle alone: the owners hold independent files, and
@@ -463,12 +469,38 @@ func regenerateCatalogs(workdir, onlyBundleDir string) (string, error) {
 	return first, nil
 }
 
+// catalogWriteHook observes the steps of a refresh that run INSIDE the
+// authoring lock. A test asserts from it that the lock is held where this
+// file says it is — a window the file's bytes alone cannot show, since a
+// take that was released before the read would leave the same bytes. Nil
+// in production, and read through catalogStep so a step costs one nil
+// check on the run-start path.
+var catalogWriteHook func(step string)
+
+func catalogStep(step string) {
+	if catalogWriteHook != nil {
+		catalogWriteHook(step)
+	}
+}
+
 // refreshCatalogOwner splices the generated region rendered from bundles
 // into the catalog owned by one of them, and returns where it wrote.
 // ("", nil) means that bundle ships no template, i.e. it owns no catalog
 // and there was nothing to write. Every error names the bundle it
 // belongs to, so the caller can report it without cancelling the others.
-func refreshCatalogOwner(bundles []EntryWithSchema, owner EntryWithSchema, workdir string) (string, error) {
+//
+// The generated catalog is a file an authoring editor saves too — the
+// studio, the assistant, the unit save all reach it through the authoring
+// lock pkg/authoringlock answers for. This refresh holds that lock from
+// before it READS the template until after its rename, so an authored save
+// cannot land in between and be replaced: a save that asks meanwhile waits
+// for this write and then refuses on its own stale check, instead of
+// overwriting it. The lock is per FILE, which is what keeps it off the hot
+// path's back: a run regenerates the catalog its own bundle owns, so two
+// runs of different bots never wait on each other, and one owner's editor
+// costs that owner's refresh alone (the caller joins per-owner failures).
+// The wait is bounded by ctx and by nothing in this package.
+func refreshCatalogOwner(ctx context.Context, bundles []EntryWithSchema, owner EntryWithSchema, workdir string) (string, error) {
 	// The template lives at the BUNDLE ROOT, not skills/, so it is
 	// never mirrored into <workspace>/.claude/skills/ as a (duplicate
 	// `name: iterion-bot-catalog`) skill — only the generated file is.
@@ -479,23 +511,41 @@ func refreshCatalogOwner(bundles []EntryWithSchema, owner EntryWithSchema, workd
 	case !shipped:
 		return "", nil
 	}
-	static, err := os.ReadFile(staticPath)
-	if err != nil {
-		return "", fmt.Errorf("botregistry: read catalog template %s: %w", staticPath, err)
-	}
-	block := RenderCatalogBlock(bundles, owner.Name, workdir)
-	out, err := spliceGeneratedBlock(string(static), block)
-	if err != nil {
-		return "", fmt.Errorf("botregistry: %s: %w", staticPath, err)
-	}
+	// The skills dir comes before the lock: the lock lives beside the file
+	// it governs, so its control directory needs that directory to exist.
 	skillsDir := filepath.Join(owner.Path, bundle.DirSkills)
 	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
 		return "", fmt.Errorf("botregistry: mkdir %s: %w", skillsDir, err)
 	}
 	dest := filepath.Join(skillsDir, catalogGeneratedName)
-	out = reanchorForDepth(out, filepath.Dir(staticPath), skillsDir)
-	if err := store.WriteFileAtomic(dest, []byte(out), 0o644); err != nil {
-		return "", fmt.Errorf("botregistry: write catalog %s: %w", dest, err)
+	held := false
+	// Hold releases on every path out of the closure, a panic included;
+	// the flag tells a refused TAKE — where nothing was written and the
+	// file is whole — from a write that failed under the lock.
+	err := authoringlock.Hold(ctx, dest, func() error {
+		held = true
+		catalogStep("locked")
+		static, err := os.ReadFile(staticPath)
+		if err != nil {
+			return fmt.Errorf("botregistry: read catalog template %s: %w", staticPath, err)
+		}
+		block := RenderCatalogBlock(bundles, owner.Name, workdir)
+		out, err := spliceGeneratedBlock(string(static), block)
+		if err != nil {
+			return fmt.Errorf("botregistry: %s: %w", staticPath, err)
+		}
+		out = reanchorForDepth(out, filepath.Dir(staticPath), skillsDir)
+		if err := store.WriteFileAtomic(dest, []byte(out), 0o644); err != nil {
+			return fmt.Errorf("botregistry: write catalog %s: %w", dest, err)
+		}
+		catalogStep("written")
+		return nil
+	})
+	switch {
+	case err != nil && !held:
+		return "", fmt.Errorf("botregistry: leaving the generated catalog %s as it is: its authoring lock was not taken (an editor is saving it, or the wait this caller allowed ended): %w", dest, err)
+	case err != nil:
+		return "", err
 	}
 	return dest, nil
 }

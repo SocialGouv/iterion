@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"testing"
@@ -27,7 +28,7 @@ func TestBotsCreate_EveryTemplateValidates(t *testing.T) {
 			// C018 (no model and no credential the host can detect), a
 			// bare CI has no credential, and the test measures the scaffold
 			// and the bundle lint, not the host.
-			if err := BotsCreate(BotsCreateOptions{Slug: tpl.ID, Template: tpl.ID, Model: "anthropic/claude-opus-4-8", Backend: "claude_code"}, p); err != nil {
+			if err := BotsCreate(context.Background(), BotsCreateOptions{Slug: tpl.ID, Template: tpl.ID, Model: "anthropic/claude-opus-4-8", Backend: "claude_code"}, p); err != nil {
 				t.Fatalf("bots create --template %s: %v", tpl.ID, err)
 			}
 			// Both forms, because they are one verdict: the bundle

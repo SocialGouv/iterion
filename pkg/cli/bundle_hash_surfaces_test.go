@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,7 +22,7 @@ func TestPromotedMainBotHashesLikeItsBundleOnEverySurface(t *testing.T) {
 	p, _ := testPrinter()
 	// Pinned model and backend: the compile refuses C018 on a
 	// credential-less host, and the test measures the hash, not the host.
-	if err := BotsCreate(BotsCreateOptions{Slug: "mf", Template: "multi-file", Model: "anthropic/claude-opus-4-8", Backend: "claude_code"}, p); err != nil {
+	if err := BotsCreate(context.Background(), BotsCreateOptions{Slug: "mf", Template: "multi-file", Model: "anthropic/claude-opus-4-8", Backend: "claude_code"}, p); err != nil {
 		t.Fatalf("BotsCreate: %v", err)
 	}
 	mainBot := filepath.Join("bots", "mf", "main.bot")

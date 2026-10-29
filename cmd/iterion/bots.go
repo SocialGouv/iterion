@@ -66,7 +66,7 @@ committed copy by hand after editing a manifest outside the studio.`,
 			}
 			workdir = wd
 		}
-		path, err := cli.BotsRegenCatalog(workdir)
+		path, err := cli.BotsRegenCatalog(cmd.Context(), workdir)
 		if err != nil {
 			return err
 		}
@@ -114,7 +114,7 @@ bundle.`,
 		// Only an explicitly-passed dial overrides the template's value.
 		opts.Worktree = boolFlagIfSet(cmd, "worktree")
 		opts.Sandbox = boolFlagIfSet(cmd, "sandbox")
-		return cli.BotsCreate(opts, newPrinter())
+		return cli.BotsCreate(cmd.Context(), opts, newPrinter())
 	},
 }
 

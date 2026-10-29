@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -52,7 +53,7 @@ func TestAssistantDependencyBotsLocalizeKeepsTheCatalogConsistentWithDiscovery(t
 	}
 	catalogPath := filepath.Join(ownerDir, "skills", "iterion-bot-catalog.md")
 	plannerCatalogPath := filepath.Join(root, "bots", "planner", "skills", "iterion-bot-catalog.md")
-	if _, err := botregistry.RegenerateWhatsNextCatalog(root); err != nil {
+	if _, err := botregistry.RegenerateWhatsNextCatalog(context.Background(), root); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(catalogPath); err != nil {

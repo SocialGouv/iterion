@@ -306,7 +306,7 @@ func (s *Server) handleBotsPut(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "bots: write manifest: %v", err)
 		return
 	}
-	catalogError := s.regenCatalog(name, "update")
+	catalogError := s.regenCatalog(r.Context(), name, "update")
 	s.respondBot(w, r, name, catalogError)
 }
 
@@ -391,7 +391,7 @@ func (s *Server) handleBotOverlay(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "bots: overlay: %v", err)
 		return
 	}
-	catalogError := s.regenCatalog(name, "overlay")
+	catalogError := s.regenCatalog(r.Context(), name, "overlay")
 	// respondBot re-resolves the entry; an unknown name 404s here (after a
 	// harmless no-op overlay write — ResolveEnabled ignores unknown names).
 	s.respondBot(w, r, name, catalogError)
@@ -459,11 +459,11 @@ func (s *Server) respondBot(w http.ResponseWriter, r *http.Request, name, catalo
 // landed — so it returns the rendered cause (empty when the refresh
 // succeeded or there is no workspace) for the response to carry, and warns
 // on the server log for the operators watching it.
-func (s *Server) regenCatalog(name, action string) string {
+func (s *Server) regenCatalog(ctx context.Context, name, action string) string {
 	if s.cfg.WorkDir == "" {
 		return ""
 	}
-	_, err := botregistry.RegenerateWhatsNextCatalog(s.cfg.WorkDir)
+	_, err := botregistry.RegenerateWhatsNextCatalog(ctx, s.cfg.WorkDir)
 	if err == nil {
 		return ""
 	}

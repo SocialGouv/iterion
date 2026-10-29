@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -44,7 +45,7 @@ func TestBotsCreate_ReportsTheCatalogRegenFailureInBothFormats(t *testing.T) {
 		owner := breakCatalogOwner(t, workdir)
 		p, out := testPrinter()
 
-		if err := BotsCreate(BotsCreateOptions{Slug: "my-bot", Workdir: workdir}, p); err != nil {
+		if err := BotsCreate(context.Background(), BotsCreateOptions{Slug: "my-bot", Workdir: workdir}, p); err != nil {
 			t.Fatalf("BotsCreate: %v", err)
 		}
 		got := out.String()
@@ -64,7 +65,7 @@ func TestBotsCreate_ReportsTheCatalogRegenFailureInBothFormats(t *testing.T) {
 		owner := breakCatalogOwner(t, workdir)
 		p, out := jsonPrinter()
 
-		if err := BotsCreate(BotsCreateOptions{Slug: "my-bot", Workdir: workdir}, p); err != nil {
+		if err := BotsCreate(context.Background(), BotsCreateOptions{Slug: "my-bot", Workdir: workdir}, p); err != nil {
 			t.Fatalf("BotsCreate: %v", err)
 		}
 		var got map[string]any
@@ -120,7 +121,7 @@ func TestBotsCreate_SilentWhenTheCatalogRefreshSucceeds(t *testing.T) {
 	workdir := inTempWorkspace(t)
 	p, out := testPrinter()
 
-	if err := BotsCreate(BotsCreateOptions{Slug: "my-bot", Workdir: workdir}, p); err != nil {
+	if err := BotsCreate(context.Background(), BotsCreateOptions{Slug: "my-bot", Workdir: workdir}, p); err != nil {
 		t.Fatalf("BotsCreate: %v", err)
 	}
 	if strings.Contains(out.String(), "not refreshed") {

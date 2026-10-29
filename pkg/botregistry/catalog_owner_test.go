@@ -1,6 +1,7 @@
 package botregistry
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -158,7 +159,7 @@ func TestRegenerateWhatsNextCatalog_UnreadableTemplateIsAnError(t *testing.T) {
 		t.Fatalf("symlink unavailable: %v", err)
 	}
 
-	first, err := RegenerateWhatsNextCatalog(ws)
+	first, err := RegenerateWhatsNextCatalog(context.Background(), ws)
 	if err == nil {
 		t.Fatalf("RegenerateWhatsNextCatalog = (%q, nil), want the unreadable template reported", first)
 	}
@@ -191,7 +192,7 @@ func TestRegenerateWhatsNextCatalog_ABrokenOwnerDoesNotCancelTheOthers(t *testin
 				t.Fatalf("symlink unavailable: %v", err)
 			}
 
-			first, err := RegenerateWhatsNextCatalog(ws)
+			first, err := RegenerateWhatsNextCatalog(context.Background(), ws)
 			if err == nil {
 				t.Fatalf("RegenerateWhatsNextCatalog = (%q, nil), want the unreadable template reported", first)
 			}
@@ -222,7 +223,7 @@ func TestRegenerateCatalogForBundle_WritesOnlyTheAskingBundle(t *testing.T) {
 	ws := twoOwnerWorkspace(t, nil)
 	asking := filepath.Join(ws, "bots", "whats-next")
 
-	dest, err := RegenerateCatalogForBundle(ws, asking)
+	dest, err := RegenerateCatalogForBundle(context.Background(), ws, asking)
 	if err != nil {
 		t.Fatalf("RegenerateCatalogForBundle: %v", err)
 	}
@@ -257,7 +258,7 @@ func TestRegenerateCatalogForBundle_WorkspaceThroughASymlink(t *testing.T) {
 
 	// The workspace spelled through the link, the bundle by its real path:
 	// the shape a run gets when its workspace was handed over as a link.
-	dest, err := RegenerateCatalogForBundle(link, filepath.Join(ws, "bots", "whats-next"))
+	dest, err := RegenerateCatalogForBundle(context.Background(), link, filepath.Join(ws, "bots", "whats-next"))
 	if err != nil {
 		t.Fatalf("RegenerateCatalogForBundle through a symlinked workspace: %v", err)
 	}
@@ -283,7 +284,7 @@ func TestRegenerateCatalogForBundle_WorkspaceThroughASymlink(t *testing.T) {
 func TestRegenerateCatalogForBundle_NothingToWriteIsQuiet(t *testing.T) {
 	t.Run("a bundle shipping no template", func(t *testing.T) {
 		ws := twoOwnerWorkspace(t, nil)
-		dest, err := RegenerateCatalogForBundle(ws, filepath.Join(ws, "bots", "review-pr"))
+		dest, err := RegenerateCatalogForBundle(context.Background(), ws, filepath.Join(ws, "bots", "review-pr"))
 		if err != nil {
 			t.Fatalf("a non-owner must be a quiet no-op, got: %v", err)
 		}
@@ -299,7 +300,7 @@ func TestRegenerateCatalogForBundle_NothingToWriteIsQuiet(t *testing.T) {
 		// The shape a materialized .botz takes: the bundle lives in the
 		// pod's scratch, the workspace is the checkout under review.
 		outside := twoOwnerWorkspace(t, nil)
-		dest, err := RegenerateCatalogForBundle(ws, filepath.Join(outside, "bots", "whats-next"))
+		dest, err := RegenerateCatalogForBundle(context.Background(), ws, filepath.Join(outside, "bots", "whats-next"))
 		if err != nil {
 			t.Fatalf("a bundle outside the workspace must be a quiet no-op, got: %v", err)
 		}
@@ -325,7 +326,7 @@ func TestRegenerateCatalogForBundle_YmlSpelledOwnerIsInTheWriteSet(t *testing.T)
 		t.Fatalf("the fixture must be a bundle a run can carry: %v", err)
 	}
 
-	dest, err := RegenerateCatalogForBundle(ws, asking)
+	dest, err := RegenerateCatalogForBundle(context.Background(), ws, asking)
 	if err != nil {
 		t.Fatalf("RegenerateCatalogForBundle = (%q, %v), want the .yml-spelled owner refreshed in place", dest, err)
 	}
@@ -355,7 +356,7 @@ func TestRegenerateCatalogForBundle_UndiscoveredOwnerIsAnError(t *testing.T) {
 		t.Fatalf("catalogTemplateShipped(%q) = (%v, %v), want the fixture to claim ownership", asking, shipped, err)
 	}
 
-	dest, err := RegenerateCatalogForBundle(ws, asking)
+	dest, err := RegenerateCatalogForBundle(context.Background(), ws, asking)
 	if err == nil {
 		t.Fatalf("RegenerateCatalogForBundle = (%q, nil), want the undiscovered owner reported", dest)
 	}

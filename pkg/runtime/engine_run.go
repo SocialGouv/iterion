@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
@@ -776,9 +777,9 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// run OWNS (regenerateBotCatalog); best-effort and a no-op for a run
 	// that owns none — a failure must never abort the run (the mirror
 	// falls back to the on-disk catalog).
-	if _, err := e.regenerateBotCatalog(run.BotID); err != nil {
+	if _, catalogErr := e.regenerateBotCatalog(ctx, run.BotID); catalogErr != nil {
 		if e.logger != nil {
-			e.logger.Warn("bot catalog regen: %v", err)
+			e.logger.Warn("bot catalog regen: %v", catalogErr)
 		}
 	}
 	// Bundle skill mirroring: when a .botz backs this run, copy the
@@ -925,15 +926,29 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 // cannot read. A launch surface persisting no id (today every one but
 // the cloud — see runview.BotIDForRun) keeps the former, the operator's
 // own workspace behaviour.
-func (e *Engine) regenerateBotCatalog(botID string) (string, error) {
-	if e.bundle != nil {
-		return botregistry.RegenerateCatalogForBundle(e.workDir, e.bundle.Dir)
-	}
-	if botID != "" {
+// A generated catalog is written under its authoring lock, so this can
+// wait on an editor's save of the same file. The wait is bounded HERE:
+// a run's context carries no deadline, and a run start must not sit
+// behind an editor — where the server's wait is its request's and the
+// operator's is their command's, both of which end on their own.
+func (e *Engine) regenerateBotCatalog(ctx context.Context, botID string) (string, error) {
+	if e.bundle == nil && botID != "" {
 		return "", nil
 	}
-	return botregistry.RegenerateWhatsNextCatalog(e.workDir)
+	ctx, cancel := context.WithTimeout(ctx, catalogLockWait)
+	defer cancel()
+	if e.bundle != nil {
+		return botregistry.RegenerateCatalogForBundle(ctx, e.workDir, e.bundle.Dir)
+	}
+	return botregistry.RegenerateWhatsNextCatalog(ctx, e.workDir)
 }
+
+// catalogLockWait is how long a run start waits for a save that holds a
+// generated catalog's authoring lock. A save takes milliseconds; a wait
+// that outlives this one is warned about and the run goes on with the
+// catalog on disk, which is what makes the refresh best effort rather
+// than a gate on starting.
+var catalogLockWait = 15 * time.Second
 
 // reconcileExecutionWorkspace stamps the effective workspace identity only
 // after worktree setup/adoption has made the isolation decision authoritative.

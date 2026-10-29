@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 )
@@ -12,7 +13,7 @@ import (
 func TestRunDiagram_BareMainBotOfABundleSeesItsPrompts(t *testing.T) {
 	inTempWorkspace(t)
 	p, _ := testPrinter()
-	if err := BotsCreate(BotsCreateOptions{Slug: "mf", Template: "multi-file", Model: "anthropic/claude-opus-4-8", Backend: "claude_code"}, p); err != nil {
+	if err := BotsCreate(context.Background(), BotsCreateOptions{Slug: "mf", Template: "multi-file", Model: "anthropic/claude-opus-4-8", Backend: "claude_code"}, p); err != nil {
 		t.Fatalf("BotsCreate: %v", err)
 	}
 	jp, out := jsonPrinter()
