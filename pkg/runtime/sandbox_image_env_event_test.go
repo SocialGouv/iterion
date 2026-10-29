@@ -90,7 +90,7 @@ func TestTheImageEnvEventCarriesBothHalvesOfTheClass(t *testing.T) {
 	}
 	rec := &imageEnvRecorder{}
 
-	screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), nil, rec.emit, "run-77")
+	_, _ = screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), nil, rec.emit, "run-77")
 
 	payload := rec.planted(t)
 	if got := payload["image"]; got != "planter/dev:1" {
@@ -130,7 +130,10 @@ func TestTheScreenedSpecAndTheEventComeFromTheSameScreen(t *testing.T) {
 	}
 	rec := &imageEnvRecorder{}
 
-	started := screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), nil, rec.emit, "run-78")
+	started, screenErr := screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), nil, rec.emit, "run-78")
+	if screenErr != nil {
+		t.Fatalf("a screen that neutralised everything it decided on refused the boot: %v", screenErr)
+	}
 
 	spec, ok := started.(*screenedSpec)
 	if !ok {
@@ -161,7 +164,7 @@ func TestAnImageThatPlantsNothingEmitsNoEvent(t *testing.T) {
 	}
 	rec := &imageEnvRecorder{}
 
-	screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("clean/dev:1"), nil, rec.emit, "run-79")
+	_, _ = screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("clean/dev:1"), nil, rec.emit, "run-79")
 
 	if len(rec.events) != 0 {
 		t.Fatalf("a clean image must emit nothing, got %v", rec.types())
@@ -176,7 +179,7 @@ func TestTheImageEnvEventSaysWhenNothingWasScreened(t *testing.T) {
 	t.Setenv(EnvSandboxImageEnvAllow, "")
 	rec := &imageEnvRecorder{}
 
-	screenAndReportSandboxImageEnv(context.Background(), &blindDriver{supports: true}, newScreenedSpec("planter/dev:1"), nil, rec.emit, "run-80")
+	_, _ = screenAndReportSandboxImageEnv(context.Background(), &blindDriver{supports: true}, newScreenedSpec("planter/dev:1"), nil, rec.emit, "run-80")
 
 	payload := rec.planted(t)
 	reason, ok := payload["unscreened"].(string)
@@ -193,32 +196,55 @@ func TestTheImageEnvEventSaysWhenNothingWasScreened(t *testing.T) {
 	}
 }
 
-// TestARefusedNeutralisationIsReportedAsWhatTheContainerGot pins the
-// honest half of a failure: when the driver refuses the override, the
-// names move to `reported`, because that is what the container actually
-// carries — an event still listing them as neutralised would be the one
-// lie this event exists to prevent.
-func TestARefusedNeutralisationIsReportedAsWhatTheContainerGot(t *testing.T) {
+// TestARefusedNeutralisationTravelsUnderItsOwnKeyAndStopsTheBoot: a
+// neutralisation the class decided on and the driver would not install is
+// its own fact, with its own keys, and it is the one disposition that
+// REFUSES the boot.
+//
+// Not `unscreened` (the stated silence of a driver that reads no image
+// config, under which the run proceeds) and not `reported` (names KEPT in
+// a container that started): nothing started, so the honest record is
+// `refused` plus the names it covered. A reader of the event stream that
+// could not tell those three apart could not tell a blocked boot from a
+// cloud run.
+func TestARefusedNeutralisationTravelsUnderItsOwnKeyAndStopsTheBoot(t *testing.T) {
 	t.Setenv(EnvSandboxImageEnvAllow, "")
 	driver := &screeningDriver{
 		name:     "docker",
 		supports: true,
-		imageEnv: []string{"CLAUDE_CODE_USE_BEDROCK=1"},
+		imageEnv: []string{"CLAUDE_CODE_USE_BEDROCK=1", "PATH=/usr/bin"},
 		refuse:   errors.New("the driver refused the override"),
 	}
 	rec := &imageEnvRecorder{}
 
-	screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), nil, rec.emit, "run-81")
+	_, screenErr := screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), nil, rec.emit, "run-81")
+
+	var refusal *ImageEnvNeutralisationRefusedError
+	if !errors.As(screenErr, &refusal) {
+		t.Fatalf("the seam returned %v, want a typed *ImageEnvNeutralisationRefusedError — the boot must not start under a guard that did not take", screenErr)
+	}
+	if !slices.Equal(refusal.Names, []string{"CLAUDE_CODE_USE_BEDROCK"}) {
+		t.Errorf("the refusal names %v, want [CLAUDE_CODE_USE_BEDROCK]", refusal.Names)
+	}
+	if refusal.Image != "planter/dev:1" || !strings.Contains(refusal.Reason, "refused the override") {
+		t.Errorf("the refusal reads %+v, want the image and the driver's own reason", refusal)
+	}
 
 	payload := rec.planted(t)
 	if got := names(t, payload, "neutralized"); len(got) != 0 {
 		t.Errorf("neutralized = %v, want empty: the override was refused", got)
 	}
-	if got := names(t, payload, "reported"); !slices.Equal(got, []string{"CLAUDE_CODE_USE_BEDROCK"}) {
-		t.Errorf("reported = %v, want [CLAUDE_CODE_USE_BEDROCK] — the container got the planted value", got)
+	if got := names(t, payload, "refused_names"); !slices.Equal(got, []string{"CLAUDE_CODE_USE_BEDROCK"}) {
+		t.Errorf("refused_names = %v, want [CLAUDE_CODE_USE_BEDROCK] under its own key", got)
 	}
-	if reason, _ := payload["unscreened"].(string); !strings.Contains(reason, "refused") {
-		t.Errorf("unscreened = %#v, want the driver's refusal", payload["unscreened"])
+	if reason, _ := payload["refused"].(string); !strings.Contains(reason, "refused the override") {
+		t.Errorf("refused = %#v, want the driver's own reason", payload["refused"])
+	}
+	if got := names(t, payload, "reported"); !slices.Equal(got, []string{"PATH"}) {
+		t.Errorf("reported = %v, want [PATH] alone — a name nothing started with was never KEPT", got)
+	}
+	if _, present := payload["unscreened"]; present {
+		t.Errorf("unscreened must stay absent: the screen RAN, and a reader must tell a refused guard from a driver that screens nothing: %v", payload)
 	}
 }
 
@@ -236,7 +262,7 @@ func TestTheImageEnvEventNamesWhatTheHostKnobLetThrough(t *testing.T) {
 	}
 	rec := &imageEnvRecorder{}
 
-	screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("corp/dev:1"), nil, rec.emit, "run-82")
+	_, _ = screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("corp/dev:1"), nil, rec.emit, "run-82")
 
 	payload := rec.planted(t)
 	if got := names(t, payload, "allowed"); !slices.Equal(got, []string{"HTTPS_PROXY"}) {
@@ -281,11 +307,16 @@ func TestAStoreThatRefusesTheEventDoesNotStopTheBoot(t *testing.T) {
 	}
 	rec := &imageEnvRecorder{err: errors.New("store is down")}
 
-	started := screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), nil, rec.emit, "run-84")
+	started, screenErr := screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), nil, rec.emit, "run-84")
 
 	spec, ok := started.(*screenedSpec)
 	if !ok || !slices.Equal(spec.Neutralized(), []string{"CLAUDE_CODE_USE_BEDROCK"}) {
 		t.Fatalf("a refused event must leave the neutralisation in place, got %#v", started)
+	}
+	// And the boot is not refused: a degraded store is not a guard that
+	// failed, which is the only thing that stops a start.
+	if screenErr != nil {
+		t.Fatalf("a store that refused the event stopped the boot: %v", screenErr)
 	}
 }
 
@@ -307,7 +338,7 @@ func TestADoubledPlantedNameIsOneFinding(t *testing.T) {
 	}
 	rec := &imageEnvRecorder{}
 
-	screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), nil, rec.emit, "run-85")
+	_, _ = screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), nil, rec.emit, "run-85")
 
 	payload := rec.planted(t)
 	if got := names(t, payload, "neutralized"); !slices.Equal(got, []string{"CLAUDE_CODE_USE_BEDROCK"}) {

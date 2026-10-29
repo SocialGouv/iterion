@@ -25,9 +25,11 @@ import (
 // infra prefix of [platformcfg]'s bot-var deny list, so a stored bot var
 // cannot shadow it either.
 //
-// Names are matched exactly and case-sensitively, the same way the class's
-// exact names are. A name it lets through is still REPORTED: the operator
-// asked for the variable, not for silence.
+// Names are matched exactly and case-sensitively — against the spelling
+// the IMAGE baked, not against a class entry (the class itself is
+// case-insensitive, so one entry answers for every spelling). A name it
+// lets through is still REPORTED: the operator asked for the variable, not
+// for silence.
 const EnvSandboxImageEnvAllow = "ITERION_SANDBOX_IMAGE_ENV_ALLOW"
 
 // imageEnvScreen is what one screen of an image's ENV found.
@@ -46,11 +48,38 @@ type imageEnvScreen struct {
 	// cannot read an image's config, or the read failed. The run is told;
 	// it is never reported as a clean image.
 	unscreened string
+	// refused, when non-empty, says WHY a neutralisation this screen
+	// DECIDED on could not be installed, and refusedNames are the names it
+	// covered, sorted.
+	//
+	// Its own field, never folded into unscreened: the two are different
+	// facts with different consequences. Unscreened says the channel was
+	// never read — a driver whose images the kubelet pulls — and the run
+	// proceeds under a stated silence. Refused says the class was read, a
+	// credential WAS found, and the override the guard consists of did not
+	// take: the run does not start (ARB-119). A reader that could not tell
+	// them apart would read a blocked boot and a cloud run the same way.
+	refused      string
+	refusedNames []string
 }
 
 // anyFinding reports whether the screen has something to tell the operator.
 func (s imageEnvScreen) anyFinding() bool {
-	return len(s.neutralized) > 0 || len(s.reported) > 0 || len(s.allowed) > 0 || s.unscreened != ""
+	return len(s.neutralized) > 0 || len(s.reported) > 0 || len(s.allowed) > 0 ||
+		s.unscreened != "" || s.refused != ""
+}
+
+// refusal is the typed error a refused neutralisation stops the boot with,
+// or nil when the screen installed everything it decided on.
+func (s imageEnvScreen) refusal() error {
+	if s.refused == "" {
+		return nil
+	}
+	return &ImageEnvNeutralisationRefusedError{
+		Image:  s.image,
+		Names:  slices.Clone(s.refusedNames),
+		Reason: s.refused,
+	}
 }
 
 // eventPayload is the screen as [store.EventSandboxImageEnvPlanted]
@@ -74,6 +103,10 @@ func (s imageEnvScreen) eventPayload(runID string) map[string]any {
 	}
 	if s.unscreened != "" {
 		payload["unscreened"] = s.unscreened
+	}
+	if s.refused != "" {
+		payload["refused"] = s.refused
+		payload["refused_names"] = envNameList(s.refusedNames)
 	}
 	return payload
 }
@@ -100,12 +133,20 @@ func envNameList(names []string) []string {
 // screens the image's baked-in env, reports what it found to the run —
 // the warning inside the screen, the
 // [store.EventSandboxImageEnvPlanted] event here — and returns the spec
-// to start.
+// to start, or the typed refusal that must stop the boot.
 //
 // One function, because the two are one fact: a boot that neutralised a
 // planted credential and an event that does not say so, or the reverse,
 // are both a guard the operator cannot audit. Keeping them at a single
 // seam is what makes the pair testable without a container (#2317).
+//
+// The error is CLOSED by default: a neutralisation the class decided on
+// and the driver could not install means a planted credential would ride
+// into a started container, which is the whole failure #2317 exists to
+// prevent. The event and the warning go out FIRST, so the run's record
+// carries what the image planted even though nothing started — a refusal
+// the operator cannot read would be as bad as the silent start it
+// replaces (ARB-119).
 func screenAndReportSandboxImageEnv(
 	ctx context.Context,
 	driver sandbox.Driver,
@@ -113,10 +154,10 @@ func screenAndReportSandboxImageEnv(
 	logger *iterlog.Logger,
 	emit func(store.EventType, map[string]any) error,
 	runID string,
-) sandbox.PreparedSpec {
+) (sandbox.PreparedSpec, error) {
 	screened, screen := screenSandboxImageEnv(ctx, driver, prepared, logger)
 	emitImageEnvScreen(emit, screen, runID)
-	return screened
+	return screened, screen.refusal()
 }
 
 // emitImageEnvScreen carries the screen's findings to the run's event
@@ -240,11 +281,13 @@ func screenSandboxImageEnv(
 	}
 	neutralized, err := screener.NeutralizeImageEnv(prepared, screen.neutralized)
 	if err != nil {
-		// The neutralisation is the guard: a run that cannot have it must
-		// not silently start without it. The names move to unscreened so
-		// the caller's refusal names what it could not neutralise.
-		screen.unscreened = err.Error()
-		screen.reported = sortedSet(append(screen.reported, screen.neutralized...))
+		// The neutralisation IS the guard, so this is the closed-by-default
+		// branch: the names it covered move to their own disposition, where
+		// the caller reads them to refuse the boot by name. They are not
+		// folded into `reported` — nothing is kept, because nothing starts
+		// — and `neutralized` is emptied, because nothing was overridden.
+		screen.refused = err.Error()
+		screen.refusedNames = screen.neutralized
 		screen.neutralized = nil
 		return prepared, screen
 	}
@@ -307,6 +350,13 @@ func warnImageEnvScreen(logger *iterlog.Logger, screen imageEnvScreen) {
 		logger.Warn("sandbox: the env image %s bakes in was NOT screened (%s) — a variable it plants reaches every process iterion runs in the container",
 			image, strconv.Quote(screen.unscreened))
 	}
+	if screen.refused != "" {
+		// Its own line, and it says what happens next: this is not the
+		// stated silence of an unscreened channel but a guard that was
+		// decided and could not be installed, so the run does not start.
+		logger.Warn("sandbox: image %s bakes in %s and the driver REFUSED to override them (%s) — the run does not start: a credential or a model route the image contributes would reach every process iterion runs in the container",
+			image, quotedEnvNames(screen.refusedNames), strconv.Quote(screen.refused))
+	}
 }
 
 // quotedEnvNames renders one disposition for the operator's LOG.
@@ -326,4 +376,33 @@ func quotedEnvNames(names []string) string {
 		quoted[i] = strconv.Quote(name)
 	}
 	return strings.Join(quoted, ", ")
+}
+
+// ImageEnvNeutralisationRefusedError is the cause of a boot refused
+// because the driver would not override what the image bakes in: the
+// class was read, a credential or a model route WAS found, and the
+// `--env NAME=` the guard consists of did not take.
+//
+// A distinct type rather than a message, for the same reason the screen
+// keeps `refused` apart from `unscreened`: a caller — a doctor, a bug
+// report, a test — must be able to tell "the guard could not be
+// installed" from "this driver screens nothing", and read WHICH names
+// were at stake without parsing prose.
+type ImageEnvNeutralisationRefusedError struct {
+	// Image is the reference whose baked-in env was screened.
+	Image string
+	// Names are the names the screen decided to neutralise and could
+	// not, sorted.
+	Names []string
+	// Reason is the driver's own refusal.
+	Reason string
+}
+
+func (e *ImageEnvNeutralisationRefusedError) Error() string {
+	image := strconv.Quote(e.Image)
+	if e.Image == "" {
+		image = "(unnamed)"
+	}
+	return "sandbox: image " + image + " bakes in " + quotedEnvNames(e.Names) +
+		" and the driver refused to override them: " + e.Reason
 }

@@ -672,9 +672,10 @@ const (
 	//
 	// Emitted once per sandbox boot, from the screen that runs after the
 	// image is local (pulled, or built from a `build:`) and before the
-	// container starts — so a boot that then fails to start still records
-	// what the image planted — and only when the image has something to
-	// answer for, "not screened" included. It carries the WHOLE class, not the
+	// container starts — so a boot that then fails to start, or that the
+	// screen itself REFUSES, still records what the image planted — and
+	// only when the image has something to answer for, "not screened"
+	// included. It carries the WHOLE class, not the
 	// acted-on half alone: the kept half is what an operator reads to
 	// judge whether such an image belongs in the run at all. Data:
 	//   - image: the inspected image reference ("" when the driver's
@@ -693,10 +694,16 @@ const (
 	//     absent when the knob named none
 	//   - unscreened: string — why nothing was screened: a driver that
 	//     cannot read an image's config (kubernetes, whose images the
-	//     kubelet pulls), a failed read, or a refused neutralisation.
-	//     Absent when the screen ran. Nothing is ever inferred from a
-	//     silence: the names of a refused neutralisation move to
-	//     `reported`, because that is what the container got
+	//     kubelet pulls) or a failed read. The run PROCEEDS under that
+	//     stated silence; nothing is ever inferred from it. Absent when
+	//     the screen ran
+	//   - refused: string — why a neutralisation the class DECIDED on
+	//     could not be installed, with refused_names ([]string, sorted)
+	//     naming it. Its own pair of keys, never `unscreened` and never
+	//     `reported`: this is the one disposition under which the run
+	//     does NOT start, so the names were neither overridden nor kept
+	//     by a container — there is no container. Absent when every
+	//     decided override took (ARB-119)
 	//   - run_id: the run scope
 	EventSandboxImageEnvPlanted EventType = "sandbox_image_env_planted"
 	// EventSandboxNetworkDefaulted fires when a repo-defined sandbox

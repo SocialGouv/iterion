@@ -625,8 +625,12 @@ func TestDeniedEnvKey(t *testing.T) {
 		{"XDG_CONFIG_HOME", true},
 		{"XDG_DATA_HOME", true},
 		{"XDG_RUNTIME_DIR", true},
+		// A lower-case spelling of an exact name is the same name: the
+		// three forms of the class all match case-insensitively.
+		{"path", true},
+		{"bash_env", true},
+		{"imds_endpoint", true},
 		// Outside the class: the repository's own configuration.
-		{"path", false},
 		{"TOKEN", false},
 		{"MYTOOL_ENDPOINT", false},
 		{"NODE_ENV", false},
@@ -673,7 +677,9 @@ func TestDeniedEnvKey(t *testing.T) {
 		})
 	}
 	for name := range deniedEnvNames {
-		assertGuardHasItsOwnRow(t, "exact "+name, cases, func(key string) bool { return key == name })
+		assertGuardHasItsOwnRow(t, "exact "+name, cases, func(key string) bool {
+			return strings.EqualFold(key, name)
+		})
 	}
 }
 
@@ -701,7 +707,7 @@ func assertGuardHasItsOwnRow(t *testing.T, guard string, cases []struct {
 				others++
 			}
 		}
-		if _, exact := deniedEnvNames[c.key]; exact {
+		if _, exact := deniedEnvNames[strings.ToUpper(c.key)]; exact {
 			others++
 		}
 		if others == 1 {

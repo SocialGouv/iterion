@@ -54,6 +54,26 @@ var dispositionCases = []dispositionCase{
 	{"GH_CONFIG_DIR", neutralizeInImage},
 	{"GLAB_CONFIG_DIR", neutralizeInImage},
 
+	// The three names that RESTORE what the rest of the sub-class is
+	// emptied for: bash reads BASH_ENV for every non-interactive shell —
+	// which is what a tool node and an agent's Bash tool are — and node
+	// takes a module from NODE_OPTIONS=--require and resolves a bare one
+	// through NODE_PATH, inside the agent CLI's own process. A channel
+	// that re-exports a neutralised name belongs to the sub-class, and
+	// empty is their default (measured: bash and node run normally with
+	// all three empty).
+	{"BASH_ENV", neutralizeInImage},
+	{"NODE_OPTIONS", neutralizeInImage},
+	{"NODE_PATH", neutralizeInImage},
+
+	// Case is not a membership rule: the exact-name half answers the same
+	// for any spelling, which is why the table carries no lower-case twin
+	// of its own rows.
+	{"bash_env", neutralizeInImage},
+	{"gcloud_project", neutralizeInImage},
+	{"Node_Options", neutralizeInImage},
+	{"path", reportedOnly},
+
 	// The loader, toolchain and home namespaces: reported, because an empty
 	// value breaks the image. ITERION_ is the measured one — iterion's own
 	// images bake ITERION_VERSION, ITERION_COMMIT and ITERION_BOTS_PATH.
@@ -135,7 +155,7 @@ func assertGuardHasItsOwnDispositionRow(t *testing.T, guard string, want imageEn
 				others++
 			}
 		}
-		if _, exact := deniedEnvNames[c.key]; exact {
+		if _, exact := deniedEnvNames[upper]; exact {
 			others++
 		}
 		if others != 1 {
@@ -162,7 +182,6 @@ func TestTheImageDispositionOfEveryExactNameIsDeclared(t *testing.T) {
 		"BEDROCK_REGION":                 neutralizeInImage,
 		"CLOUD_ML_REGION":                neutralizeInImage,
 		"GCLOUD_PROJECT":                 neutralizeInImage,
-		"gcloud_project":                 neutralizeInImage,
 		"AGENT_PROXY_URL":                neutralizeInImage,
 		"BETA_TRACING_ENDPOINT":          neutralizeInImage,
 		"ENABLE_BETA_TRACING_DETAILED":   neutralizeInImage,
@@ -180,12 +199,18 @@ func TestTheImageDispositionOfEveryExactNameIsDeclared(t *testing.T) {
 		"PATH": reportedOnly, "HOME": reportedOnly, "SHELL": reportedOnly,
 		"GOROOT": reportedOnly, "GOFLAGS": reportedOnly,
 
+		// Neutralised: the three channels that RESTORE a name the screen
+		// emptied — bash's non-interactive startup file, and the two node
+		// variables read inside the agent CLI's own process. Empty is
+		// their default.
+		"BASH_ENV": neutralizeInImage, "NODE_OPTIONS": neutralizeInImage,
+		"NODE_PATH": neutralizeInImage,
+
 		// Reported: code loaders, shells and their startup files,
 		// toolchains, editors — the execution half of the class, where an
 		// empty value is read as presence or breaks the image's own build.
-		"NODE_OPTIONS": reportedOnly, "NODE_PATH": reportedOnly,
-		"GCONV_PATH": reportedOnly, "BASH_ENV": reportedOnly,
-		"SHELLOPTS": reportedOnly, "BASHOPTS": reportedOnly,
+		"GCONV_PATH": reportedOnly,
+		"SHELLOPTS":  reportedOnly, "BASHOPTS": reportedOnly,
 		"PS4": reportedOnly, "ENV": reportedOnly, "ZDOTDIR": reportedOnly,
 		"SSH_ASKPASS": reportedOnly, "SSH_ASKPASS_REQUIRE": reportedOnly,
 		"EDITOR": reportedOnly, "VISUAL": reportedOnly,
@@ -227,7 +252,46 @@ func TestTheImageDispositionOfEveryExactNameIsDeclared(t *testing.T) {
 		if d == notDenied {
 			t.Errorf("deniedEnvNames[%q] is notDenied — an entry of the class must declare a disposition", name)
 		}
+		// The lookup upper-cases what it is asked, so an entry spelled any
+		// other way is unreachable: dead code that reads like a guard.
+		if upper := strings.ToUpper(name); name != upper {
+			t.Errorf("deniedEnvNames[%q] is never consulted — the lookup asks for %q; one entry answers for every spelling", name, upper)
+		}
 	}
+}
+
+// TestEveryExactNameAnswersTheSameInAnyCase holds the rule the suffix and
+// namespace halves already followed, at the class rather than at a row: an
+// exact name is matched case-INSENSITIVELY, so no spelling of it escapes
+// its disposition.
+//
+// Read from the production table, never from a copy, and it is the reason
+// the table carries no lower-case twin: `gcloud_project` used to be its own
+// entry, which applied the rule at ONE row and left every sibling
+// (`openai_api_base`, `imds_endpoint`, `msi_endpoint`, `bedrock_region`,
+// `bash_env`) answering "outside the class".
+func TestEveryExactNameAnswersTheSameInAnyCase(t *testing.T) {
+	for _, name := range slices.Sorted(maps.Keys(deniedEnvNames)) {
+		want := deniedEnvNames[name]
+		for _, spelling := range []string{strings.ToLower(name), strings.ToUpper(name), mixedCase(name)} {
+			if got := screenEnvName(spelling); got != want {
+				t.Errorf("screenEnvName(%q) = %v, want the %q row's %v — case is not a membership rule",
+					spelling, got, name, want)
+			}
+		}
+	}
+}
+
+// mixedCase spells name with every other rune upper-cased, so a reader of
+// the failure sees a spelling no row of the table carries.
+func mixedCase(name string) string {
+	runes := []rune(strings.ToLower(name))
+	for i := range runes {
+		if i%2 == 0 {
+			runes[i] = []rune(strings.ToUpper(string(runes[i])))[0]
+		}
+	}
+	return string(runes)
 }
 
 // TestTheDispositionPrecedenceTiltsTowardNeutralising holds the documented

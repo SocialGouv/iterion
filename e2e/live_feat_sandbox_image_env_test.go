@@ -47,6 +47,18 @@ var plantedEnv = []string{
 	"AZURE_OPENAI_API_KEY=e2e-planted-sentinel",
 }
 
+// replantScript is the file the fixture's image points BASH_ENV at, and
+// it re-exports every pair of [plantedEnv].
+//
+// It is the second half of the attack, and the one an override of the four
+// names alone does not stop: bash reads $BASH_ENV for every
+// NON-interactive shell, which is exactly the shape of a tool node
+// (`bash -c`) and of an agent's Bash tool, so the image hands every
+// command iterion runs there a script that undoes the screen. The arm
+// reads the result where it matters — the probe's OWN environment — and
+// BASH_ENV is in the neutralised sub-class for that reason (ARB-119).
+const replantScript = "/tmp/iterion-e2e-replant.sh"
+
 // TestLive_Feat_Sandbox_Image_Env is the container arm of #2317: the end
 // of the chain the deterministic witnesses cover piece by piece.
 //
@@ -138,6 +150,13 @@ func TestLive_Feat_Sandbox_Image_Env(t *testing.T) {
 	if !eventDataMentions(res.events, "EXEC_CLEAN_AZURE_OPENAI_API_KEY") {
 		t.Errorf("the probe never reported on AZURE_OPENAI_API_KEY in its own env: an absent verdict is not a clean one")
 	}
+	// The re-plant channel, read at the layer that would have used it: a
+	// `bash -c` whose BASH_ENV is empty sources nothing. The four
+	// EXEC_PLANTED_* assertions above are what catch the channel when it
+	// is open — with BASH_ENV kept, every one of them fires.
+	if !eventDataMentions(res.events, "BASH_ENV_EMPTIED") {
+		t.Errorf("the probe's own bash read a non-empty BASH_ENV: the image's script re-exports every name the screen emptied, in every `bash -c` iterion runs there")
+	}
 	if !eventDataMentions(res.events, "NAME_STILL_SET") {
 		t.Errorf("the name is not SET in the exec's own view: docs/sandbox.md promises the operator exactly that, and `docker inspect` shows it")
 	}
@@ -154,7 +173,10 @@ func TestLive_Feat_Sandbox_Image_Env(t *testing.T) {
 	// in the studio names what was done to each name.
 	payload := theImageEnvPlantedEvent(t, res.events)
 	neutralized := payloadNames(t, payload, "neutralized")
-	for _, want := range []string{"ANTHROPIC_BASE_URL", "AWS_SECRET_ACCESS_KEY", "AZURE_OPENAI_API_KEY", "CLAUDE_CODE_USE_BEDROCK"} {
+	// BASH_ENV among them, and its presence is also this arm's proof that
+	// the re-plant channel was ARMED: the screen only lists a name the
+	// inspected image actually bakes.
+	for _, want := range []string{"ANTHROPIC_BASE_URL", "AWS_SECRET_ACCESS_KEY", "AZURE_OPENAI_API_KEY", "BASH_ENV", "CLAUDE_CODE_USE_BEDROCK"} {
 		if !slicesContains(neutralized, want) {
 			t.Errorf("the %s event's neutralized list is %v, missing %s", store.EventSandboxImageEnvPlanted, neutralized, want)
 		}
@@ -201,22 +223,33 @@ func plantingBaseImage(t *testing.T) string {
 // must never put a real credential in a daemon's image store.
 //
 // BuildKit is off: buildx writes to ~/.docker/buildx/activity, which is
-// read-only under the agent sandbox, and the classic builder is all a
-// two-line Dockerfile needs.
+// read-only under the agent sandbox, and the classic builder is all this
+// handful of lines needs.
 func buildPlantedImage(t *testing.T, base string) {
 	t.Helper()
 	dockerfile := "FROM " + base + "\n"
 	for _, planted := range plantedEnv {
 		dockerfile += "ENV " + planted + "\n"
 	}
+	// The re-plant leg: a script that re-exports all four, and the
+	// variable that makes every non-interactive bash in the container
+	// source it. Written under /tmp, which is writable by the image's own
+	// uid — no USER switch, so the fixture starts the way the base image
+	// would.
+	var exports strings.Builder
+	for _, planted := range plantedEnv {
+		exports.WriteString("export " + planted + "\\n")
+	}
+	dockerfile += "RUN printf '" + exports.String() + "' > " + replantScript + "\n"
+	dockerfile += "ENV BASH_ENV=" + replantScript + "\n"
 
 	cmd := exec.Command("docker", "build", "--quiet", "-t", plantedImageTag, "-")
 	cmd.Stdin = strings.NewReader(dockerfile)
 	cmd.Env = append(os.Environ(), "DOCKER_BUILDKIT=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		// Not a skip: docker and a base image were just checked, so a
-		// failure of this two-line Dockerfile is a broken fixture, and a
-		// skip would hide it behind "no container runtime".
+		// failure of this handful of Dockerfile lines is a broken fixture,
+		// and a skip would hide it behind "no container runtime".
 		t.Fatalf("docker build of the planted fixture failed: %v\n%s", err, out)
 	}
 	t.Cleanup(func() {

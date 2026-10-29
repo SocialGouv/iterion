@@ -184,8 +184,10 @@ func TestTheImageEnvScreenSaysWhenItScreenedNothing(t *testing.T) {
 }
 
 // TestARefusedNeutralisationNeverPassesAsDone: if the driver cannot
-// neutralise, the names move to the reported list and the reason is
-// recorded. The run must not read as neutralised when nothing was.
+// neutralise, nothing is claimed as neutralised, the names it covered move
+// to the refused disposition with the driver's reason, and `unscreened`
+// stays empty — the screen RAN. The caller reads that field to stop the
+// boot (TestTheBootRefusesToStartWhenANeutralisationIsRefused).
 func TestARefusedNeutralisationNeverPassesAsDone(t *testing.T) {
 	t.Setenv(EnvSandboxImageEnvAllow, "")
 	boom := errors.New("env AWS_SECRET_ACCESS_KEY: invalid env var name")
@@ -201,11 +203,19 @@ func TestARefusedNeutralisationNeverPassesAsDone(t *testing.T) {
 	if len(screen.neutralized) != 0 {
 		t.Errorf("neutralized = %q, want nothing claimed", screen.neutralized)
 	}
-	if !slices.Equal(screen.reported, []string{"AWS_SECRET_ACCESS_KEY", "PATH"}) {
-		t.Errorf("reported = %q, want the un-neutralised name folded in", screen.reported)
+	if !slices.Equal(screen.refusedNames, []string{"AWS_SECRET_ACCESS_KEY"}) {
+		t.Errorf("refusedNames = %q, want the name the override did not take on", screen.refusedNames)
 	}
-	if screen.unscreened != boom.Error() {
-		t.Errorf("unscreened = %q, want the refusal's reason", screen.unscreened)
+	if screen.refused != boom.Error() {
+		t.Errorf("refused = %q, want the driver's own reason", screen.refused)
+	}
+	// Reported keeps its own meaning — a name KEPT in a container — and
+	// the refused name is not one of them: nothing starts.
+	if !slices.Equal(screen.reported, []string{"PATH"}) {
+		t.Errorf("reported = %q, want [PATH] alone", screen.reported)
+	}
+	if screen.unscreened != "" {
+		t.Errorf("unscreened = %q, want empty: the screen ran, and the two facts must stay apart", screen.unscreened)
 	}
 }
 
@@ -258,8 +268,17 @@ func TestTheScreensWarningTellsTheTruthAfterARefusal(t *testing.T) {
 	if strings.Contains(logged, "overridden with an empty value") {
 		t.Errorf("the log claims an override the driver refused:\n%s", logged)
 	}
-	if !strings.Contains(logged, "NOT screened") || !strings.Contains(logged, "invalid env var name") {
+	if !strings.Contains(logged, "REFUSED to override") || !strings.Contains(logged, "invalid env var name") {
 		t.Errorf("the log does not report the refusal and its reason:\n%s", logged)
+	}
+	// And it says what follows, because that is what the operator acts on.
+	if !strings.Contains(logged, "the run does not start") {
+		t.Errorf("the log does not say the boot was stopped:\n%s", logged)
+	}
+	// Not the unscreened line: that one promises a run proceeding under a
+	// stated silence, which is the opposite of what happened.
+	if strings.Contains(logged, "NOT screened") {
+		t.Errorf("a refused override was reported as an unscreened image:\n%s", logged)
 	}
 	if !strings.Contains(logged, "AWS_SECRET_ACCESS_KEY") {
 		t.Errorf("the log does not name the variable that still rides:\n%s", logged)

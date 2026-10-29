@@ -606,8 +606,8 @@ never lets the repository speak for the operator:
     unset, `~/.gitconfig` first (the EXACT name only, so a toolchain's
     `JAVA_HOME` or `ANT_HOME` still configures the repository's own
     build); `OPENAI_API_BASE`,
-    `BEDROCK_REGION`, `CLOUD_ML_REGION`, `GCLOUD_PROJECT` (and the
-    lower-case `gcloud_project` the CLI also reads),
+    `BEDROCK_REGION`, `CLOUD_ML_REGION`, `GCLOUD_PROJECT` (one entry for
+    both spellings the CLI reads: the names match case-insensitively),
     `AGENT_PROXY_URL`, `SESSION_INGRESS_URL` (the claude CLI's API base
     when no `ANTHROPIC_BASE_URL` is set — the usual case),
     `BETA_TRACING_ENDPOINT`,
@@ -716,6 +716,19 @@ two halves of the class get different answers:
   `OTEL_`, `SENTRY_`, `GH_`, `GLAB_`, `CLAW_`, `CLAWD_`, `HOOK_`, …)
   and the exact endpoint, region, project and managed-identity names
   (`OPENAI_API_BASE`, `BEDROCK_REGION`, `IMDS_ENDPOINT`, …);
+- **and the three channels that RESTORE a name the screen just emptied**,
+  which belong to that sub-class for exactly that reason: `BASH_ENV`,
+  which bash reads for every *non-interactive* shell — the shape of a
+  tool node (`bash -c`) and of an agent's Bash tool — so a planted script
+  re-exports every neutralised name inside the very processes iterion
+  runs; `NODE_OPTIONS`, whose `--require=…` runs a planted module in the
+  agent CLI's own process, which is node; and `NODE_PATH`, which resolves
+  a bare `require` from the planter's directory. Empty is their default,
+  measured on built images: `bash -c` and `node -e` run normally with all
+  three empty, where a kept `BASH_ENV` brings the planted values back
+  (#2317, ARB-119). The cost is stated: an image that bakes `NODE_PATH`
+  for its own global modules loses that resolution, and the escape hatch
+  below is the operator's answer;
 - the **rest of the class is reported only, and keeps its value**.
   Emptying `PATH`, `HOME`, `GOROOT`, a loader path or an `XDG_` dir
   breaks an image doing its job — iterion's own `full` variant bakes
@@ -726,14 +739,30 @@ two halves of the class get different answers:
   binaries a CLI spawns are reported for the same reason: an image may
   legally bake them, and their consumers read presence as much as value.
 
+Membership is **case-insensitive in all three forms** — suffixes,
+namespaces and exact names alike — so `bash_env` is read by the same bash
+as `BASH_ENV` and no entry needs a lower-case twin.
+
 Every screen that finds something says so **twice**: a warning per
 disposition in the run's log, and one `sandbox_image_env_planted` event
 carrying the whole class — `image`, `neutralized`, `reported`, plus
-`allowed` and `unscreened` when those hold. The two name lists always
-travel, the empty one included, so "this half caught nothing" never
-reads like "this event does not report that half"; a refused
-neutralisation moves its names to `reported`, because that is what the
-container got. An image that plants nothing of the class emits nothing.
+`allowed`, `unscreened` and `refused`/`refused_names` when those hold.
+The two name lists always travel, the empty one included, so "this half
+caught nothing" never reads like "this event does not report that half".
+An image that plants nothing of the class emits nothing.
+
+**A neutralisation the driver refuses stops the run.** The override IS
+the guard, so the screen is closed by default: when the class decides a
+name must be emptied and the driver will not take the pair, the boot
+refuses with `FailureCode = CAPABILITY_UNSUPPORTED`, naming the image and
+the variables, and **no container starts** — the event goes out first,
+under its own `refused` / `refused_names` keys, so the run's record says
+what the image planted even though nothing ran. That is a different fact
+from `unscreened`, which says the channel was never read (a driver whose
+images the kubelet pulls) and under which the run *proceeds*: a reader of
+the two keys can tell a blocked boot from a cloud run. The operator's
+answer to a refusal they judge acceptable is the host-side allow knob
+below.
 
 A name let through keeps its value and is still reported — the operator
 asked for the variable, not for silence. A variable the screen
@@ -762,7 +791,8 @@ read says the same. Nothing is ever inferred from a silence.
 **The escape hatch is the operator's, and host-side only.**
 `ITERION_SANDBOX_IMAGE_ENV_ALLOW=NAME1,NAME2` names the variables an
 image may contribute untouched — exact names, comma-separated,
-case-sensitive, no prefix matching. It is read from the runner's own
+case-sensitive (it names a variable as the IMAGE spells it, not a class
+entry), no prefix matching. It is read from the runner's own
 process environment: never from the workspace, never from a stored bot
 var (`ITERION_SANDBOX_` is an infra prefix of the bot-var deny list),
 so **the repository under review can never allowlist itself**.

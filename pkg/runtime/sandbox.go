@@ -813,7 +813,24 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// devcontainer env seam, and reports the rest (#2317). Its findings
 	// reach the operator twice: the run's log, and the
 	// `sandbox_image_env_planted` event the studio and a bug report read.
-	prepared = screenAndReportSandboxImageEnv(ctx, driver, prepared, logger, emitEvent, p.RunID)
+	//
+	// CLOSED by default: a neutralisation the class decided on and the
+	// driver refused is a planted credential about to ride into the
+	// container, so the boot stops here with the names on it rather than
+	// starting under a guard that did not take (ARB-119). The event is
+	// already out, so the run's record says what the image planted.
+	prepared, err = screenAndReportSandboxImageEnv(ctx, driver, prepared, logger, emitEvent, p.RunID)
+	if err != nil {
+		if proxy != nil {
+			_ = proxy.Shutdown(ctx)
+		}
+		return nil, &RuntimeError{
+			Code:    ErrCodeCapabilityUnsupported,
+			Message: "sandbox: the image's planted credential and routing env could not be neutralised",
+			Hint:    "rebuild the image without those variables in its `ENV`, or name the ones the operator wants through with " + EnvSandboxImageEnvAllow + " (host-side, exact names — docs/sandbox.md, « the env an IMAGE bakes in »)",
+			Cause:   err,
+		}
+	}
 
 	run, err := driver.Start(ctx, prepared, info)
 	if err != nil {

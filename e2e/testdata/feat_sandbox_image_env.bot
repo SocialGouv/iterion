@@ -26,11 +26,16 @@
 ##     `\0` / `\n`, which is why the `tr` below keeps them. Emptiness is tested
 ##     with the quote-free `case x$VAR in x)` idiom.
 ##
+## The image also points BASH_ENV at a script that re-exports the four: bash reads
+## it for every NON-interactive shell, which is what this very tool node is, so a
+## screen that only emptied the four would be undone inside this process. The
+## verdict on BASH_ENV itself is read for that reason.
+##
 ## The probe prints verdict words and never a value — a planted credential that
 ## survived must not become a log line.
 
 tool env_probe:
-  command: "env > /tmp/exec.env; tr '\\0' '\\n' < /proc/1/environ > /tmp/pid1.env 2>/dev/null || echo PID1_UNREADABLE; for pair in CLAUDE_CODE_USE_BEDROCK=1 ANTHROPIC_BASE_URL=https://collector.invalid AWS_SECRET_ACCESS_KEY=e2e-planted-sentinel AZURE_OPENAI_API_KEY=e2e-planted-sentinel; do n=$(echo $pair | cut -d= -f1); grep -qxF $pair /tmp/pid1.env && echo PID1_PLANTED_$n || echo PID1_CLEAN_$n; grep -qxF $pair /tmp/exec.env && echo EXEC_PLANTED_$n || echo EXEC_CLEAN_$n; grep -qxF $n= /tmp/pid1.env && echo PID1_EMPTY_$n || echo PID1_NOTEMPTY_$n; done; cut -d= -f1 < /tmp/exec.env | grep -qx CLAUDE_CODE_USE_BEDROCK && echo NAME_STILL_SET || echo NAME_ABSENT; grep -q '^PATH=/' /tmp/pid1.env && echo PID1_PATH_KEPT || echo PID1_PATH_EMPTIED; case x$PATH in x) echo PATH_EMPTIED;; *) echo PATH_KEPT;; esac"
+  command: "env > /tmp/exec.env; tr '\\0' '\\n' < /proc/1/environ > /tmp/pid1.env 2>/dev/null || echo PID1_UNREADABLE; for pair in CLAUDE_CODE_USE_BEDROCK=1 ANTHROPIC_BASE_URL=https://collector.invalid AWS_SECRET_ACCESS_KEY=e2e-planted-sentinel AZURE_OPENAI_API_KEY=e2e-planted-sentinel; do n=$(echo $pair | cut -d= -f1); grep -qxF $pair /tmp/pid1.env && echo PID1_PLANTED_$n || echo PID1_CLEAN_$n; grep -qxF $pair /tmp/exec.env && echo EXEC_PLANTED_$n || echo EXEC_CLEAN_$n; grep -qxF $n= /tmp/pid1.env && echo PID1_EMPTY_$n || echo PID1_NOTEMPTY_$n; done; cut -d= -f1 < /tmp/exec.env | grep -qx CLAUDE_CODE_USE_BEDROCK && echo NAME_STILL_SET || echo NAME_ABSENT; grep -q '^PATH=/' /tmp/pid1.env && echo PID1_PATH_KEPT || echo PID1_PATH_EMPTIED; case x$PATH in x) echo PATH_EMPTIED;; *) echo PATH_KEPT;; esac; case x$BASH_ENV in x) echo BASH_ENV_EMPTIED;; *) echo BASH_ENV_KEPT;; esac"
 
 workflow main:
   sandbox:

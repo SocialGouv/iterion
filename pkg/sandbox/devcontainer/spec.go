@@ -171,9 +171,10 @@ func UsableEnvName(name string) bool {
 //     PATH, `go build -toolexec`, and the TLS trust of the connections
 //     that carry credentials.
 //
-// Suffixes and namespaces match case-insensitively (http_proxy routes as
-// much as HTTP_PROXY); the exact names are the load-bearing forms, matched
-// as written, so a lower-case spelling a consumer reads is its own entry.
+// All three forms match case-insensitively (http_proxy routes as much as
+// HTTP_PROXY, and `bash_env` is read by the same bash as BASH_ENV): case is
+// nowhere a membership rule, so no entry needs a lower-case twin of its
+// own.
 //
 // Where the class STOPS, and why — the claude CLI carries Anthropic's own
 // 192-name list of environment that executes code (its `f$` set), which is
@@ -229,11 +230,17 @@ func ScreenImageEnvName(name string) (denied, neutralize bool) {
 // screenEnvName walks the three forms of the class and returns the
 // disposition of the first guard that catches name — the single walk both
 // [DeniedEnvKey] and [ScreenImageEnvName] answer from.
+//
+// All three forms read the UPPER-cased name, so case is nowhere a
+// membership rule: a table that matched its exact names as written applied
+// the case rule at one row (`gcloud_project`) and left every sibling
+// spelling — `openai_api_base`, `imds_endpoint`, `bash_env` — answering
+// "outside the class".
 func screenEnvName(name string) imageEnvDisposition {
-	if d, exact := deniedEnvNames[name]; exact {
+	upper := strings.ToUpper(name)
+	if d, exact := deniedEnvNames[upper]; exact {
 		return d
 	}
-	upper := strings.ToUpper(name)
 	for _, guard := range deniedEnvSuffixes {
 		if strings.HasSuffix(upper, guard.pattern) {
 			return guard.image
@@ -409,10 +416,13 @@ var deniedEnvNamespaces = []envGuard{
 
 // deniedEnvNames are the exact names outside the families above, each with
 // what the runtime does when an IMAGE bakes it in. Consulted FIRST, so an
-// exact name overrides the disposition its namespace would give it.
+// exact name overrides the disposition its namespace would give it, and
+// keyed by the UPPER-cased name: the lookup upper-cases what it is asked,
+// so every entry answers for every spelling and no row needs a twin.
 //
-// The endpoint, region, project and managed-identity names neutralise. The
-// rest are reported only, and three groups earn that answer rather than
+// The endpoint, region, project and managed-identity names neutralise, and
+// so do the three channels that re-export a neutralised name. The rest are
+// reported only, and three groups earn that answer rather than
 // inherit it: `PATH`, `HOME`, `GOROOT` and the shells, where an empty value
 // breaks the container outright; `KUBECONFIG`, `DOCKER_HOST` and
 // `DOCKER_CONFIG`, where emptying would send the client to its DEFAULT —
@@ -421,13 +431,26 @@ var deniedEnvNamespaces = []envGuard{
 // binary-path names, which an image may legally bake for its own tooling
 // and whose consumers read presence as much as value.
 var deniedEnvNames = map[string]imageEnvDisposition{
-	// The node runtime's options and module path, glibc's iconv modules,
-	// the shell the claude CLI picks, bash's startup file and options (in a
-	// non-root bash, SHELLOPTS=xtrace runs a planted PS4's command
-	// substitutions), sh's and zsh's startup files, the command search
-	// path, `go build -toolexec`, ssh's askpass helper.
-	"NODE_OPTIONS": reportedOnly, "NODE_PATH": reportedOnly, "GCONV_PATH": reportedOnly,
-	"SHELL": reportedOnly, "BASH_ENV": reportedOnly, "SHELLOPTS": reportedOnly, "BASHOPTS": reportedOnly, "PS4": reportedOnly,
+	// The three channels that RESTORE a neutralised name, which is why
+	// they neutralise rather than report: bash reads BASH_ENV for every
+	// NON-interactive shell — the shape of a tool node (`bash -c`) and of
+	// an agent's Bash tool — so a planted script re-exports every name
+	// this screen just emptied; `NODE_OPTIONS=--require=…` runs a planted
+	// module inside the agent CLI's own process, which is node; and
+	// NODE_PATH resolves a bare `require` from the planter's directory.
+	// Empty is their default — measured on built images: `bash -c` and
+	// `node -e` run normally with all three empty, where the planted
+	// values otherwise come back (#2317, ARB-119).
+	"BASH_ENV": neutralizeInImage, "NODE_OPTIONS": neutralizeInImage, "NODE_PATH": neutralizeInImage,
+	// glibc's iconv modules, the shell the claude CLI picks, bash's
+	// options (in a non-root bash, SHELLOPTS=xtrace runs a planted PS4's
+	// command substitutions), sh's and zsh's startup files, the command
+	// search path, `go build -toolexec`, ssh's askpass helper. An image
+	// that bakes one of these is doing its job, and an empty value breaks
+	// it — the difference with the three above, where empty IS the
+	// default.
+	"GCONV_PATH": reportedOnly,
+	"SHELL":      reportedOnly, "SHELLOPTS": reportedOnly, "BASHOPTS": reportedOnly, "PS4": reportedOnly,
 	"ENV": reportedOnly, "ZDOTDIR": reportedOnly, "PATH": reportedOnly, "GOFLAGS": reportedOnly,
 	"SSH_ASKPASS": reportedOnly, "SSH_ASKPASS_REQUIRE": reportedOnly,
 	// git's editor chain is GIT_EDITOR (denied by GIT_), core.editor,
@@ -463,10 +486,10 @@ var deniedEnvNames = map[string]imageEnvDisposition{
 	// Endpoints, projects and regions off the suffix rule; the claude
 	// CLI's agent proxy and beta tracing.
 	"OPENAI_API_BASE": neutralizeInImage, "BEDROCK_REGION": neutralizeInImage, "CLOUD_ML_REGION": neutralizeInImage,
-	// The claude CLI reads BOTH spellings of the gcloud project, and this
-	// table is case-SENSITIVE on purpose: lower-case `path` names no
-	// variable the container's processes read, and a repository may use it.
-	"GCLOUD_PROJECT": neutralizeInImage, "gcloud_project": neutralizeInImage,
+	// The claude CLI reads BOTH spellings of the gcloud project, and ONE
+	// entry answers for both: the names are matched case-insensitively,
+	// like the suffixes and the namespaces.
+	"GCLOUD_PROJECT":  neutralizeInImage,
 	"AGENT_PROXY_URL": neutralizeInImage, "BETA_TRACING_ENDPOINT": neutralizeInImage,
 	"ENABLE_BETA_TRACING_DETAILED": neutralizeInImage, "ENABLE_ENHANCED_TELEMETRY_BETA": neutralizeInImage,
 	// The endpoint the claude CLI falls back to when no ANTHROPIC_BASE_URL
