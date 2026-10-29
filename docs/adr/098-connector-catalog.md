@@ -201,6 +201,30 @@ the IR's (ADR-075). And an image `COPY` serves the server and runner but
 gives a standalone release binary nothing — CLI and desktop need their own
 asset delivery.
 
+**The baked floor is in the binary, and nothing resolves through it yet**
+(#2757, slice S1). [`connectors/embed.go`](../../connectors/embed.go) carries
+the shipped packages WHOLE (`//go:embed all:forgejo` — the generated half, the
+overlay, the schemas, the contracts, the triggers and the identity lock), and
+`connection.BakedCatalog` serves them through the SAME loader a directory tier
+uses: the package loaders now read `io/fs`
+([`spec.LoadFS`](../../pkg/connector/spec/io.go),
+[`overlay.LoadPackageFS`](../../pkg/connector/overlay/overlay.go)) with the
+directory form an `os.DirFS` wrapper, so the only way to serve an embedded
+package — a SECOND loader — never has to be written. That matters precisely
+because of the defect recorded below: two loaders of one format is how
+validation came to report on the merged package while execution ran the
+generated one, two auth schemes against five.
+
+It is deliberately NOT part of `LocalCatalogs`. A tier that always answers
+makes `LocalResolver` never return nil, which makes the refusal "this process
+has no connector catalog wired" unreachable — and that refusal, with its
+greppable `ITERION_CONNECTOR_ADMISSION` override, is what keeps a `.bot` from
+spending an operator's credential on a resolution nobody configured. Its real
+question becomes "no CONNECTION bound for this connector", which is a
+tenant-scoped read of the store at admission: a product decision, not a
+rename. Composing the floor and re-aiming every "no catalog" surface is
+therefore ONE change (slice S2), not a side effect of the seam.
+
 **The git source exists, and it fetches at INSTALL time only** (#2757):
 `iterion connectors install <git url | repository path> --ref <sha>
 [--path <dir>]` materializes the source at that commit

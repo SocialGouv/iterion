@@ -16,6 +16,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `cmd/release-floors` | Command release-floors realigns the syntax-floor pins to the release being cut: release-it runs it with --apply from its before:git:beforeRelease… | — |
 | `cmd/render-gate` | Command render-gate reads a rendered Kubernetes manifest stream (`helm template`, `kustomize build`, an Argo CD manifest dump) and refuses every… | — |
 | `cmd/skill-share` | Command skill-share writes, checks, or re-pins the shared skills of the bot catalogue. | — |
+| `connectors` | exposes the connector packages shipped with iterion as an fs.FS, so the binary serves them from any working directory — the BAKED floor of the… | — |
 | `contrib/mattermost-clarify` | Command mattermost-clarify is a chat channel adapter that wires a Mattermost bot ("@clarify-bot") to iterion's run-completion webhook (pkg/notify),… | `ChannelDriver`, `RelevanceFilter` |
 | `e2e/fixtures/feature-dev-go-service` | a small in-memory user service used as a realistic fixture for iterion's feature_dev bot live test. | — |
 | `e2e/fixtures/feature-dev-go-service/handlers` | wires HTTP handlers against a *store.Store. | — |

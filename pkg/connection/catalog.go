@@ -3,12 +3,14 @@ package connection
 import (
 	"errors"
 	"fmt"
-	"os"
+	"io/fs"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 
+	"github.com/SocialGouv/iterion/connectors"
 	"github.com/SocialGouv/iterion/pkg/connector/overlay"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
 )
@@ -41,6 +43,9 @@ const (
 	// TierMemory is a catalog held in memory: tests, and the tier that
 	// rebuilds a stored package.
 	TierMemory TierKind = "memory"
+	// TierBaked is the FLOOR: the packages compiled into this binary, which
+	// every process has whatever its home and workspace hold.
+	TierBaked TierKind = "baked"
 )
 
 // Tier names the catalog that SERVED a package, and where that copy came from.
@@ -99,15 +104,26 @@ type Catalog interface {
 	Connectors() []string
 }
 
-// FSCatalog serves packages from a directory of them — `connectors/<id>/` in
-// a checkout, or an operator's own tree.
+// FSCatalog serves packages from a filesystem of them, a connector id per
+// directory — `connectors/<id>/` in a checkout, an operator's own tree, or
+// the packages compiled into the binary.
+//
+// One type for the three because they differ in exactly one thing: WHICH
+// fs.FS. The alternative was a second catalog with its own loader for the
+// baked floor, and a loader of connector packages that is not the one
+// `connectors validate` runs is the defect Package's comment below records,
+// read a second time.
 //
 // It CACHES a package after the first load, which matters more than it looks:
 // the shipped Forgejo package is 651 KiB of YAML across ten files, and parsing
 // it per node would put a measurable cost on every call in a loop.
 type FSCatalog struct {
 	kind TierKind
+	// root is the directory this catalog serves, and the Source its answers
+	// carry. EMPTY for a tier that is not a path — the baked floor lives in
+	// the binary, and a made-up path would read as somewhere to go looking.
 	root string
+	fsys fs.FS
 
 	mu     sync.RWMutex
 	loaded map[string]*spec.Package
@@ -134,7 +150,28 @@ func NewFSCatalogAs(kind TierKind, root string) *FSCatalog {
 	if kind == "" {
 		kind = TierDirectory
 	}
-	return &FSCatalog{kind: kind, root: root, loaded: map[string]*spec.Package{}}
+	// spec.DirFS rather than os.DirFS: it keeps the root in the paths its
+	// errors name, so what an operator reads is still a file they can open.
+	return &FSCatalog{kind: kind, root: root, fsys: spec.DirFS(root), loaded: map[string]*spec.Package{}}
+}
+
+// BakedCatalog serves the connector packages compiled INTO this binary.
+//
+// The floor of the tiers: it needs no home, no workspace and no install, so a
+// published `iterion` resolves the shipped connectors on a machine that has
+// never seen this repository. Above it an operator's `<iterion home>` tier
+// and a project's own still win, which is what keeps a baked package
+// correctable without a release.
+//
+// NOT part of LocalCatalogs yet, deliberately (ARB-68): a floor that always
+// answers makes "this process has no connector catalog wired" unreachable,
+// and that refusal is load-bearing — it is what stops a `.bot` from spending
+// an operator's credential on a resolution nobody configured. Composing the
+// floor and re-aiming those surfaces is one change, not a side effect of
+// this one; until then the floor is reachable by name and serves whoever
+// asks for it explicitly.
+func BakedCatalog() *FSCatalog {
+	return &FSCatalog{kind: TierBaked, fsys: connectors.FS(), loaded: map[string]*spec.Package{}}
 }
 
 // tier says which tier this catalog is, for the answers it serves. Internal:
@@ -142,6 +179,16 @@ func NewFSCatalogAs(kind TierKind, root string) *FSCatalog {
 // is — and an accessor nobody needs is surface a later tier would have to
 // honour.
 func (c *FSCatalog) tier() Tier { return Tier{Kind: c.kind, Source: c.root} }
+
+// where is how a refusal NAMES this catalog: its root when it has one, and
+// the tier's own phrase ("baked catalog") when it is not a path. One place,
+// so a tier that lives in the binary cannot report an empty directory.
+func (c *FSCatalog) where() string {
+	if c.root != "" {
+		return c.root
+	}
+	return c.tier().String()
+}
 
 // Package loads (once) and returns a connector package, with this tier.
 func (c *FSCatalog) Package(connectorID string) (*spec.Package, Tier, error) {
@@ -155,7 +202,6 @@ func (c *FSCatalog) Package(connectorID string) (*spec.Package, Tier, error) {
 		return pkg, c.tier(), nil
 	}
 
-	dir := filepath.Join(c.root, connectorID)
 	// The EFFECTIVE package — generated half plus overlay, then the complete
 	// check. Not `spec.Load`, which reads only the generated half: calling it
 	// here served execution a package the authored corrections had never
@@ -164,18 +210,22 @@ func (c *FSCatalog) Package(connectorID string) (*spec.Package, Tier, error) {
 	// validation and to none of them at run time, and lost every declared
 	// pagination. The same loader backs `iterion connectors validate`, so what
 	// an operator checks is what a run gets.
-	pkg, err := overlay.LoadPackage(dir)
+	// The id is the package's directory WITHIN this catalog's filesystem,
+	// which is what lets the same loader read a directory on disk and the
+	// baked copy. CheckConnectorID above has already refused anything that
+	// is not a plain name, so nothing can address a sibling of the root.
+	pkg, err := overlay.LoadPackageFS(c.fsys, connectorID)
 	if err != nil {
 		// errors.Is, not os.IsNotExist: the loader wraps with %w and the
 		// legacy helper does not unwrap, so the absent case was never
 		// recognised — every missing connector reported as a load failure,
 		// and (once layering arrived) stopped the search instead of falling
 		// through to the tier that has it.
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, fs.ErrNotExist) {
 			// ABSENT — the only case a layered lookup may fall through on, so
 			// it carries the sentinel. Anything else below means the tier has
 			// the package and cannot load it.
-			return nil, Tier{}, fmt.Errorf("no connector %q in %s%s: %w", connectorID, c.root, c.suggest(connectorID), errNoSuchConnector)
+			return nil, Tier{}, fmt.Errorf("no connector %q in %s%s: %w", connectorID, c.where(), c.suggest(connectorID), errNoSuchConnector)
 		}
 		return nil, Tier{}, fmt.Errorf("connector %q: %w", connectorID, err)
 	}
@@ -195,7 +245,7 @@ func (c *FSCatalog) Package(connectorID string) (*spec.Package, Tier, error) {
 
 // Connectors lists the directories that look like packages.
 func (c *FSCatalog) Connectors() []string {
-	entries, err := os.ReadDir(c.root)
+	entries, err := fs.ReadDir(c.fsys, ".")
 	if err != nil {
 		return nil
 	}
@@ -204,7 +254,9 @@ func (c *FSCatalog) Connectors() []string {
 		if !e.IsDir() {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(c.root, e.Name(), "connector.yaml")); err != nil {
+		// spec.ConnectorFile, not a second copy of the name: the file that
+		// makes a directory a package is the loader's to define.
+		if _, err := fs.Stat(c.fsys, path.Join(e.Name(), spec.ConnectorFile)); err != nil {
 			continue
 		}
 		out = append(out, e.Name())

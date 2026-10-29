@@ -1,9 +1,10 @@
 package spec
 
 import (
+	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"io/fs"
+	"path"
 	"strings"
 
 	yaml "go.yaml.in/yaml/v2"
@@ -69,9 +70,9 @@ type triggersDoc struct {
 // is, for the same reason a tier that is present and unreadable is not an
 // absent one: a declaration silently dropped is an event the engine will
 // never believe, with nothing saying so.
-func readTriggers(dir string, p *Package) error {
-	body, err := os.ReadFile(filepath.Join(dir, TriggersFile))
-	if os.IsNotExist(err) {
+func readTriggers(fsys fs.FS, dir string, p *Package) error {
+	body, err := fs.ReadFile(fsys, path.Join(dir, TriggersFile))
+	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
