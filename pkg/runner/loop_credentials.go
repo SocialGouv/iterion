@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // injectCredentials resolves the run's sealed bundle, decrypts it,
@@ -37,7 +38,11 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 	if r.cfg.RunSecrets == nil {
 		return ctx, nil, fmt.Errorf("runner: SecretsRef set but RunSecrets not wired")
 	}
-	rec, err := r.cfg.RunSecrets.Get(ctx, msg.SecretsRef)
+	// Scoped like every other store read of this loop
+	// (store.WithIdentity): the ref is an `_id`, so the tenant clause is
+	// what keeps the query inside this run's team. The post-read binding
+	// check below stays — it is the second layer, not the first.
+	rec, err := r.cfg.RunSecrets.Get(store.WithIdentity(ctx, msg.TenantID, msg.OwnerID), msg.SecretsRef)
 	if err != nil {
 		return ctx, nil, fmt.Errorf("fetch run_secrets %s: %w", msg.SecretsRef, err)
 	}
@@ -211,7 +216,11 @@ func (r *Runner) deleteRunSecrets(msg *queue.RunMessage) {
 	}
 	ctxDel, cancel := context.WithTimeout(context.Background(), runSecretsDeleteTimeout)
 	defer cancel()
-	if delErr := r.cfg.RunSecrets.Delete(ctxDel, msg.SecretsRef); delErr != nil {
+	// A detached ctx carries no identity, and the ref is an `_id`: without
+	// the stamp this delete is the one store write of the loop that leaves
+	// its team. Every sibling detached call stamps the same way
+	// (loop_gitws, bank_push, loop_spend).
+	if delErr := r.cfg.RunSecrets.Delete(store.WithIdentity(ctxDel, msg.TenantID, msg.OwnerID), msg.SecretsRef); delErr != nil {
 		r.cfg.Logger.Warn("runner: run_secrets delete for %s (ref=%s): %v", msg.RunID, msg.SecretsRef, delErr)
 	}
 }

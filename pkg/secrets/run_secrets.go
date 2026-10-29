@@ -184,6 +184,11 @@ type RunSecretsStore interface {
 // (already consumed or never published).
 var ErrRunSecretsNotFound = errors.New("secrets: run secrets not found")
 
+// ErrRunSecretsTenantMissing is returned when a RunSecrets read or delete
+// lacks the tenant_id needed to scope it. Callers propagate it — a ref is
+// an `_id`, so an unscoped query reaches every team's sealed bundle.
+var ErrRunSecretsTenantMissing = errors.New("secrets: RunSecrets store called without tenant context")
+
 // ErrBundleDEKMissing is the typed refusal for a "dek"-stamped record
 // whose message carries no per-run key: corrupt publish or a message
 // stripped in transit — never executed.
@@ -409,34 +414,54 @@ func (s *MongoRunSecretsStore) Put(ctx context.Context, rec RunSecretsRecord) er
 }
 
 func (s *MongoRunSecretsStore) Get(ctx context.Context, id string) (RunSecretsRecord, error) {
-	return mongoutil.FindOne[RunSecretsRecord](ctx, s.coll, withRunSecretsTenantFilter(ctx, bson.M{"_id": id}), ErrRunSecretsNotFound, "secrets: get run secrets")
+	filter, err := withRunSecretsTenantFilter(ctx, bson.M{"_id": id})
+	if err != nil {
+		return RunSecretsRecord{}, err
+	}
+	return mongoutil.FindOne[RunSecretsRecord](ctx, s.coll, filter, ErrRunSecretsNotFound, "secrets: get run secrets")
 }
 
 func (s *MongoRunSecretsStore) Delete(ctx context.Context, id string) error {
-	_, err := s.coll.DeleteOne(ctx, withRunSecretsTenantFilter(ctx, bson.M{"_id": id}))
+	filter, err := withRunSecretsTenantFilter(ctx, bson.M{"_id": id})
 	if err != nil {
+		return err
+	}
+	if _, err := s.coll.DeleteOne(ctx, filter); err != nil {
 		return fmt.Errorf("secrets: delete run secrets: %w", err)
 	}
 	return nil
 }
 
-// withRunSecretsTenantFilter mirrors the mongo package's withTenantFilter:
-// when ctx carries a tenant, scope by it; otherwise pass through for
-// privileged callers (cluster admin, bootstrap, migration tooling).
-func withRunSecretsTenantFilter(ctx context.Context, base bson.M) bson.M {
+// withRunSecretsTenantFilter scopes a run_secrets filter to the tenant on
+// ctx. Fail-closed like its model — pkg/store/mongo's withTenantFilter —
+// and like the four sibling helpers of this package (api keys, bindings,
+// generic secrets): a tenant-less ctx is refused, never served unscoped,
+// because `_id` alone addresses every team's sealed bundle.
+//
+// The privileged callers the unscoped read exists for (cluster admin,
+// bootstrap, migration tooling) say so through store.WithoutTenantFilter,
+// the same greppable escape hatch the model keeps, so every unscoped reach
+// into the sealed bundles is one grep away.
+func withRunSecretsTenantFilter(ctx context.Context, base bson.M) (bson.M, error) {
 	tenantID, ok := store.TenantFromContext(ctx)
-	if !ok {
-		return base
+	if !ok || tenantID == "" {
+		if store.IsWithoutTenantFilter(ctx) {
+			return base, nil
+		}
+		return nil, ErrRunSecretsTenantMissing
 	}
 	out := make(bson.M, len(base)+1)
 	for k, v := range base {
 		out[k] = v
 	}
 	out["tenant_id"] = tenantID
-	return out
+	return out, nil
 }
 
-// MemoryRunSecretsStore is the test variant.
+// MemoryRunSecretsStore is the test variant. Its refusals carry the same
+// terms as the Mongo store's — a tenant-less read or delete is refused
+// here too, so a test driving a caller that forgot its tenant stamp sees
+// what production sees instead of a kinder fixture.
 type MemoryRunSecretsStore struct {
 	mu sync.Mutex
 	m  map[string]RunSecretsRecord
@@ -454,6 +479,9 @@ func (s *MemoryRunSecretsStore) Put(_ context.Context, rec RunSecretsRecord) err
 }
 
 func (s *MemoryRunSecretsStore) Get(ctx context.Context, id string) (RunSecretsRecord, error) {
+	if err := requireRunSecretsTenant(ctx); err != nil {
+		return RunSecretsRecord{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec, ok := s.m[id]
@@ -466,7 +494,23 @@ func (s *MemoryRunSecretsStore) Get(ctx context.Context, id string) (RunSecretsR
 	return rec, nil
 }
 
+// requireRunSecretsTenant is the memory store's half of the fail-closed
+// rule withRunSecretsTenantFilter enforces on Mongo: the same ctx shapes
+// are refused with the same error, so the two stores answer alike.
+func requireRunSecretsTenant(ctx context.Context) error {
+	if tenantID, ok := store.TenantFromContext(ctx); ok && tenantID != "" {
+		return nil
+	}
+	if store.IsWithoutTenantFilter(ctx) {
+		return nil
+	}
+	return ErrRunSecretsTenantMissing
+}
+
 func (s *MemoryRunSecretsStore) Delete(ctx context.Context, id string) error {
+	if err := requireRunSecretsTenant(ctx); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec, ok := s.m[id]

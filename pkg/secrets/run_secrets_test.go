@@ -230,9 +230,15 @@ func TestMemoryRunSecretsStore_TenantIsolation(t *testing.T) {
 		t.Fatalf("Get under foreign tenant = %v, want ErrRunSecretsNotFound", err)
 	}
 
-	// No tenant in ctx → privileged runner-pickup path returns the record.
-	if _, err := st.Get(ctx, "ref-1"); err != nil {
-		t.Fatalf("Get under bare ctx (privileged): %v", err)
+	// No tenant in ctx → refused. A ref is an `_id`, so an unscoped read
+	// reaches every team's bundle; the privileged callers say so.
+	if _, err := st.Get(ctx, "ref-1"); !errors.Is(err, ErrRunSecretsTenantMissing) {
+		t.Fatalf("Get under bare ctx = %v, want ErrRunSecretsTenantMissing", err)
+	}
+
+	// The explicit privileged ctx still returns the record.
+	if _, err := st.Get(store.WithoutTenantFilter(ctx), "ref-1"); err != nil {
+		t.Fatalf("Get under an explicitly unscoped ctx: %v", err)
 	}
 
 	// Unknown id → not found.

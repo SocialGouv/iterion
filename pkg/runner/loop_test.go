@@ -958,18 +958,25 @@ func TestInjectCredentials_UnknownRefFails(t *testing.T) {
 
 // TestInjectCredentials_TenantMismatchFails pins the exact-match tenant
 // binding: a sealed bundle stamped for another tenant (or a legacy
-// tenant-less record) must never be served to this run.
+// tenant-less record) must never be served to this run. Two layers
+// refuse, and which one speaks depends on the record: a foreign stamp
+// never leaves the store now that the fetch carries the message's tenant
+// clause, while a legacy tenant-less row is still served by the store
+// (it matches no tenant) and is caught by the post-read binding check.
 func TestInjectCredentials_TenantMismatchFails(t *testing.T) {
 	rs := secrets.NewMemoryRunSecretsStore()
 	sealed, dek := sealDekFixture(t, "team-a", "run-1", secrets.RunBundle{GenericSecrets: map[string]string{"x": "v"}})
-	for _, recTenant := range []string{"team-other", ""} {
-		if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: recTenant, RunID: "run-1", KeyID: secrets.DEKKeyID, SealedBundle: sealed}); err != nil {
+	for _, tc := range []struct{ recTenant, wantErr string }{
+		{recTenant: "team-other", wantErr: "run secrets not found"},
+		{recTenant: "", wantErr: "tenant mismatch"},
+	} {
+		if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: tc.recTenant, RunID: "run-1", KeyID: secrets.DEKKeyID, SealedBundle: sealed}); err != nil {
 			t.Fatal(err)
 		}
 		r := &Runner{cfg: Config{Logger: iterlog.Nop(), RunSecrets: rs}}
 		_, _, err := r.injectCredentials(context.Background(), &queue.RunMessage{RunID: "run-1", TenantID: "team-a", SecretsRef: "ref-1", BundleDEK: dek})
-		if err == nil || !strings.Contains(err.Error(), "tenant mismatch") {
-			t.Fatalf("rec tenant %q: expected tenant-mismatch error, got %v", recTenant, err)
+		if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+			t.Fatalf("rec tenant %q: want an error containing %q, got %v", tc.recTenant, tc.wantErr, err)
 		}
 	}
 }
@@ -1044,30 +1051,39 @@ func TestInjectCredentials_HappyPathAndCleanup(t *testing.T) {
 		t.Errorf("OAuth temp dir survived cleanup: %s", dir)
 	}
 	// The persistent sealed bundle must survive cleanup (redelivery contract).
-	if _, err := rs.Get(context.Background(), "ref-1"); err != nil {
+	if _, err := rs.Get(store.WithTenant(context.Background(), "team-a"), "ref-1"); err != nil {
 		t.Errorf("sealed bundle deleted by cleanup: %v", err)
 	}
 }
 
 func TestDeleteRunSecrets(t *testing.T) {
 	rs := secrets.NewMemoryRunSecretsStore()
-	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", RunID: "run-1"}); err != nil {
+	owner := store.WithTenant(context.Background(), "team-a")
+	if err := rs.Put(owner, secrets.RunSecretsRecord{ID: "ref-1", TenantID: "team-a", RunID: "run-1"}); err != nil {
 		t.Fatal(err)
 	}
 	r := &Runner{cfg: Config{Logger: iterlog.Nop(), RunSecrets: rs}}
 
 	// Empty ref: no-op, record untouched.
-	r.deleteRunSecrets(&queue.RunMessage{RunID: "run-1"})
-	if _, err := rs.Get(context.Background(), "ref-1"); err != nil {
+	r.deleteRunSecrets(&queue.RunMessage{RunID: "run-1", TenantID: "team-a"})
+	if _, err := rs.Get(owner, "ref-1"); err != nil {
 		t.Fatalf("record deleted on empty ref: %v", err)
 	}
-	// Real ref: removed.
+	// A message carrying no tenant_id cannot reach the document: the
+	// loop's own rule (loop_nats.go — "a payload without tenant_id is
+	// logged, never written under an unfiltered store context") applies
+	// to this delete too, and the store's 24h TTL reaps the bundle.
 	r.deleteRunSecrets(&queue.RunMessage{RunID: "run-1", SecretsRef: "ref-1"})
-	if _, err := rs.Get(context.Background(), "ref-1"); !errors.Is(err, secrets.ErrRunSecretsNotFound) {
+	if _, err := rs.Get(owner, "ref-1"); err != nil {
+		t.Fatalf("a tenant-less message deleted the bundle anyway: %v", err)
+	}
+	// Real ref under its own team: removed.
+	r.deleteRunSecrets(&queue.RunMessage{RunID: "run-1", TenantID: "team-a", SecretsRef: "ref-1"})
+	if _, err := rs.Get(owner, "ref-1"); !errors.Is(err, secrets.ErrRunSecretsNotFound) {
 		t.Fatalf("expected ErrRunSecretsNotFound after delete, got %v", err)
 	}
 	// Nil store: no panic.
-	(&Runner{cfg: Config{Logger: iterlog.Nop()}}).deleteRunSecrets(&queue.RunMessage{RunID: "run-1", SecretsRef: "ref-1"})
+	(&Runner{cfg: Config{Logger: iterlog.Nop()}}).deleteRunSecrets(&queue.RunMessage{RunID: "run-1", TenantID: "team-a", SecretsRef: "ref-1"})
 }
 
 // ---------------------------------------------------------------------------
