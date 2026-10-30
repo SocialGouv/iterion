@@ -14,13 +14,15 @@ description: |
 
 1. Read the `contract` you were given. It states the verdicts and what each
    additionally requires. It is authoritative over this page.
-2. For each id of your batch, read the brief (`<briefs_dir>/<id>.md`) BEFORE
-   the evidence: the tests are numbered there, the methodology says what to
-   look at, the glossary defines the words the tests turn on (« pertinent »,
-   « si nécessaire », …). Reason from those definitions, not from the
-   everyday sense.
-3. Then read the evidence file (`<items_dir>/<id>.json`) and open the cited
-   sources when the snippet does not settle it.
+2. Your input lists, per id of your batch and in the batch's order, the
+   absolute path of each brief and each evidence file. Open exactly those —
+   never a path reconstructed from memory or rebuilt from a directory name.
+   For each id, read its brief BEFORE the evidence: the tests are numbered
+   there, the methodology says what to look at, the glossary defines the
+   words the tests turn on (« pertinent », « si nécessaire », …). Reason
+   from those definitions, not from the everyday sense.
+3. Then read the id's evidence file and open the cited sources when the
+   snippet does not settle it.
 
 ## The four verdicts
 

@@ -287,7 +287,6 @@ prompt refute_system:
 
   For EVERY claim `n` in the batch:
     1. Open the cited file at the cited line. Read the surrounding element.
-    1. Open the cited file at the cited line. Read the surrounding element.
        A claim marked `uncited: true` cites nothing: it is an agent's
        « non applicable » (or a conformity landed without evidence) on a
        criterion whose harvest came back empty. There is no file to open —

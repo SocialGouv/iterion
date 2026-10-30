@@ -3814,4 +3814,40 @@ func TestRgaaAuditAgentsSpellTheirPathsToolsAndMCPPosture(t *testing.T) {
 			t.Errorf("schema %s lacks %s", ref.schema, ref.field)
 		}
 	}
+	// The bundle's skills are declared "Authoritative" by the same prompts,
+	// so they must name the same path discipline: the batch's own absolute
+	// paths, listed in the input — never a directory variable the agents no
+	// longer receive (adjudicate_input and refute_input dropped items_dir
+	// and briefs_dir with #2675), never a path reconstructed from memory.
+	for _, skill := range []string{
+		"rgaa-audit/skills/adjudication-protocol.md",
+		"rgaa-audit/skills/refutation-protocol.md",
+		"rgaa-audit/skills/ultra11y-engine.md",
+		"rgaa-audit/skills/rgaa-audit.md",
+		"rgaa-audit/skills/iterion-board.md",
+	} {
+		raw, err := os.ReadFile(skill)
+		if err != nil {
+			t.Fatalf("read %s: %v", skill, err)
+		}
+		body := string(raw)
+		for _, gone := range []string{"items_dir", "briefs_dir"} {
+			if strings.Contains(body, gone) {
+				t.Errorf("%s still names %s, a directory variable the agents do not receive", skill, gone)
+			}
+		}
+	}
+	for _, skill := range []string{
+		"rgaa-audit/skills/adjudication-protocol.md",
+		"rgaa-audit/skills/refutation-protocol.md",
+		"rgaa-audit/skills/ultra11y-engine.md",
+	} {
+		raw, err := os.ReadFile(skill)
+		if err != nil {
+			t.Fatalf("read %s: %v", skill, err)
+		}
+		if !strings.Contains(strings.Join(strings.Fields(string(raw)), " "), "never a path reconstructed from memory") {
+			t.Errorf("%s does not name the batch's listed absolute paths as the only ones to open", skill)
+		}
+	}
 }

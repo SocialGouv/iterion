@@ -35,9 +35,14 @@ this bot is a deterministic node.
 
 | file | what it is |
 |---|---|
-| `<items_dir>/<id>.json` | the engine's harvest for one criterion: `evidence[]` (`file`, `line`, `selector`, `snippet`, `note`), `signals[]` (rule hits), `population` (`classes`, `occurrences`, `files`, `pages` — how many subjects it found), `testIds`, `needsRenderedEvidence`, `evidenceComplete` |
-| `<briefs_dir>/<id>.md` | the criterion's own numbered tests, the standard's testing methodology and glossary, rendered by the engine at run time — the ONLY normative text in the run |
+| one evidence file per criterion | the engine's harvest for one criterion: `evidence[]` (`file`, `line`, `selector`, `snippet`, `note`), `signals[]` (rule hits), `population` (`classes`, `occurrences`, `files`, `pages` — how many subjects it found), `testIds`, `needsRenderedEvidence`, `evidenceComplete` |
+| one brief per criterion | the criterion's own numbered tests, the standard's testing methodology and glossary, rendered by the engine at run time — the ONLY normative text in the run |
 | the `contract` in your input | the verdict vocabulary and what each verdict must carry; it wins over this page if the two ever disagree |
+
+Your batch input lists the absolute path of every evidence file and brief
+it hands you (a null brief path names a criterion the engine decided
+statically): open exactly those, never a path reconstructed from memory or
+rebuilt from a directory of the run.
 
 A `population` of zeros means the engine found no subject for the criterion
 in the audited scope: NA is the expected verdict, confirmed by one grep.
