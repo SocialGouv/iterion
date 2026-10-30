@@ -680,27 +680,40 @@ func (e *ClawExecutor) toolNodePolicyIdentity(ctx context.Context, name string) 
 // command runs, so what is left to read at its exit is a pipe buffer, not a
 // transcript.
 //
-// It is the HOST's bound. On a node the sandbox runs, this Cmd is the
-// driver's exec client, and the wait ends when that client does — whatever
-// the bound says, including an override. What comes back whole there is the
-// command's OWN answer: measured through the docker driver, a command that
-// prints its object and leaves a job holding the in-container output gets
-// that object parsed, uncut and unreported, at 10 ms, 100 ms, 2 s and
-// unbounded alike, and the job keeps running in the container. What the job
-// writes AFTER the exec stream closes is LOST there, with neither the report
-// nor [toolNodeDrainCutKey]: the cut belongs to the client, not to this bound
-// — `docker exec` stops copying some 2 s after the exec'd process exits and
-// exits 0 (measured directly: the same head in hand against a holder writing
-// at 4 s and one writing at 10 s) — so this site reads no error,
-// [proc.DrainCutShort] is asked about nil, and the sentinel the host's
-// reading needs can never arrive.
+// It is the HOST's bound, and the readings above are the host path's. On a
+// node whose driver runs the command elsewhere, this Cmd is the DRIVER's
+// exec client — [ClawExecutor.sandboxToolCommand] hands a
+// [sandbox.HostRun] driver's command straight through instead, so the noop
+// one stays on the host path — and the bound in force is then that
+// client's: the driver's own when it set one — the kubernetes driver puts
+// kubectlDrainBound on every kubectl it builds (cmdContext, through
+// [proc.WaitDelayEnv] like this site), and [runWithSeparateStreams] keeps
+// that choice — this site's default otherwise, which is what the docker
+// driver takes, having set none. What a cut can say there follows the same
+// rule: [proc.DrainCutShort] is asked about the CLIENT's pipes. A driver
+// that bounds its client raises exec's sentinel, which this site reports,
+// and marks when the bytes in hand do not parse — about that client's
+// drain. One that does not leaves this site reading a nil error, with no
+// sentinel to report or to mark: measured on the docker driver (29.9.2,
+// image ghcr.io/socialgouv/iterion-sandbox-slim:edge), `docker exec` itself
+// stops copying some 2 s after the exec'd process exits and exits 0 —
+// holders writing at 4 s and at 10 s both leave the command's own bytes in
+// hand after 2.05 s, and the same recipe run at bounds of 10 ms, 100 ms,
+// 2 s and unbounded comes back at 2.04–2.06 s alike, so no override widens
+// that grace.
 //
-// Nor can the path say the cut from somewhere else. What it proves is the
-// command's END — its completion line, which arrives after every byte the
-// command wrote to stdout before it, and which is what judges a sandboxed
-// command ([ClawExecutor.settleSandboxedRun]) — never that what followed
-// that line is whole, because the bytes are already gone when the client
-// returns. The one thing left to ask the container is whether the command's
+// Either way the reading says nothing about the in-container job that held
+// the command's output: [toolNodeDrainCutKey] and the report describe the
+// drain of what THIS process waited for, and a sandboxed node's answer
+// carries no promise from them.
+//
+// A sandboxed node has one other thing to read, and it does not stand in
+// for a sentinel that did not come. What the completion line proves is the
+// command's END — it arrives after every byte the command wrote to stdout
+// before it, and it is what judges a sandboxed command
+// ([ClawExecutor.settleSandboxedRun]) — never that what followed that line
+// is whole: this process holds only what the client copied to it. The one
+// thing left to ask the container is whether the command's
 // session still holds a process ([sandbox.Completion.Sweep] scans it), and a
 // process proves a process: a job that redirected its own streams reads
 // there exactly like one that held the output, and neither says a byte was

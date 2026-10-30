@@ -429,9 +429,12 @@ func (e *ClawExecutor) recoveryModel(node *ir.ToolNode) string {
 // stamps the private _verified_action metadata the engine reads to emit the
 // node_verified_action event. The key is stripped before schema validation.
 //
-// This merge is the one point every rung of the ladder crosses, and the only
+// Every rung that PUBLISHES an output crosses this merge, and it is the only
 // place in the engine where two tool-node output maps become one — so it is
-// where a mark that describes ONE of them is honoured or lost.
+// where a mark that describes ONE of them is honoured or lost. The exits
+// that publish nothing cross nothing: an oracle that could not run, a
+// cancelled node, and rung 5 under `required` or `recover`, which fails the
+// node instead of answering with it.
 // [toolNodeDrainCutKey] describes the `result` wrapper of the run it came
 // from, so it follows the `result` that survived the clash: the whole point
 // of the mark is to tell a possible prefix from an answer, and on a complete

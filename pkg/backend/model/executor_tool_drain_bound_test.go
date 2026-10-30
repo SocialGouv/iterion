@@ -385,11 +385,21 @@ type leftoverHolders struct {
 	// bound's timer can fire late — a holder that lets go as the bound fires
 	// would make a verdict a race between a timer and a sleep.
 	holds time.Duration
+	// letsGo is the same derivation the other way, for the shape where the
+	// bound must NOT bite: a job that writes and closes the output well
+	// inside it. The witness that uses it widens the bound by its override
+	// besides, so "inside the bound" is not that same race either.
+	letsGo time.Duration
 }
 
 func newLeftoverHolders(t *testing.T) *leftoverHolders {
 	t.Helper()
-	return &leftoverHolders{t: t, dir: t.TempDir(), holds: toolNodeDrainBound + 2*time.Second}
+	return &leftoverHolders{
+		t:      t,
+		dir:    t.TempDir(),
+		holds:  toolNodeDrainBound + 2*time.Second,
+		letsGo: toolNodeDrainBound / 8,
+	}
 }
 
 // recipe is a shell body that prints printed, leaves ONE process holding the
@@ -411,6 +421,22 @@ func (h *leftoverHolders) recipe(printed string) string {
 func (h *leftoverHolders) redirectedRecipe(printed string) string {
 	return fmt.Sprintf("( trap '' PIPE; sleep %.1f; : > %q/$$ ) >/dev/null 2>&1 &\nprintf '%%s\\n' %q\nexit 0",
 		h.holds.Seconds(), h.dir, printed)
+}
+
+// insideBoundRecipe is the shape where the bound never bites: the command
+// prints its own answer, then a job it left behind writes to that same
+// output and CLOSES it well inside the bound. The node's wait ends with the
+// job, nothing is left to cut — and the job's bytes are spliced into the
+// answer the command meant to publish.
+//
+// No PIPE trap here, unlike the holders above, and that is deliberate: the
+// pipe is never closed under this job, so it reports its exit the ordinary
+// way. A run where the bound DID bite would kill it on its write instead,
+// and [leftoverHolders.join] says so — the inconclusive-run guard of the
+// witness that uses this recipe.
+func (h *leftoverHolders) insideBoundRecipe(printed, late string) string {
+	return fmt.Sprintf("( sleep %.2f; printf '%%s' %q; : > %q/$$ ) &\nprintf '%%s' %q\nexit 0",
+		h.letsGo.Seconds(), late, h.dir, printed)
 }
 
 // cutAnswerRecipe is the one shape where the bytes the bound leaves in hand
@@ -730,6 +756,84 @@ func TestACutOutputThatCouldBeAPrefixIsPublishedAsOne(t *testing.T) {
 			t.Errorf("the marked output does not validate against the node's declared schema: %v", err)
 		}
 	})
+}
+
+// The THIRD outcome of a leftover job, which neither reading above covers:
+// the job writes its bytes and LETS GO inside the bound, so nothing is ever
+// cut. The node ends with that job, keeps its success — and publishes an
+// answer the job CONTAMINATED, with no mark and nothing reported, because
+// there was no cut to mark or report.
+//
+// It is the common `server &` shape, a startup line landing half a second
+// after the command's own answer, and it is the case where a downstream
+// {{outputs.<node>.<field>}} silently finds nothing: the object the recipe
+// declared was reshaped into the `result` wrapper by bytes it never meant to
+// publish. So the mark's guarantee is ONE-WAY — a mark says these bytes may
+// be a prefix; its absence says nothing was cut, never that the answer is
+// what the command printed. That is what the DSL page, the
+// ITERION_PROC_WAIT_DELAY row and [toolNodeDrainBound] say, and the reason
+// the way out is the recipe's own: redirect what must outlive the node, wait
+// for the job whose bytes you publish.
+//
+// The report's absence IS the cut's absence: runToolNodeCore emits that
+// report on exactly [proc.DrainCutShort], so a run with no report had no
+// sentinel. The bound in force is the operator's override, two orders of
+// magnitude above the job's own write, so this arm is not a race between a
+// timer and a sleep.
+//
+// Mutations seen red: mark every wrapped output, asking the parse alone and
+// not the cut (`drainCut && wrapped` → `wrapped` in runToolNodeCore) — a
+// contaminated answer nothing cut is then published as a possible prefix,
+// read here on a plain node whose own recipe contaminated it, and on the
+// postcondition's uncut run by the merge witness below; and read every run
+// as a cut one (`drainCut := true`), which reports to an operator a drain
+// the bound never abandoned.
+func TestAJobThatLetsGoInsideTheBoundContaminatesTheAnswerWithNothingToReport(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture, and the job is a background one")
+	}
+	const wide = time.Minute
+	t.Setenv(proc.WaitDelayEnv, wide.String())
+	const (
+		printed = `{"deployed":12,"failed":0}`
+		late    = "LATE"
+	)
+
+	holders := newLeftoverHolders(t)
+	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "deploy"}, Command: holders.insideBoundRecipe(printed, late)}
+	var logged lockedSink
+	events := &toolNodeEvents{}
+	ex := newTestClawExecutor(NewRegistry(), &ir.Workflow{},
+		WithToolPolicy(tool.OpenPolicy()),
+		WithLogger(iterlog.New(iterlog.LevelInfo, &logged)),
+		events.hooks())
+
+	start := time.Now()
+	res, err := runToolNodeUnderDeadline(t, ex, node)
+	elapsed := time.Since(start)
+	t.Cleanup(func() { holders.join(1) })
+
+	if err != nil {
+		t.Fatalf("the node failed although its command exited 0: %v", err)
+	}
+	// The job lets go in a fraction of a second under a bound of a minute:
+	// a node back in seconds came back with the job, never with the bound.
+	if elapsed >= 10*time.Second {
+		t.Fatalf("the node took %s under a %s bound: the job did not let go inside it, so this arm cannot say what an uncut run publishes", elapsed, wide)
+	}
+	if res["result"] != printed+late {
+		t.Fatalf("the node's output is %v, want the command's object with the job's bytes spliced in (%q)", res, printed+late)
+	}
+	if _, declared := res["deployed"]; declared {
+		t.Errorf("the node's output still carries the field its command printed (%v): the contaminated bytes are supposed to have stopped parsing as that object", res)
+	}
+	if _, marked := res[toolNodeDrainCutKey]; marked {
+		t.Errorf("an answer nothing cut short is published as a possible prefix (%v): the mark then says nothing about a cut", res)
+	}
+	report := events.callOutput() + "\n" + logged.String()
+	if strings.Contains(report, proc.WaitDelayEnv) {
+		t.Errorf("a drain nothing cut short is reported anyway: %s", report)
+	}
 }
 
 // The settle of a sandboxed run judges the command by its completion line,

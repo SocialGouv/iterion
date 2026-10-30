@@ -40,8 +40,14 @@ var toolNodeCoreReaders = map[string]string{
 // them production and 230 test — so a walk that comes back having read a
 // handful read nothing, and its clean answer means nothing. The floor is set
 // well under that count because the walk's job is to cover the files, not to
-// pin how many there are: a package that loses half its files still fails
-// here, one that gains a file does not.
+// pin how many there are: one that gains a file does not fail here.
+//
+// What it buys, exactly, and no more: it catches a walk that COLLAPSED — a
+// directory it could not read, a filter that matched almost nothing — not
+// one that drifted. Measured by overlaying a floor above the count: the walk
+// reads 303 files. Against the 150 below, 150 files still pass, so the first
+// loss that trips this is 154 of them, and a package that lost HALF its
+// files would not. The inventory's own assertions are what judge a drift.
 const walkFloor = 150
 
 // TestEveryReaderOfRunToolNodeCoreNamesItsFamily pins the caller set of
