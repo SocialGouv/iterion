@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/budgetfloor"
@@ -235,4 +236,126 @@ func TestReservedLaunchArgsMatchTheBoardKeys(t *testing.T) {
 	for k := range known {
 		t.Errorf("board key %s is missing from native.ReservedLaunchArgs — the write routes would leave it member-writable", k)
 	}
+}
+
+// The forged-stamp chain replayed END TO END through the door the write
+// routes were found to leave open LAST: a comment. The comment door stamps
+// bot args wholesale, so a member able to write a comment could carry the
+// __iterion_webhook_id + __iterion_project_path pair (ids readable on any
+// webhook-created card of the team) and re-key the run's meter, bound and
+// BYOK audience one gate below the filtered create/patch doors. The route
+// here is the SAME mounting BoardAPI registers, and the dispatch is the
+// cloud board dispatcher's common path.
+func TestBoardDispatch_AStampForgedByACommentNeverLaunches(t *testing.T) {
+	s, rs, pub := newRepoIdentityServer(t, budgetfloor.RepoQuota{Repo: "acme/widgets", MonthlyUSD: 10}, 12.0)
+	pub.onLaunch = func(runID string) { finishRunAs(t, rs, runID, store.RunStatusFinished) }
+	seedIntegrationConfig(t, s, webhooks.Config{ID: "wh-t1", TenantID: "t1", Provider: webhooks.ProviderGitHub})
+
+	// The honest webhook card: the server stamped acme/widgets under the
+	// team's integration, no clone URL — the quadrant where the stamp
+	// stands. Over quota, so the honest identity is REFUSED.
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("native.NewStore: %v", err)
+	}
+	stamped, err := board.Create(native.Issue{
+		Title: "webhook card", State: native.StateReady, Bot: "probe",
+		BotArgs: map[string]string{
+			boardProjectPathKey: "acme/widgets",
+			boardWebhookIDKey:   "wh-t1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("board.Create: %v", err)
+	}
+
+	// The forge attempt, through the mounting itself: one comment carrying
+	// the forged pair.
+	api := &native.BoardAPI{Resolve: func(*http.Request) (native.BoardStore, error) { return board, nil }}
+	mux := http.NewServeMux()
+	api.RegisterRoutesWithMiddleware(mux, "", nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	body := strings.NewReader(`{"author":"member","body":"run this","bot":"probe","bot_args":{` +
+		`"member_var2":"v2",` +
+		`"` + boardProjectPathKey + `":` + quoteJSON("harmless/other") + `,` +
+		`"` + boardWebhookIDKey + `":` + quoteJSON("wh-t1") + `,` +
+		`"` + boardKeyOverridesKey + `":"{}"}}`)
+	resp, err := http.Post(srv.URL+"/issues/"+stamped.ID+"/comments", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST comment: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST comment = %d", resp.StatusCode)
+	}
+	after, err := board.Get(stamped.ID)
+	if err != nil {
+		t.Fatalf("board.Get: %v", err)
+	}
+	if after.BotArgs["member_var2"] != "v2" {
+		t.Fatalf("the comment's own var did not land (%v) — this test only means something while the door is open", after.BotArgs)
+	}
+	if got := after.BotArgs[boardProjectPathKey]; got != "acme/widgets" {
+		t.Fatalf("the comment forged %s = %q, want the server's stamp %q — the identity a run is metered and bounded by is not a comment's to write", boardProjectPathKey, got, "acme/widgets")
+	}
+	if got := after.BotArgs[boardWebhookIDKey]; got != "wh-t1" {
+		t.Fatalf("the comment rewrote %s to %q, want the stored %q", boardWebhookIDKey, got, "wh-t1")
+	}
+	if _, carried := after.BotArgs[boardKeyOverridesKey]; carried {
+		t.Fatalf("the comment carried a BYOK override audience: %v", after.BotArgs)
+	}
+
+	// The dispatcher's common path, on what the card ACTUALLY carries.
+	if err := s.processBoardCard(boundedCtx(t), "t1", *after); !errors.Is(err, errCardLaunchRefused) {
+		t.Fatalf("processBoardCard = %v, want errCardLaunchRefused — the over-quota repository must be refused, not launched under a forged slug", err)
+	}
+	if n := len(pub.specs); n != 0 {
+		t.Fatalf("the comment-forged chain published %d launch(es), want 0", n)
+	}
+}
+
+// A clone URL the forge served with a trailing slash spells the SAME
+// repository as the bare .git form, and the meter must key it the same: an
+// on-base derivation keeping its own trim turned "…/acme/widgets.git/" into
+// a key no quota aims at, and the over-ceiling repository launched.
+func TestBoardDispatch_ATrailingSlashCloneURLStaysOneQuotaKey(t *testing.T) {
+	t.Run("the over-quota repository is refused", func(t *testing.T) {
+		s, rs, pub := newRepoIdentityServer(t, budgetfloor.RepoQuota{Repo: "acme/widgets", MonthlyUSD: 10}, 12.0)
+		pub.onLaunch = func(runID string) { finishRunAs(t, rs, runID, store.RunStatusFinished) }
+		seedIntegrationConfig(t, s, webhooks.Config{ID: "wh-t1", TenantID: "t1", Provider: webhooks.ProviderGitHub})
+		err := s.processBoardCard(boundedCtx(t), "t1", native.Issue{
+			ID: "native:slash", Bot: "probe", State: native.StateReady,
+			BotArgs: map[string]string{
+				boardWebhookIDKey:   "wh-t1",
+				boardRepoURLKey:     "https://github.com/acme/widgets.git/",
+				boardProjectPathKey: "acme/widgets",
+			},
+		})
+		if !errors.Is(err, errCardLaunchRefused) {
+			t.Fatalf("processBoardCard = %v, want errCardLaunchRefused — the .git/ spelling is the same repository, its ceiling still applies", err)
+		}
+		if n := len(pub.specs); n != 0 {
+			t.Fatalf("the trailing-slash spelling published %d launch(es), want 0", n)
+		}
+	})
+
+	t.Run("the metered key is the forge slug either spelling", func(t *testing.T) {
+		s, rs, pub := newRepoIdentityServer(t, budgetfloor.RepoQuota{Repo: "acme/widgets", MonthlyUSD: 10}, 0)
+		pub.onLaunch = func(runID string) { finishRunAs(t, rs, runID, store.RunStatusFinished) }
+		seedIntegrationConfig(t, s, webhooks.Config{ID: "wh-t1", TenantID: "t1", Provider: webhooks.ProviderGitHub})
+		if err := s.processBoardCard(boundedCtx(t), "t1", native.Issue{
+			ID: "native:slash", Bot: "probe", State: native.StateReady,
+			BotArgs: map[string]string{
+				boardWebhookIDKey:   "wh-t1",
+				boardRepoURLKey:     "https://github.com/acme/widgets.git/",
+				boardProjectPathKey: "acme/widgets",
+			},
+		}); err != nil {
+			t.Fatalf("processBoardCard = %v, want nil", err)
+		}
+		if got := pub.only(t).ProjectPath; got != "acme/widgets" {
+			t.Errorf("launched spec.ProjectPath = %q, want %q — a split key reads its quota as half-used on each half", got, "acme/widgets")
+		}
+	})
 }

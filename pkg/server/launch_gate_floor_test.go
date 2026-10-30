@@ -608,6 +608,21 @@ func TestHandleLaunchRun_RepoQuotaBindsTheDirectLaunch(t *testing.T) {
 		}
 	})
 
+	// The spelling is not an identity: "o/hungry.git/" is the SAME
+	// repository the quota aims at, and a derivation keeping its own trim
+	// made the over-ceiling repository launch under a key no quota matches.
+	t.Run("the .git/ spelling of an over-quota repository is refused too", func(t *testing.T) {
+		s, ctx := newSrv(t, budgetfloor.RepoQuota{Repo: "o/hungry", MonthlyUSD: 10})
+		seedRepoUsage(t, s.credUsage, "o/hungry", 12.0, 3)
+		rec := launch(t, s, ctx, "o/hungry.git/")
+		if rec.Code != http.StatusPaymentRequired {
+			t.Fatalf("status = %d, want 402 — the trailing-slash spelling split the quota key and escaped the ceiling: %s", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), denyRepoQuota) {
+			t.Errorf("body = %s, want it to name %s", rec.Body.String(), denyRepoQuota)
+		}
+	})
+
 	t.Run("a super-admin bypasses it here as everywhere else", func(t *testing.T) {
 		// gateLaunch returns before the repo half for a super-admin, so the
 		// webhook, board, trigger, scheduled and resume lanes all let them

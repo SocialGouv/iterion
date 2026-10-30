@@ -13,6 +13,7 @@ func TestProjectPathFromCloneURL(t *testing.T) {
 		{"https://github.com/acme/widgets.git", "acme/widgets"},
 		{"https://github.com/acme/widgets", "acme/widgets"},
 		{"https://github.com/acme/widgets/", "acme/widgets"},
+		{"https://github.com/acme/widgets.git/", "acme/widgets"},
 		// The forge's own casing survives: GitHub writes "Acme/Widgets" and
 		// the meter keys on it byte-for-byte — lowercasing would split the
 		// quota between two keys.
@@ -48,6 +49,30 @@ func TestProjectPathFromCloneURL_RoundTripsCloneURLFor(t *testing.T) {
 	for _, slug := range []string{"acme/widgets", "Acme/Widgets", "group/sub/repo"} {
 		if got := ProjectPathFromCloneURL(CloneURLFor("https://gitlab.example.com", slug)); got != slug {
 			t.Errorf("round-trip of %q = %q", slug, got)
+		}
+	}
+}
+
+// CanonicalRepoSlug is the ONE trim every clone-URL→key derivation shares.
+// A ".git/" tail is the spelling a copy-pasted URL carries as often as a
+// bare ".git": a derivation that canonicalised one form and not the other
+// split the quota key and let an over-ceiling repository launch under a key
+// no quota aims at.
+func TestCanonicalRepoSlug(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"acme/widgets", "acme/widgets"},
+		{"acme/widgets.git", "acme/widgets"},
+		{"acme/widgets.git/", "acme/widgets"},
+		{"acme/widgets/", "acme/widgets"},
+		{"/acme/widgets.git", "acme/widgets"},
+		{"group/sub/repo.git/", "group/sub/repo"},
+		{"Acme/Widgets.GIT/", "Acme/Widgets.GIT"}, // case-sensitive suffix: only ".git" folds
+		{"", ""},
+		{"/", ""},
+	}
+	for _, c := range cases {
+		if got := CanonicalRepoSlug(c.in); got != c.want {
+			t.Errorf("CanonicalRepoSlug(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }

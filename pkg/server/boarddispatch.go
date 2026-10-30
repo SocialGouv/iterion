@@ -1776,7 +1776,11 @@ func boardCardRepoIdentity(integration *webhooks.Config, lc boardLaunchContext) 
 	if lc.RepoURL != "" {
 		base := strings.TrimSuffix(forge.CanonicalBaseURL(forge.Provider(integration.Provider), integration.ForgeBaseURL), "/")
 		if strings.HasPrefix(lc.RepoURL, base+"/") {
-			return strings.TrimSuffix(strings.TrimPrefix(lc.RepoURL, base+"/"), ".git")
+			// The same canonicalisation whatever the URL's spelling: a
+			// "…/widgets.git/" tail that kept its own trim would split the
+			// quota key and launch the over-quota repository under a key
+			// no ceiling aims at.
+			return forge.CanonicalRepoSlug(strings.TrimPrefix(lc.RepoURL, base+"/"))
 		}
 		return forge.ProjectPathFromCloneURL(lc.RepoURL)
 	}

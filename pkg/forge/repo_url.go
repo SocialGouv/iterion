@@ -15,6 +15,17 @@ func WebURLFor(baseURL, repoFullName string) string {
 	return strings.TrimSuffix(baseURL, "/") + "/" + strings.Trim(repoFullName, "/")
 }
 
+// CanonicalRepoSlug canonicalises a repo path to the slug the forge meters
+// by: the trailing ".git" and the stray slashes a clone URL can carry
+// ("acme/widgets.git/", "acme/widgets/", "/acme/widgets.git") all fold back
+// to "acme/widgets", the same key whichever spelling arrived. Every
+// derivation that turns a clone-URL path into a quota/meter key goes through
+// it — a derivation keeping its own trim is how one repository comes to be
+// charged under two keys, each reading its quota as half-used.
+func CanonicalRepoSlug(path string) string {
+	return strings.Trim(strings.TrimSuffix(strings.TrimSuffix(path, "/"), ".git"), "/")
+}
+
 // ProjectPathFromCloneURL canonicalises a repo clone URL back to the forge
 // slug ("owner/repo", GitLab subgroups included) — the inverse of
 // CloneURLFor, and the identity pkg/credusage meters a run's spend against
@@ -36,9 +47,6 @@ func WebURLFor(baseURL, repoFullName string) string {
 // canonicalised, making the function idempotent on its own output).
 func ProjectPathFromCloneURL(cloneURL string) string {
 	u := strings.TrimSpace(cloneURL)
-	trim := func(s string) string {
-		return strings.Trim(strings.TrimSuffix(strings.TrimSuffix(s, "/"), ".git"), "/")
-	}
 	if u == "" {
 		return ""
 	}
@@ -47,18 +55,18 @@ func ProjectPathFromCloneURL(cloneURL string) string {
 		// authority (host[:port], userinfo included).
 		u = u[i+3:]
 		if i := strings.Index(u, "/"); i >= 0 {
-			return trim(u[i+1:])
+			return CanonicalRepoSlug(u[i+1:])
 		}
 		return ""
 	}
 	if strings.HasPrefix(u, "git@") {
 		// scp-like syntax: the path starts after the host's colon.
 		if i := strings.Index(u, ":"); i >= 0 {
-			return trim(u[i+1:])
+			return CanonicalRepoSlug(u[i+1:])
 		}
 		return ""
 	}
 	// A bare slug (or a host-less path): nothing to strip. Idempotent on
 	// the function's own output.
-	return trim(u)
+	return CanonicalRepoSlug(u)
 }

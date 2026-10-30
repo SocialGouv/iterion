@@ -676,8 +676,10 @@ already charged its run slot by then.
 
 The **board dispatcher** is inside the perimeter too (#2371, D33): the card
 carries the forge slug beside its clone URL (the webhook payload's own project
-path, stamped at carding; the URL is canonicalised back to the slug only when
-the stamp is absent), and `processBoardCard` both stamps it on the run — so the
+path, stamped at carding; the stamp is honored only where no clone URL
+contradicts it, and a URL that is present is canonicalised back to the slug
+against the card's integration), and `processBoardCard` both stamps it on the
+run — so the
 meter charges the card's spend to its repository — and passes it to the gate.
 The sanctioned consequence: a board card whose repository sits at its ceiling
 is *refused* like any other launch, where it previously launched uncounted.

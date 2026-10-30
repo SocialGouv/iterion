@@ -79,6 +79,13 @@ func (s *Store) RegisterRoutesWithMiddleware(mux *http.ServeMux, prefix string, 
 // Go 1.22's ServeMux doesn't flag ambiguities against other catch-all
 // method routes. The prefix may itself contain path wildcards (e.g.
 // "/api/teams/{tid}/board") that the resolver reads back via PathValue.
+// Every route whose handler can persist a card's BotArgs filters the class
+// at the write (DropServerMintedLaunchVars / KeepStoredLaunchContext) — a
+// client door that forgets re-opens the launch context to the client. The
+// registrations stay literal on purpose: the route witnesses in pkg/server
+// (cli_route_reachability_test.go, docs_rest_reference_test.go,
+// board_write_rung_test.go) parse THIS source, and a registration they
+// cannot read is one they cannot guard.
 func (h *BoardAPI) RegisterRoutesWithMiddleware(mux *http.ServeMux, prefix string, wrap func(http.Handler) http.Handler) {
 	p := strings.TrimSuffix(prefix, "/")
 	if wrap == nil {
@@ -430,7 +437,26 @@ func (h *BoardAPI) handleAddComment(w http.ResponseWriter, r *http.Request) {
 			patch.Bot = bot
 		}
 		if botArgs != nil {
-			patch.BotArgs = &botArgs
+			// The comment door is as client-facing as create and PATCH, and
+			// its bot stamp replaces bot args wholesale: the caller's own
+			// vars land, the reserved launch context comes back off the
+			// STORED card. Unfiltered, one comment forging the
+			// __iterion_webhook_id + __iterion_project_path pair (ids
+			// readable on any webhook-created card of the team) re-keys the
+			// run's meter, bound and BYOK audience one gate below the
+			// filtered create/patch doors (card_launch_args.go). The same
+			// merge covers the comment-dispatcher's own resolved args: a
+			// "/command" restamp keeps the stored context too.
+			kept := DropServerMintedLaunchVars(botArgs)
+			existing, gerr := s.Get(id)
+			if gerr != nil {
+				writeErr(w, statusForErr(gerr), gerr)
+				return
+			}
+			if existing != nil {
+				kept = KeepStoredLaunchContext(existing.BotArgs, kept)
+			}
+			patch.BotArgs = &kept
 		}
 		if _, err := s.Update(id, patch); err != nil {
 			writeErr(w, statusForErr(err), err)

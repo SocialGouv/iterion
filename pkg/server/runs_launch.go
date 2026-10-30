@@ -662,7 +662,11 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			span.SetStatus(codes.Error, "repo host mismatch")
 			return
 		}
-		repoProjectPath = strings.TrimSuffix(strings.TrimPrefix(req.RepoURL, base+"/"), ".git")
+		// The same canonicalisation whatever the URL's spelling: a
+		// "…/widgets.git/" tail that kept its own trim would split the quota
+		// key and launch the over-quota repository under a key no ceiling
+		// aims at.
+		repoProjectPath = forge.CanonicalRepoSlug(strings.TrimPrefix(req.RepoURL, base+"/"))
 		// The repository half of the admission, taken at the FIRST line where
 		// this surface knows which repository it targets. `repoProjectPath` is
 		// the identity the run is stamped with below (spec.ProjectPath), which
