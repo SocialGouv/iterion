@@ -46,6 +46,16 @@ import (
 var (
 	ErrNotFound = errors.New("connection: not found")
 	ErrExists   = errors.New("connection: already exists")
+	// ErrConflict is an Update whose record moved since it was read: the
+	// UpdatedAt the caller carries is no longer the stored one.
+	//
+	// Typed, and separate from ErrExists, because the two send an operator
+	// somewhere different: a colliding alias is a name to change, a conflict
+	// is "read it again and re-apply". And it must not read as success, which
+	// is what a last-write-wins replace did — a revocation, a rotation and a
+	// capability narrowing were each reverted by a concurrent cosmetic edit,
+	// both answering 200.
+	ErrConflict = errors.New("connection: changed since it was read")
 )
 
 // Status is a connection's usability.

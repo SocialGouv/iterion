@@ -183,13 +183,26 @@ func (s *MongoStore) Update(ctx context.Context, c Connection) error {
 		// update trying to move the record between tenants.
 		return err
 	}
+	if err := checkUnchanged(prev, c); err != nil {
+		return err
+	}
+	expected := prev.UpdatedAt
 	c.SealedPayload = keptCredential(prev, c)
 	c.CreatedAt = prev.CreatedAt
-	c.UpdatedAt = s.clock()
+	c.UpdatedAt = nextStamp(prev.UpdatedAt, s.clock())
+	// The precondition is IN THE FILTER as well as checked above, and that is
+	// the half the other twins get from their lock: between the Get and this
+	// write another replica can land its own replace, and a compare in Go
+	// cannot see it. `updated_at` is the record's own version here — mongo
+	// stores it at millisecond precision and Get decodes it back, so the
+	// value round-trips exactly.
+	//
+	// A zero match after a SUCCESSFUL Get is therefore a conflict, never a
+	// missing record: the id and the tenant were just proven to match.
 	return mongoutil.ReplaceOneChecked(ctx, s.coll,
-		bson.M{"_id": c.ID, "tenant_id": c.TenantID},
+		bson.M{"_id": c.ID, "tenant_id": c.TenantID, "updated_at": expected},
 		mongoDoc{Connection: c, AliasNorm: aliasNorm(c.Alias)},
-		ErrExists, ErrNotFound, "connection: update")
+		ErrExists, ErrConflict, "connection: update")
 }
 
 func (s *MongoStore) Delete(ctx context.Context, tenantID, id string) error {

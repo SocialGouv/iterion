@@ -109,7 +109,11 @@ type connectionCreateReq struct {
 }
 
 // connectionPatchReq is the body of PATCH /api/teams/{id}/connections/{conn_id}.
-// Every field is a pointer: absent and "set to empty" are different intents.
+//
+// Every scalar field is a pointer: absent and "set to empty" are different
+// intents. Capabilities needs none — JSON already tells a missing list (nil)
+// from an explicitly empty one (a non-nil slice of length zero) — and the
+// handler answers them differently, which is the whole point of knowing.
 type connectionPatchReq struct {
 	DisplayName  *string  `json:"display_name,omitempty"`
 	Capabilities []string `json:"capabilities,omitempty"`
@@ -295,6 +299,22 @@ func (s *Server) handlePatchConnection(w http.ResponseWriter, r *http.Request) {
 		conn.DisplayName = strings.TrimSpace(*req.DisplayName)
 	}
 	if req.Capabilities != nil {
+		// An EXPLICIT empty list is refused rather than defaulted.
+		//
+		// parseConnectionCapabilities answers `[action]` to an empty list,
+		// which is right for CREATE ("one connection per connector, used by
+		// automation" is the common case) and wrong here: a connection
+		// created `[trigger]` — events believed, the token never spent — was
+		// PATCHed with `{"capabilities": []}`, answered 200, and came back
+		// holding `action`. The token became spendable by a deterministic
+		// node from a request that asked for nothing, which is the opposite
+		// of "never silently replace an operator's explicit choice".
+		if len(req.Capabilities) == 0 {
+			httpError(w, http.StatusBadRequest,
+				"capabilities is an empty list: a connection that declares no capability is one nothing may use, so say which of %s it keeps — or DELETE it",
+				strings.Join(connection.CapabilityNames(), ", "))
+			return
+		}
 		caps, err := parseConnectionCapabilities(req.Capabilities)
 		if err != nil {
 			httpError(w, http.StatusBadRequest, "%s", err.Error())
@@ -337,13 +357,35 @@ func (s *Server) handlePatchConnection(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusConflict, "%s", err.Error())
 			return
 		}
+		if errors.Is(err, connection.ErrConflict) {
+			// The read-modify-write this handler IS: it read the whole record
+			// above, applied the body's fields and wrote the whole thing
+			// back, so another request landing in between would be
+			// overwritten — and the overwrite is silent, both answers being
+			// 200. A revocation, a rotation and a capability narrowing were
+			// each lost that way. 409 names the retry, which is the caller's
+			// to make: re-read, re-apply, re-send.
+			httpError(w, http.StatusConflict,
+				"connection %q changed since this request read it, so nothing was written — read it again and re-apply the change", conn.ID)
+			return
+		}
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
 	s.auditTenant(r, teamID, "connection.updated", "connection", conn.ID, map[string]any{
 		"connector": conn.Connector, "alias": conn.Alias, "status": string(conn.Status),
 	})
-	writeJSON(w, connectionDTOOf(conn))
+	// The STORED record is what the response serves, not the one this handler
+	// wrote: Update advanced `updated_at` to the write's own stamp, and that
+	// field is the precondition the caller's next PATCH carries — a response
+	// serving the pre-write value would make every following edit answer 409
+	// against a version nothing still holds.
+	stored, err := s.connectionStore.Get(r.Context(), teamID, conn.ID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "connection %q updated but cannot be read back: %s", conn.ID, err.Error())
+		return
+	}
+	writeJSON(w, connectionDTOOf(stored))
 }
 
 func (s *Server) handleDeleteConnection(w http.ResponseWriter, r *http.Request) {

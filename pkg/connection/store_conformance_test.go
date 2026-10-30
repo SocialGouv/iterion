@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -34,15 +35,22 @@ func contains(s, sub string) bool { return strings.Contains(s, sub) }
 // sync).
 
 func stores(t *testing.T) map[string]func() connection.Store {
+	return storesBuilt(t, time.Now)
+}
+
+// storesBuilt is the same triple of twins, each pinned to the clock given —
+// the default wall clock for the suite, a frozen one for the tests that need
+// two writes to land inside one clock tick.
+func storesBuilt(t *testing.T, clock func() time.Time) map[string]func() connection.Store {
 	t.Helper()
 	out := map[string]func() connection.Store{
-		"memory": func() connection.Store { return connection.NewMemoryStore() },
+		"memory": func() connection.Store { return connection.NewMemoryStore().WithClock(clock) },
 		"file": func() connection.Store {
 			s, err := connection.NewFileStore(filepath.Join(t.TempDir(), "connections.json"))
 			if err != nil {
 				t.Fatalf("file store: %v", err)
 			}
-			return s
+			return s.WithClock(clock)
 		},
 	}
 	if uri := os.Getenv("ITERION_TEST_MONGO_URI"); uri != "" {
@@ -76,7 +84,7 @@ func stores(t *testing.T) map[string]func() connection.Store {
 				defer dropCancel()
 				_ = s.Drop(drop)
 			})
-			return s
+			return s.WithClock(clock)
 		}
 	}
 	return out
@@ -387,8 +395,15 @@ func TestAnUpdateKeepsTheCredential(t *testing.T) {
 				t.Fatalf("create: %v", err)
 			}
 
-			// The transport shape: everything but the credential.
-			edit := conn("c1", "tenant-a", "main")
+			// The transport shape: everything but the credential. Read
+			// first, because Update's precondition is the record's own
+			// UpdatedAt — which is what the one caller (the PATCH route) has
+			// and what a blind writer must not be allowed to skip.
+			edit, err := s.Get(ctx, "tenant-a", "c1")
+			if err != nil {
+				t.Fatalf("read before update: %v", err)
+			}
+			edit.SealedPayload = nil
 			edit.DisplayName = "renamed for display only"
 			if err := s.Update(ctx, edit); err != nil {
 				t.Fatalf("update: %v", err)
@@ -403,7 +418,10 @@ func TestAnUpdateKeepsTheCredential(t *testing.T) {
 			}
 
 			// And an update that DOES carry one rotates it.
-			rot := conn("c1", "tenant-a", "main")
+			rot, err := s.Get(ctx, "tenant-a", "c1")
+			if err != nil {
+				t.Fatalf("read before rotation: %v", err)
+			}
 			rot.SealedPayload = []byte("sealed-rotated")
 			if err := s.Update(ctx, rot); err != nil {
 				t.Fatalf("rotate: %v", err)
@@ -443,7 +461,11 @@ func TestARenameCannotCollideWithAnotherAlias(t *testing.T) {
 
 			// The normalisation is part of the rule: " MAIN " and "main" are
 			// the same name to `ByAlias`, so they must be the same name here.
-			clash := conn("c2", "tenant-a", "  MAIN  ")
+			clash, err := s.Get(ctx, "tenant-a", "c2")
+			if err != nil {
+				t.Fatalf("read c2: %v", err)
+			}
+			clash.Alias = "  MAIN  "
 			if err := s.Update(ctx, clash); !errors.Is(err, connection.ErrExists) {
 				t.Errorf("rename onto an existing alias = %v, want ErrExists", err)
 			}
@@ -453,10 +475,205 @@ func TestARenameCannotCollideWithAnotherAlias(t *testing.T) {
 			}
 
 			// A record may of course keep its OWN alias through an update.
-			same := conn("c1", "tenant-a", "main")
+			same, err := s.Get(ctx, "tenant-a", "c1")
+			if err != nil {
+				t.Fatalf("read c1: %v", err)
+			}
 			same.DisplayName = "renamed for display only"
 			if err := s.Update(ctx, same); err != nil {
 				t.Errorf("a connection must be able to keep its own alias: %v", err)
+			}
+		})
+	}
+}
+
+// TestAnUpdateRefusesARecordThatMovedSinceItWasRead — on EVERY store.
+//
+// The window that matters belongs to the CALLER: an HTTP PATCH reads the whole
+// record, applies its own fields and writes the whole thing back, so a lock
+// held inside Update spans none of it. Last-write-wins there meant a
+// revocation, a rotation and a capability narrowing were each reverted by a
+// concurrent cosmetic edit, with both requests answering 200 — the operator
+// revoked a leaked connection, was told it worked, and the credential kept
+// authenticating.
+//
+// The precondition is the record's own UpdatedAt, which is why the suite also
+// pins that a stale writer loses and the WINNER's change survives: a guard
+// that refused both would be a different bug.
+func TestAnUpdateRefusesARecordThatMovedSinceItWasRead(t *testing.T) {
+	for name, build := range stores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			s := build()
+			if err := s.Create(ctx, conn("c1", "tenant-a", "main")); err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			// TWO readers of one record, as two requests are.
+			first, err := s.Get(ctx, "tenant-a", "c1")
+			if err != nil {
+				t.Fatalf("first read: %v", err)
+			}
+			second, err := s.Get(ctx, "tenant-a", "c1")
+			if err != nil {
+				t.Fatalf("second read: %v", err)
+			}
+
+			// The security change lands.
+			first.Status = connection.StatusRevoked
+			first.StatusReason = "leaked"
+			if err := s.Update(ctx, first); err != nil {
+				t.Fatalf("the revocation must land: %v", err)
+			}
+
+			// The cosmetic edit, built on the stale read, must NOT.
+			second.DisplayName = "renamed while the other request revoked it"
+			if err := s.Update(ctx, second); !errors.Is(err, connection.ErrConflict) {
+				t.Errorf("a stale update = %v, want ErrConflict — a 200 here is how a revocation is lost", err)
+			}
+			got, err := s.Get(ctx, "tenant-a", "c1")
+			if err != nil {
+				t.Fatalf("get: %v", err)
+			}
+			if got.Status != connection.StatusRevoked || got.StatusReason != "leaked" {
+				t.Errorf("stored status = %q/%q, want the revocation kept", got.Status, got.StatusReason)
+			}
+			if got.DisplayName != "" {
+				t.Errorf("the refused edit landed anyway: display_name = %q", got.DisplayName)
+			}
+
+			// And the loser succeeds once it re-reads — a conflict is "read
+			// it again", not "this record is now unwritable".
+			retry, err := s.Get(ctx, "tenant-a", "c1")
+			if err != nil {
+				t.Fatalf("re-read: %v", err)
+			}
+			retry.DisplayName = "renamed after re-reading"
+			if err := s.Update(ctx, retry); err != nil {
+				t.Errorf("a re-read update = %v, want it to land", err)
+			}
+		})
+	}
+}
+
+// TestTheAliasRuleIsOneNormalisationOnEveryStore — on EVERY store.
+//
+// The comparison in code (aliasEq) and the value behind the cloud twin's
+// unique index (aliasNorm) were two different normalisations that agreed on
+// ASCII: case FOLDING one side, a case MAPPING the other. So σ/ς and s/ſ
+// collided in code and not in the index, while i/İ collided in the index and
+// not in code — and `connection: İ` in a `.bot` resolved a DIFFERENT
+// credential on the cloud tier than on the local one, which is the exact
+// failure the uniqueness rule exists to prevent. The suite's only alias case
+// was "main" vs "MAIN", so it could not see any of it.
+func TestTheAliasRuleIsOneNormalisationOnEveryStore(t *testing.T) {
+	for name, build := range stores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			for _, tc := range []struct {
+				name   string
+				first  string
+				second string
+				// same is whether the two are ONE name: the store must
+				// refuse the second, and both must resolve to the first.
+				same bool
+			}{
+				// The ASCII case the rule is written for.
+				{"ascii case", "main", "MAIN", true},
+				// A dotted capital I lowercases (simple mapping) to a plain
+				// i, so the two ARE one name.
+				{"dotted capital I", "i", "İ", true},
+				// A final sigma folds to a non-final sigma but does not MAP
+				// to one, so the two are two names.
+				{"greek final sigma", "σ", "ς", false},
+				// Likewise a long s.
+				{"latin long s", "s", "ſ", false},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					s := build()
+					if err := s.Create(ctx, conn("c1", "tenant-a", tc.first)); err != nil {
+						t.Fatalf("create %q: %v", tc.first, err)
+					}
+					err := s.Create(ctx, conn("c2", "tenant-a", tc.second))
+					if tc.same {
+						if !errors.Is(err, connection.ErrExists) {
+							t.Fatalf("creating %q beside %q = %v, want ErrExists — one name, one credential", tc.second, tc.first, err)
+						}
+						// And the one name resolves to the one record, from
+						// either spelling.
+						for _, alias := range []string{tc.first, tc.second} {
+							got, gerr := s.ByAlias(ctx, "tenant-a", "probe", alias)
+							if gerr != nil || got.ID != "c1" {
+								t.Errorf("ByAlias(%q) = %q (%v), want c1", alias, got.ID, gerr)
+							}
+						}
+						return
+					}
+					if err != nil {
+						t.Fatalf("creating %q beside %q = %v, want it accepted — two names", tc.second, tc.first, err)
+					}
+					// Two names, each resolving to its OWN record: the
+					// divergence showed up as one spelling answering the
+					// other's credential.
+					for alias, want := range map[string]string{tc.first: "c1", tc.second: "c2"} {
+						got, gerr := s.ByAlias(ctx, "tenant-a", "probe", alias)
+						if gerr != nil || got.ID != want {
+							t.Errorf("ByAlias(%q) = %q (%v), want %s", alias, got.ID, gerr, want)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestAWriteMovesTheVersionEvenWhenTheClockDoesNot — on EVERY store, under a
+// FROZEN clock.
+//
+// The precondition is the record's own UpdatedAt, and the cloud twin stores
+// it at millisecond precision: a bare clock read can repeat the stored value,
+// and two writers that both read inside that tick would then both pass a
+// precondition that never moved — the second silently overwriting the first,
+// the exact shape the precondition exists to refuse. nextStamp forces the
+// stamp past the stored one, so the loser's precondition is stale by
+// construction.
+//
+// Mutation that reddens this: write the bare `s.clock()` back over
+// nextStamp in any twin's Update.
+func TestAWriteMovesTheVersionEvenWhenTheClockDoesNot(t *testing.T) {
+	frozen := time.Now().Truncate(time.Millisecond)
+	for name, build := range storesBuilt(t, func() time.Time { return frozen }) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			s := build()
+			if err := s.Create(ctx, conn("c1", "tenant-a", "main")); err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			first, err := s.Get(ctx, "tenant-a", "c1")
+			if err != nil {
+				t.Fatalf("first read: %v", err)
+			}
+			second, err := s.Get(ctx, "tenant-a", "c1")
+			if err != nil {
+				t.Fatalf("second read: %v", err)
+			}
+
+			first.DisplayName = "writer A"
+			if err := s.Update(ctx, first); err != nil {
+				t.Fatalf("writer A must land: %v", err)
+			}
+
+			// Same carried version, same frozen clock: only a stamp that is
+			// FORCED to move can tell A's write from B's.
+			second.DisplayName = "writer B"
+			if err := s.Update(ctx, second); !errors.Is(err, connection.ErrConflict) {
+				t.Errorf("writer B = %v, want ErrConflict — a version that does not move lets both writers land", err)
+			}
+			got, err := s.Get(ctx, "tenant-a", "c1")
+			if err != nil {
+				t.Fatalf("read back: %v", err)
+			}
+			if got.DisplayName != "writer A" {
+				t.Errorf("display_name = %q, want writer A's edit kept — B overwrote it", got.DisplayName)
 			}
 		})
 	}
