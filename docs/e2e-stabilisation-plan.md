@@ -33,7 +33,7 @@ Repeated from #1424 verbatim so the plan cannot drift from its own definition:
 
 | Surface | rows | det | live | uncov | unit-only | excluded |
 |---|--:|--:|--:|--:|--:|--:|
-| runtime | 59 | 58 | 1 | 0 | 0 | 0 |
+| runtime | 60 | 59 | 1 | 0 | 0 | 0 |
 | cli | 57 | 57 | 0 | 0 | 0 | 0 |
 | dsl | 51 | 49 | 0 | 0 | 2 | 0 |
 | cloud | 48 | 48 | 0 | 0 | 0 | 0 |
@@ -52,7 +52,7 @@ Repeated from #1424 verbatim so the plan cannot drift from its own definition:
 | forge | 7 | 7 | 0 | 0 | 0 | 0 |
 | integrations | 6 | 3 | 0 | 0 | 0 | 3 |
 | desktop | 1 | 0 | 0 | 0 | 1 | 0 |
-| Total | 403 | 387 | 6 | 1 | 4 | 5 |
+| Total | 404 | 388 | 6 | 1 | 4 | 5 |
 
 The surface axis is the matrix's **Family** column — the one the gate reads and
 the "front door per family" section documents. The `ID` prefix is a naming
