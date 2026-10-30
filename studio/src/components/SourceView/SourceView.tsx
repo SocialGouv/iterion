@@ -79,6 +79,15 @@ export default function SourceView() {
   pathRef.current = currentFilePath;
   const [parseError, setParseError] = useState<string | null>(null);
   const [refused, setRefused] = useState<string | null>(null);
+  // #1650 item 3's apply-time verdict, on this editor's banner surface
+  // (Q42=A) rather than a toast: a toast reads as the answer to whatever
+  // the author just did anywhere in the app, the banner is the document's
+  // own verdict. Tied to the applied document's IDENTITY — the store
+  // normalises what an apply hands it, so the parse answer's object is not
+  // the one later renders read — and gone the moment the document moves (a
+  // canvas edit, another apply, a reopen), instead of a list of events
+  // having to clear it.
+  const [fragmentWarning, setFragmentWarning] = useState<{ message: string; doc: IterDocument | null } | null>(null);
   // Which file of the unit the view is on; null until a unit names one.
   // The selection lives in the STORE (#1647), not in this component: it is
   // the write target of the assistant's per-file proposal, which the
@@ -378,10 +387,11 @@ export default function SourceView() {
     // emptied main — applies whole, and only the /api/validate that follows
     // would say the document is no runnable program (C006, or the C001/C008
     // of declarations whose referents are not here). Warn at apply time,
-    // from the parse response itself (#1650 item 3).
-    const warnFragment = (result: Parameters<typeof fragmentParseWarning>[0]) => {
+    // from the parse response itself (#1650 item 3). A healthy apply clears
+    // the verdict a previous one raised.
+    const noteFragment = (result: Parameters<typeof fragmentParseWarning>[0]) => {
       const warning = fragmentParseWarning(result);
-      if (warning) addToast(warning.message, "warning", { persistent: true, key: `fragment-parse:${bufferKey}` });
+      setFragmentWarning(warning ? { message: warning.message, doc: documentStore.getState().document } : null);
     };
     const settle = (applied: IterDocument | null) => {
       const held = documentStore.getState().sourceBuffer;
@@ -447,7 +457,7 @@ export default function SourceView() {
           return;
         }
         applyParsedSource(result, { setDocument, setSalvaged, readRefusal: documentStore.getState().readRefusal });
-        warnFragment(result);
+        noteFragment(result);
         // What the STORE ends up holding, not what was handed to it: the
         // store normalises the document, so the object the next render
         // reads is not the one this answer carried.
@@ -504,7 +514,7 @@ export default function SourceView() {
       // canvas cannot do this — it never held the region the parser could
       // not read — which is why the refusal points here.
       applyParsedSource(result, { setDocument, setSalvaged, readRefusal: documentStore.getState().readRefusal });
-      warnFragment(result);
+      noteFragment(result);
       // The provenance follows the apply, as it does on the per-file branch:
       // without it the buffer keeps naming the PRE-apply document for the
       // whole debounce, and a second Apply to the same file is refused as
@@ -540,7 +550,6 @@ export default function SourceView() {
     rendered,
     setSourceBuffer,
     setEditing,
-    addToast,
   ]);
 
   // Cancel takes the typed text, and there is no undo for it — the render
@@ -806,6 +815,11 @@ export default function SourceView() {
             : unit
               ? "The bot is in several files now, edited one file at a time, and this whole-file text has no single file to be applied to. Discard drops it for good."
               : "This tab shows a single file now, so this fragment cannot be offered a file to apply to. Discard drops it for good."}
+        </InlineBanner>
+      )}
+      {fragmentWarning && fragmentWarning.doc === document && (
+        <InlineBanner tone="warning" layout="sticky">
+          {fragmentWarning.message}
         </InlineBanner>
       )}
       {parseError && (

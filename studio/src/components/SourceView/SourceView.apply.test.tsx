@@ -185,16 +185,20 @@ describe("Apply, when the pane was hidden while it parsed", () => {
   });
 });
 
-// #1650 item 3: a buffer that is not a valid standalone workflow — empty,
-// or a fragment (declarations, no `workflow`) — parses 200 with diagnostics
-// null/empty, and only /api/validate would say so afterwards (C006, C001,
-// C008). The apply warns instead, from the parse response alone.
+// #1650 item 3 (Q42=A): a buffer that is not a valid standalone workflow —
+// empty, or a fragment (declarations, no `workflow`) — parses 200 with
+// diagnostics null/empty, and only /api/validate would say so afterwards
+// (C006, C001, C008). The apply warns INLINE, on the editor's banner
+// surface, from the parse response alone — a toast reads as the answer to
+// whatever the author just did anywhere, the banner is the document's own
+// verdict.
 describe("Apply of a text that declares no workflow", () => {
   const fragmentDocument = () => ({ ...createEmptyDocument(), workflows: [] });
+  const fragmentBanner = () => screen.queryByText(/declares no workflow|declares nothing/);
   const fragmentToasts = () =>
-    useUIStore.getState().toasts.filter((t) => t.type === "warning" && /declares no workflow|declares nothing/.test(t.message));
+    useUIStore.getState().toasts.filter((t) => /declares no workflow|declares nothing/.test(t.message));
 
-  it("warns at apply time: a fragment parses 200 with diagnostics absent (whole file)", async () => {
+  it("warns inline at apply time: a fragment parses 200 with diagnostics absent (whole file)", async () => {
     const s = store();
     mount(s);
     fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
@@ -202,10 +206,12 @@ describe("Apply of a text that declares no workflow", () => {
     api.parseSource.mockResolvedValueOnce({ document: fragmentDocument() });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     await waitFor(() => expect(s.getState().document?.workflows).toEqual([]));
-    expect(fragmentToasts()).toHaveLength(1);
+    expect(fragmentBanner()).toBeTruthy();
+    // The surface is the banner, not a toast.
+    expect(fragmentToasts()).toHaveLength(0);
   });
 
-  it("warns at apply time: an emptied main leaves the merged document without a workflow (one file of a unit)", async () => {
+  it("warns inline at apply time: an emptied main leaves the merged document without a workflow (one file of a unit)", async () => {
     const s = store(true);
     mount(s);
     await screen.findByTestId("source-view-file-picker");
@@ -218,10 +224,11 @@ describe("Apply of a text that declares no workflow", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     await waitFor(() => expect(s.getState().document?.workflows).toEqual([]));
-    expect(fragmentToasts()).toHaveLength(1);
+    expect(fragmentBanner()).toBeTruthy();
+    expect(fragmentToasts()).toHaveLength(0);
   });
 
-  it("stays quiet on a healthy parse", async () => {
+  it("shows no banner on a healthy parse", async () => {
     const s = store();
     mount(s);
     fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
@@ -229,7 +236,25 @@ describe("Apply of a text that declares no workflow", () => {
     api.parseSource.mockResolvedValueOnce(parsed("healthy"));
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     await waitFor(() => expect(s.getState().document?.comments?.[0]?.text).toBe("healthy"));
+    expect(fragmentBanner()).toBeNull();
     expect(fragmentToasts()).toHaveLength(0);
+  });
+
+  it("clears the banner on the apply that parses a workflow", async () => {
+    const s = store();
+    mount(s);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    type("agent a: model: m");
+    api.parseSource.mockResolvedValueOnce({ document: fragmentDocument() });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await screen.findByText(/declares no workflow|declares nothing/);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    type("workflow main: entry: done");
+    api.parseSource.mockResolvedValueOnce(parsed("healthy"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(s.getState().document?.comments?.[0]?.text).toBe("healthy"));
+    expect(fragmentBanner()).toBeNull();
   });
 
   it("stays quiet when the parse reported errors — the existing diagnostics say it", async () => {
@@ -240,6 +265,7 @@ describe("Apply of a text that declares no workflow", () => {
     api.parseSource.mockResolvedValueOnce({ document: fragmentDocument(), diagnostics: ["line 1: model expects a value"], bindable: false });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     await waitFor(() => expect(s.getState().document?.workflows).toEqual([]));
+    expect(fragmentBanner()).toBeNull();
     expect(fragmentToasts()).toHaveLength(0);
   });
 });
