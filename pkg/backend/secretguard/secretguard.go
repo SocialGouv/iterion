@@ -751,7 +751,7 @@ func (g *Guard) Holds(name string) bool {
 	if _, ok := st.placeholderByName[name]; ok {
 		return true
 	}
-	return g.SecretFilePath(name) != ""
+	return st.secretFilePath(name) != ""
 }
 
 // RedactForModel is the model boundary's pass (ADR-146, axis 1a): every
@@ -1161,7 +1161,7 @@ func (g *Guard) ResolveSecretRef(name string) string {
 	if st == nil {
 		return ""
 	}
-	if path := g.SecretFilePath(name); path != "" {
+	if path := st.secretFilePath(name); path != "" {
 		return path
 	}
 	return st.resolveSecretRef(name, g.cfg.Placeholders)
@@ -1180,7 +1180,7 @@ func (g *Guard) ResolveSecretRefAt(sink, name string) string {
 	if st == nil {
 		return ""
 	}
-	if path := g.SecretFilePath(name); path != "" {
+	if path := st.secretFilePath(name); path != "" {
 		return path
 	}
 	ph, declared := st.placeholderByName[name]
@@ -1206,14 +1206,21 @@ func (st *guardState) resolveSecretRef(name string, placeholders bool) string {
 	return st.placeholderValue[ph]
 }
 
-// SecretFilePath returns the mounted path for a file secret, or "" for
-// value secrets / unknown names.
-func (g *Guard) SecretFilePath(name string) string {
-	st := g.load()
+// secretFilePath is SecretFilePath on an ALREADY LOADED generation: the
+// resolvers read the placeholder and file-path maps from the SAME
+// generation, so a Register swap landing between two loads cannot mix two
+// generations' answers in one resolution.
+func (st *guardState) secretFilePath(name string) string {
 	if st == nil || name == "" {
 		return ""
 	}
 	return st.filePathByName[name]
+}
+
+// SecretFilePath returns the mounted path for a file secret, or "" for
+// value secrets / unknown names.
+func (g *Guard) SecretFilePath(name string) string {
+	return g.load().secretFilePath(name)
 }
 
 func (g *Guard) SecretFileHints() []FileSecretHint {

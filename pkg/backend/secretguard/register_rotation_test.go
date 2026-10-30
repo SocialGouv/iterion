@@ -121,6 +121,105 @@ func TestRotatedDeclaredSecretMaterialisesTheLiveValue(t *testing.T) {
 	}
 }
 
+// TestRotatedDeclaredSecretStaysLiveAcrossEveryRotation is the CHAIN
+// witness of the rotation scope: the attributes carry through EVERY
+// rotation of the name, and the declared placeholder resolves the LIVE
+// value at every generation — not just the first. A long run rotates the
+// same credential many times (a five-minute ticker under a one-hour
+// token): a chain that stops transporting at the first same-name
+// registration — which after the first takeover is the redaction-only
+// remnant — re-loses the scope at the second rotation and spends the dead
+// intermediate token from the declared placeholder. Red when
+// carryReplaced stops chaining (single first-match scan) and when the
+// remnant stops carrying the name's attributes.
+func TestRotatedDeclaredSecretStaysLiveAcrossEveryRotation(t *testing.T) {
+	const name = "forge_token"
+	host, foreign := "forge.example.com", "evil.example"
+	cfg := DefaultConfig()
+	ph := PlaceholderForName(name)
+	deadPh := redactOnlyPlaceholder(ph)
+
+	v1 := randomToken(t) // the launch generation
+	g := New([]Secret{{
+		Name:     name,
+		Value:    v1,
+		FilePath: "/run/iterion/secrets/" + name,
+		Hosts:    []string{host},
+	}}, cfg)
+	history := []string{v1}
+
+	// Three rotations of the same name — the normal shape of a long run.
+	for i := range 3 {
+		rotated := randomToken(t)
+		g.Register(Secret{Name: name, Value: rotated, RedactOnly: true})
+
+		// The fresh value IS the live generation: the declared placeholder
+		// materialises it, under the carried scope.
+		if got := g.MaterializeFor(secretsink.Agent, ph); got != rotated {
+			t.Fatalf("rotation %d: the declared placeholder materialises %q, want the live token", i+1, got)
+		}
+		if !g.ExfiltratesTo("body="+rotated, foreign) {
+			t.Fatalf("rotation %d: the live value is allow-any at the egress gate — the chain lost the hosts: scope", i+1)
+		}
+		if g.ExfiltratesTo("body="+rotated, host) {
+			t.Fatalf("rotation %d: the live value is gated toward its own approved host — the scope was narrowed, not carried", i+1)
+		}
+		// The mount follows the live generation.
+		if got := g.SecretFilePath(name); got != "/run/iterion/secrets/"+name {
+			t.Fatalf("rotation %d: the declared secret lost its file mount: %q", i+1, got)
+		}
+		// Every dead generation stays scrubbed, its _redacted__ placeholder
+		// resolving nowhere, and keeps the scope of the generation it
+		// replaced — a remnant built bare would widen the dead token to
+		// allow-any.
+		for _, dead := range history {
+			if !g.ContainsSecret("x " + dead) {
+				t.Fatalf("rotation %d: a replaced generation left the guard — a value that was live must stay scrubbed for the rest of the run", i+1)
+			}
+			if got := g.MaterializeFor(secretsink.Agent, deadPh); got != deadPh {
+				t.Fatalf("rotation %d: a replaced value's _redacted__ placeholder resolves: %q", i+1, got)
+			}
+			if !g.ExfiltratesTo("body="+dead, foreign) {
+				t.Fatalf("rotation %d: a replaced value came back allow-any at the egress gate — the remnant dropped the scope of the value it keeps", i+1)
+			}
+		}
+		history = append(history, rotated)
+	}
+}
+
+// TestRotationToASubMinLenValueLeavesTheLiveGenerationInPlace is the
+// MinLen witness of the takeover: a rotation whose fresh value is below
+// MinLen registers nothing (the build would drop it) AND takes no
+// materialisable slot over — degrading the live generation to a remnant
+// while the fresh entry was filtered away killed the declared placeholder
+// outright. The live value stays live: resolving, gated, scrubbed. Red
+// when Register stops skipping sub-MinLen values before the takeover.
+func TestRotationToASubMinLenValueLeavesTheLiveGenerationInPlace(t *testing.T) {
+	const name = "forge_token"
+	v1 := randomToken(t)
+	g := New([]Secret{{
+		Name:  name,
+		Value: v1,
+		Hosts: []string{"forge.example.com"},
+	}}, DefaultConfig())
+	ph := PlaceholderForName(name)
+
+	g.Register(Secret{Name: name, Value: "abc", RedactOnly: true}) // below MinLen 5
+
+	if got := g.MaterializeFor(secretsink.Agent, ph); got != v1 {
+		t.Fatalf("a sub-MinLen rotation killed the declared placeholder: it materialises %q, want the still-live value", got)
+	}
+	if g.ContainsSecret("x abc") {
+		t.Fatal("a sub-MinLen value got registered — MinLen doctrine says it stays unregistered")
+	}
+	if !g.ContainsSecret("x " + v1) {
+		t.Fatal("the live generation left the guard")
+	}
+	if !g.ExfiltratesTo("body="+v1, "evil.example") {
+		t.Fatal("the live value lost the scope of its own declaration to a rotation that registered nothing")
+	}
+}
+
 // TestRegisterKeepsTheHostFileMaterialisation is the rebuild witness: the
 // host materialisation is a runtime resolution (MaterializeHostFiles
 // rewrote the file hints to paths it wrote on THIS host), so a later

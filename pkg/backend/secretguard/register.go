@@ -15,23 +15,29 @@ package secretguard
 // between two read-locks would deadlock).
 //
 // A registration whose raw value is already known is skipped, so a
-// refresher that re-reads an unchanged value costs nothing.
+// refresher that re-reads an unchanged value costs nothing. So is one
+// whose value is shorter than the build's MinLen: the build would drop it
+// anyway, and letting it take a materialisable slot over would kill the
+// declared placeholder outright (the live generation degraded to a
+// remnant, the fresh entry filtered away — nothing left to resolve).
 //
 // A registration whose NAME already exists carries that registration's
-// attributes over: a seam that swaps a value must not widen or drop what
-// the value it replaces carried. The egress scope (`Hosts`), the sink
-// grants, the env-only and ambient classes, the placeholder and the file
-// mount belong to the name's declaration, not to any one generation of
-// its value — without this a rotated `hosts:`-scoped credential would
-// come back allow-any at the Layer-2 egress gate while the launch-time
-// value of the same name stayed blocked. When the replaced registration
-// was MATERIALISABLE, the fresh value takes its slot over (the declared
-// placeholder keeps resolving — to the live value from now on, instead of
-// spending a dead token) and the value it replaces stays registered as a
-// redaction-only remnant: still scrubbed from every sink, its placeholder
-// resolving nowhere. Rotation sites pass one value per name per call;
-// two same-name additions in one call both inherit, and the first
-// takeover wins the remnant slot.
+// attributes over, through the WHOLE chain of the name's rotations: the
+// egress scope (`Hosts`), the sink grants, the env-only and ambient
+// classes, the placeholder and the file mount belong to the name's
+// declaration, not to any one generation of its value — without this a
+// rotated `hosts:`-scoped credential would come back allow-any at the
+// Layer-2 egress gate while the launch-time value of the same name stayed
+// blocked. When the replaced registration was MATERIALISABLE, the fresh
+// value takes its slot over (the declared placeholder keeps resolving —
+// to the live value from now on, instead of spending a dead token) and
+// the value it replaces stays registered as a redaction-only remnant that
+// itself carries the attributes: after the first rotation the name's
+// first registration IS such a remnant, so a scan that stopped there
+// would re-lose the scope at the second rotation — the normal case of a
+// long run (a five-minute ticker under a one-hour token). Rotation sites
+// pass one value per name per call; two same-name additions in one call
+// both inherit, and the first takeover wins the remnant slot.
 //
 // Values are registered exactly as handed otherwise — a rotation site
 // passes RedactOnly, so the fresh value is scrubbed everywhere but its
@@ -47,6 +53,13 @@ func (g *Guard) Register(add ...Secret) {
 		takeover := make(map[int]Secret) // inputs index → the replaced value, kept for redaction
 		for _, s := range add {
 			if s.Value == "" {
+				continue
+			}
+			// Below MinLen the build registers nothing — and the takeover
+			// must not fire either, or the live generation would be
+			// degraded to a remnant while the fresh entry was filtered
+			// away, and the declared placeholder would resolve nowhere.
+			if len([]rune(s.Value)) < g.cfg.MinLen {
 				continue
 			}
 			// The raw form is one of the value's encodings: already
@@ -86,41 +99,71 @@ func (g *Guard) Register(add ...Secret) {
 	}
 }
 
-// carryReplaced transports the replaced same-name registration's
-// attributes onto s, in place. Returns the redaction-only remnant of a
-// replaced MATERIALISABLE registration, its inputs index, and whether a
-// takeover happened (no takeover when no same-name match, or when the
-// match was already redaction-only — its old value stays registered as it
-// is).
+// carryReplaced chains the replaced same-name registration's attributes
+// onto s, in place, across the name's WHOLE rotation chain. Returns the
+// redaction-only remnant of a replaced MATERIALISABLE registration, its
+// inputs index, and whether a takeover happened.
+//
+// Two passes: the name's live (materialisable) generation first — an
+// earlier rotation left its remnant BEFORE the live entry in registration
+// order, so a single first-match scan would stop on the attribute-less
+// remnant and re-lose the scope at the second rotation. No live
+// generation: the name's first registration (itself an
+// attribute-carrying remnant after the first takeover) lends its
+// attributes, with no takeover — its value stays registered as it is.
 func carryReplaced(inputs []Secret, s *Secret) (remnant Secret, idx int, took bool) {
 	for i := range inputs {
 		prev := inputs[i]
-		if prev.Name != s.Name {
+		if prev.Name != s.Name || prev.RedactOnly {
 			continue
 		}
-		s.Hosts = prev.Hosts
-		s.Sinks = prev.Sinks
-		s.EnvOnly = prev.EnvOnly
-		s.Ambient = prev.Ambient
-		s.Placeholder = prev.Placeholder
-		if prev.FilePath != "" {
-			s.FilePath = prev.FilePath
-		}
-		if prev.Env != "" {
-			s.Env = prev.Env
-		}
-		if prev.RedactOnly {
-			return Secret{}, i, false
-		}
+		carryAttributes(prev, s)
 		// The fresh value takes the materialisable slot over; the value it
 		// replaces stays registered for redaction only. Its placeholder
 		// becomes the _redacted__ form (the name's own now resolves), and
 		// its encodings keep matching — a value that was live at launch is
 		// scrubbed from every sink for the rest of the run.
 		s.RedactOnly = false
-		return Secret{Name: prev.Name, Value: prev.Value, RedactOnly: true}, i, true
+		return remnantOf(prev), i, true
+	}
+	for i := range inputs {
+		prev := inputs[i]
+		if prev.Name != s.Name {
+			continue
+		}
+		carryAttributes(prev, s)
+		return Secret{}, i, false
 	}
 	return Secret{}, -1, false
+}
+
+// carryAttributes transports the name's declaration-level attributes from
+// the replaced registration onto s, in place: the egress scope, the sink
+// grants, the env-only and ambient classes, the placeholder and the file
+// mount belong to the NAME, not to any one generation of its value.
+func carryAttributes(prev Secret, s *Secret) {
+	s.Hosts = prev.Hosts
+	s.Sinks = prev.Sinks
+	s.EnvOnly = prev.EnvOnly
+	s.Ambient = prev.Ambient
+	s.Placeholder = prev.Placeholder
+	if prev.FilePath != "" {
+		s.FilePath = prev.FilePath
+	}
+	if prev.Env != "" {
+		s.Env = prev.Env
+	}
+}
+
+// remnantOf builds the redaction-only remnant a replaced MATERIALISABLE
+// registration leaves behind: the replaced value, still scrubbed from
+// every sink, carrying the name's attributes — after this takeover the
+// name's earliest registration is THIS remnant, and the next rotation
+// must find the scope on it.
+func remnantOf(prev Secret) Secret {
+	rem := prev
+	rem.RedactOnly = true
+	return rem
 }
 
 // carryHostPaths re-applies the outgoing generation's host materialisation

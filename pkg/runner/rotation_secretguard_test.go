@@ -276,4 +276,31 @@ func TestRegisterRotatedKeepsTheReplacedEgressScope(t *testing.T) {
 	if got := guard.MaterializeFor(secretsink.Agent, ph); got != rotated {
 		t.Fatalf("the declared placeholder materialises %q, want the live token", got)
 	}
+
+	// The SECOND rotation of the same name — the normal shape of a long
+	// run (a five-minute ticker under a one-hour token) — must find the
+	// scope on the live generation, not stop at the redaction-only remnant
+	// the first takeover left: otherwise the live value comes back
+	// allow-any at the egress gate and the declared placeholder spends the
+	// dead intermediate token.
+	rotated2 := rotatedTokenFixture(t)
+	holder.registerRotated("forge_token", rotated2)
+	if !guard.ContainsSecret(rotated2) {
+		t.Fatal("scenario broken: the second rotation did not register")
+	}
+	if !guard.ExfiltratesTo("body="+rotated2, "evil.example") {
+		t.Fatal("after the second rotation the live value is allow-any at the egress gate — the seam's chain stopped at the first same-name registration")
+	}
+	if guard.ExfiltratesTo("body="+rotated2, "forge.example.com") {
+		t.Fatal("after the second rotation the live value is gated toward its own approved host")
+	}
+	if got := guard.MaterializeFor(secretsink.Agent, ph); got != rotated2 {
+		t.Fatalf("after the second rotation the declared placeholder materialises %q, want the live token", got)
+	}
+	// Both dead generations stay scrubbed.
+	for _, dead := range []string{launch, rotated} {
+		if !guard.ContainsSecret("x " + dead) {
+			t.Fatal("a replaced generation left the guard — a value that was live must stay scrubbed for the rest of the run")
+		}
+	}
 }
