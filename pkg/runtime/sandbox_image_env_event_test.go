@@ -100,7 +100,7 @@ func TestTheImageEnvEventCarriesBothHalvesOfTheClass(t *testing.T) {
 	}
 	rec := &imageEnvRecorder{}
 
-	_, _ = screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-77")
+	_, _, _ = startScreenedSandbox(context.Background(), driver, newScreenedSpec("planter/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-77")
 
 	payload := rec.planted(t)
 	if got := payload["image"]; got != "planter/dev:1" {
@@ -115,6 +115,11 @@ func TestTheImageEnvEventCarriesBothHalvesOfTheClass(t *testing.T) {
 	}
 	if got := names(t, payload, "reported"); !slices.Equal(got, []string{"PATH"}) {
 		t.Errorf("reported = %v, want [PATH] — the kept half must travel too, or the operator cannot judge the image", got)
+	}
+	// And the image's own fact beside them, which depends on no
+	// container: the union of the class the image bakes.
+	if got := names(t, payload, "planted"); !slices.Equal(got, []string{"ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "PATH"}) {
+		t.Errorf("planted = %v, want the three names of the class the image bakes", got)
 	}
 	// The two conditions did not hold, so their absence is the signal.
 	if _, present := payload["allowed"]; present {
@@ -140,7 +145,7 @@ func TestTheScreenedSpecAndTheEventComeFromTheSameScreen(t *testing.T) {
 	}
 	rec := &imageEnvRecorder{}
 
-	started, screenErr := screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-78")
+	_, started, screenErr := startScreenedSandbox(context.Background(), driver, newScreenedSpec("planter/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-78")
 	if screenErr != nil {
 		t.Fatalf("a screen that neutralised everything it decided on refused the boot: %v", screenErr)
 	}
@@ -174,7 +179,7 @@ func TestAnImageThatPlantsNothingEmitsNoEvent(t *testing.T) {
 	}
 	rec := &imageEnvRecorder{}
 
-	_, _ = screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("clean/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-79")
+	_, _, _ = startScreenedSandbox(context.Background(), driver, newScreenedSpec("clean/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-79")
 
 	if len(rec.events) != 0 {
 		t.Fatalf("a clean image must emit nothing, got %v", rec.types())
@@ -189,20 +194,22 @@ func TestTheImageEnvEventSaysWhenNothingWasScreened(t *testing.T) {
 	t.Setenv(EnvSandboxImageEnvAllow, "")
 	rec := &imageEnvRecorder{}
 
-	_, _ = screenAndReportSandboxImageEnv(context.Background(), &blindDriver{supports: true}, newScreenedSpec("planter/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-80")
+	_, _, _ = startScreenedSandbox(context.Background(), &blindDriver{supports: true}, newScreenedSpec("planter/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-80")
 
 	payload := rec.planted(t)
 	reason, ok := payload["unscreened"].(string)
 	if !ok || !strings.Contains(reason, "kubernetes") {
 		t.Fatalf("unscreened = %#v, want the reason naming the driver that cannot read an image's env", payload["unscreened"])
 	}
-	// Both halves still travel, empty: "the screen found nothing" and
-	// "the screen did not run" must not read the same way.
-	if got := names(t, payload, "neutralized"); len(got) != 0 {
-		t.Errorf("neutralized = %v, want an empty list on an unscreened image", got)
-	}
-	if got := names(t, payload, "reported"); len(got) != 0 {
-		t.Errorf("reported = %v, want an empty list on an unscreened image", got)
+	// Not one disposition travels, and not even the planted list: the
+	// class was never READ, so "the screen found nothing" and "the
+	// screen did not run" cannot read the same way. An empty
+	// `neutralized` beside `unscreened` would be the second of those
+	// dressed as the first.
+	for _, key := range []string{"neutralized", "reported", "planted", "allowed", "operator_set", "driver_set"} {
+		if _, present := payload[key]; present {
+			t.Errorf("%s travels on an unscreened image: %v", key, payload[key])
+		}
 	}
 }
 
@@ -227,7 +234,7 @@ func TestARefusedNeutralisationTravelsUnderItsOwnKeyAndStopsTheBoot(t *testing.T
 	}
 	rec := &imageEnvRecorder{}
 
-	_, screenErr := screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-81")
+	_, _, screenErr := startScreenedSandbox(context.Background(), driver, newScreenedSpec("planter/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-81")
 
 	var refusal *ImageEnvNeutralisationRefusedError
 	if !errors.As(screenErr, &refusal) {
@@ -241,8 +248,10 @@ func TestARefusedNeutralisationTravelsUnderItsOwnKeyAndStopsTheBoot(t *testing.T
 	}
 
 	payload := rec.planted(t)
-	if got := names(t, payload, "neutralized"); len(got) != 0 {
-		t.Errorf("neutralized = %v, want empty: the override was refused", got)
+	for _, key := range []string{"neutralized", "reported", "operator_set", "driver_set", "allowed"} {
+		if _, present := payload[key]; present {
+			t.Errorf("%s travels although the override was refused and nothing started: %v", key, payload[key])
+		}
 	}
 	if got := names(t, payload, "refused_names"); !slices.Equal(got, []string{"CLAUDE_CODE_USE_BEDROCK"}) {
 		t.Errorf("refused_names = %v, want [CLAUDE_CODE_USE_BEDROCK] under its own key", got)
@@ -250,8 +259,10 @@ func TestARefusedNeutralisationTravelsUnderItsOwnKeyAndStopsTheBoot(t *testing.T
 	if reason, _ := payload["refused"].(string); !strings.Contains(reason, "refused the override") {
 		t.Errorf("refused = %#v, want the driver's own reason", payload["refused"])
 	}
-	if got := names(t, payload, "reported"); !slices.Equal(got, []string{"PATH"}) {
-		t.Errorf("reported = %v, want [PATH] alone — a name nothing started with was never KEPT", got)
+	// The planted list is what the operator acts on, and it is the
+	// IMAGE's own fact: it travels although no container does.
+	if got := names(t, payload, "planted"); !slices.Equal(got, []string{"CLAUDE_CODE_USE_BEDROCK", "PATH"}) {
+		t.Errorf("planted = %v, want both names of the class the image bakes", got)
 	}
 	if _, present := payload["unscreened"]; present {
 		t.Errorf("unscreened must stay absent: the screen RAN, and a reader must tell a refused guard from a driver that screens nothing: %v", payload)
@@ -272,7 +283,7 @@ func TestTheImageEnvEventNamesWhatTheHostKnobLetThrough(t *testing.T) {
 	}
 	rec := &imageEnvRecorder{}
 
-	_, _ = screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("corp/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-82")
+	_, _, _ = startScreenedSandbox(context.Background(), driver, newScreenedSpec("corp/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-82")
 
 	payload := rec.planted(t)
 	if got := names(t, payload, "allowed"); !slices.Equal(got, []string{"HTTPS_PROXY"}) {
@@ -290,6 +301,8 @@ func TestTheImageEnvEventNamesWhatTheHostKnobLetThrough(t *testing.T) {
 func TestTheImageEnvEventPayloadDoesNotAliasTheScreen(t *testing.T) {
 	screen := imageEnvScreen{
 		image:       "planter/dev:1",
+		planted:     []string{"AWS_SECRET_ACCESS_KEY", "PATH"},
+		deduced:     true,
 		neutralized: []string{"AWS_SECRET_ACCESS_KEY"},
 		reported:    []string{"PATH"},
 	}
@@ -317,7 +330,7 @@ func TestAStoreThatRefusesTheEventDoesNotStopTheBoot(t *testing.T) {
 	}
 	rec := &imageEnvRecorder{err: errors.New("store is down")}
 
-	started, screenErr := screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-84")
+	_, started, screenErr := startScreenedSandbox(context.Background(), driver, newScreenedSpec("planter/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-84")
 
 	spec, ok := started.(*screenedSpec)
 	if !ok || !slices.Equal(spec.Neutralized(), []string{"CLAUDE_CODE_USE_BEDROCK"}) {
@@ -348,7 +361,7 @@ func TestADoubledPlantedNameIsOneFinding(t *testing.T) {
 	}
 	rec := &imageEnvRecorder{}
 
-	_, _ = screenAndReportSandboxImageEnv(context.Background(), driver, newScreenedSpec("planter/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-85")
+	_, _, _ = startScreenedSandbox(context.Background(), driver, newScreenedSpec("planter/dev:1"), sandbox.RunInfo{}, nil, rec.emit, "run-85")
 
 	payload := rec.planted(t)
 	if got := names(t, payload, "neutralized"); !slices.Equal(got, []string{"CLAUDE_CODE_USE_BEDROCK"}) {

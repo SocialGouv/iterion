@@ -670,65 +670,92 @@ const (
 	// `ENV CLAUDE_CODE_USE_BEDROCK=1` plus the planter's keys re-routes
 	// every prompt of the run with ZERO containerEnv entries (#2317).
 	//
-	// Emitted once per sandbox boot, from the screen that runs after the
-	// image is local (pulled, or built from a `build:`) and before the
-	// container starts — so a boot that then fails to start, or that the
-	// screen itself REFUSES, still records what the image planted — and
-	// only when the image has something to answer for, "not screened"
-	// included. It carries the WHOLE class, not the
-	// acted-on half alone: the kept half is what an operator reads to
-	// judge whether such an image belongs in the run at all. Data:
+	// Emitted once per sandbox boot, by the seam the container starts
+	// THROUGH — the screen runs after the image is local (pulled, or
+	// built from a `build:`), the container starts from the spec it
+	// amended, and the record is read back off that container — and only
+	// when the image has something to answer for, "not screened" and
+	// "not deduced" included. A boot that never created a container (the
+	// screen REFUSED it, or Start failed) still records what the image
+	// planted.
+	//
+	// It carries the WHOLE class, not the acted-on half alone: the kept
+	// half is what an operator reads to judge whether such an image
+	// belongs in the run at all.
+	//
+	// One fact needs no container, and every other key is a MEASUREMENT
+	// of one. `planted` is read from `image inspect`. The dispositions
+	// are the image's `ENV` compared, name by name, to the environment
+	// the container was CREATED with, read back by the driver that
+	// created it ([sandbox.StartedEnvReader],
+	// `docker container inspect -f '{{json .Config.Env}}'`) — never
+	// reassembled from the rules that produce that environment, which is
+	// how two earlier records came to contradict `docker inspect`
+	// (HTTP_PROXY published as emptied, then NODE_EXTRA_CA_CERTS as
+	// "untouched", of containers carrying iterion's own value). Data:
 	//   - image: the inspected image reference ("" when the driver's
 	//     prepared spec exposes none)
-	//   - neutralized: []string, sorted — the sub-class the driver
-	//     ACTUALLY overrode, which the container starts with
-	//     `--env NAME=`: set and EMPTY, which every one of those
-	//     consumers reads as absent. It is the credential and routing
-	//     names, and the ones that lead to CODE at the startup of a
-	//     process iterion runs there (the loader, the shells' startup
-	//     channels, node's and npm's and bun's options, git's
-	//     config-from-the-environment). The driver reports what it
-	//     emptied and this list is that answer, never the set the screen
-	//     decided on: the two differ for a name the run's own env or the
-	//     driver's own Start already sets (operator_set and driver_set
-	//     below). Always present, empty list included
-	//   - reported: []string, sorted — the rest of the class, whose
-	//     value the container's processes DO read: an empty one would
-	//     break an image doing its job (`PATH`, `HOME`, a loader library
-	//     path, `KUBECONFIG`), or nothing a process iterion starts reads
-	//     the name — plus any planted name no driver could pass and no
-	//     process could resolve. Always present, empty list included
-	//   - allowed: []string, sorted — names the host-side
-	//     ITERION_SANDBOX_IMAGE_ENV_ALLOW let through untouched;
-	//     absent when the knob named none
+	//   - planted: []string, sorted — the names of the deny class the
+	//     IMAGE bakes into its own `ENV`. Present whenever the class was
+	//     read, container or not; absent only with `unscreened`
+	//   - neutralized: []string, sorted — the names the container
+	//     carries EMPTY where the image baked a value: set and empty,
+	//     which every consumer of that sub-class reads as absent. It is
+	//     the credential and routing names, and the ones measured to
+	//     lead to CODE at the startup of a process iterion runs there
+	//     (the loader, the shells' startup channels, node's and npm's
+	//     and bun's options, git's config-from-the-environment). Present
+	//     whenever the container was read, empty list included
+	//   - reported: []string, sorted — the names the container carries
+	//     at the IMAGE's exact value, which its processes read: an empty
+	//     one would break an image doing its job (`PATH`, `HOME`, a
+	//     loader library path, `KUBECONFIG`), or nothing a process
+	//     iterion starts reads the name — plus any planted name no
+	//     driver could pass and no process could resolve. Present
+	//     whenever the container was read, empty list included
+	//   - allowed: []string, sorted — the same measurement for a name
+	//     the host-side ITERION_SANDBOX_IMAGE_ENV_ALLOW named: the
+	//     container carries the image's own value, untouched, as the
+	//     operator asked. A name the knob let through whose value the
+	//     driver's own pair overrode is filed under driver_set instead,
+	//     because that is what the container has; absent when none holds
 	//   - operator_set: []string, sorted — names of the class, EITHER
-	//     half, the RUN's own reviewed env already sets (the workflow's
-	//     `sandbox.env:`, the launch overlay, the forfait config dirs).
-	//     The container starts with the OPERATOR's value: the image's is
-	//     never read, and iterion does not override the reviewed channel
-	//     with an empty string — so they are neither `neutralized` (set
-	//     and EMPTY) nor `reported` (the image's value kept). Absent when
-	//     none collided
-	//   - driver_set: []string, sorted — names of the class the DRIVER's
-	//     own Start sets: the pairs it appends after the spec's env, the
-	//     egress proxy's six spellings and the per-run CA bundles among
-	//     them. The container reads ITERION's value, so the same two
-	//     claims would both be false — `docker inspect` of a container
-	//     started under an enforced network policy shows the proxy URL,
-	//     not an empty string. Its own key rather than operator_set's: an
-	//     operator finds one of those names in their own `.bot`, and one
-	//     of these nowhere. Absent when none collided
+	//     half, the container carries at the value the RUN's own
+	//     reviewed env holds (the workflow's `sandbox.env:`, the launch
+	//     overlay, the forfait config dirs). The image's value is never
+	//     read, and iterion does not override the reviewed channel with
+	//     an empty string; absent when none holds
+	//   - driver_set: []string, sorted — names the container carries at
+	//     ITERION's own value, for a name the DRIVER declares its Start
+	//     sets: the pairs it appends after the spec's env, the egress
+	//     proxy's six spellings and the per-run CA bundles among them.
+	//     Its own key rather than operator_set's: an operator finds one
+	//     of those names in their own `.bot`, and one of these nowhere;
+	//     absent when none holds
+	//   - unexplained: []string, sorted — names whose container value is
+	//     neither the image's, nor the run's own, nor a pair the driver
+	//     declares. Nothing in this repository produces one — it is the
+	//     shape of a driver whose declaration drifted from its argv —
+	//     and it is published rather than guessed into a neighbour;
+	//     absent when none holds
 	//   - unscreened: string — why nothing was screened: a driver that
 	//     cannot read an image's config (kubernetes, whose images the
 	//     kubelet pulls) or a failed read. The run PROCEEDS under that
-	//     stated silence; nothing is ever inferred from it. Absent when
-	//     the screen ran
+	//     stated silence; nothing is ever inferred from it, and not even
+	//     `planted` travels. Absent when the screen ran
+	//   - undeduced: string — why no disposition could be measured
+	//     although the class WAS read: no container was created (the
+	//     boot was refused, or Start failed), the driver cannot read one
+	//     back, or the read failed. NOT ONE disposition travels with it
+	//     — an empty `neutralized` beside it would read as "nothing was
+	//     planted" where the fact is "nobody looked". Absent when the
+	//     container was read
 	//   - refused: string — why a neutralisation the class DECIDED on
 	//     could not be installed, with refused_names ([]string, sorted)
 	//     naming it. Its own pair of keys, never `unscreened` and never
-	//     `reported`: this is the one disposition under which the run
-	//     does NOT start, so the names were neither overridden nor kept
-	//     by a container — there is no container. Absent when every
+	//     `undeduced` alone: this is the one disposition under which the
+	//     run does NOT start, so the names were neither overridden nor
+	//     kept by a container — there is no container. Absent when every
 	//     decided override took (ARB-119)
 	//   - run_id: the run scope
 	EventSandboxImageEnvPlanted EventType = "sandbox_image_env_planted"

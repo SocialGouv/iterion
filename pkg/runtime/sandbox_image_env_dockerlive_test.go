@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -35,28 +36,42 @@ import (
 // claim the whole screen rests on: every disposition the operator reads
 // describes the container that actually started.
 //
-// It drives the real [docker.Driver] from Prepare through the screen's own
-// seam to Start, on a throwaway image that bakes one name per disposition,
-// with the RunInfo an enforced network policy and TLS inspection produce —
-// the configuration under which Start appends `--env` pairs of its own.
-// Then it asks `docker inspect -f '{{json .Config.Env}}'` and compares,
-// name by name:
+// It drives the real [docker.Driver] from Prepare through the seam the
+// boot starts its containers with — screen, Start, deduce, report — on a
+// throwaway image that bakes one name per disposition, with the RunInfo an
+// enforced network policy and TLS inspection produce (the configuration
+// under which Start appends `--env` pairs of its own) and the host allow
+// knob naming two of them. Then it asks
+// `docker inspect -f '{{json .Config.Env}}'` with its OWN client and
+// compares, name by name:
 //
 //   - `neutralized` must read EMPTY in the container;
 //   - `driver_set` must read ITERION's value, never empty and never the
 //     image's;
 //   - `operator_set` must read the OPERATOR's value;
-//   - `reported` must read the IMAGE's value.
+//   - `reported` and `allowed` must read the IMAGE's value.
 //
-// Before the `driver_set` disposition existed, this comparison failed on
-// four of nine names: the event published `HTTP_PROXY` as emptied while
-// the container carried the proxy URL.
+// Since the record is DEDUCED from that same container, the agreement is
+// structural rather than lucky — which is the point: what this witness
+// holds is the WIRING of the deduction through the real driver (the
+// container inspect, the resolution order `--env` pairs are applied in,
+// the five dispositions each landing on the name the daemon puts there),
+// and that the image bakes a subject for every arm. Two predictions died
+// here before it: `HTTP_PROXY` published as emptied while the container
+// carried the proxy URL (four of nine names), then `NODE_EXTRA_CA_CERTS`
+// published as "let through untouched" by the host knob while the
+// container carried iterion's per-run CA — which is why the knob names it
+// below and the event is expected to file it under `driver_set`.
 func TestLiveTheImageEnvEventAgreesWithDockerInspect(t *testing.T) {
 	drv, err := docker.New()
 	if err != nil {
 		t.Skipf("docker driver unavailable: %v", err)
 	}
-	t.Setenv(EnvSandboxImageEnvAllow, "")
+	// The knob's two arms in one run: a name nothing of iterion touches
+	// (the container must carry the image's value, filed `allowed`), and
+	// one the driver's own Start overrides (the container must carry
+	// iterion's, filed `driver_set` — the round-4 finding).
+	t.Setenv(EnvSandboxImageEnvAllow, "KUBECONFIG,NODE_EXTRA_CA_CERTS")
 	// A writable docker/buildx config: the build must not need the
 	// operator's own.
 	t.Setenv("DOCKER_CONFIG", t.TempDir())
@@ -90,14 +105,10 @@ func TestLiveTheImageEnvEventAgreesWithDockerInspect(t *testing.T) {
 	}
 
 	rec := &imageEnvRecorder{}
-	screened, err := screenAndReportSandboxImageEnv(
+	run, _, err := startScreenedSandbox(
 		context.Background(), drv, prepared, info, iterlog.Nop(), rec.emit, runID)
 	if err != nil {
-		t.Fatalf("the screen refused the boot: %v", err)
-	}
-	run, err := drv.Start(context.Background(), screened, info)
-	if err != nil {
-		t.Fatalf("Start: %v", err)
+		t.Fatalf("the seam refused the boot: %v", err)
 	}
 	t.Cleanup(func() { _ = run.Cleanup(context.Background()) })
 
@@ -134,18 +145,47 @@ func TestLiveTheImageEnvEventAgreesWithDockerInspect(t *testing.T) {
 			t.Errorf("the event files %s under operator_set and the container has it = %q, want the operator's own value", name, got)
 		}
 	}
-	for _, name := range names(t, payload, "reported") {
-		got, present := actual[name]
-		if !present || got != baked[name] {
-			t.Errorf("the event REPORTS %s — the image's value kept, read by every process — and the container has it = %q (present %v) where the image baked %q: that half promises exactly this",
-				name, got, present, baked[name])
+	for _, disposition := range []string{"reported", "allowed"} {
+		for _, name := range names(t, payload, disposition) {
+			got, present := actual[name]
+			if !present || got != baked[name] {
+				t.Errorf("the event files %s under %s — the image's value kept, read by every process — and the container has it = %q (present %v) where the image baked %q: that is exactly what both of those words promise",
+					name, disposition, got, present, baked[name])
+			}
 		}
 	}
-	// Anti-vacuity: the four arms must each have had a subject, or an
+	// The round-4 finding, at the real driver: the knob named
+	// NODE_EXTRA_CA_CERTS, and the container carries ITERION's per-run CA
+	// for it, so the record must say driver_set and not "untouched".
+	if slices.Contains(names(t, payload, "allowed"), "NODE_EXTRA_CA_CERTS") {
+		t.Errorf("the event files NODE_EXTRA_CA_CERTS as ALLOWED — untouched — and the container has it = %q, which is iterion's own per-run CA: the knob withholds iterion's `--env NAME=`, it does not stop the driver's pair",
+			actual["NODE_EXTRA_CA_CERTS"])
+	}
+	if !slices.Contains(names(t, payload, "driver_set"), "NODE_EXTRA_CA_CERTS") {
+		t.Errorf("driver_set = %q, want NODE_EXTRA_CA_CERTS among them: the driver points it at the per-run CA, and the container is what the record describes",
+			names(t, payload, "driver_set"))
+	}
+	// Nothing is left unattributed: a name the container carries that
+	// neither the image, nor the run, nor the driver's declaration
+	// explains would be a declaration drifting from the argv.
+	if unexplained, present := payload["unexplained"]; present {
+		t.Errorf("the event publishes unexplained = %v: on the real driver every planted name must be attributable, so this is a declaration that drifted from the argv", unexplained)
+	}
+	// Anti-vacuity: the five arms must each have had a subject, or an
 	// agreement over empty lists would read as a verdict.
-	for _, disposition := range []string{"neutralized", "driver_set", "operator_set", "reported"} {
+	for _, disposition := range []string{"neutralized", "driver_set", "operator_set", "reported", "allowed"} {
 		if len(names(t, payload, disposition)) == 0 {
 			t.Errorf("the event carries no %s name: the witness image must bake one per disposition, or this agreement is over an empty set", disposition)
+		}
+	}
+	// And the planted list is the union, read from the IMAGE: it is what
+	// an operator judges the image on, whatever the container did.
+	planted := names(t, payload, "planted")
+	for _, disposition := range []string{"neutralized", "driver_set", "operator_set", "reported", "allowed"} {
+		for _, name := range names(t, payload, disposition) {
+			if !slices.Contains(planted, name) {
+				t.Errorf("%s is filed under %s and absent from planted %q: the two readings of the same image disagree", name, disposition, planted)
+			}
 		}
 	}
 	if !eventRecorded(rec.events, store.EventSandboxImageEnvPlanted) {
@@ -171,7 +211,11 @@ ENV NO_PROXY=planter.example
 ENV NODE_EXTRA_CA_CERTS=/planter/ca.pem
 # operator_set: the run's own env carries this one.
 ENV CODEX_HOME=/planter/codex
-# reported: neither iterion nor the operator sets it.
+# reported: neither iterion nor the operator sets it, and the host knob
+# does not name it.
+ENV DOCKER_CONFIG=/planter/docker
+# allowed: the host knob names this one AND nothing of iterion sets it, so
+# the container must carry the image's own value.
 ENV KUBECONFIG=/planter/kubeconfig
 `
 	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(dockerfile), 0o600); err != nil {

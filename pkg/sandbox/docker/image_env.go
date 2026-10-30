@@ -15,6 +15,11 @@ import (
 // not — see [sandbox.ImageEnvScreener].
 var _ sandbox.ImageEnvScreener = (*Driver)(nil)
 
+// Compile-time guard: and it reads back the container it created, which is
+// what makes the audit record a measurement rather than a prediction — see
+// [sandbox.StartedEnvReader].
+var _ sandbox.StartedEnvReader = (*Driver)(nil)
+
 // ImageConfigEnv implements [sandbox.ImageEnvScreener]: the `ENV` entries of
 // the image the prepared spec will start, read with `image inspect`.
 //
@@ -41,6 +46,43 @@ func (d *Driver) ImageConfigEnv(ctx context.Context, prepared sandbox.PreparedSp
 	var env []string
 	if err := json.Unmarshal(out, &env); err != nil {
 		return nil, fmt.Errorf("docker driver: image env: decoding %s's .Config.Env: %w", image, err)
+	}
+	return env, nil
+}
+
+// StartedContainerEnv implements [sandbox.StartedEnvReader]: the
+// environment the container of this run was CREATED with, read with
+// `container inspect` on the id `docker run` returned — the image's own
+// `ENV` with every `--env` pair of the argv applied on top, which is
+// exactly the thing the audit record of the image env screen claims
+// something about.
+//
+// `.Config.Env` and not `/proc/1/environ`: the former is the created
+// container's own env, which is the layer the screen acts on, and it is
+// readable whether or not pid 1 is still alive. The runtime's own in-
+// container `docker exec` layer is deliberately NOT in it — the screen
+// makes no claim about that layer, and docs/sandbox.md says so.
+func (d *Driver) StartedContainerEnv(ctx context.Context, run sandbox.Run) ([]string, error) {
+	r, ok := run.(*Run)
+	if !ok {
+		return nil, fmt.Errorf("docker driver: started container env: run is %T, not this driver's", run)
+	}
+	if r.containerID == "" {
+		return nil, fmt.Errorf("docker driver: started container env: the run carries no container id")
+	}
+	out, err := runtimeCmdContext(ctx, d.rt, "container", "inspect", "--format", "{{json .Config.Env}}", r.containerID).Output()
+	if err != nil {
+		return nil, fmt.Errorf("docker driver: started container env: %s container inspect %s: %w", d.rt, r.containerID, err)
+	}
+	var env []string
+	if err := json.Unmarshal(out, &env); err != nil {
+		return nil, fmt.Errorf("docker driver: started container env: decoding %s's .Config.Env: %w", r.containerID, err)
+	}
+	// A created container always carries PATH at least (the image's, or
+	// the daemon's default), so an empty list is a read that answered
+	// about nothing — never "a container with no environment".
+	if len(env) == 0 {
+		return nil, fmt.Errorf("docker driver: started container env: %s inspects with an empty .Config.Env", r.containerID)
 	}
 	return env, nil
 }

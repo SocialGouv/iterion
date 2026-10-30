@@ -730,10 +730,13 @@ two halves of the class get different answers:
   `OTEL_`, `SENTRY_`, `GH_`, `GLAB_`, `CLAW_`, `CLAWD_`, `HOOK_`, …)
   and the exact endpoint, region, project and managed-identity names
   (`OPENAI_API_BASE`, `BEDROCK_REGION`, `IMDS_ENDPOINT`, …);
-- **and every channel that leads to CODE, or to a configuration a
-  program EXECUTES, at the startup of a process iterion runs there** —
-  which belongs to that sub-class for exactly one reason: a member of it
-  re-plants everything the first half empties. The measured case is
+- **and every channel MEASURED to lead to CODE, or to a configuration a
+  program EXECUTES, at the startup of a process iterion runs there,
+  whose EMPTY value is inert** — such a channel belongs to that
+  sub-class for exactly one reason: a member of it re-plants everything
+  the first half empties. Both halves of that sentence are load-bearing,
+  and the names they leave out are written as a residue below rather
+  than left to be guessed. The measured case is
   `LD_PRELOAD`, whose constructor ran in **pid 1** of a container created
   with `--env ANTHROPIC_BASE_URL= --env AWS_ACCESS_KEY_ID= …` and put the
   planter's route and keys back — for `bash`, for `node` and for an
@@ -772,9 +775,64 @@ two halves of the class get different answers:
   for its own global modules, or `OPENSSL_CONF` for its own provider,
   loses it — and the escape hatch below is the operator's answer. The
   FAMILIES keep their own answer where a member is legitimate:
-  `LD_LIBRARY_PATH` is how a CUDA-style image finds its runtime,
   `OPENSSL_MODULES`, `BUN_INSTALL` and `NPM_CONFIG_PREFIX` name
   directories, and the rest of `GIT_*` is reported;
+
+  **The RESIDUE of that sub-class, measured, and reported rather than
+  emptied.** Three groups of names reach code and keep their value, each
+  for a reason that was measured rather than argued — the table in
+  pkg/runtime's `sandbox_image_env_startup_code_class_test.go` carries
+  the same rows, so neither this page nor that file can state the set
+  alone:
+  - **`GIT_CONFIG_PARAMETERS`** — git's SECOND configuration road from
+    the environment, the serialised form `git -c` passes to its own
+    children: one variable, no file, no `HOME`. Measured on the default
+    sandbox image: a planted
+    `'core.sshCommand=…'` ran the planter's program on
+    `git ls-remote` (uid 1000), `core.hooksPath` ran it on the commit an
+    agent makes, and `credential.helper` is #2316's mechanism by the
+    same single variable; `--env GIT_CONFIG_PARAMETERS=` is inert
+    (`git config --get` answers nothing, `init`/`commit`/`log`/`clone`
+    all rc=0) and no image iterion publishes bakes it. It satisfies
+    every criterion of the neutralised half and is NOT in it: the row is
+    an open operator decision, and until it is taken this page says so.
+  - **the command-valued `GIT_*` names** — `GIT_SSH_COMMAND`, `GIT_SSH`,
+    `GIT_PROXY_COMMAND`, `GIT_ASKPASS`, `GIT_EDITOR`,
+    `GIT_EXTERNAL_DIFF`, `GIT_TEMPLATE_DIR`. Their value IS a command
+    string, so the channel fires: measured on git 2.47.3 in the default
+    image, the planter's program ran once per file of a plain `git diff`
+    (`GIT_EXTERNAL_DIFF`) and on a fetch (`GIT_SSH_COMMAND`), with the
+    run's own credentials in its environment. They stay reported because
+    the *second* criterion fails, not the first: `--env NAME=` does not
+    close them — git runs the empty string as a command, so that same
+    `git diff` exits 128 with `error: cannot run : No such file or
+    directory` / `fatal: external diff died`, and so does a fetch. That
+    is the diff of the run's own work.
+    Closing them needs a disposition iterion does not have, one that
+    DROPS a name from the container's env (`--env NAME` with no `=`,
+    measured to remove the image's entry outright); the three
+    dispositions today all set a value.
+  - **the loader's search path and `PATH`** — `LD_LIBRARY_PATH` is how a
+    CUDA-style image finds its own runtime
+    (`nvidia/cuda:12.6.2-base-ubuntu24.04` bakes it) and an empty `PATH`
+    leaves the container resolving no command, so both keep their value.
+    The cost is measured and it is the whole credential half: an image
+    baking `LD_LIBRARY_PATH=/planted/lib` with one shim in it
+    (`libdl.so.2`, whose glibc original is an empty stub) had **node**
+    read back the planter's route, token, access key and Bedrock switch
+    — with every neutralisation of the table above applied, and over the
+    operator's own token. The host-side allow knob is the answer to the
+    CUDA cost; it is not an answer to this one.
+
+  What the residue is, said plainly: **an image a repository chooses is
+  the repository's code** — its binaries, its files and its
+  `postCreateCommand` — by the same contract that makes "the
+  devcontainer's image/build, mounts, user, `workspaceFolder` and
+  `postCreateCommand` still define the container" auto mode's rule, and
+  the fork road into that position is refused at admission
+  (`admitSandboxImageBackends`). What this screen closes is the ENV road
+  into the *operator's own* credentials and model routes, and the rows
+  above are where that road is still open;
 - the **rest of the class is reported only, and keeps its value**.
   Emptying `PATH`, `HOME`, `GOROOT`, a loader library path or an `XDG_`
   dir breaks an image doing its job — iterion's own `full` variant bakes
@@ -793,39 +851,70 @@ repository.
 
 Every screen that finds something says so **twice**: a warning per
 disposition in the run's log, and one `sandbox_image_env_planted` event
-carrying the whole class — `image`, `neutralized`, `reported`, plus
-`allowed`, `operator_set`, `unscreened` and `refused`/`refused_names` when
-those hold. The two name lists always travel, the empty one included, so
-"this half caught nothing" never reads like "this event does not report
-that half". An image that plants nothing of the class emits nothing.
+carrying the whole class. An image that plants nothing of the class emits
+nothing.
 
-`neutralized` is what the driver **actually** emptied, not what the class
-decided, and two dispositions carry the difference.
+**The record is DEDUCED from the container, not predicted from the
+spec.** `planted` is the one fact that needs no container: the names of
+the class the image bakes, read from `image inspect`, and what an
+operator judges the image on. Every other key is a claim about a
+container's own environment, so each is a MEASUREMENT of it — the
+image's `ENV` compared, name by name, to the `--env`-resolved
+environment the container was CREATED with, read back by the driver that
+created it (`sandbox.StartedEnvReader`, `docker container inspect -f
+'{{json .Config.Env}}'`):
 
-A name the run's own reviewed env already carries — the workflow's
-`sandbox.env:`, the launch overlay, the forfait config dirs — is left at
-the **operator's** value and travels under `operator_set`. A name the
-**driver's own Start** sets travels under `driver_set`: it appends
-`--env` pairs of its own *after* the spec's — the egress proxy's six
-spellings when a network policy is enforced, the six CA bundles and the
-JVM truststore when that proxy inspects TLS — and the last pair for a
-name is the one the container gets. The planted value reaches nothing in
-either case, because both of those channels win; but the container is not
-created with `NAME=`, and an audit record that said otherwise would
-describe a container `docker inspect` contradicts. Measured: of nine
-names a planted image contributed on a run with an enforced policy, four
-(`HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, `NO_PROXY`) read the proxy
-URL in `docker inspect -f '{{json .Config.Env}}'`, not an empty string.
+- `neutralized` — the container carries the name EMPTY where the image
+  baked a value;
+- `reported` — the container carries the image's exact value, which its
+  processes read;
+- `allowed` — the same measurement for a name the host knob named: the
+  image's own value, untouched, as the operator asked;
+- `operator_set` — the container carries the value the RUN's own
+  reviewed env holds (the workflow's `sandbox.env:`, the launch overlay,
+  the forfait config dirs);
+- `driver_set` — the container carries ITERION's own value, for a name
+  the driver DECLARES its Start sets (`StartEnvNames`): it appends
+  `--env` pairs of its own *after* the spec's — the egress proxy's six
+  spellings when a network policy is enforced, the six CA bundles and
+  the JVM truststore when that proxy inspects TLS — and the last pair
+  for a name is the one the container gets;
+- `unexplained` — the container's value matches none of those. Nothing
+  in this repository produces one; it is the shape of a driver whose
+  declaration drifted from its argv, and it is published rather than
+  filed under a neighbour.
+
+`neutralized` and `reported` always travel together once the container
+was read, the empty list included, so "this half caught nothing" never
+reads like "this event does not report that half"; the four others
+travel only when they hold, so their presence is the signal.
+
+Why a measurement and not a rule: the rules were applied in the wrong
+ORDER twice. A record predicted from them published `HTTP_PROXY` as
+emptied of a container carrying the proxy URL (four of nine names on one
+run), and then `NODE_EXTRA_CA_CERTS` as "let through untouched" of a
+container carrying iterion's per-run CA — an operator who allowed their
+image's CA bundle through read that the image controlled the TLS trust
+of the connections carrying their credentials. Both times the rules were
+right. Read off the container, the question cannot arise: the host knob
+withholds iterion's `--env NAME=`, it does not stop the driver's pair
+from winning, and the name lands where the container puts it.
+
+**A container that cannot be read says so.** `undeduced` carries the
+reason — no container was created (the screen refused the boot, or Start
+failed), the driver cannot read one back, or the read failed — and then
+**not one disposition travels**: `planted` plus that reason is the whole
+record. An empty `neutralized` beside it would read as "nothing was
+planted" where the fact is "nobody looked". `unscreened` is the same
+discipline one step earlier: the class itself was never read, so not
+even `planted` is known.
 
 Both partitions cover the **whole** class, the reported half included:
 iterion sets seven of those names itself — `HOME` under `host_state`, and
 the six CA bundles under TLS inspection — so a `reported` list that held
 them would promise the image controls the TLS trust of the connections
 that carry the run's credentials, when iterion's per-run CA is what the
-container got. The driver DECLARES the names its own Start will set
-(`sandbox.ImageEnvScreener.StartEnvNames`, read from the same lists the
-argv is built from), because nothing else can know: those values come
-from the RunInfo inside `Start` and appear in no spec.
+container got.
 
 **A neutralisation the driver refuses stops the run** — and **no docker
 image can trigger it today**, which is proved rather than assumed: the
@@ -849,10 +938,15 @@ answer to a refusal they judge acceptable is the host-side allow knob
 below.
 
 A name let through keeps its value and is still reported — the operator
-asked for the variable, not for silence. A variable the screen
-neutralises is **set and empty**, not absent: `docker inspect` shows it,
-and a consumer that reads presence rather than value still sees it. That
-is the accepted cost of not refusing an image that works.
+asked for the variable, not for silence. What the knob withholds is
+ITERION's `--env NAME=`; it does not stop the **driver's own pair** from
+winning, so a name it lets through on a run with an enforced network
+policy (`HTTPS_PROXY`) or TLS inspection (`NODE_EXTRA_CA_CERTS`) is
+published under `driver_set`, not `allowed`: the event says what the
+container has. A variable the screen neutralises is **set and empty**,
+not absent: `docker inspect` shows it, and a consumer that reads
+presence rather than value still sees it. That is the accepted cost of
+not refusing an image that works.
 
 **Where the override applies, measured.** The screen acts on the layer
 the container is *created* with: `/proc/1/environ` of a run on a planted

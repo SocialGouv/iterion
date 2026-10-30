@@ -408,18 +408,56 @@ type ImageEnvScreener interface {
 	// prepared spec's, which no caller can see from the spec: the egress
 	// proxy's variables, the per-run CA bundles, a truststore.
 	//
-	// It exists because the audit record the caller publishes says what
-	// the CONTAINER has, and `docker inspect` is the judge: a name the
-	// driver's own argv sets is neither emptied nor left at the image's
-	// value, and a screen that could not ask would publish one of those
-	// two as true. Read where those pairs are BUILT, so the declaration
-	// and the argv cannot drift; a screener with no pairs of its own
-	// returns nil.
+	// It is an ATTRIBUTION, not the audit record: what the container
+	// holds is read from the container ([StartedEnvReader]), and this
+	// answers the next question — the value that is neither the image's
+	// nor the run's own came from the driver, and an operator finds such
+	// a name in no `.bot` of theirs. Read where those pairs are BUILT, so
+	// the declaration and the argv cannot drift; a screener with no pairs
+	// of its own returns nil.
 	//
 	// It is part of this interface rather than an optional sibling
-	// because a screener that cannot answer it has no honest audit
-	// record to publish.
+	// because a screener that cannot answer it can name no source for a
+	// value the container carries.
 	StartEnvNames(info RunInfo) []string
+}
+
+// StartedEnvReader is an optional interface a [Driver] may implement so the
+// runtime can DEDUCE what an image's baked-in `ENV` did to the container
+// that actually started, instead of predicting it from the spec (#2317).
+//
+// It exists because a prediction was wrong twice. The screen knows what it
+// asked for — `--env NAME=` for the credential sub-class — and what else
+// gives those names a value in principle (the run's own env, the driver's
+// own pairs, the host allow knob); reassembling the container's state from
+// those rules published `HTTP_PROXY` as "set and EMPTY", then
+// `NODE_EXTRA_CA_CERTS` as "let through untouched", of a container
+// `docker inspect` showed carrying iterion's own value. Each time the rule
+// was right and the ORDER it was applied in was not, which is a defect no
+// amount of care in the predicting caller removes.
+//
+// So the audit record is read off the container: the image's `ENV`
+// ([ImageEnvScreener.ImageConfigEnv]) compared, name by name, to what the
+// container was created with. A disposition is then a MEASUREMENT of the
+// pair — emptied, kept, replaced — and cannot contradict `docker inspect`
+// by construction. A driver that does not implement this says it does not
+// know, and the run's record says so: nothing is ever filed under a
+// disposition the container did not witness.
+type StartedEnvReader interface {
+	// StartedContainerEnv returns the `KEY=value` entries the container of
+	// this Run was CREATED with — the image's own `ENV` with every `--env`
+	// pair applied on top, in the resolution order a process in it reads
+	// (the LAST entry for a name wins).
+	//
+	// The Run is the one this driver's own Start returned: a driver that
+	// is handed another's answers with an error rather than guessing.
+	//
+	// The error is the honest answer for "could not be read" — a daemon
+	// that refused, a container already gone — and the caller reports the
+	// dispositions as NOT deduced, with the reason. It must never be
+	// swallowed into an empty list, which would read as a container with
+	// no environment at all.
+	StartedContainerEnv(ctx context.Context, run Run) ([]string, error)
 }
 
 // SchedulingPolicyReporter is implemented by drivers that stamp a

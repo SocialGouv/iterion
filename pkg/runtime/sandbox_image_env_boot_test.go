@@ -3,6 +3,7 @@ package runtime
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -20,11 +21,16 @@ import (
 // is exactly the state the single seam exists to make impossible, and one
 // discarded assignment away.
 //
-// So this drives the REAL boot, records the spec that reached Start, and
-// asks the question at the departure: does the container start with the
-// neutralisation, and does the event the operator reads AGREE with it?
-// The agreement is the assertion that matters — a guard whose two halves
-// can disagree is a guard nobody can audit.
+// So this drives the REAL boot — resolveAndStartSandbox — records the spec
+// that reached Start, and asks the question at the departure: does the
+// container start with the neutralisation?
+//
+// The second half is the new contract (#2317 round 5): this fixture's
+// driver answers Start with an error, so NO container exists, and the
+// record the boot publishes must claim nothing about one. The
+// dispositions of this event are measurements of a container's own
+// environment; here there is none, and the honest record is the names the
+// IMAGE plants plus the reason nothing could be measured.
 func TestTheContainerStartsWithTheSpecTheScreenReturned(t *testing.T) {
 	driver, events, err := bootOnPlantedImage(t, nil)
 
@@ -65,19 +71,31 @@ func TestTheContainerStartsWithTheSpecTheScreenReturned(t *testing.T) {
 		t.Errorf("the spec handed to Start neutralises PATH (%v): the container would resolve no command", startedWith)
 	}
 
-	// The event an operator reads must describe THAT spec. Compared
-	// against the recorded start rather than against a literal: a
-	// hard-coded list would pass while the two drifted apart, which is
-	// the audit failure this seam was made one function to prevent.
+	// The record the operator reads is published by the BOOT — which is
+	// how this witness proves the boot goes through the screen's seam at
+	// all — and it describes what it can: the names the image plants.
 	payload := plantedPayload(t, events)
-	if got := names(t, payload, "neutralized"); !slices.Equal(got, startedWith) {
-		t.Errorf("the event says %v was neutralised and the container STARTED with %v — the operator reads the event, the container runs the spec, and a boot where the two can disagree is a guard nobody can audit", got, startedWith)
-	}
-	if got := names(t, payload, "reported"); !slices.Equal(got, []string{"PATH"}) {
-		t.Errorf("reported = %v, want [PATH]: the kept half decides whether such an image belongs in the run at all", got)
-	}
 	if got := payload["image"]; got != "ghcr.io/planter/dev:1" {
 		t.Errorf("the event names image %v, want the one the run started from", got)
+	}
+	wantPlanted := append(slices.Clone(wantNeutralized), "PATH")
+	slices.Sort(wantPlanted)
+	if got := names(t, payload, "planted"); !slices.Equal(got, wantPlanted) {
+		t.Errorf("planted = %v, want %v — what the IMAGE bakes is the fact that does not depend on a container", got, wantPlanted)
+	}
+	// No container was created, so not one disposition may travel: each
+	// of them is a claim about a container's own environment. A record
+	// that published `neutralized: [ANTHROPIC_BASE_URL …]` here would be
+	// describing the spec it HOPED for, which is precisely the kind of
+	// claim `docker inspect` contradicted twice.
+	undeduced, _ := payload["undeduced"].(string)
+	if !strings.Contains(undeduced, "no container was created") {
+		t.Errorf("undeduced = %q, want the reason: this boot's Start failed, so nothing can be measured", undeduced)
+	}
+	for _, key := range []string{"neutralized", "reported", "allowed", "operator_set", "driver_set", "unexplained"} {
+		if _, present := payload[key]; present {
+			t.Errorf("%s travels on a boot where Start failed: %v — the dispositions are measurements of a container, and this run has none", key, payload[key])
+		}
 	}
 	// A started sandbox is the other half of the record: the refusal arm
 	// of TestTheBootRefusesToStartWhenANeutralisationIsRefused asserts

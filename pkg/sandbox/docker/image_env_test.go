@@ -24,6 +24,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/devcontainer"
+	"github.com/SocialGouv/iterion/pkg/sandbox/netproxy"
 )
 
 // discardLogger is a logger whose output goes nowhere: these tests assert on
@@ -466,4 +467,126 @@ func testCACert() []byte {
 		panic("test CA cert: " + err.Error())
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+// TestEveryJavaTrustPairCarriesItsOwnValue holds the JVM truststore trio
+// at the COUPLING, which a refactor had reduced to a shared index.
+//
+// The three values are three different things — a container path, a
+// password, a `-D` option string — and they were appended by walking a
+// list of values with `javaTrustEnvNames[i]` as the name. Both lists
+// compile in any order, so a reorder of either hands `JAVA_TOOL_OPTIONS`
+// the p12 PATH (which the JVM rejects as an option) and leaves the
+// truststore unset, with [Driver.StartEnvNames] still declaring the right
+// NAMES — an audit record green over a wrong argv, and TLS inspection
+// silently broken for every JVM in the container.
+//
+// So the assertion is per NAME: what does the pair carrying this name
+// hold, and does it mean what the name says. A list built as pairs cannot
+// fail it; a list paired by index does the moment either order changes.
+func TestEveryJavaTrustPairCarriesItsOwnValue(t *testing.T) {
+	info := inspectedRunInfo()
+	args, dirs, err := caInjectionArgs(info)
+	t.Cleanup(func() { cleanupTempDirs(dirs) })
+	if err != nil {
+		t.Fatalf("caInjectionArgs: %v", err)
+	}
+	pairs := map[string]string{}
+	for i, arg := range args {
+		if arg != "--env" || i+1 >= len(args) {
+			continue
+		}
+		name, value, _ := strings.Cut(args[i+1], "=")
+		pairs[name] = value
+	}
+
+	// The truststore PATH, and the same path is what the `-v` arg mounts
+	// the p12 at: the name's meaning is a file the JVM can open.
+	store, ok := pairs["ITERION_JAVA_TRUSTSTORE"]
+	if !ok {
+		t.Fatalf("ITERION_JAVA_TRUSTSTORE is not among the pairs: %q — without it this witness has no subject", args)
+	}
+	if store != javaTrustStoreContainerPath {
+		t.Errorf("ITERION_JAVA_TRUSTSTORE=%q, want the container path of the mounted keystore (%q): a JVM opens this as a file",
+			store, javaTrustStoreContainerPath)
+	}
+	if !slices.Contains(args, "-v") || !slices.ContainsFunc(args, func(a string) bool {
+		return strings.HasSuffix(a, javaTrustStoreContainerPath+":ro")
+	}) {
+		t.Errorf("no `-v …:%s:ro` mount among %q: the name points at a file nothing put there", javaTrustStoreContainerPath, args)
+	}
+
+	// The PASSWORD, which is the one netproxy mints the store with.
+	if got := pairs["ITERION_JAVA_TRUSTSTORE_PASSWORD"]; got != netproxy.JavaTrustStorePassword {
+		t.Errorf("ITERION_JAVA_TRUSTSTORE_PASSWORD=%q, want netproxy's own (%q): a JVM reads it to open the store",
+			got, netproxy.JavaTrustStorePassword)
+	}
+
+	// And the OPTION string, which is neither of the two above: it must
+	// be a `-D` pair naming both.
+	opts, ok := pairs["JAVA_TOOL_OPTIONS"]
+	if !ok {
+		t.Fatalf("JAVA_TOOL_OPTIONS is not among the pairs: %q", args)
+	}
+	if !strings.HasPrefix(opts, "-Djavax.net.ssl.trustStore=") {
+		t.Errorf("JAVA_TOOL_OPTIONS=%q, want a `-D` option string: a JVM handed anything else refuses the option and runs with NO truststore, which is TLS inspection broken in silence", opts)
+	}
+	for _, want := range []string{
+		"-Djavax.net.ssl.trustStore=" + javaTrustStoreContainerPath,
+		"-Djavax.net.ssl.trustStorePassword=" + netproxy.JavaTrustStorePassword,
+	} {
+		if !strings.Contains(opts, want) {
+			t.Errorf("JAVA_TOOL_OPTIONS=%q does not carry %q", opts, want)
+		}
+	}
+
+	// The trio's names are read FROM the pairs, so the declaration the
+	// image env screen reads cannot drift from what the argv sets.
+	declared := javaTrustEnvNames()
+	if len(declared) != 3 {
+		t.Fatalf("javaTrustEnvNames() = %q, want the three names of the trio", declared)
+	}
+	for _, name := range declared {
+		if _, present := pairs[name]; !present {
+			t.Errorf("javaTrustEnvNames() declares %q and the argv sets no such pair: %q", name, args)
+		}
+	}
+}
+
+// TestStartedContainerEnvRefusesWhatItCannotRead: the deduction of the
+// image env screen reads this method's answer as a MEASUREMENT of the
+// container, so every "I cannot tell" must come back as an error. A nil
+// slice would read as a container with no environment at all, and the
+// record would file every planted name as dropped.
+//
+// The happy path needs a daemon and is witnessed end to end against
+// `docker inspect` (pkg/runtime's TestLiveTheImageEnvEventAgreesWithDockerInspect).
+func TestStartedContainerEnvRefusesWhatItCannotRead(t *testing.T) {
+	d := &Driver{rt: RuntimeDocker, logger: discardLogger()}
+
+	t.Run("a run from another driver", func(t *testing.T) {
+		env, err := d.StartedContainerEnv(context.Background(), &foreignRun{})
+		if err == nil {
+			t.Fatalf("StartedContainerEnv accepted a %T and answered %q: a driver that is handed another's run must say so, never guess", &foreignRun{}, env)
+		}
+		if !strings.Contains(err.Error(), "not this driver's") {
+			t.Errorf("the error is %q, want it to say the run is not this driver's", err)
+		}
+	})
+
+	t.Run("a run with no container id", func(t *testing.T) {
+		env, err := d.StartedContainerEnv(context.Background(), &Run{driver: d})
+		if err == nil {
+			t.Fatalf("StartedContainerEnv answered %q for a run carrying no container id", env)
+		}
+		if !strings.Contains(err.Error(), "no container id") {
+			t.Errorf("the error is %q, want it to name the missing container id", err)
+		}
+	})
+}
+
+// foreignRun is a [sandbox.Run] from another driver — the one thing this
+// driver's reader must refuse rather than answer about.
+type foreignRun struct {
+	sandbox.Run
 }

@@ -116,7 +116,7 @@ func TestTheImageScreenNeutralisesEveryStartupCodeChannel(t *testing.T) {
 		// absent.
 		{"ld.so", "every process iterion starts there", "LD_LIBRARY_PATH",
 			"the directories the loader searches, hence which library is found", true, false,
-			"not emptied: it is how a CUDA-style image finds its own runtime, so an empty value breaks an image doing its job"},
+			"not emptied: it is how a CUDA-style image finds its own runtime (nvidia/cuda:12.6.2-base-ubuntu24.04 bakes it), so an empty value breaks an image doing its job — and the COST was measured, it is the whole credential half: an image baking LD_LIBRARY_PATH=/planted/lib with one shim in it (libdl.so.2, whose glibc original is an empty stub) had NODE read back the planter's route, token, access key and Bedrock switch, with every neutralisation of this table applied and over the operator's own token"},
 		{"sh", "every Run.Exec of a generated script", "ENV",
 			"a startup file, in an interactive POSIX shell", true, false,
 			"measured on both shapes: the default image's /bin/sh (dash) and an image whose /bin/sh is bash BOTH ignore it for a non-interactive `sh -c`, where BASH_ENV is the channel that fires"},
@@ -126,6 +126,15 @@ func TestTheImageScreenNeutralisesEveryStartupCodeChannel(t *testing.T) {
 		{"perl", "no site: iterion starts no perl in the container", "PERL5OPT",
 			"-M<module>, run at interpreter startup", false, false,
 			"measured that the channel FIRES (the planted module ran under `perl -e`), and that no site of iterion's own starts perl there: the deny class takes the names that steer a process ITERION starts"},
+		{"git", "the clone, commit and push of the run's work", "GIT_CONFIG_PARAMETERS",
+			"git's SECOND config road from the environment: the serialised form `git -c` passes to its children, one variable, no file and no HOME", true, false,
+			"not emptied, and it meets every criterion of the neutralised half: a planted 'core.sshCommand=…' ran the planter's program on `git ls-remote` (uid 1000, default sandbox image), core.hooksPath ran it on the commit an agent makes, credential.helper is #2316's mechanism by the same single variable; `--env GIT_CONFIG_PARAMETERS=` is inert (`git config --get` answers nothing, init/commit/log/clone all rc=0) and no image iterion publishes bakes it. The row is an open operator decision, and docs/sandbox.md states it as a residue rather than implying it closed"},
+		{"git", "the clone, commit and push of the run's work", "GIT_EXTERNAL_DIFF",
+			"a program git RUNS for every file of a diff", true, false,
+			"not emptied because EMPTY IS NOT INERT, which is the second criterion. Measured on git 2.47.3 in the default sandbox image: planted, the program ran once per file of a plain `git diff` with the path on its argv (rc=0, marker on stderr); EMPTIED, the same `git diff` answers `error: cannot run : No such file or directory` / `fatal: external diff died, stopping at f.txt` and exits 128 — the diff of the run's own work. (`git diff --stat`, `git log -p` and `git show` do not call the diff driver by default and stay rc=0 either way.) Closing it needs a disposition that DROPS a name (a bare `--env NAME`, which removes the image's entry outright); all three dispositions today set a value"},
+		{"git", "the clone, commit and push of the run's work", "GIT_SSH_COMMAND",
+			"the program git runs instead of ssh, for every fetch and push", true, false,
+			"same two measurements as GIT_EXTERNAL_DIFF, on the same image: the planted program ran on `git ls-remote`, and emptied that fetch exits 128 with `error: cannot run : No such file or directory` / `fatal: unable to fork`"},
 		{"git", "the clone, commit and push of the run's work", "HOME",
 			"the ~/.gitconfig every insteadOf and credential helper is read from", true, false,
 			"not emptied, and assumed as such (question Jo #59): an empty HOME sends every configuration read to the DEFAULT, which under host_state is the operator's own home"},
@@ -141,9 +150,9 @@ func TestTheImageScreenNeutralisesEveryStartupCodeChannel(t *testing.T) {
 	}
 
 	// Anti-vacuity: the table is the claim, and an empty or shrunken one
-	// would certify nothing. 16 neutralised rows and 8 residue rows at the
-	// time of writing.
-	if len(channels) < 20 {
+	// would certify nothing. 16 neutralised rows and 11 residue rows at
+	// the time of writing.
+	if len(channels) < 25 {
 		t.Fatalf("the startup-code class holds %d rows: a table this small has stopped describing the programs the image ships", len(channels))
 	}
 	neutralised := 0
@@ -213,6 +222,71 @@ func TestThePromiseAboutTheNeutralisedSubClassIsBoundedToTheEnvRoad(t *testing.T
 	} {
 		if !strings.Contains(page, required) {
 			t.Errorf("docs/sandbox.md no longer states %q — the bounded promise and the residue beside it are what the npmrc measurement bought", required)
+		}
+	}
+}
+
+// TestTheCommandValuedGitFamilyIsReportedAsOneResidue holds the row the
+// table above states for two measured members, at the FAMILY: every
+// `GIT_*` name whose value IS a command git runs reads the same
+// disposition, so a page that calls them one residue is describing the
+// screen and not one example of it.
+//
+// Two of them were measured through git itself (`GIT_EXTERNAL_DIFF` on a
+// plain `git diff`, `GIT_SSH_COMMAND` on a fetch); the rest share the
+// shape and were not individually exercised, which is why this is an
+// assertion about the SCREEN's verdict and not a row of the measurement
+// table. The two facts the page states for all of them — the channel
+// fires, and `--env NAME=` does not close it because git runs the empty
+// string as a command — are the measured pair.
+func TestTheCommandValuedGitFamilyIsReportedAsOneResidue(t *testing.T) {
+	family := []string{
+		"GIT_SSH_COMMAND", "GIT_SSH", "GIT_PROXY_COMMAND", "GIT_ASKPASS",
+		"GIT_EDITOR", "GIT_EXTERNAL_DIFF", "GIT_TEMPLATE_DIR",
+	}
+	for _, name := range family {
+		denied, neutralize := devcontainer.ScreenImageEnvName(name)
+		if !denied {
+			t.Errorf("ScreenImageEnvName(%q) says the name is OUTSIDE the class: it is a program git runs, so the operator must at least be told", name)
+		}
+		if neutralize {
+			t.Errorf("ScreenImageEnvName(%q) says NEUTRALISE: an empty value makes git answer `cannot run : No such file or directory` and die on the run's own diff or fetch — docs/sandbox.md states this family as a residue, and a page and a screen that disagree is the defect", name)
+		}
+	}
+}
+
+// TestThePageStatesTheResidueOfTheStartupCodeSubClass is the prose half
+// of the table above: the sentence that introduces the neutralised
+// sub-class must not claim EVERY channel that leads to code, because
+// three groups of measured channels stay reported — git's second config
+// road, the command-valued `GIT_*` names, and the loader's search path
+// with `PATH`.
+//
+// The forbidden string is the unbounded sentence itself, and the required
+// ones are the bound and the residue beside it: a prose promise is only
+// testable as the exact words it is made in.
+func TestThePageStatesTheResidueOfTheStartupCodeSubClass(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "sandbox.md"))
+	if err != nil {
+		t.Fatalf("read docs/sandbox.md: %v", err)
+	}
+	page := strings.Join(strings.Fields(string(raw)), " ")
+
+	const unbounded = "and every channel that leads to CODE, or to a configuration a program EXECUTES, at the startup of a process iterion runs there**"
+	if strings.Contains(page, unbounded) {
+		t.Errorf("docs/sandbox.md promises %q: `GIT_CONFIG_PARAMETERS` leads to code and is reported, the command-valued `GIT_*` names lead to code and cannot be emptied, and `LD_LIBRARY_PATH` re-planted the whole credential half in node (all measured) — so the sentence owes its bound and its residue", unbounded)
+	}
+	for _, required := range []string{
+		"every channel MEASURED to lead to CODE",
+		"whose EMPTY value is inert**",
+		"**The RESIDUE of that sub-class, measured, and reported rather than emptied.**",
+		"**`GIT_CONFIG_PARAMETERS`**",
+		"**the command-valued `GIT_*` names**",
+		"**the loader's search path and `PATH`**",
+		"**an image a repository chooses is the repository's code**",
+	} {
+		if !strings.Contains(page, required) {
+			t.Errorf("docs/sandbox.md no longer states %q — the bound and the residue are what the round-4 measurements bought, and a page that drops them tells the operator the ENV road to code is shut", required)
 		}
 	}
 }

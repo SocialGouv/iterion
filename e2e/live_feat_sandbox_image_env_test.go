@@ -249,7 +249,24 @@ func TestLive_Feat_Sandbox_Image_Env(t *testing.T) {
 	if got := payload["image"]; got != plantedImageTag {
 		t.Errorf("the event names image %v, want %s", got, plantedImageTag)
 	}
-	t.Logf("the image's planted credentials and route read EMPTY in the container; the run event reports neutralized=%v", neutralized)
+	// The dispositions above are only worth reading because they were
+	// DEDUCED from the container this run created: the engine asks the
+	// docker driver for the `.Config.Env` of the container it started and
+	// compares it to the image's own ENV, so the record cannot contradict
+	// `docker inspect`. A record that could not be measured says so
+	// instead, and publishes no disposition at all — so `undeduced` here
+	// would mean every assertion above read a list that is absent, and
+	// `planted` is the image-side union the operator judges the image on.
+	if reason, present := payload["undeduced"]; present {
+		t.Errorf("the %s event says it could not read the container (%v): on this run the docker driver created one, and the dispositions must be measurements of it", store.EventSandboxImageEnvPlanted, reason)
+	}
+	planted := payloadNames(t, payload, "planted")
+	for _, want := range []string{"ANTHROPIC_BASE_URL", "BASH_ENV", "KUBECONFIG", "PATH"} {
+		if !slicesContains(planted, want) {
+			t.Errorf("the %s event's planted list is %v, missing %s — it is read from the IMAGE and is what an operator judges it on", store.EventSandboxImageEnvPlanted, planted, want)
+		}
+	}
+	t.Logf("the image's planted credentials and route read EMPTY in the container; the run event reports neutralized=%v, deduced from the container the driver created", neutralized)
 }
 
 // plantingBaseImage resolves the local image the fixture derives FROM:

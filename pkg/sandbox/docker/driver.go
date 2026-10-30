@@ -289,19 +289,51 @@ var (
 )
 
 // caBundleEnvNames are the CA-bundle variables [caInjectionArgs] points at
-// the per-run egress CA, and javaTrustEnvNames the JVM's keystore trio.
-// Same two readers as the proxy names above.
-var (
-	caBundleEnvNames = []string{
-		"NODE_EXTRA_CA_CERTS", // Node / Claude Code (additive)
-		"SSL_CERT_FILE",       // OpenSSL: python ssl, git-over-openssl, ruby, …
-		"CURL_CA_BUNDLE",      // curl
-		"GIT_SSL_CAINFO",      // git
-		"REQUESTS_CA_BUNDLE",  // python requests
-		"NIX_SSL_CERT_FILE",   // nix : sa propre variable, il n'honore pas SSL_CERT_FILE
+// the per-run egress CA. Same two readers as the proxy names above.
+var caBundleEnvNames = []string{
+	"NODE_EXTRA_CA_CERTS", // Node / Claude Code (additive)
+	"SSL_CERT_FILE",       // OpenSSL: python ssl, git-over-openssl, ruby, …
+	"CURL_CA_BUNDLE",      // curl
+	"GIT_SSL_CAINFO",      // git
+	"REQUESTS_CA_BUNDLE",  // python requests
+	"NIX_SSL_CERT_FILE",   // nix : sa propre variable, il n'honore pas SSL_CERT_FILE
+}
+
+// javaTrustStoreContainerPath is where [caInjectionArgs] mounts the JVM
+// truststore, read by the mount argument and by the pair that names it.
+const javaTrustStoreContainerPath = "/run/iterion/egress-truststore.p12"
+
+// javaTrustEnvPair is one `--env` pair of the JVM truststore trio: a name
+// beside the value IT carries.
+type javaTrustEnvPair struct{ name, value string }
+
+// javaTrustPairs is the trio [caInjectionArgs] sets when the egress proxy
+// inspects TLS — a JVM's trust is a keystore-typed file, so none of
+// [caBundleEnvNames] reaches it.
+//
+// Pairs and not two parallel lists: the three values are a path, a
+// password and an option string, so a reorder of either list compiles and
+// mismatches silently. [Driver.StartEnvNames] reads the NAMES from here,
+// which is what keeps the declaration and the argv from drifting.
+func javaTrustPairs() []javaTrustEnvPair {
+	return []javaTrustEnvPair{
+		{"ITERION_JAVA_TRUSTSTORE", javaTrustStoreContainerPath},
+		{"ITERION_JAVA_TRUSTSTORE_PASSWORD", netproxy.JavaTrustStorePassword},
+		{"JAVA_TOOL_OPTIONS", "-Djavax.net.ssl.trustStore=" + javaTrustStoreContainerPath +
+			" -Djavax.net.ssl.trustStorePassword=" + netproxy.JavaTrustStorePassword},
 	}
-	javaTrustEnvNames = []string{"ITERION_JAVA_TRUSTSTORE", "ITERION_JAVA_TRUSTSTORE_PASSWORD", "JAVA_TOOL_OPTIONS"}
-)
+}
+
+// javaTrustEnvNames is the trio's names, in the argv's own order, read
+// from the pairs so a pair added there is declared here by construction.
+func javaTrustEnvNames() []string {
+	pairs := javaTrustPairs()
+	names := make([]string, 0, len(pairs))
+	for _, pair := range pairs {
+		names = append(names, pair.name)
+	}
+	return names
+}
 
 // StartEnvNames implements [sandbox.ImageEnvScreener]: the names
 // [Driver.Start] sets with a value of its own for this RunInfo, read from
@@ -320,7 +352,7 @@ func (d *Driver) StartEnvNames(info sandbox.RunInfo) []string {
 	}
 	if len(info.ProxyCACert) > 0 {
 		names = append(names, caBundleEnvNames...)
-		names = append(names, javaTrustEnvNames...)
+		names = append(names, javaTrustEnvNames()...)
 	}
 	return names
 }
@@ -360,7 +392,7 @@ func hostNetworkArgs(info sandbox.RunInfo, specEnv map[string]string) []string {
 // replace, which is fine here. See docs/secrets.md.
 //
 // Its own function so the `--env` names it sets are read from
-// [caBundleEnvNames] and [javaTrustEnvNames], which
+// [caBundleEnvNames] and [javaTrustPairs], which
 // [Driver.StartEnvNames] declares to the image env screen: a pair built
 // inline in Start would be invisible to that declaration.
 func caInjectionArgs(info sandbox.RunInfo) (args []string, dirs []string, err error) {
@@ -389,15 +421,16 @@ func caInjectionArgs(info sandbox.RunInfo) (args []string, dirs []string, err er
 	if err := os.WriteFile(tsHostPath, trustStore, 0o644); err != nil {
 		return nil, dirs, fmt.Errorf("docker driver: write java truststore: %w", err)
 	}
-	const tsContainerPath = "/run/iterion/egress-truststore.p12"
-	args = append(args, "-v", tsHostPath+":"+tsContainerPath+":ro")
-	for i, value := range []string{
-		tsContainerPath,
-		netproxy.JavaTrustStorePassword,
-		"-Djavax.net.ssl.trustStore=" + tsContainerPath +
-			" -Djavax.net.ssl.trustStorePassword=" + netproxy.JavaTrustStorePassword,
-	} {
-		args = append(args, "--env", javaTrustEnvNames[i]+"="+value)
+	args = append(args, "-v", tsHostPath+":"+javaTrustStoreContainerPath+":ro")
+	// Each name beside ITS value, never two parallel lists paired by
+	// index: the trio's values are three different things (a path, a
+	// password, a JVM option string), a reorder of either list compiles,
+	// and the JVM's answer to `JAVA_TOOL_OPTIONS=<a p12 path>` is to
+	// refuse the option and run with no truststore at all — while
+	// [Driver.StartEnvNames] keeps declaring the right NAMES, so an audit
+	// record would stay green over a wrong argv.
+	for _, pair := range javaTrustPairs() {
+		args = append(args, "--env", pair.name+"="+pair.value)
 	}
 	return args, dirs, nil
 }
