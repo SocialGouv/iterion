@@ -45,14 +45,14 @@ Repeated from #1424 verbatim so the plan cannot drift from its own definition:
 | tools-mcp | 14 | 13 | 0 | 0 | 1 | 0 |
 | triggers | 13 | 13 | 0 | 0 | 0 | 0 |
 | persistence | 9 | 9 | 0 | 0 | 0 | 0 |
-| sandbox | 9 | 6 | 1 | 0 | 0 | 2 |
+| sandbox | 9 | 8 | 0 | 0 | 0 | 1 |
 | webhooks | 9 | 9 | 0 | 0 | 0 | 0 |
 | observability | 8 | 8 | 0 | 0 | 0 | 0 |
 | plugins | 8 | 7 | 1 | 0 | 0 | 0 |
 | forge | 7 | 7 | 0 | 0 | 0 | 0 |
 | integrations | 6 | 2 | 0 | 0 | 0 | 4 |
 | desktop | 1 | 0 | 0 | 0 | 1 | 0 |
-| Total | 403 | 384 | 7 | 1 | 4 | 7 |
+| Total | 403 | 386 | 6 | 1 | 4 | 6 |
 
 The surface axis is the matrix's **Family** column — the one the gate reads and
 the "front door per family" section documents. The `ID` prefix is a naming
@@ -197,14 +197,26 @@ re-measuring it.
 
 ### 5. Sandbox — #2796 (epic #1405)
 
-- **Already free**: 5 / 8 rows — proportionally the least free surface.
-- `sandbox.docker-driver` (live) is **tool-gated, not paid**: it needs a
-  container runtime, not a credential. Ledger: `test:live:feat:sandbox-net`
-  reads `never`.
-- **Excluded**: `sandbox.kubernetes-pod-lifecycle` (live cluster + registry,
-  no fake apiserver harness in this repo), `sandbox.buildkit` (a Docker daemon
-  with BuildKit; rejected by design on the k8s driver). Both premises are
-  re-measurable and the container-env family is building harnesses next door.
+- **Verdict of the 2026-10-31 re-read**: 8 / 9 rows now
+  `covered-deterministic`; the one `excluded` row kept its premise and the
+  ledger row below stays honest about the gate.
+- `sandbox.docker-driver` **promoted**: the driver shells out to the CLI, so a
+  stand-in daemon binary (the `Runtime` seam) drives the public driver path —
+  the docker run argv with the workspace bind-mount, the stale-name conflict
+  retry, exec, cleanup, probe-before-pull. What still needs a daemon is
+  **tool-gated, not paid**: it needs a container runtime, never a credential.
+  Ledger: `test:live:feat:sandbox-net` reads `never`.
+- `sandbox.buildkit` **promoted**: the buildx argv/promise half was already
+  deterministic through the `runBuildx` seam; the layers themselves remain
+  BuildKit's, behind a Docker daemon — tool-gated, no live target drives
+  `sandbox.build:` through the driver today. The k8s refusal is still by
+  design (`SupportsBuild: false`).
+- `sandbox.kubernetes-pod-lifecycle` **stays excluded**, premise re-measured
+  and holding: no fake apiserver harness exists in this tree — no k8s client
+  or envtest in go.mod (the driver shells out to `kubectl`), no httptest
+  apiserver under pkg/sandbox/kubernetes, and the kind job is an ARC
+  diagnostic that never drives the driver. It needs a live cluster + a
+  registry.
 - **Budget**: hours, no money.
 
 ### 6. The tail — #2797 observability, #2798 connectors, #2799 studio
