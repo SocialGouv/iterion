@@ -16,8 +16,8 @@ carries what a generator cannot write: per-route authorization detail,
 refusal reasons, pitfalls.
 
 **Auth rung** is the OUTER gate a caller meets, read off the registration
-line itself (a rung hidden behind a local variable refuses the generation
-rather than print a wrong rung):
+line itself (a rung hidden behind a local variable or a closure refuses
+the generation rather than print a wrong rung):
 
 - `platform admin` — an authenticated platform super-admin (`requireSuperAdmin`).
 - `session + write rung` — an authenticated member with the family's write rung

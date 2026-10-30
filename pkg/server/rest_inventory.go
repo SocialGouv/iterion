@@ -103,12 +103,14 @@ var packageFuncRe = regexp.MustCompile(`(?m)^func ([A-Za-z_]\w*)\(`)
 // scanRouteInventory reads every literal mux registration of the server
 // package's non-test sources, following a local alias of a wrapper one hop
 // at a time (loginLimit := s.limitRoute(…), the rate limiters of
-// auth_routes.go). Two shapes are REFUSED rather than classified, because
+// auth_routes.go). Three shapes are REFUSED rather than classified, because
 // classifying them would write a lie with every gate green:
 //
 //   - an alias that hides an auth wrapper (`h := s.requireSuperAdmin(…)`)
 //     behind a bare name — the annex would print "session" for a
 //     platform-admin route (the reviewer probe of #2821's first round);
+//   - an alias to a function VALUE (`h := func(next …) …`) — the closure's
+//     body is unreadable, so whatever it wraps is invisible (second round);
 //   - a bare head that is neither an inline literal, nor a declared
 //     package-level func, nor an alias that resolves — a handler this
 //     generator cannot name is a registration it cannot judge.
@@ -187,6 +189,16 @@ func resolveHead(head string, aliases map[string]string, funcs map[string]bool) 
 		// Before the dotted-head pass-through: an alias to s.requireSuperAdmin
 		// has a dot too, and the rung it hides is the lie this refuses.
 		return "", fmt.Errorf("the auth rung hides behind the local variable %q (→ %s): wrap the registration inline so the rung is readable on the registration line — the annex's Auth column is compiled from that line", head, resolved)
+	case aliased && resolved == "func":
+		// A function VALUE behind a variable (`h := func(next …) … { return
+		// s.requireSuperAdmin(next) }`) is not an inline literal: the
+		// generator never sees the closure's body, so whatever rung it wraps
+		// is unreadable on the registration line. Refused wholesale — a
+		// closure WITHOUT an admin wrapper is refused too, because the
+		// classifier cannot tell the difference without reading the body
+		// (the reviewer probe of #2821's second round). Zero registration in
+		// the tree takes this shape today.
+		return "", fmt.Errorf("the handler %q is a function value (→ a closure): a closure's body is unreadable to this generator, so any rung it wraps would be invisible — name a declared handler or wrap the registration inline", head)
 	case resolved == "func" || strings.Contains(resolved, "."):
 		// An inline function literal, or a receiver-qualified expression
 		// (s.requireAuth, http.NotFoundHandler, s.hub.HandleWebSocket): the
@@ -390,8 +402,8 @@ carries what a generator cannot write: per-route authorization detail,
 refusal reasons, pitfalls.
 
 **Auth rung** is the OUTER gate a caller meets, read off the registration
-line itself (a rung hidden behind a local variable refuses the generation
-rather than print a wrong rung):
+line itself (a rung hidden behind a local variable or a closure refuses
+the generation rather than print a wrong rung):
 
 - ` + "`platform admin`" + ` — an authenticated platform super-admin (` + "`requireSuperAdmin`" + `).
 - ` + "`session + write rung`" + ` — an authenticated member with the family's write rung

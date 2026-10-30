@@ -173,6 +173,9 @@ func TestTheAnnexMatchesTheRegisteredSurfaceBothWays(t *testing.T) {
 //   - every annex row under /api/admin/ reads "platform admin" (the admin
 //     prefix family is uniformly requireSuperAdmin by convention, so the
 //     prefix alone is a verdict no classifier bug can talk its way out of);
+//     the platform-admin family OUTSIDE the prefix gets the same verdict
+//     where a rule already codifies it: every non-GET /api/v1/plugins
+//     route, the rule chokepointResponses (openapi.go) applies;
 //   - every registration whose resolved head IS requireSuperAdmin — inline
 //     or followed through a one-hop local alias — reads "platform admin" in
 //     the annex.
@@ -243,21 +246,55 @@ func TestTheAdminRungCannotBeMislabeled(t *testing.T) {
 		byRoute[r.RouteInfo] = r.Rung
 	}
 	adminPrefixRows := 0
+	pluginWriteRows := 0
 	for _, r := range rows {
-		if !strings.HasPrefix(r.Pattern, "/api/admin/") {
-			continue
+		if strings.HasPrefix(r.Pattern, "/api/admin/") {
+			adminPrefixRows++
+			if r.Rung != "platform admin" {
+				t.Errorf("annex row %s reads rung %q — every /api/admin/ route is platform admin", routeInfoString(r.RouteInfo), r.Rung)
+			}
 		}
-		adminPrefixRows++
-		if r.Rung != "platform admin" {
-			t.Errorf("annex row %s reads rung %q — every /api/admin/ route is platform admin", routeInfoString(r.RouteInfo), r.Rung)
+		// The platform-admin family outside the /api/admin/ prefix, where a
+		// rule already codifies it: the non-GET plugin routes
+		// (chokepointResponses, openapi.go).
+		if strings.HasPrefix(r.Pattern, "/api/v1/plugins") && r.Method != "GET" {
+			pluginWriteRows++
+			if r.Rung != "platform admin" {
+				t.Errorf("annex row %s reads rung %q — a non-GET /api/v1/plugins route is platform admin (the chokepointResponses rule)", routeInfoString(r.RouteInfo), r.Rung)
+			}
 		}
 	}
 	if adminPrefixRows < 50 {
 		t.Fatalf("only %d /api/admin/ row(s) in the annex, floor 50 — the prefix leg of this witness is judging nothing", adminPrefixRows)
 	}
+	if pluginWriteRows < 5 {
+		t.Fatalf("only %d non-GET /api/v1/plugins row(s) in the annex, floor 5 — the plugin leg of this witness is judging nothing", pluginWriteRows)
+	}
 	for _, reg := range platformAdminRegistrations(t) {
 		if rung, ok := byRoute[reg]; !ok || rung != "platform admin" {
 			t.Errorf("%s is registered with requireSuperAdmin and the annex reads rung %q — a platform-admin route documented lower is the lie this witness exists to refuse", routeInfoString(reg), byRoute[reg])
+		}
+	}
+}
+
+// The scan reads LITERAL registrations only; a platform-admin family
+// mounted as a sub-tree on the raw mux under /api/admin would be invisible
+// to it AND to the prefix leg above — the one hole left. The raw mounts all
+// live in server_routes.go, so the guard is one sentence long: no sub-tree
+// mount prefix there starts with /api/admin.
+func TestNoAdminFamilyMountsOutsideTheScan(t *testing.T) {
+	raw, err := os.ReadFile("server_routes.go")
+	if err != nil {
+		t.Fatalf("read server_routes.go: %v", err)
+	}
+	code := witnessLineComments.ReplaceAllString(string(raw), "")
+	mounts := regexp.MustCompile(`RegisterRoutesWithMiddleware\(s\.mux\.ServeMux, "([^"]+)"`).FindAllStringSubmatch(code, -1)
+	if len(mounts) < 2 {
+		t.Fatalf("found %d sub-tree mount(s) in server_routes.go, floor 2 — the witness no longer reads the mounts it guards", len(mounts))
+	}
+	for _, m := range mounts {
+		if strings.HasPrefix(m[1], "/api/admin") {
+			t.Errorf("%s mounts a whole sub-tree on the raw mux under /api/admin — its routes escape the annex's scan AND its prefix leg; register it with literal patterns or move the prefix", m[1])
 		}
 	}
 }
@@ -320,9 +357,10 @@ func TestRegistrationRungClassifiesTheOuterGate(t *testing.T) {
 func TestResolveHeadFollowsAliasesAndRefusesHiddenRungs(t *testing.T) {
 	funcs := map[string]bool{"SPAHandler": true}
 	aliases := map[string]string{
-		"loginLimit": "s.limitRoute",
-		"adminProbe": "s.requireSuperAdmin",
-		"loop":       "loop",
+		"loginLimit":  "s.limitRoute",
+		"adminProbe":  "s.requireSuperAdmin",
+		"hiddenAdmin": "func",
+		"loop":        "loop",
 	}
 	if got, err := resolveHead("loginLimit", aliases, funcs); err != nil || got != "s.limitRoute" {
 		t.Errorf("loginLimit resolves to s.limitRoute, got %q err %v", got, err)
@@ -332,6 +370,12 @@ func TestResolveHeadFollowsAliasesAndRefusesHiddenRungs(t *testing.T) {
 	}
 	if _, err := resolveHead("adminProbe", aliases, funcs); err == nil || !strings.Contains(err.Error(), "adminProbe") {
 		t.Errorf("the refusal must name the variable, got %v", err)
+	}
+	// A closure behind a variable is refused whatever it wraps — the body is
+	// unreadable, so "no admin wrapper inside" is not a verdict the
+	// generator can give.
+	if _, err := resolveHead("hiddenAdmin", aliases, funcs); err == nil || !strings.Contains(err.Error(), "function value") {
+		t.Errorf("an alias to a function value must refuse, got %v", err)
 	}
 	if got, err := resolveHead("s.requireAuth", aliases, funcs); err != nil || got != "s.requireAuth" {
 		t.Errorf("a dotted head passes through, got %q err %v", got, err)
