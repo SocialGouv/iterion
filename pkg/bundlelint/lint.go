@@ -21,8 +21,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/SocialGouv/iterion/pkg/backend/automemory"
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -814,7 +814,7 @@ func llmNodeIDs(w *ir.Workflow) []string {
 }
 
 // anyNodeCanWriteDurably reports whether one node of the workflow could put
-// bytes in a durable memory tree. Four declarations are a path, and each is a
+// bytes in a durable memory tree. TWO declarations are a path, and each is a
 // different question:
 //
 //   - a `memory:` block whose WRITE TOOL a run gets AND the gate leaves —
@@ -824,24 +824,35 @@ func llmNodeIDs(w *ir.Workflow) []string {
 //     backend is NOT asked: a block on a backend that cannot serve it is ir's
 //     own diagnostic (C047), and a warning speaking over another's defect
 //     would name the wrong fix;
-//   - `auto_memory: on` where the executor's own tool GRANT lands and the
-//     gate leaves it — per-bot memory maintained with ORDINARY FILE TOOLS
-//     (autoMemoryGrantsAWriter);
-//   - an UNDECLARED `tools:` list is not an empty one — on the CLI backends
-//     it means "no restriction", so the native roster keeps the shell and the
-//     writers, while `tools: []` IS a declaration. The GATE still bounds that
-//     roster, so it is asked about the roster rather than credited for the
-//     absence of a list;
-//   - a declared tool of the durable-write vocabulary its permission gate
-//     leaves.
+//   - a durable writer the node HOLDS on one of its routes, whose call the
+//     gate leaves (heldWriterLeft).
 //
-// Every arm reads what the RUNTIME INSTALLS, never the mere presence of a
-// block or a list entry: that reading is what let `write: false`,
-// `visibility: "global"` and a `permission: deny` gate silence the warning on
-// bundles with no write path at all (iterion#2832). And every arm ends at the
-// GATE, which bounds what runs whatever exists: two of them credited an
-// installed writer the gate denies until round 2 of that ticket.
+// What a node holds is not re-derived here, and that is the whole shape of
+// this check: it is asked of the ENGINE's own seam, the tool list the runtime
+// puts on delegate.Task.AllowedTools for THIS node on THAT route
+// (model.ClawExecutor.EffectiveToolNamesOnRoutes). Every append it folds in
+// resolves outside the IR, and every re-derivation of one has been wrong in
+// both directions on this very diagnostic (iterion#2832):
+//
+//   - the `interaction:` append has a claw escape hatch, so a claw node that
+//     declared `tools: []` is handed `[ask_user todo_write read_file
+//     write_file glob]` — a reader keying on `len(declared) > 0` fired C274
+//     on a node the engine hands `write_file`, two warnings away from the
+//     C270 that says so;
+//   - on claw the list IS the whole surface (the ToolDefs resolution sits
+//     behind `len(effectiveTools) > 0 && claw`), so an UNDECLARED list is no
+//     tool at all there — crediting a native roster for the absence of a
+//     declaration silenced C274 on a claw-only bundle with no write path,
+//     which is the headline defect of the ticket;
+//   - `auto_memory:` resolves through a launch override, the workflow and an
+//     env default, and the grant it adds is claw's alone.
+//
+// Both arms end at the GATE, which bounds what runs whatever exists.
 func anyNodeCanWriteDurably(w *ir.Workflow, ids []string) bool {
+	// The PROGRAM-only reading: the node's and the workflow's own fields,
+	// never ITERION_AUTO_MEMORY or a credential probe, so the verdict does
+	// not move with the machine that runs the lint.
+	exec := model.NewProgramExecutor(w)
 	for _, id := range ids {
 		llm, ok := w.Nodes[id].(ir.LLMNode)
 		if !ok {
@@ -850,16 +861,7 @@ func anyNodeCanWriteDurably(w *ir.Workflow, ids []string) bool {
 		if llm.GetMemory().InstallsWriteTool() && storeWriterLeft(llm, w) != "" {
 			return true
 		}
-		if autoMemoryGrantsAWriter(llm, w) {
-			return true
-		}
-		if !toolcatalog.ToolsDeclared(llm.GetTools()) {
-			if nativeDurableWriterLeft(llm, w) != "" {
-				return true
-			}
-			continue
-		}
-		if declaredDurableWriter(llm, w) != "" {
+		if heldWriterLeft(exec, llm, w) != "" {
 			return true
 		}
 	}
@@ -889,108 +891,89 @@ func storeWriterLeft(llm ir.LLMNode, w *ir.Workflow) string {
 	return ""
 }
 
-// autoMemoryGrantsAWriter reports whether `auto_memory:` is what gives a node
-// a durable write path — the executor's own GRANT, not the switch.
+// heldWriterLeft returns the first durable writer a run of this node HOLDS on
+// one of its routes and whose call the gate leaves, or "" for none.
 //
-// Auto-memory is maintained with ORDINARY FILE TOOLS, so on nearly every
-// shape the writer it needs is one the other arms already answer for: an
-// UNDECLARED list keeps the route's whole roster (nativeDurableWriterLeft), a
-// declared writer is a declared writer (declaredDurableWriter). What the
-// switch ADDS is one grant, and it is claw's: a claw route whose list is
-// declared and NON-EMPTY receives automemory.ClawToolGrant appended
-// (model.ClawExecutor.assembleEffectiveTools). Hence the two shapes this arm
-// refuses, both of which it used to credit:
+// Asked per ROUTE, because both halves of the question are decided per route:
+// the appends are (buildTask is re-run for a `fallbacks:` element that
+// changes the backend) and so is what the declaration means there. A route
+// that keeps a writer is a run that writes, so one route answering is enough
+// — the same existential the gate question takes over the routes' spellings.
 //
-//   - `tools: []` — a declaration (toolcatalog.ToolsDeclared), and the append
-//     sits behind the executor's own `len(effectiveTools) > 0`: the node
-//     receives nothing and can neither read nor write MEMORY.md;
-//   - a route that is not claw — on claude_code the node writes MEMORY.md
-//     with the native roster its `tools:` list bounds
-//     (delegate.claudeNativeDisallowedTools removes every native the list
-//     omits), so a writer-free list has no path and the switch adds none.
-//
-// The mode is resolved by the SHARED resolver, so the node's own value wins
-// over the workflow's exactly as it does at dispatch; the run override and
-// the env default are not the declaration's to know, and are left empty. A
-// route of "" is read generously — the resolver falls through to env and host
-// credentials, so the declaration genuinely cannot say, the same reading C132
-// performs. And the granted writer is asked of the GATE like any other.
-func autoMemoryGrantsAWriter(llm ir.LLMNode, w *ir.Workflow) bool {
-	var wfMode string
-	if w != nil {
-		wfMode = w.AutoMemory
-	}
-	if !automemory.Resolve("", llm.GetAutoMemory(), wfMode, "").Enabled() {
-		return false
-	}
-	tools := llm.GetTools()
-	if !toolcatalog.ToolsDeclared(tools) || len(tools) == 0 {
-		return false
-	}
-	if !slices.ContainsFunc(nodeRoutes(llm, w), func(route string) bool {
-		return route == "" || route == backendcaps.Claw
-	}) {
-		return false
-	}
+// The store's OWN builtins are not writers here, and the exclusion is the
+// question itself: `memory_write` reaches a run from a `memory:` block (the
+// arm above), never from a held list — naming it in `tools:` asks claw for a
+// tool it does not have (C135). A bundle that read the skill page and
+// answered it with `tools: [memory_write]` is precisely the confusion this
+// diagnostic exists to name, so crediting that entry would silence the
+// warning on its own best example. Which members are the store's is the SAME
+// derivation the naming half reads, from the same chokepoint.
+func heldWriterLeft(exec *model.ClawExecutor, llm ir.LLMNode, w *ir.Workflow) string {
 	writers := toolcatalog.DurableWriteCanonicals()
-	for _, granted := range automemory.ClawToolGrant() {
-		if !slices.Contains(writers, toolcatalog.CanonicalToolName(granted)) {
-			continue
-		}
-		if PermissionGateLeaves(llm, w, granted) {
-			return true
-		}
-	}
-	return false
-}
-
-// nativeDurableWriterLeft returns the first durable writer an undeclared
-// `tools:` list keeps through the gate, or "" when the gate removes them all.
-//
-// The roster is the shared vocabulary minus the store's own builtins (a CLI
-// backend has no `memory_write`), asked of the SAME gate predicate a declared
-// list is asked of: a node under `permission: deny` whose allow list names no
-// writer runs none of them, however complete its native roster is.
-func nativeDurableWriterLeft(llm ir.LLMNode, w *ir.Workflow) string {
 	store := durableMemoryWriteTools()
-	for _, canonical := range toolcatalog.DurableWriteCanonicals() {
-		if slices.Contains(store, canonical) {
-			continue
-		}
-		if PermissionGateLeaves(llm, w, canonical) {
-			return canonical
+	for _, route := range nodeRoutes(exec, llm) {
+		for _, held := range heldToolNames(exec, llm, route) {
+			canonical := toolcatalog.CanonicalToolName(held)
+			if !slices.Contains(writers, canonical) || slices.Contains(store, canonical) {
+				continue
+			}
+			if PermissionGateLeaves(llm, w, held) {
+				return held
+			}
 		}
 	}
 	return ""
 }
 
-// declaredDurableWriter returns the first tool a node declares that could
-// write a durable file, or "" for none. The vocabulary is the shared set —
-// never a second list — folded through the spelling table, so `write_file`
-// and `apply_patch` count exactly as `write` and `edit` do.
+// heldToolNames are the names a run of this node on ONE route can call.
 //
-// The store's OWN builtins are excluded, and the exclusion is the heart of
-// the question: a `memory:` block installs them, a `tools:` entry cannot —
-// naming one there asks claw for a tool it does not have (C135). A bundle
-// that read the skill page and answered it with `tools: [memory_write]` is
-// precisely the confusion this diagnostic exists to name, so reading that
-// list as a path would silence the warning on its own best example. Which
-// members are the store's is the SAME derivation the naming half reads, from
-// the same chokepoint.
-func declaredDurableWriter(llm ir.LLMNode, w *ir.Workflow) string {
-	writers := toolcatalog.DurableWriteCanonicals()
-	store := durableMemoryWriteTools()
-	for _, tool := range llm.GetTools() {
-		canonical := toolcatalog.CanonicalToolName(tool)
-		if !slices.Contains(writers, canonical) || slices.Contains(store, canonical) {
-			continue
-		}
-		if !PermissionGateLeaves(llm, w, tool) {
-			continue
-		}
-		return tool
+// Where the declaration BOUNDS that route, they are the engine's answer and
+// nothing else — the author's list after the appends this route decides,
+// taken over the pessimistic reading of the node's effort (an incoming edge
+// may raise it to ultracode at dispatch, which appends claw's `agent`).
+//
+// Where it bounds nothing, the agent keeps its own roster, and the names are
+// that backend's (toolcatalog.DurableWriteSpellingsOn): the writers alone,
+// since the only question asked of them is whether one survives the gate.
+func heldToolNames(exec *model.ClawExecutor, llm ir.LLMNode, route string) []string {
+	if routeBoundsTheList(route, llm.GetTools()) {
+		return exec.EffectiveToolNamesOnRoutes(llm, true, []string{route})
 	}
-	return ""
+	return toolcatalog.DurableWriteSpellingsOn(route)
+}
+
+// routeBoundsTheList reports whether the node's `tools:` declaration is what
+// decides the surface of a run on this route.
+//
+//   - on claw the list IS the surface: buildTask resolves the ToolDefs behind
+//     `len(effectiveTools) > 0 && claw` and claw_backend sets opts.Tools from
+//     ToolDefs alone, so an UNDECLARED list is no tool at all there. Reading
+//     it as "no restriction" credited a claw-only bundle with a native write
+//     surface the engine never installs (iterion#2832);
+//   - everywhere else an UNDECLARED list is no restriction — claude_code
+//     disallows only the natives a DECLARED list omits
+//     (delegate.claudeNativeDisallowedTools returns nil with no declaration)
+//     — while `tools: []` IS a declaration (toolcatalog.ToolsDeclared), and
+//     reading the two alike is what let a node asking for no tools keep the
+//     whole roster.
+//
+// Every route reaching here is a NAMED backend: nodeRoutes expands the one
+// the engine cannot resolve into the candidates dispatch would pick from, so
+// this predicate never answers for "" and never has to guess which side of
+// the two readings above an undecided route falls on.
+//
+// Inventoried and NOT fixed, so the class is not read as closed: pi, kimi,
+// grok and opencode never receive the list at all — C270 warns about it, and
+// toolcatalog.ReceivesToolList is the predicate — so a DECLARED writer-free
+// list reads here as a bound their run does not have. It is the `readonly:`
+// class again (a per-backend reading of what a flag or a seam withholds), the
+// corpus twin has the same hole, and crediting those routes generously would
+// silence C274 on every gated bundle that names one.
+func routeBoundsTheList(route string, tools []string) bool {
+	if route == backendcaps.Claw {
+		return true
+	}
+	return toolcatalog.ToolsDeclared(tools)
 }
 
 // PermissionGateLeaves reports whether the runtime permission gate lets a tool
@@ -1012,9 +995,11 @@ func declaredDurableWriter(llm ir.LLMNode, w *ir.Workflow) string {
 //
 // Two readings are the DECLARATION's, not the gate's, and stay here:
 //
-//   - a mode no gate can parse, and a rule list it refuses, are C110/C111's
-//     errors. A warning that read either as a bound would name the wrong
-//     fix, so both are read as off;
+//   - a mode no gate can parse is C110's error. A warning that read it as a
+//     bound would name the wrong fix, so it is read as off;
+//   - a RULE the gate refuses is C111's error, and it is skipped ROW BY ROW
+//     (parsableRules). Discarding the whole gate over one unparseable row
+//     read five honoured deny rules as none;
 //   - which SPELLINGS the gate will see for the tool — gateSpellings, from
 //     the node's own routes.
 //
@@ -1038,14 +1023,33 @@ func PermissionGateLeaves(llm ir.LLMNode, w *ir.Workflow, tool string) bool {
 	// between them, and the merge a reader used to write by hand
 	// (`append(allow, ask...)`) appended into the IR's own backing array.
 	pol, err := permission.NewPolicy(mode,
-		ir.EffectivePermissionRules(llm.GetPermissionAllow(), wfAllow),
-		ir.EffectiveAskRules(llm, w),
-		ir.EffectivePermissionRules(llm.GetPermissionDeny(), wfDeny),
+		parsableRules(ir.EffectivePermissionRules(llm.GetPermissionAllow(), wfAllow)),
+		parsableRules(ir.EffectiveAskRules(llm, w)),
+		parsableRules(ir.EffectivePermissionRules(llm.GetPermissionDeny(), wfDeny)),
 	)
 	if err != nil {
 		return true
 	}
 	return pol.LeavesTool(gateSpellings(llm, w, tool)...)
+}
+
+// parsableRules keeps the rows of a rule list the gate's own grammar accepts
+// (permission.ValidateRule, the parse C111 reports on), dropping the rest.
+//
+// A row the grammar refuses is C111's ERROR, and it is this warning's job to
+// read it as absent — not to read the whole gate as absent. permission.NewPolicy
+// fails on the FIRST malformed row of any list, so a single `Grep(` turned a
+// five-row deny list into no gate at all and the warning credited every writer
+// those five rows remove. Nothing of the grammar is read here either: the rows
+// are offered to the parser that enforces them, one at a time.
+func parsableRules(raws []string) []string {
+	var out []string
+	for _, raw := range raws {
+		if permission.ValidateRule(raw) == nil {
+			out = append(out, raw)
+		}
+	}
+	return out
 }
 
 // gateSpellings are the names the gate will SEE for one tool concept on a
@@ -1067,17 +1071,20 @@ func PermissionGateLeaves(llm ir.LLMNode, w *ir.Workflow, tool string) bool {
 // Only the raw names are offered, never the canonical key: a rule matches a
 // call by its raw name OR that key already (permission's own matcher), while
 // a GLOB row is the form that needs the raw one — which is the whole reason
-// this projection exists.
+// this projection exists. The CALLER owes a name some route can send, which
+// is what every arm above now hands it (the engine seam's own list, or
+// toolcatalog.DurableWriteSpellingsOn for a route nothing bounds); a bare
+// concept key reaching here would be offered to the gate verbatim by the
+// fallback below, asking about a call no backend makes.
 //
-// Every route the node may take is read, the primary and the `fallbacks:`
-// (ir.LLMNode.GetFallbacks, on the interface for pre-run readings exactly
-// like this one): a route that keeps the writer is a run that writes. A route
-// no declaration names is read generously — the resolver falls through to the
-// environment and the host's credentials, so the declaration genuinely cannot
-// say, the same reading C132 and the auto-memory arm perform.
+// Every route the node may take is read, and the routes come from the ENGINE
+// (nodeRoutes): a route that keeps the writer is a run that writes, and the
+// one the engine cannot resolve is expanded there into every candidate
+// dispatch would pick from, so the generous reading an undecided route is
+// owed is taken over real rosters rather than over the caller's word.
 func gateSpellings(llm ir.LLMNode, w *ir.Workflow, tool string) []string {
 	out := []string{}
-	for _, route := range nodeRoutes(llm, w) {
+	for _, route := range nodeRoutes(model.NewProgramExecutor(w), llm) {
 		for _, spelling := range backendGateSpellings(route, tool) {
 			if !slices.Contains(out, spelling) {
 				out = append(out, spelling)
@@ -1097,38 +1104,56 @@ func backendGateSpellings(backend, tool string) []string {
 			out = append(out, native)
 		}
 	}
-	// A roster with no tool for the concept does not rename it: claw's
-	// `memory_write` on a CLI route is a block the backend cannot serve, and
-	// C047 owns that defect — this warning reads the name as declared and
-	// leaves the refusal to the diagnostic that is about it.
+	// A roster with no tool for the concept does not rename it: claw calls
+	// its tools by the declared name, and claw's `memory_write` on a CLI
+	// route is a block the backend cannot serve, which C047 owns — this
+	// warning reads the name as declared and leaves the refusal to the
+	// diagnostic that is about it.
 	if len(out) == 0 {
 		return []string{tool}
 	}
 	return out
 }
 
-// nodeRoutes are the backends a node may run on, in declaration order: its
-// own `backend:` resolved against the workflow default, then each
-// `fallbacks:` route (which falls back to the node's backend when it names
-// none). "" is a route no declaration decides, kept rather than dropped so a
-// reader can answer generously for it.
-func nodeRoutes(llm ir.LLMNode, w *ir.Workflow) []string {
-	dflt := ""
-	if w != nil {
-		dflt = w.DefaultBackend
-	}
-	primary := ir.SourceNodeBackendName(llm.GetLLMFields().Backend, dflt)
-	routes := []string{primary}
-	for _, fb := range llm.GetFallbacks() {
-		route := ir.SourceNodeBackendName(fb.Backend, dflt)
-		if fb.Backend == "" {
-			route = primary
+// nodeRoutes are the backends a node may run on: the ENGINE's own resolution
+// of the chain dispatch walks — EffectiveBackendName then
+// EffectiveFallbackBackends — never a second reading of the IR.
+//
+// Re-deriving them from the declaration is wrong in both directions, which is
+// the reason those seams exist: a route spelled `{{vars.fb}}` is a backend
+// NAME at dispatch and nothing in the IR, a route a `when:` gate or `action:
+// skip` takes out of the chain is in the IR and in no run, and a `fallbacks:`
+// entry naming no backend of its own inherits the node's rather than adding a
+// route.
+//
+// A route the engine answers "" for is one no DECLARATION decides: the
+// program-only executor stops before the host, and past that point dispatch
+// reads ITERION_DEFAULT_BACKEND, then a credential probe, then claw
+// (model.resolveBackendName). So it is read as EVERY backend the registry
+// knows rather than as a backend of its own — the generous reading this
+// warning owes an undecided route, made of the routes a run can actually take
+// instead of a branch of its own. Collapsing it to one name would be a guess
+// in whichever direction that name's appends happen to fall: read as claw,
+// `auto_memory: on` with a restricted list holds `write_file` and a bundle on
+// claude_code is credited a grant it never gets; read as a CLI backend, the
+// same node loses the grant and C274 fires on a bundle whose runs write.
+func nodeRoutes(exec *model.ClawExecutor, llm ir.LLMNode) []string {
+	var out []string
+	add := func(route string) {
+		if !slices.Contains(out, route) {
+			out = append(out, route)
 		}
-		if !slices.Contains(routes, route) {
-			routes = append(routes, route)
+	}
+	for _, route := range append([]string{exec.EffectiveBackendName(llm)}, exec.EffectiveFallbackBackends(llm)...) {
+		if route != "" {
+			add(route)
+			continue
+		}
+		for _, candidate := range backendcaps.Names() {
+			add(candidate)
 		}
 	}
-	return routes
+	return out
 }
 
 // namedTools are the tools a page NAMES, in the order given, each at most

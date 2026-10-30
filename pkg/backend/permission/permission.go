@@ -680,24 +680,27 @@ func compileArg(content string) (*regexp.Regexp, error) {
 }
 
 // argScopeIsUnbounded reports whether an argument scope leaves no call out —
-// the three spellings compileArg turns into a matcher every candidate
-// satisfies, listed here beside it:
+// read from the SHAPE compileArg gives the scope, never from a list of
+// spellings:
 //
-//   - `*` and `**` compile to `^.*$`, the greedy wildcards;
 //   - `:*` is the prefix idiom with an EMPTY prefix, which compiles to `^`
 //     and therefore matches every command — `deny: ["Bash(:*)"]` bounds the
-//     shell as a bare `Bash` row does.
+//     shell as a bare `Bash` row does;
+//   - a scope made of greedy wildcards and nothing else goes to globToRegexp,
+//     which joins the pieces around each `*` with `.*`: `*` and `**` compile
+//     to `^.*$`, `(***)` to `^.*.*.*$`, and every one of them matches every
+//     candidate. An allowlist of three spellings read `Write(***)` as
+//     bounding a subset while the gate denied 4/4 probe calls.
 //
-// A scope that bounds a subset (`docs/**`, `git diff:*`) is not one, and
-// neither is `()`, whose matcher is `^$`: it bounds the empty argument alone.
-// The set is these spellings and not "the matcher accepts the empty string",
-// which `^$` would satisfy too.
+// A scope that bounds a subset (`docs/**`, `git diff:*`, `*:*`) is not one,
+// and neither is `()`, whose matcher is `^$`: it bounds the empty argument
+// alone. The reading is the scope's shape and not "the matcher accepts the
+// empty string", which `^$` would satisfy too.
 func argScopeIsUnbounded(trimmedArg string) bool {
-	switch trimmedArg {
-	case "*", "**", ":*":
+	if trimmedArg == ":*" {
 		return true
 	}
-	return false
+	return trimmedArg != "" && strings.Trim(trimmedArg, "*") == ""
 }
 
 // matchAny returns the first rule in rs that matches the tool (by its raw

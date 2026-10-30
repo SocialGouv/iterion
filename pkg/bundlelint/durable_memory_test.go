@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/bundlelint"
@@ -398,9 +399,15 @@ func TestAutoMemoryIsAPathToTheTree(t *testing.T) {
 // Each case is measured against the engine, not against this arm's own
 // reading: `EffectiveToolNames` holds [read_file glob grep todo_write
 // write_file agent] on the gated claw node, whose only writer the real gate
-// answers `deny` for; it holds NOTHING at all for `tools: []` (the executor's
-// append sits behind `len(effectiveTools) > 0`); and on claude_code it holds
-// the three readers the list named.
+// answers `deny` for; it holds NOTHING at all for `tools: []` with no
+// `interaction:` (the executor's append sits behind `len(effectiveTools) >
+// 0`); and on claude_code it holds the three readers the list named.
+//
+// The last row is the one a reading of the DECLARATION gets backwards, and
+// the measurement is the whole case: an undeclared list on a CLAW-only node
+// is not "no restriction" but no tool at all, so `auto_memory: on` there
+// writes nothing — the shape asserted from both ends in
+// TestTheHeldQuestionIsAskedOfTheEngineAndNotOfTheDeclaration.
 func TestAutoMemoryCreditsOnlyTheGrantThatLands(t *testing.T) {
 	page := skillPage(pageTeaching(durableStoreTools(t)[0]))
 	build := func(backend string, tools []string, mode string, allow []string) *ir.Workflow {
@@ -428,13 +435,94 @@ func TestAutoMemoryCreditsOnlyTheGrantThatLands(t *testing.T) {
 		{"`permission: deny` with a writer-free allow list denies the granted writer", "claw", restricted, "deny", []string{"Read(**)", "Glob"}, 1},
 		{"`permission: deny` whose allow list covers the granted writer", "claw", restricted, "deny", []string{"Write"}, 0},
 		{"a declared-EMPTY list receives no grant at all", "claw", []string{}, "", nil, 1},
-		{"an UNDECLARED list is the native roster, which the other arm reads", "claw", nil, "", nil, 0},
+		{"an UNDECLARED list on a claw-only node is no tool at all, so the grant reaches nothing", "claw", nil, "", nil, 1},
+		{"the same UNDECLARED list on a CLI route is that route's native roster", "claude_code", nil, "", nil, 0},
 	}
 	for _, c := range cases {
 		got := durableMemoryDiags(build(c.backend, c.tools, c.mode, c.allow), page)
 		if len(got) != c.want {
 			t.Errorf("%s: got %d durable-memory diagnostics, want %d: %+v", c.what, len(got), c.want, got)
 		}
+	}
+}
+
+// TestTheHeldQuestionIsAskedOfTheEngineAndNotOfTheDeclaration is iterion#2832
+// round 3: the two shapes a reader that RE-DERIVES the executor's appends gets
+// backwards — in opposite directions — each measured against the seam the
+// runtime puts on delegate.Task.AllowedTools before the lint is asked
+// anything, so a case that stops exercising its shape fails instead of
+// passing over a no-op.
+//
+//   - a claw node that declared `tools: []` AND `interaction:`. The
+//     interaction append has a claw escape hatch — `len(effectiveTools) > 0 ||
+//     backendName == claw` (model.assembleEffectiveTools) — so the empty list
+//     is re-populated with `ask_user`, and that one entry unlocks every later
+//     append: `todo_write`, then the `auto_memory:` trio. A reader keying on
+//     `len(declared) > 0` fired C274 on a node the engine hands `write_file`,
+//     two warnings away from the C270 that says so in the same report;
+//   - a claw-ONLY node with an UNDECLARED list. On claw the list IS the
+//     surface: buildTask resolves the ToolDefs behind `len(effectiveTools) > 0
+//     && claw` and claw_backend sets opts.Tools from ToolDefs alone, so the
+//     node runs with no tool at all. Reading the absence of a list as "no
+//     restriction" there credited a native write surface the engine never
+//     installs, and silenced the warning on a bundle with no write path —
+//     the ticket's headline defect.
+//
+// The second shape carries its own boundary: ONE CLI route is enough for the
+// undeclared list to mean "no restriction" again, and the bundle then has the
+// write path the warning would have denied.
+func TestTheHeldQuestionIsAskedOfTheEngineAndNotOfTheDeclaration(t *testing.T) {
+	page := skillPage(pageTeaching(durableStoreTools(t)[0]))
+	writers := toolcatalog.DurableWriteCanonicals()
+	// The engine's own answer for the node, filtered to the durable writers
+	// this diagnostic is about — never the lint's reading of it.
+	heldWriters := func(w *ir.Workflow) (held, all []string) {
+		all = model.NewProgramExecutor(w).EffectiveToolNames(w.Nodes["nexie"], true)
+		for _, name := range all {
+			if slices.Contains(writers, toolcatalog.CanonicalToolName(name)) {
+				held = append(held, name)
+			}
+		}
+		return held, all
+	}
+
+	for _, mode := range []ir.InteractionMode{ir.InteractionHuman, ir.InteractionAsync, ir.InteractionLLMOrHuman} {
+		w := wf("probe", nil, nil, nil, &ir.AgentNode{
+			BaseNode:          ir.BaseNode{ID: "nexie"},
+			LLMFields:         ir.LLMFields{Backend: "claw"},
+			InteractionFields: ir.InteractionFields{Interaction: mode},
+			Tools:             []string{},
+			AutoMemory:        "on",
+		})
+		held, all := heldWriters(w)
+		if len(held) == 0 {
+			t.Fatalf("interaction %v: the engine hands this `tools: []` claw node no durable writer (EffectiveToolNames = %v), so this case asserts nothing — the escape hatch it is about is gone", mode, all)
+		}
+		if got := durableMemoryDiags(w, page); len(got) != 0 {
+			t.Errorf("interaction %v: the engine hands this node %v and the warning still says no node of the bundle can write: %+v", mode, held, got)
+		}
+	}
+
+	clawOnly := &ir.AgentNode{
+		BaseNode:   ir.BaseNode{ID: "nexie"},
+		LLMFields:  ir.LLMFields{Backend: "claw"},
+		AutoMemory: "on",
+	}
+	if toolcatalog.ToolsDeclared(clawOnly.Tools) {
+		t.Fatal("the probe node declares a `tools:` list — the undeclared-list reading this case is about is not exercised")
+	}
+	w := wf("probe", nil, nil, nil, clawOnly)
+	if held, all := heldWriters(w); len(held) != 0 {
+		t.Fatalf("the engine hands this claw-only undeclared-list node %v (EffectiveToolNames = %v): claw now installs a tool for a node that declares none, and this case is asserting the opposite of the runtime", held, all)
+	}
+	if got := durableMemoryDiags(w, page); len(got) != 1 {
+		t.Errorf("a claw-only node with an undeclared `tools:` list holds no tool at all, and the bundle's page teaches a durable write: got %d durable-memory diagnostics, want 1: %+v", len(got), got)
+	}
+
+	clawOnly.Fallbacks = []ir.Fallback{{Backend: "claude_code"}}
+	withCLI := wf("probe", nil, nil, nil, clawOnly)
+	if got := durableMemoryDiags(withCLI, page); len(got) != 0 {
+		t.Errorf("one `fallbacks:` route onto a CLI backend makes the undeclared list mean no restriction again, so that route keeps the native write surface: %+v", got)
 	}
 }
 

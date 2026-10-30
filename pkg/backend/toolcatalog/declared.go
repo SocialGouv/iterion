@@ -1,6 +1,7 @@
 package toolcatalog
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
@@ -61,4 +62,50 @@ func ToolsDeclared(tools []string) bool { return tools != nil }
 // turns advisory CLI-backend names into blocking C135 errors on shipped bots.
 func ReceivesToolList(backend string) bool {
 	return backendcaps.Offers(strings.TrimSpace(backend), backendcaps.ToolList)
+}
+
+// DurableWriteSpellingsOn are the names ONE backend can send for a durable
+// write when nothing bounds its tool surface — the question a reader asks
+// about a node whose `tools:` declaration does not reach, or does not bound,
+// that route, where the agent keeps its own roster.
+//
+// It answers in NAMES a gate can match, never in canonical keys: a permission
+// rule is evaluated against the name the backend's model emits, and a reader
+// that handed the gate a bare concept key asked about a call no backend makes
+// — which read `deny: ["Write*"]` as leaving a writer it removes
+// (iterion#2832 round 3). Two sources, in this order:
+//
+//   - the backend's own roster where the registry declares one
+//     (backendcaps.NativeTools — claude_code's twenty names, the seed
+//     delegate's `--disallowedTools` projection is built from): those ARE the
+//     names that route sends;
+//   - otherwise every SPELLING of the shared table that folds onto a durable
+//     write. A roster iterion does not declare is one it cannot name, so the
+//     honest candidate set is the names the catalogue knows for the concept,
+//     and a reader asking "does the gate leave a writer" takes them
+//     existentially: every known spelling denied is a writer gone, one
+//     surviving is a writer this reading cannot call bounded.
+//
+// The store's own builtin (`memory_write`) is in NEITHER: it has no spelling
+// row and is on no roster, which is exactly what makes it claw's and the
+// `memory:` block's — a reader asking about a block asks about that name
+// directly.
+func DurableWriteSpellingsOn(backend string) []string {
+	writers := DurableWriteCanonicals()
+	var out []string
+	for _, native := range backendcaps.NativeTools(strings.TrimSpace(backend)) {
+		if slices.Contains(writers, CanonicalToolName(native)) {
+			out = append(out, native)
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+	for spelling, canonical := range canonicalToolNames {
+		if slices.Contains(writers, canonical) {
+			out = append(out, spelling)
+		}
+	}
+	slices.Sort(out)
+	return out
 }

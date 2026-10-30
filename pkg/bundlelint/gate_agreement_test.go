@@ -2,11 +2,13 @@ package bundlelint_test
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/bundlelint"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
@@ -230,4 +232,164 @@ func TestTheLintsGateQuestionAgreesWithTheGateOverEveryRuleForm(t *testing.T) {
 		t.Fatalf("the table reached one verdict only (%d left, %d gone) — it cannot witness an agreement in both directions", leftCount, goneCount)
 	}
 	t.Logf("%d rule forms, %d cases: %d left, %d gone", len(seen), leftCount+goneCount, leftCount, goneCount)
+}
+
+// TestTheUndeclaredRosterArmAsksTheGateInTheRoutesSpelling pins the half of
+// the gate question that was asserted over nothing until iterion#2832 round 3:
+// a node whose `tools:` list bounds nothing keeps its ROUTE's own roster, and
+// the gate must be asked about the names that route SENDS. The arm used to
+// hand it toolcatalog.DurableWriteCanonicals — the concept keys "write",
+// "edit", "notebookedit", "bash", which no backend emits. A claude_code-only
+// route hid that, because the projection renames the key through that route's
+// roster; one route whose roster the registry leaves empty puts the raw key
+// back in the offer, and `deny: ["Write*"]` then reads as leaving a writer it
+// removes.
+//
+// Every row is compared with the GATE — permission.Policy.Evaluate over the
+// calls claude_code actually sends for the writers of its roster — so the
+// verdict is never this arm's reading of itself. The claw-fallback row is the
+// one that was silent before: that route's surface is its `tools:` list, so
+// an undeclared list holds nothing there and takes no writer with it.
+func TestTheUndeclaredRosterArmAsksTheGateInTheRoutesSpelling(t *testing.T) {
+	t.Parallel()
+
+	// The names claude_code sends for a durable write, from the registry's own
+	// roster — never a literal, so a roster change is read here the day it
+	// lands instead of the day someone remembers.
+	natives := toolcatalog.DurableWriteSpellingsOn("claude_code")
+	if len(natives) == 0 {
+		t.Fatal("the registry declares no durable writer on claude_code's roster — the arm this test is about credits nothing and every row below would pass over a no-op")
+	}
+	writePaths := []map[string]any{
+		{"file_path": "/w/notes.md", "content": "x"},
+		{"file_path": "/w/docs/notes.md", "content": "x"},
+		{"file_path": "relative.md", "content": "x"},
+	}
+	shellCmds := []map[string]any{{"command": "echo hi >> /w/notes.md"}, {"command": "git diff"}}
+	callsFor := func(native string) []map[string]any {
+		if toolcatalog.CanonicalToolName(native) == "bash" {
+			return shellCmds
+		}
+		return writePaths
+	}
+
+	page := skillPage(pageTeaching(durableStoreTools(t)[0]))
+	cases := []struct {
+		what             string
+		fallback         string
+		mode             string
+		allow, ask, deny []string
+	}{
+		{what: "no gate at all"},
+		{what: "`ask` + a deny of every writer of the route's roster", mode: "ask",
+			deny: []string{"Write*", "Edit*", "MultiEdit", "NotebookEdit", "Bash"}},
+		{what: "the same deny list, plus a claw `fallbacks:` route whose roster the registry leaves empty", fallback: "claw", mode: "ask",
+			deny: []string{"Write*", "Edit*", "MultiEdit", "NotebookEdit", "Bash"}},
+		{what: "`ask` + a deny list written in CATALOGUE spellings the route never sends", mode: "ask",
+			deny: []string{"write_*", "edit_*", "notebook_*", "run_*"}},
+		{what: "`deny` + an allow list naming no writer", mode: "deny", allow: []string{"Read(**)", "Glob"}},
+		{what: "`deny` + an allow row naming the route's own writer", mode: "deny", allow: []string{"Write"}},
+		{what: "`deny` + an ask row covering the route's own writer", mode: "deny", ask: []string{"Write"}},
+	}
+	quiet, named := 0, 0
+	for _, c := range cases {
+		node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "nexie"}, LLMFields: ir.LLMFields{Backend: "claude_code"}}
+		if c.fallback != "" {
+			node.Fallbacks = []ir.Fallback{{Name: "second", Backend: c.fallback}}
+		}
+		if node.Tools != nil {
+			t.Fatalf("%s: the probe node declares a `tools:` list — the undeclared-list arm is not the one answering", c.what)
+		}
+		w := wf("probe", nil, nil, nil, node)
+		w.Permission, w.PermissionAllow, w.PermissionAsk, w.PermissionDeny = c.mode, c.allow, c.ask, c.deny
+
+		// The gate: does any call of any writer of claude_code's roster reach
+		// a verdict other than Deny?
+		gateLeaves := c.mode == "" || c.mode == "off"
+		var verdicts []string
+		if !gateLeaves {
+			mode, err := permission.ParseMode(c.mode)
+			if err != nil {
+				t.Fatalf("%s: the case names a mode no gate parses (%q): %v", c.what, c.mode, err)
+			}
+			pol, err := permission.NewPolicy(mode, c.allow, c.ask, c.deny)
+			if err != nil {
+				t.Fatalf("%s: the case names a rule the gate refuses: %v", c.what, err)
+			}
+			for _, native := range natives {
+				for _, in := range callsFor(native) {
+					dec, rule := pol.Evaluate(native, in)
+					verdicts = append(verdicts, fmt.Sprintf("%s(%v) -> %s (rule %q)", native, in, dec, rule))
+					if dec != permission.Deny {
+						gateLeaves = true
+					}
+				}
+			}
+		}
+
+		got := durableMemoryDiags(w, page)
+		lintQuiet := len(got) == 0
+		if lintQuiet {
+			quiet++
+		} else {
+			named++
+		}
+		if lintQuiet != gateLeaves {
+			direction := "the warning credits a write path no call of the route's roster can take"
+			if gateLeaves {
+				direction = "the warning denies a write path the gate lets run"
+			}
+			t.Errorf("%s: lint_quiet=%v gate_leaves=%v — %s\n  diags: %+v\n  gate: %s",
+				c.what, lintQuiet, gateLeaves, direction, got, strings.Join(verdicts, "\n        "))
+		}
+	}
+	if quiet == 0 || named == 0 {
+		t.Fatalf("the table reached one verdict only (%d quiet, %d named) — it cannot witness an agreement in both directions", quiet, named)
+	}
+}
+
+// TestAnUnparseableRuleIsSkippedRowByRowAndNotAsAWholeGate is iterion#2832
+// round 3: permission.NewPolicy fails on the FIRST malformed row of a list, so
+// a gate question that built ONE policy and read the error as "no gate at all"
+// turned five honoured deny rows into none, and credited every writer those
+// five rows remove.
+//
+// A row the grammar refuses is C111's ERROR, and reading it as ABSENT is this
+// warning's job — not reading the gate as absent. The rest of the list is what
+// the runtime enforces, and that is what the row below is measured against.
+func TestAnUnparseableRuleIsSkippedRowByRowAndNotAsAWholeGate(t *testing.T) {
+	t.Parallel()
+
+	honoured := []string{"Write*", "Edit*", "MultiEdit", "NotebookEdit", "Bash"}
+	malformed := "Grep("
+	if permission.ValidateRule(malformed) == nil {
+		t.Fatalf("%q parses now — this case carries no rule the gate refuses and asserts nothing", malformed)
+	}
+	if _, err := permission.NewPolicy(permission.ModeAsk, nil, nil, append(slices.Clone(honoured), malformed)); err == nil {
+		t.Fatal("permission.NewPolicy accepts a list with a malformed row now — the whole-gate discard this test is about cannot happen, and the comparison below is a no-op")
+	}
+
+	page := skillPage(pageTeaching(durableStoreTools(t)[0]))
+	build := func(deny []string) (*ir.AgentNode, *ir.Workflow) {
+		node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "nexie"}, LLMFields: ir.LLMFields{Backend: "claude_code"}}
+		w := wf("probe", nil, nil, nil, node)
+		w.Permission, w.PermissionDeny = "ask", deny
+		return node, w
+	}
+
+	cleanNode, clean := build(honoured)
+	if bundlelint.PermissionGateLeaves(cleanNode, clean, "Write") {
+		t.Fatal("the five deny rows alone do not bound `Write` — the baseline of this case is wrong, and the row below would prove nothing")
+	}
+	if got := durableMemoryDiags(clean, page); len(got) != 1 {
+		t.Fatalf("the five deny rows remove every writer of the route's roster: got %d durable-memory diagnostics, want 1: %+v", len(got), got)
+	}
+
+	badNode, bad := build(append(slices.Clone(honoured), malformed))
+	if bundlelint.PermissionGateLeaves(badNode, bad, "Write") {
+		t.Error("one row the grammar refuses read the five honoured deny rows as no gate at all: `Write` was credited as left")
+	}
+	if got := durableMemoryDiags(bad, page); len(got) != 1 {
+		t.Errorf("one unparseable row beside five honoured ones credited a write path the gate denies on every call: got %d durable-memory diagnostics, want 1: %+v", len(got), got)
+	}
 }

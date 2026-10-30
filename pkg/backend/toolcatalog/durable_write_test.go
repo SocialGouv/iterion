@@ -3,6 +3,8 @@ package toolcatalog
 import (
 	"slices"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 )
 
 // TestTheDurableWriteSetIsTheWritingSetPlusTheShellAndClawsOwnTool holds the
@@ -58,5 +60,80 @@ func TestTheDurableWriteSetCannotBeGrownByACaller(t *testing.T) {
 		if m == "definitely_not_a_tool" || m == "clobbered" {
 			t.Fatalf("a caller's append or write reached the package's set (saw %q): the function must return a copy", m)
 		}
+	}
+}
+
+// TestDurableWriteSpellingsOnAnswersInNamesABackendCanSend holds the three
+// claims of that function, each of which a reader of its answer spends on the
+// permission gate — and a gate matches a CALL, by the name the backend's model
+// emits. A reader handed a concept KEY asked about a call no backend makes, and
+// read `deny: ["Write*"]` as leaving a writer it removes (iterion#2832).
+//
+//   - where the registry declares a roster, the answer is drawn from it: every
+//     name is on that roster, and every durable writer of that roster is there;
+//   - where it declares none, the answer is drawn from the SPELLING table, so
+//     each name folds onto a durable-write concept and none is a key the table
+//     does not carry;
+//   - the store's own builtin is in NEITHER: `memory_write` has no spelling row
+//     and is on no roster, which is what makes it the `memory:` block's.
+func TestDurableWriteSpellingsOnAnswersInNamesABackendCanSend(t *testing.T) {
+	t.Parallel()
+
+	writers := DurableWriteCanonicals()
+	store := []string{}
+	rows := CanonicalRows()
+	for _, canonical := range writers {
+		if _, projected := rows[canonical]; !projected {
+			store = append(store, canonical)
+		}
+	}
+	if len(store) == 0 {
+		t.Fatal("every durable-write concept has a spelling row now — the store-builtin claim below is asserted over nothing")
+	}
+
+	declared, undeclared := 0, 0
+	for _, backend := range backendcaps.Names() {
+		got := DurableWriteSpellingsOn(backend)
+		if len(got) == 0 {
+			t.Errorf("%s: no durable writer at all — a node whose list bounds nothing there would be read as unable to write", backend)
+			continue
+		}
+		for _, name := range got {
+			if canonical := CanonicalToolName(name); !slices.Contains(writers, canonical) {
+				t.Errorf("%s: %q folds onto %q, which is not a durable-write concept", backend, name, canonical)
+			}
+			if slices.Contains(store, CanonicalToolName(name)) {
+				t.Errorf("%s: %q is the durable store's OWN builtin, which a `tools:` list cannot install (C135) and no roster carries", backend, name)
+			}
+		}
+		roster := backendcaps.NativeTools(backend)
+		if len(roster) == 0 {
+			undeclared++
+			// No roster: every name must be a ROW of the spelling table (which
+			// is keyed by spelling), never a bare concept key the table does
+			// not carry — the shape that asked the gate about a call nothing
+			// sends.
+			for _, name := range got {
+				if _, carried := rows[name]; !carried {
+					t.Errorf("%s: %q is no row of CanonicalRows — it is a concept key the spelling table does not carry, and the gate would be asked about a call nothing sends",
+						backend, name)
+				}
+			}
+			continue
+		}
+		declared++
+		for _, name := range got {
+			if !slices.Contains(roster, name) {
+				t.Errorf("%s: %q is not on the roster the registry declares for it: %v", backend, name, roster)
+			}
+		}
+		for _, native := range roster {
+			if slices.Contains(writers, CanonicalToolName(native)) && !slices.Contains(got, native) {
+				t.Errorf("%s: the roster carries the durable writer %q and the answer omits it", backend, native)
+			}
+		}
+	}
+	if declared == 0 || undeclared == 0 {
+		t.Fatalf("the registry exercises one branch only (%d backends with a roster, %d without) — the other claim above is asserted over nothing", declared, undeclared)
 	}
 }
