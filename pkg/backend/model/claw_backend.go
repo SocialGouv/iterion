@@ -1591,6 +1591,13 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		b.logger.Warn("[%s#%d/claw] the sandbox crossing refused %s: a header line of that name replaces the credential the engine resolved for this node on every request the container sends. Put the credential in the route's own variable (ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY) if this node must spend it; the block's other lines crossed",
 			task.NodeID, task.Iteration, strings.Join(refusedHeaders, ", "))
 	}
+	// The tool half of the crossing (#2802): the names claw's vendored tool
+	// packages read that the classification forwards — see forwardableToolEnv
+	// for which and why, claw_vendored_tool_env_test.go for the derivation
+	// that keeps the list honest.
+	for k, v := range forwardableToolEnv() {
+		runnerEnv[k] = v
+	}
 	runnerEnv["HOME"] = clawRunnerHome(ctx, task)
 	// The runner is this binary re-entered, and its cwd in the container is
 	// the workspace: the invocation-class marker is what stops it auto-loading

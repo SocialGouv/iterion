@@ -77,10 +77,14 @@ import (
 // spells itself, which is that package's to forward (#1804).
 
 // crossedByItsOwnBranch: names forwardableProviderEnv sets itself, because
-// the value that crosses is a decision, not the host's raw value.
+// the value that crosses is a decision, not the host's raw value — and the
+// tool names forwardableToolEnv sets, merged into the same runner env at the
+// dispatch (#2802).
 var crossedByItsOwnBranch = map[string]string{
 	"ITERION_OPENAI_USE_OAUTH":   `crosses as the refusal "0", or as "1" beside a ChatGPT forfait the container was handed: the run's own, or the host's that a host-wide "1" orders, written at the dispatch`,
 	"ITERION_CODEX_HOST_VERSION": "the host's `codex --version` probe, sent when no ITERION_CODEX_VERSION override is set",
+	"CLAW_BASH_TIMEOUT":          "the deployment's bash budget, spent where bash runs — the container for a sandboxed node; a duration, not a path, so the launcher's value crosses as-is when set (forwardableToolEnv)",
+	"CLAW_CONFIG_HOME":           "the skill lookup reads it in the container and no iterion-seeded mount serves a claw config home, so there is nothing to rewrite to and the launcher's value crosses as-is when set (forwardableToolEnv)",
 }
 
 // Why a name stays on the host.
@@ -413,6 +417,7 @@ var crossingSpellings = map[string]string{
 	"var providerCredentialEnvVars": "the forwarding list itself",
 	"var providerRoutingEnvVars":    "the routing subset, which forwardableProviderEnv forwards as explicit empties when the host leaves them unset",
 	"forwardableProviderEnv":        "sets the crossing: a refusal, the run's own credentials, the host's resolved values",
+	"forwardableToolEnv":            "sets the crossing for the tool names that cross as-is when the launcher sets them (#2802)",
 	"var byokEnvVar":                "the variable a run's own key crosses as, which forwardableProviderEnv sets",
 	"anthropicWireShadowEnv":        "the ambient keys the crossing blanks, so the run's forfait outranks them",
 	"deliverHostCodexForfait":       "sets the crossing beside the host's forfait it wrote into the container, which a host-wide \"1\" orders",
