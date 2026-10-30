@@ -65,12 +65,15 @@ func NeedsPromptSection(name string) bool {
 // `auto_memory: on` into a hard failure on every claw node that restricted
 // its tools).
 //
-// It lives here, beside the switch, because the grant is the mechanism and
-// two readers answer about it: the executor that APPENDS it
-// (model.ClawExecutor.assembleEffectiveTools) and the lint that asks whether
-// auto-memory gives a node a durable write path at all
-// (bundlelint.autoMemoryGrantsAWriter, C274). Held apart, the second was
-// crediting a write path the first never granted.
+// It lives here, beside the switch, because the grant is the mechanism, and it
+// has ONE reader: the executor that APPENDS it
+// (model.ClawExecutor.assembleEffectiveTools). A second reader used to re-read
+// it to answer whether auto-memory gives a node a durable write path at all
+// (bundlelint, C274), and held apart it credited a write path the executor
+// never granted — twice, in both directions. That question is asked of the
+// executor's own seam now (EffectiveToolNamesOnRoutes, which folds this append
+// in per route), so a reader of the grant besides the append is the defect
+// returning (iterion#2832).
 func ClawToolGrant() []string {
 	return slices.Clone(clawToolGrant)
 }
