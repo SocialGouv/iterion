@@ -87,14 +87,14 @@ func TestClawRelay_PersistsNoRelayedPlanInClear(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "campaign", Iteration: 1}, sessionSeed{}).
-				OnEvent(string(store.EventToolStarted), map[string]any{
-					"tool":        "todo_write",
-					"tool_use_id": "tu_9",
-					"input":       json.RawMessage(input),
-					"iteration":   1,
-					"input_size":  len(input),
-				})
+			handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "campaign", Iteration: 1}, sessionSeed{})
+			handler.OnEvent(string(store.EventToolStarted), map[string]any{
+				"tool":        "todo_write",
+				"tool_use_id": "tu_9",
+				"input":       json.RawMessage(input),
+				"iteration":   1,
+				"input_size":  len(input),
+			})
 
 			snaps, err := st.ListPlanSnapshots(context.Background(), runID)
 			if err != nil {
@@ -156,11 +156,11 @@ func TestClawRelay_APlanWritesOwnVocabularyCrossesUntouched(t *testing.T) {
 	  {"id":"t-1","content":"wire the relay","status":"done","priority":"high","activeForm":"wiring the relay"},
 	  {"id":"t-2","content":"ship it","status":"in_progress","priority":"medium"}
 	]}`
-	b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "campaign", Iteration: 1}, sessionSeed{}).
-		OnEvent(string(store.EventToolStarted), map[string]any{
-			"tool": "todo_write", "tool_use_id": "tu_9", "iteration": 1,
-			"input": json.RawMessage(input), "input_size": len(input),
-		})
+	handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "campaign", Iteration: 1}, sessionSeed{})
+	handler.OnEvent(string(store.EventToolStarted), map[string]any{
+		"tool": "todo_write", "tool_use_id": "tu_9", "iteration": 1,
+		"input": json.RawMessage(input), "input_size": len(input),
+	})
 
 	snaps, err := st.ListPlanSnapshots(context.Background(), runID)
 	if err != nil {

@@ -6520,6 +6520,7 @@ export interface components {
             backend_session_fingerprint?: string;
             backend_session_id?: string;
             backend_session_state_ref?: string;
+            backend_session_stranded?: boolean;
             budget_cost_usd?: number;
             budget_elapsed_ns?: number;
             budget_iterations_used?: number;

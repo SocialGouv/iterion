@@ -754,6 +754,7 @@ func TestRewind_ClearsPendingInteractionAndBackendState(t *testing.T) {
 		BackendSessionID:        "sess-1",
 		BackendConversation:     json.RawMessage(`[{"role":"assistant"}]`),
 		BackendPendingToolUseID: "tool-7",
+		BackendSessionStranded:  true,
 	}
 	svc, st, runID := seedRun(t, linearBot, cp, store.RunStatusPausedWaitingHuman)
 
@@ -771,6 +772,9 @@ func TestRewind_ClearsPendingInteractionAndBackendState(t *testing.T) {
 	}
 	if got.BackendName != "" || got.BackendSessionID != "" || got.BackendConversation != nil || got.BackendPendingToolUseID != "" {
 		t.Error("backend rehydration survived; the pivot must replay against the edited prompt, not the old conversation")
+	}
+	if got.BackendSessionStranded {
+		t.Error("the stranding fact survived the rewind; the replayed pivot would keep its captures out of a session it never left")
 	}
 }
 

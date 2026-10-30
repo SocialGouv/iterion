@@ -217,6 +217,14 @@ type ErrNeedsInteraction struct {
 	// that is awaiting an answer. Required when Conversation is non-nil.
 	PendingToolUseID string
 
+	// SessionStranded travels with Conversation when the crossing that
+	// captured it held none of its session's history (a relayed mirror
+	// gap, or a seed the sandbox channel refused). The runtime
+	// checkpoints it beside the conversation and hands it back on
+	// resume, so the resumed crossing's own captures stay out of the
+	// session store instead of replacing it (#2461).
+	SessionStranded bool
+
 	// SessionStateBlob is a packed CLI session (ADR-089). Transient: the
 	// runtime Puts it then drops the slice. Never logged or checkpointed.
 	SessionStateBlob []byte `json:"-"`

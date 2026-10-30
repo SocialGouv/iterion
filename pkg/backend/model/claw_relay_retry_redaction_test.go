@@ -37,12 +37,12 @@ func TestClawRelay_RedactsARelayedRetryForTheOperatorLog(t *testing.T) {
 	b := NewClawBackend(NewRegistry(), hooks, RetryPolicy{},
 		WithClawLogger(logger))
 
-	b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "plan", Iteration: 1}, sessionSeed{}).
-		OnEvent(string(store.EventLLMRetry), map[string]any{
-			"attempt":  1,
-			"delay_ms": 250,
-			"error":    "openai: 401 unauthorized (Authorization: Bearer " + secret + ")",
-		})
+	handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "plan", Iteration: 1}, sessionSeed{})
+	handler.OnEvent(string(store.EventLLMRetry), map[string]any{
+		"attempt":  1,
+		"delay_ms": 250,
+		"error":    "openai: 401 unauthorized (Authorization: Bearer " + secret + ")",
+	})
 
 	if !strings.Contains(runLog.String(), "LLM retry") {
 		t.Fatalf("scenario broken: no LLM-retry line in %q", runLog.String())

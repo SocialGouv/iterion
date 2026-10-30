@@ -376,6 +376,9 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		if rs.resumeBackend.sessionID != "" {
 			nodeInput[delegate.SessionIDKey] = rs.resumeBackend.sessionID
 		}
+		if rs.resumeBackend.sessionStranded {
+			nodeInput[delegate.ResumeSessionStrandedKey] = true
+		}
 		rs.resumeBackend = resumeBackendState{}
 	}
 

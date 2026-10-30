@@ -222,6 +222,7 @@ parent's).
   "backend_name": "claude_code",
   "backend_conversation": null,
   "backend_pending_tool_use_id": "",
+  "backend_session_stranded": false,
   "node_sessions": {
     "writer-or-named-session-slot": {
       "backend": "claude_code",
@@ -257,7 +258,10 @@ repair does not rewrite the stored blob in place; the next successful session
 checkpoint persists the normalized conversation.
 
 The loop snapshots preserve `loop.<name>.previous_output`; backend fields
-preserve mid-agent interaction; recovery counters keep retry ceilings honest;
+preserve mid-agent interaction — `backend_session_stranded` included, which
+marks the checkpointed conversation as a stranded sandbox crossing's own turns
+so the resumed crossing keeps its captures out of the session store (#2461);
+recovery counters keep retry ceilings honest;
 budget fields prevent resume from granting a fresh allowance.
 The union of `artifact_owners` and `artifacts` is the authoritative logical
 publish-name snapshot. `artifact_owners` is the complete catalog: when a

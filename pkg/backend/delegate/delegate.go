@@ -855,6 +855,15 @@ type Task struct {
 	// ask_user call, sent back to the LLM as the tool_result content.
 	ResumeAnswer string
 
+	// SessionStranded marks ResumeConversation as the turns of a crossing
+	// that held none of its session's history (a relayed mirror gap, or a
+	// seed the channel refused): the pause carried the fact, and the
+	// crossing resumed from it must keep its own captures out of the
+	// session store — saving them would REPLACE the conversation the
+	// session's other nodes built. Launcher-side only: the verdict is the
+	// host's, so it never crosses the wire (ToIOTask drops it).
+	SessionStranded bool
+
 	// ContinueConversation, when non-nil, is a COMPLETED conversation the
 	// backend replays as it ended, with UserPrompt as its next user turn —
 	// the executor's schema re-ask, which tells the model what its answer
@@ -1784,6 +1793,11 @@ const (
 	ResumeConversationKey        = "_resume_conversation"
 	ResumePendingToolUseIDKey    = "_resume_pending_tool_use_id"
 	ResumeAnswerKey              = "_resume_answer"
+	// ResumeSessionStrandedKey carries the stranding fact beside
+	// ResumeConversationKey: the conversation being resumed is one
+	// stranded crossing's own turns, so the resumed crossing's captures
+	// must stay out of the session store. Set to true when present.
+	ResumeSessionStrandedKey = "_resume_session_stranded"
 	// SessionIDKey carries the CLI session id consumed by SessionInherit
 	// (and SessionFork) nodes through the input map. Set by the executor's
 	// session-continuity wiring and by the engine's fork rehydration path
@@ -1918,6 +1932,14 @@ type Result struct {
 	// answer in PendingConversation. Required when PendingConversation
 	// is non-nil.
 	PendingToolUseID string
+
+	// SessionStranded travels with PendingConversation on a pause: the
+	// crossing that captured this conversation held none of its session's
+	// history (a relayed mirror gap, or a seed the channel refused), so a
+	// resume of this pause must keep the resumed crossing's captures out
+	// of the session store. Set by the launcher when it builds the pause
+	// result; never crosses the wire — the verdict is the host's.
+	SessionStranded bool
 
 	// EffectiveModel is the model the backend actually used, as reported
 	// by the provider — distinct from the workflow-declared `model:`.

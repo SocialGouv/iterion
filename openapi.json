@@ -621,6 +621,9 @@
           "backend_session_state_ref": {
             "type": "string"
           },
+          "backend_session_stranded": {
+            "type": "boolean"
+          },
           "budget_cost_usd": {
             "type": "number"
           },

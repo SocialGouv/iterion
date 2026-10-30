@@ -462,6 +462,10 @@ func TestResumeFromFailure_BackendRehydrationInjectedOnce(t *testing.T) {
 		Outputs:             map[string]map[string]any{"step_a": {"result": "ok"}},
 		BackendConversation: conversation,
 		BackendSessionID:    "sess-42",
+		// The stranding fact rides the same carriage (#2461): a conversation
+		// the pause marked as a stranded crossing's own turns keeps the
+		// resumed crossing's captures out of the session store.
+		BackendSessionStranded: true,
 	}
 	if err := s.FailRunResumable(ctx, runID, cp, "boom", ""); err != nil {
 		t.Fatalf("FailRunResumable: %v", err)
@@ -517,6 +521,9 @@ func TestResumeFromFailure_BackendRehydrationInjectedOnce(t *testing.T) {
 	if got := bIn[delegate.SessionIDKey]; got != "sess-42" {
 		t.Errorf("restart node session id = %v, want sess-42", got)
 	}
+	if got := bIn[delegate.ResumeSessionStrandedKey]; got != true {
+		t.Errorf("restart node input missing the stranding fact: input[%q] = %v, want true", delegate.ResumeSessionStrandedKey, got)
+	}
 
 	cIn := inputs["step_c"]
 	if cIn == nil {
@@ -527,6 +534,9 @@ func TestResumeFromFailure_BackendRehydrationInjectedOnce(t *testing.T) {
 	}
 	if _, has := cIn[delegate.SessionIDKey]; has {
 		t.Error("downstream node received the resume session id — injection must be one-shot")
+	}
+	if _, has := cIn[delegate.ResumeSessionStrandedKey]; has {
+		t.Error("downstream node received the stranding fact — injection must be one-shot")
 	}
 }
 

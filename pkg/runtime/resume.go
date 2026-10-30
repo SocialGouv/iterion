@@ -1323,6 +1323,7 @@ func (e *Engine) resumeFromPauseWithHostInputs(ctx context.Context, r *store.Run
 			Backend:            cp.BackendName,
 			Conversation:       cp.BackendConversation,
 			PendingToolUseID:   cp.BackendPendingToolUseID,
+			SessionStranded:    cp.BackendSessionStranded,
 			SessionStateRef:    cp.BackendSessionStateRef,
 		}
 		loopErr := e.reInvokeBackend(ctx, rs, humanNodeID, node, ni, answers, 0)
@@ -2464,9 +2465,10 @@ func pinBackendRehydration(rs *runState, cp *store.Checkpoint) {
 		return
 	}
 	rs.resumeBackend = resumeBackendState{
-		nodeID:       cp.NodeID,
-		conversation: cp.BackendConversation,
-		sessionID:    cp.BackendSessionID,
+		nodeID:          cp.NodeID,
+		conversation:    cp.BackendConversation,
+		sessionID:       cp.BackendSessionID,
+		sessionStranded: cp.BackendSessionStranded,
 	}
 }
 
@@ -3222,6 +3224,13 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 			nodeInput[delegate.ResumeAnswerKey] = a
 		}
 	}
+	// The stranding fact stands on its own (a stranded pause whose
+	// conversation never made the checkpoint still bars the resumed
+	// crossing's captures), so it is injected outside the conversation
+	// branch.
+	if ni.SessionStranded {
+		nodeInput[delegate.ResumeSessionStrandedKey] = true
+	}
 
 	if ni.SessionID != "" {
 		nodeInput[delegate.SessionIDKey] = ni.SessionID
@@ -3381,6 +3390,7 @@ func (e *Engine) pauseForBackendInteraction(rs *runState, nodeID string, ni *mod
 		BackendName:               ni.Backend,
 		BackendConversation:       ni.Conversation,
 		BackendPendingToolUseID:   ni.PendingToolUseID,
+		BackendSessionStranded:    ni.SessionStranded,
 	}
 	if len(ni.SessionStateBlob) > 0 {
 		ref := newSessionRef()
@@ -3424,7 +3434,12 @@ type pauseInfo struct {
 	BackendName               string
 	BackendConversation       json.RawMessage
 	BackendPendingToolUseID   string
-	BackendSessionStateRef    string
+	// BackendSessionStranded is the sandbox-mirror stranding fact (#2461):
+	// the checkpointed conversation is a stranded crossing's own turns, so
+	// the crossing resumed from this pause keeps its captures out of the
+	// session store.
+	BackendSessionStranded bool
+	BackendSessionStateRef string
 	// Kind tags the written Interaction (store.InteractionKindAwait for
 	// an await_answers tool escalation, "" for ordinary blocking pauses).
 	Kind string
@@ -3572,6 +3587,7 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, 
 	cp.BackendName = info.BackendName
 	cp.BackendConversation = info.BackendConversation
 	cp.BackendPendingToolUseID = info.BackendPendingToolUseID
+	cp.BackendSessionStranded = info.BackendSessionStranded
 	cp.BackendSessionStateRef = info.BackendSessionStateRef
 	cp.RecoveryPause = info.RecoveryPause
 	cp.RecoveryCode = string(info.RecoveryCode)

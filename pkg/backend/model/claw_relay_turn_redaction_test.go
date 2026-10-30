@@ -154,8 +154,8 @@ func TestClawRelay_PersistsNoRelayedTurnInClear(t *testing.T) {
 			for k, v := range s.put {
 				payload[k] = v
 			}
-			b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "campaign", Iteration: 0}, sessionSeed{}).
-				OnEvent(relayTurnCaptureType, payload)
+			handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "campaign", Iteration: 0}, sessionSeed{})
+			handler.OnEvent(relayTurnCaptureType, payload)
 
 			if _, err := st.LoadTurn(context.Background(), runID, "campaign", 0, 0); err != nil {
 				t.Fatalf("scenario broken: the relayed turn was not persisted: %v", err)

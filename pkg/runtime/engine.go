@@ -653,6 +653,11 @@ type resumeBackendState struct {
 	// (a plain []byte silently failed it and dropped the rehydration).
 	conversation json.RawMessage
 	sessionID    string
+	// sessionStranded is the sandbox-mirror stranding fact (#2461)
+	// checkpointed beside the conversation; injected under
+	// delegate.ResumeSessionStrandedKey so the resumed crossing keeps
+	// its captures out of the session store.
+	sessionStranded bool
 }
 
 // markFailedBestEffort transitions the run to status=failed with a

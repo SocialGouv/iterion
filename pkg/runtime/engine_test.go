@@ -2498,6 +2498,67 @@ func TestInteractionAskUserPersistsConversation(t *testing.T) {
 	}
 }
 
+// TestInteractionAskUserPersistsSessionStranding pins the #2461 carriage at
+// the runtime's own seam: a pause whose conversation is a stranded crossing's
+// own turns checkpoints the fact beside it, and the resume hands it back to
+// the executor so the resumed crossing keeps its captures out of the session
+// store.
+func TestInteractionAskUserPersistsSessionStranding(t *testing.T) {
+	wf := interactionWorkflow(ir.InteractionHuman)
+
+	persistedConv := json.RawMessage(`[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"assistant","content":[{"type":"tool_use","id":"toolu_42","name":"ask_user","input":{"question":"Which env?"}}]}]`)
+
+	exec := newStubExecutor()
+	calls := 0
+	var secondCallInput map[string]any
+	exec.on("worker", func(input map[string]any) (map[string]any, error) {
+		calls++
+		if calls == 1 {
+			return nil, &model.ErrNeedsInteraction{
+				NodeID:           "worker",
+				Questions:        map[string]any{delegate.AskUserQuestionKey: "Which env?"},
+				Backend:          "claw",
+				Conversation:     persistedConv,
+				PendingToolUseID: "toolu_42",
+				SessionStranded:  true,
+			}
+		}
+		secondCallInput = input
+		return map[string]any{"text": "ok", "_tokens": 10}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	if err := eng.Run(context.Background(), "run-ask-user-stranded", nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("expected ErrRunPaused on first call, got: %v", err)
+	}
+
+	r, err := s.LoadRun(context.Background(), "run-ask-user-stranded")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.Checkpoint == nil {
+		t.Fatal("checkpoint is nil after pause")
+	}
+	if !r.Checkpoint.BackendSessionStranded {
+		t.Error("checkpoint dropped the stranding fact the pause carried — the resume cannot know the conversation is a stranded crossing's own")
+	}
+
+	if err := eng.Resume(context.Background(), "run-ask-user-stranded", map[string]any{
+		delegate.AskUserQuestionKey: "staging",
+	}); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	if got := secondCallInput[delegate.ResumeSessionStrandedKey]; got != true {
+		t.Errorf("resumed node input[%q] = %v, want true — the stranded crossing's captures would rejoin the session", delegate.ResumeSessionStrandedKey, got)
+	}
+	if _, ok := secondCallInput[delegate.ResumeConversationKey].(json.RawMessage); !ok {
+		t.Errorf("input[%q] missing or wrong type: %T", delegate.ResumeConversationKey, secondCallInput[delegate.ResumeConversationKey])
+	}
+}
+
 // TestInteractionDepthGuardFailsRunaway verifies the maxInteractionDepth
 // guard: a run whose initial dispatch already exceeds the cap is failed
 // with a structured checkpoint rather than recursing further. The guard

@@ -806,6 +806,11 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 				Backend:          servingBackendName,
 				Conversation:     result.PendingConversation,
 				PendingToolUseID: result.PendingToolUseID,
+				// The stranding fact rides the pause: a stranded crossing's
+				// checkpointed conversation is its own blind turns, and the
+				// resumed crossing must know or its capture becomes the
+				// session.
+				SessionStranded: result.SessionStranded,
 			}
 			if f.session == ir.SessionPersist && result.SessionID != "" {
 				ni.SessionStateBlob = e.packLiveSession(ctx, servingTask, servingBackendName, result.SessionID)
@@ -2035,6 +2040,13 @@ func (e *ClawExecutor) applySessionContinuity(task *delegate.Task, f backendFiel
 // the LLM's exact pre-pause state instead of restarting from the
 // rendered system+user prompts.
 func applyResumeContinuity(task *delegate.Task, input map[string]any) {
+	// The stranding fact travels beside the conversation and stands on
+	// its own: a stranded pause resumed without one (the conversation
+	// lost, the checkpoint edited) still bars the resumed crossing's
+	// captures from the session store.
+	if stranded, _ := input[delegate.ResumeSessionStrandedKey].(bool); stranded {
+		task.SessionStranded = true
+	}
 	conv, ok := input[delegate.ResumeConversationKey].(json.RawMessage)
 	if !ok || len(conv) == 0 {
 		return

@@ -1005,6 +1005,7 @@ func applyRewind(cp *store.Checkpoint, wf *ir.Workflow, nodeID string, dropped, 
 	cp.BackendSessionFingerprint = ""
 	cp.BackendConversation = nil
 	cp.BackendPendingToolUseID = ""
+	cp.BackendSessionStranded = false
 	cp.BackendSessionStateRef = ""
 	if cp.NodeSessions != nil {
 		for _, id := range dropped {

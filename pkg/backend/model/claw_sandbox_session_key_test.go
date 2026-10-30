@@ -53,7 +53,8 @@ func TestSandboxSessionMirrorAndSeedShareTheTasksSessionKey(t *testing.T) {
 				Role:    "user",
 				Content: []api.ContentBlock{{Type: "text", Text: "the-first-nodes-turn"}},
 			}})
-			b.multiplexerHandler(ctx, first, sessionSeed{}).OnSessionCapture(snapshot)
+			handler, _ := b.multiplexerHandler(ctx, first, sessionSeed{})
+			handler.OnSessionCapture(snapshot)
 
 			if got := store.load(runID, taskSessionKey(first)); len(got) == 0 {
 				t.Fatalf("the runner's capture did not land under the task's session key %q — the slot's conversation never accumulates on the host", taskSessionKey(first))

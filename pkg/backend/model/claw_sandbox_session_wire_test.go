@@ -654,20 +654,16 @@ func TestSandboxSeed_ATaskCarryingItsHistoryIsSeededNothingAndStillMirrors(t *te
 	})
 }
 
-// The stranding fact lives on the crossing, not on the pause it produces.
-// Crossing A relays a gap the host reads as "the container holds LESS than
-// I do", so its capture stays out of the session — the guarantee, asserted
-// first. The pause A then produces carries A's own blind turns, and the
-// resume that brings them back finds a host copy the channel CAN carry: the
-// seed's verdict says this crossing's history could have come from the
-// session, nothing on the pause says it did not, and the mirror takes the
-// capture. That residual is version skew alone — a replay a container could
-// not decode, a reason a newer runner names — and closing it needs the fact
-// to travel with the pause, i.e. durable state beside the checkpointed
-// conversation. It is documented in docs/sandbox.md; if the second half
-// below ever stops holding, the residual is closed and both this witness
-// and that paragraph go.
-func TestSandboxMirror_AGapStrandsTheCrossingButNotThePauseItProduces(t *testing.T) {
+// The stranding fact travels WITH the pause (#2461). Crossing A relays a gap
+// the host reads as "the container holds LESS than I do", so its capture stays
+// out of the session — and the pause it then produces carries the fact on its
+// result. The resume that brings the blind turns back is seeded with it
+// (Task.SessionStranded, rehydrated from the checkpoint), so the resumed
+// crossing's capture stays out too. The control arm resumes WITHOUT the fact
+// — a checkpoint written before the field existed — and the mirror takes the
+// capture: absent stays the pre-field behaviour, which is exactly the residual
+// the carriage closes.
+func TestSandboxMirror_AGapStrandsThePauseItProduces(t *testing.T) {
 	t.Parallel()
 	const runID = "run-1"
 	const slot = "assistant_conversation"
@@ -688,41 +684,73 @@ func TestSandboxMirror_AGapStrandsTheCrossingButNotThePauseItProduces(t *testing
 	if err != nil {
 		t.Fatalf("build the gap envelope: %v", err)
 	}
+	pauseEnv, err := delegate.NewResultEnvelope(delegate.IOResult{
+		Output: map[string]any{
+			"_needs_interaction":     true,
+			"_interaction_questions": map[string]any{delegate.AskUserQuestionKey: "go on?"},
+		},
+		PendingConversation: blind,
+		PendingToolUseID:    "toolu_pending",
+	})
+	if err != nil {
+		t.Fatalf("build the pause envelope: %v", err)
+	}
 	scriptA, saysA := envelopeScript(t, 2, gap,
 		delegate.NewSessionCaptureEnvelope(blind),
-		resultEnvelope(t, map[string]any{"verdict": "paused"}))
+		pauseEnv)
 	var logsA strings.Builder
 	bA := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{},
 		WithClawLogger(iterlog.New(iterlog.LevelDebug, &logsA)))
-	if _, err := bA.executeViaSandboxRunner(ctx, delegate.Task{
+	resA, err := bA.executeViaSandboxRunner(ctx, delegate.Task{
 		NodeID: "copi", SessionSlot: slot, Model: "openai/gpt-5", WorkDir: t.TempDir(),
 		Sandbox: &scriptedSandbox{script: scriptA, args: []string{"", saysA}},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("the stranded crossing failed: %v (log %q)", err, logsA.String())
 	}
 	if got := len(store.load(runID, slot)); got != before {
 		t.Fatalf("the gap-stranded crossing replaced the session: %d messages left of %d", got, before)
 	}
+	if !resA.SessionStranded {
+		t.Fatalf("the pause a stranded crossing produced dropped the fact: SessionStranded = false beside %d bytes of blind conversation", len(blind))
+	}
 
-	// The resume of the pause that crossing produced: what it carries is the
-	// blind conversation, and the host cannot tell.
-	scriptB, saysB := envelopeScript(t, 1,
-		delegate.NewSessionCaptureEnvelope(mustMarshalMessages(t, []api.Message{
-			{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "the-blind-crossings-own-turn"}}},
-			{Role: "assistant", Content: []api.ContentBlock{{Type: "text", Text: "the-answer-after-the-pause"}}},
-		})),
-		resultEnvelope(t, map[string]any{"verdict": "ok"}))
+	// The resume of that pause: the fact came back with the conversation, so
+	// the resumed crossing's own turns stay out of the session it never saw.
+	resumedCapture := delegate.NewSessionCaptureEnvelope(mustMarshalMessages(t, []api.Message{
+		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "the-blind-crossings-own-turn"}}},
+		{Role: "assistant", Content: []api.ContentBlock{{Type: "text", Text: "the-answer-after-the-pause"}}},
+	}))
+	scriptB, saysB := envelopeScript(t, 1, resumedCapture, resultEnvelope(t, map[string]any{"verdict": "ok"}))
 	bB := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{})
 	if _, err := bB.executeViaSandboxRunner(ctx, delegate.Task{
 		NodeID: "copi", SessionSlot: slot, Model: "openai/gpt-5", WorkDir: t.TempDir(),
 		ResumeConversation:     blind,
 		ResumePendingToolUseID: "toolu_pending", ResumeAnswer: "go on",
-		Sandbox: &scriptedSandbox{script: scriptB, args: []string{"", saysB}},
+		SessionStranded: true,
+		Sandbox:         &scriptedSandbox{script: scriptB, args: []string{"", saysB}},
 	}); err != nil {
 		t.Fatalf("the resumed crossing failed: %v", err)
 	}
+	if !strings.Contains(string(mustMarshalMessages(t, store.load(runID, slot))), "sibling-turn-1") {
+		t.Fatal("the resumed crossing's capture became the session although the pause it resumes carried the stranding")
+	}
+
+	// The control: the same resume WITHOUT the fact — the checkpoint a
+	// pre-#2461 runner wrote — still mirrors. The field is what decides,
+	// and a legacy pause keeps the behaviour the carriage replaces.
+	scriptC, saysC := envelopeScript(t, 1, resumedCapture, resultEnvelope(t, map[string]any{"verdict": "ok"}))
+	bC := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{})
+	if _, err := bC.executeViaSandboxRunner(ctx, delegate.Task{
+		NodeID: "copi", SessionSlot: slot, Model: "openai/gpt-5", WorkDir: t.TempDir(),
+		ResumeConversation:     blind,
+		ResumePendingToolUseID: "toolu_pending", ResumeAnswer: "go on",
+		Sandbox: &scriptedSandbox{script: scriptC, args: []string{"", saysC}},
+	}); err != nil {
+		t.Fatalf("the legacy resumed crossing failed: %v", err)
+	}
 	if strings.Contains(string(mustMarshalMessages(t, store.load(runID, slot))), "sibling-turn-1") {
-		t.Fatalf("the documented residual is closed: a gap-stranded pause no longer replaces the session — delete this witness and the docs/sandbox.md paragraph that records it")
+		t.Fatal("a pause that never carried the fact stopped mirroring — absent must stay the pre-field behaviour")
 	}
 }
 

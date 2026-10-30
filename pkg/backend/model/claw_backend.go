@@ -1838,7 +1838,8 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// (see [sessionSeed]).
 	seed := b.sessionSeedForCrossing(ctx, task)
 
-	mux := delegate.NewMultiplexer(stdoutR, stdinPipe, b.multiplexerHandler(ctx, task, seed))
+	handler, stranded := b.multiplexerHandler(ctx, task, seed)
+	mux := delegate.NewMultiplexer(stdoutR, stdinPipe, handler)
 
 	if len(seed.replay) > 0 {
 		if err := mux.Send(delegate.NewSessionReplayEnvelope(seed.replay)); err != nil {
@@ -1966,6 +1967,18 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 
 	if res.BackendName == "" {
 		res.BackendName = delegate.BackendClaw
+	}
+	// A pause produced by a stranded crossing carries the stranding WITH
+	// it: the conversation it checkpoints is this crossing's own turns,
+	// not the session's, and the resume must not let the resumed
+	// crossing's captures become the session. Read after Run, when every
+	// relayed gap has been dispatched in order — the flag the handler
+	// grew is the final verdict. Only a pause carries a conversation
+	// into a checkpoint, so only a pause carries the fact.
+	if stranded.Load() {
+		if needs, _ := res.Output["_needs_interaction"].(bool); needs {
+			res.SessionStranded = true
+		}
 	}
 	return res, nil
 }
@@ -2912,7 +2925,12 @@ func canonicalMCPToolName(name string) string {
 //     into the host's nodeSessionStore so CompactAndRetry compacts the
 //     latest history. Pre-spawn, the launcher seeds a session_replay
 //     envelope from the host store (see [executeViaSandboxRunner]).
-func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task, seed sessionSeed) delegate.MultiplexerHandler {
+//
+// The returned flag is the crossing's stranding verdict, live for the
+// whole dispatch: the caller reads it after [delegate.Multiplexer.Run] to
+// stamp a pause result the crossing produced while stranded, so the fact
+// travels with the pause (see [executeViaSandboxRunner]).
+func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task, seed sessionSeed) (delegate.MultiplexerHandler, *atomic.Bool) {
 	// Index ToolDefs by name once so OnToolCall is O(1) instead of
 	// scanning the slice on each runner-initiated tool_call.
 	toolByName := make(map[string]delegate.ToolDef, len(task.ToolDefs))
@@ -2924,9 +2942,11 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 	// envelope carries the snapshot alone, and the host holds the task the
 	// runner is executing.
 	hostSessKey := taskSessionKey(task)
-	// Whether this crossing holds none of the session's history, from the two
-	// sides that know: the seed's own outcome, and the runner's word for a
-	// replay that did not survive the channel. Either way the crossing
+	// Whether this crossing holds none of the session's history, from the
+	// three sides that know: the seed's own outcome, the runner's word for
+	// a replay that did not survive the channel, and the pause this
+	// crossing resumes from (task.SessionStranded — the fact travelled
+	// with it). Either way the crossing
 	// answers without the conversation this host holds, and its capture must
 	// not become it. Both reach this flag before any capture can — the runner
 	// loads the replay into its local store before it runs the node, and
@@ -2934,7 +2954,7 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 	// is atomic because the guard is load-bearing while the dispatch's
 	// schedule is the multiplexer's to change.
 	var stranded atomic.Bool
-	stranded.Store(seed.refused)
+	stranded.Store(seed.refused || task.SessionStranded)
 	var strandedOnce sync.Once
 	return delegate.MultiplexerHandler{
 		OnToolCall: func(toolCtx context.Context, name string, input json.RawMessage) (string, error) {
@@ -3056,7 +3076,7 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 					task.NodeID, task.Iteration, eventType)
 			}
 		},
-	}
+	}, &stranded
 }
 
 // ---------------------------------------------------------------------------

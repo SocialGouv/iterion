@@ -323,6 +323,15 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 			return nil, fmt.Errorf("load turn messages for claw rehydration: %w", mErr)
 		}
 		child.Checkpoint.BackendConversation = msgBytes
+		// The stranding fact travels with the conversation (#2461): when the
+		// parent's pause checkpoint says these turns are a stranded crossing's
+		// own, the child's resumed crossing keeps its captures out of the
+		// session store too. The asymmetry is deliberate — a false positive
+		// costs one capture the child's fresh store never accumulates; a
+		// false negative repeats the session replacement the field closes.
+		if parent.Checkpoint != nil && parent.Checkpoint.BackendSessionStranded {
+			child.Checkpoint.BackendSessionStranded = true
+		}
 	}
 	// Drop the forked node's existing output and every logical binding that
 	// may have come from it so re-execution starts fresh. Besides explicit

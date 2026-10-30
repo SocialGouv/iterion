@@ -1774,10 +1774,15 @@ carries). The crossing's words stay as the detail of the error.
   too, so the capture coming back continues the session; a copy it cannot
   carry reached no crossing at all, and what comes back is one blind
   crossing's own turns, which must not replace the session the host holds.
-  The residual is version skew alone: a crossing stranded by a relayed gap
-  (a replay a container could not decode, a reason a newer runner names) and
-  then resumed does mirror, because the host's copy is deliverable and
-  nothing on the pause says the crossing never saw it.
+  A pause produced by a stranded crossing carries the stranding WITH it
+  (#2461): the launcher stamps the pause result, the runtime checkpoints the
+  fact as `backend_session_stranded` beside the conversation, and the resume
+  hands it back to the crossing it spawns — whose captures then stay out of
+  the session exactly as the original stranded crossing's did, version skew
+  (a replay a container could not decode, a reason a newer runner names)
+  included. A checkpoint written before the field existed reads as absent,
+  the pre-field behaviour: only a pause written by a runner that knows the
+  fact can carry it.
   Every gap in the host's copy — a refused snapshot, a refused write, a
   replay the runner could not decode — is relayed as a `session_mirror_gap`
   event, which the launcher logs whatever the crossing's outcome; the

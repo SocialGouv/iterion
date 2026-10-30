@@ -2064,6 +2064,15 @@ type Checkpoint struct {
 	// an answer in BackendConversation. Required when BackendConversation
 	// is non-nil.
 	BackendPendingToolUseID string `json:"backend_pending_tool_use_id,omitempty" bson:"backend_pending_tool_use_id,omitempty"`
+	// BackendSessionStranded records that BackendConversation is the turns
+	// of a crossing that held none of its session's history (a relayed
+	// mirror gap, or a seed the sandbox channel refused — #2461). The
+	// stranding travels WITH the pause so a resumed crossing keeps its own
+	// captures out of the session store instead of replacing it. Absent on
+	// checkpoints written before the field existed — the pre-field
+	// behaviour, which is exactly the residual it closes, so only a pause
+	// written by a runner that knows the fact can carry it.
+	BackendSessionStranded bool `json:"backend_session_stranded,omitempty" bson:"backend_session_stranded,omitempty"`
 	// NodeSessions holds persist slots (ADR-089). Keyed by session_slot when
 	// authored, otherwise by node id for backward compatibility.
 	NodeSessions map[string]NodeSessionSlot `json:"node_sessions,omitempty" bson:"node_sessions,omitempty"`
