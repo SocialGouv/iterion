@@ -157,3 +157,41 @@ func TestTurnStore_AThirdAttemptStacksBehindTheSecond(t *testing.T) {
 			latest.Attempt, latest.Usage.OutputTokens, err)
 	}
 }
+
+// The parity pin for the mongo twin's same-attempt rule (revi on #2806):
+// an identical checkpoint redelivered WITHOUT its Messages blob is the
+// same attempt — the coordinate keeps one record and the conversation
+// sidecar survives. The mongo twin reads the same input the same way.
+func TestTurnStore_SameAttemptWithoutMessagesKeepsTheBlob(t *testing.T) {
+	st, err := New(t.TempDir(), WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatalf("New store: %v", err)
+	}
+	ctx := context.Background()
+	runID, nodeID := "run-redelivery", "writer"
+	full := &TurnCheckpoint{
+		RunID: runID, NodeID: nodeID, LoopIter: 0, TurnIndex: 0,
+		Backend: "claude_code", SessionID: "sess-a",
+		Usage:    TurnUsage{OutputTokens: 23},
+		Messages: json.RawMessage(`[{"role":"user","content":"draft"}]`),
+	}
+	if err := st.WriteTurn(ctx, full); err != nil {
+		t.Fatalf("WriteTurn: %v", err)
+	}
+	bare := &TurnCheckpoint{
+		RunID: runID, NodeID: nodeID, LoopIter: 0, TurnIndex: 0,
+		Backend: "claude_code", SessionID: "sess-a",
+		Usage: TurnUsage{OutputTokens: 23},
+	}
+	if err := st.WriteTurn(ctx, bare); err != nil {
+		t.Fatalf("WriteTurn(bare redelivery): %v", err)
+	}
+	rows, err := st.ListTurns(ctx, runID, nodeID, 0)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("ListTurns = %d rows (%v), want 1 — a bare redelivery must not stack an attempt", len(rows), err)
+	}
+	msgs, err := st.LoadTurnMessages(ctx, runID, nodeID, 0, 0)
+	if err != nil || string(msgs) != `[{"role":"user","content":"draft"}]` {
+		t.Errorf("LoadTurnMessages = %q (%v), want the first write's blob", msgs, err)
+	}
+}

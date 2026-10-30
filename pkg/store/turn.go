@@ -117,6 +117,14 @@ type TurnCheckpoint struct {
 	// the Fork API) resolve — while ListTurns enumerates every attempt,
 	// superseded included.
 	Superseded bool `json:"superseded,omitempty"`
+	// DroppedAttempts counts the superseded attempts a bounded
+	// implementation has let fall off the coordinate's retained tail
+	// (the mongo twin keeps the most recent ones so a coordinate's
+	// document stays under the BSON ceiling; the filesystem keeps every
+	// attempt file and never drops). It rides the CANONICAL record only:
+	// non-zero means the history — and any usage baseline summed from
+	// ListTurns — is partial, and says by how much.
+	DroppedAttempts int `json:"dropped_attempts,omitempty"`
 	// Backend identifies the executor that produced this turn:
 	// "claw" or "claude_code". Drives the per-backend rehydration
 	// branch in the Fork API (Phase 3/4).

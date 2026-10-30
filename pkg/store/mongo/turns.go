@@ -21,6 +21,17 @@ import (
 // and the runner skipped per-turn capture (model/hooks.go turnSink nil).
 var _ store.TurnStore = (*Store)(nil)
 
+// maxRetainedTurnAttempts bounds how many SUPERSEDED attempts one
+// coordinate's document retains: each prior entry carries its inline
+// Messages blob, so an unbounded list grows the document to the 16 MiB
+// BSON ceiling — and past it EVERY write on the coordinate fails
+// (ReplaceOne too big), losing the latest attempt with the rest. Eight
+// keeps the recent retry history an operator inspects while bounding a
+// turn document at roughly eight conversations; the canonical record is
+// never dropped, and the cut is counted on it (PriorDropped →
+// TurnCheckpoint.DroppedAttempts) so a partial baseline says so.
+const maxRetainedTurnAttempts = 8
+
 // runTurnDoc is one persisted TurnCheckpoint COORDINATE, one document per
 // (run_id, node_id, loop_iter, turn_index). The cloud twin of the
 // filesystem store's runs/<id>/turns/<node>/<iter>/<turn>.json plus its
@@ -62,11 +73,20 @@ type runTurnDoc struct {
 	// stays agnostic of the backend's wire format.
 	Messages []byte `bson:"messages,omitempty"`
 	GitRef   string `bson:"git_ref,omitempty"`
-	// Prior holds the superseded attempts at this coordinate, oldest
-	// first. Inner docs carry no TenantID and a nil Prior — the nesting
+	// Prior holds the superseded attempts at this coordinate, the most
+	// recent ones (oldest retained first): the list is bounded
+	// (maxRetainedTurnAttempts) because every entry carries its inline
+	// Messages blob, and an unbounded list would grow the document past
+	// the 16 MiB BSON ceiling — past which EVERY write on the coordinate
+	// fails, the latest attempt included. The canonical record is never
+	// dropped. Inner docs carry no TenantID and a nil Prior — the nesting
 	// is exactly one level.
-	Prior     []runTurnDoc `bson:"prior,omitempty"`
-	WrittenAt time.Time    `bson:"ts"`
+	Prior []runTurnDoc `bson:"prior,omitempty"`
+	// PriorDropped counts the superseded attempts the bound let fall off
+	// the tail. Surfaced as TurnCheckpoint.DroppedAttempts so a baseline
+	// summed from ListTurns can tell "partial" from "exact".
+	PriorDropped int       `bson:"prior_dropped,omitempty"`
+	WrittenAt    time.Time `bson:"ts"`
 }
 
 // toCheckpoint converts the persisted document back to the wire-shape
@@ -91,6 +111,7 @@ func (d runTurnDoc) toCheckpoint() *store.TurnCheckpoint {
 		WrittenAt:    d.WrittenAt,
 
 		TerminatedBackground: d.TerminatedBackground,
+		DroppedAttempts:      d.PriorDropped,
 	}
 }
 
@@ -102,6 +123,7 @@ func (d runTurnDoc) priorAttempt() runTurnDoc {
 	prior := d
 	prior.TenantID = ""
 	prior.Prior = nil
+	prior.PriorDropped = 0 // the counter belongs to the coordinate's canonical record
 	if prior.Attempt < 1 {
 		prior.Attempt = 1
 	}
@@ -112,11 +134,13 @@ func (d runTurnDoc) priorAttempt() runTurnDoc {
 // the stored one already records — every field equal, the bookkeeping
 // ones (tenant stamp, ts, attempt, prior) aside: an idempotent
 // redelivery numbers nothing new, a DIFFERING write is a new attempt
-// (#2806).
+// (#2806). Messages is deliberately NOT compared: the blob is the
+// attempt's sidecar, not its identity — a redelivery from a path that
+// has no conversation snapshot to carry (the sandbox relay, a replayed
+// hook) is the same attempt, exactly as the filesystem twin's
+// turnsSameAttempt never reads the sidecar (revi on #2806). WriteTurn
+// then keeps the stored blob when the redelivery carries none.
 func sameTurnAttempt(stored runTurnDoc, in runTurnDoc) bool {
-	if !bytes.Equal(stored.Messages, in.Messages) {
-		return false
-	}
 	a, b := stored.priorAttempt(), in.priorAttempt()
 	a.Messages, b.Messages = nil, nil
 	a.WrittenAt, b.WrittenAt = time.Time{}, time.Time{}
@@ -183,6 +207,14 @@ func (s *Store) WriteTurn(ctx context.Context, t *store.TurnCheckpoint) error {
 		TerminatedBackground: t.TerminatedBackground,
 	}
 	filter := turnKeyFilter(ctx, t.RunID, t.NodeID, t.LoopIter, t.TurnIndex)
+	// The read-supersede-replace below is a read-modify-write with no
+	// transaction: two writers racing one coordinate could each read the
+	// pre-write document and one's supersede would be lost (the canonical
+	// record itself is last-writer-wins either way). Accepted, and narrow:
+	// a coordinate is written by one execution of one node, and a retried
+	// or resumed attempt is sequential by construction — the cross-process
+	// case the fs twin answers with its file lock has no concurrent writer
+	// here (revi on #2806: documented, not closed).
 	var stored runTurnDoc
 	findErr := s.runTurns.FindOne(ctx, filter).Decode(&stored)
 	switch {
@@ -193,14 +225,36 @@ func (s *Store) WriteTurn(ctx context.Context, t *store.TurnCheckpoint) error {
 	case findErr != nil:
 		return fmt.Errorf("store/mongo: read turn %s/%s/%d/%d: %w", t.RunID, t.NodeID, t.LoopIter, t.TurnIndex, findErr)
 	case sameTurnAttempt(stored, doc):
-		// Same attempt written twice: keep the incumbent's numbering.
+		// Same attempt written twice: keep the incumbent's numbering —
+		// and its conversation when the redelivery carries none (the
+		// fs twin's sidecar survives an identical rewrite the same way).
 		doc.Attempt = stored.Attempt
 		if doc.Attempt < 1 {
 			doc.Attempt = 1
 		}
 		doc.Prior = stored.Prior
+		doc.PriorDropped = stored.PriorDropped
+		if len(doc.Messages) == 0 {
+			doc.Messages = stored.Messages
+		}
 	default:
-		doc.Prior = append(stored.Prior, stored.priorAttempt())
+		priors := append(stored.Prior, stored.priorAttempt())
+		dropped := stored.PriorDropped
+		if len(priors) > maxRetainedTurnAttempts {
+			// The oldest superseded attempt falls off — never the
+			// canonical record — and the cut is counted, so a baseline
+			// summed from ListTurns reads as partial rather than
+			// silently exact.
+			cut := len(priors) - maxRetainedTurnAttempts
+			priors = priors[cut:]
+			dropped += cut
+			if s.logger != nil {
+				s.logger.Warn("store/mongo: turn %s/%s/%d/%d: retained superseded attempts past the bound (%d) — dropped the oldest %d (%d dropped in all)",
+					t.RunID, t.NodeID, t.LoopIter, t.TurnIndex, maxRetainedTurnAttempts, cut, dropped)
+			}
+		}
+		doc.Prior = priors
+		doc.PriorDropped = dropped
 		doc.Attempt = stored.priorAttempt().Attempt + 1
 	}
 	t.Attempt = doc.Attempt
@@ -216,10 +270,13 @@ func (s *Store) WriteTurn(ctx context.Context, t *store.TurnCheckpoint) error {
 // messages blob is projected out (like the other readers) — LoadTurn
 // never surfaces it, so pulling it over the wire only to discard it in
 // toCheckpoint would waste bandwidth; callers fetch it via
-// LoadTurnMessages.
+// LoadTurnMessages. The superseded attempts' blobs (`prior.messages`)
+// are projected out for the same reason, here and in LatestTurn /
+// LoadTurnAtIndex: an anchor read must not haul every preserved
+// conversation just to drop it (revi on #2806).
 func (s *Store) LoadTurn(ctx context.Context, runID, nodeID string, loopIter, turn int) (*store.TurnCheckpoint, error) {
 	var doc runTurnDoc
-	opts := options.FindOne().SetProjection(bson.M{"messages": 0})
+	opts := options.FindOne().SetProjection(bson.M{"messages": 0, "prior.messages": 0})
 	err := s.runTurns.FindOne(ctx, turnKeyFilter(ctx, runID, nodeID, loopIter, turn), opts).Decode(&doc)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
@@ -279,7 +336,7 @@ func (s *Store) LatestTurn(ctx context.Context, runID, nodeID string) (*store.Tu
 	filter := withTenantFilter(ctx, bson.M{"run_id": runID, "node_id": nodeID})
 	opts := options.FindOne().
 		SetSort(bson.D{{Key: "loop_iter", Value: -1}, {Key: "turn_index", Value: -1}}).
-		SetProjection(bson.M{"messages": 0})
+		SetProjection(bson.M{"messages": 0, "prior.messages": 0})
 	var doc runTurnDoc
 	if err := s.runTurns.FindOne(ctx, filter, opts).Decode(&doc); err != nil {
 		if err == mongo.ErrNoDocuments {
@@ -298,7 +355,7 @@ func (s *Store) LoadTurnAtIndex(ctx context.Context, runID, nodeID string, turn 
 	filter := withTenantFilter(ctx, bson.M{"run_id": runID, "node_id": nodeID, "turn_index": turn})
 	opts := options.FindOne().
 		SetSort(bson.D{{Key: "loop_iter", Value: -1}}).
-		SetProjection(bson.M{"messages": 0})
+		SetProjection(bson.M{"messages": 0, "prior.messages": 0})
 	var doc runTurnDoc
 	if err := s.runTurns.FindOne(ctx, filter, opts).Decode(&doc); err != nil {
 		if err == mongo.ErrNoDocuments {
