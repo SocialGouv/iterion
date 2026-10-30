@@ -365,7 +365,7 @@ func registerSandboxLocalTools(reg *tool.Registry, workspace, scratchDir string,
 	if err := tool.RegisterClawSubagents(reg, subagent); err != nil {
 		return err
 	}
-	return tool.RegisterClawReadImage(reg)
+	return tool.RegisterClawReadImage(reg, readScope)
 }
 
 // makeHybridToolDefs builds the runner's tool set, routing each tool the

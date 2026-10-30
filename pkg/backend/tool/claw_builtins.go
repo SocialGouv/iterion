@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	clawlsp "github.com/SocialGouv/claw-code-go/pkg/api/lsp"
@@ -216,11 +217,47 @@ func registerClawSpecs(reg *Registry, specs []clawBuiltinSpec) error {
 // agents can splice into their next message. Unlike screenshot /
 // computer_use this tool does not require a display, so it's safe in
 // headless workflows.
-func RegisterClawReadImage(reg *Registry) error {
+//
+// The `path` input answers to the SAME ReadScope as read_file, glob and
+// grep (#2885): contained in the workspace or a declared read root, and
+// never a credential or secret file — an image read reaches the same
+// filesystem a file read does, and a `.env` leaks its bytes whether or
+// not they sniff as PNG. The `url` input touches no filesystem and
+// keeps the underlying tool's own transport guards (https-only, no
+// redirect downgrade).
+func RegisterClawReadImage(reg *Registry, scope *ReadScope) error {
 	return RegisterClawTool(reg,
 		clawtools.ReadImageTool(),
-		clawComputerUseAdapter(clawtools.ExecuteReadImage),
+		clawComputerUseAdapter(func(ctx context.Context, input map[string]any) (clawtools.ReadImageResult, error) {
+			return executeScopedReadImage(ctx, input, scope)
+		}),
 	)
+}
+
+// executeScopedReadImage gates read_image's `path` input on the read
+// scope before claw's loader opens it — resolveReadPath's containment
+// plus the credential exclusion, the exact gate read_file passes
+// (#2885). The loader receives the RESOLVED path, so it opens what the
+// scope admitted. A missing or empty path (a URL read, or the input
+// error claw's own validation answers) passes through untouched.
+func executeScopedReadImage(ctx context.Context, input map[string]any, scope *ReadScope) (clawtools.ReadImageResult, error) {
+	raw, ok := input["path"].(string)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return clawtools.ExecuteReadImage(ctx, input)
+	}
+	path, err := resolveReadPath(scope, raw)
+	if err != nil {
+		return clawtools.ReadImageResult{}, fmt.Errorf("read_image: %w", err)
+	}
+	if sensitiveWorkspacePath(raw) || sensitiveWorkspacePath(path) {
+		return clawtools.ReadImageResult{}, fmt.Errorf("read_image: %q is excluded as a credential or secret file", raw)
+	}
+	scoped := make(map[string]any, len(input))
+	for key, value := range input {
+		scoped[key] = value
+	}
+	scoped["path"] = path
+	return clawtools.ExecuteReadImage(ctx, scoped)
 }
 
 // RegisterClawComputerUse registers the desktop-control tools that
@@ -677,7 +714,8 @@ type ClawDefaults struct {
 	Workspace string
 
 	// ReadScope, when non-nil, is the read tools' (read_file, glob, grep,
-	// workspace_grep) scope — workspace plus the extra read-only roots a
+	// read_image, workspace_grep) scope — workspace plus the extra
+	// read-only roots a
 	// host attaches after registration, the run's ${PROJECT_SCRATCH_DIR}
 	// being the canonical one (#2650). Nil builds a workspace-only scope
 	// from Workspace. A host that passes one here should hand the SAME
@@ -847,7 +885,7 @@ func RegisterClawAll(reg *Registry, defaults ClawDefaults) error {
 			return err
 		}
 	}
-	if err := RegisterClawReadImage(reg); err != nil {
+	if err := RegisterClawReadImage(reg, readScope); err != nil {
 		return err
 	}
 	if defaults.IncludeComputerUse {

@@ -91,7 +91,7 @@ func TestAClawGrepErrorQuotingItsSecretPatternReturnsThePlaceholder(t *testing.T
 func TestAClawImageURLCarryingASecretIsNotQuotedBack(t *testing.T) {
 	t.Parallel()
 	tr := tool.NewRegistry()
-	if err := tool.RegisterClawReadImage(tr); err != nil {
+	if err := tool.RegisterClawReadImage(tr, tool.NewReadScope("")); err != nil {
 		t.Fatal(err)
 	}
 	second := runClawToolWith(t, tr, "read_image", map[string]any{"url": "https://127.0.0.1:1/render.png?apikey=__ITERION_SECRET_GH_TOKEN__"}, t.TempDir())

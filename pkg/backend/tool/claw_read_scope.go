@@ -9,9 +9,9 @@ import (
 )
 
 // ReadScope is the set of directories claw's READ tools (read_file, glob,
-// grep — and the workspace_grep diagnostic alias) accept: the run workspace
-// plus zero or more EXTRA read-only roots a host attaches after the registry
-// is built.
+// grep, read_image — and the workspace_grep diagnostic alias) accept: the
+// run workspace plus zero or more EXTRA read-only roots a host attaches
+// after the registry is built.
 //
 // The canonical extra root is the run's ${PROJECT_SCRATCH_DIR} (#2650):
 // bots keep their run state out of the audited tree there BY DESIGN, and

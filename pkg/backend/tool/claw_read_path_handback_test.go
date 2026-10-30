@@ -22,9 +22,10 @@ import (
 //
 // The set under test is every builtin whose executor is handed the
 // ReadScope (grep `scope *ReadScope` in this package: read_file, glob,
-// grep, and the workspace_grep alias of the diagnostics registry). A
-// fourth scope-gated tool belongs in this table; resolving each name from
-// the registry is what fails if one is renamed away.
+// grep, and the workspace_grep alias of the diagnostics registry) — plus
+// read_image, whose registration takes the scope for its `path` input
+// (#2885). A fourth scope-gated tool belongs in this table; resolving
+// each name from the registry is what fails if one is renamed away.
 
 const (
 	handbackScratchBody   = "SCRATCH-BRIEF\n"
@@ -175,5 +176,70 @@ func TestCredentialExclusionFoldsCaseUnderEveryRoot(t *testing.T) {
 	}
 	if out, err := executeWorkspaceReadFile(map[string]any{"path": plain}, scope); err != nil || !strings.Contains(out, "public") {
 		t.Fatalf("read_file(ENVIRONMENT.md) = %q, %v — the fold must not widen the list", out, err)
+	}
+}
+
+// read_image takes a model-supplied path to the SAME filesystem read_file
+// reads, so it answers to the same scope (#2885): the extra roots open it,
+// a path outside every root refuses, and the credential exclusion binds.
+// Every refusal below is against a file holding VALID PNG bytes, so what
+// reddens is the gate, never the format sniff.
+func TestReadImageAnswersToTheReadScope(t *testing.T) {
+	scope, reg, workspace, scratch := handbackFixture(t)
+	if err := RegisterClawReadImage(reg, scope); err != nil {
+		t.Fatal(err)
+	}
+	readImage := func(input map[string]any) (string, error) {
+		t.Helper()
+		def, err := reg.Resolve("read_image")
+		if err != nil {
+			t.Fatalf("resolve read_image: %v", err)
+		}
+		raw, err := json.Marshal(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return def.Execute(context.Background(), raw)
+	}
+
+	// The positives: an image under the extra root reads by its absolute
+	// path, and the workspace-relative spelling joins the workspace — the
+	// two shapes read_file accepts.
+	scratchPNG := filepath.Join(scratch, "briefs", "shot.png")
+	if err := os.WriteFile(scratchPNG, tiny1x1PNG, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := readImage(map[string]any{"path": scratchPNG}); err != nil || !strings.Contains(out, "image/png") {
+		t.Fatalf("read_image(%q) under the scratch root = %q, %v — want the decoded PNG block", scratchPNG, out, err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "shot.png"), tiny1x1PNG, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := readImage(map[string]any{"path": "shot.png"}); err != nil || !strings.Contains(out, "image/png") {
+		t.Fatalf("read_image(shot.png) relative to the workspace = %q, %v", out, err)
+	}
+
+	// Outside every root: refused the way read_file refuses.
+	outside := filepath.Join(t.TempDir(), "shot.png")
+	if err := os.WriteFile(outside, tiny1x1PNG, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readImage(map[string]any{"path": outside}); err == nil || !strings.Contains(err.Error(), "outside workspace") {
+		t.Fatalf("read_image(%q) outside every root = %v, want the scope refusal", outside, err)
+	}
+
+	// A credential name under EITHER root: refused, although the bytes
+	// decode as a PNG — the exclusion, not the loader, said no.
+	for _, root := range []string{workspace, scratch} {
+		env := filepath.Join(root, ".env")
+		if err := os.WriteFile(env, tiny1x1PNG, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readImage(map[string]any{"path": env}); err == nil || !strings.Contains(err.Error(), "credential") {
+			t.Fatalf("read_image(%q) = %v, want the credential refusal", env, err)
+		}
+		if err := os.Remove(env); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
