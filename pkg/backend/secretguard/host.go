@@ -31,7 +31,8 @@ func (g *Guard) MaterializeForHostWithin(s, host string, limit int) (string, boo
 	if len(s) > limit {
 		return s, false
 	}
-	if g == nil || s == "" {
+	st := g.load()
+	if st == nil || s == "" {
 		return s, true
 	}
 	in := s
@@ -40,7 +41,7 @@ func (g *Guard) MaterializeForHostWithin(s, host string, limit int) (string, boo
 	// to the ones that grow: the verdict is the result's length, never the
 	// order two substitutions happen to be declared in.
 	for _, grows := range [2]bool{false, true} {
-		for _, sec := range g.secrets {
+		for _, sec := range st.secrets {
 			if sec.RedactOnly || grows != (len(sec.Value) > len(sec.Placeholder)) || !hostAllowed(sec.Hosts, host) || !secretsink.Grants(sec.Sinks, secretsink.Egress) {
 				continue
 			}
@@ -66,22 +67,23 @@ func (g *Guard) MaterializeForHostWithin(s, host string, limit int) (string, boo
 // the destination is out of scope, so legitimate use toward an approved
 // host is never blocked. Nil-safe.
 func (g *Guard) ExfiltratesTo(s, host string) bool {
-	if g == nil || s == "" {
+	st := g.load()
+	if st == nil || s == "" {
 		return false
 	}
 	// Fast path: the precompiled matcher spans every encoding of every
 	// known secret. No match → no secret value is present at all, so
 	// nothing can be exfiltrating — skip the per-secret/per-encoding scan
 	// (this is the common case on the proxy hot path).
-	if g.matcher == nil || !g.matcher.MatchString(s) {
+	if st.matcher == nil || !st.matcher.MatchString(s) {
 		return false
 	}
 	host = canonicalHostname(host)
-	for i, sec := range g.secrets {
+	for i, sec := range st.secrets {
 		if hostAllowed(sec.Hosts, host) {
 			continue // this destination is approved for this secret
 		}
-		for _, enc := range g.encodings[i] {
+		for _, enc := range st.encodings[i] {
 			if strings.Contains(s, enc) {
 				return true
 			}
