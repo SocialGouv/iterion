@@ -2196,6 +2196,19 @@ that is the typed-refused half of the parity rule, and no compile-time
 diagnostic predicts it, since the compiler cannot know which host will
 build the registry.
 
+**Named subagents resolve from the workspace.** A `subagent_type` that names
+`<workspace>/.claude/agents/<name>.md` — the file a plugin's `contributes:
+agents` mirrors there, which claude_code discovers natively — resolves that
+file through iterion's own resolver (`pkg/backend/model/workspace_agents.go`,
+contained by `os.Root` at the workspace, like the workspace commands above):
+the body becomes the child's system prompt, `tools:` intersects the node's
+effective set (never widens it), and `model:` refuses the delegation
+(#1717 — a contributed file does not re-route the node's spend). The
+resolver is iterion-side by arbitration (ARB-83): iterion's `SubagentRunner`
+executes every spawn a workflow drives, on this backend and claude_code
+alike. This cell is wired and covered by deterministic tests; no live e2e
+has paid for it, so it does not read `proven`.
+
 ### `codex`
 
 The Codex backend delegates to the installed Codex CLI through the pinned Agent
