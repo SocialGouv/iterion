@@ -102,6 +102,14 @@ a row only means something if a run can be attributed to it:
   `pkg/backend/backendcaps/live_seed.json` (compared cell-for-cell by
   `TestLiveLedgerZeroMove`) and the reviewed golden beside it
   (`go test ./pkg/backend/backendcaps/ -update-backendcaps`).
+- `TestNoTwoRecordingTargetsSelectTheSameLiveTest` — a target's `-run`
+  pattern selects exactly the tests its name claims: among targets whose
+  selection sits in ONE source file, no two may match the same test.
+  `test:live:feature-dev` and `test:live:whole-improve-loop` once carried
+  unanchored patterns that silently ran (and timed out, and billed, and
+  fail-marked) their `_Real` sibling — whose own target exists — under
+  the cheap target's row (#2784). The `openai-compatible` pair stays
+  legal: no second target selects either function.
 
 ## Quality layer — how it works
 

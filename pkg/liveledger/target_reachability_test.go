@@ -1,9 +1,7 @@
 package liveledger
 
 import (
-	"fmt"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -126,36 +124,17 @@ func liveTestFiles(sources map[string]string) map[string]string {
 // that row honest. test:live and test:live:feats:all reach across
 // files, so they make nobody attributable.
 //
-// Matching uses Go's own -run semantics: an unanchored regexp over the
-// test name, where the part before the first `/` applies to the
-// top-level function. An empty pattern filters nothing — the target
-// would run every live test of every file — so it is attributable for
-// nobody, which is what skipping it yields.
-//
-// The residual this rule does NOT catch, by construction: two variants
-// of one file that a single unanchored pattern selects together, where
-// the second has its own (costlier) target — #2784.
+// The residual this rule does NOT catch — two variants of one file that
+// a single unanchored pattern selects together, where the second has
+// its own (costlier) target — is #2784's shape, and
+// TestNoTwoRecordingTargetsSelectTheSameLiveTest
+// (target_overlap_test.go) now refuses it.
 func attributableTargets(targets []LiveTarget, fileOf map[string]string) (map[string][]string, error) {
 	out := map[string][]string{}
 	for _, tt := range targets {
-		if tt.RunPattern == "" {
-			continue
-		}
-		top := tt.RunPattern
-		if i := strings.Index(top, "/"); i >= 0 {
-			top = top[:i]
-		}
-		re, err := regexp.Compile(top)
+		matched, files, err := matchLiveTests(tt, fileOf)
 		if err != nil {
-			return nil, fmt.Errorf("target %s: -run pattern %q does not compile as a Go test filter: %w", tt.Name, tt.RunPattern, err)
-		}
-		var matched []string
-		files := map[string]bool{}
-		for fn, file := range fileOf {
-			if re.MatchString(fn) {
-				matched = append(matched, fn)
-				files[file] = true
-			}
+			return nil, err
 		}
 		if len(matched) == 0 || len(files) > 1 {
 			continue

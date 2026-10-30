@@ -329,12 +329,12 @@ tasks:
   test:live:feature-dev:
     desc: Live e2e for feature_dev bot (requires claude CLI + OPENAI_API_KEY)
     cmds:
-      - go test -v -tags live -count=1 -run TestLive_FeatureDev -timeout 90m ./e2e/...
+      - go test -v -tags live -count=1 -run "TestLive_FeatureDev$" -timeout 90m ./e2e/...
 
   test:live:whole-improve-loop:
     desc: Live e2e for whole_improve_loop bot (requires claude CLI + OPENAI_API_KEY)
     cmds:
-      - go test -v -tags live -count=1 -run TestLive_VibeReviewAlternating -timeout 45m ./e2e/...
+      - go test -v -tags live -count=1 -run "TestLive_VibeReviewAlternating$" -timeout 45m ./e2e/...
 
   test:live:secured-renovacy:
     desc: Live e2e for secured-renovacy bundle (requires claude CLI + docker + OPENAI_API_KEY; ~$10-50, up to 3h)
