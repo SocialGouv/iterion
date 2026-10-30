@@ -109,3 +109,43 @@ func DurableWriteSpellingsOn(backend string) []string {
 	slices.Sort(out)
 	return out
 }
+
+// DeclaredListBounds reports whether a node's `tools:` declaration is what
+// decides the tool surface of a run on this backend. It is the second
+// parameter of the shared per-backend durable-write question iterion#2882
+// names (the first is ReadonlyWithholdsDurableWrite): a reader crediting a
+// write path asks it before reading anything into the list.
+//
+//   - a backend that never RECEIVES the list (ReceivesToolList — pi, kimi,
+//     grok and opencode, driven through the CLI-agent seam) is bounded by
+//     nothing the node declares: a declared writer-free list is a bound
+//     their run does not have, and reading it as one was the hole this arm
+//     closes — the run keeps its native roster, writers included;
+//   - on claw the list IS the surface: buildTask resolves the ToolDefs
+//     behind `len(effectiveTools) > 0 && claw` and claw_backend sets
+//     opts.Tools from ToolDefs alone, so an UNDECLARED list is no tool at
+//     all there. Reading it as "no restriction" credited a claw-only bundle
+//     with a native write surface the engine never installs (iterion#2832);
+//   - everywhere else the list reaches, an UNDECLARED list is no
+//     restriction — claude_code disallows only the natives a DECLARED list
+//     omits (delegate.claudeNativeDisallowedTools returns nil with no
+//     declaration) — while `tools: []` IS a declaration (ToolsDeclared), and
+//     reading the two alike is what let a node asking for no tools keep the
+//     whole roster.
+//
+// Every route a caller asks about is expected to be a NAMED backend: the
+// durable-memory reading expands the route the engine cannot resolve into
+// the candidates dispatch would pick from, so this predicate never answers
+// for "" and never has to guess which side of the readings above an
+// undecided route falls on. An UNREGISTERED name answers false — the safe
+// side, and ReceivesToolList's own default.
+
+func DeclaredListBounds(backend string, tools []string) bool {
+	if !ReceivesToolList(backend) {
+		return false
+	}
+	if strings.TrimSpace(backend) == backendcaps.Claw {
+		return true
+	}
+	return ToolsDeclared(tools)
+}

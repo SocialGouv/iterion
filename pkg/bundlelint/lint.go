@@ -876,6 +876,12 @@ func anyNodeCanWriteDurably(w *ir.Workflow, ids []string) bool {
 //   - `auto_memory:` resolves through a launch override, the workflow and an
 //     env default, and the grant it adds is claw's alone.
 //
+// And what a route's surface MEANS is not re-derived either: whether the
+// declared list bounds it and what `readonly:` withholds from it are the
+// capability registry's per-backend facts (toolcatalog.DeclaredListBounds,
+// toolcatalog.ReadonlyWithholdsDurableWrite — the two parameters of the
+// shared question iterion#2882 names), never this package's own table.
+//
 // Both arms end at the GATE, which bounds what runs whatever exists.
 //
 // The reading is PROGRAM-only: the node's and the workflow's own fields,
@@ -957,55 +963,56 @@ func heldWriterLeft(exec *model.ClawExecutor, llm ir.LLMNode, w *ir.Workflow) st
 	return ""
 }
 
-// heldToolNames are the names a run of this node on ONE route can call.
+// heldToolNames are the names a run of this node on ONE route can call for a
+// durable write.
 //
-// Where the declaration BOUNDS that route, they are the engine's answer and
-// nothing else — the author's list after the appends this route decides,
-// taken over the pessimistic reading of the node's effort (an incoming edge
-// may raise it to ultracode at dispatch, which appends claw's `agent`).
+// Where the declaration BOUNDS that route (toolcatalog.DeclaredListBounds —
+// a list a backend never receives bounds nothing, so pi, kimi, grok and
+// opencode read as their roster whatever the list says), they are the
+// engine's answer and nothing else — the author's list after the appends
+// this route decides, taken over the pessimistic reading of the node's
+// effort (an incoming edge may raise it to ultracode at dispatch, which
+// appends claw's `agent`).
 //
 // Where it bounds nothing, the agent keeps its own roster, and the names are
 // that backend's (toolcatalog.DurableWriteSpellingsOn): the writers alone,
 // since the only question asked of them is whether one survives the gate.
+//
+// Either way, the names then pass the node's `readonly:` flag AS THIS ROUTE
+// HONOURS IT (toolcatalog.ReadonlyWithholdsDurableWrite): the flag removes
+// the file writers on claude_code (and keeps the shell), everything on
+// codex and pi, and nothing on the backends that ignore it — a declared
+// `write_file` beside `readonly: true` on claude_code is no write path
+// (iterion#2882).
 func heldToolNames(exec *model.ClawExecutor, llm ir.LLMNode, route string) []string {
-	if routeBoundsTheList(route, llm.GetTools()) {
-		return exec.EffectiveToolNamesOnRoutes(llm, true, []string{route})
+	var names []string
+	if toolcatalog.DeclaredListBounds(route, llm.GetTools()) {
+		names = exec.EffectiveToolNamesOnRoutes(llm, true, []string{route})
+	} else {
+		names = toolcatalog.DurableWriteSpellingsOn(route)
 	}
-	return toolcatalog.DurableWriteSpellingsOn(route)
+	return readonlySurvivors(llm, route, names)
 }
 
-// routeBoundsTheList reports whether the node's `tools:` declaration is what
-// decides the surface of a run on this route.
-//
-//   - on claw the list IS the surface: buildTask resolves the ToolDefs behind
-//     `len(effectiveTools) > 0 && claw` and claw_backend sets opts.Tools from
-//     ToolDefs alone, so an UNDECLARED list is no tool at all there. Reading
-//     it as "no restriction" credited a claw-only bundle with a native write
-//     surface the engine never installs (iterion#2832);
-//   - everywhere else an UNDECLARED list is no restriction — claude_code
-//     disallows only the natives a DECLARED list omits
-//     (delegate.claudeNativeDisallowedTools returns nil with no declaration)
-//     — while `tools: []` IS a declaration (toolcatalog.ToolsDeclared), and
-//     reading the two alike is what let a node asking for no tools keep the
-//     whole roster.
-//
-// Every route reaching here is a NAMED backend: nodeRoutes expands the one
-// the engine cannot resolve into the candidates dispatch would pick from, so
-// this predicate never answers for "" and never has to guess which side of
-// the two readings above an undecided route falls on.
-//
-// Inventoried and NOT fixed, so the class is not read as closed: pi, kimi,
-// grok and opencode never receive the list at all — C270 warns about it, and
-// toolcatalog.ReceivesToolList is the predicate — so a DECLARED writer-free
-// list reads here as a bound their run does not have. It is the `readonly:`
-// class again (a per-backend reading of what a flag or a seam withholds), the
-// corpus twin has the same hole, and crediting those routes generously would
-// silence C274 on every gated bundle that names one.
-func routeBoundsTheList(route string, tools []string) bool {
-	if route == backendcaps.Claw {
-		return true
+// readonlySurvivors drops the durable-write names the node's `readonly:`
+// flag withholds ON THIS ROUTE. The flag is per-backend leverage, and the
+// per-backend fact is the capability registry's
+// (toolcatalog.ReadonlyWithholdsDurableWrite) — never a table of this
+// package's, which is the hole iterion#2882 names: no arm of this check read
+// the flag at all, so `readonly: true` beside `tools: [write_file]` on
+// claude_code was credited as the write path the spawn withholds.
+func readonlySurvivors(llm ir.LLMNode, route string, names []string) []string {
+	f := llm.GetLLMFields()
+	if f == nil || !f.Readonly {
+		return names
 	}
-	return toolcatalog.ToolsDeclared(tools)
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if !toolcatalog.ReadonlyWithholdsDurableWrite(route, toolcatalog.CanonicalToolName(name)) {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // PermissionGateLeaves reports whether the runtime permission gate lets a tool
