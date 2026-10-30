@@ -1988,4 +1988,13 @@ type Result struct {
 	// before a thinking-bearing assistant message arrived). Zero when no
 	// thinking was produced.
 	ThinkingMs int
+
+	// GatewaySpec is the invocation's catalog provenance on an
+	// OpenAI-compatible gateway route (ADR-122 §resolution): which table
+	// answered and what it said, as compact JSON. Harness-recorded — the
+	// claw backend resolves the catalog once, before anything runs — never
+	// model JSON, so it survives the reserved-namespace wipe the node
+	// output goes through the way the usage counters do, and is re-stamped
+	// there as `_gateway_spec`. Empty on a non-gateway route.
+	GatewaySpec json.RawMessage
 }

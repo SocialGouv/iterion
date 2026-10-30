@@ -227,7 +227,10 @@ func (e *ClawExecutor) GateCanAsk(node ir.Node) bool {
 // model / context window / peak load / output cap (claude_code; left
 // unset by backends that don't report them). The four "_model" /
 // "_context_*" / "_max_output_tokens" keys drive the run-view's
-// per-node model label and context-usage gauge.
+// per-node model label and context-usage gauge. A gateway route's catalog
+// provenance is re-stamped from Result.GatewaySpec as `_gateway_spec` —
+// harness-recorded like the counters, so it survives the wipe a
+// model-written key of the same name does not (#2786).
 //
 // `output` is passed explicitly so the LLM router path can re-stamp
 // after a `{"text": …}` fallback has reassigned to a fresh map.
@@ -285,6 +288,9 @@ func stampDelegateOutputMeta(output map[string]any, result delegate.Result, back
 	}
 	if result.ThinkingMs > 0 {
 		output["_thinking_ms"] = result.ThinkingMs
+	}
+	if len(result.GatewaySpec) > 0 {
+		output["_gateway_spec"] = result.GatewaySpec
 	}
 }
 

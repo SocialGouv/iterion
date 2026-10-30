@@ -77,15 +77,12 @@ func checkGatewayEnv(strict bool) error {
 	return cfg.Validate(strict)
 }
 
-// stampGatewaySpec records the invocation's catalog provenance on the
-// node output: which table answered and what it said (compact JSON — the
-// output travels through maps that must stay single-line-safe). An unknown
-// record is recorded AS unknown: the absence of a window or a price is a
-// fact about the catalog, not an omission. Nil-safe.
-func stampGatewaySpec(output map[string]any, resolved compatgw.Resolved) map[string]any {
-	if output == nil {
-		return output
-	}
+// gatewaySpecRecord renders the invocation's catalog provenance: which
+// table answered and what it said (compact JSON — the output travels
+// through maps that must stay single-line-safe). An unknown record is
+// recorded AS unknown: the absence of a window or a price is a fact about
+// the catalog, not an omission. Nil only when the record cannot marshal.
+func gatewaySpecRecord(resolved compatgw.Resolved) json.RawMessage {
 	record := struct {
 		Source           string  `json:"source"`
 		ContextWindow    int     `json:"context_window,omitempty"`
@@ -99,8 +96,25 @@ func stampGatewaySpec(output map[string]any, resolved compatgw.Resolved) map[str
 		InputUSDPerMTok:  resolved.Spec.InputCostPerM,
 		OutputUSDPerMTok: resolved.Spec.OutputCostPerM,
 	}
-	if raw, err := json.Marshal(record); err == nil {
-		output["_gateway_spec"] = json.RawMessage(raw)
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return nil
+	}
+	return raw
+}
+
+// stampGatewaySpec records the invocation's catalog provenance on the
+// node output. The stamp on the map alone does not reach the operator:
+// the output's reserved namespace is re-projected from the Result
+// downstream (stampDelegateOutputMeta), so the caller also carries the
+// record on Result.GatewaySpec — this stamp is what the backend's own
+// return value shows. Nil-safe.
+func stampGatewaySpec(output map[string]any, resolved compatgw.Resolved) map[string]any {
+	if output == nil {
+		return output
+	}
+	if raw := gatewaySpecRecord(resolved); len(raw) > 0 {
+		output["_gateway_spec"] = raw
 	}
 	return output
 }

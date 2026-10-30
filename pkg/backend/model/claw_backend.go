@@ -737,6 +737,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		res, genErr = b.generateTextWithRetry(ctx, client, task, opts)
 	}
 	if gwRoute.Gateway() {
+		res.GatewaySpec = gatewaySpecRecord(gwResolved)
 		res.Output = stampGatewaySpec(res.Output, gwResolved)
 		if gwResolved.Known() && gwResolved.Spec.ContextWindow > 0 && res.ContextWindow == 0 {
 			res.ContextWindow = gwResolved.Spec.ContextWindow
@@ -1988,6 +1989,13 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	res := delegate.FromIOResult(ioRes)
 	// The relay carries model JSON and harness counters separately. Apply
 	// the same reserved-namespace boundary on success and runner failure.
+	// A gateway route's provenance is re-resolved HERE, host-side (the
+	// crossing forwarded the host's resolution, so both ends read the same
+	// table): the in-container stamp rode the relay as output keys, which
+	// the wipe below would otherwise read as model-written.
+	if gwRoute := modelroute.Parse(task.Model); gwRoute.Gateway() {
+		res.GatewaySpec = gatewaySpecRecord(compatgw.ResolveCatalog(gwRoute.Wire, modelspecs.Default(), os.Getenv))
+	}
 	stampDelegateOutputMeta(res.Output, res, delegate.BackendClaw)
 	if ioRes.Error != "" {
 		// Preserve waitErr for errors.Is / errors.As consumers when
