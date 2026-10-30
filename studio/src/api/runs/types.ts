@@ -1049,7 +1049,8 @@ export interface PreviewCostResponse {
   // Per-node assessment of the backend names the client sent with the
   // preview request. Blocking reasons share the runtime admission predicate;
   // warnings describe non-security capability drift such as a claw tools:
-  // list becoming inert on a CLI backend.
+  // list becoming inert on a CLI backend, or the tools claude_code withholds
+  // from every node whatever the list says (#2815).
   backend_options?: Record<string, Record<string, PreviewBackendOption>>;
 }
 

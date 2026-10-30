@@ -3,11 +3,15 @@ package server
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
+	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -82,6 +86,17 @@ func buildBackendOverrideOptions(
 					llm.GetTools(),
 				)
 			}
+			if backend == backendcaps.ClaudeCode {
+				// The roster drift a claude_code choice carries whatever the
+				// node's list says (iterion#2815) — the same projection the
+				// delegate spawns from, never a second list.
+				if drift := claudeCodeRosterDriftNotice(llm); drift != "" {
+					if choice.Warning != "" {
+						choice.Warning += " "
+					}
+					choice.Warning += drift
+				}
+			}
 			choices[backend] = choice
 		}
 		if len(choices) > 0 {
@@ -92,6 +107,49 @@ func buildBackendOverrideOptions(
 		return nil
 	}
 	return result
+}
+
+// claudeCodeRosterDriftNotice is the launch picker's half of the
+// capability-drift disclosure (iterion#2815): what a claude_code choice
+// withholds from THIS node whatever its tools: list says, and the subagent
+// pair a list without `agent` lets go. Read off the delegate's own
+// projection (delegate.ClaudeCodeToolSurface) — the roster is the CLI's,
+// not iterion's, and a second enumeration here is how #1651 happened. The
+// reason per name is `iterion validate --explain`'s surface; the picker
+// carries the one sentence.
+func claudeCodeRosterDriftNotice(llm ir.LLMNode) string {
+	tools := llm.GetTools()
+	surface := delegate.ClaudeCodeToolSurface(delegate.Task{
+		AllowedTools:    tools,
+		ToolsDeclared:   toolcatalog.ToolsDeclared(tools),
+		Readonly:        llm.GetLLMFields().Readonly,
+		DiagnosticShell: slices.Contains(tools, "diagnostic_shell"),
+	})
+	var always []string
+	subagentLeaves := false
+	for _, w := range surface.Withheld {
+		switch {
+		case w.Always && w.OnRoster:
+			always = append(always, w.Name)
+		case !w.Always && (w.Name == "Agent" || w.Name == "Task"):
+			subagentLeaves = true
+		}
+	}
+	if len(always) == 0 && !subagentLeaves {
+		return ""
+	}
+	var b strings.Builder
+	if len(always) > 0 {
+		fmt.Fprintf(&b, "claude_code withholds %s from every node whatever its tools: list says — a headless session has nobody to ask, no background shell and no later turn", strings.Join(always, ", "))
+	}
+	if subagentLeaves {
+		if b.Len() > 0 {
+			b.WriteString("; ")
+		}
+		b.WriteString("the subagent tools Agent/Task also leave: the tools: list does not declare `agent`")
+	}
+	b.WriteString(" (per name and reason: iterion validate --explain)")
+	return b.String()
 }
 
 // effectivePreviewBackend mirrors the backend tail that is knowable before

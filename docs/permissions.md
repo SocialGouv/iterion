@@ -209,7 +209,12 @@ that list is the only bound. Five of the six — `AskUserQuestion`,
 roster so `--disallowedTools` can name them and are withheld from **every**
 spawn whatever the list says; `Agent` is the current CLI's spelling of the
 subagent tool `Task` names on older ones, so declaring the subagent keeps
-both.
+both. This drift — what a node's declaration grants on the roster and what
+leaves it anyway, with the reason per name — is shown, never warned on:
+`iterion validate --explain` reads it per node, and the Studio launch picker
+carries the one-sentence form on every claude_code choice (#2815; the reading
+comes from the same projection the spawn's argv is built from, never a
+second list).
 
 **`tools: []` is a declaration, not an absence.** An empty list is the author
 saying *this node has no tools*; a node with no `tools:` line leaves the

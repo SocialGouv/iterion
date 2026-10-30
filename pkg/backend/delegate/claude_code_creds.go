@@ -199,6 +199,27 @@ var headlessWithheldTools = []string{
 	"BashOutput", "KillShell",
 }
 
+// headlessWithheldReasons is the reason per name of headlessWithheldTools,
+// for the capability-drift disclosure (ClaudeCodeToolSurface — `iterion
+// validate --explain`, the Studio launch preview, iterion#2815): the argv a
+// spawn carries is enforced, this map is what an AUTHOR is told. It is a
+// lookup keyed by the list, never a second list — the witness
+// (TestTheCapabilityDriftDisclosureCoversTheRoster) holds its key set equal
+// to headlessWithheldTools, so a name added or removed there without its
+// reason moving is red.
+var headlessWithheldReasons = map[string]string{
+	"Workflow":        "runs in the background and reports through a completion notification, and a one-shot headless session has no later turn to deliver it",
+	"ScheduleWakeup":  "schedules a prompt for a later turn of this session, and a headless session has none — a durable cron lives in the workspace's .claude/scheduled_tasks.json instead",
+	"CronCreate":      "schedules a prompt for a later turn of this session, and a headless session has none — a durable cron lives in the workspace's .claude/scheduled_tasks.json instead",
+	"CronDelete":      "schedules a prompt for a later turn of this session, and a headless session has none — a durable cron lives in the workspace's .claude/scheduled_tasks.json instead",
+	"CronList":        "schedules a prompt for a later turn of this session, and a headless session has none — a durable cron lives in the workspace's .claude/scheduled_tasks.json instead",
+	"RemoteTrigger":   "schedules remote agents under the account the CLI runs on, and a headless node has no later turn their completion could reach",
+	"AskUserQuestion": "waits for an answer a headless session has nobody to give — the node's own ask_user capability rides the engine instead",
+	"SlashCommand":    "runs a repository-defined command, which can be Bash-backed — it would reach a shell the node never declared",
+	"BashOutput":      "reads a BACKGROUND shell's output, and background tasks are pinned off in a headless session, so there is nothing to read",
+	"KillShell":       "stops a BACKGROUND shell, and background tasks are pinned off in a headless session, so there is nothing to stop",
+}
+
 // backgroundTasksOffEnv is the CLI's own switch for background work. With it
 // set, subagents run in the foreground and `run_in_background` disappears
 // from the Agent and Bash schemas. The CLI's Agent prompt then says the report

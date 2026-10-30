@@ -81,6 +81,13 @@ type ValidateResult struct {
 	// stands. An install with no catalog at all is not this: it is an answer,
 	// and it is in the report.
 	ConnectorsError string `json:"connectors_error,omitempty"`
+	// Explain is the capability-drift reading (`--explain`, iterion#2815):
+	// one entry per LLM node whose source-resolved backend is claude_code,
+	// with the native tools the node's declaration grants and the ones the
+	// backend withholds whatever the list says, the reason per name. Like
+	// Exec and Connectors it is a reading, not a diagnostic: it never moves
+	// `valid`.
+	Explain []ValidateExplainNode `json:"explain,omitempty"`
 }
 
 // ValidateOptions widen `iterion validate`. Exec runs the compiled program
@@ -123,6 +130,13 @@ type ValidateOptions struct {
 	// `validate` reads off the machine rather than out of the program, so a
 	// default invocation has to stay independent of what is installed.
 	Connectors bool
+	// Explain shows, for every LLM node whose source-resolved backend is
+	// claude_code, the native roster the node's `tools:` declaration grants
+	// and the tools the backend withholds whatever the list says, with the
+	// reason per name (`--explain`, iterion#2815). A reading, never a
+	// diagnostic: it does not move the verdict, and the answer comes from
+	// the same projection the delegate's spawn argv is built from.
+	Explain bool
 }
 
 // ValidateDiagnostic is one finding of `iterion validate` in the shape a
@@ -732,6 +746,14 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 		}
 	}
 
+	// The capability-drift reading (`--explain`), on a program that compiles:
+	// a reading, never a diagnostic, so it stands beside the verdict without
+	// moving it (iterion#2815 — ARB-50 withdrew the per-node warning this
+	// replaces; the information is owed, the diagnostic surface was wrong).
+	if opts.Explain && result.Valid && cr.Workflow != nil {
+		result.Explain = explainClaudeCodeSurfaces(cr.Workflow)
+	}
+
 	sortValidateDiagnostics(result.Diagnostics)
 	if p.Format == OutputJSON {
 		p.JSON(result)
@@ -752,6 +774,7 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 			}
 		}
 		printDiagnostics(p, result.Diagnostics)
+		printExplain(p, result.Explain)
 		if result.Exec != nil {
 			p.Blank()
 			for _, line := range strings.Split(strings.TrimRight(result.Exec.Render(), "\n"), "\n") {

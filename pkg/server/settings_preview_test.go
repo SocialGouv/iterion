@@ -179,6 +179,49 @@ func TestBuildBackendOverrideOptionsRequiresPauseForAskRules(t *testing.T) {
 	}
 }
 
+// The picker's half of the capability-drift disclosure (iterion#2815): a
+// claude_code choice carries the withholdings no tools: list can lift, and a
+// restricted list that skips `agent` is told the subagent pair leaves. The
+// names come from the delegate's own projection — never a second list.
+func TestBuildBackendOverrideOptionsDisclosesClaudeCodeRosterDrift(t *testing.T) {
+	t.Setenv("ITERION_PERMISSION", "")
+	t.Setenv("ITERION_DEFAULT_BACKEND", "")
+	wf := compileSource(t, `agent restricted:
+  backend: "claude_code"
+  tools: [read_file]
+
+agent ambient:
+  backend: "claude_code"
+
+workflow main:
+  restricted -> ambient
+  ambient -> done
+`)
+	choices := buildBackendOverrideOptions(wf, "off", "", []string{"claude_code", "codex"})
+
+	restricted := choices["restricted"]["claude_code"].Warning
+	for _, want := range []string{"AskUserQuestion", "SlashCommand", "BashOutput", "KillShell", "ScheduleWakeup"} {
+		if !strings.Contains(restricted, want) {
+			t.Errorf("the claude_code choice of a restricted node does not name %s as unconditionally withheld: %q", want, restricted)
+		}
+	}
+	if !strings.Contains(restricted, "Agent/Task") || !strings.Contains(restricted, "`agent`") {
+		t.Errorf("a list without agent must be told the subagent pair leaves, with the declaration that keeps it: %q", restricted)
+	}
+
+	ambient := choices["ambient"]["claude_code"].Warning
+	if !strings.Contains(ambient, "AskUserQuestion") {
+		t.Errorf("an undeclared node loses the headless surface all the same: %q", ambient)
+	}
+	if strings.Contains(ambient, "Agent/Task") {
+		t.Errorf("an undeclared node KEEPS the ambient roster, subagent pair included — the notice must not say it leaves: %q", ambient)
+	}
+
+	if got := choices["restricted"]["codex"].Warning; strings.Contains(got, "withholds") {
+		t.Errorf("the drift notice is claude_code's — a codex choice must not carry it: %q", got)
+	}
+}
+
 func TestPreviewCost_EffectiveBlock(t *testing.T) {
 	t.Setenv("ITERION_COMPRESS", "")
 	t.Setenv("ITERION_PERMISSION", "")
