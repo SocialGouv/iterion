@@ -3,6 +3,7 @@ package delegate
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -615,11 +616,17 @@ var describedByCommand = map[string]bool{"Bash": true, "PowerShell": true, "Moni
 // gate — so it always auto-allows the rewritten command. The rewrite runs
 // host-side; the (sandboxed) CLI runs the rewritten command in-container
 // against the bind-mounted rewriter binary (the chain's run env is pinned on
-// both spawns: claudeEnvPins).
-func installRewriteHook(task Task, opts []claudesdk.Option) []claudesdk.Option {
+// both spawns: claudeEnvPins). Under a sandbox the hook consults
+// rewriteSkipsSandboxedTask before installing (#2007).
+func (b *ClaudeCodeBackend) installRewriteHook(task Task, opts []claudesdk.Option) []claudesdk.Option {
 	mode := rewrite.ParseMode(task.CompressMode)
 	chain := rewrite.NewChain(task.Rewriters)
 	if !mode.Enabled() || !chain.Available() {
+		return opts
+	}
+	if rewriteSkipsSandboxedTask(task) {
+		b.Logger.Warn("[%s#%d/claude-code] sandboxed task: rewriter chain stands down (%s=skip) — Bash commands run in-container verbatim, without the chain's 60–90%% output-token saving",
+			task.NodeID, task.Iteration, rewrite.SandboxEnv)
 		return opts
 	}
 	bashMatcher := "^Bash$"
@@ -627,6 +634,15 @@ func installRewriteHook(task Task, opts []claudesdk.Option) []claudesdk.Option {
 		Matcher: &bashMatcher,
 		Handler: rewriteCommandHandler(chain, mode, task.MaterializeSecrets),
 	}))
+}
+
+// rewriteSkipsSandboxedTask is the delegate half of the #2007 placement
+// decision: the one predicate consulting task.Sandbox before the rewrite
+// hook is installed. A hostless task (no sandbox, or the noop passthrough
+// driver) is unaffected by ITERION_REWRITE_SANDBOX — its commands run on the
+// host either way, so the host-side rewrite costs the boundary nothing.
+func rewriteSkipsSandboxedTask(task Task) bool {
+	return rewrite.SkipsSandbox(os.Getenv(rewrite.SandboxEnv), taskSandboxed(task))
 }
 
 // rewriteCommandHandler is the PreToolUse handler that rewrites a Bash

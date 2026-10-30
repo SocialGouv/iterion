@@ -101,6 +101,7 @@ var serialFamily = map[string]string{
 	"executor_tool_drain_bound_test.go":        "Setenv",
 	"executor_tool_env_test.go":                "Setenv",
 	"executor_tool_overlay_test.go":            "Setenv",
+	"executor_tool_rewrite_sandbox_test.go":    "Setenv",
 	"executor_tool_test.go":                    "Setenv",
 	"executor_verified_action_test.go":         "Setenv",
 	"expand_braced_env_linear_test.go":         "Setenv",

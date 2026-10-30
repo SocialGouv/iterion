@@ -143,9 +143,13 @@ type ClawExecutor struct {
 	// (precedence: override > node DSL > workflow DSL > env). chain is the
 	// ordered set of enabled rewriters (rtk by default), wired from the plugin
 	// registry; nil when no rewriter plugin is enabled (compression off).
+	// rewriteSandboxEnv is ITERION_REWRITE_SANDBOX, also read once at
+	// construction: the #2007 placement escape hatch sandboxSkipsRewrite
+	// consults before a sandboxed tool node's command is rewritten host-side.
 	wfCompress         string
 	compressOverride   string
 	compressEnvDefault string
+	rewriteSandboxEnv  string
 	chain              *rewrite.Chain
 
 	// Backend auto-memory (MEMORY.md). Same precedence shape as compression:
@@ -1013,6 +1017,7 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		defaultBackend:     wf.DefaultBackend,
 		wfCompress:         wf.Compress,
 		compressEnvDefault: os.Getenv(rewrite.ModeEnv),
+		rewriteSandboxEnv:  os.Getenv(rewrite.SandboxEnv),
 
 		wfAutoMemory:             wf.AutoMemory,
 		autoMemoryEnvDefault:     os.Getenv(automemory.ModeEnv),
@@ -1045,6 +1050,10 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 	if ambient.InvalidEnv(e.ambientContextEnvDefault) && e.logger != nil {
 		e.logger.Warn("%s=%q is not one of %s: ignored, nodes fall back to their DSL or the workspace default",
 			ambient.PolicyEnv, e.ambientContextEnvDefault, strings.Join(ambient.Values, ", "))
+	}
+	if rewrite.InvalidSandboxEnv(e.rewriteSandboxEnv) && e.logger != nil {
+		e.logger.Warn("%s=%q is not one of %s: ignored, the rewriter chain keeps running host-side for sandboxed tasks",
+			rewrite.SandboxEnv, e.rewriteSandboxEnv, strings.Join(rewrite.SandboxValues, ", "))
 	}
 
 	return e

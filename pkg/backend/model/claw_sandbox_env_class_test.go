@@ -118,6 +118,7 @@ var hostSideEnvReads = map[string]hostSideRead{
 	"ITERION_CLAW_COMPACT_THRESHOLD_RATIO": {whyTaskField, []string{"resolveCompaction"}},
 	"ITERION_CLAW_COMPACT_PRESERVE_RECENT": {whyTaskField, []string{"resolveCompaction"}},
 	"ITERION_COMPRESS":                     {whyTaskField, []string{"NewClawExecutor"}},
+	"ITERION_REWRITE_SANDBOX":              {"the rewriter chain's placement for a sandboxed task, a host-side decision taken where the command is resolved — the runner's tasks carry no sandbox, so it never takes it", []string{"NewClawExecutor"}},
 	"ITERION_AUTO_MEMORY":                  {whyTaskField, []string{"NewClawExecutor"}},
 	"ITERION_AMBIENT_CONTEXT":              {whyTaskField, []string{"NewClawExecutor"}},
 	"ITERION_CLAW_SLASH_COMMANDS":          {whyTaskField, []string{"SlashCommandsDisabled"}},

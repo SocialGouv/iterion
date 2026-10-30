@@ -1089,7 +1089,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// and ask_user extend extraAllowedTools; the single registration below
 	// emits one WithAllowedTools call.
 	opts = installMaterializeSecretsHook(task, opts)
-	opts = installRewriteHook(task, opts)
+	opts = b.installRewriteHook(task, opts)
 	opts = b.wireBoardMCP(task, opts, &extraAllowedTools)
 	opts = b.wireRunsMCP(task, opts, &extraAllowedTools)
 	opts = b.wireConnectorMCP(task, opts, &extraAllowedTools)

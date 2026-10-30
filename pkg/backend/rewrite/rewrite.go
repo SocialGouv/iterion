@@ -37,6 +37,40 @@ import (
 // when neither a node, the workflow, nor a run override sets one.
 const ModeEnv = "ITERION_COMPRESS"
 
+// SandboxEnv is the operator escape hatch deciding whether the rewriter chain
+// still runs HOST-SIDE for a task whose commands execute inside a sandbox
+// (#2007). The chain rewrites a command in the launcher/engine process and
+// the sandboxed CLI or tool node runs the rewritten command in-container, so
+// under the default ("host", also every unset/unknown value) each Bash
+// command of a sandbox-requested run passes through a host-side subprocess
+// the sandbox boundary otherwise excludes. "skip" stands the chain down for
+// sandboxed tasks — their commands run verbatim in-container, forgoing the
+// rewrite's 60–90% output-token saving on those runs. The knob only makes
+// the flip consultable ahead of the product decision; it does not take it.
+const SandboxEnv = "ITERION_REWRITE_SANDBOX"
+
+// SandboxValues lists the values SandboxEnv accepts, for warnings.
+var SandboxValues = []string{"host", "skip"}
+
+// SkipsSandbox resolves the placement decision both rewrite sites consult
+// (the claude_code PreToolUse hook and the tool-node recipe), each through
+// its own named predicate: true only when the command will execute inside a
+// sandbox AND the operator set SandboxEnv=skip. A non-sandboxed command is
+// always rewritten, whatever the knob.
+func SkipsSandbox(envValue string, sandboxed bool) bool {
+	return sandboxed && strings.EqualFold(strings.TrimSpace(envValue), "skip")
+}
+
+// InvalidSandboxEnv reports a non-empty SandboxEnv value that names no known
+// placement, so the reader can warn once (the value resolves to "host").
+func InvalidSandboxEnv(envValue string) bool {
+	switch strings.ToLower(strings.TrimSpace(envValue)) {
+	case "", "host", "skip":
+		return false
+	}
+	return true
+}
+
 // DefaultRewriteTimeoutMs bounds a single rewriter invocation when the spec
 // does not set one. Generous so a wedged binary can never stall a node.
 const DefaultRewriteTimeoutMs = 5000

@@ -747,7 +747,8 @@ cat >/dev/null
 		task := Task{NodeID: "n", CompressMode: c.mode, Rewriters: []plugin.RewriterSpec{c.spec},
 			ExtraEnv: []string{"RTK_RECALL=1", "ITERION_TEST_CAPTURE=" + capture}}
 		// Execute's order: the spawn's per-task env, then the hooks.
-		opts := installRewriteHook(task, append([]claudesdk.Option{claudesdk.WithCLIPath(cli)}, perTaskSpawnOpts(task)...))
+		b := &ClaudeCodeBackend{Logger: iterlog.Nop()}
+		opts := b.installRewriteHook(task, append([]claudesdk.Option{claudesdk.WithCLIPath(cli)}, perTaskSpawnOpts(task)...))
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		_, err := claudesdk.Prompt(ctx, "go", opts...)
 		cancel()

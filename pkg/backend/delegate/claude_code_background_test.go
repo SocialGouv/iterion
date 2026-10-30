@@ -5731,8 +5731,8 @@ func TestTheRewriteHookLeavesACommandNamingASecretToTheMaterialisation(t *testin
 	stdinLog := filepath.Join(dir, "stdin.log")
 	opts := []claudesdk.Option{claudesdk.WithCLIPath(fake), claudesdk.WithEnv("FAKE_CLAUDE_SCRIPT", scriptPath), claudesdk.WithEnv("FAKE_CLAUDE_STDIN_LOG", stdinLog)}
 	opts = installMaterializeSecretsHook(task, opts)
-	opts = installRewriteHook(task, opts)
 	b := &ClaudeCodeBackend{Logger: iterlog.Nop()}
+	opts = b.installRewriteHook(task, opts)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	if _, _, err := b.runSession(ctx, "do it", task, opts); err != nil {
