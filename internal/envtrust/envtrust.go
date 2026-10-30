@@ -130,6 +130,38 @@ func Inherited(name string) string {
 	return os.Getenv(name)
 }
 
+// MergePlantedMarker renders the EnvPlantedNames value for a process whose
+// inherited marker read baseMarker, with names added. The studio's project
+// snapshot plants a `.env`'s values straight into a CHILD's environment —
+// the returned slice, not this process's own — so the mark has to travel in
+// the bytes rather than through MarkPlanted, which would record names this
+// process does not even carry. The rules are the marker's own: names the
+// marker cannot carry (not Exportable) are dropped, names already in the
+// inherited marker are kept once, the result is sorted so a child inherits
+// the same string twice in a row. Empty when nothing survives to carry.
+func MergePlantedMarker(baseMarker string, names ...string) string {
+	set := map[string]bool{}
+	for _, name := range strings.Split(baseMarker, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			set[CanonicalName(name)] = true
+		}
+	}
+	for _, name := range names {
+		set[CanonicalName(name)] = true
+	}
+	merged := make([]string, 0, len(set))
+	for name := range set {
+		if Exportable(name) {
+			merged = append(merged, name)
+		}
+	}
+	if len(merged) == 0 {
+		return ""
+	}
+	sortStrings(merged)
+	return strings.Join(merged, ",")
+}
+
 // ensurePlantedLocked seeds the set from the marker an ancestor exported.
 // Caller holds mu for writing.
 func ensurePlantedLocked() {

@@ -11,11 +11,28 @@ import (
 // the loader plant routes again quietly.
 func TestRoutingShapedNameCoversTheFamiliesTheTreeReads(t *testing.T) {
 	for _, name := range []string{
-		// provider endpoints (_BASE_URL)
+		// provider endpoints (_URL, the _BASE_URL shape among them)
 		"OPENAI_BASE_URL", "ANTHROPIC_BASE_URL", "XAI_BASE_URL", "MOONSHOT_BASE_URL",
 		"OPENAI_COMPATIBLE_BASE_URL", "DASHSCOPE_BASE_URL", "CLAUDE_CODE_API_BASE_URL",
+		// the OAuth forfait wires, the refresh token among them
+		"ITERION_OAUTH_FORFAIT_ANTHROPIC_TOKEN_URL", "ITERION_OAUTH_FORFAIT_ANTHROPIC_AUTHORIZE_URL",
+		"ITERION_OAUTH_FORFAIT_CODEX_TOKEN_URL",
+		// the deployment's own wires
+		"ITERION_REMOTE_URL", "ITERION_NATS_URL", "ITERION_REDIS_URL",
+		"ITERION_QUEUE_NATS_URL", "ITERION_SERVER_URL", "ITERION_ALERTS_WEBHOOK_URL",
+		"ITERION_ALERTS_BASE_URL", "ITERION_PUBLIC_URL", "ITERION_OIDC_GENERIC_ISSUER_URL",
+		"ITERION_UPDATE_MANIFEST_URL", "ITERION_MODEL_SPECS_URL",
+		// the search backends (SEARXNG_URL is read FIRST, before SEARXNG_ENDPOINT)
+		"SEARXNG_URL", "CLAW_WEB_SEARCH_BRAVE_URL", "CLAW_WEB_SEARCH_DDG_URL",
+		// the vendored AWS endpoint overrides (prefix family)
+		"AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "AWS_ENDPOINT_URL_STS",
+		"AWS_ENDPOINT_URL_S3",
 		// the legacy OpenAI name (_API_BASE)
 		"OPENAI_API_BASE",
+		// the _URI spelling
+		"ITERION_MONGO_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+		// the sentinel peer list (_ADDRS)
+		"ITERION_REDIS_SENTINEL_ADDRS",
 		// endpoints (_ENDPOINT)
 		"AZURE_OPENAI_ENDPOINT", "OTEL_EXPORTER_OTLP_ENDPOINT",
 		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "ITERION_S3_ENDPOINT",
@@ -25,6 +42,10 @@ func TestRoutingShapedNameCoversTheFamiliesTheTreeReads(t *testing.T) {
 		"DOCKER_HOST", "KUBERNETES_SERVICE_HOST", "GCE_METADATA_HOST",
 		"ITERION_SMTP_HOST", "GH_HOST", "AZURE_AUTHORITY_HOST",
 		"AZURE_POD_IDENTITY_AUTHORITY_HOST",
+		// trusted / unguarded host lists (_HOSTS)
+		"ITERION_SANDBOX_MODEL_HOSTS", "ITERION_WEBHOOK_FORGE_HOSTS",
+		// where error reports are delivered (_DSN)
+		"SENTRY_DSN",
 		// proxies (_PROXY, both cases)
 		"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
 		"http_proxy", "https_proxy", "all_proxy", "no_proxy",
@@ -49,7 +70,7 @@ func TestRoutingShapedNameIsCaseInsensitiveOnTheShape(t *testing.T) {
 // the model-path exclusions (a deployment, an API version, a kill switch, a
 // Google project no visible credential moves), the keys themselves, the
 // provenance marker, the opt-in — and a name that merely CONTAINS a routing
-// word is not on the wire for it.
+// word is not on the wire for it. A bare suffix names nothing either.
 func TestRoutingShapedNameLeavesTheNonRoutingNamesAlone(t *testing.T) {
 	for _, name := range []string{
 		"OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ZAI_API_KEY",
@@ -58,8 +79,9 @@ func TestRoutingShapedNameLeavesTheNonRoutingNamesAlone(t *testing.T) {
 		"AZURE_OPENAI_DEPLOYMENT", "AZURE_OPENAI_API_VERSION",
 		"CLAW_OPENAI_REASONING_SUMMARY", "ANTHROPIC_CUSTOM_HEADERS",
 		"ITERION_CLAW_COMPACT_THRESHOLD_RATIO", "ITERION_MODEL_SPECS_CACHE",
+		"DBUS_SESSION_BUS_ADDRESS",
 		// the suffix alone names nothing
-		"_HOST", "_BASE_URL",
+		"_HOST", "_URL", "_URI", "_DSN",
 	} {
 		if RoutingShapedName(name) {
 			t.Errorf("%s is read as routing-shaped: the loader would refuse a name nothing routes with", name)
@@ -71,9 +93,14 @@ func TestRoutingShapedNameLeavesTheNonRoutingNamesAlone(t *testing.T) {
 // the class, so the case above proves nothing unless the list still holds
 // every shape it was written for.
 func TestEveryRoutingSuffixIsPresent(t *testing.T) {
-	for _, want := range []string{"_BASE_URL", "_API_BASE", "_ENDPOINT", "_HOST", "_PROXY"} {
+	for _, want := range []string{"_ADDRS", "_API_BASE", "_DSN", "_ENDPOINT", "_HOST", "_HOSTS", "_PROXY", "_URI", "_URL"} {
 		if !slices.Contains(routingSuffixes, want) {
 			t.Errorf("%s left routingSuffixes (%v): either the tree stopped reading that shape, or the class was narrowed without saying so", want, routingSuffixes)
+		}
+	}
+	for _, want := range []string{"AWS_ENDPOINT_URL"} {
+		if !slices.Contains(routingPrefixes, want) {
+			t.Errorf("%s left routingPrefixes (%v): the per-service endpoint spellings would plant again", want, routingPrefixes)
 		}
 	}
 }

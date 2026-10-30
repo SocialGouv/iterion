@@ -1,14 +1,15 @@
-//go:build desktop
-
 package main
 
 import (
 	"bufio"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // dotenvAppliedKeys tracks which keys were set into the process env by a
@@ -170,6 +171,19 @@ func candidateEnvFiles() []string {
 // know to stop probing fallbacks. Comments and blank lines are
 // ignored; values may be optionally double- or single-quoted, in which
 // case the matching outer quotes are stripped.
+//
+// The routing class is refused like on every lane that plants
+// (envtrust.DotenvPlantRefused): the file may be operator-owned, but it is
+// also the file a direnv symlink can point at a PROJECT's `.env`
+// (ReloadIterionEnvFile's comment), and the class is the one guard that
+// holds whatever the path resolves to. What IS applied is not marked
+// planted, on purpose: the file sits in the operator's home — the values it
+// carries ARE the operator's own, and marking them would strip the
+// documented desktop credential flow (the provider keys stashed here) of
+// its authority at the belt's reads. The refusal goes to stderr directly,
+// not through the
+// level-configured logger: the level it would ride on is itself something
+// this file may have planted a line above.
 func applyDotenvFile(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
@@ -201,9 +215,26 @@ func applyDotenvFile(path string) bool {
 		if key == "" {
 			continue
 		}
+		// A name no shell could export is refused, not set: the same rule
+		// the CLI loader applies (see envtrust.Exportable). One carrying the
+		// planted-names separator reaches a child as two names; one outside
+		// ASCII folds on Windows in ways CanonicalName cannot mirror. The
+		// provenance marker itself is likewise never taken from a file —
+		// the mark is what a loader records, not what a file declares.
+		if !envtrust.Exportable(key) || envtrust.CanonicalName(key) == envtrust.EnvPlantedNames {
+			continue
+		}
 		// Honour an existing process env value (shell-passed vars
 		// override the dotenv default).
 		if _, present := os.LookupEnv(key); present {
+			continue
+		}
+		// A name that decides where a connection goes is not applied: the
+		// same routing class the CLI loader and the studio snapshot refuse,
+		// asked with envtrust's one predicate. What IS applied is not
+		// marked planted, on purpose — see the function comment.
+		if envtrust.DotenvPlantRefused(key) {
+			fmt.Fprintln(os.Stderr, "iterion: "+envtrust.RoutingRefusalLine(key, "the dotenv file", path))
 			continue
 		}
 		if err := os.Setenv(key, val); err != nil {

@@ -1,6 +1,9 @@
 package envtrust
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // DotenvEndpointsOptIn is the operator's opt-in that lets a project `.env`
 // plant routing-shaped names (RoutingShapedName): export it as
@@ -12,7 +15,10 @@ import "strings"
 // cannot vote for itself: the loader marks what it plants, and a planted
 // value reads as nothing said here, whatever order the file put its lines
 // in. It is refused as a bot variable (pkg/platformcfg), so a stored record
-// cannot widen what the repositories a bot reviews may plant either.
+// cannot widen what the repositories a bot reviews may plant either. On the
+// studio lane it never crosses into a run's environment at all
+// (pkg/projectenv): the runs launched there answer their own opt-in where
+// the run's iterion itself is launched, not in a file the workspace holds.
 const DotenvEndpointsOptIn = "ITERION_DOTENV_ENDPOINTS"
 
 // DotenvEndpointsAllowed reports whether the environment this process
@@ -23,22 +29,97 @@ func DotenvEndpointsAllowed() bool {
 	return strings.TrimSpace(Inherited(DotenvEndpointsOptIn)) == "allow"
 }
 
+// DotenvPlantRefused answers the ONE question every loader that plants a
+// dotenv file asks about a name it is about to set: the CLI's applyDotEnv,
+// the studio's projectenv.Snapshot and the desktop's env-file loader. The
+// routing class stays closed unless the environment this process INHERITED
+// granted the opt-in, so the answer cannot drift between the lanes that
+// plant.
+func DotenvPlantRefused(name string) bool {
+	return RoutingShapedName(name) && !DotenvEndpointsAllowed()
+}
+
+// RoutingRefusalLine renders the single-line refusal for a routing-shaped
+// name a dotenv file plants: the name, the file it came from, why it is not
+// applied, the credential it would have redirected (when the operator's own
+// is inherited beside it) and the operator's way past the refusal. One
+// message for every loader that plants — the CLI's, the studio snapshot's,
+// the desktop's — so a refusal reads the same wherever a file tried to route
+// a wire. source names the kind of file ("the project `.env`", "the dotenv
+// file") and path its location; both are said because the next reader needs
+// to find the line to delete or the name to export. The caller puts the line
+// on stderr directly: a refusal is not a log level, and the level a logger
+// honours is itself something the file may have planted a line earlier.
+func RoutingRefusalLine(name, source, path string) string {
+	credHalf := ""
+	if redirected := InheritedCredentialsAt(name); len(redirected) > 0 {
+		credHalf = ": " + strings.Join(redirected, " / ") + " is the operator's own and would be presented at the host it names"
+	}
+	return fmt.Sprintf("%s comes from %s %s, so it is not applied: a dotenv file does not choose where a connection goes%s — export %s in the environment iterion runs with to answer it yourself, or export %s=allow to let this file plant its routes",
+		name, source, path, credHalf, name, DotenvEndpointsOptIn)
+}
+
+// routingPrefixes are the case-insensitive NAME PREFIXES that put a variable
+// in the routing class — a family the service suffix composes per service,
+// so no suffix can answer for it:
+//
+//   - `AWS_ENDPOINT_URL` — the vendored aws-sdk-go-v2's endpoint overrides.
+//     AWS_ENDPOINT_URL itself is the global override every service's
+//     endpoints.go reads (and the `_URL` suffix would answer for it alone);
+//     AWS_ENDPOINT_URL_BEDROCK_RUNTIME, AWS_ENDPOINT_URL_STS and their kin
+//     are the per-service spellings, which the SDK composes from the service
+//     ID at run time (config/env_config.go builds the name with
+//     fmt.Sprintf("%s_%s", ...) and each service's endpoints.go reads its
+//     own literal). The bedrock runtime dials the planted host with the
+//     operator's AWS identity — Authorization header and session token — so
+//     the prefix answers for the whole family, the next service included.
+var routingPrefixes = []string{
+	"AWS_ENDPOINT_URL",
+}
+
 // routingSuffixes are the case-insensitive NAME SUFFIXES that put a variable
 // in the routing class: a name of one of these shapes decides where a
-// connection is dialled — a model call, an outbound HTTP request, a metadata
-// or credential lookup, a container or module fetch. Enumerated from the
+// connection is dialled, what is presented or sent there, or which hosts are
+// trusted — a model call, an outbound HTTP request, a metadata or credential
+// lookup, a container or module fetch, an error report. Enumerated from the
 // readers in this tree (first-party greps and the vendored SDKs), not from
-// one reviewer's list:
+// one reviewer's list; the completeness guard
+// (routing_completeness_test.go) re-walks the same sources, so a reader
+// that outgrows this inventory arrives red rather than planting silently.
 //
-//   - `_BASE_URL` — the model-call hosts: OPENAI_BASE_URL, ANTHROPIC_BASE_URL,
-//     XAI_BASE_URL and MOONSHOT_BASE_URL (the vendored claw provider packages
-//     and this engine's own tables), OPENAI_COMPATIBLE_BASE_URL
-//     (pkg/backend/compatgw), DASHSCOPE_BASE_URL and the ANTHROPIC_*_BASE_URL
-//     wire variants (vendored claw runtime and providers), and
-//     CLAUDE_CODE_API_BASE_URL (vendored claw). cmd/iterion's own endpoint
-//     refusals (credentialsPresentedAt) are a subset of this shape.
-//   - `_API_BASE` — the same question under OpenAI's legacy name:
-//     OPENAI_API_BASE (pkg/sandbox/devcontainer's deny class).
+//   - `_URL` — where a wire goes, the tree's most common spelling. The
+//     model-call hosts (OPENAI_BASE_URL, ANTHROPIC_BASE_URL, XAI_BASE_URL,
+//     MOONSHOT_BASE_URL — the vendored claw provider packages and this
+//     engine's own tables — OPENAI_COMPATIBLE_BASE_URL of
+//     pkg/backend/compatgw, DASHSCOPE_BASE_URL, the ANTHROPIC_*_BASE_URL
+//     wire variants and CLAUDE_CODE_API_BASE_URL, all vendored claw — the
+//     `_BASE_URL` shape this suffix answers for together with the rest);
+//     the OAuth forfait wires, ITERION_OAUTH_FORFAIT_ANTHROPIC_TOKEN_URL
+//     being the URL the stored Claude subscription's refresh token is
+//     POSTed to (pkg/secrets reads them through envOr: oauth_refresh.go,
+//     oauth_authcode.go, oauth_account.go, plus the Codex token URL);
+//     the deployment's own wires ITERION_REMOTE_URL (pkg/cli/remote.go,
+//     read with ITERION_REMOTE_TOKEN beside it), ITERION_NATS_URL,
+//     ITERION_REDIS_URL and ITERION_ALERTS_WEBHOOK_URL (pkg/config/env.go),
+//     ITERION_QUEUE_NATS_URL and ITERION_SERVER_URL
+//     (cmd/iterion/scan_shards.go), ITERION_ALERTS_BASE_URL
+//     (pkg/cli/studio.go) and ITERION_PUBLIC_URL (pkg/deeplink — the origin
+//     deep links are built on); the search backends SEARXNG_URL (read FIRST,
+//     before its classed `_ENDPOINT` sibling, by the vendored claw
+//     web_search.go and by pkg/backend/tool), CLAW_WEB_SEARCH_BRAVE_URL and
+//     CLAW_WEB_SEARCH_DDG_URL (vendored claw); the wires that fetch
+//     iterion's own data, ITERION_OIDC_GENERIC_ISSUER_URL
+//     (pkg/config/env.go), ITERION_UPDATE_MANIFEST_URL
+//     (cmd/iterion-desktop/updater.go) and ITERION_MODEL_SPECS_URL
+//     (pkg/backend/modelspecs — where the price table is fetched from).
+//   - `_URI` — the same question under a second spelling: ITERION_MONGO_URI
+//     (pkg/config/env.go), and the vendored aws-sdk-go-v2's container
+//     credential sources AWS_CONTAINER_CREDENTIALS_FULL_URI and
+//     AWS_CONTAINER_CREDENTIALS_RELATIVE_URI (config/env_config.go — where
+//     the SDK fetches credentials from).
+//   - `_ADDRS` — a host list dialled as one: ITERION_REDIS_SENTINEL_ADDRS
+//     (pkg/config/env.go), the Sentinel peers a cache connection fails over
+//     across.
 //   - `_ENDPOINT` — AZURE_OPENAI_ENDPOINT (the vendored foundry provider,
 //     which reads it with the operator's key beside it), the OpenTelemetry
 //     exporters' OTEL_EXPORTER_OTLP_ENDPOINT and its _TRACES/_LOGS splits
@@ -57,36 +138,72 @@ func DotenvEndpointsAllowed() bool {
 //     authority hosts the ARB names as their own shape — AZURE_AUTHORITY_HOST
 //     and AZURE_POD_IDENTITY_AUTHORITY_HOST (vendored azidentity) — which
 //     this suffix already answers for.
+//   - `_HOSTS` — a list that decides which hosts are trusted or left
+//     unguarded: ITERION_SANDBOX_MODEL_HOSTS (pkg/runtime/sandbox.go — the
+//     hosts whose request bodies the inspecting proxy leaves in placeholder
+//     form, so a planted list is a host the run's prompts and code cross in
+//     the clear) and ITERION_WEBHOOK_FORGE_HOSTS
+//     (pkg/server/webhooks_gitlab.go — the hosts allowed to forge webhooks,
+//     where a planted entry admits the forger the list exists to stop).
 //   - `_PROXY` — the outbound proxies: HTTP_PROXY, HTTPS_PROXY, NO_PROXY and
 //     their lowercase forms (vendored claw's apikit, and Go's own
 //     net/http for every request this process or a child sends), ALL_PROXY
-//     and its lowercase (vendored gorilla/websocket). One suffix covers the
-//     four names the doctrine lists, both cases, plus any future `*_PROXY`.
+//     and its lowercase (vendored gorilla/websocket).
+//   - `_DSN` — where error reports are delivered: SENTRY_DSN (vendored
+//     sentry-go reads it itself, pkg/errtrack boots on it) — a crash
+//     envelope carries the operator's stack, paths and machine context, so
+//     a planted DSN delivers them at a host the file chose. This closes the
+//     #498 review note that a project `.env` could aim errtrack: a project
+//     that legitimately reports to its own DSN now asks the opt-in like any
+//     other wire.
+//
+// Examined and excluded, with the reason: DBUS_SESSION_BUS_ADDRESS
+// (vendored godbus — the desktop's session-bus discovery, dialled by the
+// GUI stack of the process the operator launched, which reads its own
+// operator-owned env files and never a project `.env`; nothing a project
+// `.env` reaches dials it); GOPROXY (no production reader in the tree); and
+// the routing-shaped names with no reader at all — SSH_AUTH_SOCK,
+// ANTHROPIC_UNIX_SOCKET, GIT_PROXY_COMMAND, DATABASE_URL, ITERION_MONGO_URL,
+// ITERION_SLACK_WEBHOOK_URL, SESSION_INGRESS_URL, AGENT_PROXY_URL,
+// FIRECRAWL_API_URL, GITHUB_API_URL — grepped for across pkg/, internal/,
+// cmd/ and vendor/ in the read forms the tree uses (os.Getenv,
+// os.LookupEnv, envOr, lookupString, lookup, readEnv) and found only in
+// lists and comments. The AWS booleans that end in `_ENDPOINT`
+// (AWS_USE_FIPS_ENDPOINT, AWS_USE_DUALSTACK_ENDPOINT) are the class's
+// documented over-refusal price: they pick which VARIANT of Amazon's own
+// endpoints answers, the refusal is loud, and the opt-in answers it.
 //
 // The shape, not a list of names: the next SDK's endpoint is covered the day
 // it is read, not the day someone remembers to add it — the same rule the
 // model-path class guard (pkg/backend/model hostShapedName) states for the
 // narrower set it walks.
 var routingSuffixes = []string{
-	"_BASE_URL",
+	"_ADDRS",
 	"_API_BASE",
+	"_DSN",
 	"_ENDPOINT",
 	"_HOST",
+	"_HOSTS",
 	"_PROXY",
+	"_URI",
+	"_URL",
 }
 
 // RoutingShapedName reports whether a variable's NAME puts it in the routing
-// class — the names cmd/iterion's dotenv loader refuses to plant by default
-// (ARB-122: the loader is the one site that knows it is planting, so it is
-// the one that closes the class; the per-name credential tables are the belt
-// that stays at the reads).
-//
-// The match is case-insensitive: on Windows the case is not even meaningful
-// (CanonicalName), and a lowercase spelling of a routing name asks the same
-// question as its uppercase. A name must carry more than the suffix —
-// `_HOST` alone names nothing.
+// class — the names every dotenv loader refuses to plant by default
+// (ARB-122: the loader is the site that knows it is planting, so the class
+// closes at the plant; the per-name credential tables are the belt that
+// stays at the reads). The match is case-insensitive: on Windows the case is
+// not even meaningful (CanonicalName), and a lowercase spelling of a routing
+// name asks the same question as its uppercase. A name must carry more than
+// the shape it matches — `_HOST` alone names nothing.
 func RoutingShapedName(name string) bool {
 	upper := strings.ToUpper(name)
+	for _, prefix := range routingPrefixes {
+		if len(upper) > len(prefix) && strings.HasPrefix(upper, prefix) {
+			return true
+		}
+	}
 	for _, suffix := range routingSuffixes {
 		if len(upper) > len(suffix) && strings.HasSuffix(upper, suffix) {
 			return true

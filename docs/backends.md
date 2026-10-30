@@ -1371,26 +1371,37 @@ never merged across sources, and an answer carries its provenance:
 > key presented there are one credential presentation.
 >
 > One class is refused outright rather than read as nothing said: the
-> ROUTES. The loader (`cmd/iterion` `applyDotEnv`, the one site that knows
-> it is planting) refuses by default any name whose SHAPE decides where a
-> connection is dialled — a `*_BASE_URL`, an `*_API_BASE` (OpenAI's legacy
-> name), an `*_ENDPOINT`, a `*_HOST` (the Azure `*_AUTHORITY_HOST` pair
-> among them), a `*_PROXY` (`HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`,
-> either case) — whether or not a credential is presented there: a planted
-> route would point every wire, the operator's credentials included, at a
-> host the file chose, and the reads are not all iterion's — the vendored
+> ROUTES. Every lane that plants a dotenv file asks the same question at its
+> plant (`internal/envtrust` `DotenvPlantRefused`) — the CLI's `applyDotEnv`,
+> the studio/desktop server's project snapshot (`pkg/projectenv.Snapshot`,
+> which feeds every host-spawned command of a run) and the desktop's own env
+> file — and refuses by default any name whose SHAPE decides where a
+> connection is dialled, what is presented or sent there, or which hosts are
+> trusted: a `*_URL` or `*_URI` (provider hosts, the OAuth forfait wires the
+> refresh token is POSTed to, the AWS endpoint overrides `AWS_ENDPOINT_URL*`
+> per service, `SEARXNG_URL` — read before its `*_ENDPOINT` sibling — and
+> the deployment's own `ITERION_*_URL` wires), an `*_API_BASE` (OpenAI's
+> legacy name), an `*_ENDPOINT`, a `*_HOST` (the Azure `*_AUTHORITY_HOST`
+> pair among them), a `*_HOSTS` list, an `*_ADDRS` list, a `*_DSN`, a
+> `*_PROXY` (`HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`, either
+> case) — whether or not a credential is presented there: a planted route
+> would point every wire, the operator's credentials included, at a host
+> the file chose, and the reads are not all iterion's — the vendored
 > provider packages and SDKs read these names themselves, and every child
-> inherits what lands here. The refusal names the file, the variable and the
-> way past it. A `.env` that legitimately configures its own gateway — the
-> portable laptop case, the key and the host in one file — asks the
-> operator's opt-in: export `ITERION_DOTENV_ENDPOINTS=allow` in the
-> environment iterion runs with (or export the endpoint itself, which the
-> file cannot overwrite); with the opt-in the routes plant and read as
-> planted, so nothing downstream takes them for the operator's answer. The
-> per-name credential table (`internal/envtrust`) stays as the belt at the
-> reads: a planted half of the `OPENAI_COMPATIBLE_*` pair still refuses the
-> gateway by name, and the routing names the host's own `.env` planted still
-> cross into a sandbox as explicit empties.
+> inherits what lands here. The refusal is one line on stderr, where no log
+> level the file itself planted reaches it, naming the file, the variable
+> and the way past it. A `.env` that legitimately configures its own
+> gateway — the portable laptop case, the key and the host in one file —
+> asks the operator's opt-in: export `ITERION_DOTENV_ENDPOINTS=allow` in
+> the environment iterion runs with (or export the endpoint itself, which
+> the file cannot overwrite); with the opt-in the routes plant and read as
+> planted, so nothing downstream takes them for the operator's answer — and
+> on the studio lane the opt-in never crosses into the run environment,
+> whatever the file or the operator said: the runs answer their own where
+> they launch. The per-name credential table (`internal/envtrust`) stays as
+> the belt at the reads: a planted half of the `OPENAI_COMPATIBLE_*` pair
+> still refuses the gateway by name, and the routing names the host's own
+> `.env` planted still cross into a sandbox as explicit empties.
 
 The snapshot is regenerated with `task models:snapshot` (the committed diff
 is the review; it carries the source digest and an as-of date, and an answer

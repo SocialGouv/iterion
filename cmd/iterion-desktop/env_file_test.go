@@ -1,11 +1,13 @@
-//go:build desktop
-
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // TestReloadIterionEnvFile_ClearsCommentedKey reproduces the dogfood
@@ -108,4 +110,83 @@ func TestReloadIterionEnvFile_RereadsActiveKey(t *testing.T) {
 	if got := os.Getenv("MY_KEY"); got != "second" {
 		t.Errorf("after reload: env = %q, want second", got)
 	}
+}
+
+// The desktop env-file loader closes the same routing class as the CLI and
+// the studio lanes: a route the file names is not applied — whatever the
+// path resolves to, since a direnv symlink can point this very file at a
+// PROJECT's `.env` — and the refusal names the file, the key and the
+// opt-in on stderr. The operator's own credentials keep flowing: what IS
+// applied here is not marked planted, because the file sits in the
+// operator's home and its values ARE the operator's own — the mark exists
+// for files that sit in a repository.
+func TestTheDesktopEnvFileLeavesNoRoutingNameInTheEnvironment(t *testing.T) {
+	envtrust.ResetForTest()
+	t.Cleanup(envtrust.ResetForTest)
+	t.Setenv(envtrust.EnvPlantedNames, "")
+	t.Setenv(envtrust.DotenvEndpointsOptIn, "")
+	os.Unsetenv("SEARXNG_URL")
+	os.Unsetenv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME")
+	t.Cleanup(func() {
+		os.Unsetenv("SEARXNG_URL")
+		os.Unsetenv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME")
+	})
+
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, "env")
+	if err := os.WriteFile(envPath, []byte(strings.Join([]string{
+		"SEARXNG_URL=https://repo-under-review.example/search",
+		"AWS_ENDPOINT_URL_BEDROCK_RUNTIME=https://repo-under-review.example/bedrock",
+		"OPENAI_API_KEY=sk-the-operator-owns-it",
+	}, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	t.Setenv("ITERION_ENV_FILE", envPath)
+	dotenvMu.Lock()
+	dotenvAppliedKeys = nil
+	dotenvMu.Unlock()
+
+	said := captureStderr(t, loadIterionEnvFile)
+
+	for _, name := range []string{"SEARXNG_URL", "AWS_ENDPOINT_URL_BEDROCK_RUNTIME"} {
+		if got, present := os.LookupEnv(name); present {
+			t.Errorf("%s = %q: the file chose where a connection goes", name, got)
+		}
+		for _, want := range []string{name, envPath, envtrust.DotenvEndpointsOptIn + "=allow"} {
+			if !strings.Contains(said, want) {
+				t.Errorf("the refusal does not say %q — it said: %s", want, said)
+			}
+		}
+	}
+	// The operator's own credentials keep flowing, unmarked.
+	if got := os.Getenv("OPENAI_API_KEY"); got != "sk-the-operator-owns-it" {
+		t.Errorf("OPENAI_API_KEY = %q: the keys stashed in the operator's own file are what this loader exists for", got)
+	}
+	if envtrust.Planted("OPENAI_API_KEY") {
+		t.Error("the operator's own key reads as planted: the mark is for repository files, not the home")
+	}
+}
+
+// captureStderr runs fn with os.Stderr on a pipe and returns what it wrote.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stderr = w
+	fn()
+	os.Stderr = orig
+	if err := w.Close(); err != nil {
+		t.Fatalf("close the pipe: %v", err)
+	}
+	said, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read the pipe: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("close the read end: %v", err)
+	}
+	return string(said)
 }

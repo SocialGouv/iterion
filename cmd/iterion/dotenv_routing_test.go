@@ -11,13 +11,31 @@ import (
 
 // routingWitnessNames is the witness table: one route of every family the
 // loader's class covers, each read somewhere in this tree — provider
-// endpoints, the legacy OpenAI name, other endpoints, hosts, proxies (the
-// lowercase proxy is a distinct NAME on Linux and travels on its own line).
-// The doctrine (ARB-122) is the loader's to close: the file plants no route
-// unless the operator's own environment opted in.
+// endpoints, the OAuth forfait wires, the deployment's own wires, the AWS
+// endpoint overrides, the legacy OpenAI name, the _URI/_ADDRS/_HOSTS/_DSN
+// spellings, other endpoints, hosts, proxies (the lowercase proxy is a
+// distinct NAME on Linux and travels on its own line). The doctrine
+// (ARB-122) is the loaders' to close: the file plants no route unless the
+// operator's own environment opted in — on this lane and on the studio and
+// desktop lanes that ask the same question (pkg/projectenv,
+// cmd/iterion-desktop).
 var routingWitnessNames = []string{
-	// provider endpoints
+	// provider endpoints (_URL, the _BASE_URL shape among them)
 	"OPENAI_BASE_URL", "ANTHROPIC_BASE_URL", "MOONSHOT_BASE_URL", "OPENAI_COMPATIBLE_BASE_URL",
+	// the OAuth forfait wires — the token URL is where the stored Claude
+	// subscription's refresh token is POSTed (pkg/secrets)
+	"ITERION_OAUTH_FORFAIT_ANTHROPIC_TOKEN_URL", "ITERION_OAUTH_FORFAIT_ANTHROPIC_AUTHORIZE_URL",
+	"ITERION_OAUTH_FORFAIT_CODEX_TOKEN_URL",
+	// the vendored AWS endpoint overrides (the prefix family)
+	"AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "AWS_ENDPOINT_URL_STS",
+	// the deployment's own wires
+	"ITERION_REMOTE_URL", "ITERION_NATS_URL", "ITERION_REDIS_URL",
+	"ITERION_QUEUE_NATS_URL", "ITERION_SERVER_URL", "ITERION_ALERTS_WEBHOOK_URL",
+	// the search backends
+	"SEARXNG_URL", "CLAW_WEB_SEARCH_BRAVE_URL", "CLAW_WEB_SEARCH_DDG_URL",
+	// the _URI/_ADDRS/_HOSTS/_DSN spellings
+	"ITERION_MONGO_URI", "ITERION_REDIS_SENTINEL_ADDRS",
+	"ITERION_SANDBOX_MODEL_HOSTS", "ITERION_WEBHOOK_FORGE_HOSTS", "SENTRY_DSN",
 	// the legacy OpenAI name
 	"OPENAI_API_BASE",
 	// other endpoints
@@ -142,5 +160,31 @@ func TestTheOptInLetsAProjectDotenvPlantItsRoutes(t *testing.T) {
 	}
 	if said != "" {
 		t.Errorf("a granted opt-in was warned about: %s", said)
+	}
+}
+
+// A refusal is not a log level: a line EARLIER IN THE SAME FILE plants
+// ITERION_LOG_LEVEL=error, and the level-configured logger would swallow the
+// refusal the moment the file wants its route applied quietly — the variable
+// stays refused, and the only trace of why vanishes. The refusal therefore
+// goes to stderr directly, where no level reaches it.
+func TestAPlantedLogLevelCannotMuteTheRefusal(t *testing.T) {
+	isolateRoutingEnv(t)
+	clearEnv(t, "ITERION_LOG_LEVEL")
+	repo := writeDotEnv(t,
+		"ITERION_LOG_LEVEL=error",
+		"OPENAI_BASE_URL=https://repo-under-review.example",
+	)
+	t.Chdir(repo)
+
+	said := captureStderr(t, loadDotEnvFromCwd)
+
+	if got, set := os.LookupEnv("OPENAI_BASE_URL"); set {
+		t.Fatalf("OPENAI_BASE_URL = %q: the route was applied", got)
+	}
+	for _, want := range []string{"OPENAI_BASE_URL", "ITERION_DOTENV_ENDPOINTS=allow"} {
+		if !strings.Contains(said, want) {
+			t.Errorf("the refusal does not say %q — the planted log level muted it; stderr said: %s", want, said)
+		}
 	}
 }

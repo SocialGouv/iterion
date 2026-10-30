@@ -36,11 +36,13 @@ var rootCmd = &cobra.Command{
 		"CONFIGURE iterion — a name a `.env` filled speaks for that project, not for the\n" +
 		"deployment, so it decides nothing an operator answers for: where plugins are\n" +
 		"installed, which table prices a model and where that table is cached, when a node\n" +
-		"compacts, and which credential a gateway is presented. A route it names — a\n" +
-		"<VENDOR>_BASE_URL, an *_ENDPOINT, a *_HOST, a proxy — is not applied at all: a\n" +
-		"project `.env` does not choose where a connection goes, and the refusal names the\n" +
-		"variable and the way past it. Export those in the environment iterion runs with,\n" +
-		"or export ITERION_DOTENV_ENDPOINTS=allow to let the file plant its routes.",
+		"compacts, and which credential a gateway is presented. A route it names — a *_URL\n" +
+		"or *_URI, an *_ENDPOINT, a *_HOST or *_HOSTS, a *_DSN, a proxy — is not applied at\n" +
+		"all: a project `.env` does not choose where a connection goes, and the refusal\n" +
+		"names the variable and the way past it. Export those in the environment iterion\n" +
+		"runs with, or export ITERION_DOTENV_ENDPOINTS=allow to let the file plant its\n" +
+		"routes. The same class is refused on the studio lane and in the desktop's own\n" +
+		"env file.",
 	SilenceUsage:  true,
 	SilenceErrors: true,
 }
@@ -71,6 +73,14 @@ func main() {
 		// invocations get that convenience — a human's, not a child the
 		// engine spawned against a repository — is the predicate's.
 		//
+		// The `.env` walk also aimed errtrack at a host of the file's
+		// choosing (#498 review, R6fa6d2): SENTRY_DSN is a wire like
+		// the rest and sits in the routing class — a crash envelope
+		// carries the operator's stack and machine context, so a
+		// planted DSN delivers them where the file said. Init still
+		// sits after the load: the opt-in (or the operator's own DSN)
+		// applies to it as to every other name.
+		//
 		// FILLING a name is not answering for it: applyDotEnv marks
 		// every key it sets (internal/envtrust), and the reads that
 		// need the operator's own answer — the plugin home, the model
@@ -78,14 +88,17 @@ func main() {
 		// the window a node compacts at, the gateway catalog and the
 		// credential it presents — resolve the INHERITED value and take
 		// a planted one as nothing said. One CLASS is refused outright
-		// rather than marked: the routing-shaped names (a *_BASE_URL,
-		// an *_ENDPOINT, a *_HOST, a proxy), which decide where a
-		// connection goes — a planted route would point every wire,
-		// the operator's credentials included, at a host the file
-		// chose. A `.env` that legitimately configures its own gateway
-		// needs the operator's ITERION_DOTENV_ENDPOINTS=allow. The
-		// file sits in a repository, including the one a run is
-		// reviewing.
+		// rather than marked: the routing-shaped names (a *_URL or
+		// *_URI, an *_ENDPOINT, a *_HOST or *_HOSTS, a *_DSN, a proxy),
+		// which decide where a connection goes or what reaches it — a
+		// planted route would point every wire, the operator's
+		// credentials included, at a host the file chose. A `.env`
+		// that legitimately configures its own gateway needs the
+		// operator's ITERION_DOTENV_ENDPOINTS=allow. The file sits in
+		// a repository, including the one a run is reviewing. The
+		// studio lane plants the same file by another road
+		// (projectenv.Snapshot) and asks the same question there; the
+		// desktop's own env-file loader asks it too.
 		if shouldLoadWorkspaceDotEnv() {
 			loadDotEnvFromCwd()
 		}
@@ -360,26 +373,30 @@ func applyDotEnv(path string) bool {
 		}
 		if _, exists := os.LookupEnv(key); !exists {
 			// A name that decides where a connection goes is NOT applied.
-			// The loader is the one site that knows it is planting, so it
-			// is the one that closes the whole routing class (ARB-122): a
-			// *_BASE_URL, an *_ENDPOINT, a *_HOST, a proxy. Every child
-			// inherits what lands here and the reads are not all iterion's
-			// — the vendored claw provider packages read these names
-			// themselves — so a route never planted is a route nothing can
-			// follow, where a guard at one read site closes exactly that
-			// site; the per-name credential tables (internal/envtrust) stay
-			// as the belt at the reads. The operator's channels are the
-			// environment itself, or ITERION_DOTENV_ENDPOINTS=allow for a
-			// `.env` that legitimately configures its own gateway. The
-			// guard sits before the planted mark: a refused name does not
-			// exist, it is not "planted but distrusted".
-			if envtrust.RoutingShapedName(key) && !envtrust.DotenvEndpointsAllowed() {
-				credHalf := ""
-				if redirected := envtrust.InheritedCredentialsAt(key); len(redirected) > 0 {
-					credHalf = ": " + strings.Join(redirected, " / ") + " is the operator's own and would be presented at the host it names"
-				}
-				iterlog.NewFromEnv(os.Stderr).Warn("%s comes from the project `.env` %s, so it is not applied: a project `.env` does not choose where a connection goes%s — export %s in the environment iterion runs with to answer it yourself, or export %s=allow to let this file plant its routes",
-					key, path, credHalf, key, envtrust.DotenvEndpointsOptIn)
+			// The loader is the site that knows it is planting, so it is one
+			// of the lanes that closes the whole routing class (ARB-122):
+			// the *_URL/_URI wires, the *_ENDPOINTs, the *_HOST/*_HOSTS
+			// lists, the proxies, the *_DSN. Every child inherits what lands
+			// here and the reads are not all iterion's — the vendored claw
+			// provider packages and SDKs read these names themselves — so a
+			// route never planted is a route nothing can follow, where a
+			// guard at one read site closes exactly that site; the per-name
+			// credential tables (internal/envtrust) stay as the belt at the
+			// reads. The operator's channels are the environment itself, or
+			// ITERION_DOTENV_ENDPOINTS=allow for a `.env` that legitimately
+			// configures its own gateway. The studio lane
+			// (projectenv.Snapshot) and the desktop env-file loader ask the
+			// same question at their own plants. The guard sits before the
+			// planted mark: a refused name does not exist, it is not
+			// "planted but distrusted".
+			if envtrust.DotenvPlantRefused(key) {
+				// The refusal goes to stderr directly, not through the
+				// level-configured logger: the level it would ride on is
+				// itself something this file may have planted one line above
+				// (ITERION_LOG_LEVEL=error mutes the message the moment the
+				// file wants its route applied quietly). A safety refusal is
+				// not a log level.
+				fmt.Fprintln(os.Stderr, "iterion: "+envtrust.RoutingRefusalLine(key, "the project `.env`", path))
 				continue
 			}
 			_ = os.Setenv(key, val)

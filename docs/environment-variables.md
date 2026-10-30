@@ -156,24 +156,42 @@ other variable does.
 
 ## The project `.env` and the routes it may not name
 
-The CLI auto-loads the nearest `.env` walking up from the working directory
-and fills every name the environment left unset. That file sits in a
-repository — including the one a run is reviewing — so the loader (the one
-site that knows it is planting) refuses by default any name whose SHAPE
-decides where a connection is dialled: a `*_BASE_URL`, an `*_API_BASE`, an
-`*_ENDPOINT`, a `*_HOST` (the Azure `*_AUTHORITY_HOST` pair among them), a
-`*_PROXY`, either case. The refusal is one line naming the file, the
-variable and the opt-in; the name is not planted, not even marked, and the
-credentials presented at a refused route (a `*_API_KEY`, a token) still
-plant as before — a key next to a project is what `.env` loading exists
-for. Each refused name keeps a per-answer belt at its reads
-(`internal/envtrust`): the gateway pair refuses by name, the routing names
-the host planted cross into a sandbox as explicit empties, and everything a
-run's authority question reads goes through the provenance seam.
+Every lane that plants a dotenv file asks the same question at its plant
+(`internal/envtrust` `DotenvPlantRefused`): the CLI auto-loading the nearest
+`.env` walking up from the working directory (`cmd/iterion` `applyDotEnv`),
+the studio/desktop server building a run's environment from the workspace
+project's `.env` (`pkg/projectenv.Snapshot` → `SetRunExtraEnv`), and the
+desktop's own env file (`~/.iterion/env`, `$ITERION_ENV_FILE`). A file sits
+in a repository — including the one a run is reviewing — so any name whose
+SHAPE decides where a connection is dialled, what is presented or sent
+there, or which hosts are trusted is refused by default: a `*_URL` or
+`*_URI` (provider hosts, the OAuth forfait wires the refresh token is POSTed
+to, the AWS endpoint overrides `AWS_ENDPOINT_URL*` per service, the
+deployment's own `ITERION_*_URL` wires, `SEARXNG_URL`), an `*_ENDPOINT`, a
+`*_HOST` (the Azure `*_AUTHORITY_HOST` pair among them), a `*_HOSTS` list
+(the sandbox model hosts the inspecting proxy leaves in the clear, the
+webhook forge allowlist), an `*_ADDRS` list (Redis Sentinel), a `*_DSN`
+(where crash envelopes are delivered), an `*_API_BASE`, a `*_PROXY` — either
+case. The refusal is one line on stderr (no log level reaches it, and the
+level a logger would honour is itself something the file may have planted)
+naming the file, the variable and the opt-in; the name is not planted, not
+even marked, and the credentials presented at a refused route (a
+`*_API_KEY`, a token) still plant as before — a key next to a project is
+what `.env` loading exists for. Each refused name keeps a per-answer belt at
+its reads (`internal/envtrust`): the gateway pair refuses by name, the
+routing names the host planted cross into a sandbox as explicit empties, and
+everything a run's authority question reads goes through the provenance
+seam. The studio lane marks what it DOES plant in the run environment
+(`ITERION_DOTENV_PLANTED` travels in it) and never lets the file's opt-in
+cross into a run; the desktop's file is operator-owned, so its values keep
+the operator's authority — the class refusal is the guard there, not the
+mark. The inventory of shapes is re-walked against the tree's real reads by
+a completeness guard (`internal/envtrust` `routing_completeness_test.go`), so
+a reader that outgrows it arrives red.
 
 | Variable | Effect | Default |
 |---|---|---|
-| `ITERION_DOTENV_ENDPOINTS` | The operator's opt-in that lets the project `.env` plant routing-shaped names again — for a laptop config that legitimately keeps its own gateway's host beside its key. `allow` grants; anything else (unset, empty, another word; surrounding whitespace ignored) keeps the refusal. Read **only** from the inherited environment, never from what the `.env` plants: a file that names it does not consent on the operator's behalf. Refused as a bot variable. | unset (refused) |
+| `ITERION_DOTENV_ENDPOINTS` | The operator's opt-in that lets a dotenv file plant routing-shaped names again — for a laptop config that legitimately keeps its own gateway's host beside its key. `allow` grants; anything else (unset, empty, another word; surrounding whitespace ignored) keeps the refusal. Read **only** from the inherited environment, never from what the `.env` plants: a file that names it does not consent on the operator's behalf — and on the studio lane it does not cross into the run environment at all, whoever said it: the runs launched there answer their own opt-in where the run's iterion itself is launched. Refused as a bot variable. | unset (refused) |
 
 ## Reading a source
 
