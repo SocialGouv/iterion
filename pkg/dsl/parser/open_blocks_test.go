@@ -129,7 +129,7 @@ func TestOpenBlocksReadEachTokenOnce(t *testing.T) {
 			{"splicing shape", 1_000, deeperBrokenListsSource(1_000), true},
 		} {
 			p := &parser{lex: lexSource("lists.bot", c.src, sourceBudget()), file: "lists.bot"}
-			lexed := len(p.lex.tokens)
+			lexed := p.lex.streamLen()
 			p.parseFile()
 			if errs := p.report.Count(SeverityError); errs < c.lists {
 				t.Fatalf("%s: %d errors for %d broken lists: the shape never reached the resync", c.name, errs, c.lists)
@@ -137,10 +137,10 @@ func TestOpenBlocksReadEachTokenOnce(t *testing.T) {
 			if p.blocks.replayed == 0 {
 				t.Fatalf("%s: the resync never asked openBlocks for the stack", c.name)
 			}
-			if spliced := len(p.lex.tokens) > lexed; spliced != c.splices {
+			if spliced := p.lex.streamLen() > lexed; spliced != c.splices {
 				t.Fatalf("%s: spliced=%v, want %v — the shape no longer exercises what it is here for", c.name, spliced, c.splices)
 			}
-			if n := len(p.lex.tokens); p.blocks.replayed > n {
+			if n := p.lex.streamLen(); p.blocks.replayed > n {
 				t.Errorf("%s: openBlocks read %d tokens of a stream of %d: a token is read once, however many resyncs ask", c.name, p.blocks.replayed, n)
 			}
 		}
@@ -227,6 +227,52 @@ func TestBrokenListsParseInLinearTime(t *testing.T) {
 			t.Fatalf("%d broken lists (%d bytes) parsed in %s, past the %s bound: the open-block lookup is rescanning the stream", lists, len(src), took, bound)
 		}
 		t.Logf("%d broken lists (%d bytes) parsed in %s", lists, len(src), took)
+	})
+}
+
+// The ticket's second quadratic (#2880, the other half of #2768's comment):
+// the rescue's splice hands each open loop its closing DEDENTs — inserted
+// into the flat token slice, every splice recopied the stream's tail, and a
+// source whose broken lists repeat paid the tail per list: measured before
+// the queue, N=2000 → 0.33s, 4000 → 1.33s, 8000 → 5.30s, ×4 per doubling,
+// the memmove of the tail. The witness is the RATIO, never the clock:
+// doubling the lists costs ~2x when the splice is the queue's cut-and-join
+// and ~4x when it is a recopy, and neither figure moves with the machine.
+// Medians of three interleaved runs keep a loaded shard's pause off the
+// verdict.
+func TestBrokenListSplicesStayLinear(t *testing.T) {
+	withoutOpenBlocksCheck(t, func() {
+		parse := func(lists int) time.Duration {
+			t.Helper()
+			p := &parser{lex: lexSource("lists.bot", deeperBrokenListsSource(lists), sourceBudget()), file: "lists.bot"}
+			lexed := p.lex.streamLen()
+			start := time.Now()
+			p.parseFile()
+			took := time.Since(start)
+			if errs := p.report.Count(SeverityError); errs < lists {
+				t.Fatalf("%d errors for %d broken lists: the shape never reached the resync", errs, lists)
+			}
+			if p.lex.streamLen() <= lexed {
+				t.Fatalf("%d broken lists spliced nothing: the shape no longer exercises the rescue's splice", lists)
+			}
+			return took
+		}
+		const lists = 4000
+		var small, large []time.Duration
+		for r := 0; r < 3; r++ {
+			small = append(small, parse(lists))
+			large = append(large, parse(2*lists))
+		}
+		slices.Sort(small)
+		slices.Sort(large)
+		s, l := small[1], large[1]
+		if s <= 0 {
+			t.Fatalf("the %d-list parse measured %s: no baseline to compare against", lists, s)
+		}
+		if ratio := float64(l) / float64(s); ratio > 3 {
+			t.Fatalf("doubling the broken lists cost %.1fx (%s then %s): the rescue's splice recopies the stream's tail", ratio, s, l)
+		}
+		t.Logf("%d broken lists parsed in %s, %d in %s (%.2fx)", lists, s, 2*lists, l, float64(l)/float64(s))
 	})
 }
 

@@ -516,7 +516,9 @@ func (p *parser) rescueCannotClaim(t Token, i int, host string) bool {
 // stream index at, tagged with that token's line. A block loop closes on any
 // DEDENT, so only the count matters: the resync's DEDENT accounting hands
 // each open loop the one closing token the broken list's remainder denied
-// it.
+// it. The insert is the lexer queue's cut-and-join, never a recopy of the
+// stream's tail: a source whose broken lists repeat rescues per list, and
+// recopying the tail at every rescue is quadratic in them (#2880).
 func (p *parser) spliceDedents(at, n, line int) {
 	if n <= 0 {
 		return
@@ -525,7 +527,7 @@ func (p *parser) spliceDedents(at, n, line int) {
 	for k := range dedents {
 		dedents[k] = Token{Type: TokenDedent, Line: line, Column: 1}
 	}
-	p.lex.tokens = slices.Insert(p.lex.tokens, at, dedents...)
+	p.lex.splice(at, dedents)
 	if at < p.blocks.ti {
 		// The open-block stack read past the splice point: what it read
 		// is no longer the stream, so it starts over (openBlocks).
