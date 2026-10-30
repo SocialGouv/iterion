@@ -97,10 +97,27 @@ func (r Resolved) Known() bool { return r.Source != SourceUnknown }
 // declared 0/0 means unpriced, not free.
 func (r Resolved) Priced() bool { return r.Spec.InputCostPerM > 0 && r.Spec.OutputCostPerM > 0 }
 
+// operatorTableEntry is one parsed operator table, memoised by the RAW
+// value it was parsed from.
+type operatorTableEntry struct {
+	table map[string]modelspecs.Spec
+	err   error
+}
+
 var (
-	operatorTableOnce sync.Once
-	operatorTable     map[string]modelspecs.Spec
-	operatorTableErr  error
+	operatorTableMu sync.Mutex
+	// Keyed by the raw value READ, not by first caller: a process holds
+	// readers of different provenance (the dispatch head reads live, the
+	// sandbox crossing reads envtrust.Inherited — #2813), and a sync.Once
+	// would answer every reader with the table the FIRST getter produced —
+	// a workspace .env's table, primed live, crossing as the operator's.
+	// catalogEnv filters the planted values out before they reach this map,
+	// so nothing a repository planted is memoised under the operator's name.
+	operatorTables = map[string]operatorTableEntry{}
+	// A parse REFUSAL is a decision made on evidence: it stands for the
+	// process whatever later reads produce (a table that disappears must
+	// not rehabilitate it). Over-refusal is the safe direction.
+	operatorRefusal error
 )
 
 // catalogEnv reads one of the three names this catalog resolves from, and
@@ -131,31 +148,42 @@ func catalogEnv(get func(string) string, name string) string {
 	return strings.TrimSpace(get(name))
 }
 
-// operatorModels parses OPENAI_COMPATIBLE_MODELS once. A malformed table is
-// a REFUSAL at every seam that resolves a gateway route, not a silent
-// fallback to the catalog: the operator wrote a price, a typo must not
-// price the model differently. A table the repository planted is not the
-// operator's, so it neither prices nor refuses anything (catalogEnv) — and
-// the launch seam says so, refusal included (warnPlantedOperatorTable).
+// operatorModels parses OPENAI_COMPATIBLE_MODELS, memoised by the value
+// read. A malformed table is a REFUSAL at every seam that resolves a
+// gateway route, not a silent fallback to the catalog: the operator wrote
+// a price, a typo must not price the model differently. A table the
+// repository planted is not the operator's, so it neither prices nor
+// refuses anything (catalogEnv) — and the launch seam says so, refusal
+// included (warnPlantedOperatorTable).
 func operatorModels(get func(string) string) (map[string]modelspecs.Spec, error) {
-	operatorTableOnce.Do(func() {
-		raw := catalogEnv(get, CatalogModelsEnv)
-		if raw == "" {
-			operatorTable = map[string]modelspecs.Spec{}
-			return
-		}
-		operatorTable, operatorTableErr = parseOperatorTable(raw)
-	})
-	return operatorTable, operatorTableErr
+	raw := catalogEnv(get, CatalogModelsEnv)
+	operatorTableMu.Lock()
+	defer operatorTableMu.Unlock()
+	if operatorRefusal != nil {
+		return nil, operatorRefusal
+	}
+	if e, ok := operatorTables[raw]; ok {
+		return e.table, e.err
+	}
+	table, err := parseOperatorTable(raw)
+	if err != nil {
+		operatorRefusal = err
+	}
+	operatorTables[raw] = operatorTableEntry{table: table, err: err}
+	return table, err
 }
 
-// parseOperatorTable decodes one OPENAI_COMPATIBLE_MODELS value. It is the
-// ONE parser of that format: the resolution reads the operator's table
+// parseOperatorTable parses the raw OPENAI_COMPATIBLE_MODELS value. Empty
+// is the empty table; anything malformed is a refusal. It is the ONE
+// parser of that format: the resolution reads the operator's table
 // through it, and the planted-table diagnostic re-reads a value the
 // resolution declined through the SAME code, so what an operator is told
 // about their typo is what would have refused their routes — not a second
 // decoder that agrees today.
 func parseOperatorTable(raw string) (map[string]modelspecs.Spec, error) {
+	if raw == "" {
+		return map[string]modelspecs.Spec{}, nil
+	}
 	var entries map[string]struct {
 		ContextWindow    int     `json:"context_window"`
 		MaxOutputTokens  int     `json:"max_output_tokens"`
@@ -194,7 +222,7 @@ func parseOperatorTable(raw string) (map[string]modelspecs.Spec, error) {
 // CheckOperatorTable parses OPENAI_COMPATIBLE_MODELS and returns its
 // refusal — the seam-level probe for "the operator table, if any, is
 // well-formed". Memoised like the resolution itself: one parse per
-// process, the same refusal every time.
+// value, the same refusal every time.
 //
 // It is also where a table the catalog DECLINED is said out loud, because
 // this is the launch-and-validation seam (pkg/backend/model checkGatewayEnv,
@@ -248,8 +276,10 @@ func warnPlantedOperatorTable(get func(string) string) {
 // unknown-warning memo — tests only; a production process reads its env
 // once and says each id once.
 func ResetCatalogCaches() {
-	operatorTableOnce = sync.Once{}
-	operatorTable, operatorTableErr = nil, nil
+	operatorTableMu.Lock()
+	operatorTables = map[string]operatorTableEntry{}
+	operatorRefusal = nil
+	operatorTableMu.Unlock()
 	plantedTableWarnOnce = sync.Once{}
 	unknownWarns.Range(func(k, _ any) bool {
 		unknownWarns.Delete(k)
