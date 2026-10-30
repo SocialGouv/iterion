@@ -24,7 +24,8 @@ import (
 type gateCase struct {
 	form             string // the grammar form this row exercises
 	what             string
-	backend          string // the node's route
+	backend          string // the node's primary route
+	fallback         string // a `fallbacks:` route, "" for none
 	declared         string // the spelling the `tools:` list carries
 	call             string // the name the gate sees at dispatch
 	inputs           []map[string]any
@@ -108,6 +109,13 @@ func gateCases() []gateCase {
 		{form: "prefix idiom (empty prefix)", what: "`ask` + deny: [\"Bash(:*)\"], which matches every command", backend: "claude_code",
 			declared: "bash", call: "Bash", inputs: shellCmds, mode: "ask", deny: []string{"Bash(:*)"}},
 
+		// A `fallbacks:` route the node may take. The verdict is read over
+		// every route — a route that keeps the writer is a run that writes —
+		// so the probe is that route's own spelling: `write_*` covers nothing
+		// a claude_code spawn sends, and everything the claw fallback does.
+		{form: "fallback route", what: "`deny` + allow: [\"write_*\"], reached on the claw fallback", backend: "claude_code", fallback: "claw",
+			declared: "write_file", call: "write_file", inputs: writePaths, mode: "deny", allow: []string{"write_*"}},
+
 		// The store builtin, which no roster projects: the name as declared
 		// is the name the gate sees.
 		{form: "store builtin", what: "`deny` + an allow list naming no writer, over the store tool", backend: "claw",
@@ -142,7 +150,7 @@ func TestTheLintsGateQuestionAgreesWithTheGateOverEveryRuleForm(t *testing.T) {
 
 	wantForms := []string{
 		"arg scope (every call)", "arg scope (subset)", "bare row", "catch-all",
-		"class row", "class row (scoped)", "off mode", "prefix idiom",
+		"class row", "class row (scoped)", "fallback route", "off mode", "prefix idiom",
 		"prefix idiom (empty prefix)", "store builtin", "tool glob (catalogue spelling)",
 		"tool glob (native spelling)", "unset mode",
 	}
@@ -154,6 +162,9 @@ func TestTheLintsGateQuestionAgreesWithTheGateOverEveryRuleForm(t *testing.T) {
 			BaseNode:  ir.BaseNode{ID: "worker"},
 			LLMFields: ir.LLMFields{Backend: c.backend},
 			Tools:     []string{c.declared},
+		}
+		if c.fallback != "" {
+			node.Fallbacks = []ir.Fallback{{Name: "second", Backend: c.fallback}}
 		}
 		w := wf("probe", nil, nil, nil, node)
 		w.Permission, w.PermissionAllow, w.PermissionAsk, w.PermissionDeny = c.mode, c.allow, c.ask, c.deny
