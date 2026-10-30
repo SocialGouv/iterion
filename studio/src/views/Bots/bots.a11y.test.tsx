@@ -7,7 +7,6 @@ import { memoryLocation } from "wouter/memory-location";
 
 import type { BotEntryWithSchema } from "@/api/bots";
 import {
-  CLAMP_TEXT_WAIVER,
   expectNoViolationsStrict,
   setupMatchMedia,
 } from "@/__tests__/a11y/axeHelpers";
@@ -113,17 +112,18 @@ describe("a11y / Bots gallery", () => {
     const container = mountGallery();
     // Non-vacuity: the cards are what the net is over. A gallery that
     // rendered its empty state would pass this audit and prove nothing.
-    // ClampText renders its text twice (visible + its sr-only description),
-    // so the count is not the assertion — the presence of the cards is.
+    // The clamped blocks render each text once, as the card button's own
+    // content — the presence of the cards is the assertion.
     expect((await screen.findAllByText("Acci")).length).toBeGreaterThan(0);
     expect(screen.getAllByText("Revi").length).toBeGreaterThan(0);
     // The trigger badge is the one piece of card markup that needs the
     // subscription read, so the audit's scope is asserted, not assumed.
     expect(await screen.findByText(/^1 trigger$/)).toBeTruthy();
-    // The cards' clamped title/path/description blocks are ClampText's
-    // nodes, waived on the primitive's own attribute so a roleless focusable
-    // the GALLERY adds still fails, in this same entry.
-    await expectNoViolationsStrict(container, "BotsView", [CLAMP_TEXT_WAIVER]);
+    // The cards' clamped title/path/description blocks are not focus stops:
+    // they sit in the card button, whose one tab stop and name carry them
+    // (#2803), so this entry runs with NO waiver — a roleless focusable the
+    // GALLERY adds still fails, in this same entry.
+    await expectNoViolationsStrict(container, "BotsView");
   });
 
   it("has no violation on the empty catalog", async () => {

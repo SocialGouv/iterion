@@ -523,11 +523,20 @@ function BotCard({
           <span className="shrink-0 text-lg leading-none" aria-hidden="true">
             {identity.emoji}
           </span>
-          <ClampText className={`min-w-0 text-sm font-medium ${identity.color}`} text={label} />
+          {/* The card button is the one tab stop: the clamped blocks below
+              are visual only, and its accessible name carries their text
+              (#2803). The description is a span, not a p — a button takes
+              phrasing content only (RGAA 8.2). */}
+          <ClampText
+            className={`min-w-0 text-sm font-medium ${identity.color}`}
+            text={label}
+            focusable={false}
+          />
           {bot.display_name?.trim() && (
             <ClampText
               className="min-w-0 font-mono text-caption text-fg-subtle"
               text={bot.name}
+              focusable={false}
             />
           )}
           <span className="ml-auto shrink-0">
@@ -537,9 +546,14 @@ function BotCard({
           </span>
         </span>
         {bot.description ? (
-          <ClampText as="p" className="text-xs text-fg-muted" lines={2} text={bot.description} />
+          <ClampText
+            className="text-xs text-fg-muted"
+            lines={2}
+            text={bot.description}
+            focusable={false}
+          />
         ) : (
-          <p className="text-xs italic text-fg-subtle">No description.</p>
+          <span className="block text-xs italic text-fg-subtle">No description.</span>
         )}
         <span className="mt-auto flex flex-wrap items-center gap-1">
           {(bot.tags ?? []).map((t) => (

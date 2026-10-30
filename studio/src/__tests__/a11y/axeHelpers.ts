@@ -315,9 +315,12 @@ export interface AxeWaiver {
  * the claim belongs to the primitive, and the copies are where its reason
  * drifts.
  *
- * NOT for a surface that nests the block inside a control: a focus stop
- * inside a button is a second tab stop for one control, which is a defect
- * and not a recovery mechanism (#2803).
+ * Only for a STANDALONE block: every clamp nested in a control carries
+ * focusable={false} instead (the control is the one tab stop and its name
+ * carries the text, #2803), is no focus stop at all, and must not be
+ * waived — the source guard in jsx-content.test.ts holds each nested call
+ * site to that opt-out, and ClampText.test.tsx audits the composition with
+ * no waiver.
  */
 export const CLAMP_TEXT_WAIVER: AxeWaiver = {
   rule: "focus-order-semantics",

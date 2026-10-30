@@ -221,10 +221,13 @@ export default function RecentFilesPanel({ variant = "card" }: Props) {
                           )}
                         </span>
                         {ex.description && (
+                          // The example button is the one tab stop; its
+                          // accessible name carries the description (#2803).
                           <ClampText
                             as="span"
                             className="block text-fg-muted text-micro mt-0.5"
                             text={ex.description}
+                            focusable={false}
                           />
                         )}
                       </span>
