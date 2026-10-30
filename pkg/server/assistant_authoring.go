@@ -207,7 +207,7 @@ func currentAuthoringLimits() authoringLimits {
 }
 
 func envPositiveInt(name string, fallback int) int {
-	v, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name)))
+	v, err := strconv.Atoi(strings.TrimSpace(envOperator(name)))
 	if err != nil || v <= 0 {
 		return fallback
 	}
@@ -963,7 +963,7 @@ func (t *authoringTarget) validateChanges(ctx context.Context, previews []author
 }
 
 func validateAuthoringPythonSyntax(parent context.Context, path, source string) error {
-	interpreter := strings.TrimSpace(os.Getenv("ITERION_ASSISTANT_PYTHON"))
+	interpreter := strings.TrimSpace(envOperator("ITERION_ASSISTANT_PYTHON"))
 	if interpreter == "" {
 		interpreter = "python3"
 	}

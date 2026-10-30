@@ -217,7 +217,7 @@ func (s *Server) allowedOrigins() []string {
 // is identical to an absent one (the origin gets refused either way), which is
 // the shape of a guard that looks configured and matches nothing.
 func loadExtraAllowedOrigins(logger *iterlog.Logger) []string {
-	valid, malformed := splitAllowedOrigins(os.Getenv("ITERION_ALLOWED_ORIGINS"))
+	valid, malformed := splitAllowedOrigins(envOperator("ITERION_ALLOWED_ORIGINS"))
 	for _, entry := range malformed {
 		logger.Warn("ITERION_ALLOWED_ORIGINS: ignoring %q — expected an origin of the form scheme://host with no path; requests from it will be refused", logSafe(entry))
 	}
@@ -360,7 +360,7 @@ func (s *Server) requireSafeOrigin(w http.ResponseWriter, r *http.Request) bool 
 	//
 	// Checked after the allowlist so the normal path is untouched: this costs
 	// a getenv only on a request already being refused.
-	if os.Getenv("ITERION_REQUIRE_ORIGIN") == "0" {
+	if envOperator("ITERION_REQUIRE_ORIGIN") == "0" {
 		return true
 	}
 	// A refusal is logged because the 403 goes to the caller and nowhere

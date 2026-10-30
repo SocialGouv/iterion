@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
@@ -66,21 +67,32 @@ func TestAProjectDotenvCannotChooseTheModelSpecsTable(t *testing.T) {
 		t.Fatalf("an exported %s stopped answering: %+v — an offline deployment lost its catalog", modelspecs.CacheEnv, res)
 	}
 
-	// The repository's channel: the same table, planted by its `.env`.
+	// The repository's channel: the loader REFUSES the knob now —
+	// ITERION_MODEL_SPECS_ is an operator-grade namespace (the bot-var gate
+	// denies it to a stored record), so the file cannot set it at all, the
+	// way it could not set the sandbox override or the JWT secret.
 	if err := os.Unsetenv(modelspecs.CacheEnv); err != nil {
 		t.Fatalf("unset: %v", err)
 	}
 	t.Chdir(repo)
-	loadDotEnvFromCwd()
+	said := captureStderr(t, loadDotEnvFromCwd)
 
-	// Unchanged behaviour: the `.env` still SETS the variable, as it does for
-	// an API key next to a project. Only its authority is in question.
-	if got := os.Getenv(modelspecs.CacheEnv); got != forged {
-		t.Fatalf("the .env must still set the knob: %q", got)
+	if got := os.Getenv(modelspecs.CacheEnv); got != "" {
+		t.Fatalf("the .env planted %s=%q: the operator grade must refuse it", modelspecs.CacheEnv, got)
 	}
-	if !envtrust.Planted(modelspecs.CacheEnv) {
-		t.Fatalf("%s did not read as planted: the rest of this case proves nothing", modelspecs.CacheEnv)
+	if !strings.Contains(said, modelspecs.CacheEnv) {
+		t.Fatalf("the refusal does not name %s — it said: %s", modelspecs.CacheEnv, said)
 	}
+
+	// The belt, for a value that managed to be planted anyway (an OLDER
+	// binary's marker in a child — the current loader cannot produce one):
+	// the planted value still works, and it answers nothing about the
+	// operator's catalog.
+	if err := os.Setenv(modelspecs.CacheEnv, forged); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	t.Setenv(envtrust.EnvPlantedNames, modelspecs.CacheEnv)
+	envtrust.ResetForTest()
 
 	res := resolve()
 	if res.Known() || res.Spec.ContextWindow != 0 || res.Spec.MaxOutputTokens != 0 || res.Priced() {

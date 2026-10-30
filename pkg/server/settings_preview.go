@@ -36,7 +36,7 @@ func buildBackendOverrideOptions(
 			runPermission,
 			llm.GetPermission(),
 			wf.Permission,
-			os.Getenv("ITERION_PERMISSION"),
+			envOperator("ITERION_PERMISSION"),
 		)
 		if err != nil {
 			// Validation remains authoritative for malformed modes, but the
@@ -61,7 +61,7 @@ func buildBackendOverrideOptions(
 			llm.GetLLMFields().Backend,
 			runBackend,
 			wf.DefaultBackend,
-			os.Getenv("ITERION_DEFAULT_BACKEND"),
+			envOperator("ITERION_DEFAULT_BACKEND"),
 		)
 		choices := make(map[string]previewBackendOption, len(backendNames))
 		for _, backend := range backendNames {
@@ -126,11 +126,13 @@ func buildEffectiveSettings(wf *ir.Workflow) *previewEffectiveSettings {
 		return nil
 	}
 	eff := &previewEffectiveSettings{
+		// ITERION_COMPRESS stays a raw read: not operator-grade — a workflow
+		// knob a bot's stored record may carry.
 		Compress:       resolveKnob(wf.Compress, os.Getenv("ITERION_COMPRESS"), "auto"),
 		AutoMemory:     resolveKnob(wf.AutoMemory, normalizedAutoMemoryEnv(), "off"),
 		AmbientContext: resolveKnob(wf.AmbientContext, normalizedAmbientContextEnv(), ambient.Workspace.String()),
-		Permission:     resolveKnob(wf.Permission, os.Getenv("ITERION_PERMISSION"), "off"),
-		Backend:        resolveKnob(wf.DefaultBackend, os.Getenv("ITERION_DEFAULT_BACKEND"), "auto"),
+		Permission:     resolveKnob(wf.Permission, envOperator("ITERION_PERMISSION"), "off"),
+		Backend:        resolveKnob(wf.DefaultBackend, envOperator("ITERION_DEFAULT_BACKEND"), "auto"),
 	}
 	for _, node := range wf.Nodes {
 		switch n := node.(type) {
@@ -179,7 +181,7 @@ func resolveKnob(workflow, env, def string) previewEffectiveKnob {
 // environment said off", and collapsing the two would attribute the default to
 // a source that never spoke.
 func normalizedAutoMemoryEnv() string {
-	raw := strings.TrimSpace(os.Getenv(automemory.ModeEnv))
+	raw := strings.TrimSpace(envOperator(automemory.ModeEnv))
 	if raw == "" {
 		return ""
 	}
@@ -192,7 +194,7 @@ func normalizedAutoMemoryEnv() string {
 // falls back to the default, and the preview attributes it to the default
 // rather than captioning a value no run would ever use.
 func normalizedAmbientContextEnv() string {
-	p, ok := ambient.Parse(os.Getenv(ambient.PolicyEnv))
+	p, ok := ambient.Parse(envOperator(ambient.PolicyEnv))
 	if !ok {
 		return ""
 	}

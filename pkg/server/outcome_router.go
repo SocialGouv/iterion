@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -63,7 +62,7 @@ const (
 
 // outcomeRouterEnabled reads the fleet switch.
 func outcomeRouterEnabled() bool {
-	return strings.EqualFold(strings.TrimSpace(os.Getenv(outcomeRouterEnv)), "on")
+	return strings.EqualFold(strings.TrimSpace(envOperator(outcomeRouterEnv)), "on")
 }
 
 // startOutcomeRouter attaches the router to the event spine and starts

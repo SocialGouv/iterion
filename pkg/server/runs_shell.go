@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -63,7 +62,7 @@ func shellWatchPeriod() time.Duration {
 }
 
 func envDurationOrDefault(name string, def time.Duration) time.Duration {
-	if v := os.Getenv(name); v != "" {
+	if v := envOperator(name); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			return d
 		}

@@ -31,13 +31,183 @@ func TestSnapshotEvaluatesShellWithoutMutatingProcess(t *testing.T) {
 }
 
 func TestSnapshotRejectsReservedOverrides(t *testing.T) {
+	isolateSnapshotEnv(t)
 	path := filepath.Join(t.TempDir(), ".env")
-	if err := os.WriteFile(path, []byte("ITERION_HOME=/tmp/other\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("HOME=/tmp/other\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Snapshot([]string{"HOME=/host/home", "ITERION_HOME=/host/iterion", "PATH=" + os.Getenv("PATH")}, path)
-	if err == nil || !strings.Contains(err.Error(), "ITERION_HOME") {
+	_, err := Snapshot([]string{"HOME=/host/home", "PATH=" + os.Getenv("PATH")}, path)
+	if err == nil || !strings.Contains(err.Error(), "HOME") {
 		t.Fatalf("reserved override error = %v", err)
+	}
+}
+
+// The operator grade closes at this plant like the routing class does: the
+// names the bot-var gate denies a stored record — the sandbox lifts, the
+// auth and origin guards, the server's secrets — are refused here with the
+// same one-line message, the operator's own value restored where they
+// exported one. The H-10 review measured ITERION_SANDBOX_OVERRIDE=none and
+// ITERION_DISABLE_AUTH=1 riding the run environment of every command the
+// studio spawned; the grade refusal is the fix, and ITERION_HOME shows the
+// refusal outranking the reserved-variable error it used to answer to.
+func TestTheStudioSnapshotLeavesNoOperatorGradeNameInTheRunEnvironment(t *testing.T) {
+	isolateSnapshotEnv(t)
+
+	const operatorHome = "/host/iterion"
+	base := []string{
+		"HOME=/host/home", "PATH=" + os.Getenv("PATH"),
+		"ITERION_HOME=" + operatorHome, // the operator's own posture
+	}
+	grades := []string{
+		"ITERION_HOME",
+		"ITERION_SANDBOX_OVERRIDE",
+		"ITERION_SANDBOX_DEFAULT",
+		"ITERION_DISABLE_AUTH",
+		"ITERION_REQUIRE_ORIGIN",
+		"ITERION_ALLOWED_ORIGINS",
+		"ITERION_SECURITY_HEADERS",
+		"ITERION_STUDIO_INSECURE_NONLOOPBACK",
+		"ITERION_PI_TRUST_PROJECT",
+		"ITERION_JWT_SECRET",
+		"ITERION_BOOTSTRAP_ADMIN_PASSWORD",
+		"ITERION_SERVER_TOKEN",
+		"ITERION_COMPLETION_WEBHOOK_ALLOW_PRIVATE",
+		"ITERION_DOTENV_ENDPOINTS",
+	}
+	var lines []string
+	for _, name := range grades {
+		lines = append(lines, name+"=planted-by-the-repo-under-review")
+	}
+	envPath := writeEnvFile(t, lines...)
+
+	var env []string
+	var snapErr error
+	said := captureStderr(t, func() { env, snapErr = Snapshot(base, envPath) })
+	if snapErr != nil {
+		t.Fatalf("Snapshot: %v", snapErr)
+	}
+	if got, ok := envValue(env, "ITERION_HOME"); !ok || got != operatorHome {
+		t.Errorf("ITERION_HOME = %q (present=%v), want the operator's own %q restored", got, ok, operatorHome)
+	}
+	for _, name := range grades[1:] {
+		if got, ok := envValue(env, name); ok {
+			t.Errorf("%s = %q in the run environment: the repository under review answered for the operator", name, got)
+		}
+	}
+	if marker, ok := envValue(env, envtrust.EnvPlantedNames); ok {
+		t.Errorf("the run environment carries a planted marker %q: nothing was planted, so nothing is distrusted", marker)
+	}
+	for _, name := range grades {
+		if !strings.Contains(said, name) || !strings.Contains(said, envPath) {
+			t.Errorf("the refusal does not name %s and the file — stderr said: %s", name, said)
+		}
+		if strings.Contains(said, envtrust.DotenvEndpointsOptIn+"=allow to let this file plant its routes") {
+			t.Errorf("the operator-grade refusal offers the opt-in (stderr: %s): the opt-in widens routes, never the operator's posture", said)
+		}
+	}
+}
+
+// The command substitution a value spells is refused, not run: the studio
+// snapshot was the lane whose sourcing shell EXECUTED `FOO=$(touch …)` on
+// the host (the H-10 probe measured the marker file created, before the
+// routing question was even asked). The parse-first loader decides before
+// any shell exists — the command in the file never runs, the value does not
+// exist, and the refusal names the file.
+func TestTheStudioSnapshotRunsNothingACommandSubstitutionSpells(t *testing.T) {
+	isolateSnapshotEnv(t)
+
+	marker := filepath.Join(t.TempDir(), "substituted-ran")
+	envPath := writeEnvFile(t,
+		"FIRST=ok",
+		"FOO=$(touch "+marker+")",
+		"BAR=`touch "+marker+"`",
+		"QUOTED=\"$(touch "+marker+")\"",
+		"LAST=also-ok",
+	)
+	var env []string
+	var snapErr error
+	said := captureStderr(t, func() { env, snapErr = Snapshot([]string{"HOME=/host/home", "PATH=" + os.Getenv("PATH")}, envPath) })
+	if snapErr != nil {
+		t.Fatalf("Snapshot: %v", snapErr)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the substitution marker exists: the file's command RAN on the host (stat err %v)", err)
+	}
+	for _, name := range []string{"FOO", "BAR", "QUOTED"} {
+		if _, ok := envValue(env, name); ok {
+			t.Errorf("%s reached the run environment: a refused value was applied", name)
+		}
+	}
+	if got, ok := envValue(env, "FIRST"); !ok || got != "ok" {
+		t.Errorf("FIRST = %q (present=%v): the refusals must not cost the file its ordinary plants", got, ok)
+	}
+	if got, ok := envValue(env, "LAST"); !ok || got != "also-ok" {
+		t.Errorf("LAST = %q (present=%v): the refusals must not cost the file its ordinary plants", got, ok)
+	}
+	for _, name := range []string{"FOO", "BAR", "QUOTED"} {
+		if !strings.Contains(said, name) || !strings.Contains(said, envPath) {
+			t.Errorf("the substitution refusal does not name %s and the file — stderr said: %s", name, said)
+		}
+	}
+}
+
+// One parse, one plant set: an unquoted value with spaces is ONE value on
+// this lane, exactly what the CLI's parser reads on the other one — the
+// sourcing shell used to read `VAR=a b` as an assignment plus a command
+// and lose the assignment with the command that never existed (the H-10
+// probe measured the silent loss).
+func TestTheStudioSnapshotPlantsWhatTheParserRead(t *testing.T) {
+	isolateSnapshotEnv(t)
+
+	envPath := writeEnvFile(t,
+		"FIRST=ok",
+		"SPACED=ssh -i /tmp/some-key",
+		"LAST=also-ok",
+	)
+	env, err := Snapshot([]string{"HOME=/host/home", "PATH=" + os.Getenv("PATH")}, envPath)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if got, ok := envValue(env, "SPACED"); !ok || got != "ssh -i /tmp/some-key" {
+		t.Errorf("SPACED = %q (present=%v), want the whole value the parser read", got, ok)
+	}
+	if got, ok := envValue(env, "FIRST"); !ok || got != "ok" {
+		t.Errorf("FIRST = %q (present=%v)", got, ok)
+	}
+	if got, ok := envValue(env, "LAST"); !ok || got != "also-ok" {
+		t.Errorf("LAST = %q (present=%v)", got, ok)
+	}
+}
+
+// The legacy frame survives where it was wanted: `$VAR`/`${VAR}` expand on
+// the base environment and on the file's own earlier assignments, and a
+// single-quoted value stays literal — the sourcing shell used to give
+// both, minus the execution the refusal removed. A dollar the file itself
+// escaped stays literal too.
+func TestTheStudioSnapshotStillExpandsTheWantedReferences(t *testing.T) {
+	isolateSnapshotEnv(t)
+
+	envPath := writeEnvFile(t,
+		"BASE_SUFFIX=${BASE}-tail",
+		"PROJECT_ONLY='two words'",
+		"JOINED=$PROJECT_ONLY/tail",
+		"LITERAL=\\$NOT_DEFINED_ANYWHERE",
+		"ESCAPED=\\$HOME",
+	)
+	env, err := Snapshot([]string{"HOME=/host/home", "BASE=head", "PATH=" + os.Getenv("PATH")}, envPath)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	for key, want := range map[string]string{
+		"BASE_SUFFIX":  "head-tail",
+		"PROJECT_ONLY": "two words",
+		"JOINED":       "two words/tail",
+		"LITERAL":      "$NOT_DEFINED_ANYWHERE",
+		"ESCAPED":      "$HOME",
+	} {
+		if got, ok := envValue(env, key); !ok || got != want {
+			t.Errorf("%s = %q (present=%v), want %q", key, got, ok, want)
+		}
 	}
 }
 

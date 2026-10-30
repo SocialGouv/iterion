@@ -1402,6 +1402,26 @@ never merged across sources, and an answer carries its provenance:
 > the belt at the reads: a planted half of the `OPENAI_COMPATIBLE_*` pair
 > still refuses the gateway by name, and the routing names the host's own
 > `.env` planted still cross into a sandbox as explicit empties.
+>
+> Two more classes close at the same plant, with the opt-in answering
+> neither. The OPERATOR GRADE — the inventory the bot-var gate denies a
+> stored record (`internal/envtrust` `operator.go`, one list serving both
+> gates), widened to the server's credential spellings — is refused
+> outright: `ITERION_SANDBOX_OVERRIDE=none` (the reviewed repository
+> disarming the engine reviewing it), `ITERION_DISABLE_AUTH`,
+> `ITERION_REQUIRE_ORIGIN=0`, `ITERION_JWT_SECRET`,
+> `ITERION_BOOTSTRAP_ADMIN_PASSWORD`, `ITERION_SERVER_TOKEN`, the whole
+> infra namespace list. The reads carry the belt: `pkg/config`'s `lookup`
+> and `pkg/server`'s `envOperator` answer a planted grade value with
+> nothing, so a stale marker in a child lifts no guard. And a VALUE
+> carrying command substitution — `$(...)` or backticks — is refused on
+> every lane: the studio snapshot used to source the file in bash, which
+> RAN `FOO=$(touch /tmp/x)` on the host before any question was asked. The
+> plant set is the parse now (`internal/dotenv`, one reader, three lanes);
+> bash keeps only the `$VAR` expansion the legacy frame wanted, the git
+> transport family (`GIT_SSH_COMMAND`, `GIT_PROXY_COMMAND`, `GIT_CONFIG_*`)
+> rides the routing refusal — its reader is the git binary itself — and
+> `pkg/git` drops a planted transport name again at its own env assembly.
 
 The snapshot is regenerated with `task models:snapshot` (the committed diff
 is the review; it carries the source digest and an as-of date, and an answer

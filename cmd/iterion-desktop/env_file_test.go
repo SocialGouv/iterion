@@ -190,3 +190,72 @@ func captureStderr(t *testing.T, fn func()) string {
 	}
 	return string(said)
 }
+
+// The substitution refusal on the desktop lane, like on the CLI and studio
+// ones: a value spelling command substitution does not exist after the
+// load, and the refusal names the file. Nothing here evaluates values, but
+// the trigger does not travel either — the H-10 review measured the studio
+// lane RUNNING `$(touch …)` from the file, and the same bytes must not be
+// handed to a run on this lane either.
+func TestTheDesktopEnvFileRunsNothingACommandSubstitutionSpells(t *testing.T) {
+	envtrust.ResetForTest()
+	t.Cleanup(envtrust.ResetForTest)
+	t.Setenv(envtrust.EnvPlantedNames, "")
+	envtrust.ResetForTest()
+
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, "env")
+	marker := filepath.Join(dir, "substituted-ran")
+	content := "FIRST=ok\n" +
+		"FOO=$(touch " + marker + ")\n" +
+		"BAR=`touch " + marker + "`\n" +
+		"LAST=also-ok\n"
+	if err := os.WriteFile(envPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ITERION_ENV_FILE", envPath)
+
+	// Reset package globals between tests, and leave the witness names
+	// unset (t.Setenv cannot express "absent").
+	dotenvMu.Lock()
+	dotenvAppliedKeys = nil
+	dotenvMu.Unlock()
+	for _, name := range []string{"FIRST", "FOO", "BAR", "LAST"} {
+		t.Setenv(name, "")
+		os.Unsetenv(name)
+	}
+
+	var said string
+	{
+		orig := os.Stderr
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("pipe: %v", err)
+		}
+		os.Stderr = w
+		loadIterionEnvFile()
+		os.Stderr = orig
+		_ = w.Close()
+		b, _ := io.ReadAll(r)
+		_ = r.Close()
+		said = string(b)
+	}
+
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the substitution marker exists: the file's command RAN (stat err %v)", err)
+	}
+	for _, name := range []string{"FOO", "BAR"} {
+		if _, set := os.LookupEnv(name); set {
+			t.Errorf("%s reached the environment: a refused value was applied", name)
+		}
+		if !strings.Contains(said, name) || !strings.Contains(said, envPath) {
+			t.Errorf("the substitution refusal does not name %s and the file — it said: %s", name, said)
+		}
+	}
+	if got := os.Getenv("FIRST"); got != "ok" {
+		t.Errorf("FIRST = %q: the refusals must not cost the file its ordinary plants", got)
+	}
+	if got := os.Getenv("LAST"); got != "also-ok" {
+		t.Errorf("LAST = %q: the refusals must not cost the file its ordinary plants", got)
+	}
+}

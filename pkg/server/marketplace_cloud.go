@@ -2,7 +2,6 @@ package server
 
 import (
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -51,7 +50,7 @@ func (s *Server) marketplaceAllowedScopes() []string {
 	if s.cfg.Mode != "cloud" {
 		return []string{string(marketplace.ScopePublic)}
 	}
-	raw := strings.TrimSpace(os.Getenv("ITERION_MARKETPLACE_SCOPES"))
+	raw := strings.TrimSpace(envOperator("ITERION_MARKETPLACE_SCOPES"))
 	if raw == "" {
 		return []string{
 			string(marketplace.ScopeOrg),
@@ -76,7 +75,7 @@ func (s *Server) marketplaceAllowedScopes() []string {
 // allowed scope, overridable via ITERION_MARKETPLACE_DEFAULT_SCOPE.
 func (s *Server) marketplaceDefaultScope() string {
 	allowed := s.marketplaceAllowedScopes()
-	want := strings.TrimSpace(os.Getenv("ITERION_MARKETPLACE_DEFAULT_SCOPE"))
+	want := strings.TrimSpace(envOperator("ITERION_MARKETPLACE_DEFAULT_SCOPE"))
 	for _, a := range allowed {
 		if a == want {
 			return want

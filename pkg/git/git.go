@@ -18,6 +18,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // gitCommandTimeout bounds every `git` subprocess spawned by this
@@ -213,8 +215,26 @@ func NoRunHooks(args ...string) []string {
 	return append(slices.Clone(runHooksOff), args...)
 }
 
+// gitEnv returns the process environment for the engine's own git
+// gestures, minus the redirection variables SanitizeEnv drops, with the
+// locale pinned, and minus the git transport a project `.env` planted:
+// GIT_SSH_COMMAND and its family name the PROGRAM that carries every
+// network gesture (the H-10 probe measured a planted GIT_SSH_COMMAND
+// EXECUTED by the git binary before it dialled), and the loaders now
+// refuse the family at the plant — this drop is the belt at the read, for
+// a marker an older binary's loader left in a child. The operator's own
+// export is not planted: it survives, as any operator channel does.
 func gitEnv() []string {
-	return append(SanitizeEnv(os.Environ()), "LC_ALL=C", "LANG=C")
+	env := SanitizeEnv(os.Environ())
+	out := make([]string, 0, len(env)+2)
+	for _, kv := range env {
+		if key, _, ok := strings.Cut(kv, "="); ok &&
+			envtrust.GitTransportName(key) && envtrust.Planted(key) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "LC_ALL=C", "LANG=C")
 }
 
 // run executes `git args...` with cwd=dir and returns combined stdout.

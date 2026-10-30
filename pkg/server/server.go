@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -742,7 +741,7 @@ func warnInvalidEnvDurations(log *iterlog.Logger) {
 		return
 	}
 	for _, name := range runSocketDurationEnvVars {
-		if v := os.Getenv(name); v != "" {
+		if v := envOperator(name); v != "" {
 			if d, err := time.ParseDuration(v); err != nil || d <= 0 {
 				log.Warn("server: %s=%q is not a positive Go duration — the default is used; state a value like \"2h\" to honour the override", name, v)
 			}
@@ -1197,8 +1196,8 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		s.forgeOrchestrator.ProvisionLeases = s.leases
 	}
 	s.replicaID = newReplicaID()
-	s.gateSweep = gateSweepSettingsFromEnv(os.Getenv, s.warnf)
-	s.leaseHandoverOff, s.leaseHandoverPasses = leaseHandoverFromEnv(os.Getenv, s.warnf)
+	s.gateSweep = gateSweepSettingsFromEnv(envOperator, s.warnf)
+	s.leaseHandoverOff, s.leaseHandoverPasses = leaseHandoverFromEnv(envOperator, s.warnf)
 	// Wire the same Origin allowlist used for HTTP CORS into the WebSocket
 	// upgrader so cross-origin browser tabs can't subscribe to file events.
 	SetWebSocketOriginCheck(s.isAllowedOrigin)

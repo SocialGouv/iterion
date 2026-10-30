@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -81,12 +80,12 @@ type retryProbeBounds struct {
 // (probing off) and is honoured as written.
 func retryProbeBoundsFromEnv() retryProbeBounds {
 	b := retryProbeBounds{floor: defaultRetryProbeFloor, budget: defaultRetryProbeBudget}
-	if raw := strings.TrimSpace(os.Getenv(EnvRetryProbeFloor)); raw != "" {
+	if raw := strings.TrimSpace(envOperator(EnvRetryProbeFloor)); raw != "" {
 		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
 			b.floor = d
 		}
 	}
-	if raw := strings.TrimSpace(os.Getenv(EnvRetryProbeBudget)); raw != "" {
+	if raw := strings.TrimSpace(envOperator(EnvRetryProbeBudget)); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil && n >= 0 {
 			b.budget = n
 		}

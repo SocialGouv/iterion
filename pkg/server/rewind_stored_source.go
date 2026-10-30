@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -20,7 +19,7 @@ import (
 const BotSourcePinFallbackEnv = "ITERION_BOTSOURCE_PIN_FALLBACK"
 
 func botsourcePinFallbackEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(BotSourcePinFallbackEnv))) {
+	switch strings.ToLower(strings.TrimSpace(envOperator(BotSourcePinFallbackEnv))) {
 	case "off", "no", "false", "none":
 		return false
 	}

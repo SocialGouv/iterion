@@ -79,7 +79,7 @@ const (
 // exists to cut, failing closed (huge window) would silently delay
 // verdicts; the default is the only value the operator has read about.
 func webhookSyncDebounceFromEnv() time.Duration {
-	raw := strings.TrimSpace(os.Getenv("ITERION_WEBHOOK_SYNC_DEBOUNCE"))
+	raw := strings.TrimSpace(envOperator("ITERION_WEBHOOK_SYNC_DEBOUNCE"))
 	if raw == "" {
 		return webhookSyncDebounceDefault
 	}

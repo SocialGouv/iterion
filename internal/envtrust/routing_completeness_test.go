@@ -167,7 +167,7 @@ func envNamesReadIn(t *testing.T, path string) []string {
 // bytesNameAReadForm is the cheap prefilter that keeps the walk off the
 // files that cannot contain a read.
 func bytesNameAReadForm(raw []byte) bool {
-	for _, form := range []string{"Getenv(", "LookupEnv(", ".Inherited(", ".Planted(", "lookupString(", "lookup(", "envOr(", "readEnv("} {
+	for _, form := range []string{"Getenv(", "LookupEnv(", ".Inherited(", ".Planted(", "lookupString(", "lookup(", "envOr(", "readEnv(", "envOperator("} {
 		if strings.Contains(string(raw), form) {
 			return true
 		}
@@ -192,7 +192,10 @@ func envReadForm(fun ast.Expr) bool {
 		return false
 	case *ast.Ident:
 		switch e.Name {
-		case "lookup", "lookupString", "envOr", "readEnv":
+		case "lookup", "lookupString", "envOr", "readEnv",
+			// pkg/server's belt helper: it reads through Inherited, so the
+			// literals at its call sites are the tree's reads of those names.
+			"envOperator":
 			return true
 		}
 		return false

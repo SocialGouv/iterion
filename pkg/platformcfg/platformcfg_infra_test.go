@@ -13,11 +13,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// TestInfraNamesCoverTheEnforcementSwitches: botVarsInfraExact exists so a
-// stored bot var can never become an infra override. The two project-trust
+// TestInfraNamesCoverTheEnforcementSwitches: the operator-grade inventory
+// (envtrust's, asked through InfraGradeName) exists so a stored bot var can
+// never become an infra override. The two project-trust
 // switches are the ones that matter most — each lifts a refusal that stops an
 // agent CLI from executing code out of the repository under review — and the
 // two binary pins decide which binary runs.
@@ -28,7 +30,7 @@ func TestInfraNamesCoverTheEnforcementSwitches(t *testing.T) {
 		"ITERION_PI_BIN",
 		"ITERION_OPENCODE_BIN",
 	} {
-		if !botVarsInfraExact[name] {
+		if !envtrust.InfraGradeName(name) {
 			t.Errorf("%s is writable as a bot var; it decides what runs or whether a refusal holds", name)
 		}
 		if botVarNameOK(name) {
@@ -203,8 +205,10 @@ var buildOutputs = []string{"../../pkg/cli/templates/dispatch_bots", "../../pkg/
 // spell it: the string literals of its Go source and of the vendored claw it
 // links — a name, or the head of an assignment such as "ITERION_SHARD_INDEX=%d"
 // — and every name written in the manifests and scripts it embeds under pkg
-// (plugin manifests, the pi extension). The deny lists themselves are cut out
-// of platformcfg.go first: a name they spell is not a name the engine reads.
+// (plugin manifests, the pi extension). The deny lists themselves are cut
+// out first, wherever they live (pkg/platformcfg's own declarations and
+// envtrust's operator inventory): a name they spell is not a name the
+// engine reads.
 func engineEnvNames(t *testing.T) map[string][]string {
 	t.Helper()
 	literal := regexp.MustCompile(`"(ITERION_[A-Z0-9_]+)["=]`)
@@ -238,15 +242,21 @@ func engineEnvNames(t *testing.T) map[string][]string {
 			t.Fatalf("walk %s: %v", dir, err)
 		}
 	}
+	denied := 0
 	for _, dir := range []string{"../../pkg", "../../cmd", "../../internal", "../../vendor/github.com/SocialGouv/claw-code-go"} {
 		walk(dir, []string{".go"}, func(path, src string) {
-			if filepath.ToSlash(path) == "../../pkg/platformcfg/platformcfg.go" {
-				src = withoutDenyLists(t, src)
+			if filepath.ToSlash(path) == "../../pkg/platformcfg/platformcfg.go" || filepath.ToSlash(path) == "../../internal/envtrust/operator.go" {
+				var cut int
+				src, cut = withoutDenyLists(t, path, src)
+				denied += cut
 			}
 			for _, m := range literal.FindAllStringSubmatch(src, -1) {
 				note(m[1], path)
 			}
 		})
+	}
+	if denied < 2 {
+		t.Fatalf("blanked %d deny-list declarations (platformcfg.go, envtrust operator.go), want the prefix and exact lists at least: the lists moved and the blanking no longer finds them", denied)
 	}
 	walk("../../pkg", []string{".yaml", ".yml", ".js", ".mjs", ".cjs", ".json"}, func(path, src string) {
 		for _, name := range bare.FindAllString(src, -1) {
@@ -286,16 +296,18 @@ func TestTheScanSkipsOnlyGitignoredBuildOutputs(t *testing.T) {
 	}
 }
 
-// withoutDenyLists blanks every botVars… declaration of platformcfg.go: a
-// name the lists spell is not a name the engine reads, and counting it would
-// let every refused name find itself. Parsed, not pattern-matched, so a new
-// list — however it is written — is blanked too.
-func withoutDenyLists(t *testing.T, src string) string {
+// withoutDenyLists blanks every deny-list declaration of the named file —
+// the botVars… lists that stayed in platformcfg.go and the operatorInfra…
+// inventory that lives in envtrust's operator.go: a name the lists spell is
+// not a name the engine reads, and counting it would let every refused name
+// find itself. Parsed, not pattern-matched, so a new list — however it is
+// written — is blanked too.
+func withoutDenyLists(t *testing.T, path, src string) (string, int) {
 	t.Helper()
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "platformcfg.go", src, parser.SkipObjectResolution)
+	file, err := parser.ParseFile(fset, path, src, parser.SkipObjectResolution)
 	if err != nil {
-		t.Fatalf("parse platformcfg.go: %v", err)
+		t.Fatalf("parse %s: %v", path, err)
 	}
 	out := []byte(src)
 	cut := 0
@@ -306,7 +318,9 @@ func withoutDenyLists(t *testing.T, src string) string {
 		}
 		for _, spec := range gen.Specs {
 			vs := spec.(*ast.ValueSpec)
-			if !slices.ContainsFunc(vs.Names, func(n *ast.Ident) bool { return strings.HasPrefix(n.Name, "botVars") }) {
+			if !slices.ContainsFunc(vs.Names, func(n *ast.Ident) bool {
+				return strings.HasPrefix(n.Name, "botVars") || strings.HasPrefix(n.Name, "operatorInfra")
+			}) {
 				continue
 			}
 			for i := fset.Position(vs.Pos()).Offset; i < fset.Position(vs.End()).Offset; i++ {
@@ -317,10 +331,7 @@ func withoutDenyLists(t *testing.T, src string) string {
 			cut++
 		}
 	}
-	if cut < 2 {
-		t.Fatalf("blanked %d botVars declarations in platformcfg.go, want the prefix and exact lists at least", cut)
-	}
-	return string(out)
+	return string(out), cut
 }
 
 func TestEveryEngineEnvNameIsClassified(t *testing.T) {
@@ -336,7 +347,7 @@ func TestEveryEngineEnvNameIsClassified(t *testing.T) {
 		case refused && listed:
 			t.Errorf("%s is refused as a bot var and listed in writableBotVars — drop one", name)
 		case !refused && !listed:
-			t.Errorf("%s (%s) is writable as a bot var and unclassified: if it lifts or weakens a guard, configures the process, names an endpoint or identity, or is written by the engine for a child, refuse it (botVarsInfraExact/botVarsInfraPrefixes); otherwise list it in writableBotVars with the reason", name, seen[name][0])
+			t.Errorf("%s (%s) is writable as a bot var and unclassified: if it lifts or weakens a guard, configures the process, names an endpoint or identity, or is written by the engine for a child, refuse it (envtrust's operator inventory); otherwise list it in writableBotVars with the reason", name, seen[name][0])
 		}
 	}
 	for name := range writableBotVars {

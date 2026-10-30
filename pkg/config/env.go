@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/internal/isolationenv"
 )
 
@@ -387,7 +388,21 @@ func splitCSV(v string) []string {
 // `unset FOO` and `FOO=` behave identically; this matches the precedence
 // rule in the plan ("env > yaml > defaults" means a present-but-empty
 // env var is a no-op, not an override-to-empty).
+//
+// The operator-grade names read through envtrust: this surface IS the
+// operator's configuration (the sandbox, the auth stack, the store wires,
+// the secrets), and a value a project `.env` planted — what an older
+// binary's loader could still leave in a child, since the current loaders
+// refuse the grade at the plant — is not the operator. A planted value
+// reads as unset, and the YAML and defaults answer instead.
 func lookup(key string) (string, bool) {
+	if envtrust.OperatorGradeRefused(key) {
+		v := envtrust.Inherited(key)
+		if v == "" {
+			return "", false
+		}
+		return v, true
+	}
 	v, ok := os.LookupEnv(key)
 	if !ok {
 		return "", false

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -116,7 +115,10 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		origin := r.Header.Get("Origin")
 		if origin == "" {
-			if os.Getenv("ITERION_REQUIRE_WS_ORIGIN") == "1" {
+			// The origin guard is the operator's posture: a planted value (an older
+			// loader's marker in a child) answers nothing — envOperator, and the
+			// completeness test holds every raw read of this package to it.
+			if envOperator("ITERION_REQUIRE_WS_ORIGIN") == "1" {
 				return false
 			}
 			// Non-browser caller (curl, websocat without --origin) — allow.

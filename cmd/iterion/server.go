@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/audit"
 	iterauth "github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/desktopsso"
@@ -469,7 +470,11 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// see this process's writes). ADR-053.
 	streamSrc := runstream.NewMongo(st.EventsCollection(), st.RunLogsCollection(), st.RunsCollection(), logger).WithMetrics(mreg)
 
-	disableAuth, _ := strconv.ParseBool(os.Getenv("ITERION_DISABLE_AUTH"))
+	// The kill switch is the operator's own posture: read through envtrust,
+	// a value a project `.env` planted — what an older binary's loader could
+	// leave in a child, the current loaders refusing the grade at the plant
+	// — answers nothing, and the empty read parses to false (auth ON).
+	disableAuth, _ := strconv.ParseBool(envtrust.Inherited("ITERION_DISABLE_AUTH"))
 
 	if err := bootstrapAdmin(rootCtx, cfg, authStack.identityStore, authStack.authSvc, disableAuth, logger); err != nil {
 		return err

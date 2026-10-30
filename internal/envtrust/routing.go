@@ -31,12 +31,23 @@ func DotenvEndpointsAllowed() bool {
 
 // DotenvPlantRefused answers the ONE question every loader that plants a
 // dotenv file asks about a name it is about to set: the CLI's applyDotEnv,
-// the studio's projectenv.Snapshot and the desktop's env-file loader. The
-// routing class stays closed unless the environment this process INHERITED
-// granted the opt-in, so the answer cannot drift between the lanes that
-// plant.
+// the studio's projectenv.Snapshot and the desktop's env-file loader. Two
+// classes close at the plant, one entry point, so the answer cannot drift
+// between the lanes. A ROUTING-SHAPED name is not applied unless the
+// environment this process INHERITED granted the opt-in — whatever
+// namespace it lives in, the operator's explicit grant answers it, as it
+// has since the routing class closed (a deployment wire the operator
+// exported a grant for keeps working). Every OTHER operator-grade name
+// (OperatorGradeRefused — the same inventory the bot-var gate asks,
+// widened to the server's credential spellings) is closed OUTRIGHT: the
+// sandbox lifts, the auth and origin guards, the server's secrets are the
+// operator's posture, and nothing a file may say — the opt-in included —
+// lets the file set them.
 func DotenvPlantRefused(name string) bool {
-	return RoutingShapedName(name) && !DotenvEndpointsAllowed()
+	if RoutingShapedName(name) {
+		return !DotenvEndpointsAllowed()
+	}
+	return OperatorGradeRefused(name)
 }
 
 // RoutingRefusalLine renders the single-line refusal for a routing-shaped
@@ -55,8 +66,52 @@ func RoutingRefusalLine(name, source, path string) string {
 	if redirected := InheritedCredentialsAt(name); len(redirected) > 0 {
 		credHalf = ": " + strings.Join(redirected, " / ") + " is the operator's own and would be presented at the host it names"
 	}
-	return fmt.Sprintf("%s comes from %s %s, so it is not applied: a dotenv file does not choose where a connection goes%s — export %s in the environment iterion runs with to answer it yourself, or export %s=allow to let this file plant its routes",
-		name, source, path, credHalf, name, DotenvEndpointsOptIn)
+	// The grade names that no opt-in answers get the other half of the
+	// question: their opt-in half would lie, because ITERION_DOTENV_
+	// ENDPOINTS widens what a file may plant as a ROUTE and answers
+	// nothing for the operator's own posture. What remains is the
+	// operator's channel: the environment iterion runs with.
+	tail := fmt.Sprintf(" — export %s in the environment iterion runs with to answer it yourself, or export %s=allow to let this file plant its routes", name, DotenvEndpointsOptIn)
+	if !RoutingShapedName(name) && OperatorGradeRefused(name) {
+		tail = fmt.Sprintf(" — export %s in the environment iterion runs with if you mean it; the file a project holds does not set the operator's posture", name)
+	}
+	reason := "a dotenv file does not choose where a connection goes"
+	if !RoutingShapedName(name) && OperatorGradeRefused(name) {
+		reason = "a dotenv file does not speak for the operator"
+	}
+	return fmt.Sprintf("%s comes from %s %s, so it is not applied: %s%s%s",
+		name, source, path, reason, credHalf, tail)
+}
+
+// gitTransportPrefixes are the git transport names the git BINARY reads
+// itself: GIT_SSH and GIT_SSH_COMMAND name the program that carries
+// ssh:// and git:// transport; GIT_PROXY_COMMAND the program that carries
+// every proxied connection; GIT_CONFIG_COUNT / GIT_CONFIG_KEY_n /
+// GIT_CONFIG_VALUE_n and GIT_CONFIG_PARAMETERS inject config — which is
+// where core.sshCommand and friends hide. The reader is not a Go
+// os.Getenv (the walk that derives the routing class sees none) but every
+// clone, fetch and push pkg/git runs: the H-10 probe measured a planted
+// GIT_SSH_COMMAND EXECUTED by the git binary before it even dialled. The
+// family is refused at the plant like the rest of the class, and a planted
+// name of it is additionally dropped at pkg/git's own env assembly.
+var gitTransportPrefixes = []string{
+	"GIT_SSH",
+	"GIT_PROXY_COMMAND",
+	"GIT_CONFIG_",
+}
+
+// GitTransportName reports whether name is one of the git transport names
+// the git binary itself reads (gitTransportPrefixes). pkg/git consults it
+// beside Planted to keep a project `.env`'s transport out of the engine's
+// own git gestures.
+func GitTransportName(name string) bool {
+	upper := strings.ToUpper(name)
+	for _, prefix := range gitTransportPrefixes {
+		if upper == prefix || strings.HasPrefix(upper, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // routingPrefixes are the case-insensitive NAME PREFIXES that put a variable
@@ -73,8 +128,14 @@ func RoutingRefusalLine(name, source, path string) string {
 //     own literal). The bedrock runtime dials the planted host with the
 //     operator's AWS identity — Authorization header and session token — so
 //     the prefix answers for the whole family, the next service included.
+//
+//   - the git transport family (gitTransportPrefixes) — the programs and
+//     config the git binary reads for every network gesture, spelled above.
 var routingPrefixes = []string{
 	"AWS_ENDPOINT_URL",
+	"GIT_CONFIG_",
+	"GIT_PROXY_COMMAND",
+	"GIT_SSH",
 }
 
 // routingSuffixes are the case-insensitive NAME SUFFIXES that put a variable
@@ -161,14 +222,24 @@ var routingPrefixes = []string{
 // (vendored godbus — the desktop's session-bus discovery, dialled by the
 // GUI stack of the process the operator launched, which reads its own
 // operator-owned env files and never a project `.env`; nothing a project
-// `.env` reaches dials it); GOPROXY (no production reader in the tree); and
-// the routing-shaped names with no reader at all — SSH_AUTH_SOCK,
-// ANTHROPIC_UNIX_SOCKET, GIT_PROXY_COMMAND, DATABASE_URL, ITERION_MONGO_URL,
+// `.env` reaches dials it); GOPROXY (no production reader in the tree);
+// GIT_ASKPASS (a program git runs for credentials, but only when a
+// transport needs an interactive answer — every engine gesture
+// authenticates out of band or fails rather than prompting, and the
+// transport family above already closes the gestures the reviewer
+// measured); GIT_EDITOR (git runs it on an interactive commit — the
+// engine's commits always pass -m) — and the routing-shaped names with no
+// reader at all — SSH_AUTH_SOCK,
+// ANTHROPIC_UNIX_SOCKET, DATABASE_URL, ITERION_MONGO_URL,
 // ITERION_SLACK_WEBHOOK_URL, SESSION_INGRESS_URL, AGENT_PROXY_URL,
 // FIRECRAWL_API_URL, GITHUB_API_URL — grepped for across pkg/, internal/,
 // cmd/ and vendor/ in the read forms the tree uses (os.Getenv,
-// os.LookupEnv, envOr, lookupString, lookup, readEnv) and found only in
-// lists and comments. The AWS booleans that end in `_ENDPOINT`
+// os.LookupEnv, envOr, lookupString, lookup, readEnv, envOperator) and
+// found only in lists and comments. GIT_PROXY_COMMAND is NOT among them
+// any more: the H-10 review measured its reader — the git BINARY, run as a
+// subprocess with the process env, which the Go-form grep cannot see — so
+// it and GIT_SSH and GIT_CONFIG_ are in the class above. The AWS booleans
+// that end in `_ENDPOINT`
 // (AWS_USE_FIPS_ENDPOINT, AWS_USE_DUALSTACK_ENDPOINT) are the class's
 // documented over-refusal price: they pick which VARIANT of Amazon's own
 // endpoints answers, the refusal is loud, and the opt-in answers it.
@@ -200,7 +271,10 @@ var routingSuffixes = []string{
 func RoutingShapedName(name string) bool {
 	upper := strings.ToUpper(name)
 	for _, prefix := range routingPrefixes {
-		if len(upper) > len(prefix) && strings.HasPrefix(upper, prefix) {
+		// The prefix matches its own exact spelling too: GIT_SSH alone is
+		// the legacy transport-program name, and AWS_ENDPOINT_URL answers
+		// through this list as well as through the _URL suffix.
+		if strings.HasPrefix(upper, prefix) {
 			return true
 		}
 	}

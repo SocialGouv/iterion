@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/SocialGouv/iterion/pkg/store"
-	"os"
 	"reflect"
 	"time"
 
@@ -41,7 +40,7 @@ import (
 const defaultCloudBoardTickInterval = 3 * time.Second
 
 func cloudBoardTickInterval() time.Duration {
-	if v := os.Getenv("ITERION_CLOUD_BOARD_TICK"); v != "" {
+	if v := envOperator("ITERION_CLOUD_BOARD_TICK"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			return d
 		}

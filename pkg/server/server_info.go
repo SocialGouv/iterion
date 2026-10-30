@@ -2,7 +2,6 @@ package server
 
 import (
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -240,7 +239,7 @@ func deriveProjectName(dir string) string {
 // rather than silently sending nothing or everything. A cap this cheap to
 // mis-type must not be able to break the assistant.
 func assistantEditorMaxSource() int {
-	raw := strings.TrimSpace(os.Getenv("ITERION_ASSISTANT_EDITOR_MAX_SOURCE"))
+	raw := strings.TrimSpace(envOperator("ITERION_ASSISTANT_EDITOR_MAX_SOURCE"))
 	if raw == "" {
 		return 0
 	}

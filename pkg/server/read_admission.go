@@ -98,7 +98,7 @@ func (a *atomicTime) swapIfOlder(now time.Time, window time.Duration) bool {
 // level silences — the read budget's own discipline (pkg/dsl/readbudget).
 func readAdmissionFromEnv() *readAdmissionGate {
 	maxBytes := int64(defaultReadAdmissionMaxBytes)
-	if v := strings.TrimSpace(os.Getenv(EnvReadAdmissionMaxBytes)); v != "" {
+	if v := strings.TrimSpace(envOperator(EnvReadAdmissionMaxBytes)); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		switch {
 		case err != nil || n < 0:
@@ -110,7 +110,7 @@ func readAdmissionFromEnv() *readAdmissionGate {
 		}
 	}
 	wait := defaultReadAdmissionWait
-	if v := strings.TrimSpace(os.Getenv(EnvReadAdmissionWait)); v != "" {
+	if v := strings.TrimSpace(envOperator(EnvReadAdmissionWait)); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil || d < 0 {
 			iterlog.NewFromEnv(os.Stderr).Error("server: invalid %s=%q (a Go duration, 0 to refuse immediately); using the default %s", EnvReadAdmissionWait, v, defaultReadAdmissionWait)

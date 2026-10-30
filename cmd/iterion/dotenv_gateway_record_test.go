@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
@@ -22,18 +23,21 @@ const forgedGatewayRecord = `{"model":"gw/m","source":"operator","context_window
 // price it is billed at and the provenance all of that is recorded under.
 //
 // Both halves of the fix are driven here, on the real road: the host's
-// explicit empty leaves the repository no gap to fill, and a record that
-// landed from the `.env` anyway — nothing dispatched this process a gateway
-// node, so no host wrote the name — is refused for want of a host behind
-// it. Either way the catalog answers unknown, and the local sources decide.
+// explicit empty leaves the repository no gap to fill, and the loader now
+// REFUSES the name outright — ITERION_OPENAI_COMPATIBLE_RESOLVED is an
+// operator-grade name (the bot-var gate denies it to a stored record), so
+// the `.env` cannot write the record at all, whatever the crossing left
+// absent. Either way the catalog answers unknown, and the local sources
+// decide; the belt that refused a PLANTED record for want of a host behind
+// it stays at the read (pkg/backend/compatgw), covering what an older
+// binary's loader could still leave in a child.
 func TestAWorkspaceDotenvCannotPlantTheForwardedGatewayRecord(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		crossed  bool // the host dispatched a gateway node and wrote the name
-		wantKept string
+		name    string
+		crossed bool // the host dispatched a gateway node and wrote the name
 	}{
-		{"the host crossed an explicit empty", true, ""},
-		{"the host wrote nothing at all", false, forgedGatewayRecord},
+		{"the host crossed an explicit empty", true},
+		{"the host wrote nothing at all", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := t.TempDir()
@@ -62,13 +66,19 @@ func TestAWorkspaceDotenvCannotPlantTheForwardedGatewayRecord(t *testing.T) {
 			t.Setenv(compatgw.CatalogProviderEnv, "")
 			compatgw.ResetCatalogCaches()
 
+			var said string
 			t.Chdir(repo)
-			loadDotEnvFromCwd()
+			said = captureStderr(t, loadDotEnvFromCwd)
 
-			// Unchanged behaviour: the `.env` is loaded exactly as before,
-			// and LookupEnv still decides what it may fill.
-			if got := os.Getenv(compatgw.ResolvedEnvName); got != tc.wantKept {
-				t.Fatalf("%s = %q after the .env load, want %q", compatgw.ResolvedEnvName, got, tc.wantKept)
+			// The loader refuses the name: the file writes no record, on
+			// either side of the crossing. Where the host wrote an explicit
+			// empty the loader never reaches the line (the crossing wins),
+			// so the refusal is said only where the file had the gap.
+			if got := os.Getenv(compatgw.ResolvedEnvName); got != "" {
+				t.Fatalf("%s = %q after the .env load, want it absent: the loader must refuse it", compatgw.ResolvedEnvName, got)
+			}
+			if !tc.crossed && !strings.Contains(said, compatgw.ResolvedEnvName) {
+				t.Fatalf("the refusal does not name %s — it said: %s", compatgw.ResolvedEnvName, said)
 			}
 
 			res := compatgw.ResolveCatalog("gw/m", nil, os.Getenv)

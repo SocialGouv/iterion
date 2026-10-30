@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -1090,7 +1089,7 @@ func hostFromURL(raw string) string {
 // payload cannot exfiltrate the token elsewhere. Empty env = no restriction
 // (any well-formed host), preserving prior behaviour.
 func forgeHostAllowed(host string) bool {
-	raw := strings.TrimSpace(os.Getenv("ITERION_WEBHOOK_FORGE_HOSTS"))
+	raw := strings.TrimSpace(envOperator("ITERION_WEBHOOK_FORGE_HOSTS"))
 	if raw == "" {
 		return true
 	}

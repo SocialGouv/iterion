@@ -2,7 +2,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -17,6 +16,7 @@ import (
 	// log timestamps and time.Local then honour the operator's timezone.
 	_ "time/tzdata"
 
+	"github.com/SocialGouv/iterion/internal/dotenv"
 	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
@@ -322,45 +322,12 @@ func loadDotEnvFromCwd() {
 }
 
 func applyDotEnv(path string) bool {
-	f, err := os.Open(path)
+	entries, err := dotenv.Parse(path)
 	if err != nil {
 		return false
 	}
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		eq := strings.Index(line, "=")
-		if eq < 0 {
-			continue
-		}
-		key := strings.TrimSpace(line[:eq])
-		// Allow `export KEY=VALUE` lines (common shell convention).
-		key = strings.TrimPrefix(key, "export ")
-		key = strings.TrimSpace(key)
-		if key == "" {
-			continue
-		}
-		// A key no shell could export is refused, not set. One carrying the
-		// planted-names separator would reach a child as two names, the extra
-		// one denying the OPERATOR's own environment its authority there; one
-		// outside ASCII is folded by Windows in ways envtrust.CanonicalName
-		// cannot mirror, so it could be recorded as planted under the name of
-		// a variable it never set. Such a line is malformed anyway.
-		if !envtrust.Exportable(key) {
-			continue
-		}
-		val := strings.TrimSpace(line[eq+1:])
-		// Strip a single surrounding pair of matching quotes.
-		if len(val) >= 2 {
-			if (val[0] == '"' && val[len(val)-1] == '"') ||
-				(val[0] == '\'' && val[len(val)-1] == '\'') {
-				val = val[1 : len(val)-1]
-			}
-		}
+	for _, entry := range entries {
+		key, val := entry.Key, entry.Value
 		// The provenance record is not a value a repository gets to write.
 		// Without this, one `.env` line naming ITERION_DOTENV_PLANTED seeded
 		// the whole planted set from the file itself — marking the
@@ -376,19 +343,23 @@ func applyDotEnv(path string) bool {
 			// The loader is the site that knows it is planting, so it is one
 			// of the lanes that closes the whole routing class (ARB-122):
 			// the *_URL/_URI wires, the *_ENDPOINTs, the *_HOST/*_HOSTS
-			// lists, the proxies, the *_DSN. Every child inherits what lands
-			// here and the reads are not all iterion's — the vendored claw
-			// provider packages and SDKs read these names themselves — so a
-			// route never planted is a route nothing can follow, where a
-			// guard at one read site closes exactly that site; the per-name
-			// credential tables (internal/envtrust) stay as the belt at the
-			// reads. The operator's channels are the environment itself, or
-			// ITERION_DOTENV_ENDPOINTS=allow for a `.env` that legitimately
-			// configures its own gateway. The studio lane
-			// (projectenv.Snapshot) and the desktop env-file loader ask the
-			// same question at their own plants. The guard sits before the
-			// planted mark: a refused name does not exist, it is not
-			// "planted but distrusted".
+			// lists, the proxies, the *_DSN, the git transport family. Every
+			// child inherits what lands here and the reads are not all
+			// iterion's — the vendored claw provider packages and SDKs read
+			// these names themselves — so a route never planted is a route
+			// nothing can follow, where a guard at one read site closes
+			// exactly that site; the per-name credential tables
+			// (internal/envtrust) stay as the belt at the reads. The same
+			// predicate refuses the operator grade: the infra names the
+			// bot-var gate denies a stored record, widened to the server's
+			// credential spellings — the file a project holds has no more
+			// authority over ITERION_SANDBOX_OVERRIDE or ITERION_JWT_SECRET
+			// than a bot does. The operator's channels are the environment
+			// itself, or ITERION_DOTENV_ENDPOINTS=allow for the ROUTES. The
+			// studio lane (projectenv.Snapshot) and the desktop env-file
+			// loader ask the same question at their own plants. The guard
+			// sits before the planted mark: a refused name does not exist,
+			// it is not "planted but distrusted".
 			if envtrust.DotenvPlantRefused(key) {
 				// The refusal goes to stderr directly, not through the
 				// level-configured logger: the level it would ride on is
@@ -397,6 +368,16 @@ func applyDotEnv(path string) bool {
 				// file wants its route applied quietly). A safety refusal is
 				// not a log level.
 				fmt.Fprintln(os.Stderr, "iterion: "+envtrust.RoutingRefusalLine(key, "the project `.env`", path))
+				continue
+			}
+			// The parser kept this file's bytes as bytes; no shell of ours
+			// evaluates them — but every child MIGHT (a value reaches a
+			// run's own shell tooling one fork away), so a value spelling
+			// command substitution is refused rather than planted: nothing
+			// of ours executes it, and nothing downstream gets handed the
+			// trigger either.
+			if envtrust.HasCommandSubstitution(val) {
+				fmt.Fprintln(os.Stderr, "iterion: "+envtrust.CommandSubstitutionRefusalLine(key, "the project `.env`", path))
 				continue
 			}
 			_ = os.Setenv(key, val)

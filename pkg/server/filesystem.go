@@ -37,7 +37,7 @@ type filesystemEntry struct {
 }
 
 func browseRoot() string {
-	return strings.TrimSpace(os.Getenv(browseRootEnv))
+	return strings.TrimSpace(envOperator(browseRootEnv))
 }
 
 // resolveBrowsePath joins a request-supplied (relative) path onto the

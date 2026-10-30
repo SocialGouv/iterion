@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/SocialGouv/iterion/internal/dotenv"
 	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
@@ -170,58 +171,42 @@ func candidateEnvFiles() []string {
 // existed and was processed (even if empty or all-comments) so callers
 // know to stop probing fallbacks. Comments and blank lines are
 // ignored; values may be optionally double- or single-quoted, in which
-// case the matching outer quotes are stripped.
+// case the matching outer quotes are stripped. The parse is the ONE
+// reader (internal/dotenv) the CLI and the studio snapshot share — the
+// same bytes in, the same entries out, no lane's own dialect.
 //
-// The routing class is refused like on every lane that plants
-// (envtrust.DotenvPlantRefused): the file may be operator-owned, but it is
-// also the file a direnv symlink can point at a PROJECT's `.env`
-// (ReloadIterionEnvFile's comment), and the class is the one guard that
-// holds whatever the path resolves to. What IS applied is not marked
-// planted, on purpose: the file sits in the operator's home — the values it
-// carries ARE the operator's own, and marking them would strip the
-// documented desktop credential flow (the provider keys stashed here) of
-// its authority at the belt's reads. The refusal goes to stderr directly,
-// not through the
+// The refusals are the same three every lane that plants asks, with
+// envtrust's one predicate and message:
+//
+//   - the routing class and the operator grade, one predicate
+//     (envtrust.DotenvPlantRefused): the file may be operator-owned,
+//     but it is also the file a direnv symlink can point at a PROJECT's
+//     `.env` (ReloadIterionEnvFile's comment), and the class is the one
+//     guard that holds whatever the path resolves to — and the
+//     operator's home file does not outrank a bot's stored record, the
+//     H-10 finding being exactly that the file did;
+//
+//   - command substitution in a value (envtrust.HasCommandSubstitution):
+//     nothing here evaluates values, but the trigger does not travel
+//     either — a refused value does not exist.
+//
+// What IS applied is not marked planted, on purpose: the file sits in the
+// operator's home — the values it carries ARE the operator's own, and
+// marking them would strip the documented desktop credential flow (the
+// provider keys stashed here) of its authority at the belt's reads. The
+// refusal goes to stderr directly, not through the
 // level-configured logger: the level it would ride on is itself something
 // this file may have planted a line above.
 func applyDotenvFile(path string) bool {
-	f, err := os.Open(path)
+	entries, err := dotenv.Parse(path)
 	if err != nil {
 		return false
 	}
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		// Strip an optional leading "export " so dotenv files that
-		// double as bash-source scripts work too.
-		line = strings.TrimPrefix(line, "export ")
-		eq := strings.IndexByte(line, '=')
-		if eq <= 0 {
-			continue
-		}
-		key := strings.TrimSpace(line[:eq])
-		val := strings.TrimSpace(line[eq+1:])
-		// Trim balanced surrounding quotes.
-		if len(val) >= 2 {
-			first, last := val[0], val[len(val)-1]
-			if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
-				val = val[1 : len(val)-1]
-			}
-		}
-		if key == "" {
-			continue
-		}
-		// A name no shell could export is refused, not set: the same rule
-		// the CLI loader applies (see envtrust.Exportable). One carrying the
-		// planted-names separator reaches a child as two names; one outside
-		// ASCII folds on Windows in ways CanonicalName cannot mirror. The
-		// provenance marker itself is likewise never taken from a file —
-		// the mark is what a loader records, not what a file declares.
-		if !envtrust.Exportable(key) || envtrust.CanonicalName(key) == envtrust.EnvPlantedNames {
+	for _, entry := range entries {
+		key, val := entry.Key, entry.Value
+		// The provenance marker is never taken from a file — the mark is
+		// what a loader records, not what a file declares.
+		if envtrust.CanonicalName(key) == envtrust.EnvPlantedNames {
 			continue
 		}
 		// Honour an existing process env value (shell-passed vars
@@ -229,12 +214,16 @@ func applyDotenvFile(path string) bool {
 		if _, present := os.LookupEnv(key); present {
 			continue
 		}
-		// A name that decides where a connection goes is not applied: the
-		// same routing class the CLI loader and the studio snapshot refuse,
-		// asked with envtrust's one predicate. What IS applied is not
-		// marked planted, on purpose — see the function comment.
+		// The routing class and the operator grade, one predicate; then a
+		// value spelling command substitution, refused like on every lane
+		// that plants. What IS applied is not marked planted, on purpose —
+		// see the function comment.
 		if envtrust.DotenvPlantRefused(key) {
 			fmt.Fprintln(os.Stderr, "iterion: "+envtrust.RoutingRefusalLine(key, "the dotenv file", path))
+			continue
+		}
+		if envtrust.HasCommandSubstitution(val) {
+			fmt.Fprintln(os.Stderr, "iterion: "+envtrust.CommandSubstitutionRefusalLine(key, "the dotenv file", path))
 			continue
 		}
 		if err := os.Setenv(key, val); err != nil {

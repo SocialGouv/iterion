@@ -191,7 +191,58 @@ a reader that outgrows it arrives red.
 
 | Variable | Effect | Default |
 |---|---|---|
-| `ITERION_DOTENV_ENDPOINTS` | The operator's opt-in that lets a dotenv file plant routing-shaped names again — for a laptop config that legitimately keeps its own gateway's host beside its key. `allow` grants; anything else (unset, empty, another word; surrounding whitespace ignored) keeps the refusal. Read **only** from the inherited environment, never from what the `.env` plants: a file that names it does not consent on the operator's behalf — and on the studio lane it does not cross into the run environment at all, whoever said it: the runs launched there answer their own opt-in where the run's iterion itself is launched. Refused as a bot variable. | unset (refused) |
+| `ITERION_DOTENV_ENDPOINTS` | The operator's opt-in that lets a dotenv file plant routing-shaped names again — for a laptop config that legitimately keeps its own gateway's host beside its key. `allow` grants; anything else (unset, empty, another word; surrounding whitespace ignored) keeps the refusal. Read **only** from the inherited environment, never from what the `.env` plants: a file that names it does not consent on the operator's behalf — and on the studio lane it does not cross into the run environment at all, whoever said it: the runs launched there answer their own opt-in where the run's iterion itself is launched. Refused as a bot variable. The grant answers ROUTES only: the operator grade below is closed with the opt-in exported and without. | unset (refused) |
+
+### The operator grade — names no dotenv file may set
+
+The same entry point refuses a second class outright, with or without the
+opt-in: the OPERATOR-GRADE names — the inventory the bot-var gate denies a
+stored record (`internal/envtrust` `operator.go`, one inventory serving both
+gates), widened to the server's credential spellings. `ITERION_SANDBOX_`
+OVERRIDE/DEFAULT (a reviewed repository disarming the sandbox that reviews
+it), `ITERION_DISABLE_AUTH`, `ITERION_REQUIRE_ORIGIN=0`,
+`ITERION_ALLOWED_ORIGINS`, `ITERION_SECURITY_HEADERS`,
+`ITERION_STUDIO_INSECURE_NONLOOPBACK`, `ITERION_PI_TRUST_PROJECT` (a file
+lifting the project-trust refusal), the session and store secrets
+(`ITERION_JWT_SECRET`, `ITERION_SECRETS_*`, every `ITERION_` name carrying
+`TOKEN`, `SECRET`, `PASSWORD` or `CREDENTIAL` — `ITERION_SERVER_TOKEN`,
+`ITERION_COMPLETION_WEBHOOK_SECRET`), the boot admin
+(`ITERION_BOOTSTRAP_*`), and the whole infra namespace list the bot-var gate
+holds (`ITERION_MONGO_`, `ITERION_NATS_`, `ITERION_REDIS_`, `ITERION_S3_`,
+`ITERION_OIDC_`, `ITERION_OAUTH_`, `ITERION_AUTH_`, `ITERION_LOG_`,
+`ITERION_RUN_`, …). A stored bot var must never set these; the H-10 review
+measured a project `.env` setting them with MORE authority than a bot. The
+refusal line names the file and the variable and points at the operator's
+own channel — the environment iterion runs with — and offers no opt-in.
+
+The plant is closed on every lane; the reads carry the belt. The server's
+config loader (`pkg/config` `lookup`) and its guard postures
+(`pkg/server` `envOperator` — origins, CSRF, security headers, the WS
+origin, the webhook forge list, the assistant's bounds — and the
+`ITERION_DISABLE_AUTH` read of `iterion serve`) answer a planted value with
+nothing, so a marker an older binary's loader left in a child cannot lift a
+guard; a completeness test walks `pkg/server`'s raw reads and fails the day
+a grade name is read around the helper.
+
+### Command substitution — a value no dotenv file may spell
+
+A value carrying `$(...)` or backticks is refused on every lane
+(`envtrust.HasCommandSubstitution`), named like a route and with no opt-in:
+nothing of iterion's evaluates a value, but the studio snapshot used to
+SOURCE the file in bash — the legacy instance manager's frame — and a
+sourced `FOO=$(touch /tmp/x)` EXECUTED on the host before any question was
+asked. The plant set is the PARSE now (`internal/dotenv`, one reader shared
+by the three lanes), and bash keeps one job on the studio lane: expanding
+`$VAR`/`${VAR}` in the values that survived the refusals, on the child's
+base environment. An unquoted value with spaces is one value on every lane
+(the sourcing shell used to lose it silently); a single-quoted value stays
+literal; a `$` the file escaped stays literal; lines that are not
+assignments are skipped, not executed. The git transport family
+(`GIT_SSH`, `GIT_SSH_COMMAND`, `GIT_PROXY_COMMAND`, `GIT_CONFIG_*`) rides
+the routing refusal — the reader there is the git BINARY, which no Go-side
+grep sees, and a planted `GIT_SSH_COMMAND` was measured EXECUTED by git
+before it dialled — and `pkg/git` drops a planted transport name again at
+its own env assembly, for a stale marker in a child.
 
 ## Reading a source
 
