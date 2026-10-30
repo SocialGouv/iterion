@@ -219,20 +219,52 @@ the name `/proc/<pid>/stat` gives — the file the last execve ran.
 the members of its first scans and then stops re-discovering passed both
 witnesses while their single window sat between scan 1 and scan 2: a mutant that
 drops members new at the third scan of a phase was green on 18 of 18 arms. Each
-witness now stages its window a second time, at a later scan and in the phase
-that ENDS its sweep — the empty-scan witness in its TERM phase, which ends on
-two scans that find nothing, and the non-empty one at the first scan to find
-nothing, which only a KILL-phase scan after the TERM-ignoring seed was killed
-ever is. A member dropped in a phase that hands over to the next one is
-re-discovered for free by that phase's own first scan, so a window staged there
-witnesses nothing. That mutant and its sh twin now redden 3 of 3 arms each, on
-the product's own lines (`later (pid N) belongs to the session and is still
-running`). The KILL-phase window also turns a capture that never was one: the
-mutant that drops re-discovery in the KILL phase ALONE read as caught by
+witness stages its window a second time, at a later scan, and the non-empty one
+a third time two scans further on. A window witnesses that drop only when it
+sits in the phase that ENDS the sweep: a member dropped in a phase that hands
+over to the next one is re-discovered for free by that phase's own first scan.
+The non-empty witness has that by construction — its later windows sit in the
+KILL phase, which has no successor, so a member dropped there is left running
+and unreported however the phase ends, on the product's own lines (`latest (pid
+N) belongs to the session and is still running`). The empty-scan witness cannot:
+its windows sit in the TERM phase, which ends that sweep only while the session
+goes quiet, and the very mutants it hunts leave a member alive — the phase then
+burns its budget and hands it to KILL, which finds it. That is how the
+third-scan mutant and its sh twin stayed green on it, 3 of 3 arms each at 10.1s,
+with the second window already in place.
+
+**A premise, not an assumption.** The empty-scan witness reads the sweep's own
+scan log once it has returned (`endedQuiet`): the log must end on the two empty
+scans a quiet phase returns on, and count at most a quarter of the scans the
+phase budget allows — 6 scans on each of 9 arms of sound code, against a ceiling
+of 50, where a phase that burned its 10s budget logged 201 scans in the go
+implementation and 160 to 191 in the program. A phase that handed over now FAILS
+this witness instead of saving the sweep, and a count is not a duration, so load
+costs the premise nothing; what no scan log can show is a deadline that expired
+while the sweep was HELD, which is what the wide budget below is for. The
+third-scan mutant and its sh twin redden the witness 3 of 3 arms each on that
+premise.
+
+**How far the windows reach.** A window's member is new to the scan AFTER it, so
+the three windows of the non-empty witness pin re-discovery at the 2nd scan of
+the TERM phase and at the 3rd and 5th of the KILL phase, and the empty-scan one
+pins the 2nd and 4th of its own. Measured with mutants that drop a member first
+seen at the Kth scan of a phase: K=3 and K=4 redden both witnesses, K=5 the
+non-empty one, K=6 passes both. The third window is what K=4 and K=5 cost: with
+only two, K=4 and its sh twin passed the ENTIRE package, 69 green and rc 0. No
+finite set of windows reaches every index, which is why the product's clause
+stays a loop over every scan, and why both witnesses say where their proof
+stops.
+
+The KILL-phase window also turns a capture that never was one: the mutant that
+drops re-discovery in the KILL phase ALONE read as caught by
 `TestSweepSignalsBeforeItsDeadline`, and is caught there 1 arm in 15 — by the
 same execve miss, so the verdict was a race's. It reddens the non-empty witness
-3 of 3, and the deadline witness is now green on it: when a sweep gives up is
-that witness's subject, re-discovery is not. The phase deadlines are set wide for these witnesses (`sweepBudget`):
+3 of 3 instead, and deterministically: the member it drops keeps the session from
+ever being quiet again, so the third window's premise cannot be met and fails as
+itself, naming the scans it waited through. The deadline witness still catches
+it only by that race, and that is no loss — when a sweep gives up is that
+witness's subject, re-discovery is not. The phase deadlines are set wide for these witnesses (`sweepBudget`):
 a phase that ends on its deadline skips the scan the window was staged for and
 reads as a verdict on how long this host took to start one process — when a
 sweep gives up is `TestSweepSignalsBeforeItsDeadline`'s subject, and it keeps
