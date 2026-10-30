@@ -178,6 +178,13 @@ type compiler struct {
 	// lexer counted as a single record, so the compiler holds the bot's
 	// expressions to the count the lexer held its files to.
 	exprBudget *expr.Budget
+	// groupExpansionBudget/Spent: the uses of a bot share ONE substitution
+	// budget — every string field a group instance writes spends it (one
+	// record per field, one per groupSubstBytesPerRecord bytes) — because a
+	// per-use count lets N uses multiply: 40 uses individually under each
+	// bound built 11.5 GiB (#2774). Same resolver as the read budget
+	// (readbudget.Read), no second knob.
+	groupExpansionBudget, groupExpansionSpent int
 	// fallbackWhens are the fallback `when:` readings, by node id and route
 	// index (fallbackWhenKey): parsed once on exprBudget by
 	// checkFallbackWhen, nil when the reading was refused, and read again
@@ -595,6 +602,8 @@ func CompileWithCapabilities(file *ast.File, capabilities CompileCapabilities) *
 		mcp:          make(map[string]*MCPServer),
 		capabilities: capabilities,
 		exprBudget:   expr.NewBudget(readbudget.Read()),
+		// The uses of a bot share one substitution budget (#2774).
+		groupExpansionBudget: readbudget.Read(),
 	}
 	// A file that still carries `import` lines was handed over alone: its
 	// fragments were never merged in, and compiling it would be compiling a

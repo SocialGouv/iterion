@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 
@@ -57,7 +58,7 @@ func (c *compiler) expandGroups() {
 		}
 		prefixes[use.Prefix] = true
 		binds := c.bindGroupParams(g, use)
-		c.instantiateGroup(g, names[use.Group], use.Prefix, binds, wf)
+		c.instantiateGroup(g, names[use.Group], use, binds, wf)
 	}
 	c.retainConcreteGroupPrompts()
 }
@@ -89,7 +90,10 @@ func (c *compiler) bindGroupParams(g *ast.GroupDecl, use *ast.UseDecl) map[strin
 // instantiateGroup clones the group's nodes + internal edges under the given
 // prefix into the file's top-level slices and the workflow's edge list.
 // internal is the group's node-name set, precomputed once by expandGroups.
-func (c *compiler) instantiateGroup(g *ast.GroupDecl, internal map[string]bool, prefix string, binds map[string]string, wf *ast.WorkflowDecl) {
+// An instance whose substitution ran past a bound (x.refused) is dropped and
+// reported HERE, on the `use` line whose values caused it.
+func (c *compiler) instantiateGroup(g *ast.GroupDecl, internal map[string]bool, use *ast.UseDecl, binds map[string]string, wf *ast.WorkflowDecl) {
+	prefix := use.Prefix
 	pid := func(name string) string {
 		if internal[name] {
 			return prefix + "." + name
@@ -97,6 +101,15 @@ func (c *compiler) instantiateGroup(g *ast.GroupDecl, internal map[string]bool, 
 		return name // terminals (done/fail) and external refs stay as-is
 	}
 	x := newGroupExpansion(c, internal, prefix, binds)
+	// The uses of a bot share ONE substitution budget: a use that starts
+	// past it expands nothing — 40 uses individually under each bound
+	// otherwise multiply into gigabytes (#2774).
+	if c.groupExpansionBudget > 0 && c.groupExpansionSpent >= c.groupExpansionBudget {
+		c.errorfAtSpan(DiagGroupExpansionPastBudget, use.Span,
+			"use %q as %q: the {{params.*}} substitution expands past its bound: %s",
+			use.Group, use.Prefix, c.groupExpansionBudgetMessage())
+		return
+	}
 	// A foreach is iteration STATE, so it is per instance like a node — two
 	// `use` of the same group cannot share one cursor over two collections.
 	// compileEdges keys foreaches by name and keeps the first silently, so an
@@ -108,6 +121,12 @@ func (c *compiler) instantiateGroup(g *ast.GroupDecl, internal map[string]bool, 
 		}
 	}
 	copy := x.clone(reflect.ValueOf(g), "", "").Interface().(*ast.GroupDecl)
+	if x.refused != "" {
+		c.errorfAtSpan(DiagGroupExpansionPastBudget, use.Span,
+			"use %q as %q: the {{params.*}} substitution expands past its bound: %s",
+			use.Group, use.Prefix, x.refused)
+		return
+	}
 	for _, n := range copy.Agents {
 		n.Name = pid(n.Name)
 	}
@@ -154,9 +173,22 @@ func (c *compiler) instantiateGroup(g *ast.GroupDecl, internal map[string]bool, 
 // A `{{params.x}}` with no binding — and any other `{{...}}` namespace —
 // is copied through unchanged, leaving the reference validator to report
 // it. An unterminated `{{` ends the scan with the remainder copied as-is.
-func substParams(s string, binds map[string]string) string {
+//
+// The OUTPUT is held to a bound BEFORE it is built: one field may not
+// expand past maxGroupFieldExpansion (checked before each value write, so
+// the gigabyte string never exists). The shared budget the bot's uses are
+// held to is spent per written field by the clone walk (spendGroupExpansion)
+// — the lexer counts a marker and its bound value as one record each, so K
+// markers × an S-byte value is a K·S-byte string no reader's count saw
+// (#2774). Past a bound the expansion is refused: the breach is recorded on
+// x.refused, the field comes out empty, and instantiateGroup drops the
+// instance with a diagnostic on the `use` line.
+func (x *groupExpansion) substParams(s string) string {
 	if s == "" || !strings.Contains(s, "{{params.") {
 		return s
+	}
+	if x.refused != "" {
+		return "" // the use is already refused: expand nothing further
 	}
 	var b strings.Builder
 	b.Grow(len(s))
@@ -165,11 +197,15 @@ func substParams(s string, binds map[string]string) string {
 			end := strings.Index(s[i:], "}}")
 			if end == -1 {
 				b.WriteString(s[i:])
-				return b.String()
+				break
 			}
 			raw := s[i : i+end+2]
 			if key, ok := strings.CutPrefix(raw[2:len(raw)-2], "params."); ok {
-				if v, bound := binds[key]; bound {
+				if v, bound := x.binds[key]; bound {
+					if b.Len()+len(v) > maxGroupFieldExpansion {
+						x.refused = fmt.Sprintf("one field expands past %d bytes, the size cap a source file is held to", maxGroupFieldExpansion)
+						return ""
+					}
 					b.WriteString(v)
 					i += end + 2
 					continue
@@ -181,6 +217,10 @@ func substParams(s string, binds map[string]string) string {
 		}
 		b.WriteByte(s[i])
 		i++
+	}
+	if b.Len() > maxGroupFieldExpansion {
+		x.refused = fmt.Sprintf("one field expands past %d bytes, the size cap a source file is held to", maxGroupFieldExpansion)
+		return ""
 	}
 	return b.String()
 }

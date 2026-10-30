@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/readbudget"
 )
 
 // Every instance owns its entire declaration tree. Walking all string fields
@@ -22,6 +23,48 @@ type groupExpansion struct {
 	// instance's scoped name, so the edge clause and every {{each.<name>…}}
 	// in the body are renamed together.
 	foreaches map[string]string
+	// refused carries the breach's reason once a bound ran out.
+	refused string
+}
+
+// maxGroupFieldExpansion caps the expanded length of ONE string field at the
+// size cap a source file is held to (parser's 10 MiB): one field's expansion
+// may be larger than any file, never larger than what a file could carry.
+const maxGroupFieldExpansion = 10 << 20
+
+// groupSubstBytesPerRecord is the unit an expanded field's bytes spend the
+// substitution budget at: one record per field a group instance writes, one
+// per 64 bytes — so the 2^20 count a bot's reading is held to lets its group
+// expansions write about 64 MiB of text TOGETHER, and K markers of a 100 KB
+// value refuse after ~650 of them instead of building a gigabyte string.
+const groupSubstBytesPerRecord = 64
+
+// spendGroupExpansion charges one string field a group instance writes
+// (substituted or cloned verbatim) against the budget the bot's uses share
+// (#2774 — a per-use budget lets N uses multiply: 40 uses individually under
+// each bound allocated 11.5 GiB). The lexer counts a field once whatever its
+// length, so a group of S bytes used N times — or one field of K markers ×
+// an S-byte value — builds N·S of compiler memory no reader's count saw.
+// Returns false when the budget is out; the expansion then records the
+// breach and the use is dropped (C325, on the `use` line).
+func (c *compiler) spendGroupExpansion(bytes int) bool {
+	if c.groupExpansionBudget == 0 {
+		// A compiler built by hand in a test rather than by Compile: resolve
+		// the operator's count on first spend.
+		c.groupExpansionBudget = readbudget.Read()
+	}
+	charge := 1 + bytes/groupSubstBytesPerRecord
+	if charge > c.groupExpansionBudget-c.groupExpansionSpent {
+		return false
+	}
+	c.groupExpansionSpent += charge
+	return true
+}
+
+// groupExpansionBudgetMessage is the breach wording every site of the shared
+// substitution budget reports.
+func (c *compiler) groupExpansionBudgetMessage() string {
+	return fmt.Sprintf("the bot's group expansions together spend past the read budget of %d records — every string field an instance writes spends one per %d bytes, the uses sharing one count", c.groupExpansionBudget, groupSubstBytesPerRecord)
 }
 
 func newGroupExpansion(c *compiler, internal map[string]bool, prefix string, binds map[string]string) *groupExpansion {
@@ -78,9 +121,17 @@ func (x *groupExpansion) clone(v reflect.Value, owner, field string) reflect.Val
 		}
 		// Rewrite authored references before substitution: bound values are caller
 		// text, inserted once, and must never be captured as group-local references.
-		s = substParams(s, x.binds)
+		s = x.substParams(s)
 		if (owner == "LLMDecl" || owner == "RouterDecl" || owner == "HumanDecl") && (field == "System" || field == "User" || field == "Instructions" || field == "InteractionPrompt") {
 			s = x.prompt(s)
+		}
+		// Every field an instance writes — substituted or cloned verbatim —
+		// spends the substitution budget the bot's uses share: without
+		// markers this is the pure N×group-size clone amplification, the
+		// fourth measured site of #2774.
+		if x.refused == "" && !x.c.spendGroupExpansion(len(s)) {
+			x.refused = x.c.groupExpansionBudgetMessage()
+			s = ""
 		}
 		out := reflect.New(v.Type()).Elem()
 		out.SetString(s)
@@ -234,9 +285,15 @@ func (x *groupExpansion) prompt(ref string) string {
 	if p == nil {
 		return ref
 	} // regular unknown-prompt diagnostic
-	body := substParams(x.templates(x.c.expandPromptBody(p)), x.binds)
+	body := x.substParams(x.templates(x.c.expandPromptBody(p)))
 	if body == p.Body {
 		return ref
+	}
+	// The specialized body is written to the file's prompts, outside the
+	// clone walk: it spends the shared budget here.
+	if x.refused == "" && !x.c.spendGroupExpansion(len(body)) {
+		x.refused = x.c.groupExpansionBudgetMessage()
+		return ""
 	}
 	cp := *p
 	cp.Body = body

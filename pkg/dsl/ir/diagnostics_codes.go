@@ -446,10 +446,5 @@ const (
 	DiagSecretSinkUngranted  DiagCode = "C323" // a `{{secrets.X}}` reference in a prompt body, a tool command/postcondition/script or an action param whose secret does not grant that sink (error)
 	DiagSecretEgressUnscoped DiagCode = "C324" // a `sinks:` list granting `egress` on a secret with no `hosts:` — the proxy substitutes it toward any host (warning)
 
-	// A bare image name (`image: foo`) is a class only when it names one
-	// (pkg/sandbox/imageclass); otherwise the runtime honours it verbatim —
-	// it may be a locally built image, and re-pointing it at a registry
-	// would be the silent replacement philosophy #1 refuses. The warning is
-	// what tells the two bare-word readings apart before the pull does.
-	DiagSandboxImageClassUnknown DiagCode = "C325" // sandbox.image is a bare word that names no stock image class — passed through verbatim at launch (warning)
+	DiagGroupExpansionPastBudget DiagCode = "C327" // a `use`'s {{params.*}} substitution expands one field past the 10 MiB size cap or spends past the read budget (ITERION_DSL_READ_BUDGET) — the lexer counts a marker and its value as one record each, so K markers × an S-byte value built a K·S-byte string no budget saw (error)
 )

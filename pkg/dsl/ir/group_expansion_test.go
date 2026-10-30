@@ -15,7 +15,7 @@ import (
 )
 
 func TestGroupReferenceRewritingPreservesCallerText(t *testing.T) {
-	x := &groupExpansion{internal: map[string]bool{"gate": true, "deep.member": true}, prefix: "r1", binds: map[string]string{"fn": "concat", "op": "+", "n": "2", "field": "ok", "value": "outputs.gate", "template": "{{outputs.gate.ok}}"}}
+	x := &groupExpansion{internal: map[string]bool{"gate": true, "deep.member": true}, prefix: "r1", binds: map[string]string{"fn": "concat", "op": "+", "n": "2", "field": "ok", "value": "outputs.gate", "template": "{{outputs.gate.ok}}"}, c: &compiler{}}
 	for _, tc := range []struct{ src, want string }{
 		{`outputs . gate.ok && outputs.gatekeeper.ok`, `outputs.r1 . gate.ok && outputs.gatekeeper.ok`},
 		{`concat('outputs.gate', outputs.gate.name)`, `concat('outputs.gate', outputs.r1.gate.name)`},
@@ -27,13 +27,13 @@ func TestGroupReferenceRewritingPreservesCallerText(t *testing.T) {
 		{`outputs.gate.{{params.field}}`, `outputs.r1.gate.ok`},
 		{`concat('{{params.value}}', outputs.deep.member.name)`, `concat('outputs.gate', outputs.r1.deep.member.name)`},
 	} {
-		if got := substParams(x.expression(tc.src), x.binds); got != tc.want {
+		if got := x.substParams(x.expression(tc.src)); got != tc.want {
 			t.Errorf("%s => %s, want %s", tc.src, got, tc.want)
 		}
 	}
 	src := `outputs.gate {{ outputs.gate.ok }} {{!outputs.gate.ok}} {{outputs.gatekeeper.ok}} {{artifacts.gate.ok}} {{params.template}}`
 	want := `outputs.gate {{ outputs.r1.gate.ok }} {{!outputs.r1.gate.ok}} {{outputs.gatekeeper.ok}} {{artifacts.gate.ok}} {{outputs.gate.ok}}`
-	if got := substParams(x.templates(src), x.binds); got != want {
+	if got := x.substParams(x.templates(src)); got != want {
 		t.Fatalf("templates = %s, want %s", got, want)
 	}
 }
@@ -42,7 +42,7 @@ func TestGroupReferenceRewritingPreservesCallerText(t *testing.T) {
 // form added by #1145. Both must bind local members before caller parameters
 // are inserted; strings inside an expression remain literal.
 func TestGroupLoopCapReferenceRewriting(t *testing.T) {
-	x := &groupExpansion{internal: map[string]bool{"gate": true}, prefix: "r1", binds: map[string]string{"cap": "outputs.gate.n"}}
+	x := &groupExpansion{internal: map[string]bool{"gate": true}, prefix: "r1", binds: map[string]string{"cap": "outputs.gate.n"}, c: &compiler{}}
 	for _, tc := range []struct{ src, want string }{
 		{`{{outputs.gate.n}}`, `{{outputs.r1.gate.n}}`},
 		{`outputs.gate.n - 1`, `outputs.r1.gate.n - 1`},
