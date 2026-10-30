@@ -50,9 +50,9 @@ Repeated from #1424 verbatim so the plan cannot drift from its own definition:
 | observability | 8 | 8 | 0 | 0 | 0 | 0 |
 | plugins | 8 | 7 | 1 | 0 | 0 | 0 |
 | forge | 7 | 7 | 0 | 0 | 0 | 0 |
-| integrations | 6 | 2 | 0 | 0 | 0 | 4 |
+| integrations | 6 | 3 | 0 | 0 | 0 | 3 |
 | desktop | 1 | 0 | 0 | 0 | 1 | 0 |
-| Total | 403 | 386 | 6 | 1 | 4 | 6 |
+| Total | 403 | 387 | 6 | 1 | 4 | 5 |
 
 The surface axis is the matrix's **Family** column — the one the gate reads and
 the "front door per family" section documents. The `ID` prefix is a naming
@@ -235,11 +235,21 @@ Under their own epics (#1415, #1406, #1412):
   `recordServed` in `pkg/backend/model/hooks.go` reddens them through the
   engine path. What a real facade credential would still buy is the facade's
   own alias semantics — not iterion's code.
-- **Connectors**: `plugins.workspace-commands` (live, ledger `never`, with a
-  deterministic half already cited beside it — does the live half add a
-  guarantee?), `tools-mcp.tool-display` (a pure formatter), and the four
-  `excluded` `integrations` rows (third-party tenant, claw TUI behaviours),
-  whose premises a claw bump can quietly invalidate.
+- **Connectors** (read 2026-10-31, #2798): `plugins.workspace-commands`
+  **stays paid** — the cited deterministic suites prove everything iterion
+  owns (the claw expansion, the claude_code passthrough, the `command`
+  tool); the live run alone witnesses what iterion only consumes: the real
+  claude CLI resolving a project command iterion deliberately passes
+  through untouched, and the two model halves no stub can produce. Ledger
+  `never` = an honest gap, not a green line. `tools-mcp.tool-display`
+  stays `unit-only`, its premise holding — a pure formatter whose string
+  shape the cited suite pins; done being read.
+  `integrations.claw-lifecycle-hooks` **promoted** — its WHY went stale:
+  iterion installs a lifecycle runner (runview's `NewDefaultLifecycleHooks`,
+  a PreToolUse SafetyHook, through `WithBackendLifecycleHooks` →
+  `opts.Hooks`), and a wiring test through the real backend was seen red
+  with that landing line deleted. The other three `excluded` rows
+  re-measured: premises hold, readings dated in their rows.
 - **Studio** (read 2026-10-30, #2799): `studio-ui.editor-llm-meta`
   **promoted** — the card needs no live model: the resolution answer is data
   in the react-query cache, and a vitest render of the real WorkflowNode
@@ -278,10 +288,12 @@ Recorded, not re-opened:
    PLIAGE team key (referenced by path, never printed), one ledger row per
    target as the receipt, every spend journaled. An epic may close on
    deterministic evidence; a 🟢 humming mark requires a ledger row.
-4. **Living with `excluded`** — G97 again: seven rows carry `excluded` with a
-   WHY (the matrix text matches `excluded` sixteen times; seven of those are
-   rows, the rest are the legend and prose — count rows, not greps). None is
-   promoted on reading alone.
+4. **Living with `excluded`** — G97 again: seven rows carried `excluded`
+   with a WHY when this was signed (the matrix text matches `excluded`
+   sixteen times; seven of those are rows, the rest are the legend and
+   prose — count rows, not greps). None is promoted on reading alone —
+   only once re-measured in the tree, as `integrations.claw-lifecycle-hooks`
+   was on 2026-10-31 (#2798); six remain.
 5. **Definition of `stabilised`** — fixed by #1424 itself and copied verbatim
    at the top of this document.
 

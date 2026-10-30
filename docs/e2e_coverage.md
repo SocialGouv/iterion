@@ -58,7 +58,7 @@ coverage beyond what's already in place.
 | OTLP exporter | Requires a real collector for an end-to-end live test. iterion server/runner wire OTLP/HTTP through `pkg/cloud/tracing` when `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is set; checked-in tests cover exporter setup and the benchmark OTLP observer path. |
 | CLAUDE.md auto-load | Historical claw TUI command-loader coverage is not present in this workspace. The behavior runs at claw TUI boot, not in an iterion workflow context; iterion uses its own command registry. |
 | Bedrock / Vertex / Foundry providers | Requires real cloud creds (AWS/GCP/Azure). Code paths are unit-tested with mocked SDK clients. |
-| Lifecycle hooks / ctx propagation into claw hook handlers | Historical claw runtime lifecycle coverage is not present in this workspace. iterion does not currently install a `lifehooks.Runner` on its claw client; adding one is a separate feature. |
+| Lifecycle hooks / ctx propagation into claw hook handlers | Historical claw runtime lifecycle coverage is not present in this workspace. iterion does not currently install a `lifehooks.Runner` on its claw client; adding one is a separate feature. **Superseded 2026-10-31**: iterion now installs one — `NewDefaultLifecycleHooks` (a PreToolUse SafetyHook) rides `WithBackendLifecycleHooks` into the claw loop; see `integrations.claw-lifecycle-hooks` in the matrix. |
 | Permission modes `auto` / `dontAsk` | iterion runs in workflow mode (no interactive prompts). Modes are unit-tested at the claw level. |
 
 ## How to run
