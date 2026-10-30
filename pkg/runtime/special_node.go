@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -149,7 +150,7 @@ func (e *Engine) executeSpecialNodeForBranch(ctx context.Context, rs *runState, 
 		}
 		return store(out, true)
 	case *ir.ComputeNode:
-		out, err := e.computeOutput(rs, nodeID, n, sc)
+		out, err := e.computeOutput(ctx, rs, nodeID, n, sc)
 		if err != nil {
 			return fail(err)
 		}
@@ -169,12 +170,14 @@ func (e *Engine) executeSpecialNodeForBranch(ctx context.Context, rs *runState, 
 // same evaluation runs on the main loop (trunk scope) and inside a fan-out
 // branch (merged parent+branch scope). No LLM, no shell, no side effects —
 // artifact persistence is the caller's concern (compute's postValidate hook).
-func (e *Engine) computeOutput(rs *runState, nodeID string, cn *ir.ComputeNode, sc resolveScope) (map[string]any, error) {
+// The ctx reaches the expression evaluator: a cancelled run interrupts an
+// evaluation instead of waiting it out (#2775).
+func (e *Engine) computeOutput(ctx context.Context, rs *runState, nodeID string, cn *ir.ComputeNode, sc resolveScope) (map[string]any, error) {
 	nodeInput := e.buildNodeInputRS(nodeID, sc)
 	output := make(map[string]any, len(cn.Exprs))
 	exprCtx := e.exprContextScoped(rs, sc, nodeInput)
 	for _, ce := range cn.Exprs {
-		v, err := evalComputeExpr(ce.AST, exprCtx)
+		v, err := evalComputeExpr(ctx, ce.AST, exprCtx)
 		if err != nil {
 			// A simulation may know the failure rests on a value it made
 			// up: the field takes the stand-in and the node goes on, so
@@ -194,9 +197,12 @@ func (e *Engine) computeOutput(rs *runState, nodeID string, cn *ir.ComputeNode, 
 			// that does not move, so re-executing it reaches the same
 			// verdict. That is what keeps an automatic resume from
 			// re-burning a pod per attempt on it (pkg/retrypolicy).
+			// The expression is quoted by excerpt, as the compiler's
+			// diagnostics quote it: at the read budget's edge the text is
+			// a megabyte and the failure message must not be (#2775).
 			return nil, &RuntimeError{
 				Code:    ErrCodeExpressionFailed,
-				Message: fmt.Sprintf("compute %q: field %q expression %q: %v", nodeID, ce.Key, ce.Raw, err),
+				Message: fmt.Sprintf("compute %q: field %q expression %q: %v", nodeID, ce.Key, expr.Excerpt(ce.Raw), err),
 				NodeID:  nodeID,
 				Hint:    "check the compute node's expressions for type mismatches or unknown references",
 			}

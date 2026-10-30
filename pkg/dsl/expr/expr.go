@@ -46,6 +46,7 @@
 package expr
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"reflect"
@@ -256,10 +257,24 @@ type Context struct {
 // Eval evaluates the AST against the context and returns the resulting
 // value (typed as bool, int64, float64, string, or nil for absent paths).
 func (a *AST) Eval(ctx *Context) (any, error) {
+	return a.EvalContext(context.Background(), ctx)
+}
+
+// EvalContext is Eval interruptible: the evaluator consults ctx as it works
+// (sampled, so a cheap evaluation pays nothing for it) and a cancelled ctx
+// ends the evaluation at the next node instead of at its end — a run's
+// exec-timeout lands DURING a pathological expression, not after it (#2775).
+func (a *AST) EvalContext(ctx context.Context, ectx *Context) (any, error) {
 	if a == nil || a.root == nil {
 		return nil, nil
 	}
-	return evalNode(a.root, &evalState{ctx: ctx, visits: maxEvalVisits})
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("expr: evaluation interrupted: %w", err)
+	}
+	return evalNode(a.root, &evalState{ctx: ectx, cancel: ctx, visits: maxEvalVisits, work: evalBudget()})
 }
 
 // maxEvalVisits bounds the total number of per-element visits a single
@@ -272,11 +287,14 @@ const maxEvalVisits = 100_000
 
 // evalState carries per-evaluation state threaded through the recursive
 // evaluator: the resolution Context, the lambda local-binding frame stack
-// (innermost last), and the remaining element-visit budget.
+// (innermost last), the remaining element-visit budget, the remaining work
+// budget, and the cancellation the caller asked the evaluation to honour.
 type evalState struct {
 	ctx    *Context
 	locals []map[string]any
 	visits int
+	work   int
+	cancel context.Context
 }
 
 // lookupLocal resolves a lambda-bound identifier from the innermost frame out.
@@ -298,6 +316,20 @@ func (st *evalState) consume() error {
 	return nil
 }
 
+// debit charges n units of evaluation work — one per node evaluated, plus
+// the produced length of every string a `+` or a builtin builds — and
+// refuses the evaluation past the work budget. The visit budget counts a
+// combinator's ELEMENTS; this counts what each visit costs, which a body of
+// thousands of nodes or a quadratic string concatenation multiplies past any
+// visit count (#2775). The bound is the operator's (EvalEnv), 0 removes it.
+func (st *evalState) debit(n int) error {
+	st.work -= n
+	if st.work < 0 {
+		return fmt.Errorf("expr: evaluation budget exceeded (the work of one evaluation — node evaluations and built string bytes — is past %d, the count %s sets, 0 for none)", evalBudget(), EvalEnv)
+	}
+	return nil
+}
+
 // evalBody pushes a single-binding frame, evaluates body, then pops it.
 func (st *evalState) evalBody(name string, val any, body node) (any, error) {
 	st.locals = append(st.locals, map[string]any{name: val})
@@ -309,7 +341,12 @@ func (st *evalState) evalBody(name string, val any, body node) (any, error) {
 // EvalBool evaluates and coerces the result to bool. Non-bool truthy values
 // follow standard rules: nil → false, "" → false, 0 → false, others → true.
 func (a *AST) EvalBool(ctx *Context) (bool, error) {
-	v, err := a.Eval(ctx)
+	return a.EvalBoolContext(context.Background(), ctx)
+}
+
+// EvalBoolContext is EvalBool interruptible, as EvalContext is Eval.
+func (a *AST) EvalBoolContext(ctx context.Context, ectx *Context) (bool, error) {
+	v, err := a.EvalContext(ctx, ectx)
 	if err != nil {
 		return false, err
 	}
@@ -1308,6 +1345,17 @@ func (p *parser) parseLambda(ctxName string) ([]string, node, error) {
 // ---------------------------------------------------------------------------
 
 func evalNode(n node, st *evalState) (any, error) {
+	if err := st.debit(1); err != nil {
+		return nil, err
+	}
+	// Cancellation is sampled on the work counter — every sixty-fourth node —
+	// so an evaluation pays one branch per node for it and a cancelled caller
+	// is answered within a bounded number of evaluations, not at the end.
+	if st.cancel != nil && st.work&63 == 0 {
+		if err := st.cancel.Err(); err != nil {
+			return nil, fmt.Errorf("expr: evaluation interrupted: %w", err)
+		}
+	}
 	switch v := n.(type) {
 	case litBool:
 		return v.v, nil
@@ -1456,6 +1504,17 @@ func evalBinary(n *binaryNode, st *evalState) (any, error) {
 	case "<", "<=", ">", ">=":
 		return compare(n.op, l, r)
 	case "+", "-", "*", "/", "%":
+		if n.op == "+" {
+			// `+` concatenates as soon as one operand is a string: charge the
+			// produced length BEFORE arith builds it — a post-hoc charge pays
+			// for a string that already exists, and a left-deep chain
+			// re-copies its prefix at every step (#2775).
+			if size, concat := concatCharge(l, r); concat {
+				if err := st.debit(size); err != nil {
+					return nil, err
+				}
+			}
+		}
 		return arith(n.op, l, r)
 	}
 	return nil, fmt.Errorf("expr: unknown binary op %q", n.op)
@@ -1527,6 +1586,29 @@ func compare(op string, a, b any) (bool, error) {
 		}
 	}
 	return false, fmt.Errorf("expr: cannot compare %T %s %T", a, op, b)
+}
+
+// concatCharge estimates the produced length of a `+` that concatenates —
+// at least one string operand, the other string or numeric, the shapes arith
+// accepts — so the work budget is charged before the result is built.
+func concatCharge(a, b any) (int, bool) {
+	operandLen := func(v any) (int, bool) {
+		if s, ok := v.(string); ok {
+			return len(s), true
+		}
+		if _, ok := toFloat(v); ok {
+			return 24, true // a number renders short under %v
+		}
+		return 0, false
+	}
+	if _, ok := a.(string); !ok {
+		if _, ok := b.(string); !ok {
+			return 0, false
+		}
+	}
+	an, aok := operandLen(a)
+	bn, bok := operandLen(b)
+	return an + bn, aok && bok
 }
 
 func arith(op string, a, b any) (any, error) {
@@ -1736,7 +1818,12 @@ func mulCheckedInt64(a, b int64) (int64, bool) {
 // evaluator (which dispatches) read one declaration. A second copy would
 // drift, and the drift reads as "it compiled, then died mid-run".
 type builtin struct {
-	fn func(args []any) (any, error)
+	// fn receives the evalState so a builtin that BUILDS a string or a
+	// collection charges the work budget as it builds — before the
+	// allocation, never after it (#2775: a post-hoc charge let
+	// join(map(...)) allocate hundreds of MiB the budget would have
+	// refused, past any recover).
+	fn func(st *evalState, args []any) (any, error)
 	// min is the smallest accepted argument count; max the largest, or
 	// arityUnbounded when the builtin is variadic.
 	min, max int
@@ -1850,10 +1937,12 @@ func evalFuncCall(n *funcCallNode, st *evalState) (any, error) {
 		}
 		args[i] = v
 	}
-	return b.fn(args)
+	// A builtin that builds a string or a collection charges the work budget
+	// as it builds, inside its implementation — never after the allocation.
+	return b.fn(st, args)
 }
 
-func builtinLength(args []any) (any, error) {
+func builtinLength(st *evalState, args []any) (any, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("expr: length() takes 1 argument, got %d", len(args))
 	}
@@ -1882,7 +1971,7 @@ func builtinLength(args []any) (any, error) {
 	return nil, fmt.Errorf("expr: length() expects array, string, or map, got %T", args[0])
 }
 
-func builtinConcat(args []any) (any, error) {
+func builtinConcat(st *evalState, args []any) (any, error) {
 	if len(args) == 0 {
 		return nil, fmt.Errorf("expr: concat() takes at least 1 argument")
 	}
@@ -1895,12 +1984,17 @@ func builtinConcat(args []any) (any, error) {
 		if err != nil {
 			return nil, fmt.Errorf("expr: concat() argument %d is %T, want array", i+1, a)
 		}
+		// Charge the copy before it happens: the budget refuses a giant
+		// concat before its result exists, not after (#2775).
+		if err := st.debit(len(arr)); err != nil {
+			return nil, err
+		}
 		out = append(out, arr...)
 	}
 	return out, nil
 }
 
-func builtinUnique(args []any) (any, error) {
+func builtinUnique(st *evalState, args []any) (any, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("expr: unique() takes 1 argument, got %d", len(args))
 	}
@@ -1912,11 +2006,21 @@ func builtinUnique(args []any) (any, error) {
 		return nil, fmt.Errorf("expr: unique() expects array, got %T", args[0])
 	}
 	// Stringify for equality so heterogeneous arrays (which the runtime
-	// cheerfully produces from JSON) don't blow up on map/slice keys.
+	// cheerfully produces from JSON) don't blow up on map/slice keys. A
+	// string element IS its key (%v renders it as itself), so nothing
+	// copies; the key's length is still charged — the map walk hashes every
+	// byte, and a retained formatting of a non-string element is real
+	// memory (#2775).
 	seen := make(map[string]struct{}, len(arr))
 	out := make([]any, 0, len(arr))
 	for _, v := range arr {
-		key := fmt.Sprintf("%v", v)
+		key, isStr := v.(string)
+		if !isStr {
+			key = fmt.Sprintf("%v", v)
+		}
+		if err := st.debit(len(key) + 1); err != nil {
+			return nil, err
+		}
 		if _, dup := seen[key]; dup {
 			continue
 		}
@@ -1926,7 +2030,7 @@ func builtinUnique(args []any) (any, error) {
 	return out, nil
 }
 
-func builtinContains(args []any) (any, error) {
+func builtinContains(st *evalState, args []any) (any, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("expr: contains() takes 2 arguments, got %d", len(args))
 	}
@@ -1957,7 +2061,7 @@ func builtinContains(args []any) (any, error) {
 // field). Wrapping the accumulator as `tail(unique(concat(...)), N)` keeps a
 // bounded, most-recent window. n <= 0 yields an empty array; n >= len
 // returns the array unchanged. Order is preserved.
-func builtinTail(args []any) (any, error) {
+func builtinTail(st *evalState, args []any) (any, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("expr: tail() takes 2 arguments (array, n), got %d", len(args))
 	}
@@ -1979,6 +2083,9 @@ func builtinTail(args []any) (any, error) {
 		return arr, nil
 	}
 	// Copy the last n elements so the result never aliases the input slice.
+	if err := st.debit(int(n)); err != nil {
+		return nil, err
+	}
 	out := make([]any, n)
 	copy(out, arr[int64(len(arr))-n:])
 	return out, nil
@@ -1992,7 +2099,7 @@ func builtinTail(args []any) (any, error) {
 // if(cond, then, else) returns then when cond is truthy, else
 // otherwise. As of ticket a3a9757b the un-taken branch is NOT
 // evaluated — `if(n > 0, total / n, 0)` is safe when n == 0.
-func builtinIf(args []any) (any, error) {
+func builtinIf(st *evalState, args []any) (any, error) {
 	if len(args) != 3 {
 		return nil, fmt.Errorf("expr: if() takes 3 arguments (cond, then, else), got %d", len(args))
 	}
@@ -2002,7 +2109,7 @@ func builtinIf(args []any) (any, error) {
 	return args[2], nil
 }
 
-func builtinJoin(args []any) (any, error) {
+func builtinJoin(st *evalState, args []any) (any, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("expr: join() takes 2 arguments, got %d", len(args))
 	}
@@ -2017,24 +2124,42 @@ func builtinJoin(args []any) (any, error) {
 	if !ok {
 		return nil, fmt.Errorf("expr: join() expects array as first argument, got %T", args[0])
 	}
-	parts := make([]string, len(arr))
+	// Build incrementally and charge each part BEFORE writing it: the budget
+	// refuses a giant join before its result string exists — a post-hoc
+	// charge of the built string let join(map(...)) allocate hundreds of MiB
+	// past any recover (#2775).
+	var out strings.Builder
 	for i, v := range arr {
-		parts[i] = fmt.Sprintf("%v", v)
+		// A string element renders as itself under %v: no copy to charge for.
+		part, ok := v.(string)
+		if !ok {
+			part = fmt.Sprintf("%v", v)
+		}
+		if err := st.debit(len(part) + len(sep)); err != nil {
+			return nil, err
+		}
+		if i > 0 {
+			out.WriteString(sep)
+		}
+		out.WriteString(part)
 	}
-	return strings.Join(parts, sep), nil
+	return out.String(), nil
 }
 
 // builtinSort returns a new array sorted ascending. All-numeric arrays sort
 // numerically; all-string arrays lexicographically; mixed/other arrays sort by
 // their %v stringification. Ordering is deterministic for prompt-cache
 // stability. The input is never mutated.
-func builtinSort(args []any) (any, error) {
+func builtinSort(st *evalState, args []any) (any, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("expr: sort() takes 1 argument, got %d", len(args))
 	}
 	arr, err := toElemSlice(args[0])
 	if err != nil {
 		return nil, fmt.Errorf("expr: sort() expects array, %w", err)
+	}
+	if err := st.debit(len(arr)); err != nil {
+		return nil, err
 	}
 	out := make([]any, len(arr))
 	copy(out, arr)
@@ -2067,13 +2192,16 @@ func builtinSort(args []any) (any, error) {
 }
 
 // builtinKeys returns a map's keys, sorted ascending (deterministic).
-func builtinKeys(args []any) (any, error) {
+func builtinKeys(st *evalState, args []any) (any, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("expr: keys() takes 1 argument, got %d", len(args))
 	}
 	m, err := toStringMap(args[0])
 	if err != nil {
 		return nil, fmt.Errorf("expr: keys() expects a map, %w", err)
+	}
+	if err := st.debit(len(m)); err != nil {
+		return nil, err
 	}
 	out := make([]any, 0, len(m))
 	for _, k := range sortedMapKeys(m) {
@@ -2083,13 +2211,16 @@ func builtinKeys(args []any) (any, error) {
 }
 
 // builtinValues returns a map's values ordered by sorted key (deterministic).
-func builtinValues(args []any) (any, error) {
+func builtinValues(st *evalState, args []any) (any, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("expr: values() takes 1 argument, got %d", len(args))
 	}
 	m, err := toStringMap(args[0])
 	if err != nil {
 		return nil, fmt.Errorf("expr: values() expects a map, %w", err)
+	}
+	if err := st.debit(len(m)); err != nil {
+		return nil, err
 	}
 	out := make([]any, 0, len(m))
 	for _, k := range sortedMapKeys(m) {
@@ -2101,7 +2232,7 @@ func builtinValues(args []any) (any, error) {
 // builtinSlice returns arr[start:end) with bounds clamped to [0, len]. A
 // negative index counts from the end (Python-style); end defaults past the last
 // element when out of range. The result never aliases the input.
-func builtinSlice(args []any) (any, error) {
+func builtinSlice(st *evalState, args []any) (any, error) {
 	if len(args) != 3 {
 		return nil, fmt.Errorf("expr: slice() takes 3 arguments (array, start, end), got %d", len(args))
 	}
@@ -2134,6 +2265,9 @@ func builtinSlice(args []any) (any, error) {
 	if e < s {
 		e = s
 	}
+	if err := st.debit(int(e - s)); err != nil {
+		return nil, err
+	}
 	out := make([]any, e-s)
 	copy(out, arr[s:e])
 	return out, nil
@@ -2142,7 +2276,7 @@ func builtinSlice(args []any) (any, error) {
 // builtinSum totals a numeric array. All-integer inputs stay int64 (with
 // overflow detection); a fractional element promotes the sum to float64. Empty
 // is int64(0).
-func builtinSum(args []any) (any, error) {
+func builtinSum(st *evalState, args []any) (any, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("expr: sum() takes 1 argument, got %d", len(args))
 	}
@@ -2188,8 +2322,8 @@ func builtinSum(args []any) (any, error) {
 // subexpressions have to be spelled out four times inside nested `if`s, which
 // is how a deterministic guard stops being reviewable. Arguments are FLATTENED
 // one level, so `max(list, 7)` reads the list's elements alongside the scalar.
-func builtinMin(args []any) (any, error) { return minMax(args, "min") }
-func builtinMax(args []any) (any, error) { return minMax(args, "max") }
+func builtinMin(st *evalState, args []any) (any, error) { return minMax(args, "min") }
+func builtinMax(st *evalState, args []any) (any, error) { return minMax(args, "max") }
 
 func minMax(args []any, which string) (any, error) {
 	if len(args) == 0 {
@@ -2232,8 +2366,12 @@ func minMax(args []any, which string) (any, error) {
 // the engine when the compute output meets its schema. An integer passes
 // through; a non-number, or a float with no finite integer (NaN, ±Inf,
 // beyond the int64 range), is an error.
-func builtinFloor(args []any) (any, error) { return numberToInt(args, "floor", math.Floor) }
-func builtinRound(args []any) (any, error) { return numberToInt(args, "round", math.Round) }
+func builtinFloor(st *evalState, args []any) (any, error) {
+	return numberToInt(args, "floor", math.Floor)
+}
+func builtinRound(st *evalState, args []any) (any, error) {
+	return numberToInt(args, "round", math.Round)
+}
 
 func numberToInt(args []any, name string, fn func(float64) float64) (any, error) {
 	if len(args) != 1 {
@@ -2256,7 +2394,7 @@ func numberToInt(args []any, name string, fn func(float64) float64) (any, error)
 // builtinFlatten concatenates one level of nesting: each array element is
 // spliced in, each non-array element is kept as-is. Deeper nesting is left
 // intact (deep flatten is excluded to keep output size bounded by input).
-func builtinFlatten(args []any) (any, error) {
+func builtinFlatten(st *evalState, args []any) (any, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("expr: flatten() takes 1 argument, got %d", len(args))
 	}
@@ -2267,8 +2405,15 @@ func builtinFlatten(args []any) (any, error) {
 	out := make([]any, 0, len(arr))
 	for _, v := range arr {
 		if inner, ok := v.([]any); ok {
+			// Charge the copy before it happens, as concat does (#2775).
+			if err := st.debit(len(inner)); err != nil {
+				return nil, err
+			}
 			out = append(out, inner...)
 			continue
+		}
+		if err := st.debit(1); err != nil {
+			return nil, err
 		}
 		out = append(out, v)
 	}

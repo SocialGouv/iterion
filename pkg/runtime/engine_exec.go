@@ -952,7 +952,7 @@ func (e *Engine) markPreNodeBoundary(rs *runState, nodeID string) {
 // compute-specific.
 func (e *Engine) execCompute(rs *runState, nodeID string, cn *ir.ComputeNode) (string, error) {
 	return e.execSpecialNode(rs, nodeID, "compute", cn, nil,
-		func() (map[string]any, error) { return e.computeOutput(rs, nodeID, cn, rs.scope()) },
+		func() (map[string]any, error) { return e.computeOutput(rs.ctx, rs, nodeID, cn, rs.scope()) },
 		func(output map[string]any) error {
 			// Publish is compute-specific (only ComputeNode has a Publish
 			// field) and gated on validation: persist only known-valid output.

@@ -927,7 +927,7 @@ func TestComputeOutputConformsToDeclaredSchema(t *testing.T) {
 		wf := computeGaugeWorkflow(t, ir.FieldTypeInt, "6.0 / 2")
 		eng := New(wf, tmpStore(t), newStubExecutor())
 		rs := eng.newRunState("run-int-ok", nil)
-		out, err := eng.computeOutput(rs, "gate", wf.Nodes["gate"].(*ir.ComputeNode), rs.scope())
+		out, err := eng.computeOutput(context.Background(), rs, "gate", wf.Nodes["gate"].(*ir.ComputeNode), rs.scope())
 		if err != nil {
 			t.Fatalf("computeOutput: %v", err)
 		}
@@ -977,7 +977,7 @@ func TestComputeOutputConformsToDeclaredSchema(t *testing.T) {
 		wf := computeGaugeWorkflow(t, ir.FieldTypeFloat, "7")
 		eng := New(wf, tmpStore(t), newStubExecutor())
 		rs := eng.newRunState("run-float-ok", nil)
-		out, err := eng.computeOutput(rs, "gate", wf.Nodes["gate"].(*ir.ComputeNode), rs.scope())
+		out, err := eng.computeOutput(context.Background(), rs, "gate", wf.Nodes["gate"].(*ir.ComputeNode), rs.scope())
 		if err != nil {
 			t.Fatalf("computeOutput: %v", err)
 		}
@@ -990,7 +990,7 @@ func TestComputeOutputConformsToDeclaredSchema(t *testing.T) {
 		wf := computeGaugeWorkflow(t, ir.FieldTypeInt, "floor(1058 / 100.0)")
 		eng := New(wf, tmpStore(t), newStubExecutor())
 		rs := eng.newRunState("run-int-floor", nil)
-		out, err := eng.computeOutput(rs, "gate", wf.Nodes["gate"].(*ir.ComputeNode), rs.scope())
+		out, err := eng.computeOutput(context.Background(), rs, "gate", wf.Nodes["gate"].(*ir.ComputeNode), rs.scope())
 		if err != nil {
 			t.Fatalf("computeOutput: %v", err)
 		}

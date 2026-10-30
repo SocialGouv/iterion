@@ -23,11 +23,11 @@ func TestBuiltinArityMatchesTheImplementation(t *testing.T) {
 		// One argument short of the floor: the body must refuse it too, so
 		// a caller reaching the function directly cannot index past its
 		// arguments.
-		if _, err := b.fn(make([]any, b.min-1)); err == nil {
+		if _, err := b.fn(&evalState{work: evalBudget()}, make([]any, b.min-1)); err == nil {
 			t.Errorf("%s: the body accepted %d argument(s) while the registry declares min %d", name, b.min-1, b.min)
 		}
 		if b.max != arityUnbounded {
-			if _, err := b.fn(make([]any, b.max+1)); err == nil {
+			if _, err := b.fn(&evalState{work: evalBudget()}, make([]any, b.max+1)); err == nil {
 				t.Errorf("%s: the body accepted %d argument(s) while the registry declares max %d", name, b.max+1, b.max)
 			}
 		}
