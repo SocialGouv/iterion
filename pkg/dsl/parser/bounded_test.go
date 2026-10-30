@@ -66,15 +66,27 @@ func TestTheRecordingDoorBounds(t *testing.T) {
 // diagnostic (citeStoredMainWorkflow) passes Bounded at the rewrite; a new
 // one is a review finding, as it was at #2801.
 func TestEveryConstructorPassesBounded(t *testing.T) {
-	root := filepath.Join("..", "..", "..")
+	// The root must be ABSOLUTE: walked relative (../../..), WalkDir visits
+	// the root first with de.Name() == "..", which the dot-dir exclusion
+	// below would skip — the whole walk, one visit, no file read, green
+	// whatever the tree holds (round-3 review: a planted offense passed).
+	root, err := filepath.Abs(filepath.Join("..", "..", ".."))
+	if err != nil {
+		t.Fatalf("abs: %v", err)
+	}
 	var offenders []string
-	err := filepath.WalkDir(root, func(path string, de os.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(path string, de os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if de.IsDir() {
-			base := de.Name()
-			if base == "vendor" || base == "third_party" || base == "node_modules" || strings.HasPrefix(base, ".") {
+			// Real dot-dirs only — .git, .works, … — never the root the
+			// walk was given (its NAME is no marker of what it holds).
+			if path != root && strings.HasPrefix(de.Name(), ".") {
+				return filepath.SkipDir
+			}
+			switch de.Name() {
+			case "vendor", "third_party", "node_modules":
 				return filepath.SkipDir
 			}
 			return nil
@@ -114,24 +126,34 @@ func TestTheCanaryReadsEveryForm(t *testing.T) {
 		name string
 		src  string
 		want bool // an offender
+		line int  // its line, when one is wanted (0: not checked)
 	}{
-		{"an elided element with fields", "package x\n\nvar _ = []parser.Diagnostic{{Code: parser.DiagExpectedToken, Message: msg}}\n", true},
-		{"an elided element among a door's own", "package x\n\nvar _ = []parser.Diagnostic{docDiag(name, 1, 1, msg), {Code: parser.DiagExpectedToken}}\n", true},
-		{"a keyed elided element", "package x\n\nvar _ = map[string]parser.Diagnostic{\"k\": {Message: msg}}\n", true},
-		{"a wrapped element", "package x\n\nvar _ = []parser.Diagnostic{parser.Bounded(parser.Diagnostic{Code: parser.DiagExpectedToken, Message: msg})}\n", false},
-		{"a door's own diagnostic as element", "package x\n\nvar _ = []parser.Diagnostic{docDiag(name, 1, 1, msg)}\n", false},
-		{"a brace inside a string is no element", "package x\n\nvar _ = []parser.Diagnostic{docDiag(name, 1, 1, \"a { brace\")}\n", false},
-		{"an empty collection", "package x\n\nvar _ = []parser.Diagnostic{}\n", false},
-		{"a zero-value element", "package x\n\nvar _ = []parser.Diagnostic{{}}\n", false},
-		{"the zero value", "package x\n\nvar d = parser.Diagnostic{}\n", false},
-		{"a wrapped construction", "package x\n\nvar d = parser.Bounded(parser.Diagnostic{Message: msg})\n", false},
-		{"a bare pointer construction", "package x\n\nvar d = &parser.Diagnostic{Message: msg}\n", true},
-		{"a bare construction", "package x\n\nvar d = parser.Diagnostic{Message: msg}\n", true},
-		{"an aliased import", "package x\n\nimport (\n\tp \"github.com/SocialGouv/iterion/pkg/dsl/parser\"\n)\n", true},
-		{"the plain import", "package x\n\nimport (\n\t\"github.com/SocialGouv/iterion/pkg/dsl/parser\"\n)\n\nvar d = parser.Bounded(parser.Diagnostic{Message: msg})\n", false},
+		{"an elided element with fields", "package x\n\nvar _ = []parser.Diagnostic{{Code: parser.DiagExpectedToken, Message: msg}}\n", true, 0},
+		{"an elided element among a door's own", "package x\n\nvar _ = []parser.Diagnostic{docDiag(name, 1, 1, msg), {Code: parser.DiagExpectedToken}}\n", true, 0},
+		{"a keyed elided element", "package x\n\nvar _ = map[string]parser.Diagnostic{\"k\": {Message: msg}}\n", true, 0},
+		{"a wrapped element", "package x\n\nvar _ = []parser.Diagnostic{parser.Bounded(parser.Diagnostic{Code: parser.DiagExpectedToken, Message: msg})}\n", false, 0},
+		{"a door's own diagnostic as element", "package x\n\nvar _ = []parser.Diagnostic{docDiag(name, 1, 1, msg)}\n", false, 0},
+		{"a brace inside a string is no element", "package x\n\nvar _ = []parser.Diagnostic{docDiag(name, 1, 1, \"a { brace\")}\n", false, 0},
+		{"an empty collection", "package x\n\nvar _ = []parser.Diagnostic{}\n", false, 0},
+		{"a zero-value element", "package x\n\nvar _ = []parser.Diagnostic{{}}\n", false, 0},
+		{"the zero value", "package x\n\nvar d = parser.Diagnostic{}\n", false, 0},
+		{"a wrapped construction", "package x\n\nvar d = parser.Bounded(parser.Diagnostic{Message: msg})\n", false, 0},
+		{"a bare pointer construction", "package x\n\nvar d = &parser.Diagnostic{Message: msg}\n", true, 0},
+		{"a bare construction", "package x\n\nvar d = parser.Diagnostic{Message: msg}\n", true, 0},
+		{"an aliased import", "package x\n\nimport (\n\tp \"github.com/SocialGouv/iterion/pkg/dsl/parser\"\n)\n", true, 4},
+		{"an aliased import below empty lines", "package x\n\n\nimport (\n\tp \"github.com/SocialGouv/iterion/pkg/dsl/parser\"\n)\n", true, 5},
+		{"a single-line plain import is no alias", "package x\n\nimport \"github.com/SocialGouv/iterion/pkg/dsl/parser\"\n\nvar d = parser.Bounded(parser.Diagnostic{Message: msg})\n", false, 0},
+		{"a single-line aliased import", "package x\n\nimport p \"github.com/SocialGouv/iterion/pkg/dsl/parser\"\n", true, 3},
+		{"a blank import composes nothing", "package x\n\nimport (\n\t_ \"github.com/SocialGouv/iterion/pkg/dsl/parser\"\n)\n", false, 0},
+		{"a dot import hides the marker", "package x\n\nimport (\n\t. \"github.com/SocialGouv/iterion/pkg/dsl/parser\"\n)\n", true, 4},
+		{"the plain import", "package x\n\nimport (\n\t\"github.com/SocialGouv/iterion/pkg/dsl/parser\"\n)\n\nvar d = parser.Bounded(parser.Diagnostic{Message: msg})\n", false, 0},
 	} {
-		if got := len(unboundedConstructions(c.src)) > 0; got != c.want {
-			t.Errorf("%s: offender = %v, want %v (lines %v)", c.name, got, c.want, unboundedConstructions(c.src))
+		got := unboundedConstructions(c.src)
+		if isOffender := len(got) > 0; isOffender != c.want {
+			t.Errorf("%s: offender = %v, want %v (lines %v)", c.name, isOffender, c.want, got)
+		}
+		if c.want && c.line > 0 && (len(got) != 1 || got[0] != c.line) {
+			t.Errorf("%s: reported at %v, want the one offense at line %d", c.name, got, c.line)
 		}
 	}
 }
@@ -146,7 +168,13 @@ func TestTheCanaryReadsEveryForm(t *testing.T) {
 func unboundedConstructions(text string) []int {
 	const marker = "parser.Diagnostic{"
 	var lines []int
-	if m := parserAliasImportRe.FindStringIndex(text); m != nil {
+	for _, m := range parserAliasImportRe.FindAllStringSubmatchIndex(text, -1) {
+		switch text[m[2]:m[3]] {
+		case "import", "_":
+			// The keyword of a single-line plain import is no name, and a
+			// blank import composes nothing.
+			continue
+		}
 		lines = append(lines, 1+strings.Count(text[:m[0]], "\n"))
 	}
 	for at := 0; ; {
@@ -188,8 +216,12 @@ func unboundedConstructions(text string) []int {
 
 // parserAliasImportRe is an import of the parser package under another name
 // (an alias, a dot, a blank): constructions through it name no
-// `parser.Diagnostic{` the scan reads.
-var parserAliasImportRe = regexp.MustCompile(`(?m)^\s*[\w.]+\s+"github\.com/SocialGouv/iterion/pkg/dsl/parser"`)
+// `parser.Diagnostic{` the scan reads. Group 1 is the name — the keyword
+// `import` of a single-line plain import is NOT one (excluded by the
+// caller), nor is `_`, which can compose nothing. The leading whitespace
+// is horizontal only ([ \t]): \s would cross the empty lines above and the
+// offense would be reported on the wrong line.
+var parserAliasImportRe = regexp.MustCompile(`(?m)^[ \t]*(?:import[ \t]+)?([\w.]+)[ \t]+"github\.com/SocialGouv/iterion/pkg/dsl/parser"`)
 
 // literalElements splits the composite literal whose opening brace is at
 // open into its top-level elements, each with its byte offset in src.
