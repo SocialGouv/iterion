@@ -2128,12 +2128,14 @@ func claudeExtraEnvEntries(task Task) (entries [][2]string, overridden []string)
 // session, so only a short formatting instruction is needed.
 //
 // It is a full CLI spawn, not a tool-less one, and it derives its bounds from
-// the same three statements Execute does: the node's `tools:` declaration
+// the same statements Execute does: the node's `tools:` declaration
 // (claudeToolOptions), the bounds that hold whatever the spawn is
-// (claudeSpawnBounds), and the permission gate (claudePermissionGate, through
-// wireFormattingPermissionHook). The sentence that used to sit here — "(no
-// tools)" — is what kept the gap invisible for five rounds; what it names is
-// the instruction, not the toolset.
+// (claudeSpawnBounds), the permission gate (claudePermissionGate, through
+// wireFormattingPermissionHook), and the secret hooks
+// (installMaterializeSecretsHook) — a gated tool call this pass runs reads
+// and writes placeholders exactly as the work pass does. The sentence that
+// used to sit here — "(no tools)" — is what kept the gap invisible for five
+// rounds; what it names is the instruction, not the toolset.
 func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, sessionID string) (*claudesdk.ResultMessage, credSpawn, []string, error) {
 	// Use the parent context directly — the runtime already enforces budget
 	// timeouts. Adding a short artificial timeout here risks cancelling the
@@ -2189,6 +2191,14 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	// aborts the spawn with a typed error rather than running it ungated
 	// (claudesdk.Prompt, initializeRefusal).
 	opts = wireFormattingPermissionHook(task, opts)
+
+	// The secret hooks travel too (#2782): since the gate replaced the
+	// withholding, this pass can run a tool the policy allows, and a call
+	// carrying a __ITERION_SECRET_<name>__ placeholder must be materialised
+	// here exactly as on the work pass — and a tool output quoting a known
+	// value turned back into placeholders. Both hooks are no-ops when the
+	// task carries no secrets.
+	opts = installMaterializeSecretsHook(task, opts)
 
 	// Cwd / CLI path handling mirrors Execute(): on the host, pass workdir
 	// through; in the sandbox, leave cwd unset (the docker driver picks the

