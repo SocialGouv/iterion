@@ -45,7 +45,7 @@ func TestMigrateDSLStopsAtTheRepositoryRoot(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	res, err := MigrateDSL(MigrateDSLOptions{Paths: []string{filepath.Join(repo, "bots")}, Floor: "3.200.0", Printer: &Printer{W: &out, Format: OutputHuman}})
+	res, err := MigrateDSL(t.Context(), MigrateDSLOptions{Paths: []string{filepath.Join(repo, "bots")}, Floor: "3.200.0", Printer: &Printer{W: &out, Format: OutputHuman}})
 	if err != nil {
 		t.Fatalf("MigrateDSL: %v\n%s", err, out.String())
 	}
@@ -76,7 +76,7 @@ func TestMigrateDSLStopsAtTheRepositoryRoot(t *testing.T) {
 	if err := os.WriteFile(other, []byte("## a loose workflow\nagent b:\n  description: \"y\"\n\nworkflow w:\n  entry: b\n  b -> done\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, err = MigrateDSL(MigrateDSLOptions{Paths: []string{other}, Floor: "3.200.0"})
+	res, err = MigrateDSL(t.Context(), MigrateDSLOptions{Paths: []string{other}, Floor: "3.200.0"})
 	if err != nil {
 		t.Fatal(err)
 	}

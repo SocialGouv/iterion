@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -99,11 +100,13 @@ var (
 // canonical YAML form, on its own bytes (canon.Document) — and refused, its
 // bytes intact, when a rewrite would lose what its author wrote: a YAML
 // comment, a text the .bot reads otherwise than written. With To, RunFmt
-// converts instead (runFmtConvert).
-func RunFmt(opts FmtOptions) (FmtResult, error) {
+// converts instead (runFmtConvert). The context is the command's own
+// (cobra cancels it on SIGINT): it bounds the wait on a file's authoring
+// lock, so an operator's Ctrl-C is honoured mid-tree.
+func RunFmt(ctx context.Context, opts FmtOptions) (FmtResult, error) {
 	var res FmtResult
 	if opts.To != "" {
-		return runFmtConvert(opts)
+		return runFmtConvert(ctx, opts)
 	}
 	files, err := collectWorkflowFiles("fmt", opts.Paths, true)
 	if err != nil {
@@ -138,7 +141,7 @@ func RunFmt(opts FmtOptions) (FmtResult, error) {
 			if err != nil {
 				return res, fmt.Errorf("fmt: %w", err)
 			}
-			if err := replaceBotFileNow(path, raw, out, info.Mode().Perm()); err != nil {
+			if err := replaceBotFile(ctx, path, raw, out, info.Mode().Perm()); err != nil {
 				if botFileLeftAsItIs(err) {
 					// One file being saved elsewhere is that file's
 					// refusal, not the end of a whole-tree format.

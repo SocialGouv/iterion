@@ -119,7 +119,10 @@ func TestAReplacementRefusesWhileASaveHoldsTheLock(t *testing.T) {
 // TestFmtRefusesAFileASaveHoldsAndFormatsTheRest walks the PUBLIC path an
 // operator reaches — `iterion fmt -w` over a tree — and holds it to the two
 // halves that matter: the file being saved keeps its bytes and is reported
-// as refused, and its neighbours are formatted all the same.
+// as refused, and its neighbours are formatted all the same. The wait on
+// the held lock is bounded by the CONTEXT the caller hands RunFmt (#2839):
+// the command's own context, which cobra cancels on SIGINT — an operator's
+// Ctrl-C shortens it. This test stands in for it with a timeout.
 func TestFmtRefusesAFileASaveHoldsAndFormatsTheRest(t *testing.T) {
 	inTempWorkspace(t)
 	held := writeBot(t, "f/held.bot", looseBot)
@@ -133,22 +136,21 @@ func TestFmtRefusesAFileASaveHoldsAndFormatsTheRest(t *testing.T) {
 			t.Errorf("release: %v", err)
 		}
 	}()
-	previous := botFileLockWait
-	botFileLockWait = 300 * time.Millisecond
-	t.Cleanup(func() { botFileLockWait = previous })
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
 
 	p, out := humanPrinter()
-	// The command runs in a goroutine so a wait with no bound fails this
+	// The command runs in a goroutine so a wait no context bounds fails this
 	// test's own assertion instead of the harness's global timeout: a
 	// one-shot CLI that sits forever behind an editor is the other half of
-	// what the bound is for. The deferred release ends the goroutine.
+	// what the context is for. The deferred release ends the goroutine.
 	type outcome struct {
 		res FmtResult
 		err error
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		res, err := RunFmt(FmtOptions{Paths: []string{"f"}, Printer: p})
+		res, err := RunFmt(ctx, FmtOptions{Paths: []string{"f"}, Printer: p})
 		done <- outcome{res, err}
 	}()
 	var res FmtResult
@@ -156,7 +158,7 @@ func TestFmtRefusesAFileASaveHoldsAndFormatsTheRest(t *testing.T) {
 	case got := <-done:
 		res, err = got.res, got.err
 	case <-time.After(10 * time.Second):
-		t.Fatal("fmt did not come back within 10s though its wait is bounded at 300ms: a command can sit behind an editor's save for as long as the save lasts")
+		t.Fatal("fmt did not come back within 10s though its caller's context ends the wait at 300ms: a command can sit behind an editor's save for as long as the save lasts")
 	}
 	if !errors.Is(err, ErrFmtRefused) {
 		t.Fatalf("fmt over a save in flight = %v, want ErrFmtRefused\n%s", err, out.String())
@@ -243,7 +245,7 @@ func TestEveryWriterOfABotSFileGoesThroughTheLockedChokepoint(t *testing.T) {
 		}
 		sort.Strings(names)
 		for _, name := range names {
-			t.Errorf("%s calls writeFileAtomic outside the authoring lock at line(s) %v: a writer of a bot's file calls replaceBotFile (or replaceBotFileNow), or names itself in botFileWriterAllowed with its reason", name, offenders[name])
+			t.Errorf("%s calls writeFileAtomic outside the authoring lock at line(s) %v: a writer of a bot's file calls replaceBotFile, or names itself in botFileWriterAllowed with its reason", name, offenders[name])
 		}
 	}
 }

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -64,7 +65,7 @@ func (r *FmtResult) refuse(path, why string) {
 // beside it are converted, and --check reports what a write would do — the
 // refusal included: the CI form of "is the .bot beside the document the one
 // it writes?".
-func runFmtConvert(opts FmtOptions) (FmtResult, error) {
+func runFmtConvert(ctx context.Context, opts FmtOptions) (FmtResult, error) {
 	var res FmtResult
 	if opts.Baseline != "" {
 		return res, ErrFmtToBaseline
@@ -134,7 +135,7 @@ func runFmtConvert(opts FmtOptions) (FmtResult, error) {
 				if !there {
 					decided = nil
 				}
-				if err := replaceBotFileNow(dest, decided, out, perm); err != nil {
+				if err := replaceBotFile(ctx, dest, decided, out, perm); err != nil {
 					if botFileLeftAsItIs(err) {
 						// refuse names the destination itself.
 						res.refuse(dest, strings.TrimPrefix(err.Error(), dest+": "))

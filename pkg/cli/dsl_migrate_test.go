@@ -34,7 +34,7 @@ func writeMigrateBundle(t *testing.T) string {
 func TestMigrateDSLWritesTheFileAndRaisesTheManifestFloor(t *testing.T) {
 	dir := writeMigrateBundle(t)
 	var out bytes.Buffer
-	res, err := MigrateDSL(MigrateDSLOptions{Paths: []string{dir}, Floor: "v3.200.0", ShowPrompts: true, Printer: &Printer{W: &out, Format: OutputHuman}})
+	res, err := MigrateDSL(t.Context(), MigrateDSLOptions{Paths: []string{dir}, Floor: "v3.200.0", ShowPrompts: true, Printer: &Printer{W: &out, Format: OutputHuman}})
 	if err != nil {
 		t.Fatalf("MigrateDSL: %v\n%s", err, out.String())
 	}
@@ -68,7 +68,7 @@ func TestMigrateDSLDryRunAndCheckWriteNothing(t *testing.T) {
 	for _, opts := range []MigrateDSLOptions{{DryRun: true}, {Check: true}} {
 		opts.Paths = []string{dir}
 		opts.Floor = "3.200.0"
-		res, err := MigrateDSL(opts)
+		res, err := MigrateDSL(t.Context(), opts)
 		if opts.Check {
 			if !errors.Is(err, ErrWouldChange) {
 				t.Fatalf("check: err = %v", err)
@@ -85,10 +85,10 @@ func TestMigrateDSLDryRunAndCheckWriteNothing(t *testing.T) {
 			t.Fatalf("files changed on disk")
 		}
 	}
-	if _, err := MigrateDSL(MigrateDSLOptions{Paths: []string{dir}, Floor: "3.200.0"}); err != nil {
+	if _, err := MigrateDSL(t.Context(), MigrateDSLOptions{Paths: []string{dir}, Floor: "3.200.0"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := MigrateDSL(MigrateDSLOptions{Paths: []string{dir}, Floor: "3.200.0", Check: true}); err != nil {
+	if _, err := MigrateDSL(t.Context(), MigrateDSLOptions{Paths: []string{dir}, Floor: "3.200.0", Check: true}); err != nil {
 		t.Fatalf("check after migration: %v", err)
 	}
 	// A loose file, no manifest: --check fails on the file alone.
@@ -96,7 +96,7 @@ func TestMigrateDSLDryRunAndCheckWriteNothing(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(loose, "x.bot"), []byte("agent a:\n  description: \"x\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := MigrateDSL(MigrateDSLOptions{Paths: []string{loose}, Check: true}); !errors.Is(err, ErrWouldChange) {
+	if _, err := MigrateDSL(t.Context(), MigrateDSLOptions{Paths: []string{loose}, Check: true}); !errors.Is(err, ErrWouldChange) {
 		t.Fatalf("check on a loose file: err = %v", err)
 	}
 }
@@ -127,7 +127,7 @@ func TestMigrateDSLLeavesAnAncestorBundleAlone(t *testing.T) {
 				t.Fatal(err)
 			}
 			var out bytes.Buffer
-			res, err := MigrateDSL(MigrateDSLOptions{Paths: []string{loose}, Floor: "3.200.0", Printer: &Printer{W: &out, Format: OutputHuman}})
+			res, err := MigrateDSL(t.Context(), MigrateDSLOptions{Paths: []string{loose}, Floor: "3.200.0", Printer: &Printer{W: &out, Format: OutputHuman}})
 			if err != nil {
 				t.Fatalf("MigrateDSL: %v\n%s", err, out.String())
 			}
@@ -158,7 +158,7 @@ func TestMigrateDSLWritesNothingWhenAFileIsRefused(t *testing.T) {
 	if err := os.WriteFile(bad, []byte("agent a:\n  memory:\n    enabled: true\n    project_root: true\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, err := MigrateDSL(MigrateDSLOptions{Paths: []string{dir}, Floor: "3.200.0"})
+	res, err := MigrateDSL(t.Context(), MigrateDSLOptions{Paths: []string{dir}, Floor: "3.200.0"})
 	if err == nil || !strings.Contains(err.Error(), "1 file(s) refused") || !strings.Contains(err.Error(), "nothing was written") || !strings.Contains(err.Error(), "project_root") {
 		t.Fatalf("err = %v", err)
 	}

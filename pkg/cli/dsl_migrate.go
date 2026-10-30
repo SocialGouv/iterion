@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -84,8 +85,10 @@ var ErrWouldChange = errors.New("dsl migrate: a file would change")
 // the operator's outside it is no file's bundle). Every file is planned
 // and proven before any is written: one refusal anywhere, and nothing is
 // written anywhere, so a run never leaves a tree half-migrated. Nothing
-// is written under DryRun or Check either.
-func MigrateDSL(opts MigrateDSLOptions) (MigrateDSLResult, error) {
+// is written under DryRun or Check either. The context is the command's own
+// (cobra cancels it on SIGINT): it bounds the wait on a file's authoring
+// lock.
+func MigrateDSL(ctx context.Context, opts MigrateDSLOptions) (MigrateDSLResult, error) {
 	var res MigrateDSLResult
 	floor, err := resolveFloor(opts.Floor, opts.To)
 	if err != nil {
@@ -170,7 +173,7 @@ func MigrateDSL(opts MigrateDSLOptions) (MigrateDSLResult, error) {
 			if err != nil {
 				return res, err
 			}
-			if err := replaceBotFileNow(p.path, p.src, p.out.Migrated, info.Mode().Perm()); err != nil {
+			if err := replaceBotFile(ctx, p.path, p.src, p.out.Migrated, info.Mode().Perm()); err != nil {
 				return res, fmt.Errorf("dsl migrate: write %s: %w", p.path, err)
 			}
 			res.Files[i].Written = true

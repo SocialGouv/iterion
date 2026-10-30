@@ -47,7 +47,7 @@ func TestAPromptHoldingAJSONExampleConvertsAndReadsBack(t *testing.T) {
 	inTempWorkspace(t)
 	jp, _ := jsonPrinter()
 	bot := writeBot(t, "d/p.bot", jsonPromptBot(56_000))
-	if _, err := RunFmt(FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp}); err != nil {
 		t.Fatalf("fmt --to yaml of a bot whose prompt holds a JSON example: %v", err)
 	}
 	doc := "d/p.bot.yaml"
@@ -58,7 +58,7 @@ func TestAPromptHoldingAJSONExampleConvertsAndReadsBack(t *testing.T) {
 	if res := author.Parse(doc, raw); res.HasErrors() {
 		t.Fatalf("the document written does not read: %v", res.Diagnostics[0])
 	}
-	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, Check: true, Printer: jp}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, Check: true, Printer: jp}); err != nil {
 		t.Errorf("fmt --check of the document written: %v", err)
 	}
 }
@@ -83,7 +83,7 @@ func TestForceOnATwinPastTheDecodeCeilingDecodesNothing(t *testing.T) {
 	var res FmtResult
 	var err error
 	alloc := allocatedWhile(func() {
-		res, err = RunFmt(FmtOptions{Paths: []string{bot}, To: "yaml", Force: true, Check: true, Printer: jp})
+		res, err = RunFmt(t.Context(), FmtOptions{Paths: []string{bot}, To: "yaml", Force: true, Check: true, Printer: jp})
 	})
 	t.Logf("allocated %d MiB", alloc>>20)
 	if !errors.Is(err, ErrFmtWouldChange) {
@@ -122,7 +122,7 @@ func TestADenseFrontmatterIsNotDecoded(t *testing.T) {
 		var res FmtResult
 		var err error
 		alloc := allocatedWhile(func() {
-			res, err = RunFmt(FmtOptions{Paths: []string{path}, To: "yaml", Check: true, Printer: jp})
+			res, err = RunFmt(t.Context(), FmtOptions{Paths: []string{path}, To: "yaml", Check: true, Printer: jp})
 		})
 		return res, alloc, err
 	}

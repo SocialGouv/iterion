@@ -55,10 +55,10 @@ func TestTheAuthorTwinFromItsDocumentToARun(t *testing.T) {
 	if _, err := os.Stat(bot); err == nil {
 		t.Fatal("validate or diagram wrote the .bot")
 	}
-	if _, err := cli.RunFmt(cli.FmtOptions{Paths: []string{doc}, To: "bot", Printer: p}); err != nil {
+	if _, err := cli.RunFmt(t.Context(), cli.FmtOptions{Paths: []string{doc}, To: "bot", Printer: p}); err != nil {
 		t.Fatalf("fmt --to bot: %v", err)
 	}
-	if _, err := cli.RunFmt(cli.FmtOptions{Paths: []string{doc}, To: "bot", Check: true, Printer: p}); err != nil {
+	if _, err := cli.RunFmt(t.Context(), cli.FmtOptions{Paths: []string{doc}, To: "bot", Check: true, Printer: p}); err != nil {
 		t.Fatalf("fmt --to bot --check, the .bot just written: %v", err)
 	}
 

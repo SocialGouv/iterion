@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"time"
 
 	"github.com/SocialGouv/iterion/pkg/authoringlock"
 )
@@ -33,14 +32,6 @@ func botFileLeftAsItIs(err error) bool {
 	return errors.Is(err, ErrBotFileChanged) || errors.Is(err, ErrBotFileNotTaken)
 }
 
-// botFileLockWait bounds how long a CLI writer waits for a save of the same
-// file to finish. These commands carry no context of their own (RunFmt,
-// RunFix, MigrateDSL, RunImport take none), and a save takes milliseconds:
-// the bound lives here, named, rather than as an unbounded wait inside a
-// one-shot command. A caller that has a context of its own calls
-// replaceBotFile with it.
-var botFileLockWait = 15 * time.Second
-
 // replaceBotFile replaces path with data under the authoring lock, over the
 // bytes the caller decided on and no others: a save by the studio, the
 // assistant or the unit editor that landed since the caller read the file
@@ -53,6 +44,11 @@ var botFileLockWait = 15 * time.Second
 // and an agreement test in pkg/server holds the two takes to one lock), so
 // the read-back below cannot race a save: it happens under the lock, and
 // the save that follows re-reads and refuses on its own check.
+//
+// The wait for the lock is the caller's to bound, through ctx: the CLI
+// commands pass the command's context, which cobra cancels on SIGINT —
+// an operator's Ctrl-C shortens the wait (#2839). A caller after a hard
+// bound arms its own timeout.
 func replaceBotFile(ctx context.Context, path string, decidedOn, data []byte, perm os.FileMode) error {
 	held := false
 	err := authoringlock.Hold(ctx, path, func() error {
@@ -75,20 +71,9 @@ func replaceBotFile(ctx context.Context, path string, decidedOn, data []byte, pe
 		// Nothing was written and the file is whole: the take is the only
 		// thing that failed, and it is the one failure a caller may want to
 		// tell its user to retry.
-		return fmt.Errorf("%s: %w — an editor is saving it, or the %s this writer waits ended; left as it is (%w)", path, ErrBotFileNotTaken, botFileLockWait, err)
+		return fmt.Errorf("%s: %w — an editor is saving it, or the wait was cancelled; left as it is (%w)", path, ErrBotFileNotTaken, err)
 	case err != nil:
 		return err
 	}
 	return nil
-}
-
-// replaceBotFileNow is replaceBotFile with this package's own bound, for
-// the commands that carry no context. Threading the command's context
-// (cobra cancels it on SIGINT) through RunFmt, RunFix, MigrateDSL and
-// RunImport is a change of their signatures, filed as debt rather than
-// smuggled in here.
-func replaceBotFileNow(path string, decidedOn, data []byte, perm os.FileMode) error {
-	ctx, cancel := context.WithTimeout(context.Background(), botFileLockWait)
-	defer cancel()
-	return replaceBotFile(ctx, path, decidedOn, data, perm)
 }

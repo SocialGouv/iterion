@@ -25,7 +25,7 @@ starts with an ## IMPORT REPORT header and is compile-checked before
 it is written. See docs/import.md.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return cli.RunImport(cli.ImportOptions{
+		return cli.RunImport(cmd.Context(), cli.ImportOptions{
 			File:   args[0],
 			Out:    importOpts.out,
 			Name:   importOpts.name,

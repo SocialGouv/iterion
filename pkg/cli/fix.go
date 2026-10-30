@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -45,8 +46,10 @@ var ErrFixRefused = errors.New("fix: a file was refused")
 // `.bot` under opts.Paths (pkg/dsl/fix): each file is rewritten on its own
 // bytes and proven — it parses, and compiles to the same diagnostics minus
 // the fixed — before it is written. What has no mechanical remedy is listed
-// by file, for the author. Under DryRun nothing is written.
-func RunFix(opts FixOptions) (FixResult, error) {
+// by file, for the author. Under DryRun nothing is written. The context is
+// the command's own (cobra cancels it on SIGINT): it bounds the wait on a
+// file's authoring lock.
+func RunFix(ctx context.Context, opts FixOptions) (FixResult, error) {
 	var res FixResult
 	files, err := collectBotFiles("fix", opts.Paths)
 	if err != nil {
@@ -69,7 +72,7 @@ func RunFix(opts FixOptions) (FixResult, error) {
 			if err != nil {
 				return res, fmt.Errorf("fix: %w", err)
 			}
-			if err := replaceBotFileNow(path, raw, out.Fixed, info.Mode().Perm()); err != nil {
+			if err := replaceBotFile(ctx, path, raw, out.Fixed, info.Mode().Perm()); err != nil {
 				if botFileLeftAsItIs(err) {
 					// Refused like a file with no mechanical remedy: the
 					// others are still fixed, and the command exits on

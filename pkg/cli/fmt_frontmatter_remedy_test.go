@@ -87,7 +87,7 @@ func TestAFrontmatterRefusalNoticeCarriesItsRemedy(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			bot := writeBot(t, "c/b.bot", tc.head+body)
 			jp, _ := jsonPrinter()
-			res, err := RunFmt(FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp})
+			res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp})
 			if err != nil {
 				t.Fatalf("fmt refused the file: %v", err)
 			}
@@ -210,7 +210,7 @@ func TestAFrontmatterRefusalSaysWhichLinesItsNumberCounts(t *testing.T) {
 			}
 			bot := writeBot(t, "ln/"+strings.ReplaceAll(name, " ", "_")+"/b.bot", tc.head+tc.body)
 			jp, _ := jsonPrinter()
-			res, err := RunFmt(FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp})
+			res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp})
 			if err != nil {
 				t.Fatalf("fmt refused the file: %v", err)
 			}
@@ -280,7 +280,7 @@ func TestTheUnclosedFrontmatterNoticeNamesBothFenceSpellings(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			bot := writeBot(t, "fence/"+strings.ReplaceAll(name, " ", "_")+"/b.bot", head+body)
 			jp, _ := jsonPrinter()
-			res, err := RunFmt(FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp})
+			res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp})
 			if err != nil {
 				t.Fatalf("fmt --to yaml: %v", err)
 			}

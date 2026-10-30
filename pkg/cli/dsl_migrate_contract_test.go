@@ -46,7 +46,7 @@ func TestMigrateDSLRaisesTheFloorToWhatTheSourcesNeed(t *testing.T) {
 		}
 		dir := writeContractedBundle(t)
 		var out bytes.Buffer
-		res, err := MigrateDSL(MigrateDSLOptions{Paths: []string{dir}, Floor: "v" + low, Printer: &Printer{W: &out, Format: OutputHuman}})
+		res, err := MigrateDSL(t.Context(), MigrateDSLOptions{Paths: []string{dir}, Floor: "v" + low, Printer: &Printer{W: &out, Format: OutputHuman}})
 		if err != nil {
 			t.Fatalf("MigrateDSL: %v\n%s", err, out.String())
 		}

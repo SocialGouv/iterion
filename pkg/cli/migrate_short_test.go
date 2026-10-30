@@ -47,7 +47,7 @@ func TestMigrateWritesNoFloorOffASourceCutShort(t *testing.T) {
 	t.Run("cut short", func(t *testing.T) {
 		dir := write(t)
 		t.Setenv(parser.ReadBudgetEnv, strconv.Itoa(budget))
-		_, err := MigrateDSL(MigrateDSLOptions{Paths: []string{dir}, To: 2, Floor: parser.ImportSince})
+		_, err := MigrateDSL(t.Context(), MigrateDSLOptions{Paths: []string{dir}, To: 2, Floor: parser.ImportSince})
 		if !errors.Is(err, migrate.ErrRefused) || !strings.Contains(err.Error(), "child.bot") || !strings.Contains(err.Error(), "C256") || !strings.Contains(err.Error(), parser.ReadBudgetEnv) {
 			t.Errorf("migrate over a source cut short: %v — want the refusal naming child.bot, C256, the budget's variable", err)
 		}
@@ -61,7 +61,7 @@ func TestMigrateWritesNoFloorOffASourceCutShort(t *testing.T) {
 	t.Run("read whole", func(t *testing.T) {
 		dir := write(t)
 		t.Setenv(parser.ReadBudgetEnv, "0")
-		if _, err := MigrateDSL(MigrateDSLOptions{Paths: []string{dir}, To: 2, Floor: parser.ImportSince}); err != nil {
+		if _, err := MigrateDSL(t.Context(), MigrateDSLOptions{Paths: []string{dir}, To: 2, Floor: parser.ImportSince}); err != nil {
 			t.Fatal(err)
 		}
 		got, _ := os.ReadFile(filepath.Join(dir, "manifest.yaml"))

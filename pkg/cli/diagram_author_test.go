@@ -58,7 +58,7 @@ func TestDiagramDrawsTheBotADocumentStandsFor(t *testing.T) {
 	if _, err := os.Stat("d/hello.bot"); err == nil {
 		t.Fatal("diagram wrote the .bot the document stands for")
 	}
-	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
 		t.Fatalf("fmt --to bot: %v", err)
 	}
 	for _, view := range views {
@@ -192,7 +192,7 @@ func TestDiagramRefusesADocumentAsItsBotIsRefused(t *testing.T) {
 			if _, err := os.Stat(dir + "/x.bot"); err == nil {
 				t.Fatal("a refused diagram wrote the .bot")
 			}
-			if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
+			if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
 				t.Fatalf("fmt --to bot: %v", err)
 			}
 			if _, botErr := diagramJSON(t, dir+"/x.bot", ""); botErr == nil || botErr.Error() != docErr.Error() {
@@ -225,7 +225,7 @@ func TestDiagramReadsADocumentAManifestExports(t *testing.T) {
 				t.Fatalf("%s: validate refuses the document of an exported main: %v", doc, err)
 			}
 		}
-		if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
+		if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
 			t.Fatalf("fmt --to bot: %v", err)
 		}
 		fromBot, err := diagramJSON(t, strings.TrimSuffix(doc, ".yaml"), "full")
@@ -256,7 +256,7 @@ func TestDiagramReadsADocumentsFragmentsWhereItsBotDoes(t *testing.T) {
 	}
 	jp, _ := jsonPrinter()
 	docValidate := RunValidate(doc, jp)
-	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
 		t.Fatalf("fmt --to bot: %v", err)
 	}
 	fromBot, err := diagramJSON(t, "s/bundle/workflows/other.bot", "full")
@@ -309,7 +309,7 @@ func TestADocumentWhoseBotFmtWillNotWriteOverIsRefused(t *testing.T) {
 			if err := RunValidate(doc, jp); err == nil || !strings.Contains(err.Error(), sentence) {
 				t.Fatalf("validate: %v, want the refusal saying %q", err, sentence)
 			}
-			res, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Force: true, Printer: jp})
+			res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Force: true, Printer: jp})
 			if !errors.Is(err, ErrFmtRefused) || len(res.Refused) != 1 || !strings.Contains(res.Refused[0], tc.want) {
 				t.Fatalf("fmt --to bot --force: %v %q, want the refusal saying the .bot %s", err, res.Refused, tc.want)
 			}
@@ -332,7 +332,7 @@ func TestDiagramTakesADocumentWhoseBotEverySurfaceReadsBack(t *testing.T) {
 	if err := RunValidate(doc, jp); err != nil {
 		t.Fatalf("validate refuses what it reads as UPPER.BOT: %v", err)
 	}
-	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp}); err != nil {
 		t.Fatalf("fmt --to bot on UPPER.BOT.YAML: %v, want the conversion", err)
 	}
 	if _, err := os.Stat("u/UPPER.BOT"); err != nil {
@@ -354,7 +354,7 @@ func TestDiagramDoesNotDrawAMainDocumentInABundleAbove(t *testing.T) {
 	if docErr == nil || !strings.Contains(docErr.Error(), `unknown prompt "ask"`) {
 		t.Fatalf("the document was drawn in the bundle above: %v", docErr)
 	}
-	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
 		t.Fatalf("fmt --to bot: %v", err)
 	}
 	if _, botErr := diagramJSON(t, "outer/sub/main.bot", ""); botErr == nil || botErr.Error() != docErr.Error() {
@@ -369,7 +369,7 @@ func TestADocumentOfAMainWhoseBundleDoesNotOpenIsRefusedAsItsBot(t *testing.T) {
 	inTempWorkspace(t)
 	writeBot(t, "m/manifest.yaml", "schema_version: 1\nname: probe\nexports: [not: a mapping\n")
 	doc := writeBot(t, "m/main.bot.yaml", helloDocWith(""))
-	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
 		t.Fatalf("fmt --to bot: %v", err)
 	}
 	const remedy = "give main.bot a directory of its own if this is not its bundle"
@@ -470,7 +470,7 @@ func TestTheDiagramOfADocumentIsTheDiagramOfItsBotOverTheCorpus(t *testing.T) {
 			t.Fatalf("%s: the diagram of its document wrote it", bot)
 		}
 		drawn, refused := 0, 0
-		if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
+		if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
 			fmtRefused++
 			for key, s := range fromDoc {
 				if s.err == "" {

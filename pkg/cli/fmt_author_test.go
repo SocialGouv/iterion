@@ -41,14 +41,14 @@ func TestFmtToBotWritesTheBotADocumentStandsFor(t *testing.T) {
 	doc := writeBot(t, "d/hello.bot.yaml", authorHelloDoc)
 	bot := "d/hello.bot"
 	jp, _ := jsonPrinter()
-	res, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Check: true, Printer: jp})
+	res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Check: true, Printer: jp})
 	if !errors.Is(err, ErrFmtWouldChange) || len(res.Files) != 1 || !res.Files[0].Changed || res.Files[0].Written {
 		t.Fatalf("--check with no .bot beside the document: %v %+v, want ErrFmtWouldChange and a file to write", err, res.Files)
 	}
 	if _, err := os.Stat(bot); err == nil {
 		t.Fatal("--check wrote the .bot")
 	}
-	res, err = RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
+	res, err = RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
 	if err != nil {
 		t.Fatalf("--to bot: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestFmtToBotWritesTheBotADocumentStandsFor(t *testing.T) {
 		t.Fatalf("report: %+v", res.Files)
 	}
 
-	res, err = RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
+	res, err = RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
 	if err != nil || len(res.Files) != 1 || res.Files[0].Changed {
 		t.Fatalf("a second conversion is not a no-op: %v %+v", err, res.Files)
 	}
@@ -76,31 +76,31 @@ func TestFmtToBotWritesTheBotADocumentStandsFor(t *testing.T) {
 	if err := os.WriteFile(bot, []byte(edited), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, err = RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
+	res, err = RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
 	if !errors.Is(err, ErrFmtRefused) || len(res.Refused) != 1 || !strings.Contains(res.Refused[0], "--force") {
 		t.Fatalf("a different .bot beside the document was not refused: %v %v", err, res.Refused)
 	}
 	if now, _ := os.ReadFile(bot); string(now) != edited {
 		t.Fatalf("the refused destination was rewritten:\n%s", now)
 	}
-	res, err = RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Check: true, Printer: jp})
+	res, err = RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Check: true, Printer: jp})
 	if !errors.Is(err, ErrFmtRefused) || len(res.Refused) != 1 || !strings.Contains(res.Refused[0], "--force") {
 		t.Fatalf("--check on a differing destination without --force: %v %v, want the refusal the write gives", err, res.Refused)
 	}
-	res, err = RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Check: true, Force: true, Printer: jp})
+	res, err = RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Check: true, Force: true, Printer: jp})
 	if !errors.Is(err, ErrFmtWouldChange) || len(res.Files) != 1 || !res.Files[0].Changed || res.Files[0].Written {
 		t.Fatalf("--check --force on a differing destination: %v %+v, want ErrFmtWouldChange", err, res.Files)
 	}
 	if now, _ := os.ReadFile(bot); string(now) != edited {
 		t.Fatalf("--check rewrote the destination:\n%s", now)
 	}
-	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Force: true, Printer: jp}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Force: true, Printer: jp}); err != nil {
 		t.Fatalf("--force: %v", err)
 	}
 	if now, _ := os.ReadFile(bot); string(now) != string(got) {
 		t.Fatalf("--force did not write the document's .bot:\n%s", now)
 	}
-	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Check: true, Printer: jp}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Check: true, Printer: jp}); err != nil {
 		t.Fatalf("--check on the .bot the document writes: %v", err)
 	}
 }
@@ -114,7 +114,7 @@ func TestFmtForceSaysWhatTheFileItReplacesCarried(t *testing.T) {
 	inTempWorkspace(t)
 	jp, _ := jsonPrinter()
 	bot := writeBot(t, "d/x.bot", "## owner: jo\n## tags: [x]\n\n# Why this bot exists.\ndsl: 2\n\nagent hello:\n  model: \"m\" # trailing\n  system: \"Say hello.\"\n\nworkflow hello:\n  entry: hello\n\n  hello -> done\n")
-	if _, err := RunFmt(FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp}); err != nil {
 		t.Fatalf("--to yaml: %v", err)
 	}
 	doc := "d/x.bot.yaml"
@@ -134,7 +134,7 @@ func TestFmtForceSaysWhatTheFileItReplacesCarried(t *testing.T) {
 		return false
 	}
 	for _, check := range []bool{true, false} {
-		res, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Force: true, Check: check, Printer: jp})
+		res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Force: true, Check: check, Printer: jp})
 		if check && !errors.Is(err, ErrFmtWouldChange) || !check && err != nil {
 			t.Fatalf("--to bot --force (check %v): %v", check, err)
 		}
@@ -148,20 +148,20 @@ func TestFmtForceSaysWhatTheFileItReplacesCarried(t *testing.T) {
 	if err := os.WriteFile(doc, append([]byte("# keep me\n"), now...), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, err := RunFmt(FmtOptions{Paths: []string{bot}, To: "yaml", Force: true, Printer: jp})
+	res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{bot}, To: "yaml", Force: true, Printer: jp})
 	if err != nil || !said(res, "d/x.bot.yaml: --force replaces it whole — 1 comment line(s) it carries are not in what d/x.bot writes (the first: # keep me)") {
 		t.Fatalf("--to yaml --force replaced a commented document without saying so: %v %q", err, res.Notices)
 	}
 
 	// Nothing carried, nothing said: the .bot now holds no comment.
-	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Force: true, Printer: jp}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Force: true, Printer: jp}); err != nil {
 		t.Fatal(err)
 	}
 	now, _ = os.ReadFile(doc)
 	if err := os.WriteFile(doc, []byte(strings.Replace(string(now), "Say hello twice.", "Say hello thrice.", 1)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, err = RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Force: true, Printer: jp})
+	res, err = RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Force: true, Printer: jp})
 	if err != nil || said(res, "--force replaces it whole") {
 		t.Fatalf("a note for a .bot that carried no comment: %v %q", err, res.Notices)
 	}
@@ -170,14 +170,14 @@ func TestFmtForceSaysWhatTheFileItReplacesCarried(t *testing.T) {
 	// a value the document carries (the quoted description) is not lost, and
 	// a key it does not carry (the tags) is named.
 	fm := writeBot(t, "f/y.bot", "## ---\n## name: hello\n## description: \"Says hello\"\n## tags:\n##   - a\n##   - b\n## ---\n\n# kept nowhere\ndsl: 2\n\nagent hello:\n  model: \"m\"\n  system: \"Say hello.\"\n\nworkflow hello:\n  entry: hello\n\n  hello -> done\n")
-	if _, err := RunFmt(FmtOptions{Paths: []string{fm}, To: "yaml", Printer: jp}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{fm}, To: "yaml", Printer: jp}); err != nil {
 		t.Fatalf("--to yaml of a .bot with a frontmatter: %v", err)
 	}
 	ydoc, _ := os.ReadFile("f/y.bot.yaml")
 	if err := os.WriteFile("f/y.bot.yaml", []byte(strings.Replace(string(ydoc), "Say hello.", "Say hello twice.", 1)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, err = RunFmt(FmtOptions{Paths: []string{"f/y.bot.yaml"}, To: "bot", Force: true, Printer: jp})
+	res, err = RunFmt(t.Context(), FmtOptions{Paths: []string{"f/y.bot.yaml"}, To: "bot", Force: true, Printer: jp})
 	if err != nil || !said(res, "f/y.bot: --force replaces it whole — 1 comment line(s) and the frontmatter key(s) tags it carries are not in what f/y.bot.yaml writes (the first comment: kept nowhere)") || said(res, "description") {
 		t.Fatalf("--force over a .bot with a frontmatter names the wrong losses: %v %q", err, res.Notices)
 	}
@@ -194,7 +194,7 @@ func TestFmtForceSaysWhatTheFileItReplacesCarried(t *testing.T) {
 		if err := os.WriteFile("f/y.bot.yaml", []byte(target), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		res, err = RunFmt(FmtOptions{Paths: []string{fm}, To: "yaml", Force: true, Printer: jp})
+		res, err = RunFmt(t.Context(), FmtOptions{Paths: []string{fm}, To: "yaml", Force: true, Printer: jp})
 		if err != nil || !said(res, "f/y.bot.yaml: --force replaces it whole — it does not read as one YAML document") {
 			t.Fatalf("--force over %q said nothing of what it replaced: %v %q", target, err, res.Notices)
 		}
@@ -203,14 +203,14 @@ func TestFmtForceSaysWhatTheFileItReplacesCarried(t *testing.T) {
 	// The block's own YAML comments are named — the writer keeps none — and a
 	// key written twice is one key, as the catalogue reads it.
 	fm2 := writeBot(t, "g/z.bot", "## ---\n## # owned by team-x: do not rename\n## name: old\n## name: hello # the public name\n## description: Says hello\n## ---\n\ndsl: 2\n\nagent hello:\n  model: \"m\"\n  system: \"Say hello.\"\n\nworkflow hello:\n  entry: hello\n\n  hello -> done\n")
-	if _, err := RunFmt(FmtOptions{Paths: []string{fm2}, To: "yaml", Printer: jp}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{fm2}, To: "yaml", Printer: jp}); err != nil {
 		t.Fatalf("--to yaml of a .bot whose frontmatter carries comments: %v", err)
 	}
 	zdoc, _ := os.ReadFile("g/z.bot.yaml")
 	if err := os.WriteFile("g/z.bot.yaml", []byte(strings.Replace(string(zdoc), "Say hello.", "Say hello twice.", 1)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, err = RunFmt(FmtOptions{Paths: []string{"g/z.bot.yaml"}, To: "bot", Force: true, Printer: jp})
+	res, err = RunFmt(t.Context(), FmtOptions{Paths: []string{"g/z.bot.yaml"}, To: "bot", Force: true, Printer: jp})
 	if err != nil || !said(res, "g/z.bot: --force replaces it whole — 2 comment line(s) it carries are not in what g/z.bot.yaml writes (the first comment: # owned by team-x: do not rename)") || said(res, "frontmatter key") {
 		t.Fatalf("--force over a .bot whose frontmatter carries comments names the wrong losses: %v %q", err, res.Notices)
 	}
@@ -218,14 +218,14 @@ func TestFmtForceSaysWhatTheFileItReplacesCarried(t *testing.T) {
 	// A block that is not one document — a `...` ends the first — is compared
 	// line by line: what follows the end marker is named, never dropped.
 	fm3 := writeBot(t, "h/w.bot", "## ---\n## name: hello\n## ...\n## owner: team-x\n## ---\n\ndsl: 2\n\nagent hello:\n  model: \"m\"\n  system: \"Say hello.\"\n\nworkflow hello:\n  entry: hello\n\n  hello -> done\n")
-	if _, err := RunFmt(FmtOptions{Paths: []string{fm3}, To: "yaml", Printer: jp}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{fm3}, To: "yaml", Printer: jp}); err != nil {
 		t.Fatalf("--to yaml of a .bot whose frontmatter holds an end marker: %v", err)
 	}
 	wdoc, _ := os.ReadFile("h/w.bot.yaml")
 	if err := os.WriteFile("h/w.bot.yaml", []byte(strings.Replace(string(wdoc), "Say hello.", "Say hello twice.", 1)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, err = RunFmt(FmtOptions{Paths: []string{"h/w.bot.yaml"}, To: "bot", Force: true, Printer: jp})
+	res, err = RunFmt(t.Context(), FmtOptions{Paths: []string{"h/w.bot.yaml"}, To: "bot", Force: true, Printer: jp})
 	if err != nil || !said(res, "h/w.bot: --force replaces it whole") || !said(res, "comment line(s)") {
 		t.Fatalf("--force over a .bot whose frontmatter holds an end marker said nothing of what follows it: %v %q", err, res.Notices)
 	}
@@ -234,7 +234,7 @@ func TestFmtForceSaysWhatTheFileItReplacesCarried(t *testing.T) {
 	// what it carries past the error cannot be listed.
 	doc2 := writeBot(t, "k/v.bot.yaml", authorHelloDoc)
 	writeBot(t, "k/v.bot", "# keep me\ndsl: 2\n\nagent hello:\n  model: \"m\n# after the error\n")
-	res, err = RunFmt(FmtOptions{Paths: []string{doc2}, To: "bot", Force: true, Printer: jp})
+	res, err = RunFmt(t.Context(), FmtOptions{Paths: []string{doc2}, To: "bot", Force: true, Printer: jp})
 	if err != nil || !said(res, "k/v.bot: --force replaces it whole — it does not parse as a .bot") {
 		t.Fatalf("--force over a .bot that does not parse said nothing of what it replaced: %v %q", err, res.Notices)
 	}
@@ -250,7 +250,7 @@ func TestFmtToBotRefusesADocumentWithNoWrittenForm(t *testing.T) {
 	doc := writeBot(t, "e/long.bot.yaml", "dsl: 1\ncatalog:\n  name: probe\n  description: |\n"+desc+
 		"nodes:\n  - tool: t\n    command: \"printf `x` \\\"y\\\"\"\n    output: out\nschemas:\n  out:\n    ok: bool\nworkflow:\n  name: w\n  entry: t\n  edges:\n    - t -> done\n")
 	jp, _ := jsonPrinter()
-	res, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
+	res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
 	if !errors.Is(err, ErrFmtRefused) || len(res.Refused) != 1 || !strings.Contains(res.Refused[0], "no written .bot form") {
 		t.Fatalf("a document with no written form was not refused: %v %v", err, res.Refused)
 	}
@@ -268,17 +268,17 @@ func TestFmtRefusesToSettleADocumentsPromptBody(t *testing.T) {
 	inTempWorkspace(t)
 	doc := writeBot(t, "s/settled.bot.yaml", settledDoc)
 	jp, _ := jsonPrinter()
-	res, err := RunFmt(FmtOptions{Paths: []string{doc}, Printer: jp})
+	res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, Printer: jp})
 	if !errors.Is(err, ErrFmtRefused) || len(res.Refused) != 1 || !strings.Contains(res.Refused[0], "E053") || !strings.Contains(res.Refused[0], "otherwise") {
 		t.Fatalf("a document the .bot reads otherwise than written was not refused by name: %v %v", err, res.Refused)
 	}
 	if got, _ := os.ReadFile(doc); string(got) != settledDoc {
 		t.Fatalf("the author's text was settled:\n%s", got)
 	}
-	if _, err := RunFmt(FmtOptions{Paths: []string{"s"}, Check: true, Printer: jp}); !errors.Is(err, ErrFmtRefused) {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{"s"}, Check: true, Printer: jp}); !errors.Is(err, ErrFmtRefused) {
 		t.Fatalf("--check in a walk: %v, want ErrFmtRefused", err)
 	}
-	res, err = RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
+	res, err = RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
 	if err != nil {
 		t.Fatalf("--to bot: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestFmtToBotSaysTheCommentsItDoesNotCarry(t *testing.T) {
 	inTempWorkspace(t)
 	doc := writeBot(t, "c/x.bot.yaml", "# a draft\ndsl: 2\nnodes:\n  - tool: status\n    command: echo \"see #123\"\nworkflow:\n  name: w\n  entry: status\n  edges:\n    - status -> done\n")
 	jp, _ := jsonPrinter()
-	res, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
+	res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
 	if err != nil {
 		t.Fatalf("--to bot: %v", err)
 	}
@@ -314,12 +314,12 @@ func TestFmtToBotSaysTheCommentsItDoesNotCarry(t *testing.T) {
 	// The comment a ` #` started is named before the one written under it,
 	// which yaml.v3 hangs on the key.
 	under := writeBot(t, "u/x.bot.yaml", "dsl: 2\nnodes:\n  - tool: status\n    command: echo \"see #123\"\n    # retries are handled by the caller\nworkflow:\n  name: w\n  entry: status\n  edges:\n    - status -> done\n")
-	res, err = RunFmt(FmtOptions{Paths: []string{under}, To: "bot", Printer: jp})
+	res, err = RunFmt(t.Context(), FmtOptions{Paths: []string{under}, To: "bot", Printer: jp})
 	if err != nil || !strings.Contains(strings.Join(res.Notices, "\n"), under+": 2 YAML comment line(s) are not carried into the .bot (the first: #123\")") {
 		t.Fatalf("the note does not name first the comment the ` #` started: %v %q", err, res.Notices)
 	}
 	plain := writeBot(t, "p/x.bot.yaml", "dsl: 2\nnodes:\n  - tool: status\n    command: echo ready\nworkflow:\n  name: w\n  entry: status\n  edges:\n    - status -> done\n")
-	res, err = RunFmt(FmtOptions{Paths: []string{plain}, To: "bot", Printer: jp})
+	res, err = RunFmt(t.Context(), FmtOptions{Paths: []string{plain}, To: "bot", Printer: jp})
 	if err != nil || len(res.Notices) != 0 {
 		t.Fatalf("a document without a comment: %v, notices %q — want none", err, res.Notices)
 	}
@@ -337,11 +337,11 @@ func TestFmtKeepsADocumentsOwnBytes(t *testing.T) {
 	withBytes := "\ufeff" + strings.ReplaceAll(string(canonical), "\n", "\r\n")
 	doc := writeBot(t, "b/hello.bot.yaml", withBytes)
 	jp, _ := jsonPrinter()
-	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, Check: true, Printer: jp}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, Check: true, Printer: jp}); err != nil {
 		t.Fatalf("--check on a canonical document with a BOM and CRLF: %v", err)
 	}
 	loose := writeBot(t, "b/loose.bot.yaml", "\ufeff"+strings.ReplaceAll(looseHelloDoc, "\n", "\r\n"))
-	if _, err := RunFmt(FmtOptions{Paths: []string{loose}, Printer: jp}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{loose}, Printer: jp}); err != nil {
 		t.Fatalf("fmt: %v", err)
 	}
 	if got, _ := os.ReadFile(loose); string(got) != withBytes {
@@ -358,7 +358,7 @@ func TestFmtToYamlWritesTheDocumentOfABot(t *testing.T) {
 	botText := "## ---\n## name: probe\n## owner: jo\n## ---\n\nprompt ask:\n  Say hello.\n\n## the agent\nagent hello:\n  model: \"m\"\n  system: ask\n\nworkflow hello:\n  entry: hello\n  hello -> done\n"
 	bot := writeBot(t, "y/hello.bot", botText)
 	jp, _ := jsonPrinter()
-	res, err := RunFmt(FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp})
+	res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp})
 	if err != nil {
 		t.Fatalf("--to yaml: %v", err)
 	}
@@ -388,7 +388,7 @@ func TestFmtToYamlWritesTheDocumentOfABot(t *testing.T) {
 	}
 
 	broken := writeBot(t, "y/broken.bot", "agent :\n  model\n")
-	res, err = RunFmt(FmtOptions{Paths: []string{broken}, To: "yaml", Force: true, Printer: jp})
+	res, err = RunFmt(t.Context(), FmtOptions{Paths: []string{broken}, To: "yaml", Force: true, Printer: jp})
 	if !errors.Is(err, ErrFmtRefused) || len(res.Refused) != 1 || !strings.Contains(res.Refused[0], "does not parse") {
 		t.Fatalf("a .bot that does not parse was converted: %v %v", err, res.Refused)
 	}
@@ -412,7 +412,7 @@ func TestFmtToYamlWritesADocumentThatReadsBack(t *testing.T) {
 	botText := "dsl: 2\n\nvars:\n  ratio: float = 01.5\n  n: int = 010\n\nagent a:\n  model: \"m\"\n\nworkflow w:\n  entry: a\n\n  a -> done\n"
 	bot := writeBot(t, "r/numbers.bot", botText)
 	jp, _ := jsonPrinter()
-	if _, err := RunFmt(FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp}); err != nil {
 		t.Fatalf("--to yaml: %v", err)
 	}
 	out, err := os.ReadFile("r/numbers.bot.yaml")
@@ -441,7 +441,7 @@ func TestFmtToYamlWritesADocumentThatReadsBack(t *testing.T) {
 		"r/merge.bot":         "dsl: 2\n\ntool c:\n  action: forgejo.issue.comment\n  connection: \"forge-main\"\n  params:\n    \"<<\": \"x\"\n\nworkflow w:\n  entry: c\n\n  c -> done\n",
 	} {
 		frag := writeBot(t, path, text)
-		if _, err := RunFmt(FmtOptions{Paths: []string{frag}, To: "yaml", Printer: jp}); err != nil {
+		if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{frag}, To: "yaml", Printer: jp}); err != nil {
 			t.Fatalf("--to yaml %s: %v", path, err)
 		}
 		if out, err := os.ReadFile(path + ".yaml"); err != nil || author.Parse(path+".yaml", out).HasErrors() {
@@ -453,7 +453,7 @@ func TestFmtToYamlWritesADocumentThatReadsBack(t *testing.T) {
 	// the document's own name, which nothing has written yet.
 	writeBot(t, "r/rules.md", "Be brief.\n")
 	inc := writeBot(t, "r/include.bot", "dsl: 2\n\nprompt ask:\n  Say hello. {{include \"rules.md\"}}\n\nagent a:\n  model: \"m\"\n  system: ask\n\nworkflow w:\n  entry: a\n\n  a -> done\n")
-	if res, err := RunFmt(FmtOptions{Paths: []string{inc}, To: "yaml", Printer: jp}); err != nil {
+	if res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{inc}, To: "yaml", Printer: jp}); err != nil {
 		t.Fatalf("--to yaml of a .bot whose prompt includes a file beside it: %v %q", err, res.Refused)
 	}
 	if _, err := os.Stat("r/include.bot.yaml"); err != nil {
@@ -473,7 +473,7 @@ func TestFmtToYamlWritesADocumentThatReadsBack(t *testing.T) {
 		written := tc.written
 		writeDocument = func(*ast.File) ([]byte, error) { return []byte(written), nil }
 		other := writeBot(t, "r/other.bot", tc.bot)
-		res, err := RunFmt(FmtOptions{Paths: []string{other}, To: "yaml", Printer: jp})
+		res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{other}, To: "yaml", Printer: jp})
 		if !errors.Is(err, ErrFmtRefused) || len(res.Refused) != 1 || !strings.Contains(res.Refused[0], tc.want) {
 			t.Fatalf("a document the proof must refuse was converted: %v %q, want %q\n--- written:\n%s", err, res.Refused, tc.want, written)
 		}
@@ -494,7 +494,7 @@ func TestFmtToYamlAcceptsAFragmentReadBackWithReorderedDeclarations(t *testing.T
 	defer func(w func(*ast.File) ([]byte, error)) { writeDocument = w }(writeDocument)
 	writeDocument = func(*ast.File) ([]byte, error) { return []byte(written), nil }
 	jp, _ := jsonPrinter()
-	if res, err := RunFmt(FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp}); err != nil {
+	if res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp}); err != nil {
 		t.Fatalf("a reordered fragment was refused: %v %q", err, res.Refused)
 	}
 	if out, err := os.ReadFile(bot + ".yaml"); err != nil || string(out) != written {
@@ -576,7 +576,7 @@ func TestFmtToYamlRefusesAFragmentReadBackWhoseOrderChangesTheProgram(t *testing
 			defer func(w func(*ast.File) ([]byte, error)) { writeDocument = w }(writeDocument)
 			writeDocument = func(*ast.File) ([]byte, error) { return written, nil }
 			jp, _ := jsonPrinter()
-			res, conversionErr := RunFmt(FmtOptions{Paths: []string{fragment}, To: "yaml", Printer: jp})
+			res, conversionErr := RunFmt(t.Context(), FmtOptions{Paths: []string{fragment}, To: "yaml", Printer: jp})
 			if !errors.Is(conversionErr, ErrFmtRefused) || len(res.Refused) != 1 || !strings.Contains(res.Refused[0], "reads back as another program") {
 				t.Fatalf("a semantic reorder was accepted: %v %q", conversionErr, res.Refused)
 			}
@@ -614,7 +614,7 @@ func TestFmtToYamlCarriesTheCatalogTheCatalogReaderReads(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			bot := writeBot(t, "c/"+strings.ReplaceAll(name, " ", "_")+".bot", tc.head+body)
 			jp, _ := jsonPrinter()
-			res, err := RunFmt(FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp})
+			res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp})
 			if err != nil {
 				t.Fatalf("--to yaml: %v", err)
 			}
@@ -659,7 +659,7 @@ func TestFmtToYamlCountsTheLinesOfABlockTheDocumentDoesNotCarry(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			bot := writeBot(t, "l/"+strings.ReplaceAll(name, " ", "_")+".bot", tc.head+body)
 			jp, _ := jsonPrinter()
-			res, err := RunFmt(FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp})
+			res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{bot}, To: "yaml", Printer: jp})
 			if err != nil {
 				t.Fatalf("--to yaml: %v", err)
 			}
@@ -687,10 +687,10 @@ func TestFmtCanonicalisesADocumentInAWalk(t *testing.T) {
 	doc := writeBot(t, "w/hello.bot.yaml", looseHelloDoc)
 	bot := writeBot(t, "w/other.bot", looseBot)
 	jp, _ := jsonPrinter()
-	if _, err := RunFmt(FmtOptions{Paths: []string{"w"}, Check: true, Printer: jp}); !errors.Is(err, ErrFmtWouldChange) {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{"w"}, Check: true, Printer: jp}); !errors.Is(err, ErrFmtWouldChange) {
 		t.Fatalf("--check on a loose document: %v, want ErrFmtWouldChange", err)
 	}
-	res, err := RunFmt(FmtOptions{Paths: []string{"w"}, Printer: jp})
+	res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{"w"}, Printer: jp})
 	if err != nil {
 		t.Fatalf("fmt: %v", err)
 	}
@@ -708,7 +708,7 @@ func TestFmtCanonicalisesADocumentInAWalk(t *testing.T) {
 	if b, _ := os.ReadFile(bot); string(b) == looseBot {
 		t.Fatal("the .bot beside the document was not formatted")
 	}
-	if _, err := RunFmt(FmtOptions{Paths: []string{"w"}, Check: true, Printer: jp}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{"w"}, Check: true, Printer: jp}); err != nil {
 		t.Fatalf("--check after fmt: %v", err)
 	}
 }
@@ -726,7 +726,7 @@ func TestFmtRewritesACommentedDocumentKeepingItsComments(t *testing.T) {
 	commented := "# keep me\n" + strings.Replace(loose, "  ask: Say hello.\n", "  ask: Say hello. # and me\n", 1) + "# the foot\n"
 	doc := writeBot(t, "k/hello.bot.yaml", commented)
 	jp, _ := jsonPrinter()
-	res, err := RunFmt(FmtOptions{Paths: []string{"k"}, Printer: jp})
+	res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{"k"}, Printer: jp})
 	if err != nil || len(res.Refused) != 0 {
 		t.Fatalf("a commented document was refused: %v %v", err, res.Refused)
 	}
@@ -734,10 +734,10 @@ func TestFmtRewritesACommentedDocumentKeepingItsComments(t *testing.T) {
 	if got, _ := os.ReadFile(doc); string(got) != want {
 		t.Fatalf("the commented document was not rewritten with its comments in place:\n%s\nwant\n%s", got, want)
 	}
-	if _, err := RunFmt(FmtOptions{Paths: []string{"k"}, Check: true, Printer: jp}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{"k"}, Check: true, Printer: jp}); err != nil {
 		t.Fatalf("--check after fmt on a commented document: %v", err)
 	}
-	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp}); err != nil {
 		t.Fatalf("--to bot on a commented document: %v", err)
 	}
 	if _, err := os.Stat("k/hello.bot"); err != nil {
@@ -857,7 +857,7 @@ func TestFmtKeepsTheCommentsOfADocumentEndMarker(t *testing.T) {
 			src := tc.body + tc.tail
 			doc := writeBot(t, tc.dir+"/end.bot.yaml", src)
 			jp, _ := jsonPrinter()
-			res, err := RunFmt(FmtOptions{Paths: []string{doc}, Printer: jp})
+			res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, Printer: jp})
 			if err != nil || len(res.Refused) != 0 {
 				t.Fatalf("a document whose marker region the writer re-emits was refused: %v %q", err, res.Refused)
 			}
@@ -868,10 +868,10 @@ func TestFmtKeepsTheCommentsOfADocumentEndMarker(t *testing.T) {
 			if had, kept := markerLinesOf(src), markerLinesOf(string(got)); had != kept {
 				t.Fatalf("the rewrite carries %d marker line(s), the author's file %d:\n%s", kept, had, got)
 			}
-			if _, err := RunFmt(FmtOptions{Paths: []string{tc.dir}, Check: true, Printer: jp}); err != nil {
+			if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{tc.dir}, Check: true, Printer: jp}); err != nil {
 				t.Fatalf("--check after fmt: %v", err)
 			}
-			res, err = RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
+			res, err = RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
 			want := fmt.Sprintf("%s: %d YAML comment line(s) are not carried into the .bot (the first: %s)", doc, tc.n, tc.first)
 			if err != nil || !strings.Contains(strings.Join(res.Notices, "\n"), want) {
 				t.Fatalf("--to bot did not count the marker's comments: %v %q, want %q", err, res.Notices, want)
@@ -916,7 +916,7 @@ func TestFmtKeepsTheCommentsOfADocumentEndMarker(t *testing.T) {
 		t.Run(tc.dir+" is rewritten", func(t *testing.T) {
 			doc := writeBot(t, tc.dir+"/end.bot.yaml", tc.src)
 			jp, _ := jsonPrinter()
-			res, err := RunFmt(FmtOptions{Paths: []string{doc}, Printer: jp})
+			res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, Printer: jp})
 			if err != nil || len(res.Refused) != 0 {
 				t.Fatalf("a document whose rewrite keeps every comment was refused: %v %q", err, res.Refused)
 			}
@@ -930,10 +930,10 @@ func TestFmtKeepsTheCommentsOfADocumentEndMarker(t *testing.T) {
 			if had, kept := commentLinesOf(tc.src, tc.text...), commentLinesOf(string(got), tc.text...); had != kept {
 				t.Fatalf("the rewrite carries the comment lines %q, the author's file %q:\n%s", kept, had, got)
 			}
-			if _, err := RunFmt(FmtOptions{Paths: []string{tc.dir}, Check: true, Printer: jp}); err != nil {
+			if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{tc.dir}, Check: true, Printer: jp}); err != nil {
 				t.Fatalf("--check after fmt: %v", err)
 			}
-			res, err = RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
+			res, err = RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
 			if err != nil {
 				t.Fatalf("--to bot: %v", err)
 			}
@@ -957,7 +957,7 @@ func TestFmtKeepsTheCommentsOfADocumentEndMarker(t *testing.T) {
 		}
 		doc := writeBot(t, "t/text.bot.yaml", src)
 		jp, _ := jsonPrinter()
-		res, err := RunFmt(FmtOptions{Paths: []string{doc}, Printer: jp})
+		res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, Printer: jp})
 		if err != nil || len(res.Refused) != 0 {
 			t.Fatalf("a document whose only `#` are text was refused: %v %q", err, res.Refused)
 		}
@@ -998,7 +998,7 @@ func TestFmtRewritesADocumentWhoseHeaderCommentOpensAgainstItsIndicators(t *test
 	inTempWorkspace(t)
 	doc := writeBot(t, "hc/end.bot.yaml", headerCommentDoc)
 	jp, _ := jsonPrinter()
-	res, err := RunFmt(FmtOptions{Paths: []string{doc}, Printer: jp})
+	res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, Printer: jp})
 	if err != nil || len(res.Refused) != 0 {
 		t.Fatalf("a document whose rewrite keeps every comment was refused: %v %q", err, res.Refused)
 	}
@@ -1012,7 +1012,7 @@ func TestFmtRewritesADocumentWhoseHeaderCommentOpensAgainstItsIndicators(t *test
 	if !strings.Contains(string(got), "#c") {
 		t.Fatalf("the rewrite dropped the header's own comment:\n%s", got)
 	}
-	if _, err := RunFmt(FmtOptions{Paths: []string{"hc"}, Check: true, Printer: jp}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{"hc"}, Check: true, Printer: jp}); err != nil {
 		t.Fatalf("--check after fmt: %v", err)
 	}
 }
@@ -1061,7 +1061,7 @@ func TestFmtForceCountsNoCommentInsideAPropertiedValue(t *testing.T) {
 			if err := os.WriteFile("p/x.bot.yaml", []byte(tc.target), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			res, err := RunFmt(FmtOptions{Paths: []string{bot}, To: "yaml", Force: true, Printer: jp})
+			res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{bot}, To: "yaml", Force: true, Printer: jp})
 			if err != nil {
 				t.Fatalf("--to yaml --force: %v", err)
 			}
@@ -1108,7 +1108,7 @@ func TestFmtForceCountsAMovedFlowCommentOnce(t *testing.T) {
 			if err := os.WriteFile("p/x.bot.yaml", []byte(tc.target), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			res, err := RunFmt(FmtOptions{Paths: []string{bot}, To: "yaml", Force: true, Printer: jp})
+			res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{bot}, To: "yaml", Force: true, Printer: jp})
 			if err != nil {
 				t.Fatalf("--to yaml --force: %v", err)
 			}
@@ -1130,7 +1130,7 @@ func TestFmtToRefusesADestinationThatIsNotAFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	jp, _ := jsonPrinter()
-	res, err := RunFmt(FmtOptions{Paths: []string{doc, other}, To: "bot", Printer: jp})
+	res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc, other}, To: "bot", Printer: jp})
 	if !errors.Is(err, ErrFmtRefused) || len(res.Refused) != 1 || !strings.Contains(res.Refused[0], "a directory, not a file") {
 		t.Fatalf("a directory at the destination was not refused by name: %v %v", err, res.Refused)
 	}
@@ -1150,7 +1150,7 @@ func TestFmtToBotWritesADestinationFmtReadsBack(t *testing.T) {
 	inTempWorkspace(t)
 	doc := writeBot(t, "u/UPPER.BOT.YAML", authorHelloDoc)
 	jp, _ := jsonPrinter()
-	res, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
+	res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
 	if err != nil {
 		t.Fatalf("--to bot on UPPER.BOT.YAML: %v, want the conversion to UPPER.BOT", err)
 	}
@@ -1160,7 +1160,7 @@ func TestFmtToBotWritesADestinationFmtReadsBack(t *testing.T) {
 	if _, err := os.Stat("u/UPPER.BOT"); err != nil {
 		t.Fatalf("UPPER.BOT not on disk: %v", err)
 	}
-	if _, err := RunFmt(FmtOptions{Paths: []string{"u/UPPER.BOT"}, To: "yaml", Printer: jp}); err != nil {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{"u/UPPER.BOT"}, To: "yaml", Printer: jp}); err != nil {
 		t.Fatalf("--to yaml refuses the UPPER.BOT fmt wrote: %v", err)
 	}
 }
@@ -1171,7 +1171,7 @@ func TestFmtToNamesTheFileOnceInARefusal(t *testing.T) {
 	inTempWorkspace(t)
 	doc := writeBot(t, "o/bad.bot.yaml", "dsl: 2\nnodes: nope\n")
 	jp, _ := jsonPrinter()
-	res, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
+	res, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Printer: jp})
 	if !errors.Is(err, ErrFmtRefused) || len(res.Refused) != 1 || !strings.HasPrefix(res.Refused[0], doc+": does not read: "+doc+":") || strings.Count(res.Refused[0], "bad.bot.yaml") != 2 {
 		t.Fatalf("the refusal does not name the document as given, once for the file and once for the position: %v %q", err, res.Refused)
 	}
@@ -1183,19 +1183,19 @@ func TestFmtToNeedsNamedFilesOfTheRightKind(t *testing.T) {
 	doc := writeBot(t, "n/hello.bot.yaml", authorHelloDoc)
 	bot := writeBot(t, "n/other.bot", looseBot)
 	jp, _ := jsonPrinter()
-	if _, err := RunFmt(FmtOptions{Paths: []string{"n"}, To: "bot", Printer: jp}); !errors.Is(err, ErrFmtToNeedsFiles) {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{"n"}, To: "bot", Printer: jp}); !errors.Is(err, ErrFmtToNeedsFiles) {
 		t.Fatalf("--to on a directory: %v", err)
 	}
-	if _, err := RunFmt(FmtOptions{Paths: []string{bot}, To: "bot", Printer: jp}); !errors.Is(err, ErrFmtToKind) {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{bot}, To: "bot", Printer: jp}); !errors.Is(err, ErrFmtToKind) {
 		t.Fatalf("--to bot on a .bot: %v", err)
 	}
-	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "yaml", Printer: jp}); !errors.Is(err, ErrFmtToKind) {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "yaml", Printer: jp}); !errors.Is(err, ErrFmtToKind) {
 		t.Fatalf("--to yaml on a document: %v", err)
 	}
-	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "bot", Baseline: "x", Printer: jp}); !errors.Is(err, ErrFmtToBaseline) {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot", Baseline: "x", Printer: jp}); !errors.Is(err, ErrFmtToBaseline) {
 		t.Fatalf("--to with --baseline: %v", err)
 	}
-	if _, err := RunFmt(FmtOptions{Paths: []string{doc}, To: "json", Printer: jp}); err == nil || !strings.Contains(err.Error(), "bot or yaml") {
+	if _, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "json", Printer: jp}); err == nil || !strings.Contains(err.Error(), "bot or yaml") {
 		t.Fatalf("--to json: %v", err)
 	}
 }
@@ -1206,7 +1206,7 @@ func TestFixTakesNoDocument(t *testing.T) {
 	inTempWorkspace(t)
 	doc := writeBot(t, "f/hello.bot.yaml", authorHelloDoc)
 	jp, _ := jsonPrinter()
-	_, err := RunFix(FixOptions{Paths: []string{doc}, Printer: jp})
+	_, err := RunFix(t.Context(), FixOptions{Paths: []string{doc}, Printer: jp})
 	if err == nil || !strings.Contains(err.Error(), "author document") || !strings.Contains(err.Error(), "fmt --to bot") {
 		t.Fatalf("fix on a document: %v", err)
 	}
