@@ -1,6 +1,7 @@
 package kubernetes
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -100,7 +101,14 @@ func TestRunWithPhaseTimeout_RealWorkspaceCopyStallIsClassified(t *testing.T) {
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	src := t.TempDir()
-	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("payload\n"), 0o644); err != nil {
+	// The payload must outgrow the pipe buffer (64 KiB): the wedged in-pod
+	// tar never reads, so a bigger-than-buffer stream parks the host tar mid
+	// -write at the deadline — provably still running when the cut strikes.
+	// A few bytes let the host leg finish before the deadline, and on a
+	// loaded runner whichever leg the scheduler killed first decided which
+	// death the error named; this payload is what pins the cause.
+	payload := bytes.Repeat([]byte("payload\n"), 128*1024)
+	if err := os.WriteFile(filepath.Join(src, "README.md"), payload, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	r := &Run{driver: &Driver{logger: iterlog.Nop()}, podName: "sandbox-x", namespace: "ns"}

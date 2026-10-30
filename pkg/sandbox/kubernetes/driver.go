@@ -1247,7 +1247,15 @@ func (r *Run) streamDirIntoPod(ctx context.Context, src, podDst string) error {
 		return fmt.Errorf("start in-pod tar: %w", err)
 	}
 	if err := hostTar.Run(); err != nil {
-		_ = podTar.Wait()
+		// The phase deadline kills both legs of the pipe together, and which
+		// death this function reads first is the scheduler's order. When the
+		// cut struck, the wedged IN-POD tar is the cause the operator needs —
+		// the local tar died of the same cut through the pipe — so the far
+		// side's death leads whenever the phase's context is already done.
+		podWaitErr := podTar.Wait()
+		if ctx.Err() != nil && podWaitErr != nil {
+			return fmt.Errorf("in-pod tar extract: %w\n%s", podWaitErr, strings.TrimSpace(podErr.String()))
+		}
 		return fmt.Errorf("host tar %s: %w\n%s", src, err, strings.TrimSpace(hostErr.String()))
 	}
 	if err := podTar.Wait(); err != nil {
