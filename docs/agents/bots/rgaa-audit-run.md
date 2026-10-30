@@ -98,3 +98,51 @@ edits to `studio/src` are part of what gets judged.
 - The weekly CI advisory (`ci/a11y-advisory`) runs the deterministic
   layers only (no LLM); a red advisory names the criteria the next run
   will re-adjudicate.
+
+## Running on iterion.cloud — what a sandboxed cloud run does NOT get
+
+A cloud run executes inside the run's sandbox pod, not in the runner
+image, so three things the local path above takes for granted are
+absent there, plus one fact about whose budget it spends. The fixes
+are product decisions pending in
+[#2632](https://github.com/SocialGouv/iterion/issues/2632); this
+section is the honest interim state.
+
+- **The engine pre-install does not reach the run.** The runner image
+  pre-installs the pinned ultra11y (`Dockerfile.runner-devbox`:
+  `ARG ULTRA11Y_VERSION`, installed under `/opt/iterion/ultra11y` and
+  exported as `ULTRA11Y_HOME`), but the sandbox pod is the default
+  `ghcr.io/socialgouv/iterion-sandbox-slim`
+  (`pkg/runtime/sandbox_default_image.go`) — node + devbox + Nix, no
+  ultra11y (`sandbox/slim/Dockerfile`). `prepare`'s candidate walk
+  (`ULTRA11Y_BIN` → global npm → `ULTRA11Y_HOME`,
+  `bots/rgaa-audit/main.bot`) therefore misses, and every cloud run
+  pays one `npm install ultra11y@<pin>` into its run directory
+  (`engine_source: "npm-install"`) — a per-run network fetch from the
+  registry, fingerprinted like any other engine source.
+- **No browser in the pod, so `rendered=off`.** The slim image ships
+  no Chromium, so the rendered layer cannot run on iterion.cloud
+  today: launch with `rendered=off` (or let `auto` find nothing) and
+  the coverage annex says the layer did not run. The opt-in
+  `iterion-sandbox-browser` image (Chromium at `/usr/bin/chromium`,
+  named to the bot through `ULTRA11Y_BROWSER_PATH` /
+  `sandbox/browser/Dockerfile`) exists for an operator who selects it;
+  making it — or a dedicated Acci image — the cloud posture is one of
+  the decisions pending in #2632.
+- **Board filing is off in the sandbox.** `publish` /
+  `publish_verify` write through the board MCP transport; in a
+  sandboxed run it is wired only when the runtime configured
+  `BoardHTTPEndpoint` + `BoardRunToken`
+  (`pkg/backend/delegate/claude_code_hooks.go`, `wireBoardMCP` — else
+  the warning "board capabilities granted but workflow is sandboxed
+  … board MCP disabled for this node"), and the server mounts those
+  routes only when the NATIVE board store exists
+  (`pkg/server/server.go`, `boardMCPServiceOption`). On iterion.cloud
+  the board is the tenant-scoped Mongo board (`CloudBoardFor`), not
+  the native store, so the endpoint is never configured and `publish`
+  cannot file: launch with `post_to_board=false` — the issue plan
+  stays a run artefact (`issues-<date>.json`). Making board writes
+  deterministic server-side is the second decision pending in #2632.
+- **Credentials.** A cloud launch spends the credentials of the
+  account or team that launched it (BYOK); no platform key is
+  provisioned for this bot.
