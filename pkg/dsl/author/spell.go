@@ -225,10 +225,10 @@ func (s *speller) diag(n *yaml.Node, code parser.DiagCode, severity parser.Sever
 	if hint == "" {
 		hint = parser.HintFor(code)
 	}
-	s.report.Add(parser.Diagnostic{
+	s.report.Add(parser.Bounded(parser.Diagnostic{
 		Code: code, Severity: severity, Message: msg,
 		File: s.name, Line: p.line, Column: p.col, Hint: hint,
-	})
+	}))
 }
 
 func (s *speller) refuse(n *yaml.Node, msg string) {
@@ -2165,10 +2165,10 @@ func (s *speller) edges(v *yaml.Node, indent int) {
 		if _, diags := parser.ParseEdgeLine(s.profile, text); len(diags) > 0 {
 			for _, d := range diags {
 				line, col := s.edgeAt(it, text, d.Column)
-				s.report.Add(parser.Diagnostic{
+				s.report.Add(parser.Bounded(parser.Diagnostic{
 					Code: d.Code, Severity: d.Severity, Message: d.Message,
 					File: s.name, Line: line, Column: col, Hint: d.Hint,
-				})
+				}))
 			}
 			continue
 		}

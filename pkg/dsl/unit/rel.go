@@ -81,7 +81,7 @@ func (u *Unit) RelDiagnostics() {
 				return
 			}
 		}
-		u.Diagnostics = append(u.Diagnostics, parser.Diagnostic{
+		u.Diagnostics = append(u.Diagnostics, parser.Bounded(parser.Diagnostic{
 			Code:     parser.DiagFilesystemRoot,
 			Severity: parser.SeverityWarning,
 			Message:  "the unit's root is the filesystem root: absolute file names are NOT rewritten for a client — the root cut has no name it can cut",
@@ -89,7 +89,7 @@ func (u *Unit) RelDiagnostics() {
 			Line:     1,
 			Column:   1,
 			Hint:     parser.HintFor(parser.DiagFilesystemRoot),
-		})
+		}))
 		return
 	}
 	prefix := u.relPrefix()

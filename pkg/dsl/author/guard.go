@@ -894,10 +894,10 @@ func (g *guard) warn(n *yaml.Node, msg string) {
 	if col < 1 {
 		col = 1
 	}
-	d := parser.Diagnostic{
+	d := parser.Bounded(parser.Diagnostic{
 		Code: parser.DiagAuthorPromptBody, Severity: parser.SeverityWarning,
 		Message: msg, File: g.name, Line: line, Column: col,
-	}
+	})
 	g.warns.Add(d)
 	if IsCommentReading(d) {
 		g.readings = append(g.readings, d)
@@ -1042,11 +1042,15 @@ func docDiag(name string, line, col int, msg string) parser.Diagnostic {
 	if col < 1 {
 		col = 1
 	}
-	return parser.Diagnostic{
+	// The document's refusals join no report: they are answered as composed,
+	// so the bound every recording door holds is the constructor's here —
+	// yaml.v3's decode refusals carry what the author wrote whole (an
+	// anchor's name), and a message is a bounded reading of it (#2801).
+	return parser.Bounded(parser.Diagnostic{
 		Code: parser.DiagAuthorDocument, Severity: parser.SeverityError,
 		Message: msg, File: name, Line: line, Column: col,
 		Hint: parser.HintFor(parser.DiagAuthorDocument),
-	}
+	})
 }
 
 // kindWord names a node's kind for a message.

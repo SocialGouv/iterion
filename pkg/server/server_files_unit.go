@@ -19,6 +19,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/canon"
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
@@ -1458,7 +1459,12 @@ func citeStoredMainWorkflow(stored, probe *unit.Unit) {
 	other := probe.Merged.Workflows[1]
 	for i, d := range probe.Diagnostics {
 		if d.Code == parser.DiagDuplicateDecl && strings.HasPrefix(d.Message, "a unit has one workflow:") {
-			probe.Diagnostics[i].Message = fmt.Sprintf("a unit has one workflow: %q here and %q at %s:%d", other.Name, mainWf.Name, stored.Main, mainWf.Span.Start.Line)
+			// The rewrite happens after the recording doors, so it passes
+			// the bound where it lands (parser.Bounded, #2801) — and the
+			// names it cites are excerpted, so a name of any length cannot
+			// push the position it is cited for out of the message.
+			d.Message = fmt.Sprintf("a unit has one workflow: %q here and %q at %s:%d", expr.Excerpt(other.Name), expr.Excerpt(mainWf.Name), stored.Main, mainWf.Span.Start.Line)
+			probe.Diagnostics[i] = parser.Bounded(d)
 		}
 	}
 }

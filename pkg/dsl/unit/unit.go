@@ -855,7 +855,7 @@ func (l *loader) visit(rel string, from *ast.ImportDecl, fromName string) {
 		// refused at its import, once. Read first, so an import naming no
 		// file is said as that, never as a budget it did not spend.
 		l.out = true
-		d := parser.Diagnostic{Code: parser.DiagUnexpectedToken, Severity: parser.SeverityError, File: fromName, Message: parser.UnitBudgetMessage(l.budget.Limit()), Hint: parser.ReadBudgetHint}
+		d := parser.Bounded(parser.Diagnostic{Code: parser.DiagUnexpectedToken, Severity: parser.SeverityError, File: fromName, Message: parser.UnitBudgetMessage(l.budget.Limit()), Hint: parser.ReadBudgetHint})
 		if from != nil {
 			d.Line, d.Column = from.Span.Start.Line, from.Span.Start.Column
 		}
@@ -872,7 +872,7 @@ func (l *loader) visit(rel string, from *ast.ImportDecl, fromName string) {
 		}
 		switch {
 		case isMain:
-			l.add(parser.Diagnostic{Code: parser.DiagImportUnreadable, Severity: parser.SeverityError, File: l.name(rel), Line: 1, Column: 1, Message: fmt.Sprintf("cannot read %s: %v", rel, err), Hint: unreadHint(err)})
+			l.add(parser.Bounded(parser.Diagnostic{Code: parser.DiagImportUnreadable, Severity: parser.SeverityError, File: l.name(rel), Line: 1, Column: 1, Message: fmt.Sprintf("cannot read %s: %v", rel, err), Hint: unreadHint(err)}))
 		case errors.Is(err, os.ErrNotExist):
 			l.diag(parser.DiagImportUnreadable, fromName, from, fmt.Sprintf("import %q: no such fragment (%s)", from.Path, rel))
 		default:
@@ -952,7 +952,7 @@ func (l *loader) diag(code parser.DiagCode, file string, at *ast.ImportDecl, msg
 
 // diagAt is a loader diagnostic positioned at the import that led to it.
 func (l *loader) diagAt(code parser.DiagCode, file string, at *ast.ImportDecl, msg string) parser.Diagnostic {
-	d := parser.Diagnostic{Code: code, Severity: parser.SeverityError, File: file, Message: msg, Hint: parser.HintFor(code)}
+	d := parser.Bounded(parser.Diagnostic{Code: code, Severity: parser.SeverityError, File: file, Message: msg, Hint: parser.HintFor(code)})
 	if at != nil {
 		d.Line, d.Column = at.Span.Start.Line, at.Span.Start.Column
 	}
@@ -961,9 +961,12 @@ func (l *loader) diagAt(code parser.DiagCode, file string, at *ast.ImportDecl, m
 
 // refuse records d as the refusal that leaves the load short (Whole), with
 // the bound it met. The first one is the load's Refusal: it joins the
-// unit's list outside the loader's report, so no cap on its code drops it;
-// a later one is a diagnostic like any.
+// unit's list outside the loader's report, so no cap on its code drops it —
+// and no clip of the report bounds it either: it is bounded here, at the
+// door it passes (parser.Bounded, #2801); a later one is a diagnostic like
+// any.
 func (l *loader) refuse(d parser.Diagnostic, bound parser.Bound) {
+	d = parser.Bounded(d)
 	if l.u.refusedAt != 0 {
 		l.add(d)
 		return
@@ -1153,12 +1156,12 @@ func (l *loader) dup(seen map[string]ast.Pos, kind, name string, at ast.Pos) boo
 		seen[name] = at
 		return false
 	}
-	l.add(parser.Diagnostic{
+	l.add(parser.Bounded(parser.Diagnostic{
 		Code: parser.DiagDuplicateDecl, Severity: parser.SeverityError,
 		File: at.File, Line: at.Line, Column: at.Column,
 		Message: fmt.Sprintf("%s %q is declared twice: here and at %s:%d", kind, name, l.relOf(first.File), first.Line),
 		Hint:    parser.HintFor(parser.DiagDuplicateDecl),
-	})
+	}))
 	return true
 }
 
@@ -1196,12 +1199,12 @@ func (l *loader) checkNamedDuplicates(merged *ast.File) {
 	seen := map[string]first{} // namespace + "\x00" + name
 	if len(merged.Workflows) > 1 {
 		w0, w1 := merged.Workflows[0], merged.Workflows[1]
-		l.add(parser.Diagnostic{
+		l.add(parser.Bounded(parser.Diagnostic{
 			Code: parser.DiagDuplicateDecl, Severity: parser.SeverityError,
 			File: w1.Span.Start.File, Line: w1.Span.Start.Line, Column: w1.Span.Start.Column,
 			Message: fmt.Sprintf("a unit has one workflow: %q here and %q at %s:%d", w1.Name, w0.Name, l.relOf(w0.Span.Start.File), w0.Span.Start.Line),
 			Hint:    parser.HintFor(parser.DiagDuplicateDecl),
-		})
+		}))
 	}
 	mv := reflect.ValueOf(merged).Elem()
 	for i := 0; i < mv.NumField(); i++ {
@@ -1229,12 +1232,12 @@ func (l *loader) checkNamedDuplicates(merged *ast.File) {
 			key := namespace + "\x00" + name
 			if prev, dup := seen[key]; dup {
 				if prev.file != pos.File {
-					l.add(parser.Diagnostic{
+					l.add(parser.Bounded(parser.Diagnostic{
 						Code: parser.DiagDuplicateDecl, Severity: parser.SeverityError,
 						File: pos.File, Line: pos.Line, Column: pos.Column,
 						Message: fmt.Sprintf("%s %q is declared in two files: here and at %s:%d", kindWord(field.Name), name, l.relOf(prev.file), prev.line),
 						Hint:    parser.HintFor(parser.DiagDuplicateDecl),
-					})
+					}))
 				}
 				continue
 			}

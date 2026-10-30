@@ -116,12 +116,13 @@ func (doc *authorDocument) noWrittenForm() *parser.Diagnostic {
 	if doc.verifyErr == nil {
 		return nil
 	}
-	return &parser.Diagnostic{
+	d := parser.Bounded(parser.Diagnostic{
 		Code: parser.DiagAuthorNoWrittenForm, Severity: parser.SeverityError,
 		File: doc.parsePath, Line: 1, Column: 1,
 		Message: "the document has no written .bot form: " + doc.verifyErr.Error(),
 		Hint:    parser.HintFor(parser.DiagAuthorNoWrittenForm),
-	}
+	})
+	return &d
 }
 
 // twinAnotherProgram is E056 when the .bot beside the document is there and
@@ -380,12 +381,13 @@ const noProgramBeside = " is there and is no program this document could describ
 // beside the document — named as the document was named, the sentence's
 // subject — what it is.
 func (doc *authorDocument) twinWarning(said string) *parser.Diagnostic {
-	return &parser.Diagnostic{
+	d := parser.Bounded(parser.Diagnostic{
 		Code: parser.DiagAuthorTwinProgram, Severity: parser.SeverityWarning,
 		File: doc.parsePath, Line: 1, Column: 1,
 		Message: doc.botNamed + said,
 		Hint:    parser.HintFor(parser.DiagAuthorTwinProgram),
-	}
+	})
+	return &d
 }
 
 // compileAuthorDocument compiles the program an author document describes

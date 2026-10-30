@@ -5,6 +5,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
@@ -21,9 +22,20 @@ import (
 // warning per document counts every NEL, LS and PS it holds and lists the
 // physical line of each — no need to know any scalar's extent. A line is
 // counted where the scanner ends one (yamlBreaks), so the line named is the
-// one every other diagnostic of the document counts by. The list stops at
-// parser.MaxReported lines, the count never: a document of nothing but
-// separators would otherwise make the notice longer than the document.
+// one every other diagnostic of the document counts by. The list holds as
+// many of the first lines as the message's bound (expr.MaxDiagnosticText,
+// which docDiag enforces) leaves room for, the count never stops: a document
+// of nothing but separators would otherwise make the notice longer than the
+// document.
+
+// noticeOpens and noticeCloses are the fixed text the separator notice wraps
+// around its count and its list of lines — what the bound accounts for
+// beside them.
+const (
+	noticeOpens  = " (U+0085 NEL, U+2028 LS, U+2029 PS — "
+	noticeCloses = "): yaml.v3 ends a line at each; inside a block body it is read as a newline, on a trailing line it is chomped like a blank line"
+)
+
 func separatorNotice(name string, src []byte) *parser.Diagnostic {
 	// The BOM is the scanner's to skip, and it is not a separator.
 	s := strings.TrimPrefix(string(src), "\ufeff")
@@ -55,16 +67,28 @@ func separatorNotice(name string, src []byte) *parser.Diagnostic {
 	where := "line " + strconv.Itoa(lines[0])
 	if total > 1 {
 		sep = strconv.Itoa(total) + " invisible line separators"
+		// List the first lines as far as the message's bound leaves room —
+		// docDiag holds every message to expr.MaxDiagnosticText (#2801) —
+		// then count the rest: the list is where they are, the count how
+		// many it left out.
 		parts := make([]string, len(lines))
 		for i, l := range lines {
 			parts[i] = strconv.Itoa(l)
 		}
-		where = "lines " + strings.Join(parts, ", ")
-		if more := total - len(lines); more > 0 {
-			where += " and " + strconv.Itoa(more) + " more"
+		for {
+			candidate := "lines " + strings.Join(parts, ", ")
+			if more := total - len(parts); more > 0 {
+				candidate += " and " + strconv.Itoa(more) + " more"
+			}
+			msg := "the document holds " + sep + noticeOpens + candidate + noticeCloses
+			if len(msg) <= expr.MaxDiagnosticText || len(parts) == 1 {
+				where = candidate
+				break
+			}
+			parts = parts[:len(parts)-1]
 		}
 	}
-	d := docDiag(name, lines[0], 1, "the document holds "+sep+" (U+0085 NEL, U+2028 LS, U+2029 PS — "+where+"): yaml.v3 ends a line at each; inside a block body it is read as a newline, on a trailing line it is chomped like a blank line")
+	d := docDiag(name, lines[0], 1, "the document holds "+sep+noticeOpens+where+noticeCloses)
 	d.Code = parser.DiagAuthorSeparators
 	d.Severity = parser.SeverityWarning
 	d.Hint = parser.HintFor(parser.DiagAuthorSeparators)

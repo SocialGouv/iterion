@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
@@ -117,18 +118,37 @@ func TestReadersOfOneLongLineAreLinear(t *testing.T) {
 }
 
 // The separator notice counts every invisible separator and lists the lines
-// of the first thousand: the list says how many it left out.
-func TestSeparatorNoticeListsTheFirstThousandLines(t *testing.T) {
+// of the first ones as far as the message's bound (expr.MaxDiagnosticText)
+// leaves room: the list says how many it left out.
+func TestSeparatorNoticeListsWhatFitsAndCountsTheRest(t *testing.T) {
 	src := "dsl: 2\n" + strings.Repeat("\u0085", 1500)
 	n := separatorNotice("nel.bot.yaml", []byte(src))
 	if n == nil {
 		t.Fatal("no notice for 1500 separators")
 	}
+	if len(n.Message) > expr.MaxDiagnosticText {
+		t.Errorf("the notice is %d bytes, past the %d every message is held to", len(n.Message), expr.MaxDiagnosticText)
+	}
 	if !strings.Contains(n.Message, "1500 invisible line separators") {
 		t.Errorf("the notice does not count every separator: %q", excerpt(n.Message))
 	}
-	if !strings.Contains(n.Message, ", 1001 and 500 more)") {
-		t.Errorf("the notice does not stop its list at the thousandth line and count the rest: …%q", n.Message[max(0, len(n.Message)-200):])
+	// The list names the first lines and counts the rest, the count carried
+	// inside the parenthesis — never clipped off — and listed + counted is
+	// every separator the document holds.
+	if !strings.Contains(n.Message, "lines 2, 3, 4") {
+		t.Errorf("the notice does not list the first lines: %q", excerpt(n.Message))
+	}
+	m := regexp.MustCompile(`lines ([0-9, ]+) and (\d+) more\)`).FindStringSubmatch(n.Message)
+	if m == nil {
+		t.Fatalf("the notice does not count the lines it left out: …%q", n.Message[max(0, len(n.Message)-200):])
+	}
+	listed := strings.Count(m[1], ",") + 1
+	more, _ := strconv.Atoi(m[2])
+	if listed+more != 1500 {
+		t.Errorf("listed %d lines and counted %d more — %d, want every one of the 1500", listed, more, listed+more)
+	}
+	if listed < 100 {
+		t.Errorf("only %d lines listed: the list is where they are, the count how many it left out", listed)
 	}
 }
 
