@@ -6,6 +6,7 @@ This index describes the current repository state. Guides and references below a
 
 | Page | Purpose |
 |---|---|
+| [getting-started.md](getting-started.md) | One copy-paste prompt that has your AI agent install the CLI and skill, connect to iterion.cloud, and verify readiness to deploy. |
 | [current-state.md](current-state.md) | Living as-built overview: shipped surfaces, runtime/backend status, security defaults, cloud control plane, and known limits. |
 | [why-iterion.md](why-iterion.md) | Product rationale, workflow patterns, and the asymptote lens. |
 | [install.md](install.md) | Install through the CLI, studio, desktop, Docker, cloud, dispatcher, scheduler, or TypeScript SDK. |

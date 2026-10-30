@@ -352,6 +352,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/forge-integrations.md`](../forge-integrations.md) | Forge integrations (connect a repo, auto-provision) | bot (e.g. | — |
 | [`docs/forge-permissions.md`](../forge-permissions.md) | Forge permissions & identity — who a bot acts as | This is the model people most often get wrong: **the iterion user who launches | — |
 | [`docs/forge-security-read.md`](../forge-security-read.md) | Forge security-read — org-wide Dependabot alerts for bots | The security-read flow gives a bot read access to a GitHub org's | — |
+| [`docs/getting-started.md`](../getting-started.md) | Get started in one prompt | Paste one prompt into your AI coding agent and it installs Iterion, connects it to iterion.cloud, and verifies readiness to deploy. | — |
 | [`docs/github-board-sync.md`](../github-board-sync.md) | GitHub project board ↔ native board sync | Making a GitHub **Projects v2** board (the roadmap humans read) and iterion's | — |
 | [`docs/gitops-warden-rollout.md`](../gitops-warden-rollout.md) | gitops-warden — binding, calibrating, and flipping a repo to enforce | The runbook for [gitops-warden](https://github.com/SocialGouv/iterion/tree/main/bots/gitops-warden) | — |
 | [`docs/grammar/V1_SCOPE.md`](../grammar/V1_SCOPE.md) | Current scope of the V1 grammar and AST | The filename and grammar version remain `V1` for compatibility: Iterion has | — |
