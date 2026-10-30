@@ -25,6 +25,10 @@ const (
 //     must never declare recovery. "Never attach LLM recovery to a gate."
 //   - C106 — recovery bounds/model only run under policy: recover; declaring
 //     them under any other policy is dead config.
+//   - C179 — the genre half of that inertness: under policy: recover, a node
+//     whose ONLY budgeted rung is max_repair_attempts and whose recipe is a
+//     bare registered tool name reaches no rung (rung 3 corrects a command
+//     the recipe does not carry, rung 4 is off) — the recovery is inert.
 func (c *compiler) validateVerifiedActions(w *Workflow) {
 	for _, node := range w.Nodes {
 		tn, ok := node.(*ToolNode)
@@ -74,6 +78,28 @@ func (c *compiler) validateVerifiedActions(w *Workflow) {
 			c.warnfAt(DiagRecoveryWithoutRecov, tn.ID, "",
 				"tool %q declares recovery bounds but policy is %q — recovery rungs only run under policy: recover, so this config is inert",
 				tn.ID, displayPolicy(policy))
+		}
+
+		// C179 — the genre half of the same inertness. max_repair_attempts
+		// budgets rung 3, the self-repair generation, which proposes a
+		// corrected COMMAND; since #2783 dispatch gates that rung on the
+		// recipe's genre (ir.ToolRecoverySelfRepairRung reads
+		// ir.ToolRecipeSelfRepairable), and a registry recipe — a bare
+		// registered tool name — carries no command to correct, so the
+		// rung is skipped. With no max_agent_attempts rung 4 is off too:
+		// no recovery rung is reachable and the author hears nothing. The
+		// predicate is asked the way dispatch asks it — through
+		// ToolRecipeSelfRepairable — so the warning and the runtime cannot
+		// disagree; an action recipe is excluded (C262 already refuses
+		// recovery there), and a recipe-LESS node is excluded too (C004
+		// already refuses it — the warning would stack on the error with
+		// an empty tool name).
+		if policy == PolicyRecover && tn.Recovery != nil &&
+			tn.Recovery.MaxRepairAttempts > 0 && tn.Recovery.MaxAgentAttempts <= 0 &&
+			ToolRecipeKindOf(tn) == ToolRecipeRegistry && tn.Command != "" {
+			c.warnfAt(DiagRepairRungUnreachable, tn.ID, "",
+				"tool %q budgets only max_repair_attempts under policy: recover, but rung 3 proposes a corrected command and a registered tool name (%q) has none — dispatch skips the rung, and rung 4 is off without max_agent_attempts, so NO recovery rung is reachable",
+				tn.ID, tn.Command)
 		}
 	}
 }

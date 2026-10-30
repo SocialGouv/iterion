@@ -155,10 +155,11 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagInvalidWorktree: {"Invalid worktree value", "Use `auto` (a fresh git worktree per run, finalised into a branch) or `none` (run in place), or drop the field for `auto`. Any other word ran in place, in the operator's own checkout, without a word."},
 
 	// Verified actions (ADR-044).
-	DiagInvalidPolicy:        {"Invalid policy", "Use `required`, `recover` or `best_effort`."},
-	DiagRecoveryNoPostcond:   {"Recovery without postcondition", "Add a `postcondition:` (the deterministic oracle) or drop the recovery."},
-	DiagRecoveryOnGate:       {"Recovery on a gate", "Remove `recovery:` — a node whose recipe IS its postcondition is a gate and stays deterministic."},
-	DiagRecoveryWithoutRecov: {"Recovery without recover policy", "Set `policy: recover`, or remove the `recovery:` bounds."},
+	DiagInvalidPolicy:         {"Invalid policy", "Use `required`, `recover` or `best_effort`."},
+	DiagRecoveryNoPostcond:    {"Recovery without postcondition", "Add a `postcondition:` (the deterministic oracle) or drop the recovery."},
+	DiagRecoveryOnGate:        {"Recovery on a gate", "Remove `recovery:` — a node whose recipe IS its postcondition is a gate and stays deterministic."},
+	DiagRecoveryWithoutRecov:  {"Recovery without recover policy", "Set `policy: recover`, or remove the `recovery:` bounds."},
+	DiagRepairRungUnreachable: {"Recovery with no reachable rung", "Budget `recovery: max_agent_attempts:` so rung 4's agent can re-plan, or write the recipe as a `command:` with template refs / shell metacharacters or a `script:` body so rung 3 has a command to correct — a bare registered tool name gives the self-repair rung nothing to propose, and dispatch skips it."},
 
 	// Typing.
 	DiagEnumLiteralMismatch:           {"Enum literal never matches", "Compare against one of the field's declared `enum:` values, or extend the enum."},

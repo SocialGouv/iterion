@@ -116,6 +116,16 @@ const (
 	DiagInvalidLoopBudgetGuard DiagCode = "C133" // loop_budget_guard: value not one of on|off (error)
 	DiagInvalidLoopClauseGuard DiagCode = "C178" // a loop clause's guard: value not one of on|off (error)
 
+	// C179 sits in the C178/C180 gap and belongs to the Verified Action
+	// family (C103-C106, declared where they are emitted, in
+	// validate_verified_action.go): since #2783 the self-repair rung is
+	// gated on the recipe's genre, and a registry recipe (a bare tool name)
+	// has no command to correct — so a node under policy: recover that
+	// budgets ONLY max_repair_attempts reaches no rung at all. The other
+	// inert-recovery shape, bounds under a policy other than recover, is
+	// C106's.
+	DiagRepairRungUnreachable DiagCode = "C179" // policy: recover budgets only max_repair_attempts on a registry recipe — rung 3 is skipped by genre and rung 4 is off, no recovery rung is reachable (warning)
+
 	// Target-repo devbox provisioning switch diagnostics.
 	DiagInvalidRepoDevbox DiagCode = "C134" // repo_devbox: value not one of on|off (error)
 
