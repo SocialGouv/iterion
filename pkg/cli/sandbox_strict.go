@@ -424,8 +424,11 @@ func runNetworkStrictChecks(report *SandboxStrictReport, spec *sandbox.Spec) {
 		}
 	}
 
-	mode, rules := runtime.ResolveNetworkPolicy(spec)
-	if _, err := netproxy.Compile(mode, rules); err != nil {
+	mode, rules, polErr := runtime.ResolveNetworkPolicy(spec)
+	if polErr != nil {
+		report.add("network allowlist syntax", CheckFail, polErr.Error(),
+			"set the referenced environment variable, or give the rule a ${VAR:-default}")
+	} else if _, err := netproxy.Compile(mode, rules); err != nil {
 		report.add("network allowlist syntax", CheckFail, err.Error(),
 			"fix the offending rule: wildcards must lead a label (**.example.com), CIDRs must parse, one wildcard segment per rule")
 	} else {

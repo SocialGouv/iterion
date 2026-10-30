@@ -1318,7 +1318,13 @@ when a call's usage never arrives — as for any unpriced route.
 > env), so on a multi-tenant runner, bind it with the egress allowlist
 > ([pkg/sandbox/netproxy](../pkg/sandbox/netproxy/proxy.go)) and rotate it;
 > the host-side relay — the key never entering the container — is the known
-> follow-up.
+> follow-up. (The allowlist CAN name the gateway since #2099: `network.rules`
+> expand `${VAR}` against the runner's env, so a static bot scopes egress to
+> the deployment's gateway host — and the session board's curation, the
+> remaining surface that auto-resolved a vendor default for a
+> gateway-served session's content, now refuses unpinned with
+> `sessionboard.ErrGatewayBoardNeedsPin`, the twin of the supervisors'
+> gate.)
 
 ### What a gateway model costs and how big it is (ADR-122)
 

@@ -202,7 +202,12 @@ func (s *Service) SessionBoard(runID string) (sessionboard.Spec, error) {
 // is available. Returns a stop func the caller defers. A no-op otherwise —
 // the deterministic task-list board (Phase 1) is always on in the studio
 // and needs nothing here.
-func (s *Service) startSessionBoard(ctx context.Context, runID, botID string, logger *iterlog.Logger) (stop func()) {
+//
+// gatewayWatched is supervise.WorkflowNamesGateway(wf), computed by the
+// caller which holds the compiled workflow: a gateway-served session refuses
+// curation through a vendor default (#2099) — the sessionboard twin of
+// supervise.ErrGatewayWatchNeedsPin.
+func (s *Service) startSessionBoard(ctx context.Context, runID, botID string, gatewayWatched bool, logger *iterlog.Logger) (stop func()) {
 	if s.sbStore == nil || !sessionboard.Enabled() {
 		return func() {}
 	}
@@ -219,9 +224,10 @@ func (s *Service) startSessionBoard(ctx context.Context, runID, botID string, lo
 	}
 	initial, _ := s.sbStore.Load(runID)
 	cfg := sessionboard.Config{
-		BotID:   botID,
-		Model:   sessionboard.ModelFromEnv(),
-		Initial: initial,
+		BotID:          botID,
+		Model:          sessionboard.ModelFromEnv(),
+		GatewayWatched: gatewayWatched,
+		Initial:        initial,
 	}
 	coord := newSessionBoardCoordinator(s, s, runID, cfg, nil, logger)
 	if coord == nil {

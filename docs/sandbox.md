@@ -662,6 +662,16 @@ Pattern syntax (last-match-wins evaluation):
 | `10.0.0.0/8`         | CIDR range                                |
 | `!pattern`           | exclusion (negation)                      |
 
+Rules expand `${VAR}` / `${VAR:-default}` against the **runner's**
+environment when the proxy starts — the same expansion `model:`,
+`backend:` and `command:` already honour — so a catalog bot can scope
+egress to a host only the deployment knows, above all the
+[OpenAI-compatible gateway](backends.md#the-openai-compatible-gateway-openai_compatible)
+(`rules: ["${OPENAI_COMPATIBLE_HOST}"]`). A reference that resolves to
+nothing refuses the sandbox start and names the rule, rather than
+silently dropping it — a dropped allowlist rule would merely confuse,
+but a dropped denylist rule would fail *open*.
+
 Modes:
 
 | Mode        | Behaviour for unmatched hosts             |

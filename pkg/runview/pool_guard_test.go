@@ -292,13 +292,13 @@ func TestStartSessionBoardRefusesPoolRunContent(t *testing.T) {
 	t.Setenv("ITERION_SESSION_BOARD", "on")
 	t.Setenv("ITERION_DEFAULT_SESSIONBOARD_MODEL", "")
 	svc.sbStore = guardStubSBStore{}
-	svc.startSessionBoard(ctx, "run-sb-site", "bot", logger)
+	svc.startSessionBoard(ctx, "run-sb-site", "bot", false, logger)
 	if started != 0 {
 		t.Fatal("session board started on a pool-stamped run")
 	}
 
 	seedGuardRun(t, st, ctx, "run-sb-site-unstamped", "")
-	svc.startSessionBoard(ctx, "run-sb-site-unstamped", "bot", logger)
+	svc.startSessionBoard(ctx, "run-sb-site-unstamped", "bot", false, logger)
 	if started != 1 {
 		t.Fatal("unstamped control: the seam never constructed the coordinator")
 	}
@@ -414,3 +414,38 @@ type guardStubSBStore struct{}
 
 func (guardStubSBStore) Load(string) (sessionboard.Spec, error) { return sessionboard.Spec{}, nil }
 func (guardStubSBStore) Save(string, sessionboard.Spec) error   { return nil }
+
+// The sessionboard gateway pin (#2099) rides startSessionBoard's
+// gatewayWatched parameter into the coordinator's config: a gateway-served
+// run's curation must refuse a vendor default, and that refusal only exists
+// if the flag survives the seam.
+func TestStartSessionBoardCarriesGatewayWatched(t *testing.T) {
+	logger := iterlog.Nop()
+	st, svc, ctx := newGuardTestService(t)
+	seedGuardRun(t, st, ctx, "run-sb-gw", "")
+	t.Setenv("ITERION_SESSION_BOARD", "on")
+	t.Setenv("ITERION_DEFAULT_SESSIONBOARD_MODEL", "")
+	svc.sbStore = guardStubSBStore{}
+
+	var got sessionboard.Config
+	started := 0
+	restore := swapSessionBoardCoordinator(func(obs sessionboard.Observer, emit sessionboard.Emitter, id string, cfg sessionboard.Config, eval sessionboard.Evaluator, l *iterlog.Logger) *sessionboard.Coordinator {
+		started++
+		got = cfg
+		return nil
+	})
+	defer restore()
+
+	svc.startSessionBoard(ctx, "run-sb-gw", "bot", true, logger)
+	if started != 1 {
+		t.Fatalf("the seam constructed %d coordinators, want 1", started)
+	}
+	if !got.GatewayWatched {
+		t.Error("gatewayWatched=true did not reach the sessionboard config — the pin refusal would never fire")
+	}
+
+	svc.startSessionBoard(ctx, "run-sb-gw", "bot", false, logger)
+	if got.GatewayWatched {
+		t.Error("gatewayWatched=false reached the config as true")
+	}
+}

@@ -1144,7 +1144,10 @@ func startNetworkProxy(
 	emitEvent func(store.EventType, map[string]any) error,
 	logger *iterlog.Logger,
 ) (*netproxy.Proxy, string, []byte, error) {
-	mode, rules := ResolveNetworkPolicy(spec)
+	mode, rules, err := ResolveNetworkPolicy(spec)
+	if err != nil {
+		return nil, "", nil, err
+	}
 
 	// TLS inspection needs the driver to inject the per-run CA into the
 	// container trust store; drivers advertise that via
@@ -1261,6 +1264,18 @@ func proxyAddressesForDriver(d sandbox.Driver) (bind, advertise string, err erro
 //  2. spec.Network.Preset, when set, prefixes the rule list.
 //  3. spec.Network.Rules append after the preset.
 //
+// Every assembled rule then passes ir.ExpandEnvWithDefault — the same
+// expansion model:/backend:/command:/timeout: already honour — resolved
+// against THIS process's env, which is where the proxy about to enforce
+// the rules runs. It is what lets a static (catalog) bot scope egress to
+// the deployment's gateway host (`"${OPENAI_COMPATIBLE_HOST}"`,
+// `"${GATEWAY_EGRESS:-gateway.internal}"`): the host is deployment env,
+// unknowable to the bot's author (#2099). A rule whose reference resolves
+// to nothing is an error, not a silently dropped rule: in allowlist mode
+// the drop would fail closed (the host the author meant is refused), but
+// in denylist mode it would fail OPEN — the denied host allowed — so the
+// run refuses to start instead, naming the rule.
+//
 // Default when spec.Network is nil: open (no proxy, full egress). Bots
 // routinely shell out to package managers, build tooling, and
 // integration endpoints that no static allowlist can predict — landing
@@ -1280,7 +1295,7 @@ func proxyAddressesForDriver(d sandbox.Driver) (bind, advertise string, err erro
 // a repo-defined sandbox whose workflow named no network base of its
 // own. ModeAllowlist with an empty rule list is unchanged: it
 // blocks everything, surfacing as `network_blocked` events.
-func ResolveNetworkPolicy(spec *sandbox.Spec) (netproxy.Mode, []string) {
+func ResolveNetworkPolicy(spec *sandbox.Spec) (netproxy.Mode, []string, error) {
 	mode := netproxy.ModeOpen
 	preset := ""
 	var extra []string
@@ -1307,7 +1322,14 @@ func ResolveNetworkPolicy(spec *sandbox.Spec) (netproxy.Mode, []string) {
 		}
 	}
 	rules = append(rules, extra...)
-	return mode, rules
+	for i, raw := range rules {
+		expanded := ir.ExpandEnvWithDefault(raw)
+		if strings.TrimSpace(expanded) == "" && strings.TrimSpace(raw) != "" {
+			return "", nil, fmt.Errorf("sandbox network rule %q expands to nothing — set the referenced environment variable, or give it a ${VAR:-default}", raw)
+		}
+		rules[i] = expanded
+	}
+	return mode, rules, nil
 }
 
 // resolveSandboxSpec applies the precedence chain

@@ -213,6 +213,18 @@ func renderScalar(v any) string {
 	}
 }
 
+// WorkflowNamesGateway is gatewayWatched for an observer of the WHOLE run —
+// the session board's curation coordinator, which watches no declared node
+// list and so reads every route the workflow may take (#2099: the same class
+// as ErrGatewayWatchNeedsPin, the same conservative reading of an unexpanded
+// {{…}} reference).
+func WorkflowNamesGateway(wf *ir.Workflow) bool {
+	if wf == nil {
+		return false
+	}
+	return gatewayWatched(wf, nil)
+}
+
 // gatewayWatched reports whether any route this supervisor may observe can
 // be an OpenAI-compatible gateway route. It mirrors the walks that DISPATCH
 // routes — the same shapes validateGatewayRoutes warns on: an LLM node's

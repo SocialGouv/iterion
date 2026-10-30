@@ -65,6 +65,14 @@ type EvalUsage struct {
 // ErrNoModel is returned when no model is pinned and none is detectable.
 var ErrNoModel = errors.New("sessionboard: no model configured and no provider credential detected")
 
+// ErrGatewayBoardNeedsPin is refused when the session a board curates is
+// served by the OpenAI-compatible gateway and the curation has no model of
+// its own: the detector's fallback would evaluate that session's content
+// through a vendor default the deployment never funded. The same class as
+// supervise's ErrGatewayWatchNeedsPin. The remedy is the curation model pin
+// or the deployment-wide ITERION_DEFAULT_SESSIONBOARD_MODEL.
+var ErrGatewayBoardNeedsPin = errors.New("sessionboard: the observed run is served by the OpenAI-compatible gateway — pin the curation model or set ITERION_DEFAULT_SESSIONBOARD_MODEL")
+
 // LLMEvaluator is the production Evaluator: a direct claw structured call,
 // mirroring pkg/supervise's LLMEvaluator.
 type LLMEvaluator struct {
@@ -72,6 +80,11 @@ type LLMEvaluator struct {
 	client    api.APIClient
 	modelSpec string
 	pinned    string
+	// gatewayWatched is the Config.GatewayWatched of the coordinator that
+	// built this evaluator: the observed run may be gateway-served. With no
+	// pin and no env override, evaluation refuses rather than resolve a
+	// vendor default for that run's content.
+	gatewayWatched bool
 }
 
 // NewLLMEvaluator constructs an evaluator. modelSpec pins the model; pass
@@ -99,6 +112,16 @@ func resolveModel(pinned string) (string, error) {
 // Evaluate implements Evaluator.
 func (e *LLMEvaluator) Evaluate(ctx context.Context, in EvalInput) (*BoardDecision, EvalUsage, error) {
 	if e.client == nil {
+		// A board curating a gateway-served session with no pin and no env
+		// override refuses here, at the first evaluation: its detector
+		// fallback would hand that session's content to a vendor default the
+		// deployment never funded. The coordinator parks curation on the
+		// error — an enhancement stopping, never the run.
+		if e.gatewayWatched &&
+			strings.TrimSpace(ir.ExpandEnvWithDefault(e.pinned)) == "" &&
+			ir.LookupEnv("ITERION_DEFAULT_SESSIONBOARD_MODEL") == "" {
+			return nil, EvalUsage{}, ErrGatewayBoardNeedsPin
+		}
 		spec, err := resolveModel(e.pinned)
 		if err != nil {
 			return nil, EvalUsage{}, err

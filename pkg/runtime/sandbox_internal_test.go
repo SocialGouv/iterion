@@ -935,7 +935,11 @@ func TestResolveSandboxSpecRepoCloudRedirectNeverReachesTheEnv(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected err: %v", err)
 			}
-			policy, err := netproxy.Compile(ResolveNetworkPolicy(res.spec))
+			mode, rules, perr := ResolveNetworkPolicy(res.spec)
+			if perr != nil {
+				t.Fatalf("resolve the network policy: %v", perr)
+			}
+			policy, err := netproxy.Compile(mode, rules)
 			if err != nil {
 				t.Fatalf("compile the resolved network policy: %v", err)
 			}

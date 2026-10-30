@@ -152,3 +152,24 @@ func TestGatewayWatch_TheRefusalNamesTheRemedy(t *testing.T) {
 		t.Errorf("refusal %q does not name the env remedy", ErrGatewayWatchNeedsPin.Error())
 	}
 }
+
+// WorkflowNamesGateway is the whole-run reading for an observer that declares
+// no watch list — the session board's curation (#2099): nil-safe, and the
+// same verdict as a supervisor watching every node.
+func TestWorkflowNamesGateway(t *testing.T) {
+	if WorkflowNamesGateway(nil) {
+		t.Error("a nil workflow names the gateway")
+	}
+	gw := &ir.Workflow{Nodes: map[string]ir.Node{
+		"a": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Model: "openai_compatible/team/m"}},
+	}}
+	if !WorkflowNamesGateway(gw) {
+		t.Error("a gateway-served workflow reads false")
+	}
+	vendor := &ir.Workflow{Nodes: map[string]ir.Node{
+		"a": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Model: "anthropic/claude-opus-5"}},
+	}}
+	if WorkflowNamesGateway(vendor) {
+		t.Error("a vendor-only workflow names the gateway")
+	}
+}

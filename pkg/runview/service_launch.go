@@ -1527,7 +1527,7 @@ func (s *Service) spawnRun(
 		// Spawn the Session-board curation coordinator (opt-in via
 		// ITERION_SESSION_BOARD). No-op when disabled — the deterministic
 		// task-list board (Phase 1) runs in the studio regardless.
-		stopBoard := s.startSessionBoard(ctx, runID, runName, runLogger)
+		stopBoard := s.startSessionBoard(ctx, runID, runName, supervise.WorkflowNamesGateway(wf), runLogger)
 		defer stopBoard()
 
 		bodyErr := body(ctx, eng)

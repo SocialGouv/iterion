@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
@@ -213,7 +214,10 @@ func TestFromIRSpec_NilSubBlocks(t *testing.T) {
 }
 
 func TestResolveNetworkPolicy_NilSpecYieldsOpen(t *testing.T) {
-	mode, rules := ResolveNetworkPolicy(nil)
+	mode, rules, err := ResolveNetworkPolicy(nil)
+	if err != nil {
+		t.Fatalf("ResolveNetworkPolicy(nil): %v", err)
+	}
 	if mode != netproxy.ModeOpen {
 		t.Errorf("mode = %q, want open (default since 2026-05-22)", mode)
 	}
@@ -233,7 +237,10 @@ func TestResolveNetworkPolicy_ExplicitDenylist(t *testing.T) {
 			Rules: []string{"*.evil.site"},
 		},
 	}
-	mode, rules := ResolveNetworkPolicy(spec)
+	mode, rules, err := ResolveNetworkPolicy(spec)
+	if err != nil {
+		t.Fatalf("ResolveNetworkPolicy: %v", err)
+	}
 	if mode != netproxy.ModeDenylist {
 		t.Errorf("mode = %q, want denylist", mode)
 	}
@@ -255,7 +262,10 @@ func TestResolveNetworkPolicy_OpenMode(t *testing.T) {
 	spec := &sandbox.Spec{
 		Network: &sandbox.Network{Mode: sandbox.NetworkModeOpen},
 	}
-	mode, _ := ResolveNetworkPolicy(spec)
+	mode, _, err := ResolveNetworkPolicy(spec)
+	if err != nil {
+		t.Fatalf("ResolveNetworkPolicy: %v", err)
+	}
 	if mode != netproxy.ModeOpen {
 		t.Errorf("mode = %q, want open", mode)
 	}
@@ -271,7 +281,10 @@ func TestResolveNetworkPolicy_CustomPresetReplacesDefault(t *testing.T) {
 			Rules:  []string{"only-this.example.com"},
 		},
 	}
-	mode, rules := ResolveNetworkPolicy(spec)
+	mode, rules, err := ResolveNetworkPolicy(spec)
+	if err != nil {
+		t.Fatalf("ResolveNetworkPolicy: %v", err)
+	}
 	if mode != netproxy.ModeAllowlist {
 		t.Errorf("mode = %q, want allowlist", mode)
 	}
@@ -328,5 +341,66 @@ func TestEngineRepoRoot_WorktreeLayoutResolvesToOriginRepo(t *testing.T) {
 	// it to predict what the engine will do.
 	if got != origin {
 		t.Errorf("got %q, want origin repo %q", got, origin)
+	}
+}
+
+// The rules' env expansion (#2099): a static (catalog) bot cannot name the
+// deployment's gateway host — it is environment, unknowable to the author —
+// so network rules resolve ${VAR} / ${VAR:-default} against the process env
+// at policy resolution, exactly like model:/backend:/command:/timeout:.
+// Resolved HERE (runner-side, where the proxy starts), not at DSL compile:
+// in cloud the compile happens on the server and the sandbox runs on the
+// runner pod whose env holds the gateway's name.
+func TestResolveNetworkPolicy_ExpandsEnvInRules(t *testing.T) {
+	t.Setenv("ITERION_TEST_GW_HOST", "gateway.corp.internal")
+	spec := &sandbox.Spec{
+		Network: &sandbox.Network{
+			Mode:  sandbox.NetworkModeAllowlist,
+			Rules: []string{"${ITERION_TEST_GW_HOST}", "${ITERION_TEST_GW_ALT:-fallback.example.com}", "**.anthropic.com"},
+		},
+	}
+	_, rules, err := ResolveNetworkPolicy(spec)
+	if err != nil {
+		t.Fatalf("ResolveNetworkPolicy: %v", err)
+	}
+	want := []string{"gateway.corp.internal", "fallback.example.com", "**.anthropic.com"}
+	if len(rules) != len(want) {
+		t.Fatalf("rules = %v, want %v", rules, want)
+	}
+	for i := range want {
+		if rules[i] != want[i] {
+			t.Errorf("rules[%d] = %q, want %q", i, rules[i], want[i])
+		}
+	}
+	// The compiled policy answers for the expanded host, not the reference.
+	p, err := netproxy.Compile(netproxy.ModeAllowlist, rules)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if !p.Allow("gateway.corp.internal:443") {
+		t.Error("the env-named gateway host is not allowed — the expansion never reached the policy")
+	}
+	if p.Allow("elsewhere.example.com:443") {
+		t.Error("an unlisted host passed the allowlist")
+	}
+}
+
+// A reference that resolves to nothing is a loud refusal, never a silently
+// dropped rule: dropped in allowlist mode it fails closed (merely confusing),
+// but dropped in denylist mode it fails OPEN — the host the author denied is
+// allowed. The run refuses to start and names the rule instead.
+func TestResolveNetworkPolicy_UnsetRuleVarRefuses(t *testing.T) {
+	spec := &sandbox.Spec{
+		Network: &sandbox.Network{
+			Mode:  sandbox.NetworkModeDenylist,
+			Rules: []string{"${ITERION_TEST_UNSET_NEVER_SET}", "ok.example.com"},
+		},
+	}
+	_, _, err := ResolveNetworkPolicy(spec)
+	if err == nil {
+		t.Fatal("an unset rule variable must refuse, not silently drop the rule")
+	}
+	if !strings.Contains(err.Error(), "${ITERION_TEST_UNSET_NEVER_SET}") {
+		t.Errorf("the refusal does not name the offending rule: %v", err)
 	}
 }
