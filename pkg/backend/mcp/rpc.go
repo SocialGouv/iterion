@@ -6,12 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -319,7 +322,11 @@ func (c *sdkClient) start(ctx context.Context) (*mcp.ClientSession, error) {
 func (c *sdkClient) buildTransport() (mcp.Transport, error) {
 	switch c.cfg.Transport {
 	case TransportStdio:
-		cmd := exec.Command(c.cfg.Command, c.cfg.Args...)
+		command, err := resolveServerCommand(c.cfg.Name, c.cfg.Command)
+		if err != nil {
+			return nil, err
+		}
+		cmd := exec.Command(command, c.cfg.Args...)
 		if c.cfg.WorkDir != "" {
 			cmd.Dir = c.cfg.WorkDir
 		}
@@ -357,6 +364,25 @@ func (c *sdkClient) buildTransport() (mcp.Transport, error) {
 	default:
 		return nil, fmt.Errorf("mcp: unsupported transport %q for %s", c.cfg.Transport, c.cfg.Name)
 	}
+}
+
+// resolveServerCommand resolves a stdio server's command to the executable
+// the child will run. A bare name is looked up through envtrust.LookPath —
+// exec.Command would resolve it against the LIVE PATH, which a project .env
+// answers when it planted one (applyDotEnv fills only unset names): which
+// executable the launcher starts is an authority question (#1945), and the
+// repository under review does not answer it (#2809). Resolving HERE, ahead
+// of exec.Command, also surfaces a miss at transport construction with the
+// server's name on it, rather than at Start as exec's deferred ErrNotFound.
+func resolveServerCommand(server, command string) (string, error) {
+	if strings.ContainsRune(command, os.PathSeparator) {
+		return command, nil
+	}
+	resolved, err := envtrust.LookPath(command)
+	if err != nil {
+		return "", fmt.Errorf("mcp: resolve the command of %q on the inherited PATH: %w", server, err)
+	}
+	return resolved, nil
 }
 
 // headerRoundTripper injects custom headers into every HTTP request.

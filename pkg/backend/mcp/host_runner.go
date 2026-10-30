@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // HostChromiumRunner launches Chromium directly on the host (no
@@ -93,6 +95,16 @@ func (r *HostChromiumRunner) Start(runID, nodeID string) (io.ReadWriteCloser, er
 	args = append(args, r.ExtraArgs...)
 
 	cmd := exec.Command(bin, args...)
+	// The child receives a process-essential allowlist read as INHERITED
+	// (chromiumChildEnv), never the launcher's whole environment: a nil
+	// cmd.Env makes Go hand Chromium every variable of the launcher,
+	// including the names a project .env planted — and a .env plants only
+	// names that were UNSET, which is exactly where LD_PRELOAD,
+	// LD_LIBRARY_PATH and CHROME_* live on a normal machine (#2809, the
+	// site #2018 deliberately left: the allowlist a headless Chromium
+	// needs cannot be proven in CI, so it is named here rather than
+	// derived).
+	cmd.Env = chromiumChildEnv()
 	// FDs 3, 4 — order matters for --remote-debugging-pipe.
 	cmd.ExtraFiles = []*os.File{inR, outW}
 	// Don't surface Chromium's stderr to the parent's; redirect to
@@ -162,11 +174,40 @@ func (p *chromiumPipe) Close() error {
 	return firstErr
 }
 
+// chromiumAmbientAllowlist is the only ambient environment a host Chromium
+// keeps: what a headless browser needs to EXIST on the host, never what it
+// loads or trusts — LD_PRELOAD, LD_LIBRARY_PATH and the CHROME_* family are
+// the class this closes, and the `all` passthrough of the stdio transport
+// has no business here (a browser pane is not a declared server). Unix
+// names: the pipe transport (ExtraFiles at FDs 3, 4) is Unix-only already.
+var chromiumAmbientAllowlist = []string{
+	"PATH", "HOME", "TMPDIR",
+	// The XDG dirs Chromium resolves its config, cache and runtime state
+	// against, and the session bus a desktop session has it announce
+	// itself on — absent on a headless host, where the browser runs
+	// without them.
+	"XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR",
+	"DBUS_SESSION_BUS_ADDRESS",
+}
+
+// chromiumChildEnv composes the environment of the host Chromium child:
+// the allowlist above, each name read as INHERITED through the same
+// fillInherited the stdio transport's allowlist is read through — a name a
+// project .env planted does not reach the browser.
+func chromiumChildEnv() []string {
+	merged := make(map[string]string, len(chromiumAmbientAllowlist))
+	fillInherited(merged, chromiumAmbientAllowlist)
+	return renderEnv(merged)
+}
+
 // lookChromiumBinary returns the first entry of chromiumCandidates
 // found on $PATH, or an error listing what was searched.
 func lookChromiumBinary() (string, error) {
 	for _, name := range chromiumCandidates {
-		if path, err := exec.LookPath(name); err == nil {
+		// envtrust.LookPath, not exec.LookPath: which browser the launcher
+		// runs is an authority question, and a PATH a project .env planted
+		// must not answer it.
+		if path, err := envtrust.LookPath(name); err == nil {
 			return path, nil
 		}
 	}

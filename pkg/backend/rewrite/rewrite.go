@@ -224,7 +224,11 @@ func locate(loc plugin.LocateSpec) string {
 		}
 	}
 	if loc.Bin != "" {
-		if p, err := exec.LookPath(loc.Bin); err == nil {
+		// envtrust.LookPath, not exec.LookPath: the env-named path above is
+		// already read as Inherited, and the PATH fallback answers the same
+		// authority question — a PATH a project .env planted chooses no
+		// executable here either (#2809).
+		if p, err := envtrust.LookPath(loc.Bin); err == nil {
 			return p
 		}
 	}

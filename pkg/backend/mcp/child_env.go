@@ -94,17 +94,7 @@ func stdioChildEnv(declared map[string]string) stdioEnvDecision {
 	}
 
 	merged := make(map[string]string, len(stdioAmbientAllowlist)+len(named)+len(declared))
-	for _, name := range stdioAmbientAllowlist {
-		// Read as INHERITED, not live: a `.env` in the repository under
-		// review does not get to answer what the launcher's own process
-		// answers here. applyDotEnv only fills names that are UNSET, so a
-		// real process's PATH and HOME are the operator's anyway — reading
-		// them this way is what makes that a rule rather than a
-		// coincidence.
-		if v := envtrust.Inherited(name); v != "" {
-			merged[name] = v
-		}
-	}
+	fillInherited(merged, stdioAmbientAllowlist)
 	for _, name := range named {
 		// LIVE, not inherited: the operator named this one, and `.env` is
 		// where iterion tells people to put run variables. Refusing the
@@ -127,6 +117,24 @@ func stdioChildEnv(declared map[string]string) stdioEnvDecision {
 			EnvServerEnvPassthrough, len(malformed), malformed)
 	}
 	return dec
+}
+
+// fillInherited adds each allowlisted name to merged, read as INHERITED, not
+// live: a `.env` in the repository under review does not get to answer what
+// the launcher's own process answers here. applyDotEnv only fills names that
+// are UNSET, so a real process's PATH and HOME are the operator's anyway —
+// reading them this way is what makes that a rule rather than a coincidence.
+//
+// This is the one read every launcher-started host child's ambient
+// environment is composed through (stdioChildEnv for the stdio servers,
+// chromiumChildEnv for the host browser runner): a per-caller allowlist says
+// what the child needs to EXIST, never what it fetches, loads or trusts.
+func fillInherited(merged map[string]string, allowlist []string) {
+	for _, name := range allowlist {
+		if v := envtrust.Inherited(name); v != "" {
+			merged[name] = v
+		}
+	}
 }
 
 // parsePassthroughNames splits the knob's value into names, the tokens that

@@ -3,6 +3,7 @@ package mcp
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -258,4 +259,71 @@ func envMapOf(env []string) map[string]string {
 		}
 	}
 	return out
+}
+
+// TestTheHostChromiumRunnerKeepsOnlyAnInheritedAllowlist covers the site
+// #2018 left open and #2809 closes: the host Chromium runner's cmd.Env was
+// nil, so the browser inherited the launcher's whole environment — and a
+// project .env plants only names that were UNSET, exactly where LD_PRELOAD,
+// LD_LIBRARY_PATH and CHROME_* live on a normal machine. The child keeps a
+// process-essential allowlist, each name read as INHERITED: a planted
+// allowlist name does not cross, the loader families never are allowlisted,
+// and the operator's own HOME still reaches the browser. Red when
+// fillInherited goes back to reading the live environment: the planted
+// XDG_CACHE_HOME then crosses.
+func TestTheHostChromiumRunnerKeepsOnlyAnInheritedAllowlist(t *testing.T) {
+	envtrust.ResetForTest()
+	t.Cleanup(envtrust.ResetForTest)
+	t.Setenv(envtrust.EnvPlantedNames, "")
+	t.Setenv("LD_PRELOAD", "/repo/under/review/pwn.so")
+	t.Setenv("CHROME_HEADLESS", "1")
+	t.Setenv("XDG_CACHE_HOME", "/repo/under/review/cache")
+	t.Setenv("HOME", "/home/operator")
+	envtrust.MarkPlanted("XDG_CACHE_HOME")
+
+	env := envMapOf(chromiumChildEnv())
+	for _, name := range []string{"LD_PRELOAD", "CHROME_HEADLESS"} {
+		if v, ok := env[name]; ok {
+			t.Errorf("the browser child received %s=%q — a name that decides what it loads is never allowlisted", name, v)
+		}
+	}
+	if v, ok := env["XDG_CACHE_HOME"]; ok {
+		t.Errorf("the browser child received XDG_CACHE_HOME=%q, planted by a project .env", v)
+	}
+	if got := env["HOME"]; got != "/home/operator" {
+		t.Errorf("HOME: got %q, want the operator's — a browser without it does not start", got)
+	}
+}
+
+// TestAStdioCommandResolvesOnTheInheritedPATH: exec.Command resolves a bare
+// command name against the LIVE PATH, which a project .env answers when it
+// planted one — the authority #1945 closed at the config, reopened one fork
+// down (#2809). A bare name resolves on the operator's PATH, refuses loudly
+// under a planted one, and an explicit path consults no PATH. Red when
+// resolveServerCommand goes back to exec.Command's own resolution: the
+// planted case then resolves and fails its assertion.
+func TestAStdioCommandResolvesOnTheInheritedPATH(t *testing.T) {
+	envtrust.ResetForTest()
+	t.Cleanup(envtrust.ResetForTest)
+	t.Setenv(envtrust.EnvPlantedNames, "")
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "mcp-probe-server")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	if _, err := resolveServerCommand("s", "mcp-probe-server"); err != nil {
+		t.Fatalf("the operator's own PATH must resolve: %v", err)
+	}
+
+	envtrust.MarkPlanted("PATH")
+	if got, err := resolveServerCommand("s", "mcp-probe-server"); err == nil {
+		t.Errorf("a bare command resolved to %q under a planted PATH — the repository under review chose the server binary", got)
+	}
+
+	if got, err := resolveServerCommand("s", bin); err != nil || got != bin {
+		t.Errorf("an explicit path consults no PATH: got %q, %v", got, err)
+	}
 }
