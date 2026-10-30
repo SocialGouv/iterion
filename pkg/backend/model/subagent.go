@@ -11,6 +11,7 @@ import (
 	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 )
@@ -150,7 +151,8 @@ const defaultSubagentMaxSteps = 10
 // read off the context the tool call already carries:
 //
 //   - its tools, the node's effective set (ParentLoop.Tools), minus `agent`
-//     itself and the node-scoped MCP tools;
+//     itself, the node-scoped MCP tools and the ask channel (the child is
+//     not the node — filterSubagentTools);
 //   - its permission policy (ParentPermission), so a deny or ask row the
 //     parent answers to stops at the delegation too;
 //   - its step budget (ParentLoop.MaxSteps);
@@ -298,9 +300,20 @@ func buildSubagentTools(reg *tool.Registry, allowed map[string]bool) []Generatio
 }
 
 // filterSubagentTools is the withholding rule, applied to whichever set the
-// child draws from: no recursion into `agent`, no node-scoped MCP tool, and
-// claw's per-type allowlist on top (nil = general-purpose, every name
-// allowed).
+// child draws from: no recursion into `agent`, no node-scoped MCP tool, no
+// ask-channel tool, and claw's per-type allowlist on top (nil =
+// general-purpose, every name allowed).
+//
+// The ask family (ask_user and the async pair) is withheld for the reason
+// the MCP tools are: the child is not the node. ask_user raises
+// delegate.ErrAskUser to pause the RUN, and a child's call raises it from
+// inside the parent's tool call — the parent's askUserResult path still
+// recognises it through the wrap, so the run pauses on a question the child
+// asked, attributed to nobody, and the child's conversation is not persisted
+// for the resume to return to (#2812). A child that needs an operator's
+// answer reports the question back to its parent, whose OWN ask channel is
+// intact. The withholding covers the stand-alone host too, like the MCP one
+// above: a pause raised outside any run is an error with no handler at all.
 func filterSubagentTools(tools []GenerationTool, allowed map[string]bool) []GenerationTool {
 	out := make([]GenerationTool, 0, len(tools))
 	for _, t := range tools {
@@ -310,12 +323,26 @@ func filterSubagentTools(tools []GenerationTool, allowed map[string]bool) []Gene
 		if isNodeScopedMCPTool(t.Name) {
 			continue
 		}
+		if isRunPausingAskTool(t.Name) {
+			continue
+		}
 		if allowed != nil && !allowed[t.Name] {
 			continue
 		}
 		out = append(out, t)
 	}
 	return out
+}
+
+// isRunPausingAskTool names the ask channel: the blocking ask_user and the
+// async pair. Read from the same spellings the runtime appends them under
+// (executor_build_task.go), never a fresh string.
+func isRunPausingAskTool(name string) bool {
+	switch name {
+	case askUserToolName, delegate.AskUserAsyncToolName, delegate.AwaitAnswersToolName:
+		return true
+	}
+	return false
 }
 
 // isNodeScopedMCPTool reports whether a tool's reach is decided by the NODE
