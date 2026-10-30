@@ -690,6 +690,9 @@ tasks:
       - task: templates:dispatch-bots
       - task: map:gen
       - task: openapi:gen
+      # The REST annex reads the committed openapi.json, so it regenerates
+      # after the spec, never before.
+      - task: restapi:gen
 
   openapi:check:dry:
     desc: Verify the committed OpenAPI spec + TS types are fresh WITHOUT mutating them (snapshot, regenerate, compare, restore)
@@ -713,9 +716,20 @@ tasks:
     cmds:
       - task: map:check
       - task: openapi:check:dry
+      - task: restapi:check
       - task: chart:check-version
       - task: skills:check
       - task: templates:dispatch-bots:check
+
+  restapi:gen:
+    desc: Regenerate docs/cloud-rest-api-generated.md, the exhaustive REST inventory annex (from the pkg/server registration scan + openapi.json)
+    cmds:
+      - go run -mod=vendor ./cmd/iterion openapi inventory
+
+  restapi:check:
+    desc: Fail if the committed REST inventory annex drifts from the tree
+    cmds:
+      - go run -mod=vendor ./cmd/iterion openapi inventory --check
 
   skills:sync:
     desc: Write every declared shared-skill mirror from its family's source (internal/skillshare/families.go) — idempotent, runs under `task gen`

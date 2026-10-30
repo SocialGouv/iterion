@@ -30,6 +30,7 @@ This page maps every public top-level command in the current binary and document
 | `memory` | Export, import, and size local shared-knowledge spaces. |
 | `models` | Inspect resolved model capabilities and their source. |
 | `openapi` | Generate this build's OpenAPI 3.1 document offline. |
+| `openapi inventory` | Regenerate the exhaustive REST inventory annex (docs/cloud-rest-api-generated.md); `--check` fails on drift. |
 | `plugin` | Install/configure/enable/run runtime plugins. |
 | `reliability` | Inspect and roll back the staged workflow-reliability rollout. |
 | `remote` | Authenticate to and drive a remote/cloud Iterion server. |

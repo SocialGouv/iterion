@@ -289,6 +289,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/cloud-overview.md`](../cloud-overview.md) | ☁️ Iterion Cloud — the multi-tenant control plane for AI agents | platform engineer about to `helm install`, a tech-lead choosing between | — |
 | [`docs/cloud-public-exposure-checklist.md`](../cloud-public-exposure-checklist.md) | Cloud — public exposure checklist | This page is a pre-flight checklist for **opening an iterion deployment to traffic outside your private network** (i.e., putting it behind… | — |
 | [`docs/cloud-queue-schema-rollout.md`](../cloud-queue-schema-rollout.md) | Queue schema rollout runbook | How to ship a `queue.RunMessage` schema bump (`pkg/queue/types.go`, | — |
+| [`docs/cloud-rest-api-generated.md`](../cloud-rest-api-generated.md) | Cloud REST API — generated inventory | The freshness and two-way gates of pkg/server/docs_rest_inventory_test.go fail on drift. | — |
 | [`docs/cloud-rest-api.md`](../cloud-rest-api.md) | Cloud REST API reference | SDK author, an operator writing curl runbooks. | — |
 | [`docs/cloud-troubleshooting.md`](../cloud-troubleshooting.md) | Cloud troubleshooting | Symptoms-first reference for operators running iterion in cloud mode (Helm chart, docker-compose, or any setup using Mongo + NATS +… | — |
 | [`docs/cloud-user.md`](../cloud-user.md) | Iterion cloud — user guide | You signed up for an iterion workspace (or got an invite). | — |

@@ -26,6 +26,12 @@ curl .../api/openapi.json       # the same, from a live instance
 curl .../api/routes             # just the method+pattern inventory
 ```
 
+The exhaustive, generated-by-`task restapi:gen` inventory of every route
+this binary registers — with each registration's outer auth rung, and
+whether the published spec carries it — is
+[cloud-rest-api-generated.md](cloud-rest-api-generated.md), held to the
+tree both ways by `pkg/server/docs_rest_inventory_test.go`.
+
 (The `/api/v1/native`, `/api/v1/dispatcher`, `/api/v1/mcp/board` and
 `/api/v1/mcp/runs` sub-trees register on the *same* mux but bypass the
 route recorder — they are handed the bare `ServeMux` rather than the recording
