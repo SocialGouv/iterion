@@ -19,13 +19,15 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 )
 
-// parentLoopClient records what each child call was offered — the model and
-// the tool names — and answers with plain text so the loop ends in one step.
+// parentLoopClient records what each child call was offered — the model, the
+// system prompt and the tool names — and answers with plain text so the loop
+// ends in one step.
 type parentLoopClient struct {
-	mu     sync.Mutex
-	models []string
-	tools  [][]string
-	calls  int
+	mu      sync.Mutex
+	models  []string
+	systems []string
+	tools   [][]string
+	calls   int
 	// loopForever answers every call with the same tool_use, so a test can
 	// read the step budget off the number of calls the loop made.
 	loopForever bool
@@ -38,6 +40,7 @@ func (c *parentLoopClient) StreamResponse(_ context.Context, req api.CreateMessa
 		names = append(names, t.Name)
 	}
 	c.models = append(c.models, req.Model)
+	c.systems = append(c.systems, req.System)
 	c.tools = append(c.tools, names)
 	c.calls++
 	loop := c.loopForever
@@ -75,6 +78,16 @@ func (c *parentLoopClient) model(t *testing.T, call int) string {
 		t.Fatalf("child call %d not made (%d calls)", call, len(c.models))
 	}
 	return c.models[call-1]
+}
+
+func (c *parentLoopClient) system(t *testing.T, call int) string {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if call < 1 || call > len(c.systems) {
+		t.Fatalf("child call %d not made (%d calls)", call, len(c.systems))
+	}
+	return c.systems[call-1]
 }
 
 func (c *parentLoopClient) callCount() int {

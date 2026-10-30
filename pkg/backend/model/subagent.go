@@ -62,6 +62,9 @@ type ParentLoop struct {
 	// MaxSteps is the parent node's tool-loop step budget; 0 leaves the
 	// child on the runner's own default.
 	MaxSteps int
+	// WorkDir is the parent node's workspace: where a file-backed subagent
+	// (`<workspace>/.claude/agents/<name>.md`, #1714) is resolved from.
+	WorkDir string
 }
 
 // WithParentLoop attaches the parent node's loop shape.
@@ -156,7 +159,12 @@ const defaultSubagentMaxSteps = 10
 //   - its permission policy (ParentPermission), so a deny or ask row the
 //     parent answers to stops at the delegation too;
 //   - its step budget (ParentLoop.MaxSteps);
-//   - its spend, debited to the node through SubagentSpendFromContext.
+//   - its spend, debited to the node through SubagentSpendFromContext;
+//   - its definition, when subagent_type names a file-backed agent of the
+//     node's workspace (ParentLoop.WorkDir → LookupWorkspaceAgent, #1714):
+//     the file's body is the child's system prompt, its `tools:` narrows the
+//     child's set (intersected, never widening), and a `model:` key refuses
+//     the delegation (#1717).
 //
 // Hooks are propagated to the parent's event stream with a
 // "subagent:<agent_id>" nodeID so a live test can observe the full
@@ -187,6 +195,31 @@ func NewSubagentRunner(
 		// "use our defaultModel" so workflow authors don't have to
 		// specify the model on every agent call.
 		parent, fromParentLoop := ParentLoopFromContext(ctx)
+
+		// A named subagent may be file-backed: `subagent_type: auditor`
+		// resolves `<workspace>/.claude/agents/auditor.md` of the NODE's
+		// workspace (#1714) — the file a plugin's `contributes: agents`
+		// mirrors there, which claude_code discovers natively. Read before
+		// anything is resolved or spawned: a file whose frontmatter declares
+		// `model:` refuses the delegation outright (#1717), and a name that
+		// spells traversal or a file the containment boundary refuses never
+		// starts a child.
+		var agent WorkspaceAgent
+		agentFound := false
+		if fromParentLoop && parent.WorkDir != "" {
+			a, found, err := LookupWorkspaceAgent(parent.WorkDir, spec.SubagentType, workspaceAgentMaxBytes())
+			if err != nil {
+				return "", err
+			}
+			if found {
+				if a.Model != "" {
+					return "", fmt.Errorf("%w: %s (%s) declares model: %q — a contributed file does not re-route the node's spend; drop the key, or pass the model as the agent tool's own argument (#1717)",
+						ErrWorkspaceAgentModel, a.Name, a.Path, a.Model)
+				}
+				agent, agentFound = a, true
+			}
+		}
+
 		raw, _ := input["model"].(string)
 		modelSpec := raw
 		if modelSpec == "" {
@@ -212,6 +245,13 @@ func NewSubagentRunner(
 		}
 
 		allowed := clawtools.AllowedToolsForSubagent(spec.SubagentType)
+		// A file-backed agent's `tools:` narrows the child further — and only
+		// further: intersected with the per-type allowlist below and with the
+		// node's effective set at the filter, so a contributed file can never
+		// hand the child a tool the node does not hold.
+		if agentFound {
+			allowed = intersectToolSets(allowed, agent.ToolSet())
+		}
 		// Spawned from a node, the child selects from the NODE's effective
 		// tools; spawned by a stand-alone host, from the registry that host
 		// handed us. Never both: the registry holds every tool every node of
@@ -226,9 +266,17 @@ func NewSubagentRunner(
 			maxSteps = parent.MaxSteps
 		}
 
+		// The child conversation's system prompt is the agent file's body
+		// when one resolved — the file IS the agent's definition — and the
+		// generic instruction otherwise.
+		system := "You are a sub-agent. Complete the task with the tools available and return your final answer concisely."
+		if agentFound && agent.Body != "" {
+			system = agent.Body
+		}
+
 		opts := GenerationOptions{
 			Model:  modelSpec,
-			System: "You are a sub-agent. Complete the task with the tools available and return your final answer concisely.",
+			System: system,
 			Messages: []api.Message{{
 				Role:    "user",
 				Content: []api.ContentBlock{{Type: "text", Text: spec.Prompt}},
@@ -264,6 +312,15 @@ func NewSubagentRunner(
 			"text":          result.Text,
 			"input_tokens":  result.TotalUsage.InputTokens,
 			"output_tokens": result.TotalUsage.OutputTokens,
+		}
+		// A file-backed resolution is reported, so the delegating model (and
+		// a human reading the tool result) can tell a named agent ran its own
+		// definition rather than the generic shape.
+		if agentFound {
+			out["workspace_agent"] = agent.Name
+			if agent.Description != "" {
+				out["workspace_agent_description"] = agent.Description
+			}
 		}
 		b, _ := json.MarshalIndent(out, "", "  ")
 		return string(b), nil
