@@ -87,7 +87,8 @@ for (const surface of SURFACES) {
     for (const { geometry, waiver } of scan.waived) {
       console.log(
         `[target-size] ${surface.name}: waived ${geometry.selector} ` +
-          `(${geometry.widthPx}×${geometry.heightPx}px, ${geometry.kind}) — ${waiver.justification}`,
+          `(${geometry.widthPx}×${geometry.heightPx}px, ${geometry.kind}, ` +
+          `decision: ${waiver.decision}) — ${waiver.justification}`,
       );
     }
   });

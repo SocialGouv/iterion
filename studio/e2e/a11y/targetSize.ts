@@ -12,18 +12,21 @@
 //     spacing exception (a 24px circle centered on it meets another target).
 //   - wcag-spacing-exception: a target axe PASSES, but only through the
 //     spacing exception — physically under 24×24, saved by the empty room
-//     around it. WCAG 2.2's SC 2.5.8 text accepts that; whether the studio
-//     accepts it as its policy floor or grows its compact controls instead
-//     is the question pending with Jo (#2765), so the harness reports these
-//     too rather than letting axe's pass swallow them.
+//     around it.
+//
+// The policy is DECIDED (#2765, Q47b): the studio's floor is SC 2.5.8's 24px
+// AA, and WCAG's exceptions are accepted where one honestly applies — so the
+// second class is reported too rather than letting axe's pass swallow it,
+// and a target of either class survives only behind a waiver whose
+// `decision` names the exception it rests on.
 //
 // Either way, per node the report carries the real CSS px box (read off
 // getBoundingClientRect — axe reports the rule id, not the size) and the
 // WCAG exception candidates (Inline / Spacing / Equivalent). A node survives
-// only if an explicit waiver covers it (surface + selector + written
-// justification), and a waiver that matched nothing fails too — a dead
-// waiver is how a net quietly stops judging what it says it judges (same
-// discipline as axeHelpers.ts).
+// only if an explicit waiver covers it (surface + selector + the decided
+// exception + a written justification), and a waiver that matched nothing
+// fails too — a dead waiver is how a net quietly stops judging what it says
+// it judges (same discipline as axeHelpers.ts).
 //
 // NOT a test file — imported by target-size.spec.ts.
 
@@ -52,6 +55,18 @@ export const TARGET_SIZE_FLOOR_PX = 24;
 /** How a sub-24px target came to the harness's attention. */
 export type FindingKind = "axe-violation" | "wcag-spacing-exception";
 
+/**
+ * The WCAG 2.2 SC 2.5.8 exceptions the studio's decided policy accepts
+ * (#2765, Q47b) — the three a compact control can honestly rest on:
+ *
+ *   - `spacing`: the target is under 24×24 but the 24px circle centered on
+ *     it meets no other target (axe's `target-offset` check passes);
+ *   - `inline`: the target sits inside a line of text;
+ *   - `equivalent`: the same function is available through a conforming
+ *     full-size target.
+ */
+export type TargetSizeException = "spacing" | "inline" | "equivalent";
+
 /** One undersized target, measured in the real engine. */
 export interface TargetGeometry {
   /** The selector axe resolved the node to. */
@@ -77,11 +92,11 @@ export interface TargetGeometry {
 }
 
 /**
- * A documented exception. The list is the whole policy surface of this
- * harness: a finding is either a violation or it is on this list with a
- * justification someone wrote down. Matching is per surface and per the
- * fields the entry sets — every set field must match, so a waiver cannot
- * leak onto a sibling control:
+ * A documented exception DECISION. The list is the whole policy surface of
+ * this harness: a finding is either a violation or it is on this list with
+ * the WCAG exception it rests on and a justification someone wrote down.
+ * Matching is per surface and per the fields the entry sets — every set
+ * field must match, so a waiver cannot leak onto a sibling control:
  *
  *   - `selector`: substring of the node's axe selector;
  *   - `tag`: the node's tag (for nodes whose axe selector is a bare
@@ -103,18 +118,22 @@ export interface TargetSizeWaiver {
   within?: string;
   /** The class bound: more matching nodes than this fails the surface. */
   maxNodes?: number;
-  /** Why this node may stay under 24×24 — names the issue and the pending
-   *  decision. */
+  /** The WCAG exception this entry rests on — the decided policy (#2765).
+   *  A waiver without one fails the run: an entry that cannot name its
+   *  exception is a finding nobody has answered for. */
+  decision: TargetSizeException;
+  /** Why the named exception honestly applies to this node — the measured
+   *  facts (size, spacing, state) the decision stands on. */
   justification: string;
 }
 
 /**
- * The waiver list — the inventory of sub-24px targets the real engine sees
- * and someone has answered for. Every entry names #2765, because the policy
- * they all point at (does the studio accept WCAG's spacing exception as its
- * floor, or grow its compact controls to 24px?) is pending with Jo: these
- * entries RECORD findings, they do not decide them. An entry whose
- * justification stops being true is deleted here, not edited quiet.
+ * The decision list — the inventory of sub-24px targets the real engine
+ * sees, each answered for under the decided policy (#2765, Q47b: 24px AA
+ * floor, WCAG exceptions accepted where honestly met). Every entry names
+ * its exception in `decision` and the measured facts in `justification`;
+ * an entry missing either fails the run. An entry whose justification
+ * stops being true is deleted here, not edited quiet.
  */
 
 // The two chrome classes every AppShell surface carries — declared once,
@@ -126,24 +145,27 @@ const SKIP_LINK_WAIVER: Omit<TargetSizeWaiver, "surface"> = {
   selector: "not-sr-only",
   tag: "a",
   maxNodes: 1,
+  decision: "equivalent",
   justification:
     "The skip link is sr-only at rest (1×1px — visually hidden BY DESIGN) " +
-    "and becomes a fixed padded target on keyboard focus; the sub-24px box " +
-    "exists only in the state that cannot be pointed at. Whether SC 2.5.8 " +
-    "judges a focus-revealed target at rest or as-focused is part of the " +
-    "policy pending with Jo (#2765).",
+    "and becomes a fixed padded target on keyboard focus — the only state " +
+    "in which it can receive pointer input. The focused presentation is " +
+    "the conforming full-size target for the same function, so the " +
+    "at-rest box rests on SC 2.5.8's Equivalent exception (#2765).",
 };
 
 const SIDEBAR_NAV_WAIVER: Omit<TargetSizeWaiver, "surface"> = {
   within: 'nav[aria-label="Primary navigation"]',
   tag: "a",
   maxNodes: 12,
+  decision: "spacing",
   justification:
-    "The sidebar's primary-nav rows render at 187×16 CSS px (text-xs rows, " +
-    "one per studio section) and pass axe ONLY through WCAG's spacing " +
-    "exception. Accepting that exception as the floor for compact nav vs " +
-    "growing the rows to 24px is the policy question pending with Jo " +
-    "(#2765). maxNodes bounds the class: a 13th sub-24px nav target fails.",
+    "The sidebar's primary-nav rows render at 187×16 CSS px (text-xs " +
+    "rows, one per studio section) and axe's rule PASSES them through " +
+    "the spacing exception: the 24px circle centered on each row meets " +
+    "no other target, so SC 2.5.8's Spacing exception is honestly met " +
+    "and accepted as the floor (#2765). maxNodes bounds the class: a " +
+    "13th sub-24px nav target fails.",
 };
 
 export const TARGET_SIZE_WAIVERS: TargetSizeWaiver[] = [
@@ -160,49 +182,54 @@ export const TARGET_SIZE_WAIVERS: TargetSizeWaiver[] = [
     tag: "input",
     within: "table",
     maxNodes: 3,
+    decision: "spacing",
     justification:
       "The runs table's row-selection checkboxes are the same h-3.5 w-3.5 " +
-      "(14×14 CSS px) Checkbox primitive as VarFieldInput's bool — the " +
-      "#2765 known candidate in its second home. axe passes them via the " +
-      "spacing exception; the floor policy is pending with Jo (#2765). " +
-      "Their axe selectors are React useId's (`#_r_N_`), which is why this " +
-      "entry matches on tag-within-table instead — and maxNodes is the " +
-      "guard against a fourth compact input joining unexamined.",
+      "(14×14 CSS px) Checkbox primitive as VarFieldInput's bool. axe " +
+      "passes them through the spacing exception — the 24px circle " +
+      "centered on each meets no other target — so Spacing is honestly " +
+      "met and accepted as the floor (#2765). Their axe selectors are " +
+      "React useId's (`#_r_N_`), which is why this entry matches on " +
+      "tag-within-table instead — and maxNodes is the guard against a " +
+      "fourth compact input joining unexamined.",
   },
   {
     surface: "runs-list",
     selector: 'title="Filter by',
     maxNodes: 2,
+    decision: "spacing",
     justification:
-      "The runs table's per-row bot-filter icon buttons render at 20×20 CSS " +
-      "px (w-5), under the floor, passing via spacing. Same pending policy " +
-      "(#2765).",
+      "The runs table's per-row bot-filter icon buttons render at 20×20 " +
+      "CSS px (w-5), under the floor, with the 24px circle around each " +
+      "meeting no other target — Spacing exception, accepted as the " +
+      "floor (#2765).",
   },
   {
     surface: "runs-list",
     selector: "text-left",
     within: "table",
     maxNodes: 2,
+    decision: "spacing",
     justification:
-      "The runs table's bot-name open buttons are text rows at ~157×16 CSS " +
-      "px — compact table typography, passing via spacing. Same pending " +
-      "policy (#2765).",
+      "The runs table's bot-name open buttons are text rows at ~157×16 " +
+      "CSS px — compact table typography, the 24px circle around each " +
+      "meeting no other target — Spacing exception, accepted as the " +
+      "floor (#2765).",
   },
   {
     surface: "launch-form",
     selector: "#var-flag",
     maxNodes: 1,
+    decision: "spacing",
     justification:
-      "VarFieldInput's bool checkbox renders at 14×14 CSS px (h-3.5 w-3.5), " +
-      "under the SC 2.5.8 24px floor — the known candidate #2765 names " +
-      "(BotArgsForm and AddTaskDialog share the component). axe's rule " +
-      "PASSES it, but only through WCAG's spacing exception (the 24px " +
-      "circle around it meets no other target). Whether that exception is " +
-      "the studio's accepted floor or the compact controls grow to 24px is " +
-      "the policy question pending with Jo (#2765): the waiver records the " +
-      "finding, it does not decide it. Deleting this entry must redden the " +
-      "launch-form surface — that is the harness's self-proof that it sees " +
-      "what jsdom cannot.",
+      "VarFieldInput's bool checkbox renders at 14×14 CSS px (h-3.5 " +
+      "w-3.5), under the SC 2.5.8 24px floor (BotArgsForm and " +
+      "AddTaskDialog share the component). The harness measures " +
+      "spacing:MET — the 24px circle centered on it meets no other " +
+      "target — so the Spacing exception is honestly met and accepted " +
+      "as the studio's floor (#2765). Deleting this entry must redden " +
+      "the launch-form surface — that is the harness's self-proof that " +
+      "it sees what jsdom cannot.",
   },
 ];
 
@@ -459,6 +486,21 @@ export async function assertTargetSize(
 ): Promise<SurfaceScan> {
   const scan = await scanTargetSize(page, surface);
   const problems: string[] = [];
+  // The waiver list is a DECISION list: an entry that cannot name the WCAG
+  // exception it rests on, or say why that exception honestly applies, is a
+  // finding nobody answered for — it fails the run like an unwaived one.
+  const undecided = TARGET_SIZE_WAIVERS.filter(
+    (w) => w.surface === surface && (!w.decision || !w.justification.trim()),
+  );
+  if (undecided.length > 0) {
+    problems.push(
+      `waivers missing their WCAG exception decision — every entry must name ` +
+        `the exception it rests on (spacing / inline / equivalent) and a ` +
+        `non-empty justification (#2765):\n${undecided
+          .map((w) => `  - ${describeWaiver(w)}`)
+          .join("\n")}`,
+    );
+  }
   const violations = scan.findings.filter((g) => g.kind === "axe-violation");
   const spacingOnly = scan.findings.filter(
     (g) => g.kind === "wcag-spacing-exception",
@@ -473,8 +515,8 @@ export async function assertTargetSize(
   if (spacingOnly.length > 0) {
     problems.push(
       `sub-24px targets passing ONLY through WCAG's spacing exception, with no ` +
-        `documented waiver — whether the studio accepts that exception as its ` +
-        `floor is pending (#2765):${spacingOnly.map(formatGeometry).join("")}`,
+        `documented decision — the studio's floor accepts that exception only ` +
+        `where a waiver records it (#2765):${spacingOnly.map(formatGeometry).join("")}`,
     );
   }
   if (scan.deadWaivers.length > 0) {
