@@ -384,8 +384,11 @@ func OperatorGradeRefused(name string) bool {
 }
 
 // HasCommandSubstitution reports whether a VALUE spells shell execution —
-// a command substitution (`$(...)` or a backtick pair) or a bash
-// parameter-expansion operator reference (`${name@P}` and kin). Asked
+// a command substitution (`$(...)` or a backtick pair), a process
+// substitution (`<(...)` / `>(...)`, which forks the named command the
+// moment a shell evaluates the value — the H-10 probe planted one and the
+// eval created the marker), or a bash parameter-expansion operator
+// reference (`${name@P}` and kin). Asked
 // about the value a dotenv loader is about to apply, before any shell sees
 // it: the studio snapshot used to hand values to a child bash (the legacy
 // instance manager's frame), and a sourced `FOO=$(...)` EXECUTED on the
@@ -403,7 +406,8 @@ func OperatorGradeRefused(name string) bool {
 // scan is on the raw bytes and knows no quoting: a single-quoted literal
 // `'$('` is refused too — the price of deciding before any shell runs.
 func HasCommandSubstitution(value string) bool {
-	if strings.Contains(value, "$(") || strings.Contains(value, "`") {
+	if strings.Contains(value, "$(") || strings.Contains(value, "`") ||
+		strings.Contains(value, "<(") || strings.Contains(value, ">(") {
 		return true
 	}
 	return HasExpansionOperatorReference(value)
@@ -441,6 +445,60 @@ func isASCIILetter(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
 
+func isNameStart(b byte) bool {
+	return b == '_' || isASCIILetter(b)
+}
+
+func isNameByte(b byte) bool {
+	return isNameStart(b) || (b >= '0' && b <= '9')
+}
+
+// CarriesExpansionReference reports whether a value carries a simple
+// `$NAME` / `${NAME}` reference — the shapes the studio lane's Go
+// expander (pkg/projectenv expandReferences) replaces. The CLI and
+// desktop lanes plant NO expansion: a reference there is applied as the
+// literal bytes the file spelled, where the same file on the studio lane
+// arrives resolved — the H-10 review measured `GIT_EDITOR=$HOME/bin/gedit`
+// planted literal on the CLI lane (a child then execs a path named
+// `$HOME/...`) while the studio lane expanded it. The lanes that plant
+// raw ask this to WARN, not to refuse: a literal `$` is a legitimate
+// value, and the operator decides. A single-quoted value is outside the
+// question — the studio lane keeps those bytes too. The escapes and forms
+// the expander keeps dead are not references: `\$` (resolved to one
+// dollar), `$$`, `${VAR:-default}`, `${VAR@P}`, a trailing `$`.
+func CarriesExpansionReference(value string) bool {
+	for i := 0; i < len(value); i++ {
+		switch c := value[i]; {
+		case c == '\\' && i+1 < len(value) && value[i+1] == '$':
+			i++ // the expander resolves the pair to one literal dollar
+		case c == '\\' && i+1 < len(value):
+			i++ // the expander keeps the pair literal, both bytes
+		case c != '$':
+		case i+1 < len(value) && value[i+1] == '{':
+			end := i + 2
+			for end < len(value) && isNameByte(value[end]) {
+				end++
+			}
+			if end > i+2 && end < len(value) && value[end] == '}' {
+				return true
+			}
+		case i+1 < len(value) && isNameStart(value[i+1]):
+			return true
+		}
+	}
+	return false
+}
+
+// UnexpandedReferenceWarningLine renders the warning for a value whose
+// references the planting lane applies unexpanded: the same shape as the
+// refusal lines (the name, the file, what happens), with the operator's
+// two ways out. It is a WARNING, not a refusal — the bytes are the
+// operator's to plant, and the divergence with the studio lane is what
+// the line exists to make loud.
+func UnexpandedReferenceWarningLine(name, source, path string) string {
+	return fmt.Sprintf("%s comes from %s %s with a $-reference in its value ($VAR / ${VAR}); this lane plants no expansion, so the reference is applied as the literal bytes the file spelled — the studio lane would expand the same file. Put the resolved value in the file, or single-quote it to keep the bytes on every lane", name, source, path)
+}
+
 // CommandSubstitutionRefusalLine renders the refusal for a value carrying
 // shell execution — a command substitution or a `${name@op}` operator
 // reference: the same shape as RoutingRefusalLine (the name, the file,
@@ -449,5 +507,5 @@ func isASCIILetter(b byte) bool {
 // file hand a shell a trigger. The caller puts the line on stderr
 // directly, like the routing refusal.
 func CommandSubstitutionRefusalLine(name, source, path string) string {
-	return fmt.Sprintf("%s comes from %s %s with shell execution spelled in its value ($(...), backticks, or a ${name@op} expansion operator), so it is not applied: a dotenv file does not run commands — put the wanted value in the file, or export %s in the environment iterion runs with", name, source, path, name)
+	return fmt.Sprintf("%s comes from %s %s with shell execution spelled in its value ($(...), <(...)/>(...), backticks, or a ${name@op} expansion operator), so it is not applied: a dotenv file does not run commands — put the wanted value in the file, or export %s in the environment iterion runs with", name, source, path, name)
 }

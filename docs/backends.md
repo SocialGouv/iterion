@@ -1419,13 +1419,24 @@ never merged across sources, and an answer carries its provenance:
 > makes a child of iterion execute, load or trust what the file chose —
 > `BASH_ENV` (a tool-node's bash sources it), `LD_PRELOAD` (every engine
 > child preloads it), `PATH`, `IFS`, `SHELLOPTS`/`PS4`, `NODE_OPTIONS`,
-> `EDITOR`, `SSH_ASKPASS`, the `XDG_*`/`NIX_*`/`LD_*`/`NPM_CONFIG_*`
-> families, `HOME`, the config-dir names and the TLS trust roots
-> (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, …; `internal/envtrust`
+> `EDITOR`, `SSH_ASKPASS`, git's editor chain and pager
+> (`GIT_EDITOR`/`GIT_SEQUENCE_EDITOR`/`GIT_PAGER` — an agent's own
+> `git commit` without `-m` runs the editor, measured), the interpreter
+> knobs (`PYTHONPATH` — its `sitecustomize` executes at interpreter
+> startup — with `PYTHONHOME`/`PYTHONSTARTUP`, `RUBYOPT`, `PERL5OPT`/
+> `PERL5LIB`, `JAVA_TOOL_OPTIONS`/`JDK_JAVA_OPTIONS`/`CLASSPATH`,
+> `CLOUDSDK_PYTHON`), the agent config homes including opencode's
+> (`OPENCODE_CONFIG*`, `OPENCODE_PERMISSION`), `ANTHROPIC_UNIX_SOCKET`
+> (the claude CLI's own client dials it — a reader no grep sees), the
+> `XDG_*`/`NIX_*`/`LD_*`/`NPM_CONFIG_*` families, `HOME`, the config-dir
+> names and the TLS trust roots (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`,
+> `AWS_CA_BUNDLE` — the vendored AWS SDK reads it into the S3 blob
+> store's client; `internal/envtrust`
 > `execution.go`, the execution portion of the devcontainer deny table,
 > one inventory both gates read). The same opt-in answers it — these names
 > have legitimate lives in an operator's own file, and the operator
-> decides. And a VALUE spelling shell execution — `$(...)`, backticks, or
+> decides. And a VALUE spelling shell execution — `$(...)`,
+> `<(...)`/`>(...)`, backticks, or
 > a `${name@op}` expansion operator — is refused on every lane: the studio
 > snapshot used to source the file in bash, which RAN
 > `FOO=$(touch /tmp/x)` on the host before any question was asked, and the
@@ -1437,7 +1448,11 @@ never merged across sources, and an answer carries its provenance:
 > else literal — no shell exists on the lane), the git transport family
 > (`GIT_SSH_COMMAND`, `GIT_PROXY_COMMAND`, `GIT_CONFIG_*`) rides the
 > routing refusal — its reader is the git binary itself — and `pkg/git`
-> drops a planted transport name again at its own env assembly. The
+> drops a planted transport name again at its own env assembly. The CLI
+> and desktop lanes plant NO expansion: a `$VAR`/`${VAR}` reference there
+> is applied as the bytes the file spelled, where the studio lane expands
+> the same file — the loader says so on stderr when it plants one, and a
+> single-quoted value keeps its bytes on every lane. The
 > engine's own liveness knobs (`ITERION_CLAUDE_CODE_STREAM_IDLE_TIMEOUT`
 > and kin) stay bot-writable by their classification and the operator's
 > export answers, while a planted one reads as nothing said at the

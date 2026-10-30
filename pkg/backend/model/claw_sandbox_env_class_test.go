@@ -64,7 +64,10 @@ import (
 // through a reader that also answers from state that does not cross
 // (envStateConsults), such a reader is never handed to another package, and
 // the name is spelled only at its reads or where crossingSpellings says why:
-// its sandboxed twin would otherwise see another value.
+// its sandboxed twin would otherwise see another value. The one answer the
+// premise does not reach: a name that crosses by its own branch carries the
+// host's own RESOLUTION of the question its reader consults
+// (consultsWhatCrosses) — the twin reads what the host reads.
 //
 // What it does not see, named rather than hidden: a name built at run time
 // rather than spelled as a constant here — derived from data, the ${NAME}s a
@@ -85,6 +88,12 @@ var crossedByItsOwnBranch = map[string]string{
 	"ITERION_CODEX_HOST_VERSION": "the host's `codex --version` probe, sent when no ITERION_CODEX_VERSION override is set",
 	"CLAW_BASH_TIMEOUT":          "the deployment's bash budget, spent where bash runs — the container for a sandboxed node; a duration, not a path, so the launcher's value crosses as-is when set (forwardableToolEnv)",
 	"CLAW_CONFIG_HOME":           "the skill lookup reads it in the container and no iterion-seeded mount serves a claw config home, so there is nothing to rewrite to and the launcher's value crosses as-is when set (forwardableToolEnv)",
+	// The two cross as the host's own answer to the question their reader
+	// asks (envtrust.Inherited, explicit empty included), so the twin
+	// resolves what the host resolves, planted included: the state the
+	// reader consults does not cross, the RESOLUTION does.
+	"ITERION_CLAW_STREAM_COLD_TIMEOUT": "crosses as the host's planted-as-unset answer (explicit empty included): the watchdog knob's reader consults the planted marks, which do not cross, so the raw bytes would let a project .env run the container's watchdog after the host refused it",
+	"ITERION_CLAW_STREAM_IDLE_TIMEOUT": "same crossing as ITERION_CLAW_STREAM_COLD_TIMEOUT: the host's planted-as-unset answer, explicit empty included",
 }
 
 // Why a name stays on the host.
@@ -424,6 +433,7 @@ func assertRunnerHomeShape(t *testing.T, home, hostHome, workDir string) {
 var crossingSpellings = map[string]string{
 	"var providerCredentialEnvVars": "the forwarding list itself",
 	"var providerRoutingEnvVars":    "the routing subset, which forwardableProviderEnv forwards as explicit empties when the host leaves them unset",
+	"var clawStreamTimeoutEnvVars":  "the watchdog knobs, which forwardableProviderEnv crosses as the host's planted-as-unset answer, explicit empty included",
 	"forwardableProviderEnv":        "sets the crossing: a refusal, the run's own credentials, the host's resolved values",
 	"forwardableToolEnv":            "sets the crossing for the tool names that cross as-is when the launcher sets them (#2802)",
 	"var byokEnvVar":                "the variable a run's own key crosses as, which forwardableProviderEnv sets",
@@ -435,6 +445,18 @@ var crossingSpellings = map[string]string{
 // envStateConsults answer for a name from state other than the process env,
 // which the forwarding loop never copies. A reader that hands its name to one
 // answers differently on the host than in the container.
+//
+// consultsWhatCrosses is the one answer the state-not-crossing premise does
+// not reach: a name whose crossing carries the host's own RESOLUTION of the
+// same question the reader asks (crossedByItsOwnBranch — the branch writes
+// envtrust.Inherited's answer, explicit empty included), so the twin reads
+// what the host reads. The entry lives beside the premise it bounds, and the
+// assertion keeps it two-sided with crossedByItsOwnBranch: an entry whose
+// name stops crossing by its own branch reds here.
+var consultsWhatCrosses = map[string]string{
+	"ITERION_CLAW_STREAM_COLD_TIMEOUT": "the watchdog knob crosses as the host's planted-as-unset answer, so the twin resolves what the host resolves",
+	"ITERION_CLAW_STREAM_IDLE_TIMEOUT": "the watchdog knob crosses as the host's planted-as-unset answer, so the twin resolves what the host resolves",
+}
 var envStateConsults = map[string]string{
 	"pkg/dsl/ir.lookupOverlay":      "the bot-var settings overlay (ir.SetEnvOverlay), installed by the cloud server and runner, never by the claw runner",
 	"internal/envtrust.Planted":     "the names a workspace .env planted, which the host refuses and the forwarding loop copies",
@@ -559,10 +581,21 @@ func TestEveryEnvReadIsClassifiedForTheSandbox(t *testing.T) {
 		}
 	}
 	for _, name := range sortedKeys(scan.consulted) {
-		if _, crossed := crossedByItsOwnBranch[name]; forwarded[name] || crossed {
-			t.Errorf("%s crosses as the host's process env, which is what the forwarding loop copies, but it is read at %s through a reader that also answers from state that does not cross (envStateConsults): its sandboxed twin would see another value — read it as forwardableProviderEnv does, with os.Getenv, or make what crosses resolve it the same way",
-				name, strings.Join(scan.consulted[name], ", "))
+		_, crossed := crossedByItsOwnBranch[name]
+		if !forwarded[name] && !crossed {
+			continue
 		}
+		if _, allowed := consultsWhatCrosses[name]; allowed {
+			// The allowance is two-sided: it answers because the crossing
+			// carries the host's own resolution, so a name that leaves its
+			// own-branch crossing strands the allowance on a raw copy.
+			if !crossed {
+				t.Errorf("%s is allowed to consult state that does not cross only because it crosses by its own branch (the crossing carries the host's resolution); it is not crossed there any more — re-ask the forwarding", name)
+			}
+			continue
+		}
+		t.Errorf("%s crosses as the host's process env, which is what the forwarding loop copies, but it is read at %s through a reader that also answers from state that does not cross (envStateConsults): its sandboxed twin would see another value — read it as forwardableProviderEnv does, with os.Getenv, cross it by its own branch with the host's resolution (crossedByItsOwnBranch, named in consultsWhatCrosses), or make what crosses resolve it the same way",
+			name, strings.Join(scan.consulted[name], ", "))
 	}
 	for _, name := range sortedKeys(scan.spelled) {
 		_, crossed := crossedByItsOwnBranch[name]

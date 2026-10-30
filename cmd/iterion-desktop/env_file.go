@@ -226,6 +226,16 @@ func applyDotenvFile(path string) bool {
 			fmt.Fprintln(os.Stderr, "iterion: "+envtrust.CommandSubstitutionRefusalLine(key, "the dotenv file", path))
 			continue
 		}
+		// This lane plants NO expansion: a $-reference stays the bytes the
+		// file spelled, where the studio lane expands the same file (and a
+		// child shell will not re-expand them either — a planted `$HOME/...`
+		// execs a path literally named `$HOME/...`). The bytes are the
+		// operator's to plant, so this warns instead of refusing;
+		// single-quoting the value keeps it literal on every lane and
+		// silences the line.
+		if !entry.SingleQuoted && envtrust.CarriesExpansionReference(val) {
+			fmt.Fprintln(os.Stderr, "iterion: "+envtrust.UnexpandedReferenceWarningLine(key, "the dotenv file", path))
+		}
 		if err := os.Setenv(key, val); err != nil {
 			continue
 		}

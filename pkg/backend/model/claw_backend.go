@@ -2234,11 +2234,6 @@ var providerCredentialEnvVars = []string{
 	// refuses for newer models ("gpt-5.6-sol requires a newer codex-cli").
 	// The operator override must therefore cross the boundary.
 	"ITERION_CODEX_VERSION",
-	// The stream-silence watchdog runs where the provider call runs
-	// (callAndAggregate, every in-process call): in the container for a
-	// sandboxed node, which must wait as long as the host's would.
-	"ITERION_CLAW_STREAM_COLD_TIMEOUT",
-	"ITERION_CLAW_STREAM_IDLE_TIMEOUT",
 	// The routing settings claw's own provider packages read, which no
 	// provider table carries — so the walk over the tables never saw them
 	// and the launcher's value stayed on the launcher (#1804). Each decides
@@ -2278,6 +2273,15 @@ var byokEnvVar = map[secrets.Provider]string{
 	secrets.ProviderZAI:       "ZAI_API_KEY",
 	secrets.ProviderMoonshot:  "MOONSHOT_API_KEY",
 	secrets.ProviderXAI:       "XAI_API_KEY",
+}
+
+// clawStreamTimeoutEnvVars are the stream-silence watchdog knobs: they cross
+// as the host's own answer (envtrust.Inherited) rather than the raw process
+// env, planted included as an explicit empty — see the crossing branch in
+// forwardableProviderEnv.
+var clawStreamTimeoutEnvVars = []string{
+	"ITERION_CLAW_STREAM_COLD_TIMEOUT",
+	"ITERION_CLAW_STREAM_IDLE_TIMEOUT",
 }
 
 // providerRoutingEnvVars is the routing subset of providerCredentialEnvVars —
@@ -2433,6 +2437,23 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 		if _, ok := env[name]; !ok {
 			env[name] = ""
 		}
+	}
+	// The stream-silence watchdog runs where the provider call runs
+	// (callAndAggregate, every in-process call): in the container for a
+	// sandboxed node, which must wait as long as the host's would. Its two
+	// knobs cross as the HOST's own answer to the question their reader
+	// asks, not as the raw process env: the reader reads planted-as-unset
+	// (the liveness family, delegate.envDurationOr's rule), and the planted
+	// marks do not cross, so a raw copy would let a project `.env` run the
+	// container's watchdog after the host refused it — or disarm the host's
+	// and not the twin's. The name crosses EXPLICITLY, an empty included:
+	// the runner auto-loads the workspace .env, which only fills names
+	// missing from the process env (applyDotEnv honours LookupEnv), so an
+	// absent name lets the repository under review set the knob in-container
+	// after the host refused it. Empty reads as the fallback on both sides;
+	// the operator's own export crosses intact.
+	for _, name := range clawStreamTimeoutEnvVars {
+		env[name] = envtrust.Inherited(name)
 	}
 	// A gateway-served node carries the gateway env, and ONLY a gateway
 	// node does: the endpoint is operator infrastructure, the key to it is

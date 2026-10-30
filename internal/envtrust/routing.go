@@ -245,9 +245,10 @@ var routingPrefixes = []string{
 // authenticates out of band or fails rather than prompting, and the
 // transport family above already closes the gestures the reviewer
 // measured); GIT_EDITOR (git runs it on an interactive commit — the
-// engine's commits always pass -m) — and the routing-shaped names with no
-// reader at all — SSH_AUTH_SOCK,
-// ANTHROPIC_UNIX_SOCKET, DATABASE_URL, ITERION_MONGO_URL,
+// engine's commits always pass -m; the AGENT's own `git commit` with no
+// message is the execution class's question now, where the H-10 probe
+// measured the editor run) — and the routing-shaped names with no
+// reader at all — SSH_AUTH_SOCK, DATABASE_URL, ITERION_MONGO_URL,
 // ITERION_SLACK_WEBHOOK_URL, SESSION_INGRESS_URL, AGENT_PROXY_URL,
 // FIRECRAWL_API_URL, GITHUB_API_URL — grepped for across pkg/, internal/,
 // cmd/ and vendor/ in the read forms the tree uses (os.Getenv,
@@ -255,7 +256,11 @@ var routingPrefixes = []string{
 // found only in lists and comments. GIT_PROXY_COMMAND is NOT among them
 // any more: the H-10 review measured its reader — the git BINARY, run as a
 // subprocess with the process env, which the Go-form grep cannot see — so
-// it and GIT_SSH and GIT_CONFIG_ are in the class above. The AWS booleans
+// it and GIT_SSH and GIT_CONFIG_ are in the class above.
+// ANTHROPIC_UNIX_SOCKET is not either: the claude CLI's own client reads
+// it (the devcontainer table has named that reader since #2303), the same
+// external-binary blindness, and it answers in the execution class as a
+// planted route. The AWS booleans
 // that end in `_ENDPOINT`
 // (AWS_USE_FIPS_ENDPOINT, AWS_USE_DUALSTACK_ENDPOINT) are the class's
 // documented over-refusal price: they pick which VARIANT of Amazon's own

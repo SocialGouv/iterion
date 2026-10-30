@@ -111,13 +111,15 @@ func TestInfraGradeNameIsTheBotVarGateInventory(t *testing.T) {
 	}
 }
 
-// The command-substitution scan: `$( `, backticks, and the quoted spellings
-// of both, on the raw bytes — the studio lane used to RUN them by sourcing
-// the file.
+// The command-substitution scan: `$( `, backticks, process substitution,
+// and the quoted spellings of both, on the raw bytes — the studio lane used
+// to RUN them by sourcing the file, and the H-10 round-8 probe planted
+// `KEY=<(/path/evil.sh)` and the eval created the marker.
 func TestHasCommandSubstitutionSeesTheSpellings(t *testing.T) {
 	for _, value := range []string{
 		"$(touch x)", "pre$(x)post", "`touch x`", "pre`x`post",
 		`"$(touch x)"`, "${X:-$(touch x)}", "$((1+1))",
+		"<(/path/evil.sh)", ">(/path/evil.sh)", "cat <(a) >(b)",
 	} {
 		if !HasCommandSubstitution(value) {
 			t.Errorf("%q is not seen as command substitution", value)
@@ -126,9 +128,42 @@ func TestHasCommandSubstitutionSeesTheSpellings(t *testing.T) {
 	for _, value := range []string{
 		"", "plain", "$HOME/bin", "${HOME}/bin", "$UNSET_VAR",
 		"https://host.example/path?q=1", "a single $ alone",
+		"a < b and a > b", "compare 3<8 and 8>3", "an (unmatched paren",
 	} {
 		if HasCommandSubstitution(value) {
 			t.Errorf("%q is refused as command substitution: the ordinary expansions must survive", value)
+		}
+	}
+}
+
+// The unexpanded-reference question the raw-plant lanes ask: a value
+// carrying a `$NAME`/`${NAME}` reference is planted LITERAL on the CLI and
+// desktop lanes while the studio lane resolves it — the warning exists to
+// make that divergence loud, not to refuse. The forms the expander keeps
+// dead are outside the question, and a `\$` escape is not a reference.
+func TestCarriesExpansionReferenceSeesWhatTheExpanderResolves(t *testing.T) {
+	for _, value := range []string{
+		"$HOME/bin/gedit", "${HOME}/bin", "pre/$UNSET/post",
+		"a$$b$X", "${X}", "$_", "x$A1y",
+	} {
+		if !CarriesExpansionReference(value) {
+			t.Errorf("%q carries no reference per the scan: the studio lane would expand it", value)
+		}
+	}
+	for _, value := range []string{
+		"", "plain", "price: $5", "a single $ alone", "$$", "$ $",
+		"${VAR:-fallback}", "${VAR@P}", "${VAR@U}", "$'quoted'",
+		"trailing $", `\${HOME}/escaped`, `\$HOME/escaped`, `a\$b`,
+		`${unterminated`, "${not a name}", "$1digits", "3<8 and 8>3",
+	} {
+		if CarriesExpansionReference(value) {
+			t.Errorf("%q is called a reference: the scan widened past the shapes the expander resolves", value)
+		}
+	}
+	line := UnexpandedReferenceWarningLine("GIT_EDITOR", "the project `.env`", "/repo/.env")
+	for _, want := range []string{"GIT_EDITOR", "/repo/.env", "plants no expansion", "single-quote"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the warning line does not say %q: %s", want, line)
 		}
 	}
 }

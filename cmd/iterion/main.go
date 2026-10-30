@@ -384,6 +384,16 @@ func applyDotEnv(path string) bool {
 				fmt.Fprintln(os.Stderr, "iterion: "+envtrust.CommandSubstitutionRefusalLine(key, "the project `.env`", path))
 				continue
 			}
+			// This lane plants NO expansion: a $-reference stays the bytes
+			// the file spelled, where the studio lane expands the same file
+			// (and a child shell will not re-expand them either — a planted
+			// `$HOME/...` execs a path literally named `$HOME/...`). The
+			// bytes are the operator's to plant, so this warns instead of
+			// refusing; single-quoting the value keeps it literal on every
+			// lane and silences the line.
+			if !entry.SingleQuoted && envtrust.CarriesExpansionReference(val) {
+				fmt.Fprintln(os.Stderr, "iterion: "+envtrust.UnexpandedReferenceWarningLine(key, "the project `.env`", path))
+			}
 			_ = os.Setenv(key, val)
 			// A `.env` sits in a repository — including one under review — so
 			// what it plants must not later speak for the operator. The value
