@@ -5,14 +5,19 @@
 
 **Scope.** Every route this binary registers under `/api` with a literal
 pattern — the recording mux's whole table, plus the few raw-mux literals —
-each with its outer auth rung. The `/api/v1/native`, `/api/v1/dispatcher`
-and `/api/v1/mcp/{board,runs}` sub-trees register through non-literal
-patterns on the raw mux and stay out, exactly as they stay out of the
-published spec. The curated [cloud-rest-api.md](cloud-rest-api.md) carries
-what a generator cannot write: per-route authorization detail, refusal
-reasons, pitfalls.
+each with its outer auth rung. The BULK of the `/api/v1/native`,
+`/api/v1/dispatcher` and `/api/v1/mcp/{board,runs}` sub-trees registers
+through non-literal patterns on the raw mux and stays out, exactly as it
+stays out of the published spec — while their few literal registrations
+(the forge-facing card routes of board_forge.go and pipeline_boards.go)
+ARE in this inventory, marked `Spec: no` where the offline spec build
+leaves them unwired. The curated [cloud-rest-api.md](cloud-rest-api.md)
+carries what a generator cannot write: per-route authorization detail,
+refusal reasons, pitfalls.
 
-**Auth rung** is the OUTER gate a caller meets, read off the registration:
+**Auth rung** is the OUTER gate a caller meets, read off the registration
+line itself (a rung hidden behind a local variable refuses the generation
+rather than print a wrong rung):
 
 - `platform admin` — an authenticated platform super-admin (`requireSuperAdmin`).
 - `session + write rung` — an authenticated member with the family's write rung
@@ -26,9 +31,9 @@ reasons, pitfalls.
 
 **Spec** marks whether the published [`openapi.json`](../openapi.json) carries the
 route. `no` names a served route the offline spec build does not wire — a
-family gated on a deployment shape (the local-studio registrars, the DLQ,
-the cloud schedules) or a literal raw-mux registration — so a client
-generated from the spec will not know it.
+family gated on a deployment shape or a literal raw-mux registration — so
+a client generated from the spec will not know it. Those rows are
+registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes.go`, `queue_sweeper.go`, `schedules_routes.go`, `server_routes.go`.
 
 ## `/api/admin` family
 

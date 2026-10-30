@@ -688,11 +688,14 @@ tasks:
       - task: skills:sync
       # The Go CLI embeds the catalogue, so sync it before running generators.
       - task: templates:dispatch-bots
-      - task: map:gen
       - task: openapi:gen
       # The REST annex reads the committed openapi.json, so it regenerates
       # after the spec, never before.
       - task: restapi:gen
+      # Maps run LAST: the docs map reads each page's opening sentence, and
+      # the annex's is generated — a maps-first order would need two `task
+      # gen` passes for an annex header edit to reach map-docs.md.
+      - task: map:gen
 
   openapi:check:dry:
     desc: Verify the committed OpenAPI spec + TS types are fresh WITHOUT mutating them (snapshot, regenerate, compare, restore)

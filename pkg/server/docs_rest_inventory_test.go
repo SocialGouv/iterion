@@ -36,10 +36,18 @@ const restAnnexPairFloor = 400
 
 var restAnnexRow = regexp.MustCompile("^\\| `([A-Z]+)` \\| `(/api[^`]*)` \\| ([^|]+) \\| (yes|no) \\|$")
 
-// annexRoutes reads every (method, path) row of the generated annex.
-func annexRoutes(t *testing.T, body string) []RouteInfo {
+// annexRow is one parsed row of the generated annex, rung included — the
+// rung is the cell the rung cross-check exists to judge.
+type annexRow struct {
+	RouteInfo
+	Rung string
+	Spec string
+}
+
+// annexRows reads every row of the generated annex.
+func annexRows(t *testing.T, body string) []annexRow {
 	t.Helper()
-	var out []RouteInfo
+	var out []annexRow
 	seen := map[RouteInfo]bool{}
 	for i, line := range strings.Split(body, "\n") {
 		m := restAnnexRow.FindStringSubmatch(line)
@@ -58,7 +66,7 @@ func annexRoutes(t *testing.T, body string) []RouteInfo {
 		if strings.TrimSpace(m[3]) == "" {
 			t.Errorf("annex row %d carries no auth rung: %q", i+1, line)
 		}
-		out = append(out, r)
+		out = append(out, annexRow{RouteInfo: r, Rung: strings.TrimSpace(m[3]), Spec: m[4]})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Pattern != out[j].Pattern {
@@ -66,6 +74,17 @@ func annexRoutes(t *testing.T, body string) []RouteInfo {
 		}
 		return out[i].Method < out[j].Method
 	})
+	return out
+}
+
+// annexRoutes reads every (method, path) row of the generated annex.
+func annexRoutes(t *testing.T, body string) []RouteInfo {
+	t.Helper()
+	rows := annexRows(t, body)
+	out := make([]RouteInfo, len(rows))
+	for i, r := range rows {
+		out[i] = r.RouteInfo
+	}
 	return out
 }
 
@@ -143,6 +162,106 @@ func TestTheAnnexMatchesTheRegisteredSurfaceBothWays(t *testing.T) {
 	}
 }
 
+// The rung column is the annex's one SECURITY-relevant cell, and freshness
+// alone cannot hold it: the generator classifying wrong still renders bytes
+// equal to its own output (a platform-admin route registered through a
+// local variable — `h := s.requireSuperAdmin(…)` — read as "session" was
+// the reviewer probe of #2821's first round). So the rung gets its own
+// witness, independent of the classifier: this scan resolves the aliases
+// for ITSELF and holds the annex to two truths —
+//
+//   - every annex row under /api/admin/ reads "platform admin" (the admin
+//     prefix family is uniformly requireSuperAdmin by convention, so the
+//     prefix alone is a verdict no classifier bug can talk its way out of);
+//   - every registration whose resolved head IS requireSuperAdmin — inline
+//     or followed through a one-hop local alias — reads "platform admin" in
+//     the annex.
+var (
+	witnessRegistrationRe = regexp.MustCompile(`(?i:mux)\.Handle(?:Func)?\("(?:([A-Z]+) )?(/[^"]*)",\s*([A-Za-z_.]+)`)
+	witnessAliasRe        = regexp.MustCompile(`(?m)^[ \t]*([a-z]\w*) :=\s*([A-Za-z_][\w.]*)\b`)
+	witnessLineComments   = regexp.MustCompile(`(?m)//.*$`)
+)
+
+// platformAdminRegistrations is the witness's own read of the source: every
+// /api registration whose handler head — resolved through the file's local
+// aliases — is requireSuperAdmin.
+func platformAdminRegistrations(t *testing.T) []RouteInfo {
+	t.Helper()
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read the server package: %v", err)
+	}
+	var out []RouteInfo
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		raw, err := os.ReadFile(name) // #nosec G304 -- the package's own directory listing
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		code := witnessLineComments.ReplaceAllString(string(raw), "")
+		aliases := map[string]string{}
+		for _, m := range witnessAliasRe.FindAllStringSubmatch(code, -1) {
+			aliases[m[1]] = m[2]
+		}
+		for _, m := range witnessRegistrationRe.FindAllStringSubmatch(code, -1) {
+			head := m[3]
+			for hops := 0; hops < 4; hops++ {
+				next, ok := aliases[head]
+				if !ok {
+					break
+				}
+				head = next
+			}
+			if !strings.Contains(head, "requireSuperAdmin") {
+				continue
+			}
+			if !strings.HasPrefix(m[2], "/api/") {
+				continue
+			}
+			out = append(out, RouteInfo{Method: m[1], Pattern: m[2]})
+		}
+	}
+	// The floor is the witness's blindness net: the family counts in the
+	// sixties, so a regex that stops reading it would pass an empty check.
+	if len(out) < 50 {
+		t.Fatalf("the witness found %d requireSuperAdmin registration(s), floor 50 — it went blind and the rung cross-check would judge nothing", len(out))
+	}
+	return out
+}
+
+func TestTheAdminRungCannotBeMislabeled(t *testing.T) {
+	committed, err := os.ReadFile(filepath.Join("..", "..", RESTInventoryAnnexPath))
+	if err != nil {
+		t.Fatalf("read the committed annex: %v — run `task restapi:gen` and commit", err)
+	}
+	rows := annexRows(t, string(committed))
+	byRoute := map[RouteInfo]string{}
+	for _, r := range rows {
+		byRoute[r.RouteInfo] = r.Rung
+	}
+	adminPrefixRows := 0
+	for _, r := range rows {
+		if !strings.HasPrefix(r.Pattern, "/api/admin/") {
+			continue
+		}
+		adminPrefixRows++
+		if r.Rung != "platform admin" {
+			t.Errorf("annex row %s reads rung %q — every /api/admin/ route is platform admin", routeInfoString(r.RouteInfo), r.Rung)
+		}
+	}
+	if adminPrefixRows < 50 {
+		t.Fatalf("only %d /api/admin/ row(s) in the annex, floor 50 — the prefix leg of this witness is judging nothing", adminPrefixRows)
+	}
+	for _, reg := range platformAdminRegistrations(t) {
+		if rung, ok := byRoute[reg]; !ok || rung != "platform admin" {
+			t.Errorf("%s is registered with requireSuperAdmin and the annex reads rung %q — a platform-admin route documented lower is the lie this witness exists to refuse", routeInfoString(reg), byRoute[reg])
+		}
+	}
+}
+
 // A gate that cannot redden is not a gate: the comparator must name a row
 // missing from the annex, a row the registration table does not own, and
 // stay silent on an exact match.
@@ -177,7 +296,7 @@ func TestRegistrationRungClassifiesTheOuterGate(t *testing.T) {
 		{"s.boardWriteAuth", "POST", "/api/v1/boards/cards", "session + write rung"},
 		{"s.triggerWriteAuth", "GET", "/api/v1/triggers", "session + write rung"},
 		{"s.requireAuth", "GET", "/api/runs", "session"},
-		{"loginLimit", "POST", "/api/auth/login", "open"},
+		{"s.limitRoute", "POST", "/api/auth/login", "open"}, // the rate limiters are auth-neutral; the public-path rule decides
 		{"s.webhookAuth", "POST", "/api/webhooks/github/{id}", "open"},
 		{"s.configShareAuth", "GET", "/api/config-share/{id}/config", "open"},
 		{"func", "GET", "/api/server/info", "open"},
@@ -190,6 +309,44 @@ func TestRegistrationRungClassifiesTheOuterGate(t *testing.T) {
 		if got := registrationRung(c.head, c.method, c.pattern); got != c.want {
 			t.Errorf("registrationRung(%q, %q, %q) = %q, want %q", c.head, c.method, c.pattern, got, c.want)
 		}
+	}
+}
+
+// resolveHead is where a hidden rung is refused: an alias to a rate limiter
+// resolves and classifies, an alias to an AUTH wrapper refuses the
+// generation (the annex would otherwise print "session" for a
+// platform-admin route with every freshness gate green), and a bare head
+// naming nothing declared refuses too.
+func TestResolveHeadFollowsAliasesAndRefusesHiddenRungs(t *testing.T) {
+	funcs := map[string]bool{"SPAHandler": true}
+	aliases := map[string]string{
+		"loginLimit": "s.limitRoute",
+		"adminProbe": "s.requireSuperAdmin",
+		"loop":       "loop",
+	}
+	if got, err := resolveHead("loginLimit", aliases, funcs); err != nil || got != "s.limitRoute" {
+		t.Errorf("loginLimit resolves to s.limitRoute, got %q err %v", got, err)
+	}
+	if _, err := resolveHead("adminProbe", aliases, funcs); err == nil || !strings.Contains(err.Error(), "hides behind the local variable") {
+		t.Errorf("an alias hiding requireSuperAdmin must refuse, got %v", err)
+	}
+	if _, err := resolveHead("adminProbe", aliases, funcs); err == nil || !strings.Contains(err.Error(), "adminProbe") {
+		t.Errorf("the refusal must name the variable, got %v", err)
+	}
+	if got, err := resolveHead("s.requireAuth", aliases, funcs); err != nil || got != "s.requireAuth" {
+		t.Errorf("a dotted head passes through, got %q err %v", got, err)
+	}
+	if got, err := resolveHead("SPAHandler", aliases, funcs); err != nil || got != "SPAHandler" {
+		t.Errorf("a declared package func passes, got %q err %v", got, err)
+	}
+	if got, err := resolveHead("func", aliases, funcs); err != nil || got != "func" {
+		t.Errorf("an inline literal passes, got %q err %v", got, err)
+	}
+	if _, err := resolveHead("mystery", aliases, funcs); err == nil || !strings.Contains(err.Error(), "cannot resolve") {
+		t.Errorf("an unresolvable bare head must refuse, got %v", err)
+	}
+	if _, err := resolveHead("loop", aliases, funcs); err == nil {
+		t.Errorf("an alias cycle must refuse, got %v", err)
 	}
 }
 

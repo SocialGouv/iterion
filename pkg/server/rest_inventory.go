@@ -12,11 +12,12 @@ import (
 
 // This file is the GENERATOR of docs/cloud-rest-api-generated.md, the
 // exhaustive annex that stands next to the curated cloud-rest-api.md: one
-// row per route this binary's recording mux registers, with the outer auth
-// rung a caller meets. The curated page keeps the prose a generator cannot
-// write (per-route authorization detail, refusal reasons, pitfalls); the
-// annex keeps the inventory a hand-written page cannot hold (527-odd
-// registrations, drifting at every route addition).
+// row per route this binary registers under /api with a literal pattern,
+// with the outer auth rung a caller meets. The curated page keeps the prose
+// a generator cannot write (per-route authorization detail, refusal
+// reasons, pitfalls); the annex keeps the inventory a hand-written page
+// cannot hold (hundreds of registrations, drifting at every route
+// addition).
 //
 // Two sources, both in the tree, never a running server:
 //
@@ -52,27 +53,77 @@ type InventoryRoute struct {
 }
 
 // routeRegistrationRe reads one literal registration: the receiver is
-// anything ending in "mux" (s.mux, a local alias), the pattern a single
-// string literal, and the handler's head token the auth wrapper's name when
-// there is one. A registration spelled over several lines still matches —
-// the run between the pattern and the handler crosses newlines. A route
-// registered through a non-literal pattern (the dispatcher and native-board
-// sub-trees, "METHOD "+p+"<tail>") is out of this scan by design: those
-// families mount on the raw mux, and the annex's scope sentence says so.
+// anything ending in "mux" (s.mux, a local alias, the raw s.mux.ServeMux),
+// the pattern a single string literal, and the handler's head token the
+// auth wrapper's name when there is one. A registration spelled over
+// several lines still matches — the run between the pattern and the
+// handler crosses newlines. A route registered through a non-literal
+// pattern (the dispatcher and native-board sub-trees, "METHOD "+p+"<tail>")
+// is out of this scan by design: those families mount on the raw mux, and
+// the annex's scope sentence says so.
 var routeRegistrationRe = regexp.MustCompile(`(?i:mux)\.Handle(?:Func)?\("(?:([A-Z]+) )?(/[^"]*)",\s*([A-Za-z_.]+)`)
+
+// localAliasRe reads a one-hop local alias of a wrapper —
+// `loginLimit := s.limitRoute(...)` — so the classifier can follow it. The
+// paren is OPTIONAL: `h := s.requireSuperAdmin` (a method VALUE, no call)
+// is the same hiding with another spelling. A registration whose rung is
+// spelled at the call site is the rule this enforces by construction: see
+// resolveHead.
+var localAliasRe = regexp.MustCompile(`(?m)^[ \t]*([a-z]\w*) :=\s*([A-Za-z_][\w.]*)\b`)
 
 // inventoryLineComments strips line comments before the scan, so a retired
 // route quoted in a comment is not a registration.
 var inventoryLineComments = regexp.MustCompile(`(?m)//.*$`)
 
+// authWrapperHeads are the wrapper heads that carry an auth rung. A
+// registration hiding one of them behind a local variable is refused, not
+// classified: the rung is the one fact of a registration this annex exists
+// to publish, so it must be readable on the registration line itself.
+var authWrapperHeads = []string{
+	"requireSuperAdmin", "requireAuth",
+	"boardWriteAuth", "triggerWriteAuth",
+	"webhookAuth", "configShareAuth",
+}
+
+func isAuthWrapperHead(head string) bool {
+	for _, w := range authWrapperHeads {
+		if strings.HasSuffix(head, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// packageFuncRe reads a package-level func declaration, so a bare head that
+// names one (handleBrandAsset, SPAHandler) is a handler the generator can
+// classify, while one that names nothing declared (a local variable hiding
+// a wrapper) is refused.
+var packageFuncRe = regexp.MustCompile(`(?m)^func ([A-Za-z_]\w*)\(`)
+
 // scanRouteInventory reads every literal mux registration of the server
-// package's non-test sources.
+// package's non-test sources, following a local alias of a wrapper one hop
+// at a time (loginLimit := s.limitRoute(…), the rate limiters of
+// auth_routes.go). Two shapes are REFUSED rather than classified, because
+// classifying them would write a lie with every gate green:
+//
+//   - an alias that hides an auth wrapper (`h := s.requireSuperAdmin(…)`)
+//     behind a bare name — the annex would print "session" for a
+//     platform-admin route (the reviewer probe of #2821's first round);
+//   - a bare head that is neither an inline literal, nor a declared
+//     package-level func, nor an alias that resolves — a handler this
+//     generator cannot name is a registration it cannot judge.
 func scanRouteInventory(dir string) ([]InventoryRoute, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("read the server package: %w", err)
 	}
-	var out []InventoryRoute
+	type registrar struct {
+		name    string
+		code    string
+		aliases map[string]string
+	}
+	var regs []registrar
+	funcs := map[string]bool{}
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
@@ -83,16 +134,73 @@ func scanRouteInventory(dir string) ([]InventoryRoute, error) {
 			return nil, err
 		}
 		code := inventoryLineComments.ReplaceAllString(string(raw), "")
-		for _, m := range routeRegistrationRe.FindAllStringSubmatch(code, -1) {
+		aliases := map[string]string{}
+		for _, m := range localAliasRe.FindAllStringSubmatch(code, -1) {
+			aliases[m[1]] = m[2]
+		}
+		for _, m := range packageFuncRe.FindAllStringSubmatch(code, -1) {
+			funcs[m[1]] = true
+		}
+		regs = append(regs, registrar{name, code, aliases})
+	}
+	var out []InventoryRoute
+	for _, reg := range regs {
+		for _, m := range routeRegistrationRe.FindAllStringSubmatch(reg.code, -1) {
+			method, pattern, head := m[1], m[2], m[3]
+			resolved, err := resolveHead(head, reg.aliases, funcs)
+			if err != nil {
+				return nil, fmt.Errorf("%s %s (%s): %w", displayMethod(method), pattern, reg.name, err)
+			}
 			out = append(out, InventoryRoute{
-				Method:  m[1],
-				Pattern: m[2],
-				Rung:    registrationRung(m[3], m[1], m[2]),
-				File:    name,
+				Method:  method,
+				Pattern: pattern,
+				Rung:    registrationRung(resolved, method, pattern),
+				File:    reg.name,
 			})
 		}
 	}
 	return out, nil
+}
+
+func displayMethod(method string) string {
+	if method == "" {
+		return "ANY"
+	}
+	return method
+}
+
+// resolveHead follows a bare head token through the file's local aliases,
+// at most four hops (a cycle resolves to nothing useful and is refused as
+// unclassifiable).
+func resolveHead(head string, aliases map[string]string, funcs map[string]bool) (string, error) {
+	resolved := head
+	aliased := false
+	for range 4 {
+		next, ok := aliases[resolved]
+		if !ok {
+			break
+		}
+		resolved, aliased = next, true
+	}
+	switch {
+	case aliased && isAuthWrapperHead(resolved):
+		// Before the dotted-head pass-through: an alias to s.requireSuperAdmin
+		// has a dot too, and the rung it hides is the lie this refuses.
+		return "", fmt.Errorf("the auth rung hides behind the local variable %q (→ %s): wrap the registration inline so the rung is readable on the registration line — the annex's Auth column is compiled from that line", head, resolved)
+	case resolved == "func" || strings.Contains(resolved, "."):
+		// An inline function literal, or a receiver-qualified expression
+		// (s.requireAuth, http.NotFoundHandler, s.hub.HandleWebSocket): the
+		// head names itself.
+		return resolved, nil
+	case funcs[resolved]:
+		// A declared package-level handler (handleBrandAsset, SPAHandler).
+		return resolved, nil
+	default:
+		// An unresolvable bare head, or an alias chain that bottoms out at
+		// one (a cycle included): a handler this generator cannot name is a
+		// registration it cannot judge.
+		return "", fmt.Errorf("the handler head %q is a bare name this generator cannot resolve — the annex cannot name its auth rung; wrap the registration with a visible wrapper or name the handler s.handle*", head)
+	}
 }
 
 // registrationRung is the OUTER gate a caller meets, read off the
@@ -271,14 +379,19 @@ func renderRESTInventoryAnnex(routes []InventoryRoute) string {
 
 **Scope.** Every route this binary registers under ` + "`/api`" + ` with a literal
 pattern — the recording mux's whole table, plus the few raw-mux literals —
-each with its outer auth rung. The ` + "`/api/v1/native`" + `, ` + "`/api/v1/dispatcher`" + `
-and ` + "`/api/v1/mcp/{board,runs}`" + ` sub-trees register through non-literal
-patterns on the raw mux and stay out, exactly as they stay out of the
-published spec. The curated [cloud-rest-api.md](cloud-rest-api.md) carries
-what a generator cannot write: per-route authorization detail, refusal
-reasons, pitfalls.
+each with its outer auth rung. The BULK of the ` + "`/api/v1/native`" + `,
+` + "`/api/v1/dispatcher`" + ` and ` + "`/api/v1/mcp/{board,runs}`" + ` sub-trees registers
+through non-literal patterns on the raw mux and stays out, exactly as it
+stays out of the published spec — while their few literal registrations
+(the forge-facing card routes of board_forge.go and pipeline_boards.go)
+ARE in this inventory, marked ` + "`Spec: no`" + ` where the offline spec build
+leaves them unwired. The curated [cloud-rest-api.md](cloud-rest-api.md)
+carries what a generator cannot write: per-route authorization detail,
+refusal reasons, pitfalls.
 
-**Auth rung** is the OUTER gate a caller meets, read off the registration:
+**Auth rung** is the OUTER gate a caller meets, read off the registration
+line itself (a rung hidden behind a local variable refuses the generation
+rather than print a wrong rung):
 
 - ` + "`platform admin`" + ` — an authenticated platform super-admin (` + "`requireSuperAdmin`" + `).
 - ` + "`session + write rung`" + ` — an authenticated member with the family's write rung
@@ -292,9 +405,9 @@ reasons, pitfalls.
 
 **Spec** marks whether the published [` + "`openapi.json`" + `](../openapi.json) carries the
 route. ` + "`no`" + ` names a served route the offline spec build does not wire — a
-family gated on a deployment shape (the local-studio registrars, the DLQ,
-the cloud schedules) or a literal raw-mux registration — so a client
-generated from the spec will not know it.
+family gated on a deployment shape or a literal raw-mux registration — so
+a client generated from the spec will not know it. Those rows are
+registered by ` + noSpecRegistrars(routes) + `.
 `)
 	for _, f := range order {
 		b.WriteString("\n## `/api/")
@@ -313,4 +426,24 @@ generated from the spec will not know it.
 		}
 	}
 	return b.String()
+}
+
+// noSpecRegistrars names the registrar files that carry the rows the spec
+// does not publish — derived from the rows themselves, so a family that
+// joins or leaves the gated set moves the sentence with it.
+func noSpecRegistrars(routes []InventoryRoute) string {
+	seen := map[string]bool{}
+	var files []string
+	for _, r := range routes {
+		if r.InSpec || seen[r.File] {
+			continue
+		}
+		seen[r.File] = true
+		files = append(files, r.File)
+	}
+	sort.Strings(files)
+	if len(files) == 0 {
+		return "no registrar — every route is published"
+	}
+	return "`" + strings.Join(files, "`, `") + "`"
 }
