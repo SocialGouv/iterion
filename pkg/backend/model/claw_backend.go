@@ -2466,8 +2466,20 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 			return nil, crossingRefusals{}, err
 		}
 		env[compatgw.BaseURLEnv] = cfg.BaseURL
-		if cfg.APIKey != "" {
+		switch {
+		case cfg.APIKey != "":
 			env[compatgw.APIKeyEnv] = cfg.APIKey
+		case envtrust.Planted(compatgw.APIKeyEnv):
+			// A PLANTED key beside the operator's endpoint crosses as the
+			// explicit EMPTY, never absent: an absent name is one the
+			// runner's workspace .env load (loadDotEnvFromCwd, LookupEnv)
+			// fills container-side, and the repository's key would then
+			// authenticate the node's requests against the OPERATOR's
+			// gateway. The empty reads as "auth attempted, invalid" — the
+			// key doctrine of the forwarding loop, loud rather than the
+			// repository's account — and the refusal is named.
+			env[compatgw.APIKeyEnv] = ""
+			refused.planted = append(refused.planted, compatgw.APIKeyEnv)
 		}
 		if allowPrivate {
 			env["ITERION_LLM_ENDPOINT_ALLOW_PRIVATE"] = "1"
