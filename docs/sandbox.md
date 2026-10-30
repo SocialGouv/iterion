@@ -1718,7 +1718,12 @@ deliberately does NOT cross: the web-search credentials
 served on the LAUNCHER, with the launcher's credentials
 ([pkg/backend/tool/sandbox_placement.go](../pkg/backend/tool/sandbox_placement.go)),
 so a key in the container would buy nothing and travel into a container a
-fork's agent runs in. The retry budget the launcher
+fork's agent runs in. The display pair (`DISPLAY`, `WAYLAND_DISPLAY`)
+never crosses either — decided launcher-side for ever by #2802:
+`computer_use` drives the launcher host's display, a sandboxed node has
+none, and the tool is refused for a sandboxed node rather than proxied
+([claw_vendored_tool_env_test.go](../pkg/backend/model/claw_vendored_tool_env_test.go)
+derives and pins the classification). The retry budget the launcher
 resolves from `ITERION_NODE_MAX_RETRIES` / `_TRANSIENT_RETRIES` rides the
 task envelope instead: it bounds billed attempts, so the container's own
 environment never sets it — a runner image older than that field keeps its built-in

@@ -34,9 +34,12 @@ const (
 	// reads the name, so the read never happens for a node. The entry must
 	// name the registration that proves it. No name is in this class today.
 	toolClassUnreachable = "unreachable"
-	// toolClassLauncher: the tool that reads the name is launcher-placed
-	// (tool.PlacementLauncher — the web_search shape): the read happens on
-	// the launcher and the name never crosses.
+	// toolClassLauncher: the read happens on the launcher and the name never
+	// crosses. Two shapes: the tool is launcher-placed
+	// (tool.PlacementLauncher — the web_search shape), or it is
+	// PlacementRefused for a sandboxed node and the refusal IS the
+	// launcher-side verdict — computer_use, decided launcher-side for ever
+	// by #2802: a sandboxed node has no display.
 	toolClassLauncher = "launcher"
 	// toolClassForwarded: the tool runs in the container for a sandboxed
 	// node (tool.PlacementSandbox), so the name must cross — as-is for a
@@ -77,17 +80,15 @@ var vendoredToolEnvDecision = map[string]struct {
 	"CLAUDE_CONFIG_DIR": {toolClassForwarded, "skill",
 		"read in the container by the skill lookup AND by claw's claude auth; it crosses REWRITTEN to the seeded forfait mount (secrets.ClaudeCodeSandboxConfigDir, applyForfaitAcrossSandbox), never as the launcher's path"},
 
-	// The pair #2802 leaves to Jo (question 50 of
-	// ~/.claude/plans/debt-leap/fleet/questions-jo-20261028.md): launcher-side
-	// for ever — computer_use is a launcher-placement tool and a sandboxed
-	// node has no display — or forwarded for an opt-in class of
-	// desktop-automation runs (a bind-mounted X socket). Until the verdict:
-	// the names cross nowhere and the tools stay PlacementRefused for a
-	// sandboxed node, which the test below pins.
-	"DISPLAY": {toolClassUndecided, "computer_use",
-		"UNDECIDED, Jo-gated (#2802, question 50): whether a display ever crosses the sandbox; until then the name does not cross"},
-	"WAYLAND_DISPLAY": {toolClassUndecided, "computer_use",
-		"UNDECIDED, Jo-gated (#2802, question 50): whether a display ever crosses the sandbox; until then the name does not cross"},
+	// Decided by #2802 (question 50 of questions-jo-20261028.md, verdict A):
+	// launcher-side for ever. A sandboxed node has no display and
+	// computer_use — the tool that reads the pair — drives the LAUNCHER
+	// host's, so it stays PlacementRefused for a sandboxed node and the
+	// names cross nowhere.
+	"DISPLAY": {toolClassLauncher, "computer_use",
+		"decided by #2802 (Q50=A): launcher-side for ever — computer_use drives the launcher host's display and a sandboxed node has none, so the name never crosses"},
+	"WAYLAND_DISPLAY": {toolClassLauncher, "computer_use",
+		"decided by #2802 (Q50=A): launcher-side for ever — computer_use drives the launcher host's display and a sandboxed node has none, so the name never crosses"},
 }
 
 // TestEveryVendoredToolEnvNameIsDecided derives the env names claw's tool
@@ -116,7 +117,12 @@ func TestEveryVendoredToolEnvNameIsDecided(t *testing.T) {
 		placement, why := tool.SandboxPlacementOf(got.tool)
 		switch got.class {
 		case toolClassLauncher:
-			if placement != tool.PlacementLauncher {
+			// Launcher-placed (web_search), or refused for a sandboxed node
+			// where the refusal is itself the launcher-side verdict
+			// (computer_use, #2802): either way the name never crosses. What
+			// reopens the classification is the tool moving INTO the
+			// container.
+			if placement != tool.PlacementLauncher && placement != tool.PlacementRefused {
 				t.Errorf("%s is classified launcher-side but %s is placed %s (%s): the name now has to reach the container, so decide it again, not by omission", name, got.tool, placement, why)
 			}
 		case toolClassForwarded:
@@ -150,8 +156,8 @@ func TestEveryVendoredToolEnvNameIsDecided(t *testing.T) {
 // TestSandboxedClawNodeToolEnvCrossing is the witness for the forwarded
 // names: the env the in-container runner RECEIVES carries the launcher's
 // bash budget and claw config home, the forfait mounts under their rewritten
-// names — and none of the launcher-side or undecided names, however the
-// launcher sets them.
+// names — and none of the launcher-side names, however the launcher sets
+// them.
 func TestSandboxedClawNodeToolEnvCrossing(t *testing.T) {
 	t.Setenv("CLAW_BASH_TIMEOUT", "17m")
 	t.Setenv("CLAW_CONFIG_HOME", "/launcher/claw-config")

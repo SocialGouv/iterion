@@ -32,8 +32,10 @@ import "os"
 // The credential-bearing config dirs the same lookup also reads — CODEX_HOME,
 // CLAUDE_CONFIG_DIR — are NOT here: they cross only rewritten to the seeded
 // forfait mounts (applyForfaitAcrossSandbox, deliverHostCodexForfait), never
-// as the launcher's path. DISPLAY / WAYLAND_DISPLAY are undecided (the
-// Jo-gated question on #2802) and cross nowhere.
+// as the launcher's path. DISPLAY / WAYLAND_DISPLAY are decided
+// launcher-side for ever (#2802, question 50, verdict A): a sandboxed node
+// has no display and computer_use — the tool that reads the pair — stays
+// PlacementRefused there, so the names cross nowhere.
 func forwardableToolEnv() map[string]string {
 	env := map[string]string{}
 	// Spelled literally at each read: the package's env-read guard
