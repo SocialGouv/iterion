@@ -56,6 +56,11 @@ C050 and the later declaration is skipped.
 Any other sub-field produces compile-time diagnostic `C054`. An
 unknown attachment name produces `C053`.
 
+The forms resolve wherever a template resolves: prompt and tool bodies,
+and the mapping surfaces alike — an edge `with:`, an `emit` payload, a
+`fail message:`, a human node's instructions (#2864). Only a compute
+node's `expr:` has no attachments resolver (**C151**).
+
 ### Diagnostics
 
 | Code | Meaning                                                                |

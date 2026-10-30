@@ -883,23 +883,18 @@ func (c *compiler) validateSecretsRef(w *Workflow, rc refContext) {
 }
 
 // validateAttachmentsRef flags an undeclared {{attachments.X}} reference
-// or an unknown sub-field. In a data mapping — an edge / subbot / emit
-// `with:` value, or a `fail message:` — the reference is refused: same
-// rule as secrets, `resolveMapping` has no arm for the namespace and a
-// compute expression cannot resolve it either. The mapping would render
-// to nil silently. Execution sinks that DO materialise an attachment:
-// a tool's `command:`/`script:`/`postcondition:`, or a prompt body.
+// or an unknown sub-field. In a compute node's `expr:` the reference is
+// refused: `pkg/dsl/expr` has no attachments resolver (evalNamespaces
+// excludes the namespace), so it would render nil silently. A data mapping
+// — an edge / subbot / emit `with:` value, or a `fail message:` — is fine:
+// `resolveRef` resolves the namespace there like a prompt body does (#2864).
+// Execution sinks that DO materialise an attachment: a tool's
+// `command:`/`script:`/`postcondition:`, or a prompt body.
 func (c *compiler) validateAttachmentsRef(w *Workflow, rc refContext) {
 	if len(rc.Ref.Path) == 0 {
 		return
 	}
 	name := rc.Ref.Path[0]
-	if rc.InWith {
-		c.refErrorf(rc, DiagWithAttachmentRef,
-			"%s: reference %s cannot travel through a data mapping — a `with:` value or a fail `message:` resolves it to nil; move the reference to the execution sink that uses the attachment (a tool's `command:`/`script:`/`postcondition:`, a tool action's `params:` value, or a prompt body), the only places the runtime materialises it",
-			rc.Location, expr.Excerpt(rc.Ref.Raw))
-		return
-	}
 	if rc.InComputeExpr {
 		c.refErrorf(rc, DiagWithAttachmentRef,
 			"%s: reference %s cannot be resolved in a compute expression — `pkg/dsl/expr` has no attachments resolver (evalNamespaces excludes it), so the reference renders nil at evaluation; move the attachment reference to an execution sink (a tool's `command:`/`script:`/`postcondition:`, a tool action's `params:` value, or a prompt body)",

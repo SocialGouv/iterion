@@ -311,7 +311,7 @@ const (
 	// at run time).
 	DiagWithInputRefNoSchema    DiagCode = "C149" // `{{input.x}}` in a subbot/emit `with:` or a fail `message:` — the kind has no `input:` surface, so the reference resolves against the RUN's inputs at run time; warning, because the launch payload may legitimately carry an undeclared key
 	DiagWithSecretRef           DiagCode = "C150" // `{{secrets.x}}` in a data mapping or a compute `expr:` — the runtime materialises secrets only at execution sinks (tool command/script/postcondition, action params, prompt body); the mapping and the expr evaluator both resolve to nil
-	DiagWithAttachmentRef       DiagCode = "C151" // `{{attachments.x}}` in a data mapping or a compute `expr:` — same rule as secrets
+	DiagWithAttachmentRef       DiagCode = "C151" // `{{attachments.x}}` in a compute `expr:` — `pkg/dsl/expr` has no attachments resolver (a data mapping resolves the namespace since #2864, secrets stay refused there)
 	DiagWithLiteralTypeMismatch DiagCode = "C152" // a `with:` value arrives as a string unless it is exactly one reference: fires on every ref-less literal or interpolated template reaching a `bool`/`int`/`float`/`string[]` field (a string is never one), and on a `json` field for a literal that visibly attempts an encoding (warning at every consumer)
 
 	// C180+ — the var-typing wave (#1604, #1610). Kept in one contiguous

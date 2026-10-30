@@ -569,6 +569,49 @@ func (e *Engine) resolveRef(ref *ir.Ref, sc resolveScope) any {
 		if len(ref.Path) > 0 {
 			return sc.artifacts[ref.Path[0]]
 		}
+	case ir.RefAttachments:
+		// The same sub-field rule as the model template resolver
+		// (template_resolver.go): `path` by default, then `url`, `mime`,
+		// `size`, `sha256`. resolveRef is the reader for an edge `with:`,
+		// an `emit` payload, a fail `message:` and a human node's
+		// instructions — without this arm every {{attachments.*}} on those
+		// surfaces rendered empty while prompts resolved fine (#2864).
+		if sc.rs == nil || len(ref.Path) == 0 {
+			return nil
+		}
+		info, ok := sc.rs.attachments[ref.Path[0]]
+		if !ok {
+			return nil
+		}
+		sub := "path"
+		if len(ref.Path) >= 2 {
+			sub = ref.Path[1]
+		}
+		switch sub {
+		case "path":
+			return info.Path
+		case "url":
+			// An unsigned URL is not a value: resolve to nil (renders
+			// empty) rather than splicing an empty string, exactly as the
+			// model resolver reads it.
+			url, err := info.URL()
+			if err != nil {
+				if e.logger != nil {
+					e.logger.Warn("runtime: attachment %s: presigned url not resolved: %v", ref.Path[0], err)
+				}
+				return nil
+			}
+			if url == "" {
+				return nil
+			}
+			return url
+		case "mime":
+			return info.MIME
+		case "size":
+			return info.Size
+		case "sha256":
+			return info.SHA256
+		}
 	case ir.RefLoop:
 		if sc.rs == nil || len(ref.Path) < 2 {
 			return nil
