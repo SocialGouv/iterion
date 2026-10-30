@@ -56,8 +56,10 @@ func main() {
 		// the closest one) before subcommands run, so iterion behaves
 		// like every other modern CLI tool when API keys / model env
 		// vars live in a `.env` next to a project. Pre-existing env
-		// vars take precedence; .env only fills in missing keys.
-		if !isWorkspaceStudioInvocation() {
+		// vars take precedence; .env only fills in missing keys. Which
+		// invocations get that convenience — a human's, not a child the
+		// engine spawned against a repository — is the predicate's.
+		if shouldLoadWorkspaceDotEnv() {
 			loadDotEnvFromCwd()
 		}
 
@@ -157,20 +159,70 @@ func invokedCommand() string {
 	return cmd.CommandPath()
 }
 
-// isPermissionHookInvocation reports whether this process is the grok/kimi
-// PreToolUse hook. First positional argv, flags skipped: cobra is not
-// consulted because the caller has to decide this BEFORE loadDotEnvFromCwd.
-func isPermissionHookInvocation() bool {
+// firstPositionalArg returns what argv names as the subcommand: the first
+// argument that is not a flag, or "" when there is none. Cobra is not consulted
+// because every caller has to decide BEFORE loadDotEnvFromCwd, which runs
+// before Execute. A `--` ends the search: what follows belongs to whatever
+// is on the other side of it, not to this binary's command tree.
+func firstPositionalArg() string {
 	for _, a := range os.Args[1:] {
 		if a == "--" {
-			return false
+			return ""
 		}
 		if strings.HasPrefix(a, "-") {
 			continue
 		}
-		return a == "__permission-hook"
+		return a
 	}
-	return false
+	return ""
+}
+
+// isPermissionHookInvocation reports whether this process is the grok/kimi
+// PreToolUse hook.
+func isPermissionHookInvocation() bool {
+	return firstPositionalArg() == "__permission-hook"
+}
+
+// isInternalSubcommandInvocation reports whether this process runs one of the
+// hidden `__`-prefixed subcommands: the in-container claw runner, the shard
+// dispatcher, the MCP stdio helpers, the agent-CLI hooks. None of them is a
+// human's CLI call — each is re-entered by the engine, or by an agent CLI the
+// engine configured, with cwd = the workspace, and each gets its environment
+// from the process that spawned it.
+//
+// Two of them re-execute on EVERY tool call of a session
+// (__permission-hook, __claude-hook-drain) where a `.env` walk is also a
+// per-call cost on a file the gated agent writes (R6fa6d2); the others
+// re-enter the CLI holding a credential the engine resolved. The class is the
+// prefix, so a hidden subcommand added later is covered rather than
+// re-introducing the hole.
+func isInternalSubcommandInvocation() bool {
+	return strings.HasPrefix(firstPositionalArg(), "__")
+}
+
+// shouldLoadWorkspaceDotEnv reports whether this invocation gets the `.env`
+// convenience loadDotEnvFromCwd implements. It is the whole decision: main
+// calls nothing else.
+//
+// The convenience belongs to a human running the CLI in a project of their
+// own. A process the engine spawned against a workspace — a tool node's
+// command, a CLI agent, the in-container claw runner, an iterion a bot script
+// re-enters — already holds the environment the engine handed it, so reading
+// the workspace `.env` on top only lets the repository under review fill in
+// the names nobody set on purpose: the provider endpoints a credential is
+// spent against first among them (#2844). The operator's own `.env` still
+// reaches such a child, as every other variable does — through the
+// environment its parent passed on.
+func shouldLoadWorkspaceDotEnv() bool {
+	// `studio --workspace` serves a workspace it must not take its own
+	// configuration from; its reason is its own and no override applies.
+	if isWorkspaceStudioInvocation() {
+		return false
+	}
+	if envtrust.SpawnedByEngine() || isInternalSubcommandInvocation() {
+		return envtrust.DotEnvForced()
+	}
+	return true
 }
 
 // rejectUnknownSubcommands makes every GROUP command — one that only

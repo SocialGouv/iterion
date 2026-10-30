@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
@@ -1183,6 +1184,22 @@ func appendSchemaRetryFeedback(prompt, feedback string) string {
 	return prompt + "\n\n" + feedback
 }
 
+// taskExtraEnv is Task.ExtraEnv: the environment the engine hands a delegate
+// task, which every CLI-agent spawn and the claw bash builtin apply — the
+// run-level provisioning, the canonical tree-noise pathspecs, and the
+// invocation-class marker last so the engine's own entry wins on a duplicate
+// key.
+//
+// The marker is what tells an `iterion` an agent runs in the workspace that it
+// is the engine's child, not a human's CLI call, so it leaves the
+// repository's `.env` alone (#2844, internal/envtrust EnvEngineChild).
+// Concat, not append: processExtraEnv returns the executor's own slice when
+// there is no engine layer, and appending into its spare capacity would write
+// into the run's env behind its back.
+func (e *ClawExecutor) taskExtraEnv() []string {
+	return slices.Concat(e.processExtraEnv(), e.treeNoiseEnvAppend(nil), []string{envtrust.EngineChildEnvEntry()})
+}
+
 // buildTask assembles the delegate.Task for an agent/judge LLM node from the
 // node's resolved fields, prompts, schema, reasoning effort, capabilities,
 // tool set, and session/resume continuity. Split out of executeBackend to
@@ -1280,7 +1297,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		MaxTokens:             f.maxTokens,
 		WorkDir:               e.workDir,
 		HomeScope:             RunnerHomeScopeFromContext(ctx),
-		ExtraEnv:              append(e.processExtraEnv(), e.treeNoiseEnvAppend(nil)...),
+		ExtraEnv:              e.taskExtraEnv(),
 		ReasoningEffort:       wireEffort(effort),
 		Ultracode:             ultracode,
 		InteractionEnabled:    f.interaction != ir.InteractionNone,

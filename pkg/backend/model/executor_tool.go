@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
@@ -1040,11 +1041,29 @@ func (e *ClawExecutor) engineBinaryEnvEntry() (string, bool) {
 	return "", false
 }
 
-// withEngineBinaryEnv applies the engine-binary entry to a per-command env
-// map (the sandbox path's shape), creating the map when the command has no
-// env of its own.
-func (e *ClawExecutor) withEngineBinaryEnv(env map[string]string) map[string]string {
+// engineChildEnvEntries returns the entries the engine owns on every command
+// it spawns against the workspace: the path of its own binary (when one
+// resolves) and the invocation-class marker, which is unconditional — the
+// class is a fact about the spawn, not about what resolved.
+//
+// The marker is what tells a nested iterion — the one a bot script re-enters
+// through sandbox.EngineBinaryEnvVar, and every iterion below it by
+// inheritance — that it is the engine's child and not a human's CLI call, so
+// it does not auto-load the `.env` of the workspace it runs in (#2844,
+// internal/envtrust EnvEngineChild).
+func (e *ClawExecutor) engineChildEnvEntries() []string {
+	entries := []string{envtrust.EngineChildEnvEntry()}
 	if entry, ok := e.engineBinaryEnvEntry(); ok {
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+// withEngineChildEnv applies those entries to a per-command env map (the
+// sandbox path's shape), creating the map when the command has no env of its
+// own.
+func (e *ClawExecutor) withEngineChildEnv(env map[string]string) map[string]string {
+	for _, entry := range e.engineChildEnvEntries() {
 		k, v, _ := strings.Cut(entry, "=")
 		if env == nil {
 			env = map[string]string{}
@@ -1062,7 +1081,7 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []
 	argv := append(append([]string{}, interpreter...), script)
 	env = e.withRunEnv(env)
 	if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
-		return e.sandboxToolCommand(ctx, argv, sandbox.ExecOpts{Env: e.withEngineBinaryEnv(env)})
+		return e.sandboxToolCommand(ctx, argv, sandbox.ExecOpts{Env: e.withEngineChildEnv(env)})
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	// A script body backgrounds jobs as freely as a shell recipe does, so
@@ -1090,12 +1109,12 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []
 	// the run or the node wins when they set the variable themselves, as
 	// everywhere else (verdict 2 R05b122, verdict 3 R5478b3).
 	cmd.Env = append(cmd.Env, e.treeNoiseEnvAppend(env)...)
-	// The engine's own binary path, engine-owned: appended last so no
-	// inherited or launch-surface value can forge the resolution a bot
-	// script trusts when it re-enters the CLI (#1799).
-	if entry, ok := e.engineBinaryEnvEntry(); ok {
-		cmd.Env = append(cmd.Env, entry)
-	}
+	// The engine's own binary path and the invocation-class marker,
+	// engine-owned: appended last so no inherited or launch-surface value
+	// can forge the resolution a bot script trusts when it re-enters the
+	// CLI (#1799), nor claim the re-entered iterion is a human's call
+	// (#2844).
+	cmd.Env = append(cmd.Env, e.engineChildEnvEntries()...)
 
 	if e.workDir != "" {
 		cmd.Dir = e.workDir
@@ -1300,7 +1319,7 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 			// it arrived. Run as a file, it means what `bash -s` makes of it.
 			args = []string{"bash", "-c", streamedRecipeRunner, "iterion-recipe", strconv.Itoa(len(resolved))}
 		}
-		return e.sandboxToolCommand(ctx, args, sandbox.ExecOpts{Env: e.withEngineBinaryEnv(env), Stdin: stdin})
+		return e.sandboxToolCommand(ctx, args, sandbox.ExecOpts{Env: e.withEngineChildEnv(env), Stdin: stdin})
 	}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	// A tool node's lifetime is the node's. `bash -c` routinely backgrounds
@@ -1329,12 +1348,12 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 	// the run or the node wins when they set the variable themselves, as
 	// everywhere else (verdict 2 R05b122, verdict 3 R5478b3).
 	cmd.Env = append(cmd.Env, e.treeNoiseEnvAppend(env)...)
-	// The engine's own binary path, engine-owned: appended last so no
-	// inherited or launch-surface value can forge the resolution a bot
-	// script trusts when it re-enters the CLI (#1799).
-	if entry, ok := e.engineBinaryEnvEntry(); ok {
-		cmd.Env = append(cmd.Env, entry)
-	}
+	// The engine's own binary path and the invocation-class marker,
+	// engine-owned: appended last so no inherited or launch-surface value
+	// can forge the resolution a bot script trusts when it re-enters the
+	// CLI (#1799), nor claim the re-entered iterion is a human's call
+	// (#2844).
+	cmd.Env = append(cmd.Env, e.engineChildEnvEntries()...)
 	if e.workDir != "" {
 		cmd.Dir = e.workDir
 	}

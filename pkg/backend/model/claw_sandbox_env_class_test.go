@@ -177,6 +177,7 @@ const (
 	whyCodexHome    = "set in the crossing to where a ChatGPT forfait lands in the container: the run's own, or the copy of the host's a dispatch writes"
 	whyHookEnv      = "the event a settings hook's command is told about, set in its env"
 	whyToolEnv      = "set in a tool node command's env"
+	whyEngineChild  = "set by the engine on every child it spawns against the workspace — a tool node's command, a delegate task's env, the runner crossing — so a re-entered iterion does not auto-load the repository's `.env` (#2844)"
 )
 
 var envWrites = map[string]string{
@@ -198,6 +199,7 @@ var envWrites = map[string]string{
 	"HOOK_MESSAGE_COUNT":             whyHookEnv,
 	"ITERION_ARTIFACT_FILES_DIR":     whyToolEnv,
 	"ITERION_ENGINE_BIN":             whyToolEnv,
+	"ITERION_ENGINE_CHILD":           whyEngineChild,
 }
 
 const runnerHomePrefixForTest = "/tmp/iterion-scratch/claw-runner-home-"

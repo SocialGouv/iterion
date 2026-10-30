@@ -28,6 +28,15 @@
 // The marker is not a secret and does not need to be unforgeable: listing a
 // name can only REMOVE trust from it. A process that arrives with a forged
 // marker distrusts more than it must, which is the safe direction.
+//
+// # Who loads a `.env` at all
+//
+// The convenience is the CLI's, so it is the human invocation's: a process
+// the engine spawned against a workspace already holds the environment the
+// engine handed it, and reading the repository's `.env` on top would let the
+// tree under review fill in the names nobody set on purpose. EnvEngineChild
+// is the invocation-class marker the engine writes on such a child, and
+// EnvDotEnvForce the operator's way back in.
 package envtrust
 
 import (
@@ -201,4 +210,49 @@ func ResetForTest() {
 	mu.Lock()
 	defer mu.Unlock()
 	planted = nil
+}
+
+// EnvEngineChild marks a process the engine spawned against a workspace: a
+// tool node's command or script, the in-container claw runner, a CLI agent —
+// and, by inheritance, everything they spawn in turn, including an iterion
+// that re-enters the CLI (sandbox.EngineBinaryEnvVar names the binary for
+// it).
+//
+// Such a process is handed its environment by the engine that spawned it. It
+// must not ALSO read the `.env` of the workspace it was pointed at: that file
+// belongs to the repository under review, and the names it would fill in are
+// the ones nobody set on purpose — the provider endpoints a credential is
+// spent against first among them. The CLI convenience it gives up is the
+// operator's, and the operator's own `.env` already reached this process the
+// way every other variable did, through the environment its parent passed on.
+//
+// Like EnvPlantedNames the marker is not a secret and does not need to be
+// unforgeable: carrying it can only COST the process the convenience, which
+// is the safe direction.
+const EnvEngineChild = "ITERION_ENGINE_CHILD"
+
+// EnvDotEnvForce is the named escape hatch on that skip: an operator who
+// wants engine children to honour the workspace `.env` too sets it to 1 or
+// true in the environment they launch from.
+//
+// Only an INHERITED value counts (Inherited, not os.Getenv): a `.env` that
+// voted itself back in would be the hole with an extra step, and a stored bot
+// var cannot spell the name at all (pkg/platformcfg botVarsInfraExact).
+const EnvDotEnvForce = "ITERION_DOTENV_FORCE"
+
+// EngineChildEnvEntry is the KEY=value entry an engine hands every child it
+// spawns against a workspace, in the shape exec.Cmd.Env and the sandbox
+// ExecOpts both take.
+func EngineChildEnvEntry() string { return EnvEngineChild + "=1" }
+
+// SpawnedByEngine reports whether this process arrived with the engine's
+// invocation-class marker — set by the engine on the child, so a nested
+// iterion knows it is not a human's CLI call.
+func SpawnedByEngine() bool { return os.Getenv(EnvEngineChild) != "" }
+
+// DotEnvForced reports whether the operator asked for the workspace `.env`
+// to be loaded even where this package says to skip it.
+func DotEnvForced() bool {
+	v := Inherited(EnvDotEnvForce)
+	return v == "1" || strings.EqualFold(v, "true")
 }

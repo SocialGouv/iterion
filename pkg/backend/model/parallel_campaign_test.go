@@ -82,6 +82,7 @@ var serialFamily = map[string]string{
 	"executor_auto_memory_test.go":             "Setenv",
 	"executor_cooldown_test.go":                "Setenv",
 	"executor_effective_tools_test.go":         "Setenv",
+	"executor_engine_child_env_test.go":        "Setenv",
 	"executor_enginebin_test.go":               "Setenv",
 	"executor_funding_test.go":                 "Setenv",
 	"executor_noise_test.go":                   "Setenv",

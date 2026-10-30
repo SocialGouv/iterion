@@ -125,6 +125,34 @@ the operator passes through is read live: `.env` is where iterion tells
 people to put run variables, and the hatch itself is read only from the
 inherited environment, so a repository cannot widen its own reach.
 
+### Only a human's CLI call loads a workspace `.env`
+
+The auto-load is the CLI's convenience, so it belongs to the invocation a
+person typed. A process the **engine** spawned against a workspace — a tool
+node's `command:` or `script:`, a CLI agent, the in-container claw runner, and
+an `iterion` a bot script re-enters through `ITERION_ENGINE_BIN` — already
+holds the environment the engine handed it, credential included; reading the
+repository's `.env` on top of that is how a tree under review fills in the
+names nobody set on purpose, the provider endpoints (`ANTHROPIC_BASE_URL`,
+`OPENAI_BASE_URL`, …) a credential is spent against first among them. Such a
+process therefore does **not** walk up for a `.env`:
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_ENGINE_CHILD` | Written by the engine on every child it spawns against a workspace, and inherited by everything those children spawn in turn. An `iterion` that arrives with it set skips the `.env` auto-load. Engine-owned: a stored bot var cannot spell the name, and a value a `.env` planted only ever COSTS a process the convenience. | unset (a human's CLI call) |
+| `ITERION_DOTENV_FORCE` | The escape hatch: `1` or `true` makes engine children honour the workspace `.env` again. Read as INHERITED only — a `.env` cannot vote itself back in — so it goes in the environment you launch from. | unset (skip) |
+
+The hidden `__`-prefixed subcommands (`__claw-runner`, `__scan-shards`, the
+`__mcp-*` stdio helpers, `__permission-hook`, `__claude-hook-drain`) skip it on
+their argv alone: none of them is a human's call, two of them re-execute on
+every tool call of a session, and the `.env` they would walk is written by the
+agent being gated.
+
+What the skip removes is a READ of the repository's file, not inheritance: an
+operator who ran `iterion run` in their own checkout still has every `.env`
+value in the process environment, and it travels to each child the way every
+other variable does.
+
 ## Reading a source
 
 | Variable | Effect | Default |

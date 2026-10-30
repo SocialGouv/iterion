@@ -21,6 +21,7 @@ import (
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
 
 	"github.com/SocialGouv/iterion/internal/credheader"
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -1591,6 +1592,13 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 			task.NodeID, task.Iteration, strings.Join(refusedHeaders, ", "))
 	}
 	runnerEnv["HOME"] = clawRunnerHome(ctx, task)
+	// The runner is this binary re-entered, and its cwd in the container is
+	// the workspace: the invocation-class marker is what stops it auto-loading
+	// the `.env` of the repository it was handed, whose endpoint names would
+	// re-route the credential that just crossed (#2844, internal/envtrust
+	// EnvEngineChild). Set here rather than forwarded: the engine spawning the
+	// runner is the fact it records.
+	runnerEnv[envtrust.EnvEngineChild] = "1"
 	// A policy-isolated sandbox only lets egress through the run's network
 	// proxy — and the gateway client (openai_compatible/*) NEVER trusts an
 	// ambient HTTPS_PROXY by design: it dials direct unless the engine
