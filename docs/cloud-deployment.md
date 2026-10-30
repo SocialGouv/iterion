@@ -324,9 +324,13 @@ release's own — anything else in the cluster that can dial the server
 port directly can forge `X-Forwarded-For` (the audit IP, the
 rate-limit key). `networkPolicy.ingress.extraAllow` is the escape
 hatch (an `ipBlock` for `kubectl port-forward`'s node source, a
-controller living elsewhere). With neither set, the rule keeps the
-historical admit-all render for now — the empty-config verdict (warn
-vs refuse) is an open question on the ticket.
+controller living elsewhere). The chart ships `ingress-nginx` as the
+default `controllerNamespaces` (the common case — override it for your
+controller). The empty-config verdict is decided (#2804): emptying BOTH
+lists keeps the historical admit-all render — never a refusal, so an
+upgrade never breaks — and warns loudly: an
+`iterion.io/ingress-admit-all` annotation on the policy, a WARNING
+comment in the rendered manifest, and a note at install/upgrade.
 
 ## NATS monitoring endpoint (KEDA)
 

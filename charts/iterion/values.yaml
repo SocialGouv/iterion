@@ -714,16 +714,18 @@ networkPolicy:
   enabled: false
   ingress:
     # Namespaces whose pods may dial the server port directly — the ingress
-    # controller's namespaces (e.g. ["ingress-nginx"]). Matched on the
+    # controller's namespaces. Matched on the
     # kubernetes.io/metadata.name label the kube-apiserver stamps on every
     # namespace since 1.22. Anything else in the cluster that reaches the
-    # server port can forge X-Forwarded-For (#2804), so name the controller
-    # namespaces here once networkPolicy.enabled is on. Empty (with
-    # extraAllow empty) keeps the historical admit-all rule for now — the
-    # empty-config verdict (warn vs refuse) is an open question (#2804,
-    # question 51), so say what your controller is rather than leaving this
-    # empty.
-    controllerNamespaces: []
+    # server port can forge X-Forwarded-For (#2804), so this defaults to the
+    # common ingress-nginx namespace — override it with your controller's
+    # namespaces. Decided empty-config behaviour (#2804, question 51):
+    # emptying BOTH this and extraAllow keeps the historical admit-all rule
+    # — the render is never refused — but warns loudly: an
+    # iterion.io/ingress-admit-all annotation on the policy, a WARNING
+    # comment in the rendered manifest, and a helm note at
+    # install/upgrade.
+    controllerNamespaces: ["ingress-nginx"]
     # Escape hatch, the twin of egress.extraAllow: extra ingress peers for
     # the server port, as NetworkPolicyPeer objects (ipBlock for kubectl
     # port-forward's node source, a namespaceSelector for a controller that

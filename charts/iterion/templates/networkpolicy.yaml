@@ -5,6 +5,13 @@ metadata:
   name: {{ include "iterion.fullname" . }}
   labels:
     {{- include "iterion.labels" . | nindent 4 }}
+  {{- if and (not .Values.networkPolicy.ingress.controllerNamespaces) (not .Values.networkPolicy.ingress.extraAllow) }}
+  annotations:
+    # The empty-config warning (#2804, decided: warn loudly, never refuse):
+    # both ingress lists are empty, so the server port's rule below renders
+    # with no from: and admits every in-cluster pod.
+    iterion.io/ingress-admit-all: "networkPolicy.ingress.controllerNamespaces and networkPolicy.ingress.extraAllow are both empty: the server port admits every in-cluster pod, which can forge X-Forwarded-For (the audit IP, the rate-limit key)"
+  {{- end }}
 spec:
   # The app pods — server, runner, pools, backup — not the dev stores
   # (devStack.*), which share the release's selector labels: under this
@@ -28,19 +35,26 @@ spec:
     # it directly could set its own X-Forwarded-For — forging the audit IP
     # and rotating the rate-limit key, the in-cluster half of #2673's
     # evasion (#2804). The controller's namespaces are the operator's
-    # (networkPolicy.ingress.controllerNamespaces), matched on the
-    # kubernetes.io/metadata.name label the kube-apiserver stamps on every
-    # namespace since 1.22 — the idiom the kube-dns egress below uses;
-    # networkPolicy.ingress.extraAllow is the escape hatch (kubectl
-    # port-forward, a controller that lives elsewhere), the twin of
-    # egress.extraAllow.
+    # (networkPolicy.ingress.controllerNamespaces, ingress-nginx by
+    # default), matched on the kubernetes.io/metadata.name label the
+    # kube-apiserver stamps on every namespace since 1.22 — the idiom the
+    # kube-dns egress below uses; networkPolicy.ingress.extraAllow is the
+    # escape hatch (kubectl port-forward, a controller that lives
+    # elsewhere), the twin of egress.extraAllow.
     #
-    # TODO(#2804, question 51 of questions-jo-20261028.md): with the policy
-    # enabled and NEITHER controllerNamespaces nor extraAllow set, this
-    # rule renders with no from: and admits all in-cluster traffic —
-    # today's behaviour, kept while the empty-config verdict (warn loudly
-    # vs refuse the render) is Jo's. The render test pins the selector
-    # when configured.
+    # The empty-config verdict is decided (#2804, question 51): with BOTH
+    # lists empty the rule renders with no from: and admits all in-cluster
+    # traffic — the historical behaviour, kept because an upgrade must
+    # never be refused — and the render warns loudly (the
+    # iterion.io/ingress-admit-all annotation above, the WARNING comment
+    # below, a helm note at install/upgrade).
+    {{- if and (not .Values.networkPolicy.ingress.controllerNamespaces) (not .Values.networkPolicy.ingress.extraAllow) }}
+    # WARNING(#2804): no controllerNamespaces and no extraAllow — the rule
+    # below has no from: and admits EVERY in-cluster pod to the server
+    # port; any of them can forge X-Forwarded-For (the audit IP, the
+    # rate-limit key). Set networkPolicy.ingress.controllerNamespaces to
+    # your controller's namespaces.
+    {{- end }}
     - {{- if or .Values.networkPolicy.ingress.controllerNamespaces .Values.networkPolicy.ingress.extraAllow }}
       from:
         # The release's own pods (server self-checks, the runner's calls).

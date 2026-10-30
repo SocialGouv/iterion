@@ -1137,9 +1137,12 @@ func TestChartRenderDevStack(t *testing.T) {
 
 // #2804: the server port reads X-Forwarded-For (#2673), so an ingress rule
 // that admits every pod of the cluster lets any in-cluster workload forge
-// the audit IP and rotate the rate-limit key. The rule must be scoped to
-// the ingress controller's namespaces plus the release's own pods, with
-// networkPolicy.ingress.extraAllow as the operator's escape hatch.
+// the audit IP and rotate the rate-limit key. The rule is scoped to the
+// ingress controller's namespaces — the chart ships ingress-nginx as the
+// default — plus the release's own pods, with
+// networkPolicy.ingress.extraAllow as the operator's escape hatch; an
+// explicitly emptied configuration keeps the historical admit-all and warns
+// loudly (annotation + render comment + install note), never refuses.
 func TestChartRenderNetworkPolicyServerIngress(t *testing.T) {
 	// serverRule returns the ingress rule that carries the server port.
 	serverRule := func(t *testing.T, docs []map[string]any) map[string]any {
@@ -1226,16 +1229,46 @@ func TestChartRenderNetworkPolicyServerIngress(t *testing.T) {
 		}
 	})
 
-	t.Run("unconfigured keeps the historical admit-all until question 51 lands", func(t *testing.T) {
-		// TODO(#2804, question 51 of questions-jo-20261028.md): the
-		// empty-config verdict — warn loudly vs refuse the render — is
-		// Jo's. Until it lands, a render with the policy on and nothing
-		// configured keeps today's behaviour, and this subtest pins THAT
-		// so the decision, once taken, is made here rather than drifted
-		// into.
+	t.Run("the chart's default scopes the server port to the common ingress-nginx namespace", func(t *testing.T) {
+		// Decided (#2804, question 51, verdict A): the chart SHIPS a default
+		// controllerNamespaces — ingress-nginx, the common case — so a
+		// networkPolicy.enabled=true with nothing said is scoped, not
+		// admit-all.
 		docs := manifests(t, mustRender(t, "-f", "values-dev.yaml", "--set", "networkPolicy.enabled=true"))
+		peers := fromPeers(serverRule(t, docs))
+		var namespacePeer bool
+		for _, peer := range peers {
+			if got := dig(peer, "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name"); got == "ingress-nginx" {
+				namespacePeer = true
+			}
+		}
+		if !namespacePeer {
+			t.Errorf("the default controllerNamespaces must scope the server port to ingress-nginx, got %v", peers)
+		}
+		if got := dig(must(t, docs, "NetworkPolicy", "iterion"), "metadata", "annotations", "iterion.io/ingress-admit-all"); got != nil {
+			t.Errorf("a configured render must not carry the empty-config warning annotation, got %v", got)
+		}
+	})
+
+	t.Run("unconfigured warns loudly and keeps the historical admit-all", func(t *testing.T) {
+		// Decided (#2804, question 51, verdict A): the empty-config verdict
+		// is WARN LOUDLY, never refuse the render — an upgrade of an
+		// unconfigured release must not break. With the chart's default in
+		// place the empty case is an explicit operator choice (BOTH lists
+		// emptied): the rule keeps the historical from:-less admit-all, and
+		// the warning rides the policy as an annotation and the render as a
+		// comment (NOTES.txt carries it for helm install/upgrade).
+		values := valuesFile(t, "networkPolicy:\n  enabled: true\n  ingress:\n    controllerNamespaces: []\n    extraAllow: []\n")
+		out := mustRender(t, "-f", "values-dev.yaml", "-f", values)
+		docs := manifests(t, out)
 		if from := dig(serverRule(t, docs), "from"); from != nil {
-			t.Errorf("no controllerNamespaces and no extraAllow must render no from: (today's behaviour), got %v", from)
+			t.Errorf("both lists emptied must render no from: (the historical admit-all, kept for upgrade compatibility), got %v", from)
+		}
+		if got := dig(must(t, docs, "NetworkPolicy", "iterion"), "metadata", "annotations", "iterion.io/ingress-admit-all"); got == nil {
+			t.Errorf("the empty-config render must carry the loud warning annotation on the policy")
+		}
+		if !strings.Contains(out, "WARNING") || !strings.Contains(out, "X-Forwarded-For") {
+			t.Errorf("the empty-config render must carry the loud warning comment for `helm template` readers")
 		}
 	})
 

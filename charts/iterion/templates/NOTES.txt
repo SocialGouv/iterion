@@ -32,5 +32,18 @@ returned in-band only and self-service password reset is hidden in the
 UI. Set config.smtp.* + secrets.smtp to enable transactional email.
 {{- end }}
 
+{{- if and .Values.networkPolicy.enabled (not .Values.networkPolicy.ingress.controllerNamespaces) (not .Values.networkPolicy.ingress.extraAllow) }}
+
+!! WARNING (#2804): networkPolicy.enabled=true with BOTH
+   networkPolicy.ingress.controllerNamespaces and
+   networkPolicy.ingress.extraAllow empty: the server port's rule renders
+   with NO from: selector and admits EVERY in-cluster pod — any of them
+   can forge X-Forwarded-For (the audit IP, the rate-limit key). The
+   render is kept, never refused, for upgrade compatibility; the policy
+   carries the iterion.io/ingress-admit-all annotation. Set
+   networkPolicy.ingress.controllerNamespaces to your controller's
+   namespaces.
+{{- end }}
+
 Docs: https://github.com/SocialGouv/iterion/blob/main/docs/cloud-deployment.md
 {{- end }}
