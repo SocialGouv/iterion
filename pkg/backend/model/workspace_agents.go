@@ -39,6 +39,8 @@ import (
 	"syscall"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // ErrWorkspaceAgentModel refuses a delegation whose resolved agent file
@@ -55,7 +57,11 @@ var ErrWorkspaceAgentModel = errors.New("subagent: a workspace agent's model: fr
 var ErrWorkspaceAgentTooLarge = errors.New("subagent: workspace agent file exceeds the byte ceiling")
 
 // WorkspaceAgentMaxBytesEnv overrides the ceiling on one agent file, in
-// bytes. "0" removes the ceiling.
+// bytes. "0" removes the ceiling. A value a project `.env` planted carries
+// no authority — workspaceAgentMaxBytes resolves the default instead — and
+// does not cross into the sandbox: forwardableProviderEnv sends the
+// operator's value or an explicit empty, never an absent name the runner's
+// own `.env` auto-load would fill.
 const WorkspaceAgentMaxBytesEnv = "ITERION_CLAW_WORKSPACE_AGENT_MAX_BYTES"
 
 // defaultWorkspaceAgentMaxBytes matches the workspace-command ceiling: two
@@ -317,7 +323,18 @@ func workspaceAgentTools(v any) ([]string, bool, error) {
 // override when it parses, the built-in default otherwise. A non-numeric
 // value is ignored rather than obeyed — a typo must not silently remove a
 // bound.
+//
+// Neither is a value a project `.env` planted: the CLI auto-loads that file
+// (cmd/iterion applyDotEnv), including out of a repository under review,
+// whose answer here would be "0" — the ceiling gone, an unbounded read of
+// what turns into a billed system prompt — or "1", every agent file refused.
+// A planted value still reads as a value; it does not speak for the
+// operator, the same authority rule every security switch follows
+// (claw_host_forfait.go, plugin/config.go, runview/executor.go).
 func workspaceAgentMaxBytes() int {
+	if envtrust.Planted(WorkspaceAgentMaxBytesEnv) {
+		return defaultWorkspaceAgentMaxBytes
+	}
 	raw := strings.TrimSpace(os.Getenv(WorkspaceAgentMaxBytesEnv))
 	if raw == "" {
 		return defaultWorkspaceAgentMaxBytes

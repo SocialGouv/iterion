@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -369,6 +370,79 @@ func TestForwardableProviderEnv_CarriesTheStreamWatchdog(t *testing.T) {
 	}
 	if got := resolveClawStreamIdleTimeout(); got != hostIdle {
 		t.Errorf("in-container idle timeout = %s, host = %s — a tier the operator turned off is back on when sandboxed", got, hostIdle)
+	}
+}
+
+// The workspace-agent ceiling is read where the delegation runs, so the
+// sandboxed twin must resolve the SAME ceiling. The name crosses always
+// (crossedByItsOwnBranch): the operator's value when one is set, an explicit
+// empty when the host leaves it unset — an ABSENT name is one the runner's
+// workspace .env auto-load fills, handing the repository under review the
+// ceiling its own agent files are read under — and an explicit empty when
+// the host's value was itself planted, which neither side obeys
+// (workspaceAgentMaxBytes). Red when the crossing goes back to skipping
+// empty entries: host-unset then crosses absent, and the .env road is open.
+func TestForwardableProviderEnv_CarriesTheWorkspaceAgentCeiling(t *testing.T) {
+	operatorEnv(t)
+	t.Setenv(WorkspaceAgentMaxBytesEnv, "")
+
+	env := envFor(t, context.Background())
+	v, ok := env[WorkspaceAgentMaxBytesEnv]
+	if !ok {
+		t.Fatalf("host-unset %s crossed ABSENT — the runner's workspace .env auto-load fills it and picks the ceiling its own agent files are read under", WorkspaceAgentMaxBytesEnv)
+	}
+	if v != "" {
+		t.Errorf("host-unset %s crossed as %q, want the explicit empty", WorkspaceAgentMaxBytesEnv, v)
+	}
+
+	// The operator's own override crosses with its value, and the container
+	// resolves the same ceiling as the host: rebuild the in-container view
+	// from what crossed alone and ask the resolver itself.
+	t.Setenv(WorkspaceAgentMaxBytesEnv, "4096")
+	hostCeiling := workspaceAgentMaxBytes()
+	env = envFor(t, context.Background())
+	t.Setenv(WorkspaceAgentMaxBytesEnv, env[WorkspaceAgentMaxBytesEnv])
+	if got := workspaceAgentMaxBytes(); got != hostCeiling {
+		t.Errorf("in-container ceiling = %d, host = %d — the same file is bounded two ways", got, hostCeiling)
+	}
+
+	// A planted value crosses as the explicit empty: it never spoke for the
+	// operator, and forwarding it raw would launder it past the container's
+	// own planted check (the name arrived present, so the runner's applyDotEnv
+	// marked nothing).
+	envtrust.ResetForTest()
+	t.Setenv(WorkspaceAgentMaxBytesEnv, "1")
+	envtrust.MarkPlanted(WorkspaceAgentMaxBytesEnv)
+	env = envFor(t, context.Background())
+	if got := env[WorkspaceAgentMaxBytesEnv]; got != "" {
+		t.Errorf("a planted %s=%q crossed as %q — the repository under review set the ceiling its agent files are read under", WorkspaceAgentMaxBytesEnv, "1", got)
+	}
+}
+
+// TestAPlantedWorkspaceAgentCeilingSpeaksForNobody: the byte ceiling is a
+// security switch, so a value a project `.env` planted (cmd/iterion
+// applyDotEnv auto-loads it, out of a repository under review included)
+// carries no authority — "0" would unbound a read that becomes a billed
+// system prompt, "1" would refuse every agent file. The operator's own
+// export still governs; the planted one resolves the default, on the host
+// and (through the runner's own auto-load marking) in the container.
+func TestAPlantedWorkspaceAgentCeilingSpeaksForNobody(t *testing.T) {
+	operatorEnv(t)
+	t.Setenv(WorkspaceAgentMaxBytesEnv, "4096")
+	if got := workspaceAgentMaxBytes(); got != 4096 {
+		t.Fatalf("the operator's own override resolved to %d, want 4096", got)
+	}
+
+	t.Setenv(WorkspaceAgentMaxBytesEnv, "1")
+	envtrust.MarkPlanted(WorkspaceAgentMaxBytesEnv)
+	if got := workspaceAgentMaxBytes(); got != defaultWorkspaceAgentMaxBytes {
+		t.Fatalf("a planted =1 resolved to %d — the repository under review moved the ceiling its agent files are read under", got)
+	}
+	// Through the resolver: the planted refusal-by-ceiling does not bite.
+	dir := t.TempDir()
+	writeWorkspaceAgent(t, dir, "auditor", "a body well past one byte\n")
+	if _, found, err := LookupWorkspaceAgent(dir, "auditor", workspaceAgentMaxBytes()); err != nil || !found {
+		t.Errorf("under a planted =1 the file must still resolve: found=%t err=%v", found, err)
 	}
 }
 

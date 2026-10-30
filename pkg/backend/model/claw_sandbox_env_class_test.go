@@ -92,8 +92,9 @@ var crossedByItsOwnBranch = map[string]string{
 	// asks (envtrust.Inherited, explicit empty included), so the twin
 	// resolves what the host resolves, planted included: the state the
 	// reader consults does not cross, the RESOLUTION does.
-	"ITERION_CLAW_STREAM_COLD_TIMEOUT": "crosses as the host's planted-as-unset answer (explicit empty included): the watchdog knob's reader consults the planted marks, which do not cross, so the raw bytes would let a project .env run the container's watchdog after the host refused it",
-	"ITERION_CLAW_STREAM_IDLE_TIMEOUT": "same crossing as ITERION_CLAW_STREAM_COLD_TIMEOUT: the host's planted-as-unset answer, explicit empty included",
+	"ITERION_CLAW_STREAM_COLD_TIMEOUT":       "crosses as the host's planted-as-unset answer (explicit empty included): the watchdog knob's reader consults the planted marks, which do not cross, so the raw bytes would let a project .env run the container's watchdog after the host refused it",
+	"ITERION_CLAW_STREAM_IDLE_TIMEOUT":       "same crossing as ITERION_CLAW_STREAM_COLD_TIMEOUT: the host's planted-as-unset answer, explicit empty included",
+	"ITERION_CLAW_WORKSPACE_AGENT_MAX_BYTES": "crosses always — the operator's value, or an explicit empty: an absent name lets the runner's workspace .env auto-load pick the ceiling its own agent files are read under, and a value the host read as planted never crosses (workspaceAgentMaxBytes denies it authority on both sides)",
 }
 
 // Why a name stays on the host.
@@ -443,6 +444,7 @@ var crossingSpellings = map[string]string{
 	"anthropicWireShadowEnv":           "the ambient keys the crossing blanks, so the run's forfait outranks them",
 	"deliverHostCodexForfait":          "sets the crossing beside the host's forfait it wrote into the container, which a host-wide \"1\" orders",
 	"hostCodexForfait":                 "asks whether a project .env planted the switch, and names it in the refusal: a planted order ships nothing into the container",
+	"workspaceAgentMaxBytes":           "asks whether a project .env planted the ceiling override, and denies a planted value its authority — the host resolves the default, and forwardableProviderEnv's branch crosses the explicit empty in its place",
 }
 
 // envStateConsults answer for a name from state other than the process env,

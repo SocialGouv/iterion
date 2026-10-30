@@ -21,6 +21,7 @@ import (
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
 
 	"github.com/SocialGouv/iterion/internal/credheader"
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -2188,8 +2189,10 @@ var providerCredentialEnvVars = []string{
 	// The workspace-agent file ceiling is read where the delegation runs —
 	// in the container for a sandboxed node (the runner closure re-enters
 	// Execute there) — so the operator's override must cross, or a sandboxed
-	// node bounds the same file differently from its in-process twin.
-	"ITERION_CLAW_WORKSPACE_AGENT_MAX_BYTES",
+	// node bounds the same file differently from its in-process twin. It
+	// crosses in its own branch of forwardableProviderEnv
+	// (crossedByItsOwnBranch): like the routing names it must never cross
+	// ABSENT, and unlike them a planted value must not cross either.
 	// The routing settings claw's own provider packages read, which no
 	// provider table carries — so the walk over the tables never saw them
 	// and the launcher's value stayed on the launcher (#1804). Each decides
@@ -2372,6 +2375,21 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 			env[name] = ""
 		}
 	}
+	// The workspace-agent ceiling crosses ALWAYS, the routing pattern pushed
+	// one step further: the host's value when the operator set one, an
+	// explicit empty otherwise. An ABSENT name is one the runner's workspace
+	// .env auto-load fills, letting the repository under review pick the
+	// ceiling its own agent files are read under — "0" unbounds a read that
+	// becomes a billed system prompt, "1" refuses every file. And a value
+	// the HOST read as planted does not cross either: workspaceAgentMaxBytes
+	// already denies it authority host-side, and the container's own
+	// applyDotEnv never marked it (the name was present), so forwarding the
+	// raw value would launder it past the in-container twin of that check.
+	agentMaxBytes := strings.TrimSpace(os.Getenv(WorkspaceAgentMaxBytesEnv))
+	if envtrust.Planted(WorkspaceAgentMaxBytesEnv) {
+		agentMaxBytes = ""
+	}
+	env[WorkspaceAgentMaxBytesEnv] = agentMaxBytes
 	// A gateway-served node carries the gateway env, and ONLY a gateway
 	// node does: the endpoint is operator infrastructure, the key to it is
 	// not a vendor credential, and no other node has business seeing
