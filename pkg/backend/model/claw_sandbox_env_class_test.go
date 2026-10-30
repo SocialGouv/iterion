@@ -60,8 +60,10 @@ import (
 // host-side one is spelled only where the runner does not reach, envWrites
 // lists the ones this package only sets in an env it hands on, notEnvNames
 // the ones that name no variable. A name that crosses, crosses as the host's
-// process env — the forwarding loop copies os.Getenv — so it is never read
-// through a reader that also answers from state that does not cross
+// process env — the forwarding loop copies os.Getenv, save a value
+// envtrust.Planted reads as a workspace .env's, which crosses as the explicit
+// empty (#2813) — so it is never read through a reader that also answers
+// from state that does not cross
 // (envStateConsults), such a reader is never handed to another package, and
 // the name is spelled only at its reads or where crossingSpellings says why:
 // its sandboxed twin would otherwise see another value. The one answer the
@@ -438,7 +440,7 @@ var crossingSpellings = map[string]string{
 	"var clawSandboxCredentialEnvKeys": "the #1768 admission probe's own key list: ClawSandboxCredential reads the composed dispatch env through it (env[key] over the range), naming the first entry that carries a value",
 	"ClawSandboxCredential":            "reads the composed dispatch env over that range's keys, naming the first entry that carries a value — a map read the scan cannot see",
 	"var clawStreamTimeoutEnvVars":     "the watchdog knobs, which forwardableProviderEnv crosses as the host's planted-as-unset answer, explicit empty included",
-	"forwardableProviderEnv":           "sets the crossing: a refusal, the run's own credentials, the host's resolved values",
+	"forwardableProviderEnv":           "sets the crossing: a refusal, the run's own credentials, the host's resolved values — and never a value envtrust.Planted reads as a workspace .env's, which crosses as the explicit empty (named in crossingRefusals.planted)",
 	"forwardableToolEnv":               "sets the crossing for the tool names that cross as-is when the launcher sets them (#2802)",
 	"var byokEnvVar":                   "the variable a run's own key crosses as, which forwardableProviderEnv sets",
 	"anthropicWireShadowEnv":           "the ambient keys the crossing blanks, so the run's forfait outranks them",
@@ -464,7 +466,7 @@ var consultsWhatCrosses = map[string]string{
 }
 var envStateConsults = map[string]string{
 	"pkg/dsl/ir.lookupOverlay":      "the bot-var settings overlay (ir.SetEnvOverlay), installed by the cloud server and runner, never by the claw runner",
-	"internal/envtrust.Planted":     "the names a workspace .env planted, which the host refuses and the forwarding loop copies",
+	"internal/envtrust.Planted":     "the names a workspace .env planted, which the host refuses and the forwarding loop refuses to cross (a planted value crosses as the explicit empty, never as the host's raw value)",
 	"pkg/dsl/ir.ProcessEnvReadable": "the cloud process-env policy (ir.SetProcessEnvPolicy), installed by the cloud server and runner, never by the claw runner",
 }
 

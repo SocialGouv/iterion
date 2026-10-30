@@ -57,10 +57,10 @@ func TestTheSandboxCrossingRefusesAnAmbientCredentialHeaderLine(t *testing.T) {
 	}
 	// The refusal is said out loud, naming the variable and the header, never
 	// the value (the value of a credential line IS the credential).
-	if want := "ANTHROPIC_CUSTOM_HEADERS/" + credheader.NameAuthorization; !slices.Contains(refused, want) {
-		t.Errorf("refused = %v, want it to name %q so the operator is told the line did not cross", refused, want)
+	if want := "ANTHROPIC_CUSTOM_HEADERS/" + credheader.NameAuthorization; !slices.Contains(refused.headers, want) {
+		t.Errorf("refused.headers = %v, want it to name %q so the operator is told the line did not cross", refused.headers, want)
 	}
-	for _, entry := range refused {
+	for _, entry := range refused.headers {
 		if strings.Contains(entry, ambient) {
 			t.Errorf("the refusal %q carries the credential's value", entry)
 		}
@@ -242,8 +242,8 @@ func TestAHeaderBlockWithNoCredentialCrossesUntouched(t *testing.T) {
 	if got := env["ANTHROPIC_CUSTOM_HEADERS"]; got != block {
 		t.Errorf("the forwarded block = %q, want the operator's own %q", got, block)
 	}
-	if len(refused) != 0 {
-		t.Errorf("refused = %v on a block that authenticates nothing", refused)
+	if len(refused.headers) != 0 {
+		t.Errorf("refused.headers = %v on a block that authenticates nothing", refused.headers)
 	}
 }
 

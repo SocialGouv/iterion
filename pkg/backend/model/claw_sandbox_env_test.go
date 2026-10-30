@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -443,6 +444,67 @@ func TestAPlantedWorkspaceAgentCeilingSpeaksForNobody(t *testing.T) {
 	writeWorkspaceAgent(t, dir, "auditor", "a body well past one byte\n")
 	if _, found, err := LookupWorkspaceAgent(dir, "auditor", workspaceAgentMaxBytes()); err != nil || !found {
 		t.Errorf("under a planted =1 the file must still resolve: found=%t err=%v", found, err)
+	}
+}
+
+// #2813: a value a workspace `.env` planted on the host is the repository
+// under review answering for the operator — cmd/iterion's applyDotEnv fills
+// the names the launcher had UNSET, and envtrust records which. The crossing
+// must not copy such a value (the repository would pick the node's client
+// identity, its routing, the account its requests are billed to), and must
+// not drop the name either (the runner's own workspace .env auto-load fills
+// an ABSENT name inside the container): it crosses as the explicit empty,
+// and the refusal names the variable so the operator is told. Red when the
+// forwarding loop goes back to copying os.Getenv unread: the planted key
+// then crosses with its value, and the planted cases below fail on their
+// own assertions.
+func TestForwardableProviderEnv_RefusesAPlantedValue(t *testing.T) {
+	operatorEnv(t)
+
+	// The operator's own values cross as before — a key and a routing name.
+	t.Setenv("ZAI_API_KEY", "zai-operator-key")
+	t.Setenv("MOONSHOT_BASE_URL", "https://moonshot.operator.example")
+
+	// The repository's .env plants what the operator left unset: a key, an
+	// endpoint, a client identity, a header block.
+	t.Setenv("OPENAI_API_KEY", "sk-planted")
+	t.Setenv("OPENAI_BASE_URL", "https://openai.repo.example")
+	t.Setenv("CLAW_USER_AGENT", "repo-spoofed-ua")
+	t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Api-Key: planted\nX-Client: repo")
+	envtrust.MarkPlanted("OPENAI_API_KEY", "OPENAI_BASE_URL", "CLAW_USER_AGENT", "ANTHROPIC_CUSTOM_HEADERS")
+
+	env, refused, err := forwardableProviderEnv(context.Background(), "anthropic/claude-haiku-4-5")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+
+	if got := env["ZAI_API_KEY"]; got != "zai-operator-key" {
+		t.Errorf("the operator's ZAI_API_KEY crossed as %q — the operator's own value must still cross", got)
+	}
+	if got := env["MOONSHOT_BASE_URL"]; got != "https://moonshot.operator.example" {
+		t.Errorf("the operator's MOONSHOT_BASE_URL crossed as %q", got)
+	}
+
+	// Each planted name crosses as the explicit EMPTY, never absent (the
+	// runner's workspace .env auto-load would fill it) and never with its
+	// value. The header block's identity lines do not save it: a planted
+	// block is the repository's voice whole.
+	for _, name := range []string{"OPENAI_API_KEY", "OPENAI_BASE_URL", "CLAW_USER_AGENT", "ANTHROPIC_CUSTOM_HEADERS"} {
+		v, ok := env[name]
+		if !ok {
+			t.Errorf("planted %s crossed ABSENT — the runner's workspace .env auto-load fills it inside the container", name)
+			continue
+		}
+		if v != "" {
+			t.Errorf("planted %s crossed as %q — the repository under review decided what a sandboxed node's requests carry", name, v)
+		}
+		if !slices.Contains(refused.planted, name) {
+			t.Errorf("refused.planted = %v — it must name %s, or the drop reads as the variable never having been written", refused.planted, name)
+		}
+	}
+	// The operator's own names are not misread as planted.
+	if slices.Contains(refused.planted, "ZAI_API_KEY") || slices.Contains(refused.planted, "MOONSHOT_BASE_URL") {
+		t.Errorf("refused.planted = %v names an operator-set variable", refused.planted)
 	}
 }
 

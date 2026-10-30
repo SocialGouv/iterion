@@ -1580,7 +1580,7 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// finds nothing and bails with "API key required for OpenAI-
 	// compatible provider". Pass through only the keys we know
 	// providers consume: anything else stays on the host.
-	runnerEnv, refusedHeaders, err := forwardableProviderEnv(ctx, task.Model)
+	runnerEnv, refused, err := forwardableProviderEnv(ctx, task.Model)
 	if err != nil {
 		return delegate.Result{}, err
 	}
@@ -1588,9 +1588,20 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// (client identity on a self-hosted gateway), so a silent drop reads as
 	// the header never having been written. The credential's VALUE is never
 	// named — the refused line is where it lives.
-	if len(refusedHeaders) > 0 && b.logger != nil {
+	if len(refused.headers) > 0 && b.logger != nil {
 		b.logger.Warn("[%s#%d/claw] the sandbox crossing refused %s: a header line of that name replaces the credential the engine resolved for this node on every request the container sends. Put the credential in the route's own variable (ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY) if this node must spend it; the block's other lines crossed",
-			task.NodeID, task.Iteration, strings.Join(refusedHeaders, ", "))
+			task.NodeID, task.Iteration, strings.Join(refused.headers, ", "))
+	}
+	// Said out loud too, by NAME alone (the value is the repository's): a
+	// value a workspace .env planted on the host never crosses — the
+	// repository under review does not answer for the operator. The name
+	// crosses EMPTY instead: "the operator said nothing", which a provider
+	// reads as its published default, a key as a loud refusal — so a node
+	// whose credential was planted fails by name rather than spending the
+	// repository's account.
+	if len(refused.planted) > 0 && b.logger != nil {
+		b.logger.Warn("[%s#%d/claw] the sandbox crossing refused the host value of %s: a workspace .env planted it (the launcher had it unset), so it speaks for the repository under review, not for the operator — the name crosses empty. Export it in your own shell if it is yours",
+			task.NodeID, task.Iteration, strings.Join(refused.planted, ", "))
 	}
 	runnerEnv["HOME"] = clawRunnerHome(ctx, task)
 	// A policy-isolated sandbox only lets egress through the run's network
@@ -2307,7 +2318,12 @@ func sandboxProxyEnv(handle sandbox.Run) map[string]string {
 // sandbox.Run.Command so the in-container runner can reach the same
 // provider APIs as the host. Empty entries are skipped — we never
 // inject a name=<empty> pair, since some providers treat that as
-// "auth attempted but invalid" instead of "no auth".
+// "auth attempted but invalid" instead of "no auth". Two exceptions
+// cross empty ON PURPOSE: a routing name the host leaves unset
+// (providerRoutingEnvVars), and any name whose host value a workspace
+// .env planted — the explicit empty is "the operator said nothing",
+// where an absent name is one the runner's own workspace .env
+// auto-load would fill inside the container.
 //
 // The RUN's own resolved credentials override the ambient ones. Inside
 // the container the runner rebuilds its registry from env alone — ctx
@@ -2318,18 +2334,46 @@ func sandboxProxyEnv(handle sandbox.Run) map[string]string {
 // invisible whenever the ambient key happens to work, which is the worst
 // possible shape for a billing boundary.
 //
-// refusedHeaders names what the crossing would not carry: for each
-// header-block variable, the variable and the credential header line it
-// dropped (never a value — that value IS the credential). The fact travels
+// crossingRefusals is what the crossing would not carry. The facts travel
 // with the env rather than being re-derived by the caller from a second read
-// of the host environment, and the caller says it out loud: the channel has
-// documented uses, so a silent drop reads as the header never having been
-// written.
-func forwardableProviderEnv(ctx context.Context, model string) (map[string]string, []string, error) {
+// of the host environment, and the caller says them out loud: both channels
+// have documented uses, so a silent drop reads as the value never having
+// been written.
+type crossingRefusals struct {
+	// headers names, for each header-block variable, the variable and the
+	// credential header line it dropped (never a value — that value IS the
+	// credential).
+	headers []string
+	// planted names the variables whose host value a workspace .env planted
+	// (applyDotEnv fills the names the launcher had UNSET, envtrust records
+	// which): the value that crosses in their place is the explicit empty.
+	// The name is all the warning needs — the VALUE is the repository's.
+	planted []string
+}
+
+func forwardableProviderEnv(ctx context.Context, model string) (map[string]string, crossingRefusals, error) {
 	env := map[string]string{}
-	var refusedHeaders []string
+	var refused crossingRefusals
 	for _, name := range providerCredentialEnvVars {
 		v := os.Getenv(name)
+		// A value a workspace .env planted on the host is the repository
+		// under review answering for the operator — a client identity, a
+		// routing name, the key a node's requests are spent under, an
+		// operator knob (env carries defaults, never the reviewed
+		// repository's voice: D20 / ADR-132). It never crosses: not RAW, or
+		// the repository decides what a sandboxed node's requests carry —
+		// and the container's own planted check would not see it, the name
+		// arriving present; not ABSENT, or the runner's workspace .env
+		// auto-load fills it in the container. What crosses is the explicit
+		// empty, "the operator said nothing", which the routing names already
+		// cross as (providerRoutingEnvVars) and every provider reads as the
+		// published default — for a key, as a loud refusal rather than the
+		// repository's account.
+		planted := envtrust.Planted(name)
+		if planted {
+			refused.planted = append(refused.planted, name)
+			v = ""
+		}
 		if headerBlockEnvName(name) {
 			// A header block is applied LAST by the CLI, over the headers its
 			// own auth set (claw identity.go Identity.Apply), for every
@@ -2347,14 +2391,18 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 			// the process env, so an absent name lets the repository under
 			// review write the headers of every request the node sends —
 			// including, inside the container, the very line refused here.
-			kept, refused := credheader.StripCredentialLines(v)
-			for _, header := range refused {
-				refusedHeaders = append(refusedHeaders, name+"/"+header)
+			kept, refusedLines := credheader.StripCredentialLines(v)
+			for _, header := range refusedLines {
+				refused.headers = append(refused.headers, name+"/"+header)
 			}
 			env[name] = kept
 			continue
 		}
-		if v != "" {
+		// A planted name crosses as the explicit empty even when its class
+		// skips host-unset names (the keys above): the empty reads as "auth
+		// attempted, invalid" there — loud, where an absent name is the one
+		// the runner's workspace .env auto-load would fill.
+		if v != "" || planted {
 			env[name] = v
 		}
 	}
@@ -2401,11 +2449,11 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	if modelroute.Parse(model).Gateway() {
 		cfg, err := compatgw.FromEnv(os.Getenv)
 		if err != nil {
-			return nil, nil, err
+			return nil, crossingRefusals{}, err
 		}
 		allowPrivate := secrets.LLMEndpointAllowPrivate()
 		if err := cfg.Validate(!allowPrivate); err != nil {
-			return nil, nil, err
+			return nil, crossingRefusals{}, err
 		}
 		env[compatgw.BaseURLEnv] = cfg.BaseURL
 		if cfg.APIKey != "" {
@@ -2453,7 +2501,7 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	}
 	creds, ok := secrets.CredentialsFromContext(ctx)
 	if !ok {
-		return env, refusedHeaders, nil
+		return env, refused, nil
 	}
 	for provider, key := range creds.APIKeys {
 		if key == "" {
@@ -2525,10 +2573,10 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	// provider otherwise.
 	if clawPinnedProvider(model) == secrets.ProviderAnthropic {
 		if err := applyForfaitAcrossSandbox(env, creds, model); err != nil {
-			return nil, nil, err
+			return nil, crossingRefusals{}, err
 		}
 	}
-	return env, refusedHeaders, nil
+	return env, refused, nil
 }
 
 // claw declares no forfait-first provider (delegate.RegisterForfaitFirst).
