@@ -72,7 +72,7 @@ func TestOnlyIsolationenvReadsTheIsolationLoweringVariables(t *testing.T) {
 	if err != nil {
 		t.Fatalf("git ls-files did not answer, so the tree's Go files were not held to the one reader: %v", err)
 	}
-	files := strings.Split(strings.TrimSpace(string(out)), "\n")
+	files := strings.Split(strings.TrimSpace(out), "\n")
 	if len(files) < 100 {
 		t.Fatalf("git ls-files returned %d Go files — the scan would prove nothing", len(files))
 	}
@@ -129,7 +129,7 @@ func TestEveryInventoriedNameIsWiredToTheTree(t *testing.T) {
 		t.Fatalf("git ls-files did not answer: %v", err)
 	}
 	seen := map[string]string{}
-	for _, rel := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for _, rel := range strings.Split(strings.TrimSpace(out), "\n") {
 		if rel == "" || strings.HasPrefix(rel, "vendor/") || strings.HasSuffix(rel, "_test.go") ||
 			strings.HasPrefix(rel, "internal/isolationenv/") {
 			continue
