@@ -141,6 +141,21 @@ tasks:
       - corepack pnpm install --prefer-offline
       - ./node_modules/.bin/playwright install chromium
 
+  test:a11y:target-size:
+    desc: Judge SC 2.5.8 target-size in a real browser over the declared surface list (#2765; on demand — trigger pending, NOT part of task check or CI)
+    dir: studio
+    deps: [build]
+    cmds:
+      - corepack pnpm install --prefer-offline
+      ## Same skip semantics as test:e2e:ui: no chromium, no silent coverage
+      ## claim — the target says so and succeeds.
+      - |
+        if ! node e2e/guard.mjs; then
+          echo "task: [test:a11y:target-size] SKIPPED — no Playwright chromium: run 'corepack pnpm -C studio exec playwright install chromium' first. This line being the only output means NOTHING ran."
+          exit 0
+        fi
+        ./node_modules/.bin/playwright test --config playwright.a11y.config.ts {{.CLI_ARGS}}
+
   demo:copi:
     desc: Present Copi creating, launching, watching and recovering a run in a headed browser
     dir: studio

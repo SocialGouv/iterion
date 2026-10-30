@@ -34,7 +34,8 @@ export function setupMatchMedia(): void {
  * axe ships OFF by default — `declaredRuleSwitches` turns it on, or the tag
  * would be a declaration nobody runs. jsdom still has no layout, so it
  * answers `inapplicable` on element after element: the scope is declared and
- * executed here, the judgement needs a real engine (#2765).
+ * executed here, the judgement needs a real engine — it lives in
+ * e2e/a11y/target-size.spec.ts (#2765).
  */
 export const AXE_WCAG_TAGS = [
   "wcag2a",

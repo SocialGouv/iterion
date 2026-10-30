@@ -340,6 +340,17 @@ pnpm -F iterion-studio test
 
 The jsdom environment is opt-in per file via `// @vitest-environment jsdom` so pure-function tests stay on the fast Node runner.
 
+#### SC 2.5.8 target-size: the real-engine half
+
+`wcag22aa` is in the jsdom net's declared scope, and its only rule today is `target-size` — which jsdom cannot judge (no layout: every element measures 0×0 and axe reads that as a PASS). The rule gets its verdict in a real browser from [`e2e/a11y/target-size.spec.ts`](../e2e/a11y/target-size.spec.ts) (helper: [`e2e/a11y/targetSize.ts`](../e2e/a11y/targetSize.ts)), driven by its own [`playwright.a11y.config.ts`](../playwright.a11y.config.ts) — deliberately OUTSIDE the default `e2e/specs` sweep, because the trigger (per-PR CI vs nightly vs on demand) is pending (#2765). Run it on demand:
+
+```bash
+devbox run -- task test:a11y:target-size    # builds the binary; skips cleanly without chromium
+corepack pnpm -C studio test:a11y:target-size
+```
+
+The spec walks a declared surface list (`SURFACES`), runs axe's `target-size` rule, and measures every sub-24px node it saw — including the ones axe PASSES only through WCAG's spacing exception, because whether the studio accepts that exception as its floor or grows its compact controls is the policy question pending with Jo (#2765). A finding survives only behind a commented entry in `TARGET_SIZE_WAIVERS` (per surface, per selector/tag/container, `maxNodes`-bounded so a class cannot grow unexamined); a waiver that matches nothing fails, and so does an unwaivered finding. The waiver list is the inventory the policy decision will work from.
+
 Run a manual axe browser-extension sweep on `/`, `/editor`, `/runs/:id`, `/board`, `/dispatcher` (application settings are a dialog, not a route) before any large UI release — jsdom can't model the canvas, the WebSocket flows, or the full layout, so the unit suite is a floor not a ceiling.
 
 Open items still requiring human / browser verification:
