@@ -154,10 +154,18 @@ type Spec struct {
 	// re-verified at the driver border, immediately before the container is
 	// created, with the same question ([safepath.RealBindSource]); a source
 	// that no longer verifies refuses the creation instead of mounting what
-	// the swap chose. Store-backed sources are recreated cold when they went
-	// missing since the plan ([safepath.EnsureRealBindSourceDir]); a source
-	// the engine laid for this run — MustExist — refuses instead, because
-	// nothing may stand in for the tree the engine actually laid.
+	// the swap chose. The border answer ([sandbox.AnswerBindSourceCheck],
+	// shared with the witnesses that replay it over a plan's own entries)
+	// parts ways on the source's shape there: a directory keeps the store
+	// ask ([safepath.EnsureRealBindSourceDir]), a file — a copy seed, a
+	// host-bound state file — is asked for identity alone, never creation
+	// (creating on a file's path refused honest containers and would stand
+	// a directory where the operator keeps a file), and a source gone since
+	// the plan refuses whatever its shape — the engine-laid workspace
+	// because nothing may stand in for the tree the engine actually laid,
+	// every other source because the border recreates nothing the
+	// plan-to-create window removed; the cold recreate is the plan's move,
+	// and the retry replans.
 	//
 	// The ask judges the engine's own filesystem: with the daemon on another
 	// host (DOCKER_HOST against a remote engine), the daemon resolves the
@@ -179,10 +187,11 @@ type BindSourceCheck struct {
 	Path string
 
 	// MustExist marks a source the ENGINE laid for this run and binds at
-	// that path — the workspace worktree. It is never recreated: a source
-	// gone since the plan refuses the creation, where a store-backed source
-	// would be mkdir'd cold (an empty stand-in workspace would start the
-	// run on a directory the engine never laid).
+	// that path — the workspace worktree. Nothing at the border recreates
+	// any verified source gone since the plan (the border recreates nothing
+	// the window removed); for the workspace the refusal also guards the
+	// meaning: an empty stand-in directory would start the run on a tree
+	// the engine never laid.
 	MustExist bool
 }
 

@@ -90,11 +90,15 @@ func TestTheBindSourcesThePlanVerifiedAreNamedForTheDriver(t *testing.T) {
 		t.Errorf("no cache bind found under the store %s — the witness needs the warmed plan: %v", storeDir, spec.Mounts)
 	}
 
-	// Every named check must pass RIGHT NOW: a plan that names a source its
-	// own check would refuse is incoherent by construction.
+	// Every named check must answer the border question RIGHT NOW: a plan
+	// that names a source its own border refuses is incoherent by
+	// construction. The question replayed is the EXACT one docker.Driver.Start
+	// asks before the create — the identity ask alone would pass entries the
+	// border refuses (it did: the file class rode the record like
+	// directories and the border's shape answer broke on them).
 	for _, c := range spec.BindSourceChecks {
-		if err := safepath.RealBindSource(c.Root, c.Path); err != nil {
-			t.Errorf("the plan named %s for the driver and it does not verify: %v", c.Path, err)
+		if err := sandbox.AnswerBindSourceCheck(c); err != nil {
+			t.Errorf("the plan named %s for the driver and the border question refuses it: %v", c.Path, err)
 		}
 	}
 }
@@ -182,11 +186,12 @@ func TestTheEngineLaidWorkspaceIsNamedForTheBorderOnBothHostStateBranches(t *tes
 		if !named {
 			t.Errorf("%s: the plan hands the engine-laid workspace %s to the driver with no border check — the leaf can be swapped after the plan with nobody re-asking: %+v", name, wt, spec.BindSourceChecks)
 		}
-		// Every named check must pass RIGHT NOW: a plan that names a source
-		// its own question refuses is incoherent by construction.
+		// Every named check must answer the border question RIGHT NOW: a
+		// plan that names a source its own border refuses is incoherent by
+		// construction.
 		for _, c := range spec.BindSourceChecks {
-			if err := safepath.RealBindSource(c.Root, c.Path); err != nil {
-				t.Errorf("%s: the plan named %s for the driver and it does not verify: %v", name, c.Path, err)
+			if err := sandbox.AnswerBindSourceCheck(c); err != nil {
+				t.Errorf("%s: the plan named %s for the driver and the border question refuses it: %v", name, c.Path, err)
 			}
 		}
 	}
@@ -328,6 +333,20 @@ func TestEverySourceUnderASandboxWritableRootIsNamedForTheDriver(t *testing.T) {
 		if len(offenders) > 0 {
 			t.Errorf("%s: %d bind source(s) under a sandbox-writable root are NOT named in Spec.BindSourceChecks — the plan-time verification ran but no border re-ask covers them, so the plan-to-create window stays open for exactly these:\n  %s",
 				name, len(offenders), strings.Join(offenders, "\n  "))
+		}
+
+		// The border question, replayed over EVERY entry of this honest
+		// plan — the exact question docker.Driver.Start asks before the
+		// create (sandbox.AnswerBindSourceCheck), files included. A plan
+		// whose own entries fail it refuses every container it plans:
+		// incoherent by construction. This is the replay that holds the
+		// file class — the copy seeds (plugins.yaml, a worktree's
+		// .git/config) ride the record next to the directories, and the
+		// border must answer them by identity, never by creation.
+		for _, c := range spec.BindSourceChecks {
+			if err := sandbox.AnswerBindSourceCheck(c); err != nil {
+				t.Errorf("%s: the border question refuses an honest plan's entry %s: %v", name, c.Path, err)
+			}
 		}
 	}
 }
