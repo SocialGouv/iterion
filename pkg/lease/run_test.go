@@ -729,25 +729,39 @@ func (f *renewSignalStore) Renew(ctx context.Context, name, owner string, now ti
 }
 
 // The refused renewal stops the holder BEFORE its log line: a slow log sink
-// must not keep a deposed holder serving beside its successor.
+// must not keep a deposed holder serving beside its successor. The sink here
+// delivers the lost-lease line only once the holder has stopped, so the term
+// cannot end while the line stalls unless the stop already happened — a
+// holder whose stop waited for the line would deadlock against this sink and
+// leave the term to its step-down timer, and the step-down line it then
+// emits is the confession. Read after the scenario's own step-down window
+// has fully passed; no wall-clock budget for a loaded scheduler to eat.
 func TestRun_TheLossStopsTheHolderBeforeItsLogLine(t *testing.T) {
 	inner := NewMemoryStore()
 	st := &renewSignalStore{Store: inner, renewed: make(chan struct{}, 1)}
 	const leaseTTL = 3 * time.Second // renewals 1s apart; step-down 2.5s after the last
-	sp := spec("a", leaseTTL, nil)
+	lines := &logSink{}
+	sp := spec("a", leaseTTL, lines)
+	sink := sp.Warn
+	holderGone := make(chan struct{})
 	sp.Warn = func(format string, args ...any) {
+		sink(format, args...) // recorded first, then the pipe stalls below
 		if strings.Contains(fmt.Sprintf(format, args...), "lost the lease") {
-			time.Sleep(leaseTTL) // a log pipe that stalls
+			<-holderGone // a log pipe that delivers only once the holder is gone
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var clock stopClock
 	started := make(chan struct{})
+	serve := clock.serve(started)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = Run(ctx, st, sp, clock.serve(started))
+		_ = Run(ctx, st, sp, func(c context.Context) {
+			serve(c)
+			close(holderGone)
+		})
 	}()
 	<-started
 	<-st.renewed // steal right after a renewal: the next one, ~1s away, is refused
@@ -755,11 +769,16 @@ func TestRun_TheLossStopsTheHolderBeforeItsLogLine(t *testing.T) {
 	if ok, err := inner.Acquire(context.Background(), "sweeper", "thief", time.Now().Add(2*leaseTTL), time.Hour); err != nil || !ok {
 		t.Fatalf("thief Acquire = %v, %v", ok, err)
 	}
-	until(t, 10*time.Second, "a to stop", func() bool { return clock.at.Load() != 0 })
-	// Refusal ~1s after the steal; a log-first holder would stop only at its
-	// step-down, ~2.5s after it.
-	if after := clock.stopped().Sub(stolen); after > 1750*time.Millisecond {
-		t.Errorf("a stopped %s after losing its lease: the stop waited for the log line", after)
+	until(t, 10*time.Second, "a to stop while its lost-lease line is still stalled (a stop that waits for the line deadlocks against this sink and the term falls to the step-down)", func() bool { return clock.at.Load() != 0 })
+	// Let the step-down window (2.5s past the last renewal, so under leaseTTL
+	// past the steal) close before reading the log: a step-down line in it
+	// means the term ended on the timer, not on the refusal.
+	time.Sleep(time.Until(stolen.Add(leaseTTL)))
+	if n := lines.count("no renewal it can prove"); n != 0 {
+		t.Errorf("the step-down timer fired %d time(s): the stop waited for its log line and a deposed holder served beside its successor", n)
+	}
+	if !lines.has("lost the lease to another owner") {
+		t.Errorf("the refused renewal never reached its log line")
 	}
 	cancel()
 	<-done
