@@ -298,6 +298,24 @@ record keeps its bearer — the launch lane reads it to refuse a card carrying a
 live grant of another team (`withoutCardGrant`), which a mask under the store
 would answer "no crossing" to.
 
+The reserved `__iterion_*` launch-context keys (`native.ReservedLaunchArgs`: a
+webhook-carried card's clone URL and ref, forge slug, BYOK credential
+overrides, integration id) are the server's stamp about what the card's run
+targets — the board dispatcher meters, bounds and debits the run by it — and
+they never ride a client write either: the native REST create/PATCH/comments
+routes, the pipeline-board create/upsert/patch routes, and the board tools'
+`create_issue` drop the class at the door. The tools' funnel is
+`boardops.create_issue`, one chokepoint all five tool transports cross (stdio
+`__mcp-board`, HTTP `/api/v1/mcp/board`, claw in-process, delegate MCP, the
+operator MCP), so the filter lands once for them all. The store does NOT drop
+this class — the webhook lane's own stamp (`ensureBoardCard`) writes through
+the same `Create`, so the funnel cannot tell a stamp from client input; the
+doors filter, not the store, and a dropped key shows in the write's answer,
+which is the card as stored. The operator stamps by hand through the CLI door,
+which keeps the class:
+`iterion issue create --bot-arg __iterion_project_path=acme/widgets` cards a
+run the operator launches without a webhook.
+
 The SPA's Board view (`/board` in the studio) is a thin React shell on
 top of the REST surface. The table below covers the issue/board CRUD;
 the label manager and the board-schema editor add

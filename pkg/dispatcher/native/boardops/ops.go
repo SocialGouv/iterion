@@ -158,7 +158,7 @@ var allTools = []Tool{
             "parent_id":{"type":"string","description":"Planner ticket that spawned this one (provenance). Auto-filled from the creating run's source issue when omitted."},
             "fields":{"type":"object","description":"Custom board fields (validated against board schema)."},
             "bot":{"type":"string","description":"CANONICAL bot that runs this issue when the dispatcher picks it up (e.g. feature-dev). The dispatcher routes by bot first, else assignee."},
-            "bot_args":{"type":"object","additionalProperties":{"type":"string"},"description":"Per-ticket workflow var overrides (--var key=value) applied at launch. Use spawned_from for planner provenance (synced with parent_id)."}
+            "bot_args":{"type":"object","additionalProperties":{"type":"string"},"description":"Per-ticket workflow var overrides (--var key=value) applied at launch. Use spawned_from for planner provenance (synced with parent_id). The reserved __iterion_* launch-context keys (repo URL/ref, project path, credential overrides, integration id) are the server's stamp: the create drops them, and the returned card shows what landed."}
           },
           "required":["title"]
         }`),
@@ -367,6 +367,16 @@ func doCreate(store native.BoardStore, raw json.RawMessage, env CallEnv) (json.R
 		}
 		botArgs = cp
 	}
+	// A tool-created card never carries the reserved launch context: what the
+	// run clones, which credential it resolves and which repository meters,
+	// bounds and debits it is the server's stamp (card_launch_args.go), never
+	// the caller's. Every transport of this funnel is a client (a bot run
+	// holding a board.* grant, a webhook-authenticated MCP caller, the
+	// operator's session — whose direct hand path stays `iterion issue
+	// create`). The publish grant is dropped store-side at Create
+	// (BotArgsForWrite); this class is dropped HERE, because the server's own
+	// stamp writes through the same store.Create.
+	botArgs = native.DropServerMintedLaunchVars(botArgs)
 	parentID := strings.TrimSpace(args.ParentID)
 	if parentID == "" {
 		parentID = strings.TrimSpace(botArgs[native.BotArgSpawnedFrom])
