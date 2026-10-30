@@ -182,17 +182,16 @@ func TestPiMCPServers(t *testing.T) {
 		}
 	})
 
-	// The token must ride inside the server descriptor, never as its own
-	// variable, so a generic environment dump cannot log it.
-	t.Run("token appears only inside the server descriptor", func(t *testing.T) {
-		env := piExtensionEnv(full, nil)
+	// The extension env carries the catalog's PATH and nothing that holds the
+	// token: an env value rides the container runtime's own host argv
+	// (`docker exec --env K=V`, pi_mcp_config.go), so no value in it may be
+	// the credential or carry it, whatever the catalog holds.
+	t.Run("token never rides the extension env", func(t *testing.T) {
+		env := piExtensionEnv(full, nil, "")
 		for k, v := range env {
-			if k != "ITERION_PI_MCP_SERVERS" && v == "tok-123" {
-				t.Errorf("run token leaked into %s", k)
+			if strings.Contains(v, "tok-123") {
+				t.Errorf("run token leaked into %s: %q", k, v)
 			}
-		}
-		if !strings.Contains(env["ITERION_PI_MCP_SERVERS"], "tok-123") {
-			t.Error("run token missing from the server descriptor")
 		}
 	})
 }

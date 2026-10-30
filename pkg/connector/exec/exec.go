@@ -535,8 +535,10 @@ func scrubValue(v any, secrets []string) any {
 	}
 }
 
-// scrubSecrets replaces every secret in s, in both the shapes it travels in:
-// the raw bytes and the URL-escaped form an `in: query` scheme produces. ONE
+// scrubSecrets replaces every secret in s, in the shapes it travels in: the
+// raw bytes, the QueryEscape form an `in: query` scheme produces, and the
+// PathEscape form an `in: path` scheme produces — the two escapes differ
+// (`+`, space), so matching one leaves the other printing the credential. ONE
 // function for the error text and the body, or the two would redact different
 // shapes of the same credential.
 func scrubSecrets(s string, secrets []string) string {
@@ -549,6 +551,9 @@ func scrubSecrets(s string, secrets []string) string {
 		}
 		s = strings.ReplaceAll(s, secret, redactedMarker)
 		if esc := url.QueryEscape(secret); esc != secret {
+			s = strings.ReplaceAll(s, esc, redactedMarker)
+		}
+		if esc := url.PathEscape(secret); esc != secret {
 			s = strings.ReplaceAll(s, esc, redactedMarker)
 		}
 	}
@@ -653,6 +658,16 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 	}
 
 	p := op.Pagination
+	// The body the walk reads is the REDACTED one — Call redacts before
+	// returning — and the redaction renames every key carrying the
+	// credential, the protocol's own keys included when the credential is a
+	// substring of one. Reading them by their original name would miss the
+	// cursor and report the collection COMPLETE: the silent truncation the
+	// Complete flag exists to prevent. The walk resolves its field names
+	// through the same scrub the body went through, so writer and reader
+	// agree whatever the credential.
+	secrets := secretValues(op, params, cred)
+	redactedKey := func(field string) string { return scrubSecrets(field, secrets) }
 	maxPages := p.MaxPages
 	if maxPages <= 0 {
 		maxPages = defaultMaxPages
@@ -680,7 +695,7 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 		if callErr != nil || !res.OK() {
 			return nil, false, res, callErr
 		}
-		batch, found := pageItems(res.Data, p.ItemsField)
+		batch, found := pageItems(res.Data, redactedKey(p.ItemsField))
 		if !found {
 			return nil, false, res, errNoCollection(op, p.ItemsField, res.Data)
 		}
@@ -759,7 +774,7 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 			return items, false, res, nil
 		}
 		last = res
-		batch, found := pageItems(res.Data, p.ItemsField)
+		batch, found := pageItems(res.Data, redactedKey(p.ItemsField))
 		if !found {
 			// Refused rather than treated as the end of the collection: the
 			// items gathered so far are returned with the error, so a caller
@@ -792,7 +807,7 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 		// moved out of the cursor branch once; it had to be moved out of the
 		// shared pre-check too.
 		if p.Style == spec.PageCursor {
-			next := stringField(res.Data, p.CursorField)
+			next := stringField(res.Data, redactedKey(p.CursorField))
 			if next == "" {
 				return items, true, last, nil
 			}
@@ -872,15 +887,18 @@ func redactSecrets(err error, op spec.Operation, params map[string]any, cred Cre
 	}
 	msg := err.Error()
 	out := msg
-	// The credential itself, and its URL-escaped form: it reaches the query
-	// string encoded, so matching only the raw bytes would miss exactly the
-	// case that leaks.
+	// The credential itself, and the escaped forms it travels in: it reaches
+	// the query string QueryEscaped and the path PathEscaped, so matching
+	// only the raw bytes would miss exactly the cases that leak.
 	for _, secret := range secretValues(op, params, cred) {
 		if secret == "" {
 			continue
 		}
 		out = strings.ReplaceAll(out, secret, redactedMarker)
 		if esc := url.QueryEscape(secret); esc != secret {
+			out = strings.ReplaceAll(out, esc, redactedMarker)
+		}
+		if esc := url.PathEscape(secret); esc != secret {
 			out = strings.ReplaceAll(out, esc, redactedMarker)
 		}
 	}

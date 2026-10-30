@@ -916,7 +916,7 @@ func TestPiSandboxedSpawnCarriesTheExtensionContract(t *testing.T) {
 	}
 
 	b := &PiRPCBackend{Command: "pi", Logger: testLogger()}
-	spawn := b.spawner(task, "pi", sandboxDelegateMark(task))
+	spawn := b.spawner(task, "pi", sandboxDelegateMark(task), "")
 	if spawn == nil {
 		t.Fatal("no spawner for a sandboxed task")
 	}
@@ -956,23 +956,30 @@ func TestPiRPCSandboxedExecuteReapsTheInContainerProcess(t *testing.T) {
 	// The mark carries a random component, so the assertion cannot recompute
 	// it — which is exactly why Execute has to compute it ONCE and hand the
 	// same value to the spawner. Match the pidfile the spawn actually wrote
-	// against the pidfile the reap actually referenced.
+	// against the pidfile the reap actually referenced, by its .pid suffix:
+	// the reap's exec legitimately names OTHER spawn files first (the
+	// private MCP catalog the spawn wrote, swept by the same exec), so
+	// "first /tmp/iterion-delegate-* path in the script" would read the
+	// catalog where it wants the pidfile.
+	pidfileOf := func(joined string) string {
+		for _, f := range strings.Fields(joined) {
+			f = strings.TrimRight(f, ";\"'")
+			if strings.HasPrefix(f, "/tmp/iterion-delegate-") && strings.HasSuffix(f, ".pid") {
+				return f
+			}
+		}
+		return ""
+	}
 	var spawned, reaped string
 	for _, argv := range rec.allArgv {
 		joined := strings.Join(argv, " ")
-		i := strings.Index(joined, "/tmp/iterion-delegate-")
-		if i < 0 {
-			continue
-		}
-		ref := strings.Fields(joined[i:])[0]
-		ref = strings.TrimRight(ref, ";\"'")
 		// The spawn wrapper also clears a stale pid, so "kill" alone does not
 		// tell them apart: the spawn ends in `exec "$@"`, the reap sends TERM.
 		switch {
 		case strings.Contains(joined, `exec "$@"`):
-			spawned = ref
+			spawned = pidfileOf(joined)
 		case strings.Contains(joined, "kill -TERM"):
-			reaped = ref
+			reaped = pidfileOf(joined)
 		}
 	}
 	if spawned == "" {

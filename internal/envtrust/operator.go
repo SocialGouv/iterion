@@ -156,10 +156,13 @@ var operatorInfraNames = map[string]bool{
 	"ITERION_CONNECTOR_ADMISSION": true,
 	// Code loaded from the repository under review or the host: MCP servers,
 	// plugins, CLI settings sources, context files, slash commands.
-	"ITERION_MCP_AUTOLOAD":                             true,
-	"ITERION_MCP_HEALTHCHECK":                          true,
-	"ITERION_SKIP_MCP_HEALTH":                          true,
-	"ITERION_PI_MCP_SERVERS":                           true,
+	"ITERION_MCP_AUTOLOAD":    true,
+	"ITERION_MCP_HEALTHCHECK": true,
+	"ITERION_SKIP_MCP_HEALTH": true,
+	"ITERION_PI_MCP_SERVERS":  true,
+	// The PATH form pi actually reads (pi_mcp_config.go): the inline
+	// spelling the extension no longer reads is inert beside it.
+	"ITERION_PI_MCP_SERVERS_FILE":                      true,
 	"ITERION_MCP_EXPAND_UNTRUSTED_ENV":                 true,
 	"ITERION_MCP_SERVER_ENV_PASSTHROUGH":               true,
 	"ITERION_PLUGINS_ENABLE":                           true,

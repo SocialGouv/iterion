@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 /**
  * The extension's whole configuration arrives through the environment, set by
  * the Go backend that spawned pi.
@@ -8,8 +10,12 @@
  *     off, and the extension degrades to a no-op rather than failing the
  *     session. A run must never die because iterion passed one fewer flag than
  *     this build expected.
- *   - Secret VALUES never travel here. Tokens ride inside a server descriptor
- *     that is read once, so a generic environment dump cannot log them.
+ *   - Secret VALUES never travel here. The MCP catalog — whose server
+ *     descriptors carry the run token in their headers — sits in a private
+ *     file the host wrote for THIS node, and the environment carries only its
+ *     path: an env VALUE is world-readable for the whole session, because the
+ *     container runtime forwards it on the host's own argv (`docker exec --env
+ *     K=V`, /proc/<pid>/cmdline mode 444).
  */
 
 /** Bumped when the Go↔extension contract changes incompatibly. */
@@ -118,14 +124,22 @@ function usableMcpServer(s: unknown): s is McpServerConfig {
 }
 
 /**
- * Parses the MCP server list. A malformed value yields NO servers rather than
- * throwing: a broken variable must not take the whole session down with it,
- * and the missing tools are visible in the agent's own behaviour.
+ * Parses the MCP server list from the private file the host wrote for THIS
+ * node. The engine never puts the list inline: the JSON carries the run token
+ * in its headers, and an env VALUE rides the container runtime's own argv on
+ * the host — the surface that made the file the only safe shape. A path is
+ * not a secret.
+ *
+ * A malformed, missing or unreadable file yields NO servers rather than
+ * throwing: a broken handoff must not take the whole session down with it,
+ * and the missing tools are visible in the agent's own behaviour. The write
+ * side holds the refusal (the engine refuses a node whose catalog it could
+ * not write); the read side holds the degrade.
  */
-function parseMcpServers(raw: string | undefined): McpServerConfig[] {
+function parseMcpServersFile(raw: string | undefined): McpServerConfig[] {
 	if (!raw) return [];
 	try {
-		const parsed = JSON.parse(raw);
+		const parsed = JSON.parse(readFileSync(raw, "utf8"));
 		if (!Array.isArray(parsed)) return [];
 		return parsed.filter(usableMcpServer).map((s) => ({ ...s, transport: mcpTransport(s.transport) }));
 	} catch {
@@ -148,7 +162,7 @@ export function loadConfig(): IterionConfig {
 		iteration: Number.isFinite(iteration) ? iteration : undefined,
 		permission: permissionMode(env("ITERION_PI_PERMISSION")),
 		interaction: interactionMode(env("ITERION_PI_INTERACTION")),
-		mcpServers: parseMcpServers(env("ITERION_PI_MCP_SERVERS")),
+		mcpServers: parseMcpServersFile(env("ITERION_PI_MCP_SERVERS_FILE")),
 		mcpConnectTimeoutMs: positiveInt(env("ITERION_PI_MCP_CONNECT_TIMEOUT_MS"), 10_000),
 		ctrlEnabled: env("ITERION_PI_CTRL") !== "off",
 	};

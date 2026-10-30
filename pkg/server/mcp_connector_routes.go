@@ -118,20 +118,26 @@ func (h *connectorMCPHandler) catalogFor(grant boardMCPGrant) (connection.Catalo
 	return cat, nil
 }
 
-// facadeFor is the facade over catalogFor: the one a tools/list and a
-// tools/call read the operation set from.
-func (h *connectorMCPHandler) facadeFor(grant boardMCPGrant) (*facade.Facade, error) {
+// facadeFor is the facade over catalogFor, WITH the catalog it was built
+// from: a tools/call needs both, and reading the catalog a second time would
+// let the facade and the resolver see two instantiations of the run's
+// workspace — a package planted between the two reads is missing from exactly
+// one side, and every call would pay two catalog walks for it. One read, one
+// catalog, both consumers.
+func (h *connectorMCPHandler) facadeFor(grant boardMCPGrant) (*facade.Facade, connection.Catalog, error) {
 	cat, err := h.catalogFor(grant)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if cat == h.deps.Catalog {
 		// The shared catalog: its facade is cached — the packages are
 		// process-stable (the baked floor is compiled in; the FSCatalog above
 		// it caches), so the tool set does not change between two calls.
-		return h.theFacade()
+		f, err := h.theFacade()
+		return f, cat, err
 	}
-	return facadeOverCatalog(cat, h.deps.Logger)
+	f, err := facadeOverCatalog(cat, h.deps.Logger)
+	return f, cat, err
 }
 
 // facadeOverCatalog loads every connector a catalog serves into one facade.
@@ -206,7 +212,7 @@ func (h *connectorMCPHandler) dispatch(ctx context.Context, req mcpReq, grant bo
 			"serverInfo":      map[string]any{"name": "iterion-connectors-http", "version": "1.0.0"},
 		}
 	case "tools/list":
-		f, err := h.facadeFor(grant)
+		f, _, err := h.facadeFor(grant)
 		if err != nil {
 			resp.Error = &mcpRespError{Code: -32603, Message: "facade unavailable: " + err.Error()}
 			return resp
@@ -255,11 +261,7 @@ func (h *connectorMCPHandler) dispatch(ctx context.Context, req mcpReq, grant bo
 // call runs one tool through the facade, with the execution half wired to the
 // grant: the tenant it pins, the trust it carries.
 func (h *connectorMCPHandler) call(ctx context.Context, tool string, args json.RawMessage, grant boardMCPGrant) (string, error) {
-	catalog, err := h.catalogFor(grant)
-	if err != nil {
-		return "", err
-	}
-	f, err := h.facadeFor(grant)
+	f, catalog, err := h.facadeFor(grant)
 	if err != nil {
 		return "", err
 	}

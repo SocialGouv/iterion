@@ -553,3 +553,88 @@ func TestTheFacadeServesEachRunItsOwnCatalog(t *testing.T) {
 		t.Errorf("the refusal must name the catalog: %v", e)
 	}
 }
+
+// TestAFacadeCallBuildsTheCatalogOnce.
+//
+// `call` resolved its catalog and its facade through TWO catalogFor reads:
+// the RESOLVER and the FACADE could then read two different instantiations of
+// the run's workspace — a package planted between the two reads is missing
+// from exactly one side, and every call paid two catalog walks. One read, one
+// catalog, both consumers: the comment on resolverFor already promised it.
+//
+// Mutation that reddens this: have call call catalogFor itself again instead
+// of reading the catalog facadeFor answered.
+func TestAFacadeCallBuildsTheCatalogOnce(t *testing.T) {
+	t.Setenv("ITERION_CONNECTOR_ALLOW_PRIVATE", "1")
+
+	vendor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"number":1,"title":"hello"}]`))
+	}))
+	defer vendor.Close()
+
+	sealer, err := secrets.NewAESGCMSealer([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	st := connection.NewMemoryStore()
+	sealed, err := connection.SealToken(sealer, "c1", "the-token", time.Time{})
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	if err := st.Create(context.Background(), connection.Connection{
+		ID: "c1", TenantID: "t1", Connector: "probe", Alias: "main",
+		SchemeID: "token", Status: connection.StatusActive,
+		Capabilities: []connection.Capability{connection.CapAgent},
+		BaseURL:      vendor.URL,
+		AuthPlacement: connection.AuthPlacement{
+			Kind: "api_key", In: "header", Name: "Authorization", ValuePrefix: "token ",
+		},
+		SealedPayload: sealed,
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	reg := NewBoardMCPTokenRegistry()
+	if err := reg.Register("run-a", []string{connection.CapConnectors}, "", "t1", store.RunTrustDefault, true, "/srv/proj-a"); err != nil {
+		t.Fatalf("register run-a: %v", err)
+	}
+
+	var builds int
+	mux := http.NewServeMux()
+	RegisterConnectorMCPRoutes(mux, "/api/v1/mcp/connectors", ConnectorMCPDeps{
+		Store:   st,
+		Catalog: connection.NewMemoryCatalog(),
+		Sealer:  sealer,
+		Client:  connection.LocalHTTPClient(),
+		CatalogForRun: func(string, connection.ActionTrust) (connection.Catalog, error) {
+			builds++
+			return connection.NewMemoryCatalog(facadePkg(vendor.URL)), nil
+		},
+	}, reg)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"call_operation","arguments":{"operation":"probe.issue.list","connection":"main"}}}`
+	req, err := http.NewRequest("POST", server.URL+"/api/v1/mcp/connectors", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	req.Header.Set("X-Iterion-Run", "run-a")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer resp.Body.Close()
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res, hasResult := out["result"]; !hasResult || res == nil {
+		t.Fatalf("the call never reached the vendor: %v", out)
+	}
+	if builds != 1 {
+		t.Errorf("the per-run builder ran %d times for one call, want 1 — the facade and the resolver read ONE catalog", builds)
+	}
+}

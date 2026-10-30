@@ -132,15 +132,25 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	var mark string
 	if task.Sandbox != nil {
 		mark = sandboxDelegateMark(task)
-		sandboxCleanup = killSandboxDelegate(task.Sandbox, mark, ownerOf(b.Logger, task, BackendPi))
+		sandboxCleanup = killSandboxDelegate(task.Sandbox, mark, ownerOf(b.Logger, task, BackendPi), piSandboxSpawnFiles(mark)...)
 	}
 	if sandboxCleanup != nil {
 		defer sandboxCleanup()
 	}
+	// The MCP catalog parks in a file only the extension reads — on the host
+	// and inside the container alike — and the env carries its PATH. The JSON
+	// holds the run token, and an env value rides the host's `docker exec`
+	// argv for the whole session (pi_mcp_config.go); a write that fails
+	// refuses the node.
+	mcpFile, cleanupMCP, err := pinMCPServers(ctx, task, mark, b.Logger)
+	if err != nil {
+		return Result{BackendName: BackendPi, ExitCode: -1}, err
+	}
+	defer cleanupMCP()
 	// On the host, what pi starts carries the node session token and ends
 	// with this run (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md).
 	// Deferred before the client, so the client's Close runs first.
-	env := piRPCEnv(ctx, task, b.Logger)
+	env := piRPCEnv(ctx, task, b.Logger, mcpFile)
 	if task.Sandbox == nil {
 		token, since := proc.NewNodeSessionToken(), NodeSessionSince()
 		env = append(env, proc.NodeSessionEntry(token))
@@ -161,7 +171,7 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		// 30s.
 		RequestTimeout: piColdTimeout,
 		Env:            env,
-		Spawn:          b.spawner(task, binary, mark),
+		Spawn:          b.spawner(task, binary, mark, mcpFile),
 		OnEvent:        collector.onEvent,
 		OnStderr: func(line string) {
 			if b.Logger != nil {
@@ -331,7 +341,7 @@ func (b *PiRPCBackend) warnOnModelDrift(task Task, effective string) {
 // forever by design (its mode returns a never-resolving promise), so a leaked
 // in-container process would hold a model session indefinitely. Killing the
 // host-side `docker exec` client has no signal path to the exec'd process.
-func (b *PiRPCBackend) spawner(task Task, binary, mark string) pisdk.Spawner {
+func (b *PiRPCBackend) spawner(task Task, binary, mark, mcpServersFile string) pisdk.Spawner {
 	if task.Sandbox == nil {
 		return nil
 	}
@@ -347,7 +357,7 @@ func (b *PiRPCBackend) spawner(task Task, binary, mark string) pisdk.Spawner {
 		// and the extension-install guard both refuse to allow. Sandboxing is
 		// the default, so this is the default path.
 		env := piSandboxEnv(ctx, task)
-		for k, v := range piExtensionEnv(task, b.Logger) {
+		for k, v := range piExtensionEnv(task, b.Logger, mcpServersFile) {
 			env[k] = v
 		}
 		return task.Sandbox.Command(ctx, wrapSandboxDelegateArgv(mark, full), sandbox.ExecOpts{
@@ -505,13 +515,14 @@ func piRPCArgs(task Task, promptFile string, logger *iterlog.Logger) []string {
 
 // piRPCEnv assembles the child environment: the host's, plus the shared
 // credential overrides, plus run-level provisioning (devbox PATH) last so it
-// wins on a duplicate key.
-func piRPCEnv(ctx context.Context, task Task, logger *iterlog.Logger) []string {
+// wins on a duplicate key. mcpServersFile is the catalog's PATH (empty when
+// the node has no servers) — the catalog itself never rides the env.
+func piRPCEnv(ctx context.Context, task Task, logger *iterlog.Logger, mcpServersFile string) []string {
 	env := os.Environ()
 	for k, v := range piResolveEnv(ctx) {
 		env = append(env, k+"="+v)
 	}
-	for k, v := range piExtensionEnv(task, logger) {
+	for k, v := range piExtensionEnv(task, logger, mcpServersFile) {
 		env = append(env, k+"="+v)
 	}
 	return append(env, task.ExtraEnv...)
@@ -522,8 +533,10 @@ func piRPCEnv(ctx context.Context, task Task, logger *iterlog.Logger) []string {
 // Every variable is optional by contract: absent means the capability is off
 // and the extension degrades to a no-op, so a run never fails because iterion
 // passed one fewer variable than the extension build expected. Secret VALUES
-// never appear here.
-func piExtensionEnv(task Task, logger *iterlog.Logger) map[string]string {
+// never appear here — the MCP catalog's env entry is its PATH (empty when the
+// node has no servers), the document itself sits in the private file
+// pinMCPServers wrote (pi_mcp_config.go).
+func piExtensionEnv(task Task, logger *iterlog.Logger, mcpServersFile string) map[string]string {
 	env := map[string]string{
 		"ITERION_PI_CONTRACT":  piext.ContractVersion,
 		"ITERION_PI_CTRL":      "rpc",
@@ -551,10 +564,12 @@ func piExtensionEnv(task Task, logger *iterlog.Logger) map[string]string {
 		}
 		env["ITERION_PI_INTERACTION"] = mode
 	}
-	if servers := piMCPServers(task, logger); len(servers) > 0 {
-		if raw, err := json.Marshal(servers); err == nil {
-			env["ITERION_PI_MCP_SERVERS"] = string(raw)
-		}
+	// The catalog's PATH, never its content: the JSON carries the run token,
+	// and an env value is world-readable through the container runtime's own
+	// argv for the whole session (pi_mcp_config.go). Empty means the node has
+	// no servers, and the extension bridges nothing.
+	if mcpServersFile != "" {
+		env[piMCPServersFileEnv] = mcpServersFile
 	}
 	return env
 }
@@ -582,9 +597,11 @@ type piMCPServerSpec struct {
 // the model burns turns discovering they do not work. The same reasoning gates
 // the board on the run actually holding capabilities AND a wired endpoint.
 //
-// This is also the ONLY place a token appears in the extension's configuration
-// — inside a server's headers, never as a standalone variable — so a generic
-// environment dump cannot log it.
+// The list is written to the private catalog file (pinMCPServers), and the
+// ONLY place a token appears in it is inside a server's headers — never as a
+// standalone variable — so no environment dump can log it, and on the host
+// the file is 0600 in a 0700 directory while inside a sandbox it was written
+// over the writer's stdin.
 //
 // Sandboxed stdio servers inherit the claude_code caveat: the command is
 // resolved inside the container, so a host-only binary is unreachable there.
