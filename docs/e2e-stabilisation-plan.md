@@ -40,7 +40,7 @@ Repeated from #1424 verbatim so the plan cannot drift from its own definition:
 | server-api | 31 | 31 | 0 | 0 | 0 | 0 |
 | bots | 25 | 23 | 1 | 1 | 0 | 0 |
 | backends | 19 | 15 | 3 | 0 | 0 | 1 |
-| studio-ui | 15 | 14 | 0 | 0 | 1 | 0 |
+| studio-ui | 15 | 15 | 0 | 0 | 0 | 0 |
 | dispatcher | 14 | 14 | 0 | 0 | 0 | 0 |
 | tools-mcp | 14 | 13 | 0 | 0 | 1 | 0 |
 | triggers | 13 | 13 | 0 | 0 | 0 | 0 |
@@ -228,9 +228,14 @@ Under their own epics (#1415, #1406, #1412):
   guarantee?), `tools-mcp.tool-display` (a pure formatter), and the four
   `excluded` `integrations` rows (third-party tenant, claw TUI behaviours),
   whose premises a claw bump can quietly invalidate.
-- **Studio**: `studio-ui.editor-llm-meta` (is the card reachable in
-  Playwright without a live model?) and `desktop.wails-app` (cgo +
-  build-tagged, a GUI session; the bridge contract is the testable seam).
+- **Studio** (read 2026-10-30, #2799): `studio-ui.editor-llm-meta`
+  **promoted** — the card needs no live model: the resolution answer is data
+  in the react-query cache, and a vitest render of the real WorkflowNode
+  (studio/src/components/Canvas/WorkflowNode.test.tsx) pins the wiring;
+  dropping `resolvedModel` from the `displayModel` call or dropping the
+  `displayFallbackChain` call reddens it. `desktop.wails-app` stays
+  `unit-only` — the bridge contract is the testable seam, the Go half is
+  cgo + build-tagged and a GUI e2e would re-test the harness.
 
 ## What this plan does NOT do
 
