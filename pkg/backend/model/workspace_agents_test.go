@@ -82,14 +82,16 @@ func TestLookupWorkspaceAgentReadsToolsAsAList(t *testing.T) {
 // segment by construction — `..`, separators and dot-runs are refused before
 // any I/O, so the model's own subagent_type cannot walk out of
 // `.claude/agents/`. os.Root backs the guarantee; the charset keeps the name
-// from expressing what the root would refuse.
+// from expressing what the root would refuse — including a confusible:
+// "аuditor" with a Cyrillic а spells no file the operator declared, and the
+// ASCII-only rule refuses it rather than resolving a lookalike.
 func TestAWorkspaceAgentNameCannotSpellTraversal(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "secret.md"), []byte("secret"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"../secret", "..", "a/b", `..\secret`, "."} {
+	for _, name := range []string{"../secret", "..", "a/b", `..\secret`, ".", "аuditor"} {
 		if _, found, err := LookupWorkspaceAgent(dir, name, 0); err == nil || found {
 			t.Errorf("LookupWorkspaceAgent(%q) = found=%t err=%v — a traversal spelling must be refused", name, found, err)
 		}
@@ -327,5 +329,115 @@ func TestAnUnknownSubagentTypeKeepsTheBuiltinShape(t *testing.T) {
 	}
 	if strings.Contains(out, "workspace_agent") {
 		t.Errorf("an unknown type reported a workspace agent: %s", out)
+	}
+}
+
+// TestAWorkspaceAgentFrontmatterSurvivesCRLFAndABOM: claude_code parses
+// these files natively whatever their bytes, so a BOM-headed, CRLF-ended
+// frontmatter is frontmatter here too — the description and tools are read,
+// and none of the header leaks into the child's system prompt. Red when the
+// split demands the exact "---\n" bytes: the header then serves AS the
+// prompt, and a `model:` in it is ignored rather than refused.
+func TestAWorkspaceAgentFrontmatterSurvivesCRLFAndABOM(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeWorkspaceAgent(t, dir, "auditor", "\xef\xbb\xbf---\r\ndescription: Audits a change\r\ntools: Read\r\n---\r\nYou are the auditor.\r\n")
+	a, found, err := LookupWorkspaceAgent(dir, "auditor", 0)
+	if err != nil || !found {
+		t.Fatalf("lookup: found=%t err=%v", found, err)
+	}
+	if a.Description != "Audits a change" {
+		t.Errorf("description = %q — the BOM/CRLF frontmatter was not parsed", a.Description)
+	}
+	if got := strings.Join(a.Tools, ","); got != "read_file" {
+		t.Errorf("tools = %q, want [read_file]", got)
+	}
+	if a.Body != "You are the auditor." {
+		t.Errorf("body = %q — raw frontmatter is serving as the child's system prompt", a.Body)
+	}
+}
+
+// TestAWorkspaceAgentDeclaringModelInCRLFIsStillRefused: the `model:` refusal
+// is opposable only when the parse sees the key. A CRLF file that claude_code
+// would honour natively must meet the same refusal here — never a silent
+// ignore that bills the node's model where the file named another (#1717).
+func TestAWorkspaceAgentDeclaringModelInCRLFIsStillRefused(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeWorkspaceAgent(t, dir, "pricey", "---\r\nmodel: claude-opus-4-6\r\n---\r\nbody\r\n")
+	run, client := parentLoopRunner(t, "")
+	ctx := WithParentLoop(context.Background(), ParentLoop{
+		Model:   "test/parent-model",
+		Tools:   []GenerationTool{parentTool("read_file")},
+		WorkDir: dir,
+	})
+	_, err := run(ctx, map[string]any{"description": "probe", "prompt": "go", "subagent_type": "pricey"})
+	if !errors.Is(err, ErrWorkspaceAgentModel) {
+		t.Fatalf("a CRLF model:-declaring agent was not refused: %v", err)
+	}
+	if got := client.callCount(); got != 0 {
+		t.Errorf("the refused delegation still started %d child call(s)", got)
+	}
+}
+
+// TestAWorkspaceAgentBehindASymlinkedDirectoryIsRefused: the containment root
+// is the WORKSPACE, so a repository that ships `.claude` — or
+// `.claude/agents` — as a symlink pointing outside cannot move the root
+// itself: os.Root refuses the escape and the delegation fails, it never
+// reads the target.
+func TestAWorkspaceAgentBehindASymlinkedDirectoryIsRefused(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs a privilege Windows sessions lack")
+	}
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "agents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "agents", "leak.md"), []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// `.claude/agents` is the symlink.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "agents"), filepath.Join(dir, ".claude", "agents")); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := LookupWorkspaceAgent(dir, "leak", 0); err == nil || found {
+		t.Errorf(".claude/agents symlinked out of the workspace resolved: found=%t err=%v", found, err)
+	}
+
+	// `.claude` itself is the symlink.
+	dir = t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(dir, ".claude")); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := LookupWorkspaceAgent(dir, "leak", 0); err == nil || found {
+		t.Errorf(".claude symlinked out of the workspace resolved: found=%t err=%v", found, err)
+	}
+}
+
+// TestAWorkspaceAgentWithEmptyToolsGetsNoTools: `tools: []` is a declared,
+// empty narrowing — the child is offered nothing, where an absent `tools:`
+// key narrows nothing. Red when the two read alike: the empty list then
+// hands the child the node's whole effective set.
+func TestAWorkspaceAgentWithEmptyToolsGetsNoTools(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeWorkspaceAgent(t, dir, "silent", "---\ntools: []\n---\nbody\n")
+	run, client := parentLoopRunner(t, "")
+	ctx := WithParentLoop(context.Background(), ParentLoop{
+		Model:   "test/parent-model",
+		Tools:   []GenerationTool{parentTool("read_file"), parentTool("bash")},
+		WorkDir: dir,
+	})
+	if _, err := run(ctx, map[string]any{"description": "probe", "prompt": "go", "subagent_type": "silent"}); err != nil {
+		t.Fatalf("subagent: %v", err)
+	}
+	if offered := client.offered(t, 1); len(offered) != 0 {
+		t.Errorf("tools: [] offered the child %v, want no tools at all", offered)
 	}
 }

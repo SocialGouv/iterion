@@ -242,9 +242,10 @@ type workspaceAgentFrontmatter struct {
 
 // parseWorkspaceAgent splits the frontmatter off an agent file and reads the
 // three keys. The accepted block shape is an opening `---` line and a closing
-// `---` line; anything else — an unterminated block included — is body, not
-// frontmatter, so a file whose first line merely starts with dashes is never
-// misparsed.
+// `---` line, past a BOM and CRLF endings (splitAgentFrontmatter folds both,
+// as claude_code's native parse does); anything else — an unterminated block
+// included — is body, not frontmatter, so a file whose first line merely
+// starts with dashes is never misparsed.
 func parseWorkspaceAgent(name, data string) (WorkspaceAgent, error) {
 	agent := WorkspaceAgent{Name: name, Body: strings.TrimSpace(data)}
 	header, body, ok := splitAgentFrontmatter(data)
@@ -267,8 +268,13 @@ func parseWorkspaceAgent(name, data string) (WorkspaceAgent, error) {
 }
 
 // splitAgentFrontmatter returns the header and body of a leading frontmatter
-// block, or ok=false when the file opens with none.
+// block, or ok=false when the file opens with none. claude_code parses these
+// files natively whatever their bytes — a UTF-8 BOM, CRLF endings — so the
+// split folds both before matching: a file one backend reads as frontmatter
+// must never be body-with-`model:`-ignored on the other (the refusal of
+// ErrWorkspaceAgentModel is opposable only when the parse sees the key).
 func splitAgentFrontmatter(data string) (header, body string, ok bool) {
+	data = strings.ReplaceAll(strings.TrimPrefix(data, "\xef\xbb\xbf"), "\r\n", "\n")
 	rest, found := strings.CutPrefix(data, "---\n")
 	if !found {
 		return "", "", false
