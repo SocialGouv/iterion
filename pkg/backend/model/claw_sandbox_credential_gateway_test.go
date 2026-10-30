@@ -25,23 +25,27 @@ func gatewayEnvClearer(t *testing.T) {
 }
 
 // TestClawSandboxCredentialTheGatewayRouteIsAChannel is the #1768 witness
-// for a gateway-served node: a keyless openai_compatible gateway is a
-// documented valid configuration (compatgw.APIKeyEnv — "Empty is valid: a
-// gateway may sit behind network auth alone"), the dispatch forwards the
-// route to the container, and the predicate must answer YES on it — reading
-// it as "no credential channel" refused runs the node's own dispatch would
-// have served (probe 4 of the tip's adversarial review). The widening arm
-// below pins the OTHER side: with no gateway env at all, the node still
-// reads as no channel — the channel is the forwarded ROUTE, never the bare
-// model spec.
+// for a gateway-served node: the dispatch forwards the gateway route to the
+// container, and the predicate must answer YES on it — reading it as "no
+// credential channel" refused runs the node's own dispatch would have served
+// (probe 4 of the tip's adversarial review). The gateway compatgw serves now
+// carries a key: FromEnv refuses a keyless one outright ("a keyless gateway
+// is not a configuration that works"), so the channel witness is the served
+// pair, and the keyless spelling answers no channel — the run would fail at
+// Execute's head before the predicate mattered. The widening arms pin the
+// OTHER sides: a bare URL with no key reads as no channel, and with no
+// gateway env at all the node still reads as no channel — the channel is
+// the forwarded ROUTE, never the bare model spec.
 func TestClawSandboxCredentialTheGatewayRouteIsAChannel(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		gatewayURL string
+		gatewayKey string
 		want       bool
 	}{
-		{"keyless gateway: the route is the channel", "http://10.0.0.5:4000", true},
-		{"no gateway env: still no channel", "", false},
+		{"gateway with its key: the route is the channel", "http://10.0.0.5:4000", "gw-key", true},
+		{"keyless gateway: FromEnv refuses it, so no channel", "http://10.0.0.5:4000", "", false},
+		{"no gateway env: still no channel", "", "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			gatewayEnvClearer(t)
@@ -49,13 +53,17 @@ func TestClawSandboxCredentialTheGatewayRouteIsAChannel(t *testing.T) {
 			if tc.gatewayURL != "" {
 				t.Setenv(compatgw.BaseURLEnv, tc.gatewayURL)
 			}
+			if tc.gatewayKey != "" {
+				t.Setenv(compatgw.APIKeyEnv, tc.gatewayKey)
+			}
 			const model = "openai_compatible/operator-gateway-model"
 			channel, ok := ClawSandboxCredential(context.Background(), model, delegate.SandboxHomeState{})
 			if ok != tc.want {
 				t.Fatalf("ClawSandboxCredential(gateway) = (%q, %v), want ok=%v", channel, ok, tc.want)
 			}
-			if ok && !strings.Contains(channel, compatgw.BaseURLEnv) {
-				t.Fatalf("the gateway channel names nothing: %q", channel)
+			if ok && !strings.Contains(channel, compatgw.BaseURLEnv) &&
+				!strings.Contains(channel, compatgw.APIKeyEnv) {
+				t.Fatalf("the gateway channel names neither the route nor its key: %q", channel)
 			}
 		})
 	}
