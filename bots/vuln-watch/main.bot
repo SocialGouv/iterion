@@ -500,10 +500,7 @@ tool poll_dependabot:
     def _validate_host(host):
         if allow_private or not host:
             return
-        for k in ('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'):
-            v = (os.environ.get(k) or '').strip()
-            if v and (urlsplit(v if '://' in v else 'http://' + v).hostname == host):
-                return
+        ## No proxy exemption: the TARGET host is what is validated here, whatever an egress proxy in the environment says.
         infos = socket.getaddrinfo(host, None)
         for info in infos:
             if not _addr_ok(info[4][0]):
@@ -742,7 +739,11 @@ tool poll_advisories:
                 raise OSError('SSRF-unsafe address ' + str(info[4][0]) + ' for host ' + str(host))
         return infos
     def _validate_host(host):
-        if allow_private or not host or host in _proxy_hosts:
+        ## No proxy exemption: the TARGET host is what is validated here — routing
+        ## through the proxy happens at the socket, never in the URL, and a proxy
+        ## on a loopback or private address would otherwise exempt every target
+        ## on that same address.
+        if allow_private or not host:
             return
         infos = _real_getaddrinfo(host, None)
         for info in infos:
@@ -973,10 +974,7 @@ tool poll_exploit:
     def _validate_host(host):
         if allow_private or not host:
             return
-        for k in ('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'):
-            v = (os.environ.get(k) or '').strip()
-            if v and (urlsplit(v if '://' in v else 'http://' + v).hostname == host):
-                return
+        ## No proxy exemption: the TARGET host is what is validated here, whatever an egress proxy in the environment says.
         for info in socket.getaddrinfo(host, None):
             if not _addr_ok(info[4][0]):
                 raise OSError('SSRF-unsafe address ' + str(info[4][0]) + ' for host ' + str(host))
@@ -1272,10 +1270,7 @@ tool match_policy:
         def _validate_host(h):
             if allow_private or not h:
                 return
-            for k in ('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'):
-                v = (os.environ.get(k) or '').strip()
-                if v and (urlsplit(v if '://' in v else 'http://' + v).hostname == h):
-                    return
+            ## No proxy exemption: the TARGET host is what is validated here, whatever an egress proxy in the environment says.
             for info in socket.getaddrinfo(h, None):
                 if not _addr_ok(info[4][0]):
                     raise OSError('SSRF-unsafe address ' + str(info[4][0]) + ' for host ' + str(h))
