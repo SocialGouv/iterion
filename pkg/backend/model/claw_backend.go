@@ -2934,8 +2934,10 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 	// Index ToolDefs by name once so OnToolCall is O(1) instead of
 	// scanning the slice on each runner-initiated tool_call.
 	toolByName := make(map[string]delegate.ToolDef, len(task.ToolDefs))
+	toolNames := make([]string, 0, len(task.ToolDefs))
 	for _, td := range task.ToolDefs {
 		toolByName[td.Name] = td
+		toolNames = append(toolNames, td.Name)
 	}
 	hostRunID, hostStore := runtimeContextFrom(ctx)
 	// The mirror's key is the launcher's, not the wire's: a session_capture
@@ -2995,7 +2997,11 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 			if td.Execute == nil {
 				return "", fmt.Errorf("launcher: tool %q has no Execute closure (engine misconfiguration)", name)
 			}
-			return td.Execute(toolCtx, input)
+			// The node's own tool set rides the context so a launcher-placed
+			// tool whose answer depends on it — tool_search — reports what
+			// THIS node can execute, not the registry's whole catalogue
+			// (#2717); the in-process loop pins the same set on its side.
+			return td.Execute(tool.WithNodeExecutableTools(toolCtx, toolNames), input)
 		},
 		OnSessionCapture: func(snapshot json.RawMessage) {
 			if hostStore == nil || hostRunID == "" || hostSessKey == "" {

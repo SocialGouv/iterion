@@ -455,13 +455,30 @@ type ToolSnapshot func() []api.Tool
 // RegisterClawToolSearch registers the `tool_search` meta-tool. The
 // snapshot closure is invoked on every call to capture the live
 // tool catalog; pass nil to use an empty haystack (degraded but valid).
+//
+// The catalogue the snapshot searches is the registry's, which is wider
+// than the calling node's `tools:` list. When the dispatch pinned the
+// node's executable set on the context ([WithNodeExecutableTools] — the
+// in-process loop and the launcher's side of a sandboxed crossing both
+// do), the answer is rewritten per node: each match is marked available
+// or not, an available match carries its schema, and an unavailable one
+// says why, so a reviewer can no longer select a tool its node cannot
+// execute (#2717). Without the pin the legacy answer stands — a caller
+// that cannot name the node's set does not guess it.
 func RegisterClawToolSearch(reg *Registry, snapshot ToolSnapshot) error {
 	exec := func(ctx context.Context, input map[string]any) (string, error) {
 		var tools []api.Tool
 		if snapshot != nil {
 			tools = snapshot()
 		}
-		return clawtools.ExecuteToolSearch(ctx, input, tools)
+		raw, err := clawtools.ExecuteToolSearch(ctx, input, tools)
+		if err != nil {
+			return "", err
+		}
+		if executable, ok := NodeExecutableToolsFrom(ctx); ok {
+			return enrichToolSearchResult(raw, tools, executable)
+		}
+		return raw, nil
 	}
 	return RegisterClawTool(reg, clawtools.ToolSearchTool(), exec)
 }

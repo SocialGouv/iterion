@@ -22,6 +22,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
 )
 
 // charToolResultText extracts the text payload of a tool_result content block.
@@ -663,4 +664,66 @@ func TestForceCompactToTokens(t *testing.T) {
 			t.Fatalf("expected ok=false when the transcript cannot shrink, got compacted len %d", len(out))
 		}
 	})
+}
+
+// The dispatch pins the node's executable tool set on the context every
+// Execute receives, so a tool whose answer depends on it — tool_search
+// (#2717) — speaks for THIS node rather than the registry's whole
+// catalogue. The pin is the toolMap itself: a name the map cannot dispatch
+// is exactly one the answer must mark unavailable.
+func TestExecuteToolsDirect_PinsTheNodesExecutableToolsOnTheContext(t *testing.T) {
+	t.Parallel()
+	var seen map[string]bool
+	var pinned bool
+	toolMap := map[string]*GenerationTool{
+		"read_file": {Name: "read_file", Execute: func(ctx context.Context, _ json.RawMessage) (string, error) {
+			seen, pinned = tool.NodeExecutableToolsFrom(ctx)
+			return "ok", nil
+		}},
+		"tool_search": {Name: "tool_search", Execute: func(context.Context, json.RawMessage) (string, error) {
+			return "ok", nil
+		}},
+	}
+	uses := []toolUseBlock{{ID: "tu_1", Name: "read_file", PartialJSON: `{}`}}
+	if _, err := executeToolsDirect(context.Background(), uses, toolMap, nil, nil, nil, nil, nil); err != nil {
+		t.Fatalf("executeToolsDirect: %v", err)
+	}
+	if !pinned {
+		t.Fatal("the tool's Execute received a context without the node's executable set")
+	}
+	if !seen["read_file"] || !seen["tool_search"] || len(seen) != 2 {
+		t.Errorf("the pinned set = %v, want exactly the toolMap's names", seen)
+	}
+}
+
+// The launcher's side of a sandboxed crossing pins the same set: the node
+// the runner calls tool_search on is answered for the task's ToolDefs, not
+// the registry (#2717).
+func TestMultiplexerHandler_PinsTheNodesExecutableToolsOnTheForwardedCall(t *testing.T) {
+	t.Parallel()
+	var seen map[string]bool
+	var pinned bool
+	task := delegate.Task{
+		NodeID: "copi", Model: "openai/gpt-5",
+		ToolDefs: []delegate.ToolDef{
+			{Name: "read_file", Execute: func(context.Context, json.RawMessage) (string, error) { return "ok", nil }},
+			// tool_search is launcher-placed, so the launcher executes it —
+			// capturing the context here observes exactly the pin its real
+			// closure reads.
+			{Name: "tool_search", Execute: func(ctx context.Context, _ json.RawMessage) (string, error) {
+				seen, pinned = tool.NodeExecutableToolsFrom(ctx)
+				return "ok", nil
+			}},
+		},
+	}
+	handler, _ := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{}).multiplexerHandler(context.Background(), task, sessionSeed{})
+	if _, err := handler.OnToolCall(context.Background(), "tool_search", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("OnToolCall: %v", err)
+	}
+	if !pinned {
+		t.Fatal("the forwarded call's Execute received a context without the node's executable set")
+	}
+	if !seen["read_file"] || !seen["tool_search"] || len(seen) != 2 {
+		t.Errorf("the pinned set = %v, want exactly the task's ToolDefs names", seen)
+	}
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/internal/strutil"
 )
 
@@ -51,6 +52,16 @@ func executeToolsDirect(
 	policy *permission.Policy,
 ) ([]api.ContentBlock, error) {
 	results := make([]api.ContentBlock, 0, len(toolUses))
+
+	// The node's executable tool set travels on the context so a tool whose
+	// answer depends on it — tool_search, which searches the registry's whole
+	// catalogue — speaks for THIS node and cannot name a tool the node cannot
+	// call as a plain match (#2717).
+	names := make([]string, 0, len(toolMap))
+	for name := range toolMap {
+		names = append(names, name)
+	}
+	ctx = tool.WithNodeExecutableTools(ctx, names)
 
 	for _, tu := range toolUses {
 		block, abort := executeOneTool(ctx, tu, toolMap, onToolStarted, onToolCall, runner, materialize, policy)
