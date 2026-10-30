@@ -79,6 +79,13 @@ func describeRedactedArgvValue(flag, value string) string {
 		MCPServers map[string]json.RawMessage `json:"mcpServers"`
 	}
 	if err := json.Unmarshal([]byte(value), &doc); err != nil {
+		if !strings.HasPrefix(strings.TrimSpace(value), "{") {
+			// Since the catalog moved off argv (claude_code_mcp_config.go),
+			// the value a host spawn carries is a private file's path: names
+			// the file, carries no value. The sandboxed path is previewed
+			// BEFORE its rewrite, so it still describes the document.
+			return "<redacted mcp config file>"
+		}
 		return "<redacted mcp config>"
 	}
 	names := make([]string, 0, len(doc.MCPServers))

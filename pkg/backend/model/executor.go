@@ -262,6 +262,16 @@ type ClawExecutor struct {
 	// the server path; nil on CLI runs (sandboxed board-emit then stays
 	// disabled).
 	boardRegister func(caps []string, sourceIssueID string) string
+	// boardRevoke ends the grant boardRegister minted, at the moment the
+	// node that holds it is done. Set via WithBoardRevoke beside the
+	// minter; nil leaves the registry's TTL as the only reaper.
+	//
+	// The registry's own contract is "Register at the start of every run and
+	// Revoke at the end", and nothing revoked: a token stayed live for the
+	// TTL (24 h) after its node returned. It authenticates the connector
+	// facade since #2758, so what outlived the node was the right to spend
+	// the tenant's credentials — on an argv-visible string, for a day.
+	boardRevoke func(token string)
 	// boardEndpoint is the per-run gateway-reachable board MCP URL pushed
 	// in by the engine after the sandbox starts (SetBoardEndpoint). Empty
 	// disables sandboxed board-emit wiring (C082).
@@ -482,6 +492,18 @@ type ClawExecutorOption func(*ClawExecutor)
 // auto-stamp parent_id on board.create like the other two transports.
 func WithBoardRegister(fn func(caps []string, sourceIssueID string) string) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.boardRegister = fn }
+}
+
+// WithBoardRevoke installs the counterpart of WithBoardRegister: the closure
+// that ends a minted grant. Called once per node that minted one, as the node
+// returns, whatever the outcome.
+//
+// Paired with the minter at every wiring site rather than left to the
+// registry's TTL, because the TTL is the backstop for a process that died, not
+// the lifetime of a grant: a node's token authenticates the connector facade,
+// and a facade call spends the tenant's credential.
+func WithBoardRevoke(fn func(token string)) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.boardRevoke = fn }
 }
 
 // WithSourceIssueID stamps the ticket that owns this run so board.create

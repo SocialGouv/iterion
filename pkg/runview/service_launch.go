@@ -429,6 +429,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		// memory space. Same rule on both sides, so the two cannot diverge.
 		BotID:           ResolveBotID(spec.BotID, BundleNameForPath(spec.FilePath), spec.FilePath),
 		BoardRegister:   s.boardRegister,
+		BoardRevoke:     s.boardRevoke,
 		Compress:        spec.Compress,
 		AutoMemory:      spec.AutoMemory,
 		AmbientContext:  spec.AmbientContext,
@@ -1168,6 +1169,7 @@ func (s *Service) resumeExecutorSpec(wf *ir.Workflow, r *store.Run, runLogger *i
 		EventObservers: s.hookEventObservers(nil),
 		AutoMemory:     autoMemory,
 		BoardRegister:  s.boardRegister,
+		BoardRevoke:    s.boardRevoke,
 		LocalSecrets:   s.localSecrets,
 		LocalSealer:    s.localSealer,
 		UsageCapSource: s.usageCapSource,

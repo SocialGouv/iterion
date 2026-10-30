@@ -736,7 +736,7 @@ func (s *Server) boardMCPServiceOption(logger *iterlog.Logger, runStore store.Ru
 			return ""
 		}
 		return token
-	}), true
+	}, reg.Revoke), true
 }
 
 // New creates a new studio server.

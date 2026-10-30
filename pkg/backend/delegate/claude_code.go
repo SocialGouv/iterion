@@ -838,7 +838,7 @@ func (b *ClaudeCodeBackend) buildSpawnOptions(task Task) ([]claudesdk.Option, fu
 		// wrapper writes its PID to a pidfile then exec's claude (same
 		// PID, same fds); the end kills it, then sweeps the mark.
 		mark := sandboxDelegateMark(task)
-		se.end = killSandboxDelegateReporting(run, mark, ownerOf(b.Logger, task, BackendClaudeCode), sandboxSettingsFile(mark))
+		se.end = killSandboxDelegateReporting(run, mark, ownerOf(b.Logger, task, BackendClaudeCode), sandboxSpawnFiles(mark)...)
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
 			env = claudeModelDefaultEnv(env)
 			// Surface the resolved CLI invocation so failures like
@@ -848,9 +848,10 @@ func (b *ClaudeCodeBackend) buildSpawnOptions(task Task) ([]claudesdk.Option, fu
 			// methods are nil-safe — no guard needed.)
 			b.Logger.Info("claude-code: exec %v (cwd=%s, env_keys=%d, stdin=%v)",
 				redactedArgvPreview(path, args), cwd, len(env), openStdin)
-			// The routing pin is computed inside the container, from the
-			// environment the CLI runs with (claudeSandboxArgv).
-			argv, err := claudeSandboxArgv(mark, path, args, flagSettings)
+			// The MCP catalog is moved into a private in-container file and
+			// the routing pin is computed inside the container, from the
+			// environment the CLI runs with (claudeSandboxSpawnArgv).
+			argv, err := claudeSandboxSpawnArgv(ctx, run, mark, path, args, flagSettings)
 			if err != nil {
 				return claudeFailedCmd(ctx, path, err)
 			}
@@ -2251,14 +2252,15 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		// writes in the container, terminates the recorded CLI and stops what
 		// the pass left behind.
 		mark := sandboxDelegateMark(task) + "-fmt"
-		fe.end = killSandboxDelegateReporting(run, mark, ownerOf(b.Logger, task, BackendClaudeCode), sandboxSettingsFile(mark))
+		fe.end = killSandboxDelegateReporting(run, mark, ownerOf(b.Logger, task, BackendClaudeCode), sandboxSpawnFiles(mark)...)
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
 			env = claudeModelDefaultEnv(env)
 			b.Logger.Info("claude-code [fmt]: exec %v (cwd=%s, env_keys=%d, stdin=%v)",
 				redactedArgvPreview(path, args), cwd, len(env), openStdin)
-			// The routing pin is computed inside the container, from the
-			// environment the CLI runs with (claudeSandboxArgv).
-			argv, err := claudeSandboxArgv(mark, path, args, flagSettings)
+			// The MCP catalog is moved into a private in-container file and
+			// the routing pin is computed inside the container, from the
+			// environment the CLI runs with (claudeSandboxSpawnArgv).
+			argv, err := claudeSandboxSpawnArgv(ctx, run, mark, path, args, flagSettings)
 			if err != nil {
 				return claudeFailedCmd(ctx, path, err)
 			}

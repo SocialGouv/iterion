@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/internal/shellquote"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
 
 // ClaudeCodeRoutingEnv is every environment variable the Claude Code CLI reads
@@ -195,11 +196,36 @@ func (f *claudeSettingsFiles) pinHost(cmd *exec.Cmd, flagSettings []byte) {
 		var path string
 		path, err = f.write(flagSettings, claudeRoutingPin(envListLookup(cmd.Env)))
 		if err == nil {
-			cmd.Args = slices.Concat(cmd.Args[:1], []string{"--settings", path}, rest)
-			return
+			// The OTHER credential-bearing flag, moved the same way: the MCP
+			// catalog holds the per-node host-MCP token in an http server's
+			// headers (claude_code_mcp_config.go).
+			rest, err = f.pinMCPConfig(rest)
+			if err == nil {
+				cmd.Args = slices.Concat(cmd.Args[:1], []string{"--settings", path}, rest)
+				return
+			}
 		}
 	}
 	cmd.Err = err
+}
+
+// pinMCPConfig moves an inline MCP catalog off a host spawn's argv into a
+// private file, and returns the argv that reads it from there. An argv with no
+// inline catalog is returned unchanged — a node with no MCP server passes no
+// such flag.
+//
+// A write failure is returned rather than swallowed: pinHost sets cmd.Err from
+// it, so the spawn fails instead of running with the document on argv.
+func (f *claudeSettingsFiles) pinMCPConfig(args []string) ([]string, error) {
+	doc, rest, found := takeInlineMCPConfig(args)
+	if !found {
+		return args, nil
+	}
+	path, err := f.writePrivate(claudeMCPConfigFileName, []byte(doc))
+	if err != nil {
+		return nil, err
+	}
+	return slices.Concat([]string{"--mcp-config", path}, rest), nil
 }
 
 func (f *claudeSettingsFiles) write(flagSettings []byte, pin map[string]string) (string, error) {
@@ -207,6 +233,18 @@ func (f *claudeSettingsFiles) write(flagSettings []byte, pin map[string]string) 
 	if err != nil {
 		return "", err
 	}
+	return f.writePrivate(claudeSettingsFileName, content)
+}
+
+// writePrivate writes one of a host spawn's private files: 0600 in a 0700
+// directory of its own, readable by this user only, as the process environment
+// is. The CLI keeps the content it read at startup, and refuses to start when
+// the file is missing.
+//
+// A directory PER FILE, so remove can take each file and then its directory
+// without the order of two files in one directory deciding whether the
+// directory goes.
+func (f *claudeSettingsFiles) writePrivate(name string, content []byte) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.released {
@@ -214,12 +252,12 @@ func (f *claudeSettingsFiles) write(flagSettings []byte, pin map[string]string) 
 	}
 	dir, err := os.MkdirTemp("", "iterion-claude-settings-")
 	if err != nil {
-		return "", fmt.Errorf("claude-code: create the --settings directory: %w", err)
+		return "", fmt.Errorf("claude-code: create the private directory for %s: %w", name, err)
 	}
-	path := filepath.Join(dir, claudeSettingsFileName)
+	path := filepath.Join(dir, name)
 	f.paths = append(f.paths, path)
 	if err := os.WriteFile(path, content, 0o600); err != nil {
-		return "", fmt.Errorf("claude-code: write the --settings file: %w", err)
+		return "", fmt.Errorf("claude-code: write the private file %s: %w", path, err)
 	}
 	return path, nil
 }
@@ -262,6 +300,22 @@ func sandboxSettingsFile(mark string) string {
 // environment the CLI runs with: the container's own (the egress proxy, its
 // CA, the image) plus the variables the exec forwards. None of them is known
 // on the host, and none reaches an argv.
+// claudeSandboxSpawnArgv is the whole of a sandboxed spawn's argv rewriting,
+// in the order the two moves have to happen: the MCP catalog goes into a
+// private in-container file FIRST (that write is an exec of its own), then
+// the routing wrapper takes the remaining argv.
+//
+// One function both spawn paths of this backend call, so a private file added
+// for a third credential-bearing flag is added once — and cleaned up by
+// sandboxSpawnFiles, which the same two paths read.
+func claudeSandboxSpawnArgv(ctx context.Context, run sandbox.Run, mark, path string, args []string, flagSettings []byte) ([]string, error) {
+	args, err := pinSandboxMCPConfig(ctx, run, mark, args)
+	if err != nil {
+		return nil, err
+	}
+	return claudeSandboxArgv(mark, path, args, flagSettings)
+}
+
 func claudeSandboxArgv(mark, path string, args []string, flagSettings []byte) ([]string, error) {
 	rest, err := claudeFlagSettingsArgs(args, flagSettings)
 	if err != nil {

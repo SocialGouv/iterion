@@ -560,6 +560,24 @@ func (s *nodeBuildSession) boardTokenFor(mint func() string) string {
 	return s.boardToken
 }
 
+// revokeBoardToken ends the grant this node minted, once, at the node's end.
+//
+// Here rather than at each of the three applyXEndpoint sites because ONE token
+// serves all of them (boardTokenFor mints once per node and every later chain
+// element reuses it): a revoke per wiring site would end a grant the next
+// element still needs. Idempotent, so a caller that defers it and also calls
+// it explicitly does not revoke a token a LATER node has since been handed —
+// tokens are random, so that cannot happen, but a second call must still be
+// free.
+func (s *nodeBuildSession) revokeBoardToken(revoke func(token string)) {
+	if s == nil || revoke == nil || !s.boardMinted || s.boardToken == "" {
+		return
+	}
+	token := s.boardToken
+	s.boardToken, s.boardMinted = "", false
+	revoke(token)
+}
+
 // executeBackend is the unified execution path for agent and judge nodes.
 // It resolves the backend, builds a Task, and dispatches to the backend.
 //
@@ -635,6 +653,11 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	// The node's effects (its llm_prompt event, its board run token) fire
 	// once here however many chain elements the dispatch below walks.
 	sess := &nodeBuildSession{}
+	// …and the token's GRANT ends here too, on every exit: the node's own
+	// return, its `timeout:` cut, a panic unwinding. Deferred before the task
+	// is built so a failure DURING the build cannot leave a minted token
+	// behind — boardTokenFor runs inside buildTask.
+	defer sess.revokeBoardToken(e.boardRevoke)
 	task, err := e.buildTask(ctx, node, f, input, backendName, sess)
 	if err != nil {
 		return nil, err

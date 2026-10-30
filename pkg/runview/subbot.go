@@ -193,6 +193,7 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			// parent.
 			BotID:           ResolveBotID("", bundleName, childPath),
 			BoardRegister:   s.boardRegister,
+			BoardRevoke:     s.boardRevoke,
 			LocalSecrets:    s.localSecrets,
 			LocalSealer:     s.localSealer,
 			Connectors:      childConnectors,

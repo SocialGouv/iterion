@@ -240,6 +240,11 @@ type ExecutorSpec struct {
 	// registry and returns the token. nil (CLI) leaves sandboxed
 	// board-emit disabled.
 	BoardRegister func(caps []string, sourceIssueID, runID string) string
+	// BoardRevoke ends a token BoardRegister minted, as the node that held
+	// it returns. Wired beside the minter — the registry's TTL is the
+	// backstop for a process that died, not a grant's lifetime, and this
+	// token authenticates the connector facade (#2758).
+	BoardRevoke func(token string)
 	// Compress is the run-level command-output-compression override ("",
 	// "on", "ultra", "off"), forwarded to the executor as the highest-priority
 	// input to rewrite.Resolve (above node/workflow DSL and ITERION_COMPRESS).
@@ -655,6 +660,9 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		opts = append(opts, model.WithBoardRegister(func(caps []string, sourceIssueID string) string {
 			return spec.BoardRegister(caps, sourceIssueID, spec.RunID)
 		}))
+	}
+	if spec.BoardRevoke != nil {
+		opts = append(opts, model.WithBoardRevoke(spec.BoardRevoke))
 	}
 	if spec.Inbox != nil {
 		opts = append(opts, model.WithExecutorInbox(spec.Inbox))

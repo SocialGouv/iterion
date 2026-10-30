@@ -741,6 +741,9 @@ type Service struct {
 	// compatibility.
 	boardMCPHandler http.Handler
 	boardRegister   func(caps []string, sourceIssueID, runID string) string
+	// boardRevoke ends a grant boardRegister minted, as the node that held
+	// it returns.
+	boardRevoke func(token string)
 	// workDir is the directory the engine should treat as ${PROJECT_DIR}
 	// and as the repo-lookup seed for worktree: auto. Empty means
 	// "default to os.Getwd() at Run() time" — the right thing for the
@@ -1139,11 +1142,19 @@ func WithStore(s store.RunStore) ServiceOption {
 // WithBoardMCP wires the dedicated host MCP HTTP transport for sandboxed
 // board/runs-capability nodes (C082). handler must serve ONLY the token-gated
 // MCP routes — never the full server mux. register mints a per-node token
-// against the server's historical BoardMCPTokenRegistry name.
-func WithBoardMCP(handler http.Handler, register func(caps []string, sourceIssueID, runID string) string) ServiceOption {
+// against the server's historical BoardMCPTokenRegistry name, and revoke ends
+// it when the node that held it returns.
+//
+// The two travel TOGETHER, in one option, because a deployment that wired the
+// minter and not the reaper is the state this had: the registry's contract is
+// "Register at the start and Revoke at the end", and a token nobody revokes
+// stays live for the whole TTL — which since #2758 is a day of being able to
+// spend the tenant's credentials through the facade.
+func WithBoardMCP(handler http.Handler, register func(caps []string, sourceIssueID, runID string) string, revoke func(token string)) ServiceOption {
 	return func(svc *Service) {
 		svc.boardMCPHandler = handler
 		svc.boardRegister = register
+		svc.boardRevoke = revoke
 	}
 }
 
