@@ -580,10 +580,14 @@ dd807000f21a5fb4e7f895ed17beeb073ca758254c542ac12b19ce77add90f50 0b7984f9ab240fe
 b03b8c791876b8a2845901a641bf07c87549040a55e1d1478d816ac69794ce1c d7e7f5e48c9406a170b95182ee800b3f140d4a2b0f808de8953889cb74afa53f ../../docs/auto-maintenance.md
 d651f7fd26a74b22469ed6f5f1bae03b439a200a0513d9c91188289d3e5a5c8a c3d4ee0a85ffe98d07d406b26945fc7912da681f1d1a7252e1ac069f22fb43ca ../../docs/backend-capability-registry.md
 <<<<<<< HEAD
+<<<<<<< HEAD
 3d21e104f7cd6442d7360d0b5f3e4d2a747a96b250e5547e2e57b160c9946d09 3a6f849c7fd1d372558c672e0709d3ea786cee5d7c01bb933a0ae57ded3968d1 ../../docs/backends.md
 =======
 e3dfffdcb1c4f6211751ccef866f477d11561c031b9bfa90fecbcdb0007ae2e2 45b88cbc4a6e2704efe91125e538e0f16b366d239bfa4e2d9c40e528c8682e1d ../../docs/backends.md
 >>>>>>> 851c4b3d4 (security(modelspecs): the live table's own knobs answer for the operator, not for a repository)
+=======
+76a709f0fcce26688f83b877f3c90d07c0c2af148d48d23af82d05c270c796ed f76db4d865fee185ca97ddf5c33aa543fb6a1bfdfb7f5cae1128e224c0032580 ../../docs/backends.md
+>>>>>>> e0eb05671 (security(dotenv): the loader plants no route a project .env names, unless the operator opted in)
 2a47d307fd9e1178d26c9f8ec4b75549b451755f535527ad618c77b1f63e4d1e 88d1f0253566b0446f98ee9bd764a68e12727330196744e5b1fa36ade1cab2b3 ../../docs/board-epics.md
 854e299a2bedd4354d1368bea3fe6f6a32c638dee4dd4a46a52c646a4d358215 d86153b5c8541dcfab3e52b59af6039d376a521a92579fc08e33064e9ecaf755 ../../docs/bot-bundle-snapshots.md
 6dddb9d0fb5d6032bfe862e5f489b3c3c2802fd7c4fde608a22389c05795b323 109424b310d460077aa886d617ff7197a8187e8694780a72aed61b8082ef86e6 ../../docs/bot-invocations.md
@@ -709,7 +713,11 @@ dfe4fa5c12ae25f08e06eb905f7b719cc652a10b06004762186dfbf8ce68c6f5 bdf704522fe1172
 6cc453f4c9b324fafbe21387f46b965391f3952b061d6b51930f6f800c1c9bf7 4fb26ca7ec5a09082b64092d9c4aa4a974043e8b3c1f9485e4587ee272ecf3c8 ../../docs/e2e-coverage-matrix.md
 9abae56e2e1f1049f1d28d8c049d6de00ab9ce9109b802a1bf38e08492dbc05c 876f0bd3cab6cef2dcdac11c8f9b0d1f157677140b57ea3e74e4f42156ac21d4 ../../docs/e2e-stabilisation-plan.md
 a0eaf17a251d56b85326c9ee0f96ac07e81cb299be65e0226ec3f87ef8bca43a c6c4bb92aaba762f36002edc4a6b4a6e31e4eb92f118639bec859aa179d43730 ../../docs/e2e_coverage.md
+<<<<<<< HEAD
 0a1ba57f494830a107c958cb9e7534757e79a243e744c442f17231b3b0334eac 8a3b22333e5172128b729969342e825efd4a18ed074f04a74241d3503729001e ../../docs/environment-variables.md
+=======
+90cd8d391c4a1b29508935dc9acb244bb56e5a63f318d2141e55b3d92adfe847 f5de3ef8c644dd5eaf061627ab58cec28b336185e3800545c0d1f49425d66e8e ../../docs/environment-variables.md
+>>>>>>> e0eb05671 (security(dotenv): the loader plants no route a project .env names, unless the operator opted in)
 4c5161dabddf871f897e78e622b5dcea3e22a49a469b699e7c3eef845b8b8765 4c7f3da0386523b102328418c28d886bb9dc9c555671884e8fcc9bcba407e819 ../../docs/examples.md
 577584cad70bf9fde5bfb6446b94b587d4bccec3848e551b94d156081d71583b 7d5a87b5333a5991043481b280dbdd684e898853c88e46846d21043b7717ef1c ../../docs/forge-conversations.md
 9627e544c62c76c8999ea05384055e6c730359ddb22dd8ed77a420773fe344cf a50d1073f031b6deb35ac5fc6e65c2035c1cc046116c4fed2fe1da8f3780504e ../../docs/forge-integrations.md

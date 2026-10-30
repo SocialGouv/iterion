@@ -430,13 +430,18 @@ var botVarsInfraExact = map[string]bool{
 	"ITERION_TOOL_INPUT":         true,
 	"ITERION_DOTENV_PLANTED":     true,
 	"ITERION_ENGINE_CHILD":       true,
-	"ITERION_SCHEDULE":           true,
-	"ITERION_SCHEDULE_BOT":       true,
 	// The escape hatch on the engine-child `.env` skip (#2844): a stored
 	// value would hand the repository under review back the endpoint names
 	// the skip exists to deny it, and the engine child is where a
 	// repository's own file is closest to a credential.
 	"ITERION_DOTENV_FORCE": true,
+	// The dotenv loader's opt-in (internal/envtrust): it widens what a
+	// project `.env` may plant — the routing class — so it is the process's
+	// own posture, never a bot variable. A stored record must not widen what
+	// the repositories a bot reviews get to name.
+	"ITERION_DOTENV_ENDPOINTS": true,
+	"ITERION_SCHEDULE":         true,
+	"ITERION_SCHEDULE_BOT":     true,
 }
 
 // botVarsMax bounds the record so a runaway writer cannot grow the

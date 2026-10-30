@@ -18,11 +18,13 @@ import (
 // The class #2844's second half is about: the environment variables that
 // decide WHICH HOST a model call is dialled at, and the credentials
 // presented there. A project `.env` fills every name the operator left unset,
-// so naming the endpoint alone picks the host their key is spent on — and the
-// loader refuses exactly the names internal/envtrust answers for
-// (credentialsPresentedAt). This test is the completeness guard on that
-// table: a host-deciding name that is in neither the table nor the
-// exclusions below fails, so the next provider arrives decided or red.
+// so naming the endpoint alone picks the host their key is spent on. The
+// loader refuses the whole routing-SHAPE class by default (ARB-122,
+// envtrust.RoutingShapedName); internal/envtrust's per-name credential
+// table (credentialsPresentedAt) is the belt that answers, at the reads,
+// which credential sits at each refused name. This test is the completeness
+// guard on that table: a host-deciding name that is in neither the table nor
+// the exclusions below fails, so the next provider arrives decided or red.
 //
 // The set is DERIVED from three sources that define it, never from one
 // reviewer's list:

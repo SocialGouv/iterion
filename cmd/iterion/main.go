@@ -36,11 +36,11 @@ var rootCmd = &cobra.Command{
 		"CONFIGURE iterion — a name a `.env` filled speaks for that project, not for the\n" +
 		"deployment, so it decides nothing an operator answers for: where plugins are\n" +
 		"installed, which table prices a model and where that table is cached, when a node\n" +
-		"compacts, and which credential a gateway is presented. An endpoint it names\n" +
-		"(a <VENDOR>_BASE_URL, AZURE_OPENAI_ENDPOINT) is not applied at all while the key\n" +
-		"presented there is one iterion inherited — it would pick the host that key is spent\n" +
-		"on — and the refusal names the variable. Export those in the environment iterion\n" +
-		"runs with.",
+		"compacts, and which credential a gateway is presented. A route it names — a\n" +
+		"<VENDOR>_BASE_URL, an *_ENDPOINT, a *_HOST, a proxy — is not applied at all: a\n" +
+		"project `.env` does not choose where a connection goes, and the refusal names the\n" +
+		"variable and the way past it. Export those in the environment iterion runs with,\n" +
+		"or export ITERION_DOTENV_ENDPOINTS=allow to let the file plant its routes.",
 	SilenceUsage:  true,
 	SilenceErrors: true,
 }
@@ -77,10 +77,15 @@ func main() {
 		// table that prices a run and the cache file it is read from,
 		// the window a node compacts at, the gateway catalog and the
 		// credential it presents — resolve the INHERITED value and take
-		// a planted one as nothing said. One name is refused outright
-		// rather than marked: an endpoint whose credential the operator
-		// exported, since a key once presented is spent. The file sits
-		// in a repository, including the one a run is reviewing.
+		// a planted one as nothing said. One CLASS is refused outright
+		// rather than marked: the routing-shaped names (a *_BASE_URL,
+		// an *_ENDPOINT, a *_HOST, a proxy), which decide where a
+		// connection goes — a planted route would point every wire,
+		// the operator's credentials included, at a host the file
+		// chose. A `.env` that legitimately configures its own gateway
+		// needs the operator's ITERION_DOTENV_ENDPOINTS=allow. The
+		// file sits in a repository, including the one a run is
+		// reviewing.
 		if shouldLoadWorkspaceDotEnv() {
 			loadDotEnvFromCwd()
 		}
@@ -354,18 +359,27 @@ func applyDotEnv(path string) bool {
 			continue
 		}
 		if _, exists := os.LookupEnv(key); !exists {
-			// An endpoint this file names is NOT applied while the
-			// credential presented there is the operator's own: the
-			// repository would otherwise pick the host their key is spent
-			// on, and a key already presented cannot be taken back. Refused
-			// at the plant because the reads are not all iterion's — claw's
-			// vendored provider packages read these names themselves, and
-			// every child inherits a planted value — so the one name that
-			// closes them all is the one never set
-			// (internal/envtrust.InheritedCredentialsAt).
-			if redirected := envtrust.InheritedCredentialsAt(key); len(redirected) > 0 {
-				iterlog.NewFromEnv(os.Stderr).Warn("%s comes from a project `.env`, so it is not applied: %s is the operator's own and would be presented to the host that file names — export %s in the environment iterion runs with to choose the wire a credential is spent on",
-					key, strings.Join(redirected, " / "), key)
+			// A name that decides where a connection goes is NOT applied.
+			// The loader is the one site that knows it is planting, so it
+			// is the one that closes the whole routing class (ARB-122): a
+			// *_BASE_URL, an *_ENDPOINT, a *_HOST, a proxy. Every child
+			// inherits what lands here and the reads are not all iterion's
+			// — the vendored claw provider packages read these names
+			// themselves — so a route never planted is a route nothing can
+			// follow, where a guard at one read site closes exactly that
+			// site; the per-name credential tables (internal/envtrust) stay
+			// as the belt at the reads. The operator's channels are the
+			// environment itself, or ITERION_DOTENV_ENDPOINTS=allow for a
+			// `.env` that legitimately configures its own gateway. The
+			// guard sits before the planted mark: a refused name does not
+			// exist, it is not "planted but distrusted".
+			if envtrust.RoutingShapedName(key) && !envtrust.DotenvEndpointsAllowed() {
+				credHalf := ""
+				if redirected := envtrust.InheritedCredentialsAt(key); len(redirected) > 0 {
+					credHalf = ": " + strings.Join(redirected, " / ") + " is the operator's own and would be presented at the host it names"
+				}
+				iterlog.NewFromEnv(os.Stderr).Warn("%s comes from the project `.env` %s, so it is not applied: a project `.env` does not choose where a connection goes%s — export %s in the environment iterion runs with to answer it yourself, or export %s=allow to let this file plant its routes",
+					key, path, credHalf, key, envtrust.DotenvEndpointsOptIn)
 				continue
 			}
 			_ = os.Setenv(key, val)

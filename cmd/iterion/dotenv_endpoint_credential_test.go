@@ -85,7 +85,10 @@ func writeDotEnv(t *testing.T, lines ...string) string {
 // presented there is the operator's own — the whole class, through the real
 // producer: a repository ships a `.env` naming every endpoint on a model's
 // path, the reviewer's `iterion run` auto-loads it from its working
-// directory, and each line is refused by name.
+// directory, and each line is refused by name. Since ARB-122 the refusal is
+// the routing CLASS, unconditional: the loader plants no route, and this
+// case holds the credential half of the message — which names what the
+// refusal protects — against the names the table knows.
 //
 // Refused at the PLANT rather than at each read because the reads are not
 // all iterion's: claw's vendored provider packages read these names
@@ -129,9 +132,9 @@ func TestAProjectDotenvCannotChooseTheHostACredentialIsPresentedTo(t *testing.T)
 			t.Errorf("%s reads as planted: it was refused, not filled, so nothing downstream should distrust a value that is not there", endpoint)
 		}
 		// A refusal nobody can read is the silence the round before was
-		// filed for: the variable, the credential at stake and the channel
-		// that answers for the operator.
-		for _, want := range []string{endpoint, "project `.env`", "export " + endpoint} {
+		// filed for: the variable, the file it came from, the credential
+		// at stake and the channel that answers for the operator.
+		for _, want := range []string{endpoint, "project `.env`", "export " + endpoint, envtrust.DotenvEndpointsOptIn + "=allow", filepath.Join(repo, ".env")} {
 			if !strings.Contains(said, want) {
 				t.Errorf("the diagnostic does not say %q — it said: %s", want, said)
 			}
@@ -151,13 +154,16 @@ func TestAProjectDotenvCannotChooseTheHostACredentialIsPresentedTo(t *testing.T)
 }
 
 // The other half of the same rule, and the one that keeps `.env` loading
-// worth having: with no credential inherited for it, an endpoint a project
-// `.env` names IS applied — a laptop configuration, the key and the host in
-// one file — and a key next to a project still reaches the published
-// endpoint it was always spent at. The question is asked on the endpoint
-// alone for exactly that reason.
+// worth having: a `.env` naming an endpoint IS applied once the operator's
+// own environment opted in (ITERION_DOTENV_ENDPOINTS=allow — ARB-122's price
+// for a portable laptop config), and a key next to a project still reaches
+// the published endpoint it was always spent at. Without the opt-in the
+// loader refuses the route; with it the value plants and reads as planted,
+// so the belt (the provenance reads, the gateway's own refusal) still keeps
+// it from speaking for the operator.
 func TestAProjectDotenvStillConfiguresItsOwnGateway(t *testing.T) {
 	isolateEndpointEnv(t)
+	t.Setenv(envtrust.DotenvEndpointsOptIn, "allow")
 
 	const (
 		repoHost = "https://gw.my-laptop.example"

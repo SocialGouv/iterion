@@ -1370,17 +1370,27 @@ never merged across sources, and an answer carries its provenance:
 > the gateway by name instead of configuring it, since the endpoint and the
 > key presented there are one credential presentation.
 >
-> One class is refused outright rather than read as nothing said: an
-> endpoint. A `.env` line naming a `<VENDOR>_BASE_URL` or
-> `AZURE_OPENAI_ENDPOINT` is **not applied at all** while the key presented
-> there is one iterion inherited — the loader says which variable and which
-> credential, and the remedy is to export the endpoint too. The question is
-> asked at the plant, not at each read, because the reads are not all
-> iterion's: the vendored claw provider packages read these names
-> themselves, and every child process inherits a planted value. With no
-> inherited credential for it, the line still applies: a `.env` naming both
-> halves is a project configuring its own gateway, and a key next to a
-> project still reaches the published endpoint it was always spent at.
+> One class is refused outright rather than read as nothing said: the
+> ROUTES. The loader (`cmd/iterion` `applyDotEnv`, the one site that knows
+> it is planting) refuses by default any name whose SHAPE decides where a
+> connection is dialled — a `*_BASE_URL`, an `*_API_BASE` (OpenAI's legacy
+> name), an `*_ENDPOINT`, a `*_HOST` (the Azure `*_AUTHORITY_HOST` pair
+> among them), a `*_PROXY` (`HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`,
+> either case) — whether or not a credential is presented there: a planted
+> route would point every wire, the operator's credentials included, at a
+> host the file chose, and the reads are not all iterion's — the vendored
+> provider packages and SDKs read these names themselves, and every child
+> inherits what lands here. The refusal names the file, the variable and the
+> way past it. A `.env` that legitimately configures its own gateway — the
+> portable laptop case, the key and the host in one file — asks the
+> operator's opt-in: export `ITERION_DOTENV_ENDPOINTS=allow` in the
+> environment iterion runs with (or export the endpoint itself, which the
+> file cannot overwrite); with the opt-in the routes plant and read as
+> planted, so nothing downstream takes them for the operator's answer. The
+> per-name credential table (`internal/envtrust`) stays as the belt at the
+> reads: a planted half of the `OPENAI_COMPATIBLE_*` pair still refuses the
+> gateway by name, and the routing names the host's own `.env` planted still
+> cross into a sandbox as explicit empties.
 
 The snapshot is regenerated with `task models:snapshot` (the committed diff
 is the review; it carries the source digest and an as-of date, and an answer
