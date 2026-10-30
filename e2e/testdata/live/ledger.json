@@ -208,10 +208,10 @@
     },
     {
       "target": "test:live:feat:sandbox-image-env",
-      "last_run": "2026-10-30T09:23:43.715520707Z",
+      "last_run": "2026-10-30T12:07:46.97505307Z",
       "verdict": "pass",
-      "duration_sec": 22,
-      "ref": "9b5b47712d98"
+      "duration_sec": 15,
+      "ref": "9baede152c06"
     },
     {
       "target": "test:live:feat:sandbox-net",
