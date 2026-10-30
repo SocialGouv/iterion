@@ -20,10 +20,12 @@ type dispositionCase struct {
 // [TestTheImageDispositionOfEveryExactNameIsDeclared] instead: there, the
 // name IS the guard.
 //
-// Every neutralised row is a name whose consumer reads a VALUE (a
-// truthiness, a URL, a key, an identity), so an empty one is inert; every
-// reported row is a name where an empty value would break an image doing
-// its job, or is read as presence.
+// Every neutralised row is a name of the credential/routing sub-class —
+// its consumer reads a VALUE (a truthiness, a URL, a key, an identity),
+// so an empty one is inert. A reported row is everything else: a name
+// where an empty value would break an image doing its job or is read as
+// presence, AND a name that leads to code the image itself ships, which
+// is told rather than emptied (ARB-121).
 var dispositionCases = []dispositionCase{
 	// The suffix family is the credential/routing sub-class by definition.
 	{"MYTOOL_BASE_URL", neutralizeInImage},
@@ -54,35 +56,37 @@ var dispositionCases = []dispositionCase{
 	{"GH_CONFIG_DIR", neutralizeInImage},
 	{"GLAB_CONFIG_DIR", neutralizeInImage},
 
-	// The three names that RESTORE what the rest of the sub-class is
-	// emptied for: bash reads BASH_ENV for every non-interactive shell —
+	// The three channels that RESTORE a neutralised name from inside the
+	// container: bash reads BASH_ENV for every non-interactive shell —
 	// which is what a tool node and an agent's Bash tool are — and node
 	// takes a module from NODE_OPTIONS=--require and resolves a bare one
-	// through NODE_PATH, inside the agent CLI's own process. A channel
-	// that re-exports a neutralised name belongs to the sub-class, and
-	// empty is their default (measured: bash and node run normally with
-	// all three empty).
-	{"BASH_ENV", neutralizeInImage},
-	{"NODE_OPTIONS", neutralizeInImage},
-	{"NODE_PATH", neutralizeInImage},
+	// through NODE_PATH, inside the agent CLI's own process. Measured to
+	// FIRE, and REPORTED: the image that bakes them ships the script and
+	// the module they would run, so the empty value buys no promise
+	// (ARB-121, amending ARB-119).
+	{"BASH_ENV", reportedOnly},
+	{"NODE_OPTIONS", reportedOnly},
+	{"NODE_PATH", reportedOnly},
 
 	// Case is not a membership rule: the exact-name half answers the same
 	// for any spelling, which is why the table carries no lower-case twin
 	// of its own rows.
-	{"bash_env", neutralizeInImage},
+	{"bash_env", reportedOnly},
 	{"gcloud_project", neutralizeInImage},
-	{"Node_Options", neutralizeInImage},
+	{"Node_Options", reportedOnly},
 	{"path", reportedOnly},
 
 	// Every member of this namespace is a shell function definition bash
-	// imports into every non-interactive shell, so the whole namespace
-	// neutralises.
-	{"BASH_FUNC_git%%", neutralizeInImage},
+	// imports into every non-interactive shell: a code channel of the
+	// image, told and kept like the rest.
+	{"BASH_FUNC_git%%", reportedOnly},
 	// git's config with no file and no HOME: `git -c` spelled in the
-	// environment. The two namespaces refine `GIT_`, which keeps its own
-	// answer for the rest of the family.
-	{"GIT_CONFIG_KEY_0", neutralizeInImage},
-	{"GIT_CONFIG_VALUE_0", neutralizeInImage},
+	// environment, and one answer for the whole `GIT_` family — no
+	// narrower namespace refines it, because a refinement that answered
+	// the same thing would be dead code.
+	{"GIT_CONFIG_KEY_0", reportedOnly},
+	{"GIT_CONFIG_VALUE_0", reportedOnly},
+	{"GIT_CONFIG_PARAMETERS", reportedOnly},
 
 	// The loader, toolchain and home namespaces: reported, because an empty
 	// value breaks the image or nothing a process iterion starts reads the
@@ -272,26 +276,22 @@ func TestTheImageDispositionOfEveryExactNameIsDeclared(t *testing.T) {
 		"PATH": reportedOnly, "HOME": reportedOnly,
 		"GOROOT": reportedOnly, "GOFLAGS": reportedOnly,
 
-		// Neutralised: the three channels that RESTORE a name the screen
-		// emptied — bash's non-interactive startup file, and the two node
-		// variables read inside the agent CLI's own process. Empty is
-		// their default.
-		"BASH_ENV": neutralizeInImage, "NODE_OPTIONS": neutralizeInImage,
-		"NODE_PATH": neutralizeInImage,
-
-		// Neutralised: the rest of the sub-class that leads to CODE, or
-		// to a configuration a program EXECUTES, at the startup of a
-		// process iterion starts there — each measured on a disposable
-		// image through that program's own startup path, with the empty
-		// value measured inert in the same image (#2317 round 3).
-		"LD_PRELOAD": neutralizeInImage, "LD_AUDIT": neutralizeInImage,
-		"GCONV_PATH": neutralizeInImage, "OPENSSL_CONF": neutralizeInImage,
-		"SHELLOPTS": neutralizeInImage, "PS4": neutralizeInImage,
-		"NPM_CONFIG_NODE_OPTIONS": neutralizeInImage,
-		"NPM_CONFIG_SCRIPT_SHELL": neutralizeInImage,
-		"BUN_OPTIONS":             neutralizeInImage,
-		"TAR_OPTIONS":             neutralizeInImage,
-		"GIT_CONFIG_COUNT":        neutralizeInImage,
+		// Reported, and the measurement is that the channel FIRES: bash's
+		// non-interactive startup file, the two node variables read
+		// inside the agent CLI's own process, glibc's gconv modules,
+		// bash's xtrace pair and GNU tar's own options. Each ran the
+		// planter's code on a disposable image through that program's own
+		// startup path, and each is still only told: an image a
+		// repository chooses is the repository's code (ARB-121, amending
+		// ARB-119). The names whose FAMILY answers the same thing own no
+		// row here — LD_PRELOAD/LD_AUDIT under `LD_`, OPENSSL_CONF under
+		// `OPENSSL_`, BUN_OPTIONS under `BUN_`, the NPM_CONFIG_* pair
+		// under `NPM_CONFIG_`, GIT_CONFIG_COUNT under `GIT_` — because a
+		// refinement that answers its family's answer is dead code.
+		"BASH_ENV": reportedOnly, "NODE_OPTIONS": reportedOnly,
+		"NODE_PATH": reportedOnly, "GCONV_PATH": reportedOnly,
+		"SHELLOPTS": reportedOnly, "PS4": reportedOnly,
+		"TAR_OPTIONS": reportedOnly,
 
 		// Reported: shells and the startup files they DO read, toolchains,
 		// editors — where an empty value is read as presence, breaks the

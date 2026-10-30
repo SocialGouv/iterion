@@ -83,14 +83,17 @@ func TestTheContainerStartsWithTheSpecTheScreenReturned(t *testing.T) {
 	if got := names(t, payload, "planted"); !slices.Equal(got, wantPlanted) {
 		t.Errorf("planted = %v, want %v — what the IMAGE bakes is the fact that does not depend on a container", got, wantPlanted)
 	}
-	// No container was created, so not one disposition may travel: each
-	// of them is a claim about a container's own environment. A record
-	// that published `neutralized: [ANTHROPIC_BASE_URL …]` here would be
-	// describing the spec it HOPED for, which is precisely the kind of
-	// claim `docker inspect` contradicted twice.
+	// No container was HANDED BACK, so not one disposition may travel:
+	// each of them is a claim about a container's own environment. A
+	// record that published `neutralized: [ANTHROPIC_BASE_URL …]` here
+	// would be describing the spec it HOPED for, which is precisely the
+	// kind of claim `docker inspect` contradicted twice. The wording
+	// holds to what is known: Start can fail in a postCreate command —
+	// a container the driver then removes — so "no container was
+	// created" is a claim this record cannot make.
 	undeduced, _ := payload["undeduced"].(string)
-	if !strings.Contains(undeduced, "no container was created") {
-		t.Errorf("undeduced = %q, want the reason: this boot's Start failed, so nothing can be measured", undeduced)
+	if !strings.Contains(undeduced, "no container this driver could hand back") {
+		t.Errorf("undeduced = %q, want the reason stated to what is known: Start failed, so no container was handed back — whether one was created and removed is the error's own fact to carry", undeduced)
 	}
 	for _, key := range []string{"neutralized", "reported", "allowed", "operator_set", "driver_set", "unexplained"} {
 		if _, present := payload[key]; present {

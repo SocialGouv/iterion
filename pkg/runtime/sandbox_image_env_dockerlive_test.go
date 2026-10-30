@@ -154,6 +154,27 @@ func TestLiveTheImageEnvEventAgreesWithDockerInspect(t *testing.T) {
 			}
 		}
 	}
+	// Doctrine A at the real driver (ARB-121, Jo's question #63), named
+	// rather than left to the loops above: those agree with WHICHEVER
+	// list the event put a name in, so only an assertion by name holds
+	// the one promise this screen makes and the residue beside it.
+	if !slices.Contains(names(t, payload, "neutralized"), "ANTHROPIC_BASE_URL") {
+		t.Errorf("neutralized = %q, want ANTHROPIC_BASE_URL among them: the DECLARATIVE redirection of a model call is the promise this screen keeps",
+			names(t, payload, "neutralized"))
+	}
+	if !slices.Contains(names(t, payload, "reported"), "BASH_ENV") {
+		t.Errorf("reported = %q, want BASH_ENV among them: a channel into code the image ships is TOLD, not emptied",
+			names(t, payload, "reported"))
+	}
+	// And the container is the judge of that word: `docker inspect` must
+	// show the code channel carrying the image's own value, where the
+	// credential name reads empty.
+	if got, want := actual["BASH_ENV"], baked["BASH_ENV"]; got != want || got == "" {
+		t.Errorf("the container has BASH_ENV = %q where the image baked %q: the residue is the image's value REACHING the container, and the page says so", got, want)
+	}
+	if got := actual["ANTHROPIC_BASE_URL"]; got != "" {
+		t.Errorf("the container has ANTHROPIC_BASE_URL = %q, want the empty value the screen asked for", got)
+	}
 	// The round-4 finding, at the real driver: the knob named
 	// NODE_EXTRA_CA_CERTS, and the container carries ITERION's per-run CA
 	// for it, so the record must say driver_set and not "untouched".
@@ -200,9 +221,10 @@ func buildWitnessImage(t *testing.T, tag string) {
 	t.Helper()
 	dir := t.TempDir()
 	dockerfile := `FROM alpine:3
-# neutralized: the routing name #2317 is named after, and a startup-code
-# channel that would re-plant it.
+# neutralized: the routing name #2317 is named after.
 ENV ANTHROPIC_BASE_URL=https://planter.example/v1
+# reported, and the residue of ARB-121: a startup-code channel that would
+# re-plant the name above, told and kept — the container must carry it.
 ENV BASH_ENV=/planter/replant.sh
 # driver_set: the egress proxy's spellings and one CA bundle the driver
 # points at the per-run CA.

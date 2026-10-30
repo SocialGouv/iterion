@@ -744,12 +744,14 @@ const (
 	//     stated silence; nothing is ever inferred from it, and not even
 	//     `planted` travels. Absent when the screen ran
 	//   - undeduced: string — why no disposition could be measured
-	//     although the class WAS read: no container was created (the
-	//     boot was refused, or Start failed), the driver cannot read one
-	//     back, or the read failed. NOT ONE disposition travels with it
-	//     — an empty `neutralized` beside it would read as "nothing was
-	//     planted" where the fact is "nobody looked". Absent when the
-	//     container was read
+	//     although the class WAS read: no container this driver could
+	//     hand back (the boot was refused, or Start failed — which can
+	//     be a postCreate command failing in a container the driver
+	//     then removed), the driver cannot read one back, or the read
+	//     failed. NOT ONE disposition travels with it — an empty
+	//     `neutralized` beside it would read as "nothing was planted"
+	//     where the fact is "nobody looked". Absent when the container
+	//     was read
 	//   - refused: string — why a neutralisation the class DECIDED on
 	//     could not be installed, with refused_names ([]string, sorted)
 	//     naming it. Its own pair of keys, never `unscreened` and never

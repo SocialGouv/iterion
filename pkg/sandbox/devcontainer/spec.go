@@ -229,10 +229,11 @@ func DeniedEnvKey(name string) bool {
 // the FIRST entry that matches. The order is the rule, not an accident, and
 // it tilts toward neutralising — `ITERION_SOMETHING_TOKEN` is caught by the
 // reported-only `ITERION_` namespace and by the neutralised `_TOKEN`
-// suffix, and the suffix answers. The last clause is what lets a NARROWER
-// namespace refine a family: `GIT_CONFIG_KEY_` is listed before `GIT_` and
-// answers for its own members, so the family keeps its answer for the
-// rest.
+// suffix, and the suffix answers. The last clause is what would let a
+// NARROWER namespace refine a family; no namespace needs it today, and a
+// refinement that answered what its family already answers would be dead
+// code (the tests in image_env_disposition_test.go walk the class with one
+// guard left out, so such a row reddens).
 func ScreenImageEnvName(name string) (denied, neutralize bool) {
 	switch screenEnvName(name) {
 	case neutralizeInImage:
@@ -288,37 +289,47 @@ const (
 	notDenied imageEnvDisposition = iota
 
 	// reportedOnly tells the operator and leaves the image's value in
-	// place. It is the answer wherever an EMPTY value would break an image
-	// doing its job, would be read as presence rather than as a value, or
-	// where nothing a process iterion starts reads the name at all: the
-	// command search path, the loader's and the runtimes' library paths,
-	// the shells and the startup files they do read, the toolchains, the
-	// homes every configuration is resolved from, the TLS bundles an image
-	// may legally bake for its own tooling, and the names of binaries a CLI
-	// spawns.
-	// iterion's own published images set three of these on purpose (`PATH`,
-	// `GOFLAGS`, `ITERION_VERSION`/`_COMMIT`/`_BOTS_PATH`), which is the
-	// measurement that killed screening the class as a whole.
+	// place. It is the answer for everything but the credential/routing
+	// sub-class below, and it covers two very different reasons, which is
+	// why the operator is TOLD in both:
+	//
+	//   - an EMPTY value would break an image doing its job, or is read as
+	//     presence rather than as a value: the command search path, the
+	//     loader's and the runtimes' library paths, the shells and the
+	//     startup files they read, the toolchains, the homes every
+	//     configuration is resolved from, the TLS bundles an image may
+	//     legally bake for its own tooling, the names of binaries a CLI
+	//     spawns. iterion's own published images set three of these on
+	//     purpose (`PATH`, `GOFLAGS`,
+	//     `ITERION_VERSION`/`_COMMIT`/`_BOTS_PATH`), which is the
+	//     measurement that killed screening the class as a whole;
+	//   - the name leads to CODE at the startup of a process iterion
+	//     starts there — the loader's preload, bash's startup file, node's
+	//     and npm's options, git's config-from-the-environment, tar's
+	//     options. Those channels FIRE, measured one by one on a
+	//     disposable image, and they are still only reported: an image a
+	//     repository chooses IS the repository's code, so emptying one
+	//     name of a channel the image's own files and `postCreateCommand`
+	//     re-open buys no promise (ARB-121, amending ARB-119). The
+	//     operator reads them under `planted` and `reported`, and
+	//     pkg/runtime's `sandbox_image_env_startup_code_class_test.go`
+	//     holds the measurement row by row.
 	reportedOnly
 
 	// neutralizeInImage overrides the name with an EMPTY value in the
-	// container, and reports it. It is the answer for two sub-classes. The
-	// first chooses WHERE a model call goes and WHAT credential it carries
-	// — the endpoint, region, project and identity names, the credential
-	// suffixes, and the provider/agent namespaces. The second leads to
-	// CODE, or to a configuration a program EXECUTES, at the startup of a
-	// process iterion starts there: the loader, the shells' own startup
-	// channels, node's and npm's and bun's options, glibc's and OpenSSL's
-	// modules, git's config-from-the-environment, tar's options. A member
-	// of the second re-plants everything the first empties, which is why
-	// they share an answer (ARB-119).
+	// container, and reports it. ONE sub-class earns it: the names that
+	// choose WHERE a model call goes and WHAT credential it carries — the
+	// endpoint, region, project and identity names, the credential
+	// suffixes, and the provider/agent namespaces. That is the DECLARATIVE
+	// redirection of the operator's own credentials, and it is what this
+	// screen closes (ARB-121).
 	//
-	// Three measurements decide a row, on a disposable image through the
-	// program's own startup path: the planted value RUNS, the empty value
-	// is inert, and no image iterion publishes bakes the name. Those
-	// consumers all read a value (a truthiness, a URL, a key, an option
-	// string), so an empty one is inert; none is set by an image iterion
-	// publishes, so no working image loses anything. The operator's own channels still win: the workflow's
+	// Three measurements decide a row: the planted value RUNS (the CLI
+	// reads it before any token), the empty value is inert, and no image
+	// iterion publishes bakes the name. Those consumers all read a value
+	// (a truthiness, a URL, a key, an identity), so an empty one is inert;
+	// none is set by an image iterion publishes, so no working image loses
+	// anything. The operator's own channels still win: the workflow's
 	// `sandbox.env:`, the launch environment and the driver's own flags are
 	// applied on top, and the host-side allow knob lets a named variable
 	// through (see pkg/runtime's image env screen).
@@ -351,10 +362,11 @@ var deniedEnvSuffixes = []envGuard{
 //
 // The agent and provider namespaces neutralise: they name a route and a
 // credential, nothing iterion publishes bakes one, and an empty value is
-// inert to every consumer. The loader, toolchain and home namespaces are
-// reported only — `ITERION_` because iterion's own images set
-// `ITERION_VERSION`/`_COMMIT`/`_BOTS_PATH`, the rest because an empty
-// loader path, gitconfig or XDG dir breaks an image doing its job.
+// inert to every consumer. Every other namespace is reported only —
+// `ITERION_` because iterion's own images set
+// `ITERION_VERSION`/`_COMMIT`/`_BOTS_PATH`, the loader, git, shell-function,
+// toolchain and home families because emptying a name of them buys no
+// promise against an image that is the repository's own code (ARB-121).
 var deniedEnvNamespaces = []envGuard{
 	// The in-container runner: every knob and switch it is forwarded; the
 	// HOOK_* payload its settings hooks — the permission gate among them —
@@ -414,38 +426,32 @@ var deniedEnvNamespaces = []envGuard{
 	// load into iterion's own step. NIX_SSL_CERT_FILE (nix does not honour
 	// SSL_CERT_FILE) and the store's NIX_PATH/NIX_REMOTE ride along.
 	{"NIX_", reportedOnly},
-	// git's configuration by the road that needs NO file and no HOME:
-	// GIT_CONFIG_COUNT (an exact row below) with GIT_CONFIG_KEY_<n> and
-	// GIT_CONFIG_VALUE_<n> is `git -c` spelled in the environment, so a
-	// planted `core.sshCommand` or `credential.helper` is a program git
-	// RUNS — measured on a built image: git fetch executed the planter's
-	// program with the operator's remote on its argv, and `--env
-	// GIT_CONFIG_COUNT=` leaves `git config --get core.sshCommand`
-	// answering nothing. Listed BEFORE `GIT_`, because the first matching
-	// namespace answers.
-	{"GIT_CONFIG_KEY_", neutralizeInImage},
-	{"GIT_CONFIG_VALUE_", neutralizeInImage},
-	// git and its forge siblings: its config (GIT_CONFIG_*), transport (GIT_SSH_COMMAND,
-	// GIT_PROXY_COMMAND, GIT_EXEC_PATH, GIT_ALLOW_PROTOCOL), credential
-	// prompt (GIT_ASKPASS) and TLS trust, the repository and object store
-	// it acts on, its trace files, its identity.
+	// git and its forge siblings: its config (GIT_CONFIG_*, which with
+	// GIT_CONFIG_COUNT/KEY_<n>/VALUE_<n> and GIT_CONFIG_PARAMETERS is
+	// `git -c` spelled in the environment — a planted `core.sshCommand`
+	// or `credential.helper` is a program git RUNS, measured on a built
+	// image), transport (GIT_SSH_COMMAND, GIT_PROXY_COMMAND,
+	// GIT_EXEC_PATH, GIT_ALLOW_PROTOCOL), credential prompt (GIT_ASKPASS)
+	// and TLS trust, the repository and object store it acts on, its trace
+	// files, its identity. One answer for the family: every member is told
+	// and kept, because the image that bakes it ships the program it would
+	// run (ARB-121).
 	{"GIT_", reportedOnly},
 	// Every member of this one is a shell FUNCTION definition, which bash
 	// imports into every NON-interactive shell — the shape of a tool node
 	// and of an agent's Bash tool — so a planted `BASH_FUNC_git%%` runs in
-	// place of git there. Nothing legitimate bakes one and an empty
-	// definition defines nothing: measured on a built image, the planted
-	// function answered `git --version` and `--env BASH_FUNC_git%%=`
-	// restored git's own.
-	{"BASH_FUNC_", neutralizeInImage},
+	// place of git there (measured on a built image: the planted function
+	// answered `git --version`). Reported, like every other code channel
+	// of an image.
+	{"BASH_FUNC_", reportedOnly},
 	// The FAMILIES of the loader, of glibc's and OpenSSL's module paths,
-	// of the bun runtime and of npm's config stay reported: LD_LIBRARY_PATH
-	// is how a CUDA-style image finds its own runtime, OPENSSL_MODULES and
+	// of the bun runtime and of npm's config: LD_LIBRARY_PATH is how a
+	// CUDA-style image finds its own runtime, OPENSSL_MODULES and
 	// BUN_INSTALL name directories an image legally bakes, NPM_CONFIG_PREFIX
-	// the global root it installs into. The members that reach CODE —
-	// LD_PRELOAD, LD_AUDIT, OPENSSL_CONF, BUN_OPTIONS,
-	// NPM_CONFIG_NODE_OPTIONS, NPM_CONFIG_SCRIPT_SHELL — are exact rows of
-	// [deniedEnvNames], which is consulted first.
+	// the global root it installs into — and the members that reach CODE
+	// (LD_PRELOAD, LD_AUDIT, OPENSSL_CONF, BUN_OPTIONS,
+	// NPM_CONFIG_NODE_OPTIONS, NPM_CONFIG_SCRIPT_SHELL) read the same
+	// answer, so the family needs no exact row to refine it.
 	{"LD_", reportedOnly},
 	{"OPENSSL_", reportedOnly},
 	{"BUN_", reportedOnly},
@@ -466,72 +472,53 @@ var deniedEnvNamespaces = []envGuard{
 // keyed by the UPPER-cased name: the lookup upper-cases what it is asked,
 // so every entry answers for every spelling and no row needs a twin.
 //
-// The endpoint, region, project and managed-identity names neutralise, and
-// so do the three channels that re-export a neutralised name. The rest are
-// reported only, and three groups earn that answer rather than
-// inherit it: `PATH`, `HOME`, `GOROOT` and the shells, where an empty value
-// breaks the container outright; `KUBECONFIG`, `DOCKER_HOST` and
-// `DOCKER_CONFIG`, where emptying would send the client to its DEFAULT —
-// the operator's own `~/.kube/config` and docker socket under `host_state`,
-// which is worse than the planted path; and the TLS bundles and
-// binary-path names, which an image may legally bake for its own tooling
-// and whose consumers read presence as much as value.
+// The endpoint, region, project and managed-identity names neutralise.
+// Every other row is reported only, and four groups earn that answer
+// rather than inherit it: `PATH`, `HOME`, `GOROOT` and the shells, where
+// an empty value breaks the container outright; `KUBECONFIG`,
+// `DOCKER_HOST` and `DOCKER_CONFIG`, where emptying would send the client
+// to its DEFAULT — the operator's own `~/.kube/config` and docker socket
+// under `host_state`, which is worse than the planted path; the TLS
+// bundles and binary-path names, which an image may legally bake for its
+// own tooling and whose consumers read presence as much as value; and the
+// startup-code channels, which FIRE and are reported anyway because the
+// image that bakes them ships the code they would run (ARB-121).
 var deniedEnvNames = map[string]imageEnvDisposition{
-	// The three channels that RESTORE a neutralised name, which is why
-	// they neutralise rather than report: bash reads BASH_ENV for every
-	// NON-interactive shell — the shape of a tool node (`bash -c`) and of
-	// an agent's Bash tool — so a planted script re-exports every name
-	// this screen just emptied; `NODE_OPTIONS=--require=…` runs a planted
-	// module inside the agent CLI's own process, which is node; and
-	// NODE_PATH resolves a bare `require` from the planter's directory.
-	// Empty is their default — measured on built images: `bash -c` and
-	// `node -e` run normally with all three empty, where the planted
-	// values otherwise come back (#2317, ARB-119).
-	"BASH_ENV": neutralizeInImage, "NODE_OPTIONS": neutralizeInImage, "NODE_PATH": neutralizeInImage,
-	// The rest of that sub-class: a name that leads to CODE, or to a
-	// configuration a program EXECUTES, at the startup of a process
-	// iterion starts in the container — and whose empty value is inert,
-	// measured on a disposable image through the program's own startup
-	// path, all of them at once (#2317, round 3).
+	// The startup-code channels of the programs the image ships, each
+	// measured to FIRE on a disposable image through that program's own
+	// startup path — and reported, not emptied: an image a repository
+	// chooses is the repository's code, so the empty value would buy a
+	// promise its files and its `postCreateCommand` do not owe (ARB-121,
+	// amending ARB-119; pkg/runtime's
+	// `sandbox_image_env_startup_code_class_test.go` holds the rows).
 	//
-	//   - the loader runs the planter's shared object in EVERY process:
-	//     LD_PRELOAD's and LD_AUDIT's constructors ran in pid 1 and
-	//     re-exported the four credential names this screen had just
-	//     emptied, to bash, to node and to an npm-started MCP server
-	//     alike. LD_LIBRARY_PATH keeps the family's answer: a CUDA-style
-	//     image finds its own runtime through it;
+	//   - bash reads BASH_ENV for every NON-interactive shell — the shape
+	//     of a tool node (`bash -c`) and of an agent's Bash tool — so a
+	//     planted script runs there; `NODE_OPTIONS=--require=…` runs a
+	//     planted module inside the agent CLI's own process, which is
+	//     node; and NODE_PATH resolves a bare `require` from the planter's
+	//     directory;
 	//   - GCONV_PATH is glibc's: a planted gconv-modules is dlopened by
 	//     the charset conversion python does at interpreter startup —
 	//     through `python3 -I`, the argv of iterion's OWN python tool
 	//     node, which ignores every PYTHON* variable;
-	//   - OPENSSL_CONF is a configuration file that dlopens the provider
-	//     module it names: the planter's code ran in curl and in the
-	//     openssl CLI;
 	//   - SHELLOPTS=xtrace makes bash run the command substitutions of a
 	//     planted PS4 once per traced command, in every `bash -c`;
-	//   - npm turns NPM_CONFIG_NODE_OPTIONS into the NODE_OPTIONS of
-	//     every node child it spawns — `npm run` and `npm exec`, the
-	//     documented way an MCP server starts — which undoes NODE_OPTIONS
-	//     above, and NPM_CONFIG_SCRIPT_SHELL makes the planter's program
-	//     the shell those scripts run under;
-	//   - the bun runtime the claude CLI is built on reads BUN_OPTIONS:
-	//     `--preload` ran the planter's module inside the CLI's own
-	//     process (measured on `claude --version` in the default image);
 	//   - GNU tar prepends TAR_OPTIONS to its own arguments, and
 	//     --checkpoint-action=exec= is one: the planter's program ran in
 	//     a tar ITERION starts — the scratch bank and its restore, the
-	//     kubernetes workspace populate and export;
-	//   - GIT_CONFIG_COUNT is the head of the no-file config road above.
+	//     kubernetes workspace populate and export.
 	//
-	// The control for all of them, measured in the same image: with every
-	// one emptied, bash, sh, node, npm, npx, git, python3, the claude CLI,
-	// tar, openssl, curl and perl all run normally.
-	"LD_PRELOAD": neutralizeInImage, "LD_AUDIT": neutralizeInImage,
-	"GCONV_PATH": neutralizeInImage, "OPENSSL_CONF": neutralizeInImage,
-	"SHELLOPTS": neutralizeInImage, "PS4": neutralizeInImage,
-	"NPM_CONFIG_NODE_OPTIONS": neutralizeInImage, "NPM_CONFIG_SCRIPT_SHELL": neutralizeInImage,
-	"BUN_OPTIONS": neutralizeInImage, "TAR_OPTIONS": neutralizeInImage,
-	"GIT_CONFIG_COUNT": neutralizeInImage,
+	// The families carry the same answer for their own code members, so
+	// none of them needs an exact row to refine it: LD_PRELOAD and
+	// LD_AUDIT under `LD_`, OPENSSL_CONF under `OPENSSL_`, BUN_OPTIONS
+	// under `BUN_`, NPM_CONFIG_NODE_OPTIONS and NPM_CONFIG_SCRIPT_SHELL
+	// under `NPM_CONFIG_`, GIT_CONFIG_COUNT/KEY_<n>/VALUE_<n> and
+	// GIT_CONFIG_PARAMETERS under `GIT_`.
+	"BASH_ENV": reportedOnly, "NODE_OPTIONS": reportedOnly, "NODE_PATH": reportedOnly,
+	"GCONV_PATH": reportedOnly,
+	"SHELLOPTS":  reportedOnly, "PS4": reportedOnly,
+	"TAR_OPTIONS": reportedOnly,
 	// The shell the claude CLI picks, bash's other option set, sh's and
 	// zsh's startup files, the command search path, `go build -toolexec`,
 	// ssh's askpass helper. An image that bakes one of these is doing its

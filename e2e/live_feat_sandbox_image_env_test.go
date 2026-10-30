@@ -32,11 +32,13 @@ const envImageEnvBase = "ITERION_E2E_IMAGE_ENV_BASE"
 //
 // The four span the class's shapes: an agent switch, a routing base URL,
 // a cloud credential caught on its namespace, and a provider key caught
-// on its suffix. Measured at HEAD, iterion's own exec env supplies none
-// of them to a tool node, so both layers read clean — but the verdict
-// still names the ORIGIN rather than emptiness, because that layer MAY
-// legitimately carry the operator's value one day and an emptiness
-// assertion would then blame the image for it.
+// on its suffix. The two layers read differently, which is the doctrine
+// measured: the container's own env carries them EMPTY (the screen's
+// promise), and the exec layer reads the planted values back through the
+// image's kept BASH_ENV script (the documented residue) — the verdict
+// names the ORIGIN, because that layer may equally carry the operator's
+// value and only an exact match on the planted text attributes it to the
+// image.
 //
 // The `.bot` fixture carries the same four: a disagreement shows up as a
 // missing verdict word, which the assertions read as a failure rather
@@ -65,13 +67,16 @@ const reportedSentinel = "KUBECONFIG=/tmp/iterion-e2e-reported-sentinel"
 // replantScript is the file the fixture's image points BASH_ENV at, and
 // it re-exports every pair of [plantedEnv].
 //
-// It is the second half of the attack, and the one an override of the four
-// names alone does not stop: bash reads $BASH_ENV for every
-// NON-interactive shell, which is exactly the shape of a tool node
-// (`bash -c`) and of an agent's Bash tool, so the image hands every
-// command iterion runs there a script that undoes the screen. The arm
-// reads the result where it matters — the probe's OWN environment — and
-// BASH_ENV is in the neutralised sub-class for that reason (ARB-119).
+// It is the residue ARB-121 documents, and this arm PROVES it: bash reads
+// $BASH_ENV for every NON-interactive shell — exactly the shape of a tool
+// node (`bash -c`) and of an agent's Bash tool — and under the doctrine
+// the channel is KEPT and reported, because an image a repository chooses
+// is the repository's code and its files can re-open the road no matter
+// what the screen empties. So the screen's promise stops at the
+// container's own env (read at PID1_* below), and every command iterion
+// runs in the container is expected to read the planted values through
+// this kept script. The arm asserts that positively: a residue the page
+// documents but no run ever demonstrates is a claim, not a measurement.
 const replantScript = "/tmp/iterion-e2e-replant.sh"
 
 // replantModule and plantedNodePath are the node legs of the same
@@ -169,42 +174,39 @@ func TestLive_Feat_Sandbox_Image_Env(t *testing.T) {
 		if !eventDataMentions(res.events, "PID1_EMPTY_"+name) {
 			t.Errorf("the container was not created with `%s=`: docs/sandbox.md promises the operator a neutralised name stays SET and empty", name)
 		}
-		// And what a command actually runs under. Only the PLANTED text
-		// is a failure: the run's own env layer may legitimately set one
-		// of these names to the operator's value.
-		if eventDataMentions(res.events, "EXEC_PLANTED_"+name) {
-			t.Errorf("a command iterion ran in the container read the image's planted %s", name)
-		}
-		// Asserted positively at the exec layer too, for EVERY name: a
-		// per-name verdict that stopped being printed would otherwise
-		// pass as a clean process, which is the vacuity class this arm
-		// exists to kill.
-		if !eventDataMentions(res.events, "EXEC_CLEAN_"+name) {
-			t.Errorf("the probe never reported on %s in its own env: an absent verdict is not a clean one", name)
+		// And what a command actually runs under. The screen's promise
+		// stops at the container's own env: the image's kept BASH_ENV
+		// script re-exports these names into every `bash -c` iterion
+		// runs there, which is the residue ARB-121 documents — so the
+		// PLANTED text at this layer is the residue PROVEN, asserted
+		// positively, and its absence would mean the documented residue
+		// did not materialise (an emptied channel, or the doc lying).
+		if !eventDataMentions(res.events, "EXEC_PLANTED_"+name) {
+			t.Errorf("a command iterion ran in the container did NOT read the image's planted %s: the kept BASH_ENV channel must re-export it in every `bash -c`, which is the residue docs/sandbox.md documents", name)
 		}
 	}
-	// The re-plant channel, read at the layer that would have used it: a
-	// `bash -c` whose BASH_ENV is empty sources nothing. The four
-	// EXEC_PLANTED_* assertions above are what catch the channel when it
-	// is open — with BASH_ENV kept, every one of them fires.
-	if !eventDataMentions(res.events, "BASH_ENV_EMPTIED") {
-		t.Errorf("the probe's own bash read a non-empty BASH_ENV: the image's script re-exports every name the screen emptied, in every `bash -c` iterion runs there")
+	// The re-plant channel itself, read at the layer that carries it:
+	// BASH_ENV is KEPT under ARB-121 — told and not emptied, like every
+	// code channel of an image a repository chooses.
+	if !eventDataMentions(res.events, "BASH_ENV_KEPT") {
+		t.Errorf("the probe's own bash does not carry the image's BASH_ENV: the channel is reported, not emptied — the container must show the image's value")
 	}
-	// The node legs of the re-plant, read by node itself. A planted
-	// verdict is the failure; NODE_ABSENT is the honest answer on a base
-	// image without node, and it is logged rather than read as clean.
-	if eventDataMentions(res.events, "NODE_PLANTED") {
-		t.Errorf("node in the container read the image's planted ANTHROPIC_BASE_URL: NODE_OPTIONS=--require ran the planter's module inside the process the agent CLI is")
-	}
+	// The node legs of the re-plant, read by node itself. With
+	// NODE_OPTIONS kept, the baked module runs in every node process and
+	// node reads the planted route: the residue again, asserted
+	// positively. NODE_ABSENT is the honest answer on a base image
+	// without node, and it is logged rather than read as clean.
 	switch {
-	case eventDataMentions(res.events, "NODE_CLEAN"):
+	case eventDataMentions(res.events, "NODE_PLANTED"):
 	case eventDataMentions(res.events, "NODE_ABSENT"):
 		t.Logf("the base image ships no node: the NODE_OPTIONS leg was not exercised in this run (the event assertion below still covers the disposition)")
+	case eventDataMentions(res.events, "NODE_CLEAN"):
+		t.Errorf("node in the container did NOT read the planted route: NODE_OPTIONS is kept, so the baked module must have run in it — the residue docs/sandbox.md documents did not materialise")
 	default:
 		t.Errorf("the probe never reported on what node reads: an absent verdict is not a clean one")
 	}
-	if !eventDataMentions(res.events, "NODE_OPTIONS_EMPTIED") {
-		t.Errorf("the probe's own env carries a non-empty NODE_OPTIONS: the image's module runs inside every node process iterion starts there")
+	if !eventDataMentions(res.events, "NODE_OPTIONS_KEPT") {
+		t.Errorf("the probe's own env does not carry the image's NODE_OPTIONS: the channel is reported, not emptied — the container must show the image's value")
 	}
 	if !eventDataMentions(res.events, "NAME_STILL_SET") {
 		t.Errorf("the name is not SET in the exec's own view: docs/sandbox.md promises the operator exactly that, and `docker inspect` shows it")
@@ -233,15 +235,26 @@ func TestLive_Feat_Sandbox_Image_Env(t *testing.T) {
 	// in the studio names what was done to each name.
 	payload := theImageEnvPlantedEvent(t, res.events)
 	neutralized := payloadNames(t, payload, "neutralized")
-	// BASH_ENV among them, and its presence is also this arm's proof that
-	// the re-plant channel was ARMED: the screen only lists a name the
-	// inspected image actually bakes.
-	for _, want := range []string{"ANTHROPIC_BASE_URL", "AWS_SECRET_ACCESS_KEY", "AZURE_OPENAI_API_KEY", "BASH_ENV", "NODE_OPTIONS", "NODE_PATH", "CLAUDE_CODE_USE_BEDROCK"} {
+	// The DECLARATIVE redirection of credentials and model routes, and it
+	// alone: the four names of [plantedEnv], each neutralised at the
+	// container.
+	for _, want := range []string{"ANTHROPIC_BASE_URL", "AWS_SECRET_ACCESS_KEY", "AZURE_OPENAI_API_KEY", "CLAUDE_CODE_USE_BEDROCK"} {
 		if !slicesContains(neutralized, want) {
 			t.Errorf("the %s event's neutralized list is %v, missing %s", store.EventSandboxImageEnvPlanted, neutralized, want)
 		}
 	}
-	for _, want := range []string{"PATH", "KUBECONFIG"} {
+	// And NOTHING ELSE is in it: the code channels the image bakes are
+	// the residue ARB-121 documents, told and kept — the probe's other
+	// assertions prove what keeping them does.
+	for _, code := range []string{"BASH_ENV", "NODE_OPTIONS", "NODE_PATH"} {
+		if slicesContains(neutralized, code) {
+			t.Errorf("the %s event's neutralized list holds %s: a code channel of the image is REPORTED, not emptied (ARB-121)", store.EventSandboxImageEnvPlanted, code)
+		}
+	}
+	// The kept half travels complete: the reported sentinels AND the
+	// three code channels the image bakes, which the screen only lists
+	// when the inspected image actually bakes them.
+	for _, want := range []string{"PATH", "KUBECONFIG", "BASH_ENV", "NODE_OPTIONS", "NODE_PATH"} {
 		if reported := payloadNames(t, payload, "reported"); !slicesContains(reported, want) {
 			t.Errorf("the %s event's reported list is %v, missing %s — the kept half must travel too, and it is the half an operator judges the image on", store.EventSandboxImageEnvPlanted, reported, want)
 		}

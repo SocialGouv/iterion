@@ -3,7 +3,10 @@
 ## A tool-only workflow (no LLM) runs inside the image the test builds, whose
 ## `ENV` plants four names of the credential/routing sub-class. The runtime
 ## screens that image once it is local and starts the container with
-## `--env NAME=`, so no process in it may read a PLANTED value.
+## `--env NAME=`, so the container's OWN env carries them EMPTY (the
+## `PID1_*` layer below). The image's kept code channels re-open the road
+## inside the container — the residue ARB-121 documents — so the exec
+## layer is expected to read the planted values back.
 ##
 ## The probe reports the ORIGIN of what it reads, never "non-empty": iterion
 ## forwards a run-level env into every in-container `docker exec`, and that
@@ -27,9 +30,10 @@
 ##     with the quote-free `case x$VAR in x)` idiom.
 ##
 ## The image also points BASH_ENV at a script that re-exports the four: bash reads
-## it for every NON-interactive shell, which is what this very tool node is, so a
-## screen that only emptied the four would be undone inside this process. The
-## verdict on BASH_ENV itself is read for that reason.
+## it for every NON-interactive shell, which is what this very tool node is. The
+## channel is KEPT and reported (ARB-121: an image a repository chooses is the
+## repository's code, and its files re-open no matter what the screen empties),
+## so the script runs in this very process — the residue proven, not assumed.
 ##
 ## The image also bakes ONE name of the REPORTED half (`KUBECONFIG`, whose value
 ## iterion never sets on a sandbox), read as an exact pair at both layers: that

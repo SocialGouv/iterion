@@ -396,27 +396,59 @@ func isIdentChain(e ast.Expr) bool {
 // call at all, which is how a start hides from a guard that reads
 // selectors only.
 //
-// Three binding shapes, because the first alone under-read the package: an
-// assignment, a `var` DECLARATION (`*ast.DeclStmt` → `*ast.ValueSpec`,
-// which is not an `*ast.AssignStmt` and was invisible — the function left
-// the start set entirely, where the anti-vacuity floor cannot see it), and
-// either of those into a func-typed field.
+// Four binding shapes, because each of the first three alone under-read
+// the package: an assignment, a `var` DECLARATION (`*ast.DeclStmt` →
+// `*ast.ValueSpec`, which is not an `*ast.AssignStmt` and was invisible —
+// the function left the start set entirely, where the anti-vacuity floor
+// cannot see it), either of those into a func-typed field, and a
+// COMPOSITE LITERAL's field — `b := booter{start: d.Start}` in the same
+// body, where the call's selector names the field, not `Start`.
 //
 // What stays out, stated: a binding made in ANOTHER function (a
-// constructor that sets `s.start`), and a driver reached through an index
-// or a map — `drivers[0].Start(…)`, `byName[n].Start(…)` — which
-// [isIdentChain] refuses. They are outside a per-body reader by
-// construction; the boot witness and the live witness are what cover a
-// start this reader cannot see.
+// constructor that sets `s.start`), a method value taken off a CALL —
+// `newDriver().Start` — whose receiver is not a chain of identifiers, and
+// a driver reached through an index or a map — `drivers[0].Start(…)`,
+// `byName[n].Start(…)`, or a map LITERAL of method values, whose target
+// no field names. They are outside a per-body reader by construction;
+// the boot witness and the live witness are what cover a start this
+// reader cannot see.
 func identsBoundToAStartMethodValue(body *ast.BlockStmt) map[string]bool {
 	bound := map[string]bool{}
-	bind := func(target, value ast.Expr) {
+	bindKey := func(key string, value ast.Expr) {
 		sel, ok := value.(*ast.SelectorExpr)
 		if !ok || sel.Sel.Name != "Start" || !isIdentChain(sel.X) {
 			return
 		}
-		if key := identChainText(target); key != "" {
+		if key != "" {
 			bound[key] = true
+		}
+	}
+	bind := func(target, value ast.Expr) {
+		bindKey(identChainText(target), value)
+	}
+	// bindCompositeFields reads a composite literal bound in this body:
+	// its KEY_VALUE fields whose value is a `.Start` method value bind
+	// `target.field`, the chain the call's selector carries. A map
+	// literal is left to the residue above — its key is a value, not a
+	// field of the bound variable.
+	bindCompositeFields := func(target, value ast.Expr) {
+		lit, ok := value.(*ast.CompositeLit)
+		if !ok {
+			return
+		}
+		if _, isMap := lit.Type.(*ast.MapType); isMap {
+			return
+		}
+		head := identChainText(target)
+		if head == "" {
+			return
+		}
+		for _, elt := range lit.Elts {
+			kv, ok := elt.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			bindKey(head+"."+identChainText(kv.Key), kv.Value)
 		}
 	}
 	ast.Inspect(body, func(n ast.Node) bool {
@@ -425,12 +457,14 @@ func identsBoundToAStartMethodValue(body *ast.BlockStmt) map[string]bool {
 			for i, rhs := range stmt.Rhs {
 				if i < len(stmt.Lhs) {
 					bind(stmt.Lhs[i], rhs)
+					bindCompositeFields(stmt.Lhs[i], rhs)
 				}
 			}
 		case *ast.ValueSpec:
 			for i, value := range stmt.Values {
 				if i < len(stmt.Names) {
 					bind(stmt.Names[i], value)
+					bindCompositeFields(stmt.Names[i], value)
 				}
 			}
 		}
@@ -670,6 +704,31 @@ func (s *booter) boot(ctx C, prepared P, info I) {
 }`,
 		wantStarts: []string{"boot"},
 		wantBound:  map[string]bool{"boot": false},
+	}, {
+		// The other invisible shape, same consequence: a composite
+		// literal binds a func-typed field in the SAME body, and the
+		// call's selector names the field, not `Start`.
+		name: "a method value bound in a composite literal field is a start",
+		src: `package p
+func boot(ctx C, d D, prepared P, info I) {
+	screened, screen = screenSandboxImageEnv(ctx, d, prepared, info)
+	_, _ = screened, screen
+	b := booter{start: d.Start}
+	_, _ = b.start(ctx, prepared, info)
+}`,
+		wantStarts: []string{"boot"},
+		wantBound:  map[string]bool{"boot": false},
+	}, {
+		name: "a composite-literal method value handed the screened spec is bound",
+		src: `package p
+func boot(ctx C, d D, prepared P, info I) {
+	prepared, screen = screenSandboxImageEnv(ctx, d, prepared, info)
+	_ = screen
+	b := booter{start: d.Start}
+	_, _ = b.start(ctx, prepared, info)
+}`,
+		wantStarts: []string{"boot"},
+		wantBound:  map[string]bool{"boot": true},
 	}, {
 		name: "a three-argument call through an ident bound to nothing is not a start",
 		src: `package p

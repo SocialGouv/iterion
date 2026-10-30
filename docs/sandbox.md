@@ -588,9 +588,10 @@ never lets the repository speak for the operator:
     `SENTRY_*` (the iterion binary is its own in-container runner and
     wires error tracking at startup: unset the package is off, so a
     planted DSN switches an outbound channel on), `GIT_*`, the forge
-    CLIs' `GH_*` and `GLAB_*`, git's config-from-the-environment
-    `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*` (listed before `GIT_*`,
-    which they refine), the dynamic loader's `LD_*`,
+    CLIs' `GH_*` and `GLAB_*` (`GIT_*` covers git's
+    config-from-the-environment too: `GIT_CONFIG_COUNT` with
+    `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*`, and
+    `GIT_CONFIG_PARAMETERS`), the dynamic loader's `LD_*`,
     `OPENSSL_*`, nix's `NIX_*` (a `plugin-files` in `NIX_CONFIG` is
     dlopened by the `devbox install` iterion itself runs), bash's
     exported functions `BASH_FUNC_*`, the bun
@@ -603,10 +604,7 @@ never lets the repository speak for the operator:
     `$XDG_CONFIG_HOME/git/config`, opencode's login sits under
     `$XDG_DATA_HOME`) — the whole family, not only the two names seen
     planted;
-  - the exact names `NODE_OPTIONS`, `NODE_PATH`, `LD_PRELOAD`,
-    `LD_AUDIT`, `OPENSSL_CONF`, `BUN_OPTIONS`,
-    `NPM_CONFIG_NODE_OPTIONS`, `NPM_CONFIG_SCRIPT_SHELL`,
-    `GIT_CONFIG_COUNT`,
+  - the exact names `NODE_OPTIONS`, `NODE_PATH`,
     `GCONV_PATH`, `SHELL`, `BASH_ENV`, `SHELLOPTS`, `BASHOPTS`, `PS4`,
     `ENV`, `ZDOTDIR`, `PATH`, `GOFLAGS`, `SSH_ASKPASS`,
     `SSH_ASKPASS_REQUIRE`, `EDITOR`, `VISUAL`, `TAR_OPTIONS` (GNU tar
@@ -719,7 +717,7 @@ every prompt of the run with **zero `containerEnv` entries** (#2317).
 
 So the runtime screens the image too, once it is local — after the pull,
 after a `build:` has materialised it, before anything starts — and the
-two halves of the class get different answers:
+class gets one of two answers:
 
 - the **credential and routing** sub-class is **neutralised**: the
   container starts with `--env NAME=`, which overrides the image's `ENV`
@@ -729,119 +727,91 @@ two halves of the class get different answers:
   `ANTHROPIC_`, `AWS_`, `AZURE_`, `GOOGLE_`, `OPENCODE_`, `CCR_`,
   `OTEL_`, `SENTRY_`, `GH_`, `GLAB_`, `CLAW_`, `CLAWD_`, `HOOK_`, …)
   and the exact endpoint, region, project and managed-identity names
-  (`OPENAI_API_BASE`, `BEDROCK_REGION`, `IMDS_ENDPOINT`, …);
-- **and every channel MEASURED to lead to CODE, or to a configuration a
-  program EXECUTES, at the startup of a process iterion runs there,
-  whose EMPTY value is inert** — such a channel belongs to that
-  sub-class for exactly one reason: a member of it re-plants everything
-  the first half empties. Both halves of that sentence are load-bearing,
-  and the names they leave out are written as a residue below rather
-  than left to be guessed. The measured case is
-  `LD_PRELOAD`, whose constructor ran in **pid 1** of a container created
-  with `--env ANTHROPIC_BASE_URL= --env AWS_ACCESS_KEY_ID= …` and put the
-  planter's route and keys back — for `bash`, for `node` and for an
-  `npm`-started MCP server alike. The set is enumerated from the
-  PROGRAMS the image ships, and each name was measured on a disposable
-  image through that program's own startup path (#2317, ARB-119):
-  - the loader, in every process: `LD_PRELOAD`, `LD_AUDIT`;
-  - the shells iterion runs a tool node and an agent's Bash tool with:
-    `BASH_ENV` (every *non-interactive* bash), `SHELLOPTS` with `PS4`
-    (xtrace runs the substitutions of a planted `PS4` once per traced
-    command), and the whole `BASH_FUNC_*` namespace (a planted
-    `BASH_FUNC_git%%` answered `git --version`);
-  - node and the two npm roads into a node child: `NODE_OPTIONS`
-    (`--require=…`, in the CLI's own process), `NODE_PATH`,
-    `NPM_CONFIG_NODE_OPTIONS` (npm re-exports it as `NODE_OPTIONS` to
-    every `npm run` and `npm exec` child, which is how an MCP server
-    starts) and `NPM_CONFIG_SCRIPT_SHELL`;
-  - the bun runtime the claude CLI is built on: `BUN_OPTIONS`, whose
-    `--preload` ran inside `claude --version` itself;
-  - glibc's and OpenSSL's module roads: `GCONV_PATH`, dlopened by the
-    charset conversion python does at interpreter startup — including
-    under `python3 -I`, the argv of iterion's own python node — and
-    `OPENSSL_CONF`, a config file that dlopens the provider module it
-    names, measured in `curl` and in the `openssl` CLI;
-  - git's config with no file and no `HOME`: `GIT_CONFIG_COUNT` with
-    `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*`, which is `git -c` spelled
-    in the environment — a planted `core.sshCommand` ran on
-    `git ls-remote`, and `credential.helper` is the same two lines;
-  - GNU tar's own options: `TAR_OPTIONS`, whose
-    `--checkpoint-action=exec=` ran in a `tar -czf` iterion starts.
-
-  Empty is the default for every one of them, measured in the same
-  image: with all of them emptied, `bash`, `sh`, `node`, `npm`, `npx`,
-  `git`, `python3`, the claude CLI, `tar`, `openssl`, `curl` and `perl`
-  all run normally. The cost is stated: an image that bakes `NODE_PATH`
-  for its own global modules, or `OPENSSL_CONF` for its own provider,
-  loses it — and the escape hatch below is the operator's answer. The
-  FAMILIES keep their own answer where a member is legitimate:
-  `OPENSSL_MODULES`, `BUN_INSTALL` and `NPM_CONFIG_PREFIX` name
-  directories, and the rest of `GIT_*` is reported;
-
-  **The RESIDUE of that sub-class, measured, and reported rather than
-  emptied.** Three groups of names reach code and keep their value, each
-  for a reason that was measured rather than argued — the table in
-  pkg/runtime's `sandbox_image_env_startup_code_class_test.go` carries
-  the same rows, so neither this page nor that file can state the set
-  alone:
-  - **`GIT_CONFIG_PARAMETERS`** — git's SECOND configuration road from
-    the environment, the serialised form `git -c` passes to its own
-    children: one variable, no file, no `HOME`. Measured on the default
-    sandbox image: a planted
-    `'core.sshCommand=…'` ran the planter's program on
-    `git ls-remote` (uid 1000), `core.hooksPath` ran it on the commit an
-    agent makes, and `credential.helper` is #2316's mechanism by the
-    same single variable; `--env GIT_CONFIG_PARAMETERS=` is inert
-    (`git config --get` answers nothing, `init`/`commit`/`log`/`clone`
-    all rc=0) and no image iterion publishes bakes it. It satisfies
-    every criterion of the neutralised half and is NOT in it: the row is
-    an open operator decision, and until it is taken this page says so.
-  - **the command-valued `GIT_*` names** — `GIT_SSH_COMMAND`, `GIT_SSH`,
-    `GIT_PROXY_COMMAND`, `GIT_ASKPASS`, `GIT_EDITOR`,
-    `GIT_EXTERNAL_DIFF`, `GIT_TEMPLATE_DIR`. Their value IS a command
-    string, so the channel fires: measured on git 2.47.3 in the default
-    image, the planter's program ran once per file of a plain `git diff`
-    (`GIT_EXTERNAL_DIFF`) and on a fetch (`GIT_SSH_COMMAND`), with the
-    run's own credentials in its environment. They stay reported because
-    the *second* criterion fails, not the first: `--env NAME=` does not
-    close them — git runs the empty string as a command, so that same
-    `git diff` exits 128 with `error: cannot run : No such file or
-    directory` / `fatal: external diff died`, and so does a fetch. That
-    is the diff of the run's own work.
-    Closing them needs a disposition iterion does not have, one that
-    DROPS a name from the container's env (`--env NAME` with no `=`,
-    measured to remove the image's entry outright); the three
-    dispositions today all set a value.
-  - **the loader's search path and `PATH`** — `LD_LIBRARY_PATH` is how a
-    CUDA-style image finds its own runtime
-    (`nvidia/cuda:12.6.2-base-ubuntu24.04` bakes it) and an empty `PATH`
-    leaves the container resolving no command, so both keep their value.
-    The cost is measured and it is the whole credential half: an image
-    baking `LD_LIBRARY_PATH=/planted/lib` with one shim in it
-    (`libdl.so.2`, whose glibc original is an empty stub) had **node**
-    read back the planter's route, token, access key and Bedrock switch
-    — with every neutralisation of the table above applied, and over the
-    operator's own token. The host-side allow knob is the answer to the
-    CUDA cost; it is not an answer to this one.
-
-  What the residue is, said plainly: **an image a repository chooses is
-  the repository's code** — its binaries, its files and its
-  `postCreateCommand` — by the same contract that makes "the
-  devcontainer's image/build, mounts, user, `workspaceFolder` and
-  `postCreateCommand` still define the container" auto mode's rule, and
-  the fork road into that position is refused at admission
-  (`admitSandboxImageBackends`). What this screen closes is the ENV road
-  into the *operator's own* credentials and model routes, and the rows
-  above are where that road is still open;
-- the **rest of the class is reported only, and keeps its value**.
-  Emptying `PATH`, `HOME`, `GOROOT`, a loader library path or an `XDG_`
-  dir breaks an image doing its job — iterion's own `full` variant bakes
+  (`OPENAI_API_BASE`, `BEDROCK_REGION`, `IMDS_ENDPOINT`, …). Each of
+  those consumers reads a VALUE — a truthiness, a URL, a key, an
+  identity — so an empty one is inert, and no image iterion publishes
+  bakes one. This is the **declarative redirection** of the operator's
+  own credentials and model routes, and closing it is the whole promise
+  of this screen (ARB-121 on Jo's question #63);
+- **the rest of the class is told, and keeps its value.** Emptying
+  `PATH`, `HOME`, `GOROOT`, a loader library path or an `XDG_` dir
+  breaks an image doing its job — iterion's own `full` variant bakes
   `PATH`, and its runner image bakes `ITERION_VERSION` — and emptying
   `KUBECONFIG`, `DOCKER_HOST` or `DOCKER_CONFIG` would send the client
   to its DEFAULT, which under `host_state` is the operator's own,
   **worse** than the planted path. The TLS bundles and the names of
   binaries a CLI spawns are reported for the same reason: an image may
   legally bake them, and their consumers read presence as much as value.
+  The names that lead to CODE are in this half too, for a different
+  reason, and the next paragraph is that reason.
+
+**Every channel into CODE is told, and kept.** A name an image bakes that
+leads to code, or to a configuration a program EXECUTES, at the startup
+of a process iterion runs there is **reported and not emptied** — the
+operator reads it under `planted` and `reported`, and the value reaches
+the container. The channels are real and each was measured to FIRE, on a
+disposable image through the program's own startup path; the table in
+pkg/runtime's `sandbox_image_env_startup_code_class_test.go` holds the
+rows, and these are the measurements, not a list to trust:
+
+- the loader, in every process: `LD_PRELOAD`'s constructor ran in **pid
+  1** of a container created with `--env ANTHROPIC_BASE_URL= --env
+  AWS_ACCESS_KEY_ID= …` and put the planter's route and keys back — for
+  `bash`, for `node` and for an `npm`-started MCP server alike;
+  `LD_AUDIT` did it through the audit interface, and
+  `LD_LIBRARY_PATH=/planted/lib` with one shim in it (`libdl.so.2`,
+  whose glibc original is an empty stub) had **node** read back the
+  planter's route, token, access key and Bedrock switch;
+- the shells iterion runs a tool node and an agent's Bash tool with:
+  `BASH_ENV` is sourced by every *non-interactive* bash, `SHELLOPTS`
+  with `PS4` ran the planter's program once per traced command, and a
+  planted `BASH_FUNC_git%%` answered `git --version`;
+- node and the two npm roads into a node child: `NODE_OPTIONS`
+  (`--require=…`, in the CLI's own process), `NODE_PATH`,
+  `NPM_CONFIG_NODE_OPTIONS` (npm re-exports it as `NODE_OPTIONS` to
+  every `npm run` and `npm exec` child, which is how an MCP server
+  starts) and `NPM_CONFIG_SCRIPT_SHELL`;
+- the bun runtime the claude CLI is built on: `BUN_OPTIONS`, whose
+  `--preload` ran inside `claude --version` itself;
+- glibc's and OpenSSL's module roads: `GCONV_PATH`, dlopened by the
+  charset conversion python does at interpreter startup — including
+  under `python3 -I`, the argv of iterion's own python node — and
+  `OPENSSL_CONF`, a config file that dlopens the provider module it
+  names, measured in `curl` and in the `openssl` CLI;
+- git, by every road that needs no file and no `HOME`: `GIT_CONFIG_COUNT`
+  with `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*` and
+  `GIT_CONFIG_PARAMETERS` are `git -c` spelled in the environment (a
+  planted `core.sshCommand` ran on `git ls-remote`, `core.hooksPath` on
+  the commit an agent makes, and `credential.helper` is #2316's
+  mechanism), and the command-valued names — `GIT_SSH_COMMAND`,
+  `GIT_SSH`, `GIT_PROXY_COMMAND`, `GIT_ASKPASS`, `GIT_EDITOR`,
+  `GIT_EXTERNAL_DIFF`, `GIT_TEMPLATE_DIR` — are programs git runs: the
+  planter's ran once per file of a plain `git diff`, on a fetch, and as
+  the hook a `GIT_TEMPLATE_DIR` installs into the agent's own commit;
+- GNU tar's own options: `TAR_OPTIONS`, whose `--checkpoint-action=exec=`
+  ran in a `tar -czf` iterion starts.
+
+Why they are told and not emptied, said plainly: **an image a repository
+chooses is the repository's code** — its binaries, its files and its
+`postCreateCommand` — by the same contract that makes "the devcontainer's
+image/build, mounts, user, `workspaceFolder` and `postCreateCommand`
+still define the container" auto mode's rule, and the fork road into that
+position is refused at admission (`admitSandboxImageBackends`). Emptying
+one variable of a channel the image's own files re-open promises the
+operator something the artefact cannot owe: measured, an image-laid
+`/usr/etc/npmrc` re-plants `NODE_OPTIONS` with **no variable at all**,
+and an `LD_LIBRARY_PATH` shim re-plants the whole credential half with
+every neutralisation applied. So the page makes no promise there — it
+reports, which is what an operator can act on, and keeps the one promise
+the ENV road can keep. A screen that emptied these names would also break
+images doing their job (an image baking `NODE_PATH` for its own global
+modules, `OPENSSL_CONF` for its own provider) for a guarantee it does not
+buy.
+
+What this screen is NOT, therefore: a defence against a malicious image.
+It is the guard that stops a repository from **declaring** a model route
+or a credential into the run with nothing but a `devcontainer.json` and
+an `ENV` line.
 
 Membership is **case-insensitive in all three forms** — suffixes,
 namespaces and exact names alike — so no entry needs a lower-case twin.
@@ -901,8 +871,10 @@ withholds iterion's `--env NAME=`, it does not stop the driver's pair
 from winning, and the name lands where the container puts it.
 
 **A container that cannot be read says so.** `undeduced` carries the
-reason — no container was created (the screen refused the boot, or Start
-failed), the driver cannot read one back, or the read failed — and then
+reason — no container this driver could hand back (the screen refused
+the boot, or Start failed, which can be a `postCreateCommand` failing in
+a container the driver then removes), the driver cannot read one back,
+or the read failed — and then
 **not one disposition travels**: `planted` plus that reason is the whole
 record. An empty `neutralized` beside it would read as "nothing was
 planted" where the fact is "nobody looked". `unscreened` is the same
@@ -910,11 +882,16 @@ discipline one step earlier: the class itself was never read, so not
 even `planted` is known.
 
 Both partitions cover the **whole** class, the reported half included:
-iterion sets seven of those names itself — `HOME` under `host_state`, and
-the six CA bundles under TLS inspection — so a `reported` list that held
-them would promise the image controls the TLS trust of the connections
-that carry the run's credentials, when iterion's per-run CA is what the
-container got.
+iterion sets some of those names itself — `HOME` under `host_state`, and
+under TLS inspection the CA bundles of `caBundleEnvNames` plus the JVM
+truststore pair of `javaTrustPairs` (pkg/sandbox/docker, which
+`Driver.StartEnvNames` declares to the screen) — so a `reported` list
+that held them would promise the image controls the TLS trust of the
+connections that carry the run's credentials, when iterion's per-run CA
+is what the container got. No count is given here on purpose: the
+declaration is read from the driver at run time and `driver_set` is where
+those names land, which is a measurement rather than a number this page
+would have to keep true.
 
 **A neutralisation the driver refuses stops the run** — and **no docker
 image can trigger it today**, which is proved rather than assumed: the

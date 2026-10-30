@@ -65,11 +65,24 @@ type imageEnvScreen struct {
 	// container: it is read from `image inspect` and it is what the
 	// operator judges the image on.
 	planted []string
-	// imageEnv is the value the image bakes for each planted name. Every
-	// disposition below is a comparison against it, which is what keeps
-	// an arm from reading "kept" off a container whose value merely
-	// looks plausible.
-	imageEnv map[string]string
+	// imageEnv holds EVERY value the image bakes for a planted name, in
+	// no meaningful order. Every disposition below is a comparison
+	// against it, which is what keeps an arm from reading "kept" off a
+	// container whose value merely looks plausible.
+	//
+	// A slice and not one value, because an image's `Env` is not a set —
+	// docker's own build collapses a repeated name, a config written by
+	// another tool need not — and WHICH of two entries the daemon keeps
+	// is not a fact this screen may assume: measured on docker 29.9.2,
+	// a container created with no `--env` keeps BOTH entries (the
+	// process reads the last), and one created with a single unrelated
+	// `--env` pair keeps the FIRST and drops the other. Picking an end
+	// published a name the container carries at the image's own value as
+	// `unexplained` — the one disposition this record declares
+	// unreachable (#2317, round 5 F1). So the comparison asks whether
+	// the container's value is ONE OF the image's, which holds under
+	// both merges and under the next runtime's.
+	imageEnv map[string][]string
 	// allow are the planted names the host knob named, so the screen
 	// withheld its override. A name of this set is `allowed` only if the
 	// container shows the image's value: the knob stops ITERION's
@@ -94,13 +107,15 @@ type imageEnvScreen struct {
 	deduced bool
 	// neutralized are the names the container carries EMPTY — set and
 	// empty, which every consumer of that sub-class reads as absent —
-	// where the image baked a value. The credential/routing and
-	// startup-code sub-class, measured at the container.
+	// where the image baked a value. The credential/routing sub-class,
+	// measured at the container.
 	neutralized []string
-	// reported are the names the container carries at the IMAGE's exact
+	// reported are the names the container carries at the IMAGE's own
 	// value: the image's value does reach every process iterion starts
-	// there. An empty one would break an image doing its job, so this
-	// half is told and not emptied.
+	// there. This half is told and not emptied — for most of it because
+	// an empty value would break an image doing its job, and for the
+	// startup-code channels because an image a repository chooses is the
+	// repository's code, which no `--env NAME=` makes untrue (ARB-121).
 	reported []string
 	// allowed are the planted names the host knob let through AND the
 	// container shows untouched — the image's own value, as the operator
@@ -137,11 +152,12 @@ type imageEnvScreen struct {
 	// is told; it is never reported as a clean image.
 	unscreened string
 	// undeduced, when non-empty, says WHY the dispositions could not be
-	// measured although the class WAS read: no container was created
-	// (the screen refused the boot, or Start failed), the driver cannot
-	// read back a container it started, or that read failed. The planted
-	// list still travels — it is the image's own fact — and not one
-	// disposition does.
+	// measured although the class WAS read: no container was handed back
+	// (the boot was refused, or Start failed — which can be a
+	// postCreate command failing in a container the driver then
+	// removes), the driver cannot read back a container it started, or
+	// that read failed. The planted list still travels — it is the
+	// image's own fact — and not one disposition does.
 	undeduced string
 	// refused, when non-empty, says WHY a neutralisation this screen
 	// DECIDED on could not be installed, and refusedNames are the names
@@ -304,10 +320,13 @@ func startScreenedSandbox(
 	}
 	run, err := driver.Start(ctx, screened, info)
 	if err != nil {
-		// The class was read and no container exists to read back: the
-		// record says what the image plants and claims nothing about a
-		// container that never started.
-		screen.undeduced = "no container was created: the driver's Start failed (" + err.Error() + ")"
+		// The class was read and no container was handed back to read:
+		// the record says what the image plants and claims nothing about
+		// a container. Wording holds to what is known — Start can fail
+		// in a postCreate command, in a container the driver then
+		// removes, so whether one was created is the error's own fact to
+		// carry, never this record's.
+		screen.undeduced = "no container this driver could hand back: Start failed (" + err.Error() + ")"
 		reportImageEnvScreen(screen, driver.Name(), logger, emit, runID)
 		return nil, screened, err
 	}
@@ -353,18 +372,23 @@ func reportImageEnvScreen(
 // `ENV CLAUDE_CODE_USE_BEDROCK=1` and the planter's AWS keys redirects every
 // prompt of the run with zero containerEnv entries.
 //
-// What it DECIDES, per ARB-112 on #2317:
+// What it DECIDES, per ARB-112 and ARB-121 on #2317:
 //
 //   - the credential/routing sub-class of the class — the names that choose
-//     WHERE a model call goes and WHAT credential it carries — and every
-//     channel measured to lead to CODE at the startup of a process iterion
-//     runs there is NEUTRALISED: the driver is asked for `--env NAME=`,
-//     which overrides the image's ENV with an empty value every one of
-//     those consumers reads as absent;
-//   - the rest of the class is kept. Emptying `PATH`, `HOME` or a loader
-//     path would break an image doing its job — iterion's own `full`
-//     variant bakes `PATH`, and its runner image bakes `ITERION_VERSION`
-//     — so the operator is told and the value stays;
+//     WHERE a model call goes and WHAT credential it carries — is
+//     NEUTRALISED: the driver is asked for `--env NAME=`, which overrides
+//     the image's ENV with an empty value every one of those consumers
+//     reads as absent. That DECLARATIVE redirection is the whole promise;
+//   - the rest of the class is kept and told. Emptying `PATH`, `HOME` or a
+//     loader path would break an image doing its job — iterion's own
+//     `full` variant bakes `PATH`, and its runner image bakes
+//     `ITERION_VERSION`. The startup-code channels (`BASH_ENV`,
+//     `NODE_OPTIONS`, `LD_PRELOAD`, `GIT_CONFIG_*`, …) are kept for
+//     another reason, stated rather than silent: they FIRE, measured one
+//     by one, and an image a repository chooses is the repository's code —
+//     its binaries, its files, its `postCreateCommand` — so emptying one
+//     name of a channel those re-open would promise what the artefact
+//     cannot owe (ARB-121);
 //   - a name the host knob let through is not handed over: the operator
 //     asked for that variable;
 //   - a driver that cannot read an image's config is reported as NOT
@@ -387,7 +411,7 @@ func screenSandboxImageEnv(
 	prepared sandbox.PreparedSpec,
 	info sandbox.RunInfo,
 ) (sandbox.PreparedSpec, imageEnvScreen) {
-	screen := imageEnvScreen{image: preparedImageRef(prepared), imageEnv: map[string]string{}}
+	screen := imageEnvScreen{image: preparedImageRef(prepared), imageEnv: map[string][]string{}}
 	// A driver that does not honour [sandbox.Spec.Image] starts nothing
 	// FROM an image — the noop passthrough runs the commands on the host —
 	// so there is no baked-in env to screen and no silence to confess. The
@@ -429,10 +453,12 @@ func screenSandboxImageEnv(
 		if !denied {
 			continue
 		}
-		// The LAST entry for a name is the one a process reads, which is
-		// how docker resolves a config with a repeated name too.
+		// Every entry of the name, never only one: which of two the
+		// daemon keeps for the container is measured to depend on the
+		// `--env` pairs beside it, so the image side stays order-free
+		// (see [imageEnvScreen.imageEnv]).
 		screen.planted = append(screen.planted, name)
-		screen.imageEnv[name] = value
+		screen.imageEnv[name] = append(screen.imageEnv[name], value)
 		if allow[name] {
 			screen.allow[name] = true
 			continue
@@ -527,7 +553,6 @@ func deduceImageEnvScreen(
 	}
 	for _, name := range screen.planted {
 		got, inContainer := container[name]
-		baked := screen.imageEnv[name]
 		switch {
 		case !inContainer:
 			// The image baked the name and the container has no entry
@@ -540,10 +565,14 @@ func deduceImageEnvScreen(
 		case slices.Contains(screen.emptied, name) && got == "":
 			// iterion asked for `--env NAME=` and the container agrees.
 			screen.neutralized = append(screen.neutralized, name)
-		case got == baked:
+		case slices.Contains(screen.imageEnv[name], got):
 			// The image's own value is what every process iterion starts
-			// there reads. `allowed` is the same measurement for a name
-			// the operator asked through: untouched, and asked for.
+			// there reads. ONE OF the image's values, because a name the
+			// image bakes twice has two and the daemon keeps whichever
+			// its merge picks; either way the container carries what the
+			// IMAGE put there and nothing else. `allowed` is the same
+			// measurement for a name the operator asked through:
+			// untouched, and asked for.
 			if screen.allow[name] {
 				screen.allowed = append(screen.allowed, name)
 			} else {
@@ -655,7 +684,14 @@ func warnImageEnvScreen(logger *iterlog.Logger, driverName string, screen imageE
 		// layer may legitimately carry the OPERATOR's value for one of
 		// these names. The claim is about the container's own env, which
 		// is what was read.
-		logger.Warn("sandbox: image %s bakes in %s — kept, because an empty value would break the image: the container was created with the image's value, which its processes read unless a command's own env layer sets the name",
+		//
+		// The reason is not given here, and deliberately: this half holds
+		// names kept because an empty value would break the image AND
+		// names kept although they lead to code (ARB-121), and a single
+		// line that gave one reason for both would be false about the
+		// other. What it states is the measurement — the container has
+		// the image's value — and the page carries the rest.
+		logger.Warn("sandbox: image %s bakes in %s — kept: the container was created with the image's value, which its processes read unless a command's own env layer sets the name (a name of this half may lead to CODE the image ships — see the image ENV screen in docs/sandbox.md)",
 			image, quotedEnvNames(screen.reported))
 	}
 	if len(screen.operatorSet) > 0 {

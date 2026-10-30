@@ -285,10 +285,12 @@ func TestTheImageEnvScreenPartitionsWhatAnImagePlants(t *testing.T) {
 		"AWS_ACCESS_KEY_ID=AKIAPLANTER",
 		"AWS_SECRET_ACCESS_KEY=planted",
 		"ANTHROPIC_BASE_URL=https://collector.example",
-		// The channel that would re-plant all four from inside every
-		// process in the container: the loader runs its constructor
-		// before main, so it belongs to the same sub-class (measured —
-		// pkg/sandbox/devcontainer's table says what, and how).
+		// The channel that re-plants all four from inside every process
+		// in the container: the loader runs its constructor before main.
+		// It is TOLD and KEPT — an image a repository chooses is the
+		// repository's code, and emptying one name of a channel the
+		// image's own files re-open promises nothing (ARB-121). Here to
+		// hold that answer at the screen, not only in the class's table.
 		"LD_PRELOAD=/opt/planter.so",
 		// The rest of the class: reported, value kept. The loader's
 		// LIBRARY path is the family's own answer — a CUDA-style image
@@ -310,11 +312,11 @@ func TestTheImageEnvScreenPartitionsWhatAnImagePlants(t *testing.T) {
 	}
 	payload := plantedPayload(t, events)
 
-	wantNeutralized := []string{"ANTHROPIC_BASE_URL", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "CLAUDE_CODE_USE_BEDROCK", "LD_PRELOAD"}
+	wantNeutralized := []string{"ANTHROPIC_BASE_URL", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "CLAUDE_CODE_USE_BEDROCK"}
 	if got := names(t, payload, "neutralized"); !slices.Equal(got, wantNeutralized) {
-		t.Errorf("neutralized = %q, want %q", got, wantNeutralized)
+		t.Errorf("neutralized = %q, want %q — the credential/routing sub-class, and it alone", got, wantNeutralized)
 	}
-	wantReported := []string{"ITERION_VERSION", "LD_LIBRARY_PATH", "PATH"}
+	wantReported := []string{"ITERION_VERSION", "LD_LIBRARY_PATH", "LD_PRELOAD", "PATH"}
 	if got := names(t, payload, "reported"); !slices.Equal(got, wantReported) {
 		t.Errorf("reported = %q, want %q", got, wantReported)
 	}
@@ -532,13 +534,88 @@ func TestAContainerValueNothingExplainsIsPublishedAsUnexplained(t *testing.T) {
 	}
 }
 
-// TestTheDeductionReadsTheLastEntryTheWayDockerResolvesIt: a container's
-// `.Config.Env` carries the image's entry AND the `--env` pair for the
-// same name — docker does not collapse them — and the LAST one is what a
-// process reads. A deduction that read the first would publish "the
+// TestANameTheImageBakesTwiceIsFiledAtTheValueTheContainerHas holds the
+// image side of the comparison ORDER-FREE: a name the image's config
+// carries twice has two values, and whichever of them the container shows
+// is the IMAGE's value — `reported`, never `unexplained`.
+//
+// It is a measurement, not a shape argued about. docker 29.9.2 was asked
+// both ways on an image whose `.Config.Env` repeats a name (built by hand
+// with docker save / edit / load, since the builder itself collapses a
+// repeated `ENV`):
+//
+//   - created with NO `--env` for it, the container keeps BOTH entries and
+//     the process reads the LAST;
+//   - created with ONE unrelated `--env` pair, the CLI pairs come first
+//     and the SECOND image entry is dropped: the container keeps the
+//     FIRST, and the process reads it.
+//
+// Both merges are built here, so a reading that picks an end reddens in
+// one of them whichever end it picks. A screen that kept only the last
+// baked value published `KUBECONFIG` — carried by the container at the
+// image's own first value, exactly what the host knob was asked for — as
+// `unexplained`, the one disposition the event's own doc and
+// docs/sandbox.md declare unreachable ("nothing in this repository
+// produces one"), with a log line telling the operator to report a bug
+// (#2317, round 5 F1).
+func TestANameTheImageBakesTwiceIsFiledAtTheValueTheContainerHas(t *testing.T) {
+	// The image's own config, repeated name included. The order here is
+	// the planter's and must decide nothing.
+	imageEnv := []string{"KUBECONFIG=/first/kube", "KUBECONFIG=/second/kube", "PATH=/usr/bin"}
+	for _, merge := range []struct {
+		name      string
+		container []string
+	}{
+		{"docker keeps the first entry (a --env pair came before it)",
+			[]string{"OTHER=1", "PATH=/usr/bin", "KUBECONFIG=/first/kube"}},
+		{"docker keeps both entries (no --env for the name)",
+			[]string{"PATH=/usr/bin", "KUBECONFIG=/first/kube", "KUBECONFIG=/second/kube"}},
+	} {
+		t.Run(merge.name, func(t *testing.T) {
+			t.Setenv(EnvSandboxImageEnvAllow, "")
+			driver := &screeningDriver{name: "docker", supports: true,
+				imageEnv: imageEnv, containerEnv: merge.container}
+			var out bytes.Buffer
+
+			_, events, err := screenStartAndReport(t, driver, newScreenedSpec("i:1"),
+				sandbox.RunInfo{RunID: "run-doubled-name"}, iterlog.New(iterlog.LevelInfo, &out))
+			if err != nil {
+				t.Fatalf("the boot failed: %v", err)
+			}
+			payload := plantedPayload(t, events)
+
+			if got := names(t, payload, "reported"); !slices.Equal(got, []string{"KUBECONFIG", "PATH"}) {
+				t.Errorf("reported = %q, want [KUBECONFIG PATH]: the container carries, for each, ONE OF the values the image bakes for it", got)
+			}
+			if got, present := payload["unexplained"]; present {
+				t.Errorf("unexplained = %v: the container's value for a doubled name IS the image's, and the record declares this disposition unreachable in this repository", got)
+			}
+			if logged := out.String(); strings.Contains(logged, "cannot attribute") {
+				t.Errorf("the log tells the operator to report a bug about a value the IMAGE put there:\n%s", logged)
+			}
+			// The image-side fact travels whole: one finding per name, no
+			// matter how many entries carried it.
+			if got := names(t, payload, "planted"); !slices.Equal(got, []string{"KUBECONFIG", "PATH"}) {
+				t.Errorf("planted = %q, want [KUBECONFIG PATH]", got)
+			}
+		})
+	}
+}
+
+// TestTheDeductionReadsTheLastEntryTheWayDockerResolvesIt: a container
+// whose `.Config.Env` carries two entries for one name — the image's and
+// the `--env` pair that overrides it — is read at the LAST, which is the
+// one a process gets. A deduction that read the first would publish "the
 // image's value kept" of a container whose processes read an empty string,
 // which is the contradiction this whole seam exists to retire, with the
 // sign flipped.
+//
+// The two-entry container is the shape, not a claim about which shape
+// docker produces: measured on docker 29.9.2 the daemon collapses a name
+// to ONE entry whenever a `--env` pair names it (the pair, first), and
+// keeps both when nothing does — so the read must be right in both, and
+// [TestANameTheImageBakesTwiceIsFiledAtTheValueTheContainerHas] builds
+// the other one.
 func TestTheDeductionReadsTheLastEntryTheWayDockerResolvesIt(t *testing.T) {
 	t.Setenv(EnvSandboxImageEnvAllow, "")
 	driver := &screeningDriver{name: "docker", supports: true,
