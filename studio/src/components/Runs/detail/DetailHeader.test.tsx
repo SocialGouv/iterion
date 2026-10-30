@@ -3,7 +3,9 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ExecutionState } from "@/api/runs";
+import { onAssistantAttachRequest } from "@/lib/chatDock/attachToAssistant";
 import { readReferenceDrop, REFERENCE_MIME } from "@/lib/chatDock/dragReference";
+import type { TypedReference } from "@/lib/chatDock/routeReference";
 
 import { DetailHeader } from "./DetailHeader";
 
@@ -107,5 +109,73 @@ describe("DetailHeader node references", () => {
     render(<DetailHeader runId="01a09afe-92d7-7235-b9bd-892ac04caea7" exec={exec} executions={[exec]} selectedIteration={0} onSelectIteration={() => {}} events={[]} />);
     expect(screen.queryByRole("img", { name: "Drag node to assistant" })).toBeNull();
     expect(screen.getByText(exec.ir_node_id)).toBeTruthy();
+  });
+});
+
+describe("DetailHeader drag-to-assistant (#2770)", () => {
+  const RUN = "01a09afe-92d7-7235-b9bd-892ac04caea7";
+
+  function mountHeader() {
+    const exec = execution("plan_review");
+    render(
+      <DetailHeader
+        runId={RUN}
+        exec={exec}
+        executions={[exec]}
+        selectedIteration={0}
+        onSelectIteration={() => {}}
+        events={[]}
+      />,
+    );
+  }
+
+  it("today the grip is a drag-only affordance, and no control offers the attach", () => {
+    mountHeader();
+    // The current state, pinned honestly: the grip is draggable but not
+    // focusable and claims no operation (role="img" is a text alternative,
+    // not a widget), and no named control elsewhere in the header performs
+    // the attach. SC 2.1.1 / 2.5.7 are exactly what #2770 still owes — this
+    // test is meant to FAIL the day the placement lands, and to be rewritten
+    // as the flip of the skipped one below.
+    const grip = screen.getByRole("img", { name: "Drag node to assistant" });
+    expect(grip.getAttribute("draggable")).toBe("true");
+    expect(grip.hasAttribute("tabindex")).toBe(false);
+    expect(grip.tagName).not.toBe("BUTTON");
+    expect(
+      screen.queryByRole("button", {
+        name: /attach .+ (to|onto) the assistant/i,
+      }),
+    ).toBeNull();
+  });
+
+  // #2770 — enable with the placement Jo picks: the grip becoming a button,
+  // or a named control elsewhere in the header. Written against the ticket's
+  // "Attach <label> to the assistant" wording — adjust the name pattern to
+  // the landed label, nothing else. Either placement must wire the control
+  // to the shared attachReferenceToAssistant handler the drop path uses.
+  it.skip("offers a keyboard-operable Attach control wired to the shared handler", () => {
+    const received: TypedReference[] = [];
+    const off = onAssistantAttachRequest((r) => received.push(r));
+    try {
+      mountHeader();
+      const control = screen.getByRole("button", {
+        name: /^Attach .+ (to|onto) the assistant$/,
+      });
+      control.focus();
+      expect(document.activeElement).toBe(control);
+      // A native control turns Enter/Space into click — the keyboard path IS
+      // the click handler.
+      fireEvent.keyDown(control, { key: "Enter" });
+      fireEvent.click(control);
+      expect(received).toEqual([
+        {
+          kind: "node",
+          ref: `node/${RUN}/plan_review`,
+          label: "Label plan_review",
+        },
+      ]);
+    } finally {
+      off();
+    }
   });
 });

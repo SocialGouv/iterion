@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Router } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
@@ -11,6 +11,8 @@ import {
   expectNoViolationsStrict,
   setupMatchMedia,
 } from "@/__tests__/a11y/axeHelpers";
+import { onAssistantAttachRequest } from "@/lib/chatDock/attachToAssistant";
+import type { TypedReference } from "@/lib/chatDock/routeReference";
 
 // The gallery's own read. One subscription on the first bot, not an empty
 // list: the trigger badge only renders above zero, and an empty answer would
@@ -134,5 +136,66 @@ describe("a11y / Bots gallery", () => {
       await screen.findByText("No bots discovered in this workspace"),
     ).toBeTruthy();
     await expectNoViolationsStrict(container, "BotsView (empty)");
+  });
+});
+
+describe("a11y / Bots gallery drag-to-assistant (#2770)", () => {
+  it("today each card's grip is a drag-only affordance, and no control offers the attach", async () => {
+    mountGallery();
+    // Await the cards — the grips render with them, not before.
+    await screen.findAllByText("Acci");
+    // The current state, pinned honestly: each card's grip is draggable but
+    // not focusable and claims no operation (role="img" is a text
+    // alternative, not a widget), and no named control elsewhere on the card
+    // performs the attach. SC 2.1.1 / 2.5.7 are exactly what #2770 still
+    // owes — this test is meant to FAIL the day the placement lands, and to
+    // be rewritten as the flip of the skipped one below.
+    for (const name of [
+      "Drag Acci onto the assistant",
+      "Drag Revi onto the assistant",
+    ]) {
+      const grip = screen.getByRole("img", { name });
+      expect(grip.getAttribute("draggable")).toBe("true");
+      expect(grip.hasAttribute("tabindex")).toBe(false);
+      expect(grip.tagName).not.toBe("BUTTON");
+    }
+    expect(
+      screen.queryByRole("button", {
+        name: /attach .+ (to|onto) the assistant/i,
+      }),
+    ).toBeNull();
+  });
+
+  // #2770 — enable with the placement Jo picks: the grip becoming a button,
+  // or a named control elsewhere on the card. Written against the ticket's
+  // "Attach <label> to the assistant" wording — adjust the name pattern to
+  // the landed label, nothing else. Either placement must wire the control
+  // to the shared attachReferenceToAssistant handler the drop path uses.
+  it.skip("each card offers a keyboard-operable Attach control wired to the shared handler", async () => {
+    const received: TypedReference[] = [];
+    const off = onAssistantAttachRequest((r) => received.push(r));
+    try {
+      mountGallery();
+      await screen.findAllByText("Acci");
+      const controls = screen.getAllByRole("button", {
+        name: /^Attach .+ (to|onto) the assistant$/,
+      });
+      expect(controls).toHaveLength(2);
+      const [first] = controls;
+      if (!first) throw new Error("two cards, two attach controls");
+      first.focus();
+      expect(document.activeElement).toBe(first);
+      // A native control turns Enter/Space into click — the keyboard path IS
+      // the click handler.
+      fireEvent.keyDown(first, { key: "Enter" });
+      fireEvent.click(first);
+      // The bot reference is self-labelling: the chip names the path, and
+      // the expected value below follows the first card's rel_path.
+      expect(received).toEqual([
+        { kind: "bot", ref: "bot/.botz/rgaa-audit", label: ".botz/rgaa-audit" },
+      ]);
+    } finally {
+      off();
+    }
   });
 });

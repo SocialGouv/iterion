@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { RunSummary } from "@/api/runs";
 import { expectNoViolationsStrict } from "@/__tests__/a11y/axeHelpers";
+import { onAssistantAttachRequest } from "@/lib/chatDock/attachToAssistant";
+import type { TypedReference } from "@/lib/chatDock/routeReference";
 
 import { RunListCard } from "./RunListCard";
 import { RunListRow } from "./RunListRow";
@@ -182,6 +184,64 @@ describe("runs list keyboard paths (#2766)", () => {
     expect(title.tagName).toBe("BUTTON");
     fireEvent.click(title);
     expect(onOpen).toHaveBeenCalledWith("0199aaaa-1111-7000-8000-000000000001");
+  });
+});
+
+describe("runs list drag-to-assistant (#2770)", () => {
+  it("today the grip is a drag-only affordance, and no control offers the attach", () => {
+    mountRows();
+    // The current state, pinned honestly: each row's grip is draggable but
+    // not focusable and claims no operation (role="img" is a text
+    // alternative, not a widget), and no named control elsewhere on the row
+    // performs the attach. SC 2.1.1 / 2.5.7 are exactly what #2770 still
+    // owes — this test is meant to FAIL the day the placement lands, and to
+    // be rewritten as the flip of the skipped one below.
+    const grips = screen.getAllByRole("img", { name: /onto the assistant$/ });
+    expect(grips).toHaveLength(2);
+    for (const grip of grips) {
+      expect(grip.getAttribute("draggable")).toBe("true");
+      expect(grip.hasAttribute("tabindex")).toBe(false);
+      expect(grip.tagName).not.toBe("BUTTON");
+    }
+    expect(
+      screen.queryByRole("button", {
+        name: /attach .+ (to|onto) the assistant/i,
+      }),
+    ).toBeNull();
+  });
+
+  // #2770 — enable with the placement Jo picks: the grip becoming a button,
+  // or a named control elsewhere on the row. Written against the ticket's
+  // "Attach <label> to the assistant" wording — adjust the name pattern to
+  // the landed label, nothing else. Either placement must wire the control
+  // to the shared attachReferenceToAssistant handler the drop path uses.
+  it.skip("each row offers a keyboard-operable Attach control wired to the shared handler", () => {
+    const received: TypedReference[] = [];
+    const off = onAssistantAttachRequest((r) => received.push(r));
+    try {
+      mountRows();
+      const controls = screen.getAllByRole("button", {
+        name: /^Attach deploy .+ (to|onto) the assistant$/,
+      });
+      expect(controls).toHaveLength(2);
+      const [first] = controls;
+      if (!first) throw new Error("two rows, two attach controls");
+      first.focus();
+      expect(document.activeElement).toBe(first);
+      // A native control turns Enter/Space into click — the keyboard path IS
+      // the click handler (same idiom as the #2766 keyboard tests above).
+      fireEvent.keyDown(first, { key: "Enter" });
+      fireEvent.click(first);
+      expect(received).toEqual([
+        {
+          kind: "run",
+          ref: "run/0199aaaa-1111-7000-8000-000000000001",
+          label: "deploy",
+        },
+      ]);
+    } finally {
+      off();
+    }
   });
 });
 

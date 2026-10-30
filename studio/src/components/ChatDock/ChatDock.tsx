@@ -31,6 +31,10 @@ import { ChatDockShell } from "@/components/ChatDock/ChatDockShell";
 import AttachedReferences from "@/components/ChatDock/AttachedReferences";
 import BotSwitcher from "@/components/ChatDock/BotSwitcher";
 import {
+  attachReferenceToAssistant,
+  onAssistantAttachRequest,
+} from "@/lib/chatDock/attachToAssistant";
+import {
   attachReference,
   detachReference,
   hasReferenceDrag,
@@ -265,7 +269,8 @@ function AssistantDock({
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed);
   const leftInset = focusMode ? 0 : sidebarWidthPx(sidebarCollapsed);
 
-  // What the operator DROPPED in, cleared once it has gone out with a
+  // What the operator ATTACHED (dropped in, or sent through
+  // attachReferenceToAssistant), cleared once it has gone out with a
   // message. Held here rather than in the session because it belongs to the
   // message being composed, not to the conversation.
   const [attached, setAttached] = useState<readonly TypedReference[]>([]);
@@ -274,6 +279,19 @@ function AssistantDock({
   const detach = useCallback((ref: string) => {
     setAttached((cur) => detachReference(cur, ref));
   }, [setAttached]);
+
+  // The receiving end of the ONE attach action (attachToAssistant.ts): the
+  // drop below routes through it, and so will the keyboard/single-pointer
+  // control #2770 adds next to each drag grip. Either way the reference
+  // lands on the message being composed — deduped, capped, drop-ordered by
+  // attachReference.
+  useEffect(
+    () =>
+      onAssistantAttachRequest((ref) =>
+        setAttached((cur) => attachReference(cur, ref)),
+      ),
+    [setAttached],
+  );
 
   const initialReference = contextState === "pending" ? reference : null;
   const initialPage = initialReference ? activePage : null;
@@ -475,8 +493,11 @@ function AssistantDock({
     if (!dropped) return;
     e.preventDefault();
     e.stopPropagation();
-    setAttached((cur) => attachReference(cur, dropped));
-  }, [setAttached, setDragOver]);
+    // The drop is one GESTURE reaching the shared attach action, not an
+    // attach path of its own — the keyboard/single-pointer control #2770
+    // adds calls the same function.
+    attachReferenceToAssistant(dropped);
+  }, [setDragOver]);
 
   // An offer belongs to a reply. The offers are built from the latest run
   // artifact carrying their field, and the agent node publishes that
