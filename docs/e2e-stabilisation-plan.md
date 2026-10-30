@@ -132,6 +132,16 @@ re-measuring it.
   that row's test would really fail on the regression.
 - **Stays paid**: nothing. The compiler runs on stubs by design.
 - **Budget**: two rows to read, minutes, no money.
+- **Read** (2026-10-30, #2792): both rows stay `unit-only`. `dsl.expr` — the
+  evaluator is pure and exhaustively asserted in `pkg/dsl/expr`; its two
+  engine effects each have a deterministic carrier that would fail on a
+  broken evaluator (`dsl.node-compute` asserts the computed artifact value;
+  the `when:`-expression path is driven through `edgeWhenHolds` by the
+  review-topology e2e's `if(…, …, loop.review_loop.iteration % 2 == 1)`
+  edge). `dsl.parser-fuzz` — the operator-visible promise (a diagnostic, not
+  a panic) is carried by `dsl.diagnostics`' `TestValidate_Invalid`, where a
+  parser panic would kill the test process. The matrix notes were sharpened
+  to name these carriers.
 
 ### 2. Runtime — #2793 (epic #1403)
 
