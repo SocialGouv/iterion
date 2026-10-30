@@ -101,6 +101,8 @@ vi.mock("@/components/ui/InlineBanner", async (importOriginal) => {
 import BundleFilesDrawer from "./BundleFilesDrawer";
 import { useEditBuffersStore } from "@/store/editBuffers";
 import { useUIStore } from "@/store/ui";
+import { onAssistantAttachRequest } from "@/lib/chatDock/attachToAssistant";
+import type { TypedReference } from "@/lib/chatDock/routeReference";
 
 afterEach(() => {
   cleanup();
@@ -1126,5 +1128,36 @@ describe("BundleFilesDrawer when the follow question is overtaken", () => {
       expect((screen.getByLabelText("file") as HTMLTextAreaElement).value).toBe(""),
     );
     expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+
+describe("BundleFilesDrawer attach-to-assistant (#2770)", () => {
+  it("each file row's grip is a button that attaches the bot-file reference through the shared channel", async () => {
+    const received: TypedReference[] = [];
+    const off = onAssistantAttachRequest((r) => received.push(r));
+    try {
+      open();
+      // The row still drags as a whole; the grip is its keyboard and
+      // single-pointer path, minting the same reference the drop would —
+      // bot-file is self-labelling, so the chip names the bundle path.
+      const grip = await screen.findByRole("button", {
+        name: "Attach skills/notes.md to the assistant",
+      });
+      expect(grip.getAttribute("draggable")).toBe("true");
+      grip.focus();
+      expect(document.activeElement).toBe(grip);
+      fireEvent.keyDown(grip, { key: "Enter" });
+      fireEvent.click(grip);
+      expect(received).toEqual([
+        {
+          kind: "bot-file",
+          ref: "bot-file/team-1/demo/skills/notes.md",
+          label: "team-1/demo/skills/notes.md",
+        },
+      ]);
+    } finally {
+      off();
+    }
   });
 });

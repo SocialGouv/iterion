@@ -29,6 +29,7 @@ import { useTabsStore } from "@/store/tabs";
 import { useThemeStore } from "@/store/theme";
 import { useUIStore } from "@/store/ui";
 import { referenceDragProps } from "@/lib/chatDock/dragReference";
+import { attachReferenceById } from "@/lib/chatDock/attachToAssistant";
 
 interface Props {
   teamID: string;
@@ -654,6 +655,22 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
                   {...referenceDragProps("bot-file", `${shown.teamID}/${shown.slug}/${rel}`, rel)}
                   className="group flex items-center gap-2 rounded px-2 py-1.5 hover:bg-surface-2"
                 >
+                  {/* The row still drags as a whole; the grip is its keyboard
+                      and single-pointer path (#2770): a real button that
+                      performs the same attach the drop does, minting the
+                      same reference. */}
+                  <button
+                    type="button"
+                    className="shrink-0 cursor-grab select-none text-fg-subtle focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                    aria-label={`Attach ${rel} to the assistant`}
+                    title="Attach to the assistant, or drag the row onto it"
+                    {...referenceDragProps("bot-file", `${shown.teamID}/${shown.slug}/${rel}`, rel)}
+                    onClick={() =>
+                      attachReferenceById("bot-file", `${shown.teamID}/${shown.slug}/${rel}`, rel)
+                    }
+                  >
+                    ⋮⋮
+                  </button>
                   <FileIcon className="h-3.5 w-3.5 shrink-0 text-fg-subtle" />
                   <button
                     type="button"
