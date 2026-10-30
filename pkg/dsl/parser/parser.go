@@ -193,6 +193,11 @@ type parser struct {
 	// blocks is the open-block stack the broken-list resync reads
 	// (openBlocks), kept current with the consumed stream.
 	blocks openBlockStack
+	// closePoint is the memo of the broken-list resync's last close-point
+	// scan (listBlockClosePoint): consecutive resyncs of sibling broken
+	// lists scan suffixes of one region, so the scan's answer is kept and
+	// adjusted rather than recomputed (#2768).
+	closePoint closePointMemo
 	// refusedProp is the property keyword unknownProperty last refused,
 	// which recordProperty leaves out of the declaration's table.
 	refusedProp Token

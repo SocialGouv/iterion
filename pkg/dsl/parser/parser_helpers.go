@@ -528,6 +528,22 @@ func (p *parser) spliceDedents(at, n, line int) {
 		dedents[k] = Token{Type: TokenDedent, Line: line, Column: 1}
 	}
 	p.lex.splice(at, dedents)
+	m := &p.closePoint
+	if m.valid {
+		switch {
+		case at <= m.cursor:
+			// Behind the memo's cursor (the landing line's own splice): the
+			// fresh scans the memo stands for start at or past the cursor and
+			// never count these DEDENTs; the indices shift.
+			m.cursor += n
+			m.at += n
+		case at <= m.at:
+			// Inside the memo's region (the close point's own splice): a
+			// fresh scan counts these DEDENTs against the count to splice.
+			m.n -= n
+			m.at += n
+		}
+	}
 	if at < p.blocks.ti {
 		// The open-block stack read past the splice point: what it read
 		// is no longer the stream, so it starts over (openBlocks).
@@ -536,6 +552,95 @@ func (p *parser) spliceDedents(at, n, line int) {
 }
 
 // listBlockClosePoint scans past a rescued line (at peek index start) for
+// the point where the open block loops above it close — scanBlockClosePoint
+// is the scan. Consecutive resyncs of sibling broken lists in one nested
+// block ask for suffixes of the SAME region (the enclosing block's tail), so
+// the last scan is memoized (closePointMemo) and a later start inside the
+// region is answered from it (#2768): N sibling broken lists cost one scan
+// of the region, not N.
+func (p *parser) listBlockClosePoint(start, col int, cols []int, hosts []string) (at, dedents int, ok bool) {
+	m := &p.closePoint
+	abs := p.lex.ti + start
+	if m.valid && m.col == col && slices.Equal(m.cols, cols) && slices.Equal(m.hosts, hosts) &&
+		abs >= m.cursor && abs < m.at {
+		m.hits++
+		if !m.ok {
+			// The bail the memo holds stands ahead of this start: a fresh
+			// scan meets the same token with the same verdict. (A start AT or
+			// past it re-scans: the scan never checks its own first token.)
+			at, dedents, ok = m.at-p.lex.ti, 0, false
+		} else {
+			// The answer a fresh scan from abs gives is the memo's, minus the
+			// net INDENT−DEDENT of the consumed prefix: the scan's count is
+			// loops + the region's net, and the region lost its [cursor, abs)
+			// prefix.
+			net := 0
+			for k := m.cursor; k < abs; k++ {
+				m.read++
+				switch p.lex.tokens[k].Type {
+				case TokenIndent:
+					net++
+				case TokenDedent:
+					net--
+				}
+			}
+			m.cursor = abs
+			m.n -= net
+			if m.n >= 0 {
+				at, dedents, ok = m.at-p.lex.ti, m.n, true
+			} else {
+				// The count a fresh scan computes at the close is negative:
+				// its bail, not a landing.
+				at, dedents, ok = m.at-p.lex.ti, 0, false
+			}
+		}
+	} else {
+		at, dedents, ok = p.scanBlockClosePoint(start, col, cols, hosts)
+		m.valid, m.ok = true, ok
+		m.col = col
+		m.cols = slices.Clone(cols)
+		m.hosts = slices.Clone(hosts)
+		m.cursor = abs
+		m.at = p.lex.ti + at
+		m.n = dedents
+	}
+	if closePointCheck != nil {
+		closePointCheck(p, start, col, cols, hosts, at, dedents, ok)
+	}
+	return at, dedents, ok
+}
+
+// closePointMemo is the memo of the last close-point scan (#2768): the query
+// (col, and the open-block stack cols/hosts the verdict was read against),
+// the region it covered — cursor, the absolute index of the last start
+// answered, to at, the absolute index of the close point's first content
+// token (of the token the scan bailed on, when ok is false) — and the
+// verdict: ok, and n, the DEDENT count a fresh scan from cursor answers as
+// the stream stands. spliceDedents keeps the indices and the count current
+// (it is the stream's one mutation); a query with a different stack, or a
+// start behind the cursor (a rewind) or at/past at, re-scans.
+type closePointMemo struct {
+	valid  bool
+	ok     bool
+	col    int
+	cols   []int
+	hosts  []string
+	cursor int
+	at     int
+	n      int
+	// read counts the tokens the close-point scans and the memo walks read,
+	// the witness of #2768: over a reading they read the region once. hits
+	// counts the queries the memo answered without a scan.
+	read int
+	hits int
+}
+
+// closePointCheck, when set, is handed every answer listBlockClosePoint
+// gives; the package's tests set it to hold the memo to a from-scratch scan
+// of the same query (close_point_test.go's reference). Nil outside tests.
+var closePointCheck func(p *parser, start, col int, cols []int, hosts []string, at, dedents int, ok bool)
+
+// scanBlockClosePoint scans past a rescued line (at peek index start) for
 // the point where the open block loops above it close: the first line that
 // starts left of col with a property or declaration of its own, or EOF. It
 // returns the peek index of that line's first content token (of the EOF
@@ -546,23 +651,25 @@ func (p *parser) spliceDedents(at, n, line int) {
 // open at and above the rescued line — plus the levels the rescued block's
 // own subtree pushed along the way (their pops sit in the same run, so they
 // join both sides of the count). The count is unsafe — ok is false and the
-// rescue bails — when a line-start lexer diagnosis stands before the point,
-// when the closing line opens a level of its own (an INDENT the splice
-// would have to precede, leaving it with no loop to open), when the line
-// left of col starts with junk no block owns (a second broken list's
-// closer), or when the count goes negative.
-func (p *parser) listBlockClosePoint(start, col int, cols []int, hosts []string) (at, dedents int, ok bool) {
+// rescue bails, at the peek index of the token that refused — when a
+// line-start lexer diagnosis stands before the point, when the closing line
+// opens a level of its own (an INDENT the splice would have to precede,
+// leaving it with no loop to open), when the line left of col starts with
+// junk no block owns (a second broken list's closer), or when the count goes
+// negative.
+func (p *parser) scanBlockClosePoint(start, col int, cols []int, hosts []string) (at, dedents int, ok bool) {
 	lineStart := false
 	lineIndent := false // the line now starting opened with an INDENT
 	depth := 0          // levels the rescued block's own subtree pushed since start
 	pending := 0        // DEDENTs of the line now starting, not yet attributed
 	for j := start; ; j++ {
+		p.closePoint.read++
 		t := p.lex.PeekAt(j)
 		switch {
 		case t.Type == TokenEOF:
 			n := len(cols) - 1 + depth - pending
 			if n < 0 {
-				return 0, 0, false
+				return j, 0, false
 			}
 			return j, n, true
 		case lineEnds(t):
@@ -574,10 +681,10 @@ func (p *parser) listBlockClosePoint(start, col int, cols []int, hosts []string)
 		case t.Type == TokenDedent:
 			pending++
 		case t.Type == TokenError && lineStart:
-			return 0, 0, false
+			return j, 0, false
 		case lineStart && t.Column < col:
 			if lineIndent || tokenAsIdent(t) == "" {
-				return 0, 0, false
+				return j, 0, false
 			}
 			if idx := slices.Index(cols, t.Column); idx > 0 && p.rescueCannotClaim(t, j, hosts[idx]) {
 				// A declaration the still-open block at this column cannot
@@ -587,7 +694,7 @@ func (p *parser) listBlockClosePoint(start, col int, cols []int, hosts []string)
 				// read at the top level once the earlier refusals closed the
 				// blocks. A declaration at the TOP LEVEL's column reads as
 				// itself after the splice, so only an owned column refuses.
-				return 0, 0, false
+				return j, 0, false
 			}
 			loops := 0
 			for _, c := range cols[1:] {
@@ -597,7 +704,7 @@ func (p *parser) listBlockClosePoint(start, col int, cols []int, hosts []string)
 			}
 			n := loops + depth - pending
 			if n < 0 {
-				return 0, 0, false
+				return j, 0, false
 			}
 			return j, n, true
 		default:
@@ -609,7 +716,7 @@ func (p *parser) listBlockClosePoint(start, col int, cols []int, hosts []string)
 					// main read at the top level once the earlier refusals
 					// closed the blocks. The rescue bails; the ordinary
 					// recovery reads it as ever.
-					return 0, 0, false
+					return j, 0, false
 				}
 			}
 			if lineStart {

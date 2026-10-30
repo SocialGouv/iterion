@@ -13,9 +13,12 @@ import (
 // TestMain holds every openBlocks answer of the suite to the replay of the
 // whole consumed stream (replayOpenBlocks): the kept stack of #2626 and the
 // replay it replaces agree at every resync, on every source the suite
-// parses, or the reading panics naming the token.
+// parses, or the reading panics naming the token. And every
+// listBlockClosePoint answer to the from-scratch scan (referenceClosePoint):
+// the memo of #2768 and the scan it stands for agree at every resync.
 func TestMain(m *testing.M) {
 	openBlocksCheck = checkOpenBlocks
+	closePointCheck = checkClosePoint
 	os.Exit(m.Run())
 }
 
