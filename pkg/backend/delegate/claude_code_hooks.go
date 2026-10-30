@@ -617,7 +617,9 @@ var describedByCommand = map[string]bool{"Bash": true, "PowerShell": true, "Moni
 // host-side; the (sandboxed) CLI runs the rewritten command in-container
 // against the bind-mounted rewriter binary (the chain's run env is pinned on
 // both spawns: claudeEnvPins). Under a sandbox the hook consults
-// rewriteSkipsSandboxedTask before installing (#2007).
+// rewriteSkipsSandboxedTask before installing, whose default is to stand the
+// chain down — ITERION_REWRITE_SANDBOX=host restores the previous placement
+// (#2007).
 func (b *ClaudeCodeBackend) installRewriteHook(task Task, opts []claudesdk.Option) []claudesdk.Option {
 	mode := rewrite.ParseMode(task.CompressMode)
 	chain := rewrite.NewChain(task.Rewriters)
@@ -625,7 +627,7 @@ func (b *ClaudeCodeBackend) installRewriteHook(task Task, opts []claudesdk.Optio
 		return opts
 	}
 	if rewriteSkipsSandboxedTask(task) {
-		b.Logger.Warn("[%s#%d/claude-code] sandboxed task: rewriter chain stands down (%s=skip) — Bash commands run in-container verbatim, without the chain's 60–90%% output-token saving",
+		b.Logger.Warn("[%s#%d/claude-code] sandboxed task: rewriter chain stands down (%s, default skip; =host restores the host-side chain) — Bash commands run in-container verbatim, without the chain's 60–90%% output-token saving",
 			task.NodeID, task.Iteration, rewrite.SandboxEnv)
 		return opts
 	}

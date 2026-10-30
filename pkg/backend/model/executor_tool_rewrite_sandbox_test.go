@@ -15,9 +15,9 @@ import (
 // The tool-node half of the #2007 placement decision. A tool node that opted
 // into compression resolves its command through the rewriter chain
 // host-side, even when the command itself runs in-container; the predicate
-// must see the sandbox signal, the default must stay byte-identical to today
-// (the chain runs), and the flipped hatch must stand the chain down and name
-// the knob on the run's log.
+// must see the sandbox signal, the default under a sandbox is to stand the
+// chain down (named on the run's log), and ITERION_REWRITE_SANDBOX=host is
+// the escape hatch restoring the previous byte-identical placement.
 func TestSandboxedToolNodeRewritePlacement(t *testing.T) {
 	build := func(t *testing.T, sandboxed bool, logs *bytes.Buffer) (*ClawExecutor, string) {
 		t.Helper()
@@ -51,13 +51,28 @@ func TestSandboxedToolNodeRewritePlacement(t *testing.T) {
 		}
 	})
 
-	t.Run("default: a sandboxed node's command is still rewritten", func(t *testing.T) {
+	t.Run("default: the chain stands down and names the knob", func(t *testing.T) {
+		var logs bytes.Buffer
+		exec, log := build(t, true, &logs)
+		if got := resolve(exec); got != "echo plain" {
+			t.Errorf("resolved = %q, want the verbatim command", got)
+		}
+		if b, _ := os.ReadFile(log); len(b) != 0 {
+			t.Errorf("the chain ran at the default under a sandbox: rewriter log = %q", b)
+		}
+		if out := logs.String(); !strings.Contains(out, rewrite.SandboxEnv) || !strings.Contains(out, "stands down") {
+			t.Errorf("the stand-down must name %s on the run's log, got: %q", rewrite.SandboxEnv, out)
+		}
+	})
+
+	t.Run("host: a sandboxed node's command is still rewritten", func(t *testing.T) {
+		t.Setenv(rewrite.SandboxEnv, "host")
 		exec, log := build(t, true, nil)
 		if got := resolve(exec); !strings.Contains(got, "echo compressed; echo plain") {
-			t.Errorf("resolved = %q, want the rewritten command (byte-identical to today)", got)
+			t.Errorf("resolved = %q, want the rewritten command (byte-identical to before the flip)", got)
 		}
 		if b, _ := os.ReadFile(log); !strings.Contains(string(b), "echo plain") {
-			t.Errorf("the chain did not run at the default: rewriter log = %q", b)
+			t.Errorf("the chain did not run under %s=host: rewriter log = %q", rewrite.SandboxEnv, b)
 		}
 	})
 

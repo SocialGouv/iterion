@@ -213,22 +213,24 @@ func TestUltraFlagNeverLandsOnTheAgentsLeadingCommand(t *testing.T) {
 }
 
 // SkipsSandbox is the shared resolution of ITERION_REWRITE_SANDBOX both
-// rewrite sites consult (#2007): the chain stands down only for a command
-// that will run inside a sandbox, and only on an explicit "skip".
+// rewrite sites consult (#2007): the chain stands down for a command that
+// will run inside a sandbox unless the operator explicitly pins "host" — the
+// default under a sandbox is skip, and an unknown value resolves to it.
 func TestSkipsSandbox(t *testing.T) {
 	for _, c := range []struct {
 		envValue  string
 		sandboxed bool
 		want      bool
 	}{
-		{"", true, false},             // default: the chain keeps running host-side
-		{"host", true, false},         // explicit default
-		{"skip", true, true},          // the flipped hatch
-		{"SKIP", true, true},          // case-insensitive, like ParseMode
-		{" skip ", true, true},        // whitespace-tolerant
-		{"skip", false, false},        // a host-side command is always rewritten
-		{"bogus", true, false},        // unknown resolves to the default
-		{"in-container", true, false}, // the other #2007 option, not built
+		{"", true, true},             // the default: a sandboxed command skips the chain
+		{"host", true, false},        // the escape hatch: restore the host-side chain
+		{" HOST ", true, false},      // case- and whitespace-tolerant, like ParseMode
+		{"skip", true, true},         // the explicit form of the default
+		{"SKIP", true, true},         // case-insensitive
+		{"skip", false, false},       // a host-side command is always rewritten
+		{"", false, false},           // same on the host
+		{"bogus", true, true},        // unknown resolves to the default (and warns)
+		{"in-container", true, true}, // the other #2007 option, not built
 	} {
 		if got := SkipsSandbox(c.envValue, c.sandboxed); got != c.want {
 			t.Errorf("SkipsSandbox(%q, %v) = %v, want %v", c.envValue, c.sandboxed, got, c.want)

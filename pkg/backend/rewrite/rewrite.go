@@ -41,12 +41,14 @@ const ModeEnv = "ITERION_COMPRESS"
 // still runs HOST-SIDE for a task whose commands execute inside a sandbox
 // (#2007). The chain rewrites a command in the launcher/engine process and
 // the sandboxed CLI or tool node runs the rewritten command in-container, so
-// under the default ("host", also every unset/unknown value) each Bash
-// command of a sandbox-requested run passes through a host-side subprocess
-// the sandbox boundary otherwise excludes. "skip" stands the chain down for
-// sandboxed tasks — their commands run verbatim in-container, forgoing the
-// rewrite's 60–90% output-token saving on those runs. The knob only makes
-// the flip consultable ahead of the product decision; it does not take it.
+// under the previous placement each Bash command of a sandbox-requested run
+// passed through a host-side subprocess the sandbox boundary otherwise
+// excludes. The default is "skip" (also every unset/unknown value): the chain
+// stands down for sandboxed tasks, their commands run verbatim in-container,
+// and the stand-down is named on the run's log at each site it engages —
+// sandboxed runs forgo the rewrite's 60–90% output-token saving. "host"
+// restores the previous placement byte-identical; "skip" is the explicit
+// form of the default.
 const SandboxEnv = "ITERION_REWRITE_SANDBOX"
 
 // SandboxValues lists the values SandboxEnv accepts, for warnings.
@@ -54,15 +56,18 @@ var SandboxValues = []string{"host", "skip"}
 
 // SkipsSandbox resolves the placement decision both rewrite sites consult
 // (the claude_code PreToolUse hook and the tool-node recipe), each through
-// its own named predicate: true only when the command will execute inside a
-// sandbox AND the operator set SandboxEnv=skip. A non-sandboxed command is
+// its own named predicate: true whenever the command will execute inside a
+// sandbox AND the operator did not explicitly pin SandboxEnv=host. The
+// default under a sandbox is to skip; "host" is the greppable escape hatch
+// restoring the previous host-side placement. A non-sandboxed command is
 // always rewritten, whatever the knob.
 func SkipsSandbox(envValue string, sandboxed bool) bool {
-	return sandboxed && strings.EqualFold(strings.TrimSpace(envValue), "skip")
+	return sandboxed && !strings.EqualFold(strings.TrimSpace(envValue), "host")
 }
 
 // InvalidSandboxEnv reports a non-empty SandboxEnv value that names no known
-// placement, so the reader can warn once (the value resolves to "host").
+// placement, so the reader can warn once (the value resolves to the default,
+// "skip").
 func InvalidSandboxEnv(envValue string) bool {
 	switch strings.ToLower(strings.TrimSpace(envValue)) {
 	case "", "host", "skip":

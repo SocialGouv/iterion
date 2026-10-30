@@ -558,11 +558,12 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			// runs it with the value (rtk records every command it runs).
 			// The rewrite runs host-side, in this engine process, even when the
 			// command itself runs in-container — sandboxSkipsRewrite is the one
-			// predicate consulting that sandbox signal (#2007).
+			// predicate consulting that sandbox signal, and its default under a
+			// sandbox is to stand the chain down (#2007).
 			if m := rewrite.ResolveToolNode(e.compressOverride, node.Compress); m.Enabled() && !e.secretGuard.NamesMaterializableSecret(resolved) && !e.secretGuard.NamesEnvOnlySecret(resolved) {
 				if e.sandboxSkipsRewrite() {
 					if e.logger != nil {
-						e.logger.Warn("tool node %q: rewriter chain stands down (%s=skip) — the sandboxed command runs in-container verbatim, without the chain's 60–90%% output-token saving",
+						e.logger.Warn("tool node %q: rewriter chain stands down (%s, default skip; =host restores the host-side chain) — the sandboxed command runs in-container verbatim, without the chain's 60–90%% output-token saving",
 							node.ID, rewrite.SandboxEnv)
 					}
 				} else if rewritten, changed := e.chain.Rewrite(ctx, m, resolved); changed {
@@ -1393,10 +1394,11 @@ func (e *ClawExecutor) nodeOptsOutOfSandbox(_ nodeOptOut) bool {
 
 // sandboxSkipsRewrite is the tool-node half of the #2007 placement decision:
 // the one predicate consulting the sandbox signal before a tool node's
-// command goes through the rewriter chain host-side. The knob's value is
-// read once at construction (rewriteSandboxEnv); a node that opted out of
-// the sandbox runs its command on the host, so the host-side rewrite costs
-// the boundary nothing there.
+// command goes through the rewriter chain host-side. Its default under a
+// sandbox is to skip; ITERION_REWRITE_SANDBOX=host restores the previous
+// placement. The knob's value is read once at construction
+// (rewriteSandboxEnv); a node that opted out of the sandbox runs its command
+// on the host, so the host-side rewrite costs the boundary nothing there.
 func (e *ClawExecutor) sandboxSkipsRewrite() bool {
 	sandboxed := e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut)
 	return rewrite.SkipsSandbox(e.rewriteSandboxEnv, sandboxed)

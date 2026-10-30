@@ -36,11 +36,11 @@ func TestRewriteSkipsSandboxedTaskSeesTheSandboxSignal(t *testing.T) {
 		env  string
 		want bool
 	}{
-		{"host task, hatch flipped", Task{}, "skip", false},
-		{"sandboxed, hatch at default", Task{Sandbox: stubSandboxRun{}}, "", false},
+		{"host task, knob unset", Task{}, "", false},
+		{"sandboxed, the default skips", Task{Sandbox: stubSandboxRun{}}, "", true},
 		{"sandboxed, explicit host", Task{Sandbox: stubSandboxRun{}}, "host", false},
-		{"sandboxed, hatch flipped", Task{Sandbox: stubSandboxRun{}}, "skip", true},
-		{"noop passthrough is not a sandbox", Task{Sandbox: noopLikeRun{}}, "skip", false},
+		{"sandboxed, explicit skip", Task{Sandbox: stubSandboxRun{}}, "skip", true},
+		{"noop passthrough is not a sandbox", Task{Sandbox: noopLikeRun{}}, "", false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Setenv(rewrite.SandboxEnv, c.env)
@@ -51,25 +51,39 @@ func TestRewriteSkipsSandboxedTaskSeesTheSandboxSignal(t *testing.T) {
 	}
 }
 
-// With the hatch at its default a sandboxed task's hook installs exactly as
-// before (the chain still runs host-side — byte-identical behaviour); with
-// the hatch flipped the hook is NOT installed and the stand-down is named on
-// the node's log. installRewriteHook appends exactly one option when it
-// installs the hook, so the opts length is the installation witness.
+// Under a sandbox the hook stands down by default: the chain no longer runs
+// host-side, the stand-down is named on the node's log, and the knob's "host"
+// value is the greppable escape hatch restoring the previous byte-identical
+// placement. installRewriteHook appends exactly one option when it installs
+// the hook, so the opts length is the installation witness.
 func TestInstallRewriteHookUnderTheSandboxHatch(t *testing.T) {
 	task := rewriteCapableTask(t)
 	base := []claudesdk.Option{claudesdk.WithModel("m")}
 
-	t.Run("default: the chain still installs for a sandboxed task", func(t *testing.T) {
+	t.Run("default: the hook stands down for a sandboxed task and names the knob", func(t *testing.T) {
+		task := task
+		task.Sandbox = stubSandboxRun{}
+		var logs bytes.Buffer
+		b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelWarn, &logs)}
+		if got := b.installRewriteHook(task, base); len(got) != len(base) {
+			t.Errorf("hook installed at the default under a sandbox: %d opts, want %d", len(got), len(base))
+		}
+		if out := logs.String(); !bytes.Contains(logs.Bytes(), []byte(rewrite.SandboxEnv)) || !bytes.Contains(logs.Bytes(), []byte("stands down")) {
+			t.Errorf("the stand-down must name %s on the node's log, got: %q", rewrite.SandboxEnv, out)
+		}
+	})
+
+	t.Run("host: the chain still installs for a sandboxed task", func(t *testing.T) {
+		t.Setenv(rewrite.SandboxEnv, "host")
 		task := task
 		task.Sandbox = stubSandboxRun{}
 		var logs bytes.Buffer
 		b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelWarn, &logs)}
 		if got := b.installRewriteHook(task, base); len(got) != len(base)+1 {
-			t.Errorf("hook not installed at the default: %d opts, want %d", len(got), len(base)+1)
+			t.Errorf("hook not installed under %s=host: %d opts, want %d", rewrite.SandboxEnv, len(got), len(base)+1)
 		}
 		if logs.Len() != 0 {
-			t.Errorf("the default path must stay silent, logged: %s", logs.String())
+			t.Errorf("the host escape hatch must stay silent, logged: %s", logs.String())
 		}
 	})
 

@@ -157,7 +157,7 @@ var writableBotVars = map[string]string{
 	"ITERION_VERIFIED_ACTION_MODEL":      whyModel,
 
 	"ITERION_COMPRESS":                     whyMode,
-	"ITERION_REWRITE_SANDBOX":              "where the rewriter chain runs for a sandboxed task: host (the default) or skip, which can only drop the token saving, never lift a guard",
+	"ITERION_REWRITE_SANDBOX":              "where the rewriter chain runs for a sandboxed task: skip (the default) or host, which can only restore the token saving at the boundary's expense, never lift a guard",
 	"ITERION_CLAW_COMPACT_PRESERVE_RECENT": whyMode,
 	"ITERION_CLAW_COMPACT_THRESHOLD_RATIO": whyMode,
 	"ITERION_SUPERVISORS":                  "whether a bot's declared supervisors spawn, under the run-level --supervisors override",
