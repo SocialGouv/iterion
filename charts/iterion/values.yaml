@@ -709,9 +709,26 @@ containerSecurityContext:
       - ALL
   readOnlyRootFilesystem: false  # node_modules + git index need rw
 
-# --- Network policy (egress allowlist) ------------------------------
+# --- Network policy (ingress scoping + egress allowlist) --------------
 networkPolicy:
   enabled: false
+  ingress:
+    # Namespaces whose pods may dial the server port directly — the ingress
+    # controller's namespaces (e.g. ["ingress-nginx"]). Matched on the
+    # kubernetes.io/metadata.name label the kube-apiserver stamps on every
+    # namespace since 1.22. Anything else in the cluster that reaches the
+    # server port can forge X-Forwarded-For (#2804), so name the controller
+    # namespaces here once networkPolicy.enabled is on. Empty (with
+    # extraAllow empty) keeps the historical admit-all rule for now — the
+    # empty-config verdict (warn vs refuse) is an open question (#2804,
+    # question 51), so say what your controller is rather than leaving this
+    # empty.
+    controllerNamespaces: []
+    # Escape hatch, the twin of egress.extraAllow: extra ingress peers for
+    # the server port, as NetworkPolicyPeer objects (ipBlock for kubectl
+    # port-forward's node source, a namespaceSelector for a controller that
+    # lives elsewhere, ...).
+    extraAllow: []
   egress:
     # Chart users add their LLM endpoints, Mongo URI host, NATS host,
     # S3 endpoint host here. Empty list = deny-all egress (rarely

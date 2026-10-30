@@ -316,6 +316,18 @@ defaults + `egress.extraAllow`. There is no auto-detection of bundled
 sub-charts; if you run the dev stores (`devStack.*`), add the
 matching `egress.extraAllow` entry.
 
+The server port's ingress is scoped the same way (#2804): name your
+ingress controller's namespaces in `networkPolicy.ingress.controllerNamespaces`
+(matched on the `kubernetes.io/metadata.name` label every namespace
+carries since 1.22) so the rule admits the controller's pods and the
+release's own — anything else in the cluster that can dial the server
+port directly can forge `X-Forwarded-For` (the audit IP, the
+rate-limit key). `networkPolicy.ingress.extraAllow` is the escape
+hatch (an `ipBlock` for `kubectl port-forward`'s node source, a
+controller living elsewhere). With neither set, the rule keeps the
+historical admit-all render for now — the empty-config verdict (warn
+vs refuse) is an open question on the ticket.
+
 ## NATS monitoring endpoint (KEDA)
 
 KEDA's NATS JetStream scaler scrapes `/jsz` on the **monitoring**

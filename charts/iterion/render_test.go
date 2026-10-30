@@ -1135,6 +1135,137 @@ func TestChartRenderDevStack(t *testing.T) {
 	judgeClean(t, out, 4)
 }
 
+// #2804: the server port reads X-Forwarded-For (#2673), so an ingress rule
+// that admits every pod of the cluster lets any in-cluster workload forge
+// the audit IP and rotate the rate-limit key. The rule must be scoped to
+// the ingress controller's namespaces plus the release's own pods, with
+// networkPolicy.ingress.extraAllow as the operator's escape hatch.
+func TestChartRenderNetworkPolicyServerIngress(t *testing.T) {
+	// serverRule returns the ingress rule that carries the server port.
+	serverRule := func(t *testing.T, docs []map[string]any) map[string]any {
+		t.Helper()
+		rules, _ := dig(must(t, docs, "NetworkPolicy", "iterion"), "spec", "ingress").([]any)
+		for _, r := range rules {
+			rm, _ := r.(map[string]any)
+			ports, _ := dig(rm, "ports").([]any)
+			for _, p := range ports {
+				if fmt.Sprint(dig(p, "port")) == "4891" {
+					return rm
+				}
+			}
+		}
+		t.Fatalf("no ingress rule carries the server port")
+		return nil
+	}
+	fromPeers := func(rule map[string]any) []any {
+		peers, _ := dig(rule, "from").([]any)
+		return peers
+	}
+
+	t.Run("configured controller namespaces scope the server port", func(t *testing.T) {
+		docs := manifests(t, mustRender(t, "-f", "values-dev.yaml", "--set", "networkPolicy.enabled=true",
+			"--set", "networkPolicy.ingress.controllerNamespaces[0]=ingress-nginx"))
+		rule := serverRule(t, docs)
+		peers := fromPeers(rule)
+		if len(peers) == 0 {
+			t.Fatalf("the server port rule carries no from: selector — every in-cluster pod can forge X-Forwarded-For (#2804)")
+		}
+		var namespacePeer, releasePeer bool
+		for _, peer := range peers {
+			if got := dig(peer, "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name"); got == "ingress-nginx" {
+				namespacePeer = true
+			}
+			if sel := dig(peer, "podSelector"); sel != nil {
+				// The release's own pods, read from the rendered pod
+				// templates, never typed by hand.
+				for _, name := range []string{"iterion", "iterion-runner"} {
+					labels := stringMap(dig(must(t, docs, "Deployment", name), "spec", "template", "metadata", "labels"))
+					matched, err := rendergate.SelectorMatches(sel, labels)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !matched {
+						t.Errorf("the release-pods peer must admit %s's pods", name)
+					}
+				}
+				foreign := map[string]string{"app.kubernetes.io/name": "other", "app.kubernetes.io/instance": "other"}
+				if matched, err := rendergate.SelectorMatches(sel, foreign); err != nil {
+					t.Fatal(err)
+				} else if matched {
+					t.Errorf("the release-pods peer admits foreign pods")
+				}
+				releasePeer = true
+			}
+		}
+		if !namespacePeer {
+			t.Errorf("no namespaceSelector peer on kubernetes.io/metadata.name=ingress-nginx, got %v", peers)
+		}
+		if !releasePeer {
+			t.Errorf("no podSelector peer for the release's own pods, got %v", peers)
+		}
+	})
+
+	t.Run("extraAllow is the escape hatch", func(t *testing.T) {
+		docs := manifests(t, mustRender(t, "-f", "values-dev.yaml", "--set", "networkPolicy.enabled=true",
+			"--set-json", `networkPolicy.ingress.extraAllow=[{"ipBlock":{"cidr":"10.0.0.0/8"}}]`))
+		peers := fromPeers(serverRule(t, docs))
+		var ipBlock, releasePeer bool
+		for _, peer := range peers {
+			if dig(peer, "ipBlock", "cidr") == "10.0.0.0/8" {
+				ipBlock = true
+			}
+			if dig(peer, "podSelector") != nil {
+				releasePeer = true
+			}
+		}
+		if !ipBlock {
+			t.Errorf("the operator's extraAllow ipBlock is not among the peers, got %v", peers)
+		}
+		if !releasePeer {
+			t.Errorf("extraAllow alone must still admit the release's own pods, got %v", peers)
+		}
+	})
+
+	t.Run("unconfigured keeps the historical admit-all until question 51 lands", func(t *testing.T) {
+		// TODO(#2804, question 51 of questions-jo-20261028.md): the
+		// empty-config verdict — warn loudly vs refuse the render — is
+		// Jo's. Until it lands, a render with the policy on and nothing
+		// configured keeps today's behaviour, and this subtest pins THAT
+		// so the decision, once taken, is made here rather than drifted
+		// into.
+		docs := manifests(t, mustRender(t, "-f", "values-dev.yaml", "--set", "networkPolicy.enabled=true"))
+		if from := dig(serverRule(t, docs), "from"); from != nil {
+			t.Errorf("no controllerNamespaces and no extraAllow must render no from: (today's behaviour), got %v", from)
+		}
+	})
+
+	t.Run("the metrics port stays a rule of its own", func(t *testing.T) {
+		docs := manifests(t, mustRender(t, "-f", "values-dev.yaml", "--set", "networkPolicy.enabled=true", "--set", "metrics.enabled=true",
+			"--set", "networkPolicy.ingress.controllerNamespaces[0]=ingress-nginx"))
+		for _, p := range dig(serverRule(t, docs), "ports").([]any) {
+			if fmt.Sprint(dig(p, "port")) == "9090" {
+				t.Errorf("the metrics port rides the scoped rule: scoping it with the server port would break Prometheus scraping on upgrade")
+			}
+		}
+		rules, _ := dig(must(t, docs, "NetworkPolicy", "iterion"), "spec", "ingress").([]any)
+		var metricsRule map[string]any
+		for _, r := range rules {
+			rm, _ := r.(map[string]any)
+			for _, p := range dig(rm, "ports").([]any) {
+				if fmt.Sprint(dig(p, "port")) == "9090" {
+					metricsRule = rm
+				}
+			}
+		}
+		if metricsRule == nil {
+			t.Fatalf("no ingress rule carries the metrics port")
+		}
+		if from := dig(metricsRule, "from"); from != nil {
+			t.Errorf("the metrics rule keeps today's unscoped render, got from: %v", from)
+		}
+	})
+}
+
 // The server's progress deadline: a knob the cloud Deployment carries and
 // the local StatefulSet must never grow. `helm install --wait` reads a
 // Deployment past its deadline as Failed even when the pod turns Ready a

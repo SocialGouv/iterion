@@ -90,6 +90,13 @@ nats:
 
 networkPolicy:
   enabled: true
+  # #2804: the server port's ingress is scoped to the ingress controller's
+  # namespaces (+ the release's own pods) once controllerNamespaces names
+  # them; left empty the rule keeps the historical admit-all (the
+  # empty-config verdict is an open question — see the values.yaml comment).
+  # Name your controller's namespace, e.g.:
+  # ingress:
+  #   controllerNamespaces: ["ingress-nginx"]
   # NetworkPolicy egress is deny-all-by-default. Without entries
   # below, server + runner pods can only resolve DNS — every Mongo,
   # NATS, S3, and LLM endpoint call will time out. Uncomment and

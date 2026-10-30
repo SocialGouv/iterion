@@ -23,12 +23,48 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # Allow all in-cluster traffic to the server port; the Ingress
-    # controller (or kubectl port-forward) is the public entry point.
-    - ports:
+    # The server port answers the ingress controller's pods and the
+    # release's own, nobody else's: any other in-cluster pod that reached
+    # it directly could set its own X-Forwarded-For — forging the audit IP
+    # and rotating the rate-limit key, the in-cluster half of #2673's
+    # evasion (#2804). The controller's namespaces are the operator's
+    # (networkPolicy.ingress.controllerNamespaces), matched on the
+    # kubernetes.io/metadata.name label the kube-apiserver stamps on every
+    # namespace since 1.22 — the idiom the kube-dns egress below uses;
+    # networkPolicy.ingress.extraAllow is the escape hatch (kubectl
+    # port-forward, a controller that lives elsewhere), the twin of
+    # egress.extraAllow.
+    #
+    # TODO(#2804, question 51 of questions-jo-20261028.md): with the policy
+    # enabled and NEITHER controllerNamespaces nor extraAllow set, this
+    # rule renders with no from: and admits all in-cluster traffic —
+    # today's behaviour, kept while the empty-config verdict (warn loudly
+    # vs refuse the render) is Jo's. The render test pins the selector
+    # when configured.
+    - {{- if or .Values.networkPolicy.ingress.controllerNamespaces .Values.networkPolicy.ingress.extraAllow }}
+      from:
+        # The release's own pods (server self-checks, the runner's calls).
+        - podSelector:
+            matchLabels:
+              {{- include "iterion.selectorLabels" . | nindent 14 }}
+        {{- range .Values.networkPolicy.ingress.controllerNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+        {{- with .Values.networkPolicy.ingress.extraAllow }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      ports:
         - port: {{ .Values.server.port }}
           protocol: TCP
         {{- if .Values.metrics.enabled }}
+    # The metrics port stays a rule of its own, unscoped as today:
+    # Prometheus scrapes from a namespace of the operator's, and scoping it
+    # with the server port's from: would break scraping on upgrade without
+    # a word. #2804 is about the port that reads X-Forwarded-For.
+    - ports:
         - port: {{ .Values.server.metricsPort }}
           protocol: TCP
         {{- end }}
