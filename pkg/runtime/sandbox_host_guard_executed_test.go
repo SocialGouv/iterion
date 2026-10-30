@@ -692,6 +692,55 @@ func TestTheEphemeralHomeIsBackedByATmpfsEvenWithoutTheUIDRemap(t *testing.T) {
 	}
 }
 
+// The uid slice one branch over: the host-UID remap aligns the HOST's own
+// user only — applyHostUIDRemap declines a devcontainer pinned to a foreign
+// numeric user and says so — so laying the ephemeral homes uid=<host> under
+// a 2234 container is a home that container cannot WRITE. This is the exact
+// condition the scratch and the caches answer by skipping (the foreignUID
+// guard), and the ephemeral homes must answer it the same way: unaligned,
+// so homeTmpfsEntries hands them to the pinned user.
+func TestAForeignPinnedUserGetsEphemeralHomesItsContainerCanWrite(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("the foreign-uid slice needs a non-root engine: a root host never aligns, so uid<0 already holds")
+	}
+	home, _, spec := guardedHomeMountsForUser(t, "2234")
+	tmpfsAt := func(entries []string, dir string) string {
+		for _, e := range entries {
+			if strings.HasPrefix(e, dir+":") {
+				return e
+			}
+		}
+		return ""
+	}
+	for _, dir := range []string{filepath.Join(home, ".claude"), filepath.Join(home, ".codex")} {
+		entry := tmpfsAt(spec.Tmpfs, dir)
+		if entry == "" {
+			t.Fatalf("%s is neither bound nor backed by a tmpfs — the in-sandbox CLI has no home to write: %v", dir, spec.Tmpfs)
+		}
+		if strings.Contains(entry, "uid="+strconv.Itoa(os.Getuid())) {
+			t.Errorf("%q is owned by the HOST uid %d while the container runs as 2234 — the CLI cannot write its own home; the scratch and the caches skip this exact condition", entry, os.Getuid())
+		}
+		if !strings.Contains(entry, "uid=2234") {
+			t.Errorf("%q does not hand the ephemeral home to the container's pinned user 2234: %v", entry, spec.Tmpfs)
+		}
+	}
+}
+
+// guardedHomeMountsForUser is guardedHomeMounts with a spec.User, for the
+// witnesses that hold a pinned-user slice of the plan.
+func guardedHomeMountsForUser(t *testing.T, user string) (home, iterionHome string, spec *sandbox.Spec) {
+	t.Helper()
+	home, iterionHome = executedSurfaceHome(t)
+	guard := newHostConfigGuard(iterlog.Nop())
+	if guard == nil {
+		t.Fatal("the guard is on by default")
+	}
+	spec = &sandbox.Spec{User: user}
+	applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()}, guard,
+		func(store.EventType, map[string]any) error { return nil }, iterlog.Nop())
+	return home, iterionHome, spec
+}
+
 // The class the posture inversion closes is the one NO list names: with
 // ~/.claude a read-write bind, every path the overlay list did not enumerate
 // reached the operator's home — including shell code the host's own Bash tool

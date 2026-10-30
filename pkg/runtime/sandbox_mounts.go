@@ -276,14 +276,27 @@ func applyHostStateMounts(
 	guard *hostConfigGuard,
 	emitEvent func(store.EventType, map[string]any) error,
 	logger *iterlog.Logger,
-) (sharedStateDir string) {
+) (sharedStateDir string, err error) {
 	resolvedHostState, hsSource := pickHostState(workflowHostState(wf), p.HostStateOverride, p.HostStateDefault)
 	spec.HostState = sandbox.HostState(resolvedHostState)
+	absWorkspace, absErr := filepath.Abs(p.WorkspacePath)
+	if absErr != nil {
+		absWorkspace = p.WorkspacePath
+	}
+	// The workspace bind is not host_state-gated (the driver derives it from
+	// RunInfo.WorkspacePath whatever this plan decides), so its #2069 border
+	// question is asked on BOTH branches — the source under the store is
+	// plantable by any run alive between the plan and the creation, mounted
+	// home or not.
+	if err := guard.guardWorkspaceBind(spec, absWorkspace); err != nil {
+		return "", err
+	}
 	if !spec.HostState.Active() {
 		seedGitIdentityEnv(spec, p.WorkspacePath, logger)
 		// The worktree .git bind is not host_state-gated, so its #2069
 		// shadows apply here too — and the one audit event carries them.
 		guard.guardWorktreeGit(spec, p.WorktreeGitDir)
+		spec.BindSourceChecks = append(spec.BindSourceChecks, guard.verifiedBindSources()...)
 		disabled := map[string]any{
 			"enabled": false,
 			"source":  hsSource,
@@ -292,13 +305,9 @@ func applyHostStateMounts(
 			disabled["guarded"] = guarded
 		}
 		_ = emitEvent(store.EventSandboxHostStateMounted, disabled)
-		return ""
+		return "", nil
 	}
 
-	absWorkspace, absErr := filepath.Abs(p.WorkspacePath)
-	if absErr != nil {
-		absWorkspace = p.WorkspacePath
-	}
 	// Workspace at host's absolute path keeps cwd-derived state
 	// (Claude Code project key, ${PROJECT_DIR}, absolute-path tool
 	// args) resolvable identically in/out container. Preserve any
@@ -592,7 +601,18 @@ func applyHostStateMounts(
 		uid, gid := -1, -1
 		if goruntime.GOOS == "linux" {
 			if u := os.Getuid(); u != 0 {
-				uid, gid = u, os.Getgid()
+				// A container pinned to a FOREIGN numeric user keeps the
+				// unaligned posture (uid<0): homeTmpfsEntries then lays the
+				// ephemeral homes owned by the pinned user — the same answer
+				// the scratch and the caches give this condition by skipping,
+				// and the one applyHostUIDRemap already declines to override.
+				// Host-uid-owned tmpfs under a 2234 container is a home that
+				// container cannot write.
+				if fu, ok := parseUserUID(spec.User); ok && fu != u {
+					uid, gid = -1, -1
+				} else {
+					uid, gid = u, os.Getgid()
+				}
 			}
 		}
 		spec.Tmpfs = append(spec.Tmpfs, homeTmpfsEntries(
@@ -629,6 +649,10 @@ func applyHostStateMounts(
 	// nested binds parents-first by destination depth, so these overlays
 	// win over the tree bind addWorktreeGitMount appends later.
 	guard.guardWorktreeGit(spec, p.WorktreeGitDir)
+	// Every source the plan verified rides the border field: the scratch and
+	// the caches name themselves at their own sites; everything a shadow
+	// asked checkBindSource about is recorded by the guard and flushed here.
+	spec.BindSourceChecks = append(spec.BindSourceChecks, guard.verifiedBindSources()...)
 
 	mounted := map[string]any{
 		"enabled":          true,
@@ -649,7 +673,7 @@ func applyHostStateMounts(
 		mounted["home_not_mounted"] = os.Getenv(store.HomeEnvName())
 	}
 	_ = emitEvent(store.EventSandboxHostStateMounted, mounted)
-	return sharedStateDir
+	return sharedStateDir, nil
 }
 
 // operatorsIterionHome returns the iterion home host_state may bind-mount

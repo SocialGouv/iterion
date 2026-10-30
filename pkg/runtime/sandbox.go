@@ -647,7 +647,15 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 			hostGuard.cleanup()
 		}
 	}()
-	sharedStateDir := applyHostStateMounts(spec, p.Workflow, p, hostGuard, emitEvent, logger)
+	sharedStateDir, err := applyHostStateMounts(spec, p.Workflow, p, hostGuard, emitEvent, logger)
+	if err != nil {
+		// The workspace bind source failed the plan-time ask: not the tree
+		// the engine laid. Refusing the run here is the only honest
+		// posture — unlike the scratch there is no cold skip for a
+		// workspace, and the border re-ask would refuse the same source
+		// after the pull and the build.
+		return nil, fmt.Errorf("runtime: sandbox: %w", err)
+	}
 	// Back ${PROJECT_SCRATCH_DIR} with a host dir so a parent and its
 	// sub-bot children — separate runs in separate containers — can hand
 	// work to each other through it. AFTER applyHostStateMounts because it

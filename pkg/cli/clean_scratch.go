@@ -28,12 +28,22 @@ type CleanedScratch struct {
 // (<repo>/.iterion) does not — ${PROJECT_SCRATCH_DIR} always resolves into
 // the global data dir, keyed by the repo root, which is this store's
 // parent.
+//
+// The anchor is the INHERITED data dir, and "" — the operator named no
+// home — maps nothing: a project `.env` that plants ITERION_HOME must not
+// move the root this sweep deletes under, any more than it can for the
+// engine's own sweep.
 func scratchRootForStore(storeDir string) string {
-	projects := filepath.Join(absStore(store.GlobalIterionDataDir()), "projects")
+	chosen := store.InheritedIterionDataDir()
+	if chosen == "" {
+		return ""
+	}
+	dataDir := absStore(chosen)
+	projects := filepath.Join(dataDir, "projects")
 	if strings.HasPrefix(storeDir, projects+string(os.PathSeparator)) {
 		return filepath.Join(storeDir, "scratch")
 	}
-	return memory.WorkspaceScratchDir(filepath.Dir(storeDir))
+	return memory.WorkspaceScratchDirInherited(filepath.Dir(storeDir))
 }
 
 // sweepStoreScratch reclaims the stale entries of every store's scratch
@@ -96,7 +106,15 @@ func sweepStoreScratch(stores []string, opts CleanOptions, now func() time.Time,
 // worktree sweep and the scratch sweep all walked past it. The store belongs
 // to the GLOBAL iterion home, so it is swept once, not per store.
 func sweepSandboxCaches(opts CleanOptions, now func() time.Time, r *CleanResult) {
-	storeDir := iterruntime.SandboxCacheStoreDir(absStore(store.GlobalIterionDataDir()))
+	chosen := store.InheritedIterionDataDir()
+	if chosen == "" {
+		// A planted ITERION_HOME names no operator home, and the sweep
+		// refuses to take its deletion root from one — the engine's sweep
+		// and the mount plan answer the same value the same way.
+		r.ScratchErrors = append(r.ScratchErrors, "the sandbox caches are not swept: no iterion home the operator chose resolves (ITERION_HOME is unset, planted by a project .env, or the home is unavailable)")
+		return
+	}
+	storeDir := iterruntime.SandboxCacheStoreDir(absStore(chosen))
 	if storeDir == "" {
 		return
 	}

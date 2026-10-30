@@ -478,13 +478,22 @@ runs when the PLAN is built — before the driver pulls the image, which is
 minutes. A sandboxed run alive through that window can swap a verified leaf
 for a symlink and choose where the next creation's mount lands (measured on
 docker 29: plan verified, leaf swapped, creation wrote the attacker's host
-path through the emitted mount string). So the plan names every source it
-verified — the project scratch and the five caches, in
-`Spec.BindSourceChecks` — and the driver re-asks the same question
-immediately before the create command. A source that no longer verifies
-refuses the creation, naming the swap and where the leaf now points; the
-retry self-heals, because the guard then sees the planted leaf at plan time
-and skips the bind cold. **Said plainly: the race itself is irreducible.**
+path through the emitted mount string). So the plan names EVERY source it
+verified — whatever a shadow asked `checkBindSource` about, the scratch,
+the caches, the overlays — in `Spec.BindSourceChecks`, plus the run's own
+workspace: the one bind the DRIVER derives from run metadata rather than
+from this plan, read-write, and for a worktree run under the same home. The
+workspace's question is not the store's — the checkout IS supposed to be
+writable — it is the tree's identity: still the directory the engine laid
+for this run, no component a link. It is `MustExist`, the one kind nothing
+recreates: a store-backed source that went missing is mkdir'd cold, a
+missing workspace refuses the creation. The driver re-asks every entry
+immediately before the create command; a source that no longer verifies
+refuses it, naming the swap and where the leaf now points; the retry
+self-heals, because the guard then sees the planted leaf at plan time and
+skips the bind cold. The ask judges the engine's filesystem — a daemon on
+another host (remote DOCKER_HOST) resolves sources on a tree these checks
+never saw. **Said plainly: the race itself is irreducible.**
 Between the last ask and the daemon's own resolution there is always a
 window, and no userspace check can shrink it to zero — closing it fully
 needs the kernel to pin the resolution (a mount API that hands the daemon

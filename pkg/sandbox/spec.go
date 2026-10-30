@@ -137,9 +137,14 @@ type Spec struct {
 	// Kubernetes creates a per-run Secret and projects each key.
 	SecretFiles []SecretFileMount
 
-	// BindSourceChecks names the bind mounts whose SOURCE lives under a
-	// directory the sandbox itself writes — the project scratch and the
-	// sandbox's own cache store, both under the read-write iterion home.
+	// BindSourceChecks names every bind source the plan verified because it
+	// lives under a directory the sandbox itself writes — the project
+	// scratch, the sandbox's own cache store and the read-only config
+	// overlays under the read-write iterion home, the worktree `.git`
+	// tree's shadows, and the run's own workspace when the engine laid it
+	// under that home. A source under no such root — an operator checkout
+	// the launch named, a driver-written temp file — is not a source a
+	// sandbox could have chosen and is named by no entry.
 	//
 	// A bind's source is resolved by the host kernel at container CREATION,
 	// but the engine verifies these sources when the PLAN is built — before
@@ -147,13 +152,21 @@ type Spec struct {
 	// through that window can swap a verified leaf for a symlink and choose
 	// where the next creation's mount lands. So every entry here is
 	// re-verified at the driver border, immediately before the container is
-	// created, with the same question (safepath.EnsureRealBindSourceDir); a
-	// source that no longer verifies refuses the creation instead of
-	// mounting what the swap chose.
+	// created, with the same question ([safepath.RealBindSource]); a source
+	// that no longer verifies refuses the creation instead of mounting what
+	// the swap chose. Store-backed sources are recreated cold when they went
+	// missing since the plan ([safepath.EnsureRealBindSourceDir]); a source
+	// the engine laid for this run — MustExist — refuses instead, because
+	// nothing may stand in for the tree the engine actually laid.
 	//
-	// Drivers without host bind mounts never receive entries: host_state —
-	// the only writer of this field — is refused there first. They may
-	// ignore the field.
+	// The ask judges the engine's own filesystem: with the daemon on another
+	// host (DOCKER_HOST against a remote engine), the daemon resolves the
+	// source on a tree these checks never saw — the same blindness the
+	// plan-time ask already had, and a limit of the whole field.
+	//
+	// Drivers without host bind mounts never receive entries: the runtime
+	// writes this field only where it also lays host binds. They may ignore
+	// the field.
 	BindSourceChecks []BindSourceCheck
 }
 
@@ -164,6 +177,13 @@ type Spec struct {
 type BindSourceCheck struct {
 	Root string
 	Path string
+
+	// MustExist marks a source the ENGINE laid for this run and binds at
+	// that path — the workspace worktree. It is never recreated: a source
+	// gone since the plan refuses the creation, where a store-backed source
+	// would be mkdir'd cold (an empty stand-in workspace would start the
+	// run on a directory the engine never laid).
+	MustExist bool
 }
 
 type SecretFileMount struct {

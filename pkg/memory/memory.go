@@ -30,12 +30,29 @@ func WorkspaceScratchDir(workDir string) string {
 	return workspaceSubdir(workDir, "scratch")
 }
 
+// WorkspaceScratchDirInherited is WorkspaceScratchDir resolved on the
+// iterion home the OPERATOR chose (store.InheritedIterionDataDir) instead of
+// the live one. It is the form the DELETION side resolves: a project `.env`
+// that plants ITERION_HOME at sweep time must not move the root a sweep
+// deletes under — the mount plan refuses exactly that home
+// (operatorsIterionHome). "" — the operator named no home — means sweep
+// nothing: deletion is a decision of authority, it fails closed.
+func WorkspaceScratchDirInherited(workDir string) string {
+	return workspaceSubdirOn(store.InheritedIterionDataDir(), workDir, "scratch")
+}
+
 // workspaceSubdir resolves the per-workspace root for the given
 // subdirectory name (e.g. "memory" or "scratch"), following the same
 // abs-path + encode-key convention as the run store. Returns "" when
 // workDir is empty or can't be made absolute.
 func workspaceSubdir(workDir, subdir string) string {
-	if workDir == "" {
+	return workspaceSubdirOn(store.GlobalIterionDataDir(), workDir, subdir)
+}
+
+// workspaceSubdirOn is workspaceSubdir on an explicit data dir; "" dataDir
+// answers "" so a caller that must not guess a root cannot.
+func workspaceSubdirOn(dataDir, workDir, subdir string) string {
+	if workDir == "" || dataDir == "" {
 		return ""
 	}
 	abs := workDir
@@ -46,7 +63,7 @@ func workspaceSubdir(workDir, subdir string) string {
 		}
 		abs = resolved
 	}
-	return filepath.Join(store.GlobalIterionDataDir(), "projects", store.EncodeWorkDirKey(abs), subdir)
+	return filepath.Join(dataDir, "projects", store.EncodeWorkDirKey(abs), subdir)
 }
 
 // Scope is a sandboxed view of a single feature subfolder. All

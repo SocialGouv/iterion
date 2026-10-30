@@ -89,6 +89,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/skilllib"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // HostStateGuardEnvVar is the greppable escape hatch: off/none/0/false
@@ -238,6 +239,12 @@ type hostConfigGuard struct {
 	// SOURCE under one of them is a path the sandbox could choose through a
 	// symlink (safepath.RealBindSource). Registered by sandboxWrites.
 	writes []string
+	// verified is every (root, path) pair checkBindSource actually verified
+	// at plan time — the record Spec.BindSourceChecks is flushed from, so
+	// "the plan names every source it verified" holds by construction
+	// instead of by two writers keeping their own lists.
+	verified     []sandbox.BindSourceCheck
+	seenVerified map[string]bool
 }
 
 // sandboxWrites registers a root whose content the sandbox writes. Every bind
@@ -258,7 +265,10 @@ func (g *hostConfigGuard) sandboxWrites(roots ...string) {
 // checkBindSource is the ONE question every shadow asks before it binds: is
 // this host path really the path it is named, or does a symlink the sandbox
 // planted under a registered root decide what the mount reaches? A path under
-// no registered root is not sandbox-written, and answers nil.
+// no registered root is not sandbox-written, and answers nil. Every pair the
+// question verified is recorded, so the flush (verifiedBindSources) can name
+// them for the driver border — a source the plan verified is exactly a source
+// this function passed.
 func (g *hostConfigGuard) checkBindSource(hostPath string) error {
 	if g == nil || hostPath == "" {
 		return nil
@@ -275,7 +285,26 @@ func (g *hostConfigGuard) checkBindSource(hostPath string) error {
 	if best == "" {
 		return nil
 	}
-	return safepath.RealBindSource(best, hostPath)
+	if err := safepath.RealBindSource(best, hostPath); err != nil {
+		return err
+	}
+	if g.seenVerified == nil {
+		g.seenVerified = map[string]bool{}
+	}
+	if !g.seenVerified[hostPath] {
+		g.seenVerified[hostPath] = true
+		g.verified = append(g.verified, sandbox.BindSourceCheck{Root: best, Path: hostPath})
+	}
+	return nil
+}
+
+// verifiedBindSources returns every source checkBindSource verified at plan
+// time, for the flush into Spec.BindSourceChecks. Nil-safe.
+func (g *hostConfigGuard) verifiedBindSources() []sandbox.BindSourceCheck {
+	if g == nil {
+		return nil
+	}
+	return g.verified
 }
 
 // newHostConfigGuard returns the run's guard, or nil when the operator
@@ -712,4 +741,53 @@ func worktreeDotGit(gitDir string) string {
 		return ""
 	}
 	return filepath.Dir(filepath.Dir(gitDir))
+}
+
+// guardWorkspaceBind names the run's WORKSPACE bind for the driver border
+// (#2069). The workspace is the one bind source the DRIVER derives from run
+// metadata (RunInfo.WorkspacePath) instead of from this plan — read-write,
+// and for a run on an engine worktree it lives under the iterion home the
+// home bind hands every living sandboxed run read-write: the exact shape
+// the scratch and the caches have, at the path a takeover values most.
+//
+// The question asked here is NOT the store's. The workspace is the living
+// checkout — it is SUPPOSED to be writable, and its contents are the run's
+// own business. What the guard can promise is the tree's identity: the
+// resolved source is the directory the engine laid for THIS run under the
+// store, no component of it a symlink, no resolution reaching outside the
+// store root that laid it. A swap planted through the read-write home bind
+// of a run alive between this plan and the creation fails the ask — at
+// plan time here, and again at the driver border (MustExist), which is
+// what makes the promise hold whatever happens between the two asks.
+//
+// A workspace the engine did not lay — an operator checkout the launch
+// named, anywhere outside the store — is a source no sandbox chose: no
+// entry, no ask. Empty store root (a test process without an operator
+// home) asks nothing either: there is no store to have been swapped.
+func (g *hostConfigGuard) guardWorkspaceBind(spec *sandbox.Spec, workspacePath string) error {
+	if g == nil || workspacePath == "" {
+		return nil
+	}
+	abs, err := filepath.Abs(workspacePath)
+	if err != nil {
+		return fmt.Errorf("resolve the workspace path %s: %w", workspacePath, err)
+	}
+	root := store.GlobalIterionDataDir()
+	if root == "" || abs == root || !strings.HasPrefix(abs, root+string(filepath.Separator)) {
+		return nil
+	}
+	// The plan-time half of the double question, with the same failure
+	// meaning the border's half has: this is not the tree the engine laid.
+	// Unlike the scratch and the caches there is no cold skip to fall back
+	// on — a workspace that fails the ask refuses the RUN, which is why the
+	// error carries out instead of degrading into a warn.
+	if err := safepath.RealBindSource(root, abs); err != nil {
+		return fmt.Errorf("the workspace bind source is not the directory the engine laid under %s (%v) — a symlink under the store decides what the sandbox is handed; refusing the run", root, err)
+	}
+	spec.BindSourceChecks = append(spec.BindSourceChecks, sandbox.BindSourceCheck{
+		Root:      root,
+		Path:      abs,
+		MustExist: true,
+	})
+	return nil
 }

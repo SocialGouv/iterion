@@ -44,8 +44,11 @@ func (e *Engine) sweepScratchOnExit(runID string) {
 	if base == "" {
 		base = e.workDir
 	}
-	root := memory.WorkspaceScratchDir(base)
+	root := sweepScratchRoot(base)
 	if root == "" {
+		if e.logger != nil {
+			e.logger.Warn("runtime: scratch sweep: no iterion home the operator chose resolves — refusing to sweep")
+		}
 		return
 	}
 
@@ -57,4 +60,15 @@ func (e *Engine) sweepScratchOnExit(runID string) {
 		e.logger.Info("runtime: scratch sweep: reclaimed %d dir(s), %.1f MiB untouched for %s (run %s)",
 			len(swept), float64(freed)/(1024*1024), retention, runID)
 	}
+}
+
+// sweepScratchRoot is the one decision of WHERE the end-of-run sweep may
+// delete: the workspace scratch root resolved on the home the OPERATOR
+// chose (WorkspaceScratchDirInherited), never the live one — a project
+// `.env` that planted ITERION_HOME must not move the root a sweep deletes
+// under, and the mount plan refuses exactly that home. "" — the operator
+// named no home — deletes nothing: deletion is a decision of authority, it
+// fails closed.
+func sweepScratchRoot(base string) string {
+	return memory.WorkspaceScratchDirInherited(base)
 }

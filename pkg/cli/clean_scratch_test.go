@@ -3,10 +3,13 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/memory"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // A workspace can pile up gigabytes of ${PROJECT_SCRATCH_DIR} while never
@@ -213,5 +216,68 @@ func TestSweepSandboxCachesRefusesASymlinkedCache(t *testing.T) {
 	}
 	if len(r.ScratchErrors) == 0 {
 		t.Error("a refused path must be reported — a sweep that silently skips is one nobody fixes")
+	}
+}
+
+// A planted ITERION_HOME — a project `.env` may set any exportable name —
+// must not move the roots these sweeps DELETE under: the anchor and the
+// fallback resolve on the home the OPERATOR chose
+// (store.InheritedIterionDataDir), the same home the mount plan and the
+// engine's end-of-run sweep answer to, and no operator home at all refuses
+// the sweep — a root nobody can answer for deletes nothing, out loud.
+func TestTheCleanSweepsRefuseAPlantedHome(t *testing.T) {
+	envtrust.ResetForTest()
+	t.Cleanup(envtrust.ResetForTest)
+
+	base := t.TempDir()
+	planted := t.TempDir()
+	t.Setenv("ITERION_HOME", planted)
+	envtrust.MarkPlanted("ITERION_HOME")
+
+	// The raw material: the LIVE resolution follows the plant.
+	if live := memory.WorkspaceScratchDir(base); !strings.HasPrefix(live, planted+string(filepath.Separator)) {
+		t.Fatalf("fixture: the live resolution did not follow the planted home (%s) — the witness would prove nothing", live)
+	}
+
+	// A store under the planted data dir maps to no planted root.
+	plantedStore := filepath.Join(planted, "projects", "k")
+	if err := os.MkdirAll(plantedStore, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := scratchRootForStore(plantedStore); strings.HasPrefix(got, planted+string(filepath.Separator)) {
+		t.Errorf("scratchRootForStore followed the planted ITERION_HOME: %s", got)
+	}
+
+	// The cache sweep scans and deletes nothing under the planted home.
+	object := filepath.Join(planted, "sandbox-caches", ".cache", "go-build", "ab", "abcdef-d")
+	if err := os.MkdirAll(filepath.Dir(object), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(object, make([]byte, 4096), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(object, old, old); err != nil {
+		t.Fatal(err)
+	}
+	var r CleanResult
+	sweepSandboxCaches(CleanOptions{OlderThan: 168 * time.Hour, Apply: true}, time.Now, &r)
+	if _, err := os.Stat(object); err != nil {
+		t.Error("the cache sweep followed the planted ITERION_HOME and deleted under it")
+	}
+
+	// No operator home at all: both sweeps refuse — the store mapping
+	// answers "" and the cache sweep says so instead of deleting.
+	envtrust.MarkPlanted(store.HomeEnvName())
+	if got := scratchRootForStore(plantedStore); got != "" {
+		t.Errorf("scratchRootForStore resolved %q with no operator home — the refusal must fail closed on \"\"", got)
+	}
+	var r2 CleanResult
+	sweepSandboxCaches(CleanOptions{OlderThan: 168 * time.Hour, Apply: true}, time.Now, &r2)
+	if len(r2.Scratch) != 0 {
+		t.Errorf("the cache sweep deleted %d entr(y/ies) with no operator home to answer for: %v", len(r2.Scratch), r2.Scratch)
+	}
+	if len(r2.ScratchErrors) == 0 {
+		t.Error("the cache sweep deleted nothing but said nothing — a refused sweep nobody hears about is one nobody fixes")
 	}
 }

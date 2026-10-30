@@ -570,7 +570,24 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	// retry the guard sees the planted leaf when the plan is rebuilt and
 	// skips the bind cold, so the next attempt has nothing to re-verify.
 	// 0o700 matches the only writer (host_state's store dirs, owner-only).
+	//
+	// The two kinds of source part ways on EXISTENCE, and the split is the
+	// question's honest answer at this border: a store-backed source that
+	// went missing since the plan is recreated cold (the scratch and the
+	// caches skip cold at plan time for the same absence), while a source
+	// the engine laid for this run — MustExist, the workspace — refuses
+	// instead: nothing may stand in for the tree the engine actually laid,
+	// and a recreated empty workspace would start the run on it.
 	for _, c := range p.spec.BindSourceChecks {
+		if c.MustExist {
+			if err := safepath.RealBindSource(c.Root, c.Path); err != nil {
+				return nil, fmt.Errorf("docker: the bind source %s is not the path the plan verified under %s (%v) — swapped between plan and creation; refusing to create the container", c.Path, c.Root, err)
+			}
+			if _, err := os.Stat(c.Path); err != nil {
+				return nil, fmt.Errorf("docker: the bind source %s the plan verified under %s is gone (%v) — it is the engine-laid tree, not a store to recreate; refusing to create the container", c.Path, c.Root, err)
+			}
+			continue
+		}
 		if err := safepath.EnsureRealBindSourceDir(c.Root, c.Path, 0o700); err != nil {
 			return nil, fmt.Errorf("docker: the bind source %s is not the path the plan verified under %s (%v) — swapped between plan and creation; refusing to create the container", c.Path, c.Root, err)
 		}

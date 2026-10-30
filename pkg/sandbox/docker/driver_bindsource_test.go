@@ -113,3 +113,127 @@ func TestABindSourceStillRealReachesTheCreateCommand(t *testing.T) {
 		t.Errorf("the re-ask refused a source that is still the path it is named — the check has a false positive: %v", err)
 	}
 }
+
+// The workspace is the one bind source the DRIVER derives from run metadata
+// (RunInfo.WorkspacePath) instead of from the mount plan — read-write, and
+// for a run on an engine worktree under the iterion home a living run holds
+// read-write. Its shape at this border differs from the store-backed
+// sources in one promise: the tree is what the ENGINE laid for this run, so
+// a source swapped for a symlink refuses the creation, naming where the
+// swap points.
+func TestTheEngineLaidWorkspaceSwappedBetweenPlanAndCreationRefusesTheStart(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	wt := filepath.Join(root, "projects", "k", "worktrees", "run-witness")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := sandbox.Spec{
+		Mode:            sandbox.ModeInline,
+		Image:           "iterion-toctou-witness:never-pulled",
+		WorkspaceFolder: LegacyDefaultWorkspace,
+		BindSourceChecks: []sandbox.BindSourceCheck{
+			{Root: root, Path: wt, MustExist: true},
+		},
+	}
+	d := &Driver{rt: RuntimeDocker}
+	prepared := preparedWithoutPrepare(t, spec)
+
+	// The swap a run alive through the window plays on the next run's
+	// worktree, through its own read-write home bind.
+	if err := os.Remove(wt); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, wt); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := d.Start(context.Background(), prepared, sandbox.RunInfo{
+		RunID:         "workspace-swap-witness",
+		WorkspacePath: wt,
+	})
+	if err == nil {
+		t.Fatal("Start created a container whose engine-laid workspace source was swapped in the window")
+	}
+	if !strings.Contains(err.Error(), toctouRefusalPhrase) {
+		t.Errorf("the refusal must name the swap it caught — an operator reading the run log must find the window, not a docker error: %v", err)
+	}
+	if !strings.Contains(err.Error(), outside) {
+		t.Errorf("the refusal must name where the swapped workspace now points: %v", err)
+	}
+}
+
+// The other half of the workspace's promise: nothing stands in for the tree
+// the engine laid. A store-backed source that went missing is recreated
+// cold (the scratch and the caches skip cold for the same absence); a
+// MISSING WORKSPACE is not recreated — an empty stand-in directory would
+// start the run on a tree the engine never laid, and the border refuses
+// instead, without mkdir-ing the path back.
+func TestTheWorkspaceGoneSinceThePlanRefusesInsteadOfRecreating(t *testing.T) {
+	root := t.TempDir()
+	wt := filepath.Join(root, "projects", "k", "worktrees", "run-gone")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := sandbox.Spec{
+		Mode:            sandbox.ModeInline,
+		Image:           "iterion-toctou-witness:never-pulled",
+		WorkspaceFolder: LegacyDefaultWorkspace,
+		BindSourceChecks: []sandbox.BindSourceCheck{
+			{Root: root, Path: wt, MustExist: true},
+		},
+	}
+	d := &Driver{rt: RuntimeDocker}
+	prepared := preparedWithoutPrepare(t, spec)
+
+	// Gone since the plan verified it.
+	if err := os.Remove(wt); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := d.Start(context.Background(), prepared, sandbox.RunInfo{
+		RunID:         "workspace-gone-witness",
+		WorkspacePath: wt,
+	})
+	if err == nil {
+		t.Fatal("Start created a container whose workspace source went missing after the plan")
+	}
+	if !strings.Contains(err.Error(), "is gone") {
+		t.Errorf("the refusal must name the disappearance, not a docker error: %v", err)
+	}
+	if _, statErr := os.Lstat(wt); !os.IsNotExist(statErr) {
+		t.Errorf("the border recreated the missing workspace source (%v) — a cold recreation is the store-backed posture, never the engine-laid one", statErr)
+	}
+}
+
+// The control for both: the engine-laid tree still real and still present
+// passes the re-ask and reaches the create command, which fails on the
+// never-pulled image — never on the workspace source.
+func TestTheEngineLaidWorkspaceStillRealReachesTheCreateCommand(t *testing.T) {
+	root := t.TempDir()
+	wt := filepath.Join(root, "projects", "k", "worktrees", "run-control")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := sandbox.Spec{
+		Mode:            sandbox.ModeInline,
+		Image:           "iterion-toctou-witness:never-pulled",
+		WorkspaceFolder: LegacyDefaultWorkspace,
+		BindSourceChecks: []sandbox.BindSourceCheck{
+			{Root: root, Path: wt, MustExist: true},
+		},
+	}
+	d := &Driver{rt: RuntimeDocker}
+	prepared := preparedWithoutPrepare(t, spec)
+
+	_, err := d.Start(context.Background(), prepared, sandbox.RunInfo{
+		RunID:         "workspace-control",
+		WorkspacePath: wt,
+	})
+	if err == nil {
+		t.Fatal("the control expected the create command to fail on the never-pulled image")
+	}
+	if strings.Contains(err.Error(), toctouRefusalPhrase) || strings.Contains(err.Error(), "is gone") {
+		t.Errorf("the re-ask refused the real engine-laid workspace — the check has a false positive: %v", err)
+	}
+}
