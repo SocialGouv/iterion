@@ -215,6 +215,60 @@ func TestPipelineBoardTaskUpdateKeepsTheStoredLaunchContext(t *testing.T) {
 	}
 }
 
+// The create route's UPSERT branch is a wholesale bot-args swap on a STORED
+// card too: a planner re-run POST (upsert:true, same input_path) must re-stamp
+// the webhook-carried launch context off the matched card — a swap without it
+// relaunches the card with no repo subject to meter or bound, and drops its
+// BYOK overrides. Mirror of TestPipelineBoardTaskUpdateKeepsTheStoredLaunchContext.
+func TestPipelineBoardTaskUpsertKeepsTheStoredLaunchContext(t *testing.T) {
+	env := newPipelineTierEnv(t)
+	env.seedRow(t, "t1", "probe", tierForkBot)
+	stored, err := env.board.Create(native.Issue{
+		Title: "webhook card", State: native.StateBacklog, Bot: "probe",
+		BotArgs: map[string]string{
+			"input_path":         "requests/ep7.md",
+			"member_var":         "v1",
+			boardRepoURLKey:      "https://github.com/acme/widgets.git",
+			boardProjectPathKey:  "acme/widgets",
+			boardWebhookIDKey:    "wh-t1",
+			boardKeyOverridesKey: `{"github.com/acme/widgets":"byok-a"}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("board.Create: %v", err)
+	}
+	body := `{"bot":"probe","title":"webhook card","upsert":true,"bot_args":{"input_path":"requests/ep7.md",` +
+		`"member_var2":"v2",` +
+		`"` + boardProjectPathKey + `":` + quoteJSON("harmless/other") + `}}`
+	r := env.req(http.MethodPost, "/api/v1/pipeline-board/tasks", body)
+	w := httptest.NewRecorder()
+	env.srv.handlePipelineBoardTaskCreate(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("upsert card = %d %s, want 200 (the matched card must be updated, not created)", w.Code, w.Body.String())
+	}
+	after, err := env.board.Get(stored.ID)
+	if err != nil {
+		t.Fatalf("board.Get: %v", err)
+	}
+	if after.BotArgs["member_var2"] != "v2" {
+		t.Errorf("the upsert's own var did not land: %v", after.BotArgs)
+	}
+	if after.BotArgs["input_path"] != "requests/ep7.md" {
+		t.Errorf("the upsert's reconcile key did not land: %v", after.BotArgs)
+	}
+	if _, carried := after.BotArgs["member_var"]; carried {
+		t.Errorf("a wholesale swap must replace the member's own vars: %v", after.BotArgs)
+	}
+	for _, res := range native.ReservedLaunchArgs {
+		if got, ok := after.BotArgs[res]; ok && got != stored.BotArgs[res] {
+			t.Errorf("the upsert rewrote the reserved %s to %q, want the stored %q", res, got, stored.BotArgs[res])
+		}
+	}
+	if after.BotArgs[boardProjectPathKey] != "acme/widgets" {
+		t.Errorf("the card's %s = %q, want the stored %q — a planner re-run must not forge the repository identity", boardProjectPathKey, after.BotArgs[boardProjectPathKey], "acme/widgets")
+	}
+}
+
 // native.ReservedLaunchArgs and the server's board keys are ONE list: a key
 // the dispatcher lifts but the write routes do not strip (or the reverse)
 // would leave the class a member-writable identity again.

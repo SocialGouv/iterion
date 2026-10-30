@@ -251,6 +251,14 @@ func (s *Server) upsertPipelineTask(
 	if err := native.ValidateBlockers(boardStore, existing.ID, blockers); err != nil {
 		return nil, err
 	}
+	// An upsert swaps the card's bot args wholesale, so the stored ticket's
+	// reserved launch context is re-stamped off the STORED card — the same
+	// seam as the PATCH door: the payload's identity about the card's
+	// repository, credentials and integration is the server's word, and a
+	// planner re-run must not strip it (a card relaunched without its
+	// project path meters and bounds against nothing, and drops its BYOK
+	// overrides) (#2371, D33).
+	botArgs = native.KeepStoredLaunchContext(existing.BotArgs, botArgs)
 	title := strings.TrimSpace(req.Title)
 	body := strings.TrimSpace(req.Body)
 	patch := native.Patch{
