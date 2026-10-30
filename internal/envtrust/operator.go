@@ -97,6 +97,12 @@ var operatorInfraPrefixes = []string{
 // shipped bot reads to the other side of it.
 var operatorInfraNames = map[string]bool{
 	"ITERION_PUBLIC_URL": true,
+	// Written by the engine for a child (a run's identity in its
+	// environment), and the escape hatch on the engine-child `.env` skip
+	// (#2844): a stored record must never forge the first nor re-open the
+	// workspace file for the second.
+	EnvEngineChild: true,
+	EnvDotEnvForce: true,
 	// The schedule install's cron-line PATH bound (bytes): the process's
 	// own posture, never a bot variable.
 	"ITERION_SCHEDULE_PATH_MAX_BYTES": true,

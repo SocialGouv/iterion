@@ -24,13 +24,16 @@ import (
 // inventory has no shape for arrives red here, the day it is written, not
 // the day a planted `.env` aims it.
 //
-// The walk sees a literal argument, so a name read through a composed
-// constant (aws-sdk's per-service spellings are built with fmt.Sprintf
-// inside the SDK; iterion's PublicBaseEnv is a first-party constant) is
-// visible only through its literal kin — the service endpoints.go files
-// carry the per-service literals, and the floor list below pins the
-// composed ones. What the walk cannot see at all, it cannot vouch for:
-// that limit is stated on the model-path class guard
+// The walk sees a literal argument or a single-hop string constant: a
+// name read as `os.Getenv(isolationenv.ModelHosts)` resolves through the
+// declaring package's own const table, which this test collects before it
+// walks. A name read through a COMPOSED constant (aws-sdk's per-service
+// spellings are built with fmt.Sprintf inside the SDK; iterion's
+// PublicBaseEnv is a first-party constant) is visible only through its
+// literal kin — the service endpoints.go files carry the per-service
+// literals, and the floor list below pins the composed ones. What the
+// walk cannot see at all, it cannot vouch for: that limit is stated on
+// the model-path class guard
 // (pkg/backend/model/planted_endpoint_class_test.go) and is why the
 // inventory is declarations plus a walk, not a walk alone.
 func TestEveryRoutingShapedNameTheTreeReadsIsInTheClass(t *testing.T) {
@@ -58,9 +61,54 @@ func TestEveryRoutingShapedNameTheTreeReadsIsInTheClass(t *testing.T) {
 	}
 	files = append(files, serviceEndpoints...)
 
+	// Pass one: collect every package-level string constant the walked
+	// files declare, so a read whose argument is an identifier or a
+	// pkg.Name selector still names its variable. Files that do not parse
+	// are skipped here — the read-form gate below still hard-fails on a
+	// file it once accepted.
+	strConsts := map[string]string{}
+	parsed := map[string]*ast.File{}
+	walkFset := token.NewFileSet()
+	for _, path := range files {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		f, err := parser.ParseFile(walkFset, path, raw, 0)
+		if err != nil {
+			continue
+		}
+		parsed[path] = f
+		pkg := f.Name.Name
+		for _, decl := range f.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, nm := range vs.Names {
+					if i >= len(vs.Values) {
+						continue
+					}
+					lit, ok := vs.Values[i].(*ast.BasicLit)
+					if !ok || lit.Kind != token.STRING {
+						continue
+					}
+					if v, err := strconv.Unquote(lit.Value); err == nil && v != "" {
+						strConsts[pkg+"."+nm.Name] = v
+					}
+				}
+			}
+		}
+	}
+
 	found := map[string]bool{}
 	for _, path := range files {
-		for _, name := range envNamesReadIn(t, path) {
+		for _, name := range envNamesReadIn(t, path, parsed, walkFset, strConsts) {
 			found[name] = true
 		}
 	}
@@ -132,36 +180,59 @@ func routeLikeShape(name string) bool {
 // own Inherited / Planted, and the plain-name lookup helpers (pkg/config's
 // lookup and lookupString, pkg/secrets' envOr, the desktop's readEnv).
 // Files whose bytes name no read form are skipped unparsed.
-func envNamesReadIn(t *testing.T, path string) []string {
+func envNamesReadIn(t *testing.T, path string, parsed map[string]*ast.File, fset *token.FileSet, strConsts map[string]string) []string {
 	t.Helper()
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
-	if !bytesNameAReadForm(raw) {
-		return nil
-	}
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, path, raw, 0)
-	if err != nil {
-		t.Fatalf("parse %s: %v", path, err)
+	f, ok := parsed[path]
+	if !ok {
+		if !bytesNameAReadForm(raw) {
+			return nil
+		}
+		var err error
+		f, err = parser.ParseFile(fset, path, raw, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
 	}
 	var names []string
 	ast.Inspect(f, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
-		if ok && len(call.Args) > 0 {
-			lit, ok := call.Args[0].(*ast.BasicLit)
-			if ok && lit.Kind == token.STRING {
-				if envReadForm(call.Fun) {
-					if name, err := strconv.Unquote(lit.Value); err == nil && name != "" {
-						names = append(names, name)
-					}
-				}
+		if ok && len(call.Args) > 0 && envReadForm(call.Fun) {
+			if name := envNameArg(f.Name.Name, call.Args[0], strConsts); name != "" {
+				names = append(names, name)
 			}
 		}
 		return true
 	})
 	return names
+}
+
+// envNameArg resolves a read call's first argument to the variable name it
+// reads: a string literal, a same-package string constant, or a
+// pkg.Name selector into the collected const tables.
+func envNameArg(pkg string, arg ast.Expr, strConsts map[string]string) string {
+	switch a := arg.(type) {
+	case *ast.BasicLit:
+		if a.Kind == token.STRING {
+			if name, err := strconv.Unquote(a.Value); err == nil {
+				return name
+			}
+		}
+	case *ast.Ident:
+		if v, ok := strConsts[pkg+"."+a.Name]; ok {
+			return v
+		}
+	case *ast.SelectorExpr:
+		if p, ok := a.X.(*ast.Ident); ok {
+			if v, ok := strConsts[p.Name+"."+a.Sel.Name]; ok {
+				return v
+			}
+		}
+	}
+	return ""
 }
 
 // bytesNameAReadForm is the cheap prefilter that keeps the walk off the
@@ -187,6 +258,10 @@ func envReadForm(fun ast.Expr) bool {
 		case pkg.Name == "os" && (e.Sel.Name == "Getenv" || e.Sel.Name == "LookupEnv"):
 			return true
 		case pkg.Name == "envtrust" && (e.Sel.Name == "Inherited" || e.Sel.Name == "Planted"):
+			return true
+		case pkg.Name == "isolationenv" && e.Sel.Name == "Value":
+			// The one reader the isolation inventory is held to (its guard
+			// test walks the tree): every call names the variable it reads.
 			return true
 		}
 		return false

@@ -293,6 +293,21 @@ func TestTheImageDispositionOfEveryExactNameIsDeclared(t *testing.T) {
 		"SHELLOPTS": reportedOnly, "PS4": reportedOnly,
 		"TAR_OPTIONS": reportedOnly,
 
+		// Reported: the interpreters' startup knobs, the execution grade the
+		// dotenv plant gate carries — one inventory both gates read. Each
+		// runs planter code at interpreter startup (PYTHONPATH's
+		// sitecustomize, PYTHONHOME's stdlib, PYTHONSTARTUP's sourced file,
+		// RUBYOPT/PERL5OPT switches, PERL5LIB module path, the JVM-wide
+		// JAVA_TOOL_OPTIONS, the java launcher's JDK_JAVA_OPTIONS,
+		// CLASSPATH's resolution), and an image that bakes one ships the
+		// code it would run (ARB-121); the container gate refuses the same
+		// names outright in a devcontainer.json.
+		"PYTHONPATH": reportedOnly, "PYTHONHOME": reportedOnly,
+		"PYTHONSTARTUP": reportedOnly,
+		"RUBYOPT":       reportedOnly, "PERL5OPT": reportedOnly, "PERL5LIB": reportedOnly,
+		"JAVA_TOOL_OPTIONS": reportedOnly, "JDK_JAVA_OPTIONS": reportedOnly,
+		"CLASSPATH": reportedOnly,
+
 		// Reported: shells and the startup files they DO read, toolchains,
 		// editors — where an empty value is read as presence, breaks the
 		// image's own build, or nothing a process iterion starts reads the

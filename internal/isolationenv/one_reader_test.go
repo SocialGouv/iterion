@@ -2,11 +2,12 @@ package isolationenv
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/gittest"
 )
 
 // repoRoot climbs from the test's working directory to the go.mod, so the
@@ -67,7 +68,7 @@ var inventoryAliases = map[string]string{
 // (t.Setenv) and may read them back to assert its own fixture.
 func TestOnlyIsolationenvReadsTheIsolationLoweringVariables(t *testing.T) {
 	root := repoRoot(t)
-	out, err := exec.Command("git", "-C", root, "ls-files", "*.go").Output()
+	out, err := gittest.Try(root, "ls-files", "*.go")
 	if err != nil {
 		t.Fatalf("git ls-files did not answer, so the tree's Go files were not held to the one reader: %v", err)
 	}
@@ -123,7 +124,7 @@ func TestOnlyIsolationenvReadsTheIsolationLoweringVariables(t *testing.T) {
 // nothing while reading as though it did.
 func TestEveryInventoriedNameIsWiredToTheTree(t *testing.T) {
 	root := repoRoot(t)
-	out, err := exec.Command("git", "-C", root, "ls-files", "*.go").Output()
+	out, err := gittest.Try(root, "ls-files", "*.go")
 	if err != nil {
 		t.Fatalf("git ls-files did not answer: %v", err)
 	}

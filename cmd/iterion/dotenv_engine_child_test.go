@@ -16,7 +16,13 @@ import (
 // (#2844). These cases drive shouldLoadWorkspaceDotEnv, the whole decision
 // main() makes, and the loader itself.
 
+// The probe variable has no routing shape: it is what the loader plants
+// once it decides this invocation gets the convenience at all. The routing
+// name beside it is refused whatever the decision — a dotenv file does not
+// choose where a connection goes, the operator's own invocation included.
 const routingVar = "DOTENV_CHILD_ROUTING_ENDPOINT"
+
+const loadProbeVar = "DOTENV_CHILD_LOAD_PROBE"
 
 // dotEnvWorkspace is a directory carrying a `.env` that plants a routing
 // variable, with the variable unset and restored for the rest of the binary
@@ -28,13 +34,16 @@ func dotEnvWorkspace(t *testing.T) string {
 	t.Setenv(envtrust.EnvPlantedNames, "")
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".env"),
-		[]byte(routingVar+"=https://repo.example/v1\n"), 0o600); err != nil {
+		[]byte(routingVar+"=https://repo.example/v1\n"+
+			loadProbeVar+"=https://repo.example/probe\n"), 0o600); err != nil {
 		t.Fatalf("write .env: %v", err)
 	}
 	t.Chdir(dir)
-	restoreEnv(t, routingVar)
-	if err := os.Unsetenv(routingVar); err != nil {
-		t.Fatalf("unset %s: %v", routingVar, err)
+	for _, name := range []string{routingVar, loadProbeVar} {
+		restoreEnv(t, name)
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatalf("unset %s: %v", name, err)
+		}
 	}
 	return dir
 }
@@ -54,7 +63,7 @@ func loadAsMainWould(t *testing.T, args ...string) string {
 			loadDotEnvFromCwd()
 		}
 	}
-	return os.Getenv(routingVar)
+	return os.Getenv(loadProbeVar)
 }
 
 // The marker the engine writes on its children, and the control that proves
@@ -72,8 +81,11 @@ func TestEngineChildDoesNotLoadTheWorkspaceDotEnv(t *testing.T) {
 func TestAHumanCLIInvocationStillLoadsTheWorkspaceDotEnv(t *testing.T) {
 	dotEnvWorkspace(t)
 
-	if got := loadAsMainWould(t, "iterion", "run", "probe.bot"); got != "https://repo.example/v1" {
-		t.Fatalf("%s = %q, want the .env value — the CLI convenience is gone, and every skip above is unobservable", routingVar, got)
+	if got := loadAsMainWould(t, "iterion", "run", "probe.bot"); got != "https://repo.example/probe" {
+		t.Fatalf("%s = %q, want the .env value — the CLI convenience is gone, and every skip above is unobservable", loadProbeVar, got)
+	}
+	if got := os.Getenv(routingVar); got != "" {
+		t.Fatalf("%s = %q, want unset — a dotenv file does not choose where a connection goes, the operator's own invocation included", routingVar, got)
 	}
 }
 
@@ -85,8 +97,11 @@ func TestTheOperatorCanForceTheDotEnvLoadForAnEngineChild(t *testing.T) {
 	t.Setenv(envtrust.EnvEngineChild, "1")
 	t.Setenv(envtrust.EnvDotEnvForce, "1")
 
-	if got := loadAsMainWould(t, "iterion", "run", "probe.bot"); got != "https://repo.example/v1" {
-		t.Fatalf("%s = %q, want the .env value — %s is a bound with no override", routingVar, got, envtrust.EnvEngineChild)
+	if got := loadAsMainWould(t, "iterion", "run", "probe.bot"); got != "https://repo.example/probe" {
+		t.Fatalf("%s = %q, want the .env value — %s is a bound with no override", loadProbeVar, got, envtrust.EnvEngineChild)
+	}
+	if got := os.Getenv(routingVar); got != "" {
+		t.Fatalf("%s = %q, want unset — the force hatch reopens the convenience, never the routing refusal", routingVar, got)
 	}
 }
 

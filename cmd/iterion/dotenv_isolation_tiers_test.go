@@ -19,10 +19,10 @@ import (
 // what the run gets — the bypass that made the floor's event a formality while
 // the run executed on the host.
 //
-// Driven through loadDotEnvFromCwd, not os.Setenv: the planted marker is what
-// tells the inherited value from the repository's, and a test that set the
-// variable itself would prove the resolver reads the environment, not that it
-// reads the OPERATOR's.
+// The operator grade the tiers belong to is refused OUTRIGHT at the loader: the
+// file a repository holds does not set the operator's posture, so the names
+// never reach the live environment and never earn a planted mark — the attack
+// this test drives is stopped one gate earlier than the planted-mark hiding.
 func TestAPlantedSandboxTierCannotLowerTheFloorsFallThrough(t *testing.T) {
 	envtrust.ResetForTest()
 	t.Cleanup(envtrust.ResetForTest)
@@ -50,16 +50,17 @@ func TestAPlantedSandboxTierCannotLowerTheFloorsFallThrough(t *testing.T) {
 	t.Chdir(repo)
 	loadDotEnvFromCwd()
 
-	// The values ARE live — nothing is hidden from the process.
-	if got := os.Getenv(isolationenv.SandboxDefault); got != "none" {
-		t.Fatalf("the .env must still reach the live environment: %q", got)
-	}
+	// The refused names reach nothing: not the live environment, not the
+	// planted marks the one reader consults.
 	for _, name := range []string{isolationenv.SandboxDefault, isolationenv.SandboxOverride, isolationenv.SandboxFloor} {
-		if !envtrust.Planted(name) {
-			t.Fatalf("%s should be marked planted after the loader ran", name)
+		if got := os.Getenv(name); got != "" {
+			t.Fatalf("a repository .env planted %s=%q — the operator grade is refused outright", name, got)
 		}
-		if value, planted := isolationenv.Value(name); value != "" || !planted {
-			t.Errorf("the ONE reader must return the empty inherited value for planted %s: value=%q planted=%v", name, value, planted)
+		if envtrust.Planted(name) {
+			t.Fatalf("%s is marked planted: the operator grade is refused, not marked", name)
+		}
+		if value, planted := isolationenv.Value(name); value != "" || planted {
+			t.Errorf("the ONE reader must see an unset name for a refused %s: value=%q planted=%v", name, value, planted)
 		}
 	}
 
@@ -88,7 +89,10 @@ func TestAPlantedSandboxTierCannotLowerTheFloorsFallThrough(t *testing.T) {
 	if cfg.Sandbox.Default != "" || cfg.Sandbox.Override != "" {
 		t.Errorf("the deployment config took the repository's answer: default=%q override=%q", cfg.Sandbox.Default, cfg.Sandbox.Override)
 	}
-	if len(cfg.Sandbox.PlantedIgnored) != 2 {
-		t.Errorf("an ignored plant must travel with the config so the runner can say it: %v", cfg.Sandbox.PlantedIgnored)
+	// The operator grade is refused at the loader, one gate before the
+	// config: nothing is planted, so there is no ignored plant to travel
+	// with the config — the refusal is the loader's own diagnostic.
+	if len(cfg.Sandbox.PlantedIgnored) != 0 {
+		t.Errorf("an operator-grade name must be refused at the loader, not recorded as an ignored plant: %v", cfg.Sandbox.PlantedIgnored)
 	}
 }
