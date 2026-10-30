@@ -10,7 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
-func TestSnapshotEvaluatesShellWithoutMutatingProcess(t *testing.T) {
+func TestSnapshotExpandsWithoutAShellWithoutMutatingProcess(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")
 	if err := os.WriteFile(path, []byte("BASE_SUFFIX=${BASE}-tail\nPROJECT_ONLY='two words'\n"), 0o600); err != nil {
@@ -33,11 +33,15 @@ func TestSnapshotEvaluatesShellWithoutMutatingProcess(t *testing.T) {
 func TestSnapshotRejectsReservedOverrides(t *testing.T) {
 	isolateSnapshotEnv(t)
 	path := filepath.Join(t.TempDir(), ".env")
-	if err := os.WriteFile(path, []byte("HOME=/tmp/other\n"), 0o600); err != nil {
+	// PORT is reserved on this lane and in no plant class: its refusal is
+	// the reserved check's own. HOME used to be this test's example, but it
+	// is an execution-grade name now — its refusal is the class's, and the
+	// reserved check stands behind it.
+	if err := os.WriteFile(path, []byte("PORT=/tmp/other\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Snapshot([]string{"HOME=/host/home", "PATH=" + os.Getenv("PATH")}, path)
-	if err == nil || !strings.Contains(err.Error(), "HOME") {
+	if err == nil || !strings.Contains(err.Error(), "PORT") {
 		t.Fatalf("reserved override error = %v", err)
 	}
 }
@@ -449,5 +453,233 @@ func TestTheStudioSnapshotNeverTakesTheMarkerFromTheFile(t *testing.T) {
 	}
 	if said != "" {
 		t.Errorf("the dropped marker line was warned about: %s", said)
+	}
+}
+
+// The prompt expansion the round-6 review measured: `KEY=${BAR@P}` planted
+// by the file made the expansion bash run the substitutions the OPERATOR's
+// own BAR carried — the marker was created by the studio's own child shell,
+// the bytes never spelled it. No shell exists on this lane now, and the
+// belt refuses the operator form outright: KEY does not exist, the refusal
+// names the file, and the operator's BAR rides untouched.
+func TestTheStudioSnapshotRunsNothingAValueExpansionSpells(t *testing.T) {
+	isolateSnapshotEnv(t)
+
+	marker := filepath.Join(t.TempDir(), "prompt-expanded")
+	base := []string{
+		"HOME=/host/home",
+		"PATH=" + os.Getenv("PATH"),
+		"BAR=$(touch " + marker + ")", // the operator's own value
+	}
+	envPath := writeEnvFile(t, "KEY=${BAR@P}")
+	var env []string
+	var snapErr error
+	said := captureStderr(t, func() { env, snapErr = Snapshot(base, envPath) })
+	if snapErr != nil {
+		t.Fatalf("Snapshot: %v", snapErr)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the expansion marker exists: a substitution ran (stat err %v)", err)
+	}
+	if _, ok := envValue(env, "KEY"); ok {
+		t.Errorf("KEY reached the run environment: an operator form was planted")
+	}
+	if got, ok := envValue(env, "BAR"); !ok || got != "$(touch "+marker+")" {
+		t.Errorf("BAR = %q (present=%v), want the operator's own untouched", got, ok)
+	}
+	for _, want := range []string{"KEY", envPath} {
+		if !strings.Contains(said, want) {
+			t.Errorf("the refusal does not say %q — it said: %s", want, said)
+		}
+	}
+}
+
+// The execution grade closes at this plant like the routing class before
+// it: BASH_ENV sourced a tool-node's bash, LD_PRELOAD preloaded the
+// planter's object into every engine child, PATH and XDG_CONFIG_HOME moved
+// what the children resolve — all planted silently before the round-6
+// review measured it (every name below read plant-refused=false on the
+// defect). Refused now, one predicate, the operator's own value restored
+// where they exported one. GIT_SSH_COMMAND keeps reading as the routing
+// class it has always been, and a name of both classes reads the routing
+// line alone: the union, no duplicate message.
+func TestTheStudioSnapshotLeavesNoExecutionGradeNameInTheRunEnvironment(t *testing.T) {
+	isolateSnapshotEnv(t)
+
+	const operatorPath = "/operator/bin"
+	base := []string{
+		"HOME=/host/home", "PATH=" + operatorPath, "XDG_CONFIG_HOME=/operator/xdg",
+	}
+	family := []string{
+		"BASH_ENV", "ENV", "PS4", "SHELLOPTS", "BASHOPTS",
+		"LD_PRELOAD", "LD_LIBRARY_PATH", "OPENSSL_CONF",
+		"NODE_OPTIONS", "BUN_OPTIONS", "NPM_CONFIG_NODE_OPTIONS",
+		"PATH", "IFS", "GCONV_PATH", "ZDOTDIR", "SHELL",
+		"GOFLAGS", "GOENV", "GOTOOLCHAIN", "GOROOT", "GOAUTH",
+		"SSH_ASKPASS", "EDITOR", "VISUAL", "TAR_OPTIONS",
+		"XDG_CONFIG_HOME", "NIX_CONFIG", "HOME",
+		"KUBECONFIG", "DOCKER_CONFIG", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS",
+		"GIT_ASKPASS", "GIT_EXEC_PATH", "VITALS_EMITTER_BIN", "CLAUDE_CONFIG_DIR",
+		// The union witness: an execution prefix composed with a routing
+		// suffix. Refused by the routing branch, so the refusal reads the
+		// routing reason — one line, not two.
+		"NIX_STORE_URL",
+	}
+	var lines []string
+	for _, name := range family {
+		lines = append(lines, name+"=/planted/by/the/repo-under-review")
+	}
+	envPath := writeEnvFile(t, lines...)
+
+	var env []string
+	var snapErr error
+	said := captureStderr(t, func() { env, snapErr = Snapshot(base, envPath) })
+	if snapErr != nil {
+		t.Fatalf("Snapshot: %v", snapErr)
+	}
+	for _, name := range family {
+		if got, ok := envValue(env, name); ok && name != "PATH" && name != "HOME" && name != "XDG_CONFIG_HOME" {
+			t.Errorf("%s = %q in the run environment: the repository under review chose what iterion's children execute", name, got)
+		}
+	}
+	if got, ok := envValue(env, "PATH"); !ok || got != operatorPath {
+		t.Errorf("PATH = %q (present=%v), want the operator's own %q restored", got, ok, operatorPath)
+	}
+	if got, ok := envValue(env, "XDG_CONFIG_HOME"); !ok || got != "/operator/xdg" {
+		t.Errorf("XDG_CONFIG_HOME = %q (present=%v), want the operator's own restored", got, ok)
+	}
+	if got, ok := envValue(env, "HOME"); !ok || got != "/host/home" {
+		t.Errorf("HOME = %q (present=%v), want the operator's own restored", got, ok)
+	}
+	if marker, ok := envValue(env, envtrust.EnvPlantedNames); ok {
+		t.Errorf("the run environment carries a planted marker %q: nothing was planted, so nothing is distrusted", marker)
+	}
+	for _, name := range family {
+		if !strings.Contains(said, name) || !strings.Contains(said, envPath) {
+			t.Errorf("the refusal does not name %s and the file — stderr said: %s", name, said)
+		}
+	}
+	if !strings.Contains(said, "what iterion's children execute or trust") {
+		t.Errorf("the execution refusal does not say why — stderr said: %s", said)
+	}
+	var askpassLine string
+	for _, line := range strings.Split(said, "\n") {
+		if strings.Contains(line, "GIT_ASKPASS comes from") {
+			askpassLine = line
+		}
+	}
+	if askpassLine == "" || !strings.Contains(askpassLine, "execute or trust") || strings.Contains(askpassLine, "plant its routes") {
+		t.Errorf("GIT_ASKPASS must read as execution, its own line (got %q)", askpassLine)
+	}
+	if !strings.Contains(said, "NIX_STORE_URL") || !strings.Contains(said, "plant its routes") {
+		t.Errorf("the routing/execution union must read the routing line alone — stderr said: %s", said)
+	}
+}
+
+// The opt-in is the escape for the execution class too, and the one
+// measured-legitimate form rides it: `PATH=$PATH:./bin` extends the
+// operator's path on the lane where expansion exists. The plant carries
+// the provenance mark, so the run reads it planted.
+func TestTheStudioSnapshotOptInLetsTheMeasuredLegitimatePathThrough(t *testing.T) {
+	isolateSnapshotEnv(t)
+
+	// The grant is read from the environment the studio INHERITED (the live
+	// process env here), like every opt-in answer.
+	t.Setenv(envtrust.DotenvEndpointsOptIn, "allow")
+	base := []string{"HOME=/host/home", "PATH=/operator/bin", envtrust.DotenvEndpointsOptIn + "=allow"}
+	envPath := writeEnvFile(t, "PATH=$PATH:./bin")
+	var env []string
+	var snapErr error
+	said := captureStderr(t, func() { env, snapErr = Snapshot(base, envPath) })
+	if snapErr != nil {
+		t.Fatalf("Snapshot: %v", snapErr)
+	}
+	if got, ok := envValue(env, "PATH"); !ok || got != "/operator/bin:./bin" {
+		t.Errorf("PATH = %q (present=%v), want the operator's path extended by the file", got, ok)
+	}
+	marker, ok := envValue(env, envtrust.EnvPlantedNames)
+	if !ok || !strings.Contains(marker, "PATH") {
+		t.Errorf("the planted PATH carries no mark (marker %q, present %v)", marker, ok)
+	}
+	if v, ok := envValue(env, envtrust.DotenvEndpointsOptIn); ok {
+		t.Errorf("the opt-in crossed into the run environment (%q): the export answers the studio, not the runs", v)
+	}
+	// The only thing said is the boundary the export stops at — no refusal
+	// of the granted plant itself.
+	if !strings.Contains(said, envtrust.DotenvEndpointsOptIn+" does not cross") {
+		t.Errorf("the boundary the export stops at is not said — stderr: %s", said)
+	}
+	if strings.Contains(said, "PATH comes from") {
+		t.Errorf("a granted plant was warned about: %s", said)
+	}
+}
+
+// What the bash frame used to act on is bytes now: an operator form, a
+// default form, a doubled dollar, a backslash before a non-special byte —
+// the same bytes the CLI lane plants, the same bytes a sourcing shell kept
+// before a non-special character. The lanes stopped diverging.
+func TestTheStudioSnapshotExpansionKeepsEverythingElseLiteral(t *testing.T) {
+	isolateSnapshotEnv(t)
+
+	// (The operator form ${NOPE@P} is NOT here: the belt refuses it — that
+	// is the expansion test above. What is here are the forms a shell would
+	// act on but the belt does not refuse.)
+	envPath := writeEnvFile(t,
+		"DEFAULT_FORM=${NOPE:-fallback}",
+		"ANSI=$'A'",
+		"DOLLARS=a$$b",
+		"BACKSLASH=a\\z b",
+		"ESCAPED=\\$HOME",
+	)
+	env, err := Snapshot([]string{"HOME=/host/home", "PATH=" + os.Getenv("PATH")}, envPath)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	for key, want := range map[string]string{
+		"DEFAULT_FORM": "${NOPE:-fallback}",
+		"ANSI":         "$'A'",
+		"DOLLARS":      "a$$b",
+		"BACKSLASH":    `a\z b`,
+		"ESCAPED":      "$HOME",
+	} {
+		if got, ok := envValue(env, key); !ok || got != want {
+			t.Errorf("%s = %q (present=%v), want the literal %q", key, got, ok, want)
+		}
+	}
+}
+
+// An expansion can INTRODUCE a trigger the file never spelled: the base
+// value a `$VAR` pulls in may carry `$(…)` bytes. The belt asks the
+// EXPANDED value, so the reference is refused and the operator's own value
+// rides — the trigger reaches no run either way.
+func TestTheStudioSnapshotRefusesATriggerAnExpansionIntroduces(t *testing.T) {
+	isolateSnapshotEnv(t)
+
+	marker := filepath.Join(t.TempDir(), "introduced-ran")
+	base := []string{
+		"HOME=/host/home",
+		"PATH=" + os.Getenv("PATH"),
+		"BAR=$(touch " + marker + ")",
+	}
+	envPath := writeEnvFile(t, "KEY=prefix-$BAR-suffix")
+	var env []string
+	var snapErr error
+	said := captureStderr(t, func() { env, snapErr = Snapshot(base, envPath) })
+	if snapErr != nil {
+		t.Fatalf("Snapshot: %v", snapErr)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the introduced marker exists: a substitution ran (stat err %v)", err)
+	}
+	if _, ok := envValue(env, "KEY"); ok {
+		t.Errorf("KEY reached the run environment: the trigger travelled")
+	}
+	if got, ok := envValue(env, "BAR"); !ok || got != "$(touch "+marker+")" {
+		t.Errorf("BAR = %q (present=%v), want the operator's own untouched", got, ok)
+	}
+	for _, want := range []string{"KEY", envPath} {
+		if !strings.Contains(said, want) {
+			t.Errorf("the refusal does not say %q — it said: %s", want, said)
+		}
 	}
 }

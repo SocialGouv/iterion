@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/internal/clilocate"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // maxTurnsCeiling caps the per-call max-turns the claude CLI is asked
@@ -422,7 +424,8 @@ const (
 )
 
 func resolveDuration(envName string, fallback time.Duration) time.Duration {
-	if v := os.Getenv(envName); v != "" {
+	// The liveness family reads planted-as-unset: see delegate.envDurationOr.
+	if v := envtrust.Inherited(envName); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			return d
 		}

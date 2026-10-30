@@ -17,6 +17,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // PiRPCBackend drives `pi --mode rpc` — a long-lived process iterion talks to
@@ -61,7 +63,8 @@ var (
 )
 
 func envDuration(key string, def time.Duration) time.Duration {
-	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+	// The liveness family reads planted-as-unset: see envDurationOr.
+	if v := strings.TrimSpace(envtrust.Inherited(key)); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			return d
 		}

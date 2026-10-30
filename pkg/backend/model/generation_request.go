@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -15,6 +14,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/thinktokens"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // ---------------------------------------------------------------------------
@@ -52,7 +53,8 @@ const (
 // resolveClawStreamTimeout reads a non-negative duration. A zero value is an
 // explicit opt-out; an empty or malformed value keeps the safe default.
 func resolveClawStreamTimeout(name string, fallback time.Duration) time.Duration {
-	raw := strings.TrimSpace(os.Getenv(name))
+	// The liveness family reads planted-as-unset: see delegate.envDurationOr.
+	raw := strings.TrimSpace(envtrust.Inherited(name))
 	if raw == "" {
 		return fallback
 	}

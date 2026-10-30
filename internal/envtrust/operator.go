@@ -346,32 +346,29 @@ func InfraGradeName(name string) bool {
 	return false
 }
 
-// operatorSecretSubstrings are the credential spellings, inside an
-// ITERION_ name, that make it the SERVER's own secret no matter which
-// namespace its prefix falls in: the session-signing and secrets-store
-// keys are namespaced, but ITERION_SERVER_TOKEN (cmd/iterion
-// scan_shards.go — the token a shard presents to the server) and
-// ITERION_COMPLETION_WEBHOOK_SECRET (pkg/notify) are not. Substring, not
-// segment: SERVER_TOKEN and BOOTSTRAP_ADMIN_PASSWORD carry the secret
-// mid-name. Scoped to ITERION_ on purpose — a provider credential
-// (OPENAI_API_KEY, AWS_SECRET_ACCESS_KEY) in a `.env` next to the project
-// is what the file is FOR, and the operator's own exported one always
-// wins; it is the engine's own secrets a project has no business
-// answering for.
-var operatorSecretSubstrings = []string{
-	"PASSWORD", "PASSWD", "SECRET", "TOKEN", "CREDENTIAL",
-}
-
 // OperatorGradeRefused answers the loader question behind the H-10 finding:
 // may the `.env` a project holds answer for THIS name? Everything of the
 // operator's grade is refused — the infra names and namespaces the bot-var
 // gate refuses a stored record (a project file has no more authority than
-// a bot), widened to the server's credential spellings and every ITERION_
-// name carrying one. The opt-in does NOT answer here: ITERION_DOTENV_
-// ENDPOINTS widens what a file may plant as ROUTES; the operator's
-// posture — whether the sandbox runs, whether auth is on, which secret
-// signs the sessions — is never a file's to set, so the refusal reads the
-// same with the opt-in exported and without.
+// a bot), widened to every credential-shaped ITERION_ name
+// (CredentialShapedName — the very list the bot-var gate's name half asks,
+// so the parity its comment proclaims holds on BOTH halves: the H-10
+// review measured the drift, twenty names refused to a bot yet planted by
+// the file — ITERION_GH_PAT, ITERION_DB_PW, ITERION_SESSION_COOKIE — all
+// test-only that day, structural until this closure). The substring half
+// of that list keeps the mid-name spellings answered as they were here —
+// ITERION_SERVER_TOKEN (cmd/iterion scan_shards.go, the token a shard
+// presents to the server) and ITERION_COMPLETION_WEBHOOK_SECRET
+// (pkg/notify) are not namespaced and carry the secret mid-name. Scoped to
+// ITERION_ on purpose — a provider credential (OPENAI_API_KEY,
+// AWS_SECRET_ACCESS_KEY) in a `.env` next to the project is what the file
+// is FOR, and the operator's own exported one always wins; it is the
+// engine's own secrets a project has no business answering for. The
+// opt-in does NOT answer here: ITERION_DOTENV_ENDPOINTS widens what a file
+// may plant as ROUTES or host-env execution names; the operator's posture
+// — whether the sandbox runs, whether auth is on, which secret signs the
+// sessions — is never a file's to set, so the refusal reads the same with
+// the opt-in exported and without.
 //
 // The loaders ask it through DotenvPlantRefused (one entry point per
 // plant); the reads ask it through Inherited at the chokepoints that serve
@@ -383,37 +380,74 @@ func OperatorGradeRefused(name string) bool {
 	if !strings.HasPrefix(upper, "ITERION_") {
 		return false
 	}
-	if InfraGradeName(upper) {
-		return true
-	}
-	for _, secret := range operatorSecretSubstrings {
-		if strings.Contains(upper, secret) {
-			return true
-		}
-	}
-	return false
+	return InfraGradeName(upper) || CredentialShapedName(upper)
 }
 
-// HasCommandSubstitution reports whether a VALUE spells shell command
-// substitution — `$(...)` or a backtick pair. Asked about the value a
-// dotenv loader is about to apply, before any shell sees it: the studio
-// snapshot evaluates planted values in a child bash (the legacy instance
-// manager's frame), and a sourced `FOO=$(...)` EXECUTES on the host —
-// the H-10 probe measured the marker file created, before the routing
-// question was even asked. With the parse-first loaders the value is
-// refused at the plant instead: no lane runs the command, whatever the
-// name. The scan is on the raw bytes and knows no quoting: a single-quoted
-// literal `'$('` is refused too — the price of deciding before bash runs.
+// HasCommandSubstitution reports whether a VALUE spells shell execution —
+// a command substitution (`$(...)` or a backtick pair) or a bash
+// parameter-expansion operator reference (`${name@P}` and kin). Asked
+// about the value a dotenv loader is about to apply, before any shell sees
+// it: the studio snapshot used to hand values to a child bash (the legacy
+// instance manager's frame), and a sourced `FOO=$(...)` EXECUTED on the
+// host — the H-10 probe measured the marker file created, before the
+// routing question was even asked. With the parse-first loaders no lane of
+// ours evaluates a value any more (pkg/projectenv expands the simple
+// references itself, in Go), and the refusal keeps the TRIGGER from
+// travelling: the value reaches a run one fork away, where a shell — or an
+// eval, or a prompt — might. `${name@P}` is in the class for the same
+// reason the round-6 probe measured: bash's prompt expansion RUNS the
+// command substitutions the referenced variable's value carries, so a
+// planted `KEY=${BAR@P}` executed the base environment's `BAR=$(touch …)`
+// at the expansion itself; and any operator form is refused, not just the
+// prompt one — the letters bash grows are the next round's finding. The
+// scan is on the raw bytes and knows no quoting: a single-quoted literal
+// `'$('` is refused too — the price of deciding before any shell runs.
 func HasCommandSubstitution(value string) bool {
-	return strings.Contains(value, "$(") || strings.Contains(value, "`")
+	if strings.Contains(value, "$(") || strings.Contains(value, "`") {
+		return true
+	}
+	return HasExpansionOperatorReference(value)
+}
+
+// HasExpansionOperatorReference reports whether a value carries a
+// `${name@op}` bash parameter-expansion operator: the `@` plus a letter
+// inside a `${...}` pair, in any case (`@P` is the prompt expansion that
+// executes; the other letters grow with bash). An unterminated `${name@P`
+// is not one: bash reports a bad substitution for it, it executes nothing,
+// and the Go expander keeps it literal.
+func HasExpansionOperatorReference(value string) bool {
+	rest := value
+	for {
+		open := strings.Index(rest, "${")
+		if open < 0 {
+			return false
+		}
+		rest = rest[open+2:]
+		close := strings.Index(rest, "}")
+		if close < 0 {
+			return false // unterminated: bash reports a bad substitution, it runs nothing
+		}
+		segment := rest[:close]
+		for i := 0; i+1 < len(segment); i++ {
+			if segment[i] == '@' && isASCIILetter(segment[i+1]) {
+				return true
+			}
+		}
+		rest = rest[close+1:]
+	}
+}
+
+func isASCIILetter(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
 
 // CommandSubstitutionRefusalLine renders the refusal for a value carrying
-// command substitution: the same shape as RoutingRefusalLine (the name,
-// the file, why), with no opt-in half — ITERION_DOTENV_ENDPOINTS widens
-// routes, never execution, so nothing the operator exports lets a file
-// run a command. The caller puts the line on stderr directly, like the
-// routing refusal.
+// shell execution — a command substitution or a `${name@op}` operator
+// reference: the same shape as RoutingRefusalLine (the name, the file,
+// why), with no opt-in half — ITERION_DOTENV_ENDPOINTS widens routes and
+// host-env names, never execution, so nothing the operator exports lets a
+// file hand a shell a trigger. The caller puts the line on stderr
+// directly, like the routing refusal.
 func CommandSubstitutionRefusalLine(name, source, path string) string {
-	return fmt.Sprintf("%s comes from %s %s with a command substitution in its value ($(...) or backticks), so it is not applied: a dotenv file does not run commands — put the wanted value in the file, or export %s in the environment iterion runs with", name, source, path, name)
+	return fmt.Sprintf("%s comes from %s %s with shell execution spelled in its value ($(...), backticks, or a ${name@op} expansion operator), so it is not applied: a dotenv file does not run commands — put the wanted value in the file, or export %s in the environment iterion runs with", name, source, path, name)
 }

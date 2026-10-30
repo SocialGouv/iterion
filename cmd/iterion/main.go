@@ -350,16 +350,20 @@ func applyDotEnv(path string) bool {
 			// nothing can follow, where a guard at one read site closes
 			// exactly that site; the per-name credential tables
 			// (internal/envtrust) stay as the belt at the reads. The same
-			// predicate refuses the operator grade: the infra names the
-			// bot-var gate denies a stored record, widened to the server's
-			// credential spellings — the file a project holds has no more
-			// authority over ITERION_SANDBOX_OVERRIDE or ITERION_JWT_SECRET
-			// than a bot does. The operator's channels are the environment
-			// itself, or ITERION_DOTENV_ENDPOINTS=allow for the ROUTES. The
-			// studio lane (projectenv.Snapshot) and the desktop env-file
-			// loader ask the same question at their own plants. The guard
-			// sits before the planted mark: a refused name does not exist,
-			// it is not "planted but distrusted".
+			// predicate refuses the execution grade (the generic host-env
+			// families — BASH_ENV, LD_PRELOAD, PATH, IFS, NODE_OPTIONS,
+			// XDG_*, the trust roots — whose plant makes a child of iterion
+			// run or trust what the file chose) and the operator grade: the
+			// infra names the bot-var gate denies a stored record, widened
+			// to every credential-shaped ITERION_ name — the file a project
+			// holds has no more authority over ITERION_SANDBOX_OVERRIDE or
+			// ITERION_JWT_SECRET or ITERION_GH_PAT than a bot does. The
+			// operator's channels are the environment itself, or
+			// ITERION_DOTENV_ENDPOINTS=allow for the ROUTES and the
+			// execution grade. The studio lane (projectenv.Snapshot) and
+			// the desktop env-file loader ask the same question at their
+			// own plants. The guard sits before the planted mark: a refused
+			// name does not exist, it is not "planted but distrusted".
 			if envtrust.DotenvPlantRefused(key) {
 				// The refusal goes to stderr directly, not through the
 				// level-configured logger: the level it would ride on is
@@ -373,9 +377,9 @@ func applyDotEnv(path string) bool {
 			// The parser kept this file's bytes as bytes; no shell of ours
 			// evaluates them — but every child MIGHT (a value reaches a
 			// run's own shell tooling one fork away), so a value spelling
-			// command substitution is refused rather than planted: nothing
-			// of ours executes it, and nothing downstream gets handed the
-			// trigger either.
+			// shell execution — $(...), backticks, a ${name@op} operator —
+			// is refused rather than planted: nothing of ours executes it,
+			// and nothing downstream gets handed the trigger either.
 			if envtrust.HasCommandSubstitution(val) {
 				fmt.Fprintln(os.Stderr, "iterion: "+envtrust.CommandSubstitutionRefusalLine(key, "the project `.env`", path))
 				continue

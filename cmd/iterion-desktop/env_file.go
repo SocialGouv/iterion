@@ -178,7 +178,7 @@ func candidateEnvFiles() []string {
 // The refusals are the same three every lane that plants asks, with
 // envtrust's one predicate and message:
 //
-//   - the routing class and the operator grade, one predicate
+//   - the routing, execution and operator grades, one predicate
 //     (envtrust.DotenvPlantRefused): the file may be operator-owned,
 //     but it is also the file a direnv symlink can point at a PROJECT's
 //     `.env` (ReloadIterionEnvFile's comment), and the class is the one
@@ -214,8 +214,8 @@ func applyDotenvFile(path string) bool {
 		if _, present := os.LookupEnv(key); present {
 			continue
 		}
-		// The routing class and the operator grade, one predicate; then a
-		// value spelling command substitution, refused like on every lane
+		// The routing, execution and operator grades, one predicate; then
+		// a value spelling shell execution, refused like on every lane
 		// that plants. What IS applied is not marked planted, on purpose —
 		// see the function comment.
 		if envtrust.DotenvPlantRefused(key) {

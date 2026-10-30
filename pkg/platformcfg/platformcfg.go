@@ -38,7 +38,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/config"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/queue"
-	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // BotRoles is the role→bot-id override record. Each field, when non-nil,
@@ -368,19 +367,6 @@ func botVarValueRune(r rune) bool {
 	return strings.ContainsRune("._:/@+=,%-[]", r)
 }
 
-// withoutSegment is name with every `_`-separated segment equal to seg
-// dropped.
-func withoutSegment(name, seg string) string {
-	parts := strings.Split(name, "_")
-	kept := parts[:0]
-	for _, p := range parts {
-		if p != seg {
-			kept = append(kept, p)
-		}
-	}
-	return strings.Join(kept, "_")
-}
-
 // botVarNameOK is the name gate: ITERION_-prefixed upper snake case, no
 // credential-shaped words, no infra namespace.
 // EnvCloudEnvPassthrough lists, comma-separated, the credential-shaped names
@@ -422,29 +408,13 @@ var platformSecretName = func() map[string]bool {
 	return m
 }()
 
-// CredentialShapedName reports whether an environment variable name reads as a
-// credential: whatever the engine redacts as secret (store.IsSecretEnvName:
-// TOKEN, KEY, SECRET, PASSWORD, CREDENTIAL, AUTH anywhere — read without an
-// AUTHOR segment, a shipped bot's knob), a PRIVATE part, or a credential word
-// too short or too common to match inside a name (PAT in PATH) as a whole
-// segment. A webhook URL carries its own bearer, a header block carries
-// whatever authenticates the call it rides on, and a proxy URL carries its own
-// userinfo. Case-insensitive.
+// CredentialShapedName is envtrust's one credential-shape predicate
+// (internal/envtrust credential.go): the same list the dotenv plant gate
+// and the run-record redaction ask, so a name the bot-var gate refuses a
+// stored record is a name no other gate answers differently — the H-10
+// review measured the dotenv side drifting from this very list.
 func CredentialShapedName(name string) bool {
-	name = strings.ToUpper(name)
-	if store.IsSecretEnvName(withoutSegment(name, "AUTHOR")) || strings.Contains(name, "PRIVATE") {
-		return true
-	}
-	for _, segment := range strings.Split(name, "_") {
-		switch segment {
-		case "PAT", "PATS", "BEARER", "BEARERS", "PASS", "PASSWD", "PASSPHRASE", "PASSCODE",
-			"PASSFILE", "USERPASS", "HTPASSWD", "PW", "PWD", "CRED", "CREDS", "COOKIE", "COOKIES",
-			"JWT", "JWTS", "PEM", "PEMS", "NETRC", "OTP", "OTPS", "TOTP", "HOTP", "HMAC", "HMACS",
-			"SIGNATURE", "SESSIONID", "DSN", "WEBHOOK", "HEADER", "HEADERS", "PROXY":
-			return true
-		}
-	}
-	return false
+	return envtrust.CredentialShapedName(name)
 }
 
 func botVarNameOK(name string) bool {

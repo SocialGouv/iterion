@@ -1403,25 +1403,46 @@ never merged across sources, and an answer carries its provenance:
 > still refuses the gateway by name, and the routing names the host's own
 > `.env` planted still cross into a sandbox as explicit empties.
 >
-> Two more classes close at the same plant, with the opt-in answering
-> neither. The OPERATOR GRADE — the inventory the bot-var gate denies a
-> stored record (`internal/envtrust` `operator.go`, one list serving both
-> gates), widened to the server's credential spellings — is refused
-> outright: `ITERION_SANDBOX_OVERRIDE=none` (the reviewed repository
-> disarming the engine reviewing it), `ITERION_DISABLE_AUTH`,
+> Two more classes close at the same plant. The OPERATOR GRADE — the
+> inventory the bot-var gate denies a stored record (`internal/envtrust`
+> `operator.go`, one list serving both gates), widened to every
+> credential-shaped `ITERION_` name (`CredentialShapedName`, the very list
+> the bot gate's name half asks, so the two gates cannot drift) — is
+> refused outright: `ITERION_SANDBOX_OVERRIDE=none` (the reviewed
+> repository disarming the engine reviewing it), `ITERION_DISABLE_AUTH`,
 > `ITERION_REQUIRE_ORIGIN=0`, `ITERION_JWT_SECRET`,
-> `ITERION_BOOTSTRAP_ADMIN_PASSWORD`, `ITERION_SERVER_TOKEN`, the whole
-> infra namespace list. The reads carry the belt: `pkg/config`'s `lookup`
-> and `pkg/server`'s `envOperator` answer a planted grade value with
-> nothing, so a stale marker in a child lifts no guard. And a VALUE
-> carrying command substitution — `$(...)` or backticks — is refused on
-> every lane: the studio snapshot used to source the file in bash, which
-> RAN `FOO=$(touch /tmp/x)` on the host before any question was asked. The
-> plant set is the parse now (`internal/dotenv`, one reader, three lanes);
-> bash keeps only the `$VAR` expansion the legacy frame wanted, the git
-> transport family (`GIT_SSH_COMMAND`, `GIT_PROXY_COMMAND`, `GIT_CONFIG_*`)
-> rides the routing refusal — its reader is the git binary itself — and
-> `pkg/git` drops a planted transport name again at its own env assembly.
+> `ITERION_BOOTSTRAP_ADMIN_PASSWORD`, `ITERION_SERVER_TOKEN`,
+> `ITERION_GH_PAT`, the whole infra namespace list. The reads carry the
+> belt: `pkg/config`'s `lookup` and `pkg/server`'s `envOperator` answer a
+> planted grade value with nothing, so a stale marker in a child lifts no
+> guard. The EXECUTION GRADE is the generic host-env families whose plant
+> makes a child of iterion execute, load or trust what the file chose —
+> `BASH_ENV` (a tool-node's bash sources it), `LD_PRELOAD` (every engine
+> child preloads it), `PATH`, `IFS`, `SHELLOPTS`/`PS4`, `NODE_OPTIONS`,
+> `EDITOR`, `SSH_ASKPASS`, the `XDG_*`/`NIX_*`/`LD_*`/`NPM_CONFIG_*`
+> families, `HOME`, the config-dir names and the TLS trust roots
+> (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, …; `internal/envtrust`
+> `execution.go`, the execution portion of the devcontainer deny table,
+> one inventory both gates read). The same opt-in answers it — these names
+> have legitimate lives in an operator's own file, and the operator
+> decides. And a VALUE spelling shell execution — `$(...)`, backticks, or
+> a `${name@op}` expansion operator — is refused on every lane: the studio
+> snapshot used to source the file in bash, which RAN
+> `FOO=$(touch /tmp/x)` on the host before any question was asked, and the
+> bash it kept for the `$VAR` expansion later RAN the substitutions the
+> base environment's own variables carried (`KEY=${BAR@P}` is prompt
+> expansion). The plant set is the parse now (`internal/dotenv`, one
+> reader, three lanes) and the expansion is Go's (`pkg/projectenv`
+> `expandReferences`: `$VAR`/`${VAR}` and an escaped dollar, everything
+> else literal — no shell exists on the lane), the git transport family
+> (`GIT_SSH_COMMAND`, `GIT_PROXY_COMMAND`, `GIT_CONFIG_*`) rides the
+> routing refusal — its reader is the git binary itself — and `pkg/git`
+> drops a planted transport name again at its own env assembly. The
+> engine's own liveness knobs (`ITERION_CLAUDE_CODE_STREAM_IDLE_TIMEOUT`
+> and kin) stay bot-writable by their classification and the operator's
+> export answers, while a planted one reads as nothing said at the
+> duration readers (`envtrust.Inherited`): the tier they bound keeps its
+> default.
 
 The snapshot is regenerated with `task models:snapshot` (the committed diff
 is the review; it carries the source digest and an as-of date, and an answer

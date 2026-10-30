@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
@@ -26,7 +26,12 @@ const (
 )
 
 func webhookMaxAttempts() int {
-	if n, err := strconv.Atoi(os.Getenv("ITERION_WEBHOOK_MAX_ATTEMPTS")); err == nil && n > 0 {
+	// The belt, not the raw env: the name is credential-shaped
+	// (envtrust.CredentialShapedName), so a project `.env` cannot plant it
+	// and a plant that slipped past an older loader answers nothing here —
+	// the operator's own export is the whole answer, as the bot-var gate
+	// already treats it.
+	if n, err := strconv.Atoi(strings.TrimSpace(envOperator("ITERION_WEBHOOK_MAX_ATTEMPTS"))); err == nil && n > 0 {
 		return n
 	}
 	return 8

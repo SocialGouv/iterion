@@ -97,12 +97,15 @@ func TestNoOperatorGradeNameIsReadAroundTheBelt(t *testing.T) {
 		"ITERION_REQUIRE_ORIGIN", "ITERION_SECURITY_HEADERS",
 		"ITERION_ALLOWED_ORIGINS", "ITERION_WEBHOOK_FORGE_HOSTS",
 		"ITERION_ASSISTANT_PYTHON",
+		// Credential-shaped, so grade-refused since the credential parity
+		// landed: its read moved off the raw env onto the belt.
+		"ITERION_WEBHOOK_MAX_ATTEMPTS",
 	} {
 		if _, ok := beltNames[want]; !ok {
 			t.Fatalf("the walk no longer sees %s through envOperator: the belt read is gone, or the walk stopped matching", want)
 		}
 	}
-	for _, want := range []string{"ITERION_COMPRESS", "ITERION_WEBHOOK_MAX_ATTEMPTS"} {
+	for _, want := range []string{"ITERION_COMPRESS"} {
 		if _, ok := rawNames[want]; !ok {
 			t.Fatalf("the walk no longer sees %s as a raw read: a non-grade knob vanished, or the walk stopped matching", want)
 		}

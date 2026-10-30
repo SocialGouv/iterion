@@ -1,37 +1,42 @@
 // Package projectenv builds immutable per-project process environments for a
-// unified local Studio. Dotenv evaluation happens in a child shell so shell
-// expansion stays compatible with the legacy instance manager without ever
-// mutating the long-lived Studio process.
+// unified local Studio. Dotenv expansion happens in Go: the values the file
+// survives with are expanded by expandReferences against the environment
+// built so far, and no shell ever runs — the legacy instance manager's
+// sourcing frame was the one lane that EXECUTED the file (the H-10 review
+// measured `FOO=$(touch …)` running on the host), and the bash the
+// parse-first tour kept for the `$VAR` expansion alone still executed a
+// value the file never spelled (its prompt expansion ran the substitutions
+// a base variable carried, `${BAR@P}`). Nothing of ours evaluates a value
+// in a shell now; the belt refusal (envtrust.HasCommandSubstitution) keeps
+// the trigger from travelling to a run's own shell tooling one fork away.
 //
 // The studio lane is a dotenv LOADER like the CLI's: the values it takes from
 // the project `.env` are applied to every host-spawned command of a run
 // (server.Config.RunEnv → executor.SetRunExtraEnv), so Snapshot asks the
 // same questions the CLI's applyDotEnv asks at its own plant — the routing
-// class and the operator grade (envtrust.DotenvPlantRefused), and command
-// substitution in a value (envtrust.HasCommandSubstitution) — with the
-// refusal going to stderr directly. What the file DOES plant carries the
-// provenance mark in the returned environment, so a run's own envtrust reads
-// it planted instead of taking it for the operator's. The refusal class and
-// the message are envtrust's (DotenvPlantRefused, RoutingRefusalLine): one
-// class, one wording, every lane that plants.
+// and execution classes and the operator grade (envtrust.DotenvPlantRefused),
+// and shell execution spelled in a value (envtrust.HasCommandSubstitution) —
+// with the refusal going to stderr directly. What the file DOES plant carries
+// the provenance mark in the returned environment, so a run's own envtrust
+// reads it planted instead of taking it for the operator's. The refusal
+// class and the message are envtrust's (DotenvPlantRefused,
+// RoutingRefusalLine): one class, one wording, every lane that plants.
 //
-// The plant set is the PARSE now (internal/dotenv, the same primitive the
-// CLI and the desktop loaders read): the file is never handed to bash as
-// bytes, so a command substitution is refused at the plant instead of run
-// by the sourcing shell, and an unquoted value with spaces is one value,
-// like the CLI's parser reads it — the H-10 review measured the sourcing
-// shell executing `FOO=$(touch …)` on the host before the routing question
-// was even asked, and silently dropping `VAR=ssh -i key`. bash keeps one
-// job: expanding `$VAR`/`${VAR}` in the surviving values on the child's
-// base environment — what the legacy frame wanted from sourcing. Everything
-// else about a value is literal.
+// The plant set is the PARSE (internal/dotenv, the same primitive the CLI
+// and the desktop loaders read): the file is never handed to a shell as
+// bytes, and an unquoted value with spaces is one value, like the CLI's
+// parser reads it. Expansion is the one thing this lane adds over the
+// CLI's raw planting, and it is Go's now: `$VAR`/`${VAR}` — what the
+// legacy frame wanted from sourcing, and the documented contract since the
+// parse-first tour ("everything else about a value is literal", a contract
+// the bash frame exceeded). Everything else about a value — an operator
+// form, a default form, an escaped dollar's neighbour — is literal bytes,
+// the same bytes the CLI lane plants.
 package projectenv
 
 import (
-	"bytes"
 	"fmt"
 	"os"
-	"os/exec"
 	"sort"
 	"strings"
 
@@ -46,88 +51,106 @@ var reserved = map[string]struct{}{
 	"BIND": {}, "PORT": {},
 }
 
-// shellDoubleQuoted renders value inside one bash double-quoted string with
-// the sourcing shell's own semantics for everything bash treats specially
-// in one: a `"` (bare or escaped in the file) cannot close the rendering, a
-// doubled `\\` yields one backslash, a `\\$` yields the literal dollar, a
-// lone backslash escapes the character it preceded (and goes), and a bare
-// `$` survives raw to expand — the `$VAR`/`${VAR}` the legacy frame wanted.
-// Command substitution can never be in the value: the loader refused `$(`,
-// backticks and their quoted spellings before the script was built, and a
-// value the file spelled single-quoted takes the literal path instead.
-func shellDoubleQuoted(value string) string {
+// isNameByte reports whether b may appear in a variable name (after the
+// first byte, which only expandValue's caller has checked).
+func isNameByte(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
+// expandReferences expands the simple `$VAR` / `${VAR}` references the
+// legacy frame wanted, in value, against lookup — the environment built so
+// far, base first and the file's own earlier plants on top. Nothing else
+// is touched, and the rules are stated here because this IS the lane's
+// expansion contract now, not a shell's:
+//
+//   - `\$` yields one literal `$` and suppresses the expansion that would
+//     have followed it;
+//   - a backslash before any other byte is KEPT, both bytes literal — the
+//     bytes the CLI lane plants, and what a shell keeps before a
+//     non-special character too;
+//   - `$$` is two literal dollars (a dotenv value is not a shell prompt;
+//     the PID bash would put there is corruption, not a feature);
+//   - `$NAME` and `${NAME}` — NAME spelled `[A-Za-z_][A-Za-z0-9_]*`, the
+//     braced form carrying NOTHING but the name — expand to lookup's
+//     value, empty when unset, like the sourcing shell's;
+//   - every other `$` is one literal dollar: `${VAR:-default}`,
+//     `${VAR@P}`, `$'…'` stay the bytes the file spelled — the operator
+//     forms a shell would act on are exactly the ones this lane keeps
+//     dead.
+func expandReferences(value string, lookup func(name string) (string, bool)) string {
 	var b strings.Builder
-	b.WriteByte('"')
-	i := 0
-	for i < len(value) {
+	for i := 0; i < len(value); i++ {
 		c := value[i]
-		if c != '\\' {
+		switch {
+		case c == '\\' && i+1 < len(value) && value[i+1] == '$':
+			b.WriteByte('$')
 			i++
-			switch c {
-			case '"':
-				b.WriteString(`\"`)
-			case '$':
-				b.WriteByte('$') // raw: the expansion the legacy frame wanted
-			default:
-				b.WriteByte(c)
+		case c == '\\' && i+1 < len(value):
+			b.WriteByte(c)
+			b.WriteByte(value[i+1])
+			i++
+		case c == '$' && i+1 < len(value) && value[i+1] == '{':
+			end := i + 2
+			for end < len(value) && isNameByte(value[end]) {
+				end++
 			}
-			continue
-		}
-		n := 0
-		for i < len(value) && value[i] == '\\' {
-			n++
-			i++
-		}
-		for j := 0; j < n/2; j++ {
-			b.WriteString(`\\`)
-		}
-		if n%2 == 1 && i < len(value) {
-			// The file's last backslash escapes what follows; the sourcing
-			// shell's result is what lands in the value.
-			switch value[i] {
-			case '$':
-				b.WriteString(`\$`) // the literal dollar the file escaped
-			case '"':
-				b.WriteString(`\"`) // the literal quote the file escaped
-			default:
-				b.WriteByte(value[i]) // the escaped character, backslash gone
+			if end > i+2 && end < len(value) && value[end] == '}' {
+				name := value[i+2 : end]
+				if v, ok := lookup(name); ok {
+					b.WriteString(v)
+				}
+				i = end
+				continue
 			}
+			b.WriteByte(c)
+		case c == '$' && i+1 < len(value) && isNameStart(value[i+1]):
+			end := i + 2
+			for end < len(value) && isNameByte(value[end]) {
+				end++
+			}
+			name := value[i+1 : end]
+			if v, ok := lookup(name); ok {
+				b.WriteString(v)
+			}
+			i = end - 1
+		case c == '$' && i+1 < len(value) && value[i+1] == '$':
+			b.WriteString("$$")
 			i++
+		default:
+			b.WriteByte(c)
 		}
 	}
-	b.WriteByte('"')
 	return b.String()
 }
 
-// shellSingleQuoted renders a value the file spelled inside '...' — bytes
-// the sourcing shell would have kept LITERAL — inside a bash single-quoted
-// string, where nothing expands.
-func shellSingleQuoted(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+// isNameStart reports whether b may begin a variable name.
+func isNameStart(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
 
 // Snapshot returns the effective environment for envFile layered over base.
 // An empty or missing envFile returns a clone of base. The returned KEY=value
 // slice is sorted, immutable by convention, and safe to append to os/exec.Cmd.
 //
-// The file is PARSED, not sourced: internal/dotenv reads it (the same
+// The file is PARSED, never sourced: internal/dotenv reads it (the same
 // primitive the CLI's applyDotEnv and the desktop env-file loader use), the
-// refusals are decided on the parsed entries — routing/operator-grade names
-// by envtrust.DotenvPlantRefused, command substitution by
-// envtrust.HasCommandSubstitution — and only then does a child bash see the
-// surviving values, to expand `$VAR`/`${VAR}` (the legacy frame) on its base
-// environment. The child receives only base and the constructed script — no
-// file bytes are interpreted by it, so nothing in the file runs. A refused
-// entry restores the operator's own value where they exported one and does
-// not exist where they did not; every refusal names the file, the key and
-// (routing class alone) the opt-in, on stderr — the log level a logger
-// would honour is itself something this file may have planted. Whatever the
-// file DOES plant travels with the envtrust provenance marker (merged onto
-// the marker the studio itself inherited), so a run that inherits this
-// environment reads those values as planted, never as the operator's own.
-// The opt-in itself never crosses into the returned environment: a line in
-// the file grants nothing, and the operator's export answers the studio
-// process, not the runs it launches.
+// refusals are decided on the parsed entries — routing/execution/operator-
+// grade names by envtrust.DotenvPlantRefused, shell execution spelled in a
+// value by envtrust.HasCommandSubstitution — and the surviving values are
+// expanded in Go (expandReferences, `$VAR`/`${VAR}` on the environment built
+// so far). No shell exists anywhere on this lane: a value the file spelled,
+// a value an expansion produced and a base value the file references are
+// bytes and Go strings end to end. A refused entry restores the operator's
+// own value where they exported one and does not exist where they did not;
+// every refusal names the file, the key and (the opt-in-able classes) the
+// opt-in, on stderr — the log level a logger would honour is itself
+// something this file may have planted. Whatever the file DOES plant travels
+// with the envtrust provenance marker (merged onto the marker the studio
+// itself inherited), so a run that inherits this environment reads those
+// values as planted, never as the operator's own. The opt-in itself never
+// crosses into the returned environment: a line in the file grants nothing,
+// and the operator's export answers the studio process, not the runs it
+// launches.
 func Snapshot(base []string, envFile string) ([]string, error) {
 	baseMap := toMap(base)
 	if envFile == "" {
@@ -159,8 +182,8 @@ func Snapshot(base []string, envFile string) ([]string, error) {
 		folded[entry.Key] = entry
 	}
 
-	// The refusals are decided HERE, on the parsed entries, before any shell
-	// exists: a refused entry restores the operator's own value (base)
+	// The refusals are decided HERE, on the parsed entries, before any
+	// expansion: a refused entry restores the operator's own value (base)
 	// where they exported one and does not exist where they did not — a
 	// refused name is never planted either. The marker line is not a value
 	// a repository gets to declare (the mark is what a loader RECORDS, and
@@ -169,7 +192,6 @@ func Snapshot(base []string, envFile string) ([]string, error) {
 	for key, value := range baseMap {
 		effective[key] = value
 	}
-	var script []string
 	var plantedNames []string
 	for _, key := range order {
 		entry := folded[key]
@@ -201,47 +223,35 @@ func Snapshot(base []string, envFile string) ([]string, error) {
 			fmt.Fprintln(os.Stderr, "iterion: "+envtrust.CommandSubstitutionRefusalLine(key, "the project `.env`", envFile))
 			continue
 		}
-		// A plant. Values the file spelled single-quoted stay literal;
-		// everything else is rendered double-quoted for the child bash,
-		// where `$VAR`/`${VAR}` expand on the base environment and nothing
-		// else can: `$( ` and backticks were refused above, and the
-		// rendering pins the value's other bytes.
-		line := "export " + key + "=" + shellDoubleQuoted(entry.Value)
-		if entry.SingleQuoted {
-			line = "export " + key + "=" + shellSingleQuoted(entry.Value)
+		// A plant. Values the file spelled single-quoted stay the file's
+		// bytes; everything else has its simple references expanded against
+		// the environment built so far — base first, the file's earlier
+		// plants on top, the current key's own base value for a
+		// self-reference, like the sourcing shell's order. An expansion can
+		// INTRODUCE a trigger the file never spelled (the base value a
+		// `$VAR` pulled in may carry `$(…)` bytes a shell would act on one
+		// fork away), so the belt asks the EXPANDED value too: a value
+		// spelling execution is refused whatever road its bytes arrived by.
+		expanded := entry.Value
+		if !entry.SingleQuoted {
+			expanded = expandReferences(entry.Value, func(name string) (string, bool) {
+				v, ok := effective[name]
+				return v, ok
+			})
+			if envtrust.HasCommandSubstitution(expanded) {
+				if inherited {
+					effective[key] = baseValue
+				} else {
+					delete(effective, key)
+				}
+				fmt.Fprintln(os.Stderr, "iterion: "+envtrust.CommandSubstitutionRefusalLine(key, "the project `.env`", envFile))
+				continue
+			}
 		}
-		script = append(script, line)
+		effective[key] = expanded
 		plantedNames = append(plantedNames, key)
 	}
 
-	// bash expands the surviving values, in file order, on the child's base
-	// environment; the child receives the constructed script — never the
-	// file's bytes — so nothing in the file runs. Only the PLANT names are
-	// read back: the shell's own exports (PWD, SHLVL, OLDPWD, _) never
-	// enter the result, and a line naming one is a plant like any other.
-	if len(script) > 0 {
-		cmd := exec.Command("bash", "--noprofile", "--norc", "-s")
-		cmd.Env = fromMap(baseMap)
-		cmd.Stdin = strings.NewReader(strings.Join(script, "\n") + "\nenv -0\n")
-		raw, err := cmd.Output()
-		if err != nil {
-			if exitErr, isExit := err.(*exec.ExitError); isExit {
-				return nil, fmt.Errorf("project env %s: shell evaluation failed: %s", envFile, strings.TrimSpace(string(exitErr.Stderr)))
-			}
-			return nil, fmt.Errorf("project env %s: %w", envFile, err)
-		}
-		for _, field := range bytes.Split(raw, []byte{0}) {
-			if len(field) == 0 {
-				continue
-			}
-			k, v, ok := strings.Cut(string(field), "=")
-			if ok && k != "" {
-				if _, isPlant := folded[k]; isPlant {
-					effective[k] = v
-				}
-			}
-		}
-	}
 	for key := range reserved {
 		if effective[key] != baseMap[key] {
 			return nil, fmt.Errorf("project env %s may not override reserved variable %s", envFile, key)

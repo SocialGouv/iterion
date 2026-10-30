@@ -3,6 +3,8 @@ package store
 import (
 	"os"
 	"strings"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // launchEnvPrefixes is the allowlist of env-var name prefixes whose
@@ -23,21 +25,6 @@ import (
 var launchEnvPrefixes = []string{
 	"ITERION_",
 	"RESCUE_",
-}
-
-// secretValuePatterns are name substrings that mark a variable as
-// secret. Names containing any of these get the VALUE redacted in
-// LaunchEnv ("[redacted]"); the KEY is still recorded so the operator
-// can see WHICH credentials the run used (auditability) without
-// leaking the secret itself onto disk. Substring matching is
-// case-insensitive.
-var secretValuePatterns = []string{
-	"TOKEN",
-	"KEY",
-	"SECRET",
-	"PASSWORD",
-	"CREDENTIAL",
-	"AUTH",
 }
 
 // CaptureLaunchEnv snapshots the iterion-relevant env vars active at
@@ -85,16 +72,11 @@ func hasCapturedPrefix(name string) bool {
 }
 
 // IsSecretEnvName reports whether an environment variable name looks
-// like it holds a secret (case-insensitive substring match against
-// secretValuePatterns). Exported so pkg/backend/secretguard can seed
-// its value-taint set from the host's sensitive env vars using the
-// same definition this package uses for LaunchEnv redaction.
+// like it holds a secret (envtrust.SecretShapedName — the same
+// case-insensitive substring match this package redacted by). Exported so
+// pkg/backend/secretguard can seed its value-taint set from the host's
+// sensitive env vars using the same definition this package uses for
+// LaunchEnv redaction.
 func IsSecretEnvName(name string) bool {
-	upper := strings.ToUpper(name)
-	for _, p := range secretValuePatterns {
-		if strings.Contains(upper, p) {
-			return true
-		}
-	}
-	return false
+	return envtrust.SecretShapedName(name)
 }

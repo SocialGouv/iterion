@@ -41,10 +41,11 @@ type Entry struct {
 
 // Parse reads path and returns its assignments in file order. The format
 // is the standard one: `KEY=VALUE` per line, optional `#` comments,
-// optional surrounding `"` or `'` quotes around the value, an optional
-// `export ` prefix on the key. Lines that are not assignments are SKIPPED,
-// not handed to any shell — a bare command in the file used to run when
-// the studio lane sourced it. A name no shell could export
+// optional surrounding `"` or `'` quotes around the value — a comment
+// after a closed quote goes, a `#` inside an unquoted value stays — and an
+// optional `export ` prefix on the key. Lines that are not assignments are
+// SKIPPED, not handed to any shell — a bare command in the file used to run
+// when the studio lane sourced it. A name no shell could export
 // (envtrust.Exportable) is skipped too: the provenance marker cannot carry
 // it and Windows would fold it. An unreadable file is an error; the
 // callers decide whether that stops them.
@@ -75,11 +76,34 @@ func Parse(path string) ([]Entry, error) {
 		val := strings.TrimSpace(line[eq+1:])
 		entry := Entry{Key: key, Value: val}
 		if len(val) >= 2 {
-			if val[0] == '"' && val[len(val)-1] == '"' {
-				entry.Value = val[1 : len(val)-1]
-			} else if val[0] == '\'' && val[len(val)-1] == '\'' {
-				entry.Value = val[1 : len(val)-1]
-				entry.SingleQuoted = true
+			// A quoted value: the closing quote may be followed by a
+			// comment — `K="v1" # comment` is the dotenv convention, and
+			// the sourcing shell read it the same way. The comment goes;
+			// the value is what the quotes held. What the quotes did not
+			// hold stays the value it always was: a line whose LAST byte is
+			// the quote keeps the outer strip the parser has always done
+			// (`K='it''s'` reads `it''s`), and anything else keeps the
+			// line-based contract — the bytes are the value, same as the
+			// CLI lane plants them. A `#` INSIDE an unquoted value is kept
+			// (PASS=abc #123 is somebody's value, not a comment): the strip
+			// is paid for by the quotes that close before it.
+			quote := val[0]
+			if quote == '"' || quote == '\'' {
+				inside, rest, ok := cutQuoted(val, quote)
+				commentAfter := ok && func() bool {
+					rest = strings.TrimSpace(rest)
+					return rest == "" || rest[0] == '#'
+				}()
+				if ok && commentAfter {
+					entry.Value = inside
+					entry.SingleQuoted = quote == '\''
+				} else if val[len(val)-1] == quote {
+					// What the quotes did not close on the line keeps the
+					// outer strip the parser has always done (`K='it''s'`
+					// reads `it''s`); see the branch comment above.
+					entry.Value = val[1 : len(val)-1]
+					entry.SingleQuoted = quote == '\''
+				}
 			}
 		}
 		out = append(out, entry)
@@ -88,4 +112,27 @@ func Parse(path string) ([]Entry, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// cutQuoted reports the bytes inside the quote that opens val's first byte,
+// and what follows the closing quote. Inside double quotes a backslash
+// escapes the byte it precedes (the sourcing shell's own rule, so `K="a\"b"`
+// keeps the inner quote in the value); single quotes hold no escapes — the
+// next quote closes. ok is false when the first byte is not the quote or no
+// closing quote exists on the line, in which case neither result means
+// anything.
+func cutQuoted(val string, quote byte) (inside, rest string, ok bool) {
+	if len(val) < 2 || val[0] != quote {
+		return "", "", false
+	}
+	for i := 1; i < len(val); i++ {
+		if quote == '"' && val[i] == '\\' && i+1 < len(val) {
+			i++ // the escaped byte rides along, quote or not
+			continue
+		}
+		if val[i] == quote {
+			return val[1:i], val[i+1:], true
+		}
+	}
+	return "", "", false
 }

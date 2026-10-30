@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"maps"
 	"math"
-	"os"
 	"regexp"
 	"slices"
 	"strconv"
@@ -20,6 +19,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // defaultMaxConsecutiveToolErrors aborts a claude_code session once this
@@ -65,9 +66,13 @@ const (
 
 // envDurationOr returns the time.Duration parsed from environment
 // variable `name`, falling back to `fallback` when the variable is
-// unset or holds an unparseable value.
+// unset or holds an unparseable value. The liveness family stays a bot
+// variable (pkg/platformcfg's whyLiveness) and the operator's export
+// answers; a value a project `.env` planted reads as nothing said — the
+// H-10 review measured the plant reaching this raw read and parking the
+// anti-deadlock tier at `=0`.
 func envDurationOr(name string, fallback time.Duration) time.Duration {
-	if v := os.Getenv(name); v != "" {
+	if v := envtrust.Inherited(name); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			return d
 		}

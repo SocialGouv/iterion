@@ -6,7 +6,8 @@ import (
 )
 
 // DotenvEndpointsOptIn is the operator's opt-in that lets a project `.env`
-// plant routing-shaped names (RoutingShapedName): export it as
+// plant the opt-in-able classes — routing-shaped names (RoutingShapedName)
+// and execution-grade names (ExecutionGradeName): export it as
 // `ITERION_DOTENV_ENDPOINTS=allow` in the environment iterion runs with.
 // Anything else — unset, empty, another word — keeps the refusal;
 // surrounding whitespace is ignored.
@@ -31,36 +32,45 @@ func DotenvEndpointsAllowed() bool {
 
 // DotenvPlantRefused answers the ONE question every loader that plants a
 // dotenv file asks about a name it is about to set: the CLI's applyDotEnv,
-// the studio's projectenv.Snapshot and the desktop's env-file loader. Two
+// the studio's projectenv.Snapshot and the desktop's env-file loader. Three
 // classes close at the plant, one entry point, so the answer cannot drift
-// between the lanes. A ROUTING-SHAPED name is not applied unless the
-// environment this process INHERITED granted the opt-in — whatever
+// between the lanes. A ROUTING-SHAPED name and an EXECUTION-GRADE name
+// (ExecutionGradeName — the generic host-env families whose plant makes a
+// child of iterion run or trust what the file chose) are not applied unless
+// the environment this process INHERITED granted the opt-in — whatever
 // namespace it lives in, the operator's explicit grant answers it, as it
 // has since the routing class closed (a deployment wire the operator
-// exported a grant for keeps working). Every OTHER operator-grade name
-// (OperatorGradeRefused — the same inventory the bot-var gate asks,
-// widened to the server's credential spellings) is closed OUTRIGHT: the
-// sandbox lifts, the auth and origin guards, the server's secrets are the
-// operator's posture, and nothing a file may say — the opt-in included —
-// lets the file set them.
+// exported a grant for keeps working). The two share the branch so a name
+// of both classes reads one answer; the refusal line names the routing
+// reason first, so a name in the overlap is once refused, once explained.
+// Every OTHER operator-grade name (OperatorGradeRefused — the same
+// inventory the bot-var gate asks, widened to the server's credential
+// spellings) is closed OUTRIGHT: the sandbox lifts, the auth and origin
+// guards, the server's secrets are the operator's posture, and nothing a
+// file may say — the opt-in included — lets the file set them.
 func DotenvPlantRefused(name string) bool {
-	if RoutingShapedName(name) {
+	if RoutingShapedName(name) || ExecutionGradeName(name) {
 		return !DotenvEndpointsAllowed()
 	}
 	return OperatorGradeRefused(name)
 }
 
-// RoutingRefusalLine renders the single-line refusal for a routing-shaped
-// name a dotenv file plants: the name, the file it came from, why it is not
-// applied, the credential it would have redirected (when the operator's own
-// is inherited beside it) and the operator's way past the refusal. One
-// message for every loader that plants — the CLI's, the studio snapshot's,
-// the desktop's — so a refusal reads the same wherever a file tried to route
-// a wire. source names the kind of file ("the project `.env`", "the dotenv
-// file") and path its location; both are said because the next reader needs
-// to find the line to delete or the name to export. The caller puts the line
-// on stderr directly: a refusal is not a log level, and the level a logger
-// honours is itself something the file may have planted a line earlier.
+// RoutingRefusalLine renders the single-line refusal for a name a dotenv
+// file plants that the opt-in-able classes answer: the name, the file it
+// came from, why it is not applied, the credential it would have
+// redirected (when the operator's own is inherited beside it) and the
+// operator's way past the refusal. One message for every loader that
+// plants — the CLI's, the studio snapshot's, the desktop's — so a refusal
+// reads the same wherever a file tried to plant. A routing-shaped name
+// reads the routing reason ("where a connection goes"); an execution-grade
+// name outside the routing shapes reads the execution reason ("what
+// iterion's children execute or trust"); the union never duplicates — a
+// name of both classes reads the routing line alone. source names the kind
+// of file ("the project `.env`", "the dotenv file") and path its location;
+// both are said because the next reader needs to find the line to delete
+// or the name to export. The caller puts the line on stderr directly: a
+// refusal is not a log level, and the level a logger honours is itself
+// something the file may have planted a line earlier.
 func RoutingRefusalLine(name, source, path string) string {
 	credHalf := ""
 	if redirected := InheritedCredentialsAt(name); len(redirected) > 0 {
@@ -68,14 +78,21 @@ func RoutingRefusalLine(name, source, path string) string {
 	}
 	// The grade names that no opt-in answers get the other half of the
 	// question: their opt-in half would lie, because ITERION_DOTENV_
-	// ENDPOINTS widens what a file may plant as a ROUTE and answers
-	// nothing for the operator's own posture. What remains is the
-	// operator's channel: the environment iterion runs with.
+	// ENDPOINTS widens what a file may plant as a ROUTE or a host-env
+	// execution name and answers nothing for the operator's own posture.
+	// What remains is the operator's channel: the environment iterion runs
+	// with.
 	tail := fmt.Sprintf(" — export %s in the environment iterion runs with to answer it yourself, or export %s=allow to let this file plant its routes", name, DotenvEndpointsOptIn)
+	if !RoutingShapedName(name) && ExecutionGradeName(name) {
+		tail = fmt.Sprintf(" — export %s in the environment iterion runs with to answer it yourself, or export %s=allow to let this file plant it", name, DotenvEndpointsOptIn)
+	}
 	if !RoutingShapedName(name) && OperatorGradeRefused(name) {
 		tail = fmt.Sprintf(" — export %s in the environment iterion runs with if you mean it; the file a project holds does not set the operator's posture", name)
 	}
 	reason := "a dotenv file does not choose where a connection goes"
+	if !RoutingShapedName(name) && ExecutionGradeName(name) {
+		reason = "a dotenv file does not choose what iterion's children execute or trust"
+	}
 	if !RoutingShapedName(name) && OperatorGradeRefused(name) {
 		reason = "a dotenv file does not speak for the operator"
 	}

@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // branchCancelGracePeriod bounds how long the fan-out collector waits,
@@ -23,7 +24,10 @@ import (
 var branchCancelGracePeriod = defaultBranchCancelGracePeriod()
 
 func defaultBranchCancelGracePeriod() time.Duration {
-	if v := os.Getenv("ITERION_BRANCH_CANCEL_GRACE"); v != "" {
+	// The liveness family reads planted-as-unset (delegate.envDurationOr's
+	// rule): the operator's export answers, a project `.env`'s plant does
+	// not.
+	if v := envtrust.Inherited("ITERION_BRANCH_CANCEL_GRACE"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			return d
 		}
