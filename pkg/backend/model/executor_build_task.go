@@ -1907,14 +1907,11 @@ func (e *ClawExecutor) assembleEffectiveTools(f backendFields, backendName strin
 	// MEMORY.md it has no way to read or write. Grant exactly the three the
 	// instructions call for.
 	//
-	// The names must be claw's OWN (toolcatalog is the catalog): the grant
-	// lands in the list resolveToolsForNode resolves against the registry, so
-	// a name claw does not have does not degrade — it fails the node before
-	// its first token. `glob` is how claw lists a directory; it read
-	// `list_files` until 2026-08, which turned `auto_memory: on` into a hard
-	// failure on every claw node that restricted its tools.
+	// The grant itself is declared beside the switch (automemory.ClawToolGrant),
+	// so the reader that asks whether auto-memory gives a node a durable write
+	// path reads the SAME three names this appends instead of restating them.
 	if backendName == delegate.BackendClaw && len(effectiveTools) > 0 && e.autoMemoryMode(f).Enabled() {
-		for _, name := range []string{"read_file", "write_file", "glob"} {
+		for _, name := range automemory.ClawToolGrant() {
 			effectiveTools = ensureToolPresent(effectiveTools, name)
 		}
 	}

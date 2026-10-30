@@ -342,14 +342,20 @@ func TestAMemoryBlockIsAPathOnlyWhereItInstallsTheWriteTool(t *testing.T) {
 
 // TestAutoMemoryIsAPathToTheTree closes the false POSITIVE half: `auto_memory:
 // on` IS a durable memory, maintained with ordinary file tools the executor
-// appends to a restricted claw list (model.ClawExecutor.effectiveTools) and
-// folded back into the store by the mirror. A bundle whose page teaches the
-// store's tool while auto-memory is on keeps a tree, so the warning is wrong
-// there.
+// appends to a restricted claw list (automemory.ClawToolGrant, appended by
+// model.ClawExecutor.assembleEffectiveTools) and folded back into the store by
+// the mirror. A bundle whose page teaches the store's tool while auto-memory
+// is on keeps a tree, so the warning is wrong there.
 //
-// The mode is resolved as the runtime resolves it (node over workflow), and
-// the backend must be one that serves it — the same two questions
-// pkg/backend/automemory answers for the engine.
+// The mode is resolved as the runtime resolves it (node over workflow). The
+// GRANT, not the switch, is what this arm credits, so the route decides:
+// `claude_code` serves auto-memory and receives no grant — its node writes
+// MEMORY.md with the native roster its `tools:` list bounds, and a
+// writer-free list leaves it none. Measured from both ends on the shape
+// below: `model.NewProgramExecutor(w).EffectiveToolNames(node, true)` =
+// [read_file glob grep] there against [read_file glob grep todo_write
+// write_file agent] on claw, and the spawn's own `--disallowedTools` removes
+// Write, Edit, MultiEdit, NotebookEdit and Bash for it.
 func TestAutoMemoryIsAPathToTheTree(t *testing.T) {
 	page := skillPage(pageTeaching(durableStoreTools(t)[0]))
 	build := func(backend, node, workflow string) *ir.Workflow {
@@ -370,7 +376,8 @@ func TestAutoMemoryIsAPathToTheTree(t *testing.T) {
 	}{
 		{"auto_memory: on, on the node", "claw", "on", "", 0},
 		{"auto_memory: on, inherited from the workflow", "claw", "", "on", 0},
-		{"auto_memory: on on a backend that serves it", "claude_code", "on", "", 0},
+		{"auto_memory: on, route undecided (the resolver falls through)", "", "on", "", 0},
+		{"auto_memory: on on a serving backend the grant does not reach", "claude_code", "on", "", 1},
 		{"the node's off wins over the workflow's on", "claw", "off", "on", 1},
 		{"auto_memory: on on a backend that does NOT serve it (C132)", "codex", "on", "", 1},
 		{"no auto_memory at all", "claw", "", "", 1},
@@ -380,6 +387,99 @@ func TestAutoMemoryIsAPathToTheTree(t *testing.T) {
 		if len(got) != c.want {
 			t.Errorf("%s: got %d durable-memory diagnostics, want %d: %+v", c.what, len(got), c.want, got)
 		}
+	}
+}
+
+// TestAutoMemoryCreditsOnlyTheGrantThatLands is the gate and the list the
+// auto-memory arm used to skip (iterion#2832 round 2): the switch was read as
+// a write path from the declaration alone, so three shapes that cannot write
+// MEMORY.md were credited.
+//
+// Each case is measured against the engine, not against this arm's own
+// reading: `EffectiveToolNames` holds [read_file glob grep todo_write
+// write_file agent] on the gated claw node, whose only writer the real gate
+// answers `deny` for; it holds NOTHING at all for `tools: []` (the executor's
+// append sits behind `len(effectiveTools) > 0`); and on claude_code it holds
+// the three readers the list named.
+func TestAutoMemoryCreditsOnlyTheGrantThatLands(t *testing.T) {
+	page := skillPage(pageTeaching(durableStoreTools(t)[0]))
+	build := func(backend string, tools []string, mode string, allow []string) *ir.Workflow {
+		n := &ir.AgentNode{
+			BaseNode:   ir.BaseNode{ID: "nexie"},
+			LLMFields:  ir.LLMFields{Backend: backend},
+			Tools:      tools,
+			AutoMemory: "on",
+		}
+		w := wf("probe", nil, nil, nil, n)
+		w.Permission = mode
+		w.PermissionAllow = allow
+		return w
+	}
+	restricted := []string{"read_file", "glob", "grep"}
+	cases := []struct {
+		what    string
+		backend string
+		tools   []string
+		mode    string
+		allow   []string
+		want    int
+	}{
+		{"the grant lands and no gate bounds it", "claw", restricted, "", nil, 0},
+		{"`permission: deny` with a writer-free allow list denies the granted writer", "claw", restricted, "deny", []string{"Read(**)", "Glob"}, 1},
+		{"`permission: deny` whose allow list covers the granted writer", "claw", restricted, "deny", []string{"Write"}, 0},
+		{"a declared-EMPTY list receives no grant at all", "claw", []string{}, "", nil, 1},
+		{"an UNDECLARED list is the native roster, which the other arm reads", "claw", nil, "", nil, 0},
+	}
+	for _, c := range cases {
+		got := durableMemoryDiags(build(c.backend, c.tools, c.mode, c.allow), page)
+		if len(got) != c.want {
+			t.Errorf("%s: got %d durable-memory diagnostics, want %d: %+v", c.what, len(got), c.want, got)
+		}
+	}
+}
+
+// TestTheStoresWriteToolIsBoundedByTheGateLikeAnyOther is the `memory:` arm's
+// own half of iterion#2832 round 2: the block installs `memory_write`, and
+// the gate decides whether a call of it RUNS. It is a gated tool — the
+// installer appends it to the generation's tool list and every claw tool_use
+// passes the policy first — so a block under `permission: deny` whose allow
+// list names no writer buys a tool no call of which runs.
+//
+// The positive controls keep the arm from being read as "a gate kills every
+// block": an allow row covering the store tool, and no gate at all, both stay
+// quiet.
+func TestTheStoresWriteToolIsBoundedByTheGateLikeAnyOther(t *testing.T) {
+	store := durableStoreTools(t)[0]
+	page := skillPage(pageTeaching(store))
+	build := func(mode string, allow []string) *ir.Workflow {
+		w := wf("probe", nil, nil, nil, agentWithMemory("nexie",
+			&ir.Memory{Enabled: true, Scope: "vision", Read: true, Write: true, Visibility: "bot"}))
+		w.Permission = mode
+		w.PermissionAllow = allow
+		return w
+	}
+	cases := []struct {
+		what  string
+		mode  string
+		allow []string
+		want  int
+	}{
+		{"no gate at all", "", nil, 0},
+		{"`permission: deny` with a writer-free allow list", "deny", []string{"Read(**)", "Glob"}, 1},
+		{"`permission: deny` whose allow list names the store tool", "deny", []string{store}, 0},
+		{"`ask` mode: the human may approve", "ask", nil, 0},
+	}
+	for _, c := range cases {
+		got := durableMemoryDiags(build(c.mode, c.allow), page)
+		if len(got) != c.want {
+			t.Errorf("%s: got %d durable-memory diagnostics, want %d: %+v", c.what, len(got), c.want, got)
+		}
+	}
+	// A bare deny of the store tool is the same bound, written the other way.
+	denied := build("ask", nil)
+	denied.PermissionDeny = []string{store}
+	if got := durableMemoryDiags(denied, page); len(got) != 1 {
+		t.Errorf("a bare deny of %q left the block credited: got %d diagnostics, want 1: %+v", store, len(got), got)
 	}
 }
 

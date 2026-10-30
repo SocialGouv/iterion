@@ -407,6 +407,76 @@ func (p *Policy) HasExplicitDeny(toolName string, input map[string]any) bool {
 	return ok
 }
 
+// LeavesTool reports whether this gate lets AT LEAST ONE call of a tool run.
+//
+// It is the existential question [Policy.Evaluate] cannot answer on its own:
+// Evaluate judges ONE call, so a reader asking "can this node reach a writer
+// at all" would have to invent the call's arguments, and a scoped rule
+// (`Write(docs/**)`) would then answer about the path the reader guessed
+// rather than about the tool. This is THE answer to that question in this
+// package — a lint, a pre-run admission or a corpus guard reads it instead of
+// re-deriving the mode's meaning from the rule lists, which is how a reader
+// and the gate come to disagree about a rule form (iterion#2832).
+//
+// spellings are the names the BACKEND may send for one tool concept: a
+// declaration reaches the gate under the roster's spelling (`write_file` is
+// `Write` on claude_code), and a GLOB row is matched against the raw name, so
+// the concept survives when any spelling of it does. The caller owns that
+// projection — the gate has no roster of its own — and the reading mirrors
+// evaluateForwardedCall's, the one other site that gates a call it knows
+// under several names. No spelling at all is no capability: the empty call
+// leaves nothing.
+//
+// The mode decides which list answers, exactly as Evaluate's precedence does:
+//
+//   - off, or a nil policy: the gate is disabled and the lists are inert;
+//   - any mode: a deny row bounding EVERY call removes the tool (deny wins
+//     in every mode). A row bounding a subset does not — the other calls run;
+//   - `ask`: everything no deny row bounds pauses for the human, who may
+//     approve, so the capability exists;
+//   - `deny`: the mode hard-denies everything no row matches, so the tool is
+//     left only where an allow row, an ask row (a deny mode still pauses on
+//     one) or an engine-owned grant NAMES it at all. A scoped allow is
+//     enough: some calls pass.
+//
+// An exempt tool bypasses the gate entirely (Evaluate's own first answer), so
+// it is always left.
+func (p *Policy) LeavesTool(spellings ...string) bool {
+	if !p.Enabled() {
+		return true
+	}
+	for _, name := range spellings {
+		if p.leavesSpelling(name) {
+			return true
+		}
+	}
+	return false
+}
+
+// leavesSpelling is LeavesTool for ONE name the gate may see.
+func (p *Policy) leavesSpelling(name string) bool {
+	if p.isExempt(name) {
+		return true
+	}
+	canon := canonicalToolName(name)
+	for _, r := range p.deny {
+		if r.boundsEveryCall(name, canon) {
+			return false
+		}
+	}
+	if p.Mode != ModeDeny {
+		return true
+	}
+	for _, rules := range [][]rule{p.grants, p.ask, p.allow} {
+		for _, r := range rules {
+			if r.matchesTool(name, canon) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (p *Policy) matchingDeny(toolName string, input map[string]any) (rule, bool) {
 	canon := canonicalToolName(toolName)
 	var cands []string
@@ -447,7 +517,8 @@ type rule struct {
 	// anyArg is true when the argument scope leaves no call out — `Write(**)`
 	// bounds every path, so the rule removes the tool as a bare one does.
 	// Kept here, beside the parse that reads the pattern, so no caller has to
-	// re-read a rule's spelling to learn how wide it is.
+	// re-read a rule's spelling to learn how wide it is; which spellings are
+	// that wide is argScopeIsUnbounded's.
 	anyArg bool
 }
 
@@ -474,7 +545,7 @@ func parseRule(raw string) (rule, error) {
 		r.argRe = argRe
 		trimmedArg := strings.TrimSpace(argContent)
 		r.literalArg = !strings.HasSuffix(trimmedArg, ":*") && !strings.Contains(trimmedArg, "*")
-		r.anyArg = trimmedArg == "*" || trimmedArg == "**"
+		r.anyArg = argScopeIsUnbounded(trimmedArg)
 	}
 	toolPart = strings.TrimSpace(toolPart)
 	if toolPart == "" {
@@ -546,6 +617,9 @@ func RuleNamesClass(rawRule string) (string, bool) {
 // for one command family — and the warning exists for the coarser hole, a
 // tool NO row names at all. Read as "does any row bound this tool", never
 // "does this row bound every use of the tool".
+//
+// It is the matcher [Policy.LeavesTool] reads for the deny-mode half of its
+// own question, so the two cannot disagree about which rows name a tool.
 func RuleCovers(rawRule, toolName string) bool {
 	r, err := parseRule(rawRule)
 	if err != nil {
@@ -564,14 +638,26 @@ func RuleCovers(rawRule, toolName string) bool {
 // `Write(**)` leaves no call out and removes the tool as a bare `Write` does.
 // A class row (`class:shell`) with no scope removes every member.
 //
-// It parses with the REAL grammar Evaluate matches with, so it has no
-// spelling of its own to keep in step.
+// It parses with the REAL grammar Evaluate matches with, and answers through
+// the SAME predicate [Policy.LeavesTool] reads, so it has no spelling of its
+// own to keep in step.
 func RuleRemovesTool(rawRule, toolName string) bool {
 	r, err := parseRule(rawRule)
 	if err != nil {
 		return false
 	}
-	if !r.matchesTool(toolName, canonicalToolName(toolName)) {
+	return r.boundsEveryCall(toolName, canonicalToolName(toolName))
+}
+
+// boundsEveryCall reports whether this rule leaves no call of the tool out —
+// THE reading of "is this tool gone" in this package, read by RuleRemovesTool
+// and by Policy.LeavesTool so a rule form cannot mean one thing to a lint and
+// another to the gate.
+//
+// A bare row bounds every call; an argument scope bounds a subset unless the
+// scope itself leaves nothing out (anyArg, decided at parse).
+func (r rule) boundsEveryCall(rawName, canon string) bool {
+	if !r.matchesTool(rawName, canon) {
 		return false
 	}
 	return r.argRe == nil || r.anyArg
@@ -591,6 +677,27 @@ func compileArg(content string) (*regexp.Regexp, error) {
 	default:
 		return regexp.Compile("^" + regexp.QuoteMeta(c) + "$")
 	}
+}
+
+// argScopeIsUnbounded reports whether an argument scope leaves no call out —
+// the three spellings compileArg turns into a matcher every candidate
+// satisfies, listed here beside it:
+//
+//   - `*` and `**` compile to `^.*$`, the greedy wildcards;
+//   - `:*` is the prefix idiom with an EMPTY prefix, which compiles to `^`
+//     and therefore matches every command — `deny: ["Bash(:*)"]` bounds the
+//     shell as a bare `Bash` row does.
+//
+// A scope that bounds a subset (`docs/**`, `git diff:*`) is not one, and
+// neither is `()`, whose matcher is `^$`: it bounds the empty argument alone.
+// The set is these spellings and not "the matcher accepts the empty string",
+// which `^$` would satisfy too.
+func argScopeIsUnbounded(trimmedArg string) bool {
+	switch trimmedArg {
+	case "*", "**", ":*":
+		return true
+	}
+	return false
 }
 
 // matchAny returns the first rule in rs that matches the tool (by its raw

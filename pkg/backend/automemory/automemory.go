@@ -20,6 +20,7 @@ package automemory
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	clawrt "github.com/SocialGouv/claw-code-go/pkg/runtime"
@@ -51,6 +52,30 @@ func SupportsBackend(name string) bool {
 func NeedsPromptSection(name string) bool {
 	return backendcaps.Offers(name, backendcaps.AutoMemoryPrompt)
 }
+
+// ClawToolGrant names the tools a claw node running auto-memory receives on
+// top of a RESTRICTED `tools:` list — the three the instructions call for:
+// read and write MEMORY.md, and list the directory it lives in. Copied, so a
+// consumer cannot grow the grant for everyone else.
+//
+// The names are claw's OWN: the grant lands in the list the executor resolves
+// against the tool registry, so a name claw does not have does not degrade —
+// it fails the node before its first token (`glob` is how claw lists a
+// directory; it read `list_files` until 2026-08, which turned
+// `auto_memory: on` into a hard failure on every claw node that restricted
+// its tools).
+//
+// It lives here, beside the switch, because the grant is the mechanism and
+// two readers answer about it: the executor that APPENDS it
+// (model.ClawExecutor.assembleEffectiveTools) and the lint that asks whether
+// auto-memory gives a node a durable write path at all
+// (bundlelint.autoMemoryGrantsAWriter, C274). Held apart, the second was
+// crediting a write path the first never granted.
+func ClawToolGrant() []string {
+	return slices.Clone(clawToolGrant)
+}
+
+var clawToolGrant = []string{"read_file", "write_file", "glob"}
 
 // Mode is the resolved auto-memory setting for a node or run.
 type Mode int
