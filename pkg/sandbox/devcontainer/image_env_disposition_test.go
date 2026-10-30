@@ -25,7 +25,9 @@ type dispositionCase struct {
 // so an empty one is inert. A reported row is everything else: a name
 // where an empty value would break an image doing its job or is read as
 // presence, AND a name that leads to code the image itself ships, which
-// is told rather than emptied (ARB-121).
+// is told rather than emptied (ARB-121). A plantOnly row is the measured
+// edge the other way: the plant gate refuses the name, this screen
+// answers "outside the class" — and the screen-side test holds the PAIR.
 var dispositionCases = []dispositionCase{
 	// The suffix family is the credential/routing sub-class by definition.
 	{"MYTOOL_BASE_URL", neutralizeInImage},
@@ -88,6 +90,30 @@ var dispositionCases = []dispositionCase{
 	{"GIT_CONFIG_VALUE_0", reportedOnly},
 	{"GIT_CONFIG_PARAMETERS", reportedOnly},
 
+	// The interpreters' startup knobs: the [plantOnly] edge, the one
+	// place this screen and the plant gate answer differently. A
+	// devcontainer.json that plants one is refused (spec.Env is the
+	// environment of every step in the container — the bare `python3` of
+	// a tool node's command among them — and both executions ran, measured
+	// at the resolved-env seam: pkg/runtime's
+	// `sandbox_tool_env_class_test.go`). An IMAGE baking one is outside
+	// this screen: iterion's own python node runs `python3 -I`, whose
+	// isolated mode ignores the whole PYTHON* family, and no site of
+	// iterion's starts perl, ruby or a JVM — what reads the knobs there is
+	// the repository's own build, which already runs in that container
+	// (the measured rows in pkg/runtime's
+	// `sandbox_image_env_startup_code_class_test.go`). The screen-side
+	// test holds each row's PAIR: outside here, refused by DeniedEnvKey.
+	{"PYTHONPATH", plantOnly},
+	{"PYTHONHOME", plantOnly},
+	{"PYTHONSTARTUP", plantOnly},
+	{"RUBYOPT", plantOnly},
+	{"PERL5OPT", plantOnly},
+	{"PERL5LIB", plantOnly},
+	{"JAVA_TOOL_OPTIONS", plantOnly},
+	{"JDK_JAVA_OPTIONS", plantOnly},
+	{"CLASSPATH", plantOnly},
+
 	// The loader, toolchain and home namespaces: reported, because an empty
 	// value breaks the image or nothing a process iterion starts reads the
 	// name. ITERION_ is the measured one — iterion's own images bake
@@ -110,11 +136,19 @@ var dispositionCases = []dispositionCase{
 
 // TestScreenImageEnvNameAnswersItsRows holds the public screen to the table
 // above, through the exported seam the runtime calls.
+//
+// One walk, one answer — except the [plantOnly] edge, where the doctrine is
+// the PAIR and each half of it is asserted: the screen answers "outside the
+// class" for the name an image bakes, while the plant gate refuses the same
+// name from the same row (the interpreters' startup knobs: refused where a
+// devcontainer.json plants them into every step's environment, outside here
+// where what iterion itself starts reads none of them — the measurements
+// live on the row and in pkg/runtime's startup-code table).
 func TestScreenImageEnvNameAnswersItsRows(t *testing.T) {
 	for _, c := range dispositionCases {
 		t.Run(c.key, func(t *testing.T) {
 			denied, neutralize := ScreenImageEnvName(c.key)
-			wantDenied := c.want != notDenied
+			wantDenied := c.want == reportedOnly || c.want == neutralizeInImage
 			wantNeutralize := c.want == neutralizeInImage
 			if denied != wantDenied || neutralize != wantNeutralize {
 				t.Errorf("ScreenImageEnvName(%q) = (denied %v, neutralize %v), want (%v, %v)",
@@ -122,9 +156,13 @@ func TestScreenImageEnvNameAnswersItsRows(t *testing.T) {
 			}
 			// One walk, one answer: the membership the devcontainer screen
 			// reads can never disagree with the one the image screen reads.
-			if got := DeniedEnvKey(c.key); got != wantDenied {
-				t.Errorf("DeniedEnvKey(%q) = %v but ScreenImageEnvName says denied=%v — two readings of one table",
-					c.key, got, wantDenied)
+			// The plantOnly edge is the held exception: the same row refuses
+			// the name at the plant gate, so DeniedEnvKey must stay TRUE
+			// behind a screen answer of "outside the class".
+			wantPlantDenied := wantDenied || c.want == plantOnly
+			if got := DeniedEnvKey(c.key); got != wantPlantDenied {
+				t.Errorf("DeniedEnvKey(%q) = %v, want %v at this row — the plant gate and the screen read one table",
+					c.key, got, wantPlantDenied)
 			}
 		})
 	}
@@ -293,20 +331,24 @@ func TestTheImageDispositionOfEveryExactNameIsDeclared(t *testing.T) {
 		"SHELLOPTS": reportedOnly, "PS4": reportedOnly,
 		"TAR_OPTIONS": reportedOnly,
 
-		// Reported: the interpreters' startup knobs, the execution grade the
-		// dotenv plant gate carries — one inventory both gates read. Each
-		// runs planter code at interpreter startup (PYTHONPATH's
-		// sitecustomize, PYTHONHOME's stdlib, PYTHONSTARTUP's sourced file,
-		// RUBYOPT/PERL5OPT switches, PERL5LIB module path, the JVM-wide
-		// JAVA_TOOL_OPTIONS, the java launcher's JDK_JAVA_OPTIONS,
-		// CLASSPATH's resolution), and an image that bakes one ships the
-		// code it would run (ARB-121); the container gate refuses the same
-		// names outright in a devcontainer.json.
-		"PYTHONPATH": reportedOnly, "PYTHONHOME": reportedOnly,
-		"PYTHONSTARTUP": reportedOnly,
-		"RUBYOPT":       reportedOnly, "PERL5OPT": reportedOnly, "PERL5LIB": reportedOnly,
-		"JAVA_TOOL_OPTIONS": reportedOnly, "JDK_JAVA_OPTIONS": reportedOnly,
-		"CLASSPATH": reportedOnly,
+		// plantOnly: the interpreters' startup knobs, the measured edge
+		// where the two gates answer differently. The PLANT gate refuses
+		// each — spec.Env is the environment of every step in the
+		// container, the bare `python3` of a tool node's command among
+		// them, and both executions ran at the resolved-env seam
+		// (PYTHONPATH's sitecustomize, JAVA_TOOL_OPTIONS' --javaagent;
+		// pkg/runtime's `sandbox_tool_env_class_test.go`). The IMAGE
+		// screen answers "outside the class": iterion's own python node
+		// runs `python3 -I`, whose isolated mode ignores the whole
+		// PYTHON* family, and no site of iterion's starts perl, ruby or a
+		// JVM — what reads the knobs there is the repository's own build,
+		// which already runs in that container (the measured rows in
+		// pkg/runtime's `sandbox_image_env_startup_code_class_test.go`).
+		"PYTHONPATH": plantOnly, "PYTHONHOME": plantOnly,
+		"PYTHONSTARTUP": plantOnly,
+		"RUBYOPT":       plantOnly, "PERL5OPT": plantOnly, "PERL5LIB": plantOnly,
+		"JAVA_TOOL_OPTIONS": plantOnly, "JDK_JAVA_OPTIONS": plantOnly,
+		"CLASSPATH": plantOnly,
 
 		// Reported: shells and the startup files they DO read, toolchains,
 		// editors — where an empty value is read as presence, breaks the

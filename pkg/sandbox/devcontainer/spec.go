@@ -201,7 +201,10 @@ func UsableEnvName(name string) bool {
 //     question, not the family, is the membership test: GOFLAGS, PATH,
 //     NIX_* and the interpreters' startup knobs above are toolchain
 //     variables too, and they are denied because a process iterion starts
-//     reads them at its own startup;
+//     reads them at its own startup. (The knobs are the one edge where
+//     the IMAGE screen answers differently: a [plantOnly] row is refused
+//     here and outside that screen — both answers measured, the row's
+//     doc holds them.);
 //   - what needs a terminal nobody has there (PAGER, MANPAGER, LESSOPEN,
 //     BROWSER, PROMPT_COMMAND);
 //   - the *_HOME of a toolchain (JAVA_HOME, ANT_HOME, GEM_HOME, PYENV_ROOT):
@@ -220,7 +223,11 @@ func DeniedEnvKey(name string) bool {
 //
 // It is the one reader of the class's disposition flag, so the screen of an
 // image reads the SAME inventory the devcontainer screen reads — a second
-// list of "the credential ones" would be a copy, and a copy drifts.
+// list of "the credential ones" would be a copy, and a copy drifts. The
+// inventories' ANSWERS diverge on one measured edge: a [plantOnly] row is
+// refused by [DeniedEnvKey] when a devcontainer.json plants it, and
+// outside this screen when an image bakes it — the row's doc carries the
+// measurements both answers stand on.
 //
 // PRECEDENCE, when a name is caught by more than one guard: the exact names
 // first, then the suffixes, then the namespaces, and within the namespaces
@@ -238,6 +245,10 @@ func ScreenImageEnvName(name string) (denied, neutralize bool) {
 		return true, true
 	case reportedOnly:
 		return true, false
+	case plantOnly:
+		// The plant gate's refusal alone: the screen skips the name, as
+		// any name outside the class.
+		return false, false
 	default:
 		return false, false
 	}
@@ -277,6 +288,10 @@ func screenEnvName(name string) imageEnvDisposition {
 // devcontainer.json entry is dropped in [ToSandboxSpec] before it ever
 // becomes spec.Env, while an image's ENV is already inside the artefact and
 // can only be OVERRIDDEN at start (`--env NAME=`) — ARB-112 on #2317.
+//
+// One value answers for the PLANT gate alone: [plantOnly] rows are refused
+// when the repository plants them and outside the image screen — the one
+// place the two questions this inventory serves deliberately diverge.
 //
 // The zero value is [notDenied], so a map lookup that misses answers
 // "outside the class" instead of naming a disposition the class never gave.
@@ -332,6 +347,33 @@ const (
 	// applied on top, and the host-side allow knob lets a named variable
 	// through (see pkg/runtime's image env screen).
 	neutralizeInImage
+
+	// plantOnly refuses the name at the PLANT gate and nowhere else:
+	// [DeniedEnvKey] drops it from a repository's devcontainer.json env,
+	// while [ScreenImageEnvName] answers "outside the class" — an image
+	// baking the name is neither reported nor neutralised.
+	//
+	// The two questions this inventory serves diverge there ON MEASUREMENT,
+	// not on generosity. The plant gate asks what the repository may put
+	// into spec.Env — the environment of EVERY step in the container,
+	// including the bare interpreter a tool node's command spells — and the
+	// interpreters' startup knobs are execution channels there, measured at
+	// the resolved-env seam: a planted PYTHONPATH ran its sitecustomize
+	// under the container env a run resolves, and every JVM picked up a
+	// planted JAVA_TOOL_OPTIONS (pkg/runtime's
+	// `sandbox_tool_env_class_test.go`, red on the previous tip). The image
+	// screen asks what an image's baked ENV does to the processes ITERION
+	// itself starts, and the same names read nothing there: iterion's own
+	// python node runs `python3 -I`, whose isolated mode ignores the whole
+	// PYTHON* family; no site of iterion's starts perl, ruby or a JVM —
+	// what reads the knobs in the container is the repository's own build,
+	// which already runs in that container (pkg/runtime's
+	// `sandbox_image_env_startup_code_class_test.go` holds the measured
+	// rows). A name both answers refuse would report an image for code the
+	// image's own files re-open; a name both answers ignored would let a
+	// devcontainer.json plant an execution channel. One inventory, one
+	// walk, and the row carries both answers — no second list to drift.
+	plantOnly
 )
 
 // envGuard is one pattern of the class — a suffix or a namespace prefix —
@@ -471,8 +513,10 @@ var deniedEnvNamespaces = []envGuard{
 // so every entry answers for every spelling and no row needs a twin.
 //
 // The endpoint, region, project and managed-identity names neutralise.
-// Every other row is reported only, and four groups earn that answer
-// rather than inherit it: `PATH`, `HOME`, `GOROOT` and the shells, where
+// The interpreters' startup knobs are the [plantOnly] edge — refused at
+// the plant gate, outside the image screen. Every other row is reported
+// only, and four groups earn that answer rather than inherit it: `PATH`,
+// `HOME`, `GOROOT` and the shells, where
 // an empty value breaks the container outright; `KUBECONFIG`,
 // `DOCKER_HOST` and `DOCKER_CONFIG`, where emptying would send the client
 // to its DEFAULT — the operator's own `~/.kube/config` and docker socket
@@ -536,13 +580,24 @@ var deniedEnvNames = map[string]imageEnvDisposition{
 	// planter's module), PERL5LIB its module path; JAVA_TOOL_OPTIONS is
 	// read by every JVM with no flag of ours, JDK_JAVA_OPTIONS by the java
 	// launcher, and CLASSPATH is where the JVM's classes resolve from. The
-	// workspace is mounted, so the planter's relative paths resolve. (The
-	// toolchain left-out above keeps JAVA_HOME and the build-tool flags:
-	// they configure the repository's own build, and the rest of the
-	// PYTHON* family its own runs.)
-	"PYTHONPATH": reportedOnly, "PYTHONHOME": reportedOnly, "PYTHONSTARTUP": reportedOnly,
-	"RUBYOPT": reportedOnly, "PERL5OPT": reportedOnly, "PERL5LIB": reportedOnly,
-	"JAVA_TOOL_OPTIONS": reportedOnly, "JDK_JAVA_OPTIONS": reportedOnly, "CLASSPATH": reportedOnly,
+	// workspace is mounted, so the planter's relative paths resolve.
+	//
+	// These nine are the [plantOnly] edge: a devcontainer.json that plants
+	// one is refused — spec.Env is the environment of every step in the
+	// container, the bare `python3` of a tool node's command among them,
+	// and both executions were measured at the resolved-env seam (pkg/
+	// runtime's `sandbox_tool_env_class_test.go`) — while an IMAGE baking
+	// one is outside the screen, because what ITERION itself starts reads
+	// none of them: its python node runs `python3 -I` (isolated mode
+	// ignores the whole PYTHON* family), and no site of its own starts
+	// perl, ruby or a JVM (pkg/runtime's
+	// `sandbox_image_env_startup_code_class_test.go` holds the measured
+	// rows). (The toolchain left-out above keeps JAVA_HOME and the
+	// build-tool flags: they configure the repository's own build, and the
+	// rest of the PYTHON* family its own runs.)
+	"PYTHONPATH": plantOnly, "PYTHONHOME": plantOnly, "PYTHONSTARTUP": plantOnly,
+	"RUBYOPT": plantOnly, "PERL5OPT": plantOnly, "PERL5LIB": plantOnly,
+	"JAVA_TOOL_OPTIONS": plantOnly, "JDK_JAVA_OPTIONS": plantOnly, "CLASSPATH": plantOnly,
 	// git's editor chain is GIT_EDITOR (denied by GIT_), core.editor,
 	// VISUAL, EDITOR: the last two run the planter's program in a `git
 	// commit` an agent makes with no message of its own.

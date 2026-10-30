@@ -689,18 +689,26 @@ func TestDeniedEnvKey(t *testing.T) {
 		{"path", true},
 		{"bash_env", true},
 		{"imds_endpoint", true},
-		// The interpreters' startup knobs — the execution grade the dotenv
-		// plant gate carries, one inventory both gates read and the
-		// partition guard holds together. PYTHONPATH puts a directory on
-		// the module path whose sitecustomize EXECUTES at interpreter
-		// startup, PYTHONHOME moves the standard library itself,
-		// PYTHONSTARTUP names a file an interactive run sources, RUBYOPT
-		// and PERL5OPT carry the interpreter's own switches (a -M/`use`
-		// loads the planter's module), PERL5LIB its module path;
-		// JAVA_TOOL_OPTIONS is read by every JVM with no flag of ours,
-		// JDK_JAVA_OPTIONS by the java launcher, CLASSPATH is where the
-		// JVM's classes resolve from. The workspace is mounted, so the
-		// relative paths a devcontainer.json spells resolve.
+		// The interpreters' startup knobs — the [plantOnly] edge: refused
+		// HERE, where spec.Env is the environment of every step in the
+		// container (the bare `python3` of a tool node's command among
+		// them; both executions measured at the resolved-env seam), and
+		// OUTSIDE the image screen, where what iterion itself starts reads
+		// none of them (`python3 -I` for the whole PYTHON* family; no site
+		// of its own starts perl, ruby or a JVM — the measured rows in
+		// pkg/runtime's `sandbox_image_env_startup_code_class_test.go`).
+		// The dotenv plant gate refuses them too, by the same execution
+		// grade, and the partition guard holds the three together.
+		// PYTHONPATH puts a directory on the module path whose
+		// sitecustomize EXECUTES at interpreter startup, PYTHONHOME moves
+		// the standard library itself, PYTHONSTARTUP names a file an
+		// interactive run sources, RUBYOPT and PERL5OPT carry the
+		// interpreter's own switches (a -M/`use` loads the planter's
+		// module), PERL5LIB its module path; JAVA_TOOL_OPTIONS is read by
+		// every JVM with no flag of ours, JDK_JAVA_OPTIONS by the java
+		// launcher, CLASSPATH is where the JVM's classes resolve from. The
+		// workspace is mounted, so the relative paths a devcontainer.json
+		// spells resolve.
 		{"PYTHONPATH", true},
 		{"PYTHONHOME", true},
 		{"PYTHONSTARTUP", true},
