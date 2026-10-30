@@ -1026,6 +1026,7 @@ export interface CreateRunResponse {
 // Inline cost-estimate shown next to the Launch button. Best-effort
 // hint — see pkg/backend/cost for pricing caveats. Empty `nodes` and
 // notes containing `no_llm_nodes` / `no_pricing_data` / `workflow_unparseable`
+// / `workflow_errors` (a program the launch would refuse is not priced)
 // signal that the chip should be hidden rather than blocking the form.
 export interface PreviewCostNode {
   node_id: string;

@@ -232,6 +232,7 @@ func TestPreviewCost_EffectiveBlock(t *testing.T) {
 
 workflow main:
   compress: off
+  entry: draft
   draft -> done
 `
 	got := postPreviewCost(t, hs.URL, `{"source":`+jsonString(src)+`}`)
@@ -258,6 +259,7 @@ agent open:
 
 workflow main:
   permission: deny
+  entry: gated
   gated -> open
   open -> done
 `

@@ -14,6 +14,7 @@ const minimalAgentSource = `agent draft:
   reasoning_effort: medium
 
 workflow main:
+  entry: draft
   draft -> done
 `
 
@@ -23,13 +24,15 @@ const tinyJudgeSource = `judge verify:
   max_tokens: 256
 
 workflow main:
+  entry: verify
   verify -> done
 `
 
 const toolOnlySource = `tool echo:
-  cmd: "echo hi"
+  command: "echo hi"
 
 workflow main:
+  entry: echo
   echo -> done
 `
 
@@ -156,14 +159,17 @@ agent draft:
   reasoning_effort: medium
 
 workflow main:
+  entry: draft
   draft -> polish -> done
 `
 
 // The fragment's node names a prompt the BUNDLE ships (prompts/*.md) rather
-// than one the text declares — the shape a real bot in several files has —
-// so the price below is one the chip really answers for such a bot: the
-// reference leaves a C003 that this endpoint's verdict (a workflow, or
-// nothing) does not read, and the node is priced all the same.
+// than one the text declares — the shape a real bot in several files has.
+// The reference resolves only because the preview merges the bundle's
+// prompts the way the launch does: without the merge it is a C003, the
+// launch refuses the program, and the two whole-unit previews below answer
+// workflow_errors instead of a price — which is what makes the merge a
+// line a test holds.
 const unitFragmentSource = `agent polish:
   model: "anthropic/claude-sonnet-4-6"
   reasoning_effort: high
@@ -297,5 +303,79 @@ func TestPreviewCost_AnEmptyFileAtARealPathIsIncompleteNotMissing(t *testing.T) 
 	decodeJSONResp(t, resp, &got)
 	if len(got.Notes) != 1 || got.Notes[0] != "workflow_incomplete" {
 		t.Fatalf("notes = %v, want [workflow_incomplete]", got.Notes)
+	}
+}
+
+// writeBundleBot lays a bundle-shaped bot under the server's workdir (the
+// skills/ marker is what makes the directory a bundle, as in writeUnitBot)
+// and answers the file_path a client names its main by.
+func writeBundleBot(t *testing.T, workDir, name string, files map[string]string) string {
+	t.Helper()
+	dir := filepath.Join(workDir, name)
+	for rel, content := range files {
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "skills"), 0o755); err != nil {
+		t.Fatalf("mkdir skills: %v", err)
+	}
+	return name + "/main.bot"
+}
+
+// A node naming a prompt neither the text nor the bundle's prompts/ declare
+// compiles to a C003 the LAUNCH refuses: the preview answers no price and
+// says so, where the one-bit verdict (is there a workflow) priced it — a
+// workflow survives its own compile errors (#2814). Muting the diagnostics
+// read prices the node again, red on the note.
+func TestPreviewCost_AProgramTheLaunchRefusesIsNotPriced(t *testing.T) {
+	s, hs := newTestServer(t)
+	fp := writeBundleBot(t, s.cfg.WorkDir, "brokenprompt", map[string]string{
+		"main.bot":         unitMainSource,
+		"lib/review.bot":   strings.Replace(unitFragmentSource, "system: polish_system", "system: never_shipped", 1),
+		"prompts/other.md": "An unrelated prompt the merge does carry.\n",
+	})
+
+	got := postPreviewCost(t, hs.URL, `{"file_path":`+jsonString(fp)+`}`)
+	if len(got.Nodes) != 0 {
+		t.Fatalf("a program the launch refuses is priced: %+v", got.Nodes)
+	}
+	if !containsNote(got.Notes, "workflow_errors") {
+		t.Fatalf("notes = %v, want workflow_errors", got.Notes)
+	}
+	if got.CostMinUSD != 0 || got.CostMaxUSD != 0 {
+		t.Fatalf("a refused program carries a cost: %+v", got)
+	}
+}
+
+// The load's own errors are the launch's first refusal (compileLoadedUnit):
+// a fragment the import cannot read leaves the merged program short of its
+// declarations, and the chip prices nothing even when what remains compiles
+// — the price would describe a program that cannot run.
+func TestPreviewCost_AUnitTheLoadRefusesIsNotPriced(t *testing.T) {
+	s, hs := newTestServer(t)
+	fp := writeBundleBot(t, s.cfg.WorkDir, "missingfragment", map[string]string{
+		"main.bot": `import "lib/missing.bot"
+
+agent draft:
+  model: "anthropic/claude-sonnet-4-6"
+  reasoning_effort: medium
+
+workflow main:
+  entry: draft
+  draft -> done
+`,
+	})
+
+	got := postPreviewCost(t, hs.URL, `{"file_path":`+jsonString(fp)+`}`)
+	if len(got.Nodes) != 0 {
+		t.Fatalf("a unit the load refuses is priced: %+v", got.Nodes)
+	}
+	if !containsNote(got.Notes, "workflow_errors") {
+		t.Fatalf("notes = %v, want workflow_errors", got.Notes)
 	}
 }

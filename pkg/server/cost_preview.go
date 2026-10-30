@@ -7,14 +7,16 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/runview"
 )
 
-// unitNoteFor names, for the chip, why there is no program to price. The
-// two notes are the client's whole contract (it hides on either), so they
-// stay apart for the operator reading the response: a source that could not
-// become one program is not a source that failed to parse, and a main whose
-// fragments did not travel parses perfectly.
+// unitNoteFor names, for the chip, why there is no program to price. These
+// notes and the verdict ones below ("workflow_errors", "workflow_incomplete")
+// are the client's whole contract (it hides on an empty nodes list, whatever
+// the note), so they stay apart for the operator reading the response: a
+// source that could not become one program is not a source that failed to
+// parse, and a main whose fragments did not travel parses perfectly.
 func unitNoteFor(err error) string {
 	if errors.Is(err, runview.ErrInlineImport) {
 		return "unit_not_loaded"
@@ -188,7 +190,7 @@ func (s *Server) handlePreviewCost(w http.ResponseWriter, r *http.Request) {
 			bundleDir = dir
 		}
 	}
-	u, _, err := runview.LoadLaunchUnit(parserPath, src, bundleDir)
+	u, b, err := runview.LoadLaunchUnit(parserPath, src, bundleDir)
 	if err != nil || u == nil || u.Merged == nil {
 		// Never 5xx on bad input — the chip silently hides and /api/validate
 		// remains the authoritative blocker for the Launch button. A unit
@@ -198,15 +200,40 @@ func (s *Server) handlePreviewCost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, previewCostResponse{Notes: []string{unitNoteFor(err)}})
 		return
 	}
-	// The MERGED program, every file's declarations in it — not the main's
-	// own AST, whose `import` lines resolve against nothing. The bundle's
-	// prompts are deliberately NOT merged here: a `system:` naming a
-	// prompts/*.md leaves a C003 this endpoint's lenient verdict (a workflow
-	// or nothing) does not read, so merging them would change no answer it
-	// gives, and a line that changes no answer is one no test can hold.
+	// The verdict is the launch's own (compileLoadedUnit): a load that found
+	// errors is refused there before the compile, so it is not priced here —
+	// a fragment the import could not read leaves the merged program short of
+	// declarations, and a price for it would be a price of a program that
+	// cannot run.
+	for _, d := range u.Diagnostics {
+		if d.Severity == parser.SeverityError {
+			writeJSON(w, previewCostResponse{Notes: []string{"workflow_errors"}})
+			return
+		}
+	}
+	// The bundle's prompts merge BEFORE the compile, the way the launch
+	// merges them: a `system:` naming a prompts/*.md the bundle ships is
+	// the program that runs, and without the merge it reads as the C003
+	// the launch would never see. A prompts/ the launch cannot read is its
+	// refusal, so it is no price here either.
+	if err := runview.MergeBundlePrompts(u.Merged, b); err != nil {
+		writeJSON(w, previewCostResponse{Notes: []string{"workflow_errors"}})
+		return
+	}
 	cr := ir.Compile(u.Merged)
 	if cr.Workflow == nil {
+		// No program at all is incomplete, not erroneous: an empty file
+		// carries a C006 the launch refuses as "no workflow found" before
+		// the compile, and the chip's word for it predates the verdict.
 		writeJSON(w, previewCostResponse{Notes: []string{"workflow_incomplete"}})
+		return
+	}
+	if cr.HasErrors() {
+		// A program the launch refuses (C003 and friends) is not priced:
+		// "is there a workflow" is not the question — a workflow survives
+		// its own compile errors, and pricing it would price a run that
+		// cannot start.
+		writeJSON(w, previewCostResponse{Notes: []string{"workflow_errors"}})
 		return
 	}
 
