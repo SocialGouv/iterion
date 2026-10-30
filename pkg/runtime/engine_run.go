@@ -333,10 +333,12 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 
 	// Sandbox lifecycle: when the workflow opts in, start a long-lived
 	// container that hosts every delegate invocation for this run.
-	repoRoot := wtCtx.repoRoot
-	if repoRoot == "" {
-		repoRoot = EngineRepoRoot(e.workDir)
-	}
+	// The repo root comes from the ONE resolver: runPersistWorkspace
+	// already wrote `run.RepoRoot` for a worktree run (== wtCtx.repoRoot),
+	// and a non-worktree run's record keeps it empty — the resolver then
+	// re-derives the root from the workspace, exactly the reading
+	// restoreRunEnv will give it on a resume (#2867).
+	repoRoot := runRepoRoot(run, e.workDir)
 	// Persist on the engine so resolveVars's `${PROJECT_MEMORY_DIR}`
 	// expansion (and any other repo-rooted lookup) doesn't have to
 	// re-derive it. runPersistWorkspace already wrote `run.RepoRoot`

@@ -154,22 +154,16 @@ func (e *Engine) refuseUntrustedWithoutSandbox(ctx context.Context, runID string
 	}
 }
 
-// admissionRepoRoot is the repo root the admission's sandbox probe reads:
-// the run document's, else derived from the run's workspace, else the
-// engine's configured workdir — the same precedence seedRepoRootForResume
-// applies, so the probe and the run's own sandbox start read the same
-// repository.
+// admissionRepoRoot is the repo root the admission's sandbox probe reads,
+// through the engine's one resolver (runRepoRoot): the run document's
+// recorded baseline, else derived from the run's workspace, else the
+// engine's configured workdir — so the probe and the run's own sandbox
+// start read the same repository.
 func admissionRepoRoot(run *store.Run, engineWorkDir string) string {
 	if run == nil {
 		return ""
 	}
-	if run.RepoRoot != "" {
-		return run.RepoRoot
-	}
-	if run.WorkDir != "" {
-		return EngineRepoRoot(run.WorkDir)
-	}
-	return EngineRepoRoot(engineWorkDir)
+	return runRepoRoot(run, engineWorkDir)
 }
 
 // persistAdmission uses the run CAS contract and never blindly overwrites a

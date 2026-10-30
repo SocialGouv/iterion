@@ -2224,6 +2224,30 @@ func EngineRepoRoot(workDir string) string {
 	return abs
 }
 
+// runRepoRoot is the ONE resolver of the repo root an engine keys its
+// project-rooted dirs on (${PROJECT_SCRATCH_DIR}, ${PROJECT_MEMORY_DIR},
+// the sandbox's repo mount): the run record's RepoRoot when the run carries
+// a managed-worktree baseline, else EngineRepoRoot over the run's workspace
+// (falling back to the engine's own workDir when the record names none) —
+// the SAME input the launch path resolved it from, so a resumed
+// non-worktree run keys on the directory it filled at launch (#2867).
+//
+// run.RepoRoot deliberately stays a WORKTREE fact — it is never stamped
+// for an in-place run (TestEngineRun_ExplicitNoneSkipsWorktreeOnGitRepo),
+// because its readers (worktree reconstruction, fork worktree creation,
+// the files/LOC diff views) mean "managed worktree baseline". The root a
+// non-worktree run's project dirs key on is derived, never persisted.
+func runRepoRoot(r *store.Run, fallbackWorkDir string) string {
+	if r != nil && r.RepoRoot != "" {
+		return r.RepoRoot
+	}
+	workDir := fallbackWorkDir
+	if r != nil && r.WorkDir != "" {
+		workDir = r.WorkDir
+	}
+	return EngineRepoRoot(workDir)
+}
+
 // sandboxSetter is the optional interface ClawExecutor implements so
 // the engine can push the live [sandbox.Run] into the executor after
 // the run starts. Type-asserted at call time so test stubs don't have

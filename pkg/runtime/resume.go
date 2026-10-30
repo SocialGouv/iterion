@@ -1889,24 +1889,16 @@ func (e *Engine) saveClaimedCheckpoint(ctx context.Context, r *store.Run, cp *st
 }
 
 // seedRepoRootForResume fills e.repoRoot from the run record when it has
-// not been restored yet, using the same precedence resumeRebuildState
-// applies later (r.RepoRoot, else derived from the workspace). Callers
-// that need a repo-aware answer BEFORE restoreRunEnv runs — the sandbox
-// forecast behind attachmentPath — must call this first; it is a no-op
-// once the value is set.
+// not been restored yet, through the same resolver restoreRunEnv applies
+// later (runRepoRoot: the recorded baseline, else derived from the
+// workspace). Callers that need a repo-aware answer BEFORE restoreRunEnv
+// runs — the sandbox forecast behind attachmentPath — must call this
+// first; it is a no-op once the value is set.
 func (e *Engine) seedRepoRootForResume(r *store.Run) {
 	if e == nil || e.repoRoot != "" || r == nil {
 		return
 	}
-	if r.RepoRoot != "" {
-		e.repoRoot = r.RepoRoot
-		return
-	}
-	workDir := r.WorkDir
-	if workDir == "" {
-		workDir = e.workDir
-	}
-	e.repoRoot = EngineRepoRoot(workDir)
+	e.repoRoot = runRepoRoot(r, e.workDir)
 }
 
 // resumeRebuildState restores the per-run environment, re-mirrors bundle
@@ -1996,10 +1988,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	// deferred shutdown when it exited to pause, so e.sandbox is nil
 	// on resume and tool nodes downstream of the human would fall back
 	// to host execution).
-	repoRoot := r.RepoRoot
-	if repoRoot == "" {
-		repoRoot = EngineRepoRoot(e.workDir)
-	}
+	repoRoot := runRepoRoot(r, e.workDir)
 	sandboxCleanup, sbErr := e.startSandbox(ctx, runID, repoRoot, resolveWorktreeGitDir(repoRoot, r.WorkDir), r.Inputs)
 	if sbErr != nil {
 		return nil, nil, e.parkResumeSandboxFailure(ctx, runID, r.Checkpoint, humanNodeID, sbErr)
@@ -2258,13 +2247,11 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run, prepared .
 	// tool node on the host. Without this, recipes that rely on the
 	// sandbox toolchain (modern dash for `set -o pipefail`, /workspace
 	// bind mount, the slim image's git/jq/curl/node pinned versions,
-	// ...) silently fail in confusing ways post-resume. r.RepoRoot is
-	// the source of truth for the original repo root; EngineRepoRoot
-	// is the worktree-less fallback for older runs.
-	repoRoot := r.RepoRoot
-	if repoRoot == "" {
-		repoRoot = EngineRepoRoot(e.workDir)
-	}
+	// ...) silently fail in confusing ways post-resume. runRepoRoot is the
+	// one resolver: the recorded baseline when the run carries one, else
+	// the root re-derived from the restored workspace — the same reading
+	// the launch gave it (#2867).
+	repoRoot := runRepoRoot(r, e.workDir)
 	sandboxCleanup, sbErr := e.startSandbox(ctx, runID, repoRoot, resolveWorktreeGitDir(repoRoot, r.WorkDir), r.Inputs)
 	if sbErr != nil {
 		return e.parkResumeSandboxFailure(ctx, runID, cp, e.workflow.Entry, sbErr)
@@ -2501,8 +2488,12 @@ func (e *Engine) restoreRunEnv(r *store.Run) {
 	// `${PROJECT_MEMORY_DIR}` expansion finds the same path it did
 	// on the original launch — without this, a resumed run on a
 	// dispatcher worktree falls back to e.workDir's encoded key
-	// and the memory tree silently moves.
-	e.repoRoot = r.RepoRoot
+	// and the memory tree silently moves. A run with no persisted
+	// baseline (non-worktree) re-resolves the root from its workspace
+	// through the same resolver the launch used (#2867): persisting it
+	// would make run.RepoRoot stop meaning "managed worktree baseline"
+	// for its other readers.
+	e.repoRoot = runRepoRoot(r, e.workDir)
 	if s, ok := e.executor.(workDirSetter); ok {
 		s.SetWorkDir(e.workDir)
 	}
