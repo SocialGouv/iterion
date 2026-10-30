@@ -72,12 +72,12 @@ func TestFacadeSearchFindsTheLongTail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
-	hits := f.SearchOperations("create", 0)
+	hits, _ := f.SearchOperations("create", 0)
 	if len(hits) != 1 || hits[0].ID != "probe.issue.create" {
 		t.Fatalf("search(create) = %+v", hits)
 	}
 	// A blank query lists the curated set first.
-	hits = f.SearchOperations("", 0)
+	hits, _ = f.SearchOperations("", 0)
 	if len(hits) != 2 || !hits[0].Curated {
 		t.Errorf("search(\"\") = %+v, want curated first", hits)
 	}
@@ -111,13 +111,26 @@ func TestFacadeCallDispatchesAndExtractsTheConnection(t *testing.T) {
 		t.Errorf("result = %v", out)
 	}
 
-	// The long tail by operation id.
+	// A curated operation reached THROUGH the long tail: the discovery pair
+	// still dispatches what the operator curated, by id as well as by name.
 	if _, err := f.Call(context.Background(), facade.CallTool,
-		json.RawMessage(`{"operation":"probe.issue.create","connection":"main","arguments":{"title":"hi"}}`), execFn); err != nil {
-		t.Fatalf("call_operation: %v", err)
+		json.RawMessage(`{"operation":"probe.issue.list","connection":"main","arguments":{"owner":"me"}}`), execFn); err != nil {
+		t.Fatalf("call_operation on a curated operation: %v", err)
 	}
-	if gotOp != "probe.issue.create" {
+	if gotOp != "probe.issue.list" {
 		t.Errorf("call_operation dispatched %q", gotOp)
+	}
+
+	// An UNCURATED operation is refused, even though search listed it: the
+	// curated set is what the operator read, and an agent reaching past it is
+	// an effect nobody granted. (probe.issue.create carries no `mcp: true`.)
+	if _, err := f.Call(context.Background(), facade.CallTool,
+		json.RawMessage(`{"operation":"probe.issue.create","connection":"main","arguments":{"title":"hi"}}`), execFn); err == nil {
+		t.Errorf("call_operation served an uncurated operation — the curated list an operator reads was not the bound")
+	} else if !strings.Contains(err.Error(), "curated set") {
+		t.Errorf("the refusal must name the curation: %v", err)
+	} else if gotOp == "probe.issue.create" {
+		t.Errorf("the executor was reached for a refused operation")
 	}
 
 	// The discovery tool answers WITHOUT an executor call.
@@ -128,6 +141,38 @@ func TestFacadeCallDispatchesAndExtractsTheConnection(t *testing.T) {
 	ops := out.(map[string]any)["operations"].([]facade.OperationHit)
 	if len(ops) != 2 {
 		t.Errorf("search(issue) hit %d operations, want 2", len(ops))
+	}
+	if total := out.(map[string]any)["total"]; total != 2 {
+		t.Errorf("search(issue) total = %v, want 2", total)
+	}
+}
+
+// TestSearchNamesTheTruncation: the page is capped, and the cap must be
+// visible — a model that cannot see it reads twenty hits as all of them and
+// never narrows its query.
+//
+// Mutation that reddens this: drop the `total` field from the search tool's
+// answer (or truncate without counting).
+func TestSearchNamesTheTruncation(t *testing.T) {
+	f, err := facade.New(fixturePkg())
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	hits, total := f.SearchOperations("", 1)
+	if len(hits) != 1 {
+		t.Fatalf("search(\"\", 1) returned %d hits, want the capped 1", len(hits))
+	}
+	if total != 2 {
+		t.Errorf("total = %d, want the UNTRUNCATED match count 2", total)
+	}
+	out, err := f.Call(context.Background(), facade.SearchTool, json.RawMessage(`{"limit":1}`), func(context.Context, string, string, map[string]any) (any, error) {
+		return nil, errors.New("search never reaches the executor")
+	})
+	if err != nil {
+		t.Fatalf("search call: %v", err)
+	}
+	if total := out.(map[string]any)["total"]; total != 2 {
+		t.Errorf("the tool answer's total = %v, want 2", total)
 	}
 }
 
@@ -173,7 +218,10 @@ func TestFacadeOverTheBakedForgejoPackage(t *testing.T) {
 		t.Fatalf("the baked forgejo facade lists %d tools — the overlay's curation did not reach it", len(tools))
 	}
 	// The ADR's reference operation must be reachable, curated or long tail.
-	hits := f.SearchOperations("issue.comment", 5)
+	hits, total := f.SearchOperations("issue.comment", 5)
+	if total < 1 || total < len(hits) {
+		t.Errorf("total = %d for %d hits — the untruncated count", total, len(hits))
+	}
 	found := false
 	for _, h := range hits {
 		if h.ID == "forgejo.issue.comment" {

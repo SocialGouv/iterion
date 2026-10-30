@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/connector/spec"
 )
 
 // The `agent` capability, and the one place this build's answer about it
@@ -192,7 +194,10 @@ func inertNames(caps []Capability) []string {
 	for _, c := range caps {
 		switch c {
 		case CapAgent:
-			out = append(out, "`agent` (no MCP facade reads it)")
+			// Unreachable while AgentFacadeWired answers true (the arm is the
+			// sentence for the build where it flips back), kept so the table
+			// stays the one place that words every capability.
+			out = append(out, "`agent` (no agent facade is wired in this build)")
 		case CapTrigger:
 			out = append(out, "`trigger` (no connector webhook ingress reads it)")
 		default:
@@ -228,6 +233,30 @@ func (e *CapabilityError) Unwrap() error {
 		return errs[0]
 	}
 	return errors.Join(errs...)
+}
+
+// MaturityError is the resolution chokepoint's refusal of an operation whose
+// maturity promises nothing: `spotted`, or a level whose typo reads as it.
+// Maturity is DATA THE SERVER ENFORCES — `Attachable` is written "may be
+// bound to a bot OR USED BY A NODE" — and the node path already refused it by
+// name (checkOperationUsable), so the chokepoint is where the rule holds for
+// every door at once: the deterministic node, the agent's facade call, and
+// whatever surface resolves through a Resolver next.
+type MaturityError struct {
+	// Operation is the id the caller asked to resolve.
+	Operation string
+	// Maturity is the EFFECTIVE level: an operation that declares none
+	// inherits the package's, which is what a typo at the package level
+	// silently did.
+	Maturity spec.Maturity
+	// Tier is the tier serving the package — the thing an operator repairs
+	// (or waits on) to change the answer.
+	Tier Tier
+}
+
+func (e *MaturityError) Error() string {
+	return fmt.Sprintf("operation %q is at maturity %q, which promises nothing and may not be used by a node or an agent — qualify it in the package the %s serves",
+		e.Operation, e.Maturity, e.Tier)
 }
 
 // useOf names a capability as the USE it authorises, which is what an operator

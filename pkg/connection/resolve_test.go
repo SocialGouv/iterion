@@ -2,6 +2,7 @@ package connection_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -507,4 +508,76 @@ func TestTheDiagnosticsNameTheFIX(t *testing.T) {
 // it here means a change to either side fails in the package that changed.
 func TestResolverSatisfiesTheExecutorSeam(t *testing.T) {
 	var _ model.ConnectorResolver = (*connection.Resolver)(nil)
+}
+
+// TestAnOperationAtAnInertMaturityIsRefusedAtTheChokepoint — BOTH doors.
+//
+// Maturity is "DATA THE SERVER ENFORCES, not a display category", and
+// `Attachable` is written "may be bound to a bot OR USED BY A NODE". The node
+// path enforced it (checkOperationUsable); the resolver did not, so the same
+// package served an agent through the facade what a node was refused by name
+// — one rule, two answers, and the agent's answer was the permissive one.
+// The chokepoint is where the rule holds for every door at once.
+//
+// Both shapes are pinned: an operation that DECLARES the inert floor, and the
+// package-level typo — an unknown level ranks below spotted, so
+// `maturity: qualifed` clamps every operation down and must refuse the same
+// way rather than read as qualified.
+//
+// Mutation that reddens this: delete the EffectiveMaturity guard from
+// Resolver.checkUsable (pkg/connection/resolve.go).
+func TestAnOperationAtAnInertMaturityIsRefusedAtTheChokepoint(t *testing.T) {
+	cases := []struct {
+		name string
+		pkg  *spec.Package
+	}{
+		{
+			name: "an operation at the inert floor",
+			pkg: func() *spec.Package {
+				pkg := probePackage()
+				pkg.Ops[0].Operations[0].Maturity = spec.MaturitySpotted
+				return pkg
+			}(),
+		},
+		{
+			name: "a package-level typo that reads as spotted",
+			pkg: func() *spec.Package {
+				pkg := probePackage()
+				pkg.Connector.Maturity = "qualifed"
+				return pkg
+			}(),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			store := connection.NewMemoryStore()
+			r := resolver(t, store)
+			r.Catalog = connection.NewMemoryCatalog(tc.pkg)
+			seed(t, r, store, conn("c1", "tenant-a", "main"))
+
+			for _, door := range []struct {
+				name string
+				call func() error
+			}{
+				{"a deterministic node", func() error {
+					_, _, _, _, err := r.ResolveAction(context.Background(), "probe.issue.get", "main")
+					return err
+				}},
+				{"an agent through the facade", func() error {
+					_, _, _, _, err := r.ResolveAgent(context.Background(), "probe.issue.get", "main")
+					return err
+				}},
+			} {
+				got := door.call()
+				var matErr *connection.MaturityError
+				if !errors.As(got, &matErr) {
+					t.Errorf("%s: err = %v, want a MaturityError — the inert operation resolved and would have been served", door.name, got)
+				}
+				if got != nil && !strings.Contains(got.Error(), "promises nothing") {
+					t.Errorf("%s: the refusal must name the maturity: %v", door.name, got)
+				}
+			}
+		})
+	}
 }

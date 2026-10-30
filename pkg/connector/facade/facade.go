@@ -245,7 +245,12 @@ func jsonType(p spec.Param) string {
 // SearchOperations answers the discovery tool: operations whose id, summary,
 // description or tags match the query, curated first, then by id. A blank
 // query lists the curated set — the answer to "what is this connector for".
-func (f *Facade) SearchOperations(query string, limit int) []OperationHit {
+//
+// The second return is the UNTRUNCATED match count: the page is capped, and a
+// cap applied in silence reads as "these twenty are all of them" — a model
+// that cannot see the truncation cannot narrow its query, and the operation
+// it needed stays invisible while search answers 200.
+func (f *Facade) SearchOperations(query string, limit int) ([]OperationHit, int) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -263,10 +268,11 @@ func (f *Facade) SearchOperations(query string, limit int) []OperationHit {
 		}
 		return hits[i].ID < hits[j].ID
 	})
+	total := len(hits)
 	if len(hits) > limit {
 		hits = hits[:limit]
 	}
-	return hits
+	return hits, total
 }
 
 // matches is the substring test over everything an agent would guess at.
@@ -296,7 +302,8 @@ func (f *Facade) Call(ctx context.Context, tool string, args json.RawMessage, ex
 		if err := json.Unmarshal(args, &a); err != nil {
 			return nil, fmt.Errorf("facade: %s: invalid arguments: %w", SearchTool, err)
 		}
-		return map[string]any{"operations": f.SearchOperations(a.Query, a.Limit)}, nil
+		hits, total := f.SearchOperations(a.Query, a.Limit)
+		return map[string]any{"operations": hits, "total": total}, nil
 	case CallTool:
 		var a struct {
 			Operation string          `json:"operation"`
@@ -310,6 +317,17 @@ func (f *Facade) Call(ctx context.Context, tool string, args json.RawMessage, ex
 		if !found {
 			return nil, fmt.Errorf("facade: no operation %q among the served connectors (%s) — search for it with %s first",
 				a.Operation, strings.Join(f.connectors, ", "), SearchTool)
+		}
+		// THE CURATED SET IS THE BOUND. The operator reads tools/list as what
+		// a model may call; a package ships 85 deletes and 58 updates the
+		// curated list does not name, and this back door reached them all — a
+		// model choosing an operation nobody offered it is an EFFECT nobody
+		// granted, which is the one thing the curation exists to decide. The
+		// deterministic node path needs no such bound: a workflow DECLARED its
+		// call, in a file a human reviewed. The remedy is the operator's:
+		// curate the operation (`mcp: true` in the overlay) and it is served.
+		if !op.MCP {
+			return nil, fmt.Errorf("facade: operation %q is not in the curated set, so no agent may call it — an operator curates what a model may call (the overlay's `mcp: true`), and %s does not reach past that list", op.ID, CallTool)
 		}
 		params, err := paramsFrom(a.Arguments)
 		if err != nil {

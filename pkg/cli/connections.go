@@ -212,9 +212,10 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 	fmt.Fprintf(out, "  a .bot reaches it with `connection: %s`\n", alias)
 	// A grant nothing performs is said at the moment it is MADE. `agent` and
 	// `trigger` are accepted (each is a settled decision, and the operator's
-	// choice is not silently narrowed) and both are inert, so the one surface
-	// that could tell them must — the alternative is a connection that reads
-	// as attachable to an agent, or as vouching for a delivery, and is not.
+	// choice is not silently narrowed); `agent` is performed — the MCP facade
+	// reads it (#2758) — while `trigger` is still inert, so the one surface
+	// that could tell them must: the alternative is a warning about a grant
+	// that works, or silence about one that does not.
 	if advice := connection.GrantAdvice(caps); advice != "" {
 		fmt.Fprintf(out, "  warning: %s\n", advice)
 	}

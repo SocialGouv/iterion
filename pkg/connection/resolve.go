@@ -182,6 +182,20 @@ func (r *Resolver) resolve(ctx context.Context, actionID, alias string, want Cap
 // id, the scheme id and the placement can all three be identical between two
 // tiers, so the id names nothing. It is printed, never branched on.
 func (r *Resolver) checkUsable(conn Connection, pkg *spec.Package, tier Tier, op spec.Operation, want Capability) error {
+	// The MATURITY the package declares is the server's word that the
+	// capability is fit to bind at all ("DATA THE SERVER ENFORCES, not a
+	// display category"), and `Attachable` is written as "may be bound to a
+	// bot OR USED BY A NODE" — an agent through the facade is a third door on
+	// the same promise. Without this, a package at the inert floor
+	// (`maturity: spotted`) or one whose level is a TYPO — which reads as
+	// spotted — resolved and was served here, while the node path's own gate
+	// (checkOperationUsable) refused the same operation by name: one rule,
+	// two answers, and the agent's answer was the permissive one. Typed, like
+	// CapabilityError: the caller tells "wait for the package to be
+	// qualified" from "widen the grant".
+	if m := pkg.EffectiveMaturity(op); !m.Attachable() {
+		return &MaturityError{Operation: op.ID, Maturity: m, Tier: tier}
+	}
 	if !conn.Status.Usable() {
 		reason := conn.StatusReason
 		if reason == "" {
