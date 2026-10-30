@@ -489,20 +489,23 @@ func isAncestor(parents map[ast.Node]ast.Node, ancestor, n ast.Node) bool {
 	return false
 }
 
-// asksBeforeItsMint answers whether one of the asks sits ON THE FLOW that
-// reaches one of the mints: it precedes the mint in the source, and every
-// branch that holds the ask holds the mint too. The ask in
+// asksBeforeItsMint answers whether EVERY mint of the body has an ask on
+// ITS flow: one preceding it in the source, with every branch that holds
+// the ask holding the mint too. The ask in
 // `if err := o.approveTeamTokenMint(ctx); err != nil { … }` followed by the
 // mint at the same level qualifies — the question is put before the mint on
 // every path that reaches it. The same ask wrapped in `if impossible { … }`
-// with the mint after the braces does not: read by PRESENCE alone, a guard
-// took the second for the first, and a mint ran with no question asked
-// under a green guard.
+// with the mint after the braces does not. And one covered pair covers
+// itself alone: a body of two mints is terminal only when each has its own
+// covering ask — read per DECLARATION, the first covered pair once ended
+// the walk, and every other mint of the body rode without a question under
+// a green guard.
 func asksBeforeItsMint(body ast.Node, asks []*ast.CallExpr, mints []ast.Node) bool {
 	if len(asks) == 0 || len(mints) == 0 {
 		return false
 	}
 	parents := parentsIn(body)
+	covered := map[ast.Node]bool{}
 	for _, ask := range asks {
 		var held []ast.Node
 		for child, parent := ast.Node(ask), parents[ask]; parent != nil && parent != body; child, parent = parent, parents[parent] {
@@ -511,22 +514,25 @@ func asksBeforeItsMint(body ast.Node, asks []*ast.CallExpr, mints []ast.Node) bo
 			}
 		}
 		for _, mint := range mints {
-			if mint.Pos() <= ask.Pos() {
+			if covered[mint] || mint.Pos() <= ask.Pos() {
 				continue
 			}
-			covered := true
+			covers := true
 			for _, h := range held {
 				if !isAncestor(parents, h, mint) {
-					covered = false
+					covers = false
 					break
 				}
 			}
-			if covered {
-				return true
-			}
+			covered[mint] = covers
 		}
 	}
-	return false
+	for _, mint := range mints {
+		if !covered[mint] {
+			return false
+		}
+	}
+	return true
 }
 
 // mintGraph is what the guard resolves names against: the symbol tables of
@@ -1008,20 +1014,28 @@ func TestEveryTeamTokenMintSitsBehindTheChokepoint(t *testing.T) {
 		}
 		for _, body := range reg.literals {
 			calls := nodeCalls(body)
-			asks := false
-			for _, mint := range calls {
-				if mint == teamTokenMintVerb {
-					asks = true
-				}
-			}
 			// A body binding the primitive to a local name mints with no
 			// call of the verb's own spelling in its calls: the value
 			// reference is the mint the same way a call is.
 			spelled := ""
+			var mintRefs []ast.Node
 			for _, mc := range mintCallExprs(body, reg.aliases) {
 				spelled = mc.verb
-				break
+				mintRefs = append(mintRefs, mc.ref)
 			}
+			// The ask must sit ON THE FLOW that reaches the body's mints —
+			// the very test the seeds answer to. Read by PRESENCE over the
+			// body's calls, one question anywhere — written after the mint,
+			// in a branch the mint does not ride — whitewashed the whole
+			// body, and a mint ran with no question asked under a green
+			// guard.
+			teamAsks := []*ast.CallExpr{}
+			for call, mint := range askCallExprs(body) {
+				if mint == teamTokenMintVerb {
+					teamAsks = append(teamAsks, call)
+				}
+			}
+			askedOnTheFlow := asksBeforeItsMint(body, teamAsks, mintRefs)
 			for call := range calls {
 				reaches := reaching[call]
 				if !reaches && verbNamed(call) != "" {
@@ -1031,7 +1045,7 @@ func TestEveryTeamTokenMintSitsBehindTheChokepoint(t *testing.T) {
 					continue
 				}
 				judged = append(judged, reg.key+" (inline)")
-				if reg.gateMint == teamTokenMintVerb || asks {
+				if reg.gateMint == teamTokenMintVerb || askedOnTheFlow {
 					continue
 				}
 				t.Errorf("%q (%s) registers an inline handler whose body reaches a team-token mint through %q with gate %q",
@@ -1039,7 +1053,7 @@ func TestEveryTeamTokenMintSitsBehindTheChokepoint(t *testing.T) {
 			}
 			if spelled != "" {
 				judged = append(judged, reg.key+" (inline)")
-				if reg.gateMint == teamTokenMintVerb || asks {
+				if reg.gateMint == teamTokenMintVerb || askedOnTheFlow {
 					continue
 				}
 				t.Errorf("%q (%s) registers an inline handler whose body holds a team-token mint primitive as a value (%s) with gate %q",
