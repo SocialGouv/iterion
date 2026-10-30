@@ -1895,7 +1895,7 @@ func TestEdgeLoopSizedByClause(t *testing.T) {
 	// declared work signal (#2677): the budget guard prices a crossing at
 	// the previous one's cost scaled by size_now /
 	// size_at_previous_crossing. The expression's parse and references
-	// are the compiler's (C325); the parser carries the source, in
+	// are the compiler's (C326); the parser carries the source, in
 	// either suffix order with `guard:`.
 	src := `workflow test:
   entry: a

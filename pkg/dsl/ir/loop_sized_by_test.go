@@ -48,11 +48,11 @@ func TestLoopSizedBy_CompilesToTheLoop(t *testing.T) {
 	}
 }
 
-// TestLoopSizedBy_InvalidSignalIsC325: a signal that does not parse, or
+// TestLoopSizedBy_InvalidSignalIsC326: a signal that does not parse, or
 // one provably not numeric, must be refused at compile time — at run
 // time an unreadable signal prices unscaled, so a typo would otherwise
 // pass silently as "no proration".
-func TestLoopSizedBy_InvalidSignalIsC325(t *testing.T) {
+func TestLoopSizedBy_InvalidSignalIsC326(t *testing.T) {
 	for name, tail := range map[string]string{
 		"unparseable expression":           ` sized_by "outputs.worker.pending >"`,
 		"template braces":                  ` sized_by "{{outputs.worker.pending}}"`,
@@ -61,7 +61,7 @@ func TestLoopSizedBy_InvalidSignalIsC325(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := compileFile(t, loopSizedBySrc(tail))
 			if got := countCode(r, DiagInvalidLoopSizedBy); got != 1 {
-				t.Fatalf("C325 count = %d, want 1 (diagnostics: %v)", got, r.Diagnostics)
+				t.Fatalf("C326 count = %d, want 1 (diagnostics: %v)", got, r.Diagnostics)
 			}
 		})
 	}

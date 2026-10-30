@@ -544,7 +544,7 @@ loop_spec = IDENT "(" loop_cap ")" { loop_suffix } ;
    other value; empty inherits the loop_budget_guard chain.
    sized_by declares the loop's work signal: the guard prices a crossing at
    the previous one's cost scaled by size_now / size_at_previous_crossing
-   (#2677) — C325 on an unreadable or provably non-numeric expression.
+   (#2677) — C326 on an unreadable or provably non-numeric expression.
    Each suffix at most once, in either order. *)
 loop_suffix = "guard" ":" loop_budget_guard_mode | "sized_by" STRING_LIT ;
 loop_cap = INT_LIT | STRING_LIT | "unbounded" [ INT_LIT ] ;

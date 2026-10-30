@@ -312,7 +312,7 @@ func (p *parser) parseLoopClause() *ast.LoopClause {
 	//                           one's cost scaled by size_now /
 	//                           size_at_previous_crossing. A quoted
 	//                           expression; its parse and references are
-	//                           the compiler's to check (C325).
+	//                           the compiler's to check (C326).
 	for {
 		switch tokenAsIdent(p.peek()) {
 		case "guard":

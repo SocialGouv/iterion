@@ -1109,7 +1109,7 @@ sampled each time the loop's mark is taken, so a shrinking iteration is
 priced by the real traversal — a 10-item re-ask after a 43-item one
 costs 10/43 of it, not the whole — while a growing one prices up by the
 same ratio. The signal is a bare expression over `vars`/`outputs` (no
-template braces; an unreadable or provably non-numeric one is **C325**,
+template braces; an unreadable or provably non-numeric one is **C326**,
 and every edge sharing the loop must agree on it). A reading that
 resolves to nothing or to a non-number prices the crossing **unscaled**
 — the default pricing, never an invented decline — and a size of zero
