@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/canon"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
@@ -678,8 +679,16 @@ func (s *Server) saveUnit(w http.ResponseWriter, r *http.Request, req saveFileRe
 	// diagnostic to the client: it names the fragment at fault by its
 	// unit-relative path (#1934).
 	relUnitDiagnostics(u)
-	if d := firstErrorDiagnostic(u.Diagnostics); d != "" {
-		httpError(w, http.StatusUnprocessableEntity, "the bot's files do not load as one unit (%s): fix them on disk before saving from the studio", d)
+	declared := declaredFragmentPaths(nil, u.Root, u.Main)
+	for _, d := range u.Diagnostics {
+		if d.Severity != parser.SeverityError {
+			continue
+		}
+		msg := d.Error()
+		if dep, rel, ok := declaredFragmentMiss(d, declared); ok {
+			msg += " — " + fragmentDependencyNote(rel, dep)
+		}
+		httpError(w, http.StatusUnprocessableEntity, "the bot's files do not load as one unit (%s): fix them on disk before saving from the studio", msg)
 		return
 	}
 	if req.Revision == "" {
@@ -1788,7 +1797,7 @@ func (s *Server) parseUnitWithFile(w http.ResponseWriter, r *http.Request, req p
 	// introduces in a file the bot already holds (a duplicate declaration,
 	// say) are surfaced as diagnostics and saved as ever: the save can
 	// carry both.
-	if msg := stagedLoadFailure(ur.unit, staged, req.File); msg != "" {
+	if msg := stagedLoadFailure(ur.unit, staged, req.File, declaredFragmentPaths(ur.files, ur.root, ur.unit.Main)); msg != "" {
 		httpError(w, http.StatusUnprocessableEntity, "%s", msg)
 		return
 	}
@@ -1870,7 +1879,14 @@ func (s *Server) openedText(w http.ResponseWriter, path string) ([]byte, bool) {
 // an edit introduces in a file the bot already holds (a duplicate
 // declaration, say): the save can carry both, and the diagnostics say what
 // broke.
-func stagedLoadFailure(stored, staged *unit.Unit, file string) string {
+//
+// A miss whose path is exactly what a declared dependencies.fragments entry
+// materializes is still refused — whether the authoring surface resolves
+// such a dependency or merely tolerates its miss is #2865's decision — but
+// the refusal NAMES the dependency: the file was never this bundle's to
+// write (ADR-145 clause 3's wrong actor), and "fix the import" would send
+// the author to repair the one line that is right.
+func stagedLoadFailure(stored, staged *unit.Unit, file string, declared map[string]bundle.FragmentDependency) string {
 	prev := make(map[string]bool, len(stored.Diagnostics))
 	for _, d := range stored.Diagnostics {
 		if d.Severity == parser.SeverityError {
@@ -1883,6 +1899,7 @@ func stagedLoadFailure(stored, staged *unit.Unit, file string) string {
 		held[f.Rel] = true
 	}
 	var errs []string
+	var depNotes []string
 	for _, d := range staged.Diagnostics {
 		if d.Severity != parser.SeverityError {
 			continue
@@ -1893,6 +1910,9 @@ func stagedLoadFailure(stored, staged *unit.Unit, file string) string {
 		switch d.Code {
 		case parser.DiagImportUnreadable, parser.DiagBadImportPath, parser.DiagImportCycle:
 			errs = append(errs, d.Error())
+			if dep, rel, ok := declaredFragmentMiss(d, declared); ok {
+				depNotes = append(depNotes, fragmentDependencyNote(rel, dep))
+			}
 		default:
 			// A parse error in a file the apply's imports NEWLY brought in:
 			// its declarations merge as what the parser could read of them.
@@ -1904,7 +1924,11 @@ func stagedLoadFailure(stored, staged *unit.Unit, file string) string {
 	if len(errs) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("%s changes this bot's `import` lines, and with them the unit does not load: %s. A fragment an import names must exist under the bot's lib/ directory and parse whole — fix the import, or change it where this bot's files live and reopen the bot", file, strings.Join(errs, "; "))
+	msg := fmt.Sprintf("%s changes this bot's `import` lines, and with them the unit does not load: %s. A fragment an import names must exist under the bot's lib/ directory and parse whole — fix the import, or change it where this bot's files live and reopen the bot", file, strings.Join(errs, "; "))
+	if len(depNotes) > 0 {
+		msg += ". " + strings.Join(depNotes, "; ")
+	}
+	return msg
 }
 
 // unitFoldReason names a file of the unit whose multi-line form the

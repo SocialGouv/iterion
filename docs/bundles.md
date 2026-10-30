@@ -86,6 +86,19 @@ reads now. What that costs is written down rather than hidden:
 - **A miss is named where the dependency exists** — at the install, with the
   bundle, the fragment and every directory looked in. No new parse-time
   diagnostic: at parse time the file is simply there or absent.
+- **A bundle whose declared fragment is not materialized does not pass the
+  cloud editor's gates, and the refusal names the dependency.** Such a
+  bundle holds an `import` the loader cannot follow (`E046`), so the
+  per-file apply, the save and the bot-source write gate refuse it as "the
+  unit does not load" — but the refusal names the manifest's
+  `dependencies.fragments` entry the path belongs to, not the import line,
+  which is the one line that is right (ADR-145 clause 3's wrong actor).
+  Whether the authoring surface should instead RESOLVE or TOLERATE a
+  declared dependency's miss — letting the studio author save the import
+  the declaration exists for — is an open authoring-surface decision
+  ([#2865](https://github.com/SocialGouv/iterion/issues/2865)); the launch
+  plane's half is
+  [#2853](https://github.com/SocialGouv/iterion/issues/2853).
 - **The cloud plane resolves at the launch freeze, before the parse.** A
   bundle that reaches the server never carries what an install materialized,
   so the launch resolves every declared fragment while it freezes the bot's

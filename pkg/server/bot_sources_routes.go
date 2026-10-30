@@ -911,7 +911,11 @@ func validateBundleCompileSelected(files map[string]string, modified []string) [
 			if d.Severity == parser.SeverityError {
 				// The unit was read from a temporary directory the editor
 				// never sees: a diagnostic names the file as the bundle holds it.
-				diags = append(diags, rel+": "+strings.ReplaceAll(d.Error(), dir+string(os.PathSeparator), ""))
+				msg := rel + ": " + strings.ReplaceAll(d.Error(), dir+string(os.PathSeparator), "")
+				if dep, depRel, ok := declaredFragmentMiss(d, declaredFragmentPaths(files, "", rel)); ok {
+					msg += " — " + fragmentDependencyNote(depRel, dep)
+				}
+				diags = append(diags, msg)
 			}
 		}
 		if u.Merged == nil || len(u.Merged.Workflows) == 0 {
