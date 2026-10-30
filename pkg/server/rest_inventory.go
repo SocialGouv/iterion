@@ -55,13 +55,14 @@ type InventoryRoute struct {
 // routeRegistrationRe reads one literal registration: the receiver is
 // anything ending in "mux" (s.mux, a local alias, the raw s.mux.ServeMux),
 // the pattern a single string literal, and the handler's head token the
-// auth wrapper's name when there is one. A registration spelled over
-// several lines still matches — the run between the pattern and the
-// handler crosses newlines. A route registered through a non-literal
-// pattern (the dispatcher and native-board sub-trees, "METHOD "+p+"<tail>")
-// is out of this scan by design: those families mount on the raw mux, and
-// the annex's scope sentence says so.
-var routeRegistrationRe = regexp.MustCompile(`(?i:mux)\.Handle(?:Func)?\("(?:([A-Z]+) )?(/[^"]*)",\s*([A-Za-z_.]+)`)
+// auth wrapper's name when there is one — digits included, so `hop2` does
+// not truncate to `hop` (the alias regex below reads \w). A registration
+// spelled over several lines still matches — the run between the pattern
+// and the handler crosses newlines. A route registered through a
+// non-literal pattern (the dispatcher and native-board sub-trees,
+// "METHOD "+p+"<tail>") is out of this scan by design: those families mount
+// on the raw mux, and the annex's scope sentence says so.
+var routeRegistrationRe = regexp.MustCompile(`(?i:mux)\.Handle(?:Func)?\("(?:([A-Z]+) )?(/[^"]*)",\s*([A-Za-z_.0-9]+)`)
 
 // localAliasRe reads a one-hop local alias of a wrapper —
 // `loginLimit := s.limitRoute(...)` — so the classifier can follow it. The
@@ -114,6 +115,13 @@ var packageFuncRe = regexp.MustCompile(`(?m)^func ([A-Za-z_]\w*)\(`)
 //   - a bare head that is neither an inline literal, nor a declared
 //     package-level func, nor an alias that resolves — a handler this
 //     generator cannot name is a registration it cannot judge.
+//
+// One more forbidden form, documented rather than refused because the scan
+// reads names, not assignments: a middleware stored in a FIELD of the
+// Server (`s.adminGate(h)` where the field was assigned
+// `s.requireSuperAdmin` at wiring). The head reads receiver-qualified and
+// classifies on its name alone — never store a rung in a field; wrap the
+// registration inline like every route in this package does.
 func scanRouteInventory(dir string) ([]InventoryRoute, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

@@ -180,7 +180,7 @@ func TestTheAnnexMatchesTheRegisteredSurfaceBothWays(t *testing.T) {
 //     or followed through a one-hop local alias — reads "platform admin" in
 //     the annex.
 var (
-	witnessRegistrationRe = regexp.MustCompile(`(?i:mux)\.Handle(?:Func)?\("(?:([A-Z]+) )?(/[^"]*)",\s*([A-Za-z_.]+)`)
+	witnessRegistrationRe = regexp.MustCompile(`(?i:mux)\.Handle(?:Func)?\("(?:([A-Z]+) )?(/[^"]*)",\s*([A-Za-z_.0-9]+)`)
 	witnessAliasRe        = regexp.MustCompile(`(?m)^[ \t]*([a-z]\w*) :=\s*([A-Za-z_][\w.]*)\b`)
 	witnessLineComments   = regexp.MustCompile(`(?m)//.*$`)
 )
@@ -279,23 +279,37 @@ func TestTheAdminRungCannotBeMislabeled(t *testing.T) {
 
 // The scan reads LITERAL registrations only; a platform-admin family
 // mounted as a sub-tree on the raw mux under /api/admin would be invisible
-// to it AND to the prefix leg above — the one hole left. The raw mounts all
-// live in server_routes.go, so the guard is one sentence long: no sub-tree
-// mount prefix there starts with /api/admin.
+// to it AND to the prefix leg above — the one hole left. Sub-tree mounts
+// live wherever a registrar puts them (board_cloud_routes.go mounts
+// /api/v1/native today, NOT only server_routes.go), so the guard walks
+// every non-test source of the package: no sub-tree mount prefix anywhere
+// starts with /api/admin.
 func TestNoAdminFamilyMountsOutsideTheScan(t *testing.T) {
-	raw, err := os.ReadFile("server_routes.go")
+	mountRe := regexp.MustCompile(`RegisterRoutesWithMiddleware\(s\.mux\.ServeMux, "([^"]+)"`)
+	entries, err := os.ReadDir(".")
 	if err != nil {
-		t.Fatalf("read server_routes.go: %v", err)
+		t.Fatalf("read the server package: %v", err)
 	}
-	code := witnessLineComments.ReplaceAllString(string(raw), "")
-	mounts := regexp.MustCompile(`RegisterRoutesWithMiddleware\(s\.mux\.ServeMux, "([^"]+)"`).FindAllStringSubmatch(code, -1)
-	if len(mounts) < 2 {
-		t.Fatalf("found %d sub-tree mount(s) in server_routes.go, floor 2 — the witness no longer reads the mounts it guards", len(mounts))
-	}
-	for _, m := range mounts {
-		if strings.HasPrefix(m[1], "/api/admin") {
-			t.Errorf("%s mounts a whole sub-tree on the raw mux under /api/admin — its routes escape the annex's scan AND its prefix leg; register it with literal patterns or move the prefix", m[1])
+	mounts := 0
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
 		}
+		raw, err := os.ReadFile(name) // #nosec G304 -- the package's own directory listing
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		code := witnessLineComments.ReplaceAllString(string(raw), "")
+		for _, m := range mountRe.FindAllStringSubmatch(code, -1) {
+			mounts++
+			if strings.HasPrefix(m[1], "/api/admin") {
+				t.Errorf("%s mounts a whole sub-tree on the raw mux under /api/admin (%s) — its routes escape the annex's scan AND its prefix leg; register it with literal patterns or move the prefix", name, m[1])
+			}
+		}
+	}
+	if mounts < 3 {
+		t.Fatalf("found %d sub-tree mount(s) across the package, floor 3 — the witness no longer reads the mounts it guards (server_routes.go's two and board_cloud_routes.go's one today)", mounts)
 	}
 }
 
@@ -361,6 +375,7 @@ func TestResolveHeadFollowsAliasesAndRefusesHiddenRungs(t *testing.T) {
 		"adminProbe":  "s.requireSuperAdmin",
 		"hiddenAdmin": "func",
 		"loop":        "loop",
+		"hop2":        "s.requireAuth",
 	}
 	if got, err := resolveHead("loginLimit", aliases, funcs); err != nil || got != "s.limitRoute" {
 		t.Errorf("loginLimit resolves to s.limitRoute, got %q err %v", got, err)
@@ -391,6 +406,11 @@ func TestResolveHeadFollowsAliasesAndRefusesHiddenRungs(t *testing.T) {
 	}
 	if _, err := resolveHead("loop", aliases, funcs); err == nil {
 		t.Errorf("an alias cycle must refuse, got %v", err)
+	}
+	// A digit-carrying alias name resolves whole: the head class reads 0-9,
+	// so hop2 is not truncated to hop (which would refuse naming "hop").
+	if _, err := resolveHead("hop2", aliases, funcs); err == nil || !strings.Contains(err.Error(), `"hop2"`) {
+		t.Errorf("a digit-carrying alias must resolve whole and refuse naming it, got %v", err)
 	}
 }
 
