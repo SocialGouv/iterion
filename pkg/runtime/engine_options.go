@@ -244,6 +244,16 @@ func WithWorkflowHash(hash string) EngineOption {
 	return func(e *Engine) { e.workflowHash = hash }
 }
 
+// WithBudgetClock sets the clock every run budget this engine builds reads
+// its age on. Only tests set it, to advance a run's age by hand: a duration
+// witness then decides on the order of the events it staged — the node
+// holding its deadline, THEN the cap spent — never on a race between the
+// engine's own startup and a cap of a few hundred milliseconds on a loaded
+// machine. nil (the default) reads the wall clock.
+func WithBudgetClock(now func() time.Time) EngineOption {
+	return func(e *Engine) { e.budgetClock = now }
+}
+
 // WithParallelSaveWindow sets the coalescing window for routine fan-out
 // boundary checkpoints (#561). Within a window the boundaries of sibling
 // branches share one durable write; completion, pause, spend and abandoned
