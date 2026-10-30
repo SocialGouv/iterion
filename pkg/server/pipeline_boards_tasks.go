@@ -11,7 +11,6 @@ import (
 	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
-	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 type pipelineBoardTaskRequest struct {
@@ -149,9 +148,14 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 		return
 	}
 	blockers := native.NormalizeBlockers(req.Blockers)
-	// A card never carries the publish grant: whatever a client sends under
-	// that name — the mask it was shown, a stale token — is dropped.
-	botArgs := store.DropServerMintedVars(cloneStringMap(req.BotArgs))
+	// A card never carries the publish grant (a stale token, the mask it was
+	// shown) nor the reserved launch context (the repo identity, the BYOK
+	// overrides, the integration id): both are the server's to mint or stamp
+	// — the two filters DropServerMintedLaunchVars applies, one gesture —
+	// and a client able to write either would decide what its run is
+	// debited, metered, bounded and keyed as (#2371, D33). ONE derivation
+	// feeds the blocker policy, the upsert lookup and the card itself.
+	botArgs := native.DropServerMintedLaunchVars(cloneStringMap(req.BotArgs))
 	blockerPolicy := native.BlockerPolicy{RequireLabels: native.RequireBlockerLabels(botArgs)}
 
 	// Upsert: planners re-run without duplicating tickets for the same request file.
@@ -234,13 +238,17 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 		botArgs[native.BotArgSpawnedFrom] = parentID
 	}
 	newIssue := native.Issue{
-		Title:    strings.TrimSpace(req.Title),
-		Body:     strings.TrimSpace(req.Body),
-		State:    state,
+		Title: strings.TrimSpace(req.Title),
+		Body:  strings.TrimSpace(req.Body),
+		State: state,
+		// The SAME filtered map the lookup and the blocker policy read
+		// above — re-deriving from the request here would resurrect the
+		// reserved keys this route exists to keep out, and drop the
+		// spawned_from lineage stamped onto botArgs below.
 		Labels:   append([]string(nil), req.Labels...),
 		Priority: req.Priority,
 		Bot:      bot.Name,
-		BotArgs:  store.DropServerMintedVars(cloneStringMap(req.BotArgs)),
+		BotArgs:  botArgs,
 		External: req.External,
 	}
 	// Prefer the store-side atomic unique-title create (no list-then-check
@@ -357,8 +365,24 @@ func (s *Server) handlePipelineBoardTaskUpdate(w http.ResponseWriter, r *http.Re
 		Body:     req.Body,
 		Labels:   req.Labels,
 		Priority: req.Priority,
-		BotArgs:  dropServerMintedArgs(req.BotArgs),
 		External: req.External,
+	}
+	if req.BotArgs != nil {
+		// A patch replaces bot args wholesale: the member's own vars land,
+		// the reserved launch context comes back off the STORED card — the
+		// payload's identity about the card's repository, credentials and
+		// integration is the server's word, and this client neither wrote
+		// it nor may rewrite it (#2371, D33).
+		kept := native.DropServerMintedLaunchVars(*req.BotArgs)
+		existing, gerr := boardStore.Get(id)
+		if gerr != nil {
+			s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board update: read card: %v", gerr)
+			return
+		}
+		if existing != nil {
+			kept = native.KeepStoredLaunchContext(existing.BotArgs, kept)
+		}
+		patch.BotArgs = &kept
 	}
 	if req.Title != nil {
 		title := compactPipelineTitle(*req.Title)
@@ -490,14 +514,4 @@ func (s *Server) handlePipelineBoardTaskReady(w http.ResponseWriter, r *http.Req
 		return
 	}
 	s.writeJSONFor(w, r, issue)
-}
-
-// dropServerMintedArgs is a PATCH's bot_args without a server-minted var: a
-// card never carries the publish grant, whatever the client sends back.
-func dropServerMintedArgs(args *map[string]string) *map[string]string {
-	if args == nil {
-		return nil
-	}
-	kept := store.DropServerMintedVars(*args)
-	return &kept
 }

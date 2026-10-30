@@ -670,7 +670,12 @@ egress to a host only the deployment knows, above all the
 (`rules: ["${OPENAI_COMPATIBLE_HOST}"]`). A reference that resolves to
 nothing refuses the sandbox start and names the rule, rather than
 silently dropping it — a dropped allowlist rule would merely confuse,
-but a dropped denylist rule would fail *open*.
+but a dropped denylist rule would fail *open*. The test is
+**per reference**, not the rule's whole text: `api.${REGION}.example.com`
+with `REGION` unset expands to a pattern no host matches, the same silent
+drop in worse disguise. A rule every reference explicitly defaults is the
+author's "no rule when unset" — `rules: ["${EXTRA_EGRESS:-}"]` is dropped
+when the variable is absent, the one greppable opt-out.
 
 Modes:
 

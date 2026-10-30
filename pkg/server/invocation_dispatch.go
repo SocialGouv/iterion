@@ -313,14 +313,20 @@ func (s *Server) ensureBoardCard(ctx context.Context, cfg webhooks.Config, route
 		if repoRef != "" {
 			botArgs[boardRepoRefKey] = repoRef
 		}
-		// The forge slug alongside (#2371, D33): the payload's OWN project
-		// path, byte-for-byte the identity the direct lane stamps and the
-		// meter keys on — no URL re-derivation, so a forge under a sub-path
-		// base or a slug whose case a canonicaliser would fold still lands
-		// on the very key its quota is read from.
-		if meta.ProjectPath != "" {
-			botArgs[boardProjectPathKey] = meta.ProjectPath
-		}
+	}
+	// The forge slug alongside (#2371, D33): the payload's OWN project path,
+	// byte-for-byte the identity the direct lane stamps and the meter keys
+	// on — no URL re-derivation, so a forge under a sub-path base or a slug
+	// whose case a canonicaliser would fold still lands on the very key its
+	// quota is read from. Stamped whenever the payload names it, not only
+	// when it carries a clone URL: the slug does not depend on the clone,
+	// and an event without one would otherwise leave the card — and the run
+	// it launches — without the repository identity its quota reads. The
+	// launch honors it only under the provenance boardCardRepoIdentity
+	// spells out; the write routes a client drives never persist it
+	// (native.DropReservedLaunchArgs).
+	if meta.ProjectPath != "" {
+		botArgs[boardProjectPathKey] = meta.ProjectPath
 	}
 	// Carry the webhook's BYOK key / secret overrides onto the card so the
 	// board coordinator's launch applies them (it resolves nothing from the

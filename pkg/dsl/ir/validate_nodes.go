@@ -1450,6 +1450,26 @@ func ExpandEnvWithDefault(s string) string {
 	return ExpandWithDefault(s, lookupEnv)
 }
 
+// ExpandEnvWithDefaultReport is ExpandEnvWithDefault that also reports how
+// the braced references resolved: missing lists the bare `${NAME}`
+// references whose lookup came back empty (they contribute nothing to the
+// output), and allDefaulted reports whether every reference carries an
+// explicit `:-` default — the author's "leave it unset" marker.
+func ExpandEnvWithDefaultReport(s string) (out string, missing []string, allDefaulted bool) {
+	return ExpandWithDefaultReport(s, lookupEnv)
+}
+
+// ExpandWithDefaultReport is ExpandWithDefault over an arbitrary lookup, with
+// the per-reference report ExpandEnvWithDefaultReport describes. The
+// sandbox's network-rule expansion is the reader that needs it: a rule whose
+// whole text happens to survive is not the test — a bare reference that
+// resolves to nothing must be visible to the caller that refuses on it.
+func ExpandWithDefaultReport(s string, lookup func(string) string) (out string, missing []string, allDefaulted bool) {
+	rep := &expandReport{allDefaulted: true}
+	out, _ = expandWithDefault(s, lookup, expandPolicy{report: rep})
+	return out, rep.missing, rep.sawRef && rep.allDefaulted
+}
+
 // ExpandWithDefault is ExpandEnvWithDefault over an arbitrary lookup. The
 // runtime needs it because a `vars:` default resolves against more than the
 // process environment — ${PROJECT_DIR} and ${BUNDLE_DIR} are engine-supplied
@@ -1485,6 +1505,22 @@ type expandPolicy struct {
 	// keepUnresolved leaves a reference with no value as written, rather
 	// than resolving it to the empty string.
 	keepUnresolved bool
+	// report, when non-nil, collects how each braced reference resolved, for
+	// the fail-closed readers of an expansion: a rule whose reference
+	// resolves to nothing must be SEEN, not merely come out empty.
+	report *expandReport
+}
+
+// expandReport is what an expansion's braced references did. missing lists
+// the bare `${NAME}` references whose lookup came back empty — with
+// keepUnresolved unset they contribute nothing to the output. allDefaulted
+// reports whether every reference carries an explicit `:-` default: the
+// author's own "leave it unset" marker, an explicit opt-out rather than a
+// reference someone forgot to define.
+type expandReport struct {
+	missing      []string
+	sawRef       bool
+	allDefaulted bool
 }
 
 // maxEnvExpansionDepth bounds the nesting of `${A:-${B:-c}}` that resolves.
@@ -1602,12 +1638,27 @@ func expandWithDefault(s string, lookup func(string) string, policy expandPolicy
 func resolveBracedSegment(inner string, lookup func(string) string, policy expandPolicy) string {
 	if idx := strings.Index(inner, ":-"); idx >= 0 {
 		name, fallback := inner[:idx], inner[idx+2:]
-		if v := lookup(name); v != "" {
+		v := lookup(name)
+		if policy.report != nil {
+			policy.report.sawRef = true
+		}
+		if v != "" {
 			return v
 		}
 		return fallback
 	}
-	if v := lookup(inner); v != "" || !policy.keepUnresolved {
+	v := lookup(inner)
+	if policy.report != nil {
+		policy.report.sawRef = true
+		// A defaulted reference is an explicit choice; a bare one that
+		// resolves to nothing contributes nothing to the output — the fact
+		// a fail-closed reader must refuse on.
+		policy.report.allDefaulted = false
+		if v == "" && !policy.keepUnresolved {
+			policy.report.missing = append(policy.report.missing, inner)
+		}
+	}
+	if v != "" || !policy.keepUnresolved {
 		return v
 	}
 	return "${" + inner + "}"

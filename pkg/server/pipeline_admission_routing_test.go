@@ -310,11 +310,13 @@ func TestPipelineBoardCard_CarriesNoRoutingPolicyValue(t *testing.T) {
 }
 
 // TestPipelineBoardLaunchAnswers503WhenTheCardNamesAnotherTeamsIntegration:
-// the id a card carries IS member-writable, so the tenant check is what makes
-// the `webhook` level true. Over the public door, naming another team's
-// integration refuses with the outage status (the card is not at fault) and
-// publishes nothing — never the other team's routing block, never an absent
-// integration level.
+// the launch-side tenant check is what makes the `webhook` level true — the
+// id a card carries is launch context the write routes strip from a client
+// (native.DropReservedLaunchArgs), and this door is the belt behind that:
+// a card carrying an id its team cannot read — written before the filter
+// existed, or by any non-route writer — refuses with the outage status (the
+// card is not at fault) and publishes nothing. Never the other team's
+// routing block, never an absent integration level.
 //
 // Mutant: the cfg.TenantID check dropped → 202 and a run carrying the other
 // team's providers.
@@ -326,7 +328,16 @@ func TestPipelineBoardLaunchAnswers503WhenTheCardNamesAnotherTeamsIntegration(t 
 		Routing: &llmroute.Policy{Providers: []string{"anthropic"}},
 	})
 
-	card := env.createCard(t, `{"bot":"probe","title":"borrowed","bot_args":{"`+boardWebhookIDKey+`":"wh-t2"}}`)
+	// Stamped the way the server stamps (store-side), not through the write
+	// route: the route strips the id from a client; the launch must still
+	// refuse a card that carries an unreadable one.
+	card, err := env.board.Create(native.Issue{
+		Title: "borrowed", State: native.StateReady, Bot: "probe",
+		BotArgs: map[string]string{boardWebhookIDKey: "wh-t2"},
+	})
+	if err != nil {
+		t.Fatalf("board.Create: %v", err)
+	}
 	req := env.req(http.MethodPost, "/api/v1/pipeline-board/tasks/"+card.ID+"/launch", "")
 	req.SetPathValue("id", card.ID)
 	rec := httptest.NewRecorder()

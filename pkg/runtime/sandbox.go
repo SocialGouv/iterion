@@ -1271,10 +1271,15 @@ func proxyAddressesForDriver(d sandbox.Driver) (bind, advertise string, err erro
 // the deployment's gateway host (`"${OPENAI_COMPATIBLE_HOST}"`,
 // `"${GATEWAY_EGRESS:-gateway.internal}"`): the host is deployment env,
 // unknowable to the bot's author (#2099). A rule whose reference resolves
-// to nothing is an error, not a silently dropped rule: in allowlist mode
-// the drop would fail closed (the host the author meant is refused), but
-// in denylist mode it would fail OPEN — the denied host allowed — so the
-// run refuses to start instead, naming the rule.
+// to nothing is an error, not a silently dropped rule — and "resolves to
+// nothing" is judged PER REFERENCE, not on the whole rule's text:
+// "api.${REGION}.example.com" with REGION unset expands to a pattern no
+// host matches, a drop that in allowlist mode would fail closed (the host
+// the author meant is refused) but in denylist mode would fail OPEN — the
+// denied host allowed — so the run refuses to start instead, naming the
+// rule. A rule every reference explicitly defaults is the author's own
+// "no rule when unset" (`"${EXTRA_EGRESS:-}"`) and is dropped, the one
+// greppable opt-out.
 //
 // Default when spec.Network is nil: open (no proxy, full egress). Bots
 // routinely shell out to package managers, build tooling, and
@@ -1322,14 +1327,30 @@ func ResolveNetworkPolicy(spec *sandbox.Spec) (netproxy.Mode, []string, error) {
 		}
 	}
 	rules = append(rules, extra...)
-	for i, raw := range rules {
-		expanded := ir.ExpandEnvWithDefault(raw)
+	kept := make([]string, 0, len(rules))
+	for _, raw := range rules {
+		expanded, missing, allDefaulted := ir.ExpandEnvWithDefaultReport(raw)
+		// A reference that resolves to nothing refuses THE RULE, not only
+		// when the whole rule comes out empty: "api.${REGION}.example.com"
+		// with REGION unset expands to "api..example.com", a pattern no host
+		// matches — a rule silently dropped, which in denylist mode (and for
+		// an allowlist's `!` exclusions, their deny half) fails OPEN.
+		if len(missing) > 0 {
+			return "", nil, fmt.Errorf("sandbox network rule %q has a reference that resolves to nothing (%s) — set the referenced environment variable, or give it a ${VAR:-default}", raw, strings.Join(missing, ", "))
+		}
 		if strings.TrimSpace(expanded) == "" && strings.TrimSpace(raw) != "" {
+			if allDefaulted {
+				// Every reference carried an explicit `:-` default: the
+				// author said "no rule when unset" (the optional-egress
+				// idiom, `"${EXTRA_EGRESS:-}"`). Drop the rule — the
+				// greppable opt-out — rather than refusing it.
+				continue
+			}
 			return "", nil, fmt.Errorf("sandbox network rule %q expands to nothing — set the referenced environment variable, or give it a ${VAR:-default}", raw)
 		}
-		rules[i] = expanded
+		kept = append(kept, expanded)
 	}
-	return mode, rules, nil
+	return mode, kept, nil
 }
 
 // resolveSandboxSpec applies the precedence chain

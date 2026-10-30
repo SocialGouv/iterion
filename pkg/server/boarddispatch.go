@@ -1665,9 +1665,12 @@ const (
 	// (the webhook payload's own project path, stamped by ensureBoardCard).
 	// It is the run's ProjectPath — the identity pkg/credusage meters and
 	// the per-repo quota keys on — so a board-dispatched run both counts
-	// against and is bounded by its repository's quota (#2371, D33). A card
-	// without it (hand-built, or written before the stamp existed) derives
-	// the slug from its clone URL at launch (forge.ProjectPathFromCloneURL).
+	// against and is bounded by its repository's quota (#2371, D33). The
+	// launch honors it only under the provenance boardCardRepoIdentity
+	// spells out (an integration of the tenant, the clone URL in play); a
+	// card without a provable stamp derives the slug from its clone URL at
+	// launch (forge.ProjectPathFromCloneURL). The write routes a client
+	// drives never persist it (native.DropReservedLaunchArgs).
 	boardProjectPathKey = "__iterion_project_path"
 )
 
@@ -1743,6 +1746,41 @@ func retryLayerPolicy(cfg webhooks.Config) *retrypolicy.Policy {
 		return nil
 	}
 	return &p
+}
+
+// boardCardRepoIdentity derives the repository identity a carded run is
+// metered and bounded by (#2371, D33): the slug the launch's spend counts
+// against and the per-repo quota reads. integration is the card's own
+// integration claim, already resolved and tenant-checked by
+// cardLaunchPolicyLayers — nil when the card names none.
+//
+// The card's stamp (boardProjectPathKey) is a bot-arg, and bot-args are
+// member-writable: honored only when the card names an integration OF ITS
+// TENANT, and even then the clone URL re-derived against that integration's
+// forge base is what decides — byte-for-byte what the REST lane stamps for
+// the same clone URL (runs_launch.go), sub-path forge bases included. The
+// stamp stands only where no clone URL contradicts it: the webhook event
+// that names the repo without carrying a clone URL. A clone URL OFF the
+// named integration's base meters the clone the run will actually make. A
+// card naming no integration has nothing to prove the stamp with — the
+// clone URL alone answers (forge.ProjectPathFromCloneURL, its sub-path
+// caveat documented there) and an unverifiable stamp is ignored.
+func boardCardRepoIdentity(integration *webhooks.Config, lc boardLaunchContext) string {
+	stamp := strings.TrimSpace(lc.ProjectPath)
+	if integration == nil {
+		if lc.RepoURL != "" {
+			return forge.ProjectPathFromCloneURL(lc.RepoURL)
+		}
+		return ""
+	}
+	if lc.RepoURL != "" {
+		base := strings.TrimSuffix(forge.CanonicalBaseURL(forge.Provider(integration.Provider), integration.ForgeBaseURL), "/")
+		if strings.HasPrefix(lc.RepoURL, base+"/") {
+			return strings.TrimSuffix(strings.TrimPrefix(lc.RepoURL, base+"/"), ".git")
+		}
+		return forge.ProjectPathFromCloneURL(lc.RepoURL)
+	}
+	return stamp
 }
 
 // liftBoardLaunchContext splits a card's BotArgs into the bot's vars and the
@@ -1998,15 +2036,13 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	// The run's repository identity, derived HERE like on every other launch
 	// surface (#2371, D33): the slug the card's own launch will be metered
 	// against, byte-for-byte the one the per-repo quota reads. The stamped
-	// slug wins — it is the forge payload's own project path, the very value
-	// the direct webhook lane stamps — and the clone URL is the fallback for
-	// a card that carries no stamp (hand-built, or written before the stamp
-	// existed). A card with neither targets no repository, like any local
-	// run, and the repo quota has nothing to bind.
-	cardRepo := strings.TrimSpace(lc.ProjectPath)
-	if cardRepo == "" && lc.RepoURL != "" {
-		cardRepo = forge.ProjectPathFromCloneURL(lc.RepoURL)
-	}
+	// slug is a bot-arg and bot-args are member-writable, so it never
+	// decides on its own word — boardCardRepoIdentity honors it only when
+	// the card's integration claim proves webhook provenance, and takes the
+	// clone URL into account either way. A card with neither targets no
+	// repository, like any local run, and the repo quota has nothing to
+	// bind.
+	cardRepo := boardCardRepoIdentity(integration, lc)
 	spec := runview.LaunchSpec{
 		Vars:            lc.Vars,
 		TrustedVarNames: trustedVars,

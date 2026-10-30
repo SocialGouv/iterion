@@ -186,6 +186,11 @@ func (h *BoardAPI) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	// A client-created card never carries the reserved launch context: it is
+	// the server's stamp about what a carded run targets (card_launch_args.go),
+	// and the board REST surface is a client. The publish grant is dropped
+	// store-side at Create (BotArgsForWrite); this class is dropped HERE,
+	// because the server's own stamp writes through the same store.Create.
 	out, err := s.Create(Issue{
 		Title:    in.Title,
 		Body:     in.Body,
@@ -197,7 +202,7 @@ func (h *BoardAPI) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 		Fields:   in.Fields,
 		External: in.External,
 		Bot:      in.Bot,
-		BotArgs:  in.BotArgs,
+		BotArgs:  DropServerMintedLaunchVars(in.BotArgs),
 	})
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -280,6 +285,21 @@ func (h *BoardAPI) handlePatchIssue(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
+	}
+	// A patch replaces bot args wholesale: the client's own vars land, the
+	// reserved launch context comes back off the STORED card — the patching
+	// client never wrote it and may not rewrite it (card_launch_args.go).
+	if in.BotArgs != nil {
+		existing, gerr := s.Get(id)
+		if gerr != nil {
+			writeErr(w, statusForErr(gerr), gerr)
+			return
+		}
+		kept := DropServerMintedLaunchVars(*in.BotArgs)
+		if existing != nil {
+			kept = KeepStoredLaunchContext(existing.BotArgs, kept)
+		}
+		in.BotArgs = &kept
 	}
 	out, err := s.Update(id, Patch{
 		Title:    in.Title,
