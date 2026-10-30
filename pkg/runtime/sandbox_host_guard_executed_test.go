@@ -633,19 +633,43 @@ func TestTheEphemeralHomeIsBackedByATmpfsEvenWithoutTheUIDRemap(t *testing.T) {
 
 	// Now the same decision with NO uid to align (uid < 0): the guard's dirs
 	// stay, the writable-$HOME layering — whose only job is to re-lay as
-	// user-owned what docker root-creates — drops out, and nothing claims an
-	// owner it does not have.
+	// user-owned what docker root-creates — drops out, and the ephemeral
+	// homes are owned by the CONTAINER user: a docker tmpfs without uid= is
+	// root:root (measured: `--user 1000 --tmpfs d:mode=0755` → touch
+	// Permission denied), so "the image's own user owns what is laid" is
+	// something the plan must EMIT — spec.User's uid when it names one,
+	// world-writable when it does not.
 	ephemeral := []string{filepath.Join(home, ".claude"), filepath.Join(home, ".codex")}
 	nested := []string{filepath.Join(home, ".cache"), filepath.Join(home, ".claude")}
-	entries := homeTmpfsEntries(home, ephemeral, nested, -1, -1)
+	entries := homeTmpfsEntries(home, ephemeral, nested, -1, -1, "1000")
 	for _, dir := range ephemeral {
 		entry := tmpfsAt(entries, dir)
 		if entry == "" {
 			t.Errorf("with no uid remap, %s gets no tmpfs — docker root-creates it as the overlays' parent and an image whose user is not root cannot write its own home: %v", dir, entries)
 			continue
 		}
-		if strings.Contains(entry, "uid=") {
-			t.Errorf("%q names an owner no remap aligned", entry)
+		if !strings.Contains(entry, "uid=1000") {
+			t.Errorf("%q does not hand the ephemeral home to the container's pinned user 1000 — a tmpfs without uid= is root:root and the CLI cannot write its home", entry)
+		}
+		if !strings.Contains(entry, "exec") {
+			t.Errorf("%q is noexec — docker's default — and the CLI installs it runs live under the home", entry)
+		}
+	}
+	// A spec.User that names no uid (empty, or a name) cannot be honoured
+	// exactly, so the ephemeral homes go world-writable instead: a tmpfs
+	// keeps no byte past the run, and the home's isolation never rested on
+	// its mode.
+	for _, user := range []string{"", "devbox"} {
+		fallback := homeTmpfsEntries(home, ephemeral, nested, -1, -1, user)
+		for _, dir := range ephemeral {
+			entry := tmpfsAt(fallback, dir)
+			if entry == "" {
+				t.Errorf("user %q: %s gets no tmpfs at all — the CLI has no home to write", user, dir)
+				continue
+			}
+			if !strings.Contains(entry, "mode=0777") {
+				t.Errorf("user %q: %q is not world-writable — with no uid to name, root:root 0755 is a home the image's user cannot write", user, entry)
+			}
 		}
 	}
 	if entry := tmpfsAt(entries, home); entry != "" {
@@ -656,7 +680,7 @@ func TestTheEphemeralHomeIsBackedByATmpfsEvenWithoutTheUIDRemap(t *testing.T) {
 	}
 	// One destination, one --tmpfs: ~/.claude is both an ephemeral home and
 	// the ancestor of the projects/ bind, and docker cannot order two.
-	withUID := homeTmpfsEntries(home, ephemeral, nested, 1000, 1000)
+	withUID := homeTmpfsEntries(home, ephemeral, nested, 1000, 1000, "")
 	seen := map[string]int{}
 	for _, e := range withUID {
 		seen[strings.SplitN(e, ":", 2)[0]]++

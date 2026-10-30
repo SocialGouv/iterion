@@ -343,6 +343,17 @@ every intermediate ancestor re-laid (`$HOME/.local/share/pnpm` →
 `$HOME/.local` and `$HOME/.local/share`), so siblings like
 `$HOME/.local/share/fnm` stay writable too.
 
+Where the host-UID remap does NOT run — a non-Linux docker host, or an
+engine running as root — there is no host UID to lay with, so the two
+ephemeral homes are owned by the CONTAINER user instead: the tmpfs carries
+`uid=` from `spec.User` when it names one, and is world-writable
+(`mode=0777`) when it does not. This must be emitted, not assumed: a docker
+tmpfs without `uid=` is `root:root` (measured: `--user 1000 --tmpfs
+d:mode=0755` → `touch: Permission denied`), and a `root:root` ephemeral
+home is a home the in-sandbox CLI cannot write. The world-writable
+fallback loses nothing — a tmpfs keeps no byte past the run, and the
+home's isolation never rested on its mode.
+
 **Warm package caches.** Alongside the Go build/module caches, the Node
 package caches (`~/.npm`, `~/.local/share/pnpm`, `~/.cache/yarn`) are served
 at the same path inside the container — without them every sandboxed run
@@ -451,14 +462,37 @@ The iterion home is bound read-write by design (the run store, the memory tree
 and the project scratch must outlive the run) and it is the source of the
 project scratch, of the sandbox's own cache store and of the `plugins.yaml`
 copy; the worktree `.git` tree has the same shape. Before any of those is
-emitted, `realBindSource` requires the resolved source to BE the path it is
-named — `filepath.EvalSymlinks` against the resolved store root, re-asked
-after the `MkdirAll` that creates it, so a link planted between the two does
-not survive into the mount plan. A failure is a loud warn and a skip: the cold
-run, the pre-existing "cache absent" state, never a bind. Without it a run
-that replaced `<iterion home>/sandbox-caches/.cache/go-build` with a symlink
-to `~/.claude/hooks` had the NEXT run mount the operator's hooks read-write,
+emitted, `safepath.RealBindSource` requires the resolved source to BE the path
+it is named — `filepath.EvalSymlinks` against the resolved store root,
+re-asked after the `MkdirAll` that creates it, so a link planted between the
+two does not survive into the mount plan. A failure is a loud warn and a
+skip: the cold run, the pre-existing "cache absent" state, never a bind.
+Without it a run that replaced
+`<iterion home>/sandbox-caches/.cache/go-build` with a symlink to
+`~/.claude/hooks` had the NEXT run mount the operator's hooks read-write,
 under an audit line still spelling the store.
+
+**The check is asked twice, and the second ask is at the border.** The
+daemon resolves a bind's source at container CREATION, but the check above
+runs when the PLAN is built — before the driver pulls the image, which is
+minutes. A sandboxed run alive through that window can swap a verified leaf
+for a symlink and choose where the next creation's mount lands (measured on
+docker 29: plan verified, leaf swapped, creation wrote the attacker's host
+path through the emitted mount string). So the plan names every source it
+verified — the project scratch and the five caches, in
+`Spec.BindSourceChecks` — and the driver re-asks the same question
+immediately before the create command. A source that no longer verifies
+refuses the creation, naming the swap and where the leaf now points; the
+retry self-heals, because the guard then sees the planted leaf at plan time
+and skips the bind cold. **Said plainly: the race itself is irreducible.**
+Between the last ask and the daemon's own resolution there is always a
+window, and no userspace check can shrink it to zero — closing it fully
+needs the kernel to pin the resolution (a mount API that hands the daemon
+an already-opened path, or a source outside every directory the sandbox
+writes). What the second ask buys is the window's SHAPE: minutes of pull
+and build become the microseconds between the re-ask and the create, and a
+swap caught there stops the container instead of mounting what the swap
+chose.
 
 The cache store is also bound **read-only at its own path** inside the
 container. The run still writes the caches through the `$HOME` paths they are

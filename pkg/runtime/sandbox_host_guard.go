@@ -85,6 +85,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/internal/isolationenv"
+	"github.com/SocialGouv/iterion/internal/safepath"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/skilllib"
@@ -235,7 +236,7 @@ type hostConfigGuard struct {
 	tmpfs []string
 	// writes are the roots whose CONTENT the sandbox writes, so a bind
 	// SOURCE under one of them is a path the sandbox could choose through a
-	// symlink (sandbox_bind_source.go). Registered by sandboxWrites.
+	// symlink (safepath.RealBindSource). Registered by sandboxWrites.
 	writes []string
 }
 
@@ -274,7 +275,7 @@ func (g *hostConfigGuard) checkBindSource(hostPath string) error {
 	if best == "" {
 		return nil
 	}
-	return realBindSource(best, hostPath)
+	return safepath.RealBindSource(best, hostPath)
 }
 
 // newHostConfigGuard returns the run's guard, or nil when the operator

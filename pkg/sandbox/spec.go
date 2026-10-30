@@ -136,6 +136,34 @@ type Spec struct {
 	// Value. Docker writes Value to a host temp file and bind-mounts it;
 	// Kubernetes creates a per-run Secret and projects each key.
 	SecretFiles []SecretFileMount
+
+	// BindSourceChecks names the bind mounts whose SOURCE lives under a
+	// directory the sandbox itself writes — the project scratch and the
+	// sandbox's own cache store, both under the read-write iterion home.
+	//
+	// A bind's source is resolved by the host kernel at container CREATION,
+	// but the engine verifies these sources when the PLAN is built — before
+	// the driver pulls the image, which is minutes. A sandboxed run alive
+	// through that window can swap a verified leaf for a symlink and choose
+	// where the next creation's mount lands. So every entry here is
+	// re-verified at the driver border, immediately before the container is
+	// created, with the same question (safepath.EnsureRealBindSourceDir); a
+	// source that no longer verifies refuses the creation instead of
+	// mounting what the swap chose.
+	//
+	// Drivers without host bind mounts never receive entries: host_state —
+	// the only writer of this field — is refused there first. They may
+	// ignore the field.
+	BindSourceChecks []BindSourceCheck
+}
+
+// BindSourceCheck is one bind source the driver must re-verify immediately
+// before creating the container. Root is the sandbox-writable store the
+// source must stay under (what [safepath.RealBindSource] compares against);
+// Path is the source the mount string names.
+type BindSourceCheck struct {
+	Root string
+	Path string
 }
 
 type SecretFileMount struct {

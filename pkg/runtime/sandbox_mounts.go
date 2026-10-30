@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/SocialGouv/iterion/internal/safepath"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -118,9 +119,18 @@ func applyScratchMount(
 	// decides the bind source — symlinks included"). The same one check every
 	// such source passes, and a failure is this function's own loud skip.
 	iterionHome, _ := operatorsIterionHome()
-	if err := ensureRealBindSourceDir(iterionHome, hostScratch, 0o700); err != nil {
+	if err := safepath.EnsureRealBindSourceDir(iterionHome, hostScratch, 0o700); err != nil {
 		return skip(err.Error())
 	}
+	// The check above ran at plan time; the runtime daemon resolves the
+	// source at CREATION, minutes later (image pull, build). Name the pair
+	// for the driver so it re-asks the same question at that border — a leaf
+	// swapped inside the window refuses the container instead of mounting
+	// where the swap points.
+	spec.BindSourceChecks = append(spec.BindSourceChecks, sandbox.BindSourceCheck{
+		Root: iterionHome,
+		Path: hostScratch,
+	})
 	spec.Mounts = append(spec.Mounts, fmt.Sprintf(
 		"source=%s,target=%s,type=bind", hostScratch, sandboxScratchContainerPath))
 	// `docker inspect` must never show a mount events.jsonl cannot explain.
@@ -357,7 +367,7 @@ func applyHostStateMounts(
 		// and the project scratch live under it and must outlive the run — so
 		// it is a root whose content the sandbox writes, and every bind source
 		// below it is checked against a symlink the sandbox planted there
-		// (sandbox_bind_source.go). Registering the root is what makes the
+		// (safepath.RealBindSource). Registering the root is what makes the
 		// check reach all of them; the ~/.claude and ~/.codex trees need no
 		// registration because nothing under them is written any more.
 		guard.sandboxWrites(iterionHomeDir)
@@ -526,11 +536,19 @@ func applyHostStateMounts(
 				// The store lives under the read-write iterion home, so the
 				// RUN BEFORE THIS ONE could have replaced this path with a
 				// symlink to any host path — the one check every such bind
-				// source passes (sandbox_bind_source.go).
-				if err := ensureRealBindSourceDir(SandboxCacheStoreDir(iterionHomeDir), source, 0o700); err != nil {
+				// source passes (safepath.RealBindSource).
+				if err := safepath.EnsureRealBindSourceDir(SandboxCacheStoreDir(iterionHomeDir), source, 0o700); err != nil {
 					logger.Warn("runtime: the sandbox's own cache %s is not the path it is named (%v) — this run builds cold, and nothing is mounted from it", source, err)
 					continue
 				}
+				// Same window as the scratch below the same home: the check
+				// ran at plan time, the daemon resolves at creation. The
+				// driver re-asks at that border; a swap refuses the run
+				// rather than poisoning the run after this one.
+				spec.BindSourceChecks = append(spec.BindSourceChecks, sandbox.BindSourceCheck{
+					Root: SandboxCacheStoreDir(iterionHomeDir),
+					Path: source,
+				})
 				guard.note("private", target)
 			}
 			spec.Mounts = append(spec.Mounts, fmt.Sprintf("source=%s,target=%s,type=bind", source, target))
@@ -578,7 +596,7 @@ func applyHostStateMounts(
 			}
 		}
 		spec.Tmpfs = append(spec.Tmpfs, homeTmpfsEntries(
-			homeDir, guard.ephemeralTmpfs(), homeNestedBindParents(homeDir, spec.Mounts), uid, gid)...)
+			homeDir, guard.ephemeralTmpfs(), homeNestedBindParents(homeDir, spec.Mounts), uid, gid, spec.User)...)
 	}
 
 	// Disable git commit signing inside the container. The mounted
@@ -669,8 +687,14 @@ func operatorsIterionHome() (dir, notMounted string) {
 // the operator's whole ~/.claude for the run.
 // homeTmpfsEntries is the `--tmpfs` plan for a guarded run's $HOME, as a
 // decision separate from the platform it is taken on: uid >= 0 means the
-// host-UID remap aligns an owner (Linux, non-root engine), uid < 0 that it
-// does not and the image's own user owns what is laid.
+// host-UID remap aligns an owner (Linux, non-root engine); uid < 0 that it
+// does not, and the ephemeral homes are then owned by the CONTAINER user —
+// spec.User when it parses to a uid, world-writable when it does not. A
+// docker tmpfs without uid= is root:root, so "the image's own user owns
+// what is laid" is something this function must EMIT, not assume: a
+// root:root 0755 ephemeral home is a home the in-sandbox CLI cannot write.
+// The 0777 fallback loses nothing: a tmpfs keeps no byte past the run, and
+// the home's isolation never rested on its mode.
 //
 // Two stories ride one mount list, and only one of them is conditional:
 //
@@ -689,13 +713,28 @@ func operatorsIterionHome() (dir, notMounted string) {
 // under it, and because the guard's dirs and those ancestors overlap by
 // construction (~/.claude is the parent of the projects/ bind): two --tmpfs at
 // one destination is a mount docker cannot order.
-func homeTmpfsEntries(homeDir string, ephemeral, nestedParents []string, uid, gid int) []string {
+func homeTmpfsEntries(homeDir string, ephemeral, nestedParents []string, uid, gid int, containerUser string) []string {
 	if homeDir == "" {
 		return nil
 	}
-	opts := "mode=0755,exec"
-	if uid >= 0 {
-		opts = fmt.Sprintf("uid=%d,gid=%d,mode=0755,exec", uid, gid)
+	homeOpts := ""
+	ephemeralOpts := ""
+	switch {
+	case uid >= 0:
+		homeOpts = fmt.Sprintf("uid=%d,gid=%d,mode=0755,exec", uid, gid)
+		ephemeralOpts = homeOpts
+	case containerUser == "":
+		// No remap and no pinned user: the image's default user is unknown
+		// (it lives in the image, not in the spec). World-writable keeps
+		// every possible owner able to write its own ephemeral home.
+		ephemeralOpts = "mode=0777,exec"
+	default:
+		if u, ok := parseUserUID(containerUser); ok {
+			ephemeralOpts = fmt.Sprintf("uid=%d,mode=0755,exec", u)
+		} else {
+			// A named user ("devbox") whose uid the spec does not carry.
+			ephemeralOpts = "mode=0777,exec"
+		}
 	}
 	dirs := make([]string, 0, 2+len(ephemeral)+len(nestedParents))
 	if uid >= 0 {
@@ -712,6 +751,10 @@ func homeTmpfsEntries(homeDir string, ephemeral, nestedParents []string, uid, gi
 			continue
 		}
 		seen[dir] = true
+		opts := ephemeralOpts
+		if dir == homeDir {
+			opts = homeOpts
+		}
 		out = append(out, dir+":"+opts)
 	}
 	return out
@@ -776,6 +819,21 @@ func mountTarget(entry string) string {
 			if v, ok := strings.CutPrefix(field, key); ok {
 				return v
 			}
+		}
+	}
+	return ""
+}
+
+// mountSource extracts the source= path from a docker --mount spec entry of
+// the form "source=…,target=…,type=bind[,readonly]". Returns "" when the
+// entry carries no source= field — the mirror of [mountTarget], for the
+// readers that must answer about where a mount REACHES (the host side)
+// rather than where it lands.
+func mountSource(entry string) string {
+	for _, field := range strings.Split(entry, ",") {
+		field = strings.TrimSpace(field)
+		if v, ok := strings.CutPrefix(field, "source="); ok {
+			return v
 		}
 	}
 	return ""

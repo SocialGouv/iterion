@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/safepath"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -557,6 +558,23 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	// The image's CMD is deliberately replaced — it would shadow our
 	// "container as a long-lived ssh-like target" model.
 	args = append(args, p.spec.Image, "sleep", "infinity")
+
+	// The bind sources the runtime verified when it built the plan are
+	// re-asked HERE, at the last point the driver controls before the
+	// daemon resolves them. A bind's source is resolved by the host kernel
+	// at CREATION; the plan-time check ran before this driver's pull and
+	// build — minutes. A sandboxed run alive through that window can swap a
+	// verified leaf for a symlink and choose where this mount lands, so a
+	// source that no longer verifies refuses the creation instead of
+	// mounting what the swap chose. The refusal is also self-healing: on a
+	// retry the guard sees the planted leaf when the plan is rebuilt and
+	// skips the bind cold, so the next attempt has nothing to re-verify.
+	// 0o700 matches the only writer (host_state's store dirs, owner-only).
+	for _, c := range p.spec.BindSourceChecks {
+		if err := safepath.EnsureRealBindSourceDir(c.Root, c.Path, 0o700); err != nil {
+			return nil, fmt.Errorf("docker: the bind source %s is not the path the plan verified under %s (%v) — swapped between plan and creation; refusing to create the container", c.Path, c.Root, err)
+		}
+	}
 
 	out, err := runtimeCmdContext(ctx, d.rt, args...).CombinedOutput()
 	if err != nil && isContainerNameConflict(out) {
