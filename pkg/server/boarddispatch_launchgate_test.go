@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/budgetfloor"
+	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -19,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
 // The board dispatcher launches through the SAME admission gate as every
@@ -183,6 +185,125 @@ func TestProcessBoardCard_CarriesTheCardsBotToTheGate(t *testing.T) {
 	}
 	if got := other.count(); got != 0 {
 		t.Errorf("the run service was asked %d time(s) for a card with no slot, want 0", got)
+	}
+}
+
+// TestProcessBoardCard_RepoQuotaBindsTheBoardCard (#2371, D33): the board lane
+// derives the run's repository identity like every other launch surface, so a
+// card both COUNTS AGAINST (the stamped ProjectPath is what the runner's spend
+// meter reads back) and is BOUNDED BY (the gate subject carries the slug) its
+// repo's quota. Pre-fix this whole surface escaped the ceiling: the gate was
+// called with no Repo and the run carried no ProjectPath, so the meter charged
+// the spend to nobody.
+func TestProcessBoardCard_RepoQuotaBindsTheBoardCard(t *testing.T) {
+	newSrv := func(t *testing.T, quota budgetfloor.RepoQuota, spent float64) (*Server, *store.FilesystemRunStore, *tierPublisher) {
+		t.Helper()
+		pub := &tierPublisher{}
+		s, rs := newTeamForkServer(t, pub)
+		s.orgUsage = orgusage.NewMemoryCounter()
+		s.credUsage = credusage.NewMemoryCounter()
+		withFloor(t, s, budgetfloor.Policy{RepoQuotas: []budgetfloor.RepoQuota{quota}})
+		if spent > 0 {
+			seedRepoUsage(t, s.credUsage, quota.Repo, spent, 3)
+		}
+		return s, rs, pub
+	}
+
+	t.Run("a card whose repo is over its quota is refused", func(t *testing.T) {
+		s, _, pub := newSrv(t, budgetfloor.RepoQuota{Repo: "acme/widgets", MonthlyUSD: 10}, 12.0)
+		err := s.processBoardCard(boundedCtx(t), "t1", native.Issue{
+			ID: "native:1", Bot: "probe", State: native.StateReady,
+			BotArgs: map[string]string{
+				boardRepoURLKey:     "https://github.com/acme/widgets.git",
+				boardProjectPathKey: "acme/widgets",
+			},
+		})
+		if !errors.Is(err, errCardLaunchRefused) {
+			t.Fatalf("processBoardCard = %v, want errCardLaunchRefused — an over-quota repository launches nothing", err)
+		}
+		var deny *launchDeniedError
+		if !errors.As(err, &deny) || deny.Reason != denyRepoQuota {
+			t.Fatalf("the refusal does not carry the repo-quota denial: %v", err)
+		}
+		if got := len(pub.specs); got != 0 {
+			t.Errorf("the run service was asked %d time(s) after the repo-quota denial, want 0", got)
+		}
+	})
+
+	t.Run("a card carrying only the clone URL is canonicalised to the same key", func(t *testing.T) {
+		// No stamped slug (a hand-built card, or one written before the stamp
+		// existed): the launch derives the slug from the clone URL, and the
+		// derivation must land byte-for-byte on the meter's key or the card
+		// escapes the quota by spelling.
+		s, _, pub := newSrv(t, budgetfloor.RepoQuota{Repo: "acme/widgets", MonthlyUSD: 10}, 12.0)
+		err := s.processBoardCard(boundedCtx(t), "t1", native.Issue{
+			ID: "native:2", Bot: "probe", State: native.StateReady,
+			BotArgs: map[string]string{boardRepoURLKey: "https://github.com/acme/widgets.git"},
+		})
+		var deny *launchDeniedError
+		if !errors.As(err, &deny) || deny.Reason != denyRepoQuota {
+			t.Fatalf("processBoardCard = %v, want the %s denial — the URL-derived slug must equal the meter's key", err, denyRepoQuota)
+		}
+		if got := len(pub.specs); got != 0 {
+			t.Errorf("the run service was asked %d time(s), want 0", got)
+		}
+	})
+
+	t.Run("the admitted card's run is stamped with the repo it charges", func(t *testing.T) {
+		s, rs, pub := newSrv(t, budgetfloor.RepoQuota{Repo: "acme/widgets", MonthlyUSD: 100}, 12.0)
+		pub.onLaunch = func(runID string) { finishRunAs(t, rs, runID, store.RunStatusFinished) }
+		if err := s.processBoardCard(boundedCtx(t), "t1", native.Issue{
+			ID: "native:3", Bot: "probe", State: native.StateReady,
+			BotArgs: map[string]string{
+				boardRepoURLKey:     "https://github.com/acme/widgets.git",
+				boardProjectPathKey: "acme/widgets",
+			},
+		}); err != nil {
+			t.Fatalf("processBoardCard = %v, want nil — $12 of a $100 quota admits", err)
+		}
+		if got := pub.only(t).ProjectPath; got != "acme/widgets" {
+			t.Errorf("launched spec.ProjectPath = %q, want %q — the meter keys on it, so the stamp IS the charge", got, "acme/widgets")
+		}
+	})
+
+	t.Run("a card naming no repository stays unbound", func(t *testing.T) {
+		// The pre-change contract for a genuinely repo-less card (local work):
+		// a repo quota is not "every repository", and gateRepoQuota returns nil
+		// on an empty subject. The fix must not invent one.
+		s, rs, pub := newSrv(t, budgetfloor.RepoQuota{Repo: "acme/widgets", MonthlyUSD: 10}, 12.0)
+		pub.onLaunch = func(runID string) { finishRunAs(t, rs, runID, store.RunStatusFinished) }
+		if err := s.processBoardCard(boundedCtx(t), "t1", native.Issue{ID: "native:4", Bot: "probe", State: native.StateReady}); err != nil {
+			t.Fatalf("processBoardCard = %v, want nil — a repo-less card is nobody's quota", err)
+		}
+		if got := pub.only(t).ProjectPath; got != "" {
+			t.Errorf("a repo-less card stamped ProjectPath = %q, want empty", got)
+		}
+	})
+}
+
+// TestEnsureBoardCard_StampsTheForgeSlug: the card carries the payload's OWN
+// project path beside the clone URL, so the launch's repo identity is the
+// forge's byte-for-byte slug — never a re-derivation a sub-path forge base or
+// a case-folding canonicaliser could split from the meter's key (#2371).
+func TestEnsureBoardCard_StampsTheForgeSlug(t *testing.T) {
+	pub := &tierPublisher{}
+	s, _ := newTeamForkServer(t, pub)
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("native.NewStore: %v", err)
+	}
+	s.cfg.CloudBoardFor = func(string) native.BoardStore { return board }
+	s.ensureBoardCard(boundedCtx(t), webhooks.Config{TenantID: "t1", Provider: webhooks.ProviderGitHub},
+		webhooks.CommandRoute{BotID: "probe", Mode: "board"},
+		map[string]string{"pr_url": "https://github.com/Acme/Widgets/pull/7"},
+		webhookEventMeta{Kind: "note", ProjectPath: "Acme/Widgets", SubjectID: "note:1", SubjectURL: "https://github.com/Acme/Widgets/pull/7"},
+		"", "https://github.com/Acme/Widgets.git", "main")
+	cards, err := board.List(native.ListFilter{})
+	if err != nil || len(cards) != 1 {
+		t.Fatalf("board.List = %v, %d cards, want 1", err, len(cards))
+	}
+	if got := cards[0].BotArgs[boardProjectPathKey]; got != "Acme/Widgets" {
+		t.Errorf("the card's %s = %q, want the payload's own %q — case and all", boardProjectPathKey, got, "Acme/Widgets")
 	}
 }
 

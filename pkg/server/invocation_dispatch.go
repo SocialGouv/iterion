@@ -313,6 +313,14 @@ func (s *Server) ensureBoardCard(ctx context.Context, cfg webhooks.Config, route
 		if repoRef != "" {
 			botArgs[boardRepoRefKey] = repoRef
 		}
+		// The forge slug alongside (#2371, D33): the payload's OWN project
+		// path, byte-for-byte the identity the direct lane stamps and the
+		// meter keys on — no URL re-derivation, so a forge under a sub-path
+		// base or a slug whose case a canonicaliser would fold still lands
+		// on the very key its quota is read from.
+		if meta.ProjectPath != "" {
+			botArgs[boardProjectPathKey] = meta.ProjectPath
+		}
 	}
 	// Carry the webhook's BYOK key / secret overrides onto the card so the
 	// board coordinator's launch applies them (it resolves nothing from the

@@ -206,7 +206,7 @@ func TestPipelineAdmission_CarriesTheIntegrationsRoutingCell(t *testing.T) {
 	}
 	// The reserved keys are launch context on this lane as well: a bot that
 	// received them as vars would read a JSON blob as its own input.
-	for _, reserved := range []string{boardRepoURLKey, boardRepoRefKey, boardKeyOverridesKey, boardSecretOverridesKey, boardWebhookIDKey} {
+	for _, reserved := range []string{boardRepoURLKey, boardRepoRefKey, boardProjectPathKey, boardKeyOverridesKey, boardSecretOverridesKey, boardWebhookIDKey} {
 		if _, leaked := spec.Vars[reserved]; leaked {
 			t.Errorf("the reserved %s key reached the bot as a var: %v", reserved, spec.Vars)
 		}

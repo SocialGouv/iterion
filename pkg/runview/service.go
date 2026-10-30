@@ -250,7 +250,10 @@ type LaunchSpec struct {
 	RepoSHAExpected string
 	// ProjectPath is the stable forge slug ("group/project") the run
 	// targets, persisted on the run so the studio can filter/group runs
-	// by repository. Set by inbound-webhook launches; empty otherwise.
+	// by repository and the runner's spend meter (repoForSpend) can charge
+	// the run to it. Set by every repo-targeted cloud launch surface:
+	// the inbound webhooks, the repo-targeted POST /api/runs, and the
+	// board dispatcher (#2371, D33); empty otherwise.
 	ProjectPath string
 	// BotID is the bot bundle name (e.g. "review-pr") this run launches.
 	// The cloud publisher uses it to resolve bot-secret bindings during
@@ -662,7 +665,8 @@ type RunSummary struct {
 	WorkDir  string `json:"work_dir,omitempty"`
 	RepoRoot string `json:"repo_root,omitempty"`
 	// ProjectPath is the stable forge slug ("group/project") for
-	// cloud webhook-launched runs, powering the "by repo" filter.
+	// repo-targeted cloud runs — webhook, repo-targeted REST and
+	// board-dispatched alike (#2371) — powering the "by repo" filter.
 	// Empty in local mode.
 	ProjectPath string `json:"project_path,omitempty"`
 	// QueuePosition is set only for cloud-mode runs whose Status is

@@ -661,6 +661,7 @@ func TestLiftBoardLaunchContext(t *testing.T) {
 		"feature_prompt":        "add X",
 		boardRepoURLKey:         "https://github.com/acme/api.git",
 		boardRepoRefKey:         "main",
+		boardProjectPathKey:     "acme/api",
 		boardKeyOverridesKey:    `{"anthropic":"key-1"}`,
 		boardSecretOverridesKey: `{"forge_token":"sec-1"}`,
 		boardWebhookIDKey:       "wh1",
@@ -671,6 +672,9 @@ func TestLiftBoardLaunchContext(t *testing.T) {
 	}
 	if lc.RepoURL != "https://github.com/acme/api.git" || lc.RepoRef != "main" {
 		t.Errorf("repo lifted wrong: %q %q", lc.RepoURL, lc.RepoRef)
+	}
+	if lc.ProjectPath != "acme/api" {
+		t.Errorf("project path lifted wrong: %q — the slug is the run's meter identity (#2371)", lc.ProjectPath)
 	}
 	if lc.KeyOverrides["anthropic"] != "key-1" {
 		t.Errorf("key overrides = %v", lc.KeyOverrides)
@@ -697,7 +701,7 @@ func TestLiftBoardLaunchContext(t *testing.T) {
 	if bare.WebhookID != "" {
 		t.Errorf("a card with no reserved id lifted one: %q", bare.WebhookID)
 	}
-	for _, reserved := range []string{boardRepoURLKey, boardRepoRefKey, boardKeyOverridesKey, boardSecretOverridesKey, boardWebhookIDKey} {
+	for _, reserved := range []string{boardRepoURLKey, boardRepoRefKey, boardProjectPathKey, boardKeyOverridesKey, boardSecretOverridesKey, boardWebhookIDKey} {
 		if _, leaked := lc.Vars[reserved]; leaked {
 			t.Errorf("reserved key %q leaked into bot vars", reserved)
 		}

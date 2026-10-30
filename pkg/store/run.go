@@ -1448,9 +1448,12 @@ type Run struct {
 	// ProjectPath is the stable forge slug ("group/project" on GitLab,
 	// "owner/repo" on GitHub/Forgejo) the run targets. Distinct from the
 	// raw RepoURL clone URL: it is the normalized, human-meaningful
-	// identifier used to filter/group runs by repository in the studio.
-	// Set by inbound-webhook launches (the repo-scoped cloud case);
-	// empty for local runs and non-webhook cloud launches.
+	// identifier used to filter/group runs by repository in the studio, and
+	// the key pkg/credusage meters the run's spend against — the per-repo
+	// quota reads exactly this value (#2371). Set by every repo-targeted
+	// cloud launch surface (inbound webhooks, a repo-targeted POST
+	// /api/runs, the board dispatcher); empty for local runs and
+	// non-repo-targeted cloud launches.
 	ProjectPath string `json:"project_path,omitempty" bson:"project_path,omitempty"`
 	// BotID is the bot bundle name (for example, "review-pr") that
 	// launched this run. It is persisted so cloud resume/retry can
