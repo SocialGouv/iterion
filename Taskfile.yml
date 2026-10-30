@@ -142,7 +142,7 @@ tasks:
       - ./node_modules/.bin/playwright install chromium
 
   test:a11y:target-size:
-    desc: Judge SC 2.5.8 target-size in a real browser over the declared surface list (#2765; on demand — trigger pending, NOT part of task check or CI)
+    desc: Judge SC 2.5.8 target-size in a real browser over the declared surface list (#2765; runs on the studio-e2e-advisory schedule + workflow_dispatch, NOT in task check or per-PR CI)
     dir: studio
     deps: [build]
     cmds:

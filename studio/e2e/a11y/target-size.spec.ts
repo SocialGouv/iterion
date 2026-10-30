@@ -14,9 +14,10 @@ import { assertTargetSize, TARGET_SIZE_WAIVERS } from "./targetSize";
 // (./targetSize.ts) separating a true sub-24px violation from a documented
 // exception.
 //
-// ON DEMAND ONLY — the trigger (per-PR CI vs nightly vs manual) is pending
-// with Jo (#2765), so this file lives outside playwright.config.ts's
-// testDir. Run it:
+// WIRED TO THE ADVISORY, NOT THE GATE — the decided trigger (#2765, Q47a):
+// the studio-e2e-advisory workflow runs this spec on its schedule and on
+// workflow_dispatch; it never joins the per-PR sweep, so this file lives
+// outside playwright.config.ts's testDir. Run it locally:
 //
 //   devbox run -- task test:a11y:target-size     # builds the binary, skips
 //                                                # cleanly without chromium

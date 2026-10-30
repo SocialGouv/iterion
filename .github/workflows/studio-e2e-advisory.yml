@@ -1,6 +1,8 @@
 # The studio's Playwright e2e advisory (studio/e2e/specs, 13 files / 39
 # tests): serve the real iterion binary with the embedded SPA, run every
-# spec against it on the pinned chromium. No model in the loop.
+# spec against it on the pinned chromium. No model in the loop. A second
+# step then runs the SC 2.5.8 target-size harness (studio/e2e/a11y via
+# playwright.a11y.config.ts, #2765) over the same build.
 #
 # ADVISORY on purpose: drift fails THIS job, never a merge — the nightly
 # cron is the drumbeat that surfaces it (a green run means the studio e2e
@@ -59,6 +61,18 @@ jobs:
           corepack enable
           cd studio
           pnpm exec playwright test
+
+      - name: Run the SC 2.5.8 target-size harness
+        id: a11y-target-size
+        continue-on-error: false
+        # The real-engine half of the jsdom axe net (#2765): own config and
+        # testDir (playwright.a11y.config.ts -> e2e/a11y), so it stays out of
+        # the per-PR sweep and runs only here — scheduled + on demand, per
+        # the decided trigger. Same build, same chromium as the suite above.
+        run: |
+          corepack enable
+          cd studio
+          pnpm exec playwright test --config playwright.a11y.config.ts
 
       - name: Upload the Playwright report
         if: always()
