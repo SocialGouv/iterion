@@ -174,7 +174,7 @@ erDiagram
 | `"external: GitHub"` | not a collection | — | — | not a collection | the forge a share commits through |
 | `"external: browser push service"` | not a collection | — | — | not a collection | the endpoint a subscription names |
 
-`connection.Connection` is not a collection, here or anywhere. Its only durable store is a `FileStore` over `<store dir>/connections.json`. No ER page draws a `connections` entity and the guard asks for none.
+`connection.Connection` is drawn on [data-model-credentials.md](data-model-credentials.md): the cloud twin stores it in the `connections` collection, beside the `FileStore` over `<store dir>/connections.json` the local deployment reads.
 
 ## Related
 

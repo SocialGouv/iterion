@@ -175,6 +175,12 @@ func IterionSpec() Spec {
 			Evidence: "the index builder loops over a slice of {col, model} specs and calls db.Collection(s.col); " +
 				"the four cols are the package's own colPools/colPledges/colLeases/colLedger constants.",
 			Names: []string{"cred_pools", "cred_pledges", "cred_leases", "cred_pool_usage"},
+		}, {
+			Site: "pkg/connection/mongo_store.go:NewMongoStoreIn",
+			Evidence: "the collection is a parameter. NewMongoStore in the same file opens ConnectionsCollectionName " +
+				"at its own .Collection site, which resolves the name for the swept lists; NewMongoStoreIn's other " +
+				"caller is store_conformance_test.go, which passes a fresh per-build name no page draws.",
+			Names: []string{"connections"},
 		}},
 		Gates: []GateRef{
 			{"canViewTeam", "pkg/server/auth_authz.go"},

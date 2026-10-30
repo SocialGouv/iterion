@@ -128,6 +128,7 @@ var passThroughCollectionPackages = map[string]string{
 	"platformcfg": "generic record store: the collection is a parameter of its constructor",
 	"credpool":    "four stores share one implementation, each holding its collection in a field",
 	"orgsweep":    "the purge loops themselves: the name comes from the tables in this file",
+	"connection":  "the cloud twin takes the collection as a constructor parameter; production passes ConnectionsCollectionName",
 }
 
 // classifyCollection returns the table that governs a collection, or "" when

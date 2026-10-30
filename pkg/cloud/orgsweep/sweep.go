@@ -72,6 +72,9 @@ var teamScopedCollections = []string{
 	"forge_board_bindings", "forge_provision_approvals",
 	// personal access tokens (pkg/pat) — a token is minted FOR a team
 	"personal_access_tokens",
+	// connector connections (pkg/connection) — a credential is scoped to one
+	// team, every store read filters on it
+	"connections",
 }
 
 // orgScopedCollections are partitioned by the org id (org_id or tenant_id ==

@@ -34,9 +34,11 @@ type MongoStore struct {
 	clock func() time.Time
 }
 
-// NewMongoStore builds the twin over db.
+// NewMongoStore builds the twin over db. Like every store under pkg/, the
+// collection is named by the package's own constant at the .Collection site
+// itself — the sweep tables and the diagram guard are held to that form.
 func NewMongoStore(db *mongo.Database) *MongoStore {
-	return NewMongoStoreIn(db, ConnectionsCollectionName)
+	return &MongoStore{coll: db.Collection(ConnectionsCollectionName), clock: time.Now}
 }
 
 // NewMongoStoreIn builds the twin over a NAMED collection. Tests use it to

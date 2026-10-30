@@ -1,6 +1,6 @@
 # Data model — credentials, metering and routing policy
 
-Sixteen Mongo collections hold what funds a run: a credential sealed at rest, the bundle that carries it to a runner pod, the four meters that bill it, and the policy that decides where it may route.
+Seventeen Mongo collections hold what funds a run: a credential sealed at rest, the connector alias a workflow addresses it by, the bundle that carries it to a runner pod, the four meters that bill it, and the policy that decides where it may route.
 
 > Drawn from the code at commit `6c136a77d` — main at v3.281.3, with #2652, #2005 PR-A and the PR-B'1 carriage; how this page is kept true: [README](README.md).
 
@@ -278,6 +278,37 @@ erDiagram
 - `platform_settings` is **one collection, one document per family**. This page draws the four a run's funding and routing read — `platform_credentials`, `runner_pools`, `usage_caps` and `budget_floor`; the bot-facing families are drawn on [data-model-forge-bots.md](data-model-forge-bots.md). Sovereign runner pools are the `runner_pools` **family**, not a collection of their own.
 - `llm_routing_policies` is not a `platform_settings` family: its documents are tenant data, one per org or team, while `platform_credentials.routing` holds the platform level of the same policy. A document is a team's **or** an org's, never both — its `_id` carries exactly one of the two prefixes.
 
+## Block 4 — connector connections: a team's alias for one connector instance
+
+```mermaid
+erDiagram
+  connections {
+    string _id PK "'conn_' + a run id"
+    string tenant_id FK "team id"
+    string connector "package id: forgejo, slack, ..."
+    string alias "what a .bot writes in connection: - unique per (tenant, connector)"
+    string alias_norm "alias, lower-cased and trimmed - derived on every write, never trusted from a caller"
+    string display_name "cosmetic, what the studio reads"
+    string base_url "the instance this credential authenticates to - empty = the package default"
+    string scheme_id "which of the package's auth schemes this credential satisfies"
+    object auth_placement "what the scheme SAID: kind, in, name, value_prefix"
+    string[] capabilities "what this connection may be used for - empty means nothing"
+    string[] granted_scopes "what the provider said the credential carries"
+    bool scopes_known "whether the provider said anything at all"
+    string status "active | degraded | revoked"
+    string status_reason "a non-active status in words, cleared on return to active"
+    bytes sealed_payload "the credential, sealed with AAD connection:<_id>"
+    datetime expires_at "zero = never expires; no write path sets it yet (ADR-098)"
+    datetime created_at
+    datetime updated_at "the record's own version - the update precondition reads it back"
+  }
+  connections }o--|| teams : "tenant_id"
+```
+
+- The **unique `(tenant_id, connector, alias_norm)` index** is what keeps the alias rule true between replicas: the memory and file twins check alias-free under a lock they hold, and a cloud deployment has no such lock. Two concurrent Creates of one alias both passing an in-code check would answer one name twice — the index turns the second into a duplicate-key refusal the store reports as `ErrExists`.
+- The tenant is **in every filter**, not merely on the record: a read, update or delete that exists but belongs elsewhere is not found, never forbidden. `updated_at` is the record's own version — the update writes against the stamp it read, so a successful read followed by a zero-match replace is a conflict, not a missing record.
+- `auth_placement` records what the scheme said **at creation**, so a workspace-tier package update that keeps the connector's id but moves the credential into a query string cannot move a stored credential with it: the stored placement is compared at resolution and a mismatch is refused by name.
+
 ## The credential tier walk
 
 `walkCredentialPlan` enumerates seven tiers in a fixed order. These seven are the plan's own; what a run is stamped with is the five of `runs.credential_tiers`.
@@ -327,6 +358,7 @@ flowchart TD
 | collection | package | document struct | tenant field (values) | unique / TTL indexes | twin |
 |---|---|---|---|---|---|
 | `api_keys` | `pkg/secrets` | `ApiKey` | `tenant_id`: team \| `orgtier:<org>` \| `platform:` | none unique; no TTL | none (cloud-only) |
+| `connections` | `pkg/connection` | `mongoDoc` (`Connection` + derived `alias_norm`) | `tenant_id`: team | `tenant_connector_alias` unique on `(tenant_id, connector, alias_norm)`; no TTL | `file connections.json` — the memory twin checks aliases under a lock the Mongo twin replaces with the unique index |
 | `oauth_credentials` | `pkg/secrets` | `OAuthRecord` | none — `user_id` namespace: user \| `org:<team>` \| `orgtier:<org>` \| `platform:` | `user_id+kind+rank` unique; no TTL | none (cloud-only) |
 | `oauth_pending` | `pkg/secrets` | `OAuthPending` | none — `owner_key` namespace | `owner_key+kind` unique; TTL `expires_at` (10 min) | none (cloud-only) |
 | `generic_secrets` | `pkg/secrets` | `GenericSecret` | `tenant_id`: team (empty in the file store, which pins `scope_team: local`) | none unique; no TTL | `file secrets.json` — the file and memory twins keep no order among duplicate names |
