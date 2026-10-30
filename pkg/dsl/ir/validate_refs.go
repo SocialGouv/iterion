@@ -386,36 +386,59 @@ func refFromExpr(r expr.Ref) *Ref {
 	}
 }
 
-// buildPredecessors computes, for each node, the set of all nodes that
-// can execute before it (i.e. whose outputs are available). This follows
-// ALL edges (including conditional and loop back-edges) to ensure zero
-// false positives.
-func buildPredecessors(w *Workflow) map[string]map[string]bool {
-	// Build reverse adjacency list.
-	revAdj := make(map[string][]string)
-	for _, e := range w.Edges {
-		revAdj[e.To] = append(revAdj[e.To], e.From)
-	}
+// predecessorIndex answers "which nodes can execute before X" on demand.
+// Materialising every node's transitive predecessor set is quadratic in the
+// node count (2.0 GB at 8 000 nodes, OOM at 16 000 — #2776), so the sets are
+// computed per consumer that actually queries reachability and memoised: a
+// workflow whose caps and references never ask pays the reverse-adjacency
+// build alone, which is linear. The sets themselves follow ALL edges
+// (including conditional and loop back-edges) to ensure zero false positives.
+type predecessorIndex struct {
+	revAdj map[string][]string
+	// loopTargets are the targets of loop back-edges: such a node is
+	// effectively its own predecessor because a prior iteration's output is
+	// available on re-entry.
+	loopTargets map[string]bool
+	known       map[string]bool
+	memo        map[string]map[string]bool
+}
 
-	// Identify nodes that are targets of loop back-edges.
-	// These nodes are effectively their own predecessors because
-	// a prior iteration's output is available on re-entry.
-	loopTargets := make(map[string]bool)
+func newPredecessorIndex(w *Workflow) *predecessorIndex {
+	p := &predecessorIndex{
+		revAdj:      make(map[string][]string),
+		loopTargets: make(map[string]bool),
+		known:       make(map[string]bool, len(w.Nodes)),
+		memo:        make(map[string]map[string]bool),
+	}
 	for _, e := range w.Edges {
+		p.revAdj[e.To] = append(p.revAdj[e.To], e.From)
 		if e.LoopName != "" {
-			loopTargets[e.To] = true
+			p.loopTargets[e.To] = true
 		}
 	}
-
-	result := make(map[string]map[string]bool)
 	for id := range w.Nodes {
-		preds := computePredecessors(id, revAdj)
-		if loopTargets[id] {
-			preds[id] = true
-		}
-		result[id] = preds
+		p.known[id] = true
 	}
-	return result
+	return p
+}
+
+// sets returns the transitive predecessor set of nodeID, computing it once
+// per queried node. ok is false when nodeID is not a node of the workflow:
+// the caller then skips the reachability check, as the materialised map did
+// when it carried no entry.
+func (p *predecessorIndex) sets(nodeID string) (map[string]bool, bool) {
+	if !p.known[nodeID] {
+		return nil, false
+	}
+	preds, ok := p.memo[nodeID]
+	if !ok {
+		preds = computePredecessors(nodeID, p.revAdj)
+		if p.loopTargets[nodeID] {
+			preds[nodeID] = true
+		}
+		p.memo[nodeID] = preds
+	}
+	return preds, true
 }
 
 // computePredecessors returns all transitive predecessors of nodeID via
@@ -629,7 +652,7 @@ func (c *compiler) validateTemplateRefs(w *Workflow) {
 		return
 	}
 
-	predecessors := buildPredecessors(w)
+	predecessors := newPredecessorIndex(w)
 	artifactProducers := buildArtifactProducers(w)
 
 	// The references of one prompt stand consecutive in refs, one per reader
@@ -917,7 +940,7 @@ func (c *compiler) validateAttachmentsRef(w *Workflow, rc refContext) {
 	}
 }
 
-func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors map[string]map[string]bool) {
+func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors *predecessorIndex) {
 	if len(rc.Ref.Path) == 0 {
 		return
 	}
@@ -1400,7 +1423,7 @@ func routerPassThroughKeys(w *Workflow, r *RouterNode) map[string]bool {
 	return keys
 }
 
-func (c *compiler) validateArtifactsRef(w *Workflow, rc refContext, predecessors map[string]map[string]bool, producers map[string]string) {
+func (c *compiler) validateArtifactsRef(w *Workflow, rc refContext, predecessors *predecessorIndex, producers map[string]string) {
 	if len(rc.Ref.Path) == 0 {
 		return
 	}
@@ -1424,12 +1447,12 @@ func (c *compiler) validateArtifactsRef(w *Workflow, rc refContext, predecessors
 }
 
 // checkReachable reports whether targetID is reachable from rc.NodeID's
-// predecessor set. When predecessors has no entry for rc.NodeID (reachability
-// wasn't computed for it), the check is skipped and this returns true — the
+// predecessor set. When the index does not know rc.NodeID (it is not a node
+// of the workflow), the check is skipped and this returns true — the
 // caller then does not error. For edge with-mappings, the source node itself
 // has finished, so it and its predecessors are all available (IncludeSelf).
-func checkReachable(rc refContext, predecessors map[string]map[string]bool, targetID string) bool {
-	preds, ok := predecessors[rc.NodeID]
+func checkReachable(rc refContext, predecessors *predecessorIndex, targetID string) bool {
+	preds, ok := predecessors.sets(rc.NodeID)
 	if !ok {
 		return true
 	}

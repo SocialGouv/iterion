@@ -54,7 +54,11 @@ func (c *compiler) compileLoopCap(loop *Loop, edge *ast.Edge) {
 }
 
 func (c *compiler) validateLoopCapExpressions(w *Workflow) {
-	predecessors := buildPredecessors(w)
+	// The reachability check pays a reverse-BFS per consumer that asks; the
+	// common case — no loop carries an expression cap — must pay nothing, so
+	// the predecessor index is built only where a cap references outputs
+	// (#2776: materialising it unconditionally was quadratic in node count).
+	var predecessors *predecessorIndex
 	for _, edge := range w.Edges {
 		loop := w.Loops[edge.LoopName]
 		if loop == nil || loop.MaxIterationsExpr == "" || c.capRefused[edge] {
@@ -91,6 +95,9 @@ func (c *compiler) validateLoopCapExpressions(w *Workflow) {
 			case RefVars:
 				c.validateVarsRef(w, rc)
 			case RefOutputs:
+				if predecessors == nil {
+					predecessors = newPredecessorIndex(w)
+				}
 				c.validateOutputsRef(w, rc, predecessors)
 			default:
 				c.refErrorf(rc, DiagBadTemplateRef, "%s: a cap must reference vars or outputs", loc)
