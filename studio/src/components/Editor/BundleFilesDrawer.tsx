@@ -44,11 +44,14 @@ const samePair = (a: { teamID: string; slug: string }, b: { teamID: string; slug
   a.teamID === b.teamID && a.slug === b.slug;
 
 // BundleFilesDrawer is the multi-file editor for a team-authored bot bundle.
-// The bundle's main.bot is the DSL workflow — clicking it focuses/opens the
-// Canvas editor tab (the single owner of .bot rendering). Every other file
-// (skills/*.md, manifest.yaml, prompts/…) is plain text edited inline in a
-// Monaco buffer and saved per-file to the bot-source store. New files (a fresh
-// skill) can be added, and non-main files removed.
+// Every .bot file — the main, a fragment, a companion workflow — opens in the
+// Canvas editor under its own botsource:// path: the canvas loads THAT file as
+// its unit, parse diagnostics included, not always the bundle's main (#1650).
+// Each keeps an "Edit as text" lane here: the canvas opens a file that does
+// not parse salvaged, so the raw text is the repair surface (#1659). Every
+// other file (skills/*.md, manifest.yaml, prompts/…) is plain text edited
+// inline in a Monaco buffer and saved per-file to the bot-source store. New
+// files (a fresh skill) can be added, and non-main files removed.
 //
 // This buffer belongs to "would this take the author's work?" and is one of
 // the members the document store cannot answer for: it is keyed by the bot
@@ -336,8 +339,12 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
     });
   }, [bundle]);
 
-  const openMainBot = () => {
-    const file = botSourceEditorPath(shown.teamID, shown.slug, MAIN_BOT);
+  // One canvas route per workflow file (#1650): the editor path names the
+  // file itself, and the canvas loads THAT file as its unit — a fragment or
+  // a companion workflow opens as its own document, its parse diagnostics
+  // included, not always the bundle's main.
+  const openInCanvas = (rel: string) => {
+    const file = botSourceEditorPath(shown.teamID, shown.slug, rel);
     useTabsStore.getState().openTab("editor", { file });
     setLocation(`/editor?file=${encodeURIComponent(file)}`);
     handleOpenChange(false);
@@ -649,6 +656,7 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
             </button>
             {paths.map((rel) => {
               const isMain = rel === MAIN_BOT;
+              const isWorkflow = isWorkflowFile(rel);
               return (
                 <div
                   key={rel}
@@ -674,31 +682,38 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
                   <FileIcon className="h-3.5 w-3.5 shrink-0 text-fg-subtle" />
                   <button
                     type="button"
-                    onClick={() => (isMain ? openMainBot() : openFileForEdit(rel))}
+                    onClick={() => (isWorkflow ? openInCanvas(rel) : openFileForEdit(rel))}
                     className="min-w-0 flex-1 truncate text-left text-sm text-fg-default hover:text-accent-text"
-                    title={isMain ? "Open the workflow in the Canvas editor" : `Edit ${rel}`}
+                    title={
+                      isWorkflow
+                        ? isMain
+                          ? "Open the workflow in the Canvas editor"
+                          : `Open ${rel} in the Canvas editor`
+                        : `Edit ${rel}`
+                    }
                   >
                     {rel}
                     {isMain && <span className="ml-2 text-caption text-fg-subtle">workflow</span>}
                   </button>
-                  {isMain ? (
-                    // The canvas is the main's editor, but it REFUSES a main
-                    // that does not parse: the document is then the file
-                    // minus the region the parser could not read, and every
-                    // write site turns it down. On the local twin an author
-                    // repairs the file where it lives; on the cloud twin the
-                    // bundle's files live here, so this is the only surface
-                    // that can, and routing the row to the canvas alone left
-                    // a stored bot unrepairable from the studio (#1659).
+                  {isWorkflow && (
+                    // The canvas opens every .bot of the bundle, but it opens
+                    // a file that does not parse SALVAGED — the document minus
+                    // the region the parser could not read — and every write
+                    // site turns that down. On the local twin an author repairs
+                    // the file where it lives; on the cloud twin the bundle's
+                    // files live here, so this raw lane is the only surface
+                    // that can (#1659 — the main then, any .bot now).
                     <button
                       type="button"
+                      aria-label={`Edit ${rel} as text`}
                       onClick={() => openFileForEdit(rel)}
                       className="shrink-0 rounded px-1.5 py-0.5 text-caption text-accent-text opacity-0 transition-opacity hover:bg-surface-2 group-hover:opacity-100"
-                      title={`Edit ${rel} as text — the way to repair a main the canvas cannot open`}
+                      title={`Edit ${rel} as text — the way to repair a file the canvas cannot open`}
                     >
                       Edit as text
                     </button>
-                  ) : (
+                  )}
+                  {!isMain && (
                     <button
                       type="button"
                       onClick={() => void onDelete(rel)}

@@ -100,6 +100,7 @@ vi.mock("@/components/ui/InlineBanner", async (importOriginal) => {
 
 import BundleFilesDrawer from "./BundleFilesDrawer";
 import { useEditBuffersStore } from "@/store/editBuffers";
+import { useTabsStore } from "@/store/tabs";
 import { useUIStore } from "@/store/ui";
 import { onAssistantAttachRequest } from "@/lib/chatDock/attachToAssistant";
 import type { TypedReference } from "@/lib/chatDock/routeReference";
@@ -175,6 +176,15 @@ async function openForEdit(rel: string) {
   open();
   const row = await screen.findByRole("button", { name: rel });
   fireEvent.click(row);
+  return screen.getByLabelText("file") as HTMLTextAreaElement;
+}
+
+// The inline lane of a .bot file: the row itself routes to the canvas
+// (#1650), the text editor is the "Edit as text" affordance beside it.
+async function openAsText(rel: string) {
+  open();
+  await screen.findByRole("button", { name: rel });
+  fireEvent.click(screen.getByRole("button", { name: `Edit ${rel} as text` }));
   return screen.getByLabelText("file") as HTMLTextAreaElement;
 }
 
@@ -300,7 +310,7 @@ describe("BundleFilesDrawer on a refused write", () => {
 
 describe("BundleFilesDrawer editor language", () => {
   it("gives a .bot fragment iterion's own DSL, not plain text", async () => {
-    const buffer = await openForEdit("lib/nodes.bot");
+    const buffer = await openAsText("lib/nodes.bot");
     expect(buffer.getAttribute("data-language")).toBe("iter");
   });
 
@@ -325,7 +335,7 @@ describe("BundleFilesDrawer and the bundle's main", () => {
       <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
     );
     await screen.findByTitle("Open the workflow in the Canvas editor");
-    fireEvent.click(screen.getByRole("button", { name: "Edit as text" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit main.bot as text" }));
 
     const buffer = screen.getByLabelText("file") as HTMLTextAreaElement;
     expect(buffer.value).toBe("workflow w:\n  entry: a\n  a -> !!! broken\n");
@@ -336,7 +346,7 @@ describe("BundleFilesDrawer and the bundle's main", () => {
     botSources.putBotSourceFile.mockResolvedValue({ ...BUNDLE, version: 8 });
     open();
     await screen.findByTitle("Open the workflow in the Canvas editor");
-    fireEvent.click(screen.getByRole("button", { name: "Edit as text" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit main.bot as text" }));
     fireEvent.change(screen.getByLabelText("file"), {
       target: { value: "workflow w:\n  entry: a\n  a -> done\n" },
     });
@@ -359,14 +369,52 @@ describe("BundleFilesDrawer and the bundle's main", () => {
     const row = await screen.findByTitle("Open the workflow in the Canvas editor");
     expect(row.textContent).toContain("main.bot");
     fireEvent.click(row);
-    // The row still jumps to the canvas: no inline buffer opens from it.
+    // The row still jumps to the canvas: no inline buffer opens from it, and
+    // the tab it opens names the main's own path.
     expect(screen.queryByLabelText("file")).toBeNull();
+    expect(
+      useTabsStore.getState().tabs.some((t) => t.params.file === "botsource://team-1/demo/main.bot"),
+    ).toBe(true);
   });
 
   it("offers no delete for the main, which is the bundle entry", async () => {
     open();
     await screen.findByTitle("Open the workflow in the Canvas editor");
     expect(screen.queryByTitle("Delete main.bot")).toBeNull();
+  });
+});
+
+describe("BundleFilesDrawer and a .bot fragment", () => {
+  it("opens the canvas for the fragment itself, not always the main (#1650)", async () => {
+    open();
+    const row = await screen.findByRole("button", { name: "lib/nodes.bot" });
+    fireEvent.click(row);
+    // One canvas route per workflow file: the tab names the fragment's own
+    // path, and no inline buffer opens from the row.
+    expect(screen.queryByLabelText("file")).toBeNull();
+    expect(
+      useTabsStore.getState().tabs.some((t) => t.params.file === "botsource://team-1/demo/lib/nodes.bot"),
+    ).toBe(true);
+  });
+
+  it("keeps a text lane on the fragment — the repair surface a broken parse needs", async () => {
+    open();
+    await screen.findByRole("button", { name: "lib/nodes.bot" });
+    fireEvent.click(screen.getByRole("button", { name: "Edit lib/nodes.bot as text" }));
+    const buffer = screen.getByLabelText("file") as HTMLTextAreaElement;
+    expect(buffer.value).toBe("dsl: 2\n\ntool a:\n  command: \"true\"\n");
+    expect(buffer.getAttribute("data-language")).toBe("iter");
+  });
+
+  it("still offers delete on a fragment, which is not the bundle entry", async () => {
+    open();
+    await screen.findByRole("button", { name: "lib/nodes.bot" });
+    expect(screen.getByTitle("Delete lib/nodes.bot")).toBeTruthy();
+  });
+
+  it("routes a non-workflow file to the inline editor, as before", async () => {
+    const buffer = await openForEdit("skills/notes.md");
+    expect(buffer.value).toBe("# notes\n");
   });
 });
 
@@ -875,7 +923,7 @@ describe("BundleFilesDrawer's answers that land after it moved", () => {
     view.rerender(
       <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
     );
-    fireEvent.click(await screen.findByRole("button", { name: "lib/nodes.bot" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit lib/nodes.bot as text" }));
     fireEvent.change(screen.getByLabelText("file"), { target: { value: "typed in nodes\n" } });
 
     await act(async () =>
@@ -906,7 +954,7 @@ describe("BundleFilesDrawer's answers that land after it moved", () => {
     view.rerender(
       <BundleFilesDrawer teamID="team-1" slug="demo" open onOpenChange={() => {}} />,
     );
-    fireEvent.click(await screen.findByRole("button", { name: "lib/nodes.bot" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit lib/nodes.bot as text" }));
 
     await act(async () => put.resolve({ ...BUNDLE, version: 8 }));
     // Untouched, so leaving it asks nothing.
