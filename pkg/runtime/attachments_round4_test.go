@@ -103,30 +103,36 @@ func TestADeadlineCuttingTheFetchCarriesNoStoreCode(t *testing.T) {
 // the returned error alike — so the redelivery never resumes the run the
 // operator cancelled. Under a live ctx the sentinel keeps its own reading.
 func TestTheCancelWinsOverTheSetupSentinels(t *testing.T) {
-	e := &Engine{}
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
 	for _, sentinel := range []error{sandbox.ErrPhaseTimeout, sandbox.ErrCapacity} {
 		cause := fmt.Errorf("runtime: sandbox: %w", errors.Join(sentinel, errors.New("in-pod tar extract: signal: killed")))
-		if err := e.setupErr(cancelled, cause); !errors.Is(err, ErrRunCancelled) || errors.Is(err, sentinel) {
+		st, _, code := setupFailureStatus(cancelled, "sandbox start", cause)
+		if st != store.RunStatusCancelled || code != store.FailureCancelled {
+			t.Fatalf("%v under a cancel: status %s / %s, want cancelled", sentinel, st, code)
+		}
+		if err := setupErrFrom(st, code, cause); !errors.Is(err, ErrRunCancelled) || errors.Is(err, sentinel) {
 			t.Fatalf("%v under a cancel: err = %v, want the cancel alone", sentinel, err)
 		}
-		if status, _, code := setupFailureStatus(cancelled, "sandbox start", cause); status != store.RunStatusCancelled || code != store.FailureCancelled {
-			t.Fatalf("%v under a cancel: status %s / %s, want cancelled", sentinel, status, code)
+		st, _, code = setupFailureStatus(context.Background(), "sandbox start", cause)
+		if st != store.RunStatusFailedResumable {
+			t.Fatalf("%v under a live ctx: status %s, want failed_resumable", sentinel, st)
 		}
-		if err := e.setupErr(context.Background(), cause); !errors.Is(err, sentinel) || errors.Is(err, ErrRunCancelled) {
+		if err := setupErrFrom(st, code, cause); !errors.Is(err, sentinel) || errors.Is(err, ErrRunCancelled) {
 			t.Fatalf("%v under a live ctx: err = %v, want the sentinel kept", sentinel, err)
-		}
-		if status, _, _ := setupFailureStatus(context.Background(), "sandbox start", cause); status != store.RunStatusFailedResumable {
-			t.Fatalf("%v under a live ctx: status %s, want failed_resumable", sentinel, status)
 		}
 		drained, drain := context.WithCancelCause(context.Background())
 		drain(ErrRunInterrupted)
-		if err := e.setupErr(drained, cause); !errors.Is(err, ErrRunInterrupted) {
-			t.Fatalf("%v under a drain: err = %v, want ErrRunInterrupted", sentinel, err)
+		st, _, code = setupFailureStatus(drained, "sandbox start", cause)
+		if st != store.RunStatusFailedResumable {
+			t.Fatalf("%v under a drain: status %s, want failed_resumable", sentinel, st)
 		}
-		if status, _, _ := setupFailureStatus(drained, "sandbox start", cause); status != store.RunStatusFailedResumable {
-			t.Fatalf("%v under a drain: status %s, want failed_resumable", sentinel, status)
+		// One decision for the record and the return (#2862): the sentinel
+		// arm reads the cause before the ctx, so the drain's own marker does
+		// not replace it — the runner re-offers under the sentinel, on its
+		// delay and under the DLQ park, exactly as the record says.
+		if err := setupErrFrom(st, code, cause); !errors.Is(err, sentinel) || errors.Is(err, ErrRunInterrupted) {
+			t.Fatalf("%v under a drain: err = %v, want the sentinel alone", sentinel, err)
 		}
 	}
 }

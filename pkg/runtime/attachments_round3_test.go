@@ -73,11 +73,11 @@ func TestTheImageBlockRuleIsTheExecutors(t *testing.T) {
 // cancel — the typed code it would otherwise carry (and be re-offered
 // under) does not ride along.
 func TestASetupFailureUnderACancelIsTheCancel(t *testing.T) {
-	e := &Engine{}
 	cause := attachmentsUnfetchable("run-x", "fetch attachment spec", context.Canceled)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := e.setupErr(ctx, cause)
+	st, _, code := setupFailureStatus(ctx, "sandbox start", cause)
+	err := setupErrFrom(st, code, cause)
 	if !errors.Is(err, ErrRunCancelled) {
 		t.Fatalf("err = %v, want it to wrap ErrRunCancelled", err)
 	}
@@ -85,7 +85,8 @@ func TestASetupFailureUnderACancelIsTheCancel(t *testing.T) {
 	if errors.As(err, &rt) {
 		t.Fatalf("the typed failure %s still rides the cancel: a runner keyed on it would re-offer a cancelled run", rt.Code)
 	}
-	if live := e.setupErr(context.Background(), cause); !errors.As(live, &rt) || rt.Code != ErrCodeAttachmentsUnfetchable {
+	st, _, code = setupFailureStatus(context.Background(), "sandbox start", cause)
+	if live := setupErrFrom(st, code, cause); !errors.As(live, &rt) || rt.Code != ErrCodeAttachmentsUnfetchable {
 		t.Fatalf("under a live context the typed failure must ride as is: %v", live)
 	}
 }

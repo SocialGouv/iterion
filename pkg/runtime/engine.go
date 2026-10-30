@@ -684,7 +684,15 @@ type resumeBackendState struct {
 // classifies both (handleContextDoneWithCheckpoint); this is that
 // classification, minus the checkpoint, which no node has yet earned —
 // resume then restarts from the entry, which it is built to do.
-func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, cause error) {
+//
+// It RETURNS the (status, code) it decided: the caller maps that one
+// decision to the error it hands the runner (setupErrFrom), so the record
+// and the return can never be two different reads of a racing context
+// (#2862). When the compare-and-set declined — a peer recorded its own
+// outcome first, nominally the publisher's cancel — the returned decision
+// is the DOCUMENT's, re-read: the returned error must agree with what the
+// run actually says, not with this attempt's losing read.
+func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, cause error) (store.RunStatus, store.FailureCode) {
 	writeCtx := context.WithoutCancel(ctx)
 	status, msg, code := setupFailureStatus(ctx, phase, cause)
 	remedy := setupFailureRemedy(cause, code)
@@ -700,33 +708,40 @@ func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, 
 				// declined CAS means a peer got there first with its own
 				// reason, and a second event would contradict the document.
 				e.emitSetupFailure(writeCtx, runID, phase, status, msg, code, remedy)
+				return status, code
 			}
-			return
+			if cur, lerr := e.store.LoadRun(writeCtx, runID); lerr == nil && cur != nil {
+				return cur.Status, cur.FailureCode
+			}
+			return status, code
 		}
 	}
 	if e.logger != nil {
 		e.logger.Warn("runtime: failed to record run %s as %s during %s after 3 attempts: %v (original cause: %v — the run stays running until the orphan reconcile catches it)", runID, status, phase, err, cause)
 	}
+	return status, code
 }
 
 // recordSetupOutcome writes the setup phase's verdict on the run and reports
 // whether THIS call is the one that recorded it.
 //
-// A CANCELLED outcome is compare-and-set from `running`, like the resume
-// arm's: in cloud the publisher CASes the doc to `cancelled` with the
-// operator's own reason BEFORE the cancel subject reaches the engine, and an
-// unconditional write here replaced that reason with a generic "sandbox
-// start cancelled before the first node" — which is then what the run list,
-// the board card and the merge gate's synthetic status display. A decline is
-// the nominal shape, not an error, so it reports changed=false and the
-// caller stays quiet.
+// A CANCELLED or FAILED_RESUMABLE outcome — IsTerminalResumable's set, the
+// outcomes a peer may record first — is compare-and-set from `running`,
+// like the resume arm's: in cloud the publisher CASes the doc to
+// `cancelled` with the operator's own reason BEFORE the cancel subject
+// reaches the engine, and an unconditional write here replaced that reason
+// with a generic "sandbox start cancelled before the first node" — or, one
+// race later, stranded the run `failed_resumable` over the cancelled
+// document while the returned error already read as the cancel (#2862).
+// A decline is the nominal shape, not an error, so it reports changed=false
+// and the caller stays quiet.
 //
-// Every other outcome stays an unconditional write: the run is `running` and
-// owned by this engine, nothing competes for it, and the 3-attempt retry
-// above exists precisely because the store may be the thing that just
+// A plain FAILED outcome stays an unconditional write: the run is `running`
+// and owned by this engine, nothing competes for it, and the 3-attempt
+// retry above exists precisely because the store may be the thing that just
 // failed.
 func (e *Engine) recordSetupOutcome(ctx context.Context, runID string, status store.RunStatus, msg string, code store.FailureCode) (bool, error) {
-	if status == store.RunStatusCancelled {
+	if status.IsTerminalResumable() {
 		return e.recordFailureStatusIf(ctx, runID, status, msg, code,
 			[]store.RunStatus{store.RunStatusRunning})
 	}
@@ -864,34 +879,49 @@ func setupFailureCode(cause error) store.FailureCode {
 	return ""
 }
 
-// setupErr decorates the error a setup phase returns so an interruption
-// stays recognisable to the runner: it NAKs on ErrRunInterrupted (the run
-// is redelivered to a healthy pod) and ACKs on anything else. Without it
-// the status written above would say resumable while the queue had
-// already dropped the run — the two halves have to agree.
+// setupErrFrom maps the ONE decision markFailedBestEffort recorded to the
+// error returned to the runner, so the record and the return can never be
+// two different reads of a racing context (#2862): previously setupErr
+// re-read the ctx after the record was written, and a cancel, a drain or
+// the run's deadline landing between the two reads made them disagree — a
+// terminal record re-offered by the runner, a cancelled run stranded
+// failed_resumable.
 //
-// A sandbox phase timeout and an unplaced sandbox are NOT dressed up as
-// an interruption: each keeps its own sentinel (sandbox.ErrPhaseTimeout /
-// sandbox.ErrCapacity, wrapped through by the driver), and the runner's
-// ack policy classifies those shapes itself — a NAK for redelivery, with
-// the DLQ park still applying on the last permitted delivery, which an
-// interruption is exempt from.
+// The mapping, by the DECIDED (status, code) — the runner NAKs on
+// ErrRunInterrupted (the run is redelivered to a healthy pod) and on the
+// two sandbox sentinels / the unfetchable code (a delayed re-offer the
+// DLQ park still bounds), and ACKs on anything else:
 //
-// The order, checked against the run ctx: a drain (ErrRunInterrupted, the
-// runner re-offers), then an operator's cancel (ErrRunCancelled, wrapped
-// with %v so the failure's own typed code does not ride along and the
-// runner acks the run setupFailureStatus recorded cancelled), then the two
-// setup sentinels, which keep their own (the runner re-offers after its
-// delay). A setup site that returns without this decoration (a resource
-// writer's wait, for one) keeps the runner's generic reading.
-func (e *Engine) setupErr(ctx context.Context, err error) error {
-	if ctx != nil && ctx.Err() != nil && errors.Is(context.Cause(ctx), ErrRunInterrupted) {
-		return fmt.Errorf("%w: %v", ErrRunInterrupted, err)
-	}
-	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
+//   - cancelled → ErrRunCancelled, wrapped with %v so the failure's own
+//     typed code does not ride along: the runner acks the cancelled run.
+//   - failed_resumable + INTERRUPTED (a drain) → ErrRunInterrupted.
+//   - failed_resumable otherwise (a sandbox phase timeout, an unplaced
+//     pod, unfetchable attachments) → the error as passed: its sentinel
+//     (sandbox.ErrPhaseTimeout / sandbox.ErrCapacity) or typed code IS the
+//     runner's re-offer signal, and the record agrees — resumable.
+//   - terminal failed → the error as passed, minus the one re-offer
+//     signal a terminal decision can carry: ATTACHMENTS_UNFETCHABLE, typed
+//     by fetchFailure under a live ctx the deadline then took. On a
+//     terminal record that code must not reach the runner — it would
+//     re-offer a finished run — so the code is stripped while the message
+//     stays intact.
+//
+// A setup site that returns without this mapping keeps the runner's
+// generic reading.
+func setupErrFrom(status store.RunStatus, code store.FailureCode, err error) error {
+	switch {
+	case status == store.RunStatusCancelled:
 		return fmt.Errorf("%w: %v", ErrRunCancelled, err)
+	case status == store.RunStatusFailedResumable && code == store.FailureInterrupted:
+		return fmt.Errorf("%w: %v", ErrRunInterrupted, err)
+	case status == store.RunStatusFailedResumable:
+		return err
+	default:
+		if code == store.FailureAttachmentsUnfetchable || setupFailureCode(err) == store.FailureAttachmentsUnfetchable {
+			return errors.New(err.Error())
+		}
+		return err
 	}
-	return err
 }
 
 // newRunState builds a runState with all maps allocated. Resume paths

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -98,31 +99,30 @@ func TestSetupFailureStatus_CapacityIsResumable(t *testing.T) {
 // sentinel itself, so a capacity failure that lost it would be ACKed and
 // dropped by the queue while the run record claims it is resumable.
 func TestSetupErr_CapacityKeepsItsOwnSentinel(t *testing.T) {
-	e := &Engine{}
 	capacity := fmt.Errorf("runtime: sandbox: %w",
 		errors.Join(sandbox.ErrCapacity, errors.New("unschedulable")))
-	err := e.setupErr(context.Background(), capacity)
+	err := setupErrFrom(store.RunStatusFailedResumable, store.FailureSandboxCapacity, capacity)
 	if !errors.Is(err, sandbox.ErrCapacity) {
-		t.Fatalf("capacity identity lost after setupErr; got %v", err)
+		t.Fatalf("capacity identity lost after setupErrFrom; got %v", err)
 	}
 	if errors.Is(err, ErrRunInterrupted) {
 		t.Fatalf("capacity was dressed up as an interruption: %v — the runner would exempt it from the DLQ park", err)
 	}
 }
 
-// setupErr hands the phase timeout to the runner under its OWN sentinel:
-// the runner's ack policy classifies sandbox.ErrPhaseTimeout itself. It
-// must not be dressed up as ErrRunInterrupted — an interruption is exempt
-// from the DLQ park, so a stall repeating through every permitted
-// delivery would nak into nothing instead of parking and being announced.
+// setupErrFrom hands the phase timeout to the runner under its OWN
+// sentinel: the runner's ack policy classifies sandbox.ErrPhaseTimeout
+// itself. It must not be dressed up as ErrRunInterrupted — an interruption
+// is exempt from the DLQ park, so a stall repeating through every
+// permitted delivery would nak into nothing instead of parking and being
+// announced.
 func TestSetupErr_PhaseTimeoutKeepsItsOwnSentinel(t *testing.T) {
-	e := &Engine{}
 	inner := errors.New("stalled")
 	phaseTimeout := fmt.Errorf("kubernetes: workspace copy phase timed out: %w",
 		errors.Join(sandbox.ErrPhaseTimeout, context.DeadlineExceeded, inner))
-	err := e.setupErr(context.Background(), phaseTimeout)
+	err := setupErrFrom(store.RunStatusFailedResumable, store.FailureSandboxSetupTimeout, phaseTimeout)
 	if !errors.Is(err, sandbox.ErrPhaseTimeout) {
-		t.Fatalf("phase-timeout identity lost after setupErr; got %v", err)
+		t.Fatalf("phase-timeout identity lost after setupErrFrom; got %v", err)
 	}
 	if errors.Is(err, ErrRunInterrupted) {
 		t.Fatalf("phase-timeout was dressed up as an interruption: %v — the runner would exempt it from the DLQ park", err)
@@ -134,15 +134,12 @@ func TestSetupErr_PhaseTimeoutKeepsItsOwnSentinel(t *testing.T) {
 // run recorded resumable whose error lost the marker would be dropped by the
 // queue and never come back.
 func TestSetupErr_KeepsTheInterruptionMarker(t *testing.T) {
-	e := &Engine{}
 	inner := errors.New("worktree half-written")
 
-	drained, cancel := context.WithCancelCause(context.Background())
-	cancel(ErrRunInterrupted)
-	if err := e.setupErr(drained, inner); !errors.Is(err, ErrRunInterrupted) {
+	if err := setupErrFrom(store.RunStatusFailedResumable, store.FailureInterrupted, inner); !errors.Is(err, ErrRunInterrupted) {
 		t.Fatalf("a drained setup must stay recognisable to the runner, got %v", err)
 	}
-	if err := e.setupErr(context.Background(), inner); errors.Is(err, ErrRunInterrupted) {
+	if err := setupErrFrom(store.RunStatusFailed, "", inner); errors.Is(err, ErrRunInterrupted) {
 		t.Fatalf("an ordinary setup error must not claim an interruption: %v", err)
 	}
 }
@@ -174,5 +171,98 @@ func TestEngineRun_SetupDrainLeavesTheRunResumable(t *testing.T) {
 	}
 	if run.Status != store.RunStatusFailedResumable {
 		t.Fatalf("status = %q, want failed_resumable (a drain is not a workflow failure)", run.Status)
+	}
+}
+
+// #2862 — one decision for the recorded status and the returned error.
+
+// Scenario A: fetchFailure typed the unfetchable error under a LIVE ctx,
+// then the run's deadline fired before the record was written. The record
+// reads terminal failed; the typed re-offer must not ride the returned
+// error — the runner would re-offer a finished run after its two-minute
+// delay. The message survives the strip.
+func TestSetupErrFrom_TerminalRecordDropsTheReoffer(t *testing.T) {
+	deadlined, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	cause := attachmentsUnfetchable("run-x", "fetch attachment spec", errors.New("the bucket is unreachable"))
+
+	st, _, code := setupFailureStatus(deadlined, "sandbox start", cause)
+	if st != store.RunStatusFailed || code != store.FailureAttachmentsUnfetchable {
+		t.Fatalf("decision = %s / %s, want failed / %s", st, code, store.FailureAttachmentsUnfetchable)
+	}
+	mapped := setupErrFrom(st, code, fmt.Errorf("runtime: sandbox: %w", cause))
+	var rt *RuntimeError
+	if errors.As(mapped, &rt) {
+		t.Fatalf("the typed re-offer %s rides a terminal record: the runner would re-offer a finished run", rt.Code)
+	}
+	if !strings.Contains(mapped.Error(), "the bucket is unreachable") {
+		t.Fatalf("the cause's message is lost: %v", mapped)
+	}
+	// A terminal decision over a plain error changes nothing.
+	plain := errors.New("worktree half-written")
+	if got := setupErrFrom(store.RunStatusFailed, "", plain); !errors.Is(got, plain) {
+		t.Fatalf("a plain terminal error must pass through unchanged, got %v", got)
+	}
+}
+
+// The decision markFailedBestEffort returns is the one it recorded: the
+// caller maps THAT to the returned error, so the pair cannot drift.
+func TestMarkFailedBestEffort_ReturnsTheRecordedDecision(t *testing.T) {
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-one-decision"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	e := New(devboxTestWorkflow(), s, newStubExecutor(), WithLogger(iterlog.Nop()))
+	st, code := e.markFailedBestEffort(ctx, runID, "sandbox start", capacityStartError())
+	if st != store.RunStatusFailedResumable || code != store.FailureSandboxCapacity {
+		t.Fatalf("decision = %s / %s, want failed_resumable / %s", st, code, store.FailureSandboxCapacity)
+	}
+	run, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != st || run.FailureCode != code {
+		t.Fatalf("the record reads %s / %s, the decision returned %s / %s", run.Status, run.FailureCode, st, code)
+	}
+	if err := setupErrFrom(st, code, capacityStartError()); !errors.Is(err, sandbox.ErrCapacity) {
+		t.Fatalf("the sentinel the runner re-offers under is lost: %v", err)
+	}
+}
+
+// Scenario B: the operator's cancel lands between the decision's read and
+// the write — in cloud the publisher has already CASed the doc to
+// `cancelled` with the operator's own reason. The resumable write is a
+// compare-and-set from `running`, so it declines; the returned decision is
+// the DOCUMENT's, and the returned error reads as the cancel, not as the
+// re-offer the losing read had decided.
+func TestMarkFailedBestEffort_ResumableWriteLosesToAPublishersCancel(t *testing.T) {
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-cancelled-mid-write"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateRunStatusCoded(ctx, runID, store.RunStatusCancelled, "operator: stop it", store.FailureCancelled); err != nil {
+		t.Fatal(err)
+	}
+	e := New(devboxTestWorkflow(), s, newStubExecutor(), WithLogger(iterlog.Nop()))
+	// The launch-side read happened under a live ctx: failed_resumable +
+	// SANDBOX_CAPACITY was this attempt's decision — and it lost.
+	st, code := e.markFailedBestEffort(ctx, runID, "sandbox start", capacityStartError())
+	if st != store.RunStatusCancelled || code != store.FailureCancelled {
+		t.Fatalf("decision = %s / %s, want the document's cancelled", st, code)
+	}
+	run, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != store.RunStatusCancelled || run.Error != "operator: stop it" {
+		t.Fatalf("the publisher's record was clobbered: %s / %q", run.Status, run.Error)
+	}
+	mapped := setupErrFrom(st, code, capacityStartError())
+	if !errors.Is(mapped, ErrRunCancelled) || errors.Is(mapped, sandbox.ErrCapacity) {
+		t.Fatalf("the returned error = %v, want the cancel alone", mapped)
 	}
 }

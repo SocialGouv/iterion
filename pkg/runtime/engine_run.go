@@ -198,8 +198,8 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	// setup, sandbox startup and the first model call. A denied context is
 	// therefore a durable, actionable failure without external side effects.
 	if err := e.admitRun(ctx, runID, run); err != nil {
-		e.markFailedBestEffort(ctx, runID, "execution context admission", err)
-		return e.setupErr(ctx, err)
+		st, stCode := e.markFailedBestEffort(ctx, runID, "execution context admission", err)
+		return setupErrFrom(st, stCode, err)
 	}
 
 	run, err = e.runPromoteAttachments(ctx, runID, run)
@@ -229,8 +229,8 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	// already admitted at launch, and re-judging it would make a run
 	// unresumable because its declaration was tightened afterwards.
 	if err := e.validateVarConstraints(run.Inputs); err != nil {
-		e.markFailedBestEffort(ctx, runID, "var validation", err)
-		return e.setupErr(ctx, fmt.Errorf("runtime: var validation: %w", err))
+		st, stCode := e.markFailedBestEffort(ctx, runID, "var validation", err)
+		return setupErrFrom(st, stCode, fmt.Errorf("runtime: var validation: %w", err))
 	}
 
 	// Engine contract: the attached bundle may declare the build it needs.
@@ -239,8 +239,8 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	// is spun up for it. The RuntimeError's code rides through
 	// setupFailureCode, so the run is terminal and typed.
 	if err := e.refuseBundleRequiringNewerEngine(); err != nil {
-		e.markFailedBestEffort(ctx, runID, "engine requirement", err)
-		return e.setupErr(ctx, err)
+		st, stCode := e.markFailedBestEffort(ctx, runID, "engine requirement", err)
+		return setupErrFrom(st, stCode, err)
 	}
 
 	// Worktree setup stays inline: the finalizeOnExit defer must
@@ -297,8 +297,8 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 
 			wtc, cleanup, wtErr := setupWorktree(e.store.Root(), runID, e.workDir, e.worktreeBaseCommit, e.logger)
 			if wtErr != nil {
-				e.markFailedBestEffort(ctx, runID, "worktree setup", wtErr)
-				return e.setupErr(ctx, fmt.Errorf("runtime: worktree setup: %w", wtErr))
+				st, stCode := e.markFailedBestEffort(ctx, runID, "worktree setup", wtErr)
+				return setupErrFrom(st, stCode, fmt.Errorf("runtime: worktree setup: %w", wtErr))
 			}
 			e.workDir = wtc.wtPath
 			worktreeCleanup = cleanup
@@ -318,8 +318,8 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 
 	ctx, resourceCleanup, resourceErr := e.beginRunResources(ctx, runID, e.parentRunID != "" && !worktreeActive)
 	if resourceErr != nil {
-		e.markFailedBestEffort(ctx, runID, "child resources", resourceErr)
-		return resourceErr
+		st, stCode := e.markFailedBestEffort(ctx, runID, "child resources", resourceErr)
+		return setupErrFrom(st, stCode, resourceErr)
 	}
 	defer func() {
 		if cleanupErr := resourceCleanup(); cleanupErr != nil {
@@ -346,8 +346,8 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	e.repoRoot = repoRoot
 	sandboxCleanup, sbErr := e.startSandbox(ctx, runID, repoRoot, wtCtx.gitDir, inputs)
 	if sbErr != nil {
-		e.markFailedBestEffort(ctx, runID, "sandbox start", sbErr)
-		return e.setupErr(ctx, fmt.Errorf("runtime: sandbox: %w", sbErr))
+		st, stCode := e.markFailedBestEffort(ctx, runID, "sandbox start", sbErr)
+		return setupErrFrom(st, stCode, fmt.Errorf("runtime: sandbox: %w", sbErr))
 	}
 	defer sandboxCleanup()
 	e.resourcesReady()
@@ -358,8 +358,8 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	// node_started's iteration_path, the bound (max) from here. Literal
 	// caps only; expression / unbounded caps emit 0 (max unknown).
 	if err := e.emit(ctx, runID, store.EventRunStarted, "", runStartedPayload(e.workflow, run)); err != nil {
-		e.markFailedBestEffort(ctx, runID, "emit run_started", err)
-		return e.setupErr(ctx, fmt.Errorf("runtime: emit run_started: %w", err))
+		st, stCode := e.markFailedBestEffort(ctx, runID, "emit run_started", err)
+		return setupErrFrom(st, stCode, fmt.Errorf("runtime: emit run_started: %w", err))
 	}
 
 	rs := e.runInitState(ctx, runID, inputs)
@@ -687,13 +687,13 @@ func (e *Engine) runStartQueued(ctx context.Context, runID string) (*store.Run, 
 // stale). On error, marks the run failed best-effort before returning.
 func (e *Engine) runPromoteAttachments(ctx context.Context, runID string, run *store.Run) (*store.Run, error) {
 	if err := promoteBundleAttachmentDefaults(ctx, e.store, runID, e.workflow, e.bundle, e.logger); err != nil {
-		e.markFailedBestEffort(ctx, runID, "bundle attachment defaults", err)
-		return nil, e.setupErr(ctx, fmt.Errorf("runtime: bundle attachment defaults: %w", err))
+		st, stCode := e.markFailedBestEffort(ctx, runID, "bundle attachment defaults", err)
+		return nil, setupErrFrom(st, stCode, fmt.Errorf("runtime: bundle attachment defaults: %w", err))
 	}
 	if e.attachmentPromote != nil {
 		if err := e.attachmentPromote(ctx, runID); err != nil {
-			e.markFailedBestEffort(ctx, runID, "attachment promote", err)
-			return nil, e.setupErr(ctx, fmt.Errorf("runtime: promote attachments: %w", err))
+			st, stCode := e.markFailedBestEffort(ctx, runID, "attachment promote", err)
+			return nil, setupErrFrom(st, stCode, fmt.Errorf("runtime: promote attachments: %w", err))
 		}
 	}
 	if reloaded, err := e.store.LoadRun(ctx, runID); err == nil {
@@ -763,12 +763,12 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 			}
 		}
 		if err := e.reconcileExecutionWorkspace(runID, run); err != nil {
-			e.markFailedBestEffort(ctx, runID, "execution context workspace", err)
-			return e.setupErr(ctx, fmt.Errorf("runtime: reconcile execution context workspace: %w", err))
+			st, stCode := e.markFailedBestEffort(ctx, runID, "execution context workspace", err)
+			return setupErrFrom(st, stCode, fmt.Errorf("runtime: reconcile execution context workspace: %w", err))
 		}
 		if err := e.store.SaveRun(ctx, run); err != nil {
-			e.markFailedBestEffort(ctx, runID, "save work dir", err)
-			return e.setupErr(ctx, fmt.Errorf("runtime: save work dir: %w", err))
+			st, stCode := e.markFailedBestEffort(ctx, runID, "save work dir", err)
+			return setupErrFrom(st, stCode, fmt.Errorf("runtime: save work dir: %w", err))
 		}
 	}
 	// Push workDir into the executor so backend subprocesses (claude_code,
@@ -811,8 +811,8 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	ClearMirroredTierMarkers(e.workDir, e.logger)
 	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
 	if err != nil {
-		e.markFailedBestEffort(ctx, runID, "bundle skills", err)
-		return fmt.Errorf("runtime: bundle skills: %w", err)
+		st, stCode := e.markFailedBestEffort(ctx, runID, "bundle skills", err)
+		return setupErrFrom(st, stCode, fmt.Errorf("runtime: bundle skills: %w", err))
 	}
 	// Mirror markdown contributions (skills / commands / agents) from enabled
 	// plugins after the bundle skills so a same-named bundle/workspace file
@@ -832,8 +832,8 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 		if e.logger != nil {
 			e.logger.Warn("runtime: plugin contributions: %v", err)
 		}
-		e.markFailedBestEffort(ctx, runID, "plugin contributions", err)
-		return fmt.Errorf("runtime: plugin contributions: %w", err)
+		st, stCode := e.markFailedBestEffort(ctx, runID, "plugin contributions", err)
+		return setupErrFrom(st, stCode, fmt.Errorf("runtime: plugin contributions: %w", err))
 	}
 	ownedSkills = append(ownedSkills, ownedPluginSkills...)
 	hooksComplete, hooksErr := mergePluginHooks(e.workDir, e.logger)
@@ -850,8 +850,8 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// "declared and load-bearing".
 	ownedLibrarySkills, libraryComplete, libraryErr := e.applyLibrarySkills()
 	if libraryErr != nil {
-		e.markFailedBestEffort(ctx, runID, "library skills", libraryErr)
-		return fmt.Errorf("runtime: library skills: %w", libraryErr)
+		st, stCode := e.markFailedBestEffort(ctx, runID, "library skills", libraryErr)
+		return setupErrFrom(st, stCode, fmt.Errorf("runtime: library skills: %w", libraryErr))
 	}
 	e.applyMirroredSkills(append(ownedSkills, ownedLibrarySkills...))
 	// Prune orphans left by earlier passes on this worktree — a skill
