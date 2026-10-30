@@ -226,9 +226,20 @@ over to the next one is re-discovered for free by that phase's own first scan.
 The non-empty witness has that by construction — its later windows sit in the
 KILL phase, which has no successor, so a member dropped there is left running
 and unreported however the phase ends, on the product's own lines (`latest (pid
-N) belongs to the session and is still running`). The empty-scan witness cannot:
-its windows sit in the TERM phase, which ends that sweep only while the session
-goes quiet, and the very mutants it hunts leave a member alive — the phase then
+N) belongs to the session and is still running`). Those lines come free only for
+the LAST window: a member left running is a session never quiet again, so when
+it is an earlier window's member the NEXT window's premise — a scan that found
+nothing — expires first, and a premise names the scans it waited through, not
+the process left alive. So every premise staged after a window goes through
+`atAfterStaging`, which joins the sweep and judges it as well as failing on the
+premise. Measured on the mutant that drops re-discovery in the KILL phase alone,
+whose dropped member is the SECOND window's: with the join, the red carries both
+`premise, within 30s: no scan of the sweep found nothing once more, two scans
+later` and `later (pid N) belongs to the session and is still running`, 3 of 3
+arms; without it, the same 3 arms carried the premise alone and no product line
+at all. The empty-scan witness cannot have any of this: its windows
+sit in the TERM phase, which ends that sweep only while the session goes quiet,
+and the very mutants it hunts leave a member alive — the phase then
 burns its budget and hands it to KILL, which finds it. That is how the
 third-scan mutant and its sh twin stayed green on it, 3 of 3 arms each at 10.1s,
 with the second window already in place.
@@ -246,15 +257,29 @@ third-scan mutant and its sh twin redden the witness 3 of 3 arms each on that
 premise.
 
 **How far the windows reach.** A window's member is new to the scan AFTER it, so
-the three windows of the non-empty witness pin re-discovery at the 2nd scan of
-the TERM phase and at the 3rd and 5th of the KILL phase, and the empty-scan one
-pins the 2nd and 4th of its own. Measured with mutants that drop a member first
-seen at the Kth scan of a phase: K=3 and K=4 redden both witnesses, K=5 the
-non-empty one, K=6 passes both. The third window is what K=4 and K=5 cost: with
-only two, K=4 and its sh twin passed the ENTIRE package, 69 green and rc 0. No
-finite set of windows reaches every index, which is why the product's clause
-stays a loop over every scan, and why both witnesses say where their proof
-stops.
+the two windows the non-empty witness stages in the KILL phase pin re-discovery
+at its 3rd and 5th scans, and the empty-scan one pins the 2nd and 4th of its
+own. Its FIRST window pins no index: that one sits in the TERM phase, which
+hands over in that witness, so KILL's own first scan re-discovers the member for
+free — a mutant that classifies no new member at all through the whole TERM
+phase, and one that drops them from its 2nd scan on, both pass it 3 of 3 arms,
+while reddening the empty-scan witness 3 of 3 on `endedQuiet`. What the first
+window asserts is that its member is STOPPED, by whichever phase reaches it; the
+TERM indexes are the empty-scan witness's to hold. Measured with mutants that
+drop a member first seen at the Kth scan of a phase: K=3 and K=4 redden both
+witnesses, K=5 the non-empty one, K=6 passes both. The third window is what K=4
+and K=5 cost: with only two, K=4 and its sh twin passed the ENTIRE package, 69
+green and rc 0. No finite set of windows reaches every index, which is why the
+product's clause stays a loop over every scan, and why both witnesses say where
+their proof stops.
+
+The scan INDEX is also the only axis these windows bound, and that bound is
+load-free but not time-free: both witnesses compress their phases to a second or
+two where production gives them 5s and 3s, so a sweep that stops re-discovering
+after a few seconds of ELAPSED time is invisible to them. Measured, a mutant
+that classifies no new member more than 3s after the sweep started: the ENTIRE
+package green, 69 green and rc 0, both witnesses passing on all three of their
+arms. Nothing here covers it, and a window cannot — a window is an index.
 
 The KILL-phase window also turns a capture that never was one: the mutant that
 drops re-discovery in the KILL phase ALONE read as caught by
@@ -262,13 +287,22 @@ drops re-discovery in the KILL phase ALONE read as caught by
 same execve miss, so the verdict was a race's. It reddens the non-empty witness
 3 of 3 instead, and deterministically: the member it drops keeps the session from
 ever being quiet again, so the third window's premise cannot be met and fails as
-itself, naming the scans it waited through. The deadline witness still catches
-it only by that race, and that is no loss — when a sweep gives up is that
+itself, naming the scans it waited through — and, since `atAfterStaging` joins
+the sweep on that failure, alongside the product's own verdict on the process it
+left running. The deadline witness still catches it only by that race, and that
+is no loss — when a sweep gives up is that
 witness's subject, re-discovery is not. The phase deadlines are set wide for these witnesses (`sweepBudget`):
 a phase that ends on its deadline skips the scan the window was staged for and
 reads as a verdict on how long this host took to start one process — when a
 sweep gives up is `TestSweepSignalsBeforeItsDeadline`'s subject, and it keeps
-the knob.
+the knob. The third window is what the non-empty witness's KILL budget pays for:
+that phase now owes 7 scans and 2 stagings instead of 5 and 1, so the budget is
+20s and not 10s — 1s + 20s of phases still under the join's own 30s ceiling. The
+margin is measured on the whole arm, which contains that stretch and more: over
+1056 arms of both witnesses, eight workers in parallel and two of them under
+`-race`, the non-empty arm ran 1.36s to 5.28s (median 2.32s) and the empty-scan
+one 0.29s to 1.97s, with 0 failures, 0 data races, and no sweep ever hitting the
+join's ceiling.
 
 Where the gate sits is what keeps the mutation honest. At the settle instead,
 the mutant that ends on the FIRST empty scan never settles, and the witness
