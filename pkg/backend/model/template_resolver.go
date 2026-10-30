@@ -142,7 +142,19 @@ func (r *TemplateResolver) ResolveValue(ref string, input map[string]any, td *Te
 		// is the member `on` of the `json` var cfg, not a var whose name
 		// contains a dot. A whole-key lookup answered nothing here while
 		// an expression and a tool body both answered the member.
-		if v, ok := drillTemplatePath(r.Vars, strings.Split(key, ".")); ok {
+		segs := strings.Split(key, ".")
+		if v, ok := drillTemplatePath(r.Vars, segs); ok {
+			// A server-minted credential never renders through this
+			// lookup: the materialiser that swaps its placeholder back
+			// lives on the tool-body path (resolveTemplateWith) alone,
+			// so the value rendered here — a prompt, a preview without a
+			// guard — would be the bearer in clear. Freeze the identity:
+			// render the placeholder, the form Materialize renders.
+			if len(segs) == 1 {
+				if ph, masked := mintedVarMask(segs[0], v); masked {
+					return ph, true
+				}
+			}
 			return v, true
 		}
 	case "secrets":

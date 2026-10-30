@@ -403,3 +403,65 @@ func TestEveryCatalogCallSiteShapeStillCarriesTheGrant(t *testing.T) {
 		})
 	}
 }
+
+// #2827: a preview renders without a guard — RenderCommand/RenderScript pass
+// nil, and a prompt's TemplateResolver has no materialiser behind it either —
+// while the placeholder indirection exists only where the materialiser that
+// resolves it exists ("freeze the identity"). Every one of those surfaces
+// renders a server-minted secret var as the guard's placeholder, the form
+// Materialize renders — never the value.
+func TestAPreviewNeverRendersTheMintedGrant(t *testing.T) {
+	blankHostCredentials(t)
+	tok := randomToken(t)
+	vars := map[string]any{store.ForgePublishTokenVar: tok, "workspace_dir": "ws"}
+	ph := secretguard.PlaceholderForName(store.ForgePublishTokenVar)
+
+	// The command preview: the placeholder in the one form the run renders
+	// it, single-quoted for MaterializeAuthoredShellEnv.
+	command := "publish --dir {{vars.workspace_dir}} --token {{vars.forge_publish_token}}"
+	got := RenderCommand(command, mustRefs(command), nil, vars, nil, "preview", nil, nil)
+	want := "publish --dir 'ws' --token '" + ph + "'"
+	if got != want {
+		t.Errorf("RenderCommand = %q, want %q", got, want)
+	}
+	if strings.Contains(got, tok) {
+		t.Errorf("the command preview carries the grant: %q", got)
+	}
+
+	// The script preview: the placeholder as the language literal the value
+	// would have been.
+	script := "token = {{vars.forge_publish_token}}"
+	got = RenderScript(script, mustRefs(script), nil, vars, nil, "preview", nil)
+	if want := `token = "` + ph + `"`; got != want {
+		t.Errorf("RenderScript = %q, want %q", got, want)
+	}
+	if strings.Contains(got, tok) {
+		t.Errorf("the script preview carries the grant: %q", got)
+	}
+
+	// The prompt preview — and the prompt path of a run itself: nothing
+	// materialises a vars placeholder there either, guard or not.
+	for name, r := range map[string]*TemplateResolver{
+		"guard nil":     {Vars: vars},
+		"guard present": {Vars: vars, Secrets: BuildSecretGuard(t.Context(), &ir.Workflow{}, map[string]string{store.ForgePublishTokenVar: tok}, nil)},
+	} {
+		if got := r.Resolve("publish with {{vars.forge_publish_token}}", nil, nil); got != "publish with "+ph {
+			t.Errorf("%s: prompt = %q, want the placeholder %q", name, got, ph)
+		} else if strings.Contains(got, tok) {
+			t.Errorf("%s: the prompt carries the grant: %q", name, got)
+		}
+	}
+
+	// Parity with the run, pinned so the carve-outs stay deliberate: the raw
+	// {{!vars.x}} form is the author's own text and keeps the value; the read
+	// surfaces' mask renders as itself.
+	raw := "publish --token {{!vars.forge_publish_token}}"
+	if got := RenderCommand(raw, mustRefs(raw), nil, vars, nil, "preview", nil, nil); !strings.Contains(got, tok) {
+		t.Errorf("the raw form lost the author's own text: %q", got)
+	}
+	maskedVars := map[string]any{store.ForgePublishTokenVar: store.RedactedLaunchVar}
+	masked := RenderCommand(command, mustRefs(command), nil, maskedVars, nil, "preview", nil, nil)
+	if !strings.Contains(masked, store.RedactedLaunchVar) || strings.Contains(masked, ph) {
+		t.Errorf("a var already holding the read-surface mask renders as %q, want the mask itself", masked)
+	}
+}

@@ -1566,6 +1566,28 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 				continue
 			}
 		}
+		// The same mask where NO materialiser stands behind the reference —
+		// the preview renderings (RenderCommand/RenderScript) pass a nil
+		// guard, so the placeholder the branch above would emit resolves
+		// nowhere here. The value must still not render: freeze the
+		// identity, as the prompt path does (TemplateResolver). A shell
+		// body gets the placeholder in the one form the run renders it;
+		// a script body gets it as the language literal its value would
+		// have been. A guard — the run — keeps its own reading (it either
+		// holds the name env-only and took the branch above, or it
+		// deliberately did not register the value), and the raw
+		// {{!vars.x}} form keeps the value, as it does on the run: it is
+		// the author's own text.
+		if guard == nil && !ref.Unquoted && ref.Kind == ir.RefVars && len(ref.Path) == 1 {
+			if ph, masked := mintedVarMask(ref.Path[0], vars[ref.Path[0]]); masked {
+				if shellBody {
+					subs[ref.Raw] = "'" + ph + "'"
+				} else {
+					subs[ref.Raw] = defaultRender(ph, shapes.Of(ref))
+				}
+				continue
+			}
+		}
 		var val any
 		var handled, present bool
 		switch {

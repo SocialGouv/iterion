@@ -135,6 +135,23 @@ func BuildSecretGuard(ctx context.Context, wf *ir.Workflow, vars map[string]stri
 	return g
 }
 
+// mintedVarMask answers the placeholder a server-minted secret var
+// (store.ServerMintedSecretVars) renders as where no materialiser will swap
+// it back — the guard's placeholder, the form Materialize renders — and
+// whether the value is one to mask: an empty one is a caller withdrawing
+// the grant (DropServerMintedVars reads it so), and the read surfaces' mask
+// (store.RedactedLaunchVar) is already the sanctioned display form.
+func mintedVarMask(name string, v any) (string, bool) {
+	if !store.IsServerMintedSecretVar(name) {
+		return "", false
+	}
+	s, ok := v.(string)
+	if !ok || strings.TrimSpace(s) == "" || s == store.RedactedLaunchVar {
+		return "", false
+	}
+	return secretguard.PlaceholderForName(name), true
+}
+
 // mintedGrantHosts returns the hosts of the endpoints a server-minted grant is
 // presented to, read from the launch vars that name them. Deduplicated and
 // sorted so the registered scope does not depend on map order.

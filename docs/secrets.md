@@ -110,6 +110,9 @@ of a body that names it, instead of writing the bearer into the script file
 (`pub_token = os.environ.get("__ITERION_SECRET_forge_publish_token__", "")`,
 as `bots/dep-update-guard` reads it). One form keeps the value in the text, by
 the author's own choice: the raw `{{!vars.x}}` form, whose quoting is theirs.
+A preview — the dry run, any rendering without the run's guard behind it —
+resolves nothing either: it renders the placeholder, the indirection existing
+only where the materialiser that resolves it exists.
 The grant is also scoped (Layer 2) to the endpoints the server bound it to, so
 the egress gate refuses it toward any other host. And it never rests on a
 board card: the board store drops those vars from `bot_args` at its write
