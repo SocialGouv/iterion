@@ -121,6 +121,11 @@ func (s *FilesystemRunStore) WriteAttachment(ctx context.Context, runID string, 
 		return fmt.Errorf("store: marshal attachment meta: %w", err)
 	}
 	if err := writeRecord(dir, metaData, filePerm); err != nil {
+		// No residue: the bytes were renamed in place before the record,
+		// so a failed record would strand them on disk — a bytes file
+		// named exactly `.iterion` blocks the record's directory with a
+		// plain file (staging.go), which a later listing then trips over.
+		os.Remove(dstPath)
 		return err
 	}
 
@@ -391,7 +396,7 @@ func (s *FilesystemRunStore) loadAttachmentMeta(runID, name string) (AttachmentR
 	dir := s.attachmentDir(runID, name)
 	data, err := readRecord(dir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) || recordPathBlocked(dir) {
 			return AttachmentRecord{}, ErrAttachmentNotFound
 		}
 		return AttachmentRecord{}, fmt.Errorf("store: read attachment meta: %w", err)

@@ -58,6 +58,27 @@ func recordPath(dir string) string { return filepath.Join(dir, ".iterion", "meta
 
 func legacyRecordPath(dir string) string { return filepath.Join(dir, "meta.json") }
 
+// recordPathBlocked reports whether a plain FILE sits where a directory
+// component of dir's record path goes — the `.iterion` collision the
+// comment above names (a bytes file under exactly that name, or the
+// attachment directory itself replaced by a file). The record read then
+// fails with ENOTDIR, which os.IsNotExist does not match, yet the record
+// is ABSENT — its write failed before it landed or its attachment is
+// gone — so readers answer not-found instead of propagating a raw I/O
+// error that would abort a whole listing.
+func recordPathBlocked(dir string) bool {
+	for p := recordPath(dir); ; {
+		parent := filepath.Dir(p)
+		if parent == p {
+			return false
+		}
+		if info, err := os.Lstat(parent); err == nil && !info.IsDir() {
+			return true
+		}
+		p = parent
+	}
+}
+
 // writeRecord persists the record sidecar at its current location.
 func writeRecord(dir string, data []byte, perm os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(recordPath(dir)), 0o700); err != nil {

@@ -413,6 +413,10 @@ bytes land in, so a bundle default, a tool's deliverable or an operator's
 upload under that name is an ordinary file (#2863). Records written
 before the move sit beside the bytes as `meta.json`; every reader falls
 back to that path, so existing runs and staged uploads stay readable.
+One name is RESERVED, though: `.iterion` itself. A bytes file under
+exactly that name would sit where the record's directory goes, so the
+write fails loudly and leaves nothing behind — never a partial record,
+and never a stranded file that wedges the run's listing.
 
 ## Cloud notes
 

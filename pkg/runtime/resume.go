@@ -2091,7 +2091,8 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 // cancel (acked, never redelivered), ErrRunInterrupted for a drain
 // (naked, exempt from the DLQ park), the driver's own
 // sandbox.ErrPhaseTimeout for a stall and sandbox.ErrCapacity for a pod
-// that never got placed (both naked with a delay) — mirroring setupErr on the launch
+// that never got placed (both naked with a delay) — the same mapping
+// setupErrFrom applies to markFailedBestEffort's decision on the launch
 // path. A bare wrap would read as a generic failure: an operator cancel
 // burning a delivery, a drain parked on the DLQ.
 func (e *Engine) parkResumeSandboxFailure(ctx context.Context, runID string, cp *store.Checkpoint, fallbackNode string, sbErr error) error {

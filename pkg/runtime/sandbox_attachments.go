@@ -128,8 +128,10 @@ func (e *Engine) fetchAttachment(ctx context.Context, runID, name, dst string) e
 // not hand the attachments over under a LIVE context is
 // ATTACHMENTS_UNFETCHABLE — resumable, a redelivery fetches again. A fetch
 // the run's own context cut short (an operator's cancel, a drain, the
-// run's deadline) is the context's outcome: setupFailureStatus and setupErr
-// decide it, and it carries no code a runner would re-offer the run under.
+// run's deadline) is the context's outcome: markFailedBestEffort's
+// decision (setupFailureStatus) and its mapping to the returned error
+// (setupErrFrom) settle it, and it carries no code a runner would
+// re-offer the run under.
 func fetchFailure(ctx context.Context, runID, step string, cause error) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		if errors.Is(cause, ctxErr) {

@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -160,5 +162,86 @@ func TestPresignAttachment_Roundtrip(t *testing.T) {
 	// Tampering must fail.
 	if s.VerifyAttachmentSignature("run-004", "other", params["exp"], params["sig"]) {
 		t.Errorf("signature for different name unexpectedly verified")
+	}
+}
+
+// A bytes file named exactly `.iterion` collides with the record
+// sidecar's directory (staging.go): the write must fail loudly, leave
+// nothing on disk, and never wedge the run's listing — a bundle default
+// under that name reaches this path through promoteBundleAttachmentDefaults.
+func TestWriteAttachmentReservedIterionNameFailsClean(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	if _, err := s.CreateRun(ctx, "run-res", "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	// A good attachment beside the bad one: the listing must survive the
+	// collision.
+	if err := s.WriteAttachment(ctx, "run-res",
+		AttachmentRecord{Name: "good", OriginalFilename: "good.bin", MIME: "application/octet-stream"},
+		strings.NewReader("good"),
+	); err != nil {
+		t.Fatalf("WriteAttachment good: %v", err)
+	}
+
+	err := s.WriteAttachment(ctx, "run-res",
+		AttachmentRecord{Name: "bad", OriginalFilename: ".iterion", MIME: "application/octet-stream"},
+		strings.NewReader("x"))
+	if err == nil {
+		t.Fatal("WriteAttachment with OriginalFilename .iterion: expected an error, got nil")
+	}
+
+	// No residue: neither the bytes file nor a record under
+	// attachments/bad/.
+	badDir := s.attachmentDir("run-res", "bad")
+	if _, lerr := os.Lstat(filepath.Join(badDir, ".iterion")); !os.IsNotExist(lerr) {
+		t.Errorf("bytes residue at %s: lstat err = %v", filepath.Join(badDir, ".iterion"), lerr)
+	}
+	if _, lerr := os.Lstat(filepath.Join(badDir, ".iterion", "meta.json")); !os.IsNotExist(lerr) {
+		t.Errorf("record residue at %s: lstat err = %v", filepath.Join(badDir, ".iterion", "meta.json"), lerr)
+	}
+
+	list, lerr := s.ListAttachments(ctx, "run-res")
+	if lerr != nil {
+		t.Fatalf("ListAttachments: %v", lerr)
+	}
+	if len(list) != 1 || list[0].Name != "good" {
+		t.Errorf("ListAttachments = %+v, want only [good]", list)
+	}
+}
+
+// A bytes file stranded at the record's directory — a crash mid-write,
+// or a store written before the failed-write cleanup — reads as
+// NOT-FOUND: it must not abort the whole listing.
+func TestListAttachmentsSkipsIterionFileResidue(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	if _, err := s.CreateRun(ctx, "run-res2", "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := s.WriteAttachment(ctx, "run-res2",
+		AttachmentRecord{Name: "good", OriginalFilename: "good.bin", MIME: "application/octet-stream"},
+		strings.NewReader("good"),
+	); err != nil {
+		t.Fatalf("WriteAttachment good: %v", err)
+	}
+
+	badDir := s.attachmentDir("run-res2", "bad")
+	if err := os.MkdirAll(badDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(badDir, ".iterion"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("plant residue: %v", err)
+	}
+
+	if _, _, err := s.OpenAttachment(ctx, "run-res2", "bad"); !errors.Is(err, ErrAttachmentNotFound) {
+		t.Errorf("OpenAttachment on residue: err = %v, want ErrAttachmentNotFound", err)
+	}
+	list, err := s.ListAttachments(ctx, "run-res2")
+	if err != nil {
+		t.Fatalf("ListAttachments: %v", err)
+	}
+	if len(list) != 1 || list[0].Name != "good" {
+		t.Errorf("ListAttachments = %+v, want only [good]", list)
 	}
 }
