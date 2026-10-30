@@ -39,11 +39,22 @@ func refuseGatewayCrossing(backend, hint, model string) error {
 	if !gateway && !hintGateway {
 		return nil
 	}
-	switch strings.ToLower(strings.TrimSpace(backend)) {
-	case "", delegate.BackendClaw, "auto":
+	if backendServesGatewayRoute(backend) {
 		return nil
 	}
 	return fmt.Errorf("backend %q cannot serve an OpenAI-compatible gateway route — gateway models run on the claw backend", backend)
+}
+
+// backendServesGatewayRoute is the backend half of the parity rule above,
+// on its own so the AUTO-SELECTION can consult it too (executor_resolve.go):
+// the one answer to "can this backend speak to a gateway", shared so the
+// selection and the refusal can never disagree about one backend.
+func backendServesGatewayRoute(backend string) bool {
+	switch strings.ToLower(strings.TrimSpace(backend)) {
+	case "", delegate.BackendClaw, "auto":
+		return true
+	}
+	return false
 }
 
 // checkGatewayEnv validates the environment a gateway-served element needs,

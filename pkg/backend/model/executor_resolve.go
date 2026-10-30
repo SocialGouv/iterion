@@ -8,6 +8,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
@@ -68,9 +69,56 @@ func (e *ClawExecutor) resolveBackendName(node ir.Node) string {
 		return env
 	}
 	if resolved := e.detectorResolve(); resolved != "" {
-		return resolved
+		return e.gatewayCapableDetection(node, resolved)
 	}
 	return delegate.BackendClaw
+}
+
+// gatewayCapableDetection keeps host auto-detection from naming a backend
+// the node's own route cannot run on. A node whose head route is an
+// OpenAI-compatible gateway route — a gateway `model:`, or the gateway
+// provider hint — can only be served by claw, which is exactly what
+// refuseGatewayCrossing refuses every other backend for at task build.
+// Detection that ignores it concretises claude_code on any machine with the
+// `claude` CLI (the common operator machine) and the run aborts 80 ms in,
+// before any model call (#2785). Detection's answer is a GUESS the host
+// makes for an author who named nothing, so correcting it toward the one
+// backend that can serve the route replaces no explicit choice: the node's
+// own `backend:`, the workflow's `default_backend:`, ITERION_DEFAULT_BACKEND
+// and a launch override all keep their answer and their build-time refusal.
+//
+// The reading is the head route's — the one detection concretises for. A
+// `fallbacks:` element that introduces a gateway model further down the
+// chain is judged at its own build, like every other element property.
+func (e *ClawExecutor) gatewayCapableDetection(node ir.Node, detected string) string {
+	if backendServesGatewayRoute(detected) || !e.headRouteNeedsGateway(node) {
+		return detected
+	}
+	if e.logger != nil {
+		e.logger.Warn("[%s] auto-detection picked %q, which cannot serve this node's OpenAI-compatible gateway route — selecting claw instead (set `backend:` explicitly to override)",
+			node.NodeID(), detected)
+	}
+	return delegate.BackendClaw
+}
+
+// headRouteNeedsGateway reports whether the node's FIRST route is a gateway
+// route: a gateway `model:` (the launch override's, else the node's own), or
+// the head of its provider chain naming the gateway — with the head
+// element's own model pin, if it carries one, standing in for the node's.
+// The same reading dispatch builds the first element from.
+func (e *ClawExecutor) headRouteNeedsGateway(node ir.Node) bool {
+	m := e.baselineModel(node)
+	hint := ""
+	if chain := e.resolveProviderChain(node); len(chain) > 0 {
+		hint = chain[0].Provider
+		if chain[0].Model != "" {
+			m = chain[0].Model
+		}
+	}
+	if modelroute.Parse(m).Gateway() {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(hint), modelroute.OpenAICompatible)
 }
 
 // EffectiveBackendName exposes the exact runtime resolution to safety checks.
