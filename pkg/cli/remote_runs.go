@@ -762,7 +762,7 @@ func RemoteRunsRaw(ctx context.Context, c *RemoteClient, p *Printer, id, endpoin
 		return err
 	}
 	if code/100 != 2 {
-		return &APIError{Status: code, Method: "GET", Path: "/api/runs/" + id + endpoint, Body: string(body)}
+		return c.refuseAPI(code, "GET", "/api/runs/"+id+endpoint, body)
 	}
 	p.Raw(append(bytes.TrimRight(body, "\n"), '\n'))
 	return nil

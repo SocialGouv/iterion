@@ -28,6 +28,28 @@ func (s *Server) gateDerivation(mint auth.Mint, next http.HandlerFunc) http.Hand
 	})
 }
 
+// approveTeamTokenMint is the derivation chokepoint wired into the forge
+// orchestrator's one mint (forge.Orchestrator.ApproveTeamTokenMint): the
+// question a team-token mint owes is asked WHERE the mint is decided — inside
+// the provisioning lease, once the reservation has found no sealed secret to
+// reuse — rather than at the route's door. A door gate refuses every request
+// the route can carry, and three of them (the documented reconcile, a
+// settings-only PATCH, the approval of an update) mint nothing at all.
+//
+// A context with no identity is no credential's request (the background
+// project-bot rotator, a direct orchestrator call in a test): there is no
+// derivation to check, and the mint proceeds as it always did. Every HTTP
+// path into Provision runs behind requireAuth, so a request always carries
+// one.
+func (s *Server) approveTeamTokenMint(ctx context.Context) error {
+	id, ok := auth.FromContext(ctx)
+	if !ok {
+		return nil
+	}
+	_, err := s.checkDerivation(ctx, id, auth.MintTeamToken)
+	return err
+}
+
 // platformAuthorityStands asks the chokepoint whether the request's
 // credential may still exercise platform authority
 // (auth.ExercisePlatformAuthority) and reads the super-admin flag from the

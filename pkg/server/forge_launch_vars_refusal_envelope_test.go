@@ -58,7 +58,7 @@ func TestForgeProvisionError_LaunchVarsRefusalEnvelope(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
-			s.writeForgeProvisionError(w, tc.err)
+			s.writeForgeProvisionError(w, httptest.NewRequest(http.MethodPost, "/api/teams/t/forge/repo-bots", nil), tc.err)
 			if w.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d (body %s)", w.Code, tc.wantStatus, w.Body.String())
 			}

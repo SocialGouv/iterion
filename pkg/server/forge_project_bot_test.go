@@ -386,7 +386,7 @@ func TestConnectForge_BotIdentityValidation(t *testing.T) {
 func TestWriteForgeProvisionError_ProjectBot(t *testing.T) {
 	s := newForgeTestServer(t)
 	w := httptest.NewRecorder()
-	s.writeForgeProvisionError(w, fmt.Errorf("forge: mint project bot on g/p: %w: gitlab answered HTTP 400: User does not have permission", forge.ErrProjectBotNotPermitted))
+	s.writeForgeProvisionError(w, httptest.NewRequest(http.MethodPost, "/api/teams/t/forge/repo-bots", nil), fmt.Errorf("forge: mint project bot on g/p: %w: gitlab answered HTTP 400: User does not have permission", forge.ErrProjectBotNotPermitted))
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("code = %d", w.Code)
 	}
@@ -401,7 +401,7 @@ func TestWriteForgeProvisionError_ProjectBot(t *testing.T) {
 		}
 	}
 	w = httptest.NewRecorder()
-	s.writeForgeProvisionError(w, fmt.Errorf("x: %w", forge.ErrProjectBotUnsupported))
+	s.writeForgeProvisionError(w, httptest.NewRequest(http.MethodPost, "/api/teams/t/forge/repo-bots", nil), fmt.Errorf("x: %w", forge.ErrProjectBotUnsupported))
 	if w.Code != http.StatusUnprocessableEntity {
 		t.Errorf("unsupported: code = %d", w.Code)
 	}

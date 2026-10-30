@@ -215,6 +215,12 @@ iterion remote forge repo-bots create --data '{
   "launch_vars": { "review_tier": "glance" }}'
 ```
 
+On a repo **already** provisioned this is a reconcile: same hook, same
+`iwh_` secret, nothing minted, so a stored CLI token runs it. A repo's
+first enable mints that secret and wants the studio or a session credential
+([cloud-cli](cloud-cli.md#tenant-scope-teams--orgs)). The
+same holds for the two `repo-bots create` recipes further down this page.
+
 **The fixer escalation rides the same lever.** `fixer_hint` is the sentence
 the review summary publishes with its findings when this repo has a fixer to
 escalate to. Empty by default, and the line is then omitted entirely: the

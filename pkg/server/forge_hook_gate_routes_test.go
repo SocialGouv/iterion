@@ -423,7 +423,7 @@ func TestWriteForgeProvisionError_RestoreFailureOutranksTheHookFailure(t *testin
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newErrorRecorder()
-			s.writeForgeProvisionError(w, errors.Join(tc.hook, restore))
+			s.writeForgeProvisionError(w, httptest.NewRequest(http.MethodPost, "/api/teams/t/forge/repo-bots", nil), errors.Join(tc.hook, restore))
 			if w.Code != http.StatusInternalServerError {
 				t.Fatalf("code=%d body=%s, want 500: the repo has stopped receiving deliveries", w.Code, w.Body.String())
 			}

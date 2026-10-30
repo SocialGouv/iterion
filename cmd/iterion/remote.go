@@ -120,13 +120,24 @@ func runRemoteLogin(cmd *cobra.Command, args []string) error {
 	}
 
 	cfg.Token = token
+	// refuseMinted is the exit for every failure PAST a mint this command
+	// made: a token nothing stores is a credential nobody can use, and for
+	// the browser approval it belongs to an account the CLI holds nothing
+	// else for — only the token itself can revoke it. A token the operator
+	// supplied has no row this command created, so it leaves untouched.
+	refuseMinted := func(reason error) error {
+		if !selfMinted {
+			return reason
+		}
+		return cli.RefuseSelfMintedToken(cmd.Context(), cli.NewRemoteClientFor(cfg), token, reason)
+	}
 	answer, err := probeIdentity(cmd.Context(), base, token)
 	if err != nil {
-		return fmt.Errorf("reach %s: %w", base, err)
+		return refuseMinted(fmt.Errorf("reach %s: %w", base, err))
 	}
 	code := answer.code
 	if code == 401 || code == 403 {
-		return fmt.Errorf("the token was rejected by %s (HTTP %d)", base, code)
+		return refuseMinted(fmt.Errorf("the token was rejected by %s (HTTP %d)", base, code))
 	}
 	me, idErr := answer.identity(base)
 	// A token this command minted is known-good — the instance at base just
@@ -144,7 +155,7 @@ func runRemoteLogin(cmd *cobra.Command, args []string) error {
 		return tokenLoginRefusal(base, code, idErr)
 	}
 	if err := cli.SaveRemoteConfig(cfg); err != nil {
-		return err
+		return refuseMinted(fmt.Errorf("save the CLI credentials: %w", err))
 	}
 	p, _ := cli.RemoteConfigPath()
 	out := cli.NewPrinter(cli.OutputHuman)

@@ -149,7 +149,7 @@ func TestWriteForgeProvisionError_IndeterminateHookWriteLogsAndKeepsTheStatus(t 
 			s.logger = iterlog.New(iterlog.LevelWarn, logs)
 
 			w := httptest.NewRecorder()
-			s.writeForgeProvisionError(w, tc.err)
+			s.writeForgeProvisionError(w, httptest.NewRequest(http.MethodPost, "/api/teams/t/forge/repo-bots", nil), tc.err)
 			if w.Code != tc.wantCode {
 				t.Errorf("code=%d, want %d (the forge's own failure decides it): %s", w.Code, tc.wantCode, w.Body.String())
 			}

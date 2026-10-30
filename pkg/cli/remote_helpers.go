@@ -152,6 +152,15 @@ func writeInert(b *strings.Builder, r rune) {
 	}
 }
 
+// refuseAPI is THE place a non-2xx answer becomes an error, for every send
+// this package makes: the *APIError the callers inspect, carrying the
+// derivation chokepoint's advice when that is what the answer is
+// (withMintAdvice). A command that recognises the refusal itself overrides
+// the advice with its own (asPATMintRefusal).
+func (c *RemoteClient) refuseAPI(status int, method, path string, body []byte) error {
+	return c.withMintAdvice(&APIError{Status: status, Method: method, Path: path, Body: string(body)})
+}
+
 // Call performs an authenticated JSON request. A non-nil `in` is
 // marshalled as the request body; a non-2xx status returns *APIError;
 // a non-nil `out` receives the decoded response. The raw response body
@@ -171,7 +180,7 @@ func (c *RemoteClient) Call(ctx context.Context, method, path string, in, out an
 		return nil, err
 	}
 	if code/100 != 2 {
-		return resp, &APIError{Status: code, Method: method, Path: path, Body: string(resp)}
+		return resp, c.refuseAPI(code, method, path, resp)
 	}
 	if out != nil && len(resp) > 0 {
 		if err := json.Unmarshal(resp, out); err != nil {
@@ -207,7 +216,7 @@ func (c *RemoteClient) Upload(ctx context.Context, path, field, filename string,
 		return nil, err
 	}
 	if code/100 != 2 {
-		return resp, &APIError{Status: code, Method: "POST", Path: path, Body: string(resp)}
+		return resp, c.refuseAPI(code, "POST", path, resp)
 	}
 	if out != nil && len(resp) > 0 {
 		if err := json.Unmarshal(resp, out); err != nil {
@@ -276,7 +285,7 @@ func (c *RemoteClient) MeAs(ctx context.Context, bearer string) (RemoteMe, error
 		return me, err
 	}
 	if code/100 != 2 {
-		return me, &APIError{Status: code, Method: "GET", Path: "/api/auth/me", Body: string(body)}
+		return me, c.refuseAPI(code, "GET", "/api/auth/me", body)
 	}
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &me); err != nil {

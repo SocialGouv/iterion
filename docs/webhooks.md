@@ -107,7 +107,10 @@ the PATCH, on purpose: a wrong base does not fail when it is set — it fails
 as hooks that register successfully and never arrive.
 
 Re-provisioning a repo is the gesture that applies it, and it is a
-**reconcile**: `POST /api/teams/{id}/forge/repo-bots` with the repo's current
+**reconcile** — and it mints nothing, so a stored personal access token may
+run it where the repo's first enable is refused
+([cloud-cli](cloud-cli.md#tenant-scope-teams--orgs)):
+`POST /api/teams/{id}/forge/repo-bots` with the repo's current
 `bot_ids` and nothing else (`launch_vars`, `overlap`,
 `auto_fix_on_gate_failure` and `hold_labels` all mean "leave the stored one
 alone" when omitted, so re-sending them is a chance to mistype

@@ -89,6 +89,12 @@ read-back. Do not run `repo-bots create` until the target repository is listed.
 
 ## 2. Provision Revi and record both identifiers
 
+A repo's **first** enable mints its `iwh_` webhook token, which a stored
+personal access token may not do (403, [cloud-cli](cloud-cli.md#tenant-scope-teams--orgs)):
+run this step from the studio (Team → Integrations) or from a CLI holding a
+session credential. The later `repo-bots update` that re-pins a launch var
+reuses the sealed secret and needs neither.
+
 ```sh
 iterion remote forge repo-bots create --team <team-id> --data '{
   "connection_id": "<connection-id>",

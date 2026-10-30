@@ -17,6 +17,14 @@ import (
 
 var ErrProvisionBusy = errors.New("forge: repo provisioning is already running; retry")
 
+// ErrMintNotApproved is the derivation chokepoint's refusal as the
+// orchestrator reports it: this provisioning reached the point where it
+// reserves a NEW hook identity — a team-scoped token that outlives the
+// credential asking for it — and ApproveTeamTokenMint refused. It wraps the
+// chokepoint's own error, so the route answers the credential's status (401
+// for one that no longer stands, 403 for one that may never mint).
+var ErrMintNotApproved = errors.New("forge: the hook token this provisioning mints was refused by the derivation chokepoint")
+
 var provisionLeaseMu sync.Mutex
 
 // provisionLease reduces overlapping work. It is not a remote-write fence:
@@ -95,6 +103,17 @@ func (o *Orchestrator) reserveHookIdentity(ctx context.Context, req ProvisionReq
 	if len(sealed) == 0 {
 		webhookID, sealed = ri.CandidateWebhookID, ri.CandidateSecretSealed
 		if webhookID == "" {
+			// THE mint of this package, and the only one: ask the
+			// chokepoint HERE, where the decision is taken, inside the
+			// provisioning lease and after the sealed secret has been
+			// found missing. A re-provision that reuses the sealed
+			// secret never reaches this line, so it is never refused —
+			// and a repo deleted between a caller's read and this
+			// reservation cannot slip a mint past the credential check,
+			// which a gate at the route's door would have let through.
+			if err := o.approveTeamTokenMint(ctx); err != nil {
+				return ri, "", "", err
+			}
 			webhookID = o.id()
 			plaintext, _, _, _, err := webhooks.MintToken()
 			if err != nil {
@@ -141,4 +160,19 @@ func (o *Orchestrator) reserveHookIdentity(ctx context.Context, req ProvisionReq
 
 func provisionSecretAAD(integrationID, webhookID string) []byte {
 	return []byte("forge_hook_identity:" + integrationID + ":" + webhookID)
+}
+
+// approveTeamTokenMint asks the wired chokepoint whether the credential
+// behind ctx may mint the team token this reservation is about to fabricate.
+// A nil seam mints as the package always did: the background rotator and the
+// tests run no credential, and a server wires it (pkg/server passes
+// auth.MintTeamToken through auth.Service.CheckDerivation).
+func (o *Orchestrator) approveTeamTokenMint(ctx context.Context) error {
+	if o.ApproveTeamTokenMint == nil {
+		return nil
+	}
+	if err := o.ApproveTeamTokenMint(ctx); err != nil {
+		return fmt.Errorf("%w: %w", ErrMintNotApproved, err)
+	}
+	return nil
 }

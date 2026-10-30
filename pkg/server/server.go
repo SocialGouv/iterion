@@ -1024,21 +1024,26 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		}
 		s.forgeSecurityMint = s.forgeSecurityTokenMinter
 		s.forgeOrchestrator = &forge.Orchestrator{
-			LogWarn:         s.forgeLogWarn,
-			Connections:     s.forgeConnections,
-			Integrations:    s.forgeIntegrations,
-			Webhooks:        s.webhookConfigs,
-			Secrets:         s.genericSecrets,
-			Sealer:          s.sealer,
-			Bindings:        s.botBindings,
-			Bots:            s.forgeBotForge,
-			Invocations:     s.forgeBotInvocations,
-			Schedules:       cfg.ScheduledBots,
-			AdminFor:        s.forgeAdminFor,
-			AdminForToken:   s.forgeAdminForToken,
-			BotAvatar:       s.projectBotAvatar(),
-			GitHubAppMinter: s.forgeAppMinter,
-			PublicURL:       cfg.PublicURL,
+			// The derivation chokepoint, asked where the repo's hook
+			// token is actually fabricated (auth.MintTeamToken): a
+			// provisioning that reuses the integration's sealed secret
+			// mints nothing and is never asked.
+			ApproveTeamTokenMint: s.approveTeamTokenMint,
+			LogWarn:              s.forgeLogWarn,
+			Connections:          s.forgeConnections,
+			Integrations:         s.forgeIntegrations,
+			Webhooks:             s.webhookConfigs,
+			Secrets:              s.genericSecrets,
+			Sealer:               s.sealer,
+			Bindings:             s.botBindings,
+			Bots:                 s.forgeBotForge,
+			Invocations:          s.forgeBotInvocations,
+			Schedules:            cfg.ScheduledBots,
+			AdminFor:             s.forgeAdminFor,
+			AdminForToken:        s.forgeAdminForToken,
+			BotAvatar:            s.projectBotAvatar(),
+			GitHubAppMinter:      s.forgeAppMinter,
+			PublicURL:            cfg.PublicURL,
 		}
 	}
 	s.hub = NewHub(logger)

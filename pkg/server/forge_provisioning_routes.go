@@ -19,17 +19,27 @@ import (
 )
 
 // registerForgeProvisioningRoutes wires the Integrations surface. The enable
-// and the update MINT a team token: their success path runs
+// and the update CAN mint a team token: their success path runs
 // forge.Orchestrator.Provision, which reserves the repo's hook identity with
 // webhooks.MintToken and writes the webhooks.Config row whose token
 // authenticates POST /api/webhooks/{provider}/{id} — the same door the
-// team-scoped webhook mints open, so they ask the same chokepoint
-// (auth.MintTeamToken). The preview, the list and the disable mint nothing.
+// team-scoped webhook mints open. They mint it only when no live hook
+// identity exists yet (a repo's FIRST enable, or a retired integration
+// re-reserving one): a reconcile, a settings-only PATCH and an add-bots
+// request reuse the integration's sealed secret and fabricate nothing.
+//
+// So the chokepoint is NOT at this door. It is asked where the mint is
+// decided — forge.Orchestrator.ApproveTeamTokenMint, wired to
+// Server.approveTeamTokenMint — and a refusal arrives here as
+// forge.ErrMintNotApproved, which writeForgeProvisionError answers with the
+// credential's own status. A gate on the route would refuse the three
+// non-minting gestures above, which is what the runbooks run from a stored
+// token. The preview, the list and the disable mint nothing either.
 func (s *Server) registerForgeProvisioningRoutes() {
 	s.mux.Handle("GET /api/teams/{id}/forge/repo-bots", s.requireAuth(http.HandlerFunc(s.handleListForgeRepoBots)))
-	s.mux.Handle("POST /api/teams/{id}/forge/repo-bots", s.requireAuth(s.gateDerivation(auth.MintTeamToken, http.HandlerFunc(s.handleEnableForgeRepoBots))))
+	s.mux.Handle("POST /api/teams/{id}/forge/repo-bots", s.requireAuth(http.HandlerFunc(s.handleEnableForgeRepoBots)))
 	s.mux.Handle("GET /api/teams/{id}/forge/repo-bots/preview", s.requireAuth(http.HandlerFunc(s.handlePreviewForgeEnable)))
-	s.mux.Handle("PATCH /api/teams/{id}/forge/repo-bots/{integration_id}", s.requireAuth(s.gateDerivation(auth.MintTeamToken, http.HandlerFunc(s.handleUpdateForgeRepoBots))))
+	s.mux.Handle("PATCH /api/teams/{id}/forge/repo-bots/{integration_id}", s.requireAuth(http.HandlerFunc(s.handleUpdateForgeRepoBots)))
 	s.mux.Handle("DELETE /api/teams/{id}/forge/repo-bots/{integration_id}", s.requireAuth(http.HandlerFunc(s.handleDisableForgeRepoBots)))
 }
 
@@ -193,7 +203,7 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		ActorID:           id.UserID,
 	})
 	if err != nil {
-		s.writeForgeProvisionError(w, err)
+		s.writeForgeProvisionError(w, r, err)
 		return
 	}
 	s.writeProvisionResult(w, r, teamID, "forge.integration.provisioned", res, s.routingBlastRadiusWarnings(ctx, teamID, res.BotIDs, routing),
@@ -325,7 +335,7 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		Replace:           true,
 	})
 	if err != nil {
-		s.writeForgeProvisionError(w, err)
+		s.writeForgeProvisionError(w, r, err)
 		return
 	}
 	s.writeProvisionResult(w, r, teamID, "forge.integration.bots_updated", res,
@@ -347,7 +357,7 @@ func (s *Server) handleDisableForgeRepoBots(w http.ResponseWriter, r *http.Reque
 			httpError(w, http.StatusNotFound, "integration not found")
 			return
 		}
-		s.writeForgeProvisionError(w, err)
+		s.writeForgeProvisionError(w, r, err)
 		return
 	}
 	s.auditTenant(r, teamID, "forge.integration.deprovisioned", "forge_integration", integrationID, nil)
@@ -570,11 +580,23 @@ func launchVarsRefusalBody(code string, err error) map[string]any {
 
 // writeForgeProvisionError maps orchestrator/admin failures to stable HTTP
 // shapes the studio can act on.
-func (s *Server) writeForgeProvisionError(w http.ResponseWriter, err error) {
+func (s *Server) writeForgeProvisionError(w http.ResponseWriter, r *http.Request, err error) {
 	var restoreFailed *forge.ConfigRestoreError
 	var hookRefused *forge.HookRefusedError
 	var indeterminate *forge.HookWriteIndeterminateError
 	switch {
+	case errors.Is(err, forge.ErrMintNotApproved):
+		// The derivation chokepoint refused the team token this
+		// provisioning reached (forge.Orchestrator.ApproveTeamTokenMint,
+		// asked at the reservation itself). The refusal belongs to the
+		// credential, not to the forge, so it answers through the same
+		// mapping the door gate used — 403 for a credential that may never
+		// mint one, 401 for one that no longer stands, and a chokepoint
+		// that could not be READ is an identity failure and not a
+		// "provisioning failed" 502. The wrapped message keeps the
+		// instance's own wording, which is what the CLI recognises to
+		// render the advice.
+		s.derivationError(w, r, err)
 	case errors.As(err, &restoreFailed):
 		// First: the repo has stopped receiving deliveries, which outranks the
 		// hook failure it is joined with — whichever case matched that one would

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -237,5 +238,104 @@ func TestRemoteTeamsSwitch_AnApprovalWithoutThePinIsRefusedAndRevoked(t *testing
 	}
 	if who, ok := authenticates(ctx, f.base, *minted); ok {
 		t.Errorf("the unpinned token the approval minted still authenticates (as %s)", who)
+	}
+}
+
+// TestRemoteTeamsSwitch_ASaveThatFailsRevokesTheApprovedToken drives the
+// HAPPY approval — same account, the asked-for team pinned — and makes the
+// one write the command does after its checks pass fail. The approval's
+// token exists on the server and nothing holds it, so the branch that is
+// NOT a verification refusal owes the same exit as the ones that are:
+// nothing stored, the token revoked, its fate stated.
+func TestRemoteTeamsSwitch_ASaveThatFailsRevokesTheApprovedToken(t *testing.T) {
+	f := newSwitchFixture(t)
+	ctx := context.Background()
+	minted := f.approveAs(t, f.sessionA, true)
+
+	p, err := cli.RemoteConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// SaveRemoteConfig is a plain write; LoadRemoteConfig still reads.
+	if err := os.Chmod(p, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(p, 0o600) })
+
+	stored := cli.NewRemoteClientFor(cli.RemoteConfig{BaseURL: f.base, Token: f.patA})
+	var switchErr error
+	_ = captureStdoutAllowingError(t, func() error {
+		switchErr = cli.RemoteTeamsSwitch(ctx, stored, cli.NewPrinter(cli.OutputHuman), f.teamID, "iterion-cli (A)", cliTeamApproval(stored))
+		return switchErr
+	})
+	if switchErr == nil {
+		t.Fatal("the save was expected to fail")
+	}
+	for _, want := range []string{"save the CLI credentials", "revoked"} {
+		if !strings.Contains(switchErr.Error(), want) {
+			t.Errorf("the refusal reads %q — it must state %q", switchErr, want)
+		}
+	}
+	saved, err := cli.LoadRemoteConfig()
+	if err != nil {
+		t.Fatalf("read the saved config: %v", err)
+	}
+	if saved.Token != f.patA {
+		t.Errorf("a failed save persisted %+v, want the stored credential untouched", saved)
+	}
+	if who, ok := authenticates(ctx, f.base, *minted); ok {
+		t.Errorf("the token the approval minted still authenticates (as %s): nothing holds it, so nothing can revoke it later", who)
+	}
+}
+
+// TestRemoteLogin_ASaveThatFailsRevokesTheTokenItMinted is the SIBLING site:
+// `remote login` through the browser receives a token minted by a session
+// the CLI does not control, exactly like the switch, and its failures past
+// that mint leave the same orphan. The control below proves the command
+// leaves a token it did NOT mint alone.
+func TestRemoteLogin_ASaveThatFailsRevokesTheTokenItMinted(t *testing.T) {
+	f := newSwitchFixture(t)
+	ctx := context.Background()
+	minted := f.approveAs(t, f.sessionA, false)
+
+	p, err := cli.RemoteConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(p, 0o600) })
+
+	remoteLoginCmd.SetContext(ctx)
+	prevToken := remoteToken
+	t.Cleanup(func() { remoteToken = prevToken })
+	remoteToken = ""
+	var loginErr error
+	_ = captureStdoutAllowingError(t, func() error {
+		loginErr = runRemoteLogin(remoteLoginCmd, []string{f.base})
+		return loginErr
+	})
+	if loginErr == nil {
+		t.Fatal("the save was expected to fail")
+	}
+	if !strings.Contains(loginErr.Error(), "revoked") {
+		t.Errorf("the refusal reads %q — it must state the minted token's fate", loginErr)
+	}
+	if who, ok := authenticates(ctx, f.base, *minted); ok {
+		t.Errorf("the token the browser login minted still authenticates (as %s): an orphan nobody holds", who)
+	}
+	// The control: a token the OPERATOR supplied has no row this command
+	// created, and a login that refuses it must leave it alive.
+	remoteToken = f.patA
+	_ = captureStdoutAllowingError(t, func() error {
+		loginErr = runRemoteLogin(remoteLoginCmd, []string{f.base})
+		return loginErr
+	})
+	if loginErr == nil {
+		t.Fatal("the save was expected to fail for the supplied token too")
+	}
+	if _, ok := authenticates(ctx, f.base, f.patA); !ok {
+		t.Error("a login that failed revoked the token the OPERATOR supplied: it minted none, so it owns none")
 	}
 }

@@ -60,6 +60,16 @@ var forgeSentinelFamilies = map[string]forgeSentinelFamily{
 		why: "iterion's own preparation failed before any byte reached the network — writeForgeUpstreamError renders it 500, not the 502 its route defaults to",
 	},
 
+	// A credential refusal, not a forge answer and not a forge fault: the
+	// derivation chokepoint turned down the mint of a NEW hook identity
+	// before any byte reached the network. Outside the class, status 0 —
+	// the route answers the CREDENTIAL's status, which is neither 404 nor
+	// a provisioning fault.
+	"forge.ErrMintNotApproved": {
+		err: forge.ErrMintNotApproved, wantStatus: 0,
+		why: "the derivation chokepoint refused the credential asking for the team token a repo's first provisioning mints — writeForgeProvisionError hands it to derivationError, which answers 401 for a credential that no longer stands and 403 for one that may never mint, never a 502",
+	},
+
 	// Store misses. Every "…but could not be recorded on connection X: %w"
 	// wrap in the forge layer carries one of these; in the class they would
 	// all answer 404 for a write iterion itself failed.

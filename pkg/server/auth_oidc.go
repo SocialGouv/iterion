@@ -427,21 +427,27 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		// the refusal reaches the desktop's loopback instead of sitting in
 		// the browser tab while the app waits out its timeout (#2687).
 		//
-		// Only a flow THIS provider started is honoured, the same rule the
-		// accepted path applies below (pending.Provider != name): a state
-		// another provider's /start issued names no client of this one. And
-		// a read that did not complete is not a state consumed: it says so
+		// The flow the STATE names is the client waiting, whichever
+		// provider's callback the error arrives on — the same thing the
+		// accepted path below does with a state that disagrees
+		// (pending.Provider != name is answered through
+		// redirectCallbackError, with that pending). A refusal withheld
+		// from the desktop that started the flow is the timeout this
+		// branch exists to prevent, and the state is consumed either way,
+		// so withholding it protects nothing. The disagreement is logged:
+		// it names a provider that did not issue this callback.
+		//
+		// A read that did not complete is NOT a state consumed: it says so
 		// in the log instead of leaving the claim "consumed" standing on a
 		// state that may still be replayable.
 		var flow oidc.PendingAuth
 		if st := r.URL.Query().Get("state"); st != "" && s.oidcStates != nil {
 			p, terr := s.oidcStates.Take(r.Context(), st)
 			switch {
-			case terr == nil && p.Provider == name:
-				flow = p
 			case terr == nil:
-				if s.logger != nil {
-					s.logger.Warn("oidc callback error from %s: the state belongs to provider %q, so the refusal is not routed to its client", name, p.Provider)
+				flow = p
+				if p.Provider != name && s.logger != nil {
+					s.logger.Warn("oidc callback error from %s: the state was issued by provider %q — the refusal is routed to the client that flow started", name, p.Provider)
 				}
 			case !errors.Is(terr, oidc.ErrStateNotFound):
 				// A read that did not complete, like a provider

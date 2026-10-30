@@ -88,20 +88,27 @@ from a stored token: create the token in the studio (Account → Access
 tokens) or from a fresh login.
 
 The same rule reaches every command whose route mints a **team token** — a
-token that outlives the credential it is minted from: `webhooks create`,
-`webhooks rotate`, `teams|orgs invitations create`, `forge repo-bots
-create|update` (the provisioning mints the repo's webhook token) and `orgs
-approvals approve` (it replays that provisioning). All of them are refused
-from a stored token, and the advice names the **studio**, not a login: a
-login stores another personal access token, which mints no more than this
-one. Reads and the gestures that mint nothing stay available —
-`webhooks list`, the invitation list and `DELETE`, `repo-bots
-preview|delete`, `orgs approvals reject`.
+token that outlives the credential it is minted from. Three of them mint one
+on every call, so the CLI states the refusal itself, before anything is sent
+— not even the `/api/auth/me` the team and org scope resolution would read:
+`webhooks create`, `webhooks rotate` and `teams|orgs invitations create`.
+The advice names the **studio**, not a login: a login stores another personal
+access token, which mints no more than this one. Reads and the gestures that
+mint nothing stay available — `webhooks list`, the invitation list and
+`DELETE`, `repo-bots preview|delete`, `orgs approvals reject`. Org-scoped
+commands (`--org` / `ITERION_REMOTE_ORG` / `orgs switch`) need no re-minting
+(org scope is path-based).
 
-Every one of these refusals happens before anything is sent — not even the
-`/api/auth/me` the team and org scope resolution would read. Org-scoped
-commands (`--org` / `ITERION_REMOTE_ORG` /
-`orgs switch`) need no re-minting (org scope is path-based).
+The repo-bot provisioning is the one the CLI does **not** pre-judge, and must
+not: whether it mints depends on state only the instance holds. A repo's
+FIRST enable reserves its hook identity and mints the `iwh_` token, so it is
+refused (403) from a stored token. A **reconcile** of a repo already
+provisioned, a settings-only `repo-bots update`, and an `orgs approvals
+approve` standing for such an update reuse the integration's sealed secret,
+mint nothing, and go through — which is why `forge repo-bots create|update`,
+`orgs approvals approve` and the same calls through `remote api` all send,
+and the instance decides. The question is asked where the mint is decided, so
+a refusal that does come back carries the same studio advice.
 
 ## The launch → follow → inspect recipe
 
@@ -164,7 +171,7 @@ the staging step alone and prints the upload id.
 | `tokens` | `list · create · revoke` |
 | `secrets` / `api-keys` | `list · set/create · rotate/update · delete` (`--scope team\|me`) |
 | `bindings` | per-bot secret bindings (`list · create · delete`) |
-| `webhooks` | `list · get · create · update · delete · rotate · deliveries` (`create` and `rotate` mint a team token: studio only from a stored token) |
+| `webhooks` | `list · get · create · update · delete · rotate · deliveries` (`create` and `rotate` mint a team token on every call: studio only from a stored token) |
 | `forge` | `connections · refresh · repo-bots · oauth-apps · integrations` |
 | `audit` / `usage` / `limits` | `audit team\|org\|admin` · org usage · cost limits |
 | `memory` | `docs · doc get\|put\|delete · export · import` (`--name` space) — `usage` carries no space flags, so the server refuses it |

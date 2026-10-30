@@ -146,6 +146,18 @@ type Orchestrator struct {
 	// the iterion-bot face on every identity iterion operates. nil = no
 	// rebrand. Best-effort: a refusal lands on ProjectBot.AvatarError.
 	BotAvatar []byte
+	// ApproveTeamTokenMint, when set, is asked at the ONE line of this
+	// package that fabricates a team token — the reservation of a NEW hook
+	// identity (reserveHookIdentity → webhooks.MintToken) — and its refusal
+	// aborts the provisioning with ErrMintNotApproved. The question is asked
+	// where the mint is DECIDED, not where the request arrives: a
+	// re-provisioning that reuses the integration's sealed secret mints
+	// nothing and is never asked, so a stored personal access token keeps
+	// reconciling a repo it already provisioned, while the first enable of a
+	// repo (and the re-reservation a retired integration makes) answers to
+	// the credential chokepoint. Injected like the other seams: nil asks
+	// nobody, which is what the background rotator and the tests run as.
+	ApproveTeamTokenMint func(ctx context.Context) error
 	// LogWarn, when set, reports a non-blocking anomaly (the only current one:
 	// a security-read withdrawal that could not run while disconnecting).
 	// Injected like the other seams so the package stays logger-free; nil

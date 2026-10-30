@@ -90,6 +90,7 @@ import (
 //	  forge.ErrRepoNotEnabled              0  iterion's own state; the launch route and the board lane's writes answer 409
 //	  forge.ErrProvisionBusy               0  local lease contention; provisioning answers 409
 //	  forge.ErrIntegrationConflict         0  local snapshot conflict; provisioning answers 409
+//	  forge.ErrMintNotApproved             0  the derivation chokepoint refused the credential behind a NEW hook identity's mint; writeForgeProvisionError hands it to derivationError, which answers the credential's own 401/403
 func forgeUpstreamStatus(err error) (int, string) {
 	if err == nil {
 		return 0, ""

@@ -28,7 +28,11 @@ push bots/gitops-warden`, or the release that bakes it).
    Preflight the APPROVAL RIGHT before enforce (step 3) — a 403 here means
    the project's approval rules exclude bot users, which no amount of scopes
    fixes.
-3. **Provision both bots** (warden + review-pr, first-class on one webhook):
+3. **Provision both bots** (warden + review-pr, first-class on one webhook).
+   This is the repo's first enable, so it mints its `iwh_` token: from the
+   studio, or a CLI holding a session credential — a stored personal access
+   token is refused 403 here, and not on the step-4 PATCH, which mints
+   nothing ([cloud-cli](cloud-cli.md#tenant-scope-teams--orgs)).
    `POST /api/teams/{team}/forge/repo-bots`
    `{"connection_id":"…","repo":"<full path>","bot_ids":["gitops-warden","review-pr"],
      "launch_vars":{"reviewers":"<space-separated devops logins>",

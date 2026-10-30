@@ -52,29 +52,72 @@ func (c *RemoteClient) refuseIfPAT(advice string) error {
 	return fmt.Errorf("%s\n%s", patCannotMint, advice)
 }
 
-// asPATMintRefusal reports whether err is the instance's own refusal to
-// derive a credential, and renders it with the same advice — for the
-// credential the local check could not recognise.
-func asPATMintRefusal(err error, advice string) (error, bool) {
+// patMintRefusal reports whether err is the instance's own refusal to derive
+// a credential from the presented one — THE predicate, so the two renderings
+// below cannot drift apart.
+func patMintRefusal(err error) (*APIError, bool) {
 	var ae *APIError
 	if errors.As(err, &ae) && ae.Status == http.StatusForbidden && strings.Contains(ae.Body, patCannotMintSentence) {
+		return ae, true
+	}
+	return nil, false
+}
+
+// asPATMintRefusal reports whether err is that refusal, and renders it with
+// a command's own advice — for the credential the local check could not
+// recognise. It REPLACES the error, so a command with a better place to name
+// than the generic one states only its own.
+func asPATMintRefusal(err error, advice string) (error, bool) {
+	if ae, ok := patMintRefusal(err); ok {
 		return fmt.Errorf("%s\n%s", describeErrorBody([]byte(ae.Body)), advice), true
 	}
 	return err, false
 }
 
-// RefuseTeamTokenMintFromPAT is the pre-flight refusal every command whose
-// route MINTS A TEAM TOKEN puts first (auth.MintTeamToken — the webhook
-// mints, the share-link mints, the team and org invitations, and the
-// repo-bot provisioning whose orchestrator mints the repo's hook token).
-// The instance refuses every one of them to a personal access token (403,
-// #1668), and a personal access token is the only thing the CLI ever stores
-// — every `remote login` branch saves an `iap_…` — so the refusal is stated
-// here, before anything is sent, with the one place the deed can be done.
+// withMintAdvice is the SAME refusal rendered where no command named a place:
+// the generic advice, appended, with the *APIError kept in the chain so
+// callers that inspect the status still can. Every non-2xx answer this
+// package turns into an error passes through here (refuseAPI), so the
+// chokepoint's refusal carries its advice from the typed commands, from the
+// --data senders and from the `remote api` passthrough alike — one point
+// instead of a guard recopied at each command.
+func (c *RemoteClient) withMintAdvice(err error) error {
+	if _, ok := patMintRefusal(err); !ok {
+		return err
+	}
+	return fmt.Errorf("%w\n%s", err, teamTokenMintServerAdvice(c.BaseURL()))
+}
+
+// teamTokenMintServerAdvice is the advice for a refusal the SERVER stated:
+// no command named the place, and the request may have been any of the
+// mints, so it names the studio and the credential that mints.
+func teamTokenMintServerAdvice(base string) string {
+	return "Do it in the studio: " + strings.TrimRight(base, "/") + ", or from a CLI holding a session credential.\n" +
+		"The CLI stores a personal access token, which is pinned to its team and its own expiry;\n" +
+		"a token that would outlive it — a webhook, share-link or invitation token, or the hook\n" +
+		"token a repo's FIRST provisioning mints — is minted by a live session only."
+}
+
+// RefuseTeamTokenMintFromPAT is the pre-flight refusal of a command whose
+// route ALWAYS mints a team token (auth.MintTeamToken — the webhook mints,
+// the share-link mints, the team and org invitations). The instance refuses
+// those to a personal access token (403, #1668), and a personal access
+// token is the only thing the CLI ever stores — every `remote login` branch
+// saves an `iap_…` — so the refusal is stated here, before anything is sent,
+// with the one place the deed can be done.
 //
-// Its CLI callers are `webhooks create`, `webhooks rotate`, `teams|orgs
-// invitations create`, `forge repo-bots create|update` and `orgs approvals
-// approve`; the share-link mints have no first-hand command.
+// Its CLI callers are `webhooks create`, `webhooks rotate` and `teams|orgs
+// invitations create`; the share-link mints have no first-hand command.
+//
+// The repo-bot provisioning is NOT here, and must not be: whether it mints
+// depends on state only the instance holds — a repo's first enable reserves
+// a hook identity, a reconcile or a settings patch of a live integration
+// reuses its sealed secret and mints nothing (the chokepoint is asked at
+// that reservation, forge.Orchestrator.ApproveTeamTokenMint). A local
+// pre-flight there would refuse what the instance allows, which is how eight
+// runbooks came to prescribe a command that answered 403. Those commands
+// send, and the refusal that may come back carries the same advice through
+// RemoteClient.withMintAdvice.
 //
 // where names that place in the studio ("Team → Webhooks"), because naming
 // a login would be a dead end: the login would store another personal
@@ -448,6 +491,14 @@ func RemoteTeamsSwitch(ctx context.Context, c *RemoteClient, p *Printer, teamID,
 		cfg.OrgID = orgID
 	}
 	if err := SaveRemoteConfig(cfg); err != nil {
+		if viaBrowser {
+			// The LAST exit of the browser path, and the only one that is
+			// not a verification refusal: nothing is stored, so nobody
+			// holds the token the approval just minted. It leaves by the
+			// same door as every refused approval — a credential nobody
+			// can use must not outlive the failure that dropped it.
+			return refuseApprovedToken(ctx, c, newToken, fmt.Errorf("save the CLI credentials: %w", err))
+		}
 		return err
 	}
 	if viaBrowser {
@@ -483,6 +534,16 @@ func describeRemoteAccount(u server.UserView) string {
 		return u.Email
 	}
 	return u.ID
+}
+
+// RefuseSelfMintedToken is refuseApprovedToken for the sibling site: the
+// `remote login` whose browser approval (or password login) MADE a token
+// exist and then refused it. Same door, same guarantee — nothing stored, the
+// token revoked, and the error stating its fate — exported because the
+// command lives in cmd/iterion while the exit lives here, with the client
+// that can present the token.
+func RefuseSelfMintedToken(ctx context.Context, c *RemoteClient, plaintext string, reason error) error {
+	return refuseApprovedToken(ctx, c, plaintext, reason)
 }
 
 // refuseApprovedToken is the one way out of a browser approval the switch

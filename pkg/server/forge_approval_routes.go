@@ -27,11 +27,15 @@ import (
 //
 // The approval REPLAYS the parked request through forge.Orchestrator.Provision,
 // so it mints the repo's webhook token exactly as the enable it stands for
-// does: it asks the derivation chokepoint (auth.MintTeamToken) like every
-// other team-token mint. The reject deletes the record and mints nothing.
+// does — when that enable mints one. An approval standing for a new repo
+// reserves a hook identity and answers to the derivation chokepoint
+// (auth.MintTeamToken, asked at the reservation itself through
+// forge.Orchestrator.ApproveTeamTokenMint); one standing for an UPDATE of a
+// live integration reuses its sealed secret and mints nothing, so it is not
+// refused. The reject deletes the record and mints nothing.
 func (s *Server) registerForgeApprovalRoutes() {
 	s.mux.Handle("GET /api/orgs/{id}/provision-approvals", s.requireAuth(http.HandlerFunc(s.handleListOrgProvisionApprovals)))
-	s.mux.Handle("POST /api/orgs/{id}/provision-approvals/{approval_id}/approve", s.requireAuth(s.gateDerivation(auth.MintTeamToken, http.HandlerFunc(s.handleApproveProvision))))
+	s.mux.Handle("POST /api/orgs/{id}/provision-approvals/{approval_id}/approve", s.requireAuth(http.HandlerFunc(s.handleApproveProvision)))
 	s.mux.Handle("POST /api/orgs/{id}/provision-approvals/{approval_id}/reject", s.requireAuth(http.HandlerFunc(s.handleRejectProvision)))
 	s.mux.Handle("GET /api/teams/{id}/provision-approvals", s.requireAuth(http.HandlerFunc(s.handleListTeamProvisionApprovals)))
 }
@@ -374,7 +378,7 @@ func (s *Server) handleApproveProvision(w http.ResponseWriter, r *http.Request) 
 		}
 		// The request stays pending: a retryable failure must not silently
 		// consume the approval — the admin retries or rejects.
-		s.writeForgeProvisionError(w, err)
+		s.writeForgeProvisionError(w, r, err)
 		return
 	}
 	if derr := s.provisionApprovals.Delete(r.Context(), a.ID); derr != nil && !errors.Is(derr, forge.ErrProvisionApprovalNotFound) && s.logger != nil {

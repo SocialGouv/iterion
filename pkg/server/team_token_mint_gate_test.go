@@ -229,45 +229,104 @@ func connectForge(t *testing.T, f *derivationFixture, bearer, glURL string) stri
 	return out.Connection.ID
 }
 
-// forgeProvisioningMints are the three routes whose success path mints the
-// repo's webhook token through the orchestrator. The PATCH and the approve
-// name ids nothing holds: the gate answers before the handler would look
-// them up, which is the point — the refusal does not depend on the target
-// existing.
-func forgeProvisioningMints(connID string) []teamTokenMint {
-	return []teamTokenMint{
-		{http.MethodPost, "/api/teams/ta/forge/repo-bots", `{"connection_id":"` + connID + `","repo":"group/api","bot_ids":["review-pr"]}`},
-		{http.MethodPatch, "/api/teams/ta/forge/repo-bots/00000000-0000-4000-8000-000000000001", `{"bot_ids":["review-pr"]}`},
-		{http.MethodPost, "/api/orgs/o1/provision-approvals/00000000-0000-4000-8000-000000000002/approve", ""},
+// teamHookRows answers team ta's webhook rows, id and token hash: the hash
+// is the mint's own fingerprint, so a request that re-provisions WITHOUT
+// minting leaves it byte-identical. A count alone cannot tell a reused
+// secret from a freshly minted one.
+func teamHookRows(t *testing.T, f *derivationFixture) []webhooks.Config {
+	t.Helper()
+	cfgs, err := f.s.webhookConfigs.ListByTenant(context.Background(), "ta")
+	if err != nil {
+		t.Fatalf("list webhooks: %v", err)
+	}
+	return cfgs
+}
+
+// repoBotsEnableBody is the Integrations enable/reconcile request for a repo.
+func repoBotsEnableBody(connID, repo string) string {
+	return `{"connection_id":"` + connID + `","repo":"` + repo + `","bot_ids":["review-pr"]}`
+}
+
+// onlyHook answers the single webhook row team ta holds, failing when the
+// count is not one: every assertion below compares ONE row's token hash.
+func onlyHook(t *testing.T, f *derivationFixture) webhooks.Config {
+	t.Helper()
+	rows := teamHookRows(t, f)
+	if len(rows) != 1 {
+		t.Fatalf("team ta holds %d webhook rows, want 1", len(rows))
+	}
+	return rows[0]
+}
+
+// patPinnedToTeamTA mints a personal access token pinned to team ta — what
+// `iterion remote login --team ta` stores and what every runbook runs from.
+// mintPAT pins the caller's ACTIVE team, which in this fixture is the
+// account's PERSONAL one: such a token is refused by the team pin itself
+// ("not a member") and never reaches a mint, so it cannot witness this gate
+// at all.
+func patPinnedToTeamTA(t *testing.T, f *derivationFixture) string {
+	t.Helper()
+	code, _, body := f.call(t, http.MethodPost, "/api/me/tokens", f.user.AccessToken, `{"name":"ci","team_id":"ta"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("mint a PAT pinned to ta: %d %s", code, body)
+	}
+	var v struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal([]byte(body), &v); err != nil || v.Token == "" {
+		t.Fatalf("the mint answered %q", body)
+	}
+	return v.Token
+}
+
+// parkApproval writes a provision-approval record by hand, so the approve
+// route can be driven against a record the store really holds — an approve
+// of an id nothing holds answers 404 and would prove nothing about the mint.
+func parkApproval(t *testing.T, f *derivationFixture, id, connID, repo, integrationID string, baseBots []string) {
+	t.Helper()
+	if f.s.provisionApprovals == nil {
+		f.s.provisionApprovals = forge.NewMemoryProvisionApprovalStore()
+	}
+	rec := forge.ProvisionApproval{
+		ID: id, OrgID: "o1", TenantID: "ta", ConnectionID: connID,
+		RepoFullName: repo, BotIDs: []string{"review-pr"},
+	}
+	if integrationID != "" {
+		rec.IntegrationID, rec.Replace, rec.BaseBotIDs = integrationID, true, baseBots
+	}
+	if err := f.s.provisionApprovals.Create(context.Background(), rec); err != nil {
+		t.Fatalf("park the approval record: %v", err)
 	}
 }
 
-// TestTeamTokenMints_TheRepoBotProvisioningIsGated: the Integrations enable,
-// the update that re-provisions and the org approval that replays the parked
-// request mint the repo's webhook token exactly as POST
-// /api/teams/{id}/webhooks does — through the orchestrator rather than in the
-// handler — so they answer the same refusals. A revoked session's access
-// token mints none (401) and a personal access token never does (403), and
-// the enable — the one request here whose target really exists — writes no
-// webhooks.Config row and ships no token to the forge the same credential
-// named.
-func TestTeamTokenMints_TheRepoBotProvisioningIsGated(t *testing.T) {
-	t.Run("a revoked session's access token", func(t *testing.T) {
+// TestTeamTokenMints_TheRepoBotProvisioningIsGatedWhereItMints: the repo-bot
+// provisioning mints the repo's webhook token through the orchestrator
+// (forge.Orchestrator.Provision → reserveHookIdentity → webhooks.MintToken),
+// and the derivation chokepoint is asked THERE — at the reservation, inside
+// the provisioning lease — rather than at the route's door.
+//
+// So the verdict follows the request's own state, not its path: the FIRST
+// enable of a repo reserves a hook identity and answers the refusals a
+// team-token mint owes (401 for a revoked session's access token, 403 for a
+// personal access token), while the gestures that reuse the integration's
+// sealed secret — the reconcile docs/webhooks.md prescribes, a settings-only
+// PATCH, the approval of an UPDATE record — mint nothing and stay open to a
+// stored token. Each of those is checked on the token HASH, which a mint
+// would change.
+func TestTeamTokenMints_TheRepoBotProvisioningIsGatedWhereItMints(t *testing.T) {
+	t.Run("the first enable of a repo: a revoked session's access token mints none", func(t *testing.T) {
 		f, gl, glURL := forgeMintFixture(t)
 		connID := connectForge(t, f, f.user.AccessToken, glURL)
 		if code, _, body := f.call(t, http.MethodPost, "/api/me/sessions/revoke-all", f.other.AccessToken, ""); code != http.StatusNoContent {
 			t.Fatalf("sign out everywhere: %d %s", code, body)
 		}
 		f.s.authSvc.WaitRevocationPasses()
-		hooks, _, _ := mintedCounts(t, f)
-		for _, c := range forgeProvisioningMints(connID) {
-			code, _, body := f.call(t, c.method, c.path, f.user.AccessToken, c.body)
-			if code != http.StatusUnauthorized {
-				t.Errorf("%s %s with a revoked session's access token: %d %s, want 401", c.method, c.path, code, body)
-			}
+		code, _, body := f.call(t, http.MethodPost, "/api/teams/ta/forge/repo-bots", f.user.AccessToken, repoBotsEnableBody(connID, "group/api"))
+		if code != http.StatusUnauthorized {
+			t.Errorf("the first enable with a revoked session's access token: %d %s, want 401", code, body)
 		}
-		if h, _, _ := mintedCounts(t, f); h != hooks {
-			t.Errorf("a revoked session minted %d webhook row(s) through the provisioning", h-hooks)
+		if rows := teamHookRows(t, f); len(rows) != 0 {
+			t.Errorf("a revoked session minted %d webhook row(s) through the provisioning", len(rows))
 		}
 		gl.mu.Lock()
 		created := gl.createBody
@@ -277,25 +336,19 @@ func TestTeamTokenMints_TheRepoBotProvisioningIsGated(t *testing.T) {
 		}
 	})
 
-	t.Run("a personal access token", func(t *testing.T) {
+	t.Run("the first enable of a repo: a personal access token mints none", func(t *testing.T) {
 		f, gl, glURL := forgeMintFixture(t)
 		connID := connectForge(t, f, f.user.AccessToken, glURL)
-		code, patToken := f.mintPAT(t, f.user.AccessToken, "ci")
-		if code != http.StatusCreated || patToken == "" {
-			t.Fatalf("mint the PAT: %d", code)
+		patToken := patPinnedToTeamTA(t, f)
+		code, _, body := f.call(t, http.MethodPost, "/api/teams/ta/forge/repo-bots", patToken, repoBotsEnableBody(connID, "group/api"))
+		if code != http.StatusForbidden {
+			t.Errorf("the first enable with a personal access token: %d %s, want 403", code, body)
 		}
-		hooks, _, _ := mintedCounts(t, f)
-		for _, c := range forgeProvisioningMints(connID) {
-			code, _, body := f.call(t, c.method, c.path, patToken, c.body)
-			if code != http.StatusForbidden {
-				t.Errorf("%s %s with a personal access token: %d %s, want 403", c.method, c.path, code, body)
-			}
-			if want := "cannot mint another credential"; !strings.Contains(body, want) {
-				t.Errorf("%s %s: the refusal does not carry %q: %s", c.method, c.path, want, body)
-			}
+		if want := "cannot mint another credential"; !strings.Contains(body, want) {
+			t.Errorf("the refusal does not carry %q: %s", want, body)
 		}
-		if h, _, _ := mintedCounts(t, f); h != hooks {
-			t.Errorf("a personal access token minted %d webhook row(s) through the provisioning", h-hooks)
+		if rows := teamHookRows(t, f); len(rows) != 0 {
+			t.Errorf("a personal access token minted %d webhook row(s) through the provisioning", len(rows))
 		}
 		gl.mu.Lock()
 		created := gl.createBody
@@ -308,18 +361,86 @@ func TestTeamTokenMints_TheRepoBotProvisioningIsGated(t *testing.T) {
 	t.Run("a standing session still provisions", func(t *testing.T) {
 		f, gl, glURL := forgeMintFixture(t)
 		connID := connectForge(t, f, f.user.AccessToken, glURL)
-		code, _, body := f.call(t, http.MethodPost, "/api/teams/ta/forge/repo-bots", f.user.AccessToken, forgeProvisioningMints(connID)[0].body)
+		code, _, body := f.call(t, http.MethodPost, "/api/teams/ta/forge/repo-bots", f.user.AccessToken, repoBotsEnableBody(connID, "group/api"))
 		if code != http.StatusOK {
 			t.Fatalf("enable with a live session: %d %s, want the provisioning to go through", code, body)
 		}
-		if h, _, _ := mintedCounts(t, f); h != 1 {
-			t.Fatalf("a live session's enable wrote %d webhook rows, want 1", h)
+		if rows := teamHookRows(t, f); len(rows) != 1 {
+			t.Fatalf("a live session's enable wrote %d webhook rows, want 1", len(rows))
 		}
 		gl.mu.Lock()
 		created := gl.createBody
 		gl.mu.Unlock()
 		if created == nil {
 			t.Fatal("a live session's enable pushed no hook to the forge")
+		}
+	})
+
+	// The other side of the SAME branch, on the same routes and the same
+	// credential: what mints nothing is not refused. A gate at the route's
+	// door refuses all three of these, which is what left eight runbooks
+	// prescribing a command the instance answered 403 to.
+	t.Run("what re-provisions without minting stays open to a personal access token", func(t *testing.T) {
+		f, _, glURL := forgeMintFixture(t)
+		connID := connectForge(t, f, f.user.AccessToken, glURL)
+		code, _, body := f.call(t, http.MethodPost, "/api/teams/ta/forge/repo-bots", f.user.AccessToken, repoBotsEnableBody(connID, "group/api"))
+		if code != http.StatusOK {
+			t.Fatalf("enable with a live session: %d %s", code, body)
+		}
+		var enabled struct {
+			IntegrationID string `json:"integration_id"`
+		}
+		if err := json.Unmarshal([]byte(body), &enabled); err != nil || enabled.IntegrationID == "" {
+			t.Fatalf("the enable answered %q", body)
+		}
+		minted := onlyHook(t, f)
+		patToken := patPinnedToTeamTA(t, f)
+		parkApproval(t, f, "00000000-0000-4000-8000-0000000000bb", connID, "group/api", enabled.IntegrationID, []string{"review-pr"})
+
+		for _, c := range []teamTokenMint{
+			// The reconcile docs/webhooks.md prescribes: the same POST,
+			// same hook id, same durable `iwh_` secret.
+			{http.MethodPost, "/api/teams/ta/forge/repo-bots", repoBotsEnableBody(connID, "group/api")},
+			// A settings-only patch: the gate switch of docs/merge-gate.md.
+			{http.MethodPatch, "/api/teams/ta/forge/repo-bots/" + enabled.IntegrationID, `{"launch_vars":{"gate_context":"iterion/revi"}}`},
+			// An org approval standing for an UPDATE of that integration.
+			{http.MethodPost, "/api/orgs/o1/provision-approvals/00000000-0000-4000-8000-0000000000bb/approve", ""},
+		} {
+			code, _, body := f.call(t, c.method, c.path, patToken, c.body)
+			if code != http.StatusOK {
+				t.Errorf("%s %s with a personal access token: %d %s, want 200 — it mints nothing", c.method, c.path, code, body)
+				continue
+			}
+			row := onlyHook(t, f)
+			if row.ID != minted.ID || row.TokenHash != minted.TokenHash {
+				t.Errorf("%s %s DID mint: webhook %s/%s became %s/%s", c.method, c.path,
+					minted.ID, minted.TokenHash[:12], row.ID, row.TokenHash[:12])
+			}
+		}
+	})
+
+	t.Run("an approval standing for a repo's first enable still answers the chokepoint", func(t *testing.T) {
+		f, _, glURL := forgeMintFixture(t)
+		connID := connectForge(t, f, f.user.AccessToken, glURL)
+		patToken := patPinnedToTeamTA(t, f)
+		parkApproval(t, f, "00000000-0000-4000-8000-0000000000aa", connID, "group/api", "", nil)
+		code, _, body := f.call(t, http.MethodPost, "/api/orgs/o1/provision-approvals/00000000-0000-4000-8000-0000000000aa/approve", patToken, "")
+		if code != http.StatusForbidden {
+			t.Errorf("approving a NEW-repo record with a personal access token: %d %s, want 403", code, body)
+		}
+		if want := "cannot mint another credential"; !strings.Contains(body, want) {
+			t.Errorf("the refusal does not carry %q: %s", want, body)
+		}
+		if rows := teamHookRows(t, f); len(rows) != 0 {
+			t.Errorf("the refused approval minted %d webhook row(s)", len(rows))
+		}
+		// The control, same record: a live session approves it.
+		code, _, body = f.call(t, http.MethodPost, "/api/orgs/o1/provision-approvals/00000000-0000-4000-8000-0000000000aa/approve", f.user.AccessToken, "")
+		if code != http.StatusOK {
+			t.Fatalf("approving the same record with a live session: %d %s, want 200", code, body)
+		}
+		if rows := teamHookRows(t, f); len(rows) != 1 {
+			t.Fatalf("the approved provisioning wrote %d webhook rows, want 1", len(rows))
 		}
 	})
 }
