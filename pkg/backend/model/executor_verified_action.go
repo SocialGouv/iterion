@@ -432,9 +432,11 @@ func (e *ClawExecutor) recoveryModel(node *ir.ToolNode) string {
 // Every rung that PUBLISHES an output crosses this merge, and it is the only
 // place in the engine where two tool-node output maps become one — so it is
 // where a mark that describes ONE of them is honoured or lost. The exits
-// that publish nothing cross nothing: an oracle that could not run, a
-// cancelled node, and rung 5 under `required` or `recover`, which fails the
-// node instead of answering with it.
+// that publish nothing cross nothing — every exit that fails the node
+// instead of answering with it: a build or policy failure, an ambiguous end
+// (a recipe or a repair whose end was never proven), a lost `required`
+// deliverable, an oracle that could not run, a cancelled node, and rung 5
+// under `required` or `recover`.
 // [toolNodeDrainCutKey] describes the `result` wrapper of the run it came
 // from, so it follows the `result` that survived the clash: the whole point
 // of the mark is to tell a possible prefix from an answer, and on a complete

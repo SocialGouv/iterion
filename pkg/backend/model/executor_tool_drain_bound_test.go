@@ -329,6 +329,63 @@ func TestTheSharedRunnerKeepsABoundChosenBelowItAndHandsTheCutBackUnwrapped(t *t
 	}
 }
 
+// The override is THIS site's knob, and the page may only say so: it decides
+// the bound this site chooses and stops at one a layer below already chose.
+// The sibling above pins the "keeps a bound chosen below it" half with the
+// variable CLEARED, which leaves the half an operator acts on — "raise
+// ITERION_PROC_WAIT_DELAY" — unwitnessed; a page that reads "the override is
+// over either" sends them to widen a driver client's drain with a variable
+// the shared runner never applies to it. It holds for the one driver that
+// bounds its client (kubernetes) only because that driver resolves its own
+// default through this same variable (kubectlDrainBound via
+// [proc.SetWaitDelay]) — a per-driver courtesy, not a rule of this site.
+//
+// Both arms in one table so neither reading can be stated without the other.
+//
+// Mutation seen red: drop the `if drainBound == 0` test in
+// runWithSeparateStreams and call [proc.SetWaitDelay] unconditionally — the
+// chosen-below arm then comes back with the override's hour, the bound the
+// layer below asked for gone.
+func TestTheOverrideReachesThisSitesBoundAndStopsAtOneChosenBelow(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture")
+	}
+	// Recognisable, and neither this site's default nor the override.
+	const chosenBelow = 750 * time.Millisecond
+	// Far from any bound a layer could choose, so the arms cannot be confused.
+	const override = time.Hour
+	const answer = "the-commands-answer"
+
+	for _, tc := range []struct {
+		name string
+		// below is what a layer under this site put on the Cmd; 0 is a Cmd
+		// that carries no bound, which is what every driver but kubernetes
+		// hands back.
+		below     time.Duration
+		wantBound time.Duration
+	}{
+		{"nothing chosen below: the override IS the bound in force", 0, override},
+		{"a bound chosen below: the override does not reach it", chosenBelow, chosenBelow},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(proc.WaitDelayEnv, override.String())
+			cmd := exec.Command("bash", "-c", "printf %s "+answer)
+			cmd.WaitDelay = tc.below
+
+			stdout, _, bound, err := runWithSeparateStreams(cmd)
+			if err != nil {
+				t.Fatalf("the command exited 0 and left nothing holding its output: %v", err)
+			}
+			if bound != tc.wantBound {
+				t.Errorf("the bound in force is %s, want %s — the report names this one, and it is the one an operator is told to raise", bound, tc.wantBound)
+			}
+			if got := string(stdout); got != answer {
+				t.Errorf("stdout = %q, want %q", got, answer)
+			}
+		})
+	}
+}
+
 // The way out an author has, which the DSL page states: redirect the job's
 // streams and nothing holds the node's output, so the node ends as soon as
 // the command does and there is no drain to report. The control of the two
@@ -766,9 +823,10 @@ func TestACutOutputThatCouldBeAPrefixIsPublishedAsOne(t *testing.T) {
 //
 // It is the common `server &` shape, a startup line landing half a second
 // after the command's own answer, and it is the case where a downstream
-// {{outputs.<node>.<field>}} silently finds nothing: the object the recipe
-// declared was reshaped into the `result` wrapper by bytes it never meant to
-// publish. So the mark's guarantee is ONE-WAY — a mark says these bytes may
+// {{outputs.<node>.<field>}} stops resolving with nothing to say why — its
+// raw braces reach the next command as text, and no mark and no report
+// explain them: the object the recipe declared was reshaped into the
+// `result` wrapper by bytes it never meant to publish. So the mark's guarantee is ONE-WAY — a mark says these bytes may
 // be a prefix; its absence says nothing was cut, never that the answer is
 // what the command printed. That is what the DSL page, the
 // ITERION_PROC_WAIT_DELAY row and [toolNodeDrainBound] say, and the reason

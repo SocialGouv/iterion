@@ -680,27 +680,33 @@ func (e *ClawExecutor) toolNodePolicyIdentity(ctx context.Context, name string) 
 // command runs, so what is left to read at its exit is a pipe buffer, not a
 // transcript.
 //
-// It is the HOST's bound, and the readings above are the host path's. On a
+// It is the HOST's bound, and the readings above are the host path's —
+// which is every run the engine did not place in a sandbox, not `none`
+// alone: a declared `sandbox: auto` the host degraded to unsandboxed for
+// want of a container runtime (the run's sandbox_skipped event, #1425)
+// leaves e.sandbox nil, so its nodes take the branch below and read exactly
+// like none's — this bound, this report, this mark, this override. On a
 // node whose driver runs the command elsewhere, this Cmd is the DRIVER's
 // exec client — [ClawExecutor.sandboxToolCommand] hands a
 // [sandbox.HostRun] driver's command straight through instead, so the noop
 // one stays on the host path — and the bound in force is then that
 // client's: the driver's own when it set one — the kubernetes driver puts
 // kubectlDrainBound on every kubectl it builds (cmdContext, through
-// [proc.WaitDelayEnv] like this site), and [runWithSeparateStreams] keeps
-// that choice — this site's default otherwise, which is what the docker
-// driver takes, having set none. What a cut can say there follows the same
+// [proc.WaitDelayEnv] like this site, which is the only reason the override
+// reaches it), and [runWithSeparateStreams] keeps that choice — this site's
+// default otherwise, which is what the docker driver takes, having set
+// none. What a cut can say there follows the same
 // rule: [proc.DrainCutShort] is asked about the CLIENT's pipes. A driver
 // that bounds its client raises exec's sentinel, which this site reports,
 // and marks when the bytes in hand do not parse — about that client's
 // drain. One that does not leaves this site reading a nil error, with no
-// sentinel to report or to mark: measured on the docker driver (29.9.2,
-// image ghcr.io/socialgouv/iterion-sandbox-slim:edge), `docker exec` itself
-// stops copying some 2 s after the exec'd process exits and exits 0 —
-// holders writing at 4 s and at 10 s both leave the command's own bytes in
-// hand after 2.05 s, and the same recipe run at bounds of 10 ms, 100 ms,
-// 2 s and unbounded comes back at 2.04–2.06 s alike, so no override widens
-// that grace.
+// sentinel to report or to mark: measured with the docker CLI (29.9.2,
+// image ghcr.io/socialgouv/iterion-sandbox-slim:edge; a podman client's
+// grace is its own), `docker exec` itself stops copying some 2 s after the
+// exec'd process exits and exits 0 — holders writing at 4 s and at 10 s
+// both leave the command's own bytes in hand after 2.05 s, and the same
+// recipe run at bounds of 10 ms, 100 ms, 2 s and unbounded comes back at
+// 2.04–2.07 s alike, so no override widens that grace.
 //
 // Either way the reading says nothing about the in-container job that held
 // the command's output: [toolNodeDrainCutKey] and the report describe the
