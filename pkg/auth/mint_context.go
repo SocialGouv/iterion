@@ -47,15 +47,19 @@ func (v MintVerdict) Credential() string { return v.credentialID }
 // into a request's context. The derivation gate calls it right after its ask
 // (CheckDerivation) grants; production code anywhere else is a trapdoor, and
 // TestEveryTeamTokenMintVerdictStamperIsTheGateOrATest (pkg/server) refuses
-// one — tests issue verdicts through this same constructor, so the context a
-// test mints under is the context the gate stamps, never a side door.
+// one — in every spelling source can reach this constructor by: qualified,
+// a bare Ident through a dot-import of this package, or a MintVerdict
+// literal with the private key by hand. Tests issue verdicts through this
+// same constructor, so the context a test mints under is the context the
+// gate stamps, never a side door.
 func NewMintVerdict(mint Mint, credentialID string) MintVerdict {
 	return MintVerdict{mint: mint, credentialID: credentialID}
 }
 
 // ContextWithMintVerdict returns ctx carrying the verdict. Stamping without
 // the ask is the trapdoor NewMintVerdict's doc names; the same inventory
-// test holds this stamp to the gate.
+// test holds the stamp — and the raw routes beside it (a MintVerdict
+// literal, the private key in a bare context.WithValue) — to the gate.
 func ContextWithMintVerdict(ctx context.Context, v MintVerdict) context.Context {
 	return context.WithValue(ctx, mintVerdictKey{}, v)
 }

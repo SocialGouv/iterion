@@ -40,9 +40,14 @@ import (
 //   - the demand itself, read in each primitive's own body, per the table
 //     below — a context parameter and auth.RequireMintVerdict, nothing else
 //     (TestEveryTeamTokenMintPrimitiveDemandsTheVerdict);
-//   - the stamp held to the gate: whoever puts a verdict in a context in
-//     production code sits in derivation_gate.go, the gate and the forge
-//     seam's server side — anything else is a trapdoor
+//   - the stamp held to the gate: the verdict's whole currency — its two
+//     constructors, the read that takes it out of a context, a MintVerdict
+//     literal, the private context key by hand — is inventoried by SYMBOL,
+//     wherever the module's source reaches it (a dot-import of pkg/auth
+//     spells the constructors bare, and is its own refusal); in production
+//     code that currency lives only in the verdict's printer
+//     (pkg/auth/mint_context.go) and the gate (derivation_gate.go) —
+//     anything else is a trapdoor named by symbol
 //     (TestEveryTeamTokenMintVerdictStamperIsTheGateOrATest);
 //   - the forge's ask where the mint is decided, at the one reservation
 //     line that mints (TestTheForgeReservesItsHookIdentityBehindTheApproval),
@@ -103,6 +108,25 @@ var mintGraphDirs = []string{"pkg/server", "pkg/forge", "pkg/webhooks", "pkg/con
 // from: the gate that asks the chokepoint, and the forge seam's server side,
 // live there.
 const derivationGateFile = "pkg/server/derivation_gate.go"
+
+// mintContextFile is the verdict's printer: the file that defines
+// MintVerdict, its private key and its constructors. The currency exists
+// there by construction — NewMintVerdict is its only issuer,
+// ContextWithMintVerdict its only stamp — and the demand the primitives make
+// (RequireMintVerdict) reads there. The inventory exempts it beside the
+// gate, and nowhere else.
+const mintContextFile = "pkg/auth/mint_context.go"
+
+// mintVerdictUses is the currency a function name spells, with the named
+// refusal each reference to it carries. A composite literal of MintVerdict
+// and the private key mintVerdictKey are inventoried beside them: the
+// fields and the key are unexported, so every site of both lives in
+// pkg/auth, where the bare names are all there is to spell.
+var mintVerdictUses = map[string]string{
+	"NewMintVerdict":         "stamps a verdict by auth.NewMintVerdict",
+	"ContextWithMintVerdict": "stamps a verdict by auth.ContextWithMintVerdict",
+	"MintVerdictFromContext": "reads a verdict from a context by auth.MintVerdictFromContext",
+}
 
 // moduleRoot is the module's directory as seen from pkg/server, where these
 // tests run.
@@ -328,17 +352,36 @@ func TestEveryTeamTokenMintPrimitiveDemandsTheVerdict(t *testing.T) {
 	}
 }
 
-// TestEveryTeamTokenMintVerdictStamperIsTheGateOrATest holds the stamp to
-// the gate: putting a verdict in a context (auth.NewMintVerdict,
-// auth.ContextWithMintVerdict) is the chokepoint's own currency, and in
-// production code it is stamped in exactly one file — the derivation gate
-// and the forge seam's server side, which ask before they stamp. A stamper
-// anywhere else is a door around the gate, and fails here by name. Tests
-// stamp through the same constructor, so a test mints under exactly the
-// context a gated handler runs under — that is the design, not a trapdoor:
-// no production caller can reach a test's context.
+// TestEveryTeamTokenMintVerdictStamperIsTheGateOrATest holds the verdict's
+// currency to its two legitimate holders: the printer that defines it
+// (pkg/auth/mint_context.go) and the gate that asks before it stamps
+// (derivation_gate.go, the forge seam's server side included). The inventory
+// matches SYMBOLS, not spellings — every way production source can reach the
+// currency carries its own named refusal:
+//
+//   - auth.NewMintVerdict / auth.ContextWithMintVerdict, through ANY alias of
+//     pkg/auth (all of them, judged as a union in a stable order — a file
+//     importing the package twice never leaves the verdict to the import
+//     map's iteration);
+//   - the same names bare, inside pkg/auth itself or in a file that
+//     dot-imports it (a dot-import qualifies no name, so the bare spelling
+//     is all such a file can reach the constructors by — and the dot-import
+//     is its own refusal);
+//   - the read, auth.MintVerdictFromContext — outside the printer it bypasses
+//     the demand the primitives make (RequireMintVerdict's typed refusal);
+//   - a MintVerdict{…} literal, bare in pkg/auth (the unexported fields make
+//     it legal only where the package owns them) or qualified anywhere (the
+//     zero value, which approves nothing, refused all the same);
+//   - the private context key mintVerdictKey handled by hand inside pkg/auth
+//     — With it in a bare context.WithValue, or reading it straight off a
+//     context — which mints the currency through neither constructor.
+//
+// A currency site anywhere else is a door around the gate and fails here by
+// name. Tests stamp through the same constructor (testMintVerdictContext
+// below), so a test mints under exactly the context a gated handler runs
+// under — that is the design, not a trapdoor: no production caller can reach
+// a test's context.
 func TestEveryTeamTokenMintVerdictStamperIsTheGateOrATest(t *testing.T) {
-	stampers := map[string]bool{"NewMintVerdict": true, "ContextWithMintVerdict": true}
 	var offenders []string
 	allowed := 0
 	fset := token.NewFileSet()
@@ -366,14 +409,17 @@ func TestEveryTeamTokenMintVerdictStamperIsTheGateOrATest(t *testing.T) {
 			t.Errorf("parse %s: %v", p, perr)
 			return nil
 		}
-		aliases := importAliases(file)
-		for _, sel := range verdictStampings(file, aliases, stampers) {
+		for _, what := range verdictStampings(file, importAliases(file)) {
 			where := rel + "/" + filepath.Base(p)
-			if where == derivationGateFile {
+			switch where {
+			case derivationGateFile:
 				allowed++
-				continue
+			case mintContextFile:
+				// The verdict's printer: the currency exists here by
+				// construction.
+			default:
+				offenders = append(offenders, where+" "+what)
 			}
-			offenders = append(offenders, where+" stamps a verdict by "+sel)
 		}
 		return nil
 	})
@@ -385,25 +431,55 @@ func TestEveryTeamTokenMintVerdictStamperIsTheGateOrATest(t *testing.T) {
 	}
 	sort.Strings(offenders)
 	for _, o := range offenders {
-		t.Errorf("%s: a derivation verdict stamped outside %s is a door around the gate — ask the chokepoint there instead, or make your case for the inventory", o, derivationGateFile)
+		t.Errorf("%s: the verdict's currency outside its printer (%s) and the gate (%s) is a door around the gate — ask the chokepoint there instead, or make your case for the inventory", o, mintContextFile, derivationGateFile)
 	}
 }
 
-// verdictStampings answers how a file's CODE references one of the named
-// verdict constructors — a call, or a value it hands on — qualified by an
-// alias for the auth package, or bare inside the auth package itself. A
-// declaration's own name is not a stamping: only bodies and initializers
-// are read.
-func verdictStampings(file *ast.File, aliases map[string]string, names map[string]bool) []string {
-	authPkg := modulePath + "/pkg/auth"
-	qualified := ""
+// verdictStampings answers every production reference to the verdict's
+// currency a file makes, each with its own named refusal. It matches SYMBOLS,
+// not spellings:
+//
+//   - a selector through ANY alias of pkg/auth (all of them, in a stable
+//     order, never the import map's last word: a file importing the package
+//     twice is judged under both);
+//   - the same names bare, inside pkg/auth itself or in a file that
+//     dot-imports it;
+//   - a MintVerdict{…} composite literal, bare in pkg/auth or dot-imported,
+//     or qualified through an alias;
+//   - the private context key mintVerdictKey, whose unexported type keeps
+//     every site of it in pkg/auth.
+//
+// A declaration's own name is not a use of the currency: only bodies and
+// initializers are read.
+func verdictStampings(file *ast.File, aliases map[string]string) []string {
+	var authAliases []string
+	dotImportsAuth := false
 	for alias, p := range aliases {
-		if p == authPkg {
-			qualified = alias
+		if p != modulePath+"/pkg/auth" {
+			continue
 		}
+		if alias == "." {
+			dotImportsAuth = true
+			continue
+		}
+		authAliases = append(authAliases, alias)
 	}
-	var out []string
+	sort.Strings(authAliases)
+
 	inAuth := file.Name.Name == "auth"
+	reachesBare := inAuth || dotImportsAuth
+	bareWhy := " (bare, in pkg/auth)"
+	if dotImportsAuth {
+		bareWhy = " (bare: this file dot-imports pkg/auth)"
+	}
+
+	var out []string
+	refuse := func(what string) {
+		out = append(out, what)
+	}
+	if dotImportsAuth {
+		refuse(`dot-imports pkg/auth (".") — its verdict constructors spell bare, and a bare spelling is what the inventory must be able to name`)
+	}
 	var bodies []ast.Node
 	for _, decl := range file.Decls {
 		switch d := decl.(type) {
@@ -425,20 +501,48 @@ func verdictStampings(file *ast.File, aliases map[string]string, names map[strin
 		}
 	}
 	for _, body := range bodies {
-		spellings(body, func(e ast.Expr) {
-			switch v := e.(type) {
+		ast.Inspect(body, func(n ast.Node) bool {
+			switch v := n.(type) {
+			case *ast.CompositeLit:
+				switch t := v.Type.(type) {
+				case *ast.Ident:
+					if t.Name == "MintVerdict" && reachesBare {
+						refuse("builds the verdict by literal (MintVerdict{…} — the fields are unexported, so the literal only mints where the package owns them)")
+					}
+				case *ast.SelectorExpr:
+					if x, ok := t.X.(*ast.Ident); ok && t.Sel.Name == "MintVerdict" && holdsAlias(authAliases, x.Name) {
+						refuse("builds the verdict by literal (auth.MintVerdict{…} — the zero value, which approves nothing, refused all the same)")
+					}
+				}
 			case *ast.SelectorExpr:
-				if x, ok := v.X.(*ast.Ident); ok && x.Name == qualified && names[v.Sel.Name] {
-					out = append(out, qualified+"."+v.Sel.Name)
+				if x, ok := v.X.(*ast.Ident); ok && holdsAlias(authAliases, x.Name) {
+					if what, ok := mintVerdictUses[v.Sel.Name]; ok {
+						refuse(what)
+					}
 				}
 			case *ast.Ident:
-				if inAuth && names[v.Name] {
-					out = append(out, v.Name)
+				if what, ok := mintVerdictUses[v.Name]; ok && reachesBare {
+					refuse(what + bareWhy)
+				}
+				if inAuth && v.Name == "mintVerdictKey" {
+					refuse("handles the verdict's private context key by hand (mintVerdictKey) — With it in a bare context.WithValue, or reading it off a context, mints the currency through neither constructor")
 				}
 			}
+			return true
 		})
 	}
 	return out
+}
+
+// holdsAlias answers whether name is one of the aliases a file reaches
+// pkg/auth by.
+func holdsAlias(aliases []string, name string) bool {
+	for _, a := range aliases {
+		if a == name {
+			return true
+		}
+	}
+	return false
 }
 
 // TestTheForgeReservesItsHookIdentityBehindTheApproval reads the forge's one
