@@ -911,7 +911,7 @@ func storeWriterLeft(llm ir.LLMNode, w *ir.Workflow) string {
 func heldWriterLeft(exec *model.ClawExecutor, llm ir.LLMNode, w *ir.Workflow) string {
 	writers := toolcatalog.DurableWriteCanonicals()
 	store := durableMemoryWriteTools()
-	for _, route := range nodeRoutes(exec, llm) {
+	for _, route := range nodeRoutes(exec, llm, w) {
 		for _, held := range heldToolNames(exec, llm, route) {
 			canonical := toolcatalog.CanonicalToolName(held)
 			if !slices.Contains(writers, canonical) || slices.Contains(store, canonical) {
@@ -1084,7 +1084,7 @@ func parsableRules(raws []string) []string {
 // owed is taken over real rosters rather than over the caller's word.
 func gateSpellings(llm ir.LLMNode, w *ir.Workflow, tool string) []string {
 	out := []string{}
-	for _, route := range nodeRoutes(model.NewProgramExecutor(w), llm) {
+	for _, route := range nodeRoutes(model.NewProgramExecutor(w), llm, w) {
 		for _, spelling := range backendGateSpellings(route, tool) {
 			if !slices.Contains(out, spelling) {
 				out = append(out, spelling)
@@ -1121,10 +1121,26 @@ func backendGateSpellings(backend, tool string) []string {
 //
 // Re-deriving them from the declaration is wrong in both directions, which is
 // the reason those seams exist: a route spelled `{{vars.fb}}` is a backend
-// NAME at dispatch and nothing in the IR, a route a `when:` gate or `action:
-// skip` takes out of the chain is in the IR and in no run, and a `fallbacks:`
-// entry naming no backend of its own inherits the node's rather than adding a
-// route.
+// NAME at dispatch and nothing in the IR, a route an `action: skip` takes out
+// of the chain is in the IR and in no run, and a `fallbacks:` entry naming no
+// backend of its own inherits the node's rather than adding a route.
+//
+// The chain comes from the program-only executor, which holds no vars, so
+// `fallbackWhenActive` — DISPATCH's posture — has dropped every `when:` route
+// whose gate it cannot answer. A capability question does not inherit that
+// drop: dispatch ON A RUN that carries the vars walks the route (the same
+// executor with SetVars keeps it), and the engine's own answer for a walk —
+// FallbackWhenActive, which "must never drop a provider the run might spend"
+// — keeps what it cannot answer. So each gated route the chain lost is
+// carried here UNGATED, read as its source (ir.SourceNodeBackendName against
+// the workflow's `default_backend:`), and a source that decides nothing
+// expands like any undecided route below. What a DECLARATION determines
+// stays out: an `action: skip` route resolves no backend ever, and an entry
+// naming no backend of its own means the node's own route, which the chain
+// head already carries — reading it as the workflow default would add a
+// route no declaration wrote. (iterion#2832, H-10 round r3b finding 1: the
+// drop inherited dispatch's posture and fired C274 on bundles whose only
+// write path sat behind a `when:` gate a run's vars activate.)
 //
 // A route the engine answers "" for is one no DECLARATION decides: the
 // program-only executor stops before the host, and past that point dispatch
@@ -1137,21 +1153,37 @@ func backendGateSpellings(backend, tool string) []string {
 // `auto_memory: on` with a restricted list holds `write_file` and a bundle on
 // claude_code is credited a grant it never gets; read as a CLI backend, the
 // same node loses the grant and C274 fires on a bundle whose runs write.
-func nodeRoutes(exec *model.ClawExecutor, llm ir.LLMNode) []string {
+func nodeRoutes(exec *model.ClawExecutor, llm ir.LLMNode, w *ir.Workflow) []string {
 	var out []string
 	add := func(route string) {
 		if !slices.Contains(out, route) {
 			out = append(out, route)
 		}
 	}
-	for _, route := range append([]string{exec.EffectiveBackendName(llm)}, exec.EffectiveFallbackBackends(llm)...) {
+	// "" is one no DECLARATION decides: read as every candidate dispatch
+	// would pick from, never as a branch of its own.
+	expand := func(route string) {
 		if route != "" {
 			add(route)
-			continue
+			return
 		}
 		for _, candidate := range backendcaps.Names() {
 			add(candidate)
 		}
+	}
+	for _, route := range append([]string{exec.EffectiveBackendName(llm)}, exec.EffectiveFallbackBackends(llm)...) {
+		expand(route)
+	}
+	// A gated route the chain dropped is carried ungated — the walk's
+	// posture, not dispatch's (the godoc above); what the DECLARATION
+	// determines stays out (skip, inherit).
+	for _, fb := range llm.GetFallbacks() {
+		if strings.TrimSpace(fb.When) == "" ||
+			fb.Action == ir.FallbackActionSkip ||
+			strings.TrimSpace(fb.Backend) == "" {
+			continue
+		}
+		expand(ir.SourceNodeBackendName(fb.Backend, w.DefaultBackend))
 	}
 	return out
 }
