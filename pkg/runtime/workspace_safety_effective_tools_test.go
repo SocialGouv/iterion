@@ -139,6 +139,17 @@ func TestParallelAdmissionReadsTheToolsANodeWillHoldNotTheOnesItDeclared(t *test
 			node:    agentNode("n", readOnlyList, "claw", func(n *ir.AgentNode) { n.Capabilities = []string{"runs.read"} }),
 			mutates: false,
 		},
+		{
+			// The connector facade is the third host-owned MCP surface, and
+			// it acts on a VENDOR over HTTP — further from the shared
+			// worktree than the board is, not closer. Left out of the name
+			// predicate, its pair turned an admitted fan-out into a refusal
+			// on claw and made the refusal's stated cause the author's
+			// `tools:` list, which naming the tool does not fix.
+			name:    "the connectors capability adds tools that act on a VENDOR",
+			node:    agentNode("n", readOnlyList, "claw", func(n *ir.AgentNode) { n.Capabilities = []string{"connectors"} }),
+			mutates: false,
+		},
 		// A backend that never RECEIVES the list cannot be bounded by it.
 		{
 			name:    "a declared list on a backend that never receives it is no bound",

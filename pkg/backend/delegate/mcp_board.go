@@ -50,17 +50,24 @@ func BoardToolsFor(caps []string) []string {
 }
 
 // IsIterionMCPTool reports whether a tool FQN is served by one of iterion's
-// OWN MCP transports — the board and runs servers this package registers for a
-// node's `capabilities:` — as opposed to a tool the node's `mcp:` blocks or the
-// harness brought.
+// OWN MCP transports — the board, runs and connector-facade servers this
+// package registers for a node's `capabilities:` — as opposed to a tool the
+// node's `mcp:` blocks or the harness brought.
 //
-// It is built from the same two server-name constants the FQNs are built from,
-// so it cannot drift into recognising a spelling nothing emits. Its consumer is
-// the workspace-safety classifier: these tools act on the BOARD and on the run
-// store, never on the shared worktree, which is the only thing that classifier
-// asks about. (Moving a card to `eligible` does start a run through the
-// dispatcher — a real effect, and not a write to the workspace this node
-// shares with its parallel siblings.)
+// It is built from the same server-name constants the FQNs are built from, so
+// it cannot drift into recognising a spelling nothing emits. Its consumer is
+// the workspace-safety classifier: these tools act on the BOARD, on the run
+// store and on a tenant's VENDOR, never on the shared worktree, which is the
+// only thing that classifier asks about. (Moving a card to `eligible` does
+// start a run through the dispatcher — a real effect, and not a write to the
+// workspace this node shares with its parallel siblings.)
+//
+// The connector half acts further from the worktree than either: a facade call
+// is an HTTP request the SERVER performs against a remote instance, with no
+// filesystem reachable from it. Omitting it cost twice over — a claw fan-out
+// the verdict used to admit was refused, and the refusal's stated cause
+// accused the author's `tools:` list of a name it could not have declared, so
+// following the remedy changed nothing.
 //
 // The runs half holds only while that server serves READS. A tool that
 // launched work would break it — a run started without `worktree: auto`
@@ -77,5 +84,6 @@ func BoardToolsFor(caps []string) []string {
 // not enter the effective surface used by the workspace-safety classifier.
 func IsIterionMCPTool(name string) bool {
 	return strings.HasPrefix(name, "mcp__"+boardMCPServerName+"__") ||
-		strings.HasPrefix(name, "mcp__"+runsMCPServerName+"__")
+		strings.HasPrefix(name, "mcp__"+runsMCPServerName+"__") ||
+		strings.HasPrefix(name, "mcp__"+connectorMCPServerName+"__")
 }
