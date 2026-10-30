@@ -3,7 +3,6 @@ package layerguard
 import (
 	"bytes"
 	"fmt"
-	"go/build"
 	"go/build/constraint"
 	"io/fs"
 	"maps"
@@ -73,7 +72,10 @@ type layerRule struct {
 // judgedTrees — ./pkg/... and ./internal/... — read off a listing of the
 // WHOLE module (listPatterns), unioned over every context treeUnion names
 // (the host, GOOS=windows, GOOS=darwin, GOOS=freebsd, and the build tags
-// the uncompiled files of the tree still demand). A family reached THROUGH
+// the uncompiled files of the MODULE still demand — cmd/ included:
+// cmd/iterion-desktop's 35 `desktop` files and their `!desktop` stub are
+// demanders no walk of pkg/ or internal/ could hear). A family reached
+// THROUGH
 // another package is not a rule hit — what pkg/dsl/ir's direct imports
 // really name, against what only its closure holds (iterion#2857), is one
 // sentence of docs/layering.md rather than a second copy of the fact here,
@@ -192,12 +194,24 @@ var judgedTrees = []string{"pkg", "internal"}
 // judgedTrees. Listing the module instead feeds unjudgedImports the far end
 // of every edge the module has, from the SAME listing the rules read, with
 // no second source of truth to drift. Measured 2026-10-30: 230 packages
-// against the 213 of `./pkg/... ./internal/...`, 1061 module-internal edges
+// against the 213 of `./pkg/... ./internal/...`, 1064 module-internal edges
 // against 974, and not one rule hit more (the sources of every rule are
-// paths of judgedTrees). The cost is a bound this guard carries: every
-// package of the module must be listable in every context it judges, or
-// listIn fails and says which context excluded a whole package.
+// paths of judgedTrees). This scope is the tag demand's too, and that took
+// its own round: a demand read off judgedTrees alone left the composition
+// root's own tagged files asking for nothing, so three of those edges were
+// in no listing at all (tagsDemandedBy). The cost is a bound this guard
+// carries: every package of the module must be listable in every context it
+// judges — the root package included, which is why moduleRelative answers
+// rootPackagePath — or listIn fails and says which context excluded a whole
+// package.
 var listPatterns = []string{"./..."}
+
+// rootPackagePath is the module-relative path of the module's OWN root
+// package, the one import path that IS the module path with no trailing
+// slash to trim. `.` is how a pattern spells it, no rule's family is under
+// it (underPrefix answers false for every prefix of layers), and path.Join
+// keeps a file of that package at its own name.
+const rootPackagePath = "."
 
 // buildContext is one listing context: what `go list` is told about the
 // platform and the build tags. The zero value is the host's own.
@@ -224,15 +238,36 @@ var platformContexts = []buildContext{
 	{name: "freebsd", env: []string{"GOOS=freebsd"}},
 }
 
-// tagsDemandedBy returns the build tags the tree still asks for once the
-// platform contexts have answered: for every non-test file of judgedTrees
-// the go tool NAMED and none of those contexts compiled, the names its own
-// build constraints carry, minus the names a platform context already
-// decides — their GOOS and GOARCH values, the host's, and `unix`, which the
-// toolchain satisfies from the GOOS alone — and minus the one name no
-// listing may be given (reservedIgnoreTag). What is left is this project's
-// vocabulary (goldens_record today), read off the files rather than kept
-// here, so a tag landing tomorrow is listed the day it lands.
+// tagsDemandedBy returns the build tags the MODULE still asks for once the
+// platform contexts have answered, and the file each tag was read off. For
+// every non-test file those contexts NAMED and none of them compiled: the
+// names its own build constraints carry, minus the names a platform context
+// already decides — their GOOS and GOARCH values, the host's, and `unix`,
+// which the toolchain satisfies from the GOOS alone — and minus the one
+// name no listing may be given (reservedIgnoreTag). What is left is this
+// project's vocabulary (desktop, dev, goldens_record, netbsd and openbsd on
+// 2026-10-30), read off the files rather than kept here, so a tag landing
+// tomorrow is listed the day it lands.
+//
+// THE LISTING's scope, not the walk's, and that is the second half of
+// iterion#2829's fifth round: listPatterns lists the whole module, and a
+// demand read off judgedTrees alone never heard cmd/ — 35 non-test files
+// of cmd/iterion-desktop behind a `desktop` constraint, with a `!desktop`
+// stub beside them,
+// so `go build ./...` is clean, no context of the guard carried the tag,
+// and three module-internal edges of the composition root were in no
+// listing at all. The two scopes are separate on purpose: the tag demand is
+// the listing's (anything the go tool names), the coverage demand is
+// judgedTrees' (what the rules are about).
+//
+// Read off `platform.known` rather than off a second walk, so the files are
+// the ones the go tool itself named for listPatterns: `./...` names no
+// package under vendor/, under a directory starting with `.` or `_`, or
+// under testdata, and re-deciding that here is the convention-reading this
+// round removed. The listing's `IgnoredGoFiles` holds test files too, which
+// is where the _test.go suffix is dropped again: a tag only a `_test.go`
+// file asks for (live, race, clilive) is out of scope by the same decision
+// as the file.
 //
 // DEMAND-driven, which is what keeps it honest at both ends. A file the go
 // tool names in no listing — a fixture under testdata/, a file go/build
@@ -247,7 +282,7 @@ var platformContexts = []buildContext{
 // no context for — is passed as a tag: that widens what the listing sees,
 // and a file still compiled by nothing is what
 // TestEveryNonTestFileIsSeenByAListingContext reports.
-func tagsDemandedBy(root string, platform listing) ([]string, error) {
+func tagsDemandedBy(root string, platform listing) ([]string, map[string]string, error) {
 	decided := map[string]bool{"unix": true, runtime.GOOS: true, runtime.GOARCH: true, reservedIgnoreTag: true}
 	for _, c := range platformContexts {
 		for _, kv := range c.env {
@@ -256,22 +291,26 @@ func tagsDemandedBy(root string, platform listing) ([]string, error) {
 			}
 		}
 	}
-	tags := map[string]bool{}
-	err := walkNonTestFiles(root, func(rel string, names []string) error {
-		if !platform.known[rel] || platform.files[rel] {
-			return nil // the go tool names it in no listing, or a context compiled it
+	demandedBy := map[string]string{}
+	for _, rel := range slices.Sorted(maps.Keys(platform.known)) {
+		if platform.files[rel] || strings.HasSuffix(rel, "_test.go") {
+			continue // a context compiled it, or it is a test file
+		}
+		src, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel))) // #nosec G304 -- a .go file the go tool named in its own listing
+		if err != nil {
+			return nil, nil, err
+		}
+		names, err := buildConstraintsOf(string(src))
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", rel, err)
 		}
 		for _, name := range names {
-			if !decided[name] {
-				tags[name] = true
+			if _, seen := demandedBy[name]; !decided[name] && !seen {
+				demandedBy[name] = rel
 			}
 		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
-	return slices.Sorted(maps.Keys(tags)), nil
+	return slices.Sorted(maps.Keys(demandedBy)), demandedBy, nil
 }
 
 // reservedIgnoreTag is the name the toolchain keeps for a file no build of
@@ -295,46 +334,91 @@ func tagsDemandedBy(root string, platform listing) ([]string, error) {
 // (TestTheReservedIgnoreTagCannotBePassedToTheListing).
 //
 // So it is also the one name that can earn a file an exemption from the
-// coverage demand — and the exemption is go/build's answer, not this file's
-// reading of the expression: theReservedNameKeepsItOut asks MatchFile
-// whether the file matches no context the guard judges and matches one the
-// moment this name is satisfied. `//go:build ignore` and an empty
-// `// +build` line earn it; `//go:build ignore || mytag` does not, because
-// mytag is a context the guard can be given.
+// coverage demand, and the question that earns it is "does ANY build of the
+// toolchain compile this file": theReservedNameKeepsItOut pins this name
+// false in the constraint go/build honours and asks whether what is left is
+// satisfiable at all. `//go:build ignore` and an empty `// +build` line
+// earn it; `//go:build ignore || mytag` does not, because `go build -tags
+// mytag` compiles that file, and neither does `//go:build ignore ||
+// (windows && mytag)`, which no single context of this guard carries and
+// `GOOS=windows go build -tags mytag` ships.
 const reservedIgnoreTag = "ignore"
 
-// buildConstraintsOf reads the build-constraint lines of a Go source —
-// `//go:build` and the `// +build` go/build still honours (measured
-// 2026-10-30: a file carrying the old line alone is in IgnoredGoFiles until
-// its tag is given, and compiled the moment it is) — and answers ONE thing
-// about the file: the tag names its lines use, negated ones included, BOTH
-// sides of every && and ||, or a tag of a conjunction asks for a context
-// nobody lists. The expression is walked through its own node types rather
-// than evaluated: Expr.Eval calls its callback "as needed to find out
-// whether a given build tag is satisfied", which is a contract about the
-// verdict, not about the names it visits.
+// constraintLinesOf returns the constraint-shaped lines of a Go source's
+// header — every `//go:build` and `// +build` line above the package
+// clause — in the order they appear. ONE scanner: the names the listing is
+// built from and the expression an exemption is decided on are two readings
+// of this same list, so a line one of them sees is a line the other sees.
+//
+// Block comments are consumed the way go/build's own header parser consumes
+// them: a `/* ... */` does not end the header, a constraint INSIDE one is
+// no constraint, and the package clause that ends the scan is a `package `
+// the file really spells — not a line of prose that opens with the word.
+// Breaking on the first line that starts with `package ` read NO constraint
+// under a doc block whose prose opened a line that way, and a file whose
+// names are lost is a file no context is asked for: `//go:build ignore ||
+// mytag` under such a block, the shape iterion#2829's fourth round threw
+// away, re-entered by this door.
+func constraintLinesOf(src string) []string {
+	var lines []string
+	inBlock := false
+	for raw := range strings.SplitSeq(src, "\n") {
+		rest, visible := strings.TrimSpace(raw), ""
+		for rest != "" {
+			if inBlock {
+				_, after, closed := strings.Cut(rest, "*/")
+				if !closed {
+					break // the block runs on; this line says nothing
+				}
+				inBlock, rest = false, strings.TrimSpace(after)
+				continue
+			}
+			if strings.HasPrefix(rest, "//") {
+				visible += rest // a line comment runs to the end of the line
+				break
+			}
+			before, after, opened := strings.Cut(rest, "/*")
+			if !opened {
+				visible += rest
+				break
+			}
+			visible += strings.TrimSpace(before) + " "
+			inBlock, rest = true, after
+		}
+		visible = strings.TrimSpace(visible)
+		if constraint.IsGoBuild(visible) || constraint.IsPlusBuild(visible) {
+			lines = append(lines, visible)
+		}
+		if strings.HasPrefix(visible, "package ") {
+			break // the toolchain reads no constraint past the package clause
+		}
+	}
+	return lines
+}
+
+// buildConstraintsOf answers ONE thing about a source: the tag names its
+// constraint lines use, negated ones included, BOTH sides of every && and
+// ||, or a tag of a conjunction asks for a context nobody lists. The
+// expression is walked through its own node types rather than evaluated:
+// Expr.Eval calls its callback "as needed to find out whether a given build
+// tag is satisfied", which is a contract about the verdict, not about the
+// names it visits.
 //
 // Names only, and the names decide NOTHING about what compiles: which build
 // a file is in is read off the go tool's own listing (listing.files,
-// listing.known) and, for the one name no listing may carry, off
-// go/build's MatchFile. Two rounds of iterion#2829 were lost to this
-// function deciding it — first by the file-name convention, then by
-// `slices.Contains(names, "ignore")`, which threw away a file
-// `go build -tags mytag` really compiles.
+// listing.known), and whether ANY build compiles it off the expression
+// go/build honours (theReservedNameKeepsItOut). Two rounds of iterion#2829
+// were lost to this function deciding it — first by the file-name
+// convention, then by `slices.Contains(names, "ignore")`, which threw away
+// a file `go build -tags mytag` really compiles.
 //
-// Every constraint-shaped line above the package clause is read, not only
-// the one the toolchain honours: a name too many widens the listing, a name
-// missed hides a file from the context that compiles it.
+// EVERY constraint line of the header is read, not only the one the
+// toolchain honours: this list feeds a listing, where a name too many only
+// widens what the guard sees and a name missed hides a file from the
+// context that compiles it.
 func buildConstraintsOf(src string) ([]string, error) {
 	var names []string
-	for line := range strings.SplitSeq(src, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "package ") {
-			break // the toolchain reads no constraint past the package clause
-		}
-		if !constraint.IsGoBuild(line) && !constraint.IsPlusBuild(line) {
-			continue
-		}
+	for _, line := range constraintLinesOf(src) {
 		expr, err := constraint.Parse(line)
 		if err != nil {
 			return nil, fmt.Errorf("unreadable build constraint %q: %w", line, err)
@@ -342,6 +426,46 @@ func buildConstraintsOf(src string) ([]string, error) {
 		names = append(names, tagsOf(expr)...)
 	}
 	return names, nil
+}
+
+// theConstraintTheToolchainHonours returns the ONE expression go/build
+// evaluates for a source, and nil for a source no line constrains: the
+// `//go:build` line if the header carries one — it controls, and a second
+// one is a file go/build refuses outright — otherwise the conjunction of
+// the `// +build` lines, which is how the toolchain reads several of them.
+//
+// A narrower reading than buildConstraintsOf, on purpose: a name too many
+// in a LISTING only widens what the guard sees, while a term too many in
+// THIS expression could make it unsatisfiable and buy a file the exemption
+// below.
+func theConstraintTheToolchainHonours(src string) (constraint.Expr, error) {
+	var goBuild constraint.Expr
+	var plus []constraint.Expr
+	for _, line := range constraintLinesOf(src) {
+		expr, err := constraint.Parse(line)
+		if err != nil {
+			return nil, fmt.Errorf("unreadable build constraint %q: %w", line, err)
+		}
+		if constraint.IsGoBuild(line) {
+			if goBuild != nil {
+				return nil, fmt.Errorf("a second //go:build line, %q: go/build refuses such a file (multiple //go:build comments)", line)
+			}
+			goBuild = expr
+			continue
+		}
+		plus = append(plus, expr)
+	}
+	if goBuild != nil {
+		return goBuild, nil
+	}
+	if len(plus) == 0 {
+		return nil, nil
+	}
+	honoured := plus[0]
+	for _, expr := range plus[1:] {
+		honoured = &constraint.AndExpr{X: honoured, Y: expr}
+	}
+	return honoured, nil
 }
 
 // tagsOf collects the tag names of a parsed build constraint.
@@ -360,24 +484,24 @@ func tagsOf(e constraint.Expr) []string {
 }
 
 // walkNonTestFiles hands fn every non-test .go file under root's
-// judgedTrees, by its module-relative path, with the build-constraint names
-// it carries.
+// judgedTrees, by its module-relative path.
 //
 // It skips NOTHING but the _test.go suffix, and that is the fix of
 // iterion#2829's fifth round: which of these files a build compiles is a
 // question for the go tool, answered by the listing it writes
 // (listing.files holds what a context compiled, listing.known what it named
-// at all) and by go/build's MatchFile — never by a convention re-read here.
-// The two rounds before it each re-implemented one of those rules and lost
-// a real crossing to it: first the `_x.go` / `_x` name convention, then
-// "the constraint says `ignore` somewhere", which threw away a file
-// `go build -tags mytag` compiles.
+// at all) and by the constraint go/build honours — never by a convention
+// re-read here. The two rounds before it each re-implemented one of those
+// rules and lost a real crossing to it: first the `_x.go` / `_x` name
+// convention, then "the constraint says `ignore` somewhere", which threw
+// away a file `go build -tags mytag` compiles.
 //
-// So the walk is the DEMAND side only — the files the guard owes a context
-// for — and coverageOf sorts them into the go tool's own three answers. It
-// feeds the tag contexts and the coverage proof; the layer rules read what
-// `go list` returned, never this walk.
-func walkNonTestFiles(root string, fn func(rel string, tags []string) error) error {
+// So the walk is the COVERAGE demand, and only that: the files of the
+// judged trees the guard owes a context for, which coverageOf sorts into
+// the go tool's own answers. The tag demand is a wider scope and reads the
+// listing instead (tagsDemandedBy), and the layer rules read what `go list`
+// returned — never this walk.
+func walkNonTestFiles(root string, fn func(rel string) error) error {
 	for _, tree := range judgedTrees {
 		err := filepath.WalkDir(filepath.Join(root, tree), func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -390,20 +514,11 @@ func walkNonTestFiles(root string, fn func(rel string, tags []string) error) err
 			if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 				return nil
 			}
-			src, err := os.ReadFile(p) // #nosec G304 -- a .go file of the tree the test walks
-			if err != nil {
-				return err
-			}
 			rel, err := filepath.Rel(root, p)
 			if err != nil {
 				return err
 			}
-			rel = filepath.ToSlash(rel)
-			tags, err := buildConstraintsOf(string(src))
-			if err != nil {
-				return fmt.Errorf("%s: %w", rel, err)
-			}
-			return fn(rel, tags)
+			return fn(filepath.ToSlash(rel))
 		})
 		if err != nil {
 			return err
@@ -460,6 +575,25 @@ func (l listing) dedupe() {
 	}
 }
 
+// moduleRelative turns a full import path into the path this guard
+// compares, and reports whether the path is in the module at all. THE one
+// place a module prefix comes off, both sides of an edge: the module's own
+// root package is the one path that IS the prefix without its slash, and
+// it answers rootPackagePath — a parser keyed on the slash alone rejected
+// that line, and `listIn` turns a rejected line into the error that fatals
+// every test of this guard (iterion#2829: the class arrived with `./...`,
+// which names the root package, and the two patterns of judgedTrees never
+// could).
+func moduleRelative(modulePrefix, importPath string) (string, bool) {
+	if rel, ok := strings.CutPrefix(importPath, modulePrefix); ok {
+		return rel, true
+	}
+	if importPath == strings.TrimSuffix(modulePrefix, "/") {
+		return rootPackagePath, true
+	}
+	return "", false
+}
+
 // parseListing turns what `go list -f listFormat` wrote into MODULE-RELATIVE
 // pairs: the package and every import lose the module prefix here, once, and
 // imports outside the module are dropped — they belong to no layer of this
@@ -478,17 +612,19 @@ func parseListing(modulePrefix, out string) (listing, []string) {
 			continue
 		}
 		fields := strings.Split(line, "|")
-		if len(fields) != 5 || !strings.HasPrefix(fields[0], modulePrefix) {
+		pkg, inModule := "", false
+		if len(fields) == 5 {
+			pkg, inModule = moduleRelative(modulePrefix, fields[0])
+		}
+		if !inModule {
 			rejected = append(rejected, line)
 			continue
 		}
-		pkg := strings.TrimPrefix(fields[0], modulePrefix)
 		rel := []string{}
 		for _, imp := range strings.Fields(fields[1]) {
-			if !strings.HasPrefix(imp, modulePrefix) {
-				continue
+			if impRel, ok := moduleRelative(modulePrefix, imp); ok {
+				rel = append(rel, impRel)
 			}
-			rel = append(rel, strings.TrimPrefix(imp, modulePrefix))
 		}
 		got.imports[pkg] = rel
 		for _, f := range append(strings.Fields(fields[2]), strings.Fields(fields[3])...) {
@@ -583,7 +719,9 @@ func depsOf(root, pkg string, env, tags []string) ([]string, error) {
 // tagsDemandedBy reads the constraints of the files the go tool named and
 // none of them compiled, so the tags the guard passes come from the gap
 // the go tool itself reported, never from a reading of what a file "would"
-// compile under.
+// compile under. A tag that makes the listing fail — a package whose every
+// file it excludes — fails here with the file that asked for it, since no
+// reader of that error can guess why a tag was passed.
 func treeUnion(root, modulePrefix string, env []string) (listing, []buildContext, error) {
 	union := newListing()
 	ctxs := make([]buildContext, 0, len(platformContexts)+1)
@@ -595,7 +733,7 @@ func treeUnion(root, modulePrefix string, env []string) (listing, []buildContext
 		union.merge(got)
 		ctxs = append(ctxs, ctx)
 	}
-	tags, err := tagsDemandedBy(root, union)
+	tags, demandedBy, err := tagsDemandedBy(root, union)
 	if err != nil {
 		return listing{}, nil, err
 	}
@@ -603,7 +741,11 @@ func treeUnion(root, modulePrefix string, env []string) (listing, []buildContext
 		ctx := buildContext{name: "tags=" + strings.Join(tags, ","), tags: tags}
 		got, err := listIn(root, modulePrefix, env, ctx)
 		if err != nil {
-			return listing{}, nil, err
+			asked := make([]string, 0, len(tags))
+			for _, tag := range tags {
+				asked = append(asked, tag+" ("+demandedBy[tag]+")")
+			}
+			return listing{}, nil, fmt.Errorf("%w\nevery tag of that context was read off a file the platform contexts named and none compiled: %s", err, strings.Join(asked, ", "))
 		}
 		union.merge(got)
 		ctxs = append(ctxs, ctx)
@@ -758,8 +900,8 @@ func TestThePackageLayersHold(t *testing.T) {
 // hit over it in either direction.
 //
 // Measured 2026-10-30 over this module, in the five contexts: 230 listed
-// packages, 1061 module-internal edges, 1058 of them landing inside pkg/ or
-// internal/, and every one of those 1058 names a package the listing holds.
+// packages, 1064 module-internal edges, 1061 of them landing inside pkg/ or
+// internal/, and every one of those 1061 names a package the listing holds.
 // The 3 that land outside are `bots` and `connectors`, read by pkg/cli,
 // pkg/server and pkg/connection: listed, since listPatterns names the whole
 // module, and outside this map by the decision judgedTrees carries.
@@ -1030,59 +1172,64 @@ func TestEveryAcceptedExceptionIsALiveViolation(t *testing.T) {
 	}
 }
 
-// goBuildContextOf turns one listing context into the go/build context that
-// answers for it: the same GOOS, the same GOARCH, the same build tags
-// `go list` was given. What go/build then says about a file — the
-// file-name conventions, the GOOS and GOARCH suffixes, `//go:build`,
-// `// +build` and the evaluation of the expression — is the go tool's own
-// reading, and the only reading this guard has.
-func goBuildContextOf(c buildContext) build.Context {
-	bc := build.Default
-	bc.BuildTags = slices.Clone(c.tags)
-	for _, kv := range c.env {
-		k, v, ok := strings.Cut(kv, "=")
-		if !ok {
-			continue
-		}
-		switch k {
-		case "GOOS":
-			bc.GOOS = v
-		case "GOARCH":
-			bc.GOARCH = v
-		}
-	}
-	return bc
-}
+// maxNamesInAConstraint bounds the enumeration below: the exemption is
+// decided by trying every assignment of the names one constraint carries,
+// 2^n of them. Measured over the 49 constrained non-test files of the two
+// judged trees on 2026-10-30, n is 1 to 3; module-wide the widest is
+// `cmd/iterion-desktop/single_instance_unix.go`, a `desktop` tag over five
+// unix platforms, at 6 — and the only shape that could reach this ceiling
+// is a portability shim naming every GOOS the toolchain has. A constraint
+// over it is an error naming the file and this constant, never a run
+// nobody waits out: raise the number and measure what it costs (2^20
+// answers in 0.5 s, TestTheExemptionRefusesAConstraintItCannotEnumerate).
+const maxNamesInAConstraint = 20
 
-// theReservedNameKeepsItOut reports whether the one name no listing may
-// carry (reservedIgnoreTag) is what stands between dir/name and every
-// context the guard judges: no context matches the file, and one of them
-// does the moment that name is satisfied. Both halves are MatchFile's
-// answer — "MatchFile reports whether the file ... would be included in a
-// Package created by ImportDir" — so an `//go:build ignore` generator earns
-// the exemption and `//go:build ignore || mytag` does not: mytag is a
-// context the guard can be given, and tagsDemandedBy gives it.
+// theReservedNameKeepsItOut reports whether reservedIgnoreTag is what
+// stands between a source and EVERY build of the toolchain: the constraint
+// go/build honours, with that one name pinned FALSE, is satisfied by no
+// assignment of the names it has left.
 //
-// The second half is not decoration: a predicate that only asked "does the
-// reserved name let it in" would exempt every file that mentions the name
-// anywhere, which is exactly the crossing iterion#2829's fourth round lost.
-func theReservedNameKeepsItOut(dir, name string, ctxs []buildContext) (bool, error) {
-	var matched, matchedWithReserved bool
-	for _, c := range ctxs {
-		bc := goBuildContextOf(c)
-		ok, err := bc.MatchFile(dir, name)
-		if err != nil {
-			return false, fmt.Errorf("go/build cannot read %s in context %s: %w", filepath.Join(dir, name), c.name, err)
-		}
-		matched = matched || ok
-		bc.BuildTags = append(slices.Clone(bc.BuildTags), reservedIgnoreTag)
-		ok, err = bc.MatchFile(dir, name)
-		if err != nil {
-			return false, fmt.Errorf("go/build cannot read %s in context %s with %s: %w", filepath.Join(dir, name), c.name, reservedIgnoreTag, err)
-		}
-		matchedWithReserved = matchedWithReserved || ok
+// "Does any build compile this file" is the question, and no listing can
+// answer it. A context is a POINT — four platforms carrying no tag, one tag
+// set carrying no platform — so an expression satisfiable only at their
+// PRODUCT matches none of the points, while `GOOS=windows go build -tags
+// mytag` ships the crossing it holds: a predicate reading "no context of
+// mine matches it, one does the moment the name is satisfied" called the
+// reserved name the reason, and the guard went silent (iterion#2829, fifth
+// round). So the exemption is read off the expression instead, with its
+// names as free variables: `ignore` and `ignore && linux` are satisfied by
+// nothing once the name is false, `ignore || mytag` is satisfied by mytag,
+// `ignore || (windows && mytag)` by the two together, and a source no line
+// constrains is compiled by every build there is.
+//
+// Free in both senses — no combination of platforms and tags is assumed
+// impossible — so `linux && windows` counts as satisfiable where no real
+// build holds it. That is the safe direction: such a file is one the guard
+// owes a context for, a red naming the file, never a silence.
+func theReservedNameKeepsItOut(src string) (bool, error) {
+	honoured, err := theConstraintTheToolchainHonours(src)
+	if err != nil || honoured == nil {
+		return false, err
 	}
-	return matchedWithReserved && !matched, nil
+	var free []string
+	for _, name := range tagsOf(honoured) {
+		if name != reservedIgnoreTag && !slices.Contains(free, name) {
+			free = append(free, name)
+		}
+	}
+	if len(free) > maxNamesInAConstraint {
+		return false, fmt.Errorf("the build constraint names %d tags beside %q, over the %d maxNamesInAConstraint lets this exemption enumerate: %v", len(free), reservedIgnoreTag, maxNamesInAConstraint, free)
+	}
+	satisfied := make(map[string]bool, len(free))
+	for assignment := range 1 << len(free) {
+		for i, name := range free {
+			satisfied[name] = assignment&(1<<i) != 0
+		}
+		if honoured.Eval(func(tag string) bool { return satisfied[tag] }) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // coverage is what the go tool answered about the non-test files of root's
@@ -1101,13 +1248,14 @@ func theReservedNameKeepsItOut(dir, name string, ctxs []buildContext) (bool, err
 //     refuses. So this bucket buys no silence.
 //   - reserved: the tool named it, no context compiled it, and
 //     theReservedNameKeepsItOut says the one name a listing may not carry is
-//     why. An `//go:build ignore` generator, which `go generate` compiles
-//     alone through `go run`.
-//   - uncovered: the tool named it and no context compiled it, with a
-//     context that would — a `_plan9.go`, a tag behind a GOOS this guard
-//     lists nothing for. The hole: its imports are judged by nobody, and
-//     "add the context that compiles them" is a remedy a reader can carry
-//     out.
+//     why — no build of the toolchain compiles it at all. An
+//     `//go:build ignore` generator, which `go generate` compiles alone
+//     through `go run`.
+//   - uncovered: the tool named it, no context compiled it, and some build
+//     would — a `_plan9.go`, a tag behind a GOOS this guard lists nothing
+//     for, a constraint satisfied only by a platform AND a tag together.
+//     The hole: its imports are judged by nobody, and "add the context that
+//     compiles them" is a remedy a reader can carry out.
 type coverage struct {
 	walked     int
 	seen       int
@@ -1119,10 +1267,11 @@ type coverage struct {
 // coverageOf sorts root's walked files into those four answers. THE reading
 // of coverage: the tree guard, the fixture guard and the scratch-tree
 // witness call this one, none re-walks the tree with its own idea of what
-// counts.
-func coverageOf(root string, got listing, ctxs []buildContext) (coverage, error) {
+// counts. It reads a file only where the listing leaves the answer open —
+// the handful the go tool named and no context compiled.
+func coverageOf(root string, got listing) (coverage, error) {
 	var cov coverage
-	err := walkNonTestFiles(root, func(rel string, _ []string) error {
+	err := walkNonTestFiles(root, func(rel string) error {
 		cov.walked++
 		switch {
 		case got.files[rel]:
@@ -1132,10 +1281,13 @@ func coverageOf(root string, got listing, ctxs []buildContext) (coverage, error)
 			cov.offListing = append(cov.offListing, rel)
 			return nil
 		}
-		dir, name := filepath.Split(filepath.Join(root, filepath.FromSlash(rel)))
-		kept, err := theReservedNameKeepsItOut(dir, name, ctxs)
+		src, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel))) // #nosec G304 -- a .go file the walk of the tree handed out
 		if err != nil {
 			return err
+		}
+		kept, err := theReservedNameKeepsItOut(string(src))
+		if err != nil {
+			return fmt.Errorf("%s: %w", rel, err)
 		}
 		if kept {
 			cov.reserved = append(cov.reserved, rel)
@@ -1175,7 +1327,7 @@ func coverageLine(cov coverage, ctxs []buildContext) string {
 // they move with every fixture the tree adds, and neither can hide an edge
 // — that is what those two guards are for.
 func TestEveryNonTestFileIsSeenByAListingContext(t *testing.T) {
-	cov, err := coverageOf(repoRoot(t), treeListing(t), treeContexts)
+	cov, err := coverageOf(repoRoot(t), treeListing(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1213,24 +1365,50 @@ func TestTheCoverageLineCountsOnlyWhatAContextCompiled(t *testing.T) {
 // files carry, declared once and read twice: the fixture must be listed in
 // a context carrying both, and THIS module must be listed in a context
 // carrying neither. A fixture lives under testdata/, where the go tool
-// names no package, so its files demand nothing — read the tags off every
-// walked file instead and a module starts passing its fixtures' private
-// vocabulary to its own listing.
+// names no package, so its files demand nothing — read the tags off a walk
+// of the tree instead of off the listing and a module starts passing its
+// fixtures' private vocabulary to its own listing.
 var theCrossbuildFixtureTags = []string{"crossbuildonly", "crossbuildpair"}
 
-// TestTheTagsContextIsWhatTheTreeStillDemands executes the page's sentence
-// about the fifth context: the tags come from the files the four platform
-// contexts left uncompiled, which on this tree is `goldens_record` —
-// pkg/botreplay's three edges — and nothing else.
-func TestTheTagsContextIsWhatTheTreeStillDemands(t *testing.T) {
+// theTagsThisModuleDemands are the build tags this module's own non-test
+// files ask for once the four platforms have answered, each with what makes
+// it a demand nothing else covers. ONE declaration, faced with the tree
+// below: the page names the same set, and a tag that stops being demanded
+// is an edit here.
+var theTagsThisModuleDemands = map[string]string{
+	"goldens_record": "pkg/botreplay/record.go, and its three edges to pkg/log, pkg/runview and pkg/store",
+	"desktop":        "the 35 non-test files of cmd/iterion-desktop behind a `desktop` constraint, with a `!desktop` stub beside them, and its edges to internal/httpx, pkg/alert and pkg/cli",
+	"dev":            "cmd/iterion-desktop's devtools menu and its release twin, behind `desktop && dev` and `desktop && !dev`",
+	"netbsd":         "cmd/iterion-desktop/single_instance_unix.go, a platform this guard lists no context for",
+	"openbsd":        "the same file's fifth platform",
+}
+
+// TestTheTagsContextIsWhatTheModuleStillDemands executes the page's
+// sentence about the fifth context: the tags come from the files the four
+// platform contexts left uncompiled, ANYWHERE in the module, and from
+// nothing else.
+//
+// `desktop` is why the scope is the module's and not the judged trees':
+// cmd/ is the composition root, a demand read off pkg/ and internal/ alone
+// never heard of the tag, and the three module-internal edges those 42
+// files hold were in no listing of any context — green, and judged by
+// nobody (iterion#2829, fifth round).
+func TestTheTagsContextIsWhatTheModuleStillDemands(t *testing.T) {
 	treeListing(t) // fills the memo treeContexts below
 	names := contextNames(treeContexts)
 	if len(names) != len(platformContexts)+1 || !strings.HasPrefix(names[len(names)-1], "tags=") {
 		t.Fatalf("this module was listed in %v, want the %d platform contexts and one tags context", names, len(platformContexts))
 	}
 	demanded := strings.Split(strings.TrimPrefix(names[len(names)-1], "tags="), ",")
-	if !slices.Contains(demanded, "goldens_record") {
-		t.Errorf("the tags context carries %v, which does not include goldens_record — pkg/botreplay's files are then compiled by nothing", demanded)
+	for _, tag := range slices.Sorted(maps.Keys(theTagsThisModuleDemands)) {
+		if !slices.Contains(demanded, tag) {
+			t.Errorf("the tags context carries %v, which does not include %q — then nothing compiles %s", demanded, tag, theTagsThisModuleDemands[tag])
+		}
+	}
+	for _, tag := range demanded {
+		if _, known := theTagsThisModuleDemands[tag]; !known {
+			t.Errorf("the tags context carries %q, which this file does not account for — name what demands it here and on the page, or find out why it is being passed", tag)
+		}
 	}
 	for _, fixtureTag := range theCrossbuildFixtureTags {
 		if slices.Contains(demanded, fixtureTag) {
@@ -1330,7 +1508,7 @@ func TestTheGoToolSortsTheShapesTheGuardOwesNoContextFor(t *testing.T) {
 	if want := []string{"host", "windows", "darwin", "freebsd"}; !slices.Equal(names, want) {
 		t.Fatalf("the fixture was listed in %v, want %v: `ignore` is the toolchain's reserved name, the two generators that carry it — one bare, one behind an && — are the fixture's only constrained files, and no context may be built from that name", names, want)
 	}
-	cov, err := coverageOf(root, union, ctxs)
+	cov, err := coverageOf(root, union)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1432,6 +1610,11 @@ func TestTheConstraintReaderNamesEveryTagWhereverItSits(t *testing.T) {
 		{"both sides of an or", "//go:build linux || goldens_record\n\npackage a\n", []string{"linux", "goldens_record"}},
 		{"prose naming the form is no constraint", "// a generator carries // +build ignore\n\npackage a\n", nil},
 		{"past the package clause nothing is read", "package a\n\n//go:build ignore\n", nil},
+		{"a block comment whose prose opens a line with the package keyword does not end the header", "/*\npackage a is reached by go generate.\n*/\n\n//go:build ignore || mytag\n\npackage a\n", []string{"ignore", "mytag"}},
+		{"a one-line block comment before the constraint", "/* a generator */\n\n//go:build mytag\n\npackage a\n", []string{"mytag"}},
+		{"a constraint inside a block comment is no constraint", "/*\n//go:build mytag\n*/\n\npackage a\n", nil},
+		{"the constraint after a block comment closes mid-line", "/* a\nb */ //go:build mytag\n\npackage a\n", []string{"mytag"}},
+		{"two lines, both read", "//go:build linux\n// +build goldens_record\n\npackage a\n", []string{"linux", "goldens_record"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			names, err := buildConstraintsOf(c.src)
@@ -1542,6 +1725,12 @@ func TestTheGuardAndTheGoToolReadTheSameFiles(t *testing.T) {
 		shipTags []string
 		shipEnv  []string
 		ships    bool
+		// notTheHost is a platform this guard LISTS a context for, and the
+		// shape needs the host not to be it: the shape is about a file only
+		// that platform AND a build tag together compile, which no single
+		// context holds — unless the host IS that platform, where the tags
+		// context carries both and the file is simply compiled.
+		notTheHost string
 		// what the guard must then say, exactly.
 		wantViolations []string
 		wantUnjudged   []string
@@ -1574,6 +1763,61 @@ func TestTheGuardAndTheGoToolReadTheSameFiles(t *testing.T) {
 			shipTags:       []string{"shapetag"},
 			ships:          true,
 			wantViolations: []string{layers[7].name + ": pkg/store -> pkg/cli"},
+		},
+		{
+			// The crossing of a platform the guard lists with a tag it
+			// demands: the contexts are POINTS — four platforms carrying no
+			// tag, one tag set carrying no platform — so an expression
+			// satisfiable only at their product matches none of them, and a
+			// predicate that reads "no context of mine matches it" calls the
+			// reserved name the reason it is out. `GOOS=windows go build
+			// -tags shapetag` ships the crossing all the same.
+			name:       "the reserved name beside a crossing only a platform AND a tag together compile",
+			extra:      map[string]string{"pkg/store/cross.go": "//go:build ignore || (windows && shapetag)\n\npackage store\n\n" + crossing},
+			file:       "pkg/store/cross.go",
+			bucket:     "uncovered",
+			importer:   "pkg/store",
+			shipTags:   []string{"shapetag"},
+			shipEnv:    []string{"GOOS=windows"},
+			notTheHost: "windows",
+			ships:      true,
+		},
+		{
+			// A block comment whose own prose starts a line with "package ":
+			// go/build reads the constraint under it, and a name scan that
+			// stops at the first such line reads none — so nobody demands
+			// shapetag, no context compiles the file, and the reserved name
+			// buys the silence. The exact shape iterion#2829's fourth round
+			// lost, re-entered by the scanner's door.
+			name:           "a block comment above the constraint, with prose that opens a line with the package keyword",
+			extra:          map[string]string{"pkg/store/feat.go": "/*\npackage store is reached by go generate.\n*/\n\n//go:build ignore || shapetag\n\npackage store\n\n" + crossing},
+			file:           "pkg/store/feat.go",
+			bucket:         "seen",
+			importer:       "pkg/store",
+			shipTags:       []string{"shapetag"},
+			ships:          true,
+			wantViolations: []string{layers[7].name + ": pkg/store -> pkg/cli"},
+		},
+		{
+			// The listing covers the whole module, so the far end of this
+			// edge is read — but only in a context somebody asked for, and
+			// a tag demand read off the judged trees alone never hears
+			// cmd/. iterion carries the shape for real: 35 non-test files
+			// of cmd/iterion-desktop behind a `desktop` constraint, with a
+			// `!desktop` stub beside them, so `go build ./...` is clean and
+			// no context of the guard ever carried the tag.
+			name: "an importer outside the judged trees, behind a build tag",
+			extra: map[string]string{
+				"cmd/x/main.go":         "//go:build shapetag\n\npackage main\n\nimport old \"" + scratchModule + "/pkg/store/_old\"\n\nfunc main() { println(old.Name()) }\n",
+				"cmd/x/stub.go":         "//go:build !shapetag\n\npackage main\n\nfunc main() {}\n",
+				"pkg/store/_old/old.go": oldDir["pkg/store/_old/old.go"],
+			},
+			file:         "pkg/store/_old/old.go",
+			bucket:       "offListing",
+			importer:     "cmd/x",
+			shipTags:     []string{"shapetag"},
+			ships:        true,
+			wantUnjudged: []string{"cmd/x -> pkg/store/_old"},
 		},
 		{
 			name:     "the reserved name inside a conjunction",
@@ -1643,6 +1887,9 @@ func TestTheGuardAndTheGoToolReadTheSameFiles(t *testing.T) {
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			if c.notTheHost != "" && runtime.GOOS == c.notTheHost {
+				t.Skipf("this shape is about %s, a platform this guard lists a context for and the host must not be: on such a host the tags context carries that platform too, and the file is simply compiled", c.notTheHost)
+			}
 			root := t.TempDir()
 			writeScratchModule(t, root, scratchFiles(c.extra))
 			// A module of its own: GOWORK=off keeps an operator's workspace
@@ -1667,7 +1914,7 @@ func TestTheGuardAndTheGoToolReadTheSameFiles(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cov, err := coverageOf(root, union, ctxs)
+			cov, err := coverageOf(root, union)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1704,49 +1951,108 @@ func TestTheGuardAndTheGoToolReadTheSameFiles(t *testing.T) {
 	}
 }
 
-// TestTheReservedNameEarnsNoExemptionWhereAContextCompilesTheFile drives
-// theReservedNameKeepsItOut over contexts this test names, so both terms of
-// its predicate are exercised on files written for them. The exemption is
-// for a file no context of the guard can be given, NOT for a file whose
-// constraint mentions the reserved name: `//go:build ignore || shapetag` is
-// compiled by the tags context tagsDemandedBy asks for, and asking only
-// "does the reserved name let it in" is what made iterion#2829's fourth
-// round silent about the crossing such a file holds.
-func TestTheReservedNameEarnsNoExemptionWhereAContextCompilesTheFile(t *testing.T) {
-	dir := t.TempDir()
-	files := map[string]string{
-		"bare.go":     "//go:build ignore\n\npackage main\n\nfunc main() {}\n",
-		"beside.go":   "//go:build ignore || shapetag\n\npackage a\n",
-		"plus.go":     "// +build\n\npackage a\n",
-		"tagged.go":   "//go:build shapetag\n\npackage a\n",
-		"plain.go":    "package a\n",
-		"_scratch.go": "package a\n",
+// TestAPackageAtTheModuleRootIsReadLikeAnyOther: `./...` names the module's
+// OWN root package, whose import path is the module path with no trailing
+// slash to trim — the one line a parser keyed on `<module>/` cannot read.
+// listIn turns an unreadable line into an error, so that one file fatals
+// every test of this guard over a tree `go build ./...` compiles clean, and
+// the two patterns of judgedTrees could never emit it. iterion carries no
+// `.go` file at its root today, which is why this is a fixture rather than
+// a red: the class arrived with `./...`, not with a file.
+func TestAPackageAtTheModuleRootIsReadLikeAnyOther(t *testing.T) {
+	root := t.TempDir()
+	writeScratchModule(t, root, scratchFiles(map[string]string{
+		"main.go":               "package main\n\nimport old \"" + scratchModule + "/pkg/store/_old\"\n\nfunc main() { println(old.Name()) }\n",
+		"pkg/store/_old/old.go": "package old\n\nimport \"" + scratchModule + "/pkg/cli\"\n\n// Name crosses the layer.\nfunc Name() string { return cli.Name() }\n",
+	}))
+	hermetic := []string{"GOWORK=off", "GOFLAGS=-buildvcs=false"}
+	deps, err := depsOf(root, rootPackagePath, hermetic, nil)
+	if err != nil {
+		t.Fatalf("the oracle failed, so the fixture proves nothing: %v", err)
 	}
-	writeScratchModule(t, dir, files)
-	// The contexts the guard would judge such a tree in: the platforms, plus
-	// the one tags context a demand for shapetag produces.
-	ctxs := append(slices.Clone(platformContexts), buildContext{name: "tags=shapetag", tags: []string{"shapetag"}})
+	if !slices.Contains(deps, "pkg/cli") {
+		t.Fatalf("`go list -deps ./%s` holds %v, and the fixture is about a root package that reaches pkg/cli", rootPackagePath, deps)
+	}
+	prefix, err := modulePrefixOf(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	union, _, err := treeUnion(root, prefix, hermetic)
+	if err != nil {
+		t.Fatalf("listing a module with a package at its root failed: %v\nthe root package's import path IS the module path, and the guard reads it as %q", err, rootPackagePath)
+	}
+	if _, ok := union.imports[rootPackagePath]; !ok {
+		t.Fatalf("the union holds %v and not the root package as %q — its edges are then read by nobody", slices.Sorted(maps.Keys(union.imports)), rootPackagePath)
+	}
+	if got, want := unjudgedImports(union.imports), []string{rootPackagePath + " -> pkg/store/_old"}; !slices.Equal(got, want) {
+		t.Errorf("the guard named %v as imports no listing judges, want %v — the root package reaches a directory no pattern names, and that edge is judged by nobody", got, want)
+	}
+	if got := violationsOf(layers, union.imports, nil); len(got) != 0 {
+		t.Errorf("the rules named %v over the root package, want none — no rule's source family is under %q", got, rootPackagePath)
+	}
+}
+
+// TestTheReservedNameEarnsNoExemptionWhereAnyBuildCompilesTheFile drives
+// theReservedNameKeepsItOut over the shapes its enumeration must separate.
+// The exemption is for a file NO BUILD of the toolchain compiles, not for a
+// file whose constraint mentions the reserved name — and not for a file no
+// CONTEXT of this guard compiles either, which is the reading that made the
+// fifth round silent: the contexts are points, and `ignore || (windows &&
+// shapetag)` is satisfied only at their product.
+//
+// Both terms of the enumeration are exercised: a shape satisfied by one
+// name, a shape satisfied only by two together, a shape a negation
+// satisfies, and the conjunction `ignore` kills whatever the rest says.
+func TestTheReservedNameEarnsNoExemptionWhereAnyBuildCompilesTheFile(t *testing.T) {
 	for _, c := range []struct {
-		file string
+		name string
+		src  string
 		want bool
 		why  string
 	}{
-		{"bare.go", true, "no context compiles it and the reserved name is the only thing that would"},
-		{"plus.go", true, "the empty old-style line IS the reserved name, spelled by the toolchain itself"},
-		{"beside.go", false, "the tags context compiles it, so the reserved name is not what keeps it out"},
-		{"tagged.go", false, "the tags context compiles it, reserved name or no reserved name"},
-		{"plain.go", false, "every context compiles it"},
-		{"_scratch.go", false, "go/build drops the NAME in every context, with and without the reserved tag — this predicate is not what answers for that shape"},
+		{"bare", "//go:build ignore\n\npackage main\n\nfunc main() {}\n", true, "with the one name false, no assignment satisfies it: no build of the toolchain compiles the file"},
+		{"inside a conjunction", "//go:build ignore && linux\n\npackage a\n", true, "the conjunction is false whatever linux says, so GOOS=linux compiles it nowhere"},
+		{"the empty old-style line", "// +build\n\npackage a\n", true, "the empty line IS the reserved name, spelled by the toolchain itself"},
+		{"beside a tag", "//go:build ignore || shapetag\n\npackage a\n", false, "`go build -tags shapetag` compiles it, so the reserved name is not what keeps it out"},
+		{"beside a platform and a tag together", "//go:build ignore || (windows && shapetag)\n\npackage a\n", false, "`GOOS=windows go build -tags shapetag` compiles it — no single context of this guard carries both, and that is not the question"},
+		{"beside a negation", "//go:build ignore || !shapetag\n\npackage a\n", false, "every build that does not carry shapetag compiles it"},
+		{"an ordinary tag", "//go:build shapetag\n\npackage a\n", false, "the reserved name is nowhere in it"},
+		{"under a block comment whose prose opens a line with the package keyword", "/*\npackage a is reached by go generate.\n*/\n\n//go:build ignore || shapetag\n\npackage a\n", false, "go/build honours the constraint under the block, so the shapetag build compiles it"},
+		{"no constraint at all", "package a\n", false, "every build there is compiles it, so no exemption is owed"},
+		{"a constraint past the package clause", "package a\n\n//go:build ignore\n", false, "the toolchain reads no constraint there, and neither does this"},
 	} {
-		t.Run(c.file, func(t *testing.T) {
-			got, err := theReservedNameKeepsItOut(dir, c.file, ctxs)
+		t.Run(c.name, func(t *testing.T) {
+			got, err := theReservedNameKeepsItOut(c.src)
 			if err != nil {
-				t.Fatalf("theReservedNameKeepsItOut(%s) failed: %v", c.file, err)
+				t.Fatalf("theReservedNameKeepsItOut(%q) failed: %v", c.src, err)
 			}
 			if got != c.want {
-				t.Errorf("theReservedNameKeepsItOut(%s) = %v, want %v — %s", c.file, got, c.want, c.why)
+				t.Errorf("theReservedNameKeepsItOut(%q) = %v, want %v — %s", c.src, got, c.want, c.why)
 			}
 		})
+	}
+}
+
+// TestTheExemptionRefusesAConstraintItCannotEnumerate: the exemption is an
+// enumeration of 2^n assignments, so n is a load-bearing bound. Over it,
+// the answer is an error naming the file's tags — never a quiet `false`
+// that would turn into a demand for a context nobody can give, and never a
+// run nobody waits out.
+func TestTheExemptionRefusesAConstraintItCannotEnumerate(t *testing.T) {
+	names := make([]string, 0, maxNamesInAConstraint+1)
+	for i := range maxNamesInAConstraint + 1 {
+		names = append(names, fmt.Sprintf("tag%d", i))
+	}
+	src := "//go:build " + reservedIgnoreTag + " && (" + strings.Join(names, " || ") + ")\n\npackage a\n"
+	got, err := theReservedNameKeepsItOut(src)
+	if err == nil {
+		t.Fatalf("a constraint naming %d tags beside %q was answered %v with no error — the enumeration is 2^n and n has to be said out loud", len(names), reservedIgnoreTag, got)
+	}
+	if !strings.Contains(err.Error(), "maxNamesInAConstraint") {
+		t.Errorf("the error does not name the bound a reader would raise: %v", err)
+	}
+	if ok, err := theReservedNameKeepsItOut("//go:build " + reservedIgnoreTag + " && (" + strings.Join(names[:maxNamesInAConstraint], " || ") + ")\n\npackage a\n"); err != nil || !ok {
+		t.Errorf("a constraint naming exactly %d tags answered (%v, %v), want (true, nil) — the bound is inclusive", maxNamesInAConstraint, ok, err)
 	}
 }
 
@@ -1758,7 +2064,7 @@ func TestTheReservedNameEarnsNoExemptionWhereAContextCompilesTheFile(t *testing.
 // four — because it was a number in a comment that nothing executed.
 var theBoundsThePageStates = []string{
 	"Every non-test file, over five listing contexts.",
-	"Which file a build compiles is the go tool's answer, never the guard's.",
+	"Which build compiles a file is the go tool's answer; whether ANY build does is the constraint's.",
 	"Out of the listing is not out of the build.",
 	"Direct imports, one hop.",
 	"Test files are out of scope, by decision",

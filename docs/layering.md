@@ -33,12 +33,15 @@ rule.
   tree, same test binary. The guard unions five contexts — the host,
   `GOOS=windows`, `GOOS=darwin`, `GOOS=freebsd` (the three files that read
   `!linux && !darwin && !windows`), and then the build tags the files those
-  four left uncompiled still ask for, read off those files instead of listed
-  in the test (`goldens_record` today, which is where `pkg/botreplay`'s
-  three edges live). That list is not the promise: a file no context
-  compiles is refused by `TestEveryNonTestFileIsSeenByAListingContext`, and
-  `testdata/crossbuild` replays both attacks on a module of its own.
-- **Which file a build compiles is the go tool's answer, never the guard's.**
+  four left uncompiled still ask for, ANYWHERE in the module, read off the
+  listing instead of listed in the test: `desktop`, `dev`, `goldens_record`,
+  `netbsd` and `openbsd` on 2026-10-30, where `pkg/botreplay`'s three edges
+  and `cmd/iterion-desktop`'s three live. That list is not the promise: a
+  file no context compiles is refused by
+  `TestEveryNonTestFileIsSeenByAListingContext`, and `testdata/crossbuild`
+  replays both attacks on a module of its own.
+- **Which build compiles a file is the go tool's answer; whether ANY build
+  does is the constraint's.**
   The walk hands out every non-test `.go` file under the two trees — 1722 on
   2026-10-30, it skips nothing — and the listing the guard already reads
   sorts them, because `go list` publishes both the files a context compiled
@@ -52,12 +55,16 @@ rule.
   `go list -tags ignore` exits 1 on GOROOT's packages over this module
   (`TestTheReservedIgnoreTagCannotBePassedToTheListing`) and every test of
   the guard would fatal over a tree `go build ./...` compiles clean. A file
-  it keeps out earns its exemption from `go/build`'s own `MatchFile` — no
-  context matches the file, one does the moment that name is satisfied — so
-  `//go:build ignore` is exempt and `//go:build ignore || mytag` is not:
-  `mytag` is a context the guard asks for, and the crossing that file holds
-  is judged. `TestTheGuardAndTheGoToolReadTheSameFiles` writes a module per
-  shape and compares the guard to `go list -deps`: if the crossing ships,
+  it keeps out earns that exemption only where NO build of the toolchain
+  compiles it: the constraint `go/build` honours, with `ignore` pinned false,
+  satisfied by no assignment of the names it has left. So `//go:build ignore`
+  and `ignore && linux` are exempt, `ignore || mytag` is not — `go build
+  -tags mytag` compiles it — and neither is `ignore || (windows && mytag)`,
+  which `GOOS=windows go build -tags mytag` ships. A listing context is a
+  POINT, four platforms carrying no tag and one tag set carrying no platform,
+  so "no context of mine matches it" was the reading that went silent on that
+  last crossing. `TestTheGuardAndTheGoToolReadTheSameFiles` writes a module
+  per shape and compares the guard to `go list -deps`: if the crossing ships,
   the guard names it; if no build holds it, the guard is silent.
 - **Out of the listing is not out of the build.** A `_x`, `.x` or `testdata`
   DIRECTORY holds an importable package: a pattern names it nowhere, and
@@ -66,10 +73,14 @@ rule.
   edge — an import under `pkg/` or `internal/` the listing does not hold is
   a package whose own imports no rule reads, and the remedy is to rename the
   directory or to list it. The importer can be anywhere, which is why the
-  listing covers the whole module (`./...`, 230 packages) and not just the
-  two judged trees: `cmd/` is the composition root, no pattern of `pkg/` or
-  `internal/` names it, and `cmd/x` importing `pkg/store/_old` is the same
-  defect one tree further out. A dropped FILE name is reached by nothing,
+  listing covers the whole module (`./...`, 230 packages, the module's own
+  root package included) and not just the two judged trees: `cmd/` is the
+  composition root, no pattern of `pkg/` or `internal/` names it, and `cmd/x`
+  importing `pkg/store/_old` is the same defect one tree further out. So can
+  the file that ASKS for a build tag: the demand above is read off that same
+  listing, and read off the two judged trees alone it never heard `desktop`,
+  which left three edges of the composition root in no listing at all. A
+  dropped FILE name is reached by nothing,
   since no import names a file, and `TestNoGuardIsReadAroundByTheBuild`
   holds every Go file of the repository to a package of the module, so a
   stray one is refused there. `testdata/neverbuilt` is the module that says
@@ -117,7 +128,7 @@ Faced on 2026-10-29 at `e59110ed5`, over the 213 packages and 974
 module-internal import edges the five contexts named there: **12 violating
 pairs, all twelve accepted** with their reason in `allowExceptions`, and 19
 rule hits over them. The same twelve on 2026-10-30, now read off a listing
-of the whole module: 230 packages, 1061 module-internal edges, 1058 of them
+of the whole module: 230 packages, 1064 module-internal edges, 1061 of them
 landing under `pkg/` or `internal/` and every one naming a package the
 listing holds. Those counts are each reading's provenance, not a standing
 claim — they move with the tree, and the numbers that have to stay true are

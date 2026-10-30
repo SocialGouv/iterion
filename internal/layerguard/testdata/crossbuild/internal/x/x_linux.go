@@ -1,6 +1,6 @@
 //go:build linux
 
-// A platform constraint the listing contexts already cover: projectTags
+// A platform constraint the listing contexts already cover: tagsDemandedBy
 // must drop "linux" instead of passing it as a project tag.
 package x
 
