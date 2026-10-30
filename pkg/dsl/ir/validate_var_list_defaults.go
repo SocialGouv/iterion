@@ -129,6 +129,11 @@ func (c *compiler) validateVarListDefaults(w *Workflow) {
 		if loop := w.Loops[e.LoopName]; loop != nil && loop.MaxIterationsAST != nil && !c.capRefused[e] {
 			collectShiftedVars(loop.MaxIterationsAST, shifts, names)
 		}
+		// A sized_by signal is read as a number too — the same shift the
+		// cap suffers applies to the proration's reading.
+		if loop := w.Loops[e.LoopName]; loop != nil && loop.SizedByAST != nil {
+			collectShiftedVars(loop.SizedByAST, shifts, names)
+		}
 		report(siteExpression, e.From, edgeID(e.From, e.To), fmt.Sprintf("edge %s -> %s", e.From, e.To), names)
 	}
 

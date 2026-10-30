@@ -1101,6 +1101,28 @@ it. Two honest costs: a run with an opted-out loop gets no exit grace
 the clause is the bot's word — an operator's hatch stays the run-wide
 chain.
 
+The middle path between keeping the guard and lifting it is declaring
+the loop's **work signal**: `as reask("vars.max_reask") sized_by
+"outputs.fold_probe.pending"` (#2677). The guard then scales the
+previous crossing's cost by *size now / size at the previous crossing*,
+sampled each time the loop's mark is taken, so a shrinking iteration is
+priced by the real traversal — a 10-item re-ask after a 43-item one
+costs 10/43 of it, not the whole — while a growing one prices up by the
+same ratio. The signal is a bare expression over `vars`/`outputs` (no
+template braces; an unreadable or provably non-numeric one is **C325**,
+and every edge sharing the loop must agree on it). A reading that
+resolves to nothing or to a non-number prices the crossing **unscaled**
+— the default pricing, never an invented decline — and a size of zero
+prices the iteration at nothing, which is exactly what a drained
+re-ask costs. The samples ride the checkpoint beside the marks, so a
+resumed run prorates across the pause. One honest boundary: the FIRST
+crossing of a loop whose signal appears inside its own body has no
+earlier reading to scale against and prices full — if that first
+re-ask must cross, `guard: off` is the clause, not `sized_by`. A
+decline that prorated says so: the `budget_warning` carries `sized_by`,
+`size_previous` and `size_now` beside the figures, and the detail names
+the scale it applied.
+
 The run-level override **travels** — onto the cloud queue
 (`RunMessage.loop_budget_guard`, schema v7) and into a detached
 subprocess — so a runner pod re-resolving the chain from its own empty

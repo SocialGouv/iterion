@@ -385,6 +385,11 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 		NodeID:        "dispatch",
 		InteractionID: "interaction-1",
 		FiredEvents:   map[string]map[string]any{"ready": {"value": "ok"}},
+		// The sized_by work-signal samples ride the checkpoint beside the
+		// marks (#2677): a store that drops them resumes the loop pricing
+		// unscaled.
+		LoopBudgetMarks: map[string]map[string]float64{"reask": {"tokens": 41}},
+		LoopBudgetSizes: map[string]float64{"reask": 43},
 		Artifacts: map[string]map[string]any{
 			"plan":    {"title": "ship"},
 			"pending": {"title": "fallback"},
@@ -427,6 +432,7 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 					LoopPreviousOutput: map[string]map[string]any{"retry": {"result": "before"}},
 					LoopCurrentOutput:  map[string]map[string]any{"retry": {"result": "after"}},
 					LoopBudgetMarks:    map[string]map[string]float64{"retry": {"tokens": 12}},
+					LoopBudgetSizes:    map[string]float64{"retry": 7},
 					SelectedIncoming: map[string][]store.IncomingEdge{
 						"gate": {{From: "work", To: "gate", Condition: "ready"}},
 					},
@@ -449,6 +455,9 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 	}
 	if r.Checkpoint.FiredEvents["ready"]["value"] != "ok" {
 		t.Fatalf("fired events after round-trip = %#v", r.Checkpoint.FiredEvents)
+	}
+	if r.Checkpoint.LoopBudgetSizes["reask"] != 43 || r.Checkpoint.LoopBudgetMarks["reask"]["tokens"] != 41 {
+		t.Fatalf("loop budget marks/sizes after round-trip = %+v / %+v", r.Checkpoint.LoopBudgetMarks, r.Checkpoint.LoopBudgetSizes)
 	}
 	if revision := r.Checkpoint.ArtifactRevisions["plan"]; revision.NodeID != "planner" || revision.Version != 2 {
 		t.Fatalf("artifact revision after round-trip = %+v", revision)
@@ -479,6 +488,9 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 	}
 	if branch == nil || branch.CurrentNodeID != "gate" || branch.Outputs["work"]["result"] != "ok" || branch.LoopCounters["retry"] != 1 {
 		t.Fatalf("branch checkpoint after round-trip = %+v", branch)
+	}
+	if branch.LoopBudgetMarks["retry"]["tokens"] != 12 || branch.LoopBudgetSizes["retry"] != 7 {
+		t.Fatalf("branch loop budget marks/sizes after round-trip = %+v / %+v", branch.LoopBudgetMarks, branch.LoopBudgetSizes)
 	}
 	if revision := branch.ArtifactRevisions["report"]; revision.NodeID != "work" || revision.Version != 1 {
 		t.Fatalf("branch artifact revision after round-trip = %+v", revision)

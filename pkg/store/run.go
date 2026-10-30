@@ -1990,6 +1990,12 @@ type Checkpoint struct {
 	// pass the budget cannot fund, which is exactly the stranding the
 	// affordability guard exists to prevent.
 	LoopBudgetMarks map[string]map[string]float64 `json:"loop_budget_marks,omitempty" bson:"loop_budget_marks,omitempty"`
+	// LoopBudgetSizes preserves, per loop with a sized_by clause (#2677),
+	// the work signal's reading at the loop's last mark — the denominator
+	// of the scale the next crossing's pricing applies. Without it a
+	// resumed run would price the crossing it lands on unscaled: the
+	// pessimistic first-pass pricing the clause exists to lift.
+	LoopBudgetSizes map[string]float64 `json:"loop_budget_sizes,omitempty" bson:"loop_budget_sizes,omitempty"`
 	// LoopBudgetMarksV is the format version of LoopBudgetMarks. Version 2
 	// marks are measured at a loop's entry or back-edge; earlier engines also
 	// wrote the run-start baseline for loops never entered at their head, a
@@ -2193,6 +2199,7 @@ type BranchCheckpoint struct {
 	LoopPreviousOutput map[string]map[string]any      `json:"loop_previous_output,omitempty" bson:"loop_previous_output,omitempty"`
 	LoopCurrentOutput  map[string]map[string]any      `json:"loop_current_output,omitempty" bson:"loop_current_output,omitempty"`
 	LoopBudgetMarks    map[string]map[string]float64  `json:"loop_budget_marks,omitempty" bson:"loop_budget_marks,omitempty"`
+	LoopBudgetSizes    map[string]float64             `json:"loop_budget_sizes,omitempty" bson:"loop_budget_sizes,omitempty"`
 	SelectedIncoming   map[string][]IncomingEdge      `json:"selected_incoming,omitempty" bson:"selected_incoming,omitempty"`
 	// SettledIncoming is the branch-private twin of Checkpoint.SettledIncoming:
 	// the floor a NESTED fan-out left on a convergence inside this branch.

@@ -59,8 +59,8 @@ on re-entry), so a second-phase or nested loop is never charged for the
 work that preceded it; the prices ride the checkpoint. Visible as a
 `budget_warning` carrying `reason: loop_budget_guard`. Precedence mirrors
 `compress:` minus the node level (a loop is not a node): CLI
-`--loop-budget-guard` → the loop clause `as name(…) guard: off` (the
-opt-out, detail in dsl.md) → workflow `loop_budget_guard:` →
+`--loop-budget-guard` → the loop clause (`guard: off` opts out,
+`sized_by "outputs…"` prorates the price — dsl.md) → workflow `loop_budget_guard:` →
 `ITERION_LOOP_BUDGET_GUARD` → on. Diagnostics C133 (workflow) and C178
 (clause). Like `auto_memory:` and
 unlike `compress:`, the run-level override **travels onto the cloud queue**

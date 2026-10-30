@@ -290,6 +290,7 @@ func TestLoopClauseRoundtrip(t *testing.T) {
 					{From: "c", To: "d", Loop: &ast.LoopClause{Name: "free", Unbounded: true}},
 					{From: "d", To: "e", Loop: &ast.LoopClause{Name: "fuelled", Unbounded: true, FuelCap: 40}},
 					{From: "e", To: "f", Loop: &ast.LoopClause{Name: "reask", MaxIterations: 2, Guard: "off"}},
+					{From: "f", To: "g", Loop: &ast.LoopClause{Name: "sized", MaxIterations: 3, SizedBy: "outputs.probe.pending"}},
 				},
 			},
 		},
@@ -310,6 +311,11 @@ func TestLoopClauseRoundtrip(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"guard": "off"`) {
 		t.Errorf("unexpected JSON (missing guard): %s", data)
+	}
+	// The sized_by signal (#2677) rides the same clause: dropped from the
+	// wire, a studio save would silently restore the unscaled pricing.
+	if !strings.Contains(string(data), `"sized_by": "outputs.probe.pending"`) {
+		t.Errorf("unexpected JSON (missing sized_by): %s", data)
 	}
 }
 

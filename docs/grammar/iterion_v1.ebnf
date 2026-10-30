@@ -538,10 +538,15 @@ when_clause = "when" ( [ "not" ] IDENT | STRING_LIT ) ;
 else_clause = "else" ;
 
 iteration_clause = "as" ( loop_spec | foreach_spec ) ;
-loop_spec = IDENT "(" loop_cap ")" [ "guard" ":" loop_budget_guard_mode ] ;
+loop_spec = IDENT "(" loop_cap ")" { loop_suffix } ;
 (* STRING_LIT holds one template reference or an expression over vars/outputs.
    The guard clause is the loop's own word on the budget guard — C178 on any
-   other value; empty inherits the loop_budget_guard chain. *)
+   other value; empty inherits the loop_budget_guard chain.
+   sized_by declares the loop's work signal: the guard prices a crossing at
+   the previous one's cost scaled by size_now / size_at_previous_crossing
+   (#2677) — C325 on an unreadable or provably non-numeric expression.
+   Each suffix at most once, in either order. *)
+loop_suffix = "guard" ":" loop_budget_guard_mode | "sized_by" STRING_LIT ;
 loop_cap = INT_LIT | STRING_LIT | "unbounded" [ INT_LIT ] ;
 foreach_spec = "foreach" IDENT "(" IDENT "in" STRING_LIT ")" ;
 

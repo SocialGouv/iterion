@@ -441,6 +441,7 @@ func newBranchRunState(parent *runState, cp *store.BranchCheckpoint, result *bra
 		local.loopPreviousOutput = copyOutputs(cp.LoopPreviousOutput)
 		local.loopCurrentOutput = copyOutputs(cp.LoopCurrentOutput)
 		restoreLoopBudgetMarks(local, cp.LoopBudgetMarks)
+		restoreLoopBudgetSizes(local, cp.LoopBudgetSizes)
 	}
 	return local
 }
@@ -470,6 +471,7 @@ func branchCheckpointFromState(rs *runState, result *branchResult, currentNodeID
 		LoopPreviousOutput: copyOutputs(rs.loopPreviousOutput),
 		LoopCurrentOutput:  copyOutputs(rs.loopCurrentOutput),
 		LoopBudgetMarks:    snapshotLoopBudgetMarks(rs),
+		LoopBudgetSizes:    snapshotLoopBudgetSizes(rs),
 		SelectedIncoming:   cloneIncoming(result.selectedIncoming),
 		SettledIncoming:    cloneIncoming(result.settledIncoming),
 		JoinNodeID:         result.joinNodeID,
@@ -1198,7 +1200,7 @@ func (e *Engine) selectEdgeBranch(ctx context.Context, runID, branchID, fromNode
 			if rs.loopCounters[loopName] > 0 && !loop.Entries[selected.To] {
 				continue
 			}
-			markLoopBudget(rs, loopName)
+			e.markLoopBudget(rs, loopName)
 			if !loop.Entries[selected.To] {
 				continue
 			}
@@ -1217,7 +1219,7 @@ func (e *Engine) selectEdgeBranch(ctx context.Context, runID, branchID, fromNode
 	}
 	if selected.LoopName != "" {
 		rs.loopCounters[selected.LoopName]++
-		markLoopBudget(rs, selected.LoopName)
+		e.markLoopBudget(rs, selected.LoopName)
 		if staged, ok := rs.loopCurrentOutput[selected.LoopName]; ok {
 			rs.loopPreviousOutput[selected.LoopName] = staged
 		}

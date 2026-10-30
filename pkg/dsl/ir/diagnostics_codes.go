@@ -115,6 +115,7 @@ const (
 	// Loop back-edge affordability guard diagnostics.
 	DiagInvalidLoopBudgetGuard DiagCode = "C133" // loop_budget_guard: value not one of on|off (error)
 	DiagInvalidLoopClauseGuard DiagCode = "C178" // a loop clause's guard: value not one of on|off (error)
+	DiagInvalidLoopSizedBy     DiagCode = "C325" // a loop clause's sized_by signal: template braces, unparseable expression, a reference outside vars/outputs, or a provably non-numeric type (error)
 
 	// C179 sits in the C178/C180 gap and belongs to the Verified Action
 	// family (C103-C106, declared where they are emitted, in

@@ -52,3 +52,18 @@ describe("formatLoopBadge", () => {
     expect(formatLoopBadge({ name: "l" })).not.toContain("undefined");
   });
 });
+
+describe("formatLoopBadge sized_by", () => {
+  it("shows the declared work signal (#2677)", () => {
+    expect(
+      formatLoopBadge({ name: "reask", max_iterations: 2, sized_by: "outputs.probe.pending" }),
+    ).toBe("loop:reask(2) sized:outputs.probe.pending");
+  });
+
+  it("truncates a long signal and composes with guard", () => {
+    const signal = "outputs.fold_probe.pending_items_total";
+    expect(
+      formatLoopBadge({ name: "reask", max_iterations: 2, guard: "off", sized_by: signal }),
+    ).toBe(`loop:reask(2) guard:off sized:${signal.slice(0, 24)}…`);
+  });
+});

@@ -2276,6 +2276,9 @@ func writeEdge(b *buf, e *ast.Edge) {
 		if e.Loop.Guard != "" {
 			fmt.Fprintf(b, " guard: %s", e.Loop.Guard)
 		}
+		if e.Loop.SizedBy != "" {
+			fmt.Fprintf(b, " sized_by %s", b.str(e.Loop.SizedBy))
+		}
 	}
 	if e.Foreach != nil {
 		fmt.Fprintf(b, " as foreach %s(%s in %s)", e.Foreach.Name, e.Foreach.Item, b.str(e.Foreach.Collection))

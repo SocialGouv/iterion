@@ -955,6 +955,7 @@ type jsonLoopClause struct {
 	Unbounded         bool   `json:"unbounded,omitempty"`
 	FuelCap           int    `json:"fuel_cap,omitempty"`
 	Guard             string `json:"guard,omitempty"`
+	SizedBy           string `json:"sized_by,omitempty"`
 }
 
 type jsonWithEntry struct {
@@ -1725,6 +1726,7 @@ func edgeToJSON(e *Edge) *jsonEdge {
 			Unbounded:         e.Loop.Unbounded,
 			FuelCap:           e.Loop.FuelCap,
 			Guard:             e.Loop.Guard,
+			SizedBy:           e.Loop.SizedBy,
 		}
 	}
 	if e.Foreach != nil {
@@ -2608,6 +2610,7 @@ func edgeFromJSON(je *jsonEdge) (*Edge, error) {
 			Unbounded:         je.Loop.Unbounded,
 			FuelCap:           je.Loop.FuelCap,
 			Guard:             je.Loop.Guard,
+			SizedBy:           je.Loop.SizedBy,
 		}
 	}
 	if je.Foreach != nil {

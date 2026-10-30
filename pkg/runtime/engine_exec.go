@@ -1044,7 +1044,7 @@ func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string
 			if rs.loopCounters[loopName] > 0 && !loop.Entries[selected.To] {
 				continue
 			}
-			markLoopBudget(rs, loopName)
+			e.markLoopBudget(rs, loopName)
 			if !loop.Entries[selected.To] {
 				continue
 			}
@@ -1073,7 +1073,7 @@ func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string
 		// The crossing is committed: price the iteration that starts here
 		// from this point. Done on the SELECTED edge only, so evaluating a
 		// sibling back-edge cannot move the mark or leave it a zero price.
-		markLoopBudget(rs, selected.LoopName)
+		e.markLoopBudget(rs, selected.LoopName)
 		// Rotate snapshots so {{loop.<name>.previous_output}} reads the
 		// snapshot from the PRIOR traversal (one iteration behind), not the
 		// current one. The current iteration's source output is staged in

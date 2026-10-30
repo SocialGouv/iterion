@@ -1,12 +1,16 @@
 package runtime
 
 import (
+	"encoding/json"
 	"fmt"
-	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/store"
+	"math"
 	"os"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // loopBudgetMark records what a run had consumed, per enforced budget
@@ -16,16 +20,25 @@ import (
 type loopBudgetMark map[string]float64
 
 // loopBudgetVerdict describes a loop iteration the budget cannot fund.
-// spent is what the previous iteration consumed on the blocking axis;
-// used/limit are the run's standing on it, carried so the ordinary
-// budget_warning consumers (run report, alert manager) render the event
-// like any other.
+// spent is what the previous iteration consumed on the blocking axis —
+// size-scaled when the loop declares its work signal (sized_by, #2677)
+// and both ends of the scale read; used/limit are the run's standing on
+// it, carried so the ordinary budget_warning consumers (run report,
+// alert manager) render the event like any other.
 type loopBudgetVerdict struct {
 	dimension string
 	spent     float64
 	remaining float64
 	used      float64
 	limit     float64
+	// The proration the verdict carries when the loop's sized_by signal
+	// read at both ends: the signal's source, its size when the previous
+	// iteration was priced, and its size now. prorated=false leaves the
+	// trio unset and the decline's prose on the unscaled wording.
+	prorated bool
+	sizedBy  string
+	sizeFrom float64
+	sizeTo   float64
 }
 
 // display converts an axis's figures to operator units. Durations are
@@ -74,6 +87,60 @@ func (e *Engine) loopBudgetGuardEnabledFor(loopName string) bool {
 		return v
 	}
 	return true
+}
+
+// loopWorkSize reads the loop's declared work signal (`as name(3)
+// sized_by "outputs.probe.pending"`, #2677) against the run's live
+// state. ok=false — the loop declares no signal, the expression fails,
+// or the reading is not a non-negative number — means "no reading": the
+// caller prices unscaled rather than inventing a size.
+func (e *Engine) loopWorkSize(loop *ir.Loop, rs *runState) (size float64, ok bool) {
+	if loop == nil || loop.SizedByAST == nil {
+		return 0, false
+	}
+	v, err := loop.SizedByAST.Eval(e.exprContext(rs, nil))
+	if err != nil {
+		e.logger.Warn("loop %q sized_by %q: %v — pricing this crossing unscaled",
+			loop.Name, loop.SizedByExpr, err)
+		return 0, false
+	}
+	if v == nil {
+		// Not yet: the signal's producer has not run (the first crossing
+		// of a loop whose signal appears inside its own body). Unscaled,
+		// and quiet about it — this is the normal case, not a defect.
+		return 0, false
+	}
+	size, ok = loopSizeNumber(v)
+	if !ok {
+		e.logger.Warn("loop %q sized_by %q read %v (%T), not a non-negative number — pricing this crossing unscaled",
+			loop.Name, loop.SizedByExpr, v, v)
+	}
+	return size, ok
+}
+
+// loopSizeNumber coerces one reading of a loop's work signal to a
+// non-negative float. Outputs are dynamically typed, so a numeric string
+// reads — the same tolerance the loop cap extends (loopCapInteger).
+func loopSizeNumber(v any) (float64, bool) {
+	switch n := v.(type) {
+	case int:
+		return float64(n), n >= 0
+	case int64:
+		return float64(n), n >= 0
+	case float64:
+		return n, !math.IsNaN(n) && !math.IsInf(n, 0) && n >= 0
+	case float32:
+		return loopSizeNumber(float64(n))
+	case json.Number:
+		if f, err := n.Float64(); err == nil {
+			return loopSizeNumber(f)
+		}
+	case string:
+		if f, err := strconv.ParseFloat(strings.TrimSpace(n), 64); err == nil {
+			return loopSizeNumber(f)
+		}
+	}
+	return 0, false
 }
 
 // parseLoopBudgetGuard reads one layer of the chain. ok=false means the
@@ -128,14 +195,40 @@ func (e *Engine) loopBudgetShortfall(loopName string, rs *runState) *loopBudgetV
 		return nil
 	}
 
+	// The loop's declared work signal (#2677): when both ends read, the
+	// previous iteration's cost scales by size_now /
+	// size_at_previous_crossing, so a shrinking iteration — a re-ask of
+	// the still-pending subset — is priced by the traversal, not by the
+	// first, largest pass. No reading (no clause, an unreadable signal,
+	// or a mark taken before the signal existed — the first crossing of
+	// a loop whose signal appears inside its own body) prices unscaled:
+	// the default keeps today's behavior word for word.
+	var sizeFrom, sizeTo float64
+	prorated := false
+	var loop *ir.Loop
+	if e.workflow != nil {
+		loop = e.workflow.Loops[loopName]
+	}
+	if loop != nil && loop.SizedByAST != nil {
+		if now, ok := e.loopWorkSize(loop, rs); ok {
+			if from, sampled := rs.loopBudgetSizes[loopName]; sampled && from > 0 {
+				sizeFrom, sizeTo, prorated = from, now, true
+			}
+		}
+	}
+
 	for _, dim := range budgetDimensions {
 		axis, enforced := axes[dim]
 		if !enforced {
 			continue
 		}
 		spent := axis.used - previous[dim]
+		if prorated {
+			spent *= sizeTo / sizeFrom
+		}
 		// A dimension the last iteration did not move cannot be the one
-		// that starves the next; only a measured burn prices a pass.
+		// that starves the next; only a measured burn prices a pass. A
+		// prorated zero spends nothing: the iteration carries no work.
 		if spent <= 0 {
 			continue
 		}
@@ -154,6 +247,10 @@ func (e *Engine) loopBudgetShortfall(loopName string, rs *runState) *loopBudgetV
 				remaining: axis.remaining,
 				used:      axis.used,
 				limit:     limit,
+				prorated:  prorated,
+				sizedBy:   loop.SizedByExpr,
+				sizeFrom:  sizeFrom,
+				sizeTo:    sizeTo,
 			}
 		}
 	}
@@ -188,6 +285,14 @@ func (v loopBudgetVerdict) eventData(loopName string) map[string]any {
 	if unit != "" {
 		data["unit"] = unit
 	}
+	if v.prorated {
+		// The sizes the price was scaled with, so a reader of the
+		// decline sees the traversal the guard followed, not just its
+		// verdict.
+		data["sized_by"] = v.sizedBy
+		data["size_previous"] = v.sizeFrom
+		data["size_now"] = v.sizeTo
+	}
 	return data
 }
 
@@ -197,15 +302,27 @@ func (v loopBudgetVerdict) eventData(loopName string) map[string]any {
 func (v loopBudgetVerdict) detailText(loopName string) string {
 	spent, _, used, limit, unit := v.display()
 	u := unitSuffix(unit)
-	return fmt.Sprintf("loop %q declined its back-edge: another iteration, priced at the last one's cost (%.2f%s), would reach %.2f of the %.2f%s %s limit — at or past the %.2f%s threshold where the engine stops starting nodes; the run leaves by its other edges with what it banked. The price is the last iteration's, so a loop whose iterations shrink (a re-ask of the still-pending subset) is priced by its first, largest pass: lift the guard for this loop with `as %s(...) guard: off`, or run-wide with `loop_budget_guard: off` / `--loop-budget-guard off`.",
-		loopName, spent, u, used+spent, limit, u, v.dimension, budgetHardThreshold*limit, u, loopName)
+	pricing := fmt.Sprintf("priced at the last one's cost (%.2f%s)", spent, u)
+	if v.prorated {
+		pricing = fmt.Sprintf("priced at the last one's cost scaled by its sized_by signal (%g now / %g at the previous crossing = %.2f%s)",
+			v.sizeTo, v.sizeFrom, spent, u)
+	}
+	return fmt.Sprintf("loop %q declined its back-edge: another iteration, %s, would reach %.2f of the %.2f%s %s limit — at or past the %.2f%s threshold where the engine stops starting nodes; the run leaves by its other edges with what it banked. Without a readable sized_by signal the price is the last iteration's, so a loop whose iterations shrink (a re-ask of the still-pending subset) is priced by its first, largest pass: declare the loop's work signal with `as %s(...) sized_by \"outputs…\"`, lift the guard for this loop with `as %s(...) guard: off`, or run-wide with `loop_budget_guard: off` / `--loop-budget-guard off`.",
+		loopName, pricing, used+spent, limit, u, v.dimension, budgetHardThreshold*limit, u, loopName, loopName)
 }
 
 // markLoopBudget re-bases a loop's price on the run's consumption right
 // now. Called when the loop is ENTERED from outside (so its first
 // crossing prices its first iteration, not the whole run that preceded
 // it) and each time its back-edge is actually taken.
-func markLoopBudget(rs *runState, loopName string) {
+//
+// A loop with a sized_by clause (#2677) also samples its work signal
+// here: the reading is the denominator of the scale the NEXT crossing's
+// pricing applies. A signal that does not read at mark time — the first
+// entry of a loop whose signal appears inside its own body — drops any
+// stale sample, so that crossing prices unscaled rather than against a
+// previous instance's size.
+func (e *Engine) markLoopBudget(rs *runState, loopName string) {
 	axes := rs.budget.Axes()
 	if len(axes) == 0 {
 		return
@@ -215,6 +332,21 @@ func markLoopBudget(rs *runState, loopName string) {
 		mark[dim] = axis.used
 	}
 	rs.loopBudgetMarks[loopName] = mark
+	var loop *ir.Loop
+	if e.workflow != nil {
+		loop = e.workflow.Loops[loopName]
+	}
+	if loop == nil || loop.SizedByAST == nil {
+		return
+	}
+	if size, ok := e.loopWorkSize(loop, rs); ok {
+		if rs.loopBudgetSizes == nil {
+			rs.loopBudgetSizes = make(map[string]float64)
+		}
+		rs.loopBudgetSizes[loopName] = size
+	} else {
+		delete(rs.loopBudgetSizes, loopName)
+	}
 }
 
 // baselineUnpricedLoops bases every not-yet-priced loop at the run's
@@ -231,7 +363,7 @@ func (e *Engine) baselineUnpricedLoops(rs *runState) {
 		if _, priced := rs.loopBudgetMarks[loopName]; priced {
 			continue
 		}
-		markLoopBudget(rs, loopName)
+		e.markLoopBudget(rs, loopName)
 	}
 }
 
@@ -284,6 +416,28 @@ func isRunStartBaseline(mark loopBudgetMark) bool {
 // body — the one case where a run-start mark is the loop's true price.
 func loopHoldsEntry(loop *ir.Loop, entry string) bool {
 	return loop != nil && loop.Body[entry]
+}
+
+// restoreLoopBudgetSizes rehydrates the sized_by samples beside the
+// marks (restoreLoopBudgetMarks). A checkpoint carrying none — an older
+// format, or no sized loop — leaves every loop unsampled, which prices
+// unscaled until the next mark.
+func restoreLoopBudgetSizes(rs *runState, sizes map[string]float64) {
+	for loopName, size := range sizes {
+		if rs.loopBudgetSizes == nil {
+			rs.loopBudgetSizes = make(map[string]float64)
+		}
+		rs.loopBudgetSizes[loopName] = size
+	}
+}
+
+// snapshotLoopBudgetSizes projects the sized_by samples for persistence.
+// Returns nil when nothing is sampled, so checkpoints stay compact.
+func snapshotLoopBudgetSizes(rs *runState) map[string]float64 {
+	if len(rs.loopBudgetSizes) == 0 {
+		return nil
+	}
+	return cloneMap(rs.loopBudgetSizes)
 }
 
 // restoreLoopBudgetMarks rehydrates the loop prices from a checkpoint so

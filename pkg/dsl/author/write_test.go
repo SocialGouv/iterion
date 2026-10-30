@@ -76,3 +76,33 @@ func TestWriteOrdersNodesByPositionOrByKind(t *testing.T) {
 		t.Fatalf("a positioned document writes the nodes in the text's order (tool first here):\n%s", out2)
 	}
 }
+
+// The loop clause's suffixes ride the document as .bot edge text: a
+// workflow written to x.bot.yaml and read back keeps `guard:` and
+// `sized_by` (#2677) — a dropped suffix would silently re-arm the guard
+// or restore the unscaled pricing on a studio save.
+func TestWriteKeepsTheLoopClauseSuffixes(t *testing.T) {
+	f := &ast.File{Workflows: []*ast.WorkflowDecl{{
+		Name:  "w",
+		Entry: "a",
+		Edges: []*ast.Edge{
+			{From: "a", To: "b", Loop: &ast.LoopClause{Name: "reask", MaxIterations: 2, Guard: "off", SizedBy: "outputs.probe.pending"}},
+			{From: "b", To: "done"},
+		},
+	}}}
+	out, err := Write(f)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if !strings.Contains(string(out), `as reask(2) guard: off sized_by "outputs.probe.pending"`) {
+		t.Fatalf("the clause suffixes did not come out:\n%s", out)
+	}
+	back := Parse("w.x.bot.yaml", out)
+	if back.HasErrors() {
+		t.Fatalf("the written document does not read back: %v", back.Diagnostics)
+	}
+	loop := back.File.Workflows[0].Edges[0].Loop
+	if loop == nil || loop.Guard != "off" || loop.SizedBy != "outputs.probe.pending" {
+		t.Fatalf("read back %+v, want guard off + sized_by outputs.probe.pending", loop)
+	}
+}

@@ -1889,3 +1889,48 @@ func TestLexerBlockScalarBareError(t *testing.T) {
 		}
 	}
 }
+
+func TestEdgeLoopSizedByClause(t *testing.T) {
+	// `as <name>(<cap>) sized_by "outputs.probe.pending"` — the loop's
+	// declared work signal (#2677): the budget guard prices a crossing at
+	// the previous one's cost scaled by size_now /
+	// size_at_previous_crossing. The expression's parse and references
+	// are the compiler's (C325); the parser carries the source, in
+	// either suffix order with `guard:`.
+	src := `workflow test:
+  entry: a
+
+  a -> b as reask("vars.max_reask") sized_by "outputs.probe.pending" with { k: "{{outputs.a}}" }
+  b -> a as keep(3) guard: off sized_by "outputs.probe.left"
+`
+	res := parser.ParseLenient("test.bot", src)
+	assertNoDiags(t, res)
+
+	e := res.File.Workflows[0].Edges[0]
+	if e.Loop == nil {
+		t.Fatal("expected loop clause")
+	}
+	assertEq(t, "Loop.Name", e.Loop.Name, "reask")
+	assertEq(t, "Loop.MaxIterationsExpr", e.Loop.MaxIterationsExpr, "vars.max_reask")
+	assertEq(t, "Loop.SizedBy", e.Loop.SizedBy, "outputs.probe.pending")
+	if len(e.With) != 1 {
+		t.Fatalf("the with block must survive the sized_by clause, got %d entries", len(e.With))
+	}
+
+	both := res.File.Workflows[0].Edges[1]
+	if both.Loop == nil || both.Loop.Guard != "off" || both.Loop.SizedBy != "outputs.probe.left" {
+		t.Fatalf("guard/sized_by in this order mis-parsed: %+v", both.Loop)
+	}
+}
+
+func TestEdgeLoopSizedByClauseNeedsAString(t *testing.T) {
+	src := `workflow test:
+  entry: a
+
+  a -> b as reask(2) sized_by
+`
+	res := parser.ParseLenient("test.bot", src)
+	if len(res.Diagnostics) == 0 {
+		t.Fatal("sized_by with no quoted expression must be a parse diagnostic")
+	}
+}

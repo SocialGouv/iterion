@@ -203,3 +203,29 @@ func TestCorpusSurvivesUnparse(t *testing.T) {
 	}
 	t.Logf("checked %d workflows through the unparser", checked)
 }
+
+// The loop clause's `sized_by "outputs…"` declares the work signal the
+// budget guard prorates with (#2677): a loaded-then-saved .bot must not
+// drop it, or a studio save would silently restore the unscaled,
+// first-largest-pass pricing the clause lifted.
+func TestUnparseKeepsTheLoopSizedByClause(t *testing.T) {
+	src := "workflow w:\n  entry: a\n  a -> b when done_ok\n  a -> b as reask(2) sized_by \"outputs.probe.pending\"\n  a -> done\n"
+	pr := parsertest.Parse("sized.bot", src)
+	for _, d := range pr.Diagnostics {
+		t.Fatalf("fixture does not parse: %s", d.Error())
+	}
+	text := unparse.Unparse(pr.File)
+	if !strings.Contains(text, `as reask(2) sized_by "outputs.probe.pending"`) {
+		t.Fatalf("the sized_by clause did not come out:\n%s", text)
+	}
+	pr2 := parsertest.Parse("sized.bot", text)
+	for _, d := range pr2.Diagnostics {
+		t.Fatalf("does not parse back: %s\n%s", d.Error(), text)
+	}
+	if got := pr2.File.Workflows[0].Edges[1].Loop.SizedBy; got != "outputs.probe.pending" {
+		t.Errorf("sized_by came back as %q, want outputs.probe.pending", got)
+	}
+	if err := unparse.Verify(pr.File, text); err != nil {
+		t.Errorf("Verify: %v", err)
+	}
+}

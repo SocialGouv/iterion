@@ -244,7 +244,7 @@ func TestLoopBudgetGuard_ReEnteredLoopReBasesItsPrice(t *testing.T) {
 	// An outer iteration runs and the inner loop is entered: the entry
 	// re-bases its price on what has been consumed by then.
 	rs.budget.RecordUsage(spendOf(9_000, 0))
-	markLoopBudget(rs, "phase2")
+	eng.markLoopBudget(rs, "phase2")
 
 	// One cheap inner iteration, then its first crossing of this instance.
 	rs.budget.RecordUsage(spendOf(1_000, 0))
@@ -319,7 +319,7 @@ func TestLoopBudgetGuard_MarksSurviveResume(t *testing.T) {
 	origin := eng.newRunState("r", nil)
 	origin.budget = newSharedBudget(wf.Budget, eng.logger)
 	origin.budget.RecordUsage(spendOf(5_000, 0))
-	markLoopBudget(origin, "continuation")
+	eng.markLoopBudget(origin, "continuation")
 	origin.budget.RecordUsage(spendOf(3_000, 0))
 
 	cp := buildCheckpoint(origin, "gate")

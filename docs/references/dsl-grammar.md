@@ -536,12 +536,12 @@ edge = node_ref "->" node_ref { "->" node_ref } { when_or_else | iteration | wit
 node_ref = IDENT { "." IDENT } | "done" | "fail" ;
 
 when_or_else = "when" ( [ "not" ] IDENT | STRING ) | "else" ;
-iteration = "as" IDENT "(" ( INT | STRING | "unbounded" [ INT ] ) ")" [ "guard" ":" ( "on" | "off" ) ]
+iteration = "as" IDENT "(" ( INT | STRING | "unbounded" [ INT ] ) ")" [ "guard" ":" ( "on" | "off" ) ] [ "sized_by" STRING ]
           | "as foreach" IDENT "(" IDENT "in" STRING ")" ;
 with_block = "with" "{" { IDENT ":" ( STRING | INT | FLOAT | BOOL ) [ "," ] } "}" ;
 ```
 
-A chain `a -> b -> c` is one edge per arrow, in order; the clauses belong to the last edge (a clause before a further arrow is E032). A non-string `with` literal is read as its text (`n: 3` maps `"3"`). Clauses may occur in any order, but each kind may occur at most once. `when` and `else` are mutually exclusive. A quoted `when` is parsed as an expression. Every graph cycle must be declared by a named loop or finite `foreach`; `unbounded` loops require a fuel source and an exit edge.
+A chain `a -> b -> c` is one edge per arrow, in order; the clauses belong to the last edge (a clause before a further arrow is E032). A non-string `with` literal is read as its text (`n: 3` maps `"3"`). Clauses may occur in any order, but each kind may occur at most once. `when` and `else` are mutually exclusive. A quoted `when` is parsed as an expression. Every graph cycle must be declared by a named loop or finite `foreach`; `unbounded` loops require a fuel source and an exit edge. A loop's `guard` and `sized_by` suffixes accept either order, each at most once — `sized_by` names the work signal the loop budget guard prorates with ([dsl.md](../dsl.md#budget-and-loop-back-edges)).
 
 ## Expression language
 

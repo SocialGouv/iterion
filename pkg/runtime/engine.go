@@ -492,6 +492,11 @@ type runState struct {
 	// or last crossed its back-edge. Persisted on the checkpoint, so a
 	// resumed run keeps measuring across the pause.
 	loopBudgetMarks map[string]loopBudgetMark
+	// loopBudgetSizes samples each sized_by loop's work signal at the
+	// moment its mark is taken — the denominator of the proration the
+	// next crossing's pricing applies (#2677). Lazily allocated: loops
+	// without the clause never touch it. Persisted beside the marks.
+	loopBudgetSizes map[string]float64
 	// branchLocal disables predictive loop pricing against the shared run
 	// budget. Concurrent sibling spend cannot price one branch's iteration;
 	// the shared 90% pre-exec and hard limits remain authoritative.

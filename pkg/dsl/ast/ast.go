@@ -1240,7 +1240,16 @@ type LoopClause struct {
 	// a re-ask of the still-pending subset, priced by the guard at its
 	// first, largest pass — opts out here: its cap alone bounds it.
 	Guard string
-	Span  Span
+	// SizedBy names the loop's work signal (`as name(3) sized_by
+	// "outputs.probe.pending"`): a quoted expression, evaluated to a
+	// number each time the loop's budget mark is taken and each time its
+	// back-edge is priced. The guard scales the previous crossing's cost
+	// by size_now / size_at_previous_crossing, so a loop whose iterations
+	// shrink — a re-ask of the still-pending subset — is priced by its
+	// real traversal instead of its first, largest pass (#2677). Empty
+	// keeps the unscaled pricing.
+	SizedBy string
+	Span    Span
 }
 
 // WithEntry is a single key-value mapping inside a `with { ... }` block.

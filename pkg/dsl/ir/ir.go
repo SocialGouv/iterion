@@ -1663,6 +1663,19 @@ type Loop struct {
 	// loop opts out, because a graced run could take that loop's
 	// back-edge and keep looping on a spent budget.
 	Guard string
+	// SizedByExpr is the authored work-signal source (`as name(3) sized_by
+	// "outputs.probe.pending"`), SizedByAST its compiled expression. The
+	// runtime evaluates it when the loop's budget mark is taken and when
+	// its back-edge is priced, and scales the previous crossing's cost by
+	// size_now / size_at_previous_crossing — a loop whose iterations
+	// shrink is priced by its real traversal instead of its first,
+	// largest pass (#2677). Empty/nil keeps the unscaled pricing.
+	SizedByExpr string
+	SizedByAST  *expr.AST
+	// sizeRecords is what reading the signal's expression spent of the
+	// bot's read budget, re-spent for every further edge carrying the
+	// loop — the cap's capRecords rule, applied to sized_by.
+	sizeRecords int
 	// Body is the set of node IDs that participate in the loop's cycle —
 	// each node from which the loop's edge target is reachable and which
 	// can reach the loop's edge source (i.e. nodes on a path that closes

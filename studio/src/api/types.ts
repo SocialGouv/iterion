@@ -918,7 +918,10 @@ export interface WhenClause {
 // the unbounded form (`as name(unbounded [fuel])`) as `unbounded` (+
 // optional `fuel_cap`). Consumers must handle an absent bound instead
 // of assuming a number. `guard` carries the clause's budget-guard word
-// (`as name(3) guard: off`), absent when the loop inherits the chain.
+// (`as name(3) guard: off`), absent when the loop inherits the chain;
+// `sized_by` its declared work signal (`as name(3) sized_by
+// "outputs.probe.pending"`, #2677), absent when the guard prices
+// unscaled.
 export interface LoopClause {
   name: string;
   max_iterations?: number;
@@ -926,6 +929,7 @@ export interface LoopClause {
   unbounded?: boolean;
   fuel_cap?: number;
   guard?: string;
+  sized_by?: string;
 }
 
 export interface WithEntry {

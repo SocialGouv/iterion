@@ -2088,6 +2088,15 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 						"loop %q has conflicting guard settings: %q vs %q",
 						ae.Loop.Name, existing.Guard, ae.Loop.Guard)
 				}
+				// Same for the work signal: which traversal the guard
+				// prices cannot depend on the edge the run happens to
+				// cross.
+				if existing.SizedByExpr != ae.Loop.SizedBy {
+					was, now := excerptPair(existing.SizedByExpr, ae.Loop.SizedBy)
+					c.errorfOnEdge(DiagDuplicateLoop, ae,
+						"loop %q has conflicting sized_by signals: %q vs %q",
+						ae.Loop.Name, was, now)
+				}
 				if existing.MaxIterationsAST != nil && existing.capRecords > 0 {
 					// Every edge that carries the loop reads its cap again
 					// (validateLoopCapExpressions walks it per edge), so each
@@ -2102,6 +2111,13 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 						c.capRefused[e] = true
 					}
 				}
+				if existing.SizedByAST != nil && existing.sizeRecords > 0 {
+					// The work signal rides the same rule as the cap:
+					// validateLoopSizeExpressions reads it once per edge.
+					if err := c.exprBudget.Spend(existing.sizeRecords); err != nil {
+						c.errorfOnEdge(DiagExprPastReadBudget, ae, "edge %s -> %s: loop %q sized_by, read again for this edge: %v", ae.From, ae.To, ae.Loop.Name, err)
+					}
+				}
 			} else {
 				loop := &Loop{
 					Name:              ae.Loop.Name,
@@ -2110,6 +2126,7 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 					Unbounded:         ae.Loop.Unbounded,
 					FuelCap:           ae.Loop.FuelCap,
 					Guard:             ae.Loop.Guard,
+					SizedByExpr:       ae.Loop.SizedBy,
 				}
 				// Same domain as the workflow's loop_budget_guard (C133):
 				// anything but on|off is a typo that would otherwise read
@@ -2123,6 +2140,7 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 						ae.Loop.Name, ae.Loop.Guard)
 				}
 				c.compileLoopCap(loop, ae)
+				c.compileLoopSize(loop, ae)
 				loops[ae.Loop.Name] = loop
 			}
 		}

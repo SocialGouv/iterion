@@ -34,6 +34,7 @@ func buildCheckpointWithoutParallel(rs *runState, nodeID string) *store.Checkpoi
 		LoopPreviousOutput:     rs.loopPreviousOutput,
 		LoopCurrentOutput:      rs.loopCurrentOutput,
 		LoopBudgetMarks:        snapshotLoopBudgetMarks(rs),
+		LoopBudgetSizes:        snapshotLoopBudgetSizes(rs),
 		LoopBudgetMarksV:       loopBudgetMarksVersion,
 		ArtifactVersions:       rs.artifactVersions,
 		Artifacts:              artifactValues,
@@ -336,6 +337,7 @@ func restoreBudgetAccounting(rs *runState, cp *store.Checkpoint) {
 	// prices stay comparable to it and the first crossing after a resume
 	// is measured like any other.
 	restoreLoopBudgetMarks(rs, cp.LoopBudgetMarks)
+	restoreLoopBudgetSizes(rs, cp.LoopBudgetSizes)
 }
 
 // serializeNodeAttempts converts the runState's typed-key bucket into a

@@ -301,20 +301,46 @@ func (p *parser) parseLoopClause() *ast.LoopClause {
 		p.next()
 	}
 	p.expect(TokenRParen)
-	// `as <name>(<cap>) guard: off`: the loop's own word on the budget
-	// guard, the most specific layer of its precedence chain (the launch
-	// override aside). The value's domain (on|off) is the compiler's to
-	// check — C178, positioned on the edge.
-	if tokenAsIdent(p.peek()) == "guard" {
-		p.next() // consume "guard"
-		p.expect(TokenColon)
-		g := p.next()
-		lc.Guard = tokenAsIdent(g)
-		if lc.Guard == "" {
-			p.addError(DiagExpectedToken, g, "expected on or off after 'guard:' in the loop clause")
+	// Loop-clause suffixes, in either order:
+	//   guard: off            — the loop's own word on the budget guard,
+	//                           the most specific layer of its precedence
+	//                           chain (the launch override aside). The
+	//                           value's domain (on|off) is the compiler's
+	//                           to check — C178, positioned on the edge.
+	//   sized_by "outputs…"   — the loop's declared work signal (#2677):
+	//                           the guard prices a crossing at the previous
+	//                           one's cost scaled by size_now /
+	//                           size_at_previous_crossing. A quoted
+	//                           expression; its parse and references are
+	//                           the compiler's to check (C325).
+	for {
+		switch tokenAsIdent(p.peek()) {
+		case "guard":
+			p.next() // consume "guard"
+			p.expect(TokenColon)
+			g := p.next()
+			if lc.Guard != "" {
+				p.addError(DiagExpectedToken, g, "duplicate 'guard:' in the loop clause")
+			}
+			lc.Guard = tokenAsIdent(g)
+			if lc.Guard == "" {
+				p.addError(DiagExpectedToken, g, "expected on or off after 'guard:' in the loop clause")
+			}
+		case "sized_by":
+			p.next() // consume "sized_by"
+			if lc.SizedBy != "" {
+				p.addError(DiagExpectedToken, p.peek(), "duplicate 'sized_by' in the loop clause")
+			}
+			if p.peek().Type != TokenString {
+				p.addError(DiagExpectedToken, p.peek(), "expected a quoted expression after 'sized_by' in the loop clause")
+				p.next() // consume the offending token so the parser keeps advancing
+				continue
+			}
+			lc.SizedBy = p.expectString()
+		default:
+			return lc
 		}
 	}
-	return lc
 }
 
 func (p *parser) parseWithBlock() []*ast.WithEntry {
