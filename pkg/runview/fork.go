@@ -329,8 +329,21 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 		// session store too. The asymmetry is deliberate — a false positive
 		// costs one capture the child's fresh store never accumulates; a
 		// false negative repeats the session replacement the field closes.
-		if parent.Checkpoint != nil && parent.Checkpoint.BackendSessionStranded {
-			child.Checkpoint.BackendSessionStranded = true
+		// Scoped to the pause's own anchor: the stranded conversation is the
+		// pause node's LAST turns, so the child inherits the fact only when
+		// it re-executes exactly that turn. Any other anchor — another node,
+		// or an earlier turn of the pause node — pins a conversation that
+		// joined the session normally, and stamping it stranded would have
+		// OnSessionCapture silently refuse the child's legitimate captures.
+		if parent.Checkpoint != nil && parent.Checkpoint.BackendSessionStranded &&
+			spec.NodeID == parent.Checkpoint.NodeID {
+			anchorsCrossing, anchorsErr := anchorsThePauseNodesLatestTurn(ctx, turnStore, parent.ID, turn)
+			if anchorsErr != nil {
+				return nil, anchorsErr
+			}
+			if anchorsCrossing {
+				child.Checkpoint.BackendSessionStranded = true
+			}
 		}
 	}
 	// Drop the forked node's existing output and every logical binding that
@@ -704,6 +717,20 @@ func copyVars(cp *store.Checkpoint) map[string]any {
 		return out
 	}
 	return map[string]any{}
+}
+
+// anchorsThePauseNodesLatestTurn reports whether the fork's resolved
+// anchor turn is the node's latest turn checkpoint. A pause's stranded
+// conversation is that node's last turns, so only that anchor rehydrates
+// the stranded exchange — any earlier turn pinned a conversation that
+// joined the session normally. A store failure fails the fork: guessing
+// would silently decide whether the child's captures mirror.
+func anchorsThePauseNodesLatestTurn(ctx context.Context, turnStore store.TurnStore, runID string, turn *store.TurnCheckpoint) (bool, error) {
+	latest, err := turnStore.LatestTurn(ctx, runID, turn.NodeID)
+	if err != nil {
+		return false, fmt.Errorf("resolve the pause node's latest turn for stranding propagation: %w", err)
+	}
+	return latest != nil && latest.LoopIter == turn.LoopIter && latest.TurnIndex == turn.TurnIndex, nil
 }
 
 // forkSessionLedger is the child run's session ledger: the parent's, plus the
