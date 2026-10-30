@@ -6,11 +6,12 @@
 // general case does not have that luxury. The sources (a run-list row, a
 // bots-gallery card, a node header) render far from the ChatDock whose
 // composer owns the attached list, so the keyboard/single-pointer control
-// #2770 adds cannot receive the dock's setAttached as a prop.
+// #2770 put on each grip cannot receive the dock's setAttached as a prop.
 //
 // This module is the channel between those ends, and the ONE attach action
-// both paths call: the drop handler routes through it, and the future
-// control calls it directly. A CustomEvent is the channel lib/chatDock
+// both paths call: the drop handler routes through it, and the grip button
+// (#2770) calls it directly — through attachReferenceById, which mints the
+// same arguments the grip drags. A CustomEvent is the channel lib/chatDock
 // already uses for cross-tree notices (missionGrant.ts, assistantActions.ts);
 // the dock subscribes for as long as it is mounted and applies the reference
 // to the message being composed.
@@ -18,9 +19,13 @@
 // What it deliberately does NOT do is open the dock. The drop path springs
 // the shell open during dragover (ChatDockShell's openOnReferenceDrag),
 // before the drop lands; what an attach arriving at a closed dock should
-// surface is part of #2770's placement decision, not of this channel.
+// surface is a shell concern, not this channel's.
 
-import type { TypedReference } from "./routeReference";
+import {
+  mintReference,
+  type ReferenceKind,
+  type TypedReference,
+} from "./routeReference";
 
 export const ASSISTANT_ATTACH_EVENT = "iterion:assistant-attach-reference";
 
@@ -36,6 +41,22 @@ export function attachReferenceToAssistant(reference: TypedReference): void {
       detail: reference,
     }),
   );
+}
+
+/** The control-path twin of a drop: mint the kind/id/label through the same
+ *  vocabulary `readReferenceDrop` passes a drop payload through, then
+ *  dispatch. A kind/id `mintReference` refuses is a no-op — the same posture
+ *  the drop takes with a malformed payload. A grip button (#2770) calls this
+ *  with the exact arguments it spreads `referenceDragProps` with, so a click
+ *  and a drop of the same grip attach the same reference. */
+export function attachReferenceById(
+  kind: ReferenceKind,
+  id: string,
+  label?: string,
+): void {
+  const minted = mintReference(kind, id, label ?? id);
+  if (!minted) return;
+  attachReferenceToAssistant(minted);
 }
 
 /** Subscribe to attach requests; returns the unsubscribe. The ChatDock is

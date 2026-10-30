@@ -1,4 +1,5 @@
 import { memo } from "react";
+import { attachReferenceById } from "@/lib/chatDock/attachToAssistant";
 import { referenceDragProps } from "@/lib/chatDock/dragReference";
 import { pointerRowProps } from "@/lib/a11y";
 
@@ -44,9 +45,9 @@ export const RunListRow = memo(function RunListRow({
 }) {
   return (
     // The row's click is a pointer convenience — it holds the selection
-    // checkbox, the bot avatar and Resume, so it carries no widget role
-    // (that would be `nested-interactive`, WCAG 4.1.2). The keyboard path
-    // to open the run is the title button in the second cell.
+    // checkbox, the attach grip, the bot avatar and Resume, so it carries
+    // no widget role (that would be `nested-interactive`, WCAG 4.1.2). The
+    // keyboard path to open the run is the title button in the second cell.
     <tr
       className="group border-b border-border-default hover:bg-surface-2 cursor-pointer"
       {...pointerRowProps(() => onOpen(run.id))}
@@ -61,21 +62,25 @@ export const RunListRow = memo(function RunListRow({
       </td>
       <td className="px-4 py-2">
         <div className="flex items-center gap-2">
-          {/* role="img": ARIA in HTML prohibits aria-label on a roleless
-              span (axe aria-prohibited-attr), and the grip IS a glyph whose
-              text alternative says what the pointer can do with it — same
-              shape as ui/HelpHint. It claims no operation, because there is
-              none to claim: dragging a reference has no keyboard or
-              single-pointer path yet (#2770). */}
-          <span
-            role="img"
-            className="shrink-0 cursor-grab select-none text-fg-muted"
-            aria-label={`Drag ${friendlyLabel(run)} ${runRowQualifier(run)} onto the assistant`}
-            title="Drag onto the assistant to ask about this run"
+          {/* The grip is the attach control (#2770, option A): a real
+              button, so the tab order reaches it and Enter/Space attach —
+              the keyboard and single-pointer path SC 2.1.1 / 2.5.7 owed.
+              The drag still rides the same element, and the click mints
+              the same reference the drop of this grip would. */}
+          <button
+            type="button"
+            className="shrink-0 cursor-grab select-none text-fg-muted focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+            aria-label={`Attach ${friendlyLabel(run)} ${runRowQualifier(run)} to the assistant`}
+            title="Attach to the assistant, or drag onto it, to ask about this run"
             {...referenceDragProps("run", run.id, friendlyLabel(run))}
+            onClick={(e) => {
+              // The row's own click opens the run — the attach must not.
+              e.stopPropagation();
+              attachReferenceById("run", run.id, friendlyLabel(run));
+            }}
           >
             ⋮⋮
-          </span>
+          </button>
           <BotAvatar run={run} onFilter={onFilterBot} />
           {/* The row's action, as a real control: same name shape as this
               row's Resume, because friendlyLabel falls back to

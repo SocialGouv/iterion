@@ -281,8 +281,8 @@ function AssistantDock({
   }, [setAttached]);
 
   // The receiving end of the ONE attach action (attachToAssistant.ts): the
-  // drop below routes through it, and so will the keyboard/single-pointer
-  // control #2770 adds next to each drag grip. Either way the reference
+  // drop below routes through it, and so does the keyboard/single-pointer
+  // control #2770 put on each drag grip. Either way the reference
   // lands on the message being composed — deduped, capped, drop-ordered by
   // attachReference.
   useEffect(
@@ -495,7 +495,7 @@ function AssistantDock({
     e.stopPropagation();
     // The drop is one GESTURE reaching the shared attach action, not an
     // attach path of its own — the keyboard/single-pointer control #2770
-    // adds calls the same function.
+    // put on each grip calls the same function.
     attachReferenceToAssistant(dropped);
   }, [setDragOver]);
 

@@ -93,7 +93,7 @@ describe("runs list naming", () => {
     expect(button.textContent).toContain("Resume");
   });
 
-  it("qualifies each row's select and drag controls the same way", () => {
+  it("qualifies each row's select and attach controls the same way", () => {
     mountRows();
     for (const name of [
       "Select run deploy 0199aaaa-1111-",
@@ -102,10 +102,10 @@ describe("runs list naming", () => {
       expect(screen.getAllByRole("checkbox", { name })).toHaveLength(1);
     }
     for (const name of [
-      "Drag deploy 0199aaaa-1111- onto the assistant",
-      "Drag deploy 0199bbbb-2222- onto the assistant",
+      "Attach deploy 0199aaaa-1111- to the assistant",
+      "Attach deploy 0199bbbb-2222- to the assistant",
     ]) {
-      expect(screen.getAllByRole("img", { name })).toHaveLength(1);
+      expect(screen.getAllByRole("button", { name })).toHaveLength(1);
     }
   });
 
@@ -118,7 +118,7 @@ describe("runs list naming", () => {
       ...screen.getAllByRole("button", { name: /^Open / }),
       ...screen.getAllByRole("button", { name: /^Resume / }),
       ...screen.getAllByRole("checkbox"),
-      ...screen.getAllByRole("img", { name: /onto the assistant$/ }),
+      ...screen.getAllByRole("button", { name: /^Attach .+ to the assistant$/ }),
     ];
     expect(rowSpecific.length).toBe(8);
     const names = rowSpecific.map((el) => el.getAttribute("aria-label"));
@@ -188,40 +188,34 @@ describe("runs list keyboard paths (#2766)", () => {
 });
 
 describe("runs list drag-to-assistant (#2770)", () => {
-  it("today the grip is a drag-only affordance, and no control offers the attach", () => {
+  it("the grip is a button that attaches — and still drags the same reference", () => {
     mountRows();
-    // The current state, pinned honestly: each row's grip is draggable but
-    // not focusable and claims no operation (role="img" is a text
-    // alternative, not a widget), and no named control elsewhere on the row
-    // performs the attach. SC 2.1.1 / 2.5.7 are exactly what #2770 still
-    // owes — this test is meant to FAIL the day the placement lands, and to
-    // be rewritten as the flip of the skipped one below.
-    const grips = screen.getAllByRole("img", { name: /onto the assistant$/ });
+    // The placement that landed (#2770, option A): the grip IS the control.
+    // One element carries both gestures — the drag props are untouched, the
+    // click performs the attach — and it is a real button, so the tab order
+    // reaches it and Enter/Space activate. The pin is the flip of the
+    // current-state pin the scaffold landed with.
+    const grips = screen.getAllByRole("button", {
+      name: /^Attach deploy .+ to the assistant$/,
+    });
     expect(grips).toHaveLength(2);
     for (const grip of grips) {
+      expect(grip.tagName).toBe("BUTTON");
       expect(grip.getAttribute("draggable")).toBe("true");
-      expect(grip.hasAttribute("tabindex")).toBe(false);
-      expect(grip.tagName).not.toBe("BUTTON");
     }
-    expect(
-      screen.queryByRole("button", {
-        name: /attach .+ (to|onto) the assistant/i,
-      }),
-    ).toBeNull();
   });
 
-  // #2770 — enable with the placement Jo picks: the grip becoming a button,
-  // or a named control elsewhere on the row. Written against the ticket's
-  // "Attach <label> to the assistant" wording — adjust the name pattern to
-  // the landed label, nothing else. Either placement must wire the control
-  // to the shared attachReferenceToAssistant handler the drop path uses.
-  it.skip("each row offers a keyboard-operable Attach control wired to the shared handler", () => {
+  // The keyboard path the ticket owed: the control wires the shared
+  // attachReferenceToAssistant handler the drop path uses, minting through
+  // the same vocabulary (mintReference), so the click and the drop produce
+  // the same `<kind>/<id>` reference.
+  it("each row offers a keyboard-operable Attach control wired to the shared handler", () => {
     const received: TypedReference[] = [];
     const off = onAssistantAttachRequest((r) => received.push(r));
     try {
       mountRows();
       const controls = screen.getAllByRole("button", {
-        name: /^Attach deploy .+ (to|onto) the assistant$/,
+        name: /^Attach deploy .+ to the assistant$/,
       });
       expect(controls).toHaveLength(2);
       const [first] = controls;

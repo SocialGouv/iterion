@@ -1,5 +1,6 @@
 import { ClampText } from "@/components/ui/ClampText";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { attachReferenceById } from "@/lib/chatDock/attachToAssistant";
 import { referenceDragProps } from "@/lib/chatDock/dragReference";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation, useSearch } from "wouter";
@@ -485,8 +486,26 @@ function BotCard({
   const presetCount = presetEntries.length;
   return (
     <li
-      className="flex h-full flex-col rounded-[var(--radius-lg)] border border-border-default bg-surface-1 shadow-[var(--shadow-sm)] transition-[box-shadow,border-color,transform] duration-[var(--motion-fast)] ease-[var(--motion-ease)] hover:-translate-y-0.5 hover:border-border-strong hover:shadow-[var(--shadow-md)] focus-within:border-border-strong"
+      className="relative flex h-full flex-col rounded-[var(--radius-lg)] border border-border-default bg-surface-1 shadow-[var(--shadow-sm)] transition-[box-shadow,border-color,transform] duration-[var(--motion-fast)] ease-[var(--motion-ease)] hover:-translate-y-0.5 hover:border-border-strong hover:shadow-[var(--shadow-md)] focus-within:border-border-strong"
     >
+      {/* The grip is the attach control (#2770, option A): a real button, so
+          the tab order reaches it and Enter/Space attach — the keyboard and
+          single-pointer path SC 2.1.1 / 2.5.7 owed. It sits OUTSIDE the
+          card's open button (a button inside a button is invalid HTML, axe
+          nested-interactive) and overlays the glyph slot the card's first
+          row keeps for it, so the card's layout is unchanged. The drag still
+          rides the same element, and the click mints the same reference the
+          drop of this grip would. */}
+      <button
+        type="button"
+        className="absolute left-4 top-4 z-10 shrink-0 cursor-grab select-none text-fg-muted focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+        aria-label={`Attach ${label} to the assistant`}
+        title="Attach to the assistant, or drag onto it, to ask about this bot"
+        {...referenceDragProps("bot", bot.rel_path || bot.name, label)}
+        onClick={() => attachReferenceById("bot", bot.rel_path || bot.name, label)}
+      >
+        ⋮⋮
+      </button>
       <button
         type="button"
         onClick={onOpen}
@@ -494,20 +513,11 @@ function BotCard({
         title={`Open ${label}'s bot page`}
       >
         <span className="flex w-full items-center gap-2">
-          {/* Scope dragging to a grip so paths and labels remain natively
-              selectable/copyable. The reference uses the workspace-relative
-              path because that is what an assistant can actually read. */}
-          <span
-            // The grip is a glyph with a text alternative — aria-label on a
-            // roleless span is prohibited (axe aria-prohibited-attr). It
-            // claims no operation: dragging a reference has no keyboard or
-            // single-pointer path yet (#2770).
-            role="img"
-            className="shrink-0 cursor-grab select-none text-fg-muted"
-            aria-label={`Drag ${label} onto the assistant`}
-            title="Drag onto the assistant to ask about this bot"
-            {...referenceDragProps("bot", bot.rel_path || bot.name, label)}
-          >
+          {/* The grip glyph's layout slot — the control itself sits above
+              the card, outside this button. The reference uses the
+              workspace-relative path because that is what an assistant can
+              actually read. */}
+          <span aria-hidden="true" className="shrink-0 select-none invisible">
             ⋮⋮
           </span>
           <span className="shrink-0 text-lg leading-none" aria-hidden="true">

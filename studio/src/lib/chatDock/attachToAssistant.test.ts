@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   ASSISTANT_ATTACH_EVENT,
+  attachReferenceById,
   attachReferenceToAssistant,
   onAssistantAttachRequest,
 } from "./attachToAssistant";
@@ -95,5 +96,36 @@ describe("attachReferenceToAssistant", () => {
     off();
     attachReferenceToAssistant(minted("bot", "bots/revi", "Revi"));
     expect(listener).not.toHaveBeenCalled();
+  });
+});
+
+describe("attachReferenceById", () => {
+  it("mints and attaches exactly what a drop of the same payload would", () => {
+    // The grip button calls this with the same kind/id/label it spreads
+    // referenceDragProps with — the click must produce the reference the
+    // drop of the same grip produces.
+    const dropped = readReferenceDrop(
+      fakeDataTransfer({ kind: "run", id: "019f1234", label: "nightly" }),
+    );
+    if (!dropped) throw new Error("a legitimate payload must read back");
+    const received: TypedReference[] = [];
+    const off = onAssistantAttachRequest((r) => received.push(r));
+    try {
+      attachReferenceById("run", "019f1234", "nightly");
+      expect(received).toEqual([dropped]);
+    } finally {
+      off();
+    }
+  });
+
+  it("is a no-op for an id the vocabulary refuses — the drop's posture", () => {
+    const listener = vi.fn();
+    const off = onAssistantAttachRequest(listener);
+    try {
+      attachReferenceById("run", "not a run id!", "x");
+      expect(listener).not.toHaveBeenCalled();
+    } finally {
+      off();
+    }
   });
 });

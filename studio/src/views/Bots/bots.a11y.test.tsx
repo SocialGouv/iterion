@@ -140,45 +140,40 @@ describe("a11y / Bots gallery", () => {
 });
 
 describe("a11y / Bots gallery drag-to-assistant (#2770)", () => {
-  it("today each card's grip is a drag-only affordance, and no control offers the attach", async () => {
+  it("each card's grip is a button that attaches — and still drags the same reference", async () => {
     mountGallery();
     // Await the cards — the grips render with them, not before.
     await screen.findAllByText("Acci");
-    // The current state, pinned honestly: each card's grip is draggable but
-    // not focusable and claims no operation (role="img" is a text
-    // alternative, not a widget), and no named control elsewhere on the card
-    // performs the attach. SC 2.1.1 / 2.5.7 are exactly what #2770 still
-    // owes — this test is meant to FAIL the day the placement lands, and to
-    // be rewritten as the flip of the skipped one below.
+    // The placement that landed (#2770, option A): the grip IS the control.
+    // One element carries both gestures — the drag props are untouched, the
+    // click performs the attach — and it is a real button, so the tab order
+    // reaches it and Enter/Space activate. It sits OUTSIDE the card's open
+    // button (a button inside a button is invalid HTML, axe
+    // nested-interactive — the gallery's axe entries above are the net for
+    // that). The pin is the flip of the current-state pin the scaffold
+    // landed with.
     for (const name of [
-      "Drag Acci onto the assistant",
-      "Drag Revi onto the assistant",
+      "Attach Acci to the assistant",
+      "Attach Revi to the assistant",
     ]) {
-      const grip = screen.getByRole("img", { name });
+      const grip = screen.getByRole("button", { name });
+      expect(grip.tagName).toBe("BUTTON");
       expect(grip.getAttribute("draggable")).toBe("true");
-      expect(grip.hasAttribute("tabindex")).toBe(false);
-      expect(grip.tagName).not.toBe("BUTTON");
     }
-    expect(
-      screen.queryByRole("button", {
-        name: /attach .+ (to|onto) the assistant/i,
-      }),
-    ).toBeNull();
   });
 
-  // #2770 — enable with the placement Jo picks: the grip becoming a button,
-  // or a named control elsewhere on the card. Written against the ticket's
-  // "Attach <label> to the assistant" wording — adjust the name pattern to
-  // the landed label, nothing else. Either placement must wire the control
-  // to the shared attachReferenceToAssistant handler the drop path uses.
-  it.skip("each card offers a keyboard-operable Attach control wired to the shared handler", async () => {
+  // The keyboard path the ticket owed: the control wires the shared
+  // attachReferenceToAssistant handler the drop path uses, minting through
+  // the same vocabulary (mintReference), so the click and the drop produce
+  // the same `<kind>/<id>` reference.
+  it("each card offers a keyboard-operable Attach control wired to the shared handler", async () => {
     const received: TypedReference[] = [];
     const off = onAssistantAttachRequest((r) => received.push(r));
     try {
       mountGallery();
       await screen.findAllByText("Acci");
       const controls = screen.getAllByRole("button", {
-        name: /^Attach .+ (to|onto) the assistant$/,
+        name: /^Attach .+ to the assistant$/,
       });
       expect(controls).toHaveLength(2);
       const [first] = controls;
