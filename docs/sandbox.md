@@ -67,6 +67,27 @@ serves it from a runner class whose sandbox resolves active. The durable
 refusal rides the run's `admission` record with code
 `untrusted_without_sandbox`.
 
+**A fork run whose sandboxed nodes get no credential is refused before the
+container starts.** The sandbox alone is not enough: an operator
+authenticated only through a file-based subscription login (`claude login`,
+a ChatGPT login) has that login reach a local docker sandbox through the
+`host_state` mount — and a `host_state: none` run withdraws exactly that
+channel, leaving the node to die mid-run on the backend's opaque "not
+logged in". At sandbox start (driver selected, nothing pulled or mounted
+yet), a per-backend predicate — `claude_code`, `claw`, pi — answers "will
+a credential reach this node's process?" from what each backend actually
+delivers: the run's resolved credentials, the launcher env each backend
+forwards by name at exec time, the dispatch-time forfait copies, and the
+`host_state` mount itself. A node with no channel refuses the launch with
+`SANDBOX_CREDENTIAL_UNREACHABLE`, naming the backend, the node, and the
+ways out (an API key the backend forwards, an `as: file` credential
+secret, or `host_state: auto` on a runner that still mounts the login); a
+node whose backend the predicate cannot read is a
+`sandbox_no_credential_warning`, never a refusal on a guess. Trusted runs
+are never judged, and handing the operator's own OAuth token to a fork's
+container is refused by design — the token is the operator's identity, not
+a scoped run credential (#1768).
+
 ## Quick start
 
 The shortest path to a sandboxed run:

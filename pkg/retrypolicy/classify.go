@@ -166,6 +166,11 @@ var classification = map[store.FailureCode]Disposition{
 	// keeps the code in last_run_error_code (#1426) for the operator
 	// who has to change the isolation ask or provision a driver. #1425.
 	store.FailureSandboxDriverUnavailable: DispositionDeterministic,
+	// The fork-lane credential refusal (#1768): a redelivery meets the
+	// same launcher and the same absent credential channel — nothing an
+	// automatic retry can change; an operator adds a credential or stops
+	// admitting the lane.
+	store.FailureSandboxCredentialUnreachable: DispositionDeterministic,
 	// The driver can neither bind nor copy the run's attachments: a
 	// redelivery meets the same driver.
 	store.FailureAttachmentsUndeliverable: DispositionDeterministic,

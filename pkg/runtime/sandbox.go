@@ -231,6 +231,12 @@ type SandboxParams struct {
 	DefaultImage  string            // "" lets the runtime pick the built-in default
 	Environment   map[string]string // project env overlay; workflow sandbox.env wins
 
+	// Trust is who wrote the code in this run's workspace (store.RunTrust).
+	// The zero value is a trusted run — only an explicit untrusted marker
+	// arms the fork-lane admissions (the credential-reach refusal of
+	// #1768), so a run that predates the marker keeps its behavior.
+	Trust store.RunTrust
+
 	// HostStateOverride / HostStateDefault carry the precedence inputs
 	// for the host_state mount (auto-bind of ~/.iterion + ~/.claude).
 	// Empty values defer to the next layer in the chain. The chain is
@@ -561,6 +567,14 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		return nil, err
 	}
 	caps := driver.Capabilities()
+	// The fork lane's credential admission (#1768): an untrusted run whose
+	// sandboxed nodes provably get no credential is refused before a single
+	// mount, pull or start — the driver and the host_state resolution are
+	// known here, and the per-backend predicate reads what each spawn
+	// actually delivers. The cases it cannot decide are warned, not refused.
+	if err := admitSandboxCredentials(ctx, p, caps, emitEvent, logger); err != nil {
+		return nil, err
+	}
 	// What this sandbox serves a declared secret's grants with, judged here
 	// — the driver and the proxy's inspection are known, nothing is mounted
 	// or started yet, so a refusal leaves nothing behind. Egress reads the
@@ -2360,6 +2374,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		FriendlyName:             e.runName,
 		RepoRoot:                 repoRoot,
 		WorkspacePath:            e.workDir,
+		Trust:                    e.trust,
 		SecretVars:               secretVars,
 		CLIOverride:              e.sandboxOverride,
 		GlobalDefault:            e.sandboxDefault,

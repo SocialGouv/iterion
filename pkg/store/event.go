@@ -628,6 +628,15 @@ const (
 	//     "ro:<path>" / "ro-created:<path>" (read-only overlay); absent
 	//     when the guard is off or nothing was shadowed
 	EventSandboxHostStateMounted EventType = "sandbox_host_state_mounted"
+	// EventSandboxNoCredentialWarning fires at sandbox start for an
+	// untrusted (fork-lane) run when the per-backend credential predicate
+	// (#1768) cannot DECIDE whether a credential will reach a sandboxed
+	// node's process — an unknown backend, an undecided route. The cases
+	// the predicate CAN settle are a typed launch refusal instead
+	// (store.FailureSandboxCredentialUnreachable). Data:
+	//   - reason: short summary naming the nodes and their backends
+	//   - nodes: []string of "nodeID (backend)" the predicate cannot judge
+	EventSandboxNoCredentialWarning EventType = "sandbox_no_credential_warning"
 	// EventSandboxUserRemap fires when the docker driver injects
 	// `--user $(id -u):$(id -g)` because host_state=auto requires
 	// host-UID-owned writes into the mounted ~/.iterion / ~/.claude

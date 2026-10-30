@@ -54,6 +54,12 @@ const (
 	// `sandbox_skipped` event when no runtime is present — see
 	// resolveAndStartSandbox. #1425.
 	ErrCodeSandboxDriverUnavailable = store.FailureSandboxDriverUnavailable
+	// Raised at sandbox start for an UNTRUSTED (fork-lane) run whose
+	// sandboxed nodes no credential can reach — the per-backend predicate
+	// of #1768 (sandbox_credential_admission.go) settled it before the
+	// container starts; the undecidable cases warn instead
+	// (sandbox_no_credential_warning).
+	ErrCodeSandboxCredentialUnreachable = store.FailureSandboxCredentialUnreachable
 	// Raised at sandbox start when the run carries attachments and the
 	// selected driver can neither bind-mount nor copy their directory in
 	// (sandbox_attachments.go). The operator attached the files on purpose;

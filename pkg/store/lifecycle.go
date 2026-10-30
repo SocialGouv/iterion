@@ -134,6 +134,16 @@ const (
 	// why a scheduled run parked without executing.
 	FailureSandboxDriverUnavailable FailureCode = "SANDBOX_DRIVER_UNAVAILABLE"
 
+	// FailureSandboxCredentialUnreachable: an untrusted (fork-lane) run was
+	// refused before its container started because the per-backend credential
+	// predicate (#1768) settled that NO credential can reach a sandboxed
+	// node's process — no run credential, nothing the launcher forwards at
+	// exec, and no file-based login the host_state mount still carries. The
+	// alternative is the run dying mid-execution on the backend's own opaque
+	// "not logged in". The cases the predicate cannot settle stay a launch
+	// warning (sandbox_no_credential_warning).
+	FailureSandboxCredentialUnreachable FailureCode = "SANDBOX_CREDENTIAL_UNREACHABLE"
+
 	// FailureAttachmentsUndeliverable: the run carries attachments and the
 	// selected sandbox driver can neither bind-mount their directory into
 	// the container nor copy it in, so no node could have opened them.
@@ -285,6 +295,7 @@ var ReservedFailureCodes = []FailureCode{
 	FailureSchemaUnusable,
 	FailureCapabilityUnsupported,
 	FailureSandboxDriverUnavailable,
+	FailureSandboxCredentialUnreachable,
 	FailureAttachmentsUndeliverable,
 	FailureAttachmentPathUnavailable,
 	FailureAttachmentsUnfetchable,

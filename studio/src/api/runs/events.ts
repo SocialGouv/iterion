@@ -445,6 +445,7 @@ export type PassthroughEventType =
   | "sandbox_started"
   | "sandbox_claw_routed_via_runner"
   | "sandbox_host_state_mounted"
+  | "sandbox_no_credential_warning"
   | "sandbox_host_binds_dropped"
   | "sandbox_attachments_copied"
   | "sandbox_user_remap"
