@@ -168,9 +168,13 @@ func UsableEnvName(name string) bool {
 //     tooling before any prompt is read: the dynamic loader and the
 //     modules glibc and OpenSSL load, the node and bun runtimes, the shell
 //     the claude CLI picks and bash's, sh's and zsh's startup variables,
-//     its imported functions and its config-from-the-environment, PATH,
-//     `go build -toolexec`, tar's own options, and the TLS trust of the
-//     connections that carry credentials.
+//     its imported functions and its config-from-the-environment, the
+//     interpreters' startup knobs (PYTHONPATH's sitecustomize, which
+//     `python3 -c "print(1)"` imports with no user code, PYTHONHOME,
+//     PYTHONSTARTUP, RUBYOPT, PERL5OPT/PERL5LIB, JAVA_TOOL_OPTIONS/
+//     JDK_JAVA_OPTIONS/CLASSPATH), PATH, `go build -toolexec`, tar's own
+//     options, and the TLS trust of the connections that carry
+//     credentials.
 //
 // All three forms match case-insensitively. That is a MARGIN, not a claim
 // about a consumer: an environment name is case-sensitive to the program
@@ -190,20 +194,14 @@ func UsableEnvName(name string) bool {
 //
 //   - the toolchain variables NO process iterion starts reads — compilers
 //     and their flags, build systems, language runtimes, version managers
-//     (CC, CFLAGS, MAVEN_OPTS, RUSTC*, PYTHON*, GEM_HOME, JAVA_HOME,
-//     PYENV_ROOT, …). PYTHON* is the measured one, and it is measured
-//     because the family DOES carry code channels — a `sitecustomize.py`
-//     on PYTHONPATH, a stdlib under PYTHONHOME, a `usercustomize.py` under
-//     PYTHONUSERBASE all run at interpreter startup: iterion's own python
-//     tool node runs `python3 -I`, whose isolated mode ignores the whole
-//     family (measured both ways on a built image), so what is left is the
-//     bare `python3` of an operator-authored command — the repository's own
-//     build. They configure builds of the repository's own code,
+//     (CC, CFLAGS, MAVEN_OPTS, RUSTC*, GEM_HOME, JAVA_HOME,
+//     PYENV_ROOT, …): they configure builds of the repository's own code,
 //     which already runs in that container (its postCreateCommand, its
 //     tests), and a devcontainer that sets them is doing its job. That
-//     question, not the family, is the membership test: GOFLAGS, PATH and
-//     NIX_* are toolchain variables too, and they are denied because
-//     iterion's own nodes and provisioning run under them;
+//     question, not the family, is the membership test: GOFLAGS, PATH,
+//     NIX_* and the interpreters' startup knobs above are toolchain
+//     variables too, and they are denied because a process iterion starts
+//     reads them at its own startup;
 //   - what needs a terminal nobody has there (PAGER, MANPAGER, LESSOPEN,
 //     BROWSER, PROMPT_COMMAND);
 //   - the *_HOME of a toolchain (JAVA_HOME, ANT_HOME, GEM_HOME, PYENV_ROOT):
@@ -529,6 +527,22 @@ var deniedEnvNames = map[string]imageEnvDisposition{
 	"SHELL": reportedOnly, "BASHOPTS": reportedOnly,
 	"ENV": reportedOnly, "ZDOTDIR": reportedOnly, "PATH": reportedOnly, "GOFLAGS": reportedOnly,
 	"SSH_ASKPASS": reportedOnly, "SSH_ASKPASS_REQUIRE": reportedOnly,
+	// The interpreters a tool node or the repository's own tooling runs:
+	// PYTHONPATH puts a directory on the module path whose sitecustomize
+	// EXECUTES at interpreter startup — `python3 -c "print(1)"` imports it
+	// with no user code — PYTHONHOME moves the standard library itself,
+	// PYTHONSTARTUP names a file an interactive run sources; RUBYOPT and
+	// PERL5OPT carry the interpreter's own switches (a -M/`use` loads the
+	// planter's module), PERL5LIB its module path; JAVA_TOOL_OPTIONS is
+	// read by every JVM with no flag of ours, JDK_JAVA_OPTIONS by the java
+	// launcher, and CLASSPATH is where the JVM's classes resolve from. The
+	// workspace is mounted, so the planter's relative paths resolve. (The
+	// toolchain left-out above keeps JAVA_HOME and the build-tool flags:
+	// they configure the repository's own build, and the rest of the
+	// PYTHON* family its own runs.)
+	"PYTHONPATH": reportedOnly, "PYTHONHOME": reportedOnly, "PYTHONSTARTUP": reportedOnly,
+	"RUBYOPT": reportedOnly, "PERL5OPT": reportedOnly, "PERL5LIB": reportedOnly,
+	"JAVA_TOOL_OPTIONS": reportedOnly, "JDK_JAVA_OPTIONS": reportedOnly, "CLASSPATH": reportedOnly,
 	// git's editor chain is GIT_EDITOR (denied by GIT_), core.editor,
 	// VISUAL, EDITOR: the last two run the planter's program in a `git
 	// commit` an agent makes with no message of its own.

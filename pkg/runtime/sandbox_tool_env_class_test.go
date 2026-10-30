@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -67,6 +68,8 @@ func TestDeniedEnvClassCoversTheCommandsIterionRunsInTheContainer(t *testing.T) 
 		{"git", "the clone, commit and push of the run's work", "HOME", "the gitconfig ~/.gitconfig is, hence every insteadOf and helper"},
 		{"git", "the clone, commit and push of the run's work", "XDG_CONFIG_HOME", "the same config by its XDG road, $XDG_CONFIG_HOME/git/config"},
 		{"opencode", "an opencode node's agent CLI", "XDG_DATA_HOME", "the credential store its login is read from (detect's openCodeAuthPath)"},
+		{"python3", "a tool node's command", "PYTHONPATH", "the module path whose sitecustomize.py executes at interpreter startup"},
+		{"java", "a tool node's command", "JAVA_TOOL_OPTIONS", "options every JVM picks up with no flag of ours — --javaagent runs a jar"},
 	} {
 		t.Run(tc.command+"/"+tc.env, func(t *testing.T) {
 			if !devcontainer.DeniedEnvKey(tc.env) {
@@ -460,5 +463,103 @@ func TestTheRepositorysPlantedXDGDataHomeNeverReachesTheContainer(t *testing.T) 
 	}
 	if env["MYTOOL_DATA"] != planted {
 		t.Fatalf("control: MYTOOL_DATA = %q, want %q — the seam dropped a name OUTSIDE the class, so the verdict above is not the class's doing", env["MYTOOL_DATA"], planted)
+	}
+}
+
+// The table's interpreter rows, run: the interpreters a tool node starts
+// read the repository's planted paths at startup — PYTHONPATH's
+// sitecustomize executes before the first statement, every JVM picks up
+// JAVA_TOOL_OPTIONS with no flag of ours — and the workspace is mounted,
+// so the relative paths a devcontainer.json spells resolve. The container
+// environment is the one the run resolves from that repository
+// (mode=auto, the repository's file, no opt-in); deniedEnv is the list
+// the sandbox_env_denied event carries, the operator's record of the
+// attempt.
+func TestTheContainerEnvTheRunResolvesNeverCarriesTheInterpreterStartupKnobs(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// The premise, both interpreters, under the PLANTED value: the
+	// interpreter reads the repository's file — sitecustomize creates the
+	// marker, the JVM announces the pickup. A lost premise leaves the
+	// quiet verdict below meaningless.
+	pyDir := t.TempDir()
+	pyMarker := filepath.Join(t.TempDir(), "sitecustomize-ran")
+	sitecustomize := "import os\nopen(" + strconv.Quote(pyMarker) + ", 'w').close()\n"
+	if err := os.WriteFile(filepath.Join(pyDir, "sitecustomize.py"), []byte(sitecustomize), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("the witness drives a real python3, and none is on PATH")
+	}
+	controlCmd := exec.Command("python3", "-c", "print(1)")
+	controlCmd.Env = []string{"PATH=" + os.Getenv("PATH"), "PYTHONNOUSERSITE=1", "PYTHONPATH=" + pyDir}
+	if out, err := controlCmd.CombinedOutput(); err != nil {
+		t.Fatalf("control: python3 does not run under the planted PYTHONPATH (%v): %s", err, out)
+	}
+	if _, err := os.Stat(pyMarker); err != nil {
+		t.Fatalf("control: sitecustomize did not execute from the planted PYTHONPATH (%v) — the premise is gone", err)
+	}
+	// The premise's marker is exactly what the verdict below reads: take
+	// it away, or the control's execution answers for the verdict's.
+	if err := os.Remove(pyMarker); err != nil {
+		t.Fatal(err)
+	}
+
+	javaPicksUp := func(env []string) bool {
+		cmd := exec.Command("java", "-version")
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		return err == nil && strings.Contains(string(out), "Picked up JAVA_TOOL_OPTIONS")
+	}
+	if _, err := exec.LookPath("java"); err != nil {
+		t.Skip("the witness drives a real java, and none is on PATH")
+	}
+	premiseCmd := exec.Command("java", "-version")
+	premiseCmd.Env = []string{"PATH=" + os.Getenv("PATH"), "JAVA_TOOL_OPTIONS=-Dprobe=1"}
+	premiseOut, premiseErr := premiseCmd.CombinedOutput()
+	if premiseErr != nil || !strings.Contains(string(premiseOut), "Picked up JAVA_TOOL_OPTIONS") {
+		t.Fatalf("control: the JVM did not pick up the planted JAVA_TOOL_OPTIONS (err=%v): %s — the premise is gone", premiseErr, premiseOut)
+	}
+
+	env, denied := resolveRepoContainerEnv(t, &ir.Workflow{Sandbox: &ir.SandboxSpec{Mode: string(sandbox.ModeAuto)}},
+		map[string]string{
+			"PYTHONPATH":        ".mylib",
+			"JAVA_TOOL_OPTIONS": "-javaagent=.mylib/agent.jar",
+			"PYTHONUNBUFFERED":  "1", // the repo's own knob, same family prefix: kept
+		})
+	for _, name := range []string{"PYTHONPATH", "JAVA_TOOL_OPTIONS"} {
+		if !slices.Contains(denied, name) {
+			t.Errorf("deniedEnv = %v, want %s named: the event is how the operator learns what the repository tried", denied, name)
+		}
+		if _, present := env[name]; present {
+			t.Errorf("%s reached the container environment: the interpreters the steps start would read the repository's file at startup", name)
+		}
+	}
+	if env["PYTHONUNBUFFERED"] != "1" {
+		t.Fatalf("control: PYTHONUNBUFFERED = %q, want 1 — the seam dropped a name OUTSIDE the class, so the verdict above is not the class's doing", env["PYTHONUNBUFFERED"])
+	}
+
+	// The verdict, run: the interpreters under the resolved environment
+	// see nothing of the repository's planting.
+	if env == nil {
+		env = map[string]string{}
+	}
+	envWith := func(extra ...string) []string {
+		e := append([]string{"PATH=" + os.Getenv("PATH")}, extra...)
+		for k, v := range env {
+			e = append(e, k+"="+v)
+		}
+		return e
+	}
+	verdictCmd := exec.Command("python3", "-c", "print(1)")
+	verdictCmd.Env = envWith("PYTHONNOUSERSITE=1")
+	if _, err := verdictCmd.CombinedOutput(); err != nil {
+		t.Fatalf("verdict: python3 does not run under the resolved container environment (%v)", err)
+	}
+	if _, err := os.Stat(pyMarker); err == nil {
+		t.Errorf("sitecustomize from the repository's PYTHONPATH executed under the resolved container environment: the knob reached it")
+	}
+	if javaPicksUp(envWith()) {
+		t.Errorf("the JVM picked up JAVA_TOOL_OPTIONS under the resolved container environment: the knob reached it")
 	}
 }

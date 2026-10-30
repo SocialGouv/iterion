@@ -110,6 +110,13 @@ var devcontainerRealMembers = []string{
 	// the config homes the dotenv gate carries by exact name, and the
 	// shared families.
 	"CLAUDE_CONFIG_DIR", "NIX_CONFIG", "XDG_CONFIG_HOME", "SSH_ASKPASS",
+	// the interpreters a tool node runs: the module path whose
+	// sitecustomize executes at interpreter startup, and the options line
+	// every JVM picks up with no flag of ours — the execution grade one
+	// inventory answers at both gates, the dotenv one first (a project
+	// `.env` planting them) and this one beside it (the repository's
+	// devcontainer.json doing the same).
+	"PYTHONPATH", "JAVA_TOOL_OPTIONS",
 }
 
 // TestEveryDeniedEnvKeyReachesADotenvPlantClassOrAnExemption holds the
@@ -142,7 +149,8 @@ func TestEveryDeniedEnvKeyReachesADotenvPlantClassOrAnExemption(t *testing.T) {
 			t.Errorf("%s is exempt with no reason: the exemption must say why the dotenv question differs", name)
 		}
 	}
-	for _, prefix := range deniedEnvNamespaces {
+	for _, guard := range deniedEnvNamespaces {
+		prefix := guard.pattern
 		probe := strings.ToUpper(prefix[:len(prefix)-1]) + "_PROBE"
 		if answered(probe).any() {
 			continue
@@ -181,7 +189,7 @@ func TestEveryDeniedEnvKeyReachesADotenvPlantClassOrAnExemption(t *testing.T) {
 	// stay shared. (envtrust may refuse MORE than this table — IFS is its
 	// own strengthening, not shared — the guard holds the sharing, not an
 	// equality.)
-	for _, name := range []string{"BASH_ENV", "LD_PRELOAD", "NODE_OPTIONS", "PATH", "XDG_CONFIG_HOME", "NIX_CONFIG", "SSH_ASKPASS", "PS4", "SHELLOPTS", "EDITOR"} {
+	for _, name := range []string{"BASH_ENV", "LD_PRELOAD", "NODE_OPTIONS", "PATH", "XDG_CONFIG_HOME", "NIX_CONFIG", "SSH_ASKPASS", "PS4", "SHELLOPTS", "EDITOR", "PYTHONPATH", "JAVA_TOOL_OPTIONS"} {
 		if !DeniedEnvKey(name) {
 			t.Errorf("%s left this table's deny class: the execution portion must keep answering the container question", name)
 		}
