@@ -78,7 +78,7 @@ func TestValkeyBoardMCPTokenStore_RegisterLookupRevoke(t *testing.T) {
 	mr, rdb := newTestRedis(t)
 	s := newValkeyBoardMCPTokenStore(rdb, nil)
 
-	if err := s.Register("tok1", []string{"board.read", "board.move"}, "", "", store.RunTrustFork, true); err != nil {
+	if err := s.Register("tok1", []string{"board.read", "board.move"}, "", "", store.RunTrustFork, true, ""); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	g, ok := s.lookup("tok1")
@@ -99,7 +99,7 @@ func TestValkeyBoardMCPTokenStore_RegisterLookupRevoke(t *testing.T) {
 		t.Errorf("revoked token should miss")
 	}
 	// TTL eviction.
-	if err := s.Register("tok2", []string{"board.read"}, "", "", store.RunTrustDefault, true); err != nil {
+	if err := s.Register("tok2", []string{"board.read"}, "", "", store.RunTrustDefault, true, ""); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	mr.FastForward(boardMCPDefaultTTL + time.Minute)
@@ -115,7 +115,7 @@ func TestValkeyBoardMCPTokenStore_RegisterSurfacesSetFailure(t *testing.T) {
 	s := newValkeyBoardMCPTokenStore(rdb, nil)
 
 	mr.SetError("valkey down")
-	err := s.Register("secret-token", []string{"board.read"}, "", "", store.RunTrustDefault, true)
+	err := s.Register("secret-token", []string{"board.read"}, "", "", store.RunTrustDefault, true, "")
 	if err == nil {
 		t.Fatal("Register should surface the Set failure")
 	}
@@ -155,4 +155,44 @@ func TestValkeyAuthRateLimiter_AllowDenyRefill(t *testing.T) {
 	if ok, _ := rl.allow("other", cfg); !ok {
 		t.Errorf("independent key should be allowed")
 	}
+}
+
+// The run's WORKSPACE rides the grant like its trust does: the facade's
+// project tier is rooted at THE RUN'S working directory, whichever replica
+// serves the call. And a payload written before the field existed reads as
+// "none" — a rolling replica must not invent a workspace for a token that
+// never carried one.
+//
+// Mutation that reddens this: drop WorkDir from boardTokenPayload or from
+// Register's marshal.
+func TestABoardTokenCarriesTheRunsWorkspace(t *testing.T) {
+	mr, rdb := newTestRedis(t)
+	s := newValkeyBoardMCPTokenStore(rdb, nil)
+
+	if err := s.Register("tok-ws", []string{"board.read"}, "", "t1", store.RunTrustDefault, true, "/srv/worktrees/issue-42"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	g, ok := s.lookup("tok-ws")
+	if !ok {
+		t.Fatal("lookup missed")
+	}
+	if g.WorkDir != "/srv/worktrees/issue-42" {
+		t.Errorf("workDir = %q, want the run's own workspace", g.WorkDir)
+	}
+
+	// Legacy shape: a payload with no work_dir at all.
+	ctx, cancel := valkeyCtx()
+	defer cancel()
+	if err := rdb.Set(ctx, boardTokenKeyPrefix+"tok-legacy",
+		[]byte(`{"caps":["board.read"],"trust":"fork","trust_stated":true}`), 0).Err(); err != nil {
+		t.Fatalf("seed legacy: %v", err)
+	}
+	g, ok = s.lookup("tok-legacy")
+	if !ok {
+		t.Fatal("legacy lookup missed")
+	}
+	if g.WorkDir != "" {
+		t.Errorf("legacy payload workDir = %q, want empty — the facade must not guess a workspace", g.WorkDir)
+	}
+	_ = mr
 }

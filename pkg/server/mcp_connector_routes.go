@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -43,6 +44,15 @@ type ConnectorMCPDeps struct {
 	Sealer  secrets.Sealer
 	Client  *http.Client
 	Logger  *iterlog.Logger
+	// CatalogForRun builds the catalog ONE RUN's calls resolve through, from
+	// that run's own workspace and trust — the shape the node path already
+	// resolves through (runview.LocalConnectors). Wired by local launches;
+	// nil leaves the process-wide Catalog serving every call, which is the
+	// CLOUD shape (its catalog holds no workspace tier at all) and the safe
+	// one: the workspace tier is the tier a run's own code can plant
+	// packages in, so it must open for the run whose workspace it is and for
+	// no other.
+	CatalogForRun func(workDir string, trust connection.ActionTrust) (connection.Catalog, error)
 }
 
 // RegisterConnectorMCPRoutes wires the facade endpoint onto mux — the
@@ -64,9 +74,10 @@ type connectorMCPHandler struct {
 	deps     ConnectorMCPDeps
 	registry BoardMCPTokenStore
 
-	// Built once: the packages are process-stable (the baked floor is
-	// compiled in; the FSCatalog above it caches), so the tool set does not
-	// change between two calls of one server.
+	// Built once for the process-wide Catalog (the cloud shape); a wired
+	// CatalogForRun builds per call instead, because WHICH packages exist is
+	// the run's own fact there — its workspace tier and its trust — and a
+	// catalog pinned at startup serves one run's packages to every other.
 	facadeOnce sync.Once
 	facade     *facade.Facade
 	facadeErr  error
@@ -78,20 +89,74 @@ type connectorMCPHandler struct {
 // the node path at its own resolution, so nobody is told a quieter lie here.
 func (h *connectorMCPHandler) theFacade() (*facade.Facade, error) {
 	h.facadeOnce.Do(func() {
-		var pkgs []*spec.Package
-		for _, id := range h.deps.Catalog.Connectors() {
-			pkg, _, err := h.deps.Catalog.Package(id)
-			if err != nil {
-				if h.deps.Logger != nil {
-					h.deps.Logger.Error("connector MCP: the catalog lists %q but it cannot load; excluded from the facade: %v", id, err)
-				}
-				continue
-			}
-			pkgs = append(pkgs, pkg)
-		}
-		h.facade, h.facadeErr = facade.New(pkgs...)
+		h.facade, h.facadeErr = facadeOverCatalog(h.deps.Catalog, h.deps.Logger)
 	})
 	return h.facade, h.facadeErr
+}
+
+// catalogFor answers the catalog THIS call resolves through: the process-wide
+// one when no per-run builder is wired, and one built over the run's OWN
+// workspace and trust otherwise. A builder REFUSAL is the call's error — a
+// silent fall back to the process-wide catalog would serve one run's answer
+// from packages its workspace does not hold, which is the exact drift this
+// exists to prevent.
+//
+// Built per call rather than cached: the builder reads the run's workspace
+// from disk, and a cache keyed on (workDir, trust) would have to decide how
+// stale a workspace's packages may go — a question the node path answers by
+// rebuilding per executor build, which is the precedent this follows. The
+// local path is low-rate (a handful of calls per node), and a stale answer
+// here is the project tier serving packages the workspace no longer has.
+func (h *connectorMCPHandler) catalogFor(grant boardMCPGrant) (connection.Catalog, error) {
+	if h.deps.CatalogForRun == nil {
+		return h.deps.Catalog, nil
+	}
+	cat, err := h.deps.CatalogForRun(grant.WorkDir, trustOfGrant(grant))
+	if err != nil {
+		return nil, fmt.Errorf("this run's connector catalog cannot be built: %w", err)
+	}
+	return cat, nil
+}
+
+// facadeFor is the facade over catalogFor: the one a tools/list and a
+// tools/call read the operation set from.
+func (h *connectorMCPHandler) facadeFor(grant boardMCPGrant) (*facade.Facade, error) {
+	cat, err := h.catalogFor(grant)
+	if err != nil {
+		return nil, err
+	}
+	if cat == h.deps.Catalog {
+		// The shared catalog: its facade is cached — the packages are
+		// process-stable (the baked floor is compiled in; the FSCatalog above
+		// it caches), so the tool set does not change between two calls.
+		return h.theFacade()
+	}
+	return facadeOverCatalog(cat, h.deps.Logger)
+}
+
+// facadeOverCatalog loads every connector a catalog serves into one facade.
+func facadeOverCatalog(cat connection.Catalog, logger *iterlog.Logger) (*facade.Facade, error) {
+	var pkgs []*spec.Package
+	for _, id := range cat.Connectors() {
+		pkg, _, err := cat.Package(id)
+		if err != nil {
+			if logger != nil {
+				logger.Error("connector MCP: the catalog lists %q but it cannot load; excluded from the facade: %v", id, err)
+			}
+			continue
+		}
+		pkgs = append(pkgs, pkg)
+	}
+	return facade.New(pkgs...)
+}
+
+// trustOfGrant reads the run's trust the way every consumer of a grant must:
+// unstated is UNKNOWN, never the zero value read as trusted (#1802).
+func trustOfGrant(grant boardMCPGrant) connection.ActionTrust {
+	if !grant.TrustStated {
+		return connection.TrustUnknown()
+	}
+	return connection.TrustOfRun(store.RunTrust(grant.Trust))
 }
 
 func (h *connectorMCPHandler) serve(w http.ResponseWriter, r *http.Request) {
@@ -141,7 +206,7 @@ func (h *connectorMCPHandler) dispatch(ctx context.Context, req mcpReq, grant bo
 			"serverInfo":      map[string]any{"name": "iterion-connectors-http", "version": "1.0.0"},
 		}
 	case "tools/list":
-		f, err := h.theFacade()
+		f, err := h.facadeFor(grant)
 		if err != nil {
 			resp.Error = &mcpRespError{Code: -32603, Message: "facade unavailable: " + err.Error()}
 			return resp
@@ -190,11 +255,15 @@ func (h *connectorMCPHandler) dispatch(ctx context.Context, req mcpReq, grant bo
 // call runs one tool through the facade, with the execution half wired to the
 // grant: the tenant it pins, the trust it carries.
 func (h *connectorMCPHandler) call(ctx context.Context, tool string, args json.RawMessage, grant boardMCPGrant) (string, error) {
-	f, err := h.theFacade()
+	catalog, err := h.catalogFor(grant)
 	if err != nil {
 		return "", err
 	}
-	resolver := h.resolverFor(grant)
+	f, err := h.facadeFor(grant)
+	if err != nil {
+		return "", err
+	}
+	resolver := h.resolverFor(grant, catalog)
 	out, err := f.Call(ctx, tool, args, h.execWith(resolver))
 	if err != nil {
 		return "", err
@@ -208,26 +277,25 @@ func (h *connectorMCPHandler) call(ctx context.Context, tool string, args json.R
 
 // resolverFor builds the per-call resolver from the GRANT, so the tenant and
 // the trust of a facade call are the run's — read at mint time from the run
-// document — and never anything the MCP request itself claims.
+// document — and never anything the MCP request itself claims. catalog is the
+// one catalogFor answered: the RESOLVER and the FACADE read ONE catalog, or a
+// tools/list would promise what call_operation cannot serve (or hide what it
+// can).
 //
 // The tenant falls back to connection.LocalTenant when the grant carries
 // none: local mode mints grants without one (there is exactly one tenant on a
 // laptop), and the FileStore's records live under it.
-func (h *connectorMCPHandler) resolverFor(grant boardMCPGrant) *connection.Resolver {
+func (h *connectorMCPHandler) resolverFor(grant boardMCPGrant, catalog connection.Catalog) *connection.Resolver {
 	tenantID := grant.TenantID
 	if tenantID == "" {
 		tenantID = connection.LocalTenant
 	}
-	trust := connection.TrustUnknown()
-	if grant.TrustStated {
-		trust = connection.TrustOfRun(store.RunTrust(grant.Trust))
-	}
 	return &connection.Resolver{
-		Catalog:  h.deps.Catalog,
+		Catalog:  catalog,
 		Store:    h.deps.Store,
 		Sealer:   h.deps.Sealer,
 		TenantID: tenantID,
-		Trust:    trust,
+		Trust:    trustOfGrant(grant),
 	}
 }
 

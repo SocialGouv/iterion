@@ -252,6 +252,12 @@ type Config struct {
 	// `iterion connections` is the surface.
 	Connections      connection.Store
 	ConnectorCatalog connection.Catalog
+	// ConnectorCatalogForRun builds the catalog ONE run's facade calls
+	// resolve through, from that run's own workspace and trust — the shape
+	// runview.LocalConnectors already resolves nodes through. Local launches
+	// wire it; nil (cloud) leaves ConnectorCatalog serving every call, whose
+	// catalog holds no workspace tier at all.
+	ConnectorCatalogForRun func(workDir string, trust connection.ActionTrust) (connection.Catalog, error)
 	// BoardBindings ties each team to one forge PROJECT board (ADR-097).
 	// Absent (local mode) self-disables the board endpoints and the periodic
 	// reconciliation worker.

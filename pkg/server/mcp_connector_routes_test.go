@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,7 +25,10 @@ func facadePkg(baseURL string) *spec.Package {
 	return &spec.Package{
 		Connector: spec.Connector{
 			ID: "probe", Version: "1.0.0",
-			BaseURL: spec.BaseURL{Default: baseURL},
+			// The package floor clamps every operation's level, so the
+			// fixture declares the same floor the shipped packages ship.
+			Maturity: spec.MaturityExperimental,
+			BaseURL:  spec.BaseURL{Default: baseURL},
 			Auth: []spec.AuthScheme{{
 				ID: "token", Kind: spec.AuthAPIKey, In: "header", Name: "Authorization", ValuePrefix: "token ",
 			}},
@@ -32,7 +36,7 @@ func facadePkg(baseURL string) *spec.Package {
 		Ops: []spec.OpsFile{{Operations: []spec.Operation{
 			{
 				ID: "probe.issue.list", Resource: "issue", Verb: "list",
-				Summary: "List issues", Effect: spec.EffectRead, MCP: true, Deterministic: true,
+				Summary: "List issues", Effect: spec.EffectRead, Maturity: spec.MaturityExperimental, MCP: true, Deterministic: true,
 				HTTP:    spec.HTTPBinding{Method: "GET", Path: "/issues"},
 				Results: []spec.ResultCase{{Status: 200}},
 				Security: []spec.SecurityRequirement{
@@ -41,9 +45,22 @@ func facadePkg(baseURL string) *spec.Package {
 			},
 			{
 				ID: "probe.issue.create", Resource: "issue", Verb: "create",
-				Summary: "Create an issue", Effect: spec.EffectCreate, Deterministic: true,
+				Summary: "Create an issue", Effect: spec.EffectCreate, Maturity: spec.MaturityExperimental, Deterministic: true,
 				HTTP:    spec.HTTPBinding{Method: "POST", Path: "/issues", RequestBody: spec.BodyJSON},
 				Params:  []spec.Param{{Key: "title", Name: "title", In: "body", Type: "string", Required: true}},
+				Results: []spec.ResultCase{{Status: 201}},
+				Security: []spec.SecurityRequirement{
+					{Terms: []spec.SecurityTerm{{SchemeID: "token"}}},
+				},
+			},
+			{
+				// The CURATED MUTATING operation: what the trust gate is
+				// witnessed against, now that the curation bounds
+				// call_operation — a mutating op a model may call is one an
+				// operator curated.
+				ID: "probe.issue.close", Resource: "issue", Verb: "close",
+				Summary: "Close an issue", Effect: spec.EffectUpdate, Maturity: spec.MaturityExperimental, MCP: true, Deterministic: true,
+				HTTP:    spec.HTTPBinding{Method: "POST", Path: "/issues", RequestBody: spec.BodyJSON},
 				Results: []spec.ResultCase{{Status: 201}},
 				Security: []spec.SecurityRequirement{
 					{Terms: []spec.SecurityTerm{{SchemeID: "token"}}},
@@ -107,7 +124,7 @@ func newFacadeTestRig(t *testing.T, caps []string, trust store.RunTrust, trustSt
 	}
 
 	rig.reg = NewBoardMCPTokenRegistry()
-	if err := rig.reg.Register("run-token", caps, "", "t1", trust, trustStated); err != nil {
+	if err := rig.reg.Register("run-token", caps, "", "t1", trust, trustStated, ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
@@ -222,14 +239,35 @@ func TestConnectorFacadeServesAnAgentWithACredentialItNeverHolds(t *testing.T) {
 		t.Fatal("the vendor saw no call at all")
 	}
 
-	// The long tail, by operation id — the mutating op, allowed on a trusted run.
+	// The long tail by operation id — a CURATED mutating operation on a
+	// trusted run: the discovery pair reaches what the operator curated.
+	_, out = rig.rpc(t, "run-token", "tools/call", map[string]any{
+		"name":      "call_operation",
+		"arguments": map[string]any{"operation": "probe.issue.close", "connection": "main"},
+	})
+	text, isError = rpcText(t, out)
+	if isError || !strings.Contains(text, `"number":2`) {
+		t.Errorf("call_operation on a curated operation failed: isError=%v %s", isError, text)
+	}
+
+	// An UNCURATED operation is refused even on a trusted run: the curated
+	// set is what the operator read, and trust widens neither it nor any
+	// other list. The vendor must not see the call at all.
+	for len(rig.gotAuth) > 0 {
+		<-rig.gotAuth
+	}
 	_, out = rig.rpc(t, "run-token", "tools/call", map[string]any{
 		"name":      "call_operation",
 		"arguments": map[string]any{"operation": "probe.issue.create", "connection": "main", "arguments": map[string]any{"title": "hi"}},
 	})
 	text, isError = rpcText(t, out)
-	if isError || !strings.Contains(text, `"number":2`) {
-		t.Errorf("call_operation on the long tail failed: isError=%v %s", isError, text)
+	if !isError || !strings.Contains(text, "curated set") {
+		t.Errorf("call_operation on the uncurated create: isError=%v %s — the curation must be the bound", isError, text)
+	}
+	select {
+	case auth := <-rig.gotAuth:
+		t.Errorf("the refused call reached the vendor anyway: %q", auth)
+	case <-time.After(200 * time.Millisecond):
 	}
 
 	// Discovery.
@@ -256,7 +294,7 @@ func TestConnectorFacadeRefusesTheWrongGrants(t *testing.T) {
 	if code, _ := rig.rpc(t, "nope", "initialize", nil); code != http.StatusUnauthorized {
 		t.Errorf("unknown token: code=%d, want 401", code)
 	}
-	if err := rig.reg.Register("board-only", []string{"board.read"}, "", "t1", store.RunTrustDefault, true); err != nil {
+	if err := rig.reg.Register("board-only", []string{"board.read"}, "", "t1", store.RunTrustDefault, true, ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if code, _ := rig.rpc(t, "board-only", "initialize", nil); code != http.StatusForbidden {
@@ -307,7 +345,7 @@ func TestConnectorFacadeHonoursTheRunsTrust(t *testing.T) {
 	)
 	_, out := rig.rpc(t, "run-token", "tools/call", map[string]any{
 		"name":      "call_operation",
-		"arguments": map[string]any{"operation": "probe.issue.create", "connection": "main", "arguments": map[string]any{"title": "hi"}},
+		"arguments": map[string]any{"operation": "probe.issue.close", "connection": "main"},
 	})
 	text, isError := rpcText(t, out)
 	if !isError || !strings.Contains(text, "read operations only") {
@@ -331,10 +369,187 @@ func TestConnectorFacadeHonoursTheRunsTrust(t *testing.T) {
 	)
 	_, out = rig2.rpc(t, "run-token", "tools/call", map[string]any{
 		"name":      "call_operation",
-		"arguments": map[string]any{"operation": "probe.issue.create", "connection": "main", "arguments": map[string]any{"title": "hi"}},
+		"arguments": map[string]any{"operation": "probe.issue.close", "connection": "main"},
 	})
 	text, isError = rpcText(t, out)
 	if !isError || !strings.Contains(text, "nobody stated") {
 		t.Errorf("an unstated trust mutating through the facade: isError=%v %s", isError, text)
+	}
+}
+
+// TestTheFacadeServesEachRunItsOwnCatalog: the workspace tier a facade call
+// resolves through is THE RUN'S — its own working directory, its own trust —
+// never the process-wide catalog a startup pinned. A catalog shared across
+// runs serves one run's workspace packages to every other run, and the
+// workspace tier is exactly the tier a run's own code can plant packages in.
+//
+// The shared Catalog here is EMPTY, so anything any run is served came from
+// the per-run builder — the test cannot pass because the fallback leaked.
+//
+// Mutations that redden this: have the handler call the builder with a fixed
+// workDir (or ignore its error and fall back to the shared catalog); or drop
+// CatalogForRun from the deps.
+func TestTheFacadeServesEachRunItsOwnCatalog(t *testing.T) {
+	t.Setenv("ITERION_CONNECTOR_ALLOW_PRIVATE", "1")
+
+	vendor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"number":1,"title":"hello"}]`))
+	}))
+	defer vendor.Close()
+
+	sealer, err := secrets.NewAESGCMSealer([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	st := connection.NewMemoryStore()
+	sealed, err := connection.SealToken(sealer, "c1", "the-token", time.Time{})
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	if err := st.Create(context.Background(), connection.Connection{
+		ID: "c1", TenantID: "t1", Connector: "probe", Alias: "main",
+		SchemeID: "token", Status: connection.StatusActive,
+		Capabilities: []connection.Capability{connection.CapAgent},
+		BaseURL:      vendor.URL,
+		AuthPlacement: connection.AuthPlacement{
+			Kind: "api_key", In: "header", Name: "Authorization", ValuePrefix: "token ",
+		},
+		SealedPayload: sealed,
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	reg := NewBoardMCPTokenRegistry()
+	if err := reg.Register("run-a", []string{connection.CapConnectors}, "", "t1", store.RunTrustDefault, true, "/srv/proj-a"); err != nil {
+		t.Fatalf("register run-a: %v", err)
+	}
+	if err := reg.Register("run-b", []string{connection.CapConnectors}, "", "t1", store.RunTrustFork, true, "/srv/other"); err != nil {
+		t.Fatalf("register run-b: %v", err)
+	}
+	if err := reg.Register("run-c", []string{connection.CapConnectors}, "", "t1", store.RunTrustDefault, true, "/srv/boom"); err != nil {
+		t.Fatalf("register run-c: %v", err)
+	}
+
+	var gotWorkDirs []string
+	var gotTrusts []connection.ActionTrust
+	mux := http.NewServeMux()
+	RegisterConnectorMCPRoutes(mux, "/api/v1/mcp/connectors", ConnectorMCPDeps{
+		Store:   st,
+		Catalog: connection.NewMemoryCatalog(), // empty: nothing may leak from it
+		Sealer:  sealer,
+		Client:  connection.LocalHTTPClient(),
+		CatalogForRun: func(workDir string, trust connection.ActionTrust) (connection.Catalog, error) {
+			gotWorkDirs = append(gotWorkDirs, workDir)
+			gotTrusts = append(gotTrusts, trust)
+			switch workDir {
+			case "/srv/proj-a":
+				return connection.NewMemoryCatalog(facadePkg(vendor.URL)), nil
+			case "/srv/boom":
+				return nil, errors.New("no such workspace")
+			default:
+				return connection.NewMemoryCatalog(), nil
+			}
+		},
+	}, reg)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	rpc := func(t *testing.T, token, method string, params map[string]any) (int, map[string]any) {
+		t.Helper()
+		body := map[string]any{"jsonrpc": "2.0", "id": 1, "method": method}
+		if params != nil {
+			body["params"] = params
+		}
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		req, err := http.NewRequest("POST", server.URL+"/api/v1/mcp/connectors", strings.NewReader(string(raw)))
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		req.Header.Set("X-Iterion-Run", token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("do: %v", err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return resp.StatusCode, out
+	}
+	textOf := func(t *testing.T, out map[string]any) string {
+		t.Helper()
+		res, _ := out["result"].(map[string]any)
+		contents, _ := res["content"].([]any)
+		if len(contents) == 0 {
+			return ""
+		}
+		first, _ := contents[0].(map[string]any)
+		text, _ := first["text"].(string)
+		return text
+	}
+
+	// run-a's own workspace holds the probe package: its tools/list serves it.
+	_, out := rpc(t, "run-a", "tools/list", nil)
+	res, _ := out["result"].(map[string]any)
+	tools, _ := res["tools"].([]any)
+	var names []string
+	for _, tool := range tools {
+		names = append(names, tool.(map[string]any)["name"].(string))
+	}
+	if !strings.Contains(strings.Join(names, ","), "probe_issue_list") {
+		t.Errorf("run-a's catalog served %v — its own workspace's package is missing", names)
+	}
+
+	// run-b's workspace holds nothing: the same endpoint serves only the
+	// discovery pair, and call_operation cannot resolve what its catalog
+	// does not hold — the facade and the resolver read ONE catalog.
+	_, out = rpc(t, "run-b", "tools/list", nil)
+	res, _ = out["result"].(map[string]any)
+	tools, _ = res["tools"].([]any)
+	names = nil
+	for _, tool := range tools {
+		names = append(names, tool.(map[string]any)["name"].(string))
+	}
+	if strings.Contains(strings.Join(names, ","), "probe_issue_list") {
+		t.Errorf("run-b was served run-a's workspace package: %v", names)
+	}
+	_, out = rpc(t, "run-b", "tools/call", map[string]any{
+		"name":      "call_operation",
+		"arguments": map[string]any{"operation": "probe.issue.list", "connection": "main"},
+	})
+	if text := textOf(t, out); !strings.Contains(text, "no operation") {
+		t.Errorf("run-b resolved through a catalog that is not its own: %s", text)
+	}
+
+	// The builder saw each run's OWN trust, read at mint time — never a
+	// hardcoded default.
+	if len(gotTrusts) < 2 {
+		t.Fatalf("the builder was consulted %d time(s)", len(gotTrusts))
+	}
+	forkSeen := false
+	for i, tr := range gotTrusts {
+		if gotWorkDirs[i] == "/srv/other" && tr == connection.TrustOfRun(store.RunTrustFork) {
+			forkSeen = true
+		}
+	}
+	if !forkSeen {
+		t.Errorf("the builder never saw run-b's fork trust: dirs=%v trusts=%v", gotWorkDirs, gotTrusts)
+	}
+
+	// A builder refusal is the CALL's error, never a silent fall back to the
+	// shared (here: empty) catalog.
+	_, out = rpc(t, "run-c", "tools/list", nil)
+	res, _ = out["result"].(map[string]any)
+	if _, hasTools := res["tools"]; hasTools {
+		t.Errorf("a refused catalog build served a tools/list anyway: %v", out)
+	}
+	if e := out["error"].(map[string]any); !strings.Contains(e["message"].(string), "cannot be built") {
+		t.Errorf("the refusal must name the catalog: %v", e)
 	}
 }

@@ -101,15 +101,20 @@ type boardTokenPayload struct {
 	// lookup must read as UNSTATED — the facade fails closed on it.
 	Trust       string `json:"trust,omitempty"`
 	TrustStated bool   `json:"trust_stated,omitempty"`
+	// WorkDir carries the run's working directory for the same reason: the
+	// facade's project tier is rooted at THE RUN'S workspace. Absent on a
+	// legacy payload reads as "none".
+	WorkDir string `json:"work_dir,omitempty"`
 }
 
-func (s *valkeyBoardMCPTokenStore) Register(token string, caps []string, sourceIssueID, tenantID string, trust store.RunTrust, trustStated bool) error {
+func (s *valkeyBoardMCPTokenStore) Register(token string, caps []string, sourceIssueID, tenantID string, trust store.RunTrust, trustStated bool, workDir string) error {
 	b, err := json.Marshal(boardTokenPayload{
 		Caps:          caps,
 		SourceIssueID: strings.TrimSpace(sourceIssueID),
 		TenantID:      strings.TrimSpace(tenantID),
 		Trust:         string(trust),
 		TrustStated:   trustStated,
+		WorkDir:       workDir,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal board MCP caps: %w", err)
@@ -161,6 +166,7 @@ func (s *valkeyBoardMCPTokenStore) lookup(token string) (boardMCPGrant, bool) {
 		TenantID:      payload.TenantID,
 		Trust:         payload.Trust,
 		TrustStated:   payload.TrustStated,
+		WorkDir:       payload.WorkDir,
 	}
 	for _, c := range payload.Caps {
 		grant.Capabilities[c] = true

@@ -79,6 +79,7 @@ func executorWithBoardTokens(t *testing.T, b delegate.Backend, minted *[]string,
 }
 
 func TestTheNodesHostMCPTokenIsRevokedWhenTheNodeEnds(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		fail bool
@@ -118,6 +119,7 @@ func TestTheNodesHostMCPTokenIsRevokedWhenTheNodeEnds(t *testing.T) {
 // would leave the first live, and a revoke of the first at the second's end
 // would be a token still live while its node was gone.
 func TestTwoNodesEachEndTheirOwnGrant(t *testing.T) {
+	t.Parallel()
 	b := &tokenRecordingBackend{}
 	var minted, revoked []string
 	e := executorWithBoardTokens(t, b, &minted, &revoked)

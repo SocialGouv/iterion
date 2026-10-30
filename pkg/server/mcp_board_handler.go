@@ -56,7 +56,15 @@ type boardMCPGrant struct {
 	// read as "unknown", never as "trusted" (connection.TrustUnknown).
 	Trust       string
 	TrustStated bool
-	ExpiresAt   time.Time
+	// WorkDir is the run document's own working directory: the facade's
+	// PROJECT catalog tier is rooted at THE RUN'S workspace, not at whatever
+	// directory the serving process was started in — the two agree only when
+	// a studio is launched inside the one project it serves. Empty on grants
+	// minted before this field existed (legacy payloads), which the per-run
+	// catalog reads as "no workspace of its own" and the project tier as
+	// absent.
+	WorkDir   string
+	ExpiresAt time.Time
 }
 
 // BoardMCPTokenStore is the per-run board-MCP token registry. The in-memory
@@ -70,9 +78,10 @@ type boardMCPGrant struct {
 // The trust argument is the run's store.RunTrust: the connector facade's
 // credential resolution (#2758) fails CLOSED on an unstated trust, so the
 // minter must say when it could not read the run rather than letting the
-// zero value read as the trusted one.
+// zero value read as the trusted one. workDir is the run's working directory,
+// which the facade's project tier is rooted at for that run's calls alone.
 type BoardMCPTokenStore interface {
-	Register(token string, caps []string, sourceIssueID, tenantID string, trust store.RunTrust, trustStated bool) error
+	Register(token string, caps []string, sourceIssueID, tenantID string, trust store.RunTrust, trustStated bool, workDir string) error
 	Revoke(token string)
 	lookup(token string) (boardMCPGrant, bool)
 }
@@ -100,13 +109,14 @@ func newBoardMCPToken() string {
 // Register stores a token with its grant. A subsequent call with the same
 // token replaces the grant. A full registry is an error: the token would
 // never authorize, so the caller must not hand it out.
-func (r *BoardMCPTokenRegistry) Register(token string, caps []string, sourceIssueID, tenantID string, trust store.RunTrust, trustStated bool) error {
+func (r *BoardMCPTokenRegistry) Register(token string, caps []string, sourceIssueID, tenantID string, trust store.RunTrust, trustStated bool, workDir string) error {
 	grant := boardMCPGrant{
 		Capabilities:  boardops.Capabilities{},
 		SourceIssueID: strings.TrimSpace(sourceIssueID),
 		TenantID:      strings.TrimSpace(tenantID),
 		Trust:         string(trust),
 		TrustStated:   trustStated,
+		WorkDir:       workDir,
 		ExpiresAt:     r.now().Add(boardMCPDefaultTTL),
 	}
 	for _, c := range caps {

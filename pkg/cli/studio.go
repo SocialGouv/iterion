@@ -331,20 +331,24 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 		// facade call in a studio run resolves exactly what the CLI manages.
 		// The CRUD routes stay CLOUD-only (team-scoped paths); here the store
 		// feeds the MCP facade under connection.LocalTenant.
+		//
+		// The catalog the facade serves is built PER RUN, from that run's
+		// workspace and trust — the same shape the node path resolves through
+		// (runview.LocalConnectors). Pinned at startup it read as "trusted"
+		// in hard code and rooted at THIS process's cwd: a fork run was then
+		// served the project tier its trust withdraws (the workspace tier is
+		// exactly where a repository under review can plant a package), and
+		// two runs over different checkouts resolved the same packages — the
+		// daemon's — while their own nodes resolved their own. The fallback
+		// catalog is the trust-independent floor: the operator's home tier
+		// and the baked packages, with NO workspace tier, which is the shape
+		// safe for whichever run reaches it.
 		if cfg.Sealer != nil {
 			if connStore, cerr := connection.NewFileStore(connection.DefaultPath(resolvedStoreDir)); cerr != nil {
 				logger.Warn("studio: connector connections disabled (%v)", cerr)
 			} else {
-				tiers, terr := connection.LocalCatalogs(
-					connection.LocalCatalogPaths(dir, store.GlobalIterionDataDir()),
-					connection.TrustOfRun(store.RunTrustDefault))
-				if terr != nil {
-					logger.Warn("studio: connector catalog disabled (%v)", terr)
-				} else {
-					cfg.Connections = connStore
-					cfg.ConnectorCatalog = connection.NewLayeredCatalog(
-						append(tiers, connection.BakedCatalog())...)
-				}
+				cfg.Connections = connStore
+				cfg.ConnectorCatalog, cfg.ConnectorCatalogForRun = LocalConnectorPlane(dir, store.GlobalIterionDataDir())
 			}
 		}
 	}

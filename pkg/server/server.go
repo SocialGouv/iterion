@@ -300,9 +300,13 @@ type Server struct {
 	forgeConnections forge.ConnectionStore
 	// connectionStore + connectorCatalog back /api/teams/:id/connections
 	// (pkg/connection). Nil in local mode — see Config.Connections.
-	connectionStore   connection.Store
-	connectorCatalog  connection.Catalog
-	forgeIntegrations forge.RepoIntegrationStore
+	connectionStore  connection.Store
+	connectorCatalog connection.Catalog
+	// connectorCatalogRun is the per-run catalog builder the facade serves
+	// from (Config.ConnectorCatalogForRun): nil in cloud, where the shared
+	// catalog has no workspace tier to vary.
+	connectorCatalogRun func(workDir string, trust connection.ActionTrust) (connection.Catalog, error)
+	forgeIntegrations   forge.RepoIntegrationStore
 	// forgeAppClients is the per-connection GitHub-App client cache
 	// (githubAppClientFor): one client — hence one set of minted tokens — per
 	// connection per replica, validated against the connection state it was
@@ -680,11 +684,12 @@ func (s *Server) boardMCPServiceOption(logger *iterlog.Logger, runStore store.Ru
 			client = connection.LocalHTTPClient()
 		}
 		RegisterConnectorMCPRoutes(mux, "/api/v1/mcp/connectors", ConnectorMCPDeps{
-			Store:   s.connectionStore,
-			Catalog: s.connectorCatalog,
-			Sealer:  s.sealer,
-			Client:  client,
-			Logger:  s.logger,
+			Store:         s.connectionStore,
+			Catalog:       s.connectorCatalog,
+			CatalogForRun: s.connectorCatalogRun,
+			Sealer:        s.sealer,
+			Client:        client,
+			Logger:        s.logger,
 		}, s.boardMCPTokens)
 	}
 	reg := s.boardMCPTokens
@@ -696,11 +701,14 @@ func (s *Server) boardMCPServiceOption(logger *iterlog.Logger, runStore store.Ru
 			}
 			return ""
 		}
-		tenantID := ""
+		tenantID, workDir := "", ""
 		// The run's TRUST rides the grant (#1802 via #2758): the connector
 		// facade resolves credentials under it, and an unreadable run means
 		// unstated — which fails a mutating call closed rather than reading
-		// the zero value as "the tenant's own code".
+		// the zero value as "the tenant's own code". The run's WORKDIR rides
+		// with it for the same reason: the facade's project tier is rooted at
+		// THE RUN'S workspace (a per-issue worktree), not at the directory
+		// this process was started in.
 		trust, trustStated := store.RunTrust(""), false
 		if runStore != nil && runID != "" {
 			lookupCtx := context.Background()
@@ -721,6 +729,7 @@ func (s *Server) boardMCPServiceOption(logger *iterlog.Logger, runStore store.Ru
 			} else {
 				tenantID = run.TenantID
 				trust, trustStated = run.Trust, true
+				workDir = run.WorkDir
 			}
 		}
 		if strings.EqualFold(s.cfg.Mode, "cloud") && tenantID == "" {
@@ -729,7 +738,7 @@ func (s *Server) boardMCPServiceOption(logger *iterlog.Logger, runStore store.Ru
 			}
 			return ""
 		}
-		if err := reg.Register(token, caps, sourceIssueID, tenantID, trust, trustStated); err != nil {
+		if err := reg.Register(token, caps, sourceIssueID, tenantID, trust, trustStated, workDir); err != nil {
 			if logger != nil {
 				logger.Error("board MCP: %v; sandboxed board-emit disabled for a node", err)
 			}
@@ -878,6 +887,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		forgeConnections:    cfg.ForgeConnections,
 		connectionStore:     cfg.Connections,
 		connectorCatalog:    cfg.ConnectorCatalog,
+		connectorCatalogRun: cfg.ConnectorCatalogForRun,
 		pluginSources:       cfg.PluginSources,
 		pluginSourceFetcher: cfg.PluginSourceFetcher,
 		botSources:          cfg.BotSources,
