@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -54,10 +55,17 @@ func TestTheRecordingDoorBounds(t *testing.T) {
 // bounded at the door it passes: a parser.Diagnostic composite literal
 // carrying fields is written parser.Bounded(parser.Diagnostic{...}), so no
 // site can compose a message around the bound. The zero value (no message
-// to bound) and the element type of a slice literal ([]parser.Diagnostic{…}
-// — its elements are bounded diagnostics of a door) are not constructions.
+// to bound) is not a construction, and in a collection literal
+// ([]parser.Diagnostic{…}) every element is read: an expression element
+// (docDiag(…), a door's own diagnostic) passes; a composite element carries
+// its type in full, wrapped.
+//
+// One named limit: the scan sees constructions, not mutations — a zero
+// value filled by a later assignment (d := parser.Diagnostic{}; d.Message =
+// …) is no composite literal. The one production rewrite of a recorded
+// diagnostic (citeStoredMainWorkflow) passes Bounded at the rewrite; a new
+// one is a review finding, as it was at #2801.
 func TestEveryConstructorPassesBounded(t *testing.T) {
-	const marker = "parser.Diagnostic{"
 	root := filepath.Join("..", "..", "..")
 	var offenders []string
 	err := filepath.WalkDir(root, func(path string, de os.DirEntry, err error) error {
@@ -83,29 +91,8 @@ func TestEveryConstructorPassesBounded(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
 		}
-		text := string(src)
-		for at := 0; ; {
-			i := strings.Index(text[at:], marker)
-			if i < 0 {
-				break
-			}
-			i += at
-			at = i + len(marker)
-			before := strings.TrimRight(text[:i], " \t\n")
-			rest := strings.TrimLeft(text[at:], " \t\n")
-			switch {
-			case strings.HasSuffix(before, "]"):
-				// The element type of a []parser.Diagnostic{…} literal.
-			case strings.HasPrefix(rest, "}"):
-				// The zero value: no message to bound.
-			default:
-				b := strings.TrimSuffix(before, "&")
-				b = strings.TrimRight(b, " \t\n")
-				if !strings.HasSuffix(b, "parser.Bounded(") {
-					line := 1 + strings.Count(text[:i], "\n")
-					offenders = append(offenders, fmt.Sprintf("%s:%d", path, line))
-				}
-			}
+		for _, line := range unboundedConstructions(string(src)) {
+			offenders = append(offenders, fmt.Sprintf("%s:%d", path, line))
 		}
 		return nil
 	})
@@ -115,4 +102,206 @@ func TestEveryConstructorPassesBounded(t *testing.T) {
 	if len(offenders) > 0 {
 		t.Errorf("a parser.Diagnostic is composed outside the parser package without passing parser.Bounded — the door that holds a message and a hint to %d bytes (#2801):\n  %s", expr.MaxDiagnosticText, strings.Join(offenders, "\n  "))
 	}
+}
+
+// The canary's forms, probed against unboundedConstructions: the elided
+// composite element of a collection literal (the reviewer's probe — the
+// type written once for the slice, the elements' fields reachable by no
+// wrapper the scan would see) and the aliased import (an alias composes a
+// Diagnostic the marker never names) are offenders; the door forms pass.
+func TestTheCanaryReadsEveryForm(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		src  string
+		want bool // an offender
+	}{
+		{"an elided element with fields", "package x\n\nvar _ = []parser.Diagnostic{{Code: parser.DiagExpectedToken, Message: msg}}\n", true},
+		{"an elided element among a door's own", "package x\n\nvar _ = []parser.Diagnostic{docDiag(name, 1, 1, msg), {Code: parser.DiagExpectedToken}}\n", true},
+		{"a keyed elided element", "package x\n\nvar _ = map[string]parser.Diagnostic{\"k\": {Message: msg}}\n", true},
+		{"a wrapped element", "package x\n\nvar _ = []parser.Diagnostic{parser.Bounded(parser.Diagnostic{Code: parser.DiagExpectedToken, Message: msg})}\n", false},
+		{"a door's own diagnostic as element", "package x\n\nvar _ = []parser.Diagnostic{docDiag(name, 1, 1, msg)}\n", false},
+		{"a brace inside a string is no element", "package x\n\nvar _ = []parser.Diagnostic{docDiag(name, 1, 1, \"a { brace\")}\n", false},
+		{"an empty collection", "package x\n\nvar _ = []parser.Diagnostic{}\n", false},
+		{"a zero-value element", "package x\n\nvar _ = []parser.Diagnostic{{}}\n", false},
+		{"the zero value", "package x\n\nvar d = parser.Diagnostic{}\n", false},
+		{"a wrapped construction", "package x\n\nvar d = parser.Bounded(parser.Diagnostic{Message: msg})\n", false},
+		{"a bare pointer construction", "package x\n\nvar d = &parser.Diagnostic{Message: msg}\n", true},
+		{"a bare construction", "package x\n\nvar d = parser.Diagnostic{Message: msg}\n", true},
+		{"an aliased import", "package x\n\nimport (\n\tp \"github.com/SocialGouv/iterion/pkg/dsl/parser\"\n)\n", true},
+		{"the plain import", "package x\n\nimport (\n\t\"github.com/SocialGouv/iterion/pkg/dsl/parser\"\n)\n\nvar d = parser.Bounded(parser.Diagnostic{Message: msg})\n", false},
+	} {
+		if got := len(unboundedConstructions(c.src)) > 0; got != c.want {
+			t.Errorf("%s: offender = %v, want %v (lines %v)", c.name, got, c.want, unboundedConstructions(c.src))
+		}
+	}
+}
+
+// unboundedConstructions is the canary's reading of one Go source: the
+// 1-based lines where a parser.Diagnostic is composed around the bound —
+// a composite literal with fields not written parser.Bounded(...), an
+// elided composite element of a collection literal (`{{Code: …}}`, whose
+// fields no wrapper can reach), or an import of the parser package under
+// another name (the scan reads `parser.Diagnostic{`; an alias or a dot
+// import composes it invisibly).
+func unboundedConstructions(text string) []int {
+	const marker = "parser.Diagnostic{"
+	var lines []int
+	if m := parserAliasImportRe.FindStringIndex(text); m != nil {
+		lines = append(lines, 1+strings.Count(text[:m[0]], "\n"))
+	}
+	for at := 0; ; {
+		i := strings.Index(text[at:], marker)
+		if i < 0 {
+			break
+		}
+		i += at
+		at = i + len(marker)
+		before := strings.TrimRight(text[:i], " \t\n")
+		rest := strings.TrimLeft(text[at:], " \t\n")
+		switch {
+		case strings.HasSuffix(before, "]"):
+			// A collection of diagnostics ([]parser.Diagnostic{…}, a map's
+			// element type): the type is written once for the collection,
+			// so an element written as a bare composite carries its fields
+			// where no wrapper can reach them. Every element is read: an
+			// expression (a door's own diagnostic — docDiag(…), a bounded
+			// refusal) passes; a composite element is a construction and
+			// carries its type in full, wrapped — or holds no field at all.
+			elems, offs := literalElements(text, at-1)
+			for k, el := range elems {
+				if elidedCompositeWithFields(el) {
+					lines = append(lines, 1+strings.Count(text[:offs[k]], "\n"))
+				}
+			}
+		case strings.HasPrefix(rest, "}"):
+			// The zero value: no message to bound.
+		default:
+			b := strings.TrimSuffix(before, "&")
+			b = strings.TrimRight(b, " \t\n")
+			if !strings.HasSuffix(b, "parser.Bounded(") {
+				lines = append(lines, 1+strings.Count(text[:i], "\n"))
+			}
+		}
+	}
+	return lines
+}
+
+// parserAliasImportRe is an import of the parser package under another name
+// (an alias, a dot, a blank): constructions through it name no
+// `parser.Diagnostic{` the scan reads.
+var parserAliasImportRe = regexp.MustCompile(`(?m)^\s*[\w.]+\s+"github\.com/SocialGouv/iterion/pkg/dsl/parser"`)
+
+// literalElements splits the composite literal whose opening brace is at
+// open into its top-level elements, each with its byte offset in src.
+// Strings, runes, raw strings and both comment forms are skipped, so a
+// brace or a comma inside one is never read as syntax.
+func literalElements(src string, open int) (elems []string, offs []int) {
+	depth := 0
+	start := open + 1
+	for i := open; i < len(src); i++ {
+		switch src[i] {
+		case '"', '\'', '`':
+			i = skipLiteral(src, i)
+		case '/':
+			i = skipComment(src, i)
+		case '{', '[', '(':
+			depth++
+		case '}', ']', ')':
+			depth--
+			if depth == 0 {
+				return append(elems, src[start:i]), append(offs, start)
+			}
+		case ',':
+			if depth == 1 {
+				elems, offs = append(elems, src[start:i]), append(offs, start)
+				start = i + 1
+			}
+		}
+	}
+	return elems, offs
+}
+
+// elidedCompositeWithFields reports whether elem composes a value with the
+// type elided: a brace at the element's top level (outside parens and
+// brackets — the wrapped form parser.Bounded(parser.Diagnostic{…}) opens
+// none there) whose literal holds a field. The empty element `{}` is the
+// zero value.
+func elidedCompositeWithFields(elem string) bool {
+	depth := 0
+	for i := 0; i < len(elem); i++ {
+		switch elem[i] {
+		case '"', '\'', '`':
+			i = skipLiteral(elem, i)
+		case '/':
+			i = skipComment(elem, i)
+		case '[', '(':
+			depth++
+		case ']', ')':
+			depth--
+		case '{':
+			if depth > 0 {
+				continue
+			}
+			// The literal's content, to its matching close: empty is the
+			// zero value.
+			bdepth := 0
+			j := i
+			for ; j < len(elem); j++ {
+				switch elem[j] {
+				case '"', '\'', '`':
+					j = skipLiteral(elem, j)
+				case '/':
+					j = skipComment(elem, j)
+				case '{':
+					bdepth++
+				case '}':
+					bdepth--
+					if bdepth == 0 {
+						return strings.TrimSpace(elem[i+1:j]) != ""
+					}
+				}
+			}
+			return false
+		}
+	}
+	return false
+}
+
+// skipLiteral returns the index of the closing quote of the string, raw
+// string or rune literal opening at i (the last byte of src for one never
+// closed).
+func skipLiteral(src string, i int) int {
+	q := src[i]
+	for i++; i < len(src); i++ {
+		if q != '`' && src[i] == '\\' {
+			i++
+			continue
+		}
+		if src[i] == q {
+			return i
+		}
+	}
+	return len(src) - 1
+}
+
+// skipComment returns the index of the last byte of the comment opening at
+// i, or i itself when src[i] opens none (a division).
+func skipComment(src string, i int) int {
+	if i+1 >= len(src) {
+		return i
+	}
+	switch src[i+1] {
+	case '/':
+		for i < len(src) && src[i] != '\n' {
+			i++
+		}
+		return i
+	case '*':
+		i += 2
+		for i+1 < len(src) && (src[i] != '*' || src[i+1] != '/') {
+			i++
+		}
+		return i + 1
+	}
+	return i
 }

@@ -738,9 +738,9 @@ func (c *compiler) validateSharedPromptRef(w *Workflow, rcs []refContext, predec
 }
 
 // readerNames is how a merged finding names its readers: quoted — `"a",
-// "b"` — where the sentence quotes the name, bare where it does not (an
-// edge list's `src -> dst`). One reader is named as it ever was; past
-// maxReadersNamed the first are named and the rest counted.
+// "b"` — where the sentence quotes the name, bare — `a, b` — where it does
+// not (an edge list's `src -> dst`). One reader is named as it ever was;
+// past maxReadersNamed the first are named and the rest counted.
 func readerNames(readers []string) (quoted, bare string) {
 	if len(readers) == 1 {
 		return `"` + readers[0] + `"`, readers[0]
@@ -752,7 +752,7 @@ func readerNames(readers []string) (quoted, bare string) {
 		more = fmt.Sprintf(" and %d more", len(readers)-maxReadersNamed)
 	}
 	quoted = `"` + strings.Join(named, `", "`) + `"`
-	return quoted + more, quoted + more
+	return quoted + more, strings.Join(named, ", ") + more
 }
 
 // validateLoopRef warns of a {{loop.X.<field>}} reference whose loop X no

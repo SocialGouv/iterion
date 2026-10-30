@@ -9,14 +9,22 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
-// The document-level notice of #1663. yaml.v3's scanner ends a line at CR,
-// NEL (U+0085), LS (U+2028) and PS (U+2029), not only at LF. Inside a block
-// scalar the converter reads an LS/PS as the newline the scanner meant
-// (E053, spell.go), but a trailing line made only of such a character is a
-// trailing blank line to the scanner, and clip or strip chomping removes it
-// before the converter sees the value — no diagnostic, no trace. An author
-// told to "remove the invisible character" at line N may leave a second one
-// on a trailing line and never hear of it again.
+// noticeOpens and noticeCloses are the fixed text the separator notice wraps
+// around its count and its list of lines — what the bound accounts for
+// beside them.
+const (
+	noticeOpens  = " (U+0085 NEL, U+2028 LS, U+2029 PS — "
+	noticeCloses = "): yaml.v3 ends a line at each; inside a block body it is read as a newline, on a trailing line it is chomped like a blank line"
+)
+
+// separatorNotice is the document-level notice of #1663. yaml.v3's scanner
+// ends a line at CR, NEL (U+0085), LS (U+2028) and PS (U+2029), not only at
+// LF. Inside a block scalar the converter reads an LS/PS as the newline the
+// scanner meant (E053, spell.go), but a trailing line made only of such a
+// character is a trailing blank line to the scanner, and clip or strip
+// chomping removes it before the converter sees the value — no diagnostic,
+// no trace. An author told to "remove the invisible character" at line N
+// may leave a second one on a trailing line and never hear of it again.
 //
 // So the RAW source is scanned once, before any reading of it, and one
 // warning per document counts every NEL, LS and PS it holds and lists the
@@ -27,15 +35,6 @@ import (
 // which docDiag enforces) leaves room for, the count never stops: a document
 // of nothing but separators would otherwise make the notice longer than the
 // document.
-
-// noticeOpens and noticeCloses are the fixed text the separator notice wraps
-// around its count and its list of lines — what the bound accounts for
-// beside them.
-const (
-	noticeOpens  = " (U+0085 NEL, U+2028 LS, U+2029 PS — "
-	noticeCloses = "): yaml.v3 ends a line at each; inside a block body it is read as a newline, on a trailing line it is chomped like a blank line"
-)
-
 func separatorNotice(name string, src []byte) *parser.Diagnostic {
 	// The BOM is the scanner's to skip, and it is not a separator.
 	s := strings.TrimPrefix(string(src), "\ufeff")

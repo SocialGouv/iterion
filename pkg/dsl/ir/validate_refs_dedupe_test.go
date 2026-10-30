@@ -84,6 +84,27 @@ func TestAMergedFindingNamesOnlyTheReadersItFails(t *testing.T) {
 	}
 }
 
+// The merged finding names its readers quoted where the sentence quotes a
+// name — the location, a %q — and bare where it does not: an edge list's
+// `src -> dst`.
+func TestAMergedFindingNamesItsReadersBareInAnEdgeList(t *testing.T) {
+	src := "schema s:\n  x: string\n\nprompt p:\n  {{input.x}}\n\nagent a:\n  model: \"m\"\nagent z1:\n  model: \"m\"\n  input: s\n  system: p\n\nagent z2:\n  model: \"m\"\n  input: s\n  system: p\n\nworkflow w:\n  entry: a\n  a -> z1\n  a -> z2\n  z1 -> done\n  z2 -> done\n"
+	cr := compileText(t, src)
+	if n := countByCode(cr, string(DiagInputFieldNeverMapped)); n != 1 {
+		t.Fatalf("%d C308, want one — the two readers it fails, merged\ndiagnostics: %+v", n, cr.Diagnostics)
+	}
+	d := diagFor(cr, DiagInputFieldNeverMapped)
+	if !strings.Contains(d.Message, "(node \"z1\", \"z2\")") {
+		t.Errorf("the location names the readers quoted: %s", d.Message)
+	}
+	if !strings.Contains(d.Message, "incoming: `a -> z1, z2`") {
+		t.Errorf("the edge list names the readers bare: %s", d.Message)
+	}
+	if strings.Contains(d.Message, `a -> "z1"`) {
+		t.Errorf("the edge list quotes a name: %s", d.Message)
+	}
+}
+
 // The amplification measured in #2779: the diagnostics a valid shared-prompt
 // bot draws are linear in its references, its readers changing the names a
 // finding attributes, not its count — and the whole answer stays small.
