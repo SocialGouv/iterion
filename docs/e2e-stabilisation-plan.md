@@ -47,12 +47,12 @@ Repeated from #1424 verbatim so the plan cannot drift from its own definition:
 | persistence | 9 | 9 | 0 | 0 | 0 | 0 |
 | sandbox | 9 | 6 | 1 | 0 | 0 | 2 |
 | webhooks | 9 | 9 | 0 | 0 | 0 | 0 |
-| observability | 8 | 6 | 0 | 0 | 2 | 0 |
+| observability | 8 | 8 | 0 | 0 | 0 | 0 |
 | plugins | 8 | 7 | 1 | 0 | 0 | 0 |
 | forge | 7 | 7 | 0 | 0 | 0 | 0 |
 | integrations | 6 | 2 | 0 | 0 | 0 | 4 |
 | desktop | 1 | 0 | 0 | 0 | 1 | 0 |
-| Total | 402 | 380 | 7 | 1 | 7 | 7 |
+| Total | 402 | 382 | 7 | 1 | 5 | 7 |
 
 The surface axis is the matrix's **Family** column — the one the gate reads and
 the "front door per family" section documents. The `ID` prefix is a naming
@@ -211,10 +211,18 @@ re-measuring it.
 
 Under their own epics (#1415, #1406, #1412):
 
-- **Observability** (6 / 8, 2 `unit-only`): `effective-model` and
-  `facade-routing` both assert through the durable record, which is how the
-  rest of the surface's deterministic rows are tested — so the reading is
-  whether the status understates the proof.
+- **Observability** (8 / 8 — both `unit-only` rows **promoted** 2026-10-30,
+  #2797): the cited tests drove the recorder with a hand-built
+  `DelegateInfo`, but the hooks ride `dispatchWithObservability` on every
+  agent dispatch and the delegate backend is a registry seam — a scripted
+  backend stamps the `EffectiveModel` / `SessionFingerprint` a CLI parses
+  off its stream, no credential anywhere.
+  `TestEffectiveModelRecordThroughEngine` /
+  `TestFacadeRoutingRecordThroughEngine` (pkg/runtime) run the real engine +
+  executor + store; muting `emitModelDrift`, `emitFacadeRouting` or
+  `recordServed` in `pkg/backend/model/hooks.go` reddens them through the
+  engine path. What a real facade credential would still buy is the facade's
+  own alias semantics — not iterion's code.
 - **Connectors**: `plugins.workspace-commands` (live, ledger `never`, with a
   deterministic half already cited beside it — does the live half add a
   guarantee?), `tools-mcp.tool-display` (a pure formatter), and the four
