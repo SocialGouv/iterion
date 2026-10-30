@@ -9,6 +9,7 @@ import type { IterDocument } from "@/api/types";
 import { ITER_LANGUAGE_ID } from "@/lib/iterLanguage";
 import { registerIterLanguage } from "@/lib/iterMonaco";
 import { applyParsedSource, readRefusalSentence } from "@/lib/salvage";
+import { fragmentParseWarning } from "@/lib/fragmentParse";
 import { useConfirm } from "@/hooks/useConfirm";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
@@ -372,6 +373,16 @@ export default function SourceView() {
     // replacement that fails or is refused loses nothing.
     const superseded = () => documentStore.getState()._intent !== submitted.intent;
     const closed = () => documentStore.getState().sourceBuffer?.session !== submitted.session;
+    // A 200 whose diagnostics are null/empty for a text that declares no
+    // workflow — an empty buffer, a fragment of a bot in several files, an
+    // emptied main — applies whole, and only the /api/validate that follows
+    // would say the document is no runnable program (C006, or the C001/C008
+    // of declarations whose referents are not here). Warn at apply time,
+    // from the parse response itself (#1650 item 3).
+    const warnFragment = (result: Parameters<typeof fragmentParseWarning>[0]) => {
+      const warning = fragmentParseWarning(result);
+      if (warning) addToast(warning.message, "warning", { persistent: true, key: `fragment-parse:${bufferKey}` });
+    };
     const settle = (applied: IterDocument | null) => {
       const held = documentStore.getState().sourceBuffer;
       if (held && held.text !== submitted.text) {
@@ -436,6 +447,7 @@ export default function SourceView() {
           return;
         }
         applyParsedSource(result, { setDocument, setSalvaged, readRefusal: documentStore.getState().readRefusal });
+        warnFragment(result);
         // What the STORE ends up holding, not what was handed to it: the
         // store normalises the document, so the object the next render
         // reads is not the one this answer carried.
@@ -492,6 +504,7 @@ export default function SourceView() {
       // canvas cannot do this — it never held the region the parser could
       // not read — which is why the refusal points here.
       applyParsedSource(result, { setDocument, setSalvaged, readRefusal: documentStore.getState().readRefusal });
+      warnFragment(result);
       // The provenance follows the apply, as it does on the per-file branch:
       // without it the buffer keeps naming the PRE-apply document for the
       // whole debounce, and a second Apply to the same file is refused as
@@ -527,6 +540,7 @@ export default function SourceView() {
     rendered,
     setSourceBuffer,
     setEditing,
+    addToast,
   ]);
 
   // Cancel takes the typed text, and there is no undo for it — the render
