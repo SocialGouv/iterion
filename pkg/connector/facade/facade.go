@@ -1,13 +1,15 @@
 // Package facade is the MCP offer over a connector package (ADR-098 §2,
-// #2758): the SAME operations a deterministic `tool … action:` node calls,
-// exposed to an agent as MCP tools, with the model choosing the operation.
+// #2758): a connector's operations exposed to an agent as MCP tools, with
+// the model choosing among what the operator curated.
 //
 // The facade is GENERATED FROM THE PACKAGE at run time — one source of
-// operations, or the node surface and the agent surface drift. A curated
-// subset (the overlay's `mcp: true` operations) is listed as tools by name;
-// the long tail is reached through the `search_operations` /
-// `call_operation` pair, so a 500-operation API does not bury an agent's
-// context.
+// operations, or the node surface and the agent surface drift. The curated
+// subset (the overlay's `mcp: true` operations) is listed as tools by name
+// AND is the whole callable set: the `search_operations` /
+// `call_operation` pair discovers the rest (ids and summaries, so a
+// 500-operation API does not bury an agent's context) without serving it,
+// because what a model may call is what an operator read and curate —
+// an operation outside that list is refused, whatever the run's trust.
 //
 // The package boundary is the security property: facade code NEVER touches a
 // credential. Every call goes out through the ExecFunc the server hands in,
