@@ -46,7 +46,7 @@ type Workflow struct {
 	MCP             *MCPConfig             // workflow-level MCP activation/filtering
 	DefaultBackend  string                 // workflow-level default backend (empty = not set)
 	ToolPolicy      []string               // workflow-level tool policy patterns (nil = open)
-	Capabilities    []string               // workflow-level default host capabilities (nil = inherit none)
+	Capabilities    []string               // workflow-level default host capabilities (nil = none; a declared `capabilities: []` round-trips as declared)
 	Skills          []string               // workflow-level default skill-library references (nil = none)
 	Interaction     *InteractionMode       // workflow-level default interaction mode (nil = not set)
 	// Contracts are the unit's `contract` declarations by name, each bound
@@ -241,7 +241,7 @@ type AgentNode struct {
 	SessionSlot      string
 	Tools            []string // tool capability names
 	ToolPolicy       []string // per-node tool policy patterns (nil = inherit workflow)
-	Capabilities     []string // host-side capabilities (e.g. board.create); nil = inherit workflow
+	Capabilities     []string // host-side capabilities (e.g. board.create); nil = inherit workflow, a declared `capabilities: []` = no grant (#1801)
 	Skills           []string // skill-library references; resolved names mirrored into .claude/skills/ (nil = inherit workflow)
 	ToolMaxSteps     int      // max tool-use iterations (0 = not set)
 	AwaitMode        AwaitMode
@@ -281,7 +281,7 @@ type JudgeNode struct {
 	SessionSlot      string
 	Tools            []string
 	ToolPolicy       []string // per-node tool policy patterns (nil = inherit workflow)
-	Capabilities     []string // host-side capabilities (e.g. board.read); nil = inherit workflow
+	Capabilities     []string // host-side capabilities (e.g. board.read); nil = inherit workflow, a declared `capabilities: []` = no grant (#1801)
 	Skills           []string // skill-library references; resolved names mirrored into .claude/skills/ (nil = inherit workflow)
 	ToolMaxSteps     int
 	AwaitMode        AwaitMode

@@ -360,7 +360,7 @@ agent reviewer:
   session: fresh
   tools: [bash, read_file, grep]   ## `tools: []` = declared empty; no line = undeclared
   tool_policy: [git.*, read_file]
-  capabilities: [board.read]
+  capabilities: [board.read]   ## `capabilities: []` = no grant (overrides the workflow's); no line = inherit
   skills: ["review-playbook"]
   tool_max_steps: 10
   max_tokens: 12000

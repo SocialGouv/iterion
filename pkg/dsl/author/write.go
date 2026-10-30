@@ -226,11 +226,12 @@ func strList(vals []string) *yaml.Node {
 	return flowSeq(items)
 }
 
-// declaredList is strList for the one list whose EMPTY form is a declared
-// value — an agent's or judge's `tools:` (toolcatalog.ToolsDeclared): nil is
-// absent and writes nothing, an empty slice is the author saying "this node
-// has no tools" and writes `[]`, as the .bot writes it back. Dropping the
-// line would turn a closed node into an open one.
+// declaredList is strList for the lists whose EMPTY form is a declared
+// value — an agent's or judge's `tools:` (toolcatalog.ToolsDeclared), and
+// the `capabilities:` of an agent, judge or workflow (#1801): nil is absent
+// and writes nothing, an empty slice is the author saying "none" and writes
+// `[]`, as the .bot writes it back. Dropping the line would turn a closed
+// node into an open one — or a declared no-grant back into an inheritance.
 func declaredList(vals []string) *yaml.Node {
 	if vals == nil {
 		return nil
@@ -1047,7 +1048,7 @@ func (w *writer) llm(kind, name string, d *ast.LLMDecl) *yaml.Node {
 	p.str("session_slot", d.SessionSlot)
 	p.set("tools", declaredList(d.Tools))
 	p.set("tool_policy", strList(d.ToolPolicy))
-	p.set("capabilities", strList(d.Capabilities))
+	p.set("capabilities", declaredList(d.Capabilities))
 	p.set("skills", strList(d.Skills))
 	p.int("tool_max_steps", d.ToolMaxSteps)
 	p.int("max_tokens", d.MaxTokens)
@@ -1431,7 +1432,7 @@ func (w *writer) workflow(wf *ast.WorkflowDecl) *yaml.Node {
 	p.set("ask", strList(wf.Ask))
 	p.set("deny", strList(wf.Deny))
 	p.set("tool_policy", strList(wf.ToolPolicy))
-	p.set("capabilities", strList(wf.Capabilities))
+	p.set("capabilities", declaredList(wf.Capabilities))
 	p.set("skills", strList(wf.Skills))
 	if wf.Interaction != nil {
 		p.set("interaction", str(wf.Interaction.String()))

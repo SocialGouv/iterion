@@ -76,7 +76,7 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 		d.ToolPolicy = p.parseToolList()
 	case TokenCapabilities:
 		p.expect(TokenColon)
-		d.Capabilities = p.parseToolList()
+		d.Capabilities = p.parseDeclaredCapabilityList()
 	case TokenSkills:
 		p.expect(TokenColon)
 		d.Skills = p.parseSkillList()

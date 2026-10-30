@@ -259,7 +259,7 @@ A node: `agent <name>:` at the top level or inside a `group`.
 | `session_slot` | ident | Named durable session slot; requires session: persist; must not be named like another node (C314) |
 | `tools` | tool list | Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks, C159 on a name it holds but cannot serve); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270) |
 | `tool_policy` | tool list | Tool-policy entries applied on top of tools |
-| `capabilities` | tool list | Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081) |
+| `capabilities` | tool list | Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081). `capabilities: []` declares NO capability — it overrides the workflow's list; no line at all inherits it |
 | `skills` | skill list | Skill-library skills mirrored into the run's .claude/skills |
 | `tool_max_steps` | int | Upper bound on tool-call rounds in one execution |
 | `max_tokens` | int | Output-token cap per call |
@@ -311,7 +311,7 @@ A node: `judge <name>:` at the top level or inside a `group`.
 | `session_slot` | ident | Named durable session slot; requires session: persist; must not be named like another node (C314) |
 | `tools` | tool list | Tools the node may call; `tools: []` declares NO tools, no line at all leaves it undeclared. Restricts claw (C135 on a name it lacks, C159 on a name it holds but cannot serve); on claude_code it becomes --disallowedTools over that CLI's native roster, on codex a sandbox mode; pi/kimi/grok never receive it (C270) |
 | `tool_policy` | tool list | Tool-policy entries applied on top of tools |
-| `capabilities` | tool list | Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081) |
+| `capabilities` | tool list | Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081). `capabilities: []` declares NO capability — it overrides the workflow's list; no line at all inherits it |
 | `skills` | skill list | Skill-library skills mirrored into the run's .claude/skills |
 | `tool_max_steps` | int | Upper bound on tool-call rounds in one execution |
 | `max_tokens` | int | Output-token cap per call |
@@ -563,7 +563,7 @@ A top-level declaration: `workflow <name>:`.
 | `ask` | string list | Permission rules that pause for approval |
 | `deny` | string list | Permission rules always blocked |
 | `tool_policy` | tool list | Run-wide tool-policy entries |
-| `capabilities` | tool list | Run-wide board capabilities |
+| `capabilities` | tool list | Run-wide board capabilities; a node's own `capabilities:` replaces them — `capabilities: []` on the node holds none |
 | `skills` | skill list | Run-wide skill-library skills |
 | `interaction` | one of `none`, `human`, `llm`, `llm_or_human`, `review`, `async`, `human_or_host` | Default interaction mode for the run's nodes that set none |
 

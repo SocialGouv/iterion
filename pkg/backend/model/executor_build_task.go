@@ -1309,6 +1309,8 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		resolvedModel = picked
 	}
 
+	// A nil list inherits the workflow's; a DECLARED empty one
+	// (`capabilities: []`, #1801) is an explicit no-grant and stays empty.
 	effectiveCaps := f.capabilities
 	if effectiveCaps == nil {
 		effectiveCaps = e.wfCapabilities

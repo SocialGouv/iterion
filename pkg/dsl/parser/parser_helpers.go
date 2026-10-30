@@ -111,9 +111,9 @@ func (p *parser) parseBracketList(parseElem func() (value string, ok bool)) []st
 }
 
 // parseBracketElems reads the elements of an inline list whose `[` is already
-// consumed, through the closing `]`. It is shared with parseDeclaredToolList,
-// the one list whose empty inline form is a value rather than an absence —
-// which also reaches it on a `[` that was NOT read, so the first token may
+// consumed, through the closing `]`. It is shared with parseDeclaredRefList,
+// the lists whose empty inline form is a value rather than an absence —
+// which also reach it on a `[` that was NOT read, so the first token may
 // already end the line; appendElem refuses it there rather than hand it to an
 // element reader.
 func (p *parser) parseBracketElems(parseElem func() (value string, ok bool)) []string {
@@ -122,7 +122,7 @@ func (p *parser) parseBracketElems(parseElem func() (value string, ok bool)) []s
 	// The property whose value the list is, for the resync below: the tokens
 	// just consumed are `<name> : [` on both paths into this loop, and the
 	// name's column is the indentation a sibling property shares. On
-	// parseDeclaredToolList's fall-through path the `[` was NOT read (the
+	// parseDeclaredRefList's fall-through path the `[` was NOT read (the
 	// offending token stands where it would be), the shape check fails, and
 	// the give-up keeps its old recovery — the one the line-end tests pin.
 	propTok, propOk := Token{}, false
@@ -857,20 +857,36 @@ func (p *parser) parseToolList() []string {
 	return p.parseBracketList(p.refListElem)
 }
 
-// parseDeclaredToolList parses an agent/judge `tools:` — the one list whose
-// EMPTY inline form is a value rather than an absence. `tools: []` is the
-// author saying "this node has no tools"; no `tools:` line at all leaves the
-// surface undeclared, which the CLI backends read as "no restriction". The
-// two are told apart by nilness from here down, through the ONE predicate
+// parseDeclaredToolList parses an agent/judge `tools:` — a list whose EMPTY
+// inline form is a value rather than an absence. `tools: []` is the author
+// saying "this node has no tools"; no `tools:` line at all leaves the surface
+// undeclared, which the CLI backends read as "no restriction". The two are
+// told apart by nilness from here down, through the ONE predicate
 // toolcatalog.ToolsDeclared.
-//
-// Every other bracket list keeps parseBracketList's nil: `capabilities: []`
-// in particular must stay indistinguishable from an absent one, because a nil
-// capability list is what makes a node inherit the workflow's.
 //
 // The `- item` form cannot express an empty list — an indented block with no
 // item is a parse error — so it never yields a declared-empty surface.
 func (p *parser) parseDeclaredToolList() []string {
+	return p.parseDeclaredRefList("tools", "tool")
+}
+
+// parseDeclaredCapabilityList parses an agent/judge/workflow `capabilities:`
+// — the SECOND list whose empty inline form is a value (#1801).
+// `capabilities: []` is the author saying "this node holds NO host
+// capability": an explicit empty grant that OVERRIDES the workflow's list,
+// where an absent `capabilities:` line inherits it (the executor resolves
+// the inheritance on nil). Before #1801 the empty form compiled to nil and
+// silently inherited — the author who emptied the list got the parent grant
+// instead of no grant.
+func (p *parser) parseDeclaredCapabilityList() []string {
+	return p.parseDeclaredRefList("capabilities", "capability")
+}
+
+// parseDeclaredRefList parses the lists whose empty inline form is a
+// declaration: `tools:` and `capabilities:`. Every OTHER bracket list keeps
+// parseBracketList's nil — `tool_policy: []` or `skills: []` stay
+// indistinguishable from an absent line.
+func (p *parser) parseDeclaredRefList(prop, elem string) []string {
 	if lineEnds(p.peek()) {
 		return p.parseDashList(p.refListElem)
 	}
@@ -897,8 +913,8 @@ func (p *parser) parseDeclaredToolList() []string {
 	out := p.parseBracketElems(p.refListElem)
 	if out == nil {
 		p.addErrorHint(DiagExpectedToken, at,
-			"no tool name was read from this list: every element was refused",
-			"Write `tools: []` for a node with no tools, or name the tools.")
+			"no "+elem+" name was read from this list: every element was refused",
+			"Write `"+prop+": []` to declare none, or name the "+prop+".")
 	}
 	return out
 }

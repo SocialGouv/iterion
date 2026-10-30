@@ -635,7 +635,7 @@ type LLMDecl struct {
 	SessionSlot       string           // optional durable slot shared by compatible persist nodes
 	Tools             []string         // tool capability names
 	ToolPolicy        []string         // per-node tool policy patterns (nil = inherit workflow)
-	Capabilities      []string         // host-side capabilities granted to the node (e.g. board.create)
+	Capabilities      []string         // host-side capabilities granted to the node (e.g. board.create); nil = inherit the workflow's, a declared `capabilities: []` = no grant (#1801)
 	Skills            []string         // skill-library skills referenced by the node (nil = inherit workflow default)
 	ToolMaxSteps      int              // max tool-use iterations (0 = not set)
 	MaxTokens         int              // max output tokens per LLM call (0 = inherit backend default)
@@ -1012,7 +1012,7 @@ type WorkflowDecl struct {
 	Entry          string            // entry node name
 	DefaultBackend string            // workflow-level default backend (empty = not set)
 	ToolPolicy     []string          // workflow-level tool policy patterns (nil = open)
-	Capabilities   []string          // workflow-level default host capabilities (nil = inherit none)
+	Capabilities   []string          // workflow-level default host capabilities (nil = none; a declared `capabilities: []` is kept so the written form round-trips)
 	Skills         []string          // workflow-level default skill-library references (nil = none)
 	MCP            *MCPConfigDecl    // workflow-level MCP activation/filtering
 	Budget         *BudgetBlock      // execution limits (optional)

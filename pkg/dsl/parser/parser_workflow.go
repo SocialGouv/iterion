@@ -162,7 +162,7 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 		case TokenCapabilities:
 			p.next() // consume "capabilities"
 			p.expect(TokenColon)
-			wd.Capabilities = p.parseToolList()
+			wd.Capabilities = p.parseDeclaredCapabilityList()
 			p.skipNewlines()
 
 		case TokenSkills:

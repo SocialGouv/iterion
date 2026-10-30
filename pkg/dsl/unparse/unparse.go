@@ -1249,7 +1249,9 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 			fmt.Fprintf(&w.b, "  tool_policy: [%s]\n", refList(&w.b, wf.ToolPolicy))
 		}
 
-		if len(wf.Capabilities) > 0 {
+		// Declared like a node's (see writeAgentFields): `capabilities: []`
+		// is written back so the workflow's explicit empty grant round-trips.
+		if wf.Capabilities != nil {
 			fmt.Fprintf(&w.b, "  capabilities: [%s]\n", refList(&w.b, wf.Capabilities))
 		}
 		if len(wf.Skills) > 0 {
@@ -1827,7 +1829,12 @@ func writeAgentFields(b *buf, f llmFields) {
 	if len(f.ToolPolicy) > 0 {
 		fmt.Fprintf(b, "  tool_policy: [%s]\n", refList(b, f.ToolPolicy))
 	}
-	if len(f.Capabilities) > 0 {
+	// A DECLARED empty list is written back as `capabilities: []`: it is the
+	// author saying "this node holds NO host capability", an explicit empty
+	// grant that overrides the workflow's list (#1801) — dropping the line
+	// would turn it back into an inheritance. Only an absent (nil) list
+	// writes nothing.
+	if f.Capabilities != nil {
 		fmt.Fprintf(b, "  capabilities: [%s]\n", refList(b, f.Capabilities))
 	}
 	if len(f.Skills) > 0 {

@@ -461,7 +461,7 @@ type jsonAgentDecl struct {
 	SessionSlot       string               `json:"session_slot,omitempty"`
 	Tools             *[]string            `json:"tools,omitempty"`
 	ToolPolicy        []string             `json:"tool_policy,omitempty"`
-	Capabilities      []string             `json:"capabilities,omitempty"`
+	Capabilities      *[]string            `json:"capabilities,omitempty"`
 	Skills            []string             `json:"skills,omitempty"`
 	ToolMaxSteps      int                  `json:"tool_max_steps,omitempty"`
 	MaxTokens         int                  `json:"max_tokens,omitempty"`
@@ -512,7 +512,7 @@ type jsonJudgeDecl struct {
 	SessionSlot       string               `json:"session_slot,omitempty"`
 	Tools             *[]string            `json:"tools,omitempty"`
 	ToolPolicy        []string             `json:"tool_policy,omitempty"`
-	Capabilities      []string             `json:"capabilities,omitempty"`
+	Capabilities      *[]string            `json:"capabilities,omitempty"`
 	Skills            []string             `json:"skills,omitempty"`
 	ToolMaxSteps      int                  `json:"tool_max_steps,omitempty"`
 	MaxTokens         int                  `json:"max_tokens,omitempty"`
@@ -881,7 +881,7 @@ type jsonWorkflowDecl struct {
 	Contract       string                `json:"contract,omitempty"`
 	DefaultBackend string                `json:"default_backend,omitempty"`
 	ToolPolicy     []string              `json:"tool_policy,omitempty"`
-	Capabilities   []string              `json:"capabilities,omitempty"`
+	Capabilities   *[]string             `json:"capabilities,omitempty"`
 	Skills         []string              `json:"skills,omitempty"`
 	MCP            *jsonMCPConfigDecl    `json:"mcp,omitempty"`
 	Budget         *jsonBudgetBlock      `json:"budget,omitempty"`
@@ -1543,7 +1543,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		SessionSlot:       a.SessionSlot,
 		Tools:             declaredListToJSON(a.Tools),
 		ToolPolicy:        a.ToolPolicy,
-		Capabilities:      a.Capabilities,
+		Capabilities:      declaredListToJSON(a.Capabilities),
 		Skills:            a.Skills,
 		ToolMaxSteps:      a.ToolMaxSteps,
 		MaxTokens:         a.MaxTokens,
@@ -1592,7 +1592,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		SessionSlot:       j.SessionSlot,
 		Tools:             declaredListToJSON(j.Tools),
 		ToolPolicy:        j.ToolPolicy,
-		Capabilities:      j.Capabilities,
+		Capabilities:      declaredListToJSON(j.Capabilities),
 		Skills:            j.Skills,
 		ToolMaxSteps:      j.ToolMaxSteps,
 		MaxTokens:         j.MaxTokens,
@@ -1652,7 +1652,7 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 		Contract:            w.Contract,
 		DefaultBackend:      w.DefaultBackend,
 		ToolPolicy:          w.ToolPolicy,
-		Capabilities:        w.Capabilities,
+		Capabilities:        declaredListToJSON(w.Capabilities),
 		Skills:              w.Skills,
 		MCP:                 mcpConfigToJSON(w.MCP),
 		Compaction:          compactionToJSON(w.Compaction),
@@ -2373,7 +2373,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 			SessionSlot:       ja.SessionSlot,
 			Tools:             declaredListFromJSON(ja.Tools),
 			ToolPolicy:        ja.ToolPolicy,
-			Capabilities:      ja.Capabilities,
+			Capabilities:      declaredListFromJSON(ja.Capabilities),
 			Skills:            ja.Skills,
 			ToolMaxSteps:      ja.ToolMaxSteps,
 			MaxTokens:         ja.MaxTokens,
@@ -2436,7 +2436,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 			SessionSlot:       jj.SessionSlot,
 			Tools:             declaredListFromJSON(jj.Tools),
 			ToolPolicy:        jj.ToolPolicy,
-			Capabilities:      jj.Capabilities,
+			Capabilities:      declaredListFromJSON(jj.Capabilities),
 			Skills:            jj.Skills,
 			ToolMaxSteps:      jj.ToolMaxSteps,
 			MaxTokens:         jj.MaxTokens,
@@ -2513,7 +2513,7 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 		Contract:            jw.Contract,
 		DefaultBackend:      jw.DefaultBackend,
 		ToolPolicy:          jw.ToolPolicy,
-		Capabilities:        jw.Capabilities,
+		Capabilities:        declaredListFromJSON(jw.Capabilities),
 		Skills:              jw.Skills,
 		MCP:                 mcpConfigFromJSON(jw.MCP),
 		Compaction:          compactionFromJSON(jw.Compaction),
@@ -2635,8 +2635,10 @@ func edgeFromJSON(je *jsonEdge) (*Edge, error) {
 // — so a list that must tell "declared, and empty" from "not declared" crosses
 // as a POINTER: nil is absent, a pointer to an empty slice is `[]`.
 //
-// The one field with that semantics today is an agent/judge `tools:`
-// (toolcatalog.ToolsDeclared). The rule lists deliberately do not have it.
+// The fields with that semantics today are an agent/judge `tools:`
+// (toolcatalog.ToolsDeclared) and the `capabilities:` of an agent, judge and
+// workflow — a declared `capabilities: []` is no grant, not an inheritance
+// (#1801). The rule lists deliberately do not have it.
 func declaredListToJSON(v []string) *[]string {
 	if v == nil {
 		return nil

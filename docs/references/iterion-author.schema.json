@@ -942,7 +942,7 @@
           "type": "string"
         },
         "capabilities": {
-          "description": "Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081)",
+          "description": "Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081). `capabilities: []` declares NO capability — it overrides the workflow's list; no line at all inherits it",
           "items": {
             "type": "string"
           },
@@ -1487,7 +1487,7 @@
           "type": "string"
         },
         "capabilities": {
-          "description": "Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081)",
+          "description": "Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081). `capabilities: []` declares NO capability — it overrides the workflow's list; no line at all inherits it",
           "items": {
             "type": "string"
           },
@@ -2579,7 +2579,7 @@
           "description": "Run caps, each overridable by the matching run flag"
         },
         "capabilities": {
-          "description": "Run-wide board capabilities",
+          "description": "Run-wide board capabilities; a node's own `capabilities:` replaces them — `capabilities: []` on the node holds none",
           "items": {
             "type": "string"
           },
@@ -3648,7 +3648,7 @@
           "type": "string"
         },
         "capabilities": {
-          "description": "Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081)",
+          "description": "Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081). `capabilities: []` declares NO capability — it overrides the workflow's list; no line at all inherits it",
           "items": {
             "type": "string"
           },
@@ -4193,7 +4193,7 @@
           "type": "string"
         },
         "capabilities": {
-          "description": "Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081)",
+          "description": "Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081). `capabilities: []` declares NO capability — it overrides the workflow's list; no line at all inherits it",
           "items": {
             "type": "string"
           },
@@ -5285,7 +5285,7 @@
           "description": "Run caps, each overridable by the matching run flag"
         },
         "capabilities": {
-          "description": "Run-wide board capabilities",
+          "description": "Run-wide board capabilities; a node's own `capabilities:` replaces them — `capabilities: []` on the node holds none",
           "items": {
             "type": "string"
           },

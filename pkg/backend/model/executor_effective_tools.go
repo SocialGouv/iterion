@@ -66,6 +66,8 @@ func (e *ClawExecutor) EffectiveToolNamesOnRoutes(node ir.Node, mayEscalateToUlt
 	if err != nil {
 		return nil
 	}
+	// The same nil seam as buildTask: a declared empty `capabilities: []`
+	// (#1801) is no grant, not an inheritance.
 	caps := f.capabilities
 	if caps == nil {
 		caps = e.wfCapabilities
