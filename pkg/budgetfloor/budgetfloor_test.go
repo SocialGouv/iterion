@@ -107,6 +107,66 @@ func TestLookupsTrimBothSidesOfAnIdentity(t *testing.T) {
 	}
 }
 
+// The case is not an identity either: a forge resolves case-variant slugs to
+// ONE repository, so a quota stored in one spelling must cap a launch that
+// asks in another — a byte-exact match answers "unlimited" to the very
+// repository the ceiling was written for. Validate refuses a policy holding
+// two identifiers that differ only by case, so the fold never picks a
+// ceiling by slice order.
+func TestLookupsFoldTheCaseOfAnIdentity(t *testing.T) {
+	p := Policy{
+		Reservations: []Reservation{{BotID: "Review-PR", Reserve: Reserve{FiveHourPercent: 20, ConcurrentRuns: 2, MonthlyUSD: 30}}},
+		RepoQuotas:   []RepoQuota{{Repo: "O/Hungry", MonthlyUSD: 10}},
+	}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	if _, ok := p.Reserved("review-pr"); !ok {
+		t.Fatal("the reservation does not follow its bot across the case")
+	}
+	if got := p.OtherReserved("review-pr", WindowFiveHour); got != 0 {
+		t.Errorf("OtherReserved for the folded holder = %d, want 0 — its own band is not another workload's", got)
+	}
+	if usd, _ := p.RepoCap("o/hungry"); usd != 10 {
+		t.Errorf("RepoCap(\"o/hungry\") = $%.2f, want the $10 quota stored as \"O/Hungry\"", usd)
+	}
+	if usd, _ := p.RepoCap("O/HUNGRY"); usd != 10 {
+		t.Errorf("RepoCap(\"O/HUNGRY\") = $%.2f, want the same ceiling", usd)
+	}
+
+	// A share naming its bot in another case resolves THROUGH the fold, the
+	// same way the quota match does.
+	share := Policy{
+		Reservations: []Reservation{{BotID: "review-pr", Reserve: Reserve{MonthlyUSD: 30}}},
+		RepoQuotas:   []RepoQuota{{Repo: "o/r", ReserveSharePercent: 50, ShareOfBot: "REVIEW-PR"}},
+	}
+	if err := share.Validate(); err != nil {
+		t.Fatalf("a share naming its bot by another case: %v", err)
+	}
+	if usd, _ := share.RepoCap("o/r"); usd != 15 {
+		t.Errorf("RepoCap through a case-variant share = $%.2f, want half the $30 reserve", usd)
+	}
+
+	for _, tc := range []struct {
+		name string
+		p    Policy
+	}{
+		{"two reservations differing only by case", Policy{Reservations: []Reservation{
+			{BotID: "review-pr", Reserve: Reserve{FiveHourPercent: 10}},
+			{BotID: "Review-PR", Reserve: Reserve{WeekPercent: 10}},
+		}}},
+		{"two quotas differing only by case", Policy{RepoQuotas: []RepoQuota{
+			{Repo: "o/r", MonthlyUSD: 10}, {Repo: "O/R", RouteSpendsPerMonth: 5},
+		}}},
+	} {
+		t.Run("refuses "+tc.name, func(t *testing.T) {
+			if err := tc.p.Validate(); err == nil {
+				t.Fatal("accepted two identifiers the fold reads as one")
+			}
+		})
+	}
+}
+
 // The zero value must reserve NOTHING: a deployment that never configured a
 // policy cannot start refusing work because the feature shipped.
 func TestZeroPolicyReservesNothing(t *testing.T) {

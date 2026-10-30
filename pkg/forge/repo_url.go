@@ -16,22 +16,45 @@ func WebURLFor(baseURL, repoFullName string) string {
 }
 
 // CanonicalRepoSlug canonicalises a repo path to the slug the forge meters
-// by: the trailing ".git" and the stray slashes a clone URL can carry
-// ("acme/widgets.git/", "acme/widgets/", "/acme/widgets.git") all fold back
-// to "acme/widgets", the same key whichever spelling arrived. Every
-// derivation that turns a clone-URL path into a quota/meter key goes through
-// it — a derivation keeping its own trim is how one repository comes to be
-// charged under two keys, each reading its quota as half-used.
+// by: the trailing ".git" — any case, a copy-pasted URL recases the suffix
+// as readily as the slug — and the stray slashes a clone URL can carry
+// ("acme/widgets.git/", "acme/widgets.git//", "/acme/widgets.git",
+// "acme/widgets.git.git") all fold back to "acme/widgets", the same key
+// whichever spelling arrived. The fold runs to a FIXED point: a single pass
+// turns "acme/widgets.git/" into "acme/widgets.git" and stops there — a key
+// no quota aims at, which is exactly the split this function exists to
+// prevent. The slug's own case survives the fold: "Acme/Widgets" is how the
+// forge writes the repository (a webhook payload carries it byte-for-byte),
+// so the derivation must not re-case what it stamps; the case is folded
+// where the identity is READ instead (budgetfloor's quota match, credusage's
+// repository read, forge.SameRepo) — a forge resolves case-variant slugs to
+// one repository, so a spelling is never a second repo.
+//
+// Every derivation that turns a clone-URL path into a quota/meter key goes
+// through it — a derivation keeping its own trim is how one repository comes
+// to be charged under two keys, each reading its quota as half-used.
 func CanonicalRepoSlug(path string) string {
-	return strings.Trim(strings.TrimSuffix(strings.TrimSuffix(path, "/"), ".git"), "/")
+	p := strings.Trim(path, "/")
+	for {
+		prev := p
+		if n := len(p); n >= 4 && strings.EqualFold(p[n-4:], ".git") {
+			p = p[:n-4]
+		}
+		if trimmed := strings.Trim(p, "/"); trimmed != p {
+			p = trimmed
+		}
+		if p == prev {
+			return p
+		}
+	}
 }
 
 // ProjectPathFromCloneURL canonicalises a repo clone URL back to the forge
 // slug ("owner/repo", GitLab subgroups included) — the inverse of
 // CloneURLFor, and the identity pkg/credusage meters a run's spend against
-// (store.Run.ProjectPath). The case is preserved: the meter keys on the slug
-// byte-for-byte as the forge writes it, and GitHub's "Owner/Repo" is not
-// "owner/repo".
+// (store.Run.ProjectPath). The case is preserved here: the slug is stamped
+// byte-for-byte as the forge writes it, and the case folds where the
+// identity is read (CanonicalRepoSlug's doc names the reads).
 //
 // The host is dropped, not kept: the slug is the meter's whole key and is
 // not unique across forge hosts (#950's finding 5), so two deployments'

@@ -662,10 +662,13 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			span.SetStatus(codes.Error, "repo host mismatch")
 			return
 		}
-		// The same canonicalisation whatever the URL's spelling: a
-		// "…/widgets.git/" tail that kept its own trim would split the quota
-		// key and launch the over-quota repository under a key no ceiling
-		// aims at.
+		// The same canonicalisation whatever the URL's spelling: a "…/widgets.git/"
+		// tail that kept its own trim would split the quota key and launch the
+		// over-quota repository under a key no ceiling aims at. The trim runs
+		// to a fixed point and folds the suffix's case; the slug's own case is
+		// folded where the quota and the usage listing READ it, not here — a
+		// forge resolves case-variant slugs to one repository (see
+		// CanonicalRepoSlug).
 		repoProjectPath = forge.CanonicalRepoSlug(strings.TrimPrefix(req.RepoURL, base+"/"))
 		// The repository half of the admission, taken at the FIRST line where
 		// this surface knows which repository it targets. `repoProjectPath` is

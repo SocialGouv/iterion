@@ -57,7 +57,10 @@ func TestProjectPathFromCloneURL_RoundTripsCloneURLFor(t *testing.T) {
 // A ".git/" tail is the spelling a copy-pasted URL carries as often as a
 // bare ".git": a derivation that canonicalised one form and not the other
 // split the quota key and let an over-ceiling repository launch under a key
-// no quota aims at.
+// no quota aims at. The fold runs to a fixed point ("…git.git",
+// "…git.git//") and folds the suffix's case — the suffix is URL furniture,
+// not the slug's own spelling — while the slug's case is preserved (the
+// reads fold it: budgetfloor's quota match, credusage's repository read).
 func TestCanonicalRepoSlug(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"acme/widgets", "acme/widgets"},
@@ -66,13 +69,23 @@ func TestCanonicalRepoSlug(t *testing.T) {
 		{"acme/widgets/", "acme/widgets"},
 		{"/acme/widgets.git", "acme/widgets"},
 		{"group/sub/repo.git/", "group/sub/repo"},
-		{"Acme/Widgets.GIT/", "Acme/Widgets.GIT"}, // case-sensitive suffix: only ".git" folds
+		{"Acme/Widgets.GIT/", "Acme/Widgets"}, // the suffix is furniture: any case folds
+		{"acme/widgets.git.git", "acme/widgets"},
+		{"acme/widgets.git.git//", "acme/widgets"},
+		{"acme/.git", "acme"},
 		{"", ""},
 		{"/", ""},
+		{".git", ""},
 	}
 	for _, c := range cases {
 		if got := CanonicalRepoSlug(c.in); got != c.want {
 			t.Errorf("CanonicalRepoSlug(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	// Idempotent on its own output, whatever the spelling that produced it.
+	for _, s := range []string{"acme/widgets", "Acme/Widgets", "group/sub/repo"} {
+		if got := CanonicalRepoSlug(CanonicalRepoSlug(s)); got != CanonicalRepoSlug(s) {
+			t.Errorf("CanonicalRepoSlug(%q) = %q, not a fixed point", s, got)
 		}
 	}
 }

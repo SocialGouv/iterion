@@ -1779,7 +1779,9 @@ func boardCardRepoIdentity(integration *webhooks.Config, lc boardLaunchContext) 
 			// The same canonicalisation whatever the URL's spelling: a
 			// "…/widgets.git/" tail that kept its own trim would split the
 			// quota key and launch the over-quota repository under a key
-			// no ceiling aims at.
+			// no ceiling aims at. Fixed point + any-case suffix, and the
+			// slug's own case folds at the reads (see CanonicalRepoSlug) —
+			// the same contract the REST lane stamps under.
 			return forge.CanonicalRepoSlug(strings.TrimPrefix(lc.RepoURL, base+"/"))
 		}
 		return forge.ProjectPathFromCloneURL(lc.RepoURL)

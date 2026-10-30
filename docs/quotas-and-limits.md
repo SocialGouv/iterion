@@ -440,6 +440,14 @@ numbers:
 - **A repository's spend spans tenants.** Two teams can serve one repo with
   their own credentials, so the admin view sums both; the team view returns
   only that team's share.
+- **The slug's case does not split a bill.** A forge resolves case-variant
+  slugs to one repository — GitHub serves `O/Hungry` and `o/hungry`
+  identically — so the reads fold the case instead of keying on a spelling:
+  the per-repo quota match, and every `--repo` / `?repo=` listing, answer for
+  every spelling a run was stamped under. A URL's `.git` suffix — any case,
+  doubled, trailing slashes — folds to a fixed point at the derivation
+  (`forge.CanonicalRepoSlug`). The rows keep the spelling their run arrived
+  with; the reads count them together.
 - **A run whose repository cannot be read meters without one.** Same rule as
   the route attribution: charged to the credential, attributed to nobody —
   never guessed.

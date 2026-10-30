@@ -623,6 +623,42 @@ func TestHandleLaunchRun_RepoQuotaBindsTheDirectLaunch(t *testing.T) {
 		}
 	})
 
+	// The spelling is not an identity, and ".git/" was only one neighbour of
+	// it. A forge resolves every spelling below to the SAME repository (the
+	// ".git" suffix is URL furniture a copy-paste can recase or double, and
+	// the slug itself resolves case-insensitively), so each must read the
+	// honest key's quota and be refused by it. A spelling the derivation or
+	// the reads do not fold launches the over-ceiling repository under a key
+	// no ceiling aims at.
+	t.Run("every spelling neighbour of an over-quota repository is refused", func(t *testing.T) {
+		for _, repo := range []string{"o/hungry.GIT", "O/Hungry", "o/hungry.git//", "o/hungry.git.git"} {
+			s, ctx := newSrv(t, budgetfloor.RepoQuota{Repo: "o/hungry", MonthlyUSD: 10})
+			seedRepoUsage(t, s.credUsage, "o/hungry", 12.0, 3)
+			rec := launch(t, s, ctx, repo)
+			if rec.Code != http.StatusPaymentRequired {
+				t.Fatalf("repo_url %q: status = %d, want 402 — the spelling escaped the ceiling: %s", repo, rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), denyRepoQuota) {
+				t.Errorf("repo_url %q: body = %s, want it to name %s", repo, rec.Body.String(), denyRepoQuota)
+			}
+		}
+	})
+
+	// The honest spelling changes no key: a quota written the way the forge
+	// spells the slug is read by that very spelling — the fold never bends a
+	// caller's legitimate casing away from its own ceiling.
+	t.Run("the forge's own casing reads its own quota", func(t *testing.T) {
+		s, ctx := newSrv(t, budgetfloor.RepoQuota{Repo: "O/Hungry", MonthlyUSD: 10})
+		seedRepoUsage(t, s.credUsage, "O/Hungry", 12.0, 3)
+		rec := launch(t, s, ctx, "O/Hungry")
+		if rec.Code != http.StatusPaymentRequired {
+			t.Fatalf("status = %d, want 402: %s", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), denyRepoQuota) {
+			t.Errorf("body = %s, want it to name %s", rec.Body.String(), denyRepoQuota)
+		}
+	})
+
 	t.Run("a super-admin bypasses it here as everywhere else", func(t *testing.T) {
 		// gateLaunch returns before the repo half for a super-admin, so the
 		// webhook, board, trigger, scheduled and resume lanes all let them

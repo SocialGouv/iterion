@@ -3,6 +3,7 @@ package credusage
 import (
 	"context"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -95,12 +96,16 @@ func (c *MemoryCounter) ListByTier(_ context.Context, when time.Time, tier Tier)
 
 // ListByRepo keeps the per-repository rows apart — it is the one listing
 // scoped to a single repo, so summing them would collapse the very dimension
-// asked for.
+// asked for. The repo is matched case-insensitively: a forge resolves
+// case-variant slugs to ONE repository, and the per-repo quota reads through
+// this listing, so a spelling that read as an empty month would uncap the
+// repository its ceiling was written for. The rows themselves keep whatever
+// spelling their runs were stamped under.
 func (c *MemoryCounter) ListByRepo(_ context.Context, when time.Time, repoID string) ([]MonthlyUsage, error) {
 	if repoID == "" {
 		return nil, nil
 	}
-	rows := c.list(when, func(r *memRow) bool { return r.key.RepoID == repoID })
+	rows := c.list(when, func(r *memRow) bool { return strings.EqualFold(r.key.RepoID, repoID) })
 	sortUsage(rows)
 	return rows, nil
 }

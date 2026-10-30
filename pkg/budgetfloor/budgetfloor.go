@@ -273,12 +273,14 @@ func (p Policy) Validate() error {
 		if err := r.Validate(); err != nil {
 			return err
 		}
-		bot := strings.TrimSpace(r.BotID)
+		bot := foldID(r.BotID)
 		if seen[bot] {
 			// Two reservations for one bot would compose against each other
 			// through OtherReserved below — the workload would be refused on
-			// its own band.
-			return fmt.Errorf("budgetfloor: bot %q has more than one reservation", bot)
+			// its own band. Case variants collide on the same fold the
+			// lookups match through: letting both through would make
+			// Reserved answer whichever came first in the slice.
+			return fmt.Errorf("budgetfloor: bot %q has more than one reservation", strings.TrimSpace(r.BotID))
 		}
 		seen[bot] = true
 		byBot[bot] = r
@@ -301,12 +303,15 @@ func (p Policy) Validate() error {
 			return err
 		}
 		repo := strings.TrimSpace(q.Repo)
-		if repos[repo] {
+		if repos[foldID(repo)] {
+			// Case variants are one repository to the forge and one quota to
+			// RepoCap's fold — two stored here would answer whichever the
+			// slice listed first.
 			return fmt.Errorf("budgetfloor: repository %q has more than one quota", repo)
 		}
-		repos[repo] = true
+		repos[foldID(repo)] = true
 		if q.ReserveSharePercent > 0 {
-			res, ok := byBot[strings.TrimSpace(q.ShareOfBot)]
+			res, ok := byBot[foldID(q.ShareOfBot)]
 			if !ok {
 				return fmt.Errorf("budgetfloor: repository %q takes a share of bot %q, which has no reservation", repo, q.ShareOfBot)
 			}
@@ -327,14 +332,29 @@ func (p Policy) Validate() error {
 }
 
 // sameID compares two identifiers the way every lookup below must: on the
-// TRIMMED value of BOTH sides.
+// TRIMMED value of BOTH sides, CASE-INSENSITIVELY.
 //
 // Trimming only the query is the trap, and it fails in the dangerous
 // direction: a reservation stored as " review-pr " (an id typed into the raw
 // admin API — the CLI trims) would never match its holder, so Reserved says
 // "unreserved" while OtherReserved counts that band as somebody ELSE's, and
 // the reservation refuses the exact workload it protects.
-func sameID(stored, query string) bool { return strings.TrimSpace(stored) == query }
+//
+// The fold is the same trap one spelling over. Bot ids and repo slugs are
+// forge vocabulary, and a forge resolves case-variant slugs to ONE
+// repository (forge.SameRepo compares case-insensitively for the same
+// reason): a quota stored as "O/Hungry" and a launch asking "o/hungry" are
+// the same ceiling, and a byte-exact match answers "unlimited" to the very
+// repository the cap was written for. A ceiling that matches less than the
+// forge says is the same repository fails open, so the comparison folds.
+// Validate refuses a policy holding two identifiers that differ only by
+// case, so the fold never has to pick between two ceilings by slice order.
+func sameID(stored, query string) bool { return strings.EqualFold(strings.TrimSpace(stored), query) }
+
+// foldID is the map key two identifiers of one kind collide on in Validate —
+// the folded form sameID matches on. The identifiers are forge slugs and
+// config bot ids (ASCII), where a lowercased key and strings.EqualFold agree.
+func foldID(id string) string { return strings.ToLower(strings.TrimSpace(id)) }
 
 // Reserved returns the reservation protecting a bot, if any.
 func (p Policy) Reserved(botID string) (Reservation, bool) {
