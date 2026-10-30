@@ -100,6 +100,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/benchmark/asymptote` | computes per-iteration quality scores from persisted runs and compares groups of runs (e.g. | — |
 | `pkg/benchmark/discovery` | measures what a run spent on ORIENTATION — the reads, searches and listings an agent performs to find its way around a repository — as opposed to… | — |
 | `pkg/benchmark/quality` | the subjective quality + value-for-money assessment layer for iterion's live e2e tests. | — |
+| `pkg/boardcaps` | the vocabulary of the native kanban board's capability names: the ONE list the DSL compiler validates a `capabilities:` entry against and the board… | — |
 | `pkg/botdeps` | manages project-pinned shared bot dependencies. | — |
 | `pkg/botimport` | converts Claude-Code workflow scripts (.claude/workflows/*.js — the `export const meta` + `agent()` / `phase()` / `log()` shape) into DRAFT .bot… | — |
 | `pkg/botinstall` | imports a bot bundle from a git URL or local path into a workspace so `iterion bots list`, the dispatcher, and the studio discover it. | — |

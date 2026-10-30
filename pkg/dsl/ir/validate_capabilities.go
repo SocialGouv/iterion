@@ -3,8 +3,8 @@ package ir
 import (
 	"regexp"
 
+	"github.com/SocialGouv/iterion/pkg/boardcaps"
 	"github.com/SocialGouv/iterion/pkg/connection"
-	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 	"github.com/SocialGouv/iterion/pkg/runops"
 )
 
@@ -34,16 +34,16 @@ const (
 // Capability naming convention: lowercase `domain` or `domain.action`,
 // e.g. `board.create`, `board.read`. Enforced by C081.
 var KnownCapabilities = map[string]bool{
-	boardops.CapBoardRead:    true,
-	boardops.CapBoardCreate:  true,
-	boardops.CapBoardMove:    true,
-	boardops.CapBoardAssign:  true,
-	boardops.CapBoardLabel:   true,
-	boardops.CapBoardClose:   true,
-	boardops.CapBoardComment: true,
-	CapWatchSubscribe:        true,
-	CapWatchUnsubscribe:      true,
-	runops.CapRunsRead:       true,
+	boardcaps.BoardRead:    true,
+	boardcaps.BoardCreate:  true,
+	boardcaps.BoardMove:    true,
+	boardcaps.BoardAssign:  true,
+	boardcaps.BoardLabel:   true,
+	boardcaps.BoardClose:   true,
+	boardcaps.BoardComment: true,
+	CapWatchSubscribe:      true,
+	CapWatchUnsubscribe:    true,
+	runops.CapRunsRead:     true,
 	// The connector MCP facade (ADR-098 §2, #2758): an agent node declaring
 	// `capabilities: [connectors]` is wired to the host's facade endpoint,
 	// through which it reaches the tenant's `agent`-capable connections.

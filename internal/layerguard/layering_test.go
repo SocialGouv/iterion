@@ -93,7 +93,10 @@ type layerRule struct {
 //
 // Verdict faced on 2026-10-29 at e59110ed5, over the 213 packages and 974
 // module-internal import edges the union named there: 12 violating pairs,
-// every one of them accepted into allowExceptions below with its reason.
+// every one of them accepted into allowExceptions below with its reason;
+// 10 on 2026-10-30, iterion#2857 having lifted the ir's two heavyweight
+// vocabulary imports (the auto-memory cell read straight off the registry,
+// the board capability names moved to the pkg/boardcaps leaf).
 // Those counts are that reading's provenance — expectedAllowCount and
 // expectedRuleHitCount are the two numbers this file keeps true. The first
 // reading of this file ("verified 2026-10-23 over 903 internal import
@@ -124,15 +127,20 @@ var allowExceptions = map[string]string{
 	// The IR validates a .bot against what the chosen backend can do, so it
 	// reads the capability vocabulary where it is defined instead of keeping
 	// a second copy of it (AGENTS.md: never a second list). Each package
-	// below is vocabulary — constants, Parse, SupportsBackend — never an
-	// executor, and the five leaves carry 1 to 3 module packages each.
-	"pkg/dsl/ir -> pkg/backend/backendcaps":        "capability-aware validation: validate_provider/command/fallbacks/async_backend/sandbox_image_presence refuse a .bot asking a backend for what the registry says it cannot do (leaf: 1 module package)",
-	"pkg/dsl/ir -> pkg/backend/toolcatalog":        "validate_tools/fallbacks/permission_rules resolve tool names against THE catalogue, never a second list (leaf: 2 module packages)",
-	"pkg/dsl/ir -> pkg/backend/permission":         "validate_permission_rules parses a rule with the permission grammar that enforces it (leaf: 3 module packages)",
-	"pkg/dsl/ir -> pkg/backend/modelroute":         "validate_gateway/nodes decide gateway shape with modelroute.Parse, the one reader of a model reference (leaf: 1 module package)",
-	"pkg/dsl/ir -> pkg/backend/ambient":            "validate_nodes names the backends that honour an ambient-context policy from ambient.SupportOf, the measurement's source (leaf: 1 module package)",
-	"pkg/dsl/ir -> pkg/backend/automemory":         "validate_nodes asks automemory.SupportsBackend which backends serve durable memory — vocabulary, but the package drags pkg/store and pkg/knowledge (10 module packages): filed as iterion#2857",
-	"pkg/dsl/ir -> pkg/dispatcher/native/boardops": "validate_capabilities names the board capabilities from boardops.CapBoard* — seven constants that drag the native dispatcher, pkg/store, pkg/forge and pkg/mail (43 module packages): filed as iterion#2857",
+	// below is vocabulary — constants, Parse, Offers — never an executor,
+	// and the five leaves carry 1 to 3 module packages each. The two that
+	// once broke that shape — automemory.SupportsBackend (10 packages) and
+	// the seven boardops.CapBoard* constants (43) — were resolved by
+	// iterion#2857: the IR reads the registry's auto-memory cell directly
+	// (the one cell SupportsBackend reads, pinned by
+	// model.TestBackendCapabilityConsumersConform), and the board
+	// capability names moved to pkg/boardcaps, a leaf outside every banned
+	// family, which boardops re-exports.
+	"pkg/dsl/ir -> pkg/backend/backendcaps": "capability-aware validation: validate_provider/command/fallbacks/async_backend/sandbox_image_presence refuse a .bot asking a backend for what the registry says it cannot do — validate_nodes also reads its auto-memory cell here (leaf: 1 module package)",
+	"pkg/dsl/ir -> pkg/backend/toolcatalog": "validate_tools/fallbacks/permission_rules resolve tool names against THE catalogue, never a second list (leaf: 2 module packages)",
+	"pkg/dsl/ir -> pkg/backend/permission":  "validate_permission_rules parses a rule with the permission grammar that enforces it (leaf: 3 module packages)",
+	"pkg/dsl/ir -> pkg/backend/modelroute":  "validate_gateway/nodes decide gateway shape with modelroute.Parse, the one reader of a model reference (leaf: 1 module package)",
+	"pkg/dsl/ir -> pkg/backend/ambient":     "validate_nodes names the backends that honour an ambient-context policy from ambient.SupportOf, the measurement's source (leaf: 1 module package)",
 
 	// pkg/cli composes and starts an in-process server (server.New in
 	// studio.go and workspace_studio.go) and reads its response types; its
@@ -151,15 +159,15 @@ var allowExceptions = map[string]string{
 	"pkg/backend/delegate -> pkg/dispatcher/native/boardops": "the MCP board bridge serves the same operations through the same boardops entry as the claw tools",
 }
 
-const expectedAllowCount = 12
+const expectedAllowCount = 10
 
 // expectedRuleHitCount pins how many times a RULE fires over the tree,
-// exceptions ignored: 19 hits for the 12 accepted pairs, because several
+// exceptions ignored: 15 hits for the 10 accepted pairs, because several
 // rules name the same crossing. The pair count cannot see a rule born MUTE
 // — a rule whose only targets are pairs allowExceptions already holds is
 // green the day it lands, with no edit to this file and nothing in review
 // to read. This number moves instead.
-const expectedRuleHitCount = 19
+const expectedRuleHitCount = 15
 
 // underPrefix reports whether a module-relative package path IS prefix or
 // lives below it. THE comparison of this guard: both arguments come from
@@ -1019,30 +1027,37 @@ func TestTheGuardJudgesDirectImportsOnly(t *testing.T) {
 // sentence is spelled from it, so accepting a second import is a single
 // edit a reviewer sees. Two copies would let the page keep saying "only"
 // about one of them with the test green.
-var theLeafsAcceptedDispatcherImports = []string{"pkg/dispatcher/native/boardops"}
+//
+// EMPTY since iterion#2857: the board capability names the IR validates
+// against moved to pkg/boardcaps, a leaf outside every banned family, which
+// pkg/dispatcher/native/boardops re-exports — the implementation now reads
+// the vocabulary where the compiler reads it.
+var theLeafsAcceptedDispatcherImports = []string{}
 
 // theLeafOneHopSentence is what docs/layering.md publishes about the one
 // hop, in the page's own words minus its code ticks, with the accepted
 // imports spelled from theLeafsAcceptedDispatcherImports. The fact lives on
-// the page once and this guard faces it with the tree — the reading it
-// replaces ("its direct imports name no pkg/forge and no pkg/dispatcher
-// package") was false the day it landed: pkg/dsl/ir imports
-// pkg/dispatcher/native/boardops DIRECTLY, which is the very pair
-// allowExceptions accepts below.
+// the page once and this guard faces it with the tree — a reading of this
+// bullet that leaves the sentence stale tells a reader of the page a
+// coupling is transitive when it is one hop away, which is what the bullet
+// before iterion#2857's resolution did about boardops in the other
+// direction.
 func theLeafOneHopSentence() string {
+	if len(theLeafsAcceptedDispatcherImports) == 0 {
+		return "its direct imports name no pkg/forge or pkg/dispatcher package"
+	}
 	return "its direct imports name no pkg/forge package and, of the pkg/dispatcher family, only the accepted " + andList(theLeafsAcceptedDispatcherImports)
 }
 
 // theLeafClosureOnly are the packages of the leaf rule's banned families
 // that `go list -deps ./pkg/dsl/ir` holds and its direct imports do not —
-// the other half of the same bullet, and the weight filed as iterion#2857.
-// When that weight is lifted the measurement moves, this list and the page's
-// sentence are edited together, and a reviewer sees both.
+// the other half of the same bullet. iterion#2857 lifted the three the
+// boardops vocabulary dragged in (pkg/dispatcher/native, pkg/dispatcher/tracker
+// and pkg/forge); what remains rides an accepted pkg/backend leaf
+// (toolcatalog). When that weight moves, this list and the page's sentence
+// are edited together, and a reviewer sees both.
 var theLeafClosureOnly = []string{
 	"pkg/backend/tool/privacy/detector",
-	"pkg/dispatcher/native",
-	"pkg/dispatcher/tracker",
-	"pkg/forge",
 }
 
 // proseText normalizes a page, or a sentence, to what it SAYS: markdown code
@@ -1065,11 +1080,12 @@ func andList(items []string) string {
 
 // TestTheLeafsOneHopReadingIsWhatThePageSays executes the bullet
 // docs/layering.md publishes about the one hop, both halves, against the
-// union the rules are judged on. A page that says the leaf's direct imports
-// name no pkg/dispatcher package tells a reader of iterion#2857 that the
-// coupling is transitive, when seven boardops.CapBoard* constants are one
-// hop away — and the page is where #2829 ends, so a sentence on it is a
-// claim this guard owes a verdict on, not prose.
+// union the rules are judged on. The bullet once said the leaf's direct
+// imports name no pkg/dispatcher package while seven boardops.CapBoard*
+// constants sat one hop away — it told a reader of iterion#2857 that the
+// coupling was transitive when it was not — and the page is where #2829
+// ends, so a sentence on it is a claim this guard owes a verdict on, not
+// prose.
 func TestTheLeafsOneHopReadingIsWhatThePageSays(t *testing.T) {
 	const leaf = "pkg/dsl/ir"
 	leafRule := layers[0]

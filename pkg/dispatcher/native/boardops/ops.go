@@ -15,20 +15,26 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/boardcaps"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 )
 
 // Capability names. Use these constants instead of string literals so a
 // typo at any call site becomes a compile error and the registry below
 // (KnownCapabilities in pkg/dsl/ir) tracks the single source of truth.
+// The names THEMSELVES live in pkg/boardcaps, a leaf: the DSL compiler
+// validates against them there, and reading them must not link this
+// package — the dispatcher, the store, the forge and the mailer behind it —
+// into every binary that compiles a .bot (iterion#2857). These re-exports
+// keep the implementation's own call sites on the same constants.
 const (
-	CapBoardRead    = "board.read"
-	CapBoardCreate  = "board.create"
-	CapBoardMove    = "board.move"
-	CapBoardAssign  = "board.assign"
-	CapBoardLabel   = "board.label"
-	CapBoardClose   = "board.close"
-	CapBoardComment = "board.comment"
+	CapBoardRead    = boardcaps.BoardRead
+	CapBoardCreate  = boardcaps.BoardCreate
+	CapBoardMove    = boardcaps.BoardMove
+	CapBoardAssign  = boardcaps.BoardAssign
+	CapBoardLabel   = boardcaps.BoardLabel
+	CapBoardClose   = boardcaps.BoardClose
+	CapBoardComment = boardcaps.BoardComment
 )
 
 // Capabilities is a granted-cap set. Use NewCapabilities to parse a

@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
-	"github.com/SocialGouv/iterion/pkg/backend/automemory"
+	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
@@ -492,8 +492,13 @@ func (c *compiler) validateWorkspaceCheckpoint(w *Workflow) {
 // and whitespace-trimmed.
 //
 // The accepted values are kept inline (pkg/backend/model would cycle), but
-// the BACKEND allowlist is not: it comes from automemory.SupportsBackend, so
-// the warning and the engine can never disagree about who honours the knob.
+// the BACKEND allowlist is not: it is the backendcaps registry's auto-memory
+// cell, the one cell automemory.SupportsBackend reads — the two readings are
+// pinned equal by model.TestBackendCapabilityConsumersConform — so the
+// warning and the engine can never disagree about who honours the knob, and
+// reading that cell here does not link the mirror's machinery (pkg/store,
+// pkg/knowledge) into the compiler, which importing pkg/backend/automemory
+// did (iterion#2857).
 func (c *compiler) validateAutoMemory(w *Workflow) {
 	norm := func(v string) string { return strings.ToLower(strings.TrimSpace(v)) }
 	valid := func(v string) bool {
@@ -536,7 +541,7 @@ func (c *compiler) validateAutoMemory(w *Workflow) {
 		// falls through to env and host credential detection, so the compiler
 		// genuinely cannot know.
 		backend := effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend)
-		if backend != "" && !automemory.SupportsBackend(backend) {
+		if backend != "" && !backendcaps.Offers(backend, backendcaps.AutoMemory) {
 			c.warnfAtProperty(DiagAutoMemoryNotSupported, kind, n.NodeID(), "auto_memory",
 				"%s %q: auto_memory: on has NO effect on backend=%q — MEMORY.md is wired for claude_code, claw and pi only",
 				kind, n.NodeID(), backend)
@@ -711,7 +716,7 @@ func (c *compiler) warnIfWorkflowAutoMemoryIsInert(w *Workflow) {
 		backend := effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend)
 		// Unresolved: the runtime falls through to env and host credential
 		// detection, so the compiler genuinely cannot know and must not guess.
-		supported := backend == "" || automemory.SupportsBackend(backend)
+		supported := backend == "" || backendcaps.Offers(backend, backendcaps.AutoMemory)
 		if strings.ToLower(strings.TrimSpace(nn.GetAutoMemory())) == "off" {
 			if supported {
 				optedOut++

@@ -42,11 +42,11 @@ rule.
   replays both attacks on a module of its own.
 - **Which build compiles a file is the go tool's answer; whether ANY build
   does is the constraint's.**
-  The walk hands out every non-test `.go` file under the two trees — 1722 on
+  The walk hands out every non-test `.go` file under the two trees — 1732 on
   2026-10-30, it skips nothing — and the listing the guard already reads
   sorts them, because `go list` publishes both the files a context compiled
   (`GoFiles`, `CgoFiles`) and the files it named and left out
-  (`IgnoredGoFiles`): 1704 compiled, 18 the go tool names in no listing of
+  (`IgnoredGoFiles`): 1714 compiled, 18 the go tool names in no listing of
   any context (the `testdata/` fixtures below, a file called `_x.go` or
   `.x.go`, a directory called `_x` or `.x` — go/build drops such a name
   before it reads a constraint, and a pattern names no package in such a
@@ -87,17 +87,20 @@ rule.
   all of it, under `TestTheGoToolSortsTheShapesTheGuardOwesNoContextFor`.
 - **Direct imports, one hop.** A rule hit is one import edge; a banned
   family reached THROUGH another package is not one. `pkg/dsl/ir` is a leaf
-  in that sense only: its direct imports name no `pkg/forge` package and, of
-  the `pkg/dispatcher` family, only the accepted
-  `pkg/dispatcher/native/boardops` — seven `boardops.CapBoard*` constants
-  one hop away, not a weight reached through something else. What
-  `go list -deps ./pkg/dsl/ir` adds on top of the one hop is
-  `pkg/backend/tool/privacy/detector`, `pkg/dispatcher/native`,
-  `pkg/dispatcher/tracker` and `pkg/forge`: four packages of those same
-  banned families, the weight filed as iterion#2857. Neither half is prose —
+  in that sense only: its direct imports name no `pkg/forge` or
+  `pkg/dispatcher` package. What `go list -deps ./pkg/dsl/ir` adds on top of
+  the one hop is `pkg/backend/tool/privacy/detector`: one package of those
+  same banned families, riding an accepted `pkg/backend` leaf. Until
+  iterion#2857 the hop also held `pkg/dispatcher/native/boardops` — seven
+  capability constants — and the closure three packages more
+  (`pkg/dispatcher/native`, `pkg/dispatcher/tracker` and `pkg/forge`); the
+  vocabulary moved to `pkg/boardcaps`, a leaf outside every banned family,
+  which the implementation re-exports. Neither half is prose —
   `TestTheLeafsOneHopReadingIsWhatThePageSays` reads this sentence off this
-  page and faces both halves with the tree. Read "must not import" above as
-  the one hop the guard checks.
+  page and faces both halves with the tree, and the IR's own closure witness
+  (`TestTheLeafClosureLinksNoDispatcherForgeMailerOrClawRuntime`) refuses the
+  dispatcher, the forge, the mailer and the claw runtime coming back through
+  ANY hop. Read "must not import" above as the one hop the guard checks.
 - **Test files are out of scope, by decision** — `go list` runs without
   `-test`, so a coupling that lives only in a `_test.go` file is none of the
   guard's business: `pkg/backend/model`'s test variant imports
@@ -125,22 +128,27 @@ of times the rules fire is pinned, so a rule born mute over pairs already
 accepted is an edit a reviewer sees.
 
 Faced on 2026-10-29 at `e59110ed5`, over the 213 packages and 974
-module-internal import edges the five contexts named there: **12 violating
-pairs, all twelve accepted** with their reason in `allowExceptions`, and 19
-rule hits over them. The same twelve on 2026-10-30, now read off a listing
+module-internal import edges the five contexts named there: 12 violating
+pairs, all twelve accepted with their reason in `allowExceptions`, and 19
+rule hits over them; **10 pairs and 15 hits on 2026-10-30**, iterion#2857
+having lifted the two ir-leaf violations that were weight rather than
+vocabulary. The same ten, read off a listing
 of the whole module: 230 packages, 1064 module-internal edges, 1061 of them
 landing under `pkg/` or `internal/` and every one naming a package the
 listing holds. Those counts are each reading's provenance, not a standing
 claim — they move with the tree, and the numbers that have to stay true are
 the pinned `expectedAllowCount` and `expectedRuleHitCount`, which the guard
-itself checks. The twelve are three families, not twelve decisions:
+itself checks. The ten are three families, not ten decisions:
 
-- `pkg/dsl/ir` → six `pkg/backend/*` packages and
-  `pkg/dispatcher/native/boardops`: the IR validates a `.bot` against what
-  the chosen backend can do, and reads the capability vocabulary where it
-  is defined rather than keeping a second copy. Five of the seven are
-  leaves (1 to 3 module packages); `automemory` and `boardops` drag 10 and
-  43 — filed as iterion#2857.
+- `pkg/dsl/ir` → five `pkg/backend/*` packages: the IR validates a `.bot`
+  against what the chosen backend can do, and reads the capability
+  vocabulary where it is defined rather than keeping a second copy. All
+  five are leaves (1 to 3 module packages each). The two that were not —
+  `automemory` and `boardops`, 10 and 43 module packages — were resolved by
+  iterion#2857 with no second list: the IR reads the registry's
+  auto-memory cell itself (the one cell `automemory.SupportsBackend`
+  reads, pinned by `TestBackendCapabilityConsumersConform`), and the board
+  capability names moved to `pkg/boardcaps`, which `boardops` re-exports.
 - `pkg/cli` → `pkg/server`, `pkg/server/projects`: `iterion studio` and
   `iterion dispatch` compose an in-process server, and `pkg/cli` is
   imported by `cmd/iterion` and `cmd/iterion-desktop` only.
