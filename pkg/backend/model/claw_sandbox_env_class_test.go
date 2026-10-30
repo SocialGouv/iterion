@@ -186,6 +186,17 @@ var getterHandoffs = map[string]string{
 	"pkg/backend/compatgw.CheckOperatorTable":  whyGatewayEnv,
 }
 
+// consultsHandoffs: the {callee, reader} pairs a state-consulting reader is
+// handed to ON PURPOSE. Everywhere else the refusal stands: what such a
+// reader answers from is state that does not cross, so a name read through
+// it would differ host/container. At a classified pair the handed reader
+// DEFINES what crosses — the divergence the refusal guards against is the
+// point. An entry whose site is gone is dropped, like every table here.
+var consultsHandoffs = map[[2]string]string{
+	{"pkg/backend/compatgw.FromEnv", "internal/envtrust.Inherited"}:        "the crossing's gateway branch (forwardableProviderEnv): a gateway route a workspace .env planted must not cross (#2813) — Inherited reads a planted name as unset and the node fails loudly, by name",
+	{"pkg/backend/compatgw.ResolveCatalog", "internal/envtrust.Inherited"}: "the same branch's catalog record: a planted OPENAI_COMPATIBLE_MODELS table or catalog provider must not cross claiming source=operator",
+}
+
 // notEnvNames: constants this package spells like an env name, which no code
 // reads from the environment, with what they are.
 var notEnvNames = map[string]string{}
@@ -440,7 +451,7 @@ var crossingSpellings = map[string]string{
 	"var clawSandboxCredentialEnvKeys": "the #1768 admission probe's own key list: ClawSandboxCredential reads the composed dispatch env through it (env[key] over the range), naming the first entry that carries a value",
 	"ClawSandboxCredential":            "reads the composed dispatch env over that range's keys, naming the first entry that carries a value — a map read the scan cannot see",
 	"var clawStreamTimeoutEnvVars":     "the watchdog knobs, which forwardableProviderEnv crosses as the host's planted-as-unset answer, explicit empty included",
-	"forwardableProviderEnv":           "sets the crossing: a refusal, the run's own credentials, the host's resolved values — and never a value envtrust.Planted reads as a workspace .env's, which crosses as the explicit empty (named in crossingRefusals.planted)",
+	"forwardableProviderEnv":           "sets the crossing: a refusal, the run's own credentials, the host's resolved values — and never a value envtrust.Planted reads as a workspace .env's: the forwarding loop crosses the explicit empty instead (named in crossingRefusals.planted), and the gateway branch reads envtrust.Inherited (consultsHandoffs), so a planted gateway route fails the node loudly, by name",
 	"forwardableToolEnv":               "sets the crossing for the tool names that cross as-is when the launcher sets them (#2802)",
 	"var byokEnvVar":                   "the variable a run's own key crosses as, which forwardableProviderEnv sets",
 	"anthropicWireShadowEnv":           "the ambient keys the crossing blanks, so the run's forfait outranks them",
@@ -706,6 +717,21 @@ func TestEveryEnvReadIsClassifiedForTheSandbox(t *testing.T) {
 			t.Errorf("getterHandoffs lists %s, which this package no longer hands an env reader: drop the entry", callee)
 		}
 	}
+	consultsPairs := make([][2]string, 0, len(consultsHandoffs))
+	for pair := range consultsHandoffs {
+		consultsPairs = append(consultsPairs, pair)
+	}
+	sort.Slice(consultsPairs, func(i, j int) bool {
+		if consultsPairs[i][0] != consultsPairs[j][0] {
+			return consultsPairs[i][0] < consultsPairs[j][0]
+		}
+		return consultsPairs[i][1] < consultsPairs[j][1]
+	})
+	for _, pair := range consultsPairs {
+		if !scan.consultsUsed[pair] {
+			t.Errorf("consultsHandoffs lists %s handed %s, which no call site does anymore: drop the entry", pair[1], pair[0])
+		}
+	}
 }
 
 func btoi(b bool) int {
@@ -744,6 +770,7 @@ type envScan struct {
 	spelled      map[string][]envRead // every constant spelled like an env name, by site
 	consulted    map[string][]string  // name → reads through a reader that consults envStateConsults
 	dynamicUsed  map[[2]string]bool
+	consultsUsed map[[2]string]bool  // consultsHandoffs pairs the walk exercised
 	enumerations map[string][]string // function → positions
 	handoffs     map[string][]string // callee handed a reader → positions
 	reachedFrom  map[string]string   // function the runner reaches → the one it is reached from, or what enters it
@@ -1657,7 +1684,7 @@ func scanPackageEnvReads(t *testing.T) envScan {
 	mod := loadTypedModule(t, fset)
 	model, info := mod.model, mod.model.info
 
-	scan := envScan{reads: map[string][]envRead{}, spelled: map[string][]envRead{}, consulted: map[string][]string{}, dynamicUsed: map[[2]string]bool{}, enumerations: map[string][]string{}, handoffs: map[string][]string{}}
+	scan := envScan{reads: map[string][]envRead{}, spelled: map[string][]envRead{}, consulted: map[string][]string{}, dynamicUsed: map[[2]string]bool{}, consultsUsed: map[[2]string]bool{}, enumerations: map[string][]string{}, handoffs: map[string][]string{}}
 	problem := func(format string, args ...any) { scan.problems = append(scan.problems, fmt.Sprintf(format, args...)) }
 	at := func(pos token.Pos) string {
 		p := fset.Position(pos)
@@ -1894,7 +1921,12 @@ func scanPackageEnvReads(t *testing.T) envScan {
 					default:
 						handedTo[ref] = label
 						if readers.consultsRef(info, arg) {
-							problem("%s: an env reader that also answers from envStateConsults handed to %s: what it reads there is not what crosses — hand it os.Getenv", at(arg.Pos()), label)
+							pair := [2]string{label, funcLabelOf(info, ref)}
+							if consultsHandoffs[pair] == "" {
+								problem("%s: an env reader that also answers from envStateConsults handed to %s: what it reads there is not what crosses — hand it os.Getenv, or classify the pair in consultsHandoffs with why the divergence is the point", at(arg.Pos()), label)
+							} else {
+								scan.consultsUsed[pair] = true
+							}
 						}
 					}
 				}

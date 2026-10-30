@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	clawrt "github.com/SocialGouv/claw-code-go/pkg/runtime"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -325,6 +326,54 @@ func TestForwardableProviderEnv_GatewayEnvRidesOnlyGatewayNodes(t *testing.T) {
 			if v, ok := env[name]; ok {
 				t.Errorf("vendor node's sandbox env carries %s=%q — operator gateway infrastructure leaked to a non-gateway node", name, v)
 			}
+		}
+	})
+
+	// The gateway pair is not in providerCredentialEnvVars, so the #2813
+	// loop never sees it — and the branch writes what crosses EXPLICITLY,
+	// outranking even a container-side fill. Read live, a route the
+	// repository's .env planted on the host would cross raw: the repository
+	// picking where a sandboxed node's traffic — and its key — goes, the
+	// sharp case of #2813. The branch reads envtrust.Inherited: a planted
+	// name is unset, the node fails loudly by name; the operator's own pair
+	// still crosses. Red when the branch goes back to os.Getenv: the
+	// planted case then crosses and fails its own assertion.
+	t.Run("a planted gateway pair does not cross", func(t *testing.T) {
+		operatorEnv(t)
+		clearGatewayEnv(t)
+		t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://93.184.216.34/v1")
+		t.Setenv("OPENAI_COMPATIBLE_API_KEY", "gw-planted")
+		envtrust.MarkPlanted("OPENAI_COMPATIBLE_BASE_URL", "OPENAI_COMPATIBLE_API_KEY")
+
+		if _, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/m"); !errors.Is(err, compatgw.ErrNotConfigured) {
+			t.Fatalf("a planted gateway route crossing = %v, want ErrNotConfigured — loud, by name, and nothing crossed", err)
+		}
+
+		// Per name, not per pair: the operator's endpoint crosses, the
+		// planted key does not.
+		envtrust.ResetForTest()
+		t.Setenv(envtrust.EnvPlantedNames, "")
+		envtrust.MarkPlanted("OPENAI_COMPATIBLE_API_KEY")
+		env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/m")
+		if err != nil {
+			t.Fatalf("the operator's own endpoint must cross: %v", err)
+		}
+		if got := env["OPENAI_COMPATIBLE_BASE_URL"]; got != "https://93.184.216.34/v1" {
+			t.Errorf("the operator's endpoint crossed as %q", got)
+		}
+		if v, ok := env["OPENAI_COMPATIBLE_API_KEY"]; ok {
+			t.Errorf("a planted gateway key crossed as %q — the repository under review authenticates the node's requests", v)
+		}
+
+		// And the operator's own pair crosses whole.
+		envtrust.ResetForTest()
+		t.Setenv(envtrust.EnvPlantedNames, "")
+		env, _, err = forwardableProviderEnv(context.Background(), "openai_compatible/m")
+		if err != nil {
+			t.Fatalf("the operator's own gateway: %v", err)
+		}
+		if env["OPENAI_COMPATIBLE_API_KEY"] != "gw-planted" {
+			t.Errorf("the operator's own key crossed as %q", env["OPENAI_COMPATIBLE_API_KEY"])
 		}
 	})
 }

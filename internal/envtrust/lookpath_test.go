@@ -43,3 +43,23 @@ func TestLookPathResolvesNothingUnderAPlantedPATH(t *testing.T) {
 		t.Errorf("an explicit path must resolve under a planted PATH: got %q, %v", got, err)
 	}
 }
+
+// The separator set is the platform's, as exec.LookPath uses it: on Windows
+// '/' names a path too, so it must consult no PATH there either way.
+func TestNamesAPathFollowsThePlatform(t *testing.T) {
+	if namesAPath("bare-name") {
+		t.Error("a bare name consults PATH")
+	}
+	if !namesAPath("dir" + string(os.PathSeparator) + "bin") {
+		t.Error("the platform separator names a path")
+	}
+	defer func(prev string) { goos = prev }(goos)
+	goos = "windows"
+	if !namesAPath("dir/bin") {
+		t.Error("on Windows '/' names a path — exec.LookPath honours it")
+	}
+	goos = "linux"
+	if namesAPath("dir\\bin") {
+		t.Error("on Linux a backslash is a name character, not a separator")
+	}
+}

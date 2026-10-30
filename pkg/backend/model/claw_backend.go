@@ -2446,8 +2446,18 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	// that crosses the IPC), and the in-container factory's guard is told
 	// the operator's choice explicitly rather than left to re-derive it
 	// from whatever the sandbox env happens to carry.
+	//
+	// The read is envtrust.Inherited, not os.Getenv: these names are not in
+	// providerCredentialEnvVars, so the loop above never sees them — and
+	// the explicit writes below would even outrank a container-level fill.
+	// A gateway route a workspace .env planted on the host would otherwise
+	// cross raw: the repository under review picking where a sandboxed
+	// node's traffic — and its key — goes, the sharp case of #2813. A
+	// planted name reads as UNSET here: ErrNotConfigured fails the node
+	// loudly, naming the variable. (The package doc's "the process
+	// environment the operator controls" is exactly what Inherited means.)
 	if modelroute.Parse(model).Gateway() {
-		cfg, err := compatgw.FromEnv(os.Getenv)
+		cfg, err := compatgw.FromEnv(envtrust.Inherited)
 		if err != nil {
 			return nil, crossingRefusals{}, err
 		}
@@ -2469,8 +2479,10 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 		// lie one side tells the other: a `tool_call:false` the operator
 		// declared must not read unknown container-side under a record that
 		// still claims `source=operator`. Top precedence container-side
-		// (compatgw.ResolvedEnvRecord, the shape both sides share).
-		if resolved := compatgw.ResolveCatalog(modelroute.Parse(model).Wire, modelspecs.Default(), os.Getenv); resolved.Known() {
+		// (compatgw.ResolvedEnvRecord, the shape both sides share). Read as
+		// Inherited like the pair above: a planted OPENAI_COMPATIBLE_MODELS
+		// table or catalog provider must not cross claiming source=operator.
+		if resolved := compatgw.ResolveCatalog(modelroute.Parse(model).Wire, modelspecs.Default(), envtrust.Inherited); resolved.Known() {
 			if raw, merr := json.Marshal(compatgw.ForwardableRecord(modelroute.Parse(model).Wire, resolved)); merr == nil {
 				env[compatgw.ResolvedEnvName] = string(raw)
 			}
