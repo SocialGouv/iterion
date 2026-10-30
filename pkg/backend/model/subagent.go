@@ -314,6 +314,14 @@ func buildSubagentTools(reg *tool.Registry, allowed map[string]bool) []Generatio
 // answer reports the question back to its parent, whose OWN ask channel is
 // intact. The withholding covers the stand-alone host too, like the MCP one
 // above: a pause raised outside any run is an error with no handler at all.
+//
+// Known residual, out of this withholding's reach: the child inherits the
+// parent's permission POLICY (ParentPermission), and an `ask` verdict of a
+// permission rule on a tool the child holds — bash, say — raises the same
+// ErrAskUser from inside the child's tool call (permissionGateOutcome). The
+// withholding covers the ask TOOLS, not the policy's ask VERDICT; closing
+// that second path is its own decision (refuse, or downgrade to deny, at the
+// delegation).
 func filterSubagentTools(tools []GenerationTool, allowed map[string]bool) []GenerationTool {
 	out := make([]GenerationTool, 0, len(tools))
 	for _, t := range tools {

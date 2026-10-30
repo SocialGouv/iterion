@@ -75,50 +75,80 @@ func (e *ClawExecutor) resolveBackendName(node ir.Node) string {
 }
 
 // gatewayCapableDetection keeps host auto-detection from naming a backend
-// the node's own route cannot run on. A node whose head route is an
-// OpenAI-compatible gateway route — a gateway `model:`, or the gateway
-// provider hint — can only be served by claw, which is exactly what
+// the node's chain cannot run on. A node whose chain carries an
+// OpenAI-compatible gateway route — a gateway `model:`, a gateway provider
+// hint, in any position — can only be served by claw, which is exactly what
 // refuseGatewayCrossing refuses every other backend for at task build.
 // Detection that ignores it concretises claude_code on any machine with the
-// `claude` CLI (the common operator machine) and the run aborts 80 ms in,
-// before any model call (#2785). Detection's answer is a GUESS the host
-// makes for an author who named nothing, so correcting it toward the one
-// backend that can serve the route replaces no explicit choice: the node's
-// own `backend:`, the workflow's `default_backend:`, ITERION_DEFAULT_BACKEND
-// and a launch override all keep their answer and their build-time refusal.
+// `claude` CLI (the common operator machine), and a chain whose gateway
+// element sits in SECOND position is worse than the head case: the head
+// fails on its own merits, the gateway fallback is refused at its own build,
+// and the rescue route the author declared never fires — the one case a
+// fallback exists for (#2785). Detection answers for the HOST — the
+// credentials present, in the operator's ITERION_BACKEND_PREFERENCE order —
+// and never reads the node's route, which is the one input this answer
+// needs. Correcting it toward the one backend that can serve the chain
+// therefore overrides no operator choice: the preference order says nothing
+// about routes, and the node's own `backend:`, the workflow's
+// `default_backend:`, ITERION_DEFAULT_BACKEND and a launch override all keep
+// their answer and their build-time refusal.
 //
-// The reading is the head route's — the one detection concretises for. A
-// `fallbacks:` element that introduces a gateway model further down the
-// chain is judged at its own build, like every other element property.
+// The reading is the WHOLE chain's, taken over the walk dispatch itself
+// would take under the detected backend (resolveChainUnder), so the question
+// and the walk cannot drift.
 func (e *ClawExecutor) gatewayCapableDetection(node ir.Node, detected string) string {
-	if backendServesGatewayRoute(detected) || !e.headRouteNeedsGateway(node) {
+	if backendServesGatewayRoute(detected) || !e.chainNeedsGateway(node, detected) {
 		return detected
 	}
-	if e.logger != nil {
-		e.logger.Warn("[%s] auto-detection picked %q, which cannot serve this node's OpenAI-compatible gateway route — selecting claw instead (set `backend:` explicitly to override)",
+	if e.logger != nil && e.noteGatewayReroute(node.NodeID(), detected) {
+		e.logger.Warn("[%s] auto-detection picked %q, which cannot serve this node's OpenAI-compatible gateway route — selecting claw, the only backend that serves one (set `backend: claw` to make the choice explicit)",
 			node.NodeID(), detected)
 	}
 	return delegate.BackendClaw
 }
 
-// headRouteNeedsGateway reports whether the node's FIRST route is a gateway
-// route: a gateway `model:` (the launch override's, else the node's own), or
-// the head of its provider chain naming the gateway — with the head
-// element's own model pin, if it carries one, standing in for the node's.
-// The same reading dispatch builds the first element from.
-func (e *ClawExecutor) headRouteNeedsGateway(node ir.Node) bool {
-	m := e.baselineModel(node)
-	hint := ""
-	if chain := e.resolveProviderChain(node); len(chain) > 0 {
-		hint = chain[0].Provider
-		if chain[0].Model != "" {
-			m = chain[0].Model
+// noteGatewayReroute dedupes the redirect warn: the seams ask
+// resolveBackendName several times for one node (admission, the route walk,
+// dispatch), and one redirect is one fact. Returns true once per
+// (node, detected) pair.
+func (e *ClawExecutor) noteGatewayReroute(nodeID, detected string) bool {
+	e.rerouteWarnMu.Lock()
+	defer e.rerouteWarnMu.Unlock()
+	if e.rerouteWarned == nil {
+		e.rerouteWarned = map[string]bool{}
+	}
+	key := nodeID + "\x00" + detected
+	if e.rerouteWarned[key] {
+		return false
+	}
+	e.rerouteWarned[key] = true
+	return true
+}
+
+// chainNeedsGateway reports whether any element of the chain the node would
+// walk under `detected` is a gateway route: a gateway model of its own, or
+// the node's baseline it inherits, or the gateway provider hint. Only
+// elements that INHERIT the node's resolved backend count — an element
+// pinning its own `backend:` is served by it and judged at its own build
+// whatever detection answers, and an `action: skip` element runs no model.
+func (e *ClawExecutor) chainNeedsGateway(node ir.Node, detected string) bool {
+	base := e.baselineModel(node)
+	for _, el := range e.resolveChainUnder(node, detected) {
+		if el.Skip || el.Backend != "" {
+			continue
+		}
+		m := el.Model
+		if m == "" {
+			m = base
+		}
+		if modelroute.Parse(m).Gateway() {
+			return true
+		}
+		if strings.EqualFold(strings.TrimSpace(el.Provider), modelroute.OpenAICompatible) {
+			return true
 		}
 	}
-	if modelroute.Parse(m).Gateway() {
-		return true
-	}
-	return strings.EqualFold(strings.TrimSpace(hint), modelroute.OpenAICompatible)
+	return false
 }
 
 // EffectiveBackendName exposes the exact runtime resolution to safety checks.
@@ -206,6 +236,15 @@ var defaultFallbackTriggers = []delegate.FallbackCategory{
 // silently change the first's semantics and invalidate C088, which two
 // catalog bots document in their own comments.
 func (e *ClawExecutor) resolveChain(node ir.Node) []chainElement {
+	return e.resolveChainUnder(node, e.resolveBackendName(node))
+}
+
+// resolveChainUnder is resolveChain with the node's resolved backend handed
+// in — the one reading auto-selection can take without recursing into its
+// own resolution (resolveBackendName → gatewayCapableDetection → the chain
+// → resolveBackendName would be a cycle; the detected backend IS the answer
+// the chain read needs).
+func (e *ClawExecutor) resolveChainUnder(node ir.Node, nodeBackend string) []chainElement {
 	chain := e.resolveProviderChain(node)
 	for _, fb := range nodeFallbacks(node) {
 		if !e.fallbackWhenActive(node.NodeID(), fb) {
@@ -229,7 +268,7 @@ func (e *ClawExecutor) resolveChain(node ir.Node) []chainElement {
 		el.On = resolveTriggers(fb.On)
 		chain = append(chain, el)
 	}
-	return dedupeChain(e.dropForbidden(node, chain), e.resolveBackendName(node), e.baselineModel(node))
+	return dedupeChain(e.dropForbidden(node, chain), nodeBackend, e.baselineModel(node))
 }
 
 // EffectiveFallbackBackends reports the backends a node's `fallbacks:` routes

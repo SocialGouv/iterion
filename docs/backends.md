@@ -1304,7 +1304,14 @@ that alias on its own host's loopback. A gateway route runs on the
 **`claw` backend only**: an explicit `backend:` naming a CLI backend, or a
 vendor `provider:` hint beside a gateway model, is refused when the node is
 dispatched, and warning **C186** says the same at `iterion validate` time
-([diagnostics](references/diagnostics.md)).
+([diagnostics](references/diagnostics.md)). A node that names NO backend gets
+claw from auto-detection when its chain carries a gateway route in any
+position — its own `model:`, a later `provider:` step or a `fallbacks:` route
+inheriting the node's backend — since the credentials-first answer
+(claude_code on a machine with the CLI) could never serve that route, and a
+gateway fallback under it would be refused at its own build without ever
+firing; the redirect is logged once per node, and an explicit `backend:
+claw` makes the same choice silently.
 
 Until the catalog slice prices the gateway's ids, a gateway route is an
 unpriced route: spend is still metered in tokens and bounded by

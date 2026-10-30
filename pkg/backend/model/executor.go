@@ -90,6 +90,12 @@ type ClawExecutor struct {
 	// so a run can re-target the bot without editing the .bot. Empty applies
 	// nothing (backward-compatible). See model_override.go.
 	modelOverrides ModelOverrides
+	// rerouteWarned dedupes the gateway auto-selection redirect warn
+	// (gatewayCapableDetection): the seams ask resolveBackendName several
+	// times for one node, and one redirect is one fact. Guarded because
+	// parallel branches share the executor.
+	rerouteWarnMu sync.Mutex
+	rerouteWarned map[string]bool
 	// allowedProviders is the run's provider allowlist (ADR-129 §5) the
 	// dispatch enforces: a chain element whose resolved provider is outside
 	// it is dropped before dispatch, so a forbidden rescue route burns no
