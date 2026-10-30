@@ -283,17 +283,19 @@ The citations, per cell that is not self-evident from the table:
   and stops resolving under a list that names only `user` — measured both
   ways. So the flag does not *enable* project commands, it *scopes* them:
   iterion always passes it, and the ambient-context policy (above) decides
-  which scopes accompany it. `workspace`, the default, keeps the project
-  scope that carries them and leaves the operator's own
-  `~/.claude/commands/` OUT on both backends — the default-posture
-  asymmetry #1716 measured is gone. What remains is deliberate: under
-  `operator` or `all` a `claude_code` node sees the operator's own
-  commands and a `claw` node never does, because claw's lookup is rooted at
-  the workspace by `os.Root` and a sandboxed or multi-tenant run does not
-  read the host's home. If that symmetry is ever wanted, the honest form is
-  an explicit opt-in that carries the operator scope into the lookup — not
-  a default, and not a silent read (#1716's (e), arbitrated to "documented
-  asymmetry" until an operator asks for the opt-in).
+  which scopes accompany it. What the policy leaves of the user-scope
+  question (#1716's (e)) is decided, per value: under `none` and
+  `workspace` (the default) NEITHER backend sees the operator's own
+  `~/.claude/commands/` — `claude_code` passes no `user` scope there and
+  claw never reads one — so the default-posture asymmetry the ticket
+  measured is gone; under `operator` and `all` a `claude_code` node sees
+  it and a `claw` node never does. That residue is deliberate, and the
+  ticket closes on it rather than on an opt-in. Containment is the whole
+  reason: claw's lookup is rooted at the workspace through `os.Root`, and
+  a sandboxed or multi-tenant run holds no host home to root a user scope
+  at. If symmetry is ever wanted it is re-proven by need — a measured
+  case of an operator reaching for it earns the design, and nothing is
+  built ahead of one.
 
 - **claw, five proven cells.** Structured output:
   `TestLive_Feat_Cursors` asserts the reviewer's output against its
