@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -37,9 +38,24 @@ func (s *FilesystemRunStore) turnJSONPath(runID, nodeID string, loopIter, turn i
 	return filepath.Join(s.turnIterDir(runID, nodeID, loopIter), strconv.Itoa(turn)+".json")
 }
 
+// turnAttemptJSONPath returns the path a SUPERSEDED attempt is preserved
+// at: runs/<id>/turns/<node>/<iter>/<turn>.attempt-<n>.json. The
+// coordinate's canonical file (<turn>.json) always holds the LATEST
+// attempt; attempt 1 is the oldest superseded record.
+func (s *FilesystemRunStore) turnAttemptJSONPath(runID, nodeID string, loopIter, turn, attempt int) string {
+	return filepath.Join(s.turnIterDir(runID, nodeID, loopIter),
+		strconv.Itoa(turn)+".attempt-"+strconv.Itoa(attempt)+".json")
+}
+
 // turnMessagesPath returns the sibling messages.json blob for a claw turn.
 func (s *FilesystemRunStore) turnMessagesPath(runID, nodeID string, loopIter, turn int) string {
 	return filepath.Join(s.turnIterDir(runID, nodeID, loopIter), strconv.Itoa(turn)+".messages.json")
+}
+
+// turnAttemptMessagesPath is the sidecar twin of turnAttemptJSONPath.
+func (s *FilesystemRunStore) turnAttemptMessagesPath(runID, nodeID string, loopIter, turn, attempt int) string {
+	return filepath.Join(s.turnIterDir(runID, nodeID, loopIter),
+		strconv.Itoa(turn)+".attempt-"+strconv.Itoa(attempt)+".messages.json")
 }
 
 // turnIndexPath returns runs/<id>/turns/<node>/index.json — a tiny
@@ -65,6 +81,18 @@ type turnNodeIndex struct {
 // WriteTurn satisfies TurnStore. Atomically writes the per-turn JSON
 // (and the messages sibling when t.Messages is non-nil) and refreshes
 // the per-node index.
+//
+// A write to a coordinate that already holds a DIFFERENT checkpoint is a
+// new attempt of the node, not an edit: the derivation (model/hooks.go)
+// knows the LLM step, not the execution attempt, so a retried or resumed
+// node re-derives the coordinate its previous attempt wrote (#2806). The
+// previous record is then preserved at <turn>.attempt-<n>.json (stamped
+// Superseded, its messages sidecar moved along), the new write becomes
+// the coordinate's canonical record with Attempt = previous+1, and
+// ListTurns enumerates every attempt — the earlier attempt's usage stays
+// in the baseline the bench reconciliation sums. A byte-identical
+// redelivery (WrittenAt/Attempt/Superseded aside) remains the idempotent
+// overwrite the contract has always promised and numbers nothing new.
 func (s *FilesystemRunStore) WriteTurn(_ context.Context, t *TurnCheckpoint) error {
 	if t == nil {
 		return fmt.Errorf("store: WriteTurn: nil turn")
@@ -85,6 +113,35 @@ func (s *FilesystemRunStore) WriteTurn(_ context.Context, t *TurnCheckpoint) err
 	if t.WrittenAt.IsZero() {
 		t.WrittenAt = time.Now().UTC()
 	}
+	// The coordinate's read-modify-write (load the incumbent, maybe
+	// supersede it, then the index merge below) is one critical section:
+	// WriteTurn is driven by each parallel branch's goroutine and by a
+	// resumed process that shares nothing with this one but the files, so
+	// the files decide. refreshTurnIndexLocked is the index half, under
+	// the same lock.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	incumbent, err := s.readTurnFile(s.turnJSONPath(t.RunID, t.NodeID, t.LoopIter, t.TurnIndex))
+	if err != nil {
+		return err
+	}
+	switch {
+	case incumbent == nil:
+		if t.Attempt < 1 {
+			t.Attempt = 1
+		}
+		t.Superseded = false
+	case turnsSameAttempt(incumbent, t):
+		// Same attempt written twice: keep the incumbent's numbering.
+		t.Attempt = incumbentAttempt(incumbent)
+		t.Superseded = false
+	default:
+		if err := s.supersedeTurn(incumbent); err != nil {
+			return err
+		}
+		t.Attempt = incumbentAttempt(incumbent) + 1
+		t.Superseded = false
+	}
 	data, err := json.MarshalIndent(t, "", "  ")
 	if err != nil {
 		return fmt.Errorf("store: marshal turn: %w", err)
@@ -97,20 +154,92 @@ func (s *FilesystemRunStore) WriteTurn(_ context.Context, t *TurnCheckpoint) err
 			return fmt.Errorf("store: write turn messages: %w", err)
 		}
 	}
-	return s.refreshTurnIndex(t.RunID, t.NodeID, t.LoopIter, t.TurnIndex, t.WrittenAt)
+	return s.refreshTurnIndexLocked(t.RunID, t.NodeID, t.LoopIter, t.TurnIndex, t.WrittenAt)
 }
 
-// refreshTurnIndex merges the (LoopIter, TurnIndex, WrittenAt) tuple
-// into the per-node index. Reads the current index, updates the slot,
-// writes atomically. The read-modify-write of index.json is guarded by
-// s.mu: WriteTurn is driven by the per-turn backend hook on EACH
-// parallel branch's goroutine (model/hooks.go), not under s.mu, so two
-// turns of the same node racing here would otherwise lose index entries
-// (last-writer-wins on the whole file). No caller holds s.mu when
-// reaching WriteTurn, so taking it here cannot deadlock.
-func (s *FilesystemRunStore) refreshTurnIndex(runID, nodeID string, loopIter, turn int, writtenAt time.Time) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// readTurnFile loads the checkpoint at path, nil (no error) when absent.
+func (s *FilesystemRunStore) readTurnFile(path string) (*TurnCheckpoint, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("store: read turn: %w", err)
+	}
+	var t TurnCheckpoint
+	if err := json.Unmarshal(data, &t); err != nil {
+		return nil, fmt.Errorf("store: unmarshal turn: %w", err)
+	}
+	return &t, nil
+}
+
+// incumbentAttempt reads a persisted record's attempt number; a record
+// written before attempts were kept carries none and is attempt 1.
+func incumbentAttempt(t *TurnCheckpoint) int {
+	if t.Attempt < 1 {
+		return 1
+	}
+	return t.Attempt
+}
+
+// turnsSameAttempt reports whether two checkpoints are one attempt
+// written twice: every field equal, the bookkeeping ones (WrittenAt,
+// Attempt, Superseded) aside. Messages carries no JSON form (the blob
+// lands in the sidecar), so a same-checkpoint redelivery with a
+// re-marshalled conversation still reads as one attempt.
+func turnsSameAttempt(a, b *TurnCheckpoint) bool {
+	ca, cb := *a, *b
+	ca.WrittenAt, cb.WrittenAt = time.Time{}, time.Time{}
+	ca.Attempt, cb.Attempt = 0, 0
+	ca.Superseded, cb.Superseded = false, false
+	ba, errA := json.Marshal(ca)
+	bb, errB := json.Marshal(cb)
+	return errA == nil && errB == nil && bytes.Equal(ba, bb)
+}
+
+// supersedeTurn preserves the coordinate's incumbent as
+// <turn>.attempt-<n>.json, stamped Superseded with its attempt number,
+// its messages sidecar moved to the attempt path beside it (a fork
+// resolves the canonical record, so the incumbent's conversation must
+// not keep answering for the new attempt under the canonical sidecar
+// name). The caller holds s.mu.
+func (s *FilesystemRunStore) supersedeTurn(incumbent *TurnCheckpoint) error {
+	n := incumbentAttempt(incumbent)
+	incumbent.Attempt = n
+	incumbent.Superseded = true
+	sidecar := s.turnMessagesPath(incumbent.RunID, incumbent.NodeID, incumbent.LoopIter, incumbent.TurnIndex)
+	if blob, err := os.ReadFile(sidecar); err == nil {
+		attemptSidecar := s.turnAttemptMessagesPath(incumbent.RunID, incumbent.NodeID, incumbent.LoopIter, incumbent.TurnIndex, n)
+		if err := writeFileAtomic(attemptSidecar, blob, filePerm); err != nil {
+			return fmt.Errorf("store: preserve turn messages: %w", err)
+		}
+		if err := os.Remove(sidecar); err != nil {
+			return fmt.Errorf("store: move turn messages aside: %w", err)
+		}
+		if incumbent.MessagesRef != "" {
+			incumbent.MessagesRef = incumbent.NodeID + "/" + strconv.Itoa(incumbent.LoopIter) + "/" +
+				strconv.Itoa(incumbent.TurnIndex) + ".attempt-" + strconv.Itoa(n) + ".messages.json"
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("store: read turn messages: %w", err)
+	}
+	data, err := json.MarshalIndent(incumbent, "", "  ")
+	if err != nil {
+		return fmt.Errorf("store: marshal superseded turn: %w", err)
+	}
+	if err := writeFileAtomic(s.turnAttemptJSONPath(incumbent.RunID, incumbent.NodeID, incumbent.LoopIter, incumbent.TurnIndex, n), data, filePerm); err != nil {
+		return fmt.Errorf("store: preserve turn: %w", err)
+	}
+	return nil
+}
+
+// refreshTurnIndexLocked merges the (LoopIter, TurnIndex, WrittenAt)
+// tuple into the per-node index. Reads the current index, updates the
+// slot, writes atomically. The caller holds s.mu: WriteTurn's whole
+// coordinate read-modify-write runs under it, so two turns of the same
+// node racing here cannot lose index entries (last-writer-wins on the
+// whole file) nor interleave a supersede with a fresh write.
+func (s *FilesystemRunStore) refreshTurnIndexLocked(runID, nodeID string, loopIter, turn int, writtenAt time.Time) error {
 	path := s.turnIndexPath(runID, nodeID)
 	var idx turnNodeIndex
 	if data, err := os.ReadFile(path); err == nil {
@@ -166,9 +295,13 @@ func (s *FilesystemRunStore) LoadTurn(_ context.Context, runID, nodeID string, l
 	return &t, nil
 }
 
-// ListTurns satisfies TurnStore. Returns turns in ascending TurnIndex
-// order. The sibling messages.json blob is NOT inlined — callers that
-// need it should follow up with LoadTurnMessages.
+// ListTurns satisfies TurnStore. Returns turns in ascending (TurnIndex,
+// Attempt) order: every attempt of a coordinate is enumerated — the
+// superseded records (<turn>.attempt-<n>.json) first, the canonical
+// latest attempt last — so a reader summing the node's usage (bench
+// discovery's reconciliation) counts every attempt's spend (#2806). The
+// sibling messages.json blob is NOT inlined — callers that need it
+// should follow up with LoadTurnMessages.
 func (s *FilesystemRunStore) ListTurns(_ context.Context, runID, nodeID string, loopIter int) ([]*TurnCheckpoint, error) {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return nil, err
@@ -184,11 +317,7 @@ func (s *FilesystemRunStore) ListTurns(_ context.Context, runID, nodeID string, 
 		}
 		return nil, fmt.Errorf("store: list turn dir: %w", err)
 	}
-	type indexed struct {
-		idx int
-		t   *TurnCheckpoint
-	}
-	var rows []indexed
+	var rows []*TurnCheckpoint
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -197,9 +326,12 @@ func (s *FilesystemRunStore) ListTurns(_ context.Context, runID, nodeID string, 
 		if !strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".messages.json") {
 			continue
 		}
-		idxStr := strings.TrimSuffix(name, ".json")
-		idx, parseErr := strconv.Atoi(idxStr)
-		if parseErr != nil {
+		// <turn>.json is the coordinate's canonical record,
+		// <turn>.attempt-<n>.json a preserved superseded one; anything
+		// else is not a turn file.
+		stem := strings.TrimSuffix(name, ".json")
+		turnPart, _, _ := strings.Cut(stem, ".attempt-")
+		if _, parseErr := strconv.Atoi(turnPart); parseErr != nil {
 			continue
 		}
 		data, readErr := os.ReadFile(filepath.Join(dir, name))
@@ -210,14 +342,19 @@ func (s *FilesystemRunStore) ListTurns(_ context.Context, runID, nodeID string, 
 		if jerr := json.Unmarshal(data, &t); jerr != nil {
 			return nil, fmt.Errorf("store: unmarshal turn %s: %w", name, jerr)
 		}
-		rows = append(rows, indexed{idx, &t})
+		rows = append(rows, &t)
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].idx < rows[j].idx })
-	out := make([]*TurnCheckpoint, len(rows))
-	for i, r := range rows {
-		out[i] = r.t
-	}
-	return out, nil
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].TurnIndex != rows[j].TurnIndex {
+			return rows[i].TurnIndex < rows[j].TurnIndex
+		}
+		// Within one coordinate the superseded records come first, the
+		// canonical latest attempt last; a legacy record carrying no
+		// attempt number reads as 1 and never shares its coordinate with
+		// attempt files (those exist only once numbering did).
+		return incumbentAttempt(rows[i]) < incumbentAttempt(rows[j])
+	})
+	return rows, nil
 }
 
 // LatestTurn satisfies TurnStore. Walks the per-node index.json once

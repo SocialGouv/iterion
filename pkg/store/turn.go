@@ -99,6 +99,24 @@ type TurnCheckpoint struct {
 	// delegate-call boundary (TurnIndex always 0 for claude_code, by
 	// construction, until the SDK exposes intra-call hooks — Phase 6).
 	TurnIndex int `json:"turn_index"`
+	// Attempt numbers this record among the attempts written at its
+	// (NodeID, LoopIter, TurnIndex) coordinate. The coordinate derives
+	// from the LLM step, not from the node's execution attempt, so a
+	// retried or RESUMED attempt of the same node re-derives the
+	// coordinate the previous attempt wrote (#2806): WriteTurn then
+	// keeps every attempt — the differing previous record is preserved
+	// as a superseded one rather than silently overwritten, so the
+	// usage baseline every reader sums (bench discovery's
+	// reconciliation) and the audit trail keep the earlier attempt's
+	// spend. 1 for a coordinate's first write; 0 on a record written
+	// before attempts were kept, read as 1.
+	Attempt int `json:"attempt,omitempty"`
+	// Superseded marks a record preserved from an earlier attempt at its
+	// coordinate. The coordinate's canonical record is the LATEST
+	// attempt — the one LoadTurn, LatestTurn and LoadTurnAtIndex (and so
+	// the Fork API) resolve — while ListTurns enumerates every attempt,
+	// superseded included.
+	Superseded bool `json:"superseded,omitempty"`
 	// Backend identifies the executor that produced this turn:
 	// "claw" or "claude_code". Drives the per-backend rehydration
 	// branch in the Fork API (Phase 3/4).

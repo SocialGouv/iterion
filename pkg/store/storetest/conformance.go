@@ -1505,12 +1505,42 @@ func testTurnStore(t *testing.T, s store.RunStore) {
 		t.Errorf("LoadTurnMessages(no blob) = %v; want ErrTurnNotFound", err)
 	}
 
-	// WriteTurn is an idempotent overwrite on the same key.
+	// WriteTurn is an idempotent overwrite on the same key for the SAME
+	// attempt, and a supersede for a DIFFERING one (#2806): the retried
+	// node's new attempt becomes the coordinate's canonical record, and
+	// the previous attempt stays enumerated — the baseline a usage
+	// reconciliation sums keeps both.
 	if err := ts.WriteTurn(ctx, &store.TurnCheckpoint{RunID: runID, NodeID: "impl", LoopIter: 0, TurnIndex: 0, Backend: "claw", Model: "m2"}); err != nil {
 		t.Fatalf("WriteTurn(overwrite): %v", err)
 	}
 	if got, err := ts.LoadTurn(ctx, runID, "impl", 0, 0); err != nil || got.Model != "m2" {
 		t.Errorf("after overwrite LoadTurn(0,0).Model = %v (err %v); want m2", got, err)
+	}
+	afterRetry, err := ts.ListTurns(ctx, runID, "impl", 0)
+	if err != nil {
+		t.Fatalf("ListTurns after retry: %v", err)
+	}
+	if len(afterRetry) != 4 {
+		t.Fatalf("ListTurns after retry = %d rows, want 4 — turn 0 keeps both attempts plus turns 1 and 2", len(afterRetry))
+	}
+	if afterRetry[0].TurnIndex != 0 || afterRetry[0].Attempt != 1 || !afterRetry[0].Superseded || afterRetry[0].Model != "m" {
+		t.Errorf("afterRetry[0] = turn %d attempt %d superseded %v model %q; want the superseded first attempt (0/1/true/m)",
+			afterRetry[0].TurnIndex, afterRetry[0].Attempt, afterRetry[0].Superseded, afterRetry[0].Model)
+	}
+	if afterRetry[1].TurnIndex != 0 || afterRetry[1].Attempt != 2 || afterRetry[1].Superseded || afterRetry[1].Model != "m2" {
+		t.Errorf("afterRetry[1] = turn %d attempt %d superseded %v model %q; want the latest attempt (0/2/false/m2)",
+			afterRetry[1].TurnIndex, afterRetry[1].Attempt, afterRetry[1].Superseded, afterRetry[1].Model)
+	}
+	// The coordinate-addressed readers resolve the LATEST attempt.
+	if latest, err := ts.LatestTurn(ctx, runID, "impl"); err != nil || latest.LoopIter != 1 {
+		t.Errorf("LatestTurn after retry = iter %d (%v); want iter 1 — a supersede must not move the node's latest", latest.LoopIter, err)
+	}
+	// A byte-identical redelivery numbers no new attempt.
+	if err := ts.WriteTurn(ctx, &store.TurnCheckpoint{RunID: runID, NodeID: "impl", LoopIter: 0, TurnIndex: 0, Backend: "claw", Model: "m2"}); err != nil {
+		t.Fatalf("WriteTurn(redelivery): %v", err)
+	}
+	if rows, err := ts.ListTurns(ctx, runID, "impl", 0); err != nil || len(rows) != 4 {
+		t.Errorf("after an identical redelivery ListTurns = %d rows (%v), want 4", len(rows), err)
 	}
 
 	// DeleteRun sweeps the turns too.

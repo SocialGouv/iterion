@@ -298,7 +298,14 @@ entry (see [backends.md](backends.md), "Background work"). Absent on
 checkpoints written before it existed — an empty ledger, the previous
 behaviour. A turn checkpoint (`turns/…json`) carries the same fact for its
 own processes as `terminated_background`; a Fork API child run seeds its
-ledger with it.
+ledger with it. A turn checkpoint also carries `attempt`/`superseded`: its
+coordinate (`turns/<node>/<iter>/<turn>.json`) derives from the LLM step,
+not the node's execution attempt, so a retried or resumed node re-derives
+the coordinate its previous attempt wrote — the store keeps EVERY attempt
+(the superseded one preserved as `…/<turn>.attempt-<n>.json`, with its
+messages sidecar moved aside), the coordinate's canonical record stays the
+latest attempt for the fork anchor, and the usage reconciliation sums both
+(#2806).
 `recovery_pause` / `recovery_code` mark a pause the recovery dispatcher wrote
 for a node whose execution **failed** (`AUTH_FAILED`, `BUDGET_EXCEEDED`, …):
 the node still owes its work, so the answer that resumes the run is an

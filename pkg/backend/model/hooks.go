@@ -847,6 +847,13 @@ func (h *storeHooks) onLLMTurnCapture(nodeID string, info LLMTurnCaptureInfo) {
 	if turnIdx < 0 {
 		turnIdx = 0
 	}
+	// The coordinate knows the step, not the node's execution ATTEMPT:
+	// a retried or resumed node re-derives the (LoopIter, TurnIndex)
+	// its previous attempt wrote. The collision is the store's to
+	// resolve — WriteTurn keeps every attempt (the incumbent preserved
+	// as a superseded record, the new write canonical), so the earlier
+	// attempt's usage stays in the reconciliation baseline and a fork
+	// anchored here still resumes the LAST attempt (#2806).
 	turn := &store.TurnCheckpoint{
 		RunID:     h.runID,
 		NodeID:    nodeID,

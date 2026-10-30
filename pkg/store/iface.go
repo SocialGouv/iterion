@@ -793,14 +793,29 @@ type TurnStore interface {
 	// runs/<runID>/turns/<NodeID>/<LoopIter>/<TurnIndex>.json. The
 	// caller is responsible for setting WrittenAt; implementations
 	// are free to overwrite it for monotonic-clock safety.
+	//
+	// The coordinate derives from the LLM step, not the node's
+	// execution attempt, so a retried or resumed node re-derives the
+	// coordinate its previous attempt wrote (#2806). Implementations
+	// keep EVERY attempt: a write that differs from the coordinate's
+	// incumbent supersedes it — the incumbent is preserved (fs:
+	// <turn>.attempt-<n>.json; mongo: the doc's `prior` list), the new
+	// write becomes the coordinate's latest record with Attempt
+	// incremented — while a byte-identical redelivery is the
+	// idempotent overwrite the seam has always had. WriteTurn owns
+	// the Attempt/Superseded bookkeeping and stamps both on t.
 	WriteTurn(ctx context.Context, t *TurnCheckpoint) error
 	// LoadTurn returns the TurnCheckpoint at the exact
-	// (NodeID, LoopIter, TurnIndex) coordinates, or a typed
+	// (NodeID, LoopIter, TurnIndex) coordinates — the coordinate's
+	// LATEST attempt, the one a fork resumes — or a typed
 	// not-found error.
 	LoadTurn(ctx context.Context, runID, nodeID string, loopIter, turn int) (*TurnCheckpoint, error)
 	// ListTurns enumerates all turns for one (NodeID, LoopIter)
-	// in ascending TurnIndex order. Returns an empty slice (no
-	// error) when no turns exist for that node yet.
+	// in ascending (TurnIndex, Attempt) order — every attempt of a
+	// coordinate, superseded ones included, so a reader summing the
+	// node's usage (the bench reconciliation) counts every attempt's
+	// spend. Returns an empty slice (no error) when no turns exist
+	// for that node yet.
 	ListTurns(ctx context.Context, runID, nodeID string, loopIter int) ([]*TurnCheckpoint, error)
 	// LatestTurn returns the highest-indexed turn for a node across
 	// all loop iterations, or a typed not-found error when none

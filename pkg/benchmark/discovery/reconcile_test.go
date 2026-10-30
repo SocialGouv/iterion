@@ -373,3 +373,49 @@ func TestStepsThatNameNoNodeAreCountedApart(t *testing.T) {
 		t.Fatalf("the corpus comparison is wrong: %+v", c.Reconciliation)
 	}
 }
+
+// #2806 — the run the reconciliation caught, replayed:
+// live-feat-budget-resume-1786088951, node `writer`: a first attempt
+// died on budget_exceeded, the resumed run re-executed the node, and
+// BOTH attempts emitted their step-1 usage (23, then 31 output tokens).
+// The checkpoint coordinate derives from the step, not the attempt, so
+// the retried attempt wrote where the first had written — and a store
+// that overwrites there leaves the baseline at 31 where the feed
+// carries 54. Both attempts must stay in the baseline the comparison
+// reads.
+func TestARetriedNodeKeepsBothAttemptsInTheBaseline(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	runID := newRun(t, s)
+	nodeStarted(t, s, runID, "writer")
+	step(t, s, runID, "writer", map[string]any{"input_tokens": 1200, "output_tokens": 23})
+	step(t, s, runID, "writer", map[string]any{"input_tokens": 2100, "output_tokens": 31})
+	// Two attempts, one coordinate: exactly what the retried node wrote.
+	for _, u := range [][2]int{{1200, 23}, {2100, 31}} {
+		if err := store.AsTurnStore(s).WriteTurn(ctx, &store.TurnCheckpoint{
+			RunID: runID, NodeID: "writer", LoopIter: 0, TurnIndex: 0,
+			Backend: "claude_code",
+			Usage:   store.TurnUsage{InputTokens: u[0], OutputTokens: u[1]},
+		}); err != nil {
+			t.Fatalf("WriteTurn: %v", err)
+		}
+	}
+
+	prof, err := ParseRun(ctx, s, runID)
+	if err != nil {
+		t.Fatalf("ParseRun: %v", err)
+	}
+	u := prof.Nodes[0].Usage
+	if u.Turns != 2 {
+		t.Fatalf("turns read = %d, want 2 — the retried attempt erased the first attempt's checkpoint", u.Turns)
+	}
+	if u.TurnInputTokens != 3300 || u.TurnOutputTokens != 54 {
+		t.Fatalf("the checkpoints sum to %d/%d, want 3300/54 (both attempts)", u.TurnInputTokens, u.TurnOutputTokens)
+	}
+	if !u.Reconcilable || !u.Reconciled() {
+		t.Fatalf("a retried node must reconcile once both attempts are kept: %+v", u)
+	}
+	if r := Aggregate([]*RunProfile{prof}).Reconciliation; r.NodesWithGap != 0 {
+		t.Fatalf("the corpus still reports a gap on a retried node: %+v", r)
+	}
+}
