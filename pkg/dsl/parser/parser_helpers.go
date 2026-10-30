@@ -440,13 +440,23 @@ func (p *parser) rescueTopLevelDeclaration(i int, t Token, cols []int, depth, pe
 
 // consumeBrokenListRemainder eats the n peeked tokens of a broken inline
 // list's remainder, saying each lexer diagnosis the span held once, the way
-// skipIndentedBlock says one.
+// skipIndentedBlock says one. The span is recorded on the open-block stack
+// (skipped): the parser's block loops never see these tokens, so the stack
+// must not read their INDENT/DEDENT pairs either — a replay that did let a
+// second resync in the same block read one level short and land with too
+// few DEDENTs, handing a later declaration to a loop that refuses it
+// (#2771).
 func (p *parser) consumeBrokenListRemainder(n int) {
+	if n <= 0 {
+		return
+	}
+	from := p.lex.ti
 	for ; n > 0; n-- {
 		if tok := p.next(); tok.Type == TokenError {
 			p.lexerError(tok)
 		}
 	}
+	p.blocks.skipped = append(p.blocks.skipped, indexSpan{from, p.lex.ti})
 }
 
 // declStartsBlock reports whether the token opens a top-level declaration —
@@ -546,7 +556,19 @@ func (p *parser) spliceDedents(at, n, line int) {
 	}
 	if at < p.blocks.ti {
 		// The open-block stack read past the splice point: what it read
-		// is no longer the stream, so it starts over (openBlocks).
+		// is no longer the stream, so it starts over (openBlocks). The
+		// skipped spans' indices move with the insertion; a splice inside
+		// a span grows it (the resync only ever splices at or past the
+		// cursor, so this is the defensive path).
+		for k := range p.blocks.skipped {
+			sp := &p.blocks.skipped[k]
+			if sp.from >= at {
+				sp.from += n
+				sp.to += n
+			} else if sp.to > at {
+				sp.to += n
+			}
+		}
 		p.blocks.reset()
 	}
 }
@@ -746,21 +768,16 @@ func (p *parser) scanBlockClosePoint(start, col int, cols []int, hosts []string)
 // level it pushed reads its column off the first real token of the line it
 // opens (resync-spliced DEDENTs may sit between); until that token is
 // consumed the level reads as column 1. An earlier resync's consumed
-// remainder held INDENT/DEDENT pairs the parser's loops never saw, so the
-// replay can drift from the loops a later resync still has open — it then
-// reads fewer levels than the loops hold, and the rescue bails, or lands
-// with too few DEDENTs and hands a later declaration to a loop that refuses
-// it (#2771 pins the shape); the kept stack keeps that drift exactly where
-// the replay had it, so no verdict moves here.
+// remainder is not read (skipped): the parser's block loops never saw those
+// tokens, so the INDENT/DEDENT pairs they hold must not move the stack — a
+// replay that read them let a second resync in the same block land with too
+// few DEDENTs and lose a declaration (#2771).
 func (p *parser) openBlocks() (cols []int, hosts []string) {
 	s := &p.blocks
 	if s.cols == nil || s.ti > p.lex.ti {
 		s.reset()
 	}
-	toks := p.lex.tokens[:p.lex.ti]
-	for ; s.ti < len(toks); s.ti++ {
-		s.read(toks[s.ti])
-	}
+	s.readThrough(p.lex.tokens[:p.lex.ti])
 	cols = slices.Clone(s.cols)
 	for i, c := range cols {
 		if c == 0 {
@@ -775,9 +792,11 @@ func (p *parser) openBlocks() (cols []int, hosts []string) {
 }
 
 // openBlockStack is the open-block stack openBlocks reads: the replay of the
-// consumed stream's INDENT/DEDENT pairs, kept current token by token.
+// consumed stream's INDENT/DEDENT pairs, kept current token by token, minus
+// the spans the parser's loops never saw (skipped).
 type openBlockStack struct {
-	// ti is how far the stack has read: p.lex.tokens[:ti] are in it.
+	// ti is how far the stack has read: p.lex.tokens[:ti] are in it, the
+	// skipped spans excepted.
 	ti int
 	// cols and hosts are the stack, the top level first: the column each
 	// open block reads its lines at — 0 while the level's first real token
@@ -798,17 +817,48 @@ type openBlockStack struct {
 	// reading, a start-over included; the witness of #2626 holds it to the
 	// stream's length — a token is read once, however many resyncs ask.
 	replayed int
+	// skipped are the absolute index spans of the consumed broken-list
+	// remainders, recorded by consumeBrokenListRemainder: the parser's
+	// block loops never saw those tokens, so the stack must not read their
+	// INDENT/DEDENT pairs either (#2771). The spans arrive in order and
+	// never overlap (the stream's cursor only moves forward past a
+	// remainder); si is the span the catch-up reads at. Splices land at or
+	// past the cursor, never inside a span; the one defensive exception
+	// (a splice behind what the stack read) shifts them. Kept over reset,
+	// as replayed is: they name spans of the stream, not of the reading.
+	skipped []indexSpan
+	si      int
 }
 
+// indexSpan is a half-open span [from, to) of absolute stream indices.
+type indexSpan struct{ from, to int }
+
 // openBlocksCheck, when set, is handed every answer openBlocks gives; the
-// package's tests set it to hold the kept stack to a replay of the whole
-// consumed stream at each call. Nil outside tests.
+// package's tests set it to hold the kept stack to a replay of the consumed
+// stream at each call. Nil outside tests.
 var openBlocksCheck func(p *parser, cols []int, hosts []string)
 
 // reset starts the stack over from the first token of the stream, keeping
-// the count of tokens read so far.
+// the count of tokens read so far and the skipped spans (they name spans of
+// the stream, unchanged by a start-over).
 func (s *openBlockStack) reset() {
-	*s = openBlockStack{cols: []int{1}, hosts: []string{""}, replayed: s.replayed}
+	*s = openBlockStack{cols: []int{1}, hosts: []string{""}, replayed: s.replayed, skipped: s.skipped}
+}
+
+// readThrough reads the tokens of toks the stack has not read yet, past the
+// skipped spans without push/pop: the parser's loops never saw them.
+func (s *openBlockStack) readThrough(toks []Token) {
+	for s.ti < len(toks) {
+		for s.si < len(s.skipped) && s.skipped[s.si].to <= s.ti {
+			s.si++
+		}
+		if s.si < len(s.skipped) && s.ti >= s.skipped[s.si].from {
+			s.ti = s.skipped[s.si].to
+			continue
+		}
+		s.read(toks[s.ti])
+		s.ti++
+	}
 }
 
 // read is one more consumed token in the stack.

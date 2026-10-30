@@ -23,7 +23,7 @@ func TestMain(m *testing.M) {
 }
 
 func checkOpenBlocks(p *parser, cols []int, hosts []string) {
-	wantCols, wantHosts := replayOpenBlocks(p.lex.tokens[:p.lex.ti])
+	wantCols, wantHosts := replayOpenBlocks(p.lex.tokens[:p.lex.ti], p.blocks.skipped)
 	if !slices.Equal(cols, wantCols) || !slices.Equal(hosts, wantHosts) {
 		panic(fmt.Sprintf("openBlocks at token %d of %s: kept stack %v %q, replay of the consumed stream %v %q", p.lex.ti, p.file, cols, hosts, wantCols, wantHosts))
 	}
@@ -31,8 +31,11 @@ func checkOpenBlocks(p *parser, cols []int, hosts []string) {
 
 // replayOpenBlocks is the open-block lookup as it stood before #2626 — the
 // whole consumed stream walked at every call — kept verbatim as the
-// reference the incremental stack is held to.
-func replayOpenBlocks(toks []Token) (cols []int, hosts []string) {
+// reference the incremental stack is held to, plus the one change of #2771:
+// the consumed broken-list remainders (skipped) are not read, since the
+// parser's loops never saw them. What the replay read of them was the drift
+// #2771 moved.
+func replayOpenBlocks(toks []Token, skipped []indexSpan) (cols []int, hosts []string) {
 	cols = []int{1}
 	hosts = []string{""}
 	var lineFirst, lineSecond, lineThird Token
@@ -46,7 +49,15 @@ func replayOpenBlocks(toks []Token) (cols []int, hosts []string) {
 		}
 		lineFirst, lineSecond, lineThird = Token{}, Token{}, Token{}
 	}
+	si := 0
 	for i := 0; i < len(toks); i++ {
+		for si < len(skipped) && skipped[si].to <= i {
+			si++
+		}
+		if si < len(skipped) && i >= skipped[si].from {
+			i = skipped[si].to - 1
+			continue
+		}
 		switch toks[i].Type {
 		case TokenIndent:
 			col := 1
@@ -166,7 +177,8 @@ func deeperBrokenListsSource(n int) string {
 // Under the suite's cross-check, a reading with several resyncs exercises
 // the catch-up — the second answer and the later ones read only the tokens
 // consumed since — and every answer still equals the replay: the kept stack
-// never started over (replayed is the cursor of the last call, not a sum).
+// never started over (replayed plus the skipped spans is the cursor of the
+// last call, not a sum).
 func TestOpenBlocksCatchUpUnderTheCheck(t *testing.T) {
 	saved := openBlocksCheck
 	calls, lastTi := 0, 0
@@ -182,31 +194,37 @@ func TestOpenBlocksCatchUpUnderTheCheck(t *testing.T) {
 	if calls < 2 {
 		t.Fatalf("%d openBlocks calls: the source holds three broken lists, the catch-up needs a second call", calls)
 	}
-	if p.blocks.replayed != lastTi {
-		t.Errorf("replayed %d tokens over %d calls, the last at cursor %d: the stack started over instead of catching up", p.blocks.replayed, calls, lastTi)
+	skipped := 0
+	for _, sp := range p.blocks.skipped {
+		if sp.to <= lastTi {
+			skipped += sp.to - sp.from
+		}
+	}
+	if p.blocks.replayed+skipped != lastTi {
+		t.Errorf("replayed %d tokens (+%d skipped) over %d calls, the last at cursor %d: the stack started over instead of catching up", p.blocks.replayed, skipped, calls, lastTi)
 	}
 }
 
-// The replay's known drift, kept where it was (#2771 moves it deliberately):
-// after a first rescue, the consumed remainder's INDENT/DEDENT pairs — and
-// the DEDENT it spliced — are in the stream the stack reads, while the
-// parser's loops never saw them, so a second rescue in the same block reads
-// one level short, lands with one DEDENT too few, and the declaration after
-// the block is handed to a loop that refuses it. This test pins that
-// outcome so a change here cannot move a verdict unannounced.
-func TestResyncDriftIsKeptWhereTheReplayHadIt(t *testing.T) {
+// The replay's drift, moved by #2771: an earlier resync's consumed remainder
+// held INDENT/DEDENT pairs the parser's loops never saw, so a second rescue
+// in the same block read one level short, landed with one DEDENT too few,
+// and handed the declaration after the block to a loop that refused it —
+// agent z was lost. The stack now skips the remainders (the loops never saw
+// them), the second rescue lands with the two DEDENTs the loops wait for,
+// and every declaration after the block reads as itself.
+func TestResyncReadsTheStackTheLoopsHold(t *testing.T) {
 	src := "agent a:\n  model: \"m\"\n  sandbox:\n    network:\n      rules: [a,\n    image: i\n    network:\n      rules: [b,\n  description: \"after\"\nagent z:\n  model: \"m\"\n"
 	res := parseLenient("drift.bot", src)
 	var at []string
 	for _, d := range res.Diagnostics {
 		at = append(at, fmt.Sprintf("%s %d:%d", d.Code, d.Line, d.Column))
 	}
-	want := []string{"E002 5:17", "E002 8:17", "E012 9:3", "E012 10:1"}
+	want := []string{"E002 5:17", "E002 8:17"}
 	if !slices.Equal(at, want) {
-		t.Fatalf("diagnostics %v, want the drift's %v", at, want)
+		t.Fatalf("diagnostics %v, want the two broken lists' %v", at, want)
 	}
-	if len(res.File.Agents) != 1 || res.File.Agents[0].Name != "a" || res.File.Agents[0].Description != "" {
-		t.Errorf("agents %+v: the drift loses agent z and the description, as it did before the kept stack", res.File.Agents)
+	if len(res.File.Agents) != 2 || res.File.Agents[0].Name != "a" || res.File.Agents[0].Description != "after" || res.File.Agents[1].Name != "z" {
+		t.Errorf("agents %+v: the drift is fixed — the description stays with agent a and agent z reads as itself", res.File.Agents)
 	}
 }
 
@@ -323,7 +341,7 @@ func TestOpenBlocksAgreeWithTheReplayAtEveryCursor(t *testing.T) {
 		for _, at := range positions {
 			p.lex.ti = at
 			cols, hosts := p.openBlocks()
-			wantCols, wantHosts := replayOpenBlocks(p.lex.tokens[:at])
+			wantCols, wantHosts := replayOpenBlocks(p.lex.tokens[:at], p.blocks.skipped)
 			if !slices.Equal(cols, wantCols) || !slices.Equal(hosts, wantHosts) {
 				t.Fatalf("at token %d: kept stack %v %q, replay %v %q", at, cols, hosts, wantCols, wantHosts)
 			}
@@ -351,7 +369,7 @@ func TestOpenBlocksStartOverBehindASplice(t *testing.T) {
 		p.spliceDedents(network, 2, p.lex.tokens[network].Line)
 		p.lex.ti = at + 2
 		cols, hosts := p.openBlocks()
-		wantCols, wantHosts := replayOpenBlocks(p.lex.tokens[:p.lex.ti])
+		wantCols, wantHosts := replayOpenBlocks(p.lex.tokens[:p.lex.ti], p.blocks.skipped)
 		if !slices.Equal(cols, wantCols) || !slices.Equal(hosts, wantHosts) {
 			t.Fatalf("after a splice behind the stack: kept stack %v %q, replay %v %q", cols, hosts, wantCols, wantHosts)
 		}
