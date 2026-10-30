@@ -72,7 +72,7 @@ func TestSubbotRunner_aGateThatCanAskKeepsTheChildOutOfACopyBasedParent(t *testi
 			}
 			child := *msg
 			child.RunID = "run-child-spec"
-			spec, _, err := r.executorSpec(store.WithIdentity(context.Background(), "t1", "u1"), &child, childWf, dir, iterlog.Nop(), nil)
+			spec, _, err := r.executorSpec(store.WithIdentity(context.Background(), "t1", "u1"), &child, childWf, dir, iterlog.Nop(), nil, nil)
 			if err != nil || spec.Permission != tc.runLevel {
 				t.Fatalf("precondition: the child's executor spec: Permission=%q err=%v, want the run's %q", spec.Permission, err, tc.runLevel)
 			}

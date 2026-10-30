@@ -154,7 +154,7 @@ func TestRefreshGitCredentialsOnce_PartialDeliveryRetries(t *testing.T) {
 
 	// Tick 1: rotation reaches the host but NOT the pod → last stays "".
 	last := ""
-	r.refreshGitCredentialsOnce(context.Background(), "team-1", id, "run-1", path, repoURL, &last)
+	r.refreshGitCredentialsOnce(context.Background(), "team-1", id, "run-1", path, repoURL, &last, nil)
 	if last != "" {
 		t.Fatalf("last advanced on a partial delivery: %q", last)
 	}
@@ -165,7 +165,7 @@ func TestRefreshGitCredentialsOnce_PartialDeliveryRetries(t *testing.T) {
 	// Tick 2: pod exec recovered → the SAME rotation is retried and lands
 	// everywhere; only now does last advance.
 	fake.workspaceErr = nil
-	r.refreshGitCredentialsOnce(context.Background(), "team-1", id, "run-1", path, repoURL, &last)
+	r.refreshGitCredentialsOnce(context.Background(), "team-1", id, "run-1", path, repoURL, &last, nil)
 	if last != "token-v2" {
 		t.Fatalf("last = %q after full delivery, want token-v2", last)
 	}
@@ -175,7 +175,7 @@ func TestRefreshGitCredentialsOnce_PartialDeliveryRetries(t *testing.T) {
 
 	// Tick 3: nothing new — no re-push to the pod.
 	fake.workspaceFiles = map[string][]byte{}
-	r.refreshGitCredentialsOnce(context.Background(), "team-1", id, "run-1", path, repoURL, &last)
+	r.refreshGitCredentialsOnce(context.Background(), "team-1", id, "run-1", path, repoURL, &last, nil)
 	if len(fake.workspaceFiles) != 0 {
 		t.Fatalf("unchanged rotation re-pushed to the pod: %+v", fake.workspaceFiles)
 	}

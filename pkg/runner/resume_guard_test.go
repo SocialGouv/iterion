@@ -41,7 +41,7 @@ func scrubThroughRunner(t *testing.T, msg *queue.RunMessage, recordID string) (s
 		t.Fatal(err)
 	}
 	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
-	exec, _, err := r.buildExecutor(ctx, msg, &ir.Workflow{Name: "wf"}, "", iterlog.Nop(), nil)
+	exec, _, err := r.buildExecutor(ctx, msg, &ir.Workflow{Name: "wf"}, "", iterlog.Nop(), nil, nil)
 	if err != nil {
 		t.Fatalf("buildExecutor: %v", err)
 	}

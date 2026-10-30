@@ -502,7 +502,13 @@ kubernetes secret with a custom absolute `mount_path` is projected via
 `subPath`, which kubelet does *not* auto-update, so that projection stays
 at its launch value until pod restart; put refreshable tokens under the
 default `/run/iterion/secrets` directory. Reads are tenant-scoped and the
-value is never logged.
+value is never logged. Each rotation — file secrets and the clone's git
+credential alike — is also registered on the run's live secret guard
+(`Guard.Register`, copy-on-write) the moment it is picked up, so the fresh
+value is scrubbed from the run's log and events from that tick on; without
+the registration the launch-time value was the only one the known-literal
+layer matched, and a bot printing the credential file landed the rotated
+token verbatim in the run's sinks (#2756).
 
 Cloud setup API:
 

@@ -19,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
+	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy/detector"
@@ -79,8 +80,17 @@ type ExecutorSpec struct {
 	// redacts the parent's server-minted credentials: the child receives them
 	// through `with:`, under any name, before its own record exists.
 	ParentRunID string
-	Logger      *iterlog.Logger
-	StoreDir    string
+	// SecretGuardSink, when set, is called with the per-run secret guard the
+	// moment BuildExecutor builds it — the LATE-BOUND handle a caller whose
+	// own work starts before BuildExecutor (the cloud runner's mid-run secret
+	// rotation loops, #2756) reads the live guard through. The guard's
+	// Register seam is how a rotated credential joins redaction after launch.
+	// A nil argument means redaction built to nothing (the kill switch, or a
+	// run with no known value and the heuristic pass off): such a run has no
+	// guard to register into. Nil sink = the caller has no use for the guard.
+	SecretGuardSink func(*secretguard.Guard)
+	Logger          *iterlog.Logger
+	StoreDir        string
 	// WorkDir is the effective workspace of this run. It is the root used by
 	// Claw's relative file tools. Empty preserves the historical os.Getwd()
 	// fallback for callers that execute in their intended workspace.
@@ -442,6 +452,12 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// secrets, then thread it through the event hooks so every sink is
 	// scrubbed before persistence.
 	guard := model.BuildSecretGuard(ctx, spec.Workflow, spec.Vars, recordedMintedSecrets(ctx, spec))
+	// Hand the live guard to the caller that asked for it BEFORE anything
+	// else can fail: the runner's rotation loops start before BuildExecutor
+	// runs and read the guard through this handle once it lands (#2756).
+	if spec.SecretGuardSink != nil {
+		spec.SecretGuardSink(guard)
+	}
 	// …and through the run's LOGGER, the redaction chokepoint
 	// (docs/adr/149-the-run-logger-redacts-what-it-keeps.md, #2458): every record this fork keeps crosses
 	// guard.Redact before the write and before the warn+ hook, so a

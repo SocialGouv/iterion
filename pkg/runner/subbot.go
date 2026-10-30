@@ -283,7 +283,10 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 		// childWorkDir was resolved before the compile, so the {{workspace}}
 		// placeholders and the engine option below name the same tree.
 
-		childExec, childUsage, err := r.buildExecutor(ctx, &child, childWf, childWorkDir, childLogger, nil)
+		// The child's rotation loops register on the CHILD's guard (#2756):
+		// the handle is created before buildExecutor fills it.
+		childGuard := &runSecretGuard{}
+		childExec, childUsage, err := r.buildExecutor(ctx, &child, childWf, childWorkDir, childLogger, nil, childGuard)
 		if err != nil {
 			return nil, err
 		}
@@ -311,7 +314,8 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			runtime.WithWorkDir(childWorkDir),
 			runtime.WithSandboxRunObserver(r.sandboxRunObserver(sbObsCtx, sandboxObserverOpts{
 				runID: childRunID, tenantID: msg.TenantID, ownerID: msg.OwnerID,
-				secretRefs: r.sandboxFileSecretRefs(ctx, childWf),
+				secretRefs:  r.sandboxFileSecretRefs(ctx, childWf),
+				secretGuard: childGuard,
 				// No second checkpoint loop: a shared child is handed its
 				// parent's sandbox, and the parent's loop already preserves
 				// the one workspace they both work in.

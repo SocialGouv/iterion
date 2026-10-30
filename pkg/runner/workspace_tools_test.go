@@ -40,7 +40,7 @@ func TestRunnerClawToolsUseTheRunClone(t *testing.T) {
 
 	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop(), WorkDir: podBase, SandboxOverride: "none"}}
 	msg := &queue.RunMessage{RunID: "run-workspace-tools", WorkflowName: "wf"}
-	exec, _, err := r.buildExecutor(context.Background(), msg, &ir.Workflow{Name: "wf"}, clone, iterlog.Nop(), nil)
+	exec, _, err := r.buildExecutor(context.Background(), msg, &ir.Workflow{Name: "wf"}, clone, iterlog.Nop(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestRunnerBuildExecutorCreatesAMissingWorkspace(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "not-yet-created")
 	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop(), WorkDir: podBase, SandboxOverride: "none"}}
 	msg := &queue.RunMessage{RunID: "run-missing-workspace", WorkflowName: "wf"}
-	exec, _, err := r.buildExecutor(context.Background(), msg, &ir.Workflow{Name: "wf"}, missing, iterlog.Nop(), nil)
+	exec, _, err := r.buildExecutor(context.Background(), msg, &ir.Workflow{Name: "wf"}, missing, iterlog.Nop(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

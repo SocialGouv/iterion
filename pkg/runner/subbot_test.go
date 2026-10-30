@@ -269,7 +269,7 @@ func TestPodEngineRunsSubbotNodes(t *testing.T) {
 
 	newEngine := func(t *testing.T, runID string, wired bool) *runtime.Engine {
 		t.Helper()
-		exec, usage, err := r.buildExecutor(ctx, msg, wf, dir, iterlog.Nop(), nil)
+		exec, usage, err := r.buildExecutor(ctx, msg, wf, dir, iterlog.Nop(), nil, nil)
 		if err != nil {
 			t.Fatalf("buildExecutor: %v", err)
 		}

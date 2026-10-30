@@ -28,7 +28,7 @@ func TestExecutorSpecBindsInboxAndAsyncAsk(t *testing.T) {
 	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
 	msg := &queue.RunMessage{RunID: "run-spec", WorkflowName: "wf", Permission: "deny"}
 
-	spec, usage, err := r.executorSpec(context.Background(), msg, &ir.Workflow{}, "", iterlog.Nop(), nil)
+	spec, usage, err := r.executorSpec(context.Background(), msg, &ir.Workflow{}, "", iterlog.Nop(), nil, nil)
 	if err != nil {
 		t.Fatalf("executorSpec: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestExecutorSpecNamesTheEnginesWorkDirForTheSandboxProbe(t *testing.T) {
 	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop(), WorkDir: podBase}}
 	msg := &queue.RunMessage{RunID: "run-probe", WorkflowName: "wf"}
 
-	spec, _, err := r.executorSpec(context.Background(), msg, &ir.Workflow{}, clone, iterlog.Nop(), nil)
+	spec, _, err := r.executorSpec(context.Background(), msg, &ir.Workflow{}, clone, iterlog.Nop(), nil, nil)
 	if err != nil {
 		t.Fatalf("executorSpec: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestExecutorSpecThreadsTheProvidersAllowlist(t *testing.T) {
 			Fallbacks: []ir.Fallback{{Name: "rescue", Backend: "codex", Provider: "zai"}},
 		},
 	}}
-	spec, _, err := r.executorSpec(context.Background(), msg, wf, "", iterlog.Nop(), nil)
+	spec, _, err := r.executorSpec(context.Background(), msg, wf, "", iterlog.Nop(), nil, nil)
 	if err != nil {
 		t.Fatalf("executorSpec: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestExecutorSpecThreadsTheProvidersAllowlist(t *testing.T) {
 	// The class twin: no list on the message, the same rescue is in the
 	// answer — the drop is the allowlist's doing.
 	msg2 := &queue.RunMessage{RunID: "run-plain", WorkflowName: "wf"}
-	spec2, _, err := r.executorSpec(context.Background(), msg2, wf, "", iterlog.Nop(), nil)
+	spec2, _, err := r.executorSpec(context.Background(), msg2, wf, "", iterlog.Nop(), nil, nil)
 	if err != nil {
 		t.Fatalf("executorSpec (no list): %v", err)
 	}

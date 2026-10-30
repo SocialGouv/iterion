@@ -2592,12 +2592,17 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// a long (or redelivered) run would push/comment with a dead credential.
 	// The server-side refresh worker keeps the STORE record fresh; re-read
 	// it and rewrite the file so `cat` at use time gets a live token.
+	//
+	// secretGuard is the late-bound handle the rotation loops register each
+	// rotated value on (#2756): BuildExecutor builds the run's guard AFTER
+	// these loops arm, so they read it through the holder per tick.
+	secretGuard := &runSecretGuard{}
 	if len(fileSecrets) > 0 && r.cfg.GenericSecrets != nil {
 		if creds, ok := secrets.CredentialsFromContext(ctx); ok && len(creds.GenericRefs) > 0 {
 			refreshCtx, stopRefresh := context.WithCancel(ctx)
 			defer stopRefresh()
 			errtrack.Go("runner.refreshFileSecrets", func() {
-				r.refreshFileSecretsLoop(refreshCtx, msg.TenantID, creds.GenericRefs, fileSecrets)
+				r.refreshFileSecretsLoop(refreshCtx, msg.TenantID, creds.GenericRefs, fileSecrets, secretGuard)
 			})
 		}
 	}
@@ -2610,7 +2615,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 			gitCredCtx, stopGitCred := context.WithCancel(ctx)
 			defer stopGitCred()
 			errtrack.Go("runner.refreshGitCredentials", func() {
-				r.refreshGitCredentialsLoop(gitCredCtx, msg.TenantID, ref, msg.RunID, workDir, msg.RepoURL)
+				r.refreshGitCredentialsLoop(gitCredCtx, msg.TenantID, ref, msg.RunID, workDir, msg.RepoURL, secretGuard)
 			})
 		}
 	}
@@ -2687,7 +2692,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	if superviseHub != nil {
 		hookObservers = []func(store.Event){superviseHub.Publish}
 	}
-	executor, usage, err := r.buildExecutor(ctx, msg, wf, workDir, runLogger, hookObservers)
+	executor, usage, err := r.buildExecutor(ctx, msg, wf, workDir, runLogger, hookObservers, secretGuard)
 	if err != nil {
 		return err
 	}
@@ -2822,6 +2827,10 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 			runID: msg.RunID, tenantID: msg.TenantID, ownerID: msg.OwnerID,
 			secretRefs: r.sandboxFileSecretRefs(ctx, wf),
 			checkpoint: checkpointOn,
+			// The sandboxed file-secret refresher registers each rotated
+			// value on the run's live guard too (#2756) — same handle the
+			// pod-side loops carry, filled by buildExecutor above.
+			secretGuard: secretGuard,
 		})))
 	// Bundle resources: a bot-qualified run attaches its bundle so the
 	// engine mirrors skills/ into <workspace>/.claude/skills AND
@@ -3323,7 +3332,7 @@ func envPositiveFloat(key string) (float64, bool) {
 // through — executeRun reads its RunTotals at the end of the attempt
 // to charge the org's monthly usage. Always wrapped (Prometheus
 // registry may be nil) so org metering works without metrics.
-func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, workDir string, logger *iterlog.Logger, hookObservers []func(store.Event)) (runtime.NodeExecutor, *metricsEmitter, error) {
+func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, workDir string, logger *iterlog.Logger, hookObservers []func(store.Event), guard *runSecretGuard) (runtime.NodeExecutor, *metricsEmitter, error) {
 	// runview.BuildExecutor stats this directory to root Claw's file tools,
 	// while the engine only creates a missing workspace lazily on its first
 	// write — a run with no repository to clone keeps the pod's base
@@ -3333,7 +3342,7 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 			return nil, nil, fmt.Errorf("runner: create run workspace %s: %w", workDir, err)
 		}
 	}
-	spec, usage, err := r.executorSpec(ctx, msg, wf, workDir, logger, hookObservers)
+	spec, usage, err := r.executorSpec(ctx, msg, wf, workDir, logger, hookObservers, guard)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -3348,7 +3357,7 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 // buildExecutor so the wiring is assertable: a binder missing here is a
 // capability that silently dies on every cloud run (the supervisor-steer
 // and operator-chat inbox was exactly that).
-func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, workDir string, logger *iterlog.Logger, hookObservers []func(store.Event)) (runview.ExecutorSpec, *metricsEmitter, error) {
+func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, workDir string, logger *iterlog.Logger, hookObservers []func(store.Event), guard *runSecretGuard) (runview.ExecutorSpec, *metricsEmitter, error) {
 	operatorFallbacks, policyLadder := splitMsgFallback(msg.Fallback)
 	var zero runview.ExecutorSpec
 	emitter, ok := r.cfg.Store.(model.EventEmitter)
@@ -3378,6 +3387,11 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// Backend-hook events (assistant_text, tool_*, llm_*) fire only
 		// this seam — the declared-supervisor hub rides it.
 		EventObservers: hookObservers,
+		// The rotation loops armed before this build register each rotated
+		// credential on the run's LIVE guard through the holder (#2756):
+		// the sink is the late binding, and a binder missing here is the
+		// rotated token landing verbatim in the run's log on every cloud run.
+		SecretGuardSink: secretGuardSinkOf(guard),
 		// The run-scoped logger (teed into the RunLogStore) — the executor
 		// emits the `[node#iter/backend]` agent-stream lines the studio's
 		// per-node Logs tab filters on; on the raw pod logger they would
