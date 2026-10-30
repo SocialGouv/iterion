@@ -13,9 +13,13 @@ import (
 // sandbox), so they cannot receive it as a value: the runner creates the
 // holder first, BuildExecutor delivers the guard through the
 // ExecutorSpec.SecretGuardSink when it lands, and every rotation tick
-// Loads the current guard — nil until then (a tick before the executor
-// builds registers nothing; the NEXT tick of the same unchanged rotation
-// does).
+// Loads the current guard — nil until then. A tick that fires before the
+// executor builds registers nothing AND IS NOT REPLAYED: the refresher
+// loops advance their `last` watermark once a rotation is delivered, so
+// the same unchanged value never re-registers — the first tick of a
+// rotation lands on the live guard only when it fires after the build
+// (the build precedes the first node dispatch; the first tick is minutes
+// away).
 type runSecretGuard struct {
 	g atomic.Pointer[secretguard.Guard]
 }
@@ -41,10 +45,14 @@ func (h *runSecretGuard) Load() *secretguard.Guard {
 // registerRotated registers a mid-run rotated credential on the live
 // guard so the fresh value is scrubbed from every sink from this tick on
 // — the launch-time value is otherwise the only one the known-literal
-// layer ever matched. RedactOnly: the placeholder of a rotated value
-// resolves nowhere. No-op when the guard has not landed yet or the run
-// has none; the value is re-registered on a later tick only if it changed
-// again (Register itself dedupes an already-known value).
+// layer ever matched. RedactOnly: for a name nothing declared, the
+// placeholder resolves nowhere; for a DECLARED secret of the same name,
+// Register carries the replaced registration's attributes over and the
+// fresh value takes the materialisable slot (the declared placeholder
+// keeps resolving — to the live value from now on). No-op when the guard
+// has not landed yet or the run has none; the value is re-registered on a
+// later tick only if it changed again (Register itself dedupes an
+// already-known value).
 func (h *runSecretGuard) registerRotated(name, value string) {
 	if g := h.Load(); g != nil {
 		g.Register(secretguard.Secret{Name: name, Value: value, RedactOnly: true})

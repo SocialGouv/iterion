@@ -12,6 +12,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -236,5 +237,43 @@ func TestRotatedFileSecretIsRegisteredOnTheLiveGuard(t *testing.T) {
 	}
 	if !strings.Contains(redacted, "__ITERION_SECRET_forge_token") {
 		t.Fatalf("the rotated file secret redacted to no forge_token placeholder: %q", redacted)
+	}
+}
+
+// TestRegisterRotatedKeepsTheReplacedEgressScope is the SEAM witness of the
+// rotation scope: the holder→Register path a refresh loop actually takes
+// must deliver the replaced registration's egress scope to the fresh value
+// — a mid-run rotation of a `hosts:`-scoped credential is the live
+// credential of the run, and an allow-any registration on it blinds the
+// proxy's Layer-2 gate to exactly the token an exfiltration would carry.
+// Red when registerRotated stops reaching the inheriting Register.
+func TestRegisterRotatedKeepsTheReplacedEgressScope(t *testing.T) {
+	launch, rotated := rotatedTokenFixture(t), rotatedTokenFixture(t)
+	guard := secretguard.New([]secretguard.Secret{{
+		Name:  "forge_token",
+		Value: launch,
+		Hosts: []string{"forge.example.com"},
+	}}, secretguard.DefaultConfig())
+	holder := &runSecretGuard{}
+	holder.set(guard)
+
+	if !guard.ExfiltratesTo("body="+launch, "evil.example") {
+		t.Fatal("scenario broken: the launch value is not gated")
+	}
+	holder.registerRotated("forge_token", rotated)
+	if !guard.ContainsSecret(rotated) {
+		t.Fatal("scenario broken: the rotation did not register")
+	}
+	if !guard.ExfiltratesTo("body="+rotated, "evil.example") {
+		t.Fatal("the rotated credential is allow-any at the egress gate — the seam lost the replaced scope")
+	}
+	if guard.ExfiltratesTo("body="+rotated, "forge.example.com") {
+		t.Fatal("the rotated credential is gated toward its own approved host")
+	}
+	// And the declared placeholder resolves to the live token: a bot that
+	// read the credential uses the value it read, not a dead one.
+	ph := secretguard.PlaceholderForName("forge_token")
+	if got := guard.MaterializeFor(secretsink.Agent, ph); got != rotated {
+		t.Fatalf("the declared placeholder materialises %q, want the live token", got)
 	}
 }

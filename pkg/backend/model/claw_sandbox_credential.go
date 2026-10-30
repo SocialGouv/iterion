@@ -7,6 +7,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 )
 
 // clawSandboxCredentialEnvKeys are the entries of the env
@@ -60,6 +61,15 @@ func ClawSandboxCredential(ctx context.Context, model string, home delegate.Sand
 			if env[key] != "" {
 				return "the env the dispatch forwards into the container (" + key + ")", true
 			}
+		}
+		// A gateway-served node whose gateway env composed cleanly IS a
+		// channel, key or not: the endpoint is operator infrastructure
+		// (compatgw) that the dispatch forwards to the container, and an
+		// empty APIKeyEnv is a documented valid configuration — a gateway may
+		// sit behind network auth alone. Reading it as "no credential
+		// channel" refused runs the node's own dispatch would have served.
+		if modelroute.Parse(model).Gateway() && env[compatgw.BaseURLEnv] != "" {
+			return "the operator's gateway route the dispatch forwards (" + compatgw.BaseURLEnv + ")", true
 		}
 	}
 	if payload, _ := hostCodexForfait(ctx, model); payload != nil {

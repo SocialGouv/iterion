@@ -132,6 +132,6 @@ func admitSandboxCredentials(ctx context.Context, p SandboxParams, caps sandbox.
 		Message: fmt.Sprintf(
 			"untrusted (fork-lane) run refused before its sandbox starts: no credential can reach sandboxed node(s) %s — no run credential, nothing the launcher forwards at exec, and no file-based login the host_state mount still carries",
 			strings.Join(parts, ", ")),
-		Hint: "hand the run a credential that crosses the container boundary: export the API key the backend forwards (e.g. ANTHROPIC_API_KEY / OPENAI_API_KEY — forwarded by name at exec), or declare the credential as a workflow secret the sandbox mounts (`as: file`), or — on a runner whose host_state still mounts the operator's login — keep host_state: auto. The operator's own OAuth token is never handed to a fork's container by iterion itself.",
+		Hint: "hand the run a credential that crosses the container boundary: export the API key the backend forwards (e.g. ANTHROPIC_API_KEY / OPENAI_API_KEY — forwarded by name at exec), or — on a runner whose host_state still mounts the operator's login — keep host_state: auto. A credential declared `as: file` reaches the container's filesystem, not the backend CLI's auth, so it does not lift this refusal. The operator's own OAuth token is never handed to a fork's container by iterion itself.",
 	}
 }

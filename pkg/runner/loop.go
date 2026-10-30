@@ -2742,6 +2742,14 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// the engine stamps it onto the document for the floors that read
 		// there (a local resume, a subbot's child row).
 		runtime.WithBotSourceTier(msg.BotSourceTier),
+		// The same stamping for the workspace's trust (#1768): the wire
+		// message carries Trust and RepoSHAExpected (the clone gate reads
+		// them), and the subbot child already stamps its document — without
+		// the twin here a TOP-LEVEL untrusted run's document read as
+		// trusted, and the fork-lane admissions (the sandbox credential
+		// refusal) never judged it. Empty-safe: a trusted launch stamps
+		// nothing, so this is inert until the lane marks a run untrusted.
+		runtime.WithTrust(msg.Trust, msg.RepoSHAExpected),
 		// Sandbox defaults from the operator config (ITERION_SANDBOX_DEFAULT /
 		// ITERION_SANDBOX_HOST_STATE). pkg/cli/run.go wires these for `iterion
 		// run`; the cloud runner must too — else cfg.Sandbox.* is read and

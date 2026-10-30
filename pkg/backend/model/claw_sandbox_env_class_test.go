@@ -431,15 +431,17 @@ func assertRunnerHomeShape(t *testing.T, home, hostHome, workDir string) {
 // at a read of it. A road from anywhere else to a reader that also answers
 // from envStateConsults would go unseen.
 var crossingSpellings = map[string]string{
-	"var providerCredentialEnvVars": "the forwarding list itself",
-	"var providerRoutingEnvVars":    "the routing subset, which forwardableProviderEnv forwards as explicit empties when the host leaves them unset",
-	"var clawStreamTimeoutEnvVars":  "the watchdog knobs, which forwardableProviderEnv crosses as the host's planted-as-unset answer, explicit empty included",
-	"forwardableProviderEnv":        "sets the crossing: a refusal, the run's own credentials, the host's resolved values",
-	"forwardableToolEnv":            "sets the crossing for the tool names that cross as-is when the launcher sets them (#2802)",
-	"var byokEnvVar":                "the variable a run's own key crosses as, which forwardableProviderEnv sets",
-	"anthropicWireShadowEnv":        "the ambient keys the crossing blanks, so the run's forfait outranks them",
-	"deliverHostCodexForfait":       "sets the crossing beside the host's forfait it wrote into the container, which a host-wide \"1\" orders",
-	"hostCodexForfait":              "asks whether a project .env planted the switch, and names it in the refusal: a planted order ships nothing into the container",
+	"var providerCredentialEnvVars":    "the forwarding list itself",
+	"var providerRoutingEnvVars":       "the routing subset, which forwardableProviderEnv forwards as explicit empties when the host leaves them unset",
+	"var clawSandboxCredentialEnvKeys": "the #1768 admission probe's own key list: ClawSandboxCredential reads the composed dispatch env through it (env[key] over the range), naming the first entry that carries a value",
+	"ClawSandboxCredential":            "reads the composed dispatch env over that range's keys, naming the first entry that carries a value — a map read the scan cannot see",
+	"var clawStreamTimeoutEnvVars":     "the watchdog knobs, which forwardableProviderEnv crosses as the host's planted-as-unset answer, explicit empty included",
+	"forwardableProviderEnv":           "sets the crossing: a refusal, the run's own credentials, the host's resolved values",
+	"forwardableToolEnv":               "sets the crossing for the tool names that cross as-is when the launcher sets them (#2802)",
+	"var byokEnvVar":                   "the variable a run's own key crosses as, which forwardableProviderEnv sets",
+	"anthropicWireShadowEnv":           "the ambient keys the crossing blanks, so the run's forfait outranks them",
+	"deliverHostCodexForfait":          "sets the crossing beside the host's forfait it wrote into the container, which a host-wide \"1\" orders",
+	"hostCodexForfait":                 "asks whether a project .env planted the switch, and names it in the refusal: a planted order ships nothing into the container",
 }
 
 // envStateConsults answer for a name from state other than the process env,

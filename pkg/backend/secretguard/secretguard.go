@@ -1239,65 +1239,74 @@ func (g *Guard) SecretFileHints() []FileSecretHint {
 // same "no such file" it would in a sandbox, mirroring
 // pkg/runtime/sandbox_secret_files.go's skip.
 //
-// Concurrency: the rewrite is a copy-on-write state swap, so readers
-// (ResolveSecretRef / SecretFileHints) are race-safe against it by
-// construction. Two CONCURRENT MaterializeHostFiles calls remain a logic
-// race — the caller fires it once per run (the executor guards it with a
-// sync.Once before dispatching any node). The returned cleanup removes
-// each written file; callers typically wrap it to also remove `dir`.
-// Nil-safe.
+// Concurrency: the rewrite is a copy-on-write state swap, exchanged with a
+// CompareAndSwap on the generation it was built from, so a concurrent
+// Register cannot be dropped by the store (and the swap cannot overwrite a
+// registration that landed mid-rewrite — the build restarts from the fresh
+// generation, whose fileValueByName a same-name rotation may have already
+// refreshed). Readers (ResolveSecretRef / SecretFileHints) are race-safe
+// against it by construction. Two CONCURRENT MaterializeHostFiles calls
+// remain a logic race — the caller fires it once per run (the executor
+// guards it with a sync.Once before dispatching any node). The returned
+// cleanup removes each written file; callers typically wrap it to also
+// remove `dir`. Nil-safe.
 func (g *Guard) MaterializeHostFiles(dir string) (func(), error) {
-	st := g.load()
-	if st == nil || len(st.fileHints) == 0 {
-		return func() {}, nil
-	}
 	if strings.TrimSpace(dir) == "" {
 		return nil, errors.New("secretguard: host materialisation dir is empty")
 	}
-	next := &guardState{}
-	*next = *st
-	next.filePathByName = make(map[string]string, len(st.filePathByName))
-	for k, v := range st.filePathByName {
-		next.filePathByName[k] = v
-	}
-	next.fileHints = append([]FileSecretHint(nil), st.fileHints...)
 	var written []string
 	cleanup := func() {
 		for _, p := range written {
 			_ = os.Remove(p)
 		}
 	}
-	for i, h := range st.fileHints {
-		val, ok := st.fileValueByName[h.Name]
-		if !ok || val == "" {
-			continue
+	for {
+		st := g.load()
+		if st == nil || len(st.fileHints) == 0 {
+			return func() {}, nil
 		}
-		// A file already present at the DECLARED mount path is the cloud
-		// runner's own materialisation (materializeFileSecretsNoSandbox),
-		// which the runner's mid-run refresh loop keeps LIVE as the store
-		// record rotates. Keep the hint pointing there instead of taking a
-		// per-run tempdir snapshot: the snapshot freezes the launch-time
-		// value, so an agent reading the hinted path after the token's
-		// lifetime (a GitHub App installation token lives ~1h; the forge
-		// review post is the run's LAST action) would 401 — the live prod
-		// failure this closes. Local host runs have nothing at the mount
-		// path (creating /run/iterion/secrets needs root) and keep the
-		// tempdir path below.
-		if h.Path != "" {
-			if _, err := os.Stat(h.Path); err == nil {
-				next.filePathByName[h.Name] = h.Path
+		next := &guardState{}
+		*next = *st
+		next.filePathByName = make(map[string]string, len(st.filePathByName))
+		for k, v := range st.filePathByName {
+			next.filePathByName[k] = v
+		}
+		next.fileHints = append([]FileSecretHint(nil), st.fileHints...)
+		for i, h := range st.fileHints {
+			val, ok := st.fileValueByName[h.Name]
+			if !ok || val == "" {
 				continue
 			}
+			// A file already present at the DECLARED mount path is the cloud
+			// runner's own materialisation (materializeFileSecretsNoSandbox),
+			// which the runner's mid-run refresh loop keeps LIVE as the store
+			// record rotates. Keep the hint pointing there instead of taking a
+			// per-run tempdir snapshot: the snapshot freezes the launch-time
+			// value, so an agent reading the hinted path after the token's
+			// lifetime (a GitHub App installation token lives ~1h; the forge
+			// review post is the run's LAST action) would 401 — the live prod
+			// failure this closes. Local host runs have nothing at the mount
+			// path (creating /run/iterion/secrets needs root) and keep the
+			// tempdir path below.
+			if h.Path != "" {
+				if _, err := os.Stat(h.Path); err == nil {
+					next.filePathByName[h.Name] = h.Path
+					continue
+				}
+			}
+			hostPath := filepath.Join(dir, secrets.SanitizeFileName(h.Name))
+			if err := os.WriteFile(hostPath, []byte(val), 0o600); err != nil {
+				cleanup()
+				return nil, fmt.Errorf("secretguard: write host secret file %q: %w", h.Name, err)
+			}
+			written = append(written, hostPath)
+			next.fileHints[i].Path = hostPath
+			next.filePathByName[h.Name] = hostPath
 		}
-		hostPath := filepath.Join(dir, secrets.SanitizeFileName(h.Name))
-		if err := os.WriteFile(hostPath, []byte(val), 0o600); err != nil {
-			cleanup()
-			return nil, fmt.Errorf("secretguard: write host secret file %q: %w", h.Name, err)
+		if g.state.CompareAndSwap(st, next) {
+			return cleanup, nil
 		}
-		written = append(written, hostPath)
-		next.fileHints[i].Path = hostPath
-		next.filePathByName[h.Name] = hostPath
+		// A Register landed inside the window: rebuild from the generation it
+		// produced and retry — the same host paths, the fresh values.
 	}
-	g.state.Store(next)
-	return cleanup, nil
 }

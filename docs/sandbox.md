@@ -80,8 +80,10 @@ delivers: the run's resolved credentials, the launcher env each backend
 forwards by name at exec time, the dispatch-time forfait copies, and the
 `host_state` mount itself. A node with no channel refuses the launch with
 `SANDBOX_CREDENTIAL_UNREACHABLE`, naming the backend, the node, and the
-ways out (an API key the backend forwards, an `as: file` credential
-secret, or `host_state: auto` on a runner that still mounts the login); a
+ways out (an API key the backend forwards, or `host_state: auto` on a
+runner that still mounts the login — a credential declared `as: file`
+reaches the container's filesystem, not the backend CLI's auth, so it does
+not lift this refusal); a
 node whose backend the predicate cannot read is a
 `sandbox_no_credential_warning`, never a refusal on a guess. Trusted runs
 are never judged, and handing the operator's own OAuth token to a fork's
