@@ -54,14 +54,16 @@ var briefPromiseExemptions = map[string]struct {
 //
 // Both halves are MEASURED, neither restated:
 //
-//   - the capability comes from the engine's own seam — EffectiveToolNames
-//     over every route the node may take, which is the list the runtime puts
-//     on delegate.Task.AllowedTools after its appends — plus the permission
-//     rules that decide what RUNS. On the CLI backends the declaration is what
-//     bounds availability (claudeNativeDisallowedTools withholds every native
-//     tool the list omits), and `memory_*` plus autoload are claw-only, so a
-//     claude_code node that names neither a shell nor a writer and carries no
-//     `memory:` block has no path to the tree at all.
+//   - the capability is the LINT's own answer, asked of the same predicate
+//     C274 asks per node (bundlelint.NodeDurableWriter): the routes in the
+//     walk's posture, the engine's effective-tool seam, the per-backend
+//     readings of `readonly:` and of the `tools:` list, and the gate asked
+//     per route. This guard used to re-derive each arm, and every
+//     re-derivation was the lint's last defect one reader behind —
+//     dispatch's route posture against the walk's, and the gate asked over
+//     the union of the routes' spellings (iterion#2881), the unread
+//     `readonly:` flag and the list pi/kimi/grok/opencode never receive
+//     (iterion#2882). One predicate, two readers, no drift by construction.
 //   - the promise comes from the bundle's own pages, attributed to the bundle
 //     it is ABOUT: a generated catalogue card describes another bot, so a card
 //     for `evolve` is checked against bots/evolve, not against its host.
@@ -154,8 +156,16 @@ func bundleSlug(prefix string) string {
 // durableMemoryWritePath answers whether any LLM node of one bundle holds a
 // path to the workspace memory tree, and names it. The empty string means no
 // node does.
+//
+// The question is asked ONCE, of the predicate the lint asks
+// (bundlelint.NodeDurableWriter — C274's capability half): a `memory:` block
+// whose write tool a run gets and the gate leaves, or a durable writer the
+// node holds on one of its routes whose call THAT ROUTE's gate leaves. Every
+// arm the engine decides — the routes a `when:` gate walks, the appends a
+// route decides, what `readonly:` withholds on a backend, whether the
+// `tools:` list reaches it, the gate's answer per route — is read there and
+// nowhere here, so this guard cannot drift from the lint by construction.
 func durableMemoryWritePath(sw shippedWorkflow) string {
-	exec := model.NewProgramExecutor(sw.wf)
 	ids := make([]string, 0, len(sw.wf.Nodes))
 	for id := range sw.wf.Nodes {
 		ids = append(ids, id)
@@ -166,80 +176,19 @@ func durableMemoryWritePath(sw shippedWorkflow) string {
 		if !ok {
 			continue
 		}
-		routes := append([]string{exec.EffectiveBackendName(sw.wf.Nodes[id])}, exec.EffectiveFallbackBackends(sw.wf.Nodes[id])...)
-		// `memory:` and autoload are claw-only (C047, ir.validate_nodes), so
-		// the block is a path exactly on a claw route — and only where the
-		// run gets the store's WRITE tool: `write: false` and the
-		// instance-wide `global` space both withhold it
-		// (ir.Memory.InstallsWriteTool, the predicate pkg/bundlelint's C274
-		// reads, so this guard and the lint cannot disagree) — and only where
-		// the GATE lets a call of that tool run. `memory_write` is gated like
-		// any other claw tool, so a block under `permission: deny` whose
-		// allow list names no writer installs a tool nothing can call.
-		if llm.GetMemory().InstallsWriteTool() && slices.Contains(routes, delegate.BackendClaw) {
-			if writer := storeWriterLeftTo(llm, sw.wf); writer != "" {
-				return fmt.Sprintf("node %q carries a `memory:` block that installs %q, which its gate leaves, on a claw route", id, writer)
-			}
-		}
-		// `auto_memory: on` is per-bot memory too — ordinary file tools over a
-		// mirror the executor folds back into the store — and it needs NO arm
-		// of its own here: the grant it adds is in the ENGINE SEAM this guard
-		// already reads. EffectiveToolNames over a claw node with
-		// `auto_memory: on` and a restricted list holds `write_file`
-		// (automemory.ClawToolGrant, appended by assembleEffectiveTools), so
-		// the writer loop below finds it and asks the gate about it — while
-		// `tools: []` and an undeclared list hold nothing extra, because the
-		// executor's append sits behind `len(effectiveTools) > 0`. An arm
-		// reading the SWITCH instead credited every node that declared it,
-		// including the ones whose gate denies the granted writer and the
-		// ones running on a backend the grant never reaches (iterion#2832).
-
-		// An UNDECLARED list is not an empty one: on the CLI backends it means
-		// "no restriction", so the native roster keeps Bash, Write and Edit.
-		// Asked of toolcatalog.ToolsDeclared, the same predicate buildTask
-		// stamps on the task — `tools: []` IS a declaration, and reading it as
-		// "no declaration" is the defect that let a node asking for no tools
-		// keep the whole roster.
-		if !toolcatalog.ToolsDeclared(llm.GetTools()) && !onlyClawRoutes(routes) {
-			return fmt.Sprintf("node %q declares no `tools:` list, so its CLI route keeps the native write surface", id)
-		}
-		// Taken over the pessimistic reading of the node's effort: an incoming
-		// edge may raise it to ultracode, which appends `agent` on claw.
-		for _, writer := range writersAmong(exec.EffectiveToolNames(sw.wf.Nodes[id], true)) {
-			if !bundlelint.PermissionGateLeaves(llm, sw.wf, writer) {
-				continue
-			}
-			return fmt.Sprintf("node %q holds %q", id, writer)
+		if writer := bundlelint.NodeDurableWriter(llm, sw.wf); writer != "" {
+			return fmt.Sprintf("node %q holds a durable write path through %q", id, writer)
 		}
 	}
 	return ""
 }
 
-// storeWriterLeftTo returns the memory-store tool a `memory:` block installs
-// that the node's permission gate LEAVES, or "" when the gate removes them
-// all. The block installs the tool; the gate decides whether a call of it
-// runs, and `memory_write` is gated like any other claw tool.
-//
-// The candidates are the block's own three tools folded through the shared
-// durable-write vocabulary, so the writer among them is derived here instead
-// of named a second time. The gate question is pkg/bundlelint's exported
-// predicate — the one its C274 asks — so this guard and the lint cannot
-// disagree about a rule form.
-func storeWriterLeftTo(llm ir.LLMNode, wf *ir.Workflow) string {
-	for _, tool := range writersAmong(clawMemoryTools) {
-		if bundlelint.PermissionGateLeaves(llm, wf, tool) {
-			return tool
-		}
-	}
-	return ""
-}
-
-// TestTheCapabilityHalfAsksTheGateAboutAMemoryBlock holds the arm above to
-// examples the CORPUS cannot provide: no shipped bundle combines a `memory:`
-// block with a `permission:` gate, and bots/evolve — the one bundle with
-// blocks — declares `bash` besides them, so the walk would reach the same
-// verdict with the arm removed. Without this, the gate question in the
-// `memory:` arm is asserted over nothing.
+// TestTheCapabilityHalfAsksTheGateAboutAMemoryBlock holds the shared
+// predicate's `memory:` arm to examples the CORPUS cannot provide: no
+// shipped bundle combines a `memory:` block with a `permission:` gate, and
+// bots/evolve — the one bundle with blocks — declares `bash` besides them,
+// so the walk would reach the same verdict with the arm removed. Without
+// this, the gate question in the `memory:` arm is asserted over nothing.
 //
 // Both directions, over a workflow built here: a gated block whose allow list
 // names no writer is NOT a path, and the same block under an allow row that
@@ -276,16 +225,47 @@ func TestTheCapabilityHalfAsksTheGateAboutAMemoryBlock(t *testing.T) {
 	}
 }
 
-// onlyClawRoutes reports whether every route of a node is claw — the one
-// backend where an empty `tools:` list means "no tool loop at all" instead of
-// "no restriction".
-func onlyClawRoutes(routes []string) bool {
-	for _, r := range routes {
-		if r != delegate.BackendClaw {
-			return false
-		}
+// TestTheCapabilityHalfAsksTheGatePerRoute is the twin's own witness for
+// iterion#2881: a writer HELD on one route and REFUSED there by the gate is
+// no write path, whatever another route's spelling of the same concept
+// survives. The shape is the ticket's: a claude_code node whose list names
+// no writer, the auto-memory grant waiting on the claw fallback, and a gate
+// whose allow glob covers the claude_code spelling (`Write*`) and not the
+// claw one (`write_file`). Asked over the UNION of the routes' spellings the
+// gate leaves `Write` and the bundle is credited a path no run can take;
+// asked per route, the claw route's own spelling is refused and the verdict
+// is none.
+func TestTheCapabilityHalfAsksTheGatePerRoute(t *testing.T) {
+	t.Parallel()
+
+	node := &ir.AgentNode{
+		BaseNode:          ir.BaseNode{ID: "nexie"},
+		LLMFields:         ir.LLMFields{Backend: "claude_code"},
+		Tools:             []string{"read_file"},
+		AutoMemory:        "on",
+		InteractionFields: ir.InteractionFields{Interaction: ir.InteractionNone},
+		Fallbacks:         []ir.Fallback{{Name: "alt", Backend: delegate.BackendClaw, Model: "provider/model-a"}},
 	}
-	return len(routes) > 0
+	wf := &ir.Workflow{
+		Name: "probe", Nodes: map[string]ir.Node{"nexie": node},
+		Permission: "deny", PermissionAllow: []string{"Write*"},
+	}
+	sw := shippedWorkflow{prefix: "probe/", wf: wf}
+
+	// The precondition, measured rather than assumed: the claw route holds
+	// the granted writer and the gate refuses THAT route's spelling of it —
+	// or the verdict below proves nothing.
+	held := bundlelint.NodeDurableWriter(node, &ir.Workflow{Name: "probe", Nodes: map[string]ir.Node{"nexie": node}})
+	if held == "" {
+		t.Fatal("without the gate the bundle holds no durable writer — the auto-memory grant this case exercises is gone, and the refusal below would prove nothing")
+	}
+	if bundlelint.PermissionGateLeavesOnRoute(node, wf, delegate.BackendClaw, held) {
+		t.Fatalf("the gate leaves %q on the claw route — the refusal this case is about is not exercised", held)
+	}
+
+	if why := durableMemoryWritePath(sw); why != "" {
+		t.Errorf("a writer refused by the gate on the route that holds it was credited through another route's surviving spelling: %s", why)
+	}
 }
 
 // writersAmong folds a held tool list onto the shared spelling table and

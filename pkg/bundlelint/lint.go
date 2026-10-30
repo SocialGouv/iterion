@@ -722,14 +722,16 @@ func checkSkills(diags *[]Diag, skills []SkillDoc) {
 //
 // The capability is read from the DECLARATION, the surface bundlelint judges,
 // and from what the RUNTIME INSTALLS for it rather than from the presence of
-// a block or a list entry (iterion#2832) — see anyNodeCanWriteDurably for the
-// four arms. It is read GENEROUSLY where another diagnostic owns the defect:
+// a block or a list entry (iterion#2832) — see NodeDurableWriter for the
+// arms. It is read GENEROUSLY where another diagnostic owns the defect:
 // a `memory:` block on a backend that cannot serve it, and a permission mode
 // no gate can parse, are ir's own diagnostics, and a warning speaking over
 // them would name the wrong fix.
 // bots.TestABundleSellsADurableBriefOnlyWhereItCanWriteOne is the corpus
-// twin, which reads the RESOLVED routes an executor computes and asks THIS
-// package's gate predicate (PermissionGateLeaves) so the two cannot drift.
+// twin, which asks THIS package's capability predicate (NodeDurableWriter)
+// for the same node, so the two readers of the question cannot drift apart
+// again (iterion#2881: the twin's dispatch-posture route reading against
+// this check's walk-posture one).
 //
 // The question is asked of ONE workflow, not of a bundle's every entrypoint,
 // because a skill is mirrored into the workspace of ONE run: a bundle's
@@ -814,8 +816,27 @@ func llmNodeIDs(w *ir.Workflow) []string {
 }
 
 // anyNodeCanWriteDurably reports whether one node of the workflow could put
-// bytes in a durable memory tree. TWO declarations are a path, and each is a
-// different question:
+// bytes in a durable memory tree. The question it asks per node is
+// NodeDurableWriter's, and it is asked NOWHERE else — see there for the arms
+// and their reasons.
+func anyNodeCanWriteDurably(w *ir.Workflow, ids []string) bool {
+	for _, id := range ids {
+		llm, ok := w.Nodes[id].(ir.LLMNode)
+		if !ok {
+			continue
+		}
+		if NodeDurableWriter(llm, w) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// NodeDurableWriter names the first durable write path a run of this node can
+// take — the store builtin a `memory:` block installs and the gate leaves, or
+// a durable writer the node HOLDS on one of its routes whose call THAT
+// ROUTE's gate leaves — or "" for none. TWO declarations are a path, and each
+// is a different question:
 //
 //   - a `memory:` block whose WRITE TOOL a run gets AND the gate leaves —
 //     the block is not the path, a call of `memory_write` is
@@ -825,11 +846,19 @@ func llmNodeIDs(w *ir.Workflow) []string {
 //     own diagnostic (C047), and a warning speaking over another's defect
 //     would name the wrong fix;
 //   - a durable writer the node HOLDS on one of its routes, whose call the
-//     gate leaves (heldWriterLeft).
+//     gate leaves ON THAT ROUTE (heldWriterLeft, through
+//     PermissionGateLeavesOnRoute).
+//
+// It is THE asking of the durable-memory capability question, exported so the
+// warning (C274, through anyNodeCanWriteDurably) and its corpus twin
+// (bots.TestABundleSellsADurableBriefOnlyWhereItCanWriteOne) read ONE answer
+// by construction: the twin's own route reading was dispatch's posture while
+// this one is the walk's, and the two readers of the same question answered
+// one bundle oppositely (iterion#2881).
 //
 // What a node holds is not re-derived here, and that is the whole shape of
-// this check: it is asked of the ENGINE's own seam, the tool list the runtime
-// puts on delegate.Task.AllowedTools for THIS node on THAT route
+// the question: it is asked of the ENGINE's own seam, the tool list the
+// runtime puts on delegate.Task.AllowedTools for THIS node on THAT route
 // (model.ClawExecutor.EffectiveToolNamesOnRoutes). Every append it folds in
 // resolves outside the IR, and every re-derivation of one has been wrong in
 // both directions on this very diagnostic (iterion#2832):
@@ -848,24 +877,18 @@ func llmNodeIDs(w *ir.Workflow) []string {
 //     env default, and the grant it adds is claw's alone.
 //
 // Both arms end at the GATE, which bounds what runs whatever exists.
-func anyNodeCanWriteDurably(w *ir.Workflow, ids []string) bool {
-	// The PROGRAM-only reading: the node's and the workflow's own fields,
-	// never ITERION_AUTO_MEMORY or a credential probe, so the verdict does
-	// not move with the machine that runs the lint.
+//
+// The reading is PROGRAM-only: the node's and the workflow's own fields,
+// never ITERION_AUTO_MEMORY or a credential probe, so the verdict does not
+// move with the machine that asks.
+func NodeDurableWriter(llm ir.LLMNode, w *ir.Workflow) string {
 	exec := model.NewProgramExecutor(w)
-	for _, id := range ids {
-		llm, ok := w.Nodes[id].(ir.LLMNode)
-		if !ok {
-			continue
-		}
-		if llm.GetMemory().InstallsWriteTool() && storeWriterLeft(llm, w) != "" {
-			return true
-		}
-		if heldWriterLeft(exec, llm, w) != "" {
-			return true
+	if llm.GetMemory().InstallsWriteTool() {
+		if tool := storeWriterLeft(llm, w); tool != "" {
+			return tool
 		}
 	}
-	return false
+	return heldWriterLeft(exec, llm, w)
 }
 
 // storeWriterLeft returns the durable STORE builtin a `memory:` block
@@ -892,13 +915,22 @@ func storeWriterLeft(llm ir.LLMNode, w *ir.Workflow) string {
 }
 
 // heldWriterLeft returns the first durable writer a run of this node HOLDS on
-// one of its routes and whose call the gate leaves, or "" for none.
+// one of its routes and whose call the gate leaves ON THAT ROUTE, or "" for
+// none.
 //
-// Asked per ROUTE, because both halves of the question are decided per route:
+// Asked per ROUTE, because every half of the question is decided per route:
 // the appends are (buildTask is re-run for a `fallbacks:` element that
-// changes the backend) and so is what the declaration means there. A route
-// that keeps a writer is a run that writes, so one route answering is enough
-// — the same existential the gate question takes over the routes' spellings.
+// changes the backend), what the declaration means there is
+// (toolcatalog.DeclaredListBounds), what `readonly:` withholds there is
+// (toolcatalog.ReadonlyWithholdsDurableWrite), and so is the spelling the
+// gate will SEE a call under — `write_file` on a claw route is `Write` on a
+// claude_code one. The gate question is therefore asked with the holding
+// route's own spellings (PermissionGateLeavesOnRoute), never over the union
+// of every route's: a writer held on ONE route and refused there was
+// credited through ANOTHER route's surviving spelling, and the
+// gate-refused-writer bundle went from warned to silent (iterion#2881). A
+// route that keeps a writer is a run that writes, so one route answering is
+// enough.
 //
 // The store's OWN builtins are not writers here, and the exclusion is the
 // question itself: `memory_write` reaches a run from a `memory:` block (the
@@ -917,7 +949,7 @@ func heldWriterLeft(exec *model.ClawExecutor, llm ir.LLMNode, w *ir.Workflow) st
 			if !slices.Contains(writers, canonical) || slices.Contains(store, canonical) {
 				continue
 			}
-			if PermissionGateLeaves(llm, w, held) {
+			if PermissionGateLeavesOnRoute(llm, w, route, held) {
 				return held
 			}
 		}
@@ -977,11 +1009,20 @@ func routeBoundsTheList(route string, tools []string) bool {
 }
 
 // PermissionGateLeaves reports whether the runtime permission gate lets a tool
-// the declaration granted RUN. The gate bounds what runs, independently of
-// what exists, so every reader asking "can this node reach a writer" must ask
-// it — bundlelint's durable-memory check and its corpus twin
-// (bots.TestABundleSellsADurableBriefOnlyWhereItCanWriteOne) read THIS
-// predicate, exported so the two cannot drift.
+// the declaration granted RUN — on ANY route the node may take. The gate
+// bounds what runs, independently of what exists, so every reader asking
+// "can this node reach a writer" must ask it — bundlelint's durable-memory
+// check and its corpus twin
+// (bots.TestABundleSellsADurableBriefOnlyWhereItCanWriteOne) read the
+// predicates of this family, exported so the two cannot drift.
+//
+// The spellings are the UNION of every route's (gateSpellings): the right
+// question for a tool whose name is route-invariant — the store's own
+// `memory_write`, which no roster projects — and the WRONG one for a writer
+// held on one route only, whose call must survive the gate under THAT
+// route's spellings: a writer refused on the route that holds it was
+// credited through another route's surviving spelling (iterion#2881). The
+// held-writer arm asks PermissionGateLeavesOnRoute instead.
 //
 // It builds the REAL gate and asks IT: a permission.Policy over the node's
 // effective mode and rule lists — the policy
@@ -1006,6 +1047,53 @@ func routeBoundsTheList(route string, tools []string) bool {
 // A nil workflow is the node alone: every list falls back to what the node
 // declares, the way ir.EffectiveAskRules reads one.
 func PermissionGateLeaves(llm ir.LLMNode, w *ir.Workflow, tool string) bool {
+	pol := nodeGatePolicy(llm, w)
+	if pol == nil {
+		return true
+	}
+	return pol.LeavesTool(gateSpellings(llm, w, tool)...)
+}
+
+// PermissionGateLeavesOnRoute is PermissionGateLeaves asked about ONE route:
+// the same gate, offered that route's own spellings for the tool and no
+// other route's.
+//
+// It is the question a HELD writer owes: a call is made on the route the run
+// took, under that route's spelling, so a writer a node holds on one route
+// survives the gate exactly where the gate leaves that route's spelling of
+// it. Asking the union instead credited a writer refused on the route that
+// holds it through another route's surviving spelling — `deny` +
+// `allow: ["Write*"]` leaves `Write` (the claude_code route) and removes
+// `write_file` (the claw fallback where the writer actually sits), and the
+// gate-refused-writer bundle went silent (iterion#2881).
+//
+// route is expected to be a NAMED backend, the way nodeRoutes hands them —
+// an undecided route is expanded there into the candidates dispatch would
+// pick from, so this predicate never projects for "".
+func PermissionGateLeavesOnRoute(llm ir.LLMNode, w *ir.Workflow, route, tool string) bool {
+	pol := nodeGatePolicy(llm, w)
+	if pol == nil {
+		return true
+	}
+	return pol.LeavesTool(backendGateSpellings(route, tool)...)
+}
+
+// nodeGatePolicy builds the node's REAL gate — the policy
+// model.ClawExecutor.resolvePermissionPolicy builds, minus the run-level
+// overrides a .bot cannot know — or returns nil where the gate is absent or
+// disabled, which both predicates above read as "leaves everything".
+//
+// Two readings are the DECLARATION's, not the gate's, and stay here:
+//
+//   - a mode no gate can parse is C110's error. A warning that read it as a
+//     bound would name the wrong fix, so it is read as off;
+//   - a RULE the gate refuses is C111's error, and it is skipped ROW BY ROW
+//     (parsableRules). Discarding the whole gate over one unparseable row
+//     read five honoured deny rules as none.
+//
+// A nil workflow is the node alone: every list falls back to what the node
+// declares, the way ir.EffectiveAskRules reads one.
+func nodeGatePolicy(llm ir.LLMNode, w *ir.Workflow) *permission.Policy {
 	var wfMode string
 	var wfAllow, wfDeny []string
 	if w != nil {
@@ -1017,7 +1105,7 @@ func PermissionGateLeaves(llm ir.LLMNode, w *ir.Workflow, tool string) bool {
 	}
 	mode, err := permission.ParseMode(raw)
 	if err != nil || mode == permission.ModeOff {
-		return true
+		return nil
 	}
 	// Each list travels as its own argument — the gate owns the precedence
 	// between them, and the merge a reader used to write by hand
@@ -1028,9 +1116,9 @@ func PermissionGateLeaves(llm ir.LLMNode, w *ir.Workflow, tool string) bool {
 		parsableRules(ir.EffectivePermissionRules(llm.GetPermissionDeny(), wfDeny)),
 	)
 	if err != nil {
-		return true
+		return nil
 	}
-	return pol.LeavesTool(gateSpellings(llm, w, tool)...)
+	return pol
 }
 
 // parsableRules keeps the rows of a rule list the gate's own grammar accepts
