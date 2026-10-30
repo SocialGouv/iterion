@@ -134,3 +134,98 @@ func mustJSON(t *testing.T, v any) []byte {
 	}
 	return data
 }
+
+// Pre-#2863, `.iterion` was a LEGAL filename — only meta.json was
+// reserved: the record sits at the legacy path beside bytes named
+// exactly `.iterion`, which the new record path now reads as ENOTDIR.
+// The reader must fall back to the legacy record — the only place it can
+// be — rather than lose an intact attachment.
+func TestALegacyAttachmentNamedDotIterionIsStillRead(t *testing.T) {
+	ctx := context.Background()
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const runID = "run-legacy-dotiterion"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(s.root, "runs", runID, "attachments", "conf")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".iterion"), []byte("conf-bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := AttachmentRecord{Name: "conf", OriginalFilename: ".iterion", MIME: "application/octet-stream", Size: 10, SHA256: "x", CreatedAt: time.Now().UTC()}
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), mustJSON(t, rec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.ListAttachments(ctx, runID)
+	if err != nil || len(list) != 1 || list[0].Name != "conf" {
+		t.Fatalf("ListAttachments = %+v, %v; want the legacy .iterion attachment", list, err)
+	}
+	rc, got, err := s.OpenAttachment(ctx, runID, "conf")
+	if err != nil {
+		t.Fatalf("open the legacy .iterion attachment: %v", err)
+	}
+	defer rc.Close()
+	data, _ := io.ReadAll(rc)
+	if string(data) != "conf-bytes" || got.OriginalFilename != ".iterion" {
+		t.Fatalf("read back %q / %q through the fallback", data, got.OriginalFilename)
+	}
+}
+
+// Same pre-move shape on a staged upload: bytes `.iterion`, legacy
+// record beside them. OpenStagedUpload must read it — the upload stays
+// promotable.
+func TestALegacyStagedUploadNamedDotIterionIsStillRead(t *testing.T) {
+	ctx := context.Background()
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(s.root, UploadStagingSubdir, "up_dotiterion")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), mustJSON(t, StagedUpload{
+		UploadID: "up_dotiterion", OriginalFilename: ".iterion", MIME: "application/octet-stream", Size: 7, SHA256: "x",
+		CreatedAt: time.Now().UTC(),
+	}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".iterion"), []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec, rc, err := s.OpenStagedUpload(ctx, "up_dotiterion")
+	if err != nil {
+		t.Fatalf("open the legacy .iterion staged upload: %v", err)
+	}
+	defer rc.Close()
+	data, _ := io.ReadAll(rc)
+	if rec.OriginalFilename != ".iterion" || string(data) != "payload" {
+		t.Fatalf("read back %q / %q through the fallback", rec.OriginalFilename, data)
+	}
+}
+
+// Without ANY record — neither layout's — a stranded `.iterion` bytes
+// file still reads as not-found, on the staged side as on the
+// attachment side (TestListAttachmentsSkipsIterionFileResidue).
+func TestAStrandedDotIterionFileStaysNotFound(t *testing.T) {
+	ctx := context.Background()
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(s.root, UploadStagingSubdir, "up_stranded")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".iterion"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.OpenStagedUpload(ctx, "up_stranded"); err != ErrUploadNotFound {
+		t.Fatalf("OpenStagedUpload on a stranded .iterion file = %v, want ErrUploadNotFound", err)
+	}
+}

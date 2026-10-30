@@ -416,7 +416,11 @@ back to that path, so existing runs and staged uploads stay readable.
 One name is RESERVED, though: `.iterion` itself. A bytes file under
 exactly that name would sit where the record's directory goes, so the
 write fails loudly and leaves nothing behind — never a partial record,
-and never a stranded file that wedges the run's listing.
+and never a stranded file that wedges the run's listing. A store written
+BEFORE the move may still hold `.iterion` bytes with their record at the
+legacy `meta.json` beside them (the name was legal then): the reader
+falls back to that legacy record, so those attachments and staged
+uploads stay readable.
 
 ## Cloud notes
 

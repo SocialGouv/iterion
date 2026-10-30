@@ -50,10 +50,12 @@ const UploadStagingSubdir = "uploads"
 // a dotted subdirectory of the bytes' directory, where no upload can land
 // — an uploaded filename is sanitised to a single path component beside
 // the bytes, so `meta.json` is an ordinary filename again. (A file named
-// exactly `.iterion` still collides with the record's directory; the write
-// fails loudly, never reads back as the record.) Records written before
-// the move sit beside the bytes as `meta.json`; every reader falls back
-// to that legacy path so existing runs and staged uploads stay readable.
+// exactly `.iterion` still collides with the record's directory; a NEW
+// write fails loudly, never reads back as the record — while PRE-MOVE
+// bytes under that name block only the new path, and the reader falls
+// back to their legacy record.) Records written before the move sit
+// beside the bytes as `meta.json`; every reader falls back to that
+// legacy path so existing runs and staged uploads stay readable.
 func recordPath(dir string) string { return filepath.Join(dir, ".iterion", "meta.json") }
 
 func legacyRecordPath(dir string) string { return filepath.Join(dir, "meta.json") }
@@ -61,11 +63,13 @@ func legacyRecordPath(dir string) string { return filepath.Join(dir, "meta.json"
 // recordPathBlocked reports whether a plain FILE sits where a directory
 // component of dir's record path goes — the `.iterion` collision the
 // comment above names (a bytes file under exactly that name, or the
-// attachment directory itself replaced by a file). The record read then
-// fails with ENOTDIR, which os.IsNotExist does not match, yet the record
-// is ABSENT — its write failed before it landed or its attachment is
-// gone — so readers answer not-found instead of propagating a raw I/O
-// error that would abort a whole listing.
+// attachment directory itself replaced by a file). The new-layout read
+// then fails with ENOTDIR, which os.IsNotExist does not match. A record
+// may still exist — at the LEGACY path, where pre-#2863 writes put it —
+// so readRecord falls back there; and where no record exists anywhere
+// (a stranded bytes file, a torn-down attachment) readers answer
+// not-found rather than propagating a raw I/O error that would abort a
+// whole listing.
 func recordPathBlocked(dir string) bool {
 	for p := recordPath(dir); ; {
 		parent := filepath.Dir(p)
@@ -88,13 +92,17 @@ func writeRecord(dir string, data []byte, perm os.FileMode) error {
 }
 
 // readRecord reads the record sidecar from its current location, falling
-// back to the layout records existing before #2863 were written in.
+// back to the layout records existing before #2863 were written in. The
+// fallback also covers a blocked new path: pre-move BYTES named exactly
+// `.iterion` (a legal name back then) sit where the record's directory
+// goes, so the legacy path is the only place a record can be — and with
+// no record there either, the legacy read's ErrNotExist is the answer.
 func readRecord(dir string) ([]byte, error) {
 	data, err := os.ReadFile(recordPath(dir))
 	if err == nil {
 		return data, nil
 	}
-	if !errors.Is(err, fs.ErrNotExist) {
+	if !errors.Is(err, fs.ErrNotExist) && !recordPathBlocked(dir) {
 		return nil, err
 	}
 	return os.ReadFile(legacyRecordPath(dir))
