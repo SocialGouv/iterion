@@ -17,7 +17,7 @@ authoritative schema; readers must tolerate additive fields and event types.
   artifacts/<node_id>/<version>.json
   interactions/<interaction_id>.json
   attachments/<name>/<original_filename>
-  attachments/<name>/meta.json
+  attachments/<name>/.iterion/meta.json
   plans/<sequence>.json
   tools/<tool_use_id>/input
   tools/<tool_use_id>/output

@@ -92,10 +92,6 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid filename")
 		return
 	}
-	if store.IsReservedUploadFilename(filename) {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid filename: %q is reserved", filename)
-		return
-	}
 
 	// One pass over the part measures it — the size, the SHA-256 and the
 	// sniffed type, never the declared one — and the stager reads it again

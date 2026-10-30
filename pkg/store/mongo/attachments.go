@@ -34,12 +34,6 @@ func (s *Store) WriteAttachment(ctx context.Context, runID string, rec store.Att
 	if filename == "" {
 		filename = rec.Name
 	}
-	// The filesystem twin keeps its record sidecar beside the bytes under
-	// this name; one contract for both twins, so a file that lands in cloud
-	// lands locally too.
-	if store.IsReservedUploadFilename(filename) {
-		return store.ErrReservedUploadFilename
-	}
 	// Stream-read into memory while hashing, bounded by the configured
 	// cap so an unbounded body can't push the runner pod into OOM.
 	// LimitReader+1 lets us detect overflow: if we got past `cap` bytes,

@@ -2,25 +2,31 @@ package server
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 )
 
-// An upload named like the record sidecar would be read back as its own
-// record: refused at the door, typed.
-func TestUploadAttachment_RefusesTheSidecarName(t *testing.T) {
+// `meta.json` is an ordinary filename since the record sidecar moved out
+// of the bytes' namespace (#2863): the door admits it, and the promoted
+// attachment reads back with its bytes and its record intact.
+func TestUploadAttachment_AdmitsTheFormerSidecarName(t *testing.T) {
 	srv := uploadTestServer(t)
-	for _, name := range []string{"meta.json", "META.JSON"} {
-		body, ct := multipartBody(t, name, "application/json", []byte(`{"user":"payload"}`))
-		r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/runs/uploads", body)
-		r.Header.Set("Content-Type", ct)
-		w := httptest.NewRecorder()
-		srv.handleUploadAttachment(w, r)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("%s: status = %d, want 400", name, w.Code)
-		}
+	id := stageOne(t, srv, "meta.json", "application/json", []byte(`{"user":"payload"}`))
+	if _, err := srv.runs.RunStore().CreateRun(context.Background(), "run-meta-001", "demo", nil); err != nil {
+		t.Fatalf("create the run: %v", err)
+	}
+	if _, _, err := srv.promoteStaged(context.Background(), "run-meta-001", map[string]string{"spec": id}); err != nil {
+		t.Fatalf("promote the meta.json upload: %v", err)
+	}
+	rc, rec, err := srv.runs.OpenAttachment(context.Background(), "run-meta-001", "spec")
+	if err != nil {
+		t.Fatalf("open the promoted attachment: %v", err)
+	}
+	defer rc.Close()
+	data := make([]byte, 64)
+	n, _ := rc.Read(data)
+	if string(data[:n]) != `{"user":"payload"}` || rec.OriginalFilename != "meta.json" {
+		t.Fatalf("read back %q / %q, want the payload under meta.json", data[:n], rec.OriginalFilename)
 	}
 }
 

@@ -112,7 +112,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("RunFilesStore", func(t *testing.T) { testRunFilesStore(t, factory(t)) })
 	t.Run("StagingStore", func(t *testing.T) { testStagingStore(t, factory(t)) })
 	t.Run("AttachmentsDottedName", func(t *testing.T) { testAttachmentsDottedName(t, factory(t)) })
-	t.Run("AttachmentsReservedFilename", func(t *testing.T) { testAttachmentsReservedFilename(t, factory(t)) })
+	t.Run("AttachmentsMetaJSONFilename", func(t *testing.T) { testAttachmentsMetaJSONFilename(t, factory(t)) })
 	t.Run("ParentedRunCreator", func(t *testing.T) { testParentedRunCreator(t, factory(t)) })
 	t.Run("RunListingProjection", func(t *testing.T) { testRunListingProjection(t, factory(t)) })
 	t.Run("RecordedSourceSetter", func(t *testing.T) { testSetRunRecordedSource(t, factory(t)) })
@@ -4255,15 +4255,23 @@ func testStagingStore(t *testing.T, s store.RunStore) {
 	if _, _, err := st.OpenStagedUpload(ctx, long.UploadID); !errors.Is(err, store.ErrUploadNotFound) {
 		t.Fatalf("the refused long upload left something behind: %v", err)
 	}
-	// The record sidecar's name is nobody's filename, on either twin.
-	for _, name := range []string{"meta.json", "META.JSON"} {
-		sidecar := store.StagedUpload{UploadID: "up_1700000000_0000000000000002", OriginalFilename: name, MIME: "application/json", Size: 2, SHA256: "s"}
-		if err := st.StageUpload(ctx, sidecar, bytes.NewReader([]byte("{}"))); !errors.Is(err, store.ErrReservedUploadFilename) {
-			t.Fatalf("an upload named %q was staged (err=%v), want ErrReservedUploadFilename", name, err)
-		}
-		if _, _, err := st.OpenStagedUpload(ctx, sidecar.UploadID); !errors.Is(err, store.ErrUploadNotFound) {
-			t.Fatalf("the refused upload %q left something behind: %v", name, err)
-		}
+	// `meta.json` is an ordinary filename since the record moved out of
+	// the bytes' namespace (#2863): staged, read back, record intact.
+	sidecar := store.StagedUpload{UploadID: "up_1700000000_0000000000000002", OriginalFilename: "meta.json", MIME: "application/json", Size: 2, SHA256: "s"}
+	if err := st.StageUpload(ctx, sidecar, bytes.NewReader([]byte("{}"))); err != nil {
+		t.Fatalf("an upload named meta.json was refused: %v", err)
+	}
+	gotRec, src, oerr := st.OpenStagedUpload(ctx, sidecar.UploadID)
+	if oerr != nil {
+		t.Fatalf("open the meta.json upload: %v", oerr)
+	}
+	data, _ = io.ReadAll(src)
+	_ = src.Close()
+	if gotRec.OriginalFilename != "meta.json" || string(data) != "{}" {
+		t.Fatalf("read back %q / %q, want meta.json / {}", gotRec.OriginalFilename, data)
+	}
+	if err := st.DiscardStagedUpload(ctx, sidecar.UploadID); err != nil {
+		t.Fatalf("discard the meta.json upload: %v", err)
 	}
 	// Discard, twice.
 	if err := st.DiscardStagedUpload(ctx, rec.UploadID); err != nil {
@@ -4348,27 +4356,48 @@ func testAttachmentsDottedName(t *testing.T, s store.RunStore) {
 	}
 }
 
-// testAttachmentsReservedFilename: the record sidecar's name is nobody's
-// filename in the attachments layout either — the filesystem twin would
-// read the bytes back as the record. Refused by both twins, whichever
-// writer asks (an original filename, or a name standing in for one).
-func testAttachmentsReservedFilename(t *testing.T, s store.RunStore) {
+// testAttachmentsMetaJSONFilename: `meta.json` is an ordinary filename
+// since the record moved out of the bytes' namespace (#2863) — written by
+// any writer (an original filename, or a name standing in for one), read
+// back with its bytes and its record intact, listed, removed.
+func testAttachmentsMetaJSONFilename(t *testing.T, s store.RunStore) {
 	t.Helper()
 	ctx := testCtx()
-	const runID = "run_reserved_attachment"
+	const runID = "run_metajson_attachment"
 	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
 	for _, rec := range []store.AttachmentRecord{
 		{Name: "notes", OriginalFilename: "meta.json", MIME: "application/json"},
-		{Name: "notes", OriginalFilename: "META.JSON", MIME: "application/json"},
 		{Name: "meta.json", MIME: "application/json"},
 	} {
-		if err := s.WriteAttachment(ctx, runID, rec, strings.NewReader(`{"user":"payload"}`)); !errors.Is(err, store.ErrReservedUploadFilename) {
-			t.Fatalf("WriteAttachment(%+v) = %v, want ErrReservedUploadFilename", rec, err)
+		if err := s.WriteAttachment(ctx, runID, rec, strings.NewReader(`{"user":"payload"}`)); err != nil {
+			t.Fatalf("WriteAttachment(%+v) = %v, want nil", rec, err)
+		}
+		rc, got, err := s.OpenAttachment(ctx, runID, rec.Name)
+		if err != nil {
+			t.Fatalf("OpenAttachment(%q): %v", rec.Name, err)
+		}
+		data, _ := io.ReadAll(rc)
+		_ = rc.Close()
+		if string(data) != `{"user":"payload"}` {
+			t.Fatalf("OpenAttachment(%q) bytes = %q, want the uploaded payload", rec.Name, data)
+		}
+		if got.OriginalFilename != "meta.json" {
+			t.Fatalf("OpenAttachment(%q) record names %q, want meta.json", rec.Name, got.OriginalFilename)
 		}
 	}
+	list, err := s.ListAttachments(ctx, runID)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("ListAttachments = %+v, %v; want the two records", list, err)
+	}
+	if err := s.RemoveAttachment(ctx, runID, "notes"); err != nil {
+		t.Fatalf("RemoveAttachment: %v", err)
+	}
+	if err := s.DeleteRunAttachments(ctx, runID); err != nil {
+		t.Fatalf("DeleteRunAttachments: %v", err)
+	}
 	if list, err := s.ListAttachments(ctx, runID); err != nil || len(list) != 0 {
-		t.Fatalf("a refused attachment left a record: %+v, %v", list, err)
+		t.Fatalf("after DeleteRunAttachments: %+v, %v; want none", list, err)
 	}
 }

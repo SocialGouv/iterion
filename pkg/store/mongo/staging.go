@@ -29,9 +29,6 @@ func (s *Store) StageUpload(ctx context.Context, rec store.StagedUpload, body io
 	if _, err := blob.UploadKey(rec.UploadID, rec.OriginalFilename); err != nil {
 		return fmt.Errorf("store/mongo: stage upload: %w", err)
 	}
-	if store.IsReservedUploadFilename(rec.OriginalFilename) {
-		return store.ErrReservedUploadFilename
-	}
 	if rec.Size <= 0 {
 		return fmt.Errorf("store/mongo: stage upload %s: the record carries no size", rec.UploadID)
 	}

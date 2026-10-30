@@ -270,7 +270,8 @@ Content-Type: application/json
 Where a staged upload waits is the run store's business — the
 `store.StagingStore` seam, a capability a store has or has not, like the
 run-files area. A local store keeps it under `<store>/uploads/<upload_id>/`
-(the bytes under the original filename, a `meta.json` sidecar) until the
+(the bytes under the original filename, the record under `.iterion/meta.json`)
+until the
 launch promotes it to `<store>/runs/<run_id>/attachments/<name>/`. The
 cloud store has no disk: the record lives in the `staged_uploads`
 collection, stamped with the tenant and the user that staged it, and the
@@ -316,7 +317,7 @@ Errors are mapped to standard codes:
 
 | Mode         | Layout                                                     |
 | ------------ | ---------------------------------------------------------- |
-| Local / desktop | `<store>/runs/<run_id>/attachments/<name>/<filename>` plus a sidecar `meta.json` |
+| Local / desktop | `<store>/runs/<run_id>/attachments/<name>/<filename>` plus a record under `.iterion/meta.json` |
 | Cloud (S3-compatible store) | `attachments/<run_id>/<name>/<filename>` (S3 key); metadata reflected in the runs collection |
 
 The metadata struct (`AttachmentRecord`) carries `name`,
@@ -406,11 +407,12 @@ path as text, and are admitted on it.
 
 On a store with no root, the engine materialises the attachments before the sandbox starts (`materializeAttachments`). The guards live in `pkg/runtime/sandbox_attachments.go` and `pkg/runtime/attachment_admission.go`.
 
-`meta.json` is nobody's filename: the filesystem layout keeps each
-attachment's record under that name beside its bytes, so a file under it
-would be read back as the record. Both stores refuse it, typed, whoever
-writes the attachment — an upload (a 400 at the door), a node's
-attachment directive, a bundle default, an answered file.
+`meta.json` is anybody's filename: the filesystem layout keeps each
+attachment's record under `.iterion/meta.json`, out of the namespace the
+bytes land in, so a bundle default, a tool's deliverable or an operator's
+upload under that name is an ordinary file (#2863). Records written
+before the move sit beside the bytes as `meta.json`; every reader falls
+back to that path, so existing runs and staged uploads stay readable.
 
 ## Cloud notes
 

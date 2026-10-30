@@ -27,9 +27,9 @@ var readRandom = rand.Read
 // errors.Is to discriminate from other I/O errors.
 var ErrAttachmentNotFound = errors.New("store: attachment not found")
 
-// Sidecar stored next to each attachment so DeleteRunAttachments is
-// one rm -rf and ListAttachments is one directory scan.
-const attachmentMetaFilename = "meta.json"
+// The record sidecar sits next to each attachment (under `.iterion/`, out
+// of the bytes' namespace — see staging.go) so DeleteRunAttachments is one
+// rm -rf and ListAttachments is one directory scan.
 
 // HMAC signing key for presigned attachment URLs, generated lazily and
 // cached at the store root. Survives process restarts so URLs minted
@@ -68,12 +68,6 @@ func (s *FilesystemRunStore) WriteAttachment(ctx context.Context, runID string, 
 	}
 	if err := sanitizePathComponent("attachment filename", filepath.Base(filename)); err != nil {
 		return err
-	}
-	// The record sidecar sits beside the bytes: a file under its name
-	// would be read back as the record. Refused for every writer, here,
-	// the one write every attachment crosses.
-	if IsReservedUploadFilename(filepath.Base(filename)) {
-		return ErrReservedUploadFilename
 	}
 	dir := s.attachmentDir(runID, rec.Name)
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
@@ -126,7 +120,7 @@ func (s *FilesystemRunStore) WriteAttachment(ctx context.Context, runID string, 
 	if err != nil {
 		return fmt.Errorf("store: marshal attachment meta: %w", err)
 	}
-	if err := writeFileAtomic(filepath.Join(dir, attachmentMetaFilename), metaData, filePerm); err != nil {
+	if err := writeRecord(dir, metaData, filePerm); err != nil {
 		return err
 	}
 
@@ -395,7 +389,7 @@ func (s *FilesystemRunStore) loadAttachmentMeta(runID, name string) (AttachmentR
 		return AttachmentRecord{}, err
 	}
 	dir := s.attachmentDir(runID, name)
-	data, err := os.ReadFile(filepath.Join(dir, attachmentMetaFilename))
+	data, err := readRecord(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return AttachmentRecord{}, ErrAttachmentNotFound

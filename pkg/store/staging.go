@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -44,23 +43,41 @@ var ErrUploadNotFound = errors.New("store: staged upload not found")
 
 // UploadStagingSubdir is the directory under a filesystem store's root
 // where staged uploads wait: one directory per upload id, holding the
-// bytes under the original filename and a meta.json sidecar.
+// bytes under the original filename and the record under `.iterion/`.
 const UploadStagingSubdir = "uploads"
 
-const stagedUploadMetaFilename = "meta.json"
+// The record sidecar lives OUT of the bytes' namespace since #2863: under
+// a dotted subdirectory of the bytes' directory, where no upload can land
+// — an uploaded filename is sanitised to a single path component beside
+// the bytes, so `meta.json` is an ordinary filename again. (A file named
+// exactly `.iterion` still collides with the record's directory; the write
+// fails loudly, never reads back as the record.) Records written before
+// the move sit beside the bytes as `meta.json`; every reader falls back
+// to that legacy path so existing runs and staged uploads stay readable.
+func recordPath(dir string) string { return filepath.Join(dir, ".iterion", "meta.json") }
 
-// IsReservedUploadFilename reports whether a filename is one the staging
-// and attachments layouts keep for themselves: the record sidecar. An
-// upload under that name would be read back as its own record. Compared
-// case-insensitively, because a filesystem may be.
-func IsReservedUploadFilename(name string) bool {
-	return strings.EqualFold(name, stagedUploadMetaFilename)
+func legacyRecordPath(dir string) string { return filepath.Join(dir, "meta.json") }
+
+// writeRecord persists the record sidecar at its current location.
+func writeRecord(dir string, data []byte, perm os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(recordPath(dir)), 0o700); err != nil {
+		return err
+	}
+	return writeFileAtomic(recordPath(dir), data, perm)
 }
 
-// ErrReservedUploadFilename refuses a file named like the record sidecar —
-// a staged upload, or an attachment whatever wrote it (an upload, a
-// node's attachment directive, a bundle default, an answered file).
-var ErrReservedUploadFilename = errors.New("store: the filename meta.json is reserved for the record sidecar")
+// readRecord reads the record sidecar from its current location, falling
+// back to the layout records existing before #2863 were written in.
+func readRecord(dir string) ([]byte, error) {
+	data, err := os.ReadFile(recordPath(dir))
+	if err == nil {
+		return data, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	return os.ReadFile(legacyRecordPath(dir))
+}
 
 // StagingStore is the optional run-store capability that holds uploads
 // between their arrival and their promotion to a run. FilesystemRunStore
@@ -73,8 +90,7 @@ type StagingStore interface {
 	// rec.Size is the byte length the caller measured; a body that yields
 	// a different length is refused and nothing is kept. The body is
 	// SEEKABLE because a blob backend rewinds it to retry and to checksum
-	// (an S3 PUT over plaintext refuses an unseekable stream outright);
-	// a filename IsReservedUploadFilename names is refused by every twin.
+	// (an S3 PUT over plaintext refuses an unseekable stream outright).
 	StageUpload(ctx context.Context, rec StagedUpload, body io.ReadSeeker) error
 	// OpenStagedUpload returns the record and a reader on the bytes, or
 	// ErrUploadNotFound. The caller closes the reader.
@@ -114,9 +130,6 @@ func (s *FilesystemRunStore) StageUpload(_ context.Context, rec StagedUpload, bo
 	if err := sanitizePathComponent("upload filename", rec.OriginalFilename); err != nil {
 		return err
 	}
-	if IsReservedUploadFilename(rec.OriginalFilename) {
-		return ErrReservedUploadFilename
-	}
 	if rec.Size <= 0 {
 		return fmt.Errorf("store: stage upload %s: the record carries no size", rec.UploadID)
 	}
@@ -151,7 +164,7 @@ func (s *FilesystemRunStore) StageUpload(_ context.Context, rec StagedUpload, bo
 	if err != nil {
 		return fmt.Errorf("store: stage upload %s: encode record: %w", rec.UploadID, err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, stagedUploadMetaFilename), meta, 0o600); err != nil {
+	if err := writeRecord(dir, meta, 0o600); err != nil {
 		return fmt.Errorf("store: stage upload %s: write record: %w", rec.UploadID, err)
 	}
 	keep = true
@@ -164,7 +177,7 @@ func (s *FilesystemRunStore) OpenStagedUpload(_ context.Context, uploadID string
 	if err != nil {
 		return StagedUpload{}, nil, err
 	}
-	raw, err := os.ReadFile(filepath.Join(dir, stagedUploadMetaFilename))
+	raw, err := readRecord(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return StagedUpload{}, nil, ErrUploadNotFound
@@ -242,7 +255,7 @@ func (s *FilesystemRunStore) ReapStagedUploads(_ context.Context, cutoff time.Ti
 // stagedUploadTime is when an upload was staged: its record's CreatedAt,
 // or the directory's modification time when the record is unreadable.
 func (s *FilesystemRunStore) stagedUploadTime(dir string, entry fs.DirEntry) (time.Time, error) {
-	if raw, err := os.ReadFile(filepath.Join(dir, stagedUploadMetaFilename)); err == nil {
+	if raw, err := readRecord(dir); err == nil {
 		var rec StagedUpload
 		if json.Unmarshal(raw, &rec) == nil && !rec.CreatedAt.IsZero() {
 			return rec.CreatedAt, nil
