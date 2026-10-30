@@ -315,6 +315,13 @@ type SandboxConfig struct {
 	// a sibling sandbox pod there. Default (lower-precedence) knobs
 	// cannot express this because a workflow block outranks them.
 	Override string `yaml:"override"`
+
+	// PlantedIgnored names the isolation variables a project `.env` set and
+	// loadEnv therefore IGNORED (internal/isolationenv: a repository does not
+	// choose the deployment's isolation posture). Not a configured value, so
+	// it carries no yaml key — it is the fact that travels with the config to
+	// whoever has a logger, so an ignored plant is never silent.
+	PlantedIgnored []string `yaml:"-"`
 }
 
 // NATSConfig holds the NATS JetStream connection + stream/bucket names,

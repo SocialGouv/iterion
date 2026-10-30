@@ -23,7 +23,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/SocialGouv/iterion/internal/envtrust"
+	"github.com/SocialGouv/iterion/internal/isolationenv"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -33,41 +33,39 @@ import (
 // for a load-bearing limit: ITERION_SANDBOX_FLOOR=off (also none/0/false)
 // disables the floor and honours every source's `sandbox: none` again —
 // the pre-#1959 behaviour, for the operator who trusts their team tier.
-const SandboxFloorEnvVar = "ITERION_SANDBOX_FLOOR"
+const SandboxFloorEnvVar = isolationenv.SandboxFloor
 
-// isolationHatchOff is the ONE reader of an isolation escape hatch —
-// SandboxFloorEnvVar and [HostStateGuardEnvVar], the two variables that can
-// switch an isolation control off. It reports whether the hatch is open, and
-// whether a project `.env` is what set it.
+// isolationHatchOff reads an isolation escape hatch — SandboxFloorEnvVar and
+// [HostStateGuardEnvVar], the two members of the class that are switches
+// rather than tiers. It reports whether the hatch is open, and whether a
+// project `.env` is what set it.
 //
-// INHERITED, not live: which isolation an agent runs under is an authority
-// decision, and iterion fills unset variables from the nearest `.env` walking
-// up from the working directory (cmd/iterion applyDotEnv, no denylist) — a
-// file that sits in the repository under review, which the sandboxed agent of
-// a previous run had as its workspace. Read with os.Getenv, both hatches
-// disarm themselves from inside the blast radius: the agent writes
-// `ITERION_SANDBOX_FLOOR=off` into the repository's `.env` and the operator's
-// next `iterion run` from that checkout honours the bot's own `sandbox: none`.
-// envtrust.Inherited returns the empty string for a planted value, which
-// every hatch reads as "the operator said nothing" — the closed answer.
+// INHERITED, not live, and that is not this function's own rule: it is
+// [isolationenv], the ONE reader of every name that can LOWER a run's
+// isolation — the two hatches here, the two sandbox-mode tiers, the default
+// image and the proxy's model hosts. The inventory and the membership rule
+// live there, with the reason each sibling variable is NOT in it. Read with
+// os.Getenv, a hatch disarms itself from inside the blast radius: the agent
+// writes `ITERION_SANDBOX_FLOOR=off` into the repository's `.env` and the
+// operator's next `iterion run` from that checkout honours the bot's own
+// `sandbox: none`.
 //
 // planted is returned rather than logged here: the warn belongs where a run
 // logger exists and only where the hatch would have CHANGED the outcome, so
 // the line names a consequence instead of a setting.
 func isolationHatchOff(name string) (off, planted bool) {
-	planted = envtrust.Planted(name)
-	switch strings.ToLower(strings.TrimSpace(envtrust.Inherited(name))) {
+	value, planted := isolationenv.Value(name)
+	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "off", "none", "0", "false":
 		off = true
 	}
 	return off, planted
 }
 
-// plantedHatchWarning is the one sentence both hatches say when a `.env`
-// planted them: what was ignored, and that the operator's own environment is
-// the only place the hatch is read from.
+// plantedHatchWarning is the one sentence every member of the class says when
+// a `.env` planted it — the hatches here included.
 func plantedHatchWarning(name string) string {
-	return name + " was set by a project .env, not by the operator — the hatch is IGNORED and the isolation control stays on; export it in the operator's own environment to open it"
+	return isolationenv.PlantedWarning(name)
 }
 
 // operatorTrustedBotSource reports whether the given bot-resolution tier

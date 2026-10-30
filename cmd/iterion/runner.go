@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/isolationenv"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
@@ -82,6 +83,9 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	errtrack.AttachLogHook(logger)
 	defer errtrack.Flush()
 	logger.Info("runner: starting")
+	for _, name := range cfg.Sandbox.PlantedIgnored {
+		logger.Warn("runner: %s", isolationenv.PlantedWarning(name))
+	}
 	// Same derivation as the server (#2693): the runner compiles every
 	// workflow it executes, and its pod's ceiling is the chart's 4Gi —
 	// the GC works before the OOM-killer. GOMEMLIMIT wins; ITERION_MEMLIMIT=off disables.
@@ -361,7 +365,10 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		// ITERION_SANDBOX_OVERRIDE=none without this left cloud runs
 		// executing unsandboxed in the runner pod, because the runner
 		// wired the raw (empty) config value and the engine is neutral.
-		SandboxDefault:   resolveRunnerSandboxDefault(cfg.Sandbox.Default),
+		SandboxDefault: resolveRunnerSandboxDefault(cfg.Sandbox.Default),
+		// An isolation variable a `.env` beside the runner's working
+		// directory planted was dropped on the way in; the deployment reads
+		// why here rather than wondering which tier served the run.
 		SandboxHostState: cfg.Sandbox.HostState,
 		SandboxOverride:  cfg.Sandbox.Override,
 	})

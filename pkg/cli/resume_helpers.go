@@ -200,7 +200,7 @@ func buildResumeExecutor(
 		// answered "no sandbox" while the engine started one would arm the
 		// MCP start policy against the run it is in.
 		SandboxOverride:   resumeSandboxOverride(opts, r),
-		SandboxDefault:    runtime.ResolveGlobalSandboxDefault(),
+		SandboxDefault:    runtime.ResolveGlobalSandboxDefault(logger),
 		SandboxTiersKnown: true,
 		RunFallback:       []ir.Fallback{runFallback},
 		AutoMemory:        opts.AutoMemory,

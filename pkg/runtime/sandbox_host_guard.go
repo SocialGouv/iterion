@@ -84,14 +84,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/isolationenv"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/skilllib"
 )
 
 // HostStateGuardEnvVar is the greppable escape hatch: off/none/0/false
 // disables the guard (the ticket's "require explicit opt-in", inverted:
 // the guard is the default and opting OUT is the explicit act).
-const HostStateGuardEnvVar = "ITERION_SANDBOX_HOST_STATE_GUARD"
+const HostStateGuardEnvVar = isolationenv.HostStateGuard
 
 // sandboxCacheRoot is where the sandbox's OWN warm caches live, under the
 // operator's iterion home: <iterion home>/sandbox-caches/<the path they are
@@ -102,6 +104,32 @@ const HostStateGuardEnvVar = "ITERION_SANDBOX_HOST_STATE_GUARD"
 // $PNPM_HOME/<bin> and $GOMODCACHE/golang.org/toolchain@…/bin/go hold, and
 // relinks what the build cache holds without re-hashing it.
 const sandboxCacheRoot = "sandbox-caches"
+
+// SandboxCacheStoreDir is the sandbox's own cache store under an iterion home,
+// and SandboxCacheRelPaths the caches it holds — exported because `iterion
+// clean` must reclaim exactly what the mount plan creates. One definition: a
+// sweeper keyed on its own copy of the layout is a sweeper that stops finding
+// the store the first time the list grows.
+func SandboxCacheStoreDir(iterionHome string) string {
+	if iterionHome == "" {
+		return ""
+	}
+	return filepath.Join(iterionHome, sandboxCacheRoot)
+}
+
+// SandboxCacheRelPaths are the caches the sandbox gets its own copy of, as
+// paths under $HOME — the host EXECUTES ($PNPM_HOME's global bins, the Go
+// toolchain in the module cache) and COMPILES (the build cache's objects,
+// relinked without re-hashing) what they hold, which is why the sandbox must
+// not write the host's.
+func SandboxCacheRelPaths() []string {
+	return []string{
+		".cache/go-build", "go/pkg/mod", // Go build + module caches
+		".npm",              // npm cache (_cacache)
+		".local/share/pnpm", // pnpm home: store + global bins
+		".cache/yarn",       // yarn cache
+	}
+}
 
 // hostExecutedClaudeHomeEntries are the ~/.claude directories a read-only
 // overlay must cover, because the HOST — the operator's own CLI, and
@@ -125,26 +153,63 @@ const sandboxCacheRoot = "sandbox-caches"
 // ~/.claude/CLAUDE.md is the same class and a FILE, so it rides
 // copyFileOver beside the settings files rather than this list.
 //
-// What is deliberately NOT here: the state the in-sandbox CLI must write
-// (projects/, todos/, statsig/, shell-snapshots/, backups/, logs/,
-// .credentials.json). Those stay read-write, and the residual that leaves
-// is written down in docs/sandbox.md rather than implied — measured on the
-// image's own claude 2.1.175: an unauthenticated `--version` already
-// writes backups/, and in a home shape one state away it does not, so the
-// write set is not a list this file can hold. A future CLI version that
-// loads a NEW directory as code is covered by extending THIS list; there
-// is no pattern to infer it from.
+// Since the home itself is EPHEMERAL (ephemeralDirOver), this list is the READ
+// set, not the write protection: a path that is not here is simply ABSENT in
+// the container, which is the shape the CLI meets on a fresh machine, and a
+// plant lands in the per-run tmpfs. So a forgotten entry costs fidelity — the
+// operator's skill or plugin missing from an in-sandbox session — where it used
+// to cost the host's integrity. The state dirs the CLI writes (projects/,
+// todos/, statsig/, shell-snapshots/, session-env/, backups/, logs/) are
+// deliberately NOT here and need no enumeration: they are born with the run
+// and die with it. The three paths that must round-trip to the host are named
+// one by one at the call site, with the iterion process outside the container
+// that reads them.
+//
+// cowork_plugins/, dev-mods/ and mcp-skill-archives/ are here on the same
+// footing as plugins/: the operator's harness loads them as code, so an
+// in-sandbox session must see them exactly as the host does — and never write
+// them.
 var hostExecutedClaudeHomeEntries = []string{
 	"agents",
 	"commands",
+	"cowork_plugins",
+	"dev-mods",
 	"hooks",
 	"local",
+	"mcp-skill-archives",
 	"output-styles",
 	"plugins",
 	"routines",
 	"rules",
 	"skills",
 	"workflows",
+}
+
+// hostLoadedIterionHomeEntries are the <iterion home> directories ITERION's
+// own host-side process loads, read-only overlays for the same reason as the
+// ~/.claude list — and a separate list because this home cannot be made
+// ephemeral: the run store, the memory tree and the project scratch live
+// under it and must survive the run.
+//
+// Membership is read off the code that loads them on the HOST:
+//
+//   - plugins/ — pkg/plugin/registry.go starts their MCP servers and
+//     rewriters in the launcher's own process;
+//   - skills/ — the machine-global skill library (pkg/skilllib/store.go),
+//     which mirrorLibrarySkills copies into <workDir>/.claude/skills at
+//     EVERY run (pkg/runtime/library_skills.go), where the agent's CLI loads
+//     it as instructions. Overwriting the body of a skill the operator's
+//     workflows name steers their next run;
+//   - connectors/ — the local connector catalog (pkg/connection/local.go,
+//     tier Home), whose package decides what a `tool … action:` call reaches
+//     and which sealed credential goes with it.
+//
+// plugins.yaml rides copyFileOver beside them (a file, and one the sandbox's
+// own iterion may legitimately write).
+var hostLoadedIterionHomeEntries = []string{
+	"connectors",
+	"plugins",
+	skilllib.SkillsDirName,
 }
 
 // hostConfigGuard builds the per-run copies and read-only overlays, and
@@ -161,8 +226,55 @@ type hostConfigGuard struct {
 	// guarded is the audit trail: "copy:<path>" for a per-run copy shadow,
 	// "copy-seeded:<path>" when the host file did not exist and an empty
 	// one was created so the shadow has a mountpoint, "ro:<path>" for a
-	// read-only overlay (created empty on the host when absent).
+	// read-only overlay (created empty on the host when absent),
+	// "tmpfs:<path>" for a state dir the run gets ephemerally, "rw:<path>"
+	// for the named exceptions that must round-trip to the host.
 	guarded []string
+	// tmpfs are the host paths the run gets as a per-run tmpfs instead of a
+	// bind: applyHostStateMounts lays them where it lays the $HOME one.
+	tmpfs []string
+	// writes are the roots whose CONTENT the sandbox writes, so a bind
+	// SOURCE under one of them is a path the sandbox could choose through a
+	// symlink (sandbox_bind_source.go). Registered by sandboxWrites.
+	writes []string
+}
+
+// sandboxWrites registers a root whose content the sandbox writes. Every bind
+// source the guard lays is checked against the longest registered root that
+// contains it, so a store that gains a sandbox-writable parent gains the check
+// by registration rather than by a new call at every site.
+func (g *hostConfigGuard) sandboxWrites(roots ...string) {
+	if g == nil {
+		return
+	}
+	for _, root := range roots {
+		if root != "" {
+			g.writes = append(g.writes, filepath.Clean(root))
+		}
+	}
+}
+
+// checkBindSource is the ONE question every shadow asks before it binds: is
+// this host path really the path it is named, or does a symlink the sandbox
+// planted under a registered root decide what the mount reaches? A path under
+// no registered root is not sandbox-written, and answers nil.
+func (g *hostConfigGuard) checkBindSource(hostPath string) error {
+	if g == nil || hostPath == "" {
+		return nil
+	}
+	hostPath = filepath.Clean(hostPath)
+	best := ""
+	for _, root := range g.writes {
+		if root == hostPath || strings.HasPrefix(hostPath, root+string(filepath.Separator)) {
+			if len(root) > len(best) {
+				best = root
+			}
+		}
+	}
+	if best == "" {
+		return nil
+	}
+	return realBindSource(best, hostPath)
 }
 
 // newHostConfigGuard returns the run's guard, or nil when the operator
@@ -275,6 +387,10 @@ func (g *hostConfigGuard) copyFileOver(mounts []hostStateMount, hostPath, seed s
 	if g == nil || hostPath == "" {
 		return mounts
 	}
+	if err := g.checkBindSource(hostPath); err != nil {
+		g.warn("host guard: %v — the path is NOT shadowed and NOT bound; this run runs without it", err)
+		return mounts
+	}
 	kind := "copy"
 	content, err := os.ReadFile(hostPath)
 	if err != nil {
@@ -354,6 +470,10 @@ func (g *hostConfigGuard) roDirOver(mounts []hostStateMount, hostPath string) []
 	if g == nil || hostPath == "" {
 		return mounts
 	}
+	if err := g.checkBindSource(hostPath); err != nil {
+		g.warn("host guard: %v — the path is NOT overlaid and NOT bound; this run runs without it", err)
+		return mounts
+	}
 	info, err := os.Stat(hostPath)
 	switch {
 	case err == nil && info.IsDir():
@@ -373,6 +493,145 @@ func (g *hostConfigGuard) roDirOver(mounts []hostStateMount, hostPath string) []
 		return mounts
 	}
 	return append(mounts, hostStateMount{HostPath: hostPath, ContainerPath: hostPath, ReadOnly: true})
+}
+
+// ephemeralDirOver replaces the read-write bind of a whole host state
+// directory with a PER-RUN TMPFS at the same path: the in-sandbox CLI writes
+// it as freely as it likes, every byte dies with the run, and nothing reaches
+// the operator's home. The caller lays the tmpfs (applyHostStateMounts, beside
+// the $HOME one) from [hostConfigGuard.ephemeralTmpfs].
+//
+// This is the posture inversion #2069 asked for, and the reason it is the
+// right default is the enumeration problem: a read-only overlay list must name
+// every path the HOST executes, and a forgotten one writes the host silently,
+// while a tmpfs must name every path the SANDBOX needs to see, and a forgotten
+// one is simply absent in the container — the shape the CLI meets on a fresh
+// machine. The write set of a real authenticated run is not a list this file
+// can hold (measured on the image's claude 2.1.175: an unauthenticated
+// `--version` already writes backups/, and in a home one state away it does
+// not); the READ set is, because it is the operator's own configuration.
+//
+// What must still round-trip to the host is named, one path at a time, by
+// rwDirOver / rwFileOverExisting — with the reason at the call site.
+func (g *hostConfigGuard) ephemeralDirOver(mounts []hostStateMount, hostPath string) []hostStateMount {
+	if g == nil || hostPath == "" {
+		return mounts
+	}
+	out := mounts[:0]
+	for _, m := range mounts {
+		if m.HostPath == hostPath && m.ContainerPath == hostPath {
+			continue
+		}
+		out = append(out, m)
+	}
+	g.tmpfs = append(g.tmpfs, hostPath)
+	g.note("tmpfs", hostPath)
+	return out
+}
+
+// ephemeralTmpfs returns the host paths [hostConfigGuard.ephemeralDirOver]
+// made per-run, for the caller that lays tmpfs mounts. Nil-safe.
+func (g *hostConfigGuard) ephemeralTmpfs() []string {
+	if g == nil {
+		return nil
+	}
+	return append([]string(nil), g.tmpfs...)
+}
+
+// roDirOverExisting is roDirOver minus the creation: an absent directory is
+// left alone rather than created empty on the host.
+//
+// It is the right form under an EPHEMERAL parent and the wrong one under a
+// read-write bind. Under a tmpfs, a path the host does not have is a path the
+// container does not have either, and a plant lands in the tmpfs — so creating
+// it would only leave a directory in the operator's home forever (eight of
+// them, measured, that no cleanup removes). Under a read-write bind the
+// creation is what makes the overlay's mountpoint exist, and roDirOver stays.
+func (g *hostConfigGuard) roDirOverExisting(mounts []hostStateMount, hostPath string) []hostStateMount {
+	if g == nil || hostPath == "" {
+		return mounts
+	}
+	if err := g.checkBindSource(hostPath); err != nil {
+		g.warn("host guard: %v — the path is NOT overlaid and NOT bound; this run runs without it", err)
+		return mounts
+	}
+	info, err := os.Stat(hostPath)
+	if err != nil || !info.IsDir() {
+		return mounts
+	}
+	g.note("ro", hostPath)
+	return append(mounts, hostStateMount{HostPath: hostPath, ContainerPath: hostPath, ReadOnly: true})
+}
+
+// roFileOverExisting binds a host FILE read-only at its own path, only when
+// the host has it — for an instruction file the in-sandbox CLI must READ as
+// the operator wrote it and never write. A copy would let the sandbox rewrite
+// it for its own session, which for an instruction file is not a service:
+// nothing in the container needs to edit the operator's memory, and the write
+// that matters (the one a plant would make) must fail.
+func (g *hostConfigGuard) roFileOverExisting(mounts []hostStateMount, hostPath string) []hostStateMount {
+	if g == nil || hostPath == "" {
+		return mounts
+	}
+	if err := g.checkBindSource(hostPath); err != nil {
+		g.warn("host guard: %v — the path is NOT overlaid and NOT bound; this run runs without it", err)
+		return mounts
+	}
+	if info, err := os.Stat(hostPath); err != nil || info.IsDir() {
+		return mounts
+	}
+	g.note("ro", hostPath)
+	return append(mounts, hostStateMount{HostPath: hostPath, ContainerPath: hostPath, ReadOnly: true})
+}
+
+// rwDirOver binds a host state DIRECTORY read-write through an ephemeral
+// parent: the named exception, for state that must round-trip to the host
+// because an iterion process OUTSIDE the container reads or writes the same
+// tree. create makes the directory when the host has none — only pass true for
+// a path whose absence would silently degrade a feature, and say which at the
+// call site.
+func (g *hostConfigGuard) rwDirOver(mounts []hostStateMount, hostPath string, create bool) []hostStateMount {
+	if g == nil || hostPath == "" {
+		return mounts
+	}
+	if err := g.checkBindSource(hostPath); err != nil {
+		g.warn("host guard: %v — the path is NOT bound read-write; the run gets the ephemeral one instead", err)
+		return mounts
+	}
+	kind := "rw"
+	info, err := os.Stat(hostPath)
+	switch {
+	case err == nil && info.IsDir():
+	case create && os.IsNotExist(err):
+		if mkerr := os.MkdirAll(hostPath, 0o700); mkerr != nil {
+			g.warn("host guard: cannot create %s (%v) — the run gets the ephemeral path instead", hostPath, mkerr)
+			return mounts
+		}
+		kind = "rw-created"
+	default:
+		return mounts
+	}
+	g.note(kind, hostPath)
+	return append(mounts, hostStateMount{HostPath: hostPath, ContainerPath: hostPath})
+}
+
+// rwFileOverExisting binds a host state FILE read-write through an ephemeral
+// parent, only when the host has it. Never created: a state file the operator
+// does not have is one the CLI must be free to decide about, and an empty one
+// iterion put there can read as a corrupt credential or a disabled feature.
+func (g *hostConfigGuard) rwFileOverExisting(mounts []hostStateMount, hostPath string) []hostStateMount {
+	if g == nil || hostPath == "" {
+		return mounts
+	}
+	if err := g.checkBindSource(hostPath); err != nil {
+		g.warn("host guard: %v — the path is NOT bound read-write; the run gets the ephemeral one instead", err)
+		return mounts
+	}
+	if info, err := os.Stat(hostPath); err != nil || info.IsDir() {
+		return mounts
+	}
+	g.note("rw", hostPath)
+	return append(mounts, hostStateMount{HostPath: hostPath, ContainerPath: hostPath})
 }
 
 // audit returns the shadowed-path list for the sandbox_host_state_mounted
@@ -411,6 +670,11 @@ func (g *hostConfigGuard) guardWorktreeGit(spec *sandbox.Spec, gitDir string) {
 	if dotGit == "" {
 		return
 	}
+	// The whole .git tree is bound read-write (addWorktreeGitMount), so it is
+	// a root whose content the sandbox writes: the config copy's source and
+	// the hooks overlay's are checked against a symlink planted there, like
+	// every other bind source under such a root.
+	g.sandboxWrites(dotGit)
 	// The same precondition the bind itself (addWorktreeGitMount) applies:
 	// no existing .git tree, no shadows either.
 	info, err := os.Stat(dotGit)

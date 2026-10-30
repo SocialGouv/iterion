@@ -86,6 +86,62 @@ func ScanScratch(root string, retention time.Duration, now time.Time) ([]Scratch
 	return out, nil
 }
 
+// ScanNamedPaths ages the paths it is GIVEN, one entry per path, rather than
+// the children of a root — for a store whose members are named by the code
+// that creates them instead of discovered by listing.
+//
+// The sandbox's own cache store is that shape: its members are
+// `.cache/go-build`, `.npm`, `.local/share/pnpm` … — dot-prefixed, which
+// [ScanScratch] skips by design, and nested, which listing one level would
+// miss. Age decides the same way and for the same reason: a cache nothing has
+// touched within the retention window is one no live run is warming.
+//
+// A path that is a symlink is refused rather than followed, exactly as a
+// symlinked scratch root is: the sweep would otherwise delete wherever a run
+// pointed it.
+func ScanNamedPaths(paths []string, retention time.Duration, now time.Time) ([]ScratchEntry, error) {
+	var out []ScratchEntry
+	var firstErr error
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		fi, err := os.Lstat(p)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			if firstErr == nil {
+				firstErr = fmt.Errorf("scan %s: %w", p, err)
+			}
+			continue
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("scan: %s is a symlink — refused", p)
+			}
+			continue
+		}
+		newest, size, err := treeStat(p)
+		if err != nil {
+			// Reported, never swept: deleting what we could not inspect is
+			// how a sweep loses real work.
+			if firstErr == nil {
+				firstErr = fmt.Errorf("scan %s: %w", p, err)
+			}
+			continue
+		}
+		out = append(out, ScratchEntry{
+			Name:   filepath.ToSlash(filepath.Base(p)),
+			Path:   p,
+			Newest: newest,
+			Size:   size,
+			Stale:  retention > 0 && now.Sub(newest) >= retention,
+		})
+	}
+	return out, firstErr
+}
+
 // treeStat returns the newest mtime and the total size under path.
 func treeStat(path string) (time.Time, int64, error) {
 	var newest time.Time

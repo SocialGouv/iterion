@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	iterruntime "github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/worktreepool"
 )
@@ -181,6 +182,7 @@ func RunClean(opts CleanOptions, p *Printer) error {
 	// The out-of-tree half. Run last so a scratch error can never cost the
 	// operator the worktree report they came for.
 	sweepStoreScratch(stores, opts, now, &result)
+	sweepSandboxCaches(opts, now, &result)
 
 	if err := renderCleanResult(p, result); err != nil {
 		return err
@@ -270,7 +272,13 @@ func resolveCleanStores(opts CleanOptions) ([]string, error) {
 // those stores invisible to --all-projects — a sweep that silently covers
 // part of the machine is worse than one that admits it found nothing.
 func isSweepableStore(storeDir string) bool {
-	return worktreepool.HasWorktreeDir(storeDir) || isDir(filepath.Join(storeDir, "scratch"))
+	return worktreepool.HasWorktreeDir(storeDir) ||
+		isDir(filepath.Join(storeDir, "scratch")) ||
+		// The sandbox's own warm caches (#2069) are the third volume a store
+		// can be nothing BUT: a machine that only ever ran sandboxed bots has
+		// no worktree pool and no scratch, and keying discovery on the first
+		// two left its gigabytes invisible to --all-projects.
+		isDir(iterruntime.SandboxCacheStoreDir(storeDir))
 }
 
 func isDir(path string) bool {

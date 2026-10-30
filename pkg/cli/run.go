@@ -641,7 +641,7 @@ func buildRunExecutor(
 		// primary local surface while the run sandboxes two calls later.
 		SandboxOverride:   opts.Sandbox,
 		SandboxTiersKnown: bool(tiers),
-		SandboxDefault:    runtime.ResolveGlobalSandboxDefault(),
+		SandboxDefault:    runtime.ResolveGlobalSandboxDefault(logger),
 		RunFallback:       []ir.Fallback{runFallback},
 		// Wire the operator-message inbox so queued messages (a CLI
 		// `iterion supervise` attach, a DSL-declared supervisor, or a
@@ -901,7 +901,10 @@ func buildEngine(
 		}
 	}
 
-	sandboxDefault := runtime.ResolveGlobalSandboxDefault()
+	// nil logger: buildRunExecutor resolved the same tier a moment ago with
+	// the run's logger, so a planted ITERION_SANDBOX_DEFAULT has already been
+	// named — twice would read as two ignored plants.
+	sandboxDefault := runtime.ResolveGlobalSandboxDefault(nil)
 	sandboxHostStateDefault := strings.ToLower(os.Getenv("ITERION_SANDBOX_HOST_STATE"))
 	extraSkills, extraSkillsOrigin := ResolveExtraSkills(opts.Skills)
 	return runtime.New(wf, s, executor,

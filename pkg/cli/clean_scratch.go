@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/memory"
+	iterruntime "github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -76,6 +77,50 @@ func sweepStoreScratch(stores []string, opts CleanOptions, now func() time.Time,
 			r.Scratch = append(r.Scratch, toCleanedScratch(e, now()))
 			r.ScratchBytes += e.Size
 		}
+	}
+}
+
+// sweepSandboxCaches reclaims the sandbox's own warm caches — the store
+// host_state gives a sandboxed run instead of the host's own (#2069) — by the
+// same age rule as scratch, and reports them in the same list.
+//
+// Same rule because it is the same question: a cache nothing has touched
+// within --older-than is one no live run is warming, and age is the only thing
+// that can be said about a directory deliberately SHARED between runs. Same
+// list because the two read alike for the operator: an out-of-tree directory
+// the sweep took, and the bytes it returned.
+//
+// It is swept at all because the store is the one piece of durable state the
+// guard introduced with no reclaim: measured on this repository, a shared Go
+// build cache grows ~20 GB/h under ~100 clones, and `iterion runs prune`, the
+// worktree sweep and the scratch sweep all walked past it. The store belongs
+// to the GLOBAL iterion home, so it is swept once, not per store.
+func sweepSandboxCaches(opts CleanOptions, now func() time.Time, r *CleanResult) {
+	storeDir := iterruntime.SandboxCacheStoreDir(absStore(store.GlobalIterionDataDir()))
+	if storeDir == "" {
+		return
+	}
+	paths := make([]string, 0, len(iterruntime.SandboxCacheRelPaths()))
+	for _, rel := range iterruntime.SandboxCacheRelPaths() {
+		paths = append(paths, filepath.Join(storeDir, filepath.FromSlash(rel)))
+	}
+	entries, err := memory.ScanNamedPaths(paths, opts.OlderThan, now())
+	if err != nil {
+		r.ScratchErrors = append(r.ScratchErrors, err.Error())
+	}
+	r.ScratchScanned += len(entries)
+	for _, e := range entries {
+		if !e.Stale {
+			continue
+		}
+		if opts.Apply {
+			if rmErr := os.RemoveAll(e.Path); rmErr != nil {
+				r.ScratchErrors = append(r.ScratchErrors, rmErr.Error())
+				continue
+			}
+		}
+		r.Scratch = append(r.Scratch, toCleanedScratch(e, now()))
+		r.ScratchBytes += e.Size
 	}
 }
 

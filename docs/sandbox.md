@@ -361,7 +361,14 @@ Measured cost of the switch: the FIRST sandboxed run after it compiles cold
 (12.1 s for `./pkg/runtime` on a dedicated cache, against 0.1 s on the
 second run through the same directory), and the caches are stored twice on
 disk. Residual, stated: a sandboxed run can still poison the cache the NEXT
-sandboxed run uses — they share one store, as parallel runs always did.
+sandboxed run uses — they share one store, as parallel runs always did. The
+store is created `0700` and owned by the engine's user, so a container that
+pins a UID of its own (a devcontainer `remoteUser`/`containerUser`) gets NO
+cache and a warn saying why: handing over a directory it cannot even read
+would surface as `permission denied` inside `go build` with nothing in the run
+record to explain it — the same condition, and the same answer, as the project
+scratch's. `iterion clean` reclaims the store by the same age rule as scratch
+and discovers a store whose only volume is that cache (`--all-projects`).
 
 **Overlap handling:** when the workspace bind-mount already contains
 one of the candidate paths (typically a project-local `<repo>/.iterion/`
@@ -379,53 +386,110 @@ on shared infrastructure. The `kubernetes` driver hard-errors on
 `host_state: auto` for the same reason: cloud pods have no host
 filesystem to bind and the design refuses to fake it.
 
-**Host-configuration guard (#2069).** The state the sandbox must *write*
-stays writable — the run store and memory under the iterion home, Claude
-Code's sessions and credential refresh under `~/.claude`, codex's
-`auth.json` under `~/.codex`, the caches. The configuration the *host
-later executes* does not: a sandboxed agent (a prompt-injected one, say)
-must not be able to plant it. Under the guard — on by default wherever
-the driver has host bind mounts —
+**Host-configuration guard (#2069).** A sandboxed agent — a prompt-injected
+one, say — must not be able to plant what the HOST later executes. So under
+the guard, on by default wherever the driver has host bind mounts, the two CLI
+homes the sandbox gets are NOT the operator's: `~/.claude` and `~/.codex` are
+a **per-run tmpfs**, and only what the host reads is bound back on top of it.
+The in-sandbox CLI writes its home as freely as ever — in the tmpfs — and
+every byte dies with the run.
 
-- `~/.gitconfig`, `~/.claude.json`, `~/.claude/settings.json`,
-  `~/.claude/settings.local.json`, `~/.claude/CLAUDE.md`,
-  `~/.codex/config.toml`, `~/.codex/AGENTS.md`,
-  `~/.codex/AGENTS.override.md`, `<iterion home>/plugins.yaml` and the
-  worktree `.git`'s `config` bind a **per-run copy** seeded from the host
-  content: reads see the operator's config, writes (Claude Code's own state
-  updates included) land in the copy and die with the sandbox teardown.
-  The copies live in a `0700` scratch dir of `0600` files, removed on every
-  exit path of the sandbox start and at teardown; a scratch orphaned by a
-  killed engine is swept at the next run's guard (iterion's own prefix,
-  older than 24 h);
-- the `~/.claude` entries the HOST executes or loads as instructions bind
-  **read-only**: `hooks/` (the scripts a settings `command:` names — a hook
-  is a pointer, the script is what runs), `local/` (the CLI install
-  iterion's own probe resolves and runs), `plugins/`, `skills/`,
+Read-only by default, and the reason it is that way round is the enumeration
+problem. A read-only overlay list must name every path the HOST executes, and
+a forgotten one writes the operator's home *in silence*; a tmpfs must name
+every path the SANDBOX needs to SEE, and a forgotten one is simply absent in
+the container — the shape the CLI meets on a fresh machine. The write set of a
+real authenticated run is not a list this repository can hold (measured on the
+image's claude 2.1.175: an unauthenticated `--version` already writes
+`backups/`, and in a home one state away it does not). The READ set is,
+because it is the operator's own configuration.
+
+- what the host EXECUTES or LOADS AS INSTRUCTIONS binds **read-only** on top
+  of the tmpfs: under `~/.claude`, `hooks/` (the scripts a settings `command:`
+  names — a hook is a pointer, the script is what runs), `local/` (the CLI
+  install iterion's own probe resolves and runs), `plugins/`,
+  `cowork_plugins/`, `dev-mods/`, `mcp-skill-archives/`, `skills/`,
   `commands/`, `agents/`, `output-styles/`, `rules/`, `workflows/` and
-  `routines/`; likewise `~/.codex/prompts/`, `<iterion home>/plugins/` and
-  the worktree `.git`'s `hooks/`. The host tree stays READABLE — an
-  in-container CLI keeps the operator's plugins and skills — and
-  unwritable.
+  `routines/` (`hostExecutedClaudeHomeEntries`); `~/.codex/prompts/` and the
+  instruction files `~/.codex/AGENTS.md` and `AGENTS.override.md`; and, in the
+  iterion home, `plugins/`, `skills/` and `connectors/`
+  (`hostLoadedIterionHomeEntries` — the host-side process starts a plugin's
+  MCP servers and rewriters, `mirrorLibrarySkills` copies a library skill into
+  every run's workspace where the agent loads it as instructions, and a
+  connector package decides what a `tool … action:` call reaches and which
+  sealed credential goes with it);
+- files the CLI reads AND rewrites in place bind a **per-run copy** seeded
+  from the host content: `~/.claude/settings.json`, `settings.local.json` and
+  `CLAUDE.md`, `~/.codex/config.toml`, the three that are not under an
+  ephemeral home — `~/.gitconfig`, `~/.claude.json` and
+  `<iterion home>/plugins.yaml` — and the worktree `.git`'s `config`. Reads
+  see the operator's config, writes (a permission "always allow" landing in
+  `settings.local.json`, say) land in the copy and die with the teardown. The
+  copies live in a `0700` scratch dir of `0600` files, removed on every exit
+  path of the sandbox start and at teardown; a scratch orphaned by a killed
+  engine is swept at the next run's guard (iterion's own prefix, older than
+  24 h);
+- four paths bind **read-write**, each because an iterion process OUTSIDE the
+  container reads or writes the same tree: `~/.claude/projects/` (the session
+  transcripts `session: persist` packs from the host path after the run,
+  `delegate.SessionFilesRoot` + `sessionpack.CollectBySessionID`),
+  `~/.claude/.credentials.json` (the forfait OAuth token the CLI reads and
+  refreshes), `~/.codex/auth.json` and `~/.codex/sessions/`. Made ephemeral, a
+  sandboxed `claude_code` or `codex` node on a forfait would have no
+  credential at all and every persisted session would restart from scratch.
+
+Nothing else of the two homes crosses the boundary. A `~/.claude` entry the
+list forgets now costs FIDELITY — an in-sandbox session that does not see a
+skill — where it used to cost the host's integrity; extending
+`hostExecutedClaudeHomeEntries` is how a future CLI directory joins.
+
+**A bind source is checked, not spelled.** A bind mount's SOURCE is resolved
+by the kernel on the HOST, following every symlink in it — so a bind whose
+source lives under a directory the sandbox itself writes is a bind whose
+source the SANDBOX chooses, and nothing about the mount's string looks wrong.
+The iterion home is bound read-write by design (the run store, the memory tree
+and the project scratch must outlive the run) and it is the source of the
+project scratch, of the sandbox's own cache store and of the `plugins.yaml`
+copy; the worktree `.git` tree has the same shape. Before any of those is
+emitted, `realBindSource` requires the resolved source to BE the path it is
+named — `filepath.EvalSymlinks` against the resolved store root, re-asked
+after the `MkdirAll` that creates it, so a link planted between the two does
+not survive into the mount plan. A failure is a loud warn and a skip: the cold
+run, the pre-existing "cache absent" state, never a bind. Without it a run
+that replaced `<iterion home>/sandbox-caches/.cache/go-build` with a symlink
+to `~/.claude/hooks` had the NEXT run mount the operator's hooks read-write,
+under an audit line still spelling the store.
+
+The cache store is also bound **read-only at its own path** inside the
+container. The run still writes the caches through the `$HOME` paths they are
+bound at — mount options are per mountpoint — and can no longer rewrite the
+store itself, which is where such a symlink would be planted.
 
 Docker mounts nested binds by destination depth, parents first, so the
 overlays win over the parent binds regardless of list order (measured on
 docker 29). Every shadowed path is listed in the
-`sandbox_host_state_mounted` event's `guarded` field, so
-`docker inspect` never shows a host bind the run's events cannot
-explain. `ITERION_SANDBOX_HOST_STATE_GUARD=off` disables the guard and
-restores the all-writable posture, for the operator whose bots
-deliberately manage host config.
+`sandbox_host_state_mounted` event's `guarded` field — `copy:`/`copy-seeded:`,
+`ro:`/`ro-created:`, `tmpfs:` and `rw:`/`rw-created:` — so `docker inspect`
+never shows a host bind the run's events cannot explain.
+`ITERION_SANDBOX_HOST_STATE_GUARD=off` disables the guard and restores the
+all-writable posture, for the operator whose bots deliberately manage host
+config.
 
-An absent path is still created on the host, user-owned, before it is
-overlaid — otherwise the agent plants the directory fresh through the
-read-write parent bind, and docker would leave a root-owned mountpoint
-there. A guarded run therefore ADDS to the operator's home: empty
-`~/.claude/{hooks,local,skills,commands,agents,output-styles,rules,workflows,routines,plugins}`,
-an empty `~/.codex/prompts/`, an empty `~/.claude/settings.local.json`,
-`<iterion home>/plugins/` and `.git/hooks/`. They are inert (an empty
-plugin registry file leaves every plugin's state exactly as its absence
-did) and they are never removed.
+**What a guarded run adds to the operator's home.** Under the two ephemeral
+homes: nothing. A path the host does not have is absent in the container too
+and a plant lands in the tmpfs, so there is no mountpoint to create — which is
+why `~/.claude` and `~/.codex` use the *existing-only* shadows and no file is
+seeded there. An `AGENTS.override.md` iterion created in a home that had none
+would be a first-wins shadow of the operator's own `AGENTS.md`, forever (the
+precedence of `docs/adr/0119`), and an absent instruction file is as
+meaningful as its content. What is still created is in iterion's OWN home and
+in the worktree iterion made: `<iterion home>/{plugins,skills,connectors}`, an
+empty `<iterion home>/plugins.yaml`, `.git/hooks/`, and the two session roots
+`~/.claude/projects/` and `~/.codex/sessions/` — created because a
+`session: persist` would otherwise have nothing to pack (measured: those two
+are the ONLY paths a guarded run adds under the operator's two CLI homes). They are inert
+(an empty plugin registry file leaves every plugin's state exactly as its
+absence did) and they are never removed.
 
 One write shape changes under the guard, loudly: a copy-bound file absorbs
 STREAMING writes into the copy — measured on `~/.claude/settings.json`,
@@ -442,28 +506,36 @@ workspace-local git config (golden-master's extend identity swap is the
 catalog case) refuses loudly instead of writing, and the hatch above
 restores the writable config.
 
-Residual, deliberately out of scope and NOT free of host code execution:
-the state the in-sandbox CLI must keep writing stays read-write —
-`~/.claude/projects/` (session transcripts), `todos/`, `statsig/`,
-`shell-snapshots/`, `backups/`, `logs/`, `.credentials.json` — and a
-transcript a sandboxed run wrote is read back by a later `claude --resume`
-on the host, which is an instruction surface, while a shell snapshot is
-sourced by the host CLI's own Bash tool. Those entries are not overlaid
-because the write set of a real authenticated run cannot be enumerated
-reliably: on the image's claude 2.1.175 an unauthenticated `--version`
-already writes `backups/`, and in a home one state away it does not. The
-worktree `.git` likewise keeps objects/refs writable, which a commit needs.
-A future CLI version that loads a NEW directory as code is covered by
-extending `hostExecutedClaudeHomeEntries`; nothing infers it.
+Residual, deliberately out of scope and NOT free of host code execution: a
+transcript a sandboxed run wrote under `~/.claude/projects/` is read back by a
+later `claude --resume` on the host, which is an instruction surface — and the
+read-write bind is what makes `session: persist` work at all. The worktree
+`.git` likewise keeps objects/refs writable, which a commit needs. The two
+credential files the container can read are the subject of the opt-out above:
+`host_state: none` on shared infrastructure.
 
-Both isolation hatches — `ITERION_SANDBOX_HOST_STATE_GUARD` here and
-`ITERION_SANDBOX_FLOOR` for the isolation floor — are read from the
-environment iterion INHERITED, never from a project `.env`: the nearest
-`.env` walking up from the working directory is a file in the repository
-under review, which a sandboxed agent of a previous run had as its
-workspace. A planted hatch is ignored, with a warn naming it (and
-`hatch_ignored` on the `sandbox_floor_applied` event) — export the variable
-in the operator's own environment to open it.
+**One reader for everything that can lower isolation.** `internal/isolationenv`
+is the single reader of every environment variable whose value could make the
+operator's run LESS isolated than it would be unset: the two sandbox-mode
+tiers `ITERION_SANDBOX_DEFAULT` and `ITERION_SANDBOX_OVERRIDE`, the image
+`sandbox: auto` starts (`ITERION_SANDBOX_DEFAULT_IMAGE` — the image is the
+code that runs with the host state mounted), the proxy's model-host list
+(`ITERION_SANDBOX_MODEL_HOSTS`, which decides whose request bodies keep their
+placeholders instead of the run's real secrets), and the two hatches
+`ITERION_SANDBOX_HOST_STATE_GUARD` and `ITERION_SANDBOX_FLOOR`. All are read
+from the environment iterion INHERITED, never from a project `.env`: the
+nearest `.env` walking up from the working directory is a file in the
+repository under review, which a sandboxed agent of a previous run had as its
+workspace. A planted value is IGNORED, with a warn naming the consequence
+rather than the setting (and `hatch_ignored` on the `sandbox_floor_applied`
+event) — export the variable in the operator's own environment for it to
+count. The package doc carries the membership rule and the reason each sibling
+variable is NOT in the class, and a second reader is a test failure (a source
+scan over the module's non-test Go files): the defect this closes was not a
+wrong answer but a SECOND reader. The #1959 floor neutralizes a non-operator
+bot's `sandbox: none` by falling THROUGH to `ITERION_SANDBOX_DEFAULT`, which
+`os.Getenv` read — so one line in a repository `.env` picked the posture the
+floor had just defended, event and warn included.
 
 **host_state mounts only the state the operator chose.** The iterion home
 (`$ITERION_HOME`, else `~/.iterion`) and the scratch dir under it are

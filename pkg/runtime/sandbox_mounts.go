@@ -112,8 +112,14 @@ func applyScratchMount(
 	if hostScratch == "" {
 		return skip("no project scratch dir could be resolved")
 	}
-	if err := os.MkdirAll(hostScratch, 0o700); err != nil {
-		return skip(fmt.Sprintf("mkdir %s: %v", hostScratch, err))
+	// The scratch lives under the read-write iterion home, so a previous run
+	// could have replaced a component of this path with a symlink — and this
+	// bind is the one whose own comment names the threat ("the repository
+	// decides the bind source — symlinks included"). The same one check every
+	// such source passes, and a failure is this function's own loud skip.
+	iterionHome, _ := operatorsIterionHome()
+	if err := ensureRealBindSourceDir(iterionHome, hostScratch, 0o700); err != nil {
+		return skip(err.Error())
 	}
 	spec.Mounts = append(spec.Mounts, fmt.Sprintf(
 		"source=%s,target=%s,type=bind", hostScratch, sandboxScratchContainerPath))
@@ -347,6 +353,14 @@ func applyHostStateMounts(
 	// binds are guarded: a candidate the filter dropped (missing on the
 	// host, or covered by the workspace bind) exposes nothing.
 	if guard != nil {
+		// The iterion home stays READ-WRITE — the run store, the memory tree
+		// and the project scratch live under it and must outlive the run — so
+		// it is a root whose content the sandbox writes, and every bind source
+		// below it is checked against a symlink the sandbox planted there
+		// (sandbox_bind_source.go). Registering the root is what makes the
+		// check reach all of them; the ~/.claude and ~/.codex trees need no
+		// registration because nothing under them is written any more.
+		guard.sandboxWrites(iterionHomeDir)
 		mounted := map[string]bool{}
 		for _, m := range mounts {
 			mounted[m.HostPath] = true
@@ -358,36 +372,79 @@ func applyHostStateMounts(
 			mounts = guard.copyFileOver(mounts, claudeConfigPath, "{}\n")
 		}
 		if mounted[claudeDir] {
-			// Claude Code persists state into both settings files (a
-			// permission "always allow" lands in settings.local.json), so
-			// they are copies, not read-only binds — writes succeed and die
-			// with the run; the hooks a plant would carry never reach the
-			// host's settings.
-			mounts = guard.copyFileOver(mounts, filepath.Join(claudeDir, "settings.json"), "{}\n")
-			mounts = guard.copyFileOver(mounts, filepath.Join(claudeDir, "settings.local.json"), "{}\n")
-			// Shadowing settings.json alone shadows a POINTER: a hook is a
-			// `command:` naming a SCRIPT, and the script is what runs. The
-			// whole executed-or-loaded surface of the home is overlaid,
-			// including the memory file the host's own agent reads.
-			mounts = guard.copyFileOver(mounts, filepath.Join(claudeDir, "CLAUDE.md"), "")
+			// READ-ONLY BY DEFAULT, through an ephemeral home: the read-write
+			// bind of ~/.claude is replaced by a per-run tmpfs, and what the
+			// operator's own CLI executes or loads is bound back on top,
+			// read-only. The in-sandbox CLI writes its home as freely as ever
+			// — in the tmpfs — and a path nobody thought of fails nowhere: it
+			// is simply absent, which is the shape the CLI meets on a fresh
+			// machine, instead of writing the operator's home in silence. The
+			// enumeration that remains is of the READ set, which is the
+			// operator's own configuration and therefore knowable.
+			mounts = guard.ephemeralDirOver(mounts, claudeDir)
 			for _, entry := range hostExecutedClaudeHomeEntries {
-				mounts = guard.roDirOver(mounts, filepath.Join(claudeDir, entry))
+				mounts = guard.roDirOverExisting(mounts, filepath.Join(claudeDir, entry))
 			}
+			// The settings files and the memory file are read AND written in
+			// place by the CLI (a permission "always allow" lands in
+			// settings.local.json), so they are per-run copies rather than
+			// read-only binds: the write succeeds and dies with the run. Not
+			// seeded — under the tmpfs an absent file is absent in the
+			// container too, so there is nothing to make unplantable, and a
+			// file iterion created in the operator's home would stay there.
+			mounts = guard.copyFileOverExisting(mounts, filepath.Join(claudeDir, "settings.json"))
+			mounts = guard.copyFileOverExisting(mounts, filepath.Join(claudeDir, "settings.local.json"))
+			mounts = guard.copyFileOverExisting(mounts, filepath.Join(claudeDir, "CLAUDE.md"))
+			// The two exceptions, each with the HOST-side iterion process that
+			// needs the same tree:
+			//   - projects/ holds the CLI's session transcripts, and
+			//     `session: persist` packs them from the host path after the
+			//     run (delegate.SessionFilesRoot -> $HOME/.claude, read by
+			//     sessionpack.CollectBySessionID in
+			//     pkg/backend/model/executor_persist.go). Ephemeral, every
+			//     persisted session would silently restart from scratch;
+			//   - .credentials.json is the forfait OAuth token the CLI reads
+			//     and refreshes. Ephemeral, a sandboxed claude_code node on a
+			//     forfait has no credential at all.
+			mounts = guard.rwDirOver(mounts, filepath.Join(claudeDir, "projects"), true)
+			mounts = guard.rwFileOverExisting(mounts, filepath.Join(claudeDir, ".credentials.json"))
 		}
 		if mounted[codexDir] {
-			// auth.json refresh needs the dir writable; config.toml's MCP
-			// servers are the host's to execute, so it is a copy — and so
-			// are the instruction files codex reads from CODEX_HOME whatever
-			// the working directory (delegate.codexInstructionFiles is the
-			// same list, read by the ambient-context policy).
-			mounts = guard.copyFileOver(mounts, filepath.Join(codexDir, "config.toml"), "")
-			mounts = guard.copyFileOver(mounts, filepath.Join(codexDir, "AGENTS.md"), "")
-			mounts = guard.copyFileOver(mounts, filepath.Join(codexDir, "AGENTS.override.md"), "")
-			mounts = guard.roDirOver(mounts, filepath.Join(codexDir, "prompts"))
+			// Same posture for CODEX_HOME, and it closes the same defect one
+			// level down: config.toml's `notify = [...]` and
+			// `mcp_servers.<x>.command` NAME a program, and shadowing the
+			// pointer while leaving ~/.codex/notify.sh writable shadowed
+			// nothing. Under the ephemeral home the named program lands in
+			// the tmpfs whatever its path.
+			mounts = guard.ephemeralDirOver(mounts, codexDir)
+			mounts = guard.copyFileOverExisting(mounts, filepath.Join(codexDir, "config.toml"))
+			// The instruction files codex reads from CODEX_HOME whatever the
+			// working directory (delegate.codexInstructionFiles is the same
+			// list, read by the ambient-context policy). Read-only, and never
+			// created: an AGENTS.override.md iterion seeds into a home that
+			// had none is a first-wins shadow of the operator's own
+			// AGENTS.md, forever (docs/adr/0119, docs/backends.md).
+			mounts = guard.roDirOverExisting(mounts, filepath.Join(codexDir, "prompts"))
+			for _, name := range []string{"AGENTS.md", "AGENTS.override.md"} {
+				mounts = guard.roFileOverExisting(mounts, filepath.Join(codexDir, name))
+			}
+			// The exceptions, as above: auth.json is the "Sign in with
+			// ChatGPT" token claw's OpenAI provider reads, and sessions/ is
+			// what sessionpack packs for a codex `session: persist`.
+			mounts = guard.rwFileOverExisting(mounts, filepath.Join(codexDir, "auth.json"))
+			mounts = guard.rwDirOver(mounts, filepath.Join(codexDir, "sessions"), true)
 		}
 		if mounted[iterionHomeDir] {
 			mounts = guard.copyFileOver(mounts, filepath.Join(iterionHomeDir, "plugins.yaml"), "")
-			mounts = guard.roDirOver(mounts, filepath.Join(iterionHomeDir, "plugins"))
+			for _, entry := range hostLoadedIterionHomeEntries {
+				mounts = guard.roDirOver(mounts, filepath.Join(iterionHomeDir, entry))
+			}
+			// The sandbox's own cache store, read-only AT ITS OWN PATH. The
+			// run still writes the caches through the $HOME paths they are
+			// bound at (mount options are per mountpoint), but it can no
+			// longer rewrite the STORE — which is where a planted symlink
+			// would choose the next run's bind sources.
+			mounts = guard.roDirOver(mounts, SandboxCacheStoreDir(iterionHomeDir))
 		}
 	}
 
@@ -437,14 +494,19 @@ func applyHostStateMounts(
 	// With the guard off (the hatch, or a driver with no host binds) the
 	// operator asked for the pre-guard posture, and that includes the host's
 	// own caches at their own path — best-effort, skipped when absent.
+	// A container pinning a UID that is not the host's gets NO cache: the
+	// store is created 0700 and owned by the host user, so a foreign UID
+	// cannot even read it and `go build` would die on permission denied with
+	// no iterion event to explain it. That is the same condition — and the
+	// same answer — as applyScratchMount's, which skips its bind rather than
+	// handing over a directory the container cannot use.
+	foreignUID := -1
+	if uid, ok := parseUserUID(spec.User); ok && uid != os.Getuid() {
+		foreignUID = uid
+	}
 	if homeDir != "" {
-		for _, rel := range []string{
-			".cache/go-build", "go/pkg/mod", // Go build + module caches
-			".npm",              // npm cache (_cacache)
-			".local/share/pnpm", // pnpm home: store + global bins
-			".cache/yarn",       // yarn cache
-		} {
-			target := filepath.Join(homeDir, rel)
+		for _, rel := range SandboxCacheRelPaths() {
+			target := filepath.Join(homeDir, filepath.FromSlash(rel))
 			source := target
 			switch {
 			case guard == nil:
@@ -456,10 +518,17 @@ func applyHostStateMounts(
 				// shared <tmp> fallback — already warned above): the run is
 				// cold rather than warmed from a store the host executes.
 				continue
+			case foreignUID >= 0:
+				logger.Warn("runtime: the container pins UID %d and the host is %d, so the sandbox's own cache store (%s, owner-only) would be unreadable inside it — this run builds cold instead", foreignUID, os.Getuid(), SandboxCacheStoreDir(iterionHomeDir))
+				continue
 			default:
-				source = filepath.Join(iterionHomeDir, sandboxCacheRoot, rel)
-				if err := os.MkdirAll(source, 0o700); err != nil {
-					logger.Warn("runtime: cannot create the sandbox's own cache %s (%v) — this run builds cold rather than sharing the host's cache", source, err)
+				source = filepath.Join(SandboxCacheStoreDir(iterionHomeDir), filepath.FromSlash(rel))
+				// The store lives under the read-write iterion home, so the
+				// RUN BEFORE THIS ONE could have replaced this path with a
+				// symlink to any host path — the one check every such bind
+				// source passes (sandbox_bind_source.go).
+				if err := ensureRealBindSourceDir(SandboxCacheStoreDir(iterionHomeDir), source, 0o700); err != nil {
+					logger.Warn("runtime: the sandbox's own cache %s is not the path it is named (%v) — this run builds cold, and nothing is mounted from it", source, err)
 					continue
 				}
 				guard.note("private", target)
@@ -499,23 +568,17 @@ func applyHostStateMounts(
 		// for devbox/npm/pip/go (incl. $HOME/go/bin) while the deeper binds
 		// still overlay and persist. Direct $HOME/* binds (.claude,
 		// .iterion, …) need nothing extra — their parent is $HOME itself.
+		//
+		// The decision itself is homeTmpfsEntries, so the posture can be
+		// driven for a platform this process is not running on.
+		uid, gid := -1, -1
 		if goruntime.GOOS == "linux" {
-			if uid := os.Getuid(); uid != 0 {
-				gid := os.Getgid()
-				// `exec` is REQUIRED. docker mounts --tmpfs noexec by
-				// default, which blocks anything executable that lands in
-				// $HOME — most importantly go's auto-downloaded toolchain
-				// ($HOME/go/pkg/mod/golang.org/toolchain@.../bin/go), but
-				// also nix/npm/pip binaries cached under HOME. Without it a
-				// sandboxed `go build` dies with "cannot execute" and the
-				// agent is forced to hand-relocate GOPATH/GOCACHE to /tmp.
-				dirs := append([]string{homeDir}, homeNestedBindParents(homeDir, spec.Mounts)...)
-				for _, dir := range dirs {
-					spec.Tmpfs = append(spec.Tmpfs,
-						fmt.Sprintf("%s:uid=%d,gid=%d,mode=0755,exec", dir, uid, gid))
-				}
+			if u := os.Getuid(); u != 0 {
+				uid, gid = u, os.Getgid()
 			}
 		}
+		spec.Tmpfs = append(spec.Tmpfs, homeTmpfsEntries(
+			homeDir, guard.ephemeralTmpfs(), homeNestedBindParents(homeDir, spec.Mounts), uid, gid)...)
 	}
 
 	// Disable git commit signing inside the container. The mounted
@@ -604,6 +667,56 @@ func operatorsIterionHome() (dir, notMounted string) {
 // bind — the #2069 config overlays ($HOME/.claude/settings.json over the
 // $HOME/.claude bind) are exactly this shape, and laying the tmpfs lost
 // the operator's whole ~/.claude for the run.
+// homeTmpfsEntries is the `--tmpfs` plan for a guarded run's $HOME, as a
+// decision separate from the platform it is taken on: uid >= 0 means the
+// host-UID remap aligns an owner (Linux, non-root engine), uid < 0 that it
+// does not and the image's own user owns what is laid.
+//
+// Two stories ride one mount list, and only one of them is conditional:
+//
+//   - the WRITABLE-$HOME layering (homeDir itself and nestedParents) exists
+//     to re-lay as user-owned what docker/runc root-creates, so it has
+//     nothing to say where no uid is being aligned;
+//   - the guard's EPHEMERAL state dirs are laid either way, and that is the
+//     whole point of them. ephemeralDirOver dropped the read-write bind of
+//     ~/.claude and ~/.codex, so this tmpfs is where the in-sandbox CLI
+//     writes its home. Skip it and docker root-creates the mount parent of
+//     the read-only overlays nested under them, which an image whose user is
+//     not root cannot write — the operator's home would be safe and the CLI
+//     would be broken.
+//
+// Deduped because nestedParents names the same ancestor for every nested bind
+// under it, and because the guard's dirs and those ancestors overlap by
+// construction (~/.claude is the parent of the projects/ bind): two --tmpfs at
+// one destination is a mount docker cannot order.
+func homeTmpfsEntries(homeDir string, ephemeral, nestedParents []string, uid, gid int) []string {
+	if homeDir == "" {
+		return nil
+	}
+	opts := "mode=0755,exec"
+	if uid >= 0 {
+		opts = fmt.Sprintf("uid=%d,gid=%d,mode=0755,exec", uid, gid)
+	}
+	dirs := make([]string, 0, 2+len(ephemeral)+len(nestedParents))
+	if uid >= 0 {
+		dirs = append(dirs, homeDir)
+	}
+	dirs = append(dirs, ephemeral...)
+	if uid >= 0 {
+		dirs = append(dirs, nestedParents...)
+	}
+	out := make([]string, 0, len(dirs))
+	seen := map[string]bool{}
+	for _, dir := range dirs {
+		if dir == "" || seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		out = append(out, dir+":"+opts)
+	}
+	return out
+}
+
 func homeNestedBindParents(homeDir string, mounts []string) []string {
 	if homeDir == "" {
 		return nil

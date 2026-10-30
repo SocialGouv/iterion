@@ -5,12 +5,14 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
+	"github.com/SocialGouv/iterion/internal/testfs"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -166,32 +168,47 @@ func TestHostStateGuardShadowsWhatTheHostExecutesFromItsHome(t *testing.T) {
 	}
 }
 
-// A ~/.claude entry the host executes and the operator does not HAVE is still
-// plantable through the read-write parent bind, so the overlay is created
-// empty on the host, user-owned — the same posture plugins/ already had.
-func TestHostStateGuardOverlaysAbsentExecutedDirs(t *testing.T) {
+// A ~/.claude entry the host executes and the operator does not HAVE is left
+// ALONE: the home is ephemeral, so the path the agent plants lands in the
+// per-run tmpfs and the operator's home gains nothing — where the previous
+// posture had to create the directory on the host to have a mountpoint to
+// overlay, and left eight of them behind forever.
+func TestHostStateGuardLeavesAnAbsentExecutedDirAbsent(t *testing.T) {
 	home, _ := guardTestHome(t)
 	for _, name := range hostExecutedClaudeHomeEntries {
-		if err := os.RemoveAll(filepath.Join(home, ".claude", name)); err != nil {
-			t.Fatal(err)
-		}
+		testfs.RemoveAll(t, home, filepath.Join(home, ".claude", name))
 	}
 	guard := newHostConfigGuard(iterlog.Nop())
 	spec := &sandbox.Spec{}
 	applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()}, guard,
 		func(store.EventType, map[string]any) error { return nil }, iterlog.Nop())
 
-	for _, name := range []string{"hooks", "local", "skills", "commands", "agents", "output-styles", "workflows", "routines", "rules", "plugins"} {
+	// Named independently of the production list: a test that iterates the
+	// list it verifies stays green when the list shrinks.
+	for _, name := range []string{"hooks", "local", "skills", "commands", "agents", "output-styles", "workflows", "routines", "rules", "plugins", "dev-mods", "cowork_plugins", "mcp-skill-archives"} {
 		path := filepath.Join(home, ".claude", name)
-		info, err := os.Stat(path)
-		if err != nil || !info.IsDir() {
-			t.Errorf("absent %s was not created: %v — the agent can plant it through the read-write parent bind", path, err)
-			continue
+		if _, err := os.Stat(path); err == nil {
+			t.Errorf("%s was CREATED in the operator's home: an ephemeral home needs no mountpoint, and nothing removes what the guard leaves there", path)
 		}
 		if writable, entry := writableAtItsOwnHostPath(spec.Mounts, filepath.Join(path, "planted")); writable {
 			t.Errorf("absent %s stays plantable through %q", path, entry)
 		}
 	}
+	// The claim above rests on the tmpfs: without it the paths would be
+	// absent in the container too, and the CLI could not write its home.
+	if !hasTmpfsAt(spec.Tmpfs, filepath.Join(home, ".claude")) {
+		t.Errorf("~/.claude must be a per-run tmpfs for the in-sandbox CLI to write freely: %v", spec.Tmpfs)
+	}
+}
+
+// hasTmpfsAt reports whether the spec lays a tmpfs exactly at path.
+func hasTmpfsAt(tmpfs []string, path string) bool {
+	for _, tm := range tmpfs {
+		if tm == path || strings.HasPrefix(tm, path+":") {
+			return true
+		}
+	}
+	return false
 }
 
 // The warm caches are not shadowed, they are REPLACED: the sandbox gets its
@@ -442,5 +459,241 @@ func TestResolveAndStartSandbox_AForfaitFailureTakesTheGuardCopiesWithIt(t *test
 		if strings.HasPrefix(e.Name(), hostGuardScratchPrefix) {
 			t.Errorf("the per-run copy scratch %s survives a failed start — it holds copies of the operator's ~/.claude.json, ~/.gitconfig and ~/.codex/config.toml", filepath.Join(scratchRoot, e.Name()))
 		}
+	}
+}
+
+// The THIRD home the sandbox mounts is iterion's own, and it carries the same
+// class: what the HOST's iterion loads. It cannot be made ephemeral — the run
+// store and the memory tree live under it — so each loaded surface is overlaid
+// read-only, and the paths are named here by the mechanism that loads them,
+// independently of the production list.
+func TestTheIterionHomeInstructionSurfacesAreReadOnly(t *testing.T) {
+	_, iterionHome := guardTestHome(t)
+	mustWrite := func(path, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	skill := filepath.Join(iterionHome, "skills", "deploy", "SKILL.md")
+	mustWrite(skill, "---\nname: deploy\n---\nrun the real deploy\n")
+	connector := filepath.Join(iterionHome, "connectors", "jira", "connector.yaml")
+	mustWrite(connector, "id: jira\n")
+
+	guard := newHostConfigGuard(iterlog.Nop())
+	spec := &sandbox.Spec{}
+	applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()}, guard,
+		func(store.EventType, map[string]any) error { return nil }, iterlog.Nop())
+
+	for _, tc := range []struct{ why, path string }{
+		{"a library skill mirrorLibrarySkills copies into <workDir>/.claude/skills at every run, where the agent's CLI loads it as instructions", skill},
+		{"a local connector package, which decides what a `tool … action:` call reaches and which sealed credential goes with it", connector},
+		{"a library skill planted where the operator had none", filepath.Join(iterionHome, "skills", "planted", "SKILL.md")},
+		{"an iterion plugin, whose MCP servers and rewriters run in the launcher's own process", filepath.Join(iterionHome, "plugins", "rtk", "plugin.yaml")},
+		{"the sandbox's own cache store, which is where a planted symlink would choose the NEXT run's bind sources", filepath.Join(iterionHome, sandboxCacheRoot, "planted")},
+	} {
+		if writable, entry := writableAtItsOwnHostPath(spec.Mounts, tc.path); writable {
+			t.Errorf("WRITABLE at its own host path: %s\n    why it matters: %s\n    deciding mount: %q", tc.path, tc.why, entry)
+		}
+	}
+	// The control: what the home is bound read-write FOR still is.
+	if writable, _ := writableAtItsOwnHostPath(spec.Mounts, filepath.Join(iterionHome, "projects", "k", "memory", "x.md")); !writable {
+		t.Errorf("the run store and memory tree must stay writable — that is what the iterion home is mounted for: %v", spec.Mounts)
+	}
+}
+
+// The ephemeral home has exactly three exceptions, and each exists because an
+// iterion process OUTSIDE the container reads or writes the same tree. They
+// are asserted by their mechanism, not by their name: a future refactor that
+// drops one must redden here rather than degrade a feature silently.
+func TestTheEphemeralHomeKeepsTheStateThatMustRoundTrip(t *testing.T) {
+	home, _ := guardTestHome(t)
+	credentials := filepath.Join(home, ".claude", ".credentials.json")
+	if err := os.WriteFile(credentials, []byte(`{"claudeAiOauth":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	auth := filepath.Join(home, ".codex", "auth.json")
+	if err := os.WriteFile(auth, []byte(`{"tokens":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	guard := newHostConfigGuard(iterlog.Nop())
+	spec := &sandbox.Spec{}
+	applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()}, guard,
+		func(store.EventType, map[string]any) error { return nil }, iterlog.Nop())
+
+	for _, tc := range []struct{ why, path string }{
+		{"the CLI's session transcripts, which `session: persist` packs from the HOST path after the run (delegate.SessionFilesRoot + sessionpack.CollectBySessionID)", filepath.Join(home, ".claude", "projects")},
+		{"the forfait OAuth token the CLI reads and refreshes", credentials},
+		{"codex's ChatGPT-forfait token, the only credential path for a user with no metered key", auth},
+		{"codex's session rollouts, which sessionpack packs for a codex `session: persist`", filepath.Join(home, ".codex", "sessions")},
+	} {
+		writable, entry := writableAtItsOwnHostPath(spec.Mounts, filepath.Join(tc.path, "x"))
+		if !writable {
+			writable, entry = writableAtItsOwnHostPath(spec.Mounts, tc.path)
+		}
+		if !writable {
+			t.Errorf("%s is NOT bound read-write: %s\n    what breaks: %s", tc.path, entry, tc.why)
+		}
+	}
+	// And the read set is still READ: an ephemeral home that hid the
+	// operator's own configuration would be isolation by amputation.
+	for _, tc := range []struct{ why, path string }{
+		{"the operator's plugins, which an in-sandbox session must still see", filepath.Join(home, ".claude", "plugins", "good", "plugin.yaml")},
+		{"the operator's settings, read through a per-run copy", filepath.Join(home, ".claude", "settings.json")},
+	} {
+		if entry := bindEntryUnder(spec.Mounts, tc.path); entry == "" {
+			t.Errorf("%s is not visible in the sandbox at all (%s) — the posture must isolate writes, not reads", tc.path, tc.why)
+		}
+	}
+}
+
+// bindEntryUnder finds the mount whose target is path or an ancestor of it.
+func bindEntryUnder(mounts []string, path string) string {
+	best := ""
+	for _, m := range mounts {
+		target := mountTarget(m)
+		if target == "" {
+			continue
+		}
+		if target == path || strings.HasPrefix(path, target+string(filepath.Separator)) {
+			if len(target) > len(best) {
+				best = m
+			}
+		}
+	}
+	return best
+}
+
+// A container pinning a UID that is not the host's gets a COLD run rather than
+// a cache store it cannot read: the store is owner-only 0700, so a foreign UID
+// meets "permission denied" inside `go build` with nothing in the run record
+// to explain it. The scratch bind already answered this condition this way.
+func TestTheSandboxCachesAreSkippedWhenTheContainerPinsAnotherUID(t *testing.T) {
+	home, iterionHome := guardTestHome(t)
+	guard := newHostConfigGuard(iterlog.Nop())
+	foreign := os.Getuid() + 1234
+	spec := &sandbox.Spec{User: strconv.Itoa(foreign)}
+	applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()}, guard,
+		func(store.EventType, map[string]any) error { return nil }, iterlog.Nop())
+
+	for _, rel := range []string{".cache/go-build", "go/pkg/mod", ".npm", ".local/share/pnpm", ".cache/yarn"} {
+		target := filepath.Join(home, filepath.FromSlash(rel))
+		if entry := bindEntry(spec.Mounts, target); entry != "" {
+			t.Errorf("the cache store is mounted at %s for a container pinning UID %d (host %d): %q — owner-only 0700, so the container cannot even read it", target, foreign, os.Getuid(), entry)
+		}
+	}
+	// And nothing was created in the store for a run that gets none.
+	if _, err := os.Stat(filepath.Join(iterionHome, sandboxCacheRoot, ".cache", "go-build")); err == nil {
+		t.Errorf("the store was populated for a run that cannot use it")
+	}
+	// The control: the SAME plan with the host's own UID warms the caches.
+	warm := &sandbox.Spec{}
+	applyHostStateMounts(warm, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()}, newHostConfigGuard(iterlog.Nop()),
+		func(store.EventType, map[string]any) error { return nil }, iterlog.Nop())
+	if entry := bindEntry(warm.Mounts, filepath.Join(home, ".cache", "go-build")); entry == "" {
+		t.Errorf("control broke: the host's own UID must still get its warm caches: %v", warm.Mounts)
+	}
+}
+
+// The ephemeral home is a TMPFS or it is nothing: ephemeralDirOver drops the
+// read-write bind of ~/.claude and ~/.codex, so if no tmpfs is laid there
+// docker root-creates the mount parent of the read-only overlays nested under
+// them and the in-sandbox CLI cannot write its own home. The posture must
+// therefore hold where the host-UID remap does NOT run — a non-Linux docker
+// host, or an engine running as root — which is why the decision is a function
+// this witness can drive for a platform it is not on.
+func TestTheEphemeralHomeIsBackedByATmpfsEvenWithoutTheUIDRemap(t *testing.T) {
+	home, _, spec := guardedHomeMounts(t)
+	tmpfsAt := func(entries []string, dir string) string {
+		for _, e := range entries {
+			if strings.HasPrefix(e, dir+":") {
+				return e
+			}
+		}
+		return ""
+	}
+	// First on the real plan, where the remap DOES run: both ephemeral homes
+	// carry a uid-owned tmpfs.
+	for _, dir := range []string{filepath.Join(home, ".claude"), filepath.Join(home, ".codex")} {
+		entry := tmpfsAt(spec.Tmpfs, dir)
+		if entry == "" {
+			t.Fatalf("%s is neither bound nor backed by a tmpfs — the in-sandbox CLI has no home to write: %v", dir, spec.Tmpfs)
+		}
+		if !strings.Contains(entry, "uid="+strconv.Itoa(os.Getuid())) {
+			t.Errorf("%q is not owned by the remapped uid %d", entry, os.Getuid())
+		}
+		if !strings.Contains(entry, "exec") {
+			t.Errorf("%q is noexec — docker's default — and the CLI installs it runs live under the home", entry)
+		}
+	}
+
+	// Now the same decision with NO uid to align (uid < 0): the guard's dirs
+	// stay, the writable-$HOME layering — whose only job is to re-lay as
+	// user-owned what docker root-creates — drops out, and nothing claims an
+	// owner it does not have.
+	ephemeral := []string{filepath.Join(home, ".claude"), filepath.Join(home, ".codex")}
+	nested := []string{filepath.Join(home, ".cache"), filepath.Join(home, ".claude")}
+	entries := homeTmpfsEntries(home, ephemeral, nested, -1, -1)
+	for _, dir := range ephemeral {
+		entry := tmpfsAt(entries, dir)
+		if entry == "" {
+			t.Errorf("with no uid remap, %s gets no tmpfs — docker root-creates it as the overlays' parent and an image whose user is not root cannot write its own home: %v", dir, entries)
+			continue
+		}
+		if strings.Contains(entry, "uid=") {
+			t.Errorf("%q names an owner no remap aligned", entry)
+		}
+	}
+	if entry := tmpfsAt(entries, home); entry != "" {
+		t.Errorf("the writable-$HOME layering is uid-owned by nature and must not be laid without one: %q", entry)
+	}
+	if entry := tmpfsAt(entries, filepath.Join(home, ".cache")); entry != "" {
+		t.Errorf("same for the nested bind parents: %q", entry)
+	}
+	// One destination, one --tmpfs: ~/.claude is both an ephemeral home and
+	// the ancestor of the projects/ bind, and docker cannot order two.
+	withUID := homeTmpfsEntries(home, ephemeral, nested, 1000, 1000)
+	seen := map[string]int{}
+	for _, e := range withUID {
+		seen[strings.SplitN(e, ":", 2)[0]]++
+	}
+	for dir, n := range seen {
+		if n > 1 {
+			t.Errorf("%s is laid %d times: %v", dir, n, withUID)
+		}
+	}
+}
+
+// The class the posture inversion closes is the one NO list names: with
+// ~/.claude a read-write bind, every path the overlay list did not enumerate
+// reached the operator's home — including shell code the host's own Bash tool
+// sources at exec, and any name a future CLI invents. These cases are
+// deliberately OUTSIDE hostExecutedClaudeHomeEntries: a fix that re-binds the
+// home read-write and extends the list instead must redden here.
+func TestTheEphemeralHomeLeavesNoUnenumeratedPathWritable(t *testing.T) {
+	home, _, spec := guardedHomeMounts(t)
+	for _, tc := range []struct{ why, path string }{
+		{"shell code the HOST's Bash tool sources at exec — no human in the loop, unlike a skill or a command", filepath.Join(home, ".claude", "shell-snapshots", "snapshot-bash-1.sh")},
+		{"the environment file a host session sources", filepath.Join(home, ".claude", "session-env", "env.sh")},
+		{"tasks the host harness EXECUTES on a timer", filepath.Join(home, ".claude", "scheduled_tasks.json")},
+		{"the host harness's launch configuration", filepath.Join(home, ".claude", "launch.json")},
+		{"the host harness's daemon configuration", filepath.Join(home, ".claude", "daemon.json")},
+		{"a prompt the host harness loops on", filepath.Join(home, ".claude", "loop.md")},
+		{"a name NOBODY enumerated — the whole point of naming the read set instead of the write set", filepath.Join(home, ".claude", "PWNED-NEW")},
+		{"the program ~/.codex/config.toml's `notify =` names: shadowing the pointer while its pointee stayed writable shadowed nothing", filepath.Join(home, ".codex", "notify.sh")},
+		{"the command a config.toml `mcp_servers.<x>.command` names", filepath.Join(home, ".codex", "mcp", "server.sh")},
+	} {
+		if writable, entry := writableAtItsOwnHostPath(spec.Mounts, tc.path); writable {
+			t.Errorf("%s is writable at its own host path through %s\n    what the host does with it: %s", tc.path, entry, tc.why)
+		}
+	}
+	// The control, so a plan that mounted NOTHING could not pass: the read
+	// set is still bound.
+	if entry := bindEntryUnder(spec.Mounts, filepath.Join(home, ".claude", "hooks", "context-watch.sh")); entry == "" {
+		t.Errorf("control broke: the operator's hooks must still be READABLE in the sandbox: %v", spec.Mounts)
 	}
 }

@@ -33,6 +33,7 @@ import (
 	"unicode"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
+	"github.com/SocialGouv/iterion/internal/isolationenv"
 	"github.com/SocialGouv/iterion/pkg/askusermcp"
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -449,6 +450,12 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		return err
 	}
 	defaultImage, defaultImageFallback := resolveDefaultSandboxImageWithFallback(p.DefaultImage)
+	// The image a project `.env` named was ignored (isolationenv): say so
+	// here, where a run logger exists and the image the run WILL start from
+	// is in hand, rather than at the read.
+	if warning := plantedSandboxDefaultImage(); warning != "" && logger != nil {
+		logger.Warn("runtime: %s — this run's sandbox starts from %s", warning, defaultImage)
+	}
 	res, err := resolveSandboxSpecWithFallback(p.Workflow, p.RepoRoot, p.CLIOverride, p.GlobalDefault, defaultImage, defaultImageFallback)
 	if err != nil {
 		return nil, err
@@ -1040,12 +1047,22 @@ func (e *Engine) resolveSecretRewriter() netproxy.SecretRewriter {
 	return rw
 }
 
-// sandboxModelHosts reads ITERION_SANDBOX_MODEL_HOSTS: the operator's own
+// sandboxModelHosts reads ITERION_SANDBOX_MODEL_HOSTS: the OPERATOR's own
 // model gateways (comma- or space-separated, in the network rules' syntax),
 // whose request bodies the inspecting proxy leaves in placeholder form like
 // a provider's. netproxy.New refuses an entry that is not a host pattern.
-func sandboxModelHosts() []string {
-	return strings.FieldsFunc(os.Getenv("ITERION_SANDBOX_MODEL_HOSTS"), func(r rune) bool {
+//
+// The operator's: read through [isolationenv] like every other name that can
+// lower a run's isolation, because this one decides which hosts get
+// PLACEHOLDERS and which get the run's real secrets substituted into their
+// request bodies — a `!` exclusion of the repository's own gateway is enough.
+// A planted value is ignored, and the built-in model detection decides alone.
+func sandboxModelHosts(logger *iterlog.Logger) []string {
+	value, planted := isolationenv.Value(isolationenv.ModelHosts)
+	if planted && logger != nil {
+		logger.Warn("runtime: %s — the egress proxy keeps its built-in model-host detection", isolationenv.PlantedWarning(isolationenv.ModelHosts))
+	}
+	return strings.FieldsFunc(value, func(r rune) bool {
 		return r == ',' || unicode.IsSpace(r)
 	})
 }
@@ -1161,7 +1178,7 @@ func startNetworkProxy(
 	opts := netproxy.Options{
 		Policy:           policy,
 		Token:            token,
-		ModelHosts:       sandboxModelHosts(),
+		ModelHosts:       sandboxModelHosts(logger),
 		MaxInspectedBody: maxBody,
 		OnBlocked: func(host, reason string) {
 			_ = emitEvent(store.EventNetworkBlocked, map[string]any{
@@ -1618,13 +1635,26 @@ const sandboxDefaultSource = "global sandbox default"
 // ResolveGlobalSandboxDefault returns the effective global sandbox
 // default a PRODUCT ENTRY POINT (iterion run / resume / studio /
 // dispatch) should install via [WithSandboxDefault]: the
-// ITERION_SANDBOX_DEFAULT env value when set, else "auto" —
+// ITERION_SANDBOX_DEFAULT value the process INHERITED when set, else "auto" —
 // sandbox-by-default. The policy deliberately lives at the entry
 // points, not in the engine: an Engine constructed without
 // [WithSandboxDefault] (tests, embedders) stays neutral and runs
 // unsandboxed workflows unsandboxed.
-func ResolveGlobalSandboxDefault() string {
-	if v := strings.ToLower(strings.TrimSpace(os.Getenv("ITERION_SANDBOX_DEFAULT"))); v != "" {
+//
+// INHERITED, through [isolationenv] — the ONE reader of every name that can
+// LOWER a run's isolation — and #1959 is why this tier belongs to the class:
+// [ApplySandboxFloor] neutralizes a non-operator bot's `sandbox: none` by
+// falling THROUGH to this default, so a one-line `.env` in the repository
+// under review would pick the posture the floor had just defended, event and
+// warn included. A planted value is ignored, and said out loud where a logger
+// exists: pass nil only at a call site that holds none — the ignore stands
+// either way.
+func ResolveGlobalSandboxDefault(logger *iterlog.Logger) string {
+	value, planted := isolationenv.Value(isolationenv.SandboxDefault)
+	if planted && logger != nil {
+		logger.Warn("runtime: %s — the global sandbox default stays %q", isolationenv.PlantedWarning(isolationenv.SandboxDefault), string(sandbox.ModeAuto))
+	}
+	if v := strings.ToLower(strings.TrimSpace(value)); v != "" {
 		return v
 	}
 	return string(sandbox.ModeAuto)

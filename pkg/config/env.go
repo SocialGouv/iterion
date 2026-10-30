@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/SocialGouv/iterion/internal/isolationenv"
 )
 
 // loadEnv overlays ITERION_* env vars onto cfg. An empty / unset env
@@ -112,15 +114,28 @@ func loadEnv(cfg *Config) error {
 		cfg.Log.Level = strings.ToLower(v)
 	}
 
-	if v, ok := lookup("ITERION_SANDBOX_DEFAULT"); ok {
-		cfg.Sandbox.Default = strings.ToLower(v)
+	// The two sandbox MODE tiers are read through internal/isolationenv, the
+	// ONE reader of a name that can LOWER a run's isolation: `lookup` reads
+	// the live environment, which a `.env` beside the process's working
+	// directory fills in, and neither the deployment's sandbox default nor its
+	// CLI-strength override is a repository's answer to give. host_state is
+	// NOT in that class and keeps `lookup`: its only lowering value is the
+	// built-in default, and the isolationenv doc says so.
+	lookupIsolation := func(name string, dst *string) {
+		value, planted := isolationenv.Value(name)
+		if planted {
+			cfg.Sandbox.PlantedIgnored = append(cfg.Sandbox.PlantedIgnored, name)
+			return
+		}
+		if value = strings.TrimSpace(value); value != "" {
+			*dst = strings.ToLower(value)
+		}
 	}
+	lookupIsolation(isolationenv.SandboxDefault, &cfg.Sandbox.Default)
 	if v, ok := lookup("ITERION_SANDBOX_HOST_STATE"); ok {
 		cfg.Sandbox.HostState = strings.ToLower(v)
 	}
-	if v, ok := lookup("ITERION_SANDBOX_OVERRIDE"); ok {
-		cfg.Sandbox.Override = strings.ToLower(v)
-	}
+	lookupIsolation(isolationenv.SandboxOverride, &cfg.Sandbox.Override)
 
 	lookupString("ITERION_JWT_SECRET", &cfg.Auth.JWTSecret)
 	lookupString("ITERION_SECRETS_KEY", &cfg.Auth.SecretsKey)

@@ -99,9 +99,9 @@ func TestADeclaredModelGatewaysBodyIsNeverMaterialised(t *testing.T) {
 
 func TestSandboxModelHostsSplitsOnCommasAndSpaces(t *testing.T) {
 	t.Setenv("ITERION_SANDBOX_MODEL_HOSTS", " a.example , b.example\tc.example,,")
-	got := sandboxModelHosts()
+	got := sandboxModelHosts(nil)
 	if strings.Join(got, "|") != "a.example|b.example|c.example" {
-		t.Fatalf("sandboxModelHosts() = %q", got)
+		t.Fatalf("sandboxModelHosts(nil) = %q", got)
 	}
 }
 

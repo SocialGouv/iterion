@@ -1,16 +1,27 @@
 package runtime
 
 import (
-	"os"
 	"strings"
 
+	"github.com/SocialGouv/iterion/internal/isolationenv"
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 )
+
+// plantedSandboxDefaultImage reports the warning a caller with a logger owes
+// when a project `.env` named the sandbox image and was therefore ignored —
+// "" when there is nothing to say. The ignore itself happens in
+// resolveDefaultSandboxImageWithFallback; this is only its voice.
+func plantedSandboxDefaultImage() string {
+	if _, planted := isolationenv.Value(EnvSandboxDefaultImage); planted {
+		return isolationenv.PlantedWarning(EnvSandboxDefaultImage)
+	}
+	return ""
+}
 
 // EnvSandboxDefaultImage is the env var override for the implicit
 // sandbox image used by `sandbox: auto` when no
 // .devcontainer/devcontainer.json is found in the workspace.
-const EnvSandboxDefaultImage = "ITERION_SANDBOX_DEFAULT_IMAGE"
+const EnvSandboxDefaultImage = isolationenv.SandboxDefaultImage
 
 // builtInSandboxImageRepo is the GHCR repository iterion publishes
 // the slim sandbox image to. Fully-qualified image refs are built as
@@ -48,8 +59,13 @@ func resolveDefaultSandboxImageWithFallback(flagOverride string) (ref, fallback 
 	if v := strings.TrimSpace(flagOverride); v != "" {
 		return v, ""
 	}
-	if v := strings.TrimSpace(os.Getenv(EnvSandboxDefaultImage)); v != "" {
-		return v, ""
+	// INHERITED, through isolationenv: the image is the CODE that runs with
+	// the operator's host state mounted, so a `.env` in the repository under
+	// review must not choose it. The planted value is ignored and the warn is
+	// the caller's — resolveDefaultSandboxImage runs where the spec is built,
+	// and plantedSandboxDefaultImage names the ignored choice there.
+	if value, _ := isolationenv.Value(EnvSandboxDefaultImage); strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value), ""
 	}
 	return builtInSandboxImageRepo + ":" + appinfo.SandboxImageTag(), builtInSandboxImageRepo + ":latest"
 }

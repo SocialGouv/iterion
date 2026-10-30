@@ -1141,7 +1141,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			runview.WithResumePolicyFiller(s.assistantResumePolicy),
 			// Sandbox-by-default for studio/server-launched in-process runs
 			// (same resolution as `iterion run`).
-			runview.WithSandboxDefault(runtime.ResolveGlobalSandboxDefault()),
+			runview.WithSandboxDefault(runtime.ResolveGlobalSandboxDefault(logger)),
 		}
 		if cfg.RecoveryPassive {
 			svcOpts = append(svcOpts, runview.WithRecoveryPassive())

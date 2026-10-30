@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
+	"github.com/SocialGouv/iterion/internal/testfs"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -161,12 +162,14 @@ func TestHostStateGuardShadowsExecutableHostConfig(t *testing.T) {
 	}
 }
 
-// A host file that does NOT exist yet must not become plantable through the
-// read-write parent bind: the guard seeds it empty on the host (user-owned,
-// never docker's root-owned mountpoint) and shadows it with a copy.
-func TestHostStateGuardSeedsAbsentConfigFiles(t *testing.T) {
-	home, _ := guardTestHome(t)
-	// Remove the files a minimal home would not have.
+// Under the ephemeral posture the guard SEEDS NOTHING into the operator's
+// home: an absent ~/.claude or ~/.codex path needs no mountpoint, because the
+// per-run tmpfs is what a plant reaches. The iterion home is the exception
+// that proves the rule — it stays read-write for the run store, so there the
+// creation is still what makes the overlay's mountpoint exist.
+func TestHostStateGuardSeedsNothingIntoTheOperatorsEphemeralHome(t *testing.T) {
+	home, iterionHome := guardTestHome(t)
+	// A minimal home: none of the files or dirs below exist.
 	for _, p := range []string{
 		filepath.Join(home, ".claude", "settings.local.json"),
 		filepath.Join(home, ".codex", "config.toml"),
@@ -175,9 +178,11 @@ func TestHostStateGuardSeedsAbsentConfigFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// And a home whose plugins dir never existed.
-	if err := os.RemoveAll(filepath.Join(home, ".claude", "plugins")); err != nil {
-		t.Fatal(err)
+	for _, d := range []string{
+		filepath.Join(home, ".claude", "plugins"),
+		filepath.Join(iterionHome, "plugins"),
+	} {
+		testfs.RemoveAll(t, filepath.Dir(d), d)
 	}
 
 	guard := newHostConfigGuard(iterlog.Nop())
@@ -185,29 +190,32 @@ func TestHostStateGuardSeedsAbsentConfigFiles(t *testing.T) {
 	applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()}, guard,
 		func(store.EventType, map[string]any) error { return nil }, iterlog.Nop())
 
+	// Named one by one: each is a file or directory whose ABSENCE in the
+	// operator's home is itself meaningful, and every one of them was created
+	// by the previous posture.
 	for _, p := range []string{
 		filepath.Join(home, ".claude", "settings.local.json"),
+		filepath.Join(home, ".claude", "CLAUDE.md"),
+		filepath.Join(home, ".claude", "plugins"),
 		filepath.Join(home, ".codex", "config.toml"),
+		filepath.Join(home, ".codex", "AGENTS.md"),
+		filepath.Join(home, ".codex", "AGENTS.override.md"),
+		filepath.Join(home, ".codex", "prompts"),
 	} {
-		info, err := os.Stat(p)
-		if err != nil {
-			t.Errorf("the absent %s was not seeded: %v — the path stays plantable", p, err)
-			continue
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("%s was created in the operator's home — under an ephemeral home nothing needs a mountpoint, and the guard's cleanup does not remove what it seeds", p)
 		}
-		if info.Mode().Perm() != 0o600 {
-			t.Errorf("seeded %s mode = %o, want 0600", p, info.Mode().Perm())
-		}
-		entry := bindEntry(spec.Mounts, p)
-		if entry == "" || strings.Contains(entry, "source="+p) {
-			t.Errorf("absent %s must be shadowed by a copy once seeded: %q", p, entry)
+		if entry := bindEntry(spec.Mounts, p); entry != "" {
+			t.Errorf("%s is absent on the host and still bound: %q", p, entry)
 		}
 	}
-	pluginsDir := filepath.Join(home, ".claude", "plugins")
+	// The iterion home keeps the old shape, and for its own reason.
+	pluginsDir := filepath.Join(iterionHome, "plugins")
 	if info, err := os.Stat(pluginsDir); err != nil || !info.IsDir() {
-		t.Errorf("the absent plugins dir was not created: %v", err)
+		t.Errorf("the absent <iterion home>/plugins was not created: %v — that home is bound read-write, so the overlay needs the mountpoint", err)
 	}
 	if entry := bindEntry(spec.Mounts, pluginsDir); entry == "" || !strings.Contains(entry, "readonly") {
-		t.Errorf("absent plugins dir must get an empty read-only overlay: %q", entry)
+		t.Errorf("absent <iterion home>/plugins must get an empty read-only overlay: %q", entry)
 	}
 }
 
@@ -396,12 +404,13 @@ func TestHostConfigGuardNilIsANoOp(t *testing.T) {
 	guard.cleanup() // must not panic
 }
 
-// Regression: a config overlay nested under a bound dir
-// ($HOME/.claude/settings.json over the $HOME/.claude bind) must NOT cause
-// homeNestedBindParents to lay a tmpfs at the bound dir — the docker driver
-// passes --tmpfs AFTER --mount, so the tmpfs would shadow the bind and the
-// container would see an empty ~/.claude (sessions and credentials gone).
-func TestHostStateGuardOverlaysDoNotShadowTheirParentBind(t *testing.T) {
+// A tmpfs and a bind at the SAME destination is a shadow in either argument
+// order (measured, docker 29): the tmpfs wins and the container sees an empty
+// directory where the host's state was. So the invariant is stated over the
+// plan itself rather than over a list of paths — no tmpfs destination may be a
+// surviving bind target — and the ephemeral homes are checked for being on the
+// right side of it: tmpfs, and NOT bound.
+func TestNoTmpfsShadowsASurvivingBind(t *testing.T) {
 	if goruntime.GOOS != "linux" {
 		t.Skip("the HOME tmpfs layering exists on Linux only")
 	}
@@ -412,14 +421,33 @@ func TestHostStateGuardOverlaysDoNotShadowTheirParentBind(t *testing.T) {
 	spec := &sandbox.Spec{}
 	applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()},
 		newHostConfigGuard(iterlog.Nop()), func(store.EventType, map[string]any) error { return nil }, iterlog.Nop())
+
+	targets := map[string]string{}
+	for _, m := range spec.Mounts {
+		if t := mountTarget(m); t != "" {
+			targets[t] = m
+		}
+	}
+	laid := map[string]bool{}
 	for _, tm := range spec.Tmpfs {
-		for _, bound := range []string{
-			filepath.Join(home, ".claude"),
-			filepath.Join(home, ".codex"),
-		} {
-			if strings.HasPrefix(tm, bound+":") {
-				t.Errorf("tmpfs %q shadows the %q bind — the container would see an empty dir", tm, bound)
-			}
+		dest := strings.SplitN(tm, ":", 2)[0]
+		if entry, bound := targets[dest]; bound {
+			t.Errorf("tmpfs %q shadows the bind %q — the container would see an empty dir where the host's state is", tm, entry)
+		}
+		if laid[dest] {
+			t.Errorf("two tmpfs at one destination (%s): docker cannot order them, and the plan is ambiguous", dest)
+		}
+		laid[dest] = true
+	}
+	for _, ephemeral := range []string{
+		filepath.Join(home, ".claude"),
+		filepath.Join(home, ".codex"),
+	} {
+		if !laid[ephemeral] {
+			t.Errorf("%s must be a per-run tmpfs under the guard: %v", ephemeral, spec.Tmpfs)
+		}
+		if entry, bound := targets[ephemeral]; bound {
+			t.Errorf("%s is still bound from the host: %q — the ephemeral posture is what makes an unlisted path harmless", ephemeral, entry)
 		}
 	}
 }

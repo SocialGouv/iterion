@@ -377,7 +377,9 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		// launch is not silently sandboxed on resume just because the
 		// resume process saw docker on PATH.
 		runtime.WithSandboxOverride(sandboxOverride),
-		runtime.WithSandboxDefault(runtime.ResolveGlobalSandboxDefault()),
+		// nil logger: buildResumeExecutor named a planted
+		// ITERION_SANDBOX_DEFAULT with this run's logger already.
+		runtime.WithSandboxDefault(runtime.ResolveGlobalSandboxDefault(nil)),
 		runtime.WithSandboxDefaultImage(sandboxDefaultImage),
 		runtime.WithSandboxHostStateOverride(sandboxHostStateOverride),
 		// Worktree finalization decisions from the launch record. Without

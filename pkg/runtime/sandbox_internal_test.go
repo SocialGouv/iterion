@@ -571,11 +571,11 @@ func TestResolveSandboxSpecAutoDegradesWhateverItsSource(t *testing.T) {
 
 func TestResolveGlobalSandboxDefault(t *testing.T) {
 	t.Setenv("ITERION_SANDBOX_DEFAULT", "")
-	if got := ResolveGlobalSandboxDefault(); got != "auto" {
+	if got := ResolveGlobalSandboxDefault(nil); got != "auto" {
 		t.Errorf("unset env: got %q, want auto (sandbox-by-default)", got)
 	}
 	t.Setenv("ITERION_SANDBOX_DEFAULT", "NONE")
-	if got := ResolveGlobalSandboxDefault(); got != "none" {
+	if got := ResolveGlobalSandboxDefault(nil); got != "none" {
 		t.Errorf("env none: got %q, want none", got)
 	}
 }

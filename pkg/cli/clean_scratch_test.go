@@ -104,3 +104,114 @@ func TestSweepStoreScratchDryRunReportsWithoutDeleting(t *testing.T) {
 		t.Error("--apply left the stale entry behind")
 	}
 }
+
+// The sandbox's own warm caches (#2069) are durable state the guard
+// introduced, and until this they had no reclaim at all: a store whose only
+// volume is sandbox-caches was invisible to --all-projects, and no sweep
+// walked into it. A machine that only ever ran sandboxed bots is exactly that
+// store.
+//
+// Mutation coverage: drop the sandbox-caches arm of isSweepableStore → the
+// cache-only store is no longer discovered and this fails.
+func TestSweepableStoreIncludesCacheOnlyStores(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cacheOnly := filepath.Join(root, "cache-only")
+	if err := os.MkdirAll(filepath.Join(cacheOnly, "sandbox-caches", ".cache", "go-build"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if !isSweepableStore(cacheOnly) {
+		t.Error("a store whose only volume is the sandbox cache store is not swept — it grows forever, and --all-projects reports success")
+	}
+}
+
+// And the sweep reclaims them, by the same age rule as scratch: the paths are
+// dot-prefixed and nested (.cache/go-build, .local/share/pnpm), which the
+// scratch scan skips by design, so the reclaim reads the store layout from the
+// code that CREATES it rather than from a listing.
+func TestSweepSandboxCachesReportsThenReclaims(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ITERION_HOME", home)
+	cache := filepath.Join(home, "sandbox-caches", ".cache", "go-build", "ab")
+	if err := os.MkdirAll(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	object := filepath.Join(cache, "abcdef-d")
+	if err := os.WriteFile(object, make([]byte, 4096), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A cache that is still warm must survive the same sweep.
+	fresh := filepath.Join(home, "sandbox-caches", ".npm", "_cacache")
+	if err := os.MkdirAll(fresh, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fresh, "index"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	for _, p := range []string{object, cache, filepath.Dir(cache)} {
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	now := func() time.Time { return time.Now() }
+	var dry CleanResult
+	dry.DryRun = true
+	sweepSandboxCaches(CleanOptions{OlderThan: 168 * time.Hour}, now, &dry)
+	if len(dry.Scratch) != 1 || dry.ScratchBytes < 4096 {
+		t.Fatalf("dry run reported %d entries / %d bytes, want the one stale cache it would take", len(dry.Scratch), dry.ScratchBytes)
+	}
+	if _, err := os.Stat(object); err != nil {
+		t.Error("dry run deleted the cache")
+	}
+
+	var applied CleanResult
+	sweepSandboxCaches(CleanOptions{OlderThan: 168 * time.Hour, Apply: true}, now, &applied)
+	// The NAMED path goes — `sandbox-caches/.cache/go-build` — and its
+	// parent stays: the store's members are named by the mount plan, so a
+	// sweep that took `.cache` would take yarn's cache with go's.
+	if _, err := os.Stat(filepath.Dir(cache)); !os.IsNotExist(err) {
+		t.Error("--apply left the stale cache behind")
+	}
+	if _, err := os.Stat(filepath.Dir(filepath.Dir(cache))); err != nil {
+		t.Errorf("--apply took the store member's parent, which holds the OTHER caches: %v", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Error("--apply took a cache that is still warm")
+	}
+}
+
+// A path under the store that a run replaced with a SYMLINK is refused, not
+// followed: a sweep that followed it would delete wherever the run pointed it,
+// with --apply, outside any store.
+func TestSweepSandboxCachesRefusesASymlinkedCache(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ITERION_HOME", home)
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "keep-me")
+	if err := os.WriteFile(victim, []byte("operator data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, "sandbox-caches", ".cache", "go-build")
+	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(victim, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	var r CleanResult
+	sweepSandboxCaches(CleanOptions{OlderThan: 168 * time.Hour, Apply: true}, time.Now, &r)
+	if _, err := os.Stat(victim); err != nil {
+		t.Errorf("the sweep followed a symlinked cache and deleted outside the store: %v", err)
+	}
+	if len(r.ScratchErrors) == 0 {
+		t.Error("a refused path must be reported — a sweep that silently skips is one nobody fixes")
+	}
+}

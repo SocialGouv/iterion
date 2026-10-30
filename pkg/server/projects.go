@@ -339,7 +339,7 @@ func (s *Server) swapWorkDir(ctx context.Context, newDir string) error {
 			runview.WithWorkDir(abs),
 			runview.WithMaxConcurrentPipelines(s.cfg.MaxConcurrentPipelines),
 			// Sandbox-by-default (same resolution as `iterion run`).
-			runview.WithSandboxDefault(runtime.ResolveGlobalSandboxDefault()),
+			runview.WithSandboxDefault(runtime.ResolveGlobalSandboxDefault(s.logger)),
 		}
 		if mcpStore, openErr := store.New(storeDir); openErr != nil {
 			s.logger.Warn("projects: open runs MCP store for %q: %v — sandboxed runs.read disabled", abs, openErr)
