@@ -17,7 +17,7 @@ import (
 
 func fjConfig(t *testing.T, s *Server) (webhooks.Config, string) {
 	t.Helper()
-	pt, hash, last4, fp, err := webhooks.MintToken()
+	pt, hash, last4, fp, err := webhooks.MintToken(testMintVerdictContext(context.Background()))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -248,7 +248,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
-	plaintext, hash, last4, fp, err := webhooks.MintToken()
+	plaintext, hash, last4, fp, err := webhooks.MintToken(r.Context())
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "mint token: %v", err)
 		return
@@ -659,7 +659,7 @@ func (s *Server) handleRotateWebhook(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusConflict, "this webhook is managed by a forge integration — rotate it by disabling and re-enabling the bot in the Integrations tab")
 		return
 	}
-	plaintext, hash, last4, fp, err := webhooks.MintToken()
+	plaintext, hash, last4, fp, err := webhooks.MintToken(r.Context())
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "mint token: %v", err)
 		return

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
@@ -609,8 +610,9 @@ func TestUpsertHook_ProbeFailureIsNotNoHook(t *testing.T) {
 // stops being safe reddens here, where the scrub would otherwise start
 // missing a form.
 func TestMintedWebhookSecretNeedsNoEscaping(t *testing.T) {
+	mintCtx := auth.ContextWithMintVerdict(context.Background(), auth.NewMintVerdict(auth.MintTeamToken, "test"))
 	for i := 0; i < 32; i++ {
-		plaintext, _, _, _, err := webhooks.MintToken()
+		plaintext, _, _, _, err := webhooks.MintToken(mintCtx)
 		if err != nil {
 			t.Fatal(err)
 		}

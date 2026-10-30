@@ -22,7 +22,7 @@ func TestWebhookEpochAdmissionUsesAuthoritativeIntegration(t *testing.T) {
 		t.Run(state, func(t *testing.T) {
 			s := newWebhookTestServer(t)
 			ctx := context.Background()
-			secret, hash, _, _, err := webhooks.MintToken()
+			secret, hash, _, _, err := webhooks.MintToken(testMintVerdictContext(context.Background()))
 			if err != nil {
 				t.Fatal(err)
 			}

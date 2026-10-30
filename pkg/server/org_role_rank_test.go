@@ -676,7 +676,7 @@ func TestOrgOffboarding_aRemovalRevokesTheInvitationsTheMemberMintedAboveWhatThe
 			othersID, _ := mintInvitationAs(t, s, racerCtx, "t1", "byracer@example.com", identity.RoleMember)
 			// The same creator in ANOTHER org, through the service: the route
 			// would refuse it, since they hold no standing in o2.
-			_, elsewhere, err := s.authSvc.CreateInvitation(ctx, "t9", "elsewhere@example.com", identity.RoleAdmin, "orgadmin")
+			_, elsewhere, err := s.authSvc.CreateInvitation(testMintVerdictContext(ctx), "t9", "elsewhere@example.com", identity.RoleAdmin, "orgadmin")
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -111,11 +111,16 @@ func (o *Orchestrator) reserveHookIdentity(ctx context.Context, req ProvisionReq
 			// and a repo deleted between a caller's read and this
 			// reservation cannot slip a mint past the credential check,
 			// which a gate at the route's door would have let through.
-			if err := o.approveTeamTokenMint(ctx); err != nil {
+			// The context the seam returns carries the verdict the ask
+			// granted, and it is THE context the mint runs under: the
+			// primitive itself refuses one without the verdict, so the
+			// class is closed twice — at the ask and at the mint.
+			mctx, err := o.approveTeamTokenMint(ctx)
+			if err != nil {
 				return ri, "", "", err
 			}
 			webhookID = o.id()
-			plaintext, _, _, _, err := webhooks.MintToken()
+			plaintext, _, _, _, err := webhooks.MintToken(mctx)
 			if err != nil {
 				return ri, "", "", fmt.Errorf("forge: mint webhook identity: %w", err)
 			}
@@ -163,16 +168,21 @@ func provisionSecretAAD(integrationID, webhookID string) []byte {
 }
 
 // approveTeamTokenMint asks the wired chokepoint whether the credential
-// behind ctx may mint the team token this reservation is about to fabricate.
-// A nil seam mints as the package always did: the background rotator and the
-// tests run no credential, and a server wires it (pkg/server passes
-// auth.MintTeamToken through auth.Service.CheckDerivation).
-func (o *Orchestrator) approveTeamTokenMint(ctx context.Context) error {
+// behind ctx may mint the team token this reservation is about to fabricate,
+// and hands back the context carrying its verdict — the one the mint runs
+// under, which the primitive itself requires. A nil seam refuses: this
+// package mints a team-scoped token, and minting one without the derivation
+// chokepoint's approval is exactly what #2687 closes — a server wires the
+// seam (pkg/server passes auth.MintTeamToken through
+// auth.Service.CheckDerivation and stamps the verdict), a test stamps the
+// same verdict through the same constructor the gate uses.
+func (o *Orchestrator) approveTeamTokenMint(ctx context.Context) (context.Context, error) {
 	if o.ApproveTeamTokenMint == nil {
-		return nil
+		return ctx, fmt.Errorf("%w: no ApproveTeamTokenMint seam is wired, and a team-token mint refuses without the derivation chokepoint's approval", ErrMintNotApproved)
 	}
-	if err := o.ApproveTeamTokenMint(ctx); err != nil {
-		return fmt.Errorf("%w: %w", ErrMintNotApproved, err)
+	mctx, err := o.ApproveTeamTokenMint(ctx)
+	if err != nil {
+		return ctx, fmt.Errorf("%w: %w", ErrMintNotApproved, err)
 	}
-	return nil
+	return mctx, nil
 }

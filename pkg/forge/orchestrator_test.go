@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -146,9 +147,17 @@ func newTestOrch(t *testing.T) (*Orchestrator, *fakeAdmin, secrets.Sealer) {
 		Sealer:       sealer,
 		Bots:         testBotLookup,
 		AdminFor:     func(context.Context, Connection) (Admin, error) { return fa, nil },
-		PublicURL:    "https://iterion.example.com",
-		Now:          func() time.Time { return time.Unix(1700000000, 0).UTC() },
-		NewID:        func() string { idc++; return fmt.Sprintf("id-%d", idc) },
+		// The tests run no credential, so the mint's approval is stamped
+		// here — the same verdict, through the same constructor, the
+		// derivation gate stamps after its ask (the nil-seam refusal and
+		// the refusing-seam refusal are probed in
+		// provision_mint_approval_test.go).
+		ApproveTeamTokenMint: func(ctx context.Context) (context.Context, error) {
+			return auth.ContextWithMintVerdict(ctx, auth.NewMintVerdict(auth.MintTeamToken, "forge-test")), nil
+		},
+		PublicURL: "https://iterion.example.com",
+		Now:       func() time.Time { return time.Unix(1700000000, 0).UTC() },
+		NewID:     func() string { idc++; return fmt.Sprintf("id-%d", idc) },
 	}
 	return o, fa, sealer
 }

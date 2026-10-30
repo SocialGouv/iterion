@@ -146,7 +146,7 @@ func TestHandleInvitationAccept_AFailedOrgReadKeepsTheOwner(t *testing.T) {
 	if _, err := f.s.authStore().CreateTeam(ctx, identity.Team{ID: "tb", OrgID: "o1", Name: "TB", Slug: "tb", CreatedAt: time.Now()}); err != nil {
 		t.Fatalf("seed team tb: %v", err)
 	}
-	token, _, err := f.svc.CreateInvitation(ctx, "tb", fixtureEmail, identity.RoleMember, "someone-else")
+	token, _, err := f.svc.CreateInvitation(testMintVerdictContext(ctx), "tb", fixtureEmail, identity.RoleMember, "someone-else")
 	if err != nil {
 		t.Fatalf("CreateInvitation: %v", err)
 	}

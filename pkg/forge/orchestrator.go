@@ -148,16 +148,19 @@ type Orchestrator struct {
 	BotAvatar []byte
 	// ApproveTeamTokenMint, when set, is asked at the ONE line of this
 	// package that fabricates a team token — the reservation of a NEW hook
-	// identity (reserveHookIdentity → webhooks.MintToken) — and its refusal
+	// identity (reserveHookIdentity → webhooks.MintToken) — and the context
+	// it returns is the one the mint runs under: it must carry the
+	// derivation chokepoint's verdict (auth.ContextWithMintVerdict), which
+	// the mint primitive itself requires and refuses without. Its refusal
 	// aborts the provisioning with ErrMintNotApproved. The question is asked
 	// where the mint is DECIDED, not where the request arrives: a
 	// re-provisioning that reuses the integration's sealed secret mints
 	// nothing and is never asked, so a stored personal access token keeps
 	// reconciling a repo it already provisioned, while the first enable of a
 	// repo (and the re-reservation a retired integration makes) answers to
-	// the credential chokepoint. Injected like the other seams: nil asks
-	// nobody, which is what the background rotator and the tests run as.
-	ApproveTeamTokenMint func(ctx context.Context) error
+	// the credential chokepoint. A nil seam refuses: minting a team token
+	// without the chokepoint's approval is what this seam exists to answer.
+	ApproveTeamTokenMint func(ctx context.Context) (context.Context, error)
 	// LogWarn, when set, reports a non-blocking anomaly (the only current one:
 	// a security-read withdrawal that could not run while disconnecting).
 	// Injected like the other seams so the package stays logger-free; nil

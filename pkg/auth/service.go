@@ -2545,7 +2545,15 @@ func (s *Service) RestoreOrg(ctx context.Context, orgID string) (identity.Org, e
 
 // CreateInvitation issues a fresh invitation. The plaintext token is
 // returned (caller emails it) and only its hash is persisted.
+//
+// An invitation token is a team token (MintTeamToken): it outlives the
+// credential it is minted from, so the context must carry the derivation
+// chokepoint's verdict for it — the gate stamped it after its ask granted —
+// and a call whose context carries none is refused, whatever calls this.
 func (s *Service) CreateInvitation(ctx context.Context, teamID, email string, role identity.Role, invitedBy string) (token string, inv identity.Invitation, err error) {
+	if _, err := RequireMintVerdict(ctx, MintTeamToken, "auth.Service.CreateInvitation"); err != nil {
+		return "", identity.Invitation{}, err
+	}
 	if !role.Valid() {
 		return "", identity.Invitation{}, identity.ErrInvalidRole
 	}

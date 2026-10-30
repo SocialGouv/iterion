@@ -101,7 +101,10 @@ func whReq(ctx context.Context, method, path, body, teamID, webhookID string) *h
 	} else {
 		r = httptest.NewRequest(method, path, strings.NewReader(body))
 	}
-	r = r.WithContext(ctx)
+	// Past the mux, so past the gateDerivation wrapper that stamps the
+	// derivation verdict on the real routes; the mint handlers refuse a
+	// context without it. Same constructor the gate uses.
+	r = r.WithContext(testMintVerdictContext(ctx))
 	if teamID != "" {
 		r.SetPathValue("id", teamID)
 	}
@@ -312,7 +315,7 @@ func TestHandleRotateWebhook(t *testing.T) {
 	s := newWebhookTestServer(t)
 	ctx := superAdminCtx()
 	// seed a config with a known token
-	pt, hash, last4, fp, _ := webhooks.MintToken()
+	pt, hash, last4, fp, _ := webhooks.MintToken(testMintVerdictContext(context.Background()))
 	cfg := webhooks.Config{ID: "w1", TenantID: "t1", Provider: webhooks.ProviderGitLab, Enabled: true,
 		TokenHash: hash, TokenLast4: last4, Fingerprint: fp, BotIDs: []string{"review-pr"}, CreatedAt: time.Now()}
 	if err := s.webhookConfigs.Create(ctx, cfg); err != nil {
@@ -362,7 +365,7 @@ func runWebhookAuth(s *Server, cfgID, token string) (status int, ran bool, tenan
 
 func TestWebhookAuth_Admission(t *testing.T) {
 	s := newWebhookTestServer(t)
-	pt, hash, last4, fp, _ := webhooks.MintToken()
+	pt, hash, last4, fp, _ := webhooks.MintToken(testMintVerdictContext(context.Background()))
 	cfg := webhooks.Config{ID: "w1", TenantID: "t1", Provider: webhooks.ProviderGitLab, Enabled: true,
 		TokenHash: hash, TokenLast4: last4, Fingerprint: fp, BotIDs: []string{"review-pr"},
 		RateLimit: webhooks.Rate{Rate: 100, Burst: 100}, CreatedAt: time.Now()}
@@ -427,7 +430,7 @@ func TestWebhookAuth_DisabledAndRateLimitAndQuota(t *testing.T) {
 	ctx := context.Background()
 
 	// disabled → 410
-	pt, hash, l4, fp, _ := webhooks.MintToken()
+	pt, hash, l4, fp, _ := webhooks.MintToken(testMintVerdictContext(context.Background()))
 	s.webhookConfigs.Create(ctx, webhooks.Config{ID: "off", TenantID: "t1", Provider: webhooks.ProviderGitLab,
 		Enabled: false, TokenHash: hash, TokenLast4: l4, Fingerprint: fp, BotIDs: []string{"x"}, RateLimit: webhooks.Rate{Rate: 100, Burst: 100}})
 	if code, ran, _, _ := runWebhookAuth(s, "off", pt); code != http.StatusGone || ran {
@@ -435,7 +438,7 @@ func TestWebhookAuth_DisabledAndRateLimitAndQuota(t *testing.T) {
 	}
 
 	// rate limit: burst 1 → first ok, second 429
-	pt2, h2, l42, fp2, _ := webhooks.MintToken()
+	pt2, h2, l42, fp2, _ := webhooks.MintToken(testMintVerdictContext(context.Background()))
 	s.webhookConfigs.Create(ctx, webhooks.Config{ID: "rl", TenantID: "t1", Provider: webhooks.ProviderGitLab,
 		Enabled: true, TokenHash: h2, TokenLast4: l42, Fingerprint: fp2, BotIDs: []string{"x"}, RateLimit: webhooks.Rate{Rate: 0.0001, Burst: 1}})
 	if code, _, _, _ := runWebhookAuth(s, "rl", pt2); code != http.StatusOK {
@@ -446,7 +449,7 @@ func TestWebhookAuth_DisabledAndRateLimitAndQuota(t *testing.T) {
 	}
 
 	// monthly quota: per-webhook limit 1, high rate so RL doesn't trip
-	pt3, h3, l43, fp3, _ := webhooks.MintToken()
+	pt3, h3, l43, fp3, _ := webhooks.MintToken(testMintVerdictContext(context.Background()))
 	s.webhookConfigs.Create(ctx, webhooks.Config{ID: "mq", TenantID: "t2", Provider: webhooks.ProviderGitLab,
 		Enabled: true, TokenHash: h3, TokenLast4: l43, Fingerprint: fp3, BotIDs: []string{"x"},
 		RateLimit: webhooks.Rate{Rate: 100, Burst: 100}, MonthlyCallLimit: 1})

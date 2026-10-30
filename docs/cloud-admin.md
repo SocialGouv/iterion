@@ -236,14 +236,21 @@ outlives it, listed and revocable in the team's, the org's or the
 account's settings. What it no longer mints is the tokens of that state:
 the webhook and share-link tokens and the invitation are gated above, and
 so is the webhook token a repo-bot provisioning mints through the
-orchestrator. That last one is gated at the mint rather than at the route:
-the orchestrator asks the chokepoint on the line that reserves a NEW hook
-identity, so a repo's first enable (and the re-reservation a retired
+orchestrator. The mint travels with the chokepoint's verdict in the
+request's context: the gate stamps it once its ask grants, and the three
+mint primitives (a webhook token, a share-link token, an invitation)
+refuse a mint whose context carries none — so the class is closed at the
+primitive, whatever calls it. The provisioning's webhook token asks at the
+mint rather than at the route: the orchestrator asks the chokepoint on the
+line that reserves a NEW hook identity and mints under the verdict it
+grants, so a repo's first enable (and the re-reservation a retired
 integration makes) answers the refusal while a reconcile, a settings-only
 update and the approval of such an update reuse the sealed secret, mint
 nothing and are not refused. The class is every caller of the three mint
-primitives, not a list of route names, and a test enumerates them from the
-source (`TestEveryTeamTokenMintSitsBehindTheChokepoint`). The door that
+primitives, not a list of route names, and the guards read the demand in
+each primitive's own body plus every caller of one
+(`TestEveryTeamTokenMintPrimitiveDemandsTheVerdict`,
+`TestEveryMintPrimitiveCallerLivesInTheGuardsGraph`). The door that
 outlives the session is opened by a standing session only. A WebSocket opened before the
 revocation is asked again: every envelope that changes a run (cancel,
 pause, answer, queue a message or cancel a queued one, bump a loop, raise a

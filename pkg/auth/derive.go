@@ -72,11 +72,16 @@ const (
 	// chokepoint, and a personal access token (pinned to its team and its
 	// own expiry) does not make one.
 	//
-	// The set is defined by the VERB, not by the route's name: every caller
-	// of webhooks.MintToken, configshare.MintToken and
-	// Service.CreateInvitation answers to it (pkg/server's
-	// TestEveryTeamTokenMintSitsBehindTheChokepoint enumerates them from the
-	// source and fails on a new one that does not).
+	// The set is defined by the VERB, not by the route's name: webhooks.
+	// MintToken, configshare.MintToken and Service.CreateInvitation demand
+	// the verdict in the context they are called with
+	// (RequireMintVerdict — a mint without one refuses), the verdict is
+	// stamped only where the chokepoint granted (pkg/server's
+	// derivation_gate.go), and pkg/server's
+	// TestEveryTeamTokenMintPrimitiveDemandsTheVerdict reads the demand in
+	// each primitive's own body while
+	// TestEveryMintPrimitiveCallerLivesInTheGuardsGraph fails on a caller
+	// the guards do not read.
 	MintTeamToken Mint = "a team token (webhook, share link or invitation)"
 	// ChangeCredential is a route that changes or removes a credential of
 	// the presented credential's account: POST /api/me/password, POST

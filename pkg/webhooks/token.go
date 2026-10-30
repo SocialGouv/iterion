@@ -1,6 +1,7 @@
 package webhooks
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -19,7 +20,15 @@ const TokenPrefix = "iwh_"
 // operator exactly once) plus the at-rest fields persisted on a Config:
 // a salted hash, the last 4 chars, and a fingerprint. Reuses the same
 // random-token + hash primitives as operator session/invitation tokens.
-func MintToken() (plaintext, hash, last4, fingerprint string, err error) {
+//
+// A webhook token is a team token (auth.MintTeamToken): it outlives the
+// credential it is minted from, so the context must carry the derivation
+// chokepoint's verdict for it — the gate stamped it after its ask granted —
+// and a call whose context carries none is refused, whatever calls this.
+func MintToken(ctx context.Context) (plaintext, hash, last4, fingerprint string, err error) {
+	if _, err := auth.RequireMintVerdict(ctx, auth.MintTeamToken, "webhooks.MintToken"); err != nil {
+		return "", "", "", "", err
+	}
 	tok, _, err := auth.GenerateRandomToken(32)
 	if err != nil {
 		return "", "", "", "", err

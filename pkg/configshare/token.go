@@ -1,6 +1,7 @@
 package configshare
 
 import (
+	"context"
 	"crypto/subtle"
 	"fmt"
 
@@ -15,7 +16,15 @@ const TokenPrefix = "iws_"
 // MintToken returns a fresh share token and the values persisted on the record
 // (never the plaintext). Mirrors webhooks.MintToken so both self-authenticating
 // surfaces share the same at-rest discipline.
-func MintToken() (plaintext, hash, last4, fingerprint string, err error) {
+//
+// A share token is a team token (auth.MintTeamToken): it outlives the
+// credential it is minted from, so the context must carry the derivation
+// chokepoint's verdict for it — the gate stamped it after its ask granted —
+// and a call whose context carries none is refused, whatever calls this.
+func MintToken(ctx context.Context) (plaintext, hash, last4, fingerprint string, err error) {
+	if _, err := auth.RequireMintVerdict(ctx, auth.MintTeamToken, "configshare.MintToken"); err != nil {
+		return "", "", "", "", err
+	}
 	tok, _, err := auth.GenerateRandomToken(32)
 	if err != nil {
 		return "", "", "", "", fmt.Errorf("configshare: mint token: %w", err)

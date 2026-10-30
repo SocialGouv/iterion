@@ -211,7 +211,7 @@ func (s *Server) handleCreateConfigShare(w http.ResponseWriter, r *http.Request)
 			}
 		}
 	}
-	plaintext, hash, last4, fp, err := configshare.MintToken()
+	plaintext, hash, last4, fp, err := configshare.MintToken(r.Context())
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "mint failed")
 		return
@@ -290,7 +290,7 @@ func (s *Server) handleRotateConfigShare(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	plaintext, hash, last4, fp, err := configshare.MintToken()
+	plaintext, hash, last4, fp, err := configshare.MintToken(r.Context())
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "mint failed")
 		return

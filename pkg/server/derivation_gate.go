@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -13,10 +14,16 @@ import (
 // request's credential must still stand — its account active, its session
 // not revoked, a personal access token's row usable — and its kind must be
 // one that may do what mint names, or the route answers the refusal before
-// next runs. Every route that changes or removes a credential of the account,
-// or how an org's accounts sign in, or that mints a team-scoped token which
-// outlives the credential it is minted from (a webhook, share-link or
-// invitation token), is registered through it.
+// next runs. On a grant the verdict travels: the request next runs under
+// carries it in its context (auth.ContextWithMintVerdict), and the mint
+// primitives the handler reaches (webhooks.MintToken, configshare.MintToken,
+// auth.Service.CreateInvitation) refuse a call whose context has none —
+// the class a team-token mint belongs to is closed at the route AND at the
+// primitive, so no handler shape can carry a mint past the gate. Every route
+// that changes or removes a credential of the account, or how an org's
+// accounts sign in, or that mints a team-scoped token which outlives the
+// credential it is minted from (a webhook, share-link or invitation token),
+// is registered through it.
 func (s *Server) gateDerivation(mint auth.Mint, next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, _ := auth.FromContext(r.Context())
@@ -24,7 +31,8 @@ func (s *Server) gateDerivation(mint auth.Mint, next http.HandlerFunc) http.Hand
 			s.derivationError(w, r, err)
 			return
 		}
-		next(w, r)
+		verdict := auth.NewMintVerdict(mint, id.UserID)
+		next(w, r.WithContext(auth.ContextWithMintVerdict(r.Context(), verdict)))
 	})
 }
 
@@ -36,18 +44,24 @@ func (s *Server) gateDerivation(mint auth.Mint, next http.HandlerFunc) http.Hand
 // the route can carry, and three of them (the documented reconcile, a
 // settings-only PATCH, the approval of an update) mint nothing at all.
 //
-// A context with no identity is no credential's request (the background
-// project-bot rotator, a direct orchestrator call in a test): there is no
-// derivation to check, and the mint proceeds as it always did. Every HTTP
-// path into Provision runs behind requireAuth, so a request always carries
-// one.
-func (s *Server) approveTeamTokenMint(ctx context.Context) error {
+// The context it returns carries the verdict the ask granted
+// (auth.ContextWithMintVerdict), and it is the context the mint runs under:
+// webhooks.MintToken refuses a call whose context has none, so the class is
+// closed at the ask AND at the primitive.
+//
+// A context with no identity is no credential's request (a direct
+// orchestrator call in a test): nothing was approved, and the mint refuses —
+// there is no minting without a verdict any more. Every HTTP path into
+// Provision runs behind requireAuth, so a request always carries one.
+func (s *Server) approveTeamTokenMint(ctx context.Context) (context.Context, error) {
 	id, ok := auth.FromContext(ctx)
 	if !ok {
-		return nil
+		return ctx, errors.New("server: no credential in the context: nothing was derived, so nothing is approved to mint a team token")
 	}
-	_, err := s.checkDerivation(ctx, id, auth.MintTeamToken)
-	return err
+	if _, err := s.checkDerivation(ctx, id, auth.MintTeamToken); err != nil {
+		return ctx, err
+	}
+	return auth.ContextWithMintVerdict(ctx, auth.NewMintVerdict(auth.MintTeamToken, id.UserID)), nil
 }
 
 // platformAuthorityStands asks the chokepoint whether the request's

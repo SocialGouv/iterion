@@ -1989,7 +1989,7 @@ func seedConfigEditorGrant(t *testing.T, s *Server) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tok, _, err := s.authSvc.CreateInvitation(ctx, "t1", u.Email, identity.RoleConfigEditor, "teamadmin")
+	tok, _, err := s.authSvc.CreateInvitation(testMintVerdictContext(ctx), "t1", u.Email, identity.RoleConfigEditor, "teamadmin")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2276,7 +2276,7 @@ func TestTeamMembers_anOrphanLadderGrantCannotReRoleItselfOffTheLadder(t *testin
 // invitationFor mints a team invitation the way the console does.
 func invitationFor(t *testing.T, s *Server, teamID, email string, role identity.Role) (token, id string) {
 	t.Helper()
-	tok, inv, err := s.authSvc.CreateInvitation(context.Background(), teamID, email, role, "teamadmin")
+	tok, inv, err := s.authSvc.CreateInvitation(testMintVerdictContext(context.Background()), teamID, email, role, "teamadmin")
 	if err != nil {
 		t.Fatalf("mint an invitation for %s on %s: %v", email, teamID, err)
 	}
@@ -2474,7 +2474,7 @@ func (g *offboardingWindowGate) DeleteOrgMembership(ctx context.Context, userID,
 	if !first {
 		return nil
 	}
-	tok, _, err := g.s.authSvc.CreateInvitation(context.Background(), "t1", g.email, identity.RoleMember, "teamadmin")
+	tok, _, err := g.s.authSvc.CreateInvitation(testMintVerdictContext(context.Background()), "t1", g.email, identity.RoleMember, "teamadmin")
 	if err != nil {
 		return fmt.Errorf("mint the in-window invitation: %w", err)
 	}

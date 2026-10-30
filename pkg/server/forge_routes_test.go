@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -133,7 +134,13 @@ func newForgeTestServer(t *testing.T) *Server {
 		Sealer:       sealer,
 		Bots:         testForgeBotLookup,
 		AdminFor:     s.forgeAdminFor, // the REAL gitlab client, pointed at the mock
-		PublicURL:    "https://iterion.example.com",
+		// The tests run no credential, so the mint's approval is stamped
+		// here — the same verdict, through the same constructor, the
+		// derivation gate stamps after its ask (an unwired seam refuses).
+		ApproveTeamTokenMint: func(ctx context.Context) (context.Context, error) {
+			return auth.ContextWithMintVerdict(ctx, auth.NewMintVerdict(auth.MintTeamToken, "forge-test")), nil
+		},
+		PublicURL: "https://iterion.example.com",
 	}
 	return s
 }

@@ -14,10 +14,13 @@ import (
 	"github.com/SocialGouv/iterion/pkg/identity"
 )
 
-// mintShareReq builds an operator (admin) create-share request.
+// mintShareReq builds an operator (admin) create-share request. Past the
+// mux, so past the gateDerivation wrapper that stamps the derivation
+// verdict on the real routes; the share mint refuses a context without it.
+// Same constructor the gate uses.
 func mintShareReq(t *testing.T, adminCtx context.Context, body string) *http.Request {
 	t.Helper()
-	r := httptest.NewRequest("POST", "/api/teams/t1/config-shares", strings.NewReader(body)).WithContext(adminCtx)
+	r := httptest.NewRequest("POST", "/api/teams/t1/config-shares", strings.NewReader(body)).WithContext(testMintVerdictContext(adminCtx))
 	r.SetPathValue("id", "t1")
 	return r
 }

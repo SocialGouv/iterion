@@ -11,11 +11,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
+// mintVerdictContext is the verdict-carrying context the derivation gate
+// stamps after its ask grants — issued through the same constructor
+// (auth.NewMintVerdict), so a test mints under exactly the context a gated
+// route's handler runs under.
+func mintVerdictContext() context.Context {
+	return auth.ContextWithMintVerdict(context.Background(), auth.NewMintVerdict(auth.MintTeamToken, "test"))
+}
+
 func TestMintAndVerifyToken(t *testing.T) {
-	pt, hash, last4, fp, err := MintToken()
+	pt, hash, last4, fp, err := MintToken(mintVerdictContext())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,10 +45,72 @@ func TestMintAndVerifyToken(t *testing.T) {
 	}
 }
 
+// mintThroughHelper is one caller shape of the witness below: a mint an
+// intermediate function reaches.
+func mintThroughHelper(ctx context.Context) (string, string, string, string, error) {
+	return MintToken(ctx)
+}
+
+// TestMintTokenRefusesWithoutTheDerivationVerdict is the primitive's own
+// probe: a webhook token is a team token (auth.MintTeamToken), and the
+// context must carry the derivation chokepoint's verdict for it. Whatever
+// shape the caller wears — the direct call, the primitive held as a value,
+// a local binding, a branch arm, a helper in between — a context without
+// the verdict refuses, fail closed, and a verdict minted for ANOTHER mint
+// approves nothing. These are the shapes the round-4 review chased through
+// an AST guard over the callers; the requirement lives in the primitive
+// now, so they are all the same refusal, with no guard above to slip past.
+func TestMintTokenRefusesWithoutTheDerivationVerdict(t *testing.T) {
+	var alias = MintToken
+	shapes := []struct {
+		name string
+		mint func(context.Context) (string, string, string, string, error)
+	}{
+		{"the direct call", MintToken},
+		{"the primitive held as a value", alias},
+		{"a local binding", func(ctx context.Context) (string, string, string, string, error) {
+			mint := MintToken
+			return mint(ctx)
+		}},
+		{"a branch arm", func(ctx context.Context) (string, string, string, string, error) {
+			mint := MintToken
+			if ctx != nil {
+				return mint(ctx)
+			}
+			return "", "", "", "", nil
+		}},
+		{"a helper in between", mintThroughHelper},
+	}
+	refused := func(mint func(context.Context) (string, string, string, string, error), ctx context.Context) error {
+		_, _, _, _, err := mint(ctx)
+		return err
+	}
+	for _, shape := range shapes {
+		err := refused(shape.mint, context.Background())
+		var missing *auth.MintVerdictMissingError
+		if !errors.As(err, &missing) {
+			t.Errorf("%s without the verdict: %v, want a *auth.MintVerdictMissingError", shape.name, err)
+			continue
+		}
+		if missing.Primitive != "webhooks.MintToken" {
+			t.Errorf("%s: the refusal names %q, want webhooks.MintToken", shape.name, missing.Primitive)
+		}
+	}
+	// A verdict for another mint approves nothing: the PAT gate's stamp
+	// mints no webhook token, which is what a typed verdict buys over a
+	// boolean.
+	patCtx := auth.ContextWithMintVerdict(context.Background(), auth.NewMintVerdict(auth.MintPAT, "test"))
+	err := refused(MintToken, patCtx)
+	var missing *auth.MintVerdictMissingError
+	if !errors.As(err, &missing) {
+		t.Fatalf("a MintPAT verdict minted a webhook token: %v", err)
+	}
+}
+
 func TestSealAndVerifyHMACSignature(t *testing.T) {
 	sealer := newTestSealer(t)
 
-	pt, _, _, _, err := MintToken()
+	pt, _, _, _, err := MintToken(mintVerdictContext())
 	if err != nil {
 		t.Fatal(err)
 	}

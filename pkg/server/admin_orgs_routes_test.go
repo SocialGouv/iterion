@@ -60,7 +60,12 @@ func orgReq(ctx context.Context, method, path, body, id string) *http.Request {
 	} else {
 		r = httptest.NewRequest(method, path, strings.NewReader(body))
 	}
-	r = r.WithContext(ctx)
+	// These requests reach the handlers past the mux, so past the
+	// gateDerivation wrapper that stamps the derivation verdict on the real
+	// routes; the minting handlers (a webhook, a share link, an invitation)
+	// refuse a context without it. The verdict is issued through the same
+	// constructor the gate uses.
+	r = r.WithContext(testMintVerdictContext(ctx))
 	if id != "" {
 		r.SetPathValue("id", id)
 	}
