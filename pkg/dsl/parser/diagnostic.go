@@ -57,6 +57,13 @@ const (
 	DiagAuthorNoWrittenForm DiagCode = "E054" // the document reads, but the program it describes has no written .bot form: the text the writer produces reads back as another program (unparse.Verify names the cause)
 	DiagAuthorSeparators    DiagCode = "E055" // the document holds invisible line separators (U+0085 NEL, U+2028 LS, U+2029 PS): the scanner ends a line at each — inside a block body one is read as a newline, on a trailing line it is chomped like a blank line; a document-level warning lists every line that holds one (#1663)
 	DiagAuthorTwinProgram   DiagCode = "E056" // the .bot beside the document is there and is not the program the document describes: another program, the difference named; or no program at all — a text the parser only recovers on, or one its unit load or its compile refuses on its own account. Both sides are read as a launcher reads a file — the fragments their `import` lines name merged in, the prompts of the bundle they share merged into each — so an import is no difference of its own; a comment, a blank line, an indentation or a spelling is none either, the byte difference of a pair being what `fmt --to bot --check` reads; and nothing is said where the program question has no subject: a side that compiles to no workflow and carries no refusal of its own is a fragment, and a DOCUMENT its own load or compile refuses describes no program for a .bot to be held to — the verdict names that refusal, at its position. Which of the two files is current the author alone knows, so it is a warning and the verdict stands (#1763)
+
+	// DiagIdentifierTooLong refuses a name past the lexical cap
+	// (MaxIdentifierRunes): an identifier is one token of the read budget
+	// whatever its length, and every diagnostic that names its container —
+	// the node id riding `node_id`, the prompt, the key — would carry it
+	// whole (#2779).
+	DiagIdentifierTooLong DiagCode = "E057" // an identifier past MaxIdentifierRunes runes
 )
 
 // hints is the one-line remedy each parse code arrives with. A parse error
@@ -95,6 +102,7 @@ var hints = map[DiagCode]string{
 	DiagAuthorPromptBody:    "A prompt's text is read as the .bot lexer reads a body: leading and trailing blank lines dropped, the first line's indentation taken off every line, interior blank lines dropped in profile 1. A block scalar's line separator (U+2028, U+2029) is read as the line break the scanner meant, in a literal block; a folded block cannot say it. Write the text as it will be read, or accept the reading.",
 	DiagAuthorSeparators:    "Write a newline, or remove the invisible character: the lines the message names hold a U+0085 (NEL), U+2028 (LS) or U+2029 (PS), which an editor shows as nothing.",
 	DiagAuthorTwinProgram:   "`iterion fmt --to bot --force <document>` writes the .bot from the document; `iterion fmt --to yaml --force <bot>` writes `<bot>.yaml` from the .bot. Each replaces its destination whole. Read the two before either write.",
+	DiagIdentifierTooLong:   "Shorten the name — an identifier names a declaration; nothing it carries needs the length. The cap is lexical (parser.MaxIdentifierRunes), like the size cap: ITERION_DSL_READ_BUDGET does not move it.",
 }
 
 // HintFor returns the one-line remedy for a parse code, or "" when none is

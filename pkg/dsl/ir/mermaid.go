@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 )
 
 // MermaidView controls the level of detail in the generated diagram.
@@ -180,8 +182,11 @@ func edgeLabel(e *Edge, w *Workflow, view MermaidView) string {
 		case loop.MaxIterationsExpr != "":
 			// A templated cap (e.g. `as fix_loop("{{vars.attempts}}")`)
 			// resolves at runtime; rendering MaxIterations here
-			// shows 0, which the audit flagged as misleading.
-			parts = append(parts, fmt.Sprintf("loop:%s(%s)", loop.Name, loop.MaxIterationsExpr))
+			// shows 0, which the audit flagged as misleading. The cap is
+			// shared by every edge of the loop, so the label quotes it by
+			// excerpt: written whole on each edge, one cap text repeated as
+			// many times as the loop has edges (#2779).
+			parts = append(parts, fmt.Sprintf("loop:%s(%s)", loop.Name, expr.Excerpt(loop.MaxIterationsExpr)))
 		default:
 			parts = append(parts, fmt.Sprintf("loop:%s(%d)", loop.Name, loop.MaxIterations))
 		}

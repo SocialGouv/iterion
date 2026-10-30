@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/readbudget"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
@@ -15,6 +16,16 @@ const (
 	maxSourceSize   = 10 * 1024 * 1024 // 10 MB max file size
 	maxNestingDepth = 100              // max indentation nesting levels
 )
+
+// MaxIdentifierRunes is the most runes one identifier — a declaration's
+// name, a reference's — may hold (E057 past it). An identifier is one token
+// of the read budget whatever its length, and a diagnostic names its
+// container whole — the node id rides `node_id`, which the studio reads to
+// locate the node and cannot excerpt — so a name of any length rode every
+// message that named it (#2779). The bound is lexical, like the size cap:
+// no read-budget override moves it. 1024 runes: the catalogue's longest
+// identifier is 62.
+const MaxIdentifierRunes = 1024
 
 // ReadBudgetEnv names the operator's override of the read budget
 // (readbudget.Env).
@@ -1281,6 +1292,14 @@ func (l *Lexer) scanIdentOrKeyword(startLine, startCol int) {
 		l.advance()
 	}
 	word := string(buf)
+
+	// A name past the lexical cap is refused where it is scanned (E057), the
+	// diagnosis standing on its first rune and naming it by excerpt: no
+	// token — and no diagnostic downstream — ever holds the text (#2779).
+	if len(buf) > MaxIdentifierRunes {
+		l.emitError(DiagIdentifierTooLong, fmt.Sprintf("an identifier is at most %d runes long; this one runs %d: %s", MaxIdentifierRunes, len(buf), expr.Excerpt(word)), startLine, startCol)
+		return
+	}
 
 	// Handle "string[]"
 	if word == "string" && l.pos+1 < len(l.src) && l.src[l.pos] == '[' && l.src[l.pos+1] == ']' {

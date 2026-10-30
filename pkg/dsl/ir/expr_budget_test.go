@@ -281,10 +281,14 @@ func TestAFallbackWhenIsSpentOnce(t *testing.T) {
 // length is one token of the read budget, and a message said once per
 // reference or once per edge that quoted it whole grew as references ×
 // bytes: one probe per site, a 100 000-rune text, every message and hint
-// held under a kilobyte.
+// held under a kilobyte. A DECLARATION's name — a `.bot` identifier — is
+// capped at the lexer (parser.MaxIdentifierRunes, E057, #2779), so the
+// probes that need one run it at the cap: past the 64-rune excerpt all the
+// same.
 func TestEverySiteQuotesByExcerpt(t *testing.T) {
 	t.Setenv(readbudget.Env, "")
 	long := strings.Repeat("x", 100_000)
+	longName := strings.Repeat("x", parser.MaxIdentifierRunes)
 	agents := "agent a:\n  model: \"m\"\nagent b:\n  model: \"m\"\n\n"
 	for _, c := range []struct{ name, src, said string }{
 		{"C005 conflicting caps", agents + "workflow w:\n  entry: a\n  a -> b as l(\"vars." + long + "\")\n  b -> a as l(\"vars." + long + "y\")\n  a -> done else\n", "conflicting max_iterations"},
@@ -296,14 +300,14 @@ func TestEverySiteQuotesByExcerpt(t *testing.T) {
 		{"a cap's namespace", agents + "workflow w:\n  entry: a\n  a -> b as l(\"" + long + ".x\")\n  a -> done else\n  b -> done\n", "expressions may reference vars and outputs, got"},
 		{"C031 a field not in the schema", "schema s:\n  v: string\n\nagent a:\n  model: \"m\"\n  output: s\nagent b:\n  model: \"m\"\n\nworkflow w:\n  entry: a\n  a -> b as l(\"outputs.a." + long + "\")\n  a -> done else\n  b -> done\n", "not found in output schema"},
 		{"C308 a long field name", "schema s:\n  v: string\n\nprompt p:\n  {{input." + long + "}}\n\nagent a:\n  model: \"m\"\nagent z:\n  model: \"m\"\n  input: s\n  system: p\n\nworkflow w:\n  entry: a\n  a -> z\n  z -> done\n", "none of the node's incoming edges maps"},
-		{"a legacy when field in an edge's name", "schema s:\n  v: string\n  ok: bool\n\nprompt p:\n  {{input.x}}\n\nagent a:\n  model: \"m\"\n  output: s\nagent z:\n  model: \"m\"\n  input: s\n  system: p\n\nworkflow w:\n  entry: a\n  a -> z when " + long + "\n  a -> done else\n  z -> done\n", "none of the node's incoming edges maps"},
+		{"a legacy when field in an edge's name", "schema s:\n  v: string\n  ok: bool\n\nprompt p:\n  {{input.x}}\n\nagent a:\n  model: \"m\"\n  output: s\nagent z:\n  model: \"m\"\n  input: s\n  system: p\n\nworkflow w:\n  entry: a\n  a -> z when " + longName + "\n  a -> done else\n  z -> done\n", "none of the node's incoming edges maps"},
 		{"C155 a list default", "agent x:\n  backend: \"claude_code\"\n  model: \"claude-opus-5\"\n  system: p\n  tools: [read_file, bash]\n  fallbacks:\n    api:\n      backend: \"claw\"\n      model: \"anthropic/claude-opus-5\"\n      when: \"vars.tags == 'a'\"\n\nprompt p:\n  hi\n\nworkflow w:\n  vars:\n    tags: string[] = \"" + long + ",b\"\n  entry: x\n  x -> done\n", "whose default the run reads as"},
 		{"C121 an enum compared to a literal", "schema s:\n  kind: string [enum: \"a\", \"b\"]\n\nagent a:\n  model: \"m\"\n  output: s\nagent b:\n  model: \"m\"\n\nworkflow w:\n  entry: a\n  a -> b when \"outputs.a.kind == '" + long + "'\"\n  a -> done else\n  b -> done\n", "whose enum is"},
 		{"C040 a trailing token", agents + "workflow w:\n  entry: a\n  a -> b when \"input.x " + long + "\"\n  a -> done else\n  b -> done\n", "unexpected trailing"},
 		{"C269 two foreach collections", agents + "workflow w:\n  entry: a\n  a -> b as foreach scan(item in \"{{outputs.a." + long + "}}\")\n  b -> a as foreach scan(item in \"{{outputs.a." + long + "y}}\")\n  a -> done else\n", "declared twice over different iteration"},
-		{"the vars hint on a source with a schema", "schema s:\n  v: string\n\nagent a:\n  model: \"m\"\n  output: s\nagent b:\n  model: \"m\"\n\nworkflow w:\n  vars:\n    " + long + ": string = \"x\"\n  entry: a\n  a -> b with { k: \"{{input." + long + "}}\" }\n  b -> done\n", "use {{vars."},
-		{"C137 a quoted reference", "tool t:\n  command: \"echo '{{vars." + long + "}}'\"\n\nworkflow w:\n  vars:\n    " + long + ": string = \"x\"\n  entry: t\n  t -> done\n", "sits inside quotes"},
-		{"C137 a raw quoted reference", "tool t:\n  command: \"echo '{{!vars." + long + "}}'\"\n\nworkflow w:\n  vars:\n    " + long + ": string = \"x\"\n  entry: t\n  t -> done\n", "is raw"},
+		{"the vars hint on a source with a schema", "schema s:\n  v: string\n\nagent a:\n  model: \"m\"\n  output: s\nagent b:\n  model: \"m\"\n\nworkflow w:\n  vars:\n    " + longName + ": string = \"x\"\n  entry: a\n  a -> b with { k: \"{{input." + longName + "}}\" }\n  b -> done\n", "use {{vars."},
+		{"C137 a quoted reference", "tool t:\n  command: \"echo '{{vars." + longName + "}}'\"\n\nworkflow w:\n  vars:\n    " + longName + ": string = \"x\"\n  entry: t\n  t -> done\n", "sits inside quotes"},
+		{"C137 a raw quoted reference", "tool t:\n  command: \"echo '{{!vars." + longName + "}}'\"\n\nworkflow w:\n  vars:\n    " + longName + ": string = \"x\"\n  entry: t\n  t -> done\n", "is raw"},
 		{"C137 a quoted artifact reference", "tool t:\n  command: \"echo '{{artifacts." + long + "}}'\"\n\nworkflow w:\n  entry: t\n  t -> done\n", "command execution"},
 		{"C318 colliding deliverables", "agent a:\n  model: \"m\"\n  deliverables: [\"" + long + ".md\", \"out/" + long + ".md\"]\n\nworkflow w:\n  entry: a\n  a -> done\n", "served as"},
 		{"C317 a deliverable off the workspace", "agent a:\n  model: \"m\"\n  deliverables: [\"/" + long + ".md\"]\n\nworkflow w:\n  entry: a\n  a -> done\n", "not a workspace-relative file path"},
@@ -422,7 +426,10 @@ func boundedDiagnosticsOf(t *testing.T, name, src string, code DiagCode) *Compil
 
 func TestAGroupWithMappingOfALongVarIsBounded(t *testing.T) {
 	t.Setenv(readbudget.Env, "")
-	v := "v" + strings.Repeat("x", 100_000)
+	// A var's name is a `.bot` identifier: capped at the lexer
+	// (parser.MaxIdentifierRunes, E057, #2779). The probe runs it at the cap
+	// — past the 64-rune excerpt all the same.
+	v := "v" + strings.Repeat("x", parser.MaxIdentifierRunes-1)
 	src := "group g:\n  agent a:\n    model: \"m\"\n  agent b:\n    model: \"m\"\n  a -> b with { k: \"{{input." + v + "}}\" }\n\nuse g as i0\nuse g as i1\n\nworkflow w:\n  vars:\n    " + v + ": string = \"x\"\n  entry: i0.a\n  i0.b -> i1.a\n  i1.b -> done\n"
 	boundedDiagnosticsOf(t, "group with-mapping of a declared var", src, DiagRefNodeNoSchema)
 }

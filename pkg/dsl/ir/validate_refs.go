@@ -69,6 +69,29 @@ type refContext struct {
 	// edge condition) — those have their own refusals. A `{{secrets.X}}`
 	// reference is refused where its secret does not grant the sink.
 	Sink string
+	// Prompt names the prompt whose body holds the reference, when it is a
+	// prompt's: one prompt's references are read by every node that names
+	// it, and validating each reference once PER READER drew R × N
+	// diagnostics (#2779) — so the readers of one reference are validated
+	// each (the verdict reads the reader's schema and its place in the
+	// graph) and the findings that come out the same for several readers
+	// merge into one that names them (validateSharedPromptRef).
+	Prompt string
+	// display is the reader's name as a finding composes it: readerMark
+	// while a shared prompt's reference is validated against each reader —
+	// the merge substitutes the readers the finding is said of — empty
+	// otherwise, and displayID is NodeID.
+	display string
+}
+
+// displayID is the consuming node's name as a diagnostic composes it: the
+// reader mark while a shared prompt's reference is validated against each
+// of its readers (validateSharedPromptRef), the node's own id otherwise.
+func (rc refContext) displayID() string {
+	if rc.display != "" {
+		return rc.display
+	}
+	return rc.NodeID
 }
 
 // refErrorf / refWarnf emit a template-reference diagnostic with the
@@ -111,6 +134,7 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 					Span:        promptSpans[p.Name],
 					OnQuestions: interactionPromptOnly(w.Nodes[nodeID], p.Name),
 					Sink:        secretsink.Prompt,
+					Prompt:      p.Name,
 				})
 			}
 		}
@@ -608,26 +632,127 @@ func (c *compiler) validateTemplateRefs(w *Workflow) {
 	predecessors := buildPredecessors(w)
 	artifactProducers := buildArtifactProducers(w)
 
-	for _, rc := range refs {
-		switch rc.Ref.Kind {
-		case RefOutputs:
-			c.validateOutputsRef(w, rc, predecessors)
-		case RefVars:
-			c.validateVarsRef(w, rc)
-		case RefInput:
-			c.validateInputRef(w, rc)
-		case RefArtifacts:
-			c.validateArtifactsRef(w, rc, predecessors, artifactProducers)
-		case RefAttachments:
-			c.validateAttachmentsRef(w, rc)
-		case RefSecrets:
-			c.validateSecretsRef(w, rc)
-		case RefLoop:
-			c.validateLoopRef(w, rc)
-		case RefRun:
-			c.validateRunRef(w, rc)
+	// The references of one prompt stand consecutive in refs, one per reader
+	// (collectAllRefs): validated against each reader — the verdict reads
+	// the reader — and merged where the verdict is shared (validateSharedPromptRef).
+	for i := 0; i < len(refs); {
+		if refs[i].Prompt == "" {
+			c.validateOneRef(w, refs[i], predecessors, artifactProducers)
+			i++
+			continue
+		}
+		j := i
+		for j < len(refs) && refs[j].Prompt == refs[i].Prompt && refs[j].Ref == refs[i].Ref {
+			j++
+		}
+		c.validateSharedPromptRef(w, refs[i:j], predecessors, artifactProducers)
+		i = j
+	}
+}
+
+func (c *compiler) validateOneRef(w *Workflow, rc refContext, predecessors map[string]map[string]bool, artifactProducers map[string]string) {
+	switch rc.Ref.Kind {
+	case RefOutputs:
+		c.validateOutputsRef(w, rc, predecessors)
+	case RefVars:
+		c.validateVarsRef(w, rc)
+	case RefInput:
+		c.validateInputRef(w, rc)
+	case RefArtifacts:
+		c.validateArtifactsRef(w, rc, predecessors, artifactProducers)
+	case RefAttachments:
+		c.validateAttachmentsRef(w, rc)
+	case RefSecrets:
+		c.validateSecretsRef(w, rc)
+	case RefLoop:
+		c.validateLoopRef(w, rc)
+	case RefRun:
+		c.validateRunRef(w, rc)
+	}
+}
+
+// readerMark stands for the reading node while one reference of a shared
+// prompt is validated against each of its readers: composed into the
+// finding wherever the reader's id would go, so two readers draw
+// byte-identical diagnostics exactly when the verdict is the same for both,
+// and those merge into one naming the readers (validateSharedPromptRef). It is no
+// identifier (`‹` opens none), so it can never be a name the author wrote.
+const readerMark = "‹reader›"
+
+// maxReadersNamed is how many of a shared finding's readers are named; the
+// rest are counted.
+const maxReadersNamed = 32
+
+// validateSharedPromptRef validates one reference of a prompt against each of its
+// readers. The validation is the reader's — the same reference is clean
+// against one reader's schema and refused against another's — but the
+// FINDING is shared when the verdict is: each reader is validated in turn,
+// the reader marked (readerMark) in what it draws, and the findings
+// identical for several readers are emitted once, the mark replaced by the
+// readers' names. One reader is no merge: its finding is said as it ever
+// was. R references of a prompt read by N nodes draw O(R) findings, not the
+// R × N that made a valid 65 KB bot OOM `validate --json` (#2779).
+func (c *compiler) validateSharedPromptRef(w *Workflow, rcs []refContext, predecessors map[string]map[string]bool, artifactProducers map[string]string) {
+	if len(rcs) == 1 {
+		c.validateOneRef(w, rcs[0], predecessors, artifactProducers)
+		return
+	}
+	// A fixed reader order: the nodes map's iteration is random, and the
+	// first reader's id is the merged finding's attribution.
+	slices.SortFunc(rcs, func(a, b refContext) int { return strings.Compare(a.NodeID, b.NodeID) })
+	type finding struct {
+		d       Diagnostic
+		readers []string
+	}
+	var order []finding
+	index := map[string]int{}
+	for _, rc := range rcs {
+		rc.display = readerMark
+		rc.Location = fmt.Sprintf("prompt %q (node %q)", rc.Prompt, readerMark)
+		base := len(c.diags)
+		c.validateOneRef(w, rc, predecessors, artifactProducers)
+		drawn := c.diags[base:]
+		c.diags = c.diags[:base]
+		for _, d := range drawn {
+			key := fmt.Sprintf("%s\x00%d\x00%s\x00%d\x00%d\x00%s\x00%s\x00%s\x00%s",
+				d.Code, d.Severity, d.File, d.Line, d.Column, d.EdgeID, d.Property, d.Message, d.Hint)
+			if at, ok := index[key]; ok {
+				if !slices.Contains(order[at].readers, rc.NodeID) {
+					order[at].readers = append(order[at].readers, rc.NodeID)
+				}
+				continue
+			}
+			index[key] = len(order)
+			order = append(order, finding{d: d, readers: []string{rc.NodeID}})
 		}
 	}
+	for _, f := range order {
+		quoted, bare := readerNames(f.readers)
+		msg := strings.ReplaceAll(f.d.Message, `"`+readerMark+`"`, quoted)
+		msg = strings.ReplaceAll(msg, readerMark, bare)
+		hint := strings.ReplaceAll(f.d.Hint, `"`+readerMark+`"`, quoted)
+		hint = strings.ReplaceAll(hint, readerMark, bare)
+		sp := ast.Span{Start: ast.Pos{File: f.d.File, Line: f.d.Line, Column: f.d.Column}}
+		c.emit(f.d.Severity, f.d.Code, f.readers[0], f.d.EdgeID, sp, f.d.Property, hint, "%s", msg)
+	}
+}
+
+// readerNames is how a merged finding names its readers: quoted — `"a",
+// "b"` — where the sentence quotes the name, bare where it does not (an
+// edge list's `src -> dst`). One reader is named as it ever was; past
+// maxReadersNamed the first are named and the rest counted.
+func readerNames(readers []string) (quoted, bare string) {
+	if len(readers) == 1 {
+		return `"` + readers[0] + `"`, readers[0]
+	}
+	named := readers
+	more := ""
+	if len(named) > maxReadersNamed {
+		named = named[:maxReadersNamed]
+		more = fmt.Sprintf(" and %d more", len(readers)-maxReadersNamed)
+	}
+	quoted = `"` + strings.Join(named, `", "`) + `"`
+	return quoted + more, quoted + more
 }
 
 // validateLoopRef warns of a {{loop.X.<field>}} reference whose loop X no
@@ -816,7 +941,7 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 	if !checkReachable(rc, predecessors, targetNodeID) {
 		c.refErrorf(rc, DiagRefNodeNotReachable,
 			"%s: reference %s targets node %q which is not reachable before %q",
-			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(targetNodeID), rc.NodeID)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(targetNodeID), rc.displayID())
 		return
 	}
 
@@ -1007,7 +1132,7 @@ func (c *compiler) validateNodeBodyInputMapped(w *Workflow, rc refContext, node 
 		if e == nil || e.To != rc.NodeID {
 			continue
 		}
-		incoming = append(incoming, incomingEdgeName(e))
+		incoming = append(incoming, incomingEdgeNameAs(e, rc.displayID()))
 		for _, dm := range e.With {
 			if dm.Key == fieldName {
 				mapped = true
@@ -1040,7 +1165,7 @@ func (c *compiler) validateNodeBodyInputMapped(w *Workflow, rc refContext, node 
 	}
 	list := strings.Join(quoted, ", ")
 	hint := fmt.Sprintf("map the field on an incoming edge (%s with { %s: \"{{outputs.<producer>.%s}}\" }) or read the producer's output directly ({{outputs.<producer>.%s}}); the incoming edges of %q: %s",
-		quoted[0], expr.Excerpt(fieldName), expr.Excerpt(fieldName), expr.Excerpt(fieldName), rc.NodeID, list)
+		quoted[0], expr.Excerpt(fieldName), expr.Excerpt(fieldName), expr.Excerpt(fieldName), rc.displayID(), list)
 	c.emit(SeverityWarning, DiagInputFieldNeverMapped, rc.NodeID, rc.EdgeID, rc.Span, "", hint,
 		"%s: reference %s reads a field %q that none of the node's incoming edges maps — empty on every path (incoming: %s)",
 		rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(fieldName), list)
@@ -1050,11 +1175,13 @@ func (c *compiler) validateNodeBodyInputMapped(w *Workflow, rc refContext, node 
 // rest are counted.
 const maxIncomingNamed = 5
 
-// incomingEdgeName is how a diagnostic names an edge: from -> to, with the
-// condition that guards it — two parallel edges between one pair of nodes
-// (a `when` path and its sibling) must not read as one.
-func incomingEdgeName(e *Edge) string {
-	name := e.From + " -> " + e.To
+// incomingEdgeNameAs is how a diagnostic names an edge: from -> to as the
+// reader is displayed (displayID — the reader mark while a shared prompt's
+// reference is validated against each of its readers), with the condition
+// that guards it — two parallel edges between one pair of nodes (a `when`
+// path and its sibling) must not read as one.
+func incomingEdgeNameAs(e *Edge, to string) string {
+	name := e.From + " -> " + to
 	switch {
 	case e.Condition != "":
 		cond := expr.Excerpt(e.Condition)
@@ -1125,7 +1252,7 @@ func (c *compiler) validateNodeInputRef(w *Workflow, rc refContext, node Node, f
 	if findField(schema, fieldName) == nil {
 		c.refErrorf(rc, DiagInputFieldNotInSchema,
 			"%s: reference %s accesses field %q not found in input schema %q of node %q",
-			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(fieldName), expr.Excerpt(inSchema), rc.NodeID)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(fieldName), expr.Excerpt(inSchema), rc.displayID())
 	}
 }
 
@@ -1297,7 +1424,7 @@ func (c *compiler) validateArtifactsRef(w *Workflow, rc refContext, predecessors
 	if !checkReachable(rc, predecessors, producerID) {
 		c.refErrorf(rc, DiagRefNodeNotReachable,
 			"%s: reference %s targets artifact %q published by node %q which is not reachable before %q",
-			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(artifactName), expr.Excerpt(producerID), rc.NodeID)
+			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(artifactName), expr.Excerpt(producerID), rc.displayID())
 	}
 }
 
