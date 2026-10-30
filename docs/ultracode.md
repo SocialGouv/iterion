@@ -42,7 +42,19 @@ When a node declares `reasoning_effort: ultracode`, iterion:
    policy and step budget, and its spend is debited to the node — an
    ultracode claw node orchestrates for real, and pays for its subagents
    out of its own ceiling. `agent` is withheld from the child, so a
-   decomposition is one level deep. An embedding that wires no runner earns
+   decomposition is one level deep — and so is the ask channel: the child
+   holds no `ask_user`/`ask_user_async`/`await_answers`, since a question
+   raised from inside a tool call would pause the run unattributed, with no
+   child conversation persisted for the resume
+   ([#2812](https://github.com/SocialGouv/iterion/issues/2812)); the child
+   reports the question to its parent, whose own channel is intact. Holding
+   `agent` also reads the node as MUTATING to the parallel-branch
+   workspace-safety guard: that the shipped runner bounds the child to the
+   node's own list is the host's wiring, which the guard's name reading
+   cannot see, so an ultracode claw node shares no worktree unless it
+   declares `readonly:`
+   ([#2811](https://github.com/SocialGouv/iterion/issues/2811)). An embedding
+   that wires no runner earns
    the typed refusal `backend "claw" cannot serve the agent tool
    (subagents)` instead, and the `## Workflow Orchestration` grant says
    what to do with it where it grants the dispatch: a refused `agent` call

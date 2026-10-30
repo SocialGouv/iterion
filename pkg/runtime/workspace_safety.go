@@ -618,11 +618,20 @@ func llmToolSurfaceCanWrite(
 	// `tools: [read_file]` and is admitted read-only on that basis then shares
 	// one worktree with N siblings while holding a writer.
 	//
-	// Since #1940 a child conversation draws from the NODE's effective tools,
-	// so `agent` adds no reach the arms below do not already read off the
-	// node's own list. This arm keeps reading it as unsafe all the same: the
-	// over-approximation costs a shared worktree, never safety, and it is the
-	// reading an embedding with its own runner needs.
+	// Since #1940 the SHIPPED runner (model.NewSubagentRunner) draws a child
+	// conversation from the NODE's effective tools, so on the shipped hosts
+	// `agent` adds no reach the arms below do not already read off the node's
+	// own list. This arm keeps reading it as unsafe all the same, and #2811
+	// decided that reading stands: whether the runner bounds the child to the
+	// node's list is a property of the HOST's wiring — `ClawDefaults.Subagent`
+	// is a host's to set — which neither this name reading nor the
+	// program-only executor (`validate --exec`, whose answers must agree with
+	// dispatch's) can see. "Safe only for the shipped hosts" is a verdict the
+	// seam cannot carry today; relaxing here would trade a refused fan-out for
+	// an unsound admission the moment an embedding wires its own runner over a
+	// registry of its choosing. The over-approximation costs a shared
+	// worktree, never safety, and `readonly:` is the escape hatch for the
+	// author who knows the branch does not write.
 	//
 	// Asked, never re-derived: both opt-ins resolve outside the IR.
 	if surfaces == nil {
