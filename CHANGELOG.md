@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [4.7.1](https://github.com/SocialGouv/iterion/compare/v4.7.0...v4.7.1) (2026-10-30)
+
+### Bug Fixes
+
+* **bots:** the SSRF guard validates the target host even when it is the proxy's ([#2848](https://github.com/SocialGouv/iterion/issues/2848)) ([11561cd](https://github.com/SocialGouv/iterion/commit/11561cdc80fe67ab59aea060e4c25a746de1730a)), closes [#2847](https://github.com/SocialGouv/iterion/issues/2847)
+
+    <details><summary>why</summary>
+
+    vuln-watch's four validators and feed-watch's one exempted from validation any URL whose host equals the egress proxy's host (a loop over the proxy variables, or `host in _proxy_hosts`), while prod-watch's six already carried the opposite doctrine. Wherever the proxy sits on a loopback or private address, every target on that address bypassed the check: with the sandbox proxy at 127.0.0.1 the loopback feeds were fetched, not refused, and TestVulnWatch_FetchRejectsSSRF /…
+
+    </details>
+
 ## [4.7.0](https://github.com/SocialGouv/iterion/compare/v4.6.0...v4.7.0) (2026-10-30)
 
 ### Features
