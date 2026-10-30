@@ -191,14 +191,20 @@ func lnResult(r resultSpec) string {
 }
 
 type bgRun struct {
-	rm      *claudesdk.ResultMessage
-	meta    sessionMeta
-	err     error
-	stdin   string
-	spawn   string // the fake CLI's argv and CLAUDE_CODE_* environment
-	events  []BackgroundWork
-	warns   []string
-	elapsed time.Duration
+	rm     *claudesdk.ResultMessage
+	meta   sessionMeta
+	err    error
+	stdin  string
+	spawn  string // the fake CLI's argv and CLAUDE_CODE_* environment
+	events []BackgroundWork
+	// at is when each event of events fired, engine-side, on the same clock
+	// as startedAt — the wall time a scenario's ORDER claims are held to.
+	at []time.Time
+	// startedAt is when runSession was called: before the fake CLI played a
+	// single line of its script.
+	startedAt time.Time
+	warns     []string
+	elapsed   time.Duration
 }
 
 func (r bgRun) phases() []BackgroundPhase {
@@ -375,6 +381,7 @@ func runBgSession(t *testing.T, script []string, env map[string]string, task Tas
 	task.Hooks.OnBackgroundWork = func(w BackgroundWork) {
 		mu.Lock()
 		defer mu.Unlock()
+		run.at = append(run.at, time.Now())
 		run.events = append(run.events, w)
 	}
 	logger := iterlog.New(iterlog.LevelWarn, io.Discard)
@@ -397,6 +404,9 @@ func runBgSession(t *testing.T, script []string, env map[string]string, task Tas
 	defer cancel()
 	start := time.Now()
 	rm, meta, err := b.runSession(ctx, "do the work", task, opts)
+	mu.Lock()
+	run.startedAt = start
+	mu.Unlock()
 	run.elapsed = time.Since(start)
 	logger.SetHook(nil)
 	raw, _ := os.ReadFile(stdinLog)
@@ -4451,6 +4461,16 @@ func TestBackground_AShellsEndAtRestIsNotOwed(t *testing.T) {
 // t1 leaves the CLI's set 0.3 s after the first result, its notification comes
 // 1.2 s later: the wave came back then — not when t1 left the set, its result
 // still on its way.
+//
+// The judge is the script's OWN clock, never a duration measured engine-side:
+// WaitedFor runs from the wave's start, and a loaded shard reaches that start
+// late (1.28 s read on race-shard (1) of 2026-10-29, #2858, for a settle the
+// script placed past its 1.5 s of sleeps). The script's sleeps are real
+// seconds on the fake CLI's wall clock, and the session starts before the
+// CLI plays a single line, so a settle that honoured the notification cannot
+// land before 0.3 s + 1.2 s after startedAt on ANY load — while the settle
+// the bug produces, at the snapshot that removes t1 from the set, lands near
+// 0.3 s. Load stretches both ends alike; the floor holds.
 func TestBackground_AWaveIsBackOnlyOnceItsResultCame(t *testing.T) {
 	script := append(launchAgent(),
 		lnAssistant("m2", "", cText("WAITING")),
@@ -4467,19 +4487,27 @@ func TestBackground_AWaveIsBackOnlyOnceItsResultCame(t *testing.T) {
 	)
 	// RESULT_WAIT pins the CLI's own patience for a result on its way: the
 	// grace's fire is suppressed while t1's is, so the 1.2s gap never races
-	// a nudge (#2201). The wave's settle time is read off the event.
+	// a nudge (#2201).
 	run := runBgSession(t, script, map[string]string{
 		"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "5s",
 		"ITERION_CLAUDE_CODE_BACKGROUND_RESULT_WAIT":    "10s",
 	}, Task{})
 	var settled *BackgroundWork
+	var settledAt time.Time
 	for i, e := range run.events {
 		if e.Phase == BackgroundSettled {
 			settled = &run.events[i]
+			settledAt = run.at[i]
 		}
 	}
-	if run.err != nil || settled == nil || settled.WaitedFor < 1400*time.Millisecond {
+	if run.err != nil || settled == nil {
 		t.Fatalf("err = %v, settled = %+v: the wave was settled while t1's result was still on its way", run.err, settled)
+	}
+	// The floor is the sleeps the script itself runs between the result and
+	// t1's notification — keep it in step if the sleeps move.
+	const scriptFloor = 300*time.Millisecond + 1200*time.Millisecond
+	if waited := settledAt.Sub(run.startedAt); waited < scriptFloor {
+		t.Fatalf("settled %s into the session (WaitedFor %s), before the script's own %s of sleeps between the result and t1's notification: the wave was settled when t1 left the set, its result still on its way", waited, settled.WaitedFor, scriptFloor)
 	}
 }
 

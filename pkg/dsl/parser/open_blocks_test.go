@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"os"
 	"slices"
@@ -230,25 +231,53 @@ func TestResyncReadsTheStackTheLoopsHold(t *testing.T) {
 
 // The ticket's measure: a 2.3 MB source of 40 000 agents each leaving a
 // list open took 66 s of CPU on the replay, quadratic in the open lists.
-// On the kept stack the reading is linear, and held to two minutes — the
-// class it prices (the open-block lookup rescanning the stream) took 66 s of
-// CPU at a quarter of this size before the fix, so the margin stays
-// decisive. Twenty seconds proved weather-able after all: a saturated ARC
-// shard under -race measured 25.68 s on 2026-11-01 (#2732's queue run).
+// On the kept stack the reading is linear, and the claim is judged as a
+// CURVE, never as a duration: an absolute bound cannot tell a quadratic
+// parse on a quiet machine from a linear parse on a loaded one — the 20 s
+// bound read 20.48 s on a loaded race shard (2026-10-29, race-shard (1),
+// #2858) with the lookup perfectly linear, the same shape #2856 judged.
+// Ten lists and ten times ten: parse N and N/10 broken lists in this
+// process, fastest of three runs a size, and hold the ratio far below the
+// quadratic figure — linear reads ~10x, the rescanning lookup ~50x on
+// this shape — for a loaded runner slows both sizes alike, so neither
+// figure moves with the weather. The threshold sits between the two, an
+// honest margin from each. The race detector multiplies the constant, not
+// the exponent: a tenth of the lists under it, the same claim.
 func TestBrokenListsParseInLinearTime(t *testing.T) {
 	withoutOpenBlocksCheck(t, func() {
-		const lists = 40_000
-		src := brokenListsSource(lists)
-		start := time.Now()
-		res := parseLenient("lists.bot", src)
-		took := time.Since(start)
-		if res.ErrorCount < lists {
-			t.Fatalf("%d errors for %d broken lists: the shape never reached the resync", res.ErrorCount, lists)
+		large := 40_000
+		if raceEnabled {
+			large = 10_000
 		}
-		if bound := 2 * time.Minute; took > bound {
-			t.Fatalf("%d broken lists (%d bytes) parsed in %s, past the %s bound: the open-block lookup is rescanning the stream", lists, len(src), took, bound)
+		parse := func(lists int) time.Duration {
+			t.Helper()
+			src := brokenListsSource(lists)
+			start := time.Now()
+			res := parseLenient("lists.bot", src)
+			took := time.Since(start)
+			if res.ErrorCount < lists {
+				t.Fatalf("%d errors for %d broken lists: the shape never reached the resync", res.ErrorCount, lists)
+			}
+			return took
 		}
-		t.Logf("%d broken lists (%d bytes) parsed in %s", lists, len(src), took)
+		fastestOf3 := func(lists int) time.Duration {
+			t.Helper()
+			best := time.Duration(math.MaxInt64)
+			for i := 0; i < 3; i++ {
+				if took := parse(lists); took < best {
+					best = took
+				}
+			}
+			return best
+		}
+		tenth, full := fastestOf3(large/10), fastestOf3(large)
+		if tenth <= 0 {
+			t.Fatalf("the %d-list parse measured %s: no baseline to compare against", large/10, tenth)
+		}
+		if ratio := float64(full) / float64(tenth); ratio > 25 {
+			t.Fatalf("tenfolding the broken lists cost %.1fx (%s then %s): the open-block lookup is rescanning the stream (linear ~10, the rescan ~50)", ratio, tenth, full)
+		}
+		t.Logf("%d broken lists: fastest of 3 runs %s against %s at a tenth, ratio %.1fx (linear ~10)", large, full, tenth, float64(full)/float64(tenth))
 	})
 }
 
