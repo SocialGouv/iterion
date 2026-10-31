@@ -147,7 +147,13 @@ func TestSiblingBrokenListsParseInLinearTime(t *testing.T) {
 		if res.ErrorCount < lists {
 			t.Fatalf("%d errors for %d broken lists: the shape never reached the resync", res.ErrorCount, lists)
 		}
-		if bound := 5 * time.Second; took > bound {
+		// The tripwire prices the REGRESSION, not the machine: the linear
+		// parse reads 16 000 lists in ~150 ms locally, and a saturated ARC
+		// shard under -race measured 6.4 s against the old 5 s bound
+		// (2026-10-31 witness on 5058166bc, flake register). A rescanning
+		// close point is quadratic in the sibling count and takes minutes
+		// here — a minute keeps that margin and no loaded runner's.
+		if bound := time.Minute; took > bound {
 			t.Fatalf("%d sibling broken lists (%d bytes) parsed in %s, past the %s bound: the close-point scan is rescanning the region", lists, len(src), took, bound)
 		}
 		t.Logf("%d sibling broken lists (%d bytes) parsed in %s", lists, len(src), took)
