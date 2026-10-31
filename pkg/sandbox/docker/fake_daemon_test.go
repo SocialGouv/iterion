@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -128,14 +129,16 @@ func fakeDriver(t *testing.T, rt Runtime) *Driver {
 
 // lifecycleSpec is the spec whose translation into docker run argv the
 // lifecycle test pins: an explicit WorkspaceFolder so source and target of
-// the workspace bind-mount visibly differ.
+// the workspace bind-mount visibly differ, and TWO env pairs so the argv's
+// sorted-key order is a claim the test can fail on rather than a vacuous
+// one.
 func lifecycleSpec() sandbox.Spec {
 	return sandbox.Spec{
 		Mode:            sandbox.ModeInline,
 		Image:           "alpine:test",
 		WorkspaceFolder: "/repo",
 		User:            "1000:1000",
-		Env:             map[string]string{"ITERION_TEST_MARKER": "hello"},
+		Env:             map[string]string{"ITERION_TEST_MARKER": "hello", "ITERION_TEST_MARKER_B": "bye"},
 		Mounts:          []string{"type=bind,src=/host/extra,dst=/extra"},
 		Tmpfs:           []string{"/tmp/scratch:size=64m"},
 	}
@@ -181,11 +184,17 @@ func TestTheStandInDaemonSeesTheContainersLifecycleAndItsWorkspaceBindMount(t *t
 		{"--mount", "type=bind,src=/host/extra,dst=/extra"},
 		{"--user", "1000:1000"},
 		{"--tmpfs", "/tmp/scratch:size=64m"},
-		{"--env", "ITERION_TEST_MARKER=hello"},
 	} {
 		if !argvContains(runArgv, want) {
 			t.Errorf("docker run argv must carry %v; got=%v", want, runArgv)
 		}
+	}
+	// The spec's env pairs ride the argv in SORTED key order — the
+	// determinism envArgs promises. This RunInfo carries neither a proxy
+	// nor the host-gateway alias, so every `--env` on the argv is a spec
+	// pair and the slice pins exactly; un-sorting envArgs turns this red.
+	if got, want := envPairsOfArgs(runArgv), []string{"ITERION_TEST_MARKER=hello", "ITERION_TEST_MARKER_B=bye"}; !slices.Equal(got, want) {
+		t.Errorf("docker run env pairs = %v, want the spec's pairs in sorted key order %v", got, want)
 	}
 	if !argvHasSuffix(runArgv, []string{"alpine:test", "sleep", "infinity"}) {
 		t.Errorf("the container must be the long-lived target: the argv ends in the image plus `sleep infinity`; got=%v", runArgv)
@@ -359,6 +368,19 @@ func argvContains(argv, want []string) bool {
 		}
 	}
 	return false
+}
+
+// envPairsOfArgs reads the `NAME=value` halves of an argv's `--env` pairs,
+// in argv order — the argv is the producer, so this is the order the
+// daemon actually received.
+func envPairsOfArgs(argv []string) []string {
+	var pairs []string
+	for i, arg := range argv {
+		if arg == "--env" && i+1 < len(argv) {
+			pairs = append(pairs, argv[i+1])
+		}
+	}
+	return pairs
 }
 
 // argvHasSuffix reports whether want appears as a contiguous block at the
