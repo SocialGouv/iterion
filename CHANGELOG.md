@@ -3,6 +3,49 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [4.10.0](https://github.com/SocialGouv/iterion/compare/v4.9.0...v4.10.0) (2026-10-31)
+
+### Features
+
+* **model:** the serving route's provider rides the run record beside its model ([15a049d](https://github.com/SocialGouv/iterion/commit/15a049d6103a501575109b182e77c7e21dac58b2)), references [#2772](https://github.com/SocialGouv/iterion/issues/2772) [#2772](https://github.com/SocialGouv/iterion/issues/2772)
+
+    <details><summary>why</summary>
+
+    The selected route is provider AND model bound together (#2772, the Q49=A arbitration): published as a fact of the run — never a provider-only var — at the run level of the routing ladder, by the carriers the level system already has.
+
+    </details>
+
+### Bug Fixes
+
+* **blob:** the S3 client bounds dial and response-header phases ([#2892](https://github.com/SocialGouv/iterion/issues/2892)) ([c90ab1b](https://github.com/SocialGouv/iterion/commit/c90ab1b3c568fb2cc1701e5277076e867c9e72f2)), references [#2890](https://github.com/SocialGouv/iterion/issues/2890)
+
+    <details><summary>why</summary>
+
+    net/http ships with no default timeouts, so an S3 endpoint that accepts the TCP connection and never answers hung every caller forever - the Oct 30 storage-slot exhaustion wedged each cloud run for hours inside PutAttachment's roundTrip before its first node executed (issue #2890). The new Config.DialTimeout (10s default) and Config.ResponseHeaderTimeout (60s default) fail a degraded endpoint loudly while body streaming stays unbounded: GetAttachment returns a reader the caller drains at its…
+
+    </details>
+* **delegate:** a facade route that cannot serve the requested model is refused, not substituted ([49c92e6](https://github.com/SocialGouv/iterion/commit/49c92e630928d0c8af91bc74935517cb31d85f5a)), references [#2772](https://github.com/SocialGouv/iterion/issues/2772) [#2772](https://github.com/SocialGouv/iterion/issues/2772)
+
+    <details><summary>why</summary>
+
+    A vendor facade on the anthropic wire (z.ai, Moonshot) answers ANY model id with the one model its account aliases it to: the call succeeds and the run's record names a model that never saw the prompt — review-pr's claude primary reviewed by GLM under the claude label, the declared glm rescue never firing because the primary "succeeded" (#2772).
+
+    </details>
+* **model:** the facade verdict judges the endpoint the delegate judges ([52afe55](https://github.com/SocialGouv/iterion/commit/52afe55e9a002ff264acf224cf674dac3cfc2b4e)), references [#2772](https://github.com/SocialGouv/iterion/issues/2772)
+
+    <details><summary>why</summary>
+
+    The claw registry's claim predicate was the NON-EMPTINESS of a base URL — the delegate's is equality with the vendor endpoint — so on the exact wiring z.ai documents (ZAI_API_KEY plus ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic) the delegate refused a claude id and the registry built the client: GLM served under the claude label, the run record blessing the mislabel. Moonshot's twin refused only an unset MOONSHOT_BASE_URL.
+
+    </details>
+* **secrets:** the facade claim judges the vendor's whole published ensemble ([b7e2e0c](https://github.com/SocialGouv/iterion/commit/b7e2e0c2237eac6bb249d65d952338eaa3072a59)), references [#2772](https://github.com/SocialGouv/iterion/issues/2772)
+
+    <details><summary>why</summary>
+
+    The claim predicate folded the base URL against ONE vendor constant, but each facade publishes the same Anthropic wire on TWO hosts — and the tree itself documents the seconds: Moonshot's api.moonshot.cn gateway (byok.go's own comment, the netproxy facade allowlist, the claw env-carrier note) and Zhipu's open.bigmodel.cn for the z.ai family (detect, executor funding and the claw billing split all read "bigmodel" as z.ai). On either host the refusal #2772 closed on api.z.ai and api.moonshot.ai…
+
+    </details>
+
 ## [4.9.0](https://github.com/SocialGouv/iterion/compare/v4.8.0...v4.9.0) (2026-10-31)
 
 ### Features
