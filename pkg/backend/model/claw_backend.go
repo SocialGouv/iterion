@@ -60,6 +60,15 @@ type ClawBackend struct {
 	// channel for (e.g. "this node is about to spend your subscription's
 	// extra-usage balance"). nil silences them. See [WithClawLogger].
 	logger *iterlog.Logger
+	// slashCommandCeiling is the `command` tool's body/expansion ceiling to
+	// forward to a sandboxed crossing, in the registration's vocabulary (0
+	// = the built-in default, negative = unbounded). It is resolved by
+	// whoever CONSTRUCTS the backend — the host from its dial, the
+	// in-container runner from the task it was handed — never read from the
+	// env where the crossing is dispatched: the runner's environment is a
+	// repository's devcontainer, which must not get to widen a bound the
+	// operator set. See [WithSlashCommandCeiling].
+	slashCommandCeiling int
 }
 
 func (*ClawBackend) SupportsAsyncQuestions() bool { return true }
@@ -67,6 +76,18 @@ func (*ClawBackend) SupportsAsyncQuestions() bool { return true }
 // WithClawLogger attaches a leveled logger for operator-facing warnings.
 func WithClawLogger(l *iterlog.Logger) ClawBackendOption {
 	return func(b *ClawBackend) { b.logger = l }
+}
+
+// WithSlashCommandCeiling sets the `command` tool's ceiling this backend
+// forwards to a sandboxed crossing (delegate.IOTask.SlashCommandMaxBytes),
+// in the registration's vocabulary: the host resolves it from the dial
+// (SlashCommandMaxBytesForRegistry), and an in-container runner passes on
+// the one it received, so a nested crossing carries the operator's bound
+// rather than whatever the container's own environment says. Unset — 0 —
+// leaves the runner on the built-in default, which is what a launcher that
+// predates the field sends.
+func WithSlashCommandCeiling(maxBytes int) ClawBackendOption {
+	return func(b *ClawBackend) { b.slashCommandCeiling = maxBytes }
 }
 
 // WithMemoryStore injects a non-default workspace-memory backend
@@ -289,6 +310,20 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// refused rather than forwarded to a runner that may predate the field.
 	if len(task.ContinueConversation) > 0 && task.Sandbox != nil {
 		return delegate.Result{}, fmt.Errorf("claw backend: node %q: a continued conversation runs in-process, never through the sandbox runner", task.NodeID)
+	}
+
+	// The connector MCP facade is refused for claw BY TYPE, not silently
+	// dropped (#2758, backend parity): the facade serves agents over the
+	// host's HTTP transport so the credential is resolved and spent at the
+	// server, while claw's tool loop runs IN the runner — wiring it here
+	// would resolve the credential one process too close to the model in
+	// cloud, the exact thing Q4 forbids. claude_code and pi reach the facade.
+	if delegate.HasConnectorsCapability(task.Capabilities) {
+		return delegate.Result{}, &delegate.ErrCapabilityUnsupported{
+			NodeID: task.NodeID, Backend: delegate.BackendClaw,
+			Capability: "connectors (the connector MCP facade)",
+			Remedy:     "route the node to claude_code or pi — the facade is served over the host's HTTP transport, and the claw tool loop has no path to it in this build",
+		}
 	}
 
 	// Outside the sandbox arm, deliberately. Resolution DROPS a refused
@@ -620,7 +655,6 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		Model:    task.Model,
 		Tools:    opts.Tools,
 		MaxSteps: opts.MaxSteps,
-		WorkDir:  task.WorkDir,
 	})
 	// A child conversation spends inside a tool call, after this node's own
 	// usage is counted: without this accumulator the run's budget would
@@ -703,6 +737,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		res, genErr = b.generateTextWithRetry(ctx, client, task, opts)
 	}
 	if gwRoute.Gateway() {
+		res.GatewaySpec = gatewaySpecRecord(gwResolved)
 		res.Output = stampGatewaySpec(res.Output, gwResolved)
 		if gwResolved.Known() && gwResolved.Spec.ContextWindow > 0 && res.ContextWindow == 0 {
 			res.ContextWindow = gwResolved.Spec.ContextWindow
@@ -1603,7 +1638,21 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		b.logger.Warn("[%s#%d/claw] the sandbox crossing refused the host value of %s: a workspace .env planted it (the launcher had it unset), so it speaks for the repository under review, not for the operator — the name crosses empty. Export it in your own shell if it is yours",
 			task.NodeID, task.Iteration, strings.Join(refused.planted, ", "))
 	}
+	// The tool half of the crossing (#2802): the names claw's vendored tool
+	// packages read that the classification forwards — see forwardableToolEnv
+	// for which and why, claw_vendored_tool_env_test.go for the derivation
+	// that keeps the list honest.
+	for k, v := range forwardableToolEnv() {
+		runnerEnv[k] = v
+	}
 	runnerEnv["HOME"] = clawRunnerHome(ctx, task)
+	// The runner is this binary re-entered, and its cwd in the container is
+	// the workspace: the invocation-class marker is what stops it auto-loading
+	// the `.env` of the repository it was handed, whose endpoint names would
+	// re-route the credential that just crossed (#2844, internal/envtrust
+	// EnvEngineChild). Set here rather than forwarded: the engine spawning the
+	// runner is the fact it records.
+	runnerEnv[envtrust.EnvEngineChild] = "1"
 	// A policy-isolated sandbox only lets egress through the run's network
 	// proxy — and the gateway client (openai_compatible/*) NEVER trusts an
 	// ambient HTTPS_PROXY by design: it dials direct unless the engine
@@ -1836,7 +1885,8 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// (see [sessionSeed]).
 	seed := b.sessionSeedForCrossing(ctx, task)
 
-	mux := delegate.NewMultiplexer(stdoutR, stdinPipe, b.multiplexerHandler(ctx, task, seed))
+	handler, stranded := b.multiplexerHandler(ctx, task, seed)
+	mux := delegate.NewMultiplexer(stdoutR, stdinPipe, handler)
 
 	if len(seed.replay) > 0 {
 		if err := mux.Send(delegate.NewSessionReplayEnvelope(seed.replay)); err != nil {
@@ -1950,6 +2000,13 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	res := delegate.FromIOResult(ioRes)
 	// The relay carries model JSON and harness counters separately. Apply
 	// the same reserved-namespace boundary on success and runner failure.
+	// A gateway route's provenance is re-resolved HERE, host-side (the
+	// crossing forwarded the host's resolution, so both ends read the same
+	// table): the in-container stamp rode the relay as output keys, which
+	// the wipe below would otherwise read as model-written.
+	if gwRoute := modelroute.Parse(task.Model); gwRoute.Gateway() {
+		res.GatewaySpec = gatewaySpecRecord(compatgw.ResolveCatalog(gwRoute.Wire, modelspecs.Default(), os.Getenv))
+	}
 	stampDelegateOutputMeta(res.Output, res, delegate.BackendClaw)
 	if ioRes.Error != "" {
 		// Preserve waitErr for errors.Is / errors.As consumers when
@@ -1964,6 +2021,18 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 
 	if res.BackendName == "" {
 		res.BackendName = delegate.BackendClaw
+	}
+	// A pause produced by a stranded crossing carries the stranding WITH
+	// it: the conversation it checkpoints is this crossing's own turns,
+	// not the session's, and the resume must not let the resumed
+	// crossing's captures become the session. Read after Run, when every
+	// relayed gap has been dispatched in order — the flag the handler
+	// grew is the final verdict. Only a pause carries a conversation
+	// into a checkpoint, so only a pause carries the fact.
+	if stranded.Load() {
+		if needs, _ := res.Output["_needs_interaction"].(bool); needs {
+			res.SessionStranded = true
+		}
 	}
 	return res, nil
 }
@@ -2049,8 +2118,13 @@ func (b *ClawBackend) sessionSeedForCrossing(ctx context.Context, task delegate.
 // the parity gap of #1715). So does this backend's retry budget: the
 // runner's loop spends the launcher's, never one read from its own env, so
 // a variable a repository's devcontainer declares cannot set how many
-// attempts are billed. An old runner ignores both unknown fields — it
-// reads its own WorkDir and keeps its defaults.
+// attempts are billed. So does the workspace-command ceiling, for the same
+// reason and in the same direction: the `command` tool's in-container
+// registration would read no dial, and the operator's is a TIGHTENING on a
+// checkout under review — and like the budget it comes from this backend's
+// own field, so the dial is read by the host that built it and never by the
+// runner dispatching a nested crossing. An old runner ignores every
+// unknown field — it reads its own WorkDir and keeps its defaults.
 func (b *ClawBackend) runnerIOTask(task delegate.Task) delegate.IOTask {
 	ioTask := delegate.ToIOTask(task)
 	ioTask.SettingsHooks = settingsHooksForWire(task.WorkDir, task.NodeID, task.Iteration, b.logger)
@@ -2060,6 +2134,7 @@ func (b *ClawBackend) runnerIOTask(task delegate.Task) delegate.IOTask {
 	// outside the workspace bind, and claude_code's Read reaches them —
 	// without the root a sandboxed claw node reads none of them.
 	ioTask.ScratchDir = sandboxScratchContainerDir
+	ioTask.SlashCommandMaxBytes = b.slashCommandCeiling
 	// executeViaSandboxRunner wraps the runner in the node's session and ends
 	// it: the runner draws none of its own.
 	ioTask.LauncherEndsNodeSession = true
@@ -2192,18 +2267,6 @@ var providerCredentialEnvVars = []string{
 	// refuses for newer models ("gpt-5.6-sol requires a newer codex-cli").
 	// The operator override must therefore cross the boundary.
 	"ITERION_CODEX_VERSION",
-	// The stream-silence watchdog runs where the provider call runs
-	// (callAndAggregate, every in-process call): in the container for a
-	// sandboxed node, which must wait as long as the host's would.
-	"ITERION_CLAW_STREAM_COLD_TIMEOUT",
-	"ITERION_CLAW_STREAM_IDLE_TIMEOUT",
-	// The workspace-agent file ceiling is read where the delegation runs —
-	// in the container for a sandboxed node (the runner closure re-enters
-	// Execute there) — so the operator's override must cross, or a sandboxed
-	// node bounds the same file differently from its in-process twin. It
-	// crosses in its own branch of forwardableProviderEnv
-	// (crossedByItsOwnBranch): like the routing names it must never cross
-	// ABSENT, and unlike them a planted value must not cross either.
 	// The routing settings claw's own provider packages read, which no
 	// provider table carries — so the walk over the tables never saw them
 	// and the launcher's value stayed on the launcher (#1804). Each decides
@@ -2243,6 +2306,15 @@ var byokEnvVar = map[secrets.Provider]string{
 	secrets.ProviderZAI:       "ZAI_API_KEY",
 	secrets.ProviderMoonshot:  "MOONSHOT_API_KEY",
 	secrets.ProviderXAI:       "XAI_API_KEY",
+}
+
+// clawStreamTimeoutEnvVars are the stream-silence watchdog knobs: they cross
+// as the host's own answer (envtrust.Inherited) rather than the raw process
+// env, planted included as an explicit empty — see the crossing branch in
+// forwardableProviderEnv.
+var clawStreamTimeoutEnvVars = []string{
+	"ITERION_CLAW_STREAM_COLD_TIMEOUT",
+	"ITERION_CLAW_STREAM_IDLE_TIMEOUT",
 }
 
 // providerRoutingEnvVars is the routing subset of providerCredentialEnvVars —
@@ -2318,12 +2390,7 @@ func sandboxProxyEnv(handle sandbox.Run) map[string]string {
 // sandbox.Run.Command so the in-container runner can reach the same
 // provider APIs as the host. Empty entries are skipped — we never
 // inject a name=<empty> pair, since some providers treat that as
-// "auth attempted but invalid" instead of "no auth". Two exceptions
-// cross empty ON PURPOSE: a routing name the host leaves unset
-// (providerRoutingEnvVars), and any name whose host value a workspace
-// .env planted — the explicit empty is "the operator said nothing",
-// where an absent name is one the runner's own workspace .env
-// auto-load would fill inside the container.
+// "auth attempted but invalid" instead of "no auth".
 //
 // The RUN's own resolved credentials override the ambient ones. Inside
 // the container the runner rebuilds its registry from env alone — ctx
@@ -2373,6 +2440,18 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 		if planted {
 			refused.planted = append(refused.planted, name)
 			v = ""
+		} else if slices.Contains(providerRoutingEnvVars, name) {
+			// A routing name decides WHERE the credential crossing beside it
+			// is spent, and the credential that crosses here is the RUN's —
+			// a tenant's BYOK key, a lent subscription — not only the
+			// ambient one. So the value that crosses is the one the HOST
+			// inherited: a value this host's own project `.env` planted would
+			// send the run's credential to a host the repository under
+			// review chose, which is the laundering the explicit-empty rule
+			// below exists against, one hop out. A planted value therefore
+			// crosses as that same explicit empty, which every registry
+			// reads as "use the published default".
+			v = envtrust.Inherited(name)
 		}
 		if headerBlockEnvName(name) {
 			// A header block is applied LAST by the CLI, over the headers its
@@ -2423,6 +2502,23 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 			env[name] = ""
 		}
 	}
+	// The stream-silence watchdog runs where the provider call runs
+	// (callAndAggregate, every in-process call): in the container for a
+	// sandboxed node, which must wait as long as the host's would. Its two
+	// knobs cross as the HOST's own answer to the question their reader
+	// asks, not as the raw process env: the reader reads planted-as-unset
+	// (the liveness family, delegate.envDurationOr's rule), and the planted
+	// marks do not cross, so a raw copy would let a project `.env` run the
+	// container's watchdog after the host refused it — or disarm the host's
+	// and not the twin's. The name crosses EXPLICITLY, an empty included:
+	// the runner auto-loads the workspace .env, which only fills names
+	// missing from the process env (applyDotEnv honours LookupEnv), so an
+	// absent name lets the repository under review set the knob in-container
+	// after the host refused it. Empty reads as the fallback on both sides;
+	// the operator's own export crosses intact.
+	for _, name := range clawStreamTimeoutEnvVars {
+		env[name] = envtrust.Inherited(name)
+	}
 	// The workspace-agent ceiling crosses ALWAYS, the routing pattern pushed
 	// one step further: the host's value when the operator set one, an
 	// explicit empty otherwise. An ABSENT name is one the runner's workspace
@@ -2446,17 +2542,12 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	// that crosses the IPC), and the in-container factory's guard is told
 	// the operator's choice explicitly rather than left to re-derive it
 	// from whatever the sandbox env happens to carry.
-	//
-	// The read is envtrust.Inherited, not os.Getenv: these names are not in
-	// providerCredentialEnvVars, so the loop above never sees them — and
-	// the explicit writes below would even outrank a container-level fill.
-	// A gateway route a workspace .env planted on the host would otherwise
-	// cross raw: the repository under review picking where a sandboxed
-	// node's traffic — and its key — goes, the sharp case of #2813. A
-	// planted name reads as UNSET here: ErrNotConfigured fails the node
-	// loudly, naming the variable. (The package doc's "the process
-	// environment the operator controls" is exactly what Inherited means.)
 	if modelroute.Parse(model).Gateway() {
+		// The read is envtrust.Inherited, not os.Getenv: a gateway route a
+		// workspace .env planted on the host must not cross raw — the
+		// repository under review picking where a sandboxed node's traffic,
+		// and its key, goes (the sharp case of #2813). A planted name reads
+		// as UNSET here: ErrNotConfigured fails the node loudly, by name.
 		cfg, err := compatgw.FromEnv(envtrust.Inherited)
 		if err != nil {
 			return nil, crossingRefusals{}, err
@@ -2468,6 +2559,9 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 		env[compatgw.BaseURLEnv] = cfg.BaseURL
 		switch {
 		case cfg.APIKey != "":
+			// Crosses always, never absent: an absent name is the one state
+			// the workspace `.env` of the repository under review gets to
+			// fill.
 			env[compatgw.APIKeyEnv] = cfg.APIKey
 		case envtrust.Planted(compatgw.APIKeyEnv):
 			// A PLANTED key beside the operator's endpoint crosses as the
@@ -2491,9 +2585,35 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 		// lie one side tells the other: a `tool_call:false` the operator
 		// declared must not read unknown container-side under a record that
 		// still claims `source=operator`. Top precedence container-side
-		// (compatgw.ResolvedEnvRecord, the shape both sides share). Read as
-		// Inherited like the pair above: a planted OPENAI_COMPATIBLE_MODELS
-		// table or catalog provider must not cross claiming source=operator.
+		// (compatgw.ResolvedEnvRecord, the shape both sides share).
+		//
+		// And the name crosses EXPLICITLY, an empty record included: the
+		// runner auto-loads the workspace .env, which only fills names
+		// MISSING from the process env (applyDotEnv honours LookupEnv), so
+		// an ABSENT name lets the repository under review write the record
+		// the in-container catalog answers from FIRST — its window (hence
+		// when the node compacts), its max output (hence max_tokens), its
+		// price and the provenance it all gets recorded under. An unknown
+		// answer is still an answer, and an empty value is nothing to say
+		// here: the reader takes it as no record at all and the local
+		// sources decide, as they did before this crossed (the catalog
+		// twin of providerRoutingEnvVars' explicit empties).
+		//
+		// The record is not the only road to the resolution it carries:
+		// the two LOCAL sources of the very same answer — the operator
+		// table and the models.dev qualifier — are what the in-container
+		// catalog reads when the record does not cover the id, so they
+		// cross as explicit empties beside it. Neither is a credential
+		// and empty is each one's own "the operator declared nothing", so
+		// the empty costs the container nothing the host does not answer
+		// for: its own resolution rides in the record beside them. This
+		// also closes the route that carries no
+		// provenance mark for any reader to refuse — the repository's own
+		// devcontainer.json, which becomes the env the container is
+		// STARTED with — because ExecOpts.Env outranks that environment.
+		env[compatgw.CatalogModelsEnv] = ""
+		env[compatgw.CatalogProviderEnv] = ""
+		env[compatgw.ResolvedEnvName] = ""
 		if resolved := compatgw.ResolveCatalog(modelroute.Parse(model).Wire, modelspecs.Default(), envtrust.Inherited); resolved.Known() {
 			if raw, merr := json.Marshal(compatgw.ForwardableRecord(modelroute.Parse(model).Wire, resolved)); merr == nil {
 				env[compatgw.ResolvedEnvName] = string(raw)
@@ -2641,8 +2761,11 @@ func clawPinnedProvider(model string) secrets.Provider {
 // Anchored on the PREFIX: every z.ai id starts with "glm" (glm-4.6, glm-5.3),
 // and a substring match misrouted ids that merely contain it
 // ("notglm", "claude-glm-experimental") onto a vendor that does not serve them.
+// The table itself lives with the delegate's facade-substitution refusal
+// (delegate.FacadeServesModelID) so the refusal and the routing can never
+// disagree on what z.ai serves.
 func modelServedByZAI(model string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "glm")
+	return delegate.FacadeServesModelID(string(secrets.ProviderZAI), model)
 }
 
 // GLMOnAnthropicWire reports whether a model spec names a GLM model on the
@@ -2993,21 +3116,30 @@ func canonicalMCPToolName(name string) string {
 //     into the host's nodeSessionStore so CompactAndRetry compacts the
 //     latest history. Pre-spawn, the launcher seeds a session_replay
 //     envelope from the host store (see [executeViaSandboxRunner]).
-func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task, seed sessionSeed) delegate.MultiplexerHandler {
+//
+// The returned flag is the crossing's stranding verdict, live for the
+// whole dispatch: the caller reads it after [delegate.Multiplexer.Run] to
+// stamp a pause result the crossing produced while stranded, so the fact
+// travels with the pause (see [executeViaSandboxRunner]).
+func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task, seed sessionSeed) (delegate.MultiplexerHandler, *atomic.Bool) {
 	// Index ToolDefs by name once so OnToolCall is O(1) instead of
 	// scanning the slice on each runner-initiated tool_call.
 	toolByName := make(map[string]delegate.ToolDef, len(task.ToolDefs))
+	toolNames := make([]string, 0, len(task.ToolDefs))
 	for _, td := range task.ToolDefs {
 		toolByName[td.Name] = td
+		toolNames = append(toolNames, td.Name)
 	}
 	hostRunID, hostStore := runtimeContextFrom(ctx)
 	// The mirror's key is the launcher's, not the wire's: a session_capture
 	// envelope carries the snapshot alone, and the host holds the task the
 	// runner is executing.
 	hostSessKey := taskSessionKey(task)
-	// Whether this crossing holds none of the session's history, from the two
-	// sides that know: the seed's own outcome, and the runner's word for a
-	// replay that did not survive the channel. Either way the crossing
+	// Whether this crossing holds none of the session's history, from the
+	// three sides that know: the seed's own outcome, the runner's word for
+	// a replay that did not survive the channel, and the pause this
+	// crossing resumes from (task.SessionStranded — the fact travelled
+	// with it). Either way the crossing
 	// answers without the conversation this host holds, and its capture must
 	// not become it. Both reach this flag before any capture can — the runner
 	// loads the replay into its local store before it runs the node, and
@@ -3015,7 +3147,7 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 	// is atomic because the guard is load-bearing while the dispatch's
 	// schedule is the multiplexer's to change.
 	var stranded atomic.Bool
-	stranded.Store(seed.refused)
+	stranded.Store(seed.refused || task.SessionStranded)
 	var strandedOnce sync.Once
 	return delegate.MultiplexerHandler{
 		OnToolCall: func(toolCtx context.Context, name string, input json.RawMessage) (string, error) {
@@ -3056,7 +3188,11 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 			if td.Execute == nil {
 				return "", fmt.Errorf("launcher: tool %q has no Execute closure (engine misconfiguration)", name)
 			}
-			return td.Execute(toolCtx, input)
+			// The node's own tool set rides the context so a launcher-placed
+			// tool whose answer depends on it — tool_search — reports what
+			// THIS node can execute, not the registry's whole catalogue
+			// (#2717); the in-process loop pins the same set on its side.
+			return td.Execute(tool.WithNodeExecutableTools(toolCtx, toolNames), input)
 		},
 		OnSessionCapture: func(snapshot json.RawMessage) {
 			if hostStore == nil || hostRunID == "" || hostSessKey == "" {
@@ -3137,7 +3273,7 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 					task.NodeID, task.Iteration, eventType)
 			}
 		},
-	}
+	}, &stranded
 }
 
 // ---------------------------------------------------------------------------

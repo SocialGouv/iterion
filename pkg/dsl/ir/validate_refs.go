@@ -673,7 +673,7 @@ func (c *compiler) validateTemplateRefs(w *Workflow) {
 	}
 }
 
-func (c *compiler) validateOneRef(w *Workflow, rc refContext, predecessors map[string]map[string]bool, artifactProducers map[string]string) {
+func (c *compiler) validateOneRef(w *Workflow, rc refContext, predecessors *predecessorIndex, artifactProducers map[string]string) {
 	switch rc.Ref.Kind {
 	case RefOutputs:
 		c.validateOutputsRef(w, rc, predecessors)
@@ -715,7 +715,7 @@ const maxReadersNamed = 32
 // readers' names. One reader is no merge: its finding is said as it ever
 // was. R references of a prompt read by N nodes draw O(R) findings, not the
 // R × N that made a valid 65 KB bot OOM `validate --json` (#2779).
-func (c *compiler) validateSharedPromptRef(w *Workflow, rcs []refContext, predecessors map[string]map[string]bool, artifactProducers map[string]string) {
+func (c *compiler) validateSharedPromptRef(w *Workflow, rcs []refContext, predecessors *predecessorIndex, artifactProducers map[string]string) {
 	if len(rcs) == 1 {
 		c.validateOneRef(w, rcs[0], predecessors, artifactProducers)
 		return

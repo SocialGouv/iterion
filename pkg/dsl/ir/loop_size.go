@@ -48,7 +48,7 @@ func (c *compiler) compileLoopSize(loop *Loop, edge *ast.Edge) {
 // unreadable or non-numeric reading as "no signal" and prices unscaled,
 // so the check refuses only what is KNOWN to be wrong.
 func (c *compiler) validateLoopSizeExpressions(w *Workflow) {
-	predecessors := buildPredecessors(w)
+	predecessors := newPredecessorIndex(w)
 	for _, edge := range w.Edges {
 		loop := w.Loops[edge.LoopName]
 		if loop == nil || loop.SizedByAST == nil {

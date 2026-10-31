@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -351,36 +350,22 @@ func TestForwardableProviderEnv_GatewayEnvRidesOnlyGatewayNodes(t *testing.T) {
 			t.Fatalf("a planted gateway route crossing = %v, want ErrNotConfigured — loud, by name, and nothing crossed", err)
 		}
 
-		// Per name, not per pair: the operator's endpoint crosses, and the
-		// planted key crosses as the EXPLICIT EMPTY — never absent, which
-		// the runner's workspace .env load (loadDotEnvFromCwd, LookupEnv)
-		// would fill container-side: the repository's key authenticating
-		// the node's requests against the OPERATOR's gateway. The refusal
-		// names it.
+		// The operator's endpoint beside a PLANTED key: the endpoint and the
+		// key it is presented at are one credential presentation, so the
+		// route is refused whole (ErrNotConfigured, by name) rather than
+		// crossing half-configured — the repository's key never
+		// authenticates a node's requests against the operator's gateway.
 		envtrust.ResetForTest()
 		t.Setenv(envtrust.EnvPlantedNames, "")
 		envtrust.MarkPlanted("OPENAI_COMPATIBLE_API_KEY")
-		env, refused, err := forwardableProviderEnv(context.Background(), "openai_compatible/m")
-		if err != nil {
-			t.Fatalf("the operator's own endpoint must cross: %v", err)
-		}
-		if got := env["OPENAI_COMPATIBLE_BASE_URL"]; got != "https://93.184.216.34/v1" {
-			t.Errorf("the operator's endpoint crossed as %q", got)
-		}
-		v, ok := env["OPENAI_COMPATIBLE_API_KEY"]
-		if !ok {
-			t.Error("a planted gateway key crossed ABSENT — the runner's workspace .env load fills it container-side")
-		} else if v != "" {
-			t.Errorf("a planted gateway key crossed as %q — the repository under review authenticates the node's requests", v)
-		}
-		if !slices.Contains(refused.planted, "OPENAI_COMPATIBLE_API_KEY") {
-			t.Errorf("refused.planted = %v — it must name the dropped key, or the empty reads as the operator having none", refused.planted)
+		if _, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/m"); err == nil || !strings.Contains(err.Error(), "does not speak for the operator") {
+			t.Fatalf("operator endpoint + planted key = %v, want the planted-pair refusal — the pair is one presentation, refused whole", err)
 		}
 
 		// And the operator's own pair crosses whole.
 		envtrust.ResetForTest()
 		t.Setenv(envtrust.EnvPlantedNames, "")
-		env, _, err = forwardableProviderEnv(context.Background(), "openai_compatible/m")
+		env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/m")
 		if err != nil {
 			t.Fatalf("the operator's own gateway: %v", err)
 		}
@@ -389,28 +374,33 @@ func TestForwardableProviderEnv_GatewayEnvRidesOnlyGatewayNodes(t *testing.T) {
 		}
 	})
 
-	// The catalog table's memo must not launder provenance either: the
-	// dispatch head resolves in LIVE (Execute's head, CheckOperatorTable)
-	// before any crossing, and a once-per-process cache would answer the
-	// crossing's envtrust.Inherited read with the table the LIVE getter
-	// produced — a workspace .env's table crossing as source=operator. The
-	// memo is keyed by the value READ. Red when compatgw goes back to
-	// sync.Once: the primed live table then answers the crossing and the
-	// record crosses with source=operator.
-	t.Run("a table primed live does not answer the crossing", func(t *testing.T) {
+	// The catalog table must not launder provenance either: the dispatch
+	// head resolves in LIVE (Execute's head, CheckOperatorTable) before any
+	// crossing, and a cache that answered the crossing's read with the table
+	// a LIVE getter produced would cross a workspace .env's table stamped
+	// source=operator. Main's design refuses the planted value at EVERY
+	// read instead — catalogEnv answers "" for a planted name, so the live
+	// read itself never answers source=operator — and the crossing reads
+	// envtrust.Inherited beside it. Red when the planted filter goes: the
+	// live read then answers source=operator and the record crosses so
+	// stamped.
+	t.Run("a planted table answers for nobody, live or crossed", func(t *testing.T) {
 		operatorEnv(t)
 		clearGatewayEnv(t)
 		compatgw.ResetCatalogCaches()
 		t.Cleanup(compatgw.ResetCatalogCaches)
 		t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://93.184.216.34/v1")
+		t.Setenv("OPENAI_COMPATIBLE_API_KEY", "gw-operator")
 
 		// The repository's .env plants a table for the model, and the
 		// dispatch head reads it live FIRST — the launcher-process order.
+		// catalogEnv refuses it: the live read answers UNKNOWN, never the
+		// operator's stamp on the repository's prices.
 		t.Setenv("OPENAI_COMPATIBLE_MODELS",
 			`{"m":{"context_window":999999,"input_usd_per_mtok":0.1,"output_usd_per_mtok":0.3}}`)
 		envtrust.MarkPlanted("OPENAI_COMPATIBLE_MODELS")
-		if got := compatgw.ResolveCatalog("m", modelspecs.Default(), os.Getenv); got.Source != compatgw.SourceOperator {
-			t.Fatalf("the live dispatch-head read answered %q — the test's premise (planted table read live) does not hold", got.Source)
+		if got := compatgw.ResolveCatalog("m", modelspecs.Default(), os.Getenv); got.Source == compatgw.SourceOperator {
+			t.Fatalf("the live dispatch-head read stamped a planted table source=operator (window %d) — catalogEnv's planted filter is gone", got.Spec.ContextWindow)
 		}
 
 		env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/m")
@@ -418,7 +408,7 @@ func TestForwardableProviderEnv_GatewayEnvRidesOnlyGatewayNodes(t *testing.T) {
 			t.Fatalf("forwardableProviderEnv: %v", err)
 		}
 		raw, ok := env[compatgw.ResolvedEnvName]
-		if !ok {
+		if !ok || raw == "" {
 			return // no record crossed at all: the planted table decided nothing
 		}
 		var rec compatgw.ResolvedEnvRecord
