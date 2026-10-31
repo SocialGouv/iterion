@@ -6496,6 +6496,9 @@ export interface components {
                     [key: string]: number;
                 };
             };
+            loop_budget_sizes?: {
+                [key: string]: number;
+            };
             loop_counters?: {
                 [key: string]: number;
             };
@@ -6586,6 +6589,9 @@ export interface components {
                 };
             };
             loop_budget_marks_v?: number;
+            loop_budget_sizes?: {
+                [key: string]: number;
+            };
             loop_counters: {
                 [key: string]: number;
             };

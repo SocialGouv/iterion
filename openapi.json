@@ -460,6 +460,12 @@
             },
             "type": "object"
           },
+          "loop_budget_sizes": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
           "loop_counters": {
             "additionalProperties": {
               "type": "integer"
@@ -673,6 +679,12 @@
           },
           "loop_budget_marks_v": {
             "type": "integer"
+          },
+          "loop_budget_sizes": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
           },
           "loop_counters": {
             "additionalProperties": {
