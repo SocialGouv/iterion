@@ -5919,9 +5919,14 @@ tool decide:
                 ahead = bool(w_since and datetime.datetime.fromisoformat(w_since) < datetime.datetime.fromisoformat(since))
             if ahead:
                 armed = wcur.get('armed_at') if same else sc.get('armed_at')
+                ## A stamp that lost its offset falls back to `since`, never
+                ## to a value the plan refuses: the cursor is judged whole
+                ## (armed_at, since, at each offset-ISO) by every later read
+                ## of the state, and an empty `at` would brick each tick
+                ## after this one.
                 state['cursors']['sentry'] = {'identity': ident, 'since': since,
                                               'armed_at': _iso_of(armed, tz=True) or since,
-                                              'at': _iso_of(sc.get('at'), tz=True) or ''}
+                                              'at': _iso_of(sc.get('at'), tz=True) or since}
                 if state.get('sentry_identity') is None and isinstance(_fork.get('sentry_identity'), str):
                     state['sentry_identity'] = _fork['sentry_identity']
     needs_analysis = any(a['state'] in ('new', 'escalated', 'regressed', 'escalating', 'reopened') and a['kind'] in ('probe', 'prom', 'loki', 'sentry')

@@ -279,3 +279,51 @@ func TestProdWatch_TheAdoptionKeepsTheSessionsFrontier(t *testing.T) {
 		t.Fatalf("the healthy tick re-read the window: its walk started at %d, the session frontier is %d, the watch's old cursor %d", from, sessionCov, wCov)
 	}
 }
+
+// TestProdWatch_TheAdoptionNeverWritesACursorThePlanRefuses: the fork is a
+// file this mode does not own and reads leniently — a cursor that fails the
+// shapes plan judges a state by is never let into the watch state (#2835).
+// A hand-edited or older-writer fork whose Sentry `at` lost its offset (the
+// adoption guard types `since` and the identity only) must not land the
+// plan-refused empty string: the adoption falls back to the `since` it is
+// guarded by, the tick commits, and the next tick still runs.
+func TestProdWatch_TheAdoptionNeverWritesACursorThePlanRefuses(t *testing.T) {
+	t.Parallel()
+	wf := compileFixture(t, "prod-watch/main.bot")
+	h := newPWHarness(t) // default config: the Sentry lane dark, decide writes no cursor of its own
+	sd := filepath.Join(h.ws, ".prod-watch", "session")
+	if err := os.MkdirAll(sd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The envelope and the fork, hand-written: exactly the foreign file the
+	// lenient reader exists for. `since` and `armed_at` carry their offsets,
+	// `at` does not — the naive stamp plan refuses for cursors.sentry.at.
+	if err := os.WriteFile(filepath.Join(sd, "session.json"),
+		[]byte(`{"id":"env-1","ends_at":"2026-10-31T09:59:00+00:00","closed":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sd, "state.json"),
+		[]byte(`{"version":1,"generation":7,"cursors":{"sentry":{"identity":{"base_url":"https://sentry.example","org":"org","project":"proj","environment":"preprod"},`+
+			`"since":"2026-10-31T09:00:00+00:00","armed_at":"2026-10-31T09:00:00+00:00","at":"2026-10-31T09:30:00"}},"incidents":{},"health":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.tick(t, wf, false)
+	st := h.state(t)
+	cur, _ := st["cursors"].(map[string]any)["sentry"].(map[string]any)
+	if cur == nil {
+		t.Fatalf("the adoption tick must land the fork's Sentry cursor: %v", st["cursors"])
+	}
+	if cur["since"] != "2026-10-31T09:00:00+00:00" {
+		t.Fatalf("the adopted cursor lost the fork's since: %v", cur)
+	}
+	at, _ := cur["at"].(string)
+	if at == "" {
+		t.Fatalf("the adoption wrote the plan-refused empty at — the next tick refuses the state it just wrote: %v", cur)
+	}
+	if _, err := time.Parse(time.RFC3339, at); err != nil {
+		t.Fatalf("the adopted cursor's at %q is not an offset-ISO stamp: %v", at, err)
+	}
+	// The state the adoption wrote must not brick the watchdog: the next
+	// tick runs (h.tick fails the test on plan's refusal).
+	h.tick(t, wf, false)
+}
