@@ -99,36 +99,64 @@ edits to `studio/src` are part of what gets judged.
   layers only (no LLM); a red advisory names the criteria the next run
   will re-adjudicate.
 
-## Running on iterion.cloud — what a sandboxed cloud run does NOT get
+## The `rgaa` sandbox image class
+
+A sandboxed run of this bot needs two things no stock default image
+carries: a browser (Chromium) and the ultra11y engine. Both now exist as
+a published image class (#2632, decision (a)): the `rgaa` variant —
+`sandbox/rgaa/Dockerfile`, built FROM the browser base (Chromium +
+Playwright MCP + `ULTRA11Y_BROWSER_PATH=/usr/bin/chromium`) with the
+pinned ultra11y engine installed globally (`npm install -g
+ultra11y@<pin>`, the pin held equal to `bots/rgaa-audit/ultra11y.pin` by
+`bots/rgaa_audit_sandbox_rgaa_image_test.go`).
+
+A bot opts in by declaring the class on its sandbox block:
+
+```iter fragment:workflow
+sandbox:
+  image: rgaa    ## resolves at launch to ghcr.io/socialgouv/iterion-sandbox-rgaa:<version>
+```
+
+A bare class name (`slim`, `full`, `sec`, `browser`, `rgaa`) resolves to
+the published variant pinned to the running iterion; anything else keeps
+its meaning (a full `registry/repo:tag` reference is your own image; an
+unknown bare word is verbatim, with the compiler's C325 saying so).
+
+**Until the bot itself declares the class**, its `prepare` node keeps its
+engine resolution ladder: `ULTRA11Y_BIN` → a matching global npm install
+→ `ULTRA11Y_HOME` → a per-run `npm install ultra11y@<pin>` (fingerprint
+verified either way). On the rgaa image the second arm answers, so the
+per-run install disappears the day the bot declares `image: rgaa` — the
+fallback stays as the honest answer on every other image.
+
+## Running on iterion.cloud — what a sandboxed cloud run still does NOT get
 
 A cloud run executes inside the run's sandbox pod, not in the runner
-image, so three things the local path above takes for granted are
-absent there, plus one fact about whose budget it spends. The fixes
-are product decisions pending in
-[#2632](https://github.com/SocialGouv/iterion/issues/2632); this
-section is the honest interim state.
+image. Decision (a) of
+[#2632](https://github.com/SocialGouv/iterion/issues/2632) is delivered
+(the `rgaa` image class, above); what follows is the honest interim
+state until the bot declares it, plus the two decisions still pending.
 
-- **The engine pre-install does not reach the run.** The runner image
-  pre-installs the pinned ultra11y (`Dockerfile.runner-devbox`:
-  `ARG ULTRA11Y_VERSION`, installed under `/opt/iterion/ultra11y` and
-  exported as `ULTRA11Y_HOME`), but the sandbox pod is the default
-  `ghcr.io/socialgouv/iterion-sandbox-slim`
+- **The engine pre-install does not reach a run on the default image.**
+  The runner image pre-installs the pinned ultra11y
+  (`Dockerfile.runner-devbox`: `ARG ULTRA11Y_VERSION`, installed under
+  `/opt/iterion/ultra11y` and exported as `ULTRA11Y_HOME`), but the
+  sandbox pod defaults to `ghcr.io/socialgouv/iterion-sandbox-slim`
   (`pkg/runtime/sandbox_default_image.go`) — node + devbox + Nix, no
   ultra11y (`sandbox/slim/Dockerfile`). `prepare`'s candidate walk
   (`ULTRA11Y_BIN` → global npm → `ULTRA11Y_HOME`,
-  `bots/rgaa-audit/main.bot`) therefore misses, and every cloud run
-  pays one `npm install ultra11y@<pin>` into its run directory
-  (`engine_source: "npm-install"`) — a per-run network fetch from the
-  registry, fingerprinted like any other engine source.
-- **No browser in the pod, so `rendered=off`.** The slim image ships
-  no Chromium, so the rendered layer cannot run on iterion.cloud
-  today: launch with `rendered=off` (or let `auto` find nothing) and
-  the coverage annex says the layer did not run. The opt-in
-  `iterion-sandbox-browser` image (Chromium at `/usr/bin/chromium`,
-  named to the bot through `ULTRA11Y_BROWSER_PATH` /
-  `sandbox/browser/Dockerfile`) exists for an operator who selects it;
-  making it — or a dedicated Acci image — the cloud posture is one of
-  the decisions pending in #2632.
+  `bots/rgaa-audit/main.bot`) therefore misses, and every cloud run on
+  the default image pays one `npm install ultra11y@<pin>` into its run
+  directory (`engine_source: "npm-install"`) — a per-run network fetch
+  from the registry, fingerprinted like any other engine source. The
+  `rgaa` class carries the engine pre-installed.
+- **No browser on the default image, so `rendered=off` there.** The
+  slim image ships no Chromium, so the rendered layer cannot run on
+  iterion.cloud while the bot rides the default: launch with
+  `rendered=off` (or let `auto` find nothing) and the coverage annex
+  says the layer did not run. The `browser` class and the `rgaa` class
+  both ship Chromium at `/usr/bin/chromium`, named to the bot through
+  `ULTRA11Y_BROWSER_PATH`.
 - **Board filing is off in the sandbox.** `publish` /
   `publish_verify` write through the board MCP transport; in a
   sandboxed run it is wired only when the runtime configured
