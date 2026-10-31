@@ -888,7 +888,6 @@ export default function PipelineCardDetails({
           }}
           step={DRAWER_WIDTH_STEP}
           bigStep={DRAWER_WIDTH_STEP_LARGE}
-          valuetext={`${width} pixels`}
           onPointerResizeStart={startResize}
           onReset={() => commitWidth(DRAWER_WIDTH_DEFAULT)}
           title="Drag to resize — ←/→ to adjust, double-click to reset"
