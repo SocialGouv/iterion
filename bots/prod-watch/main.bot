@@ -6286,11 +6286,17 @@ tool commit_state:
     STAGED_FILES = STATE_FILES + ['.gitignore', '.gitattributes']
 
     def _repo_frame(sdir):
-        ## The state dir in the REPOSITORY's frame: `git diff --cached
-        ## --name-only --no-relative` prints repo-root-relative paths whatever
-        ## `diff.relative` says, and the workspace may be a subdirectory.
-        prefix = subprocess.run(['git', 'rev-parse', '--show-prefix'], capture_output=True, text=True).stdout.strip()
-        return (prefix + sdir.rstrip('/')).lstrip('/')
+        ## The state dir in the REPOSITORY's frame, spelled the way git
+        ## spells paths: relpath against the toplevel. The dir as typed
+        ## (`./x`, absolute, through a symlink) never matches what
+        ## `git diff --cached --name-only --no-relative` reports —
+        ## repo-root-relative whatever `diff.relative` says, and the
+        ## workspace may be a subdirectory.
+        top = subprocess.run(['git', 'rev-parse', '--show-toplevel'], capture_output=True, text=True)
+        if top.returncode != 0:
+            raise SystemExit('prod-watch: state_commit=true keeps the state in git -- git rev-parse --show-toplevel failed '
+                             '(a git checkout is required). git said: ' + ((top.stderr or top.stdout or '')[-300:]).strip())
+        return os.path.relpath(os.path.realpath(sdir), os.path.realpath(top.stdout.strip()))
 
     def _staged_outside(sdir):
         ## DELIVERY_OWNED_PATHS — the whole pathspec this bot's push may
@@ -6307,8 +6313,12 @@ tool commit_state:
         ## carried under the bot's identity.
         DELIVERY_OWNED_PATHS = (sdir,)
         owned = [_repo_frame(d) for d in DELIVERY_OWNED_PATHS]
-        staged = subprocess.run(['git', 'diff', '--cached', '--name-only', '--no-relative'],
-                                capture_output=True, text=True).stdout.split(chr(10))
+        ## `-z`: NUL-separated and UNQUOTED — the default output C-quotes any
+        ## path with a byte >= 0x80, a `"` or a `\` (core.quotePath), and a
+        ## quoted name never equals the dir as typed, so `données`, `x"y`
+        ## or `a\b` would be refused for ever.
+        staged = subprocess.run(['git', 'diff', '--cached', '--name-only', '--no-relative', '-z'],
+                                capture_output=True, text=True).stdout.split(chr(0))
         return [q for q in staged if q.strip()
                 and not any(q == o or q.startswith(o + '/') for o in owned)]
 
@@ -6319,8 +6329,12 @@ tool commit_state:
         ## them), so this asks exactly what `git add` would refuse: the
         ## paths still untracked under a rule.
         paths = [os.path.join(sdir, f) for f in STAGED_FILES]
-        out = subprocess.run(['git', 'check-ignore'] + paths, capture_output=True, text=True).stdout
-        return [ln.strip() for ln in out.split(chr(10)) if ln.strip()]
+        ## `-z --stdin`: the names come back NUL-separated and UNQUOTED (the
+        ## arg form's default C-quotes a non-ASCII path, and `-z` without
+        ## `--stdin` is refused outright).
+        out = subprocess.run(['git', 'check-ignore', '-z', '--stdin'],
+                             input=chr(0).join(paths), capture_output=True, text=True).stdout
+        return [ln for ln in out.split(chr(0)) if ln.strip()]
 
     def _commit_push_state(sdir, msg, extra):
         paths = [os.path.join(sdir, f) for f in STAGED_FILES] + [os.path.join(sdir, f) for f in extra]
@@ -6590,9 +6604,12 @@ tool commit_state:
         ## recurses, and a session rotation (session/ticks-2.jsonl) read by
         ## its basename would be handed to `git add` as a path the watch's
         ## dir never had — aborting the whole add, every watch tick.
-        for _ln in subprocess.run(['git', 'ls-files', '--', ':(glob)' + re.sub(r'([*?\[\]\\])', r'\\\1', state_dir.rstrip('/')) + '/*'],
-                                  capture_output=True, text=True).stdout.split(chr(10)):
-            _fn = os.path.basename(_ln.strip())
+        for _ln in subprocess.run(['git', 'ls-files', '-z', '--', ':(glob)' + re.sub(r'([*?\[\]\\])', r'\\\1', state_dir.rstrip('/')) + '/*'],
+                                  capture_output=True, text=True).stdout.split(chr(0)):
+            ## `-z`, unquoted: a quoted name's basename would end in `"` and
+            ## never match the rotation names (the quoting hole this reader
+            ## shared with the preflight above).
+            _fn = os.path.basename(_ln)
             if _fn and ROTATION_RE.match(_fn) and not os.path.exists(os.path.join(state_dir, _fn)):
                 stage_extra.append(_fn)
         committed = _commit_push_state(state_dir, 'chore(prod-watch): ' + ('session' if session_next else 'watch') + ' tick, ' + str(appended) + ' alert(s)' +
