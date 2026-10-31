@@ -30,8 +30,15 @@ func (d stubSandboxDriver) Start(context.Context, sandbox.PreparedSpec, sandbox.
 }
 
 // workingSandboxRegistry is a driver set mimicking a host WITH a
-// container runtime: the docker constructor succeeds.
-func workingSandboxRegistry() map[string]sandbox.DriverConstructor {
+// container runtime: the docker constructor succeeds. A working docker
+// registry is a LOCAL host's fact, so the helper pins the host kind —
+// left to detection, a CI pod (KUBERNETES_SERVICE_HOST set) resolves
+// HostCloud, whose kubernetes,noop preference order never consults the
+// synthetic docker constructor and the gate reads every sandboxed
+// branch as a driverless host.
+func workingSandboxRegistry(t *testing.T) map[string]sandbox.DriverConstructor {
+	t.Helper()
+	t.Setenv("ITERION_MODE", "local")
 	return map[string]sandbox.DriverConstructor{
 		"docker": func() (sandbox.Driver, error) { return stubSandboxDriver{name: "docker"}, nil },
 	}
@@ -64,7 +71,9 @@ func driverlessSandboxRegistry() map[string]sandbox.DriverConstructor {
 // secrets are written here; on a host with a real driver they are not
 // (the container mount delivers them).
 func TestMaterializeFileSecretsNoSandbox_DegradedAutoStillWrites(t *testing.T) {
-	t.Setenv("ITERION_MODE", "local") // pin the factory's preference order to docker,podman,noop — CI runs on kubernetes pods (HostCloud prefers kubernetes,noop)
+	// the host kind is pinned by workingSandboxRegistry below — the degraded
+	// half needs no pin: no preference order can construct a driver from a
+	// driverless registry
 	wf := &ir.Workflow{
 		Sandbox: &ir.SandboxSpec{Mode: "auto"},
 		Secrets: map[string]*ir.Secret{
@@ -97,7 +106,7 @@ func TestMaterializeFileSecretsNoSandbox_DegradedAutoStillWrites(t *testing.T) {
 	// CLOSED — the container mount is the delivery channel.
 	sandboxed := &Runner{cfg: Config{
 		Logger:         iterlog.New(iterlog.LevelError, os.Stderr),
-		SandboxDrivers: workingSandboxRegistry(),
+		SandboxDrivers: workingSandboxRegistry(t),
 	}}
 	written, cleanup, err = sandboxed.materializeFileSecretsNoSandbox(ctx, wf, repoRoot, "")
 	if err != nil {
@@ -132,7 +141,7 @@ func TestMaterializeFileSecretsNoSandbox_FlooredOptOutKeepsGateClosed(t *testing
 	sandboxed := &Runner{cfg: Config{
 		Logger:         iterlog.New(iterlog.LevelError, os.Stderr),
 		SandboxDefault: "auto", // the operator's floor the neutralization falls through to
-		SandboxDrivers: workingSandboxRegistry(),
+		SandboxDrivers: workingSandboxRegistry(t),
 	}}
 	// Without the tier (the operator's own launch) the declared opt-out
 	// holds: the gate OPENS. Whether the write itself lands depends on

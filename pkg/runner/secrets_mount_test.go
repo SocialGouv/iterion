@@ -50,14 +50,13 @@ func TestMaterializeFileSecretsNoSandboxRejectsOutOfTreeMountPath(t *testing.T) 
 // into the container instead), and a file secret with no resolved
 // credential value all yield (nil, nil, nil) — nothing touches the pod
 // filesystem. The runner pins a working driver set so the sandbox gate's
-// answer does not depend on what this machine has installed; the
-// driverless-host half lives in
-// TestMaterializeFileSecretsNoSandbox_DegradedAutoStillWrites.
+// answer does not depend on what this machine has installed — host kind
+// included, which workingSandboxRegistry pins; the driverless-host half
+// lives in TestMaterializeFileSecretsNoSandbox_DegradedAutoStillWrites.
 func TestMaterializeFileSecretsNoSandbox_GateShapes(t *testing.T) {
-	t.Setenv("ITERION_MODE", "local") // pin the factory's preference order to docker,podman,noop — CI runs on kubernetes pods (HostCloud prefers kubernetes,noop)
 	r := &Runner{cfg: Config{
 		Logger:         iterlog.New(iterlog.LevelError, os.Stderr),
-		SandboxDrivers: workingSandboxRegistry(),
+		SandboxDrivers: workingSandboxRegistry(t),
 	}}
 	credCtx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		Generic: map[string]string{"forge_token": "tok"},
