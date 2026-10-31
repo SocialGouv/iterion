@@ -512,11 +512,9 @@ func TestWikiGen_Run_CurrentWikiSkipsAtZeroCost(t *testing.T) {
 // end, not per pass.
 func TestWikiGen_Run_ScopeViolationLoopsUntilTheGatePasses(t *testing.T) {
 	t.Parallel()
-	var validateCalls int
 	exec, run := runWikiGraph(t, "run-wikky-scope-loop", map[string]any{"max_passes": 3},
 		func(int) map[string]any { return nil }, // the author claims complete every pass
 		func(pass int) map[string]any {
-			validateCalls++
 			if pass == 1 {
 				return map[string]any{
 					"frontmatter_valid": true, "links_ok": true, "scope_ok": false,
