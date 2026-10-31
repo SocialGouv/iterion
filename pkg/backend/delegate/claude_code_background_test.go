@@ -4539,18 +4539,20 @@ func TestBackground_AWaveIsBackOnlyOnceItsResultCame(t *testing.T) {
 		"ITERION_CLAUDE_CODE_BACKGROUND_RESULT_WAIT":    "10s",
 	}, Task{})
 	var settled *BackgroundWork
-	var settledAt time.Time
+	// ANY settle before the floor is the bug, not only the last one: judged
+	// last-wins, an early bogus settle followed by an honest one is masked
+	// by the later event's timestamp.
 	for i, e := range run.events {
-		if e.Phase == BackgroundSettled {
-			settled = &run.events[i]
-			settledAt = run.at[i]
+		if e.Phase != BackgroundSettled {
+			continue
 		}
+		if waited := run.at[i].Sub(run.startedAt); waited < scriptFloor {
+			t.Fatalf("settled event #%d fired %s into the session (WaitedFor %s), before the script's own %s of sleeps between the result and t1's notification: the wave was settled when t1 left the set, its result still on its way", i, waited, e.WaitedFor, scriptFloor)
+		}
+		settled = &run.events[i]
 	}
 	if run.err != nil || settled == nil {
 		t.Fatalf("err = %v, settled = %+v: the wave was settled while t1's result was still on its way", run.err, settled)
-	}
-	if waited := settledAt.Sub(run.startedAt); waited < scriptFloor {
-		t.Fatalf("settled %s into the session (WaitedFor %s), before the script's own %s of sleeps between the result and t1's notification: the wave was settled when t1 left the set, its result still on its way", waited, settled.WaitedFor, scriptFloor)
 	}
 }
 
