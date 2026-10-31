@@ -1254,7 +1254,18 @@ func (r *Run) streamDirIntoPod(ctx context.Context, src, podDst string) error {
 		// side's death leads whenever the phase's context is already done.
 		podWaitErr := podTar.Wait()
 		if ctx.Err() != nil && podWaitErr != nil {
-			return fmt.Errorf("in-pod tar extract: %w\n%s", podWaitErr, strings.TrimSpace(podErr.String()))
+			// Both deaths travel: the host leg's stderr can name an
+			// independent cause ("file changed as we read it") printed before
+			// the cut reached it — the wedged far side leads, the host tail
+			// follows.
+			podTail := strings.TrimSpace(podErr.String())
+			if hostTail := strings.TrimSpace(hostErr.String()); hostTail != "" {
+				if podTail != "" {
+					podTail += "\n"
+				}
+				podTail += "host tar: " + hostTail
+			}
+			return fmt.Errorf("in-pod tar extract: %w\n%s", podWaitErr, podTail)
 		}
 		return fmt.Errorf("host tar %s: %w\n%s", src, err, strings.TrimSpace(hostErr.String()))
 	}

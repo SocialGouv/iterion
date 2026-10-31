@@ -135,6 +135,46 @@ func TestRunWithPhaseTimeout_RealWorkspaceCopyStallIsClassified(t *testing.T) {
 	}
 }
 
+// The cut branch keeps BOTH legs' causes: a host tar that named an
+// independent cause before the cut reached it ("file changed as we read
+// it") must not lose that diagnostic when the wedged in-pod tar leads the
+// error — the same loss-class the in-pod side was closed against. The tar
+// shim prints to stderr and then sleeps, so at the deadline its buffer
+// carries a real diagnostic while its own death is the cut's kill.
+func TestRunWithPhaseTimeout_RealWorkspaceCopyCutKeepsTheHostTailsOwnCause(t *testing.T) {
+	isolateExecEnvironment(t)
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not on PATH")
+	}
+	shimDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(shimDir, kubeBinaryName), []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shimDir, "tar"), []byte("#!/bin/sh\necho 'tar: file changed as we read it' >&2\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("payload\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := &Run{driver: &Driver{logger: iterlog.Nop()}, podName: "sandbox-x", namespace: "ns"}
+
+	err := sandbox.RunWithPhaseTimeout(context.Background(), iterlog.Nop(), "workspace copy", workspaceCopyTimeoutEnv, 300*time.Millisecond, func(ctx context.Context) error {
+		return r.populateWorkspace(ctx, src, "/workspace")
+	})
+	if err == nil {
+		t.Fatal("a wedged in-pod tar returned no error — the copy would block until the run's max_duration")
+	}
+	if !strings.Contains(err.Error(), "in-pod tar extract") {
+		t.Fatalf("the cut branch must keep the wedged in-pod tar leading: %v", err)
+	}
+	if !strings.Contains(err.Error(), "file changed as we read it") {
+		t.Fatalf("the cut branch dropped the host tar's own cause: %v", err)
+	}
+}
+
 // #719: the post_create snippet is the setup phase right after the copy
 // and the git fixup, and it ran on the bare context. A hung snippet (a
 // package install waiting on a dead mirror, a command that reads stdin)
