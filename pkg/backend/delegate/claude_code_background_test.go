@@ -333,6 +333,41 @@ func bgSessionSafetyNet(t *testing.T, script []string, mergedEnv map[string]stri
 	return wedgeCeiling
 }
 
+// scriptSleepsBetween sums the "@sleep" seconds a script runs between two of
+// its own lines — the slice the wedge net (bgSessionSafetyNet) sums in full,
+// cut to the stretch between an anchor line and the first end line after it.
+// A judge held to the script's own clock derives its floor here, never from a
+// hand-copied constant: a constant goes stale both ways when the sleeps move
+// (shrunk, an honest settle lands under the stale floor — a false red; grown,
+// the floor weakens silently and a regression settling between the stale and
+// the true floor passes). An "@sleep" inside the window that does not parse
+// as positive seconds is a broken scenario, named loudly: a floor that
+// silently dropped a sleep would be weaker than the clock it claims to judge.
+func scriptSleepsBetween(t *testing.T, script []string, anchor, end func(string) bool) time.Duration {
+	t.Helper()
+	start := slices.IndexFunc(script, anchor)
+	if start < 0 {
+		t.Fatalf("scriptSleepsBetween: the script never plays its anchor line — broken scenario")
+	}
+	endIdx := slices.IndexFunc(script[start+1:], end)
+	if endIdx < 0 {
+		t.Fatalf("scriptSleepsBetween: the script never plays its end line after the anchor — broken scenario")
+	}
+	var floor time.Duration
+	for _, step := range script[start+1 : start+1+endIdx] {
+		s, ok := strings.CutPrefix(step, "@sleep ")
+		if !ok {
+			continue
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil || f <= 0 {
+			t.Fatalf("scriptSleepsBetween: %q does not parse as positive @sleep seconds — the floor would silently drop it", step)
+		}
+		floor += time.Duration(f * float64(time.Second))
+	}
+	return floor
+}
+
 // runBgSession plays script through runSession. env sets iterion's knobs (the
 // test's own values win over the short defaults applied here).
 func runBgSession(t *testing.T, script []string, env map[string]string, task Task) bgRun {
@@ -4485,6 +4520,17 @@ func TestBackground_AWaveIsBackOnlyOnceItsResultCame(t *testing.T) {
 		lnIdle(),
 		"@drain",
 	)
+	// The floor derives from the script slice itself — the sleeps it runs
+	// between the WAITING result and t1's notification (the same lines the
+	// wedge net sums) — never a hand-copied constant: it moves when the
+	// sleeps move, and a broken scenario names its missing anchor.
+	scriptFloor := scriptSleepsBetween(t, script,
+		func(line string) bool {
+			return strings.Contains(line, `"type":"result"`) && strings.Contains(line, `"result":"WAITING"`)
+		},
+		func(line string) bool {
+			return strings.Contains(line, `"subtype":"task_notification"`)
+		})
 	// RESULT_WAIT pins the CLI's own patience for a result on its way: the
 	// grace's fire is suppressed while t1's is, so the 1.2s gap never races
 	// a nudge (#2201).
@@ -4503,9 +4549,6 @@ func TestBackground_AWaveIsBackOnlyOnceItsResultCame(t *testing.T) {
 	if run.err != nil || settled == nil {
 		t.Fatalf("err = %v, settled = %+v: the wave was settled while t1's result was still on its way", run.err, settled)
 	}
-	// The floor is the sleeps the script itself runs between the result and
-	// t1's notification — keep it in step if the sleeps move.
-	const scriptFloor = 300*time.Millisecond + 1200*time.Millisecond
 	if waited := settledAt.Sub(run.startedAt); waited < scriptFloor {
 		t.Fatalf("settled %s into the session (WaitedFor %s), before the script's own %s of sleeps between the result and t1's notification: the wave was settled when t1 left the set, its result still on its way", waited, settled.WaitedFor, scriptFloor)
 	}
