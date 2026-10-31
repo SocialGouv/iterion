@@ -112,9 +112,12 @@ func (r *Registry) registerDefaults() {
 				// the claude_code delegate refuses pre-spawn (#2772), refused
 				// here with the same typed carrier so the node's declared
 				// fallback fires. An operator's explicit ANTHROPIC_BASE_URL
-				// stays their claim: a gateway they named may genuinely
-				// serve the id.
-				if baseURL == "" && !modelServedByZAI(modelID) {
+				// stays their claim: a gateway they named may genuinely serve
+				// the id. z.ai's OWN documented endpoint — or no base URL at
+				// all — is not a claim: the delegate refuses a claude id on
+				// exactly that env, so the claim is judged with the one
+				// predicate both backends share.
+				if !delegate.OperatorEndpointClaim(baseURL, secrets.ZAIDefaultBaseURL) && !modelServedByZAI(modelID) {
 					return nil, &delegate.ErrModelUnavailable{
 						Provider: string(secrets.ProviderZAI),
 						Model:    modelID,
@@ -339,8 +342,10 @@ func (r *Registry) registerDefaults() {
 		// the requested label — the substitution class of #2772, refused
 		// with the same typed carrier the claude_code delegate raises. An
 		// explicit MOONSHOT_BASE_URL is the operator's own destination and
-		// stays their claim.
-		if !delegate.FacadeServesModelID(string(secrets.ProviderMoonshot), modelID) && strings.TrimSpace(os.Getenv("MOONSHOT_BASE_URL")) == "" {
+		// stays their claim — Moonshot's own published endpoint is not: the
+		// delegate refuses a substituted id on exactly that env, so the
+		// claim is judged with the one predicate both backends share.
+		if !delegate.FacadeServesModelID(string(secrets.ProviderMoonshot), modelID) && !delegate.OperatorEndpointClaim(moonshotBaseURL(), secrets.MoonshotDefaultBaseURL) {
 			return nil, &delegate.ErrModelUnavailable{
 				Provider: string(secrets.ProviderMoonshot),
 				Model:    modelID,
@@ -354,9 +359,10 @@ func (r *Registry) registerDefaults() {
 		}))
 	}
 	r.providersWithKey["moonshot"] = func(modelID, apiKey string) (api.APIClient, error) {
-		// Same substitution refusal as the env factory above: a tenant's
-		// BYOK key buys the same facade, never a second verdict on it.
-		if !delegate.FacadeServesModelID(string(secrets.ProviderMoonshot), modelID) && strings.TrimSpace(os.Getenv("MOONSHOT_BASE_URL")) == "" {
+		// Same substitution refusal as the env factory above, the vendor's
+		// own base URL included: a tenant's BYOK key buys the same facade,
+		// never a second verdict on it.
+		if !delegate.FacadeServesModelID(string(secrets.ProviderMoonshot), modelID) && !delegate.OperatorEndpointClaim(moonshotBaseURL(), secrets.MoonshotDefaultBaseURL) {
 			return nil, &delegate.ErrModelUnavailable{
 				Provider: string(secrets.ProviderMoonshot),
 				Model:    modelID,

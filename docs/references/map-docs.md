@@ -160,6 +160,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/agents/README.md`](../agents/README.md) | Agent instructions — the tree | Doctrine specific to this repository: what to know before touching iterion, | — |
 | [`docs/agents/backends/README.md`](../agents/backends/README.md) | Backends and execution — the domain | Who runs the prompt, with which tools, and what the node keeps of its | — |
 | [`docs/agents/backends/backend-selection.md`](../agents/backends/backend-selection.md) | Backend selection — the seven wired backends | Read it when a node runs on the wrong backend or you wire a new one. | — |
+| [`docs/agents/backends/facade-substitution.md`](../agents/backends/facade-substitution.md) | Facade substitution — the served model is not the label | Read it when a `zai`/`moonshot` route answers with GLM/Kimi under a | — |
 | [`docs/agents/backends/fallbacks-and-parity.md`](../agents/backends/fallbacks-and-parity.md) | Fallbacks, schema re-ask and system-prompt parity | Read it when you write `fallbacks:`, hit C173/C176, a node acts "dumber" | — |
 | [`docs/agents/backends/gateway.md`](../agents/backends/gateway.md) | The OpenAI-compatible gateway | Serving `openai_compatible/<gateway model id>` from the deployment's | — |
 | [`docs/agents/backends/metering.md`](../agents/backends/metering.md) | Trusted metering | `delegate.Result` carries harness accounting independently of model JSON: | — |

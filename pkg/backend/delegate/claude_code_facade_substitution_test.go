@@ -3,6 +3,7 @@ package delegate
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -155,4 +156,30 @@ func TestFacadeSubstitutionRefusal(t *testing.T) {
 			t.Errorf("an anthropic-funded default route serves the claude id: %v", err)
 		}
 	})
+}
+
+// OperatorEndpointClaim is the claim predicate both backends judge: only an
+// endpoint that differs from the vendor's own is the operator naming a
+// destination — unset (or the vendor's documented endpoint, however
+// cosmetically respelled) is the facade's wiring, and the substitution
+// verdict applies to it.
+func TestOperatorEndpointClaim(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		endpoint string
+		want     bool
+	}{
+		{"unset is no claim", "", false},
+		{"whitespace is no claim", "   ", false},
+		{"the vendor's own endpoint is no claim", secrets.ZAIDefaultBaseURL, false},
+		{"a respelling of the vendor endpoint is no claim", "  " + strings.ToUpper(secrets.ZAIDefaultBaseURL) + "//  ", false},
+		{"a destination that differs is the claim", "https://gateway.example/anthropic", true},
+		{"another vendor's endpoint is a claim", secrets.MoonshotDefaultBaseURL, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := OperatorEndpointClaim(tc.endpoint, secrets.ZAIDefaultBaseURL); got != tc.want {
+				t.Errorf("OperatorEndpointClaim(%q) = %v, want %v", tc.endpoint, got, tc.want)
+			}
+		})
+	}
 }

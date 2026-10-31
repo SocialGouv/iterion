@@ -73,6 +73,27 @@ func sameEndpoint(a, b string) bool {
 	return norm(a) == norm(b)
 }
 
+// OperatorEndpointClaim reports whether an explicitly set base URL is the
+// operator naming a destination of their own — the one override the facade
+// substitution verdict honours. Unset (empty) is no claim, and neither is
+// the vendor's OWN documented endpoint: both wire the call to the vendor
+// exactly as the absence of a choice would, so the substitution verdict
+// covers them alike. A DIFFERENT endpoint stays the claim — a proxy may
+// genuinely serve the id.
+//
+// Exported beside FacadeServesModelID for the claw registry: on
+// ZAI_API_KEY + ANTHROPIC_BASE_URL=<the z.ai endpoint> the delegate refuses
+// a claude id and the registry built the client — GLM served under the
+// claude label with the run record blessing it. One predicate here, judged
+// by both backends, is what keeps "the refusal and the routing can never
+// disagree" true in both directions.
+func OperatorEndpointClaim(endpoint, vendorDefault string) bool {
+	if strings.TrimSpace(endpoint) == "" {
+		return false
+	}
+	return !sameEndpoint(endpoint, vendorDefault)
+}
+
 // facadeSubstitutionRefusal refuses a route the resolved facade cannot serve
 // — z.ai asked for a claude id, Moonshot asked for anything but a kimi id —
 // or returns nil when the route serves what it names.

@@ -9,6 +9,7 @@ native harness. Leaves, one line each:
 | [Capability registry](../../backend-capability-registry.md) | Backend facts, unchanged seed, derived enumerations and mutation witnesses. |
 | [gateway.md](gateway.md) | Serving `openai_compatible/…` from the deployment env, its catalog, its refusals. |
 | [fallbacks-and-parity.md](fallbacks-and-parity.md) | `fallbacks:`, C173/C176, a "dumber" node, a degrading forfait. |
+| [facade-substitution.md](facade-substitution.md) | GLM/Kimi served under a claude/gpt label, or a base URL the substitution verdict ignores. |
 | [metering.md](metering.md) | Trusted delegate counters, reserved output metadata, interaction spend. |
 | [plugins-compression.md](plugins-compression.md) | Output compression (rtk), secret substitution, or a plugin changing what a node sees. |
 | [sandbox.md](sandbox.md) | `SANDBOX_*` and `ATTACHMENT*` failures, host binds dropped or carried, changing what a node may execute. |
