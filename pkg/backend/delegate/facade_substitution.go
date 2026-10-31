@@ -1,6 +1,7 @@
 package delegate
 
 import (
+	"net/url"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -54,44 +55,72 @@ func FacadeServesModelID(slot, wireID string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(wireID)), prefix)
 }
 
-// facadeVendorBaseURL is the vendor endpoint a facade route lands on when the
-// operator did not point the wire at their own gateway.
-func facadeVendorBaseURL(slot string) string {
-	switch slot {
-	case string(secrets.ProviderZAI):
-		return secrets.ZAIDefaultBaseURL
-	case string(secrets.ProviderMoonshot):
-		return secrets.MoonshotDefaultBaseURL
-	}
-	return ""
+// sameEndpoint compares two endpoint URLs loosely: case, surrounding
+// whitespace and a trailing slash carry no routing meaning, and an explicit
+// default port (:443 on https, :80 on http) names the endpoint its no-port
+// spelling names — `https://api.z.ai:443/api/anthropic` is a respelling of
+// ZAIDefaultBaseURL, not another destination. A string that does not parse
+// as an absolute URL keeps the plain comparison.
+func sameEndpoint(a, b string) bool {
+	return normEndpoint(a) == normEndpoint(b)
 }
 
-// sameEndpoint compares two endpoint URLs loosely: case and a trailing slash
-// carry no routing meaning.
-func sameEndpoint(a, b string) bool {
-	norm := func(s string) string { return strings.TrimRight(strings.ToLower(strings.TrimSpace(s)), "/") }
-	return norm(a) == norm(b)
+// normEndpoint folds the respellings sameEndpoint ignores into one spelling:
+// whitespace, case and a trailing slash first, then — for a parsable
+// absolute URL — the explicit default port dropped from the host.
+func normEndpoint(raw string) string {
+	norm := strings.TrimRight(strings.ToLower(strings.TrimSpace(raw)), "/")
+	parsed, err := url.Parse(norm)
+	if err != nil || parsed.Host == "" {
+		return norm // no absolute URL: the plain respellings are all there is
+	}
+	if port := parsed.Port(); port != "" && port == schemeDefaultPort(parsed.Scheme) {
+		parsed.Host = parsed.Hostname() // the port the scheme implies is no routing fact
+	}
+	return strings.TrimRight(parsed.String(), "/")
+}
+
+// schemeDefaultPort is the port a URL scheme implies — the one an explicit
+// spelling of it does not have to carry to name the same endpoint.
+func schemeDefaultPort(scheme string) string {
+	switch scheme {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	}
+	return ""
 }
 
 // OperatorEndpointClaim reports whether an explicitly set base URL is the
 // operator naming a destination of their own — the one override the facade
 // substitution verdict honours. Unset (empty) is no claim, and neither is
-// the vendor's OWN documented endpoint: both wire the call to the vendor
-// exactly as the absence of a choice would, so the substitution verdict
-// covers them alike. A DIFFERENT endpoint stays the claim — a proxy may
-// genuinely serve the id.
+// any of the vendor's OWN published endpoints (secrets.FacadeVendorEndpoints):
+// the same Anthropic wire ships on two hosts per facade — Moonshot's .ai
+// default and its .cn gateway, z.ai's default and Zhipu's open.bigmodel.cn —
+// and every one of them wires the call to the vendor exactly as the absence
+// of a choice would, so the substitution verdict covers the ensemble alike,
+// however cosmetically respelled (an explicit default port included). A
+// DIFFERENT endpoint stays the claim — a proxy may genuinely serve the id.
+// A slot that names no facade holds no vendor endpoint, so any endpoint at
+// all is the operator's.
 //
 // Exported beside FacadeServesModelID for the claw registry: on
-// ZAI_API_KEY + ANTHROPIC_BASE_URL=<the z.ai endpoint> the delegate refuses
-// a claude id and the registry built the client — GLM served under the
-// claude label with the run record blessing it. One predicate here, judged
-// by both backends, is what keeps "the refusal and the routing can never
-// disagree" true in both directions.
-func OperatorEndpointClaim(endpoint, vendorDefault string) bool {
+// ZAI_API_KEY + ANTHROPIC_BASE_URL=<a z.ai-family endpoint> the delegate
+// refuses a claude id and the registry built the client — GLM served under
+// the claude label with the run record blessing it. One predicate here,
+// judged by both backends, is what keeps "the refusal and the routing can
+// never disagree" true in both directions.
+func OperatorEndpointClaim(endpoint, slot string) bool {
 	if strings.TrimSpace(endpoint) == "" {
 		return false
 	}
-	return !sameEndpoint(endpoint, vendorDefault)
+	for _, vendor := range secrets.FacadeVendorEndpoints(secrets.Provider(slot)) {
+		if sameEndpoint(endpoint, vendor) {
+			return false
+		}
+	}
+	return true
 }
 
 // facadeSubstitutionRefusal refuses a route the resolved facade cannot serve
@@ -108,10 +137,12 @@ func OperatorEndpointClaim(endpoint, vendorDefault string) bool {
 //   - Only a route the RESOLVER built as a vendor facade (the slot stamp)
 //     is judged: an ambient endpoint the run merely inherited is the
 //     operator's configuration, not a facade iterion chose.
-//   - Only the vendor's OWN endpoint: an explicit base-URL override
-//     (ANTHROPIC_BASE_URL / MOONSHOT_BASE_URL) is the operator naming a
-//     destination — a proxy may genuinely serve the id, and an explicit
-//     routing choice is honoured, never silently second-guessed.
+//   - Only the vendor's OWN published endpoints — the same ensemble the
+//     registry judges (OperatorEndpointClaim, secrets.FacadeVendorEndpoints):
+//     an explicit base-URL override (ANTHROPIC_BASE_URL / MOONSHOT_BASE_URL)
+//     naming any OTHER destination is the operator's claim — a proxy may
+//     genuinely serve the id, and an explicit routing choice is honoured,
+//     never silently second-guessed.
 //
 // An empty task.Model reads as the backend's own default
 // (defaultClaudeCodeModel): the CLI would substitute exactly the same way.
@@ -120,7 +151,7 @@ func facadeSubstitutionRefusal(task Task, credEnv map[string]string) error {
 	if facadeServedModelPrefix(slot) == "" {
 		return nil // not a resolver-built vendor facade route
 	}
-	if !sameEndpoint(credEnv["ANTHROPIC_BASE_URL"], facadeVendorBaseURL(slot)) {
+	if OperatorEndpointClaim(credEnv["ANTHROPIC_BASE_URL"], slot) {
 		return nil // the operator's own gateway is their claim
 	}
 	wireID := claudeCodeModelID(task.Model)

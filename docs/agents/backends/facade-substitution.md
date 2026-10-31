@@ -16,13 +16,15 @@ moonshot factories ([facade_substitution.go](../../../pkg/backend/delegate/facad
 [registry.go](../../../pkg/backend/model/registry.go)).
 
 **One claim predicate, both backends.** The verdict honours only an
-operator endpoint that DIFFERS from the vendor's own
-(`delegate.OperatorEndpointClaim`): unset, or the vendor's documented base
-URL however cosmetically respelled (case, spacing, trailing slash), is the
-facade's own wiring and the refusal applies — on the exact env z.ai
-documents (`ZAI_API_KEY` + `ANTHROPIC_BASE_URL`=z.ai) the delegate refuses
-a claude id and claw refuses it too. An endpoint that genuinely differs
-(the enterprise proxy) stays the operator's claim and passes.
+operator endpoint outside the vendor's published ensemble
+(`delegate.OperatorEndpointClaim` over
+[secrets.FacadeVendorEndpoints](../../../pkg/secrets/byok.go)): unset, or
+any of the vendor's own hosts — the default AND the second published host
+of the same wire (Moonshot's `api.moonshot.cn` gateway, Zhipu's
+`open.bigmodel.cn` for the z.ai family) — however respelled (case,
+spacing, trailing slash, an explicit `:443`) is the facade's own wiring
+and the refusal applies. An endpoint that genuinely differs (the
+enterprise proxy) stays the operator's claim and passes.
 
 **The record names the serving route.** Whichever route served, the run
 record carries provider AND model bound together — `NodesServed.provider`

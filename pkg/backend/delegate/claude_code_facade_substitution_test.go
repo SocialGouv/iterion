@@ -18,10 +18,11 @@ import (
 // so the node's declared `fallbacks:` route — which classifies the refusal
 // as `unavailable` — fires instead of the mislabel.
 //
-// The refusal is scoped to the vendor's own endpoint: an operator who
-// pointed the facade's base URL at their own gateway (ANTHROPIC_BASE_URL /
-// MOONSHOT_BASE_URL) chose that destination — it may genuinely serve the
-// id, and the engine does not second-guess an explicit routing choice.
+// The refusal is scoped to the vendor's own published endpoints: an
+// operator who pointed the facade's base URL at any OTHER destination
+// (ANTHROPIC_BASE_URL / MOONSHOT_BASE_URL) chose that endpoint — it may
+// genuinely serve the id, and the engine does not second-guess an explicit
+// routing choice.
 
 // refuseFacadeSubstitution is the test's handle on the seam: the refusal
 // setupCredsAndSession applies after the credential route is resolved.
@@ -140,6 +141,45 @@ func TestFacadeSubstitutionRefusal(t *testing.T) {
 		}
 	})
 
+	t.Run("the vendor's second published host is no claim", func(t *testing.T) {
+		// The facades publish the same wire on TWO hosts apiece — Moonshot's
+		// .cn gateway, Zhipu's open.bigmodel.cn for the z.ai family — and a
+		// claude id routed to either is substituted exactly as on the
+		// default: the ensemble (secrets.FacadeVendorEndpoints), not one
+		// spelling of the vendor, is what the claim is judged against.
+		resetClaudeCredEnv(t)
+		t.Setenv("MOONSHOT_BASE_URL", secrets.MoonshotChinaBaseURL)
+		ctx := ctxWithCreds(t, map[secrets.Provider]string{secrets.ProviderMoonshot: "moonshot-run"}, nil)
+		assertFacadeSubstitution(t,
+			refuseFacadeSubstitution(t, ctx, "moonshot", "claude-opus-5-5"),
+			"moonshot", "claude-opus-5-5")
+
+		resetClaudeCredEnv(t)
+		t.Setenv("ANTHROPIC_BASE_URL", secrets.ZAIChinaBaseURL)
+		ctx = ctxWithCreds(t, map[secrets.Provider]string{secrets.ProviderZAI: "zai-run"}, nil)
+		assertFacadeSubstitution(t,
+			refuseFacadeSubstitution(t, ctx, "zai", "claude-opus-5-5"),
+			"zai", "claude-opus-5-5")
+	})
+
+	t.Run("an explicit default port is a respelling, not a claim", func(t *testing.T) {
+		// :443 on https is the port the scheme implies — the same endpoint,
+		// so the same verdict; a different port stays the operator's.
+		resetClaudeCredEnv(t)
+		t.Setenv("ANTHROPIC_BASE_URL", "https://api.z.ai:443/api/anthropic")
+		ctx := ctxWithCreds(t, map[secrets.Provider]string{secrets.ProviderZAI: "zai-run"}, nil)
+		assertFacadeSubstitution(t,
+			refuseFacadeSubstitution(t, ctx, "zai", "claude-opus-5-5"),
+			"zai", "claude-opus-5-5")
+
+		resetClaudeCredEnv(t)
+		t.Setenv("ANTHROPIC_BASE_URL", "https://gateway.example:8443/anthropic")
+		ctx = ctxWithCreds(t, map[secrets.Provider]string{secrets.ProviderZAI: "zai-run"}, nil)
+		if err := refuseFacadeSubstitution(t, ctx, "zai", "claude-opus-5-5"); err != nil {
+			t.Errorf("an operator gateway on a non-default port must not be refused: %v", err)
+		}
+	})
+
 	t.Run("pinned anthropic never substitutes", func(t *testing.T) {
 		ctx := ctxWithCreds(t, map[secrets.Provider]string{
 			secrets.ProviderZAI:       "zai-run",
@@ -159,27 +199,68 @@ func TestFacadeSubstitutionRefusal(t *testing.T) {
 }
 
 // OperatorEndpointClaim is the claim predicate both backends judge: only an
-// endpoint that differs from the vendor's own is the operator naming a
-// destination — unset (or the vendor's documented endpoint, however
-// cosmetically respelled) is the facade's wiring, and the substitution
-// verdict applies to it.
+// endpoint outside the vendor's published ensemble is the operator naming a
+// destination — unset, or any of the vendor's own hosts however respelled
+// (case, spacing, trailing slash, an explicit default port), is the facade's
+// wiring, and the substitution verdict applies to it.
 func TestOperatorEndpointClaim(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		endpoint string
-		want     bool
-	}{
-		{"unset is no claim", "", false},
-		{"whitespace is no claim", "   ", false},
-		{"the vendor's own endpoint is no claim", secrets.ZAIDefaultBaseURL, false},
-		{"a respelling of the vendor endpoint is no claim", "  " + strings.ToUpper(secrets.ZAIDefaultBaseURL) + "//  ", false},
-		{"a destination that differs is the claim", "https://gateway.example/anthropic", true},
-		{"another vendor's endpoint is a claim", secrets.MoonshotDefaultBaseURL, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := OperatorEndpointClaim(tc.endpoint, secrets.ZAIDefaultBaseURL); got != tc.want {
-				t.Errorf("OperatorEndpointClaim(%q) = %v, want %v", tc.endpoint, got, tc.want)
-			}
-		})
-	}
+	t.Run("zai", func(t *testing.T) {
+		for _, tc := range []struct {
+			name     string
+			endpoint string
+			want     bool
+		}{
+			{"unset is no claim", "", false},
+			{"whitespace is no claim", "   ", false},
+			{"the vendor's default is no claim", secrets.ZAIDefaultBaseURL, false},
+			{"the family's mainland endpoint is no claim", secrets.ZAIChinaBaseURL, false},
+			{"a respelling of the default is no claim", "  " + strings.ToUpper(secrets.ZAIDefaultBaseURL) + "//  ", false},
+			{"a respelling of the mainland endpoint is no claim", strings.ToUpper(secrets.ZAIChinaBaseURL) + "/", false},
+			{"an explicit default port names the same endpoint", "https://api.z.ai:443/api/anthropic", false},
+			{"an explicit default port on the mainland endpoint", "https://open.bigmodel.cn:443/api/anthropic", false},
+			{"a non-default port is another destination", "https://api.z.ai:8443/api/anthropic", true},
+			{"a destination that differs is the claim", "https://gateway.example/anthropic", true},
+			{"another vendor's endpoint is a claim", secrets.MoonshotDefaultBaseURL, true},
+			{"another vendor's second host is a claim", secrets.MoonshotChinaBaseURL, true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if got := OperatorEndpointClaim(tc.endpoint, string(secrets.ProviderZAI)); got != tc.want {
+					t.Errorf("OperatorEndpointClaim(%q, zai) = %v, want %v", tc.endpoint, got, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("moonshot", func(t *testing.T) {
+		for _, tc := range []struct {
+			name     string
+			endpoint string
+			want     bool
+		}{
+			{"unset is no claim", "", false},
+			{"the default is no claim", secrets.MoonshotDefaultBaseURL, false},
+			{"the .cn gateway is no claim", secrets.MoonshotChinaBaseURL, false},
+			{"a respelling of the .cn gateway is no claim", strings.ToUpper(secrets.MoonshotChinaBaseURL) + "/", false},
+			{"an explicit default port names the .ai endpoint", "https://api.moonshot.ai:443/anthropic", false},
+			{"an explicit default port names the .cn gateway", "https://api.moonshot.cn:443/anthropic", false},
+			{"a destination that differs is the claim", "https://moonshot-gateway.example/anthropic", true},
+			{"another vendor's endpoint is a claim", secrets.ZAIDefaultBaseURL, true},
+			{"another vendor's second host is a claim", secrets.ZAIChinaBaseURL, true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if got := OperatorEndpointClaim(tc.endpoint, string(secrets.ProviderMoonshot)); got != tc.want {
+					t.Errorf("OperatorEndpointClaim(%q, moonshot) = %v, want %v", tc.endpoint, got, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("a slot that names no facade has no vendor endpoint", func(t *testing.T) {
+		if got := OperatorEndpointClaim("", string(secrets.ProviderAnthropic)); got {
+			t.Error("unset is no claim on any slot")
+		}
+		if got := OperatorEndpointClaim("https://api.anthropic.com", string(secrets.ProviderAnthropic)); !got {
+			t.Error("any endpoint at all is the operator's on a slot that names no facade")
+		}
+	})
 }

@@ -156,11 +156,44 @@ const (
 // registry agree without re-deriving the URL.
 const ZAIDefaultBaseURL = "https://api.z.ai/api/anthropic"
 
+// ZAIChinaBaseURL is the mainland endpoint of the z.ai family's
+// Anthropic-compatible surface — Zhipu's open.bigmodel.cn, the GLM Coding
+// Plan's own path. The tree already classifies the host into the z.ai
+// family wherever it reads a base URL (backend/detect, the claw registry's
+// billing split, executor funding), so it is the vendor's own published
+// endpoint, not an operator destination: FacadeVendorEndpoints holds it
+// beside the default for exactly that.
+const ZAIChinaBaseURL = "https://open.bigmodel.cn/api/anthropic"
+
 // MoonshotDefaultBaseURL is the Anthropic-compatible endpoint Moonshot
-// publishes for the Kimi family. The api.moonshot.cn gateway answers on the
-// same wire; MOONSHOT_BASE_URL overrides. Centralised here so the delegate
-// and the model registry agree without re-deriving the URL.
+// publishes for the Kimi family. MOONSHOT_BASE_URL overrides. Centralised
+// here so the delegate and the model registry agree without re-deriving
+// the URL.
 const MoonshotDefaultBaseURL = "https://api.moonshot.ai/anthropic"
+
+// MoonshotChinaBaseURL is Moonshot's mainland gateway, the api.moonshot.cn
+// host answering the same Anthropic-compatible wire as the default (the
+// netproxy facade allowlist carries it for exactly that reason;
+// MOONSHOT_BASE_URL reaches it). The vendor's own published endpoint, held
+// beside the default by FacadeVendorEndpoints.
+const MoonshotChinaBaseURL = "https://api.moonshot.cn/anthropic"
+
+// FacadeVendorEndpoints returns every endpoint the named facade's vendor
+// publishes for the Anthropic wire — the default its resolver stamps and
+// the second hosts of the same wire. All of them wire the call to the
+// vendor exactly as the absence of a choice would, so none of them is an
+// operator's claim: the substitution verdicts judge the ENSEMBLE through
+// delegate.OperatorEndpointClaim, never one spelling of the vendor. A
+// provider that names no Anthropic-wire facade publishes nothing here.
+func FacadeVendorEndpoints(p Provider) []string {
+	switch p {
+	case ProviderZAI:
+		return []string{ZAIDefaultBaseURL, ZAIChinaBaseURL}
+	case ProviderMoonshot:
+		return []string{MoonshotDefaultBaseURL, MoonshotChinaBaseURL}
+	}
+	return nil
+}
 
 // XAIDefaultBaseURL is the host claw's OpenAI-compatible client targets
 // for xAI Grok. The openai provider appends `/v1/chat/completions`, so

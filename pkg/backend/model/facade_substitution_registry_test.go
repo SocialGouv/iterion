@@ -78,13 +78,16 @@ func TestClawRegistryRefusesTheMoonshotSubstitution(t *testing.T) {
 	}
 }
 
-// The vendor's OWN base URL is not the operator's claim: ZAI_API_KEY plus
-// ANTHROPIC_BASE_URL pointed at z.ai's documented endpoint is the exact
-// wiring z.ai publishes, the delegate refuses a claude id on it, and the
-// registry built the client — GLM served under the claude label with the
-// run record blessing the mislabel. The verdict judges the endpoint with
-// the delegate's own fold (case, spacing, trailing slash), so a cosmetic
-// spelling of the vendor URL buys no exemption either.
+// The vendor's OWN base URLs are not the operator's claim: ZAI_API_KEY plus
+// ANTHROPIC_BASE_URL pointed at any endpoint the z.ai family publishes is
+// the exact wiring the vendor documents, the delegate refuses a claude id
+// on it, and the registry built the client — GLM served under the claude
+// label with the run record blessing the mislabel. The published ensemble
+// is TWO hosts (api.z.ai and Zhipu's open.bigmodel.cn — the family the
+// tree's detect/funding verdicts already read as one), and the verdict
+// judges the endpoint with the delegate's own fold (case, spacing, trailing
+// slash, an explicit default port), so a respelling of either vendor URL
+// buys no exemption either.
 func TestClawRegistryRefusesTheVendorBaseURLForAClaudeID(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
@@ -93,14 +96,16 @@ func TestClawRegistryRefusesTheVendorBaseURLForAClaudeID(t *testing.T) {
 
 	for _, base := range []string{
 		secrets.ZAIDefaultBaseURL,
+		secrets.ZAIChinaBaseURL,
 		"  " + strings.ToUpper(secrets.ZAIDefaultBaseURL) + "/  ",
+		"https://api.z.ai:443/api/anthropic",
 	} {
 		t.Setenv("ANTHROPIC_BASE_URL", base)
 		_, err := NewRegistry().Resolve("anthropic/claude-opus-5-5")
 		var unavailable *delegate.ErrModelUnavailable
 		if !errors.As(err, &unavailable) {
 			t.Fatalf("Resolve(anthropic/claude-opus-5-5) with ANTHROPIC_BASE_URL=%q = %v, want the typed refusal — "+
-				"the vendor's own base URL is the facade's wiring, not an operator's claim", base, err)
+				"the vendor's own published endpoints are the facade's wiring, not an operator's claim", base, err)
 		}
 		if unavailable.Provider != string(secrets.ProviderZAI) {
 			t.Errorf("Provider = %q, want zai", unavailable.Provider)
@@ -124,17 +129,20 @@ func TestClawRegistryRefusesTheVendorBaseURLForAClaudeID(t *testing.T) {
 }
 
 // Both moonshot factories judge the endpoint the way the delegate does:
-// MOONSHOT_BASE_URL pointed at Moonshot's OWN published endpoint is the
-// facade's wiring, not a claim — a substituted id is refused on it. An
-// endpoint that genuinely differs (the enterprise proxy case) stays the
-// operator's claim and passes.
+// MOONSHOT_BASE_URL pointed at any of Moonshot's OWN published endpoints —
+// the .ai default and the .cn gateway of the same wire — is the facade's
+// wiring, not a claim: a substituted id is refused on either. An endpoint
+// that genuinely differs (the enterprise proxy case) stays the operator's
+// claim and passes.
 func TestClawMoonshotFactoriesJudgeTheVendorBaseURLAsTheFacade(t *testing.T) {
 	t.Setenv("MOONSHOT_API_KEY", "sk-moonshot-fixture")
 
 	for _, base := range []string{
 		"", // unset: the published endpoint is what the factory resolves to
 		secrets.MoonshotDefaultBaseURL,
+		secrets.MoonshotChinaBaseURL,
 		strings.ToUpper(secrets.MoonshotDefaultBaseURL) + "/",
+		"https://api.moonshot.cn:443/anthropic",
 	} {
 		t.Setenv("MOONSHOT_BASE_URL", base)
 		if _, err := NewRegistry().Resolve("moonshot/claude-opus-5-5"); err == nil ||
@@ -182,6 +190,13 @@ func TestClawMoonshotBYOKJudgesTheVendorBaseURLAsTheFacade(t *testing.T) {
 		!strings.Contains(err.Error(), "moonshot") {
 		t.Fatalf("BYOK factory: ResolveWithContext(moonshot/claude-opus-5-5) on the vendor base URL = %v, "+
 			"want the facade-substitution refusal", err)
+	}
+
+	t.Setenv("MOONSHOT_BASE_URL", secrets.MoonshotChinaBaseURL)
+	if _, err := NewRegistry().ResolveWithContext(context.Background(), "moonshot/claude-opus-5-5"); err == nil ||
+		!strings.Contains(err.Error(), "moonshot") {
+		t.Fatalf("BYOK factory: ResolveWithContext(moonshot/claude-opus-5-5) on the .cn gateway = %v, "+
+			"want the facade-substitution refusal — the .cn host is the vendor's own wire, not a claim", err)
 	}
 
 	t.Setenv("MOONSHOT_BASE_URL", "https://moonshot-gateway.example/anthropic")
