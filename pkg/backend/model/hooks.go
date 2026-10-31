@@ -1126,6 +1126,9 @@ func putDelegateModelFields(data map[string]any, info DelegateInfo) {
 	if info.RouteModel != "" {
 		data["route_model"] = info.RouteModel
 	}
+	if info.Provider != "" {
+		data["provider"] = info.Provider
+	}
 	if info.ContextWindow > 0 {
 		data["context_window"] = info.ContextWindow
 	}
@@ -1224,6 +1227,7 @@ func (h *storeHooks) recordServed(nodeID string, info DelegateInfo) {
 		Backend:         info.BackendName,
 		Model:           info.EffectiveModel,
 		DeclaredModel:   info.DeclaredModel,
+		Provider:        info.Provider,
 		ContextWindow:   info.ContextWindow,
 		MaxOutputTokens: info.MaxOutputTokens,
 		Fingerprint:     info.Fingerprint,

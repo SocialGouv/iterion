@@ -312,6 +312,21 @@ func meteredFailureOutput(out chainOutcome, backendName string) map[string]any {
 	return output
 }
 
+// stampServingRoute publishes the provider half of the selected route on
+// the node's output: `_model`/`_backend` alone name a label, and on the
+// anthropic wire the same label reaches Anthropic, a forfait, or a facade
+// — the provider is what says whose endpoint answered (#2772). Stamped
+// whenever the serving route NAMED its provider (a hint, a spec prefix);
+// absent on a route that deferred to the wire's default precedence, where
+// `_session_fingerprint` is the record. Nothing is stamped on a skip:
+// nothing served.
+func stampServingRoute(output map[string]any, out chainOutcome) {
+	if output == nil || out.Provider == "" || out.Skipped {
+		return
+	}
+	output["_provider"] = out.Provider
+}
+
 // stampFallbackMeta records, on the node's own output, that the node ran
 // DEGRADED — served by something other than its first choice
 // (`_fallback_used` / `_served_by`), or served by its first choice
@@ -430,6 +445,7 @@ func (e *ClawExecutor) dispatchWithObservability(
 			di := delegateInfoFromResult(bn, out.Result)
 			di.DeclaredModel = baseModel
 			di.RouteModel = out.Route
+			di.Provider = out.Provider
 			di.Error = err
 			sess.describeDivergence(&di)
 			e.hooks.OnDelegateError(nodeID, di)
@@ -441,6 +457,7 @@ func (e *ClawExecutor) dispatchWithObservability(
 		di := delegateInfoFromResult(bn, out.Result)
 		di.DeclaredModel = baseModel
 		di.RouteModel = out.Route
+		di.Provider = out.Provider
 		// A skip outcome finished nothing: keep BackendName (the spend's
 		// origin — the metrics claw-exclusion keys on it) but flag it so
 		// recordServed and the event do not claim a backend SERVED.
@@ -779,6 +796,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	// Attach metadata.
 	stampDelegateOutputMeta(result.Output, result, servingBackendName)
 	stampFallbackMeta(result.Output, out)
+	stampServingRoute(result.Output, out)
 	if f.session == ir.SessionPersist && result.SessionID != "" {
 		if blob := e.packLiveSession(ctx, servingTask, servingBackendName, result.SessionID); len(blob) > 0 {
 			if result.Output == nil {
@@ -872,6 +890,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 			// deterministic gate fail OPEN on a degraded verdict and
 			// erases the "fell back" row from the run header.
 			stampFallbackMeta(result.Output, out)
+			stampServingRoute(result.Output, out)
 		} else {
 			e.logger.Warn("[%s#%d/%s] node declares output schema %q but no schema with that name is registered — IR compiler should have rejected this; output passes through unvalidated",
 				f.id, task.Iteration, backendName, f.outputSchema)

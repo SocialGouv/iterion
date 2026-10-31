@@ -318,6 +318,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 
 	// Attach metadata.
 	stampDelegateOutputMeta(result.Output, result, servingBackendName)
+	stampServingRoute(result.Output, out)
 
 	return result.Output, nil
 }

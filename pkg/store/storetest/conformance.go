@@ -1830,6 +1830,7 @@ func testNodesServed(t *testing.T, s store.RunStore) {
 		// agree. This is the only place the FS and Mongo halves are
 		// held to the same NodeServed shape.
 		Fingerprint: "facade:https://api.z.ai/api/anthropic",
+		Provider:    "zai",
 	}
 	if err := s.RecordNodeServed(ctx, "run_served", "implement", first); err != nil {
 		t.Fatalf("RecordNodeServed implement: %v", err)

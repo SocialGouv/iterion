@@ -446,6 +446,25 @@ func providerLabel(p string) string {
 	return p
 }
 
+// servingProvider names the provider of the route a chain element ran: the
+// effective hint the build resolved (RouteProviderHint's GLM→zai minting
+// included), and on claw — which routes on the model spec and leaves the
+// hint empty — the provider the spec pins (zai for `anthropic/glm-*`).
+// "" when the route deferred to the wire's default precedence: what served
+// there is a fact of the credential the process held, which the session
+// fingerprint reports on the backends that have one.
+func servingProvider(backendName string, task *delegate.Task) string {
+	if task.ProviderHint != "" {
+		return task.ProviderHint
+	}
+	if backendName == delegate.BackendClaw {
+		if p := clawPinnedProvider(task.Model); p.Valid() {
+			return string(p)
+		}
+	}
+	return ""
+}
+
 // stepLabel renders a chain element for logs. A `fallbacks:` element is
 // named by its entry name — the whole reason entries are named, so a
 // report says `fell through to "api"` rather than an ordinal. A legacy
@@ -968,6 +987,12 @@ type chainOutcome struct {
 	// last that executed) — the route its folded spend is booked on; on a
 	// failure, the last one that executed. Empty when no element ran.
 	Route string
+	// Provider is the provider of the element that SERVED (the resolved
+	// hint, or the spec prefix's pin on claw): the selected route is
+	// provider AND model bound together (#2772), so the outcome carries
+	// both. Empty when the serving route deferred to the wire's default
+	// precedence — never a guess at what the process happened to hold.
+	Provider string
 	// SessionDegraded reports that the element that served did so only
 	// after its best-effort session (`session: inherit_if_available` /
 	// `persist`) failed to load and was dropped — the node completed
@@ -1303,6 +1328,7 @@ func (e *ClawExecutor) dispatchChain(
 				Backend:         backend,
 				Task:            task,
 				Route:           task.Model,
+				Provider:        servingProvider(backendName, task),
 				ServedBy:        stepLabel(el),
 				FellThrough:     i > 0,
 				SessionDegraded: sessionDegraded,

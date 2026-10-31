@@ -10,6 +10,14 @@ when its primary fails — the case `provider:` cannot serve: a CLI
 backend whose subscription forfait has shut, continuing on a metered API
 through `claw`. `on:` filters which failure routes where (default
 `[usage_window, unavailable]`; never `any`, never `auth` by default). A
+**facade substitution** is an `unavailable` failure the delegate raises
+*before the spawn* (#2772): a route that resolves to a vendor facade
+(z.ai, Moonshot) with a model id the facade does not serve is refused
+typed — the facade would accept the id and answer with its own model
+under the requested label, so "success" there is a mislabel the declared
+rescue route exists to replace — and the run's record names the serving
+route as provider AND model bound together (`_provider` beside `_model`,
+`NodesServed.provider`). A
 fall-through is deliberately **loud**: a `model_fallback` event,
 `_backend`/`_model` naming what actually *served*, and
 `_fallback_used`/`_served_by` so a deterministic gate can fail closed on

@@ -479,9 +479,18 @@ func (f *RunFallback) UnmarshalBSONValue(typ byte, data []byte) error {
 // backend did not report one — DeclaredModel is then the only hint,
 // not a substitute for what ran.
 type NodeServed struct {
-	Backend         string `json:"backend" bson:"backend"`
-	Model           string `json:"model,omitempty" bson:"model,omitempty"`
-	DeclaredModel   string `json:"declared_model,omitempty" bson:"declared_model,omitempty"`
+	Backend       string `json:"backend" bson:"backend"`
+	Model         string `json:"model,omitempty" bson:"model,omitempty"`
+	DeclaredModel string `json:"declared_model,omitempty" bson:"declared_model,omitempty"`
+	// Provider is the provider of the route that SERVED — the chain
+	// element's resolved hint, or the spec prefix's pin on claw ("zai" for
+	// `anthropic/glm-*`). The selected route is provider AND model bound
+	// together (#2772): the model alone cannot say whose endpoint answered
+	// (a claude id and a glm id are both anthropic-wire), and the route is
+	// the unit a `fallbacks:` entry declares. Empty when the route deferred
+	// to the wire's default precedence — the fingerprint then names what
+	// held it, for the backends that report one.
+	Provider        string `json:"provider,omitempty" bson:"provider,omitempty"`
 	ContextWindow   int    `json:"context_window,omitempty" bson:"context_window,omitempty"`
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty" bson:"max_output_tokens,omitempty"`
 	// Fingerprint is the provider fingerprint the backend reported for the

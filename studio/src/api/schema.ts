@@ -7028,6 +7028,7 @@ export interface components {
             fingerprint?: string;
             max_output_tokens?: number;
             model?: string;
+            provider?: string;
         };
         NodeSessionSlot: {
             backend: string;
