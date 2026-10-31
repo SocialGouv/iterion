@@ -730,52 +730,6 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		opts = append(opts, model.WithMCPManager(mcpManager))
 	}
 
-	clawDefaults := tool.ClawDefaults{
-		Workspace:                   workspace,
-		IncludeWebSearch:            tool.ResolveWebSearchEnabled(),
-		IncludeWorkspaceDiagnostics: workflowUsesWorkspaceDiagnostics(spec.Workflow),
-		ReadScope:                   readScope,
-
-		// The workspace-command capability's dials resolve HERE, on the
-		// host: the runner's environment carries neither, so the kill
-		// switch becomes the tool's absence and the ceiling a value.
-		DisableWorkspaceCommands: model.SlashCommandsDisabled(),
-		CommandMaxBytes:          model.SlashCommandMaxBytesForRegistry(),
-	}
-	if planDir != "" {
-		clawDefaults.PlanMode = &clawtools.PlanModeState{Active: &planActive, Dir: planDir}
-	}
-	if mcpManager != nil {
-		clawDefaults.MCPProvider = mcpManager.ClawProvider(oauthBroker)
-	}
-	// Synchronous subagents (#1940). The `agent` tool spawns a real child
-	// conversation against this run's model registry and returns its result;
-	// with no runner here claw's own executor would answer {"status":
-	// "running"} and start nothing. The child is bounded by the node that
-	// spawned it — its effective tools, its permission policy, its step
-	// budget and its spend all ride the context (model.ParentLoop,
-	// model.WithParentPermission, model.SubagentSpend) — so the empty default
-	// model is deliberate: the node's own model serves, resolved per call,
-	// since this closure is built once per RUN and the model is a property of
-	// the node. The sandboxed path wires its own against the container's
-	// tools (cmd/iterion registerSandboxLocalTools).
-	clawDefaults.Subagent = model.NewSubagentRunner(reg, toolReg, hooks, lifecycle, "")
-	// Privacy tools — pure-Go detector, always available when a
-	// store directory is wired. No external process or model
-	// download; activating the pair surfaces privacy_filter and
-	// privacy_unfilter to every workflow that allows them via
-	// tool_policy.
-	if spec.StoreDir != "" {
-		clawDefaults.Privacy = &privacy.Config{
-			StoreDir:     spec.StoreDir,
-			Detector:     detector.New(),
-			RunIDFromCtx: model.RunIDFromContext,
-		}
-	}
-	if err := tool.RegisterClawAll(toolReg, clawDefaults); err != nil {
-		spec.Logger.Warn("runview: RegisterClawAll: %v", err)
-	}
-
 	// Register the native-board MCP tools so claw nodes that declare
 	// board capabilities can actually call mcp.iterion_board.* (and
 	// the claude_code-FQN alias mcp__iterion_board__*). Without this
@@ -848,6 +802,71 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	}
 
 	executor := model.NewClawExecutor(reg, spec.Workflow, opts...)
+
+	clawDefaults := tool.ClawDefaults{
+		IncludeWebSearch:            tool.ResolveWebSearchEnabled(),
+		IncludeWorkspaceDiagnostics: workflowUsesWorkspaceDiagnostics(spec.Workflow),
+		ReadScope:                   readScope,
+
+		// The workspace-command capability's dials resolve HERE, on the
+		// host: the runner's environment carries neither, so the kill
+		// switch becomes the tool's absence and the ceiling a value.
+		DisableWorkspaceCommands: model.SlashCommandsDisabled(),
+		CommandMaxBytes:          model.SlashCommandMaxBytesForRegistry(),
+	}
+	// The workspace-scoped lookup tools (`command`, `skill`) resolve
+	// against the executor's LIVE workDir — the field the prompt path
+	// (model.expandWorkspaceSlashCommand) reads, and the one the engine
+	// replaces at run start via SetWorkDir when `worktree: auto` produces
+	// a per-run worktree after this registry exists (#2870). Binding the
+	// provider to the same field makes the two surfaces share one source
+	// by construction; a captured string resolved `.claude/commands/` in
+	// the construction-time checkout while the prompt path read the
+	// worktree's — two checkouts, possibly two commits. The fallback keeps
+	// the construction-time workspace for a direct executor use no engine
+	// ever pushes a workDir into (empty answers would disable the tools
+	// there). Registered AFTER NewClawExecutor — the closure reads it —
+	// which is safe: the executor consults the registry per Execute, never
+	// at construction.
+	clawDefaults.WorkspaceProvider = func() string {
+		if dir := executor.WorkDir(); dir != "" {
+			return dir
+		}
+		return workspace
+	}
+	if planDir != "" {
+		clawDefaults.PlanMode = &clawtools.PlanModeState{Active: &planActive, Dir: planDir}
+	}
+	if mcpManager != nil {
+		clawDefaults.MCPProvider = mcpManager.ClawProvider(oauthBroker)
+	}
+	// Synchronous subagents (#1940). The `agent` tool spawns a real child
+	// conversation against this run's model registry and returns its result;
+	// with no runner here claw's own executor would answer {"status":
+	// "running"} and start nothing. The child is bounded by the node that
+	// spawned it — its effective tools, its permission policy, its step
+	// budget and its spend all ride the context (model.ParentLoop,
+	// model.WithParentPermission, model.SubagentSpend) — so the empty default
+	// model is deliberate: the node's own model serves, resolved per call,
+	// since this closure is built once per RUN and the model is a property of
+	// the node. The sandboxed path wires its own against the container's
+	// tools (cmd/iterion registerSandboxLocalTools).
+	clawDefaults.Subagent = model.NewSubagentRunner(reg, toolReg, hooks, lifecycle, "")
+	// Privacy tools — pure-Go detector, always available when a
+	// store directory is wired. No external process or model
+	// download; activating the pair surfaces privacy_filter and
+	// privacy_unfilter to every workflow that allows them via
+	// tool_policy.
+	if spec.StoreDir != "" {
+		clawDefaults.Privacy = &privacy.Config{
+			StoreDir:     spec.StoreDir,
+			Detector:     detector.New(),
+			RunIDFromCtx: model.RunIDFromContext,
+		}
+	}
+	if err := tool.RegisterClawAll(toolReg, clawDefaults); err != nil {
+		spec.Logger.Warn("runview: RegisterClawAll: %v", err)
+	}
 
 	if len(spec.Vars) > 0 {
 		// resolveVars' rule, one filter for both readers of a launch's raw

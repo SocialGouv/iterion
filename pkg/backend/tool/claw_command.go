@@ -42,6 +42,11 @@ const commandArgsPrefix = "\n\nARGUMENTS: "
 // (the operator's dial, resolved host-side). An empty workDir registers the
 // tool against no workspace: every call answers "unknown command".
 //
+// workDir is CAPTURED once; hosts whose workspace can move after
+// registration — the engine replaces a run's workDir when `worktree: auto`
+// produces a per-run worktree (ClawExecutor.SetWorkDir, #2870) — register
+// through RegisterClawCommandWithProvider instead, so the lookup follows.
+//
 // Nothing here fails a call with a Go error but a missing name: claude_code
 // answers an unknown command locally (is_error: false), so every domain
 // outcome — unknown name, unreadable file, oversized body, empty expansion
@@ -50,8 +55,24 @@ const commandArgsPrefix = "\n\nARGUMENTS: "
 // `disable-model-invocation:` and the rest of the frontmatter stays #1717's,
 // the VISIBILITY of what was discarded is this surface's own.
 func RegisterClawCommand(reg *Registry, workDir string, maxBytes int) error {
+	return RegisterClawCommandWithProvider(reg, staticWorkspaceProvider(workDir), maxBytes)
+}
+
+// RegisterClawCommandWithProvider is RegisterClawCommand over a workspace
+// PROVIDER, consulted on every call, rather than a string captured at
+// registration. The prompt half of the capability reads the executor's
+// workDir live — the engine replaces it at run start when `worktree: auto`
+// produces a per-run worktree — so a captured string would resolve
+// `.claude/commands/` in a different checkout than the prompt path:
+// possibly a different commit, for the capability whose byte ceiling exists
+// precisely for that review case (#2870). A nil provider behaves as the
+// empty workspace: every call answers "unknown command".
+func RegisterClawCommandWithProvider(reg *Registry, workspace func() string, maxBytes int) error {
 	if maxBytes == 0 {
 		maxBytes = DefaultWorkspaceCommandMaxBytes
+	}
+	if workspace == nil {
+		workspace = staticWorkspaceProvider("")
 	}
 	t := api.Tool{
 		Name: "command",
@@ -68,8 +89,16 @@ func RegisterClawCommand(reg *Registry, workDir string, maxBytes int) error {
 		},
 	}
 	return RegisterClawTool(reg, t, func(_ context.Context, input map[string]any) (string, error) {
-		return executeWorkspaceCommand(workDir, maxBytes, input)
+		return executeWorkspaceCommand(workspace(), maxBytes, input)
 	})
+}
+
+// staticWorkspaceProvider wraps a registration-time workspace string into
+// the provider shape the workspace-scoped lookup tools resolve through, for
+// hosts whose workspace never moves after registration (the in-container
+// runner: its cwd IS the run's bind-mounted worktree).
+func staticWorkspaceProvider(workDir string) func() string {
+	return func() string { return workDir }
 }
 
 func executeWorkspaceCommand(workDir string, maxBytes int, input map[string]any) (string, error) {

@@ -250,6 +250,17 @@ The citations, per cell that is not self-evident from the table:
   `via_claw_model_tool` node of `TestLive_Feat_WorkspaceCommands`, whose
   prompt does not open with the invocation.
 
+  "The workspace" is the run's, even when it moves: the engine replaces
+  the executor's workDir at run start when `worktree: auto` produces a
+  per-run worktree (`ClawExecutor.SetWorkDir`), and the `command` and
+  `skill` tools resolve through a workspace PROVIDER bound to that same
+  field (`ClawDefaults.WorkspaceProvider`, consulted on every call) rather
+  than a string captured when the registry was built — so the tools and
+  the prompt path can never resolve `.claude/commands/` and
+  `.claude/skills/` in two different checkouts (#2870). The witness is
+  `TestBuildExecutor_WorkspaceLookupToolsFollowSetWorkDir`
+  (pkg/runview/executor_workspace_follow_test.go).
+
   A command whose body — **or whose expanded text** — exceeds
   `ITERION_CLAW_SLASH_COMMAND_MAX_BYTES` (256 KiB by default) is refused
   rather than substituted: on a review run that file belongs to a checkout

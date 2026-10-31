@@ -30,6 +30,12 @@ func TestTheFullRegistryWiresEveryFamilyTheHostHasTo(t *testing.T) {
 		"RegisterClawBuiltinsWithEnv":      "wrapper over RegisterClawBuiltinsWithScope",
 		"RegisterClawWorkspaceDiagnostics": "wrapper over RegisterClawWorkspaceDiagnosticsWithScope",
 
+		// Thin wrappers over the provider variants RegisterClawAll calls:
+		// the same tools over a workspace string captured once, for hosts
+		// whose workspace never moves after registration (#2870).
+		"RegisterClawCommand": "wrapper over RegisterClawCommandWithProvider",
+		"RegisterClawSkill":   "wrapper over RegisterClawSkillWithProvider",
+
 		// Registers ONE tool the caller supplies. There is no fixed name for
 		// a placement table to classify, and the classification of whatever
 		// is passed is the caller's to make.

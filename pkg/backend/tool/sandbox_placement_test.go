@@ -289,6 +289,10 @@ func assertEveryOptionalFamilyIsOn(t *testing.T, defaults ClawDefaults) {
 		// and 0 is the built-in ceiling, not an off.
 		"DisableWorkspaceCommands": "false registers the command tool — the disable is the non-zero value",
 		"CommandMaxBytes":          "0 is DefaultWorkspaceCommandMaxBytes, and the family registers either way",
+		// nil wraps the Workspace string into the provider (#2870): the
+		// command and skill families register either way, against a static
+		// root.
+		"WorkspaceProvider": "nil derives the provider from Workspace — the families register either way",
 		// RegisterClawAll allocates a fresh empty registry for each of
 		// these when nil, so the family registers either way. Their doc
 		// comment says so; if that ever changes, the family stops

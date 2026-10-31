@@ -1196,6 +1196,17 @@ func (e *ClawExecutor) SetWorkDir(dir string) {
 	e.workDir = dir
 }
 
+// WorkDir reports the executor's current working directory — the value
+// SetWorkDir last pushed, or the construction-time WithWorkDir. It is the
+// live reading the prompt path resolves workspace slash commands against;
+// hosts registering the `command`/`skill` tools bind their workspace
+// provider to it (runview does) so the tools follow the same per-run
+// worktree (#2870). Empty until the engine's first SetWorkDir when the
+// executor was built without WithWorkDir.
+func (e *ClawExecutor) WorkDir() string {
+	return e.workDir
+}
+
 // SetRepoRoot updates the source-of-truth repository root. The engine
 // calls this once per run, alongside SetWorkDir, so memory specs that
 // opt into `project_root: true` resolve their scope under the operator's

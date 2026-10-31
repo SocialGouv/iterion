@@ -476,9 +476,27 @@ func RegisterClawWebSearch(reg *Registry) error {
 // RegisterClawSkill registers the `skill` tool, looking up skills at
 // <workDir>/.claude/skills/. Pass an empty workDir to resolve against
 // the process CWD.
+//
+// workDir is CAPTURED once; hosts whose workspace can move after
+// registration — the engine replaces a run's workDir when `worktree: auto`
+// produces a per-run worktree (ClawExecutor.SetWorkDir, #2870) — register
+// through RegisterClawSkillWithProvider instead, so the lookup follows.
 func RegisterClawSkill(reg *Registry, workDir string) error {
+	return RegisterClawSkillWithProvider(reg, staticWorkspaceProvider(workDir))
+}
+
+// RegisterClawSkillWithProvider is RegisterClawSkill over a workspace
+// PROVIDER, consulted on every call, rather than a string captured at
+// registration. `skill` is the same workspace-lookup capability as
+// `command` (RegisterClawCommandWithProvider) and takes the same provider
+// shape so the two surfaces cannot diverge again (#2870). A nil provider
+// behaves as the empty workspace: resolution falls to the process CWD.
+func RegisterClawSkillWithProvider(reg *Registry, workspace func() string) error {
+	if workspace == nil {
+		workspace = staticWorkspaceProvider("")
+	}
 	exec := func(ctx context.Context, input map[string]any) (string, error) {
-		return clawtools.ExecuteSkill(ctx, input, workDir)
+		return clawtools.ExecuteSkill(ctx, input, workspace())
 	}
 	return RegisterClawTool(reg, clawtools.SkillTool(), exec)
 }
@@ -711,7 +729,28 @@ type ClawDefaults struct {
 	// skill tool for skill lookup, and to the command tool for workspace
 	// slash-command lookup. Leave empty to skip workspace
 	// gating.
+	//
+	// It is the STATIC form of the workspace the workspace-scoped lookup
+	// tools (`command`, `skill`) resolve against: RegisterClawAll wraps it
+	// once into the workspace provider, and never reads it again. A host
+	// whose workspace can move after registration — the engine replaces a
+	// run's workDir when `worktree: auto` produces a per-run worktree
+	// (ClawExecutor.SetWorkDir, #2870) — sets WorkspaceProvider instead.
 	Workspace string
+
+	// WorkspaceProvider, when non-nil, answers the workspace the
+	// workspace-scoped lookup tools (`command`, `skill`) resolve against,
+	// CONSULTED ON EVERY CALL. The provider is the one mechanism both
+	// surfaces share, so they cannot drift back into resolving
+	// `.claude/commands/` and `.claude/skills/` in two different checkouts
+	// (#2870): the prompt path reads the executor's workDir live, and the
+	// engine replaces that directory at run start — after the registry
+	// exists — when `worktree: auto` produces a per-run worktree.
+	//
+	// When set, Workspace is not read at all — not even to seed the read
+	// scope (that takes the provider's first answer) — so the string can
+	// never become a second, stale source of truth beside the provider.
+	WorkspaceProvider func() string
 
 	// ReadScope, when non-nil, is the read tools' (read_file, glob, grep,
 	// read_image, workspace_grep) scope — workspace plus the extra
@@ -845,9 +884,20 @@ func RegisterClawAll(reg *Registry, defaults ClawDefaults) error {
 		defaults.LSP = clawlsp.NewRegistry()
 	}
 
+	// The ONE workspace provider the lookup tools (`command`, `skill`)
+	// share (#2870): the host's WorkspaceProvider when it has a live answer
+	// (a `worktree: auto` run's worktree, pushed via ClawExecutor.SetWorkDir
+	// after this registry exists), else the Workspace string wrapped once —
+	// the string is read here and nowhere else, so the two fields can never
+	// be two live sources of truth.
+	workspace := defaults.WorkspaceProvider
+	if workspace == nil {
+		workspace = staticWorkspaceProvider(defaults.Workspace)
+	}
+
 	readScope := defaults.ReadScope
 	if readScope == nil {
-		readScope = NewReadScope(defaults.Workspace)
+		readScope = NewReadScope(workspace())
 	}
 	if err := RegisterClawBuiltinsWithScope(reg, readScope, defaults.BashExtraEnv); err != nil {
 		return err
@@ -872,11 +922,11 @@ func RegisterClawAll(reg *Registry, defaults ClawDefaults) error {
 	if err := RegisterClawSubagents(reg, defaults.Subagent); err != nil {
 		return err
 	}
-	if err := RegisterClawSkill(reg, defaults.Workspace); err != nil {
+	if err := RegisterClawSkillWithProvider(reg, workspace); err != nil {
 		return err
 	}
 	if !defaults.DisableWorkspaceCommands {
-		if err := RegisterClawCommand(reg, defaults.Workspace, defaults.CommandMaxBytes); err != nil {
+		if err := RegisterClawCommandWithProvider(reg, workspace, defaults.CommandMaxBytes); err != nil {
 			return err
 		}
 	}
