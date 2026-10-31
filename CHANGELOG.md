@@ -3,6 +3,45 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [4.9.0](https://github.com/SocialGouv/iterion/compare/v4.8.0...v4.9.0) (2026-10-31)
+
+### Features
+
+* **model:** DISPLAY/WAYLAND_DISPLAY decided launcher-side for ever, the pin becomes the verdict ([f2ce0d3](https://github.com/SocialGouv/iterion/commit/f2ce0d336ab2cd863974b0abc15279d87eb9fcfd)), references [#2802](https://github.com/SocialGouv/iterion/issues/2802)
+
+    <details><summary>why</summary>
+
+    Question 50 landed (verdict A): a sandboxed node has no display and computer_use — the tool that reads the pair — drives the launcher host's, so the names are launcher-side for ever and cross nowhere. The fail-closed undecided class flips to the decided launcher-side class: the classification test's launcher case now accepts the PlacementRefused shape, where the refusal IS the launcher-side verdict (a move INTO the container reopens the classification, as before), and the crossing witness keeps…
+
+    </details>
+
+### Bug Fixes
+
+* **chart:** a default controllerNamespaces scopes the server port, an emptied config warns loudly instead of refusing ([1d32f47](https://github.com/SocialGouv/iterion/commit/1d32f470842fce261285c7d9764da3acecd522a8)), references [#2804](https://github.com/SocialGouv/iterion/issues/2804)
+
+    <details><summary>why</summary>
+
+    Question 51 landed (verdict A): the empty-config behaviour is decided. The chart now SHIPS a default networkPolicy.ingress.controllerNamespaces — ingress-nginx, the common case the prod values and the docs already name — so a networkPolicy.enabled=true with nothing said renders the server port's rule scoped, not admit-all. An operator who empties BOTH controllerNamespaces and ingress.extraAllow keeps the historical from:-less admit-all render — the render is never refused, so an upgrade never…
+
+    </details>
+* **claw:** route read_image's path input through the read scope ([28e0168](https://github.com/SocialGouv/iterion/commit/28e0168a27b7ab0a239ada8efdf542a178aab8af)), references [#2650](https://github.com/SocialGouv/iterion/issues/2650) [#2885](https://github.com/SocialGouv/iterion/issues/2885)
+
+    <details><summary>why</summary>
+
+    read_image took a model-supplied path bounded by neither the ReadScope nor the credential exclusion list: the kimi17 class inventory was keyed on `scope *ReadScope`, and read_image's registration took no scope, so it escaped — read_file/glob/grep refused ~/.ssh/id_rsa or a workspace .env while read_image opened any path the loader could stat.
+
+    </details>
+
+### Performance Improvements
+
+* **parser:** the broken-list rescue's splice joins the token queue instead of recopying the stream ([a5f66a6](https://github.com/SocialGouv/iterion/commit/a5f66a622050e0a27ffac13cb8e3043669124007)), references [#2880](https://github.com/SocialGouv/iterion/issues/2880) [#2768](https://github.com/SocialGouv/iterion/issues/2768) [#2771](https://github.com/SocialGouv/iterion/issues/2771)
+
+    <details><summary>why</summary>
+
+    spliceDedents inserted a rescue's closing DEDENTs into the flat token slice, recopying the whole tail of the stream at every rescue — the second quadratic of #2768's comment, and the one that stayed after the close-point scan's: on the splicing shape of repeated broken lists, N=2000 -> 0.33s, 4000 -> 1.33s, 8000 -> 5.30s (x4 per doubling, the tail's memmove), extrapolating to ~29s at 16000 rescues.
+
+    </details>
+
 ## [4.8.0](https://github.com/SocialGouv/iterion/compare/v4.7.1...v4.8.0) (2026-10-31)
 
 ### Features
