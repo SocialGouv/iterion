@@ -106,6 +106,22 @@ func (r *Registry) registerDefaults() {
 		}
 		if apiKey == "" && authToken == "" {
 			if zai := os.Getenv("ZAI_API_KEY"); zai != "" {
+				// The synthesis reroutes the call to z.ai. For a GLM id that
+				// IS the route; for any other id the facade would accept the
+				// label and serve its own model under it — the substitution
+				// the claude_code delegate refuses pre-spawn (#2772), refused
+				// here with the same typed carrier so the node's declared
+				// fallback fires. An operator's explicit ANTHROPIC_BASE_URL
+				// stays their claim: a gateway they named may genuinely
+				// serve the id.
+				if baseURL == "" && !modelServedByZAI(modelID) {
+					return nil, &delegate.ErrModelUnavailable{
+						Provider: string(secrets.ProviderZAI),
+						Model:    modelID,
+						Detail: "the ZAI_API_KEY synthesis would send it to z.ai, which serves GLM under any label — " +
+							"route the node to a model z.ai serves (anthropic/glm-*), or fund the anthropic wire",
+					}
+				}
 				apiKey = zai
 				if baseURL == "" {
 					baseURL = secrets.ZAIDefaultBaseURL
@@ -318,6 +334,19 @@ func (r *Registry) registerDefaults() {
 			// shape, and the reason the anthropic ctx factory refuses too.
 			return nil, fmt.Errorf("no Moonshot credential: set MOONSHOT_API_KEY, or attach a BYOK key under provider %q", secrets.ProviderMoonshot)
 		}
+		// Moonshot's Anthropic-compatible endpoint answers any id with the
+		// Kimi model it aliases it to: a non-kimi id would be served under
+		// the requested label — the substitution class of #2772, refused
+		// with the same typed carrier the claude_code delegate raises. An
+		// explicit MOONSHOT_BASE_URL is the operator's own destination and
+		// stays their claim.
+		if !delegate.FacadeServesModelID(string(secrets.ProviderMoonshot), modelID) && strings.TrimSpace(os.Getenv("MOONSHOT_BASE_URL")) == "" {
+			return nil, &delegate.ErrModelUnavailable{
+				Provider: string(secrets.ProviderMoonshot),
+				Model:    modelID,
+				Detail:   "the moonshot facade does not serve it — it would answer with a Kimi model under the requested label; route the node to a kimi-* id",
+			}
+		}
 		return moonshotprovider.New().NewClient(withClientIdentity(api.ProviderConfig{
 			APIKey:  key,
 			Model:   modelID,
@@ -325,6 +354,15 @@ func (r *Registry) registerDefaults() {
 		}))
 	}
 	r.providersWithKey["moonshot"] = func(modelID, apiKey string) (api.APIClient, error) {
+		// Same substitution refusal as the env factory above: a tenant's
+		// BYOK key buys the same facade, never a second verdict on it.
+		if !delegate.FacadeServesModelID(string(secrets.ProviderMoonshot), modelID) && strings.TrimSpace(os.Getenv("MOONSHOT_BASE_URL")) == "" {
+			return nil, &delegate.ErrModelUnavailable{
+				Provider: string(secrets.ProviderMoonshot),
+				Model:    modelID,
+				Detail:   "the moonshot facade does not serve it — it would answer with a Kimi model under the requested label; route the node to a kimi-* id",
+			}
+		}
 		return moonshotprovider.New().NewClient(withClientIdentity(api.ProviderConfig{
 			APIKey:  apiKey,
 			Model:   modelID,

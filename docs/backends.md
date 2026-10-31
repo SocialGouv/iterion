@@ -879,7 +879,7 @@ first, then each route.
 |---|---|---|
 | `usage_window` | subscription 5h/weekly cap — waiting is the only cure for THIS credential | `claude_code`; `pi` when the provider echoes Anthropic-shaped prose |
 | `auth` | rejected or expired credential | `claude_code`, `pi` |
-| `unavailable` | model the credential cannot reach | `claude_code` |
+| `unavailable` | model the credential cannot reach — a bad or withdrawn id, or one a facade would substitute with its own model under the requested label (z.ai answers any id with GLM, Moonshot with Kimi: refused before the spawn, #2772) | `claude_code`, `claw` |
 | `transient_exhausted` | a transient condition that survived the in-node retry budget | every backend |
 | `any` | escape hatch — clears the filter | — |
 

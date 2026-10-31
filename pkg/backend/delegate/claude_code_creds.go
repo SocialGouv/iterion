@@ -1219,7 +1219,11 @@ func facadeHintRefusal(providerHint string, env map[string]string) error {
 // pre-flight asking it before the session exists reads the ledger the session
 // will write. refused is true when the delegate refuses the route before
 // spawning — a facade hint with no key reachable: no session, no spend, no
-// reading. A node's own env additions (Task.ExtraEnv) are not composed: they
+// reading. The substitution refusal (facadeSubstitutionRefusal) is NOT
+// answered here: it judges the (slot, model) pair, and a pre-flight that
+// carries no model cannot pose the question — the refusal surfaces at
+// dispatch, classified `unavailable`, where the chain's routes take it.
+// A node's own env additions (Task.ExtraEnv) are not composed: they
 // can only move a route that holds no bundle credential, whose readings land
 // on the run's credential-less meter either way.
 func AnthropicRouteSource(ctx context.Context, providerHint string) (source string, refused bool) {

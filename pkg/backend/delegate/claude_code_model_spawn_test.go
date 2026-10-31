@@ -63,7 +63,10 @@ func TestClaudeModelDefaultsReachEverySpawn(t *testing.T) {
 	}
 	cases := []scenario{
 		{name: "direct-unconfigured", defaults: true},
-		{name: "context-zai-empty-hint", creds: map[secrets.Provider]string{secrets.ProviderZAI: "dummy-zai"}},
+		// A z.ai-only run with no hint asked for the claude DEFAULT: the
+		// facade would serve GLM under the claude label, so the route is
+		// refused before the spawn (#2772) — the fallback's job to take.
+		{name: "context-zai-empty-hint", creds: map[secrets.Provider]string{secrets.ProviderZAI: "dummy-zai"}, refusal: true},
 		{name: "custom-base", env: map[string]string{"ANTHROPIC_BASE_URL": "https://gateway.example/api"}},
 		{name: "ambient-all-overrides", defaults: true, env: map[string]string{"ANTHROPIC_DEFAULT_OPUS_MODEL": "operator-opus", "ANTHROPIC_DEFAULT_SONNET_MODEL": "operator-sonnet", "ANTHROPIC_DEFAULT_HAIKU_MODEL": "operator-haiku", "ANTHROPIC_DEFAULT_FABLE_MODEL": "operator-fable", "CLAUDE_CODE_SUBAGENT_MODEL": "operator-subagent"}, override: map[string]string{"ANTHROPIC_DEFAULT_OPUS_MODEL": "operator-opus", "ANTHROPIC_DEFAULT_SONNET_MODEL": "operator-sonnet", "ANTHROPIC_DEFAULT_HAIKU_MODEL": "operator-haiku", "ANTHROPIC_DEFAULT_FABLE_MODEL": "operator-fable", "CLAUDE_CODE_SUBAGENT_MODEL": "operator-subagent"}},
 		{name: "explicit-empties", defaults: true, env: map[string]string{"ANTHROPIC_DEFAULT_HAIKU_MODEL": "", "CLAUDE_CODE_SUBAGENT_MODEL": ""}, extra: []string{"ANTHROPIC_DEFAULT_OPUS_MODEL=", "ANTHROPIC_DEFAULT_SONNET_MODEL="}, override: map[string]string{"ANTHROPIC_DEFAULT_OPUS_MODEL": "", "ANTHROPIC_DEFAULT_SONNET_MODEL": "", "ANTHROPIC_DEFAULT_HAIKU_MODEL": "", "CLAUDE_CODE_SUBAGENT_MODEL": ""}},
@@ -105,7 +108,14 @@ func TestClaudeModelDefaultsReachEverySpawn(t *testing.T) {
 					}
 					b := &ClaudeCodeBackend{Logger: iterlog.Nop()}
 					if format {
-						_, _, _, _ = b.formatOutput(ctx, task, "review")
+						_, _, _, ferr := b.formatOutput(ctx, task, "review")
+						if tc.refusal {
+							if ferr == nil {
+								t.Fatal("facade substitution was not refused")
+							}
+							return
+						}
+						_ = ferr
 					} else {
 						opts, cleanup := b.buildTransportOptions(task)
 						defer cleanup()

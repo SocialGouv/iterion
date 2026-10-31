@@ -1748,6 +1748,13 @@ func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task,
 	if err := facadeHintRefusal(task.ProviderHint, credEnv); err != nil {
 		return opts, "", credSpawn{}, err
 	}
+	// The model half of the same refusal: a funded facade route whose id the
+	// facade does not serve is not "served" — it is substituted under the
+	// requested label. Refused before the spawn, typed `unavailable`, so the
+	// node's declared fallback fires instead of the mislabel (#2772).
+	if err := facadeSubstitutionRefusal(task, credEnv); err != nil {
+		return opts, "", credSpawn{}, err
+	}
 	// A facade route clears ANTHROPIC_CUSTOM_HEADERS (the ambient header
 	// rides the route otherwise), and the cleared value is applied AFTER
 	// the task's own ExtraEnv — an operator entry for a gateway header is
@@ -2317,6 +2324,11 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	opts = append(opts, claudeAmbient(task).settingSourcesOption())
 	credEnv, selected := anthropicCredRouteForTask(ctx, task)
 	if err := facadeHintRefusal(task.ProviderHint, credEnv); err != nil {
+		return nil, credSpawn{}, nil, err
+	}
+	// The substitution refusal of Pass 1 (setupCredsAndSession): this pass
+	// resumes the same session on the same route, so it holds the same line.
+	if err := facadeSubstitutionRefusal(task, credEnv); err != nil {
 		return nil, credSpawn{}, nil, err
 	}
 	// Read HERE, not beside the result: the record describes the env this

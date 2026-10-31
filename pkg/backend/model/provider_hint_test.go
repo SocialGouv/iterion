@@ -9,6 +9,7 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -116,14 +117,16 @@ func TestResolveWithContext_HintAnthropicRunKeyWins(t *testing.T) {
 }
 
 // TestResolveWithContext_NoHintKeepsZAIFallback is the control: with NO hint
-// the ZAI_API_KEY env-fallback still synthesises the z.ai route — the fix
-// narrows the hint path, it must not move the default one.
+// the ZAI_API_KEY env-fallback still synthesises the z.ai route FOR THE ID
+// z.ai serves — the fix narrows the hint path, it must not move the default
+// one. A claude id on the same default path is the facade substitution
+// #2772 refuses (facade_substitution_registry_test.go holds that half).
 func TestResolveWithContext_NoHintKeepsZAIFallback(t *testing.T) {
 	isolateHintTest(t)
 	t.Setenv("ZAI_API_KEY", "zai-key")
 
 	r := NewRegistry()
-	client, err := r.ResolveWithContext(context.Background(), "anthropic/claude-sonnet-4-6")
+	client, err := r.ResolveWithContext(context.Background(), "anthropic/glm-5.3")
 	if err != nil {
 		t.Fatalf("ResolveWithContext: %v", err)
 	}
@@ -136,20 +139,27 @@ func TestResolveWithContext_NoHintKeepsZAIFallback(t *testing.T) {
 }
 
 // TestResolveWithContext_HintDoesNotReadTheCache: the registry cache is keyed
-// by model spec alone. A hint-bearing resolve must not be served the z.ai
-// client a previous hint-less resolve of the SAME spec cached.
+// by model spec alone, and caches errors as well as clients. One spec, two
+// resolutions: hint-less, the claude id hits the ZAI_API_KEY synthesis and is
+// refused as a facade substitution (#2772); hint-anthropic, the hint branch
+// runs BEFORE the cache and never caches, so the same spec must fail with the
+// DIRECT path's own refusal (ErrProviderHintUnfunded) — a cached answer would
+// hand back the substitution refusal instead.
 func TestResolveWithContext_HintDoesNotReadTheCache(t *testing.T) {
 	isolateHintTest(t)
 	t.Setenv("ZAI_API_KEY", "zai-key")
 
 	r := NewRegistry()
-	// Prime the cache with the hint-less (z.ai) resolution.
-	if _, err := r.ResolveWithContext(context.Background(), "anthropic/claude-sonnet-4-6"); err != nil {
-		t.Fatalf("priming resolve: %v", err)
+	_, err := r.ResolveWithContext(context.Background(), "anthropic/claude-sonnet-4-6")
+	var unavailable *delegate.ErrModelUnavailable
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("hint-less resolve: %v, want the facade-substitution refusal cached under the spec", err)
 	}
 	ctx := WithProviderHint(context.Background(), "anthropic")
-	if _, err := r.ResolveWithContext(ctx, "anthropic/claude-sonnet-4-6"); err == nil {
-		t.Fatal("hint-anthropic resolve was served the cached z.ai client — the hint must bypass the cache")
+	_, err = r.ResolveWithContext(ctx, "anthropic/claude-sonnet-4-6")
+	var unfunded *ErrProviderHintUnfunded
+	if !errors.As(err, &unfunded) {
+		t.Fatalf("hint-anthropic resolve: %v, want the direct path's ErrProviderHintUnfunded — the hint must bypass the cache", err)
 	}
 }
 

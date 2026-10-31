@@ -104,6 +104,7 @@ var serialFamily = map[string]string{
 	"executor_tool_test.go":                    "Setenv",
 	"executor_verified_action_test.go":         "Setenv",
 	"expand_braced_env_linear_test.go":         "Setenv",
+	"facade_substitution_registry_test.go":     "Setenv",
 	"forfait_first_walk_test.go":               "Setenv",
 	"gate_can_ask_test.go":                     "Setenv",
 	"gateway_routing_test.go":                  "Setenv",

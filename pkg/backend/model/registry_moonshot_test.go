@@ -142,9 +142,16 @@ func TestClawAnthropicProviderSlots_MatchWhatTheFactorySpends(t *testing.T) {
 			key := "key-for-" + slot
 			t.Setenv(envVar, key)
 
-			client, err := NewRegistry().Resolve("anthropic/claude-haiku-4-5")
+			// The z.ai key serves GLM ids; asked for a claude id the factory
+			// REFUSES (the facade would substitute under the label, #2772) —
+			// so the spend question is posed with the id each route serves.
+			spec := "anthropic/claude-haiku-4-5"
+			if slot == string(secrets.ProviderZAI) {
+				spec = "anthropic/glm-5.3"
+			}
+			client, err := NewRegistry().Resolve(spec)
 			if err != nil {
-				t.Fatalf("Resolve(anthropic/…): %v", err)
+				t.Fatalf("Resolve(%s): %v", spec, err)
 			}
 			cc, ok := client.(*api.Client)
 			if !ok {

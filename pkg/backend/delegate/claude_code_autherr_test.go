@@ -874,22 +874,23 @@ func TestExecute_authRemediationNamesTheChannelTheSpawnRanOn(t *testing.T) {
 		hint    string
 		byok    map[secrets.Provider]string
 		env     map[string]string
+		model   string // a facade row carries an id the facade SERVES (#2772): a claude id there is refused before the spawn
 		render  string // the CLI's own verdict, when the row is about which channel it names
 		want    string
 		wantNot string
 		wantEnv string // a substring of the child env dump
 		twoPass bool
 	}{
-		{name: "zai_api_key_shortcut", env: map[string]string{"ZAI_API_KEY": "zai-env"},
+		{name: "zai_api_key_shortcut", env: map[string]string{"ZAI_API_KEY": "zai-env"}, model: "glm-5.3",
 			want:    "no working zai credential — check ZAI_API_KEY",
 			wantNot: "forfait CLAUDE_CODE_OAUTH_TOKEN", wantEnv: "slot=zai bearer=zai-env"},
-		{name: "default_precedence_zai", byok: map[secrets.Provider]string{secrets.ProviderZAI: "zai-byok"},
+		{name: "default_precedence_zai", byok: map[secrets.Provider]string{secrets.ProviderZAI: "zai-byok"}, model: "glm-5.3",
 			want:    "no working zai credential — check this run's zai key",
 			wantNot: "ZAI_API_KEY", wantEnv: "slot=zai bearer=zai-byok"},
-		{name: "default_precedence_moonshot", byok: map[secrets.Provider]string{secrets.ProviderMoonshot: "moonshot-byok"},
+		{name: "default_precedence_moonshot", byok: map[secrets.Provider]string{secrets.ProviderMoonshot: "moonshot-byok"}, model: "kimi-k2",
 			want:    "no working moonshot credential — check this run's moonshot key",
 			wantNot: "MOONSHOT_API_KEY", wantEnv: "slot=moonshot bearer=moonshot-byok"},
-		{name: "pinned_zai", hint: "zai", byok: map[secrets.Provider]string{secrets.ProviderZAI: "zai-byok"},
+		{name: "pinned_zai", hint: "zai", byok: map[secrets.Provider]string{secrets.ProviderZAI: "zai-byok"}, model: "glm-5.3",
 			want:    "no working zai credential — check this run's zai key",
 			wantNot: "forfait CLAUDE_CODE_OAUTH_TOKEN", wantEnv: "slot=zai bearer=zai-byok"},
 		// The operator's own gateway, wired the way z.ai documents it: the
@@ -948,7 +949,7 @@ func TestExecute_authRemediationNamesTheChannelTheSpawnRanOn(t *testing.T) {
 			wantEnv: "bearer=host-gateway-key key= forfait= bedrock=[0]"},
 		// The SECOND producer: pass 1 answers prose, the formatting pass
 		// renders the refusal. Its record is formatOutput's.
-		{name: "formatting_pass_on_a_facade_route", env: map[string]string{"ZAI_API_KEY": "zai-env"}, twoPass: true,
+		{name: "formatting_pass_on_a_facade_route", env: map[string]string{"ZAI_API_KEY": "zai-env"}, model: "glm-5.3", twoPass: true,
 			want:    "no working zai credential — check ZAI_API_KEY",
 			wantNot: "forfait CLAUDE_CODE_OAUTH_TOKEN", wantEnv: "spawn 2 slot=zai bearer=zai-env"},
 	}
@@ -965,7 +966,7 @@ func TestExecute_authRemediationNamesTheChannelTheSpawnRanOn(t *testing.T) {
 			if tc.byok != nil {
 				ctx = ctxWithCreds(t, tc.byok, nil)
 			}
-			task := Task{ProviderHint: tc.hint}
+			task := Task{ProviderHint: tc.hint, Model: tc.model}
 			render := authRender
 			if tc.render != "" {
 				render = tc.render

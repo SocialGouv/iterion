@@ -29,6 +29,7 @@ func TestClaudeTaskEnvPrecedenceAtSpawn(t *testing.T) {
 		keys            map[secrets.Provider]string
 		pinned          map[secrets.Provider]string
 		hint            string
+		model           string
 		want            map[string]string
 		refused         bool
 		fingerprint     string
@@ -54,9 +55,13 @@ func TestClaudeTaskEnvPrecedenceAtSpawn(t *testing.T) {
 		{name: "context key cannot be redirected", extra: []string{api + "=", base + "=https://unintended.example", auth + "=other-token", "CLAUDE_CODE_OAUTH_TOKEN=other-oauth", "CLAUDE_CODE_USE_BEDROCK=1", "CLAUDE_CODE_USE_VERTEX=1", "CLAUDE_CODE_USE_FOUNDRY=1"}, keys: map[secrets.Provider]string{secrets.ProviderAnthropic: "context-key"}, want: map[string]string{api: "context-key", base: "", auth: "", "CLAUDE_CODE_OAUTH_TOKEN": "", "CLAUDE_CODE_USE_BEDROCK": "", "CLAUDE_CODE_USE_VERTEX": "", "CLAUDE_CODE_USE_FOUNDRY": ""}, fingerprint: "anthropic-direct"},
 		{name: "direct hint keeps cloud switches off", hint: "anthropic", extra: []string{"CLAUDE_CODE_USE_BEDROCK=1", "CLAUDE_CODE_USE_VERTEX=1", "CLAUDE_CODE_USE_FOUNDRY=1"}, want: map[string]string{"CLAUDE_CODE_USE_BEDROCK": "", "CLAUDE_CODE_USE_VERTEX": "", "CLAUDE_CODE_USE_FOUNDRY": ""}},
 		{name: "explicit direct hint clears stale base", ambient: map[string]string{base: "https://stale.example/api"}, extra: []string{base + "=https://other.example/api", auth + "=extra-auth"}, hint: "anthropic", want: map[string]string{base: "", auth: ""}},
-		{name: "context facade keeps endpoint and bearer", extra: []string{base + "=", auth + "=extra-auth", "CLAUDE_CODE_OAUTH_TOKEN=extra-oauth"}, keys: map[secrets.Provider]string{secrets.ProviderMoonshot: "context-moonshot"}, hint: "moonshot", want: map[string]string{base: secrets.MoonshotDefaultBaseURL, auth: "context-moonshot", "CLAUDE_CODE_OAUTH_TOKEN": ""}},
-		{name: "ambient facade keeps endpoint and bearer", ambient: map[string]string{"ZAI_API_KEY": "ambient-zai"}, extra: []string{base + "="}, want: map[string]string{base: secrets.ZAIDefaultBaseURL, auth: "ambient-zai"}},
-		{name: "task cannot suppress a funded facade", extra: []string{ForfaitSuppressedEnvKey + "=1", FacadeSlotEnvKey + "=zai"}, keys: map[secrets.Provider]string{secrets.ProviderMoonshot: "context-moonshot"}, hint: "moonshot", want: map[string]string{base: secrets.MoonshotDefaultBaseURL, auth: "context-moonshot", ForfaitSuppressedEnvKey: "", FacadeSlotEnvKey: "moonshot"}},
+		{name: "context facade keeps endpoint and bearer", extra: []string{base + "=", auth + "=extra-auth", "CLAUDE_CODE_OAUTH_TOKEN=extra-oauth"}, keys: map[secrets.Provider]string{secrets.ProviderMoonshot: "context-moonshot"}, hint: "moonshot", model: "kimi-k2", want: map[string]string{base: secrets.MoonshotDefaultBaseURL, auth: "context-moonshot", "CLAUDE_CODE_OAUTH_TOKEN": ""}},
+		// A facade row asks for an id the facade SERVES (glm on z.ai, kimi on
+		// moonshot): the unset claude default is a substitution, refused before
+		// the spawn (#2772) — the row's subject is the env composition, so its
+		// model is the one the route can honestly serve.
+		{name: "ambient facade keeps endpoint and bearer", ambient: map[string]string{"ZAI_API_KEY": "ambient-zai"}, extra: []string{base + "="}, model: "glm-5.3", want: map[string]string{base: secrets.ZAIDefaultBaseURL, auth: "ambient-zai"}},
+		{name: "task cannot suppress a funded facade", extra: []string{ForfaitSuppressedEnvKey + "=1", FacadeSlotEnvKey + "=zai"}, keys: map[secrets.Provider]string{secrets.ProviderMoonshot: "context-moonshot"}, hint: "moonshot", model: "kimi-k2", want: map[string]string{base: secrets.MoonshotDefaultBaseURL, auth: "context-moonshot", ForfaitSuppressedEnvKey: "", FacadeSlotEnvKey: "moonshot"}},
 		{name: "task cannot forge facade accounting", extra: []string{base + "=https://gateway.example", FacadeSlotEnvKey + "=moonshot", ForfaitSuppressedEnvKey + "=1"}, want: map[string]string{base: "https://gateway.example", FacadeSlotEnvKey: "", ForfaitSuppressedEnvKey: ""}, fingerprint: "facade:https://gateway.example"},
 		{name: "unfunded facade is refused", hint: "moonshot", extra: []string{base + "=", api + "=extra-api", "CLAUDE_CODE_OAUTH_TOKEN=extra-oauth"}, refused: true},
 	}
@@ -92,7 +97,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"{
 					}
 					ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 					defer cancel()
-					task := Task{NodeID: "env-test", Command: command, WorkDir: dir, ProviderHint: tc.hint,
+					task := Task{NodeID: "env-test", Command: command, WorkDir: dir, ProviderHint: tc.hint, Model: tc.model,
 						ExtraEnv: append(append([]string{}, tc.extra...), "ITERION_TEST_CAPTURE="+capture), OutputSchema: []byte(`{"type":"object"}`)}
 					fake := &captureSandboxCmdRun{}
 					if sandboxed {

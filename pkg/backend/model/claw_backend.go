@@ -2678,8 +2678,11 @@ func clawPinnedProvider(model string) secrets.Provider {
 // Anchored on the PREFIX: every z.ai id starts with "glm" (glm-4.6, glm-5.3),
 // and a substring match misrouted ids that merely contain it
 // ("notglm", "claude-glm-experimental") onto a vendor that does not serve them.
+// The table itself lives with the delegate's facade-substitution refusal
+// (delegate.FacadeServesModelID) so the refusal and the routing can never
+// disagree on what z.ai serves.
 func modelServedByZAI(model string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "glm")
+	return delegate.FacadeServesModelID(string(secrets.ProviderZAI), model)
 }
 
 // GLMOnAnthropicWire reports whether a model spec names a GLM model on the
