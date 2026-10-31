@@ -258,8 +258,14 @@ func TestCoordinatorSteersWatchedNodeThroughTheInbox(t *testing.T) {
 
 	// QUIESCENCE — the steering's own echo comes back through the same
 	// transport carrying the marker; it must wake nobody and inject
-	// nothing. The message text deliberately contains the monitor's
-	// marker, so this pins the anti-loop guard on the composed path.
+	// nothing. The text deliberately contains the monitor's marker, so a
+	// naive coordinator would re-fire here. What this phase proves is the
+	// composed property — one settled intervention, no further model turn
+	// — whose enforcement is layered (the run-loop inbox skip, the
+	// ingest-side progress skip, the replay fingerprint, the cooldown)
+	// and attributable to no single guard; each guard's own witness lives
+	// in coordinator_inboxecho_test.go, shaped so the others cannot stand
+	// in for it.
 	time.Sleep(250 * time.Millisecond)
 	if got := eval.calls(); got != 1 {
 		t.Fatalf("the steer's own inbox echo woke the supervisor: evals=%d, want 1", got)
