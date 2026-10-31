@@ -3,6 +3,10 @@
 For developers who already live in AI coding tools. Zero to a real agent
 workflow — running, watched, and landed — in a few minutes.
 
+Already on iterion.cloud, or want your agent to do the setup? [Get started
+in one prompt](getting-started.md) installs, connects, and verifies the
+cloud path for you.
+
 ## 1. Install
 
 ```bash
