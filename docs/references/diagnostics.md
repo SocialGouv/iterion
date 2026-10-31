@@ -306,9 +306,16 @@ every other shape is a manifest parse error, and an unknown key under
 `requires:` is refused by the strict manifest decoder. A requirement iterion
 cannot read is never a requirement iterion ignores.
 
-Every check that reads a bundle's pages (**C231–C234** and **C274**) reads
+The skill-authoring checks (**C231–C234**) guard *routability* — that a skill
 can be discovered and chosen by the router — not prose style. They impose no
 phrasing template and are all warnings, so a skill gap never fails validation.
+
+Every check that reads a bundle's pages (**C231–C234** and **C274**) reads
+BOTH canonical forms, the flat `skills/<name>.md` and the directory
+`skills/<name>/SKILL.md` the engine's mirror copies through unchanged, and
+names the page file rather than its directory: the enumeration is
+`skilllib.ListDirPages`, shared with the skill library, so a form the engine
+accepts cannot go unjudged.
 
 ## Quick Troubleshooting
 

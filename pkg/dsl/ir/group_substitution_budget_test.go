@@ -120,16 +120,16 @@ func TestGroupSubstitutionBudgetIsSharedAcrossUses(t *testing.T) {
 	runtime.ReadMemStats(&after)
 	alloc := after.TotalAlloc - before.TotalAlloc
 
-	var c325 int
+	var c327 int
 	for _, d := range r.Diagnostics {
 		if d.Code == DiagGroupExpansionPastBudget {
-			c325++
+			c327++
 		}
 	}
-	if c325 == 0 {
+	if c327 == 0 {
 		t.Fatalf("40 uses each under the per-use bounds compiled clean: the budget is per use, not the bot's (%v)", r.Diagnostics)
 	}
-	t.Logf("refused with %d C327, %d MiB allocated", c325, alloc>>20)
+	t.Logf("refused with %d C327, %d MiB allocated", c327, alloc>>20)
 	if limit := uint64(512 << 20); alloc > limit {
 		t.Errorf("the refused compile allocated %d MiB, want under %d MiB", alloc>>20, limit>>20)
 	}
@@ -148,14 +148,14 @@ func TestGroupCloningWithoutParamsSpendsTheSharedBudget(t *testing.T) {
 	}
 	b.WriteString("\nworkflow w:\n  entry: r0.t\n  r0.t -> done\n")
 	r := compileFile(t, b.String())
-	var c325 int
+	var c327 int
 	for _, d := range r.Diagnostics {
 		if d.Code == DiagGroupExpansionPastBudget {
-			c325++
+			c327++
 		}
 	}
-	if c325 == 0 {
+	if c327 == 0 {
 		t.Fatalf("3 000 param-less uses cloning 40 KB each (120 MB of IR) compiled clean: %v", r.Diagnostics)
 	}
-	t.Logf("refused with %d C327", c325)
+	t.Logf("refused with %d C327", c327)
 }

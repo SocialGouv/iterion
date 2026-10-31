@@ -46,7 +46,7 @@ const groupSubstBytesPerRecord = 64
 // length, so a group of S bytes used N times — or one field of K markers ×
 // an S-byte value — builds N·S of compiler memory no reader's count saw.
 // Returns false when the budget is out; the expansion then records the
-// breach and the use is dropped (C325, on the `use` line).
+// breach and the use is dropped (C327, on the `use` line).
 func (c *compiler) spendGroupExpansion(bytes int) bool {
 	if c.groupExpansionBudget == 0 {
 		// A compiler built by hand in a test rather than by Compile: resolve

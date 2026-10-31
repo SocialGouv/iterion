@@ -218,6 +218,15 @@ var operatorInfraNames = map[string]bool{
 	// twin: a bound on what an uploaded bot may cost the server that reads
 	// it, 0 removing it.
 	"ITERION_DSL_READ_BUDGET": true,
+	// The evaluation budget of a bot's expressions (#2775): a bound on the
+	// work one expression may cost the process that evaluates it, raised
+	// only by the operator — a bot that could set it would unbound its own
+	// compute.
+	"ITERION_DSL_EVAL_BUDGET": true,
+	// The ceiling on one workspace-agent file (#1714): a security bound on
+	// a read that becomes a billed system prompt — "0" unbounds it, so no
+	// bot var may speak for it.
+	"ITERION_CLAW_WORKSPACE_AGENT_MAX_BYTES": true,
 	// The server-wide aggregate of concurrent readings and its refusal grace
 	// (#2693): bounds on what untrusted input may cost the PROCESS, 0
 	// removing the first. A stored bot var must never widen either.
