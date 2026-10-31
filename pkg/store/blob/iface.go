@@ -206,6 +206,16 @@ type Config struct {
 	AccessKeyID     string
 	SecretAccessKey string
 	UsePathStyle    bool
+	// DialTimeout bounds the TCP connect to the S3 endpoint; 0 applies
+	// the 10 s default. A degraded endpoint must fail the operation
+	// loudly instead of hanging the caller (issue #2890: an
+	// unresponsive gateway wedged every run at its first upload).
+	DialTimeout time.Duration
+	// ResponseHeaderTimeout bounds the wait for the server's response
+	// headers once the request is on the wire; 0 applies the 60 s
+	// default. Body streaming is NOT bounded by it — GetAttachment
+	// returns a reader the caller drains at its own pace.
+	ResponseHeaderTimeout time.Duration
 }
 
 // ArtifactKey returns the canonical layout key for an artifact. Using

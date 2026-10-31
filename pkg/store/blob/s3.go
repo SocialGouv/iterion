@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -86,6 +89,29 @@ func NewS3(ctx context.Context, cfg Config) (*S3Client, error) {
 	// (AWS_RESPONSE_CHECKSUM_VALIDATION, validated by default).
 	clientOpts = append(clientOpts, func(o *s3.Options) {
 		o.DisableLogOutputChecksumValidationSkipped = true
+	})
+
+	// Bound the connection and response-header phases. net/http ships
+	// with no default timeouts, so an endpoint that accepts the TCP
+	// connection but never answers hangs the caller forever — the
+	// 2026-10-31 incident wedged every cloud run at its first
+	// attachment upload for hours (issue #2890). Body streaming stays
+	// unbounded: GetAttachment returns a reader the caller drains at
+	// its own pace, and ResponseHeaderTimeout stops at the headers.
+	dialTimeout := cfg.DialTimeout
+	if dialTimeout <= 0 {
+		dialTimeout = 10 * time.Second
+	}
+	respHeaderTimeout := cfg.ResponseHeaderTimeout
+	if respHeaderTimeout <= 0 {
+		respHeaderTimeout = 60 * time.Second
+	}
+	clientOpts = append(clientOpts, func(o *s3.Options) {
+		o.HTTPClient = awshttp.NewBuildableClient().WithTransportOptions(func(t *http.Transport) {
+			t.DialContext = (&net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}).DialContext
+			t.TLSHandshakeTimeout = 10 * time.Second
+			t.ResponseHeaderTimeout = respHeaderTimeout
+		})
 	})
 
 	return &S3Client{
