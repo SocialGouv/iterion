@@ -1505,6 +1505,10 @@ func resolveSandboxSpecWithFallback(
 		// expansion docker run rejects the literal `${localEnv:HOME}`
 		// string with "mount path must be absolute".
 		expandSandboxSpec(&spec, repoRoot)
+		// A bare class name (`image: rgaa`, #2632) resolves to the published
+		// variant image here — where the tag of the running binary is known.
+		// Everything else is the author's own reference, honoured verbatim.
+		spec.Image, spec.ImageFallback = resolveSandboxImageClass(spec.Image)
 		return resolvedSpec{spec: &spec, source: source}, nil
 	}
 

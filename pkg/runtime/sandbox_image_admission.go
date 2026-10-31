@@ -8,20 +8,23 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/sandbox/imageclass"
 )
 
 // stockSandboxVariants are the sandbox images iterion publishes, one per
 // `sandbox/<variant>/Dockerfile` (`finalize` is the shared last layer of all
-// of them, not a variant of its own). The repositories are derived from
-// [builtInSandboxImageRepo] — which IS the slim one — so the family and the
-// default `sandbox: auto` resolves to cannot separate;
-// TestTheStockSandboxFamilyIsTheOneTheTreeBuilds holds the list to the tree.
+// of them, not a variant of its own) — [imageclass.Classes], the vocabulary
+// a `sandbox: { image: <class> }` declaration names them by (#2632). The
+// repositories are derived from [builtInSandboxImageRepo] — which IS the
+// slim one — so the family and the default `sandbox: auto` resolves to
+// cannot separate; TestTheStockSandboxFamilyIsTheOneTheTreeBuilds holds the
+// list to the tree.
 //
 // The `-base` tags the image pipeline also publishes are deliberately NOT
 // here: the image-presence derivation measures the FINALIZED chain, and a base
 // layer's contents are a fact nobody measured. A run on one keeps the old
 // `exec: not found`, which is the honest answer for an unmeasured image.
-var stockSandboxVariants = []string{"slim", "full", "sec", "browser"}
+var stockSandboxVariants = imageclass.Classes()
 
 // isStockSandboxImage reports whether ref names a sandbox image ITERION
 // publishes: the repository, tag and digest aside, is one of

@@ -58,12 +58,15 @@ var imageFamilies = []imageFamily{
 	}},
 	// The bases are read with finalize on purpose: a base that starts putting
 	// the pinned bin dir on PATH moves the cell instead of being invisible.
+	// rgaa (browser + the pinned ultra11y engine) ships no backend CLI of its
+	// own; it is read so the day one lands there the cells move with it.
 	{name: ImageFamilySandbox, chains: []imageChain{
 		{name: "stock sandbox", manifests: []string{
 			"sandbox/slim/Dockerfile",
 			"sandbox/full/Dockerfile",
 			"sandbox/sec/Dockerfile",
 			"sandbox/browser/Dockerfile",
+			"sandbox/rgaa/Dockerfile",
 			"sandbox/finalize/Dockerfile",
 		}},
 	}},

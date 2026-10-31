@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	"github.com/SocialGouv/iterion/pkg/sandbox/imageclass"
 )
 
 // validateEvents cross-checks emit/wait event names (ADR-051): a wait on an
@@ -966,9 +967,11 @@ func looksLikePlaywrightMCP(srv *MCPServer) bool {
 // sandboxHasBrowserImage returns true when the sandbox image name
 // suggests a browser-capable variant. The matcher is intentionally
 // loose so internal forks (`my-corp-iterion-sandbox-browser:edge`)
-// also satisfy it. Setting `image:` empty (or omitting the sandbox
-// block entirely) yields false — Phase 0 sandbox modes (none/auto)
-// don't ship Chromium today.
+// also satisfy it; a bare class name is answered from the class
+// vocabulary (`rgaa` builds FROM the browser base, so it carries
+// Chromium too — imageclass.CarriesBrowser). Setting `image:` empty
+// (or omitting the sandbox block entirely) yields false — Phase 0
+// sandbox modes (none/auto) don't ship Chromium today.
 func sandboxHasBrowserImage(spec *SandboxSpec) bool {
 	if spec == nil {
 		return false
@@ -977,7 +980,10 @@ func sandboxHasBrowserImage(spec *SandboxSpec) bool {
 	if img == "" {
 		return false
 	}
-	return strings.Contains(img, "sandbox-browser") || strings.Contains(img, "sandbox-full-browser")
+	if imageclass.LooksLikeClassName(img) {
+		return imageclass.CarriesBrowser(img)
+	}
+	return strings.Contains(img, "sandbox-browser") || strings.Contains(img, "sandbox-rgaa") || strings.Contains(img, "sandbox-full-browser")
 }
 
 func sandboxImageOrEmpty(spec *SandboxSpec) string {

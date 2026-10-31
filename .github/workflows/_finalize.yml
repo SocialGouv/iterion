@@ -1,4 +1,4 @@
-# Reusable sandbox finalize — builds the four published iterion-sandbox-*
+# Reusable sandbox finalize — builds the five published iterion-sandbox-*
 # images by stamping the iterion binary onto the matching tool-only *-base
 # image (sandbox/finalize/Dockerfile). Cheap (a few COPY layers), so it runs
 # on every app push, keeping the sandbox `:edge` binaries in lockstep with
@@ -42,7 +42,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [slim, full, sec, browser]
+        variant: [slim, full, sec, browser, rgaa]
     # Shared across the two calling workflows: never interleave two pushes of
     # the same published tag. PR validations queue per-PR instead (no push, so
     # they only contend with themselves).
@@ -53,7 +53,7 @@ jobs:
     secrets: inherit
     with:
       image-name: iterion-sandbox-${{ matrix.variant }}
-      # One shared routing-name for the four variants: each finalize is a
+      # One shared routing-name for the five variants: each finalize is a
       # couple of COPY layers, and a single warm daemon pulls the iterion
       # app image once (shared content store) instead of four times on four
       # isolated daemons. BuildKit parallelises the concurrent builds.

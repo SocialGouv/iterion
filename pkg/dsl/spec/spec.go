@@ -641,7 +641,7 @@ var Kinds = append([]Kind{
 	{Name: "sandbox", Role: BlockRole, Opener: "sandbox", Hosts: []string{"workflow", "agent", "judge", "tool"}, Doc: "Per-run container isolation (docs/sandbox.md): the short form names a mode, the block form is inline and needs image: or build: (C044).",
 		Properties: []Property{
 			checked("mode", "none, auto (devcontainer.json or the published slim image) or inline (C044 on another word)", "none", "auto", "inline"),
-			word(prop("image", String, "Container image (exclusive with build)")),
+			word(prop("image", String, "Container image (exclusive with build): a full reference (registry/repo:tag), or a bare stock-class name (slim, full, sec, browser, rgaa) resolved at launch to the published variant — an unknown bare word passes through verbatim, with C325")),
 			block("build", "sandbox.build", "Dockerfile build, local docker only (V2-6)"),
 			word(prop("user", String, "Container user")),
 			word(prop("workspace_folder", String, "Mount point of the workspace inside the container")),

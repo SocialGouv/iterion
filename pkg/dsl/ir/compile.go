@@ -385,6 +385,10 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 		HostState:       blk.HostState,
 		PostCreate:      blk.PostCreate,
 	}
+	// A bare `image:` word either names a stock image class (#2632) or is a
+	// local/docker.io reference — the warning (C325) tells the two apart;
+	// the value itself is kept as written in both cases.
+	c.warnUnknownSandboxImageClass(spec.Image, scope, name)
 	if len(blk.Env) > 0 {
 		spec.Env = make(map[string]string, len(blk.Env))
 		for k, v := range blk.Env {

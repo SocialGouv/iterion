@@ -641,7 +641,7 @@ A block opened by `sandbox:` inside `workflow`, `agent`, `judge`, `tool`.
 | Property | Value | Meaning |
 |---|---|---|
 | `mode` | ident — `none`, `auto`, `inline` | none, auto (devcontainer.json or the published slim image) or inline (C044 on another word) |
-| `image` | string | Container image (exclusive with build) |
+| `image` | string | Container image (exclusive with build): a full reference (registry/repo:tag), or a bare stock-class name (slim, full, sec, browser, rgaa) resolved at launch to the published variant — an unknown bare word passes through verbatim, with C325 |
 | `build` | block → [sandbox.build](#sandboxbuild) | Dockerfile build, local docker only (V2-6) |
 | `user` | string | Container user |
 | `workspace_folder` | string | Mount point of the workspace inside the container |

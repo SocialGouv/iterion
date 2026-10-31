@@ -2067,7 +2067,7 @@
           "type": "string"
         },
         "image": {
-          "description": "Container image (exclusive with build)",
+          "description": "Container image (exclusive with build): a full reference (registry/repo:tag), or a bare stock-class name (slim, full, sec, browser, rgaa) resolved at launch to the published variant — an unknown bare word passes through verbatim, with C325",
           "pattern": "^[^\\n\\r\\x85]*$",
           "type": "string"
         },

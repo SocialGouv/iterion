@@ -1386,6 +1386,9 @@ pinned to the running iterion version:
 | ------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | **slim** (default) | `ghcr.io/socialgouv/iterion-sandbox-slim:<version>` | git, curl, jq, Node 24, devbox + Nix                                                                |
 | **full** (opt-in)  | `ghcr.io/socialgouv/iterion-sandbox-full:<version>` | slim + Go (+ `g`), Python 3, pnpm, fnm, direnv, gh, yq (mikefarah), kubectl, helm, k9s              |
+| **sec** (opt-in)   | `ghcr.io/socialgouv/iterion-sandbox-sec:<version>`   | full + the security-audit toolchain (the sec-audit bots' floor)                                     |
+| **browser** (opt-in) | `ghcr.io/socialgouv/iterion-sandbox-browser:<version>` | slim + Chromium + Playwright MCP (`ULTRA11Y_BROWSER_PATH` names `/usr/bin/chromium`)             |
+| **rgaa** (opt-in)  | `ghcr.io/socialgouv/iterion-sandbox-rgaa:<version>`  | browser + the pinned ultra11y engine, installed globally — the rgaa-audit bot's class               |
 
 Tags track iterion releases (`v1.2.3`) plus a rolling `edge` for main.
 Snapshot/dev binaries pull the `:edge` tag. The published images can also
@@ -1393,14 +1396,28 @@ ship a **static** `iterion` on their own PATH, which sidesteps the
 host-binary bind-mount entirely (`CGO_ENABLED=0`; a nix-dynamic build dies
 in-container — see [the dogfood note](agents/workflow/dogfood.md)).
 
-**Why two variants?** The slim image is small enough to pull on
-demand and supports the common workflow (the agent calls `devbox install`
-against the workspace `devbox.json` to materialise its toolchain). The
-full image trades extra MB at first pull for not having to install
-common operator + language toolchains (Go, Node, Python, Kubernetes
-CLIs, GitHub CLI, …) on every run.
+**Declaring a variant from the bot (`sandbox.image` classes, #2632):** the
+block form's `image:` takes a bare class name — `slim`, `full`, `sec`,
+`browser`, `rgaa` — which resolves at launch to the published variant image
+of that class, pinned to the running iterion with the same `:latest`
+registry fallback the default carries:
 
-**Selecting the full variant per-run:**
+```iter fragment:workflow
+sandbox:
+  image: rgaa        # ghcr.io/socialgouv/iterion-sandbox-rgaa:<version>
+```
+
+The vocabulary is the closed, operator-controlled list in
+`pkg/sandbox/imageclass` — a class names an image iterion itself builds and
+measures. Everything else keeps its reading: a full reference
+(`registry/repo:tag`, a digest pin) is your own image, honoured verbatim
+(the escape hatch); an unknown bare word is passed through verbatim too —
+it may be a locally built image — with the compiler's C325 warning naming
+both readings. The class form is inline mode, so it outranks even
+`--sandbox auto` (a block with an `image:` is the author's wired container,
+not a degradable `auto`).
+
+**Selecting a variant per-run (operator side):**
 
 ```bash
 iterion run foo.bot \
@@ -1413,7 +1430,7 @@ iterion run foo.bot \
 export ITERION_SANDBOX_DEFAULT_IMAGE=ghcr.io/socialgouv/iterion-sandbox-full:edge
 ```
 
-**Bringing your own:** if neither variant fits, point the override at
+**Bringing your own:** if no variant fits, point the override at
 your own image (must support `sleep infinity` as PID 1 — i.e. provide
 `/bin/sh` and `sleep`). Or commit a `.devcontainer/devcontainer.json`
 to the repo to disable the fallback for that workspace; iterion will
@@ -1628,7 +1645,7 @@ each with what it actually knows:
   image serves.
 - **At run start, a typed refusal.** The sandbox spec is resolved, so the
   IMAGE is known. If it is one of the images iterion publishes
-  (`iterion-sandbox-slim`/`-full`/`-sec`/`-browser`) **and** that image
+  (`iterion-sandbox-slim`/`-full`/`-sec`/`-browser`/`-rgaa`) **and** that image
   carries no CLI for a backend the run will dispatch, the run is refused
   before any pull, with `CAPABILITY_UNSUPPORTED` naming the image, the
   missing executable and both exits. This is the only place the per-image

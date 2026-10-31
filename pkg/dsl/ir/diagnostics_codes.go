@@ -444,4 +444,11 @@ const (
 	DiagSecretSinkInvalid    DiagCode = "C322" // a `sinks:` entry outside the vocabulary or named twice, `prompt` alone, a file secret whose grants lack `file`, a value secret granting `file` (error)
 	DiagSecretSinkUngranted  DiagCode = "C323" // a `{{secrets.X}}` reference in a prompt body, a tool command/postcondition/script or an action param whose secret does not grant that sink (error)
 	DiagSecretEgressUnscoped DiagCode = "C324" // a `sinks:` list granting `egress` on a secret with no `hosts:` — the proxy substitutes it toward any host (warning)
+
+	// A bare image name (`image: foo`) is a class only when it names one
+	// (pkg/sandbox/imageclass); otherwise the runtime honours it verbatim —
+	// it may be a locally built image, and re-pointing it at a registry
+	// would be the silent replacement philosophy #1 refuses. The warning is
+	// what tells the two bare-word readings apart before the pull does.
+	DiagSandboxImageClassUnknown DiagCode = "C325" // sandbox.image is a bare word that names no stock image class — passed through verbatim at launch (warning)
 )

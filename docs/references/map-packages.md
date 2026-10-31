@@ -214,6 +214,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/sandbox` | defines the iterion sandboxing abstraction. | `Builder`, `Driver`, `HostRun`, `ImageEnvScreener`, `PreparedSpec`, `ProcessIsolated`, `ProxiedRun`, `ProxyConfigurer`, `Run`, `SchedulingPolicyReporter`, `SecretFileRefresher`, `StartedEnvReader`, `WorkspaceExporter`, `WorkspaceFileRefresher`, `WorkspaceHeadCapturer` |
 | `pkg/sandbox/devcontainer` | parses the subset of devcontainer.json fields iterion's sandbox driver consumes. | — |
 | `pkg/sandbox/docker` | implements the Docker/Podman sandbox driver. | — |
+| `pkg/sandbox/imageclass` | holds the operator-controlled vocabulary of stock sandbox image classes: the bare names a workflow's `sandbox: { image: … }` may declare instead of… | — |
 | `pkg/sandbox/kubernetes` | implements iterion's sandbox driver for cloud (in-cluster) deployments. | — |
 | `pkg/sandbox/netproxy` | implements iterion's HTTP CONNECT proxy that enforces the workflow's sandbox network policy. | `SecretRewriter` |
 | `pkg/sandbox/noop` | provides the always-available passthrough sandbox driver. | — |

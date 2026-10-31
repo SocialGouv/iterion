@@ -292,6 +292,7 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagSecretSinkInvalid:            {"Invalid secret sink grant", "Name only prompt, agent, command, params, file, egress in `sinks:`, each once and never `prompt` alone; a file secret's list carries `file`, a value secret's never does — or omit the list to grant every sink."},
 	DiagSecretSinkUngranted:          {"Secret reference reaches an ungranted sink", "Add the sink the diagnostic names to the secret's `sinks:` list, or move the reference to a sink the secret grants (docs/secrets.md, « sinks »)."},
 	DiagSecretEgressUnscoped:         {"Egress granted toward any host", "Add `hosts:` naming the hosts the proxy may substitute the secret toward, or drop `egress` from `sinks:`."},
+	DiagSandboxImageClassUnknown:     {"Sandbox image names no known class", "Name a stock class (`slim`, `full`, `sec`, `browser`, `rgaa`) for a published variant, or write the full reference (`registry/repo:tag`) of your own image — a bare word that is no class is pulled verbatim (a local or docker.io image)."},
 }
 
 // HintFor returns the catalogue fix line for code, or "" when the code has
