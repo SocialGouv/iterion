@@ -256,9 +256,19 @@ func TestSupplyShieldCve_CacheConsultsOnlyCveLinesOnShortTtl(t *testing.T) {
 	if ttl, _ := line["ttl_days"].(float64); ttl != 7 {
 		t.Fatalf("cache line ttl_days = %v, want 7 (advisories land daily)", line["ttl_days"])
 	}
+	// The stamp semantic, not this read's wall clock: the bot derives
+	// scanned_at and advisory_db_date from one `now` inside the subprocess,
+	// so the line must carry its own scan date — and that date is fresh,
+	// today or yesterday in UTC (the subprocess span may straddle 00:00 UTC
+	// between the write and this read without that failing the test).
+	scannedAt, _ := line["scanned_at"].(string)
+	if len(scannedAt) < 10 || line["advisory_db_date"] != scannedAt[:10] {
+		t.Fatalf("advisory_db_date = %v, want the line's own scan date (scanned_at %q)", line["advisory_db_date"], scannedAt)
+	}
 	today := time.Now().UTC().Format("2006-01-02")
-	if line["advisory_db_date"] != today {
-		t.Fatalf("advisory_db_date = %v, want today %s", line["advisory_db_date"], today)
+	yesterday := time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
+	if line["advisory_db_date"] != today && line["advisory_db_date"] != yesterday {
+		t.Fatalf("advisory_db_date = %v, want fresh — today %s or yesterday %s in UTC", line["advisory_db_date"], today, yesterday)
 	}
 	raw := string(b)
 
