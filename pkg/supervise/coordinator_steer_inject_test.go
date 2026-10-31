@@ -62,14 +62,26 @@ func (s *steerStub) firstInput() supervise.EvalInput {
 	return s.inputs[0]
 }
 
-func waitForSteer(t *testing.T, cond func() bool) {
+// waitForSteer polls cond until it holds or the deadline passes. A
+// predicate's error never ends the poll, but the last one is carried
+// into the fatal message: a timeout must tell "condition never held"
+// apart from "the store is failing".
+func waitForSteer(t *testing.T, cond func() (bool, error)) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
+	var lastErr error
 	for time.Now().Before(deadline) {
-		if cond() {
+		ok, err := cond()
+		if ok {
 			return
 		}
+		if err != nil {
+			lastErr = err
+		}
 		time.Sleep(5 * time.Millisecond)
+	}
+	if lastErr != nil {
+		t.Fatalf("condition not met within deadline (last store error: %v)", lastErr)
 	}
 	t.Fatal("condition not met within deadline")
 }
@@ -121,7 +133,7 @@ func TestCoordinatorSteersWatchedNodeThroughTheInbox(t *testing.T) {
 
 	// WATCH — the decision saw the watched node armed and the evidence
 	// that woke it.
-	waitForSteer(t, func() bool { return eval.calls() > 0 })
+	waitForSteer(t, func() (bool, error) { return eval.calls() > 0, nil })
 	in := eval.firstInput()
 	if in.ActiveNode != "implement" {
 		t.Fatalf("ActiveNode = %q, want the watched node", in.ActiveNode)
@@ -142,9 +154,12 @@ func TestCoordinatorSteersWatchedNodeThroughTheInbox(t *testing.T) {
 	// INJECT — the production enqueue path landed the steering in the
 	// real file-backed inbox, scoped to the watched node and framed as
 	// the supervisor's.
-	waitForSteer(t, func() bool {
+	waitForSteer(t, func() (bool, error) {
 		pending, err := st.LoadPendingQueuedMessages(ctx, runID)
-		return err == nil && len(pending) == 1
+		if err != nil {
+			return false, err
+		}
+		return len(pending) == 1, nil
 	})
 	pending, err := st.LoadPendingQueuedMessages(ctx, runID)
 	if err != nil {
@@ -166,9 +181,12 @@ func TestCoordinatorSteersWatchedNodeThroughTheInbox(t *testing.T) {
 	// appended just after the inbox row it announces, so wait for it
 	// instead of reading once: the inbox row becoming visible does not
 	// prove its event already landed.
-	waitForSteer(t, func() bool {
+	waitForSteer(t, func() (bool, error) {
 		events, err := st.LoadEvents(ctx, runID)
-		return err == nil && countSteerEvents(events, store.EventUserMessageQueued) == 1
+		if err != nil {
+			return false, err
+		}
+		return countSteerEvents(events, store.EventUserMessageQueued) == 1, nil
 	})
 	events, err := st.LoadEvents(ctx, runID)
 	if err != nil {
@@ -235,16 +253,19 @@ func TestCoordinatorSteersWatchedNodeThroughTheInbox(t *testing.T) {
 	// intervention: the reservation consumed, the action named, the eval
 	// timestamps stamped.
 	var cursor store.WatcherCursor
-	waitForSteer(t, func() bool {
+	waitForSteer(t, func() (bool, error) {
 		run, err := st.LoadRun(ctx, runID)
-		if err != nil || len(run.WatcherCursors) != 1 {
-			return false
+		if err != nil {
+			return false, err
+		}
+		if len(run.WatcherCursors) != 1 {
+			return false, nil
 		}
 		for _, cur := range run.WatcherCursors {
 			cursor = cur
 		}
 		return cursor.InterventionSequence == 1 && cursor.PendingInterventionID == "" &&
-			cursor.LastAction == "intervene"
+			cursor.LastAction == "intervene", nil
 	})
 	if !strings.HasPrefix(cursor.WatcherID, "supervisor:") {
 		t.Errorf("cursor watcher id = %q, want the supervisor prefix", cursor.WatcherID)
