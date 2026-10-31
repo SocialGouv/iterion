@@ -21,51 +21,11 @@ import (
 // Same harness as the Shieldy file: scripts extracted from the COMPILED bot
 // and run for real.
 
-// runCveTool substitutes refs into a cve-bot tool command and runs it,
-// returning the parsed stdout JSON.
+// runCveTool runs a cve-bot tool command through the shared shield-family
+// harness (runBotTool, in the supply-shield file beside its siblings).
 func runCveTool(t *testing.T, dir, cmd string, refs map[string]string) map[string]any {
 	t.Helper()
-	if _, err := exec.LookPath("python3"); err != nil {
-		if os.Getenv("CI") != "" {
-			t.Fatal("python3 not in PATH — required in CI; skipping here would silently drop the supply-shield-cve pipeline coverage")
-		}
-		t.Skip("python3 not on PATH — skipping supply-shield-cve pipeline test")
-	}
-	for k, v := range refs {
-		cmd = strings.ReplaceAll(cmd, "{{"+k+"}}", v)
-	}
-	if i := strings.Index(cmd, "{{"); i >= 0 {
-		end := i + 60
-		if end > len(cmd) {
-			end = len(cmd)
-		}
-		t.Fatalf("unsubstituted template ref in tool command: %s", cmd[i:end])
-	}
-	return runShellJSON(t, dir, cmd)
-}
-
-// runShellJSON runs a shell command, returning its last stdout line as JSON.
-// A non-zero exit fails the test with both streams attached.
-func runShellJSON(t *testing.T, dir, cmd string) map[string]any {
-	t.Helper()
-	c := exec.Command("sh", "-c", cmd)
-	c.Dir = dir
-	var stdout, stderr strings.Builder
-	c.Stdout = &stdout
-	c.Stderr = &stderr
-	runErr := c.Run()
-	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
-	last := strings.TrimSpace(lines[len(lines)-1])
-	out := map[string]any{}
-	if last != "" && strings.HasPrefix(last, "{") {
-		if err := json.Unmarshal([]byte(last), &out); err != nil && runErr == nil {
-			t.Fatalf("parse tool output %q: %v", last, err)
-		}
-	}
-	if runErr != nil {
-		t.Fatalf("tool command failed: %v\nstdout: %s\nstderr: %s", runErr, stdout.String(), stderr.String())
-	}
-	return out
+	return runBotTool(t, dir, cmd, refs, "supply-shield-cve pipeline")
 }
 
 // TestSupplyShieldCve_GenericHeuristicParsesOsvScanner pins the CVE floor's

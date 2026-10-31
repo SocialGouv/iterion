@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -38,38 +37,23 @@ func wikiGitRepo(t *testing.T) string {
 	return ws
 }
 
-// runWikiTool substitutes refs into a wiki-gen tool command and runs it.
+// runWikiTool runs a wiki-gen tool command through the shared shield-family
+// harness (runBotTool, in the supply-shield file beside its siblings).
 func runWikiTool(t *testing.T, dir, cmd string, refs map[string]string) map[string]any {
 	t.Helper()
-	if _, err := exec.LookPath("python3"); err != nil {
-		if os.Getenv("CI") != "" {
-			t.Fatal("python3 not in PATH — required in CI; skipping here would silently drop the wiki-gen pipeline coverage")
-		}
-		t.Skip("python3 not on PATH — skipping wiki-gen pipeline test")
-	}
-	for k, v := range refs {
-		cmd = strings.ReplaceAll(cmd, "{{"+k+"}}", v)
-	}
-	if i := strings.Index(cmd, "{{"); i >= 0 {
-		end := i + 60
-		if end > len(cmd) {
-			end = len(cmd)
-		}
-		t.Fatalf("unsubstituted template ref in tool command: %s", cmd[i:end])
-	}
-	return runShellJSON(t, dir, cmd)
+	return runBotTool(t, dir, cmd, refs, "wiki-gen pipeline")
 }
 
 // wikiScanRefs is scan_repo's var block at its defaults for the given repo.
 func wikiScanRefs(ws, cachePath string) map[string]string {
 	return map[string]string{
-		"vars.workspace_dir":      shqs(ws),
-		"vars.wiki_dir":           shqs("wiki"),
-		"vars.code_scope_globs":   shqs(""),
-		"vars.excluded_dirs":      shqs(".iterion,.works,.claude,vendor,node_modules,.git,dist,build,out,.next,target,coverage"),
-		"vars.bundle_self_path":   shqs(""),
-		"vars.wiki_cache_path":    shqs(cachePath),
-		"vars.issue_id":           shqs(""),
+		"vars.workspace_dir":    shqs(ws),
+		"vars.wiki_dir":         shqs("wiki"),
+		"vars.code_scope_globs": shqs(""),
+		"vars.excluded_dirs":    shqs(".iterion,.works,.claude,vendor,node_modules,.git,dist,build,out,.next,target,coverage"),
+		"vars.bundle_self_path": shqs(""),
+		"vars.wiki_cache_path":  shqs(cachePath),
+		"vars.issue_id":         shqs(""),
 	}
 }
 

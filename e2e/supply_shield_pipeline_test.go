@@ -63,15 +63,21 @@ func shqs(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// runShieldTool substitutes the given refs into a tool command and runs it
-// under sh -c, returning the parsed JSON the command printed on stdout.
-func runShieldTool(t *testing.T, dir, cmd string, refs map[string]string) map[string]any {
+// runBotTool substitutes the given refs into a bot tool command and runs it
+// for real under sh -c, returning the parsed JSON the command printed on
+// stdout. One harness for the shield-family suites (supply-shield,
+// supply-shield-cve, wiki-gen): the python3 guard fails the test in CI and
+// skips locally, the subject naming the bot whose coverage a skip would
+// silently drop; an unsubstituted {{ref}} fails loudly instead of reaching
+// the script; the last stdout line parses as JSON, and a non-zero exit
+// fails the test with both streams attached.
+func runBotTool(t *testing.T, dir, cmd string, refs map[string]string, subject string) map[string]any {
 	t.Helper()
 	if _, err := exec.LookPath("python3"); err != nil {
 		if os.Getenv("CI") != "" {
-			t.Fatal("python3 not in PATH — required in CI; skipping here would silently drop the supply-shield pipeline coverage")
+			t.Fatalf("python3 not in PATH — required in CI; skipping here would silently drop the %s coverage", subject)
 		}
-		t.Skip("python3 not on PATH — skipping supply-shield pipeline test")
+		t.Skipf("python3 not on PATH — skipping %s test", subject)
 	}
 	for k, v := range refs {
 		cmd = strings.ReplaceAll(cmd, "{{"+k+"}}", v)
@@ -101,6 +107,13 @@ func runShieldTool(t *testing.T, dir, cmd string, refs map[string]string) map[st
 		t.Fatalf("tool command failed: %v\nstdout: %s\nstderr: %s", runErr, stdout.String(), stderr.String())
 	}
 	return out
+}
+
+// runShieldTool runs a supply-shield tool command through the shared
+// shield-family harness.
+func runShieldTool(t *testing.T, dir, cmd string, refs map[string]string) map[string]any {
+	t.Helper()
+	return runBotTool(t, dir, cmd, refs, "supply-shield pipeline")
 }
 
 // shieldSkillsDir is the bundle-skills value the tests substitute: the path
@@ -173,18 +186,18 @@ func TestSupplyShield_DiffScopeScopesToChangedLockfiles(t *testing.T) {
 	ws, base := shieldGitRepo(t)
 	tool := shieldNode(t, "supply-shield/main.bot", "diff_scope")
 	refs := map[string]string{
-		"vars.workspace_dir":      shqs(ws),
-		"vars.bundle_skills_dir":  shqs(shieldSkillsDir(t, ws)),
+		"vars.workspace_dir":     shqs(ws),
+		"vars.bundle_skills_dir": shqs(shieldSkillsDir(t, ws)),
 	}
 
 	// diff mode with an explicit base: the lockfile bump is the one change
 	// that scopes, README drift does not.
 	out := runShieldTool(t, ws, tool.Command, map[string]string{
-		"vars.scope_mode": shqs("diff"),
-		"vars.base_ref":   shqs(base),
-		"vars.head_ref":   shqs("HEAD"),
-		"vars.workspace_dir":      refs["vars.workspace_dir"],
-		"vars.bundle_skills_dir":  refs["vars.bundle_skills_dir"],
+		"vars.scope_mode":        shqs("diff"),
+		"vars.base_ref":          shqs(base),
+		"vars.head_ref":          shqs("HEAD"),
+		"vars.workspace_dir":     refs["vars.workspace_dir"],
+		"vars.bundle_skills_dir": refs["vars.bundle_skills_dir"],
 	})
 	changed, _ := out["changed_lockfiles"].([]any)
 	if len(changed) != 1 || changed[0] != "package-lock.json" {
@@ -203,11 +216,11 @@ func TestSupplyShield_DiffScopeScopesToChangedLockfiles(t *testing.T) {
 
 	// full mode: empty diff, the scope named — the enumerator walks the tree.
 	full := runShieldTool(t, ws, tool.Command, map[string]string{
-		"vars.scope_mode": shqs("full"),
-		"vars.base_ref":   shqs(base),
-		"vars.head_ref":   shqs("HEAD"),
-		"vars.workspace_dir":      refs["vars.workspace_dir"],
-		"vars.bundle_skills_dir":  refs["vars.bundle_skills_dir"],
+		"vars.scope_mode":        shqs("full"),
+		"vars.base_ref":          shqs(base),
+		"vars.head_ref":          shqs("HEAD"),
+		"vars.workspace_dir":     refs["vars.workspace_dir"],
+		"vars.bundle_skills_dir": refs["vars.bundle_skills_dir"],
 	})
 	if m, _ := full["scope_mode"].(string); m != "full" {
 		t.Fatalf("scope_mode = %v, want full", full["scope_mode"])
@@ -223,11 +236,11 @@ func TestSupplyShield_DiffScopeScopesToChangedLockfiles(t *testing.T) {
 	// refs to HEAD~1 — both commits' worth of history is not needed, one
 	// parent is enough to scope the bump.
 	auto := runShieldTool(t, ws, tool.Command, map[string]string{
-		"vars.scope_mode": shqs("diff"),
-		"vars.base_ref":   shqs(""),
-		"vars.head_ref":   shqs("HEAD"),
-		"vars.workspace_dir":      refs["vars.workspace_dir"],
-		"vars.bundle_skills_dir":  refs["vars.bundle_skills_dir"],
+		"vars.scope_mode":        shqs("diff"),
+		"vars.base_ref":          shqs(""),
+		"vars.head_ref":          shqs("HEAD"),
+		"vars.workspace_dir":     refs["vars.workspace_dir"],
+		"vars.bundle_skills_dir": refs["vars.bundle_skills_dir"],
 	})
 	if autoChanged, _ := auto["changed_lockfiles"].([]any); len(autoChanged) != 1 {
 		t.Fatalf("auto-detected base found %v, want the same single lockfile", auto["changed_lockfiles"])
@@ -379,15 +392,15 @@ func substGate(cmd, ecos, scanDir string) string {
 // verdict is the reviewer's per-package verdict shape sarif_gen and the cache
 // trio consume.
 type verdict struct {
-	Ecosystem    string         `json:"ecosystem"`
-	Name         string         `json:"name"`
-	Version      string         `json:"version"`
-	Checksum     string         `json:"checksum,omitempty"`
-	RiskScore    int            `json:"risk_score"`
-	RiskLevel    string         `json:"risk_level"`
-	Summary      string         `json:"summary"`
-	Flags        []verdictFlag  `json:"flags,omitempty"`
-	FilesAudited []string       `json:"files_audited,omitempty"`
+	Ecosystem    string        `json:"ecosystem"`
+	Name         string        `json:"name"`
+	Version      string        `json:"version"`
+	Checksum     string        `json:"checksum,omitempty"`
+	RiskScore    int           `json:"risk_score"`
+	RiskLevel    string        `json:"risk_level"`
+	Summary      string        `json:"summary"`
+	Flags        []verdictFlag `json:"flags,omitempty"`
+	FilesAudited []string      `json:"files_audited,omitempty"`
 }
 
 type verdictFlag struct {
@@ -516,7 +529,7 @@ func TestSupplyShield_SarifGenMapsVerdicts(t *testing.T) {
 	tool := shieldNode(t, "supply-shield/main.bot", "sarif_gen")
 	cmd := strings.ReplaceAll(tool.Command, "{{vars.sarif_dir}}", shq(filepath.Dir(sarifPath)))
 	out := runShieldTool(t, ws, cmd, map[string]string{
-		"input.verdicts":  shq([]verdict{
+		"input.verdicts": shq([]verdict{
 			{
 				Ecosystem: "npm", Name: "evil", Version: "2.0.0", RiskLevel: "HIGH",
 				Summary: "install hook exfil",
@@ -541,18 +554,26 @@ func TestSupplyShield_SarifGenMapsVerdicts(t *testing.T) {
 		Runs    []struct {
 			Tool struct {
 				Driver struct {
-					Name    string `json:"name"`
-					Rules   []struct{ ID string `json:"id"` } `json:"rules"`
+					Name  string `json:"name"`
+					Rules []struct {
+						ID string `json:"id"`
+					} `json:"rules"`
 				} `json:"driver"`
 			} `json:"tool"`
 			Results []struct {
 				RuleId  string `json:"ruleId"`
 				Level   string `json:"level"`
-				Message struct{ Text string `json:"text"` } `json:"message"`
+				Message struct {
+					Text string `json:"text"`
+				} `json:"message"`
 				Locations []struct {
 					PhysicalLocation struct {
-						ArtifactLocation struct{ URI string `json:"uri"` } `json:"artifactLocation"`
-						Region           struct{ StartLine int `json:"startLine"` } `json:"region"`
+						ArtifactLocation struct {
+							URI string `json:"uri"`
+						} `json:"artifactLocation"`
+						Region struct {
+							StartLine int `json:"startLine"`
+						} `json:"region"`
 					} `json:"physicalLocation"`
 				} `json:"locations"`
 			} `json:"results"`
