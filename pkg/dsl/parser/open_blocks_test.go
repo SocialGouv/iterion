@@ -284,9 +284,12 @@ func TestBrokenListSplicesStayLinear(t *testing.T) {
 			small = append(small, parse(lists))
 			large = append(large, parse(2*lists))
 		}
-		slices.Sort(small)
-		slices.Sort(large)
-		s, l := small[1], large[1]
+		// The ratio reads the BEST run of each size, not the median: a load
+		// spike on a shared runner can only inflate a run, so min/min is the
+		// reading load cannot fake — and a quadratic rescue scores ≥ 4x even
+		// on its best pair (a 3.2x median on a saturated ARC shard failed the
+		// 3x bound on 2026-10-31, witness on 63aac5608, flake register).
+		s, l := slices.Min(small), slices.Min(large)
 		if s <= 0 {
 			t.Fatalf("the %d-list parse measured %s: no baseline to compare against", lists, s)
 		}

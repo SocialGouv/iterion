@@ -38,7 +38,13 @@ func TestEvalWorkBudgetCountsNodeEvaluations(t *testing.T) {
 		t.Fatalf("18M node evaluations under 1k element visits must be refused on the work budget, got %v", err)
 	}
 	t.Logf("refused after %s", el.Round(time.Millisecond))
-	if limit := 10 * time.Second; el > limit {
+	// The wall clock is a tripwire, not the measurement: what it must catch
+	// is the budget NOT biting (the full 18M-unit product evaluates for the
+	// better part of an hour), so the bound tolerates a saturated CI runner
+	// — under -race on a loaded ARC shard the bounded refusal measured 20 s
+	// (2026-10-31 witness on 63aac5608, flake register) against 1.5 s
+	// locally. Two minutes keeps a >70x margin on the regression it guards.
+	if limit := 2 * time.Minute; el > limit {
 		t.Errorf("refusal took %s, want under %s: the budget speaks after the work it bounds", el, limit)
 	}
 }

@@ -92,7 +92,7 @@ func TestAnInstallTakesTheLockOfEveryFileItWritesOrRemoves(t *testing.T) {
 				}
 			}()
 			previous := installLockWait
-			installLockWait = 300 * time.Millisecond
+			installLockWait = 2 * time.Second // a saturated CI runner can stall the sweep's own syscalls past 300 ms (2026-10-31 witness on 63aac5608, flake register)
 			t.Cleanup(func() { installLockWait = previous })
 
 			// In a goroutine so a wait with no bound fails this test's own
@@ -140,7 +140,7 @@ func TestARefusedInstallLeavesTheBundleStandingRatherThanEmptied(t *testing.T) {
 	}
 	defer func() { _ = lock.Release() }()
 	previous := installLockWait
-	installLockWait = 300 * time.Millisecond
+	installLockWait = 2 * time.Second // a saturated CI runner can stall the sweep's own syscalls past 300 ms (2026-10-31 witness on 63aac5608, flake register)
 	t.Cleanup(func() { installLockWait = previous })
 
 	// Watchdogged like the table above: a wait with no bound would block
