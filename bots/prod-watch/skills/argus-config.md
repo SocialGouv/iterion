@@ -289,11 +289,13 @@ overrides).
   window the watch tick steps back, envelope or not: the session schedule
   owns the signals there, and a window declared without a session
   schedule is a hole the digest reports as missing ticks. After the
-  window the watch resumes from its own cursors: an incident the session
-  escalated and still open is announced again by the watch's first ticks
-  (its Loki cursor catches up within `max_window_minutes`, its Sentry
-  lane within `max_catchup_hours`) — one repeat per incident, by design
-  in this slice. `heartbeat.metrics` — instant
+  window the watch's first tick adopts the session's memory read-only: the
+  incidents it alerted are not news again, and its cursors move the watch's
+  where they are ahead (the Loki frontier, Sentry's `since`) — the
+  session's files stay the session's, and the watch state keeps its one
+  writer. The lanes' catch-up read stays bounded (`max_window_minutes`,
+  `max_catchup_hours`), the gap said as partial coverage.
+  `heartbeat.metrics` — instant
   queries without a threshold (same shape as a range, no `op`), the
   POSITIVE numbers every heartbeat carries beside each probe's status and
   latency and the lanes' counts: requests, errors, p95 by route, jobs
@@ -445,10 +447,11 @@ grace plus that tick's run budget, the one the envelope recorded
 and a closed envelope frees it at once. Two windows back to back (the
 overnight pair) continue ONE fork when the watch state did not change
 between them: the second half does not re-announce what the first
-escalated. Then the watch resumes from its own cursors — the Loki
-catch-up is bounded by `max_window_minutes` and the gap is said as partial
-coverage, the session having watched the window live; an incident the
-session escalated and still open is announced again once by the watch.
+escalated. The watch's first tick past the window adopts the session's
+memory read-only — its incidents, its ahead cursors (the Loki frontier,
+Sentry's `since`); the Loki catch-up read is bounded by
+`max_window_minutes` and the gap is said as partial coverage, the session
+having watched the window live.
 On a shared local clone with `state_commit=true` the watch and the session
 commit under one lock (the watch dir's `.lock`); cloud runners clone per
 run.

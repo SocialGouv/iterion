@@ -443,8 +443,9 @@ func TestProdWatch_ASessionSaysStartEscalationHeartbeatSummaryOnce(t *testing.T)
 
 // TestProdWatch_AWatchTickStepsBackWhileASessionIsOpen: the idle tick reads
 // session.json and steps back — nothing polled, nothing posted — while the
-// session's window runs; once the window is over it resumes and sees the
-// signal with its own lifecycle.
+// session's window runs; once the window is over it resumes on the memory
+// the session adopted read-only (#2835): the breach the session escalated
+// is not news again, the channel hears it once.
 func TestProdWatch_AWatchTickStepsBackWhileASessionIsOpen(t *testing.T) {
 	wf := compileFixture(t, "prod-watch/main.bot")
 	h := newPWHarness(t)
@@ -483,8 +484,10 @@ func TestProdWatch_AWatchTickStepsBackWhileASessionIsOpen(t *testing.T) {
 	if outs["plan"]["step_back"] == true {
 		t.Fatalf("the watch tick must resume once the window is over: %v", outs["plan"]["summary"])
 	}
-	if got := pwCount(h.bodies(), "metric threshold breached"); got != 2 {
-		t.Fatalf("the watch lifecycle must see the breach as its own news after the window, got %d escalation(s)", got)
+	// The window's memory was adopted read-only: the breach the session
+	// escalated is not the watch's news a second time.
+	if got := pwCount(h.bodies(), "metric threshold breached"); got != 1 {
+		t.Fatalf("the watch must not re-announce the breach the session escalated (the memory is adopted), got %d escalation(s)", got)
 	}
 }
 

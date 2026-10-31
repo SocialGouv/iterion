@@ -33,10 +33,14 @@ notify → done                                             when not persist (dr
 `<state_dir>/session/` — the session is its only writer, the watch state
 is never written by a session tick; the first tick of a window copies the
 watch state (known incidents are not news, the Loki cursor continues where
-watch stopped), and the watch resumes from its own cursor once the window
-is over (the catch-up is bounded by `max_window_minutes`, the gap said as
-partial coverage — the session saw the window live; an incident the session
-escalated and still open is announced once more by the watch). The watch
+watch stopped), and the watch's first tick past the window ADOPTS the
+session's memory read-only — the incidents it alerted are not news again,
+its cursors move the watch's where they are ahead (the Loki frontier,
+Sentry's `since`) — without ever writing the session's files and without a
+second writer of `state.json` (the adoption is the watch's own staged
+state, stamped `adopted_session`, once per session). The catch-up read is
+still bounded by `max_window_minutes`, the gap said as partial coverage —
+the session saw the window live. The watch
 steps back inside a declared window whatever the envelope, and past the
 window only while the envelope is still open (ten minutes of closing-tick
 grace plus that tick's run budget); a closed envelope frees it at once. Two
@@ -55,7 +59,7 @@ not posted, not re-fired — and the summary names them.
 | `poll_sentry` | Sentry's org-scoped issue lists: first seen since the cursor, regressed/escalating (dated by their activity), the alerted ones by id; **issue text goes to scratch only** | Sentry API | `<scratch>/sentry_raw-<run>.jsonl` |
 | `probe_http` | GET the health URLs, status + latency | the app | — |
 | `leak_scan` | **the only reader of the raw lines and the Sentry issue text**: redaction by class, error templates, masked samples, coverage | scratch | `<scratch>/signals-<run>.json` |
-| `decide` | incident lifecycle (new / escalated / reminder / quiet, and pending past the cap; for Sentry also regressed / escalating / resolved), source staleness, cap + overflow, staged next state | `signals-<run>.json`, `state.json` | scratch: `state_next-<run>.json`, `alertlog_delta-<run>.jsonl`, `tick-<run>.json` |
+| `decide` | incident lifecycle (new / escalated / reminder / quiet, and pending past the cap; for Sentry also regressed / escalating / resolved), source staleness, cap + overflow, the session fork's memory adopted after a window (read-only), staged next state | `signals-<run>.json`, `state.json` | scratch: `state_next-<run>.json`, `alertlog_delta-<run>.jsonl`, `tick-<run>.json` |
 | `notify` | Mattermost incoming webhooks (the rendering is Mattermost's), per-sink `min_severity`, `required` sinks, all-or-nothing consume | `webhooks` secret | the channel |
 | `commit_state` | `state.json` (replaced), `alertlog.jsonl` + `ticks.jsonl` (appended, `merge=union`), optional commit + push; a session tick writes `session.json` beside them | scratch | `<state_dir>/` (the session's: `<state_dir>/session/`) |
 | `session` | mode=session: the start message, a heartbeat every `session_heartbeat_minutes` (config `session.heartbeat.metrics` + every probe + the lanes' counts), the cap note, the summary at the window's end; stages the envelope | `session.json`, the session ledgers | scratch: `session_next-<run>.json` |

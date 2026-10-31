@@ -1561,6 +1561,10 @@ tool plan:
                 refuse_state('cursors.sentry.' + f, sc.get(f), 'an ISO timestamp with its offset')
     if state.get('sentry_identity') is not None and not isinstance(state.get('sentry_identity'), str):
         refuse_state('sentry_identity', state.get('sentry_identity'), 'a string')
+    ## The envelope identity whose memory the watch already adopted from the
+    ## session fork: a string, or the adoption would re-run every tick.
+    if state.get('adopted_session') is not None and not isinstance(state.get('adopted_session'), str):
+        refuse_state('adopted_session', state.get('adopted_session'), 'a string')
     unsaid = state.get('sentry_history_unsaid')
     if unsaid is not None and (not isinstance(unsaid, list) or
                                not all(isinstance(x, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,64}@[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}', x)
@@ -4541,7 +4545,188 @@ tool decide:
         ## records are stamped later than itself). A copy that does not parse
         ## is replaced like an absent one.
         generation_seen = gen_of(jload_lenient(own_spath, 'the session copy'))
-    state['generation'] = max(generation_seen, gen_of(state)) + 1
+    ## ── the session's memory, adopted READ-ONLY (the first watch tick
+    ## after a session window) ───────────────────────────────────────
+    ## A session runs on a fork of the watch state under
+    ## <state_dir>/session/ and never writes the watch's; when the window
+    ## ends, the watch resumes on its own cursors — the incidents the
+    ## session alerted post again, its lines are re-read up to
+    ## max_window_minutes. The first watch tick past the window ADOPTS the
+    ## fork's memory instead: the incidents it alerted (so they are not
+    ## news), its cursors where they are ahead of the watch's (the Loki
+    ## frontier, Sentry's `since`). The fork is read, never written — the
+    ## session's files stay the session's — and the adoption lands as THIS
+    ## tick's own staged state, so state.json keeps its one writer. Once
+    ## per session: the marker is the envelope's identity plus the fork's
+    ## generation, and a fresh window's envelope opens a fresh adoption.
+    ## The fork is a file this mode does not own: read leniently, adopted
+    ## only in the shapes plan judges a state by — a record or cursor that
+    ## fails its types is not adopted (said on stderr), never let into the
+    ## watch state to brick the next tick's validation.
+    adopted_gen = 0
+    ## The fork's cursors the late adoption site (where decide writes its
+    ## own) will merge — empty when this tick adopts nothing.
+    _adopt_loki, _adopt_sentry = {}, None
+    if mode == 'watch':
+        _fork_dir = os.path.join(state_dir, 'session')
+        _envelope = jload_lenient(os.path.join(_fork_dir, 'session.json'), 'session file')
+        _fork = jload_lenient(os.path.join(_fork_dir, 'state.json'), 'session state')
+        _marker = str(_envelope.get('id')) + '@' + str(_envelope.get('ends_at')) + '@' + str(gen_of(_fork))
+        if _envelope and _fork and state.get('adopted_session') != _marker:
+            def _iso_of(v, tz=False):
+                if not isinstance(v, str):
+                    return None
+                try:
+                    d = datetime.datetime.fromisoformat(v)
+                except ValueError:
+                    return None
+                if tz and d.tzinfo is None:
+                    return None
+                return v
+
+            def _adopt_record(fp, srec):
+                ## The session's record, typed the way plan judges a record:
+                ## a field that fails its type drops the record, and the
+                ## record never reaches the watch state.
+                if not isinstance(srec, dict):
+                    return None
+                rec = {}
+                for f in ('kind', 'severity', 'title_key', 'detail_key', 'title_arg', 'short_id', 'level', 'link',
+                          'substatus', 'status', 'pending', 'announced_severity'):
+                    if srec.get(f) is not None and not isinstance(srec[f], str):
+                        return None
+                    rec[f] = srec.get(f)
+                for f in ('first_seen', 'last_seen', 'last_notified', 'sentry_last_seen', 'transition_at',
+                          'pending_transition_at', 'transition_checked_at', 'tracked_read_at', 'pending_since',
+                          'transition_seen_at', 'note_owed_at', 'watched_since'):
+                    if srec.get(f) is not None and _iso_of(srec[f]) is None:
+                        return None
+                    rec[f] = srec.get(f)
+                for f in ('count', 'tracked_read_gen', 'transition_checked_gen', 'admitted_gen', 'alone_until_gen',
+                          'transition_seen_gen', 'read_gen'):
+                    if srec.get(f) is not None and (isinstance(srec[f], bool) or not isinstance(srec[f], int)):
+                        return None
+                    rec[f] = srec.get(f)
+                for f in ('alerted', 'quiet_noted', 'closed_said', 'backlog', 'held_by_cap'):
+                    if srec.get(f) is not None and not isinstance(srec[f], bool):
+                        return None
+                    rec[f] = srec.get(f)
+                if srec.get('fields') is not None:
+                    if not isinstance(srec['fields'], dict):
+                        return None
+                    rec['fields'] = srec['fields']
+                if srec.get('sources') is not None:
+                    if not isinstance(srec['sources'], list) or not all(isinstance(x, str) for x in srec['sources']):
+                        return None
+                    rec['sources'] = list(srec['sources'])
+                if not isinstance(rec.get('kind'), str):
+                    return None
+                if rec['kind'] == 'sentry' and not re.fullmatch(r'sentry:[0-9]{1,20}', fp):
+                    return None
+                return rec
+
+            def _adopt_cursor(c):
+                ## One query's cursor, in the shape decide writes and plan's
+                ## parse_cursor reads: the numbers as strings, the band in
+                ## the offset:hash shape the trim judges.
+                if not isinstance(c, dict):
+                    return None
+                def num(field, default):
+                    v = c.get(field)
+                    if v is None:
+                        return default
+                    if isinstance(v, bool):
+                        return None
+                    if isinstance(v, int):
+                        return str(v)
+                    if isinstance(v, str):
+                        try:
+                            return str(int(v))
+                        except ValueError:
+                            return None
+                    return None
+                cov = num('covered_to_ns', None)
+                if cov is None:
+                    return None
+                band = c.get('band')
+                if band is None:
+                    band = []
+                if not isinstance(band, list) or any(not isinstance(e, str) or ':' not in e for e in band):
+                    return None
+                for e in band:
+                    try:
+                        int(e.split(':', 1)[0])
+                    except ValueError:
+                        return None
+                fr = num('frontier_ns', cov)
+                bb = num('band_base_ns', '0')
+                of = num('overlap_from_ns', '0')
+                ht = num('history_to_ns', '0')
+                if fr is None or bb is None or of is None or ht is None:
+                    return None
+                out = {'covered_to_ns': cov, 'frontier_ns': fr, 'band': list(band), 'band_base_ns': bb,
+                       'overlap_from_ns': of, 'history_to_ns': ht}
+                at = _iso_of(c.get('at'))
+                if at is not None:
+                    out['at'] = at
+                return out
+
+            n_inc, n_cur = 0, 0
+            ## The fork's cursors are ADOPTED where decide writes cursors —
+            ## after the lanes' own writes, which a failed walk hands back and
+            ## would otherwise clobber the adopted frontier with (the early
+            ## merge below only STASHES them).
+            for fp, srec in (_fork.get('incidents') or {}).items():
+                if not isinstance(fp, str):
+                    continue
+                rec = _adopt_record(fp, srec)
+                if rec is None:
+                    print('prod-watch: an incident of the session fork (' + repr(fp)[:60] + ') is not a shape the watch state '
+                          'can carry -- not adopted', file=sys.stderr)
+                    continue
+                wrec = incidents.get(fp)
+                if wrec is None:
+                    incidents[fp] = rec
+                else:
+                    ## Both carry it: the session's is the later lifecycle of
+                    ## the same incident (its fork started from the watch
+                    ## state), the watch's flags the words its channel heard.
+                    ## A word said is never unsaid by the merge, and the
+                    ## monotone fields only move forward.
+                    rec['alerted'] = bool(rec.get('alerted')) or bool(wrec.get('alerted'))
+                    rec['quiet_noted'] = bool(rec.get('quiet_noted')) or bool(wrec.get('quiet_noted'))
+                    rec['closed_said'] = bool(rec.get('closed_said')) or bool(wrec.get('closed_said'))
+                    rec['backlog'] = bool(rec.get('backlog')) or bool(wrec.get('backlog'))
+                    if RANK.get(wrec.get('severity') or '', 0) > RANK.get(rec.get('severity') or '', 0):
+                        rec['severity'] = wrec.get('severity')
+                    rec['count'] = max(int(rec.get('count') or 0), int(wrec.get('count') or 0))
+                    for f in ('last_seen', 'last_notified', 'sentry_last_seen'):
+                        wv = wrec.get(f)
+                        if wv and (not rec.get(f) or wv > rec[f]):
+                            rec[f] = wv
+                    wv = wrec.get('first_seen')
+                    if wv and (not rec.get('first_seen') or wv < rec['first_seen']):
+                        rec['first_seen'] = wv
+                    incidents[fp] = rec
+                n_inc += 1
+            for q, sc in ((_fork.get('cursors') or {}).get('loki') or {}).items():
+                if not isinstance(q, str):
+                    continue
+                ac = _adopt_cursor(sc)
+                if ac is None:
+                    print('prod-watch: the session cursor of loki query ' + repr(q)[:60] + ' is not a shape the watch state '
+                          'can carry -- not adopted', file=sys.stderr)
+                    continue
+                _adopt_loki[q] = ac
+                n_cur += 1
+            sc = (_fork.get('cursors') or {}).get('sentry')
+            if isinstance(sc, dict):
+                _adopt_sentry = sc
+            state['adopted_session'] = _marker
+            adopted_gen = gen_of(_fork)
+            print('prod-watch: adopted the session fork read-only — ' + str(n_inc) + ' incident(s), ' + str(n_cur) +
+                  ' loki cursor(s) ahead', file=sys.stderr)
+    state['generation'] = max(generation_seen, gen_of(state), adopted_gen) + 1
     def ns_to_iso(ts):
         try:
             return datetime.datetime.fromtimestamp(int(ts) / 1e9, datetime.timezone.utc).isoformat(timespec='minutes')
@@ -5698,6 +5883,47 @@ tool decide:
             cursors[q] = {'covered_to_ns': str(info['covered_to_ns']), 'frontier_ns': str(info.get('frontier_ns') or info['covered_to_ns']),
                           'at': now_iso, 'band': list(info.get('band') or []), 'band_base_ns': str(info.get('band_base_ns') or 0),
                           'overlap_from_ns': str(info.get('overlap_from_ns') or 0), 'history_to_ns': str(info.get('history_next_ns') or 0)}
+    ## The session fork's cursors, adopted READ-ONLY where the tick's own
+    ## writes just landed (the adoption merged the fork's incidents above):
+    ## the session's frontier where it is AHEAD of what this tick walked —
+    ## a failed or truncated walk hands back the watch's old marks, and the
+    ## session's memory must not be lost to them. A query neither walked nor
+    ## known keeps the watch's own cursor universe as it is.
+    if _adopt_loki:
+        for q, ac in _adopt_loki.items():
+            wc = cursors.get(q)
+            ahead = q in loki_per_query or isinstance(wc, dict)
+            if ahead and isinstance(wc, dict):
+                try:
+                    ahead = int(str(wc.get('covered_to_ns') or 0)) < int(ac['covered_to_ns'])
+                except ValueError:
+                    ahead = True
+            if ahead:
+                cursors[q] = ac
+    if _adopt_sentry:
+        ## Sentry: the `since` where the session is ahead, under the SAME
+        ## identity — another identity's clock says nothing about this
+        ## lane's reading. The arming stays the watch's when it has one,
+        ## and the identity stamp travels with the cursor it belongs to.
+        sc = _adopt_sentry
+        ident = sc.get('identity')
+        since = _iso_of(sc.get('since'), tz=True)
+        if since is not None and isinstance(ident, dict) and all(isinstance(ident.get(k), str)
+                                                                 for k in ('base_url', 'org', 'project', 'environment')):
+            wcur = state['cursors'].get('sentry')
+            wcur = wcur if isinstance(wcur, dict) else None
+            same = wcur is not None and wcur.get('identity') == ident
+            ahead = wcur is None
+            if same:
+                w_since = _iso_of(wcur.get('since'), tz=True)
+                ahead = bool(w_since and datetime.datetime.fromisoformat(w_since) < datetime.datetime.fromisoformat(since))
+            if ahead:
+                armed = wcur.get('armed_at') if same else sc.get('armed_at')
+                state['cursors']['sentry'] = {'identity': ident, 'since': since,
+                                              'armed_at': _iso_of(armed, tz=True) or since,
+                                              'at': _iso_of(sc.get('at'), tz=True) or ''}
+                if state.get('sentry_identity') is None and isinstance(_fork.get('sentry_identity'), str):
+                    state['sentry_identity'] = _fork['sentry_identity']
     needs_analysis = any(a['state'] in ('new', 'escalated', 'regressed', 'escalating', 'reopened') and a['kind'] in ('probe', 'prom', 'loki', 'sentry')
                          for a in posted)
 
