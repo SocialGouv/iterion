@@ -476,9 +476,28 @@ func (e *ClawExecutor) runToolNodeCore(
 		// runErr would travel joined to its verdict. The cut itself travels
 		// to the parse below, which is where a consumer of the OUTPUT can
 		// still be told the bytes may stop mid-answer.
-		stderrStr = noteAbandonedDrain(stderrStr, drainBound)
+		//
+		// The cut is also the node's TEARDOWN of what held the drain
+		// (#2883): exec's context watcher hands its verdict to Wait as soon
+		// as the direct child is REAPED, so the group kill
+		// [proc.TerminateGroupOnCancel] arms is never dispatched once the
+		// shell has exited — a leftover would otherwise survive the node's
+		// whole teardown window (measured: a node under a 3 s deadline whose
+		// command left `sleep 30 &` came back at 30 s, the group's kill
+		// never sent). The group id is the child's own pid, recorded at
+		// spawn, and the kill is delivered HERE — inside the window the
+		// bound just closed, never stored for later, so it cannot land on a
+		// group the OS built over the recycled id. What the signal cannot
+		// reach (a descendant that escaped the group, an in-container job
+		// behind a driver's exec client) keeps its own bound: the pipes the
+		// cut closed under it, the sandbox teardown, the completion sweep.
+		groupKilled, killErr := proc.KillProcessGroup(tc.cmd)
+		if killErr != nil && e.logger != nil {
+			e.logger.Warn("tool node %q: the group the command led could not be killed: %v", node.ID, killErr)
+		}
+		stderrStr = noteAbandonedDrain(stderrStr, drainBound, groupKilled)
 		if e.logger != nil {
-			e.logger.Warn("tool node %q: %s", node.ID, abandonedDrainReport(drainBound))
+			e.logger.Warn("tool node %q: %s", node.ID, abandonedDrainReport(drainBound, groupKilled))
 		}
 		runErr = nil
 	}
@@ -684,7 +703,10 @@ func (e *ClawExecutor) toolNodePolicyIdentity(ctx context.Context, name string) 
 // as the direct child is REAPED, so once the shell has exited that kill is
 // never dispatched, whatever the context does afterwards (measured: a node
 // under a 3 s deadline whose command left `sleep 30 &` came back at 30 s
-// with no error).
+// with no error). That is why the cut is also where the group kill lands
+// (#2883): [proc.KillProcessGroup] is dispatched where the sentinel is read,
+// inside the window the bound just closed, so the leftover that held the
+// drain does not survive the node's teardown.
 //
 // Two seconds, the family's default: the copier drains the output WHILE the
 // command runs, so what is left to read at its exit is a pipe buffer, not a
@@ -820,24 +842,32 @@ const toolNodeDrainCutKey = "_drain_cut"
 // stopped the wait for an output a process the command left behind still
 // holds: what the site KNOWS — the command exited 0, something still holds
 // the pipe, the wait stopped at the bound that ran — and the knob that
-// widens it.
+// widens it. groupKilled says whether the teardown that rides the cut
+// ([proc.KillProcessGroup], dispatched where the cut is read) signalled the
+// process group the command led; it is false on a driver whose client was
+// never made a group leader and when the group was already gone, and the
+// report then says nothing about a kill rather than claim one.
 //
 // Never that the output was "read short": what the bound cuts is the TAIL of
 // a copy, and the measured case is a complete answer whose fd a descendant
 // merely kept — this site cannot tell the two apart, so it reports only the
 // one it can prove. The one shape where the difference is invisible to a
 // reader of the OUTPUT carries [toolNodeDrainCutKey] instead.
-func abandonedDrainReport(bound time.Duration) string {
-	return fmt.Sprintf("the command exited 0 and a process it left still holds its output; stopped waiting %s",
+func abandonedDrainReport(bound time.Duration, groupKilled bool) string {
+	report := fmt.Sprintf("the command exited 0 and a process it left still holds its output; stopped waiting %s",
 		proc.WaitDelayHint(bound))
+	if groupKilled {
+		report += "; the process group the command led was killed"
+	}
+	return report
 }
 
 // noteAbandonedDrain adds that report to the stderr the node's event and the
 // run log carry, so the drain is auditable from the node itself and not only
 // from the engine's log. Engine prose, marked as such: the directives a tool
 // node's output declares are `[iterion] <key>=` lines, which this is not.
-func noteAbandonedDrain(stderr string, bound time.Duration) string {
-	note := "iterion: " + abandonedDrainReport(bound)
+func noteAbandonedDrain(stderr string, bound time.Duration, groupKilled bool) string {
+	note := "iterion: " + abandonedDrainReport(bound, groupKilled)
 	if trimmed := strings.TrimRight(stderr, "\n"); trimmed != "" {
 		return trimmed + "\n" + note
 	}

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -129,10 +130,12 @@ func TestToolNodeKeepsItsAnswerAndReportsTheDrainALeftoverHeld(t *testing.T) {
 				t.Errorf("the node came back in %s, no sooner than the holder's own %s: the bound did not stop the wait", elapsed, holders.holds)
 			}
 			// What the report must say is what happened: the command
-			// exited 0, something it left still holds the output, and the
-			// wait stopped at the bound that ran. "read short" would be a
-			// fact this site does not have — the answer above is whole.
-			for _, want := range []string{"exited 0", "still holds its output", "stopped waiting", tc.wantBound, proc.WaitDelayEnv} {
+			// exited 0, something it left still holds the output, the
+			// wait stopped at the bound that ran — and the teardown that
+			// rides the cut killed the group the command led (#2883).
+			// "read short" would be a fact this site does not have — the
+			// answer above is whole.
+			for _, want := range []string{"exited 0", "still holds its output", "stopped waiting", tc.wantBound, proc.WaitDelayEnv, "the process group the command led was killed"} {
 				if !strings.Contains(events.callOutput(), want) {
 					t.Errorf("the node's event does not name %q: %s", want, events.callOutput())
 				}
@@ -462,22 +465,24 @@ func newLeftoverHolders(t *testing.T) *leftoverHolders {
 // recipe is a shell body that prints printed, leaves ONE process holding the
 // output past the bound, and exits 0.
 //
-// The holder traps PIPE with an empty handler: past the bound the pipes are
-// closed under it, and the default SIGPIPE would kill it before it could
-// report that it had finished — which [leftoverHolders.join] waits for, so no
-// shell outlives the suite. Each holder reports under its own pid, so a run
-// that ran the command twice is joined twice.
+// The holder records its own pid first (live-$BASHPID), so
+// [leftoverHolders.join] judges it however it ended: a holder whose drain was
+// cut is SIGKILLed at the bound — the cut is also the node's teardown of the
+// group the command led (#2883) — long before its sleep would end, and only
+// a holder nothing cut runs the sleep out and writes its report under the
+// run's shell pid ($$), so a run that ran the command twice is joined twice.
 func (h *leftoverHolders) recipe(printed string) string {
-	return fmt.Sprintf("( trap '' PIPE; sleep %.1f; : > %q/$$ ) &\nprintf '%%s\\n' %q\nexit 0",
-		h.holds.Seconds(), h.dir, printed)
+	return fmt.Sprintf("( : > %q/live-$BASHPID; sleep %.1f; : > %q/$$ ) &\nprintf '%%s\\n' %q\nexit 0",
+		h.dir, h.holds.Seconds(), h.dir, printed)
 }
 
 // redirectedRecipe is the same holder with its own streams: the way out the
 // DSL page gives an author. The job holds a file, never the node's output, so
-// nothing is left for the bound to cut.
+// nothing is left for the bound to cut — and nothing for the teardown to
+// kill: the group is signalled only when the bound fired (#2883).
 func (h *leftoverHolders) redirectedRecipe(printed string) string {
-	return fmt.Sprintf("( trap '' PIPE; sleep %.1f; : > %q/$$ ) >/dev/null 2>&1 &\nprintf '%%s\\n' %q\nexit 0",
-		h.holds.Seconds(), h.dir, printed)
+	return fmt.Sprintf("( : > %q/live-$BASHPID; sleep %.1f; : > %q/$$ ) >/dev/null 2>&1 &\nprintf '%%s\\n' %q\nexit 0",
+		h.dir, h.holds.Seconds(), h.dir, printed)
 }
 
 // insideBoundRecipe is the shape where the bound never bites: the command
@@ -486,42 +491,78 @@ func (h *leftoverHolders) redirectedRecipe(printed string) string {
 // job, nothing is left to cut — and the job's bytes are spliced into the
 // answer the command meant to publish.
 //
-// No PIPE trap here, unlike the holders above, and that is deliberate: the
-// pipe is never closed under this job, so it reports its exit the ordinary
-// way. A run where the bound DID bite would kill it on its write instead,
-// and [leftoverHolders.join] says so — the inconclusive-run guard of the
-// witness that uses this recipe.
+// A run where the bound DID bite kills the job at the bound (#2883), before
+// its late write — and [leftoverHolders.join] says so: the inconclusive-run
+// guard of the witness that uses this recipe.
 func (h *leftoverHolders) insideBoundRecipe(printed, late string) string {
-	return fmt.Sprintf("( sleep %.2f; printf '%%s' %q; : > %q/$$ ) &\nprintf '%%s' %q\nexit 0",
-		h.letsGo.Seconds(), late, h.dir, printed)
+	return fmt.Sprintf("( : > %q/live-$BASHPID; sleep %.2f; printf '%%s' %q; : > %q/$$ ) &\nprintf '%%s' %q\nexit 0",
+		h.dir, h.letsGo.Seconds(), late, h.dir, printed)
 }
 
 // cutAnswerRecipe is the one shape where the bytes the bound leaves in hand
 // really are a PREFIX: the answer is written by the process the command left,
 // which prints its head at once and its tail past the bound. The command
-// itself prints nothing and exits 0.
-//
-// The trap is what lets the holder report: its tail write lands on a pipe the
-// bound has closed, and the default SIGPIPE would kill it before it could say
-// it had finished — which [leftoverHolders.join] waits for.
+// itself prints nothing and exits 0. The tail never lands: the teardown that
+// rides the cut SIGKILLs the holder at the bound (#2883), during its sleep.
 func (h *leftoverHolders) cutAnswerRecipe(head, tail string) string {
-	return fmt.Sprintf("( trap '' PIPE; printf '%%s' %q; sleep %.1f; printf '%%s\n' %q; : > %q/$$ ) &\nexit 0",
-		head, h.holds.Seconds(), tail, h.dir)
+	return fmt.Sprintf("( : > %q/live-$BASHPID; printf '%%s' %q; sleep %.1f; printf '%%s\n' %q; : > %q/$$ ) &\nexit 0",
+		h.dir, head, h.holds.Seconds(), tail, h.dir)
 }
 
-// join waits for the n holders the test's runs left behind.
+// join waits until the n holders the test's runs left behind are GONE. A cut
+// holder never reports — the teardown's SIGKILL lands at the bound, mid-sleep
+// — so "gone" is read by pid liveness, which covers both endings: killed at
+// the bound, or run out and exited after reporting.
 func (h *leftoverHolders) join(n int) {
 	h.t.Helper()
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
-		if left, err := os.ReadDir(h.dir); err == nil && len(left) >= n {
+		pids := h.holderPids()
+		if len(pids) >= n && !h.anyAlive(pids) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	left, _ := os.ReadDir(h.dir)
-	h.t.Errorf("%d of the %d leftover holders never reported their exit (%s) — one may outlive the suite",
-		n-len(left), n, filepath.Clean(h.dir))
+	pids := h.holderPids()
+	var alive []int
+	for _, pid := range pids {
+		if processAlive(pid) {
+			alive = append(alive, pid)
+		}
+	}
+	h.t.Errorf("%d holder pid(s) recorded (%v), %d still alive (%v) after their runs (%s) — one may outlive the suite",
+		len(pids), pids, len(alive), alive, filepath.Clean(h.dir))
+}
+
+// holderPids reads the pid each holder recorded at its start.
+func (h *leftoverHolders) holderPids() []int {
+	h.t.Helper()
+	entries, err := os.ReadDir(h.dir)
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, e := range entries {
+		pidStr, ok := strings.CutPrefix(e.Name(), "live-")
+		if !ok {
+			continue
+		}
+		if pid, err := strconv.Atoi(pidStr); err == nil {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+// anyAlive reports whether any of pids still names a live process.
+func (h *leftoverHolders) anyAlive(pids []int) bool {
+	h.t.Helper()
+	for _, pid := range pids {
+		if processAlive(pid) {
+			return true
+		}
+	}
+	return false
 }
 
 // lockedSink is a log sink a test reads while the node that writes it runs in
@@ -632,20 +673,26 @@ func (e *toolNodeEvents) delivered() bool {
 // What a job must do to outlive the node, MEASURED on the host — the
 // prescription the DSL page gives, and the reason it is a prescription and
 // not an afterthought. The bound does not merely stop waiting: it closes the
-// descriptors exec owns (the parent ends of the pipes it made), and a job
-// still writing to the node's output takes the default SIGPIPE at its next
-// write. So `server &` as the page once showed it is killed by the engine
-// moments after the node reports success, and `server >log 2>&1 &` is what
-// survives.
+// descriptors exec owns (the parent ends of the pipes it made), and the cut
+// is also the node's TEARDOWN of the group the command led (#2883) —
+// [proc.KillProcessGroup] is dispatched where the cut is read, because exec's
+// context watcher is gone by then and the kill it armed is never dispatched.
+// So `server &` as the page once showed it dies AT the bound — mid-sleep,
+// before the write that would have taken SIGPIPE is due — a job that traps
+// PIPE dies all the same (the group kill does not consult the trap), and
+// `server >log 2>&1 &` is what survives: nothing it holds is the node's
+// output, so nothing is cut and no group is killed.
 //
 // The same arm measures the second cost of the unredirected form: the job's
 // lines interleave with the command's own answer in one pipe, so the node's
 // structured output is destroyed — it comes back as the `result` wrapper,
 // marked as a possible prefix, instead of the object the recipe printed.
 //
-// Mutation seen red: drop the [proc.SetWaitDelay] call in
+// Mutations seen red: drop the [proc.SetWaitDelay] call in
 // runWithSeparateStreams — with no bound nothing closes the pipe, the job
-// writes its way to the end and the unredirected arm reads a survivor.
+// writes its way to the end and the unredirected arm reads a survivor; and
+// drop the [proc.KillProcessGroup] call in runToolNodeCore — the job is alive
+// at its death window, and the trapping arm reads its SIGPIPE.
 func TestABackgroundJobThatKeepsWritingDiesAtTheBoundAndRedirectionIsHowItOutlivesTheNode(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell fixture, and the job is a background one")
@@ -660,16 +707,16 @@ func TestABackgroundJobThatKeepsWritingDiesAtTheBoundAndRedirectionIsHowItOutliv
 		// to, before the `&`: "" is the `server &` form, the redirect is
 		// the way out.
 		streams string
-		// traps is whether the job handles PIPE and says so: the arm that
-		// names the signal, rather than inferring one from a job that
-		// stopped.
+		// traps is whether the job arms a PIPE handler that records the
+		// signal: the arm that carries it proves the teardown's kill is not
+		// the pipe's SIGPIPE — the trap is armed and never fires.
 		traps bool
 		// wantSurvives is whether the job lives past the node it was left
 		// behind by.
 		wantSurvives bool
 	}{
-		{name: "a job writing to the output it inherited is killed at its next write", streams: "", wantSurvives: false},
-		{name: "the signal that killed it is SIGPIPE, and the job itself says so", streams: "", traps: true, wantSurvives: false},
+		{name: "a job writing to the output it inherited is killed at the bound", streams: "", wantSurvives: false},
+		{name: "a job that traps PIPE is killed all the same — the group kill does not consult the trap", streams: "", traps: true, wantSurvives: false},
 		{name: "a job that redirected its own streams outlives the node", streams: ">/dev/null 2>&1 ", wantSurvives: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -708,15 +755,31 @@ func TestABackgroundJobThatKeepsWritingDiesAtTheBoundAndRedirectionIsHowItOutliv
 			if elapsed >= job.pause {
 				t.Fatalf("the node came back in %s, no sooner than the job's next write (%s): the bound did not fire before it, so this run cannot say whether the write survived", elapsed, job.pause)
 			}
+			if !tc.wantSurvives {
+				// The kill lands AT the bound (#2883): the job's pid stops
+				// naming a live process long before its second write was
+				// due. Without it the job lived on to that write, where the
+				// closed pipe's SIGPIPE was the only thing that stopped it —
+				// and a job that never wrote again survived the node's whole
+				// teardown window.
+				remaining := time.Until(start.Add(job.pause))
+				if remaining <= 1500*time.Millisecond {
+					t.Fatalf("the node came back with only %s before the job's next write: too late to prove the kill landed first", remaining)
+				}
+				if !job.deadWithin(remaining - time.Second) {
+					t.Errorf("the job (pid %d) is still alive %s after the node returned: the teardown did not kill the group the command led", job.pid(), remaining-time.Second)
+				}
+			}
 			survived := job.wrote(2, job.pause+5*time.Second)
 			if survived != tc.wantSurvives {
-				t.Errorf("the job wrote again past the bound: %v, want %v — on the host the bound closes the pipes exec owns, so a job still writing to the node's output takes SIGPIPE and only a job that redirected its streams outlives the node", survived, tc.wantSurvives)
+				t.Errorf("the job wrote again past the bound: %v, want %v — on the host the bound's cut kills the group the command led, and only a job that redirected its streams outlives the node", survived, tc.wantSurvives)
 			}
-			// The signal, from the job's own hand: a handler that fired is
-			// the difference between "the job stopped" and "the write took
-			// SIGPIPE", which is what the DSL page now tells an author.
-			if signalled := job.tookSIGPIPE(); signalled != tc.traps {
-				t.Errorf("the job reported SIGPIPE: %v, want %v", signalled, tc.traps)
+			// The trap was armed in one arm and never fired in any: the
+			// teardown's SIGKILL lands at the bound, mid-sleep, before the
+			// write that would have taken SIGPIPE is due — the kill is not
+			// the pipe's signal, and a trap cannot shield the job from it.
+			if signalled := job.tookSIGPIPE(); signalled {
+				t.Errorf("the job reported SIGPIPE: the write that would take it is never reached once the group is killed at the bound")
 			}
 			if !tc.wantSurvives {
 				// The answer is destroyed too: the job's lines and the
@@ -742,6 +805,154 @@ func TestABackgroundJobThatKeepsWritingDiesAtTheBoundAndRedirectionIsHowItOutliv
 			}
 		})
 	}
+}
+
+// The ticket's shape (#2883): a command whose shell spawns a grandchild and
+// DIES — the drain bound abandons the wait, and the group the shell led must
+// not survive the node's teardown window. exec's context watcher hands its
+// verdict to Wait as soon as the direct child is reaped, so the kill
+// [proc.TerminateGroupOnCancel] arms is unreachable by then (measured: a node
+// under a 3 s deadline whose command left `sleep 30 &` came back at 30 s, the
+// group kill never sent) — the cut is the last moment the recorded group id
+// is known to be ours, and that is where the kill lands.
+//
+// Mutation seen red: drop the [proc.KillProcessGroup] call in
+// runToolNodeCore — the grandchild is alive at the whole death window.
+func TestAGrandchildLeftHoldingTheOutputIsKilledWithTheGroupAtTheBound(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture, and the grandchild is a background job")
+	}
+	t.Setenv(proc.WaitDelayEnv, "")
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "pid")
+	// `exec` keeps the subshell's pid for the sleep, so the parent's $! IS
+	// the grandchild's. The grandchild writes nothing: it merely HOLDS the
+	// node's output pipe — the straggler shape the drain bound reports and
+	// the old world let live out its thirty seconds.
+	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "gate"}, Command: fmt.Sprintf("( exec sleep 30 ) &\necho $! > %q\nprintf '{\"started\":true}\\n'\nexit 0", pidFile)}
+	events := &toolNodeEvents{}
+	ex := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithToolPolicy(tool.OpenPolicy()), events.hooks())
+
+	start := time.Now()
+	res, err := runToolNodeUnderDeadline(t, ex, node)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("the node failed although its command exited 0: %v", err)
+	}
+	if res["started"] != true {
+		t.Fatalf("the node's output is %v, want the object its command printed", res)
+	}
+	if elapsed >= 10*time.Second {
+		t.Fatalf("the node took %s: it waited the grandchild out instead of cutting the drain at the bound", elapsed)
+	}
+	// The premise: a process was left holding the output — the cut happened,
+	// and the report says so and names the teardown's kill. Without a cut
+	// there is no group to kill and the death below would prove nothing.
+	report := events.callOutput()
+	if !strings.Contains(report, "still holds its output") {
+		t.Fatalf("the drain was not cut, so no teardown ran: %s", report)
+	}
+	if !strings.Contains(report, "the process group the command led was killed") {
+		t.Errorf("the report does not name the teardown's kill: %s", report)
+	}
+	raw, rerr := os.ReadFile(pidFile)
+	if rerr != nil {
+		t.Fatalf("the command never recorded the grandchild's pid: %v", rerr)
+	}
+	pid, perr := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if perr != nil {
+		t.Fatalf("the grandchild's pid file holds %q: %v", raw, perr)
+	}
+	// 30 s of sleep against a 2 s bound: a grandchild alive past this window
+	// survived the teardown, not its own timer.
+	t.Cleanup(func() {
+		if processAlive(pid) {
+			if p, perr := os.FindProcess(pid); perr == nil {
+				_ = p.Kill()
+				_ = p.Release()
+			}
+		}
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !processAlive(pid) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Errorf("the grandchild (pid %d) outlived the node's teardown window: the group the shell led was never killed — the kill the context watcher holds is unreachable once the direct child is reaped", pid)
+}
+
+// The kill clause is conditional on the group actually taking the signal
+// (#2883): a holder that ESCAPED the group it was spawned in (its own
+// setsid) while keeping the pipe leaves the group EMPTY — kill(-pgid)
+// answers ESRCH, [proc.KillProcessGroup] reports (false, nil), and the
+// report says nothing about a kill rather than claim one. The same arm pins
+// the boundary the docs name: what the group kill cannot reach outlives the
+// node on its own clock.
+//
+// Mutation seen red: drop the `if groupKilled` condition on the report
+// clause in runToolNodeCore — this witness reads a kill that never happened
+// in the node's event.
+func TestACutReportsNoKillWhenTheGroupIsAlreadyGone(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture, and the holder escapes the group by setsid")
+	}
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skip("the fixture's holder escapes its group with setsid(1), which this host does not carry")
+	}
+	t.Setenv(proc.WaitDelayEnv, "")
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "pid")
+	// `( exec setsid sleep 30 ) &` — the subshell is no group leader
+	// (non-interactive bash keeps jobs in the shell's group), so setsid(2)
+	// succeeds in place and the sleep KEEPS the subshell's pid while leaving
+	// the group (measured: ps reads PGID == SID == its own pid): $! names it,
+	// the pipe it inherited still holds the node's output, and the group the
+	// shell led is empty once the shell is reaped.
+	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "gate"}, Command: fmt.Sprintf("( exec setsid sleep 30 ) &\necho $! > %q\nprintf '{\"started\":true}\\n'\nexit 0", pidFile)}
+	events := &toolNodeEvents{}
+	ex := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithToolPolicy(tool.OpenPolicy()), events.hooks())
+
+	res, err := runToolNodeUnderDeadline(t, ex, node)
+	if err != nil {
+		t.Fatalf("the node failed although its command exited 0: %v", err)
+	}
+	if res["started"] != true {
+		t.Fatalf("the node's output is %v, want the object its command printed", res)
+	}
+	report := events.callOutput()
+	// The premise: the cut happened — the escaped holder still holds the
+	// pipe. Without the cut there is no teardown, and the absence of the
+	// clause would prove nothing.
+	if !strings.Contains(report, "still holds its output") {
+		t.Fatalf("the drain was not cut, so no teardown ran: %s", report)
+	}
+	if strings.Contains(report, "the process group the command led was killed") {
+		t.Errorf("the report claims the group was killed, but the only member left had escaped it by setsid and kill(-pgid) answered ESRCH: %s", report)
+	}
+	// The boundary, pinned: the escaped holder is out of the group kill's
+	// reach and lives out its own clock.
+	raw, rerr := os.ReadFile(pidFile)
+	if rerr != nil {
+		t.Fatalf("the command never recorded the holder's pid: %v", rerr)
+	}
+	pid, perr := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if perr != nil {
+		t.Fatalf("the holder's pid file holds %q: %v", raw, perr)
+	}
+	if !processAlive(pid) {
+		t.Errorf("the escaped holder (pid %d) is dead although nothing signalled it: this run is not the shape the witness needs — a straggler the group kill cannot reach", pid)
+	}
+	t.Cleanup(func() {
+		if processAlive(pid) {
+			if p, perr := os.FindProcess(pid); perr == nil {
+				_ = p.Kill()
+				_ = p.Release()
+			}
+		}
+	})
 }
 
 // A cut the exit-status family keeps the success of can still have cost
@@ -966,14 +1177,16 @@ type writingJob struct {
 	dir string
 	// pause is DERIVED from this site's bound, so the job's second write
 	// lands well past the bound however the bound changes: the margin is
-	// the wall-clock slack leftoverHolders takes, for the same reason —
-	// the bound's timer can fire late on a loaded machine.
+	// the wall-clock slack leftoverHolders takes, doubled — the witness
+	// below also asserts the job is DEAD before that write was due (#2883),
+	// and a bound firing late on a loaded machine must not let the write
+	// land inside the death window.
 	pause time.Duration
 }
 
 func newWritingJob(t *testing.T) *writingJob {
 	t.Helper()
-	return &writingJob{t: t, dir: t.TempDir(), pause: toolNodeDrainBound + 2*time.Second}
+	return &writingJob{t: t, dir: t.TempDir(), pause: toolNodeDrainBound + 4*time.Second}
 }
 
 // recipe prints printed as the node's answer and leaves a job that writes
@@ -981,18 +1194,57 @@ func newWritingJob(t *testing.T) *writingJob {
 // redirection the job's own streams get — "" for `server &`, and
 // ">/dev/null 2>&1 " for the form that keeps the node's output to itself.
 // Each write is a line first and the report of that line second, so a job
-// killed by the write reports nothing.
+// killed by the write reports nothing. The job records its own pid first, so
+// a witness can judge it dead, not merely silent.
 //
-// traps makes the job NAME the signal instead of leaving a witness to infer
-// it: the handler records that PIPE was delivered and ends the job there, so
-// the recorded signal and the write it never completed are the same event.
+// traps makes the job arm a PIPE handler that records the signal: the arm
+// that carries it proves the teardown's kill does not CONSULT the trap —
+// the group is SIGKILLed at the bound, mid-sleep, before the write that
+// would have taken SIGPIPE is due (#2883).
 func (j *writingJob) recipe(printed, streams string, traps bool) string {
 	trap := ""
 	if traps {
 		trap = fmt.Sprintf("trap 'printf SIGPIPE > %q; exit 141' PIPE; ", j.signalFile())
 	}
-	return fmt.Sprintf("( %sprintf 'tick 1\\n'; : > %q/1; sleep %.1f; printf 'tick 2\\n'; : > %q/2; printf 'tick 3\\n'; : > %q/3 ) %s&\nprintf '%%s\\n' %q\nexit 0",
-		trap, j.dir, j.pause.Seconds(), j.dir, j.dir, streams, printed)
+	return fmt.Sprintf("( echo $BASHPID > %q; %sprintf 'tick 1\\n'; : > %q/1; sleep %.1f; printf 'tick 2\\n'; : > %q/2; printf 'tick 3\\n'; : > %q/3 ) %s&\nprintf '%%s\\n' %q\nexit 0",
+		j.pidFile(), trap, j.dir, j.pause.Seconds(), j.dir, j.dir, streams, printed)
+}
+
+// pidFile is where the job records its own pid at start.
+func (j *writingJob) pidFile() string {
+	return j.dir + ".pid"
+}
+
+// pid reads the pid the job recorded, failing the test if it never did — a
+// job without a recorded pid is not the shape the witness needs.
+func (j *writingJob) pid() int {
+	j.t.Helper()
+	raw, err := os.ReadFile(j.pidFile())
+	if err != nil {
+		j.t.Fatalf("the job never recorded its pid: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		j.t.Fatalf("the job's pid file holds %q: %v", raw, err)
+	}
+	return pid
+}
+
+// deadWithin reports whether the job's recorded pid stopped naming a live
+// process within d.
+func (j *writingJob) deadWithin(d time.Duration) bool {
+	j.t.Helper()
+	pid := j.pid()
+	deadline := time.Now().Add(d)
+	for {
+		if !processAlive(pid) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // signalFile is where a trapping job records the signal it took. It lives

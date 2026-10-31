@@ -125,6 +125,74 @@ func TestTerminateGroupOnCancelOnAReapedCommandIsNotAnError(t *testing.T) {
 	}
 }
 
+// TestKillProcessGroupAnswersWhetherALiveGroupTookTheSignal pins the four
+// shapes the drain cut's report is built from (#2883): (true, nil) when a
+// member of the group the command led still lived, and the three (false, nil)
+// shapes — a command never started, a command never made its group's leader
+// (there is no recorded group id, and guessing one could land on a group the
+// OS built over the recycled pid), and a group already gone (ESRCH).
+func TestKillProcessGroupAnswersWhetherALiveGroupTookTheSignal(t *testing.T) {
+	t.Run("a command never started", func(t *testing.T) {
+		cmd := exec.Command("sh", "-c", "true")
+		TerminateGroupOnCancel(cmd)
+		if killed, err := KillProcessGroup(cmd); killed || err != nil {
+			t.Errorf("KillProcessGroup on an unstarted command = (%v, %v), want (false, nil)", killed, err)
+		}
+	})
+
+	t.Run("a command that never led a group is not signalled", func(t *testing.T) {
+		// No DetachProcessGroup: the child shares THIS process's group, so
+		// its pid names no group — the one shape where kill(-pid) could be a
+		// guess at somebody else's recycled id, and the primitive declines it.
+		cmd := exec.Command("sh", "-c", "true")
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if killed, err := KillProcessGroup(cmd); killed || err != nil {
+			t.Errorf("KillProcessGroup on a non-leader = (%v, %v), want (false, nil)", killed, err)
+		}
+	})
+
+	t.Run("a group already gone is ESRCH, mapped to no-signal", func(t *testing.T) {
+		cmd := exec.Command("sh", "-c", "true")
+		DetachProcessGroup(cmd)
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		// Reaping is the precondition, not exiting: until Wait runs the
+		// child is a zombie, still a member of its group.
+		if err := syscall.Kill(-cmd.Process.Pid, 0); err != syscall.ESRCH {
+			t.Fatalf("group %d still addressable after reaping (%v) — the precondition this arm needs does not hold", cmd.Process.Pid, err)
+		}
+		if killed, err := KillProcessGroup(cmd); killed || err != nil {
+			t.Errorf("KillProcessGroup on a gone group = (%v, %v), want (false, nil)", killed, err)
+		}
+	})
+
+	t.Run("a group with a live member takes the signal", func(t *testing.T) {
+		// The direct child exits at once; the grandchild it backgrounded
+		// holds the group open — the drain-cut shape the call site serves.
+		cmd := exec.Command("sh", "-c", "sleep 30 & exit 0")
+		DetachProcessGroup(cmd)
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if killed, err := KillProcessGroup(cmd); !killed || err != nil {
+			t.Fatalf("KillProcessGroup on a live group = (%v, %v), want (true, nil)", killed, err)
+		}
+		// The grandchild is gone with its group: nothing answers signal 0
+		// at that pgid.
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if syscall.Kill(-cmd.Process.Pid, 0) == syscall.ESRCH {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Errorf("the group is still addressable after the signal — the grandchild survived it")
+	})
+}
+
 // TestDetachProcessGroupDoesNotSignal keeps the two primitives distinct: the
 // isolation-only one must never install a Cancel, or every caller that picked
 // it to SURVIVE a parent's signal would start dying with its context.

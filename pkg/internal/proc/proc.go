@@ -14,6 +14,13 @@
 //     SIGKILLed, so a grandchild the child spawned dies with it instead of
 //     surviving and holding the inherited output pipes.
 //
+//   - [KillProcessGroup] — the same signal, dispatched by the CALLER at the
+//     moment the wait on the child ends, for the window TerminateGroupOnCancel
+//     cannot cover: os/exec's context watcher hands its verdict to Wait as
+//     soon as the direct child is reaped, so a Cancel armed on the context is
+//     never dispatched once the shell has exited, whatever the context does
+//     afterwards. The group id is the child's own pid, recorded at spawn.
+//
 // Setpgid alone gives neither guarantee to the descendants: it only makes
 // the group addressable. A cancellation path that stops at Setpgid stops
 // the WAIT, not the work.

@@ -20,3 +20,9 @@ func DetachProcessGroup(_ *exec.Cmd) {}
 // claudesdk.killProcessGroup's Windows arm, which shells out to
 // `taskkill /F /T`.
 func TerminateGroupOnCancel(_ *exec.Cmd) {}
+
+// KillProcessGroup is a no-op on Windows, for the reason
+// [TerminateGroupOnCancel] gives: there is no negative-PID signal to
+// deliver it with, so no group is ever reported killed. The same Job
+// Object seam is the one that would close it.
+func KillProcessGroup(_ *exec.Cmd) (bool, error) { return false, nil }
