@@ -217,7 +217,17 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	// claw backend retries them for an unsandboxed node, and the budget
 	// bounds billed attempts — so it is never read from this process's env,
 	// where a variable a repository's devcontainer declares would set it.
+	// The default lifecycle hooks ride here too — the same PreToolUse
+	// safety hook the host's in-process backend gets — so a dangerous call
+	// (`rm -rf /`, a fork bomb) is refused INSIDE the container with the
+	// tool_result the model reads, not wherever the sandbox's own walls
+	// happen to hold. Without it a workspace whose .claude/settings.json
+	// carries no hooks executes with opts.Hooks nil, and the refusal the
+	// in-process path promises never fires here; when settings hooks ARE
+	// present, claw_backend merges them over a fresh default, so the
+	// safety hook holds either way.
 	backend := model.NewClawBackend(registry, relayHooks, model.RetryPolicyFromWire(ioTask.Retry),
+		model.WithBackendLifecycleHooks(model.NewDefaultLifecycleHooks(relayHooks)),
 		model.WithSlashCommandCeiling(ioTask.SlashCommandMaxBytes),
 		model.WithClawLogger(iterlog.NewFromEnv(stderr)))
 
