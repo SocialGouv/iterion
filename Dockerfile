@@ -16,7 +16,7 @@
 # ---------------------------------------------------------------------
 # --platform=$BUILDPLATFORM: the studio bundle is JS (arch-independent), so build
 # it once on the builder's native arch — never under emulation for an arm64 target.
-FROM --platform=$BUILDPLATFORM node:26-bookworm-slim@sha256:cd565714d4da3e84bfd341e31448f81d47c6362198f152345297c9c1154e6341 AS studio-builder
+FROM --platform=$BUILDPLATFORM node:26-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS studio-builder
 WORKDIR /app
 # pnpm-workspace.yaml + pnpm-lock.yaml live at the repo root; the
 # studio/ directory is a workspace member that doesn't carry its own
@@ -90,7 +90,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # ---------------------------------------------------------------------
 # Stage 3 — Pinned LLM CLIs
 # ---------------------------------------------------------------------
-FROM node:26-bookworm-slim@sha256:cd565714d4da3e84bfd341e31448f81d47c6362198f152345297c9c1154e6341 AS llm-clis
+FROM node:26-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS llm-clis
 WORKDIR /llm
 COPY docker/llm-clis/package.json ./package.json
 # npm install (no lock yet) honours the exact pinned versions in
