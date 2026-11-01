@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -347,17 +348,18 @@ func (s *Server) runGateSweeper(ctx context.Context, lister gateSweepLister, hea
 	// the next pass retries; a page that keeps failing — two in a row — waits
 	// for the next deep pass instead of failing at every tick.
 	deepMisses := 0
-	// What the pass is worth, for the handover (#2685). The sweep's verdict
-	// today is its SCAN's: a pass that cannot list the candidates of its
-	// window attempted work and reached nothing, which is the signal a peer
-	// whose egress is intact can act on. The offers the pass then makes are
-	// not part of it — reconcileGateForRunID answers nil both for a run that
-	// owed nothing (the vast majority of any window) and for one it posted,
-	// so neither its nil nor its error can say whether this replica reaches
-	// the forge. Pairing the reconciler's own forge outcome with this verdict
-	// is the follow-up; counting its nils as reach would read a quiet window
-	// as proof, and counting its errors alone would hand the lease over on a
-	// window where most offers landed.
+	// What the pass is worth, for the handover (#2685). The pass's far side is
+	// the FORGE its offers post to, so its items are those offers: each one
+	// that reached the forge, and each one that could not (recordGateForgeReach
+	// — the lanes report it, the sweep never infers it from a nil). A window
+	// where every run owes nothing attempts nothing and is IDLE, which is the
+	// healthiest state this net has; a scan that cannot be read is an attempt
+	// that reached nothing, with the store's own cause.
+	//
+	// What the scan's success is NOT is progress: counting it would make every
+	// pass whose Mongo query answers "progressed" whatever became of its
+	// offers, which is how a holder with no forge egress kept the term while
+	// every gating pull request it owed a check sat unanswered.
 	sweep := func() lease.PassVerdict {
 		// Named apart from the pass COUNTER above, which paces the deep
 		// windows: this one is what the pass was worth.
@@ -411,9 +413,63 @@ func withGatePass(ctx context.Context, pass *lease.Pass) context.Context {
 
 // gatePassOf reads it back; nil when no pass is accounting, which is what a
 // sweep called outside an elected term (a test, the event path) sees.
+//
+// What the pass then records is the lease package's rule, applied at every
+// recorder below through the UnlessDone recorders: the ctx the lanes carry is
+// the TERM's own, so once it is done nothing more is recorded — its end is
+// this holder stepping down, and the cancellation of an offer in flight is no
+// evidence about the forge ("a pass must not record the expiry of its OWN
+// context", pkg/lease/health.go).
 func gatePassOf(ctx context.Context) *lease.Pass {
 	pass, _ := ctx.Value(gatePassKey{}).(*lease.Pass)
 	return pass
+}
+
+// recordGateForgeReach records what ONE offer learned about this replica's
+// forge egress, into the pass the term is accounting into. It is called with
+// the answer to the offer's FIRST forge round-trip, which every later one in
+// that offer depends on: nil is an answer — this replica reaches the forge,
+// whatever the answer said — and an error is the absence of one, carried
+// TYPED so lease.TransportFailure decides whether a peer might do better
+// (a 404 or a 403 came back from the far side; a resolver flap did not).
+//
+// The three outcomes the sweep's verdict needs are therefore separated by
+// WHERE an offer stops: a run that owes nothing never reaches here and
+// accounts into nothing, which is what keeps a quiet window idle rather than
+// proof of anything (reconcileGateForRunID, autofixForRunID).
+//
+// One forge conversation stays out: a verdict the forge made this replica
+// WAIT for is replayed on the grant's own backoff (replayGateDeferral), and
+// postGateStatus flattens its cause to text — a failure recorded without a
+// typed cause reads as a refusal, which would CLEAR the run of transport
+// failures a handover counts. An unaccounted replay leaves the pass idle,
+// which decides nothing.
+//
+// Only the offers of an elected term account: outside one — the event path, a
+// test calling a lane directly — the pass is nil and recording is a no-op.
+func recordGateForgeReach(ctx context.Context, err error) {
+	if err != nil {
+		gatePassOf(ctx).FailedUnlessDone(ctx, err)
+		return
+	}
+	gatePassOf(ctx).SucceededUnlessDone(ctx)
+}
+
+// recordGateRunUnreadable records an offer that could not even start: the run
+// document the scan named was unreadable. The cause it carries is the STORE's
+// and never a forge reach — the lanes read the run before they touch the
+// forge — and it stays typed for the same reason: a per-node egress failure to
+// the store ends the term, a refusal the store ANSWERED with does not.
+//
+// An absent or deleted run is such an answer, not a failure to reach: the
+// window is scanned before it is offered, so an operator deleting a run
+// between the two is ordinary (the same rule the assistant watch's pass
+// follows).
+func recordGateRunUnreadable(ctx context.Context, err error) {
+	if err == nil || errors.Is(err, store.ErrRunNotFound) || errors.Is(err, store.ErrRunDeleted) {
+		return
+	}
+	gatePassOf(ctx).FailedUnlessDone(ctx, err)
 }
 
 // sweepGates performs one pass over the window `lookback` reaches back to,
@@ -448,7 +504,7 @@ func (s *Server) sweepGates(ctx context.Context, lister gateSweepLister, now tim
 			// The pass could not reach the rows it sweeps: one item
 			// attempted, none done, and the store's failure is the cause it
 			// carries to the handover decision.
-			gatePassOf(ctx).Failed(err)
+			gatePassOf(ctx).FailedUnlessDone(ctx, err)
 			s.warnf("merge-gate sweeper: scan: %v", err)
 			// A failed scan proved nothing about what lies past `before`, so
 			// keep the cursor: restarting at the newest end would re-walk
@@ -489,9 +545,11 @@ func (s *Server) sweepGates(ctx context.Context, lister gateSweepLister, now tim
 				oldest = ref.UpdatedAt
 			}
 		}
-		// The scan answered: whatever the window held, this replica reaches
-		// the rows it sweeps.
-		gatePassOf(ctx).Succeeded()
+		// The scan answered, and that is deliberately NOT an item of the pass:
+		// it proves this replica reaches the rows it sweeps, while the far
+		// side a handover is about is the forge its offers post to. The
+		// offers above are what accounted (recordGateForgeReach); a page that
+		// answers with nothing owed leaves the pass idle.
 		if len(refs) < gateSweepBatch {
 			return time.Time{} // window exhausted — next pass starts fresh
 		}

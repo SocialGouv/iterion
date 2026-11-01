@@ -1142,6 +1142,32 @@ within one interval; a holder that dies is outlived by the lease's TTL (three
 intervals) and replaced at most one interval later; every term opens with a
 deep pass.
 
+A term also ends on the **work** failing, and what a pass is worth is the
+OFFERS it made, never its scan's SUCCESS: each offer that reached the forge
+and each one that could not, reported by the lane that made it
+([`pkg/lease`](../pkg/lease) `Pass`, `ITERION_LEASE_HANDOVER`); a scan that
+could not be read at all is an attempt that reached nothing, and still counts
+as one. So a window where every run owes nothing is an *idle* pass — no offer,
+no evidence, and the lease stays where it is — while a pass whose every offer
+failed to reach the forge reads *unreachable*, and K of those in one term hand
+the net over to a peer. The three outcomes are separated by where an offer
+stops: a run that gates nothing exits on a local field read and accounts into
+nothing; an answer from the forge is this replica's reach whatever the answer
+said (a 404 or a 403 ends no term — a peer would be refused identically); only
+the absence of an answer, typed, is the class a peer may not share. A run the
+store cannot read answers for the store, not the forge, and a run an operator
+deleted between the scan and the offer is an answer like any other. A pass
+holding items from both far sides is classified by the CLASS of what it met
+and never by the order the scan returned its rows in — no success and one item
+that reached nothing reads *unreachable*, whichever row came first — because
+nothing orders those rows. A term ending another way — a step-down, a
+rollout, the lease lost — cancels the offer in flight, and that cancellation
+accounts into nothing either: this holder's own exit is not evidence about the
+forge, so a pass whose only item would have been that cancellation reads
+*idle*. Counting the scan's success as progress is what made this blind: every
+pass whose Mongo query answered read "progressed" while the pull requests the
+holder owed a check sat unanswered (#2825).
+
 Two offers of one dead run can still meet — the event path runs on whichever
 replica its queue group picks, beside the sweep, and a lease handed over
 mid-stall overlaps two sweeps for the length of the stall. So the relaunch's

@@ -88,12 +88,38 @@ type Pass struct {
 	mu        sync.Mutex
 	attempted int
 	succeeded int
-	firstErr  error
+	// cause is the failure Verdict classifies on, chosen by CLASS: a
+	// TransportFailure when the pass met one, else the first failure it met.
+	cause error
 }
 
 // Attempted records n items the pass tried, s of which succeeded, and the
 // first failure it met — nil when none did. It is the shape of a worker that
 // already counts, like forge.RefreshWorker.RunOnce's (refreshed, firstErr).
+//
+// A pass carries items from more than one far side — a net that offers N runs
+// to the forge reads each one's row from the store first — and nothing orders
+// them: a Mongo page sorted on `updated_at` alone, items running in parallel,
+// two lanes of one offer. So the cause the verdict classifies on is picked by
+// class and not by arrival: an unreachable item displaces a cause that is not
+// one, and a pass with no success and one unreachable item reads unreachable
+// in EVERY order. Under a first-wins rule the same pass reads `refused`
+// whenever a local refusal happens to arrive first — the verdict Observe
+// reads as the far side having ANSWERED, which clears the very run of
+// unreachable passes a handover counts.
+//
+// The trade-off, stated: a pass mixing refusals with one unreachable item
+// hands its net over instead of keeping it. That direction is bounded — K
+// consecutive such passes end one term, and the sick-terms circuit stops a
+// fleet from bouncing the lease with nobody working — while the other
+// direction is unbounded: a holder that reaches nothing keeps its net for as
+// long as one refusal lands in each of its passes.
+//
+// The rule reaches as far as the causes it is GIVEN: a worker that already
+// collapsed its own N failures into one — forge.RefreshWorker.RunOnce keeps
+// the first — hands over the cause it kept, and must hand the unreachable one
+// for its own items to be classified by class rather than by the order its
+// query listed them in.
 func (p *Pass) Attempted(n, s int, firstErr error) {
 	if p == nil || n <= 0 {
 		return
@@ -102,8 +128,8 @@ func (p *Pass) Attempted(n, s int, firstErr error) {
 	defer p.mu.Unlock()
 	p.attempted += n
 	p.succeeded += s
-	if p.firstErr == nil {
-		p.firstErr = firstErr
+	if p.cause == nil || (!TransportFailure(p.cause) && TransportFailure(firstErr)) {
+		p.cause = firstErr
 	}
 }
 
@@ -111,9 +137,10 @@ func (p *Pass) Attempted(n, s int, firstErr error) {
 func (p *Pass) Succeeded() { p.Attempted(1, 1, nil) }
 
 // Failed records ONE item the pass attempted and could not complete. A nil
-// err is still an attempt that did not succeed, and leaves the pass unable to
-// classify its failure: Verdict answers VerdictRefused, the direction that
-// does not hand the lease over on a cause nobody named.
+// err is still an attempt that did not succeed, and names no cause to
+// classify: Verdict answers VerdictRefused for a pass whose failures are all
+// unnamed, the direction that does not hand the lease over on a cause nobody
+// named — and an item that does name an unreachable cause still decides.
 func (p *Pass) Failed(err error) {
 	if err == nil {
 		err = errUnnamedFailure
@@ -124,6 +151,55 @@ func (p *Pass) Failed(err error) {
 // errUnnamedFailure stands in for a failure recorded without a cause, so an
 // all-failed pass is never classified as unreachable by default.
 var errUnnamedFailure = errors.New("lease: a pass recorded a failure without naming it")
+
+// A pass must not record the expiry of its OWN context. The UnlessDone
+// recorders below carry the rule for every recorder that sits after a call
+// which can outlive its term. The pass's ctx is the term's: its end is this
+// holder stepping down (a rollout, a lease lost, a shutdown), and it reaches
+// an item in flight as the cancellation of that item's call. Whatever that call then answers is
+// evidence about nothing, and EITHER arm of a recorder would overwrite the
+// term's own state with it — one Observe branch per verdict:
+//   - the cut-off call reads refused, the verdict Observe takes as the far
+//     side having ANSWERED: it clears the run of unreachable passes the term
+//     accumulated and closes the circuit endTerm deliberately leaves open;
+//   - the call that answered anyway reads progressed, which clears that run,
+//     the circuit AND the run of sick terms: strictly more state, on an
+//     answer this holder is no longer serving.
+//
+// A pass cut short reports what it did before the term ended, and the verdict
+// it carries is idle or earlier evidence — nothing about the end itself. The
+// direction is bounded: the successor's term opens with a pass of its own.
+
+// AttemptedUnlessDone records n items the pass tried, s of which succeeded,
+// and the first failure met (Attempted), unless ctx is done — then nothing.
+func (p *Pass) AttemptedUnlessDone(ctx context.Context, n, s int, firstErr error) {
+	if termDone(ctx) {
+		return
+	}
+	p.Attempted(n, s, firstErr)
+}
+
+// SucceededUnlessDone records ONE item the pass attempted and completed
+// (Succeeded), unless ctx is done — then nothing.
+func (p *Pass) SucceededUnlessDone(ctx context.Context) {
+	if termDone(ctx) {
+		return
+	}
+	p.Succeeded()
+}
+
+// FailedUnlessDone records ONE item the pass attempted and could not complete
+// (Failed), unless ctx is done — then nothing.
+func (p *Pass) FailedUnlessDone(ctx context.Context, err error) {
+	if termDone(ctx) {
+		return
+	}
+	p.Failed(err)
+}
+
+// termDone reports whether ctx is a term's context and it has ended. A nil
+// ctx carries no term, so there is nothing to be done.
+func termDone(ctx context.Context) bool { return ctx != nil && ctx.Err() != nil }
 
 // Verdict classifies the pass. A pass that attempted items and recorded
 // neither a success nor a failure for them is idle: a verdict guessed from
@@ -139,9 +215,9 @@ func (p *Pass) Verdict() PassVerdict {
 		return VerdictIdle
 	case p.succeeded > 0:
 		return VerdictProgressed
-	case p.firstErr == nil:
+	case p.cause == nil:
 		return VerdictIdle
-	case TransportFailure(p.firstErr):
+	case TransportFailure(p.cause):
 		return VerdictUnreachable
 	default:
 		return VerdictRefused

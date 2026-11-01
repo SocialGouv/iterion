@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -469,8 +470,11 @@ func TestPass_classifiesWhatThePassDidAndNothingElse(t *testing.T) {
 		{"a counting worker with nothing due", func(p *Pass) { p.Attempted(0, 0, nil) }, VerdictIdle},
 		{"every item unreachable", func(p *Pass) { p.Failed(unreachable()); p.Failed(unreachable()) }, VerdictUnreachable},
 		{"every item refused", func(p *Pass) { p.Failed(errRefused) }, VerdictRefused},
-		{"the first failure decides", func(p *Pass) { p.Failed(errRefused); p.Failed(unreachable()) }, VerdictRefused},
+		{"one unreachable item among refusals", func(p *Pass) { p.Failed(errRefused); p.Failed(unreachable()) }, VerdictUnreachable},
+		{"the same pass, the unreachable item first", func(p *Pass) { p.Failed(unreachable()); p.Failed(errRefused) }, VerdictUnreachable},
 		{"a failure nobody named", func(p *Pass) { p.Failed(nil) }, VerdictRefused},
+		{"an unreachable item beside one nobody named", func(p *Pass) { p.Failed(nil); p.Failed(unreachable()) }, VerdictUnreachable},
+		{"a success beside a failure", func(p *Pass) { p.Succeeded(); p.Failed(errRefused) }, VerdictProgressed},
 		{"items attempted, nothing reported of them", func(p *Pass) { p.Attempted(3, 0, nil) }, VerdictIdle},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -481,6 +485,87 @@ func TestPass_classifiesWhatThePassDidAndNothingElse(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A verdict read off the ORDER of a sequence nothing orders is not a fact.
+// One pass carries items from several far sides and nothing fixes which
+// arrives first — a Mongo page sorted on `updated_at` alone, items running in
+// parallel — so every order of the same items must answer the same verdict,
+// and `refused` (the far side ANSWERED: Observe clears the run of unreachable
+// passes on it) must not be reachable by an arrival order alone.
+func TestPass_theVerdictIsTheSameInEveryOrderItsItemsArriveIn(t *testing.T) {
+	items := []struct {
+		name   string
+		record func(p *Pass)
+	}{
+		{"a refusal the far side answered", func(p *Pass) { p.Failed(errRefused) }},
+		{"a failure nobody named", func(p *Pass) { p.Failed(nil) }},
+		{"an item that reached nothing", func(p *Pass) { p.Failed(unreachable()) }},
+	}
+	var walk func(order []int, left []int)
+	seen := 0
+	walk = func(order []int, left []int) {
+		if len(left) == 0 {
+			var p Pass
+			names := make([]string, 0, len(order))
+			for _, i := range order {
+				items[i].record(&p)
+				names = append(names, items[i].name)
+			}
+			seen++
+			if got := p.Verdict(); got != VerdictUnreachable {
+				t.Fatalf("verdict = %s, want %s — order %q decided it", got, VerdictUnreachable, strings.Join(names, " then "))
+			}
+			return
+		}
+		for i, next := range left {
+			rest := make([]int, 0, len(left)-1)
+			rest = append(rest, left[:i]...)
+			rest = append(rest, left[i+1:]...)
+			walk(append(order, next), rest)
+		}
+	}
+	walk(nil, []int{0, 1, 2})
+	if seen != 6 {
+		t.Fatalf("drove %d orders, want all 6 — a property asserted on one order is not a property", seen)
+	}
+}
+
+// A term that has ended records nothing, whichever recorder the net uses.
+// The pass's ctx is the term's: once it is done, what arrives is this holder
+// stepping down, and either arm of a recorder would overwrite the term's own
+// state with it — the refused arm clears the run of unreachable passes and
+// closes the circuit endTerm leaves open, the progressed arm clears that
+// run, the circuit AND the run of sick terms. A nil ctx carries no term, so
+// there is nothing to be done and recording proceeds.
+func TestPass_aTermThatHasEndedRecordsNothing(t *testing.T) {
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	t.Run("every recorder is silent on a done ctx", func(t *testing.T) {
+		var p Pass
+		p.AttemptedUnlessDone(ended, 2, 1, nil)
+		p.SucceededUnlessDone(ended)
+		p.FailedUnlessDone(ended, errRefused)
+		if got := p.Verdict(); got != VerdictIdle {
+			t.Fatalf("verdict = %s, want %s — a pass cut short by its own term's end reports what it did before, never the end", got, VerdictIdle)
+		}
+	})
+	t.Run("a nil ctx has no term to be done", func(t *testing.T) {
+		var p Pass
+		p.FailedUnlessDone(nil, errRefused)
+		if got := p.Verdict(); got != VerdictRefused {
+			t.Fatalf("verdict = %s, want %s", got, VerdictRefused)
+		}
+	})
+	t.Run("a live ctx still records", func(t *testing.T) {
+		var p Pass
+		p.AttemptedUnlessDone(context.Background(), 2, 1, nil)
+		p.SucceededUnlessDone(context.Background())
+		p.FailedUnlessDone(context.Background(), errRefused)
+		if got := p.Verdict(); got != VerdictProgressed {
+			t.Fatalf("verdict = %s, want %s — the guard must not swallow a pass whose term stands", got, VerdictProgressed)
+		}
+	})
 }
 
 // Would another replica plausibly do better? That is the only question a

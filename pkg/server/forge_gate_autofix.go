@@ -117,6 +117,10 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 	}
 	run, err := s.cfg.Store.LoadRun(store.WithoutTenantFilter(ctx), runID)
 	if err != nil || run == nil {
+		// Same accounting as the reconciler's offer: an unreadable run is an
+		// attempt that did none of its work, and the cause is the store's
+		// (recordGateRunUnreadable).
+		recordGateRunUnreadable(ctx, err)
 		return nil
 	}
 	// The sweep net offers every run in the notifiable window, cancelled and
@@ -255,7 +259,13 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 	if err != nil || gc == nil {
 		return nil
 	}
+	// This lane's first forge round-trip, reported for the same reason the
+	// reconciler's is (recordGateForgeReach): every guard above declined on a
+	// local read, so what accounts into the sweep's pass is an offer that
+	// actually went to the forge. A head the forge answered with but left
+	// empty is an answer, not a reach failure.
 	pr, err := gc.GetPullRequest(ctx, repo, number)
+	recordGateForgeReach(ctx, err)
 	if err != nil || strings.TrimSpace(pr.HeadSHA) == "" {
 		return nil
 	}

@@ -271,6 +271,10 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	}
 	run, err := s.cfg.Store.LoadRun(store.WithoutTenantFilter(ctx), runID)
 	if err != nil || run == nil {
+		// An offer that cannot read its run attempted work and did none of
+		// it, and the cause is the store's — never evidence about the forge
+		// (recordGateRunUnreadable).
+		recordGateRunUnreadable(ctx, err)
 		return nil
 	}
 	// A paused run is expected to resume and post its own verdict.
@@ -505,7 +509,13 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		return abstain("provider %s cannot post commit statuses", conn.Provider)
 	}
 
+	// The offer's first forge round-trip, and the one every later one in this
+	// repair depends on: its answer — or the absence of one — is what this
+	// replica's forge egress is reported by (recordGateForgeReach). Every
+	// branch above declined before any forge traffic, so a run that owed
+	// nothing accounts into nothing.
 	pr, err := gc.GetPullRequest(ctx, repo, number)
+	recordGateForgeReach(ctx, err)
 	if err != nil {
 		return abstain("the pull request is unreadable: %v", err)
 	}

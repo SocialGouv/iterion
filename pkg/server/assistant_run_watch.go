@@ -456,7 +456,7 @@ func (c *assistantWatchCoordinator) sweep(ctx context.Context) lease.PassVerdict
 	upper, err := ws.ActiveWatchUpperBound(ctx)
 	if err != nil {
 		c.server.logWarn("assistant run watch: active watch upper bound: %v", err)
-		pass.Failed(err)
+		pass.FailedUnlessDone(ctx, err)
 		return pass.Verdict()
 	}
 	var after *runwatch.WatchCursor
@@ -467,12 +467,15 @@ func (c *assistantWatchCoordinator) sweep(ctx context.Context) lease.PassVerdict
 		watches, err := ws.ListActivePage(ctx, after, *upper, 500)
 		if err != nil {
 			c.server.logWarn("assistant run watch: list active page: %v", err)
-			pass.Failed(err)
+			pass.FailedUnlessDone(ctx, err)
 			return pass.Verdict()
 		}
 		if len(watches) > 0 {
 			// The store answered with the page: this replica reaches it.
-			pass.Succeeded()
+			// UnlessDone because the answer could have landed as the term
+			// ended — a progressed verdict overwrites the run of unreachable
+			// passes on a page this holder is no longer serving.
+			pass.SucceededUnlessDone(ctx)
 		}
 		if len(watches) == 0 {
 			break

@@ -1429,8 +1429,10 @@ func (s *Server) syncAllEnabledIntegrations(ctx context.Context) lease.PassVerdi
 			s.logger.Warn("board sync: list sync-enabled integrations: %v", err)
 		}
 		// The pass could not even learn what to sweep: one item attempted,
-		// none done, and the store's own failure is the cause it carries.
-		pass.Failed(err)
+		// none done, and the store's own failure is the cause it carries —
+		// unless it is the term ending, which records nothing
+		// (FailedUnlessDone).
+		pass.FailedUnlessDone(ctx, err)
 		return pass.Verdict()
 	}
 	for _, ri := range ris {
@@ -1438,19 +1440,22 @@ func (s *Server) syncAllEnabledIntegrations(ctx context.Context) lease.PassVerdi
 		// SIGTERM — so a pass that matched N repos does not run N connection
 		// reads each failing on ctx.Done, one warn line apiece. What the pass
 		// did before that is what it reports: the term is over either way,
-		// and a pass cut short is not evidence of anything.
+		// and a pass cut short is not evidence of anything. The recorders
+		// carry the same rule (pkg/lease UnlessDone): the cancellation that
+		// arrived between this guard and the round-trip below reaches the
+		// recording, not the guard.
 		if err := ctx.Err(); err != nil {
 			return pass.Verdict()
 		}
 		_, c, u, err := s.syncOneIntegration(ctx, ri.TenantID, ri)
 		switch {
 		case err != nil:
-			pass.Failed(err)
+			pass.FailedUnlessDone(ctx, err)
 			if s.logger != nil {
 				s.logger.Warn("board sync: %s/%s: %v", ri.TenantID, ri.RepoFullName, err)
 			}
 		default:
-			pass.Succeeded()
+			pass.SucceededUnlessDone(ctx)
 			if (c > 0 || u > 0) && s.logger != nil {
 				s.logger.Info("board sync: %s %s → %d created, %d updated", ri.TenantID, ri.RepoFullName, c, u)
 			}
