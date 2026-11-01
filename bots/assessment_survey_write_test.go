@@ -112,3 +112,51 @@ func TestAssessmentSurveyWriteRefusesAnUnusableAnswer(t *testing.T) {
 		}
 	})
 }
+
+// A model that double-encodes its structured answer hands the list back as a
+// JSON string. The unwrap is named, the shape is still enforced after it, and
+// a string that is not a JSON list refuses all the same.
+func TestAssessmentSurveyWriteUnwrapsAJSONEncodedList(t *testing.T) {
+	requireAssessmentTools(t)
+	ws := t.TempDir()
+	list := []map[string]any{{"id": "SYNTH", "evidence": "README.md", "supported": true}}
+	encoded, err := json.Marshal(list)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out := surveyWrite(t, ws, string(encoded), []map[string]any{{"id": "src-tree", "kind": "first_party", "path": "src"}}, "double-encoded")
+	if !assessmentBool(t, out, "ok") {
+		t.Fatalf("a JSON-encoded list was not unwrapped: %s", assessmentString(t, out, "reason"))
+	}
+	body, err := os.ReadFile(filepath.Join(ws, ".modernize", "survey.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var landed struct {
+		Stacks []map[string]any `json:"stacks"`
+	}
+	if err := json.Unmarshal(body, &landed); err != nil {
+		t.Fatal(err)
+	}
+	if len(landed.Stacks) != 1 || landed.Stacks[0]["id"] != "synth" {
+		// les ids du périmètre sont normalisés minuscules par la porte
+		t.Fatalf("the unwrapped list did not land: %s", body)
+	}
+}
+
+func TestAssessmentSurveyWriteRefusesAStringThatIsNotAJSONList(t *testing.T) {
+	requireAssessmentTools(t)
+	ws := t.TempDir()
+
+	out := surveyWrite(t, ws, "pas du json", []map[string]any{{"id": "src-tree", "kind": "first_party", "path": "src"}}, "")
+	if assessmentBool(t, out, "ok") {
+		t.Fatalf("a string that is not JSON was accepted as stacks")
+	}
+	if code := assessmentString(t, out, "code"); code != "SURVEY_UNREADABLE" {
+		t.Fatalf("code = %s, want SURVEY_UNREADABLE", code)
+	}
+	if _, err := os.Stat(filepath.Join(ws, ".modernize", "survey.json")); err == nil {
+		t.Fatalf("a refused survey must not land its file")
+	}
+}
