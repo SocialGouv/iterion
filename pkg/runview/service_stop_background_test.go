@@ -3,13 +3,11 @@ package runview
 import (
 	"context"
 	"maps"
-	"runtime"
 	"slices"
-	"strconv"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/goroutinetest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -17,53 +15,14 @@ import (
 // alertPollFrame names the alert manager's stall-poll goroutine,
 // pipelineSchedulerFrame the pipeline scheduler's. Both workers own their
 // goroutine — production closes nothing when either returns — so the frame is
-// the only oracle available from here. A frame is matched as frame+"(" against
-// the goroutine's OWN stack: a "created by" line names the PARENT's frame, so
-// the worker's children carry it without being workers, and a bare substring
-// matches a sibling whose name carries the frame as a PREFIX
-// (startPipelineScheduler.func1 inside startPipelineScheduler.func11) — the
-// rename that flipped the count-based sibling of this verdict.
+// the only oracle available from here, and goroutinetest holds what matching
+// one means: the goroutine's OWN stack, and the frame with its opening
+// parenthesis, which is what keeps a sibling whose name carries the frame as a
+// PREFIX (startPipelineScheduler.func1 inside .func11) out of this verdict.
 const (
 	alertPollFrame         = "alert.(*Manager).Start.func1"
 	pipelineSchedulerFrame = "runview.(*Service).startPipelineScheduler.func1"
 )
-
-// goroutinesCarrying returns the IDS of the goroutines whose own stack carries
-// frame. The runtime never reuses a goroutine id, so two readings are
-// comparable as SETS — the shape the verdict below needs: a count cannot tell
-// "this service's worker is gone" from "this service's worker is alive and an
-// ambient one left in between".
-func goroutinesCarrying(t *testing.T, frame string) map[int]bool {
-	t.Helper()
-	buf := make([]byte, 1<<20)
-	n := runtime.Stack(buf, true)
-	for n == len(buf) {
-		buf = make([]byte, 2*len(buf))
-		n = runtime.Stack(buf, true)
-	}
-	ids := map[int]bool{}
-	for _, block := range strings.Split(string(buf[:n]), "\n\n") {
-		head, stack, ok := strings.Cut(block, "\n")
-		if !ok || !strings.HasPrefix(head, "goroutine ") {
-			continue
-		}
-		// A "created by" line names the frame of the goroutine's PARENT.
-		own, _, _ := strings.Cut(stack, "\ncreated by ")
-		if !strings.Contains(own, frame+"(") {
-			continue
-		}
-		fields := strings.Fields(head)
-		if len(fields) < 2 {
-			t.Fatalf("unreadable goroutine header %q — this oracle reads ids out of the runtime's dump", head)
-		}
-		id, err := strconv.Atoi(fields[1])
-		if err != nil {
-			t.Fatalf("unreadable goroutine id in %q: %v", head, err)
-		}
-		ids[id] = true
-	}
-	return ids
-}
 
 // stableWorkers returns a set two readings apart agree on, so a worker already
 // winding down from an earlier test is not taken as standing — a baseline
@@ -72,10 +31,10 @@ func goroutinesCarrying(t *testing.T, frame string) map[int]bool {
 func stableWorkers(t *testing.T, frame string) map[int]bool {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
-	prev := goroutinesCarrying(t, frame)
+	prev := goroutinetest.Carrying(t, frame)
 	for time.Now().Before(deadline) {
 		time.Sleep(100 * time.Millisecond)
-		got := goroutinesCarrying(t, frame)
+		got := goroutinetest.Carrying(t, frame)
 		if maps.Equal(got, prev) {
 			return got
 		}
@@ -93,7 +52,7 @@ func ownWorkers(t *testing.T, frame string, ambient map[int]bool) map[int]bool {
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		own := map[int]bool{}
-		for id := range goroutinesCarrying(t, frame) {
+		for id := range goroutinetest.Carrying(t, frame) {
 			if !ambient[id] {
 				own[id] = true
 			}
@@ -113,7 +72,7 @@ func settleWorkersGone(t *testing.T, frame string, ids map[int]bool) map[int]boo
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		survivors := map[int]bool{}
-		for id := range goroutinesCarrying(t, frame) {
+		for id := range goroutinetest.Carrying(t, frame) {
 			if ids[id] {
 				survivors[id] = true
 			}

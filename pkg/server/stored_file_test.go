@@ -9,13 +9,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/goroutinetest"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -29,10 +29,8 @@ import (
 func waitInLock(t *testing.T, fn string) {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
-	buf := make([]byte, 1<<22)
 	for time.Now().Before(deadline) {
-		n := runtime.Stack(buf, true)
-		for _, g := range strings.Split(string(buf[:n]), "\n\n") {
+		for _, g := range strings.Split(goroutinetest.Dump(), "\n\n") {
 			if strings.Contains(g, fn) && strings.Contains(g, "acquireAuthoringLocalLocks") {
 				return
 			}

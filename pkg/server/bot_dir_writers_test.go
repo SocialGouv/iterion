@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/goroutinetest"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
@@ -365,10 +366,8 @@ func TestTheNewBotScaffoldNeverReplacesTheMainASaveAsCreated(t *testing.T) {
 func waitForStack(t *testing.T, fn string) {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
-	buf := make([]byte, 1<<22)
 	for time.Now().Before(deadline) {
-		n := runtime.Stack(buf, true)
-		if strings.Contains(string(buf[:n]), fn) {
+		if strings.Contains(goroutinetest.Dump(), fn) {
 			return
 		}
 		time.Sleep(time.Millisecond)

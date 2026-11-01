@@ -41,6 +41,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/floortest` | derives, for a syntax-floor test, the release below a floor from the floor itself. | — |
 | `internal/fswatch` | preserves filesystem watcher errors with resource evidence captured in the failing process, where the limits actually apply. | — |
 | `internal/gittest` | the one place iterion's tests build a `git` subprocess, a throwaway repository, or unregister a worktree. | — |
+| `internal/goroutinetest` | identifies the live goroutines a test is answerable for by the FRAME they run, read out of the runtime's own dump. | — |
 | `internal/hometest` | keeps a test binary off the operator's homes: the iterion home (ITERION_HOME) and the user home (HOME). | — |
 | `internal/httpx` | provides the shared JSON request/response helpers used by iterion's HTTP handlers. | — |
 | `internal/isolationenv` | the ONE reader of every environment variable that can LOWER the isolation of the operator's run. | — |

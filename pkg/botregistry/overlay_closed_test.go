@@ -20,6 +20,7 @@ import (
 
 	"github.com/gofrs/flock"
 
+	"github.com/SocialGouv/iterion/internal/goroutinetest"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
@@ -136,11 +137,9 @@ func mustList(t *testing.T, work string) []Entry {
 func waitStack(t *testing.T, marks ...string) {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
-	buf := make([]byte, 1<<22)
 	for time.Now().Before(deadline) {
-		n := runtime.Stack(buf, true)
 	goroutines:
-		for _, g := range strings.Split(string(buf[:n]), "\n\n") {
+		for _, g := range strings.Split(goroutinetest.Dump(), "\n\n") {
 			for _, m := range marks {
 				if !strings.Contains(g, m) {
 					continue goroutines
@@ -188,10 +187,8 @@ func TestTwoOverlayTogglesAtOnceBothLand(t *testing.T) {
 		// to enter the section, or — were the section open — past its own
 		// reading of the same file.
 		deadline := time.Now().Add(20 * time.Second)
-		buf := make([]byte, 1<<22)
 		for reached.Load() < 2 && time.Now().Before(deadline) {
-			n := runtime.Stack(buf, true)
-			for _, g := range strings.Split(string(buf[:n]), "\n\n") {
+			for _, g := range strings.Split(goroutinetest.Dump(), "\n\n") {
 				if strings.Contains(g, "SetOverlayEnabled") && strings.Contains(g, "flock.(*Flock).TryLockContext") {
 					return
 				}

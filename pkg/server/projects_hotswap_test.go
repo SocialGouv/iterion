@@ -4,13 +4,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
-	"strconv"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/goroutinetest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runview"
 )
@@ -46,52 +44,17 @@ const workerSettleCeiling = 30 * time.Second
 
 // workersByKind returns, per kind, the ids of the goroutines whose OWN stack
 // carries that kind's frame. Every kind comes out of ONE stop-the-world
-// snapshot, so the readings describe the same instant and cost one dump. The
-// runtime never reuses a goroutine id, so two snapshots are comparable as
-// SETS: a goroutine the first does not hold and the second does was started in
+// snapshot, so the readings describe the same instant and cost one dump, and
+// the reading is a SET: the runtime never reuses a goroutine id, so a
+// goroutine one snapshot does not hold and the next does was started in
 // between, whatever the rest of the process did meanwhile.
+//
+// goroutinetest holds the matching rule — including why a frame is matched
+// with its opening parenthesis — so this witness and the runs service's own
+// stop witness cannot drift apart on what counts as carrying a frame.
 func workersByKind(t *testing.T) map[string]map[int]bool {
 	t.Helper()
-	buf := make([]byte, 1<<20)
-	n := runtime.Stack(buf, true)
-	for n == len(buf) {
-		buf = make([]byte, 2*len(buf))
-		n = runtime.Stack(buf, true)
-	}
-	byKind := map[string]map[int]bool{}
-	for _, kind := range workerKinds() {
-		byKind[kind] = map[int]bool{}
-	}
-	for _, block := range strings.Split(string(buf[:n]), "\n\n") {
-		head, stack, ok := strings.Cut(block, "\n")
-		if !ok || !strings.HasPrefix(head, "goroutine ") {
-			continue
-		}
-		// A "created by" line names the frame of the goroutine's PARENT: the
-		// worker's own children carry it without being workers.
-		own, _, _ := strings.Cut(stack, "\ncreated by ")
-		var carries []string
-		for kind, frame := range periodicWorkerFrames {
-			if strings.Contains(own, frame) {
-				carries = append(carries, kind)
-			}
-		}
-		if len(carries) == 0 {
-			continue
-		}
-		fields := strings.Fields(head)
-		if len(fields) < 2 {
-			t.Fatalf("unreadable goroutine header %q — this oracle reads ids out of the runtime's dump", head)
-		}
-		id, err := strconv.Atoi(fields[1])
-		if err != nil {
-			t.Fatalf("unreadable goroutine id in %q: %v", head, err)
-		}
-		for _, kind := range carries {
-			byKind[kind][id] = true
-		}
-	}
-	return byKind
+	return goroutinetest.ByFrame(t, periodicWorkerFrames)
 }
 
 // ownWorkers returns, per kind, the goroutines carrying that kind's frame that
