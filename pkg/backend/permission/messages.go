@@ -22,6 +22,25 @@ func DenyMessage(toolName string, input map[string]any, rule string) string {
 	return b.String()
 }
 
+// UndelegatableAskMessage is the tool_result text shown to the MODEL of a
+// child conversation when the gate's verdict is Ask: a sub-agent cannot
+// pause the run (#2877), so the approval request degrades to a refusal that
+// says so — and points at the parent's own ask channel, the only route an
+// operator's answer can come back by.
+func UndelegatableAskMessage(toolName string, input map[string]any, rule string) string {
+	b := &strings.Builder{}
+	fmt.Fprintf(b, "Permission denied: the `%s` tool", toolName)
+	if arg := briefArg(toolName, input); arg != "" {
+		fmt.Fprintf(b, " for %q", arg)
+	}
+	b.WriteString(" requires operator approval")
+	if rule != "" {
+		fmt.Fprintf(b, " (ask rule: %s)", rule)
+	}
+	b.WriteString(", and a sub-agent cannot pause the run to obtain it. Do not retry this action; report it in your final answer so the parent agent can ask the operator itself.")
+	return b.String()
+}
+
 // AskPrompt is the question surfaced to the HUMAN when a call needs
 // approval (ModeAsk, off-policy). The operator answers with one of the
 // AnswerAllowOnce / AnswerAllowAlways / AnswerDeny tokens (the studio

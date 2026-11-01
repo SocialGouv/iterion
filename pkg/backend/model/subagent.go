@@ -35,6 +35,28 @@ func ParentPermission(ctx context.Context) *permission.Policy {
 	return policy
 }
 
+// asksDeniedCtxKey marks the loop of a child conversation: the permission
+// gate degrades every Ask verdict to a refusal instead of pausing the run.
+type asksDeniedCtxKey struct{}
+
+// withAsksDenied arms the Ask→refusal degradation on the context a child
+// conversation's loop runs with. A child is not the node: an Ask raised
+// from inside its tool call would pause the RUN on a question nobody is
+// attributed, and the child's conversation is not persisted for the resume
+// to return to (#2877, the policy verdict the #2812 tool withholding could
+// not cover). The refusal the child receives instead names the rule and
+// points at the parent's own, intact ask channel.
+func withAsksDenied(ctx context.Context) context.Context {
+	return context.WithValue(ctx, asksDeniedCtxKey{}, true)
+}
+
+// asksDenied reports whether the loop this ctx belongs to degrades Ask
+// verdicts to refusals — a child conversation's loop, and only that one.
+func asksDenied(ctx context.Context) bool {
+	denied, _ := ctx.Value(asksDeniedCtxKey{}).(bool)
+	return denied
+}
+
 // parentLoopCtxKey carries the shape of the claw loop a delegation is
 // spawned from — the model it bills, the tools its author declared and the
 // step budget it runs under — to the tool executors that loop invokes.
@@ -157,7 +179,10 @@ const defaultSubagentMaxSteps = 10
 //     itself, the node-scoped MCP tools and the ask channel (the child is
 //     not the node — filterSubagentTools);
 //   - its permission policy (ParentPermission), so a deny or ask row the
-//     parent answers to stops at the delegation too;
+//     parent answers to stops at the delegation too — a deny verbatim, an
+//     ask VERDICT degraded to a refusal: the child is not the node and
+//     cannot pause the run, so the refusal names the rule and points back
+//     at the parent's intact ask channel (withAsksDenied, #2877);
 //   - its step budget (ParentLoop.MaxSteps);
 //   - its spend, debited to the node through SubagentSpendFromContext;
 //   - its definition, when subagent_type names a file-backed agent of the
@@ -307,7 +332,7 @@ func NewSubagentRunner(
 		}
 		applyHooks("subagent:"+spec.AgentID, LoopIterationFromContext(ctx), eventHooks, &opts)
 
-		result, err := GenerateTextDirect(ctx, client, opts)
+		result, err := GenerateTextDirect(withAsksDenied(ctx), client, opts)
 		// Debited before the error branch: tokens a child burned are billed
 		// whether or not it answered, and GenerateTextDirect returns the
 		// usage it accumulated with its error.
@@ -386,13 +411,11 @@ func buildSubagentTools(reg *tool.Registry, allowed map[string]bool) []Generatio
 // intact. The withholding covers the stand-alone host too, like the MCP one
 // above: a pause raised outside any run is an error with no handler at all.
 //
-// Known residual, out of this withholding's reach: the child inherits the
-// parent's permission POLICY (ParentPermission), and an `ask` verdict of a
-// permission rule on a tool the child holds — bash, say — raises the same
-// ErrAskUser from inside the child's tool call (permissionGateOutcome). The
-// withholding covers the ask TOOLS, not the policy's ask VERDICT; closing
-// that second path is its own decision (refuse, or downgrade to deny, at the
-// delegation).
+// The policy's ask VERDICT takes the delegated route too (#2877): the child
+// loop runs withAsksDenied, so an `ask` rule matching a tool the child holds
+// — bash, say — degrades to a refusal tool_result at the gate
+// (permissionGateOutcome) instead of raising the same ErrAskUser from inside
+// the child's tool call.
 func filterSubagentTools(tools []GenerationTool, allowed map[string]bool) []GenerationTool {
 	out := make([]GenerationTool, 0, len(tools))
 	for _, t := range tools {

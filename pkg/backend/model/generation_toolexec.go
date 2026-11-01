@@ -132,7 +132,7 @@ func executeOneTool(
 		}
 	}
 
-	if refusal, abort := permissionGateOutcome(policy, tu, hookInput, onToolCall); abort != nil {
+	if refusal, abort := permissionGateOutcome(ctx, policy, tu, hookInput, onToolCall); abort != nil {
 		return api.ContentBlock{}, abort
 	} else if refusal != nil {
 		return *refusal, nil
@@ -236,30 +236,22 @@ func preToolUseRefusal(ctx context.Context, runner *hooks.Runner, tu toolUseBloc
 // hooks still observe every call) and BEFORE execution. Deny → a synthetic
 // refusal tool_result the model can adapt to. Ask → a *delegate.ErrAskUser
 // abort so the run pauses for human approval (mirrors claude_code's
-// PreToolUse permission hook for cross-backend parity). Allow — and a
-// nil/disabled policy — returns (nil, nil): fall through to execution.
-func permissionGateOutcome(policy *permission.Policy, tu toolUseBlock, hookInput map[string]any, onToolCall func(ToolCallInfo)) (*api.ContentBlock, error) {
+// PreToolUse permission hook for cross-backend parity) — unless the loop is
+// a child conversation's (asksDenied, #2877): a child cannot pause the run,
+// so the Ask degrades to a refusal that names the rule and points at the
+// parent's intact ask channel. Allow — and a nil/disabled policy — returns
+// (nil, nil): fall through to execution.
+func permissionGateOutcome(ctx context.Context, policy *permission.Policy, tu toolUseBlock, hookInput map[string]any, onToolCall func(ToolCallInfo)) (*api.ContentBlock, error) {
 	if !policy.Enabled() {
 		return nil, nil
 	}
 	switch dec, rule := policy.Evaluate(tu.Name, hookInput); dec {
 	case permission.Deny:
-		reason := permission.DenyMessage(tu.Name, hookInput, rule)
-		block := api.ToolResult{
-			ToolUseID: tu.ID,
-			Content:   reason,
-			IsError:   true,
-		}.ToContentBlock()
-		if onToolCall != nil {
-			onToolCall(ToolCallInfo{
-				ToolName:  tu.Name,
-				InputSize: len(tu.PartialJSON),
-				ToolUseID: tu.ID,
-				Error:     errors.New(reason),
-			})
-		}
-		return &block, nil
+		return refusalOutcome(permission.DenyMessage(tu.Name, hookInput, rule), tu, onToolCall), nil
 	case permission.Ask:
+		if asksDenied(ctx) {
+			return refusalOutcome(permission.UndelegatableAskMessage(tu.Name, hookInput, rule), tu, onToolCall), nil
+		}
 		// Suspend the run for operator approval. The captured
 		// question guides the model after the operator answers
 		// (and grants), so on resume the re-issued call passes the
@@ -273,6 +265,25 @@ func permissionGateOutcome(policy *permission.Policy, tu toolUseBlock, hookInput
 	}
 	// permission.Allow falls through to execution.
 	return nil, nil
+}
+
+// refusalOutcome renders a gate refusal as the synthetic isError tool_result
+// the model can adapt to, and reports it on onToolCall.
+func refusalOutcome(reason string, tu toolUseBlock, onToolCall func(ToolCallInfo)) *api.ContentBlock {
+	block := api.ToolResult{
+		ToolUseID: tu.ID,
+		Content:   reason,
+		IsError:   true,
+	}.ToContentBlock()
+	if onToolCall != nil {
+		onToolCall(ToolCallInfo{
+			ToolName:  tu.Name,
+			InputSize: len(tu.PartialJSON),
+			ToolUseID: tu.ID,
+			Error:     errors.New(reason),
+		})
+	}
+	return &block
 }
 
 // runToolExecution reports the call on onToolStarted, executes the tool,

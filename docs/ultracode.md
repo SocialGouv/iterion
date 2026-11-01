@@ -47,7 +47,12 @@ When a node declares `reasoning_effort: ultracode`, iterion:
    raised from inside a tool call would pause the run unattributed, with no
    child conversation persisted for the resume
    ([#2812](https://github.com/SocialGouv/iterion/issues/2812)); the child
-   reports the question to its parent, whose own channel is intact. Holding
+   reports the question to its parent, whose own channel is intact. The
+   policy's ask VERDICT takes the same route
+   ([#2877](https://github.com/SocialGouv/iterion/issues/2877)): an `ask`
+   rule matching a tool the child holds degrades to a refusal naming the
+   rule at the delegation's gate, instead of pausing the run from inside
+   the parent's tool call. Holding
    `agent` also reads the node as MUTATING to the parallel-branch
    workspace-safety guard: that the shipped runner bounds the child to the
    node's own list is the host's wiring, which the guard's name reading

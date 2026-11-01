@@ -114,6 +114,62 @@ func TestSubagentChildInheritsTheParentPolicy(t *testing.T) {
 	}
 }
 
+// TestSubagentChildAskVerdictDegradesToARefusal is the #2877 witness: the
+// child inherits the parent's policy, and that policy's ASK verdict — here
+// the ModeAsk default on a bash call — must not pause the RUN from inside
+// the parent's tool call (an unattributed pause whose child conversation no
+// resume returns to). At the delegation the Ask degrades to a refusal the
+// child's conversation carries: the tool never ran, the child finished, and
+// no ErrAskUser escaped. Red before the fix: run() returned the child's
+// abort, a *delegate.ErrAskUser wrapped as the agent tool's error.
+func TestSubagentChildAskVerdictDegradesToARefusal(t *testing.T) {
+	t.Parallel()
+	policy, err := permission.NewPolicy(permission.ModeAsk, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	ctx := WithParentPermission(context.Background(), policy)
+
+	calls, client, err := runChild(t, ctx)
+	if err != nil {
+		t.Fatalf("subagent: %v — an ask verdict in the child must degrade to a refusal, not abort the delegation", err)
+	}
+	if calls != 0 {
+		t.Fatalf("the child's bash executed %d times under the parent's ask; want 0", calls)
+	}
+	conv := client.conversation(t, 2)
+	if !strings.Contains(conv, "sub-agent cannot pause the run") {
+		t.Errorf("the child's second turn must carry the degraded refusal pointing at the parent's ask channel; got %s", conv)
+	}
+	if strings.Contains(conv, "deny rule:") {
+		t.Errorf("the refusal must not dress an ask up as a deny rule; got %s", conv)
+	}
+}
+
+// TestSubagentChildScopedAskRuleNamesItself: the degraded refusal names the
+// matched ASK rule — the operator reads which of their rules fired, and the
+// parent model can quote it when it asks.
+func TestSubagentChildScopedAskRuleNamesItself(t *testing.T) {
+	t.Parallel()
+	policy, err := permission.NewPolicy(permission.ModeDeny, nil, []string{"bash(echo:*)"}, nil)
+	if err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	ctx := WithParentPermission(context.Background(), policy)
+
+	calls, client, err := runChild(t, ctx)
+	if err != nil {
+		t.Fatalf("subagent: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("the child's bash executed %d times under the parent's ask row; want 0", calls)
+	}
+	conv := client.conversation(t, 2)
+	if !strings.Contains(conv, "ask rule: bash(echo:*)") {
+		t.Errorf("the child's second turn must name the matched ask rule; got %s", conv)
+	}
+}
+
 // TestSubagentChildWithoutTheDenyStillRuns: a parent policy that names no
 // shell rule lets the child run bash — the bound is the parent's rules, not
 // a blanket refusal of the child loop.
