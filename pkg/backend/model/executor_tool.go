@@ -925,6 +925,12 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			return resolveScriptTemplate(expanded, node.ScriptRefs, input, e.vars, td, RunIDFromContext(ctx), e.secretGuard)
 		},
 		func(resolved string) (toolCommand, func(), error) {
+			// Before any temp file exists: a {{vars.x}} naming a server-minted
+			// (env-only) credential is refused, not rendered — the value would
+			// sit in the script file in clear.
+			if err := refuseMintedScriptRef(e.secretGuard, node); err != nil {
+				return toolCommand{}, nil, err
+			}
 			interp, ext := scriptInterpreter(node.Language)
 			if len(interp) == 0 {
 				return toolCommand{}, nil, fmt.Errorf("model: tool node %q: unsupported language %q", node.ID, node.Language)
@@ -1009,6 +1015,45 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// relative path); out of it, the absolute scratch path.
 			return e.toolNodeScriptCommand(ctx, interp, scriptArg, scriptEnv), cleanup, nil
 		}
+}
+
+// refuseMintedScriptRef is the script-side half of the env-only rule. A
+// {{vars.x}} naming a credential the server minted for this run resolves in
+// the author's `command:` and `postcondition:` by environment — the
+// placeholder, single-quoted, which MaterializeAuthoredShellEnv swaps for a
+// reference to the CHILD's. A `script:` body has no such swap: the quoted
+// form is shell, and each interpreter's env read is its own expression
+// (node's `process.env.X`, python's `os.environ[...]` — which also needs an
+// import the body may not have), so nothing can turn the reference into the
+// variable read for the author. Left to render, the value would be written
+// to the script's temp file IN CLEAR — on disk for the node's lifetime,
+// pushed into the workspace by a copy-based sandbox. The reference is
+// refused instead, naming the door that works: the body names the variable
+// itself (the placeholder doubles as the environment-variable name) and the
+// engine hands the value to the interpreter of a body that names it
+// (AuthoredEnvForBody, scriptRecipe below).
+//
+// The condition mirrors the shell branch of resolveTemplateWith exactly: a
+// top-level vars ref in its default form, asked of the guard rather than
+// derived from the name — only a credential this run actually holds
+// env-only is refused. The raw {{!vars.x}} form keeps the value here as it
+// does in a command: the author's own text, quoting included.
+func refuseMintedScriptRef(guard *secretguard.Guard, node *ir.ToolNode) error {
+	for _, ref := range node.ScriptRefs {
+		if ref.Kind != ir.RefVars || len(ref.Path) != 1 || ref.Unquoted {
+			continue
+		}
+		ph := guard.AuthoredEnvPlaceholder(ref.Path[0])
+		if ph == "" {
+			continue
+		}
+		return fmt.Errorf("model: tool node %q: {{vars.%s}} in a script: body names a server-minted credential, which a script body resolves nothing of: "+
+			"the value would be written to the script's temp file in clear. Read it from the interpreter's environment instead — "+
+			"the body names the variable itself (sh: \"$%s\", js: process.env.%s, python: os.environ.get(%q)) "+
+			"and the engine hands the value to the body that names it",
+			node.ID, ref.Path[0], ph, ph, ph)
+	}
+	return nil
 }
 
 // scriptInterpreter maps a `language:` token to the interpreter argv (the
@@ -1557,9 +1602,12 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 		// shape can reshape it into a form the materialiser no longer
 		// recognises.
 		//
-		// Shell bodies only: a script body's value is a language literal,
-		// materialised into the script file itself. The raw {{!vars.x}} form
-		// is the author's own text, quoting included, and keeps the value.
+		// Shell bodies only: a script body REFUSES the reference instead
+		// (refuseMintedScriptRef, at the build of its temp file) — no swap
+		// turns a reference into another language's variable read, and a
+		// rendered value would sit in the script file in clear. The raw
+		// {{!vars.x}} form is the author's own text, quoting included, and
+		// keeps the value in both bodies.
 		if shellBody && !ref.Unquoted && ref.Kind == ir.RefVars && len(ref.Path) == 1 {
 			if ph := guard.AuthoredEnvPlaceholder(ref.Path[0]); ph != "" {
 				subs[ref.Raw] = "'" + ph + "'"

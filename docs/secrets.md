@@ -108,7 +108,13 @@ read for: there the AUTHOR names the variable — the placeholder doubles as the
 environment-variable name — and the engine hands the value to the interpreter
 of a body that names it, instead of writing the bearer into the script file
 (`pub_token = os.environ.get("__ITERION_SECRET_forge_publish_token__", "")`,
-as `bots/dep-update-guard` reads it). One form keeps the value in the text, by
+as `bots/dep-update-guard` reads it). A `{{vars.forge_publish_token}}` written
+in a `script:` body anyway is REFUSED at run time — before the script's temp
+file is written, so the bearer never rests in it in clear — with an error
+naming the var and this door (#2875; no placeholder→env swap exists for a
+script body: the single-quoted form the command path swaps is shell, and each
+interpreter's env read is its own expression, python's needing an import the
+body may not have). One form keeps the value in the text, by
 the author's own choice: the raw `{{!vars.x}}` form, whose quoting is theirs.
 A preview — the dry run, any rendering without the run's guard behind it —
 resolves nothing either: it renders the placeholder, the indirection existing

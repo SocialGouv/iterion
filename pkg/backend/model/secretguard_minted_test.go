@@ -359,6 +359,59 @@ func TestAScriptBodyReadsTheMintedGrantFromItsEnvironment(t *testing.T) {
 	}
 }
 
+// #2875, the measured leak this closes: a `{{vars.forge_publish_token}}` in a
+// `script:` body rendered the bearer as a language literal INTO the script's
+// temp file — in clear, on disk for the node's lifetime, pushed into the
+// workspace by a copy-based sandbox — while the previews (#2827) and
+// docs/secrets.md say a script body resolves nothing. The run refuses the
+// reference, before the file exists, naming the var and the door that works:
+// the body names the variable itself and reads it from the interpreter's
+// environment (the test above). The refusal is the build's, so every
+// interpreter takes it — a per-language swap would have to invent each
+// language's env-read expression (python's needs an import the body may not
+// have).
+func TestAScriptBodyRefusesAMintedVarReference(t *testing.T) {
+	blankHostCredentials(t)
+	ph := secretguard.PlaceholderForName(store.ForgePublishTokenVar)
+	for _, tc := range []struct {
+		language, script string
+	}{
+		{"sh", "cat \"$0\" > body.txt\nprintf '%s' {{vars.forge_publish_token}}\n"},
+		{"py", "import pathlib, sys\npathlib.Path(\"body.txt\").write_text(pathlib.Path(sys.argv[0]).read_text())\ntoken = {{vars.forge_publish_token}}\n"},
+	} {
+		t.Run(tc.language, func(t *testing.T) {
+			tok := randomToken(t)
+			script := tc.script
+			refs, err := ir.ParseRefs(script)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			wf := &ir.Workflow{Prompts: map[string]*ir.Prompt{}, Schemas: map[string]*ir.Schema{}}
+			guard := BuildSecretGuard(t.Context(), wf, map[string]string{store.ForgePublishTokenVar: tok}, nil)
+			e := newTestClawExecutor(NewRegistry(), wf, WithWorkDir(dir), WithSecretGuard(guard))
+			e.vars = map[string]any{store.ForgePublishTokenVar: tok}
+
+			node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "publish"}, Script: script, Language: tc.language, ScriptRefs: refs}
+			_, err = e.Execute(context.Background(), node, nil)
+			if err == nil {
+				t.Fatal("a script body referencing the minted grant ran — the bearer sat in its temp file in clear")
+			}
+			for _, want := range []string{store.ForgePublishTokenVar, ph} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal does not name %q: %v", want, err)
+				}
+			}
+			if strings.Contains(err.Error(), tok) {
+				t.Error("the refusal itself carries the grant")
+			}
+			if body, rerr := os.ReadFile(filepath.Join(dir, "body.txt")); rerr == nil {
+				t.Errorf("the refused script ran; its source read back carries the grant: %v", strings.Contains(string(body), tok))
+			}
+		})
+	}
+}
+
 // The catalog's call-site shape, unchanged by the fix: every bot writes
 // `NAME={{vars.forge_publish_token}} <program>` and reads NAME from its
 // environment. The three names the catalog uses must all still arrive — a
