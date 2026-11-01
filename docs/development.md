@@ -141,6 +141,70 @@ compares-and-sets from a status it did not set itself passes on one twin by
 accident and can never match on the other; state the status the row tests
 from.
 
+## The same replica set from an agent's Bash sandbox
+
+The recipe above assumes the test process and docker share a network
+namespace. An agent's Bash sandbox (Claude Code's bubblewrap one) does not:
+its namespace holds `lo` and nothing else, which `ip -o addr` prints in two
+lines, and docker's port publication is host-side — so `127.0.0.1:<published>`
+answers `connection refused` inside the sandbox while `docker port` shows the
+mapping, and the container's bridge address is `network unreachable`. The
+symptom is not an error, it is a wait: `mongostore.New` validates the
+connection through `pingPrimary`, which retries as long as its context lives
+(`pkg/store/mongo/ping.go`), and the context comes from `t.Deadline()`, so the
+test burns the whole `-timeout` before reporting — measured against a dead
+port, `-timeout 45s` reports after 40 s, which makes the documented
+`-timeout 1200s` a twenty-minute silence that reads as a store regression.
+
+A unix socket crosses the namespace boundary, being a filesystem object rather
+than a route. Run mongod on one in a bind-mounted scratch dir outside the
+repo, initiate the single-member set as above so transactions are available,
+and keep `directConnection=true`: the driver then connects only to the host in
+the URI and never discovers the `host:port` the member advertises, which would
+be a TCP route again (`SetDirect`, the driver's `clientoptions.go`). Run
+verbatim on 2026-11-01, where it carried a transaction-replay suite through
+the real `mongostore.SaveRun`.
+
+```bash
+name=iterion-mongo-sock                    # your own name: never a running container's
+sockdir=${TMPDIR:-/tmp}/$name              # outside the repo; mongod creates the socket here
+mkdir -p "$sockdir" && chmod 0777 "$sockdir"   # the image's mongod is not your uid
+docker run --rm -d --name "$name" --ulimit nofile=131072:131072 \
+  -v "$sockdir":/sock mongo:8.0 --replSet rs0 \
+  --unixSocketPrefix /sock --filePermissions 0777
+# mongod answers a few seconds after the container exists — initiating before
+# that is ECONNREFUSED, and the set then stays unconfigured for good:
+for i in $(seq 1 30); do
+  docker exec "$name" mongosh --quiet --eval 'db.adminCommand({ ping: 1 })' >/dev/null 2>&1 && break
+  sleep 1
+done
+docker exec "$name" mongosh --quiet \
+  --eval 'rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "localhost:27017" }] })'
+for i in $(seq 1 30); do
+  st=$(docker exec "$name" mongosh --quiet \
+        --eval 'try { print(rs.status().members[0].stateStr) } catch (e) { print("NOTREADY") }' | tail -1)
+  [ "$st" = "PRIMARY" ] && break; sleep 2
+done; [ "$st" = "PRIMARY" ] || { echo "replica set never became PRIMARY"; exit 1; }
+
+# the socket path is the URI's host, percent-encoded, and must end in .sock
+uri="mongodb://$(printf %s "$sockdir/mongodb-27017.sock" | sed 's|/|%2F|g')/?directConnection=true"
+# devbox run starts in the devbox project dir, not the cwd: name the tree you mean
+root=$(dirname "$(git rev-parse --git-common-dir)")
+ITERION_TEST_MONGO_URI="$uri" devbox run -c "$root" -- \
+  bash -c "cd $PWD && go test -count=1 -timeout 1200s ./pkg/server/cloudpublisher/"
+docker logs --tail 50 "$name"              # capture before removing: the container is --rm
+docker rm -f "$name"
+```
+
+`--bind_ip_all` is absent on purpose: nothing dials this server over TCP, and
+`mongosh` inside the container reaches it on loopback. Both permissions are
+needed, and each is missed differently: a mount dir left at your own `0775`
+makes mongod exit 48 with the dir still empty — it does not run as your uid
+and has to create the socket there — while without `--filePermissions 0777`
+the socket appears as `srwx------` owned by the image's user and the host side
+gets `permission denied`. The socket inode outlives `docker rm` in the scratch
+dir; it is inert, and a rerun replaces it.
+
 ## Frontend and local services
 
 ```bash
