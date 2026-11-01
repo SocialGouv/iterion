@@ -15,6 +15,7 @@ import (
 
 	codexsdk "github.com/ethpandaops/codex-agent-sdk-go"
 
+	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -196,7 +197,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	if resultMsg.IsError && resultMsg.Subtype != "success" {
 		return result, fmt.Errorf("delegate: codex error: subtype=%s", resultMsg.Subtype)
 	}
-	if terminalErr := codexTerminalFailure(resultMsg, result.Stderr); terminalErr != nil {
+	if terminalErr := codexTerminalFailure(resultMsg, result.Stderr, task.RedactSecrets); terminalErr != nil {
 		return result, terminalErr
 	}
 
@@ -283,7 +284,7 @@ func (b *CodexBackend) runQueryWithRetry(ctx context.Context, task Task, prompt 
 			switch m := msg.(type) {
 			case *codexsdk.AssistantMessage:
 				emitCodexToolHooks(task.Hooks, m, inFlightTools)
-				b.logAssistantActivity(task.NodeID, task.Iteration, m)
+				b.logAssistantActivity(task.NodeID, task.Iteration, m, task.RedactSecrets)
 			case *codexsdk.ResultMessage:
 				resultMsg = m
 			case *codexsdk.SystemMessage:
@@ -413,7 +414,7 @@ func (b *CodexBackend) formatOutput(ctx context.Context, task Task, sessionID, c
 	if rm.IsError && rm.Subtype != "success" {
 		return rm, duration, fmt.Errorf("codex formatting pass error: subtype=%s", rm.Subtype)
 	}
-	if terminalErr := codexTerminalFailure(rm, stderrCapture.String()); terminalErr != nil {
+	if terminalErr := codexTerminalFailure(rm, stderrCapture.String(), task.RedactSecrets); terminalErr != nil {
 		return rm, duration, terminalErr
 	}
 	return rm, duration, nil
@@ -461,16 +462,26 @@ func asInt(v any) int {
 
 // logAssistantActivity logs tool calls, text output, and tool errors from an
 // AssistantMessage in real-time, mirroring the claude_code backend's activity
-// streaming.
-func (b *CodexBackend) logAssistantActivity(nodeID string, iteration int, msg *codexsdk.AssistantMessage) {
+// streaming. redact is Task.RedactSecrets, threaded to the branches that cut
+// (contentBlocksText) or display-cut (the tool-use header detail).
+func (b *CodexBackend) logAssistantActivity(nodeID string, iteration int, msg *codexsdk.AssistantMessage, redact func(string) string) {
 	for _, block := range msg.Content {
 		switch blk := block.(type) {
 		case *codexsdk.ToolUseBlock:
-			header := fmt.Sprintf("[%s#%d/codex] 🔧 %s %s", nodeID, iteration, blk.Name, toolUseDetail(blk.Name, blk.Input))
-			b.Logger.LogBlock(iterlog.LevelInfo, "ℹ️ ", header, toolUseBody(blk.Name, blk.Input))
+			// Every leaf is redacted before the display helpers cut the
+			// input (a header detail keeps 100 bytes): a secret the cut
+			// splits is one no matcher recognises — the discipline
+			// logAssistantContent applies on the claude_code side
+			// (iterion#2822). RedactLeaves works on the DECODED strings,
+			// so a value JSON-escaped in transit is still matched.
+			input, _ := secretguard.RedactLeaves(blk.Input, func(s string) string { return redactWith(redact, s) }).(map[string]any)
+			header := fmt.Sprintf("[%s#%d/codex] 🔧 %s %s", nodeID, iteration, blk.Name, toolUseDetail(blk.Name, input))
+			b.Logger.LogBlock(iterlog.LevelInfo, "ℹ️ ", header, toolUseBody(blk.Name, input))
 		case *codexsdk.ToolResultBlock:
 			if blk.IsError {
-				b.Logger.Info("[%s#%d/codex] ❌ tool error: %s", nodeID, iteration, contentBlocksText(blk.Content))
+				// Model-emitted content quoted into the run's log, and cut:
+				// the pass runs first (iterion#2822).
+				b.Logger.Info("[%s#%d/codex] ❌ tool error: %s", nodeID, iteration, contentBlocksText(blk.Content, redact))
 			}
 		case *codexsdk.TextBlock:
 			if blk.Text != "" {
@@ -562,8 +573,10 @@ func inspectCodexRollout(ctx context.Context, threadID string) string {
 	return ""
 }
 
-// contentBlocksText flattens a ContentBlock slice for logging; truncates to 500 chars.
-func contentBlocksText(blocks []codexsdk.ContentBlock) string {
+// contentBlocksText flattens a ContentBlock slice for logging; truncates to
+// 500 bytes. The pass runs before the cut (iterion#2822) — nil redact keeps
+// the text raw.
+func contentBlocksText(blocks []codexsdk.ContentBlock, redact func(string) string) string {
 	if len(blocks) == 0 {
 		return "<empty>"
 	}
@@ -574,7 +587,7 @@ func contentBlocksText(blocks []codexsdk.ContentBlock) string {
 		}
 		switch b := blk.(type) {
 		case *codexsdk.TextBlock:
-			sb.WriteString(b.Text)
+			sb.WriteString(redactWith(redact, b.Text))
 		default:
 			fmt.Fprintf(&sb, "<%s>", blk.BlockType())
 		}
@@ -637,7 +650,12 @@ func codexCredEnvForCLI(ctx context.Context) map[string]string {
 // nominal ResultMessage whose text is actually a terminal CLI/API error.
 // Without this guard a single-string schema can wrap that text as a valid
 // result, or an empty result can look like a successful side-effect-only task.
-func codexTerminalFailure(rm *codexsdk.ResultMessage, stderr string) error {
+// redact is the run's sink pass (Task.RedactSecrets): every text this
+// function quotes into a returned error crosses it BEFORE the 500-byte cut,
+// because the error is logged and recorded whole while the cut may split a
+// declared value — and a split value is one no downstream pass recognises
+// (iterion#2822). Nil disables the pass.
+func codexTerminalFailure(rm *codexsdk.ResultMessage, stderr string, redact func(string) string) error {
 	if rm == nil {
 		return nil
 	}
@@ -662,7 +680,7 @@ func codexTerminalFailure(rm *codexsdk.ResultMessage, stderr string) error {
 			return &ErrTransient{Provider: BackendCodex, Reason: "network", Detail: resultText}
 		}
 		if isCodexAuthOrAPIStatusError(lower) {
-			return fmt.Errorf("delegate: codex terminal error: %s", truncate(resultText, 500))
+			return fmt.Errorf("delegate: codex terminal error: %s", truncate(redactWith(redact, resultText), 500))
 		}
 	}
 	// Structured output is empty and the result text carries no error
@@ -679,7 +697,7 @@ func codexTerminalFailure(rm *codexsdk.ResultMessage, stderr string) error {
 		return &ErrTransient{
 			Provider: BackendCodex,
 			Reason:   "network",
-			Detail:   truncate(strings.TrimSpace(stderr), 500),
+			Detail:   truncate(redactWith(redact, strings.TrimSpace(stderr)), 500),
 		}
 	}
 	return nil

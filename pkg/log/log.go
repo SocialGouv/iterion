@@ -107,12 +107,30 @@ type Hook func(level Level, msg string, fields map[string]any)
 // above warn" reads as `level <= hookThreshold`.
 const hookThreshold = LevelWarn
 
+// redactFn is one redaction pass over a record the logger keeps. An
+// alias, so every exported signature stays `func(string) string`.
+type redactFn = func(string) string
+
+// redactPass is what a redactor slot holds: the pass, and whether it was
+// INSTALLED on that very handle (SetRedactor) rather than inherited when
+// the handle was forked. The second field is what tells a per-run install
+// apart from a seed, so the collision SetRedactor announces is the real
+// one — two runs on one handle — and not a child run installing its own
+// matcher on a fork of its parent's logger.
+type redactPass struct {
+	fn        redactFn
+	installed bool
+}
+
 // Logger is a leveled logger that writes either emoji-rich human
 // output (default) or structured JSON. Loggers may carry a fixed set
 // of fields via WithField/WithFields/WithError; the underlying writer,
 // mutex and hook are shared between forks so concurrent log lines
 // never interleave and a hook installed on the root logger is seen by
-// every fork made from it, before or after SetHook.
+// every fork made from it, before or after SetHook. The redaction pass
+// is the one piece a fork does NOT share: it is seeded from the parent
+// and settable per handle (SetRedactor), because it carries ONE run's
+// secret matcher.
 type Logger struct {
 	level  Level
 	w      io.Writer
@@ -123,11 +141,15 @@ type Logger struct {
 	// tree reaches all of them. Never nil for a Logger built through a
 	// constructor; the dispatch stays nil-safe regardless.
 	hook *atomic.Pointer[Hook]
-	// redact, when set by WithRedactor, scrubs every record this logger
-	// KEEPS — line, block header and body, and string field values —
-	// before the write and before the hook dispatch. Copied across forks
-	// like the writer; nil on a logger that scrubs nothing.
-	redact func(string) string
+	// redact is this handle's OWN pass slot: what scrubs every record the
+	// logger KEEPS — line, block header and body, and string field values
+	// — before the write and before the hook dispatch. Each fork allocates
+	// its own slot seeded with the parent's pass, and SetRedactor writes
+	// only the slot of the handle it is called on, so two runs forked from
+	// one process logger cannot replace each other's secret matcher
+	// (iterion#2822). nil on a Logger built outside the constructors; the
+	// read and both writers stay nil-safe.
+	redact *atomic.Pointer[redactPass]
 	// fields is the inherited context. nil for the root logger; copied
 	// (not aliased) on each WithField call so a fork's mutations don't
 	// leak back to the parent.
@@ -147,12 +169,12 @@ func NewWithFormat(level Level, w io.Writer, format Format) *Logger {
 	if w == nil {
 		w = io.Discard
 	}
-	return &Logger{level: level, w: w, format: format, mu: &sync.Mutex{}, hook: &atomic.Pointer[Hook]{}}
+	return &Logger{level: level, w: w, format: format, mu: &sync.Mutex{}, hook: &atomic.Pointer[Hook]{}, redact: &atomic.Pointer[redactPass]{}}
 }
 
 // Nop returns a logger that discards all output (level below error).
 func Nop() *Logger {
-	return &Logger{level: LevelError - 1, w: io.Discard, mu: &sync.Mutex{}, hook: &atomic.Pointer[Hook]{}}
+	return &Logger{level: LevelError - 1, w: io.Discard, mu: &sync.Mutex{}, hook: &atomic.Pointer[Hook]{}, redact: &atomic.Pointer[redactPass]{}}
 }
 
 // SetHook installs h as the warn+ callback for l and every fork made
@@ -305,22 +327,113 @@ func (l *Logger) emit(level Level, emoji string, msg string) {
 // per-sink passes would leave the eleventh to drift, so producers hand
 // third-party text to the logger raw and the fork scrubs it once. Text a
 // caller TRUNCATES before logging still owes its own pass first — the
-// chokepoint can only recognise a value the cut kept whole.
+// chokepoint can only recognise a value the cut kept whole, which is what
+// Redact is for.
+//
+// The fork's pass lands in the fork's OWN slot: l keeps what it carried,
+// and a later SetRedactor on either handle leaves the other alone.
 func (l *Logger) WithRedactor(redact func(string) string) *Logger {
 	if l == nil {
 		return nil
 	}
 	out := l.withFields(nil)
-	out.redact = redact
+	out.storeRedactor(redact, false)
 	return out
 }
 
-// redactString applies the logger's redactor, if one is wired.
+// SetRedactor installs redact on THIS handle's slot, and so on every fork
+// made from it afterwards. It is the late install a launch surface owes a
+// run whose secret matcher does not exist yet when its logger is built:
+// runview.BuildExecutor builds the run's guard from the resolved
+// credentials and sets it here, so the lines the surface itself logs on
+// that handle — and the engine, executor and supervisor forks taken from
+// it — all cross the run's matcher (iterion#2822, docs/secrets.md).
+//
+// The slot is per-handle: the parent this logger was forked from is never
+// touched, and forks taken BEFORE the call keep the pass they were seeded
+// with. That is why a per-run logger must be a FORK — a surface that
+// hands BuildExecutor the bare process logger installs one run's matcher
+// where the next run would replace it.
+//
+// A SECOND install on the same handle is accepted and announced: only the
+// run about to log can protect itself, so the last install wins, and the
+// line says what the collision means — two runs reached one handle, a
+// surface skipped its fork. A pass merely INHERITED from the parent is
+// not a collision: a child run installing its own matcher on a fork of
+// its parent's logger is the normal shape. A nil redact clears the slot.
+// Safe on a nil Logger and on one built outside the constructors (no
+// slot: nothing to set).
+func (l *Logger) SetRedactor(redact func(string) string) {
+	if l == nil || l.redact == nil {
+		return
+	}
+	prev := l.storeRedactor(redact, true)
+	if redact != nil && prev != nil && prev.installed {
+		l.Warn("log: a run's redaction pass was already installed on this logger and a second one replaced it — a per-run logger must be a fork of its own (iterion#2822)")
+	}
+}
+
+// WithOwnRedactor returns a fork of l — same level, writer, format,
+// fields and hook — whose redaction slot is its own, seeded with l's
+// current pass. A launch surface calls it to give ONE run a slot
+// BuildExecutor can set without reaching l or any other run, when it has
+// no other reason to fork (no per-run tee, or a tee that failed to open).
+// Every other fork (WithWriter, WithField, WithRedactor) owns its slot
+// too, so a surface that already forked for its per-run sink owes no
+// second call. Safe on a nil Logger.
+func (l *Logger) WithOwnRedactor() *Logger {
+	if l == nil {
+		return nil
+	}
+	return l.withFields(nil)
+}
+
+// Redact runs this logger's pass over s and returns the result. It serves
+// the one producer shape the chokepoint cannot: text that must be CUT
+// before it is logged. A cut hands the pass half a secret, which no
+// matcher recognises, so the producer redacts first and bounds the result
+// — the record's own pass is then a no-op (the pass is idempotent over
+// placeholders). Safe on a nil Logger and on one that scrubs nothing,
+// which return s unchanged.
+func (l *Logger) Redact(s string) string {
+	return l.redactString(s)
+}
+
+// storeRedactor writes the handle's own slot and returns the pass it
+// replaced, nil when there was none. installed distinguishes a per-run
+// install (SetRedactor) from a fork-time pass.
+func (l *Logger) storeRedactor(redact func(string) string, installed bool) *redactPass {
+	if redact == nil {
+		return l.redact.Swap(nil)
+	}
+	return l.redact.Swap(&redactPass{fn: redact, installed: installed})
+}
+
+// redactString applies the logger's own pass, if one is wired.
 func (l *Logger) redactString(s string) string {
-	if l.redact == nil || s == "" {
+	if l == nil || s == "" || l.redact == nil {
 		return s
 	}
-	return l.redact(s)
+	p := l.redact.Load()
+	if p == nil || p.fn == nil {
+		return s
+	}
+	return p.fn(s)
+}
+
+// forkRedactorSlot gives a fork its own slot, seeded with the pass the
+// parent carries at fork time. The seed is not an install: the fork may
+// have its own run's matcher set on it without that reading as a
+// collision (SetRedactor).
+func forkRedactorSlot(parent *atomic.Pointer[redactPass]) *atomic.Pointer[redactPass] {
+	slot := &atomic.Pointer[redactPass]{}
+	if parent == nil {
+		return slot
+	}
+	if p := parent.Load(); p != nil && p.fn != nil {
+		slot.Store(&redactPass{fn: p.fn})
+	}
+	return slot
 }
 
 // WithWriter returns a fork of l writing to w instead of l's own
@@ -381,7 +494,7 @@ func (l *Logger) withFields(extra map[string]any) *Logger {
 		format: l.format,
 		mu:     l.mu,
 		hook:   l.hook,
-		redact: l.redact,
+		redact: forkRedactorSlot(l.redact),
 	}
 	if len(l.fields) == 0 && len(extra) == 0 {
 		return out

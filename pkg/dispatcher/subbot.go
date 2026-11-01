@@ -124,6 +124,11 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 		if childBundle != nil && childBundle.Manifest != nil {
 			bundleName = childBundle.Manifest.Name
 		}
+		// A subbot is a run of its own, with its own guard: BuildExecutor
+		// installs it on the handle it is given, so the child owes a fork —
+		// on the parent's handle the child's matcher would replace the
+		// parent's, which holds other values (iterion#2822).
+		childLogger := logger.WithOwnRedactor()
 		execSpec := runview.ExecutorSpec{
 			Ctx:      ctx,
 			Workflow: childWf,
@@ -133,7 +138,7 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			SandboxTiersKnown: true,
 			RunID:             childRunID,
 			ParentRunID:       req.ParentRunID,
-			Logger:            logger,
+			Logger:            childLogger,
 			StoreDir:          storeDir,
 			WorkDir:           childWorkDir,
 			// A subbot is a DIFFERENT bot from its parent, so it keys its own
@@ -186,7 +191,7 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 		// capture is mutex-guarded.
 		var capture runview.SubbotOutputCapture
 		opts := []runtime.EngineOption{
-			runtime.WithLogger(logger),
+			runtime.WithLogger(childLogger),
 			runtime.WithWorkflowHash(hash),
 			runtime.WithBundle(childBundle),
 			runtime.WithFilePath(childPath),
@@ -206,7 +211,7 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			// Recursive wiring so a child that itself declares subbot nodes can
 			// run them (grandchild sources resolve relative to the CHILD's
 			// dir); the ctx-carried depth keeps the recursion bounded.
-			runtime.WithSubbotRunner(subbotRunnerForDispatch(childPath, storeDir, childWorkDir, s, sealer, dailyCap, logger, projectEnv)),
+			runtime.WithSubbotRunner(subbotRunnerForDispatch(childPath, storeDir, childWorkDir, s, sealer, dailyCap, childLogger, projectEnv)),
 			// Le parent a six reprises à repli exponentiel sur un incident
 			// transitoire (timeout http2, 429, DNS) ; sans ça l'enfant mourrait
 			// définitivement au premier, et comme `ReattachSubbotChild` repart

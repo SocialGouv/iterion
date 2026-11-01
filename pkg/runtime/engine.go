@@ -462,6 +462,7 @@ func New(wf *ir.Workflow, s store.RunStore, exec NodeExecutor, opts ...EngineOpt
 	for _, opt := range opts {
 		opt(e)
 	}
+	e.installLogRedactor()
 	// `run.url` renders empty when the deployment's public origin is unusable,
 	// and a bot then publishes its run id with no link. That is the safe
 	// behaviour, not a silent one: the reason is said HERE, the first place a
@@ -487,6 +488,7 @@ func NewFromRecipe(r *recipe.RecipeSpec, wf *ir.Workflow, s store.RunStore, exec
 	for _, opt := range opts {
 		opt(e)
 	}
+	e.installLogRedactor()
 	return e, nil
 }
 

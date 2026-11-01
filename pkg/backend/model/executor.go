@@ -818,6 +818,16 @@ func (e *ClawExecutor) secretRedactor() func(string) string {
 	return e.secretGuard.Redact
 }
 
+// redactDisplay is secretRedactor applied nil-safe: the eager pass for
+// display text a helper then CUTS (a header hint, a result preview) —
+// a secret the cut splits is one no matcher recognises.
+func (e *ClawExecutor) redactDisplay(s string) string {
+	if red := e.secretRedactor(); red != nil {
+		return red(s)
+	}
+	return s
+}
+
 func (e *ClawExecutor) secretUnmaterializer() func(string) string {
 	if e.secretGuard == nil {
 		return nil
@@ -1338,10 +1348,15 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 				// LogBlock (not Info) so a long/multi-line input folds under the
 				// truncated header as an expandable "▸" block — parity with
 				// claude_code. clawToolHint keeps the one-line header; BlockBody
-				// supplies the full body when it had to clip.
+				// supplies the full body when it had to clip. The run's pass
+				// crosses the input BEFORE those cuts (the hint keeps 57
+				// bytes): a secret the cut splits is one no matcher
+				// recognises (iterion#2822). The event keeps the raw input —
+				// the redacting emitter scrubs it.
+				shown := secretguard.RedactJSON(input, e.secretRedactor())
 				e.logger.LogBlock(iterlog.LevelInfo, "ℹ️ ",
-					fmt.Sprintf("[%s#%d/claw] 🔧 %s %s", nodeID, iteration, toolName, clawToolHint(input)),
-					tooldisplay.BlockBody(toolName, input))
+					fmt.Sprintf("[%s#%d/claw] 🔧 %s %s", nodeID, iteration, toolName, clawToolHint(shown)),
+					tooldisplay.BlockBody(toolName, shown))
 			}
 			if fn != nil {
 				fn(nodeID, LLMToolStartedInfo{
@@ -1361,12 +1376,16 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 				// Log the tool RESULT as an expandable block (📤 success, ❌
 				// error): truncated preview in the header, full (bounded) output
 				// folded underneath — symmetric with the input above and
-				// identical to claude_code via tooldisplay.ResultDisplay.
+				// identical to claude_code via tooldisplay.ResultDisplay. The
+				// run's pass crosses the output BEFORE those cuts (a 100-byte
+				// header preview, a 4096-byte body): a secret the cut splits
+				// is one no matcher recognises (iterion#2822). The event keeps
+				// the raw output — the redacting emitter scrubs it.
 				glyph := "📤"
 				if isError {
 					glyph = "❌"
 				}
-				header, body := tooldisplay.ResultDisplay(output)
+				header, body := tooldisplay.ResultDisplay(e.redactDisplay(output))
 				if header == "" {
 					header = fmt.Sprintf("(%d bytes)", len(output))
 				}

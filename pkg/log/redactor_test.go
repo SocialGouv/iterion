@@ -135,3 +135,141 @@ func TestWithRedactorJSONFields(t *testing.T) {
 type errForTest string
 
 func (e errForTest) Error() string { return string(e) }
+
+// Each fork owns its pass slot. A launch surface forks the process logger
+// once per run and BuildExecutor installs that run's matcher on the fork,
+// so two runs in one process cannot replace each other's — the hazard a
+// shared slot would be (iterion#2822).
+func TestSetRedactorIsPerFork(t *testing.T) {
+	const valueA = "sk-live-9f3Kd8mQ2wXp"
+	const valueB = "sk-live-0000AAAA1111"
+	var procBuf, bufA, bufB bytes.Buffer
+	process := New(LevelInfo, &procBuf)
+	// The two shapes a surface uses: a per-run tee (WithWriter), and
+	// WithOwnRedactor where there is nothing to tee.
+	runA := process.WithWriter(&bufA)
+	runB := process.WithOwnRedactor().WithWriter(&bufB)
+
+	runA.SetRedactor(func(s string) string { return strings.ReplaceAll(s, valueA, "__A__") })
+	runB.SetRedactor(func(s string) string { return strings.ReplaceAll(s, valueB, "__B__") })
+
+	line := "snapshot: " + valueA + " and " + valueB
+	runA.Info("%s", line)
+	runB.Info("%s", line)
+	process.Info("%s", line)
+
+	if got := bufA.String(); !strings.Contains(got, "__A__") || strings.Contains(got, valueA) {
+		t.Errorf("run A's own value survived its own matcher: %q", got)
+	}
+	if got := bufB.String(); !strings.Contains(got, "__B__") || strings.Contains(got, valueB) {
+		t.Errorf("run B's own value survived its own matcher: %q", got)
+	}
+	// Each run keeps ITS matcher: B's install never reached A's slot.
+	if got := bufA.String(); strings.Contains(got, "__B__") {
+		t.Errorf("run B's matcher ran on run A's line: %q", got)
+	}
+	if got := bufB.String(); strings.Contains(got, "__A__") {
+		t.Errorf("run A's matcher ran on run B's line: %q", got)
+	}
+	if got := procBuf.String(); strings.Contains(got, "__A__") || strings.Contains(got, "__B__") {
+		t.Errorf("a run's matcher landed on the process logger: %q", got)
+	}
+}
+
+// SetRedactor is a LATE install: the forks taken afterwards (the engine,
+// the executor, the per-node field forks) carry the run's matcher, and
+// the parent the handle was forked from never does.
+func TestSetRedactorReachesTheForksTakenAfterIt(t *testing.T) {
+	const value = "sk-live-9f3Kd8mQ2wXp"
+	var procBuf, runBuf bytes.Buffer
+	process := New(LevelInfo, &procBuf)
+	run := process.WithWriter(&runBuf)
+	run.SetRedactor(func(s string) string { return strings.ReplaceAll(s, value, "__RUN__") })
+
+	run.WithField("node", "implement").Info("output: %s", value)
+	run.LogBlock(LevelInfo, "📋", "header "+value, "body "+value)
+	process.Info("process: %s", value)
+
+	if got := runBuf.String(); strings.Contains(got, value) {
+		t.Errorf("a fork taken after the install wrote the raw value: %q", got)
+	}
+	if strings.Count(runBuf.String(), "__RUN__") != 3 {
+		t.Errorf("want the pass on the line, the block header and its body: %q", runBuf.String())
+	}
+	if got := procBuf.String(); !strings.Contains(got, value) {
+		t.Errorf("the parent must stay unredacted — it never opted in: %q", got)
+	}
+}
+
+// A second install on the SAME handle means two runs reached one handle:
+// the last one wins (only the run about to log can protect itself) and
+// the collision is announced. A child run installing its own matcher on a
+// fork of its parent's logger is not a collision.
+func TestSetRedactorAnnouncesASecondInstallOnOneHandle(t *testing.T) {
+	const marker = "a per-run logger must be a fork of its own (iterion#2822)"
+	var shared bytes.Buffer
+	l := New(LevelInfo, &shared)
+	l.SetRedactor(func(s string) string { return "A:" + s })
+	if strings.Contains(shared.String(), marker) {
+		t.Fatalf("the FIRST install must be silent: %q", shared.String())
+	}
+	l.SetRedactor(func(s string) string { return "B:" + s })
+	if !strings.Contains(shared.String(), marker) {
+		t.Errorf("a second install on one handle must announce itself: %q", shared.String())
+	}
+	l.Info("line")
+	if got := shared.String(); !strings.Contains(got, "B:line") {
+		t.Errorf("the last install must win: %q", got)
+	}
+
+	var parentBuf, childBuf bytes.Buffer
+	parent := New(LevelInfo, &parentBuf)
+	parent.SetRedactor(func(s string) string { return "P:" + s })
+	child := parent.WithOwnRedactor().WithWriter(&childBuf)
+	child.SetRedactor(func(s string) string { return "C:" + s })
+	if strings.Contains(parentBuf.String(), marker) || strings.Contains(childBuf.String(), marker) {
+		t.Errorf("a child run's own install on its own fork is not a collision: parent=%q child=%q",
+			parentBuf.String(), childBuf.String())
+	}
+}
+
+// Redact is the eager pass for the one shape the chokepoint cannot serve:
+// text a producer must CUT before logging (pkg/supervise cuts a steer at
+// 120 B). Cutting first hands the matcher half a value, which it cannot
+// recognise.
+func TestRedactIsTheEagerPassForTextThatMustBeCut(t *testing.T) {
+	const value = "sk-live-9f3Kd8mQ2wXp"
+	var buf bytes.Buffer
+	l := New(LevelInfo, &buf).WithRedactor(testRedactor(new(int)))
+	// The value straddles the cut: 110 bytes of prose, then the value.
+	text := strings.Repeat("x", 110) + value + " tail"
+
+	cutFirst := text[:120]
+	if !strings.Contains(l.Redact(cutFirst), value[:10]) {
+		t.Fatal("the premise of this test is wrong: a cut value must survive the pass")
+	}
+	scrubbed := l.Redact(text)
+	passFirst := scrubbed[:120]
+	if strings.Contains(passFirst, value[:10]) {
+		t.Errorf("pass-then-cut still shows the value's head: %q", passFirst)
+	}
+	// The cut now falls inside the PLACEHOLDER, which is the point: what
+	// crosses the boundary is the marker, never the value.
+	if !strings.Contains(passFirst, "__ITERION_") {
+		t.Errorf("pass-then-cut kept no placeholder: %q", passFirst)
+	}
+
+	// The record's own pass over already-scrubbed text is a no-op.
+	l.Info("%s", scrubbed)
+	if strings.Count(buf.String(), "__ITERION_SECRET_test__") != 1 {
+		t.Errorf("the record's pass rewrote the placeholder: %q", buf.String())
+	}
+
+	var nilLogger *Logger
+	if got := nilLogger.Redact(value); got != value {
+		t.Errorf("Redact on a nil logger = %q, want the text unchanged", got)
+	}
+	if got := New(LevelInfo, &buf).Redact(value); got != value {
+		t.Errorf("Redact on a logger that scrubs nothing = %q, want the text unchanged", got)
+	}
+}

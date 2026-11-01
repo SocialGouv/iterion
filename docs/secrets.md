@@ -80,11 +80,47 @@ sink, before persistence:
   kept as is — the heuristic pass never redacts one, trailing sentence
   punctuation included,
 - run.log — every record the run's logger keeps, at the logger itself
-  (`Logger.WithRedactor`, wired by `runview.BuildExecutor` from this guard;
-  [ADR-149](adr/149-the-run-logger-redacts-what-it-keeps.md)) — block bodies,
-  tool sidecar blobs, and turn-snapshot conversations keep their own eager
-  pass (their stores bypass the redacting wrapper, or the text is cut before
-  it is logged).
+  (`Logger.WithRedactor`; [ADR-149](adr/149-the-run-logger-redacts-what-it-keeps.md)).
+  The pass is installed on the RUN's logger, once, by
+  `runview.BuildExecutor` — `Logger.SetRedactor`, where the guard is built —
+  so it reaches the handle the launch surface still holds and everything
+  forked from it afterwards: the executor's tree (the agent stream, the tool
+  hints, the delegate registry), the engine, the run's supervisors, and the
+  **non-event** lines of a surface's own prose (`executor close`, an MCP
+  server's quoted stderr, a launch-input refusal). `runtime.New` /
+  `runtime.NewFromRecipe` install it again on the ENGINE's fork, from the
+  scrubber its executor carries, so an engine built without BuildExecutor —
+  a dry run, a benchmark, a test — covers its **non-event** lines too: a
+  workspace-snapshot diagnostic quoting a git command's combined output, a
+  worktree or skill-mirror warning, a capture error naming what it read.
+  The slot is per HANDLE, which is why a run's logger is always a fork
+  (`iterlog.WithOwnRedactor`, a per-run tee): a surface that handed its
+  process logger would install one run's matcher where the next run replaces
+  it, and a second install on one handle says so in the log. What is NOT
+  covered by either point: a logger nobody set the matcher on, i.e. the pod's
+  own process logger — the lines `pkg/runner` logs on `r.cfg.Logger` and the
+  dispatcher runner on `r.logger`, which reach the pod's stderr, not run.log.
+  Nor a run this process does not hold: a finalize or reconcile another
+  process's run owes (`Service.runLoggerFor`) logs on a fork of the service
+  logger that carries no matcher, because the guard lives with the run's own
+  launch. Block bodies, tool sidecar blobs and turn-snapshot conversations
+  keep their own eager pass (their stores bypass the redacting wrapper), and
+  so does every producer that CUTS text before logging it — the cut runs
+  after the run's pass (`Logger.Redact` on the logger, `Task.RedactSecrets`
+  on the delegate backends: `pkg/supervise`'s steer line, the pi backend's
+  steer, UI-decline and ask_user lines, the codex terminal-error quote and
+  its tool-error content, the claw IPC decode-error quote), because a value
+  the cut split is a value no matcher recognises. The display helpers that
+  cut what they render sit in the same class, so the backends hand them
+  already-redacted text: the codex tool-use header (`toolUseDetail`, 100-byte
+  detail over leaves `secretguard.RedactLeaves` crossed first) and the claw
+  ones (the delegate bridge's 57-byte hint and 100-byte result preview, the
+  in-process header detail — `secretguard.RedactJSON` over the raw input,
+  the output redacted before `tooldisplay.ResultDisplay`); the claude_code
+  stream already did (`RedactLeaves` before `toolUseDetail`,
+  `redactForRunLog` before `ResultDisplay`). The relay payloads keep their
+  clamps unredacted on purpose: their reader is the container's loop, not
+  the operator's log.
 
 Values iterion only scrubs — the run's provider keys, the process's own
 secret-named environment, and credentials a server mints for a run (the forge

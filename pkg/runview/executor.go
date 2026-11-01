@@ -89,8 +89,16 @@ type ExecutorSpec struct {
 	// run with no known value and the heuristic pass off): such a run has no
 	// guard to register into. Nil sink = the caller has no use for the guard.
 	SecretGuardSink func(*secretguard.Guard)
-	Logger          *iterlog.Logger
-	StoreDir        string
+	// Logger is THIS RUN's logger, and BuildExecutor sets the run's secret
+	// matcher on it (iterlog.SetRedactor) so the launch surface's own lines
+	// cross the same pass the executor's and the engine's do. The slot is
+	// per-handle, so the handle must be a fork this run owns — every
+	// surface builds one (a per-run tee, or iterlog.WithOwnRedactor when it
+	// has nothing to tee): handing a shared process logger would install
+	// this run's matcher where the next run replaces it (iterion#2822).
+	// Nil builds a fresh stderr logger, whose slot is its own by construction.
+	Logger   *iterlog.Logger
+	StoreDir string
 	// WorkDir is the effective workspace of this run. It is the root used by
 	// Claw's relative file tools. Empty preserves the historical os.Getwd()
 	// fallback for callers that execute in their intended workspace.
@@ -459,17 +467,27 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		spec.SecretGuardSink(guard)
 	}
 	// …and through the run's LOGGER, the redaction chokepoint
-	// (docs/adr/149-the-run-logger-redacts-what-it-keeps.md, #2458): every record this fork keeps crosses
+	// (docs/adr/149-the-run-logger-redacts-what-it-keeps.md, #2458): every record that logger keeps crosses
 	// guard.Redact before the write and before the warn+ hook, so a
 	// producer hands the log third-party text raw and no per-sink pass is
-	// owed. Built before the FIRST line this run logs, so the fallback /
+	// owed. Set before the FIRST line this run logs, so the fallback /
 	// policy refusals below are covered too, and inherited by every fork
-	// (the run.log tee, the per-node field forks, the delegate registry).
-	// A nil guard (no known values, heuristic off) wires no redactor: the
-	// no-secrets run pays nothing, and ITERION_SECRETS_REDACT=off — which
-	// builds exactly such a guard — is the kill switch.
+	// taken afterwards (the engine, the per-node field forks, the delegate
+	// registry, the run's supervisors).
+	//
+	// SET, not fork: the matcher lands on the handle the SURFACE still
+	// holds, so the lines the surface logs on its own per-run logger —
+	// `executor close`, an MCP server's stderr, a steer the supervisor
+	// quotes — reach run.log scrubbed too (iterion#2822). The surface owes
+	// that handle to be its run's own fork; see ExecutorSpec.Logger.
+	//
+	// A nil guard (no known values, no file hint, heuristic off) wires no
+	// redactor on this handle: the no-secrets run pays nothing.
+	// ITERION_SECRETS_REDACT=off is the kill switch — it MUTES this pass,
+	// building a holding guard whose Redact returns the line unchanged; a
+	// nil guard comes only from a run that knows no value at all.
 	if guard != nil {
-		spec.Logger = spec.Logger.WithRedactor(guard.Redact)
+		spec.Logger.SetRedactor(guard.Redact)
 	}
 	// Materialise the operator's launch-time fallback chain onto the
 	// compiled workflow BEFORE anything reads it. The engine is

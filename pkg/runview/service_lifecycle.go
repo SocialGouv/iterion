@@ -224,8 +224,13 @@ func (s *Service) reconcileOrphans(parent context.Context) {
 		// server pod, doing pointless git work + logging a spurious
 		// "cannot read worktree HEAD" every tick per finished run.
 		if canReap {
-			if recErr := runtime.RecoverFinalize(ctx, s.store, r, s.logger); recErr != nil {
-				s.logger.Warn("runview: recover finalize %s: %v", id, recErr)
+			// The RUN's logger: RecoverFinalize logs the worktree's git
+			// output on the handle it is given, so it must be the handle
+			// carrying that run's secret matcher — the service logger
+			// carries none, and is shared by every run here (iterion#2822).
+			rl := s.runLoggerFor(id)
+			if recErr := runtime.RecoverFinalize(ctx, s.store, r, rl); recErr != nil {
+				rl.Warn("runview: recover finalize %s: %v", id, recErr)
 			}
 		}
 		if r.Status != store.RunStatusRunning {

@@ -139,8 +139,12 @@ func (s *Service) CancelInactiveCtx(ctx context.Context, runID string) (bool, er
 	// Re-load post-flip so RecoverFinalize sees the new status.
 	r, err = s.store.LoadRun(ctx, runID)
 	if err == nil {
-		if recErr := runtime.RecoverFinalize(ctx, s.store, r, s.logger); recErr != nil && s.logger != nil {
-			s.logger.Warn("runview: post-cancel-inactive finalize for %s: %v", runID, recErr)
+		// The RUN's logger, which carries its secret matcher when this
+		// process holds the run: RecoverFinalize logs git output on the
+		// handle it is given (iterion#2822).
+		rl := s.runLoggerFor(runID)
+		if recErr := runtime.RecoverFinalize(ctx, s.store, r, rl); recErr != nil && rl != nil {
+			rl.Warn("runview: post-cancel-inactive finalize for %s: %v", runID, recErr)
 		}
 	}
 	return true, nil
@@ -678,7 +682,9 @@ func (s *Service) CommitAndFinalizeCtx(ctx context.Context, runID, message strin
 	if err != nil {
 		return nil, err
 	}
-	if err := runtime.CommitUncommittedAndFinalize(ctx, s.store, r, message, s.logger); err != nil {
+	// The RUN's logger: the commit + promote this helper drives logs git
+	// output on the handle it is given (iterion#2822).
+	if err := runtime.CommitUncommittedAndFinalize(ctx, s.store, r, message, s.runLoggerFor(runID)); err != nil {
 		return nil, err
 	}
 	// Re-read so we return the just-persisted state (RecoverFinalize

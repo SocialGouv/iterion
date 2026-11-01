@@ -309,12 +309,13 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	}
 
 	logger, logCloser := teeRunLog(logger, level, storeDir, runID)
+	// Re-emit the engineOpts entry: the handle changed either way — the
+	// tee's own logger, or the per-run fork the failure path returns — and
+	// this one is the run's (the slot BuildExecutor sets its matcher on).
+	// WithLogger overwrites on each call, so appending is sufficient.
+	engineOpts = append(engineOpts, runtime.WithLogger(logger))
 	if logCloser != nil {
 		defer logCloser.Close()
-		// Re-emit the engineOpts entry so the engine sees the tee'd
-		// logger; WithLogger overwrites on each call, so appending is
-		// sufficient.
-		engineOpts = append(engineOpts, runtime.WithLogger(logger))
 	}
 
 	// DSL-declared supervisors (`supervisor NAME:`): wire an in-process
@@ -750,8 +751,13 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		// would hand it a credential its parent never passed.
 		childRunOpts := opts
 		childRunOpts.Vars = nil
+		// A subbot is a run of its own, with its own guard: BuildExecutor
+		// installs it on the handle it is given, so the child owes a fork —
+		// on the parent's handle the child's matcher would replace the
+		// parent's, which holds other values (iterion#2822).
+		childLogger := logger.WithOwnRedactor()
 		childExec, err := buildRunExecutor(childRunOpts, tiersUnknownToAChild, childWf, s,
-			lineage{runID: childRunID, parentRunID: req.ParentRunID}, storeDir, logger,
+			lineage{runID: childRunID, parentRunID: req.ParentRunID}, storeDir, childLogger,
 			// The child's engine below is rooted at the parent's effective
 			// workdir when the parent passed one, else at the process cwd —
 			// the same two cases its screen must probe.
@@ -787,7 +793,7 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		}, childWf, hash, runview.ExecutionContextPolicyFromEnv(), "")
 		childContext.LaunchSurface = "cli-subbot"
 		childOpts := []runtime.EngineOption{
-			runtime.WithLogger(logger),
+			runtime.WithLogger(childLogger),
 			runtime.WithWorkflowHash(hash),
 			runtime.WithBundle(childBundle),
 			runtime.WithExecutionContext(childContext),
@@ -814,7 +820,7 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			// resolve relative to the CHILD's dir). Without this, nested
 			// subbots died with "no SubbotRunner is wired" even though the
 			// depth guard below exists precisely to bound that recursion.
-			runtime.WithSubbotRunner(subbotRunnerForCLI(childPath, storeDir, s, logger, opts)),
+			runtime.WithSubbotRunner(subbotRunnerForCLI(childPath, storeDir, s, childLogger, opts)),
 			runtime.WithOnNodeFinished(func(_ context.Context, _, nodeID string, out map[string]any) {
 				capture.Record(nodeID, out)
 			}),

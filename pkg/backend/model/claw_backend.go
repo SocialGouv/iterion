@@ -1905,6 +1905,10 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 
 	handler, stranded := b.multiplexerHandler(ctx, task, seed)
 	mux := delegate.NewMultiplexer(stdoutR, stdinPipe, handler)
+	// The raw line a decode error quotes crosses the run's pass before its
+	// 256-byte cut, or a value straddling the cut publishes its head into
+	// the node's error (iterion#2822).
+	mux.SetRedactor(task.RedactSecrets)
 
 	if len(seed.replay) > 0 {
 		if err := mux.Send(delegate.NewSessionReplayEnvelope(seed.replay)); err != nil {

@@ -518,8 +518,10 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 	// hook in executor.go only ferries event payloads, and
 	// the LLMStepInfo arrives only for claw's direct loop.
 	// Nothing in this loop leaves the operator's log, so the sink is asked
-	// once for the display formatting below (HeaderDetail / BlockBody read
-	// the raw input); redaction itself is the run logger's (docs/adr/149-the-run-logger-redacts-what-it-keeps.md, #2458, applied to every record it keeps. The block bodies ask again
+	// once for the display formatting below. HeaderDetail CUTS its detail
+	// (100 bytes), so the run's pass crosses the input BEFORE it — a
+	// secret the cut splits is one no matcher recognises, which the run
+	// logger's chokepoint cannot repair (docs/adr/149-the-run-logger-redacts-what-it-keeps.md, #2458, iterion#2822). The block bodies ask again
 	// through [storeHooks.logFarSideBlock] — one owner for the bound, one
 	// IsEnabled compare for the repetition.
 	if len(step.ToolCalls) > 0 && h.logger.IsEnabled(iterlog.LevelInfo) {
@@ -528,13 +530,14 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 			// relayed llm_step_finished carries the name the container
 			// sent. The logger's chokepoint scrubs it with the line.
 			name := tc.Name
-			detail := tooldisplay.HeaderDetail(tc.Name, tc.Input, tooldisplay.SnakeCaseKeys)
+			shown := secretguard.RedactJSON(tc.Input, h.red)
+			detail := tooldisplay.HeaderDetail(tc.Name, shown, tooldisplay.SnakeCaseKeys)
 			if detail != "" {
 				h.logger.Logf(iterlog.LevelInfo, "🔧", "[%s#%d/claw] %s %s", nodeID, step.Iteration, name, detail)
 			} else {
 				h.logger.Logf(iterlog.LevelInfo, "🔧", "[%s#%d/claw] %s", nodeID, step.Iteration, name)
 			}
-			if body := tooldisplay.BlockBody(tc.Name, tc.Input); body != "" {
+			if body := tooldisplay.BlockBody(tc.Name, shown); body != "" {
 				h.logFarSideBlock(iterlog.LevelInfo, "🔧",
 					fmt.Sprintf("[%s#%d/claw] tool input %s:", nodeID, step.Iteration, name),
 					body)

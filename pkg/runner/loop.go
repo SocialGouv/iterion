@@ -2748,7 +2748,11 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// BEFORE the executor so the executor's agent-stream lines (the
 	// `[node#iter/backend]` tool/LLM tags the studio's per-node Logs tab
 	// filters on) persist too — not only the engine's node-level lines.
-	runLogger := r.cfg.Logger
+	// A FORK even without a RunLogStore: this handle is what buildExecutor
+	// sets the run's secret matcher on (iterion#2822), and the pod runs
+	// many runs through one r.cfg.Logger — setting it there would let the
+	// next run replace this one's matcher mid-flight.
+	runLogger := r.cfg.Logger.WithOwnRedactor()
 	if ls := store.AsRunLogStore(r.cfg.Store); ls != nil {
 		idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
 		seed, serr := ls.RunLogSize(idCtx, msg.RunID)
@@ -2759,7 +2763,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		defer func() { _ = w.Close() }()
 		r.registerLogWriter(msg.RunID, w)
 		defer r.unregisterLogWriter(msg.RunID)
-		runLogger = r.cfg.Logger.WithWriter(io.MultiWriter(r.cfg.Logger.Writer(), w))
+		runLogger = runLogger.WithWriter(io.MultiWriter(r.cfg.Logger.Writer(), w))
 	}
 
 	// DSL-declared supervisors run on the pod alongside the engine —

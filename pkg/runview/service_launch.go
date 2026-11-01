@@ -1574,8 +1574,12 @@ func (s *Service) spawnRun(
 			// recovery operation, not a tenant-discovery lookup.
 			fctx := store.WithoutTenantFilter(context.Background())
 			if r, loadErr := s.store.LoadRun(fctx, runID); loadErr == nil {
-				if recErr := runtime.RecoverFinalize(fctx, s.store, r, s.logger); recErr != nil {
-					s.logger.Warn("runview: post-cancel finalize for %s: %v", runID, recErr)
+				// This run's logger, not the service's: RecoverFinalize logs
+				// the worktree's git output on the handle it is given, and
+				// only this one carries the run's secret matcher
+				// (iterion#2822).
+				if recErr := runtime.RecoverFinalize(fctx, s.store, r, runLogger); recErr != nil {
+					runLogger.Warn("runview: post-cancel finalize for %s: %v", runID, recErr)
 				}
 			}
 		}
@@ -1709,7 +1713,11 @@ type launchExtras struct {
 // streaming to the studio.
 func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runName string, fin finalizationOpts, ex launchExtras, b *bundle.Bundle) []runtime.EngineOption {
 	if runLogger == nil {
-		runLogger = s.logger
+		// A fork of the service logger, never the service logger itself:
+		// the engine installs this run's secret matcher on the handle it is
+		// given, and the service logger is shared by every run in this
+		// process (iterion#2822).
+		runLogger = s.logger.WithOwnRedactor()
 	}
 	opts := []runtime.EngineOption{
 		runtime.WithLogger(runLogger),
