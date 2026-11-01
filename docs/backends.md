@@ -2391,6 +2391,33 @@ Tune the tiers with `ITERION_CLAW_STREAM_COLD_TIMEOUT` and
 `ITERION_CLAW_STREAM_IDLE_TIMEOUT` (Go durations such as `2m` or `20m`). Set
 either to `0` only when that tier must be deliberately disabled.
 
+Claw's own SSE readers add an inner watchdog on the OpenAI chat, foundry
+(Azure) and Responses wires, `CLAW_STREAM_IDLE_TIMEOUT` (**5 minutes** by
+default), measured on the gap between SSE lines. On those wires it therefore fires
+before the hot tier above and reports the stall as a stream error event,
+which iterion reads as the same silence verdict its own watchdog raises: a
+stall from either watchdog takes the identical transient retry budget
+**in-process** — the node's retry loop, and the delegate loop around it.
+Across the sandboxed crossing the runner's error reaches the host as text,
+so a stall loses that verdict there — both watchdogs' alike, iterion's own
+included. What iterion keys on is the watchdog's own report, which both
+names the window it measured and points at `CLAW_STREAM_IDLE_TIMEOUT`;
+a provider refusal that merely quotes a stall carries neither marker; on
+the generic wire the frame's type is dropped before iterion reads the
+message, so such a refusal keeps the retryable transport verdict it had
+before this change, not the verdict its own frame earns. A refusal
+relaying a whole watchdog report is decided by its frame's own type
+instead — on the wires that preserve one, which the anthropic-shaped
+client does not.
+
+That parity also makes a stall the same `fallbacks:` category as iterion's
+own — `transient_exhausted`, where it used to be the catch-all
+`unclassified` that bypasses a route's `on:` filter entirely. A chain whose
+`on:` does not name `transient_exhausted`, the default
+`[usage_window, unavailable]` included, therefore no longer routes around a
+stall once the retry budget is spent: it stops there. Name
+`transient_exhausted` on the rescue route that should take it.
+
 #### The `tools:` list is load-bearing here (`C135`)
 
 claw is the one backend a node's `tools:` list actually constrains: it

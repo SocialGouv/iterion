@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 
@@ -76,20 +77,115 @@ func ClassifyStreamError(body []byte) error {
 // drift; these are only the stream-reader-specific additions
 // (claw-code-go surfaces them as "read stream: …", "openai stream
 // read: …", "… truncated …", "parse SSE: …", and its idle watchdog as
-// "openai stream stalled: …").
+// "openai stream stalled: …"). "stream stalled" stays in the list and
+// stays reachable: clawStreamStall takes only the reports that also carry
+// the watchdog's window or its knob in the watchdog's own wording, so a
+// message that merely quotes the phrase keeps the retryable transport
+// verdict it earns here.
 var streamTransportMarkers = []string{
 	"read stream", "stream read", "parse sse", "truncat", "incomplete",
 	"stream stalled",
 }
 
+// clawStallMarker is the phrase a claw idle watchdog puts in the stream
+// `error` event it sends when a wire falls silent: "<wire> stream stalled:
+// no data for <window> — aborting (retryable; tune via
+// CLAW_STREAM_IDLE_TIMEOUT)" (sseutil.IdleWatchdog, wired on every SSE
+// reader openaiwire.StreamEvents serves — the OpenAI chat and foundry
+// wires — and on the Responses reader). Any wire claw gives that watchdog
+// reports in the same shape, so the class is keyed on that wording — the
+// phrase and one of the two markers below — rather than on the wire names.
+const clawStallMarker = "stream stalled"
+
+// clawStallWindowPrefix precedes the idle window a stall report names, and
+// clawStallTunePrefix the knob it points the operator at. Each is anchored
+// to the report's own wording — the colon after the phrase, the parenthesis
+// before "retryable" — so prose quoting the words outside that shape ("we
+// have no data for the requested range", "stalled, tune via the dashboard")
+// stays outside the class. Either is the SECOND marker a watchdog report
+// carries and a relayed provider message does not: both emit sites write
+// both (openaiwire/stream.go for the chat and foundry wires it serves,
+// openai/responses.go for the Responses reader), from the one wording
+// sseutil.IdleWatchdog's callers give it. The knob's own name is
+// deliberately not spelled here — iterion never reads that variable, and a
+// constant spelling it would claim a sandbox classification it does not
+// have.
+const (
+	clawStallWindowPrefix = "stream stalled: no data for "
+	clawStallTunePrefix   = "(retryable; tune via "
+)
+
+// clawStreamStall types a stall a provider wire's own watchdog reported as
+// the *StreamIdleError iterion's watchdog raises for the same condition — a
+// provider stream gone silent. Both verdicts are then read through
+// errors.As by the inner retry loop (isRetryable, and the larger transient
+// attempt budget) and by the outer delegate loop (isDelegateRetryable),
+// which reads no *APIError at all. The message rides along verbatim so the
+// operator keeps the wire's own report.
+//
+// Two markers are required, not one, because branch order alone does not
+// protect a provider's verdict here. The provider-verdict branches of
+// classifyStreamEventError run first, but they recognise a verdict only on
+// the wires that preserve its type and code; claw's generic SSE client
+// forwards a provider's `error.message` verbatim and drops both
+// (internal/api/client.go), so on the three providers that build it —
+// anthropic, moonshot, zai — this is the first branch that can match such
+// a refusal at all.
+// Requiring the window the watchdog measured or the knob it names — in the
+// report's own wording, anchored around the phrase — keys the class on the
+// watchdog's report rather than on a phrase a provider can relay: a refusal
+// that merely quotes "stream stalled", even alongside the window's or the
+// knob's bare words, falls through to the transport markers below and keeps
+// its standard budget.
+func clawStreamStall(msg string) (*StreamIdleError, bool) {
+	low := strings.ToLower(msg)
+	if !strings.Contains(low, clawStallMarker) {
+		return nil, false
+	}
+	if !strings.Contains(low, clawStallWindowPrefix) && !strings.Contains(low, clawStallTunePrefix) {
+		return nil, false
+	}
+	return &StreamIdleError{Phase: StreamIdleWire, Idle: clawStallWindow(msg), Reported: msg}, true
+}
+
+// clawStallWindow reads the idle window a stall message names. A report
+// that names the knob but no window leaves the window unknown rather than
+// dropping the stall verdict: the typed fact is what the retry loops read,
+// the window only describes it.
+//
+// The token is read out of the LOWERED text, where the position was found:
+// ToLower is not length-preserving (İ, two bytes, lowercases to i, one), so
+// the same index in the original lands earlier than the token — inside the
+// preceding word once the prose has shrunk by more than the space before
+// it. Go's duration units are lowercase, so reading the lowered form costs
+// nothing.
+func clawStallWindow(msg string) time.Duration {
+	low := strings.ToLower(msg)
+	at := strings.Index(low, clawStallWindowPrefix)
+	if at < 0 {
+		return 0
+	}
+	fields := strings.Fields(low[at+len(clawStallWindowPrefix):])
+	if len(fields) == 0 {
+		return 0
+	}
+	window, err := time.ParseDuration(fields[0])
+	if err != nil {
+		return 0
+	}
+	return window
+}
+
 // classifyStreamEventError turns a stream `error` event's message into a
 // typed error. A recognised provider error (quota, context overflow,
 // invalid prompt) keeps its permanent classification via
-// ClassifyStreamError. A transport / truncation failure — matched either by
-// the shared network-signature list or a stream-reader-specific marker — is
-// wrapped as a RETRYABLE *APIError so the retry loop re-issues the request
-// instead of surfacing a half-response as if it were complete. Anything
-// else stays a plain, non-retryable stream error.
+// ClassifyStreamError. A silence the wire's own idle watchdog reported
+// becomes the same *StreamIdleError iterion's watchdog raises
+// (clawStreamStall). Any other transport / truncation failure — matched
+// either by the shared network-signature list or a stream-reader-specific
+// marker — is wrapped as a RETRYABLE *APIError so the retry loop re-issues
+// the request instead of surfacing a half-response as if it were complete.
+// Anything else stays a plain, non-retryable stream error.
 func classifyStreamEventError(msg string) error {
 	if classified := ClassifyStreamError([]byte(msg)); classified != nil {
 		return classified
@@ -113,6 +209,9 @@ func classifyStreamEventError(msg string) error {
 		// any other. The verdict is typed, so isRetryable reads it as is.
 		status, _ := statusOf(d.code)
 		return &APIError{Message: "stream error: " + msg, StatusCode: status, IsRetryable: !permanentProviderError(d.typ, d.code)}
+	}
+	if stall, ok := clawStreamStall(msg); ok {
+		return stall
 	}
 	if delegate.MatchesNetworkSignature(msg) || matchesStreamTransportMarker(msg) {
 		return &APIError{Message: "stream error: " + msg, IsRetryable: true}

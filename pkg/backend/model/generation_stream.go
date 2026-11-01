@@ -42,26 +42,42 @@ var ErrToolInputTooLarge = errors.New("aggregateStream: tool_use input exceeded 
 // accumulated content exceeded maxTextBlockSize.
 var ErrTextBlockTooLarge = errors.New("aggregateStream: text/thinking block exceeded max size")
 
-// StreamIdlePhase identifies whether a provider fell silent before or after
-// sending at least one event. It makes operational failures actionable without
-// confusing them with a parent node/run deadline.
+// StreamIdlePhase identifies where a provider's silence was measured:
+// before or after its first event here, or on the wire by the wire's own
+// watchdog. It makes operational failures actionable without confusing them
+// with a parent node/run deadline.
 type StreamIdlePhase string
 
 const (
 	StreamIdleCold StreamIdlePhase = "cold"
 	StreamIdleHot  StreamIdlePhase = "hot"
+	// StreamIdleWire marks a silence a provider wire's OWN watchdog
+	// measured and reported on the stream (claw's sseutil.IdleWatchdog).
+	// Whether the provider had begun serving is the wire's to know, not
+	// this aggregator's, so such a stall is neither cold nor hot.
+	StreamIdleWire StreamIdlePhase = "wire"
 )
 
-// StreamIdleError is emitted only by Iterion's Claw stream watchdog. It is
-// intentionally distinct from context.DeadlineExceeded: the former is safe to
-// retry with a fresh provider request, whereas a parent run/node deadline is
-// not.
+// StreamIdleError is the verdict on a provider stream that went silent:
+// iterion's own watchdog measures the silence (cold and hot phases), and a
+// provider wire's watchdog reports its own in a stream error event
+// (StreamIdleWire). It is intentionally distinct from
+// context.DeadlineExceeded: a silent stream is safe to retry with a fresh
+// provider request, whereas a parent run/node deadline is not.
 type StreamIdleError struct {
 	Phase StreamIdlePhase
 	Idle  time.Duration
+	// Reported is the stall message the wire's own watchdog put on the
+	// stream. It names the wire and the window it was configured with,
+	// which the fields above do not, and is empty when iterion's
+	// aggregator measured the silence itself.
+	Reported string
 }
 
 func (e *StreamIdleError) Error() string {
+	if e.Reported != "" {
+		return e.Reported
+	}
 	return fmt.Sprintf("claw stream idle for %s in %s phase", e.Idle, e.Phase)
 }
 
