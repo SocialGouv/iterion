@@ -40,6 +40,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -67,8 +68,13 @@ const inClusterNamespacePath = "/var/run/secrets/kubernetes.io/serviceaccount/na
 // Returns ("", "", error) when the host doesn't qualify as a k8s
 // runner, with the error explaining which check failed so the
 // factory can surface a clear ErrUnavailable to the user.
+//
+// envtrust.LookPath, not exec.LookPath: which kubectl the driver shells
+// out to is an authority question, and a PATH a project .env planted
+// must not answer it — the refusal surfaces as the "not found" below
+// (#2876, the class #2809 closed site by site).
 func Detect() (kubectl string, namespace string, err error) {
-	binPath, lookupErr := exec.LookPath(kubeBinaryName)
+	binPath, lookupErr := envtrust.LookPath(kubeBinaryName)
 	if lookupErr != nil {
 		return "", "", fmt.Errorf("%s not found on PATH (did you build the runtime image with kubectl?)", kubeBinaryName)
 	}

@@ -3,10 +3,11 @@ package sandbox
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // HostKind identifies the iterion deployment topology.
@@ -55,7 +56,8 @@ type FactoryOptions struct {
 }
 
 // DriverConstructor returns a [Driver] instance. The constructor may
-// inspect the host (`exec.LookPath`, env vars, kubeconfig) to decide
+// inspect the host (envtrust.LookPath — never the live PATH, which a
+// project .env may have planted — env vars, kubeconfig) to decide
 // whether it is usable; if not, it returns (nil, ErrUnavailable) and
 // the factory falls back to the next candidate.
 type DriverConstructor func() (Driver, error)
@@ -305,9 +307,14 @@ func isDesktopBinary() bool {
 // surface the docker/podman state independently of which driver got
 // selected. Returns the binary name found ("docker" or "podman") or
 // the empty string.
+//
+// envtrust.LookPath, not exec.LookPath: the binary the doctor reports
+// is the one a driver would spawn, an authority question a PATH a
+// project .env planted must not answer (#2876, the class #2809 closed
+// site by site).
 func HostHasDocker() string {
 	for _, bin := range []string{"docker", "podman"} {
-		if _, err := exec.LookPath(bin); err == nil {
+		if _, err := envtrust.LookPath(bin); err == nil {
 			return bin
 		}
 	}

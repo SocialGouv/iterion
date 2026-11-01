@@ -3,9 +3,9 @@ package kubernetes
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
 
@@ -72,8 +72,13 @@ var runKubectlProbe = func(ctx context.Context, args ...string) ([]byte, error) 
 // Returns the resolved context label + namespace on success. The error
 // distinguishes "kubectl missing", "no context selected", and "API
 // unreachable" so the doctor can print a targeted remediation.
+//
+// envtrust.LookPath, not exec.LookPath, like [Detect]: the binary this
+// probe then shells out to is the driver's kubectl, an authority question
+// a PATH a project .env planted must not answer (#2876, the class #2809
+// closed site by site).
 func PingContext(ctx context.Context) (kctx, namespace string, err error) {
-	if _, lookErr := exec.LookPath(kubeBinaryName); lookErr != nil {
+	if _, lookErr := envtrust.LookPath(kubeBinaryName); lookErr != nil {
 		return "", "", fmt.Errorf("%s not found on PATH (install kubectl or build the runtime image with it)", kubeBinaryName)
 	}
 	// Prefer the in-cluster path: if the service-account mount is present

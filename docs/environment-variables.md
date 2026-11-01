@@ -182,7 +182,12 @@ what `.env` loading exists for. Each refused name keeps a per-answer belt at
 its reads (`internal/envtrust`): the gateway pair refuses by name, the
 routing names the host planted cross into a sandbox as explicit empties, and
 everything a run's authority question reads goes through the provenance
-seam. The studio lane marks what it DOES plant in the run environment
+seam. Which executable a launcher-started process runs is such a question:
+every PATH lookup that answers it (the sandbox runtimes' `Detect`, the
+doctor's `HostHasDocker`, the codex `--version` probe, the detached runner's
+`iterion` fallback) goes through `envtrust.LookPath`, which resolves nothing
+under a planted PATH — loudly, as `exec.ErrNotFound` (#2809 closed the seam,
+#2876 the remaining sites). The studio lane marks what it DOES plant in the run environment
 (`ITERION_DOTENV_PLANTED` travels in it) and never lets the file's opt-in
 cross into a run; the desktop's file is operator-owned, so its values keep
 the operator's authority — the class refusal is the guard there, not the

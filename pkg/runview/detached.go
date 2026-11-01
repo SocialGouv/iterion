@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -57,12 +58,16 @@ const (
 // (running as iterion-desktop) resolves the iterion CLI sibling
 // instead of forking itself — re-entering the Wails wrapper with an
 // unknown subcommand falls through to wails.Run and pops a phantom
-// GUI window. PATH lookup is the last-resort fallback.
+// GUI window. PATH lookup is the last-resort fallback, and it goes
+// through envtrust.LookPath, not exec.LookPath: which iterion binary
+// the detached runner spawns is an authority question a PATH a project
+// .env planted must not answer (#2876, the class #2809 closed site by
+// site).
 func runnerBinary() (string, error) {
 	if p := proc.LocateIterionBinary(); p != "" {
 		return p, nil
 	}
-	return exec.LookPath("iterion")
+	return envtrust.LookPath("iterion")
 }
 
 // detachedSpec describes a single subprocess invocation. It is built

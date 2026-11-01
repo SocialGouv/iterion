@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -109,11 +110,16 @@ func buildRunnerArgs(spec runnerSpec) ([]string, error) {
 // resolution as runview's detached mode: a stable installed binary
 // first (LocateIterionBinary skips volatile go-run build paths), PATH
 // as the last resort.
+//
+// envtrust.LookPath, not exec.LookPath, on that last resort: which
+// iterion binary the detached runner spawns is an authority question,
+// and a PATH a project .env planted must not answer it (#2876, the
+// class #2809 closed site by site).
 func runnerBinary() (string, error) {
 	if p := proc.LocateIterionBinary(); p != "" {
 		return p, nil
 	}
-	return exec.LookPath("iterion")
+	return envtrust.LookPath("iterion")
 }
 
 // spawnDetachedRunner starts the runner subprocess in its own session

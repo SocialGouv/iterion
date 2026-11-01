@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 )
 
@@ -43,11 +44,16 @@ const (
 // Detect probes the host for an available container runtime, preferring
 // docker over podman (matching the convention of most local dev tools).
 // Returns ("", error) when neither binary is on PATH.
+//
+// envtrust.LookPath, not exec.LookPath: which runtime binary the sandbox
+// spawns is an authority question, and a PATH a project .env planted must
+// not answer it — the refusal surfaces as the plain "not found" below
+// (#2876, the class #2809 closed site by site).
 func Detect() (Runtime, error) {
-	if _, err := exec.LookPath(string(RuntimeDocker)); err == nil {
+	if _, err := envtrust.LookPath(string(RuntimeDocker)); err == nil {
 		return RuntimeDocker, nil
 	}
-	if _, err := exec.LookPath(string(RuntimePodman)); err == nil {
+	if _, err := envtrust.LookPath(string(RuntimePodman)); err == nil {
 		return RuntimePodman, nil
 	}
 	return "", fmt.Errorf("docker: neither 'docker' nor 'podman' found on PATH")

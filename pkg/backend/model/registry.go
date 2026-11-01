@@ -21,6 +21,7 @@ import (
 	openaiprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/openai"
 	vertexprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/vertex"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
@@ -461,11 +462,21 @@ func codexCLIVersion() string {
 		return v
 	}
 	codexVersionOnce.Do(func() {
+		// envtrust.LookPath, not a bare-name exec.CommandContext (which
+		// resolves against the LIVE PATH): which codex binary answers this
+		// probe is an authority question, and a PATH a project .env planted
+		// must not answer it — the refusal reads as "no codex on the host"
+		// and the baked api.ChatGPTClientVersion stands (#2876, the class
+		// #2809 closed site by site).
+		bin, lookErr := envtrust.LookPath("codex")
+		if lookErr != nil {
+			return
+		}
 		// Timeout guards against a wedged codex binary stalling every
 		// LLM call forever (sync.Once would cache the hang).
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		out, err := exec.CommandContext(ctx, "codex", "--version").Output()
+		out, err := exec.CommandContext(ctx, bin, "--version").Output()
 		if err != nil {
 			return
 		}
