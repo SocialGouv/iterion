@@ -33,9 +33,7 @@ func piTree(t *testing.T) (agentDir, lab, repo, work string) {
 	mustWriteFile(t, filepath.Join(repo, "CLAUDE.md"), "REPO-CLAUDE-SHADOWED")
 	mustWriteFile(t, filepath.Join(work, "AGENTS.override.md"), "SUB-OVERRIDE")
 	mustWriteFile(t, filepath.Join(work, "AGENTS.md"), "SUB-AGENTS-SHADOWED")
-	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mustGitDir(t, filepath.Join(repo, ".git"))
 	t.Setenv("ITERION_PI_AGENT_DIR", agentDir)
 	t.Setenv("ITERION_PI_NO_CONTEXT_FILES", "")
 	return agentDir, lab, repo, work
@@ -146,9 +144,7 @@ func TestPiPrintTransportSuppliesThePolicysFiles(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := os.MkdirAll(filepath.Join(workDir, ".git"), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			mustGitDir(t, filepath.Join(workDir, ".git"))
 			mustWriteFile(t, filepath.Join(workDir, "AGENTS.md"), "MARKER-PI-REPO-P1")
 			binDir := t.TempDir()
 			argvDump, promptDump := filepath.Join(binDir, "argv"), filepath.Join(binDir, "prompt")

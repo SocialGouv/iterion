@@ -37,12 +37,26 @@ func ambientTree(t *testing.T) (home, lab, repo, work string) {
 	lab = filepath.Join(home, "lab")
 	repo = filepath.Join(lab, "repo")
 	work = filepath.Join(repo, "sub")
-	for _, d := range []string{filepath.Join(home, ".claude"), filepath.Join(repo, ".git"), work} {
+	for _, d := range []string{filepath.Join(home, ".claude"), work} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
+	mustGitDir(t, filepath.Join(repo, ".git"))
 	return home, lab, repo, work
+}
+
+// mustGitDir plants the shape ambient.RepoRoot requires of a `.git`
+// directory — git's own is_git_directory criteria: a HEAD that reads, and
+// objects/ and refs/ directories. An empty directory is no repository.
+func mustGitDir(t *testing.T, dotGit string) {
+	t.Helper()
+	for _, sub := range []string{"objects", "refs"} {
+		if err := os.MkdirAll(filepath.Join(dotGit, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWriteFile(t, filepath.Join(dotGit, "HEAD"), "ref: refs/heads/main\n")
 }
 
 func TestClaudeAmbientTranslatesEveryPolicy(t *testing.T) {

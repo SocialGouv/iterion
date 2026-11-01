@@ -32,8 +32,15 @@ func TestMigrateDSLStopsAtTheRepositoryRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The repository, with a loose workflow under its bots/ and no bundle.
+	// Its .git carries the shape git's is_git_directory requires — an empty
+	// .git directory is no repository, to git and to the boundary walk.
 	repo := filepath.Join(opDir, "lab", "repo")
-	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+	for _, sub := range []string{".git/objects", ".git/refs"} {
+		if err := os.MkdirAll(filepath.Join(repo, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	loose := filepath.Join(repo, "bots", "smoke", "board_smoke.bot")

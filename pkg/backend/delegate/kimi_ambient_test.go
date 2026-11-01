@@ -235,9 +235,7 @@ func TestKimiReportsItsRootFilesWhenTheHomeIsTheRepoRoot(t *testing.T) {
 	home := isolateUserHome(t)
 	mustWriteFile(t, filepath.Join(home, ".kimi-code", "AGENTS.md"), "root marker\n")
 	mustWriteFile(t, filepath.Join(home, "AGENTS.md"), "root agents\n")
-	if err := os.MkdirAll(filepath.Join(home, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mustGitDir(t, filepath.Join(home, ".git"))
 	task := Task{NodeID: "n", UserPrompt: "hi", WorkDir: filepath.Join(home, "project")}
 	got := kimiHostInstructions(task)
 	root := filepath.Join(home, ".kimi-code", "AGENTS.md")

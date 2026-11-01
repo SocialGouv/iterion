@@ -21,6 +21,7 @@ package ambient
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -279,12 +280,12 @@ func Remedy(backend string, p Policy, reason string) string {
 }
 
 // RepoRoot returns the root of the repository holding workDir: the nearest
-// directory, workDir included, that carries a `.git` entry. That entry is a
-// directory in a primary checkout and a file in a linked worktree or a
-// submodule, so a run worktree is its own root. Outside any repository the
-// root is workDir itself. The result is absolute and clean; symlinks are kept
-// as given, and callers that match paths should also try the resolved form
-// (see Forms).
+// directory, workDir included, that carries a `.git` entry git itself would
+// accept (see isGitEntry). That entry is a directory in a primary checkout
+// and a file in a linked worktree or a submodule, so a run worktree is its
+// own root. Outside any repository the root is workDir itself. The result is
+// absolute and clean; symlinks are kept as given, and callers that match
+// paths should also try the resolved form (see Forms).
 func RepoRoot(workDir string) string {
 	abs, err := filepath.Abs(workDir)
 	if err != nil {
@@ -310,16 +311,18 @@ func IsRepoRoot(dir string) bool {
 	return isGitEntry(filepath.Join(dir, ".git"))
 }
 
-// isGitEntry accepts a `.git` directory, or a `.git` file that points at one
-// ("gitdir: …"). An empty placeholder file, which some sandboxes plant on
-// paths they deny, is not a repository.
+// isGitEntry accepts a `.git` directory that meets git's own criteria, or a
+// `.git` file that points at one ("gitdir: …"). An empty placeholder — a
+// file or a directory some sandbox planted on a path it denies — is not a
+// repository: git's own discovery climbs straight past it, and a walk that
+// stopped there would answer with a root git refuses.
 func isGitEntry(path string) bool {
 	info, err := os.Stat(path)
 	if err != nil {
 		return false
 	}
 	if info.IsDir() {
-		return true
+		return isGitDirectory(path)
 	}
 	head := make([]byte, len("gitdir:"))
 	f, err := os.Open(path)
@@ -329,6 +332,57 @@ func isGitEntry(path string) bool {
 	defer f.Close()
 	n, _ := f.Read(head)
 	return string(head[:n]) == "gitdir:"
+}
+
+// isGitDirectory holds a `.git` directory to the shape git's
+// is_git_directory (setup.c) requires: a HEAD that validate_headref accepts
+// (see headReadsAsGit), and objects/ and refs/ that are directories. A
+// `.git` directory without them — the empty placeholder of the witness case
+// — is no repository to git, so it is none here either.
+func isGitDirectory(path string) bool {
+	if !headReadsAsGit(filepath.Join(path, "HEAD")) {
+		return false
+	}
+	for _, sub := range []string{"objects", "refs"} {
+		if info, err := os.Stat(filepath.Join(path, sub)); err != nil || !info.IsDir() {
+			return false
+		}
+	}
+	return true
+}
+
+// headReadsAsGit applies validate_headref's three accepted shapes: a symlink
+// whose target reads "refs/…" (git reads the link, never the target — a
+// dangling one is a HEAD to git), a "ref: refs/…" symbolic ref, or a hex
+// object id (a detached HEAD, 40 or 64 hex digits). The read is bounded, as
+// git's own 256-byte buffer is.
+func headReadsAsGit(path string) bool {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(path)
+		return err == nil && strings.HasPrefix(target, "refs/")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, 256)
+	n, _ := io.ReadFull(f, buf)
+	content := string(buf[:n])
+	if rest, ok := strings.CutPrefix(content, "ref:"); ok {
+		return strings.HasPrefix(strings.TrimLeft(rest, " \t"), "refs/")
+	}
+	oid := strings.TrimRight(content, " \t\r\n")
+	if len(oid) != 40 && len(oid) != 64 {
+		return false
+	}
+	return strings.IndexFunc(oid, func(r rune) bool {
+		return !('0' <= r && r <= '9' || 'a' <= r && r <= 'f')
+	}) == -1
 }
 
 // OperatorBoundary is the directory above which instruction files count as

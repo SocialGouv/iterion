@@ -42,7 +42,15 @@ func TestOwningDirStopsAtTheRepositoryRoot(t *testing.T) {
 		t.Run(".git as a "+gitEntry, func(t *testing.T) {
 			dotGit := filepath.Join(repo, ".git")
 			if gitEntry == "dir" {
-				if err := os.MkdirAll(dotGit, 0o755); err != nil {
+				// The shape git's is_git_directory requires: a HEAD that
+				// reads, objects/ and refs/ directories. An empty .git
+				// directory is no boundary — git itself climbs past it.
+				for _, sub := range []string{"objects", "refs"} {
+					if err := os.MkdirAll(filepath.Join(dotGit, sub), 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := os.WriteFile(filepath.Join(dotGit, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			} else if err := os.WriteFile(dotGit, []byte("gitdir: /elsewhere/repo.git\n"), 0o644); err != nil {

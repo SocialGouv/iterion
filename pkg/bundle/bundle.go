@@ -342,8 +342,10 @@ func DirForMainBot(path string) string {
 // submodule, a linked worktree) is its own boundary: the file belongs to
 // the inner one. A tree with no .git at all walks on, to the filesystem
 // root. The boundary shares ambient.RepoRoot's .git rule: an EMPTY or
-// non-pointer .git file (a corrupt checkout) is no boundary, and the walk
-// crosses it — the pre-#1367 misattribution survives that one shape.
+// non-pointer .git file (a corrupt checkout) is no boundary, and neither is
+// a .git directory that is no repository to git (no HEAD, objects/, refs/) —
+// the walk crosses both, and the pre-#1367 misattribution survives those
+// shapes.
 func OwningDir(path string) string {
 	if path == "" {
 		return ""

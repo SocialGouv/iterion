@@ -176,7 +176,7 @@ func TestRepoRootFindsTheNearestRealGitEntry(t *testing.T) {
 	tmp := t.TempDir()
 	repo := filepath.Join(tmp, "repo")
 	sub := filepath.Join(repo, "pkg", "x")
-	mustMkdir(t, filepath.Join(repo, ".git"))
+	mustGitDir(t, filepath.Join(repo, ".git"))
 	mustMkdir(t, sub)
 
 	if got := RepoRoot(sub); got != repo {
@@ -192,6 +192,11 @@ func TestRepoRootFindsTheNearestRealGitEntry(t *testing.T) {
 		t.Errorf("RepoRoot inside a linked worktree = %s, want %s", got, wt)
 	}
 
+	// Nothing below is a repository, so the walks exhaust the ancestors of
+	// tmp: they answer the work dir itself only when the host carries no git
+	// entry above it.
+	requireNoGitAncestor(t, tmp)
+
 	// An empty placeholder .git file is not a repository.
 	plain := filepath.Join(tmp, "plain")
 	mustMkdir(t, filepath.Join(plain, "deep"))
@@ -205,6 +210,115 @@ func TestRepoRootFindsTheNearestRealGitEntry(t *testing.T) {
 	mustMkdir(t, lone)
 	if got := RepoRoot(lone); got != lone {
 		t.Errorf("RepoRoot outside a repository = %s, want %s", got, lone)
+	}
+}
+
+func TestRepoRootWalksPastAnEmptyGitDirectory(t *testing.T) {
+	tmp := t.TempDir()
+
+	// git's own discovery climbs past a `.git` directory that is not a
+	// repository — no HEAD, no objects/, no refs/ — and answers the real
+	// repository above it; RepoRoot must agree.
+	repo := filepath.Join(tmp, "repo")
+	mustGitDir(t, filepath.Join(repo, ".git"))
+	stray := filepath.Join(repo, "stray")
+	work := filepath.Join(stray, "deep")
+	mustMkdir(t, filepath.Join(stray, ".git"))
+	mustMkdir(t, work)
+	if got := RepoRoot(work); got != repo {
+		t.Errorf("RepoRoot under an empty .git directory = %s, want the real repository %s", got, repo)
+	}
+
+	// With no repository anywhere above, the root is the work dir itself —
+	// the answer git's "not a git repository" maps to. The assertion depends
+	// on the host carrying no git entry above tmp.
+	requireNoGitAncestor(t, tmp)
+	hostless := filepath.Join(tmp, "hostless", ".git")
+	mustMkdir(t, hostless)
+	deep := filepath.Join(tmp, "hostless", "deep")
+	mustMkdir(t, deep)
+	if got := RepoRoot(deep); got != deep {
+		t.Errorf("RepoRoot under an empty .git directory with no repository above = %s, want the work dir itself", got)
+	}
+}
+
+// TestRepoRootHoldsAGitDirectoryToGitsCriteria pins each criterion of
+// isGitDirectory individually: mutate any one of them and its sub-case
+// reddens. "repository" means RepoRoot answers the stray .git's directory;
+// "not a repository" means the walk climbs past it and answers the work dir.
+func TestRepoRootHoldsAGitDirectoryToGitsCriteria(t *testing.T) {
+	validRef := "ref: refs/heads/main\n"
+	hexOID := "0123456789abcdef0123456789abcdef01234567\n"
+	cases := []struct {
+		name string
+		head *string // nil: no HEAD at all
+		// symlink, when set, replaces the HEAD content with a link to it
+		symlink               string
+		objects, refs, isRepo bool
+	}{
+		{name: "entirely empty", isRepo: false},
+		{name: "HEAD alone, no objects or refs", head: &validRef, isRepo: false},
+		{name: "HEAD and refs, no objects", head: &validRef, refs: true, isRepo: false},
+		{name: "empty HEAD with objects and refs", head: new(string), objects: true, refs: true, isRepo: false},
+		{name: "garbage HEAD with objects and refs", head: ptr("garbage\n"), objects: true, refs: true, isRepo: false},
+		{name: "dangling HEAD symlink with objects and refs", symlink: "refs/heads/gone", objects: true, refs: true, isRepo: true},
+		{name: "valid ref HEAD with objects and refs", head: &validRef, objects: true, refs: true, isRepo: true},
+		{name: "hex oid HEAD with objects and refs", head: &hexOID, objects: true, refs: true, isRepo: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			requireNoGitAncestor(t, tmp)
+			stray := filepath.Join(tmp, "stray")
+			work := filepath.Join(stray, "deep")
+			mustMkdir(t, work)
+			dotGit := filepath.Join(stray, ".git")
+			mustMkdir(t, dotGit)
+			if c.objects {
+				mustMkdir(t, filepath.Join(dotGit, "objects"))
+			}
+			if c.refs {
+				mustMkdir(t, filepath.Join(dotGit, "refs"))
+			}
+			if c.symlink != "" {
+				if err := os.Symlink(c.symlink, filepath.Join(dotGit, "HEAD")); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			} else if c.head != nil {
+				mustWrite(t, filepath.Join(dotGit, "HEAD"), *c.head)
+			}
+			want := work
+			if c.isRepo {
+				want = stray
+			}
+			if got := RepoRoot(work); got != want {
+				t.Errorf("RepoRoot(%s) = %s, want %s", work, got, want)
+			}
+		})
+	}
+}
+
+func ptr(s string) *string { return &s }
+
+// mustGitDir plants the shape git's is_git_directory requires of a `.git`
+// directory: a HEAD that reads, and objects/ and refs/ directories.
+func mustGitDir(t *testing.T, dotGit string) {
+	t.Helper()
+	mustMkdir(t, filepath.Join(dotGit, "objects"))
+	mustMkdir(t, filepath.Join(dotGit, "refs"))
+	mustWrite(t, filepath.Join(dotGit, "HEAD"), "ref: refs/heads/main\n")
+}
+
+// requireNoGitAncestor skips the test when an ancestor of dir carries a
+// `.git` entry: an assertion whose walk climbs out of dir would stop at that
+// host repository instead of exhausting the walk, so its premise is the
+// host's, not the test's.
+func requireNoGitAncestor(t *testing.T, dir string) {
+	t.Helper()
+	for _, ancestor := range AncestorsAbove(dir) {
+		if _, err := os.Lstat(filepath.Join(ancestor, ".git")); err == nil {
+			t.Skipf("host-dependent: %s carries a .git entry, so a walk out of %s stops there", ancestor, dir)
+		}
 	}
 }
 
