@@ -234,11 +234,17 @@ func DeniedEnvKey(name string) bool {
 // the FIRST entry that matches. The order is the rule, not an accident, and
 // it tilts toward neutralising — `ITERION_SOMETHING_TOKEN` is caught by the
 // reported-only `ITERION_` namespace and by the neutralised `_TOKEN`
-// suffix, and the suffix answers. The last clause is what would let a
-// NARROWER namespace refine a family; no namespace needs it today, and a
-// refinement that answered what its family already answers would be dead
-// code (the tests in image_env_disposition_test.go walk the class with one
-// guard left out, so such a row reddens).
+// suffix, and the suffix answers. The last clause is what lets a NARROWER
+// namespace refine a family, and a refinement that answered what its family
+// already answers would be dead code (the tests in
+// image_env_disposition_test.go walk the class with one guard left out, so
+// such a row reddens).
+//
+// One namespace is MIXED and answers by SUB-CLASS rather than wholesale —
+// the engine's own `ITERION_`, where iterion's published images bake three
+// names on purpose while others choose which credential a run uses or which
+// host it reaches: [envGuard.refine] carries that walk
+// ([engineImageEnvDisposition]).
 func ScreenImageEnvName(name string) (denied, neutralize bool) {
 	switch screenEnvName(name) {
 	case neutralizeInImage:
@@ -257,6 +263,11 @@ func ScreenImageEnvName(name string) (denied, neutralize bool) {
 // screenEnvName walks the three forms of the class and returns the
 // disposition of the first guard that catches name — the single walk both
 // [DeniedEnvKey] and [ScreenImageEnvName] answer from.
+//
+// A namespace carrying a refinement is asked it first, and [notDenied] from
+// a refinement means "no sub-class of mine answers this name": the row's own
+// disposition then answers, which is what makes that field the fallback its
+// doc claims rather than data nothing reads.
 //
 // All three forms read the UPPER-cased name, so case is nowhere a
 // membership rule: a table that matched its exact names as written applied
@@ -277,6 +288,11 @@ func screenEnvName(name string) imageEnvDisposition {
 	}
 	for _, guard := range deniedEnvNamespaces {
 		if strings.HasPrefix(upper, guard.pattern) {
+			if guard.refine != nil {
+				if refined := guard.refine(upper); refined != notDenied {
+					return refined
+				}
+			}
 			return guard.image
 		}
 	}
@@ -382,6 +398,16 @@ const (
 type envGuard struct {
 	pattern string
 	image   imageEnvDisposition
+
+	// refine answers for a pattern whose members do NOT share one
+	// disposition: [screenEnvName] asks it first and takes its answer, and
+	// [notDenied] from it means the refinement has no sub-class for this
+	// name — image answers then, so the row's own field IS the fallback a
+	// reader of it reads. nil wherever the members share an answer, which
+	// is every pattern of the class but the engine's own namespace — the
+	// seam exists because the Nth mixed family would otherwise need an
+	// `if` on a prefix literal inside the walk.
+	refine func(upper string) imageEnvDisposition
 }
 
 // deniedEnvSuffixes route a call or carry a credential under any prefix.
@@ -389,11 +415,11 @@ type envGuard struct {
 // all five neutralise: an empty endpoint, key, token, secret or proxy is
 // inert, where the planted value is the whole attack.
 var deniedEnvSuffixes = []envGuard{
-	{"_BASE_URL", neutralizeInImage},
-	{"_API_KEY", neutralizeInImage},
-	{"_TOKEN", neutralizeInImage},
-	{"_SECRET", neutralizeInImage},
-	{"_PROXY", neutralizeInImage},
+	{"_BASE_URL", neutralizeInImage, nil},
+	{"_API_KEY", neutralizeInImage, nil},
+	{"_TOKEN", neutralizeInImage, nil},
+	{"_SECRET", neutralizeInImage, nil},
+	{"_PROXY", neutralizeInImage, nil},
 }
 
 // deniedEnvNamespaces are the configuration namespaces of the agents
@@ -402,70 +428,76 @@ var deniedEnvSuffixes = []envGuard{
 //
 // The agent and provider namespaces neutralise: they name a route and a
 // credential, nothing iterion publishes bakes one, and an empty value is
-// inert to every consumer. Every other namespace is reported only —
-// `ITERION_` because iterion's own images set
-// `ITERION_VERSION`/`_COMMIT`/`_BOTS_PATH`, the loader, git, shell-function,
-// toolchain and home families because emptying a name of them buys no
-// promise against an image that is the repository's own code (ARB-121).
+// inert to every consumer. Every other namespace is reported only — the
+// loader, git, shell-function, toolchain and home families because emptying
+// a name of them buys no promise against an image that is the repository's
+// own code (ARB-121).
+//
+// `ITERION_` is the MIXED one and the only row with a refinement: its
+// default is reported — iterion's own images set
+// `ITERION_VERSION`/`_COMMIT`/`_BOTS_PATH` — while the members that choose
+// a credential or a route are neutralised name by name
+// ([engineImageEnvDisposition]).
 var deniedEnvNamespaces = []envGuard{
-	// The in-container runner: every knob and switch it is forwarded; the
-	// HOOK_* payload its settings hooks — the permission gate among them —
-	// are told about; and claw-code-go's own CLAWD_ namespace, which CLAW_
+	// The in-container runner: every knob and switch it is forwarded —
+	// answered by sub-class, because the namespace is mixed; the HOOK_*
+	// payload its settings hooks — the permission gate among them — are
+	// told about; and claw-code-go's own CLAWD_ namespace, which CLAW_
 	// does not prefix: the payload a plugin tool is given (CLAWD_TOOL_NAME,
 	// CLAWD_TOOL_INPUT, CLAWD_PLUGIN_*) and its telemetry knobs.
-	{"ITERION_", reportedOnly},
-	{"CLAW_", neutralizeInImage},
-	{"CLAWD_", neutralizeInImage},
-	{"HOOK_", neutralizeInImage},
+	{"ITERION_", reportedOnly, engineImageEnvDisposition},
+	{"CLAW_", neutralizeInImage, nil},
+	{"CLAWD_", neutralizeInImage, nil},
+	{"HOOK_", neutralizeInImage, nil},
 	// The claude CLI: its cloud-provider switches and their auth skips,
 	// its shell override, session-environment script, config dir and
 	// certificate store, its telemetry switch; its remote mode's agent
 	// proxy and token file; the ANT_ twins of its telemetry variables.
-	{"CLAUDE_", neutralizeInImage},
-	{"CCR_", neutralizeInImage},
-	{"ANT_OTEL_", neutralizeInImage},
-	{"ANT_CLAUDE_CODE_", neutralizeInImage},
+	{"CLAUDE_", neutralizeInImage, nil},
+	{"CCR_", neutralizeInImage, nil},
+	{"ANT_OTEL_", neutralizeInImage, nil},
+	{"ANT_CLAUDE_CODE_", neutralizeInImage, nil},
 	// The Anthropic client of the claude CLI: ANTHROPIC_UNIX_SOCKET, the
 	// Foundry resource and the Vertex project a call is spent in, and
 	// ANTHROPIC_CUSTOM_HEADERS, which claw applies too — last, so it rides
 	// a funded route.
-	{"ANTHROPIC_", neutralizeInImage},
+	{"ANTHROPIC_", neutralizeInImage, nil},
 	// opencode: its config file, config dir, inline config, permissions.
 	// (Its credential STORE is under XDG_DATA_HOME, refused by XDG_ below.)
-	{"OPENCODE_", neutralizeInImage},
+	{"OPENCODE_", neutralizeInImage, nil},
 	// The AWS SDK chain Bedrock authenticates through: credentials,
 	// profiles and their files, the container and instance credential
 	// endpoints, the region, AWS_ENDPOINT_URL_<SERVICE>.
-	{"AWS_", neutralizeInImage},
+	{"AWS_", neutralizeInImage, nil},
 	// azidentity and Azure OpenAI: credentials, authority host, endpoint.
-	{"AZURE_", neutralizeInImage},
+	{"AZURE_", neutralizeInImage, nil},
 	// Google ADC, which Vertex authenticates through: the service-account
 	// file, project and region, the metadata server, gcloud's credential
 	// dir — and the claude CLI's per-model Vertex region.
-	{"GOOGLE_", neutralizeInImage},
-	{"GCE_METADATA_", neutralizeInImage},
-	{"CLOUDSDK_", neutralizeInImage},
-	{"VERTEX_REGION_", neutralizeInImage},
+	{"GOOGLE_", neutralizeInImage, nil},
+	{"GCE_METADATA_", neutralizeInImage, nil},
+	{"CLOUDSDK_", neutralizeInImage, nil},
+	{"VERTEX_REGION_", neutralizeInImage, nil},
 	// Where an OpenTelemetry exporter ships what it records: the claude
 	// CLI's telemetry carries the prompts once the operator opts in.
-	{"OTEL_", neutralizeInImage},
+	{"OTEL_", neutralizeInImage, nil},
 	// Error tracking: the iterion binary is its own in-container runner and
 	// calls errtrack.Init for every command but the permission hook, so a
 	// planted SENTRY_DSN is not a redirection of the operator's reporting —
 	// it switches an outbound channel ON (pkg/errtrack).
-	{"SENTRY_", neutralizeInImage},
+	{"SENTRY_", neutralizeInImage, nil},
 	// The forge CLIs a tool node runs for the operator: their config dir
 	// chooses the identity `gh`/`glab` speak with, GH_HOST the API they
 	// speak to.
-	{"GH_", neutralizeInImage},
-	{"GLAB_", neutralizeInImage},
+	{"GH_", neutralizeInImage, nil},
+	{"GLAB_", neutralizeInImage, nil},
 	// nix, which iterion's own provisioning step drives (devbox install, run
 	// as the container's post-create): NIX_CONFIG carries a whole nix.conf,
 	// and a `plugin-files` in it makes nix dlopen the file it names on any
 	// invocation, before any build — the repository's shared object would
 	// load into iterion's own step. NIX_SSL_CERT_FILE (nix does not honour
 	// SSL_CERT_FILE) and the store's NIX_PATH/NIX_REMOTE ride along.
-	{"NIX_", reportedOnly},
+	{"NIX_", reportedOnly, nil},
 	// git and its forge siblings: its config (GIT_CONFIG_*, which with
 	// GIT_CONFIG_COUNT/KEY_<n>/VALUE_<n> and GIT_CONFIG_PARAMETERS is
 	// `git -c` spelled in the environment — a planted `core.sshCommand`
@@ -476,14 +508,14 @@ var deniedEnvNamespaces = []envGuard{
 	// files, its identity. One answer for the family: every member is told
 	// and kept, because the image that bakes it ships the program it would
 	// run (ARB-121).
-	{"GIT_", reportedOnly},
+	{"GIT_", reportedOnly, nil},
 	// Every member of this one is a shell FUNCTION definition, which bash
 	// imports into every NON-interactive shell — the shape of a tool node
 	// and of an agent's Bash tool — so a planted `BASH_FUNC_git%%` runs in
 	// place of git there (measured on a built image: the planted function
 	// answered `git --version`). Reported, like every other code channel
 	// of an image.
-	{"BASH_FUNC_", reportedOnly},
+	{"BASH_FUNC_", reportedOnly, nil},
 	// The FAMILIES of the loader, of glibc's and OpenSSL's module paths,
 	// of the bun runtime and of npm's config: LD_LIBRARY_PATH is how a
 	// CUDA-style image finds its own runtime, OPENSSL_MODULES and
@@ -492,10 +524,10 @@ var deniedEnvNamespaces = []envGuard{
 	// (LD_PRELOAD, LD_AUDIT, OPENSSL_CONF, BUN_OPTIONS,
 	// NPM_CONFIG_NODE_OPTIONS, NPM_CONFIG_SCRIPT_SHELL) read the same
 	// answer, so the family needs no exact row to refine it.
-	{"LD_", reportedOnly},
-	{"OPENSSL_", reportedOnly},
-	{"BUN_", reportedOnly},
-	{"NPM_CONFIG_", reportedOnly},
+	{"LD_", reportedOnly, nil},
+	{"OPENSSL_", reportedOnly, nil},
+	{"BUN_", reportedOnly, nil},
+	{"NPM_CONFIG_", reportedOnly, nil},
 	// The XDG base directories, which are where the configuration and the
 	// credential stores of the programs iterion runs there LIVE: git reads
 	// $XDG_CONFIG_HOME/git/config (every `insteadOf` and helper of the
@@ -503,7 +535,7 @@ var deniedEnvNamespaces = []envGuard{
 	// under $XDG_DATA_HOME (pkg/backend/detect's openCodeAuthPath). The
 	// whole family, not the two names seen planted: a dir nobody reads
 	// today is a dir the next CLI release reads (#2318).
-	{"XDG_", reportedOnly},
+	{"XDG_", reportedOnly, nil},
 }
 
 // deniedEnvNames are the exact names outside the families above, each with

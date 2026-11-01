@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -203,14 +204,32 @@ var writableBotVars = map[string]string{
 // would make the scan depend on whether `task test` ran first.
 var buildOutputs = []string{"../../pkg/cli/templates/dispatch_bots", "../../pkg/server/static"}
 
+// classificationTables are the declarations whose own spellings are cut out
+// of the scan before it reads a file: a name a CLASSIFICATION spells is not
+// a name the engine reads, and a table that enters the inventory it is
+// judged against certifies itself. The value is the prefix of the variables
+// to blank in that file — envtrust's operator-grade inventory, which every
+// gate asks, and the image screen's answer for the engine's own namespace,
+// whose family keys (`ITERION_PLATFORM_`, …) the literal regex otherwise
+// reads as four names nothing reads.
+//
+// Every file here must blank at least one declaration: a list that moved or
+// was renamed is a scan reading a classification as an inventory again, and
+// engineEnvNames fatals on it rather than counting it. pkg/platformcfg's own
+// file is not here because it declares no such list — the bot-var gate asks
+// envtrust's inventory, and `platformSecretName` indexes
+// config.PlatformSecretEnv rather than spelling names.
+var classificationTables = map[string]string{
+	"../../internal/envtrust/operator.go":                "operatorInfra",
+	"../../pkg/sandbox/devcontainer/image_env_engine.go": "engineEnv",
+}
+
 // engineEnvNames maps every ITERION_ name the engine spells to the files that
 // spell it: the string literals of its Go source and of the vendored claw it
 // links — a name, or the head of an assignment such as "ITERION_SHARD_INDEX=%d"
 // — and every name written in the manifests and scripts it embeds under pkg
-// (plugin manifests, the pi extension). The deny lists themselves are cut
-// out first, wherever they live (pkg/platformcfg's own declarations and
-// envtrust's operator inventory): a name they spell is not a name the
-// engine reads.
+// (plugin manifests, the pi extension). The classification tables themselves
+// are cut out first, wherever they live ([classificationTables]).
 func engineEnvNames(t *testing.T) map[string][]string {
 	t.Helper()
 	literal := regexp.MustCompile(`"(ITERION_[A-Z0-9_]+)["=]`)
@@ -244,21 +263,24 @@ func engineEnvNames(t *testing.T) map[string][]string {
 			t.Fatalf("walk %s: %v", dir, err)
 		}
 	}
-	denied := 0
+	blanked := map[string]int{}
 	for _, dir := range []string{"../../pkg", "../../cmd", "../../internal", "../../vendor/github.com/SocialGouv/claw-code-go"} {
 		walk(dir, []string{".go"}, func(path, src string) {
-			if filepath.ToSlash(path) == "../../pkg/platformcfg/platformcfg.go" || filepath.ToSlash(path) == "../../internal/envtrust/operator.go" {
+			slash := filepath.ToSlash(path)
+			if prefix, classifies := classificationTables[slash]; classifies {
 				var cut int
-				src, cut = withoutDenyLists(t, path, src)
-				denied += cut
+				src, cut = withoutDenyLists(t, path, src, prefix)
+				blanked[slash] += cut
 			}
 			for _, m := range literal.FindAllStringSubmatch(src, -1) {
 				note(m[1], path)
 			}
 		})
 	}
-	if denied < 2 {
-		t.Fatalf("blanked %d deny-list declarations (platformcfg.go, envtrust operator.go), want the prefix and exact lists at least: the lists moved and the blanking no longer finds them", denied)
+	for _, file := range slices.Sorted(maps.Keys(classificationTables)) {
+		if blanked[file] == 0 {
+			t.Fatalf("blanked no %s* declaration of %s: the classification moved or was renamed, and the scan is reading its own answer back as an inventory of names the engine reads", classificationTables[file], strings.TrimPrefix(file, "../../"))
+		}
 	}
 	walk("../../pkg", []string{".yaml", ".yml", ".js", ".mjs", ".cjs", ".json"}, func(path, src string) {
 		for _, name := range bare.FindAllString(src, -1) {
@@ -276,6 +298,23 @@ func engineEnvNames(t *testing.T) map[string][]string {
 	} {
 		if !slices.ContainsFunc(seen[anchor], func(p string) bool { return strings.HasPrefix(p, tree) }) {
 			t.Fatalf("the walk did not find %s under %s (found in %v) — it is not reading what the engine ships", anchor, tree, seen[anchor])
+		}
+	}
+	// And no name's ONLY source is a file that classifies names: such an
+	// entry is the scan reading an answer back as a question, and the gates
+	// then judge their own tables — a row excusing a name nothing reads
+	// passes on its own reason. [classificationTables] blanks the
+	// declarations; this is the measurement that they were the right ones.
+	for name, files := range seen {
+		classifiedOnly := true
+		for _, file := range files {
+			if _, classifies := classificationTables["../../"+file]; !classifies {
+				classifiedOnly = false
+				break
+			}
+		}
+		if classifiedOnly {
+			t.Fatalf("%s is spelled only by %v, which classify names rather than read them: the scan is feeding a gate its own table (blank the declaration in classificationTables, or store the key so the literal is not a name)", name, files)
 		}
 	}
 	return seen
@@ -298,13 +337,14 @@ func TestTheScanSkipsOnlyGitignoredBuildOutputs(t *testing.T) {
 	}
 }
 
-// withoutDenyLists blanks every deny-list declaration of the named file —
-// the botVars… lists that stayed in platformcfg.go and the operatorInfra…
-// inventory that lives in envtrust's operator.go: a name the lists spell is
-// not a name the engine reads, and counting it would let every refused name
-// find itself. Parsed, not pattern-matched, so a new list — however it is
-// written — is blanked too.
-func withoutDenyLists(t *testing.T, path, src string) (string, int) {
+// withoutDenyLists blanks every classification declaration of the named file
+// whose variable name starts with prefix — the operatorInfra… inventory in
+// envtrust's operator.go, the engineEnv… tables of the image screen: a name a
+// classification spells is not a name the engine reads, and counting it would
+// let every refused name find itself. Parsed, not pattern-matched, so a new
+// list — however it is written — is blanked too, as long as it carries the
+// family's prefix.
+func withoutDenyLists(t *testing.T, path, src, prefix string) (string, int) {
 	t.Helper()
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, src, parser.SkipObjectResolution)
@@ -321,7 +361,7 @@ func withoutDenyLists(t *testing.T, path, src string) (string, int) {
 		for _, spec := range gen.Specs {
 			vs := spec.(*ast.ValueSpec)
 			if !slices.ContainsFunc(vs.Names, func(n *ast.Ident) bool {
-				return strings.HasPrefix(n.Name, "botVars") || strings.HasPrefix(n.Name, "operatorInfra")
+				return strings.HasPrefix(n.Name, prefix)
 			}) {
 				continue
 			}

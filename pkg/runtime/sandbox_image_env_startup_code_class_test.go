@@ -6,6 +6,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
+	"github.com/SocialGouv/iterion/internal/isolationenv"
+	"github.com/SocialGouv/iterion/pkg/backend/mcp"
+	"github.com/SocialGouv/iterion/pkg/connection"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/sandbox/devcontainer"
 )
 
@@ -197,6 +202,16 @@ func TestTheScreenStillEmptiesTheCredentialRoutingSubClass(t *testing.T) {
 		"ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "AWS_SECRET_ACCESS_KEY",
 		"AZURE_OPENAI_API_KEY", "GITHUB_TOKEN", "IMDS_ENDPOINT", "OPENAI_API_BASE",
 		"HTTPS_PROXY", "GOOGLE_APPLICATION_CREDENTIALS",
+		// The engine's own namespace is mixed and answers by sub-class
+		// (#2859): the switch that lifts the private-host guard on a model
+		// endpoint and the one that chooses which credential a call
+		// carries are of the sub-class this screen empties, where
+		// ITERION_VERSION — baked by iterion's own image — is not.
+		"ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "ITERION_OPENAI_USE_OAUTH",
+		// And the guard lifts no credential or host spelling leaks out of:
+		// the opt-in that lets a project `.env` plant the routing class,
+		// and the switch that makes an engine child read that file at all.
+		envtrust.DotenvEndpointsOptIn, envtrust.EnvDotEnvForce,
 	} {
 		denied, neutralize := devcontainer.ScreenImageEnvName(name)
 		if !denied || !neutralize {
@@ -311,6 +326,111 @@ func TestThePageStatesTheResidueOfTheStartupCodeSubClass(t *testing.T) {
 	} {
 		if !strings.Contains(page, required) {
 			t.Errorf("docs/sandbox.md no longer states %q — the one promise the screen keeps, and the residue beside it, are what four rounds of measurement bought", required)
+		}
+	}
+}
+
+// TestThePageStatesTheEngineGuardLiftLineItDraws holds docs/sandbox.md's
+// enumeration of the engine namespace's guard lifts to the PRODUCTION
+// answer, both sides: the page names each one, and the screen answers for
+// it what the page says it answers.
+//
+// A page that enumerates a partition is a second source of truth unless
+// something executes it — and this one draws the line that decides the
+// doctrine's residue, so a name that changed side in the table and not on
+// the page would leave the operator reading the old line.
+func TestThePageStatesTheEngineGuardLiftLineItDraws(t *testing.T) {
+	page := theSandboxPage(t)
+	for name, wantNeutralize := range map[string]bool{
+		// The lifts the screen empties: the launcher's environment, a
+		// project `.env`'s reach, the package a consented connection is
+		// served from, this screen's own hatch, the host whose request
+		// bodies carry the run's real secrets, the auth requirement and
+		// the cookie's transport.
+		envtrust.DotenvEndpointsOptIn:      true,
+		envtrust.EnvDotEnvForce:            true,
+		mcp.EnvExpandUntrustedEnv:          true,
+		mcp.EnvServerEnvPassthrough:        true,
+		platformcfg.EnvCloudEnvPassthrough: true,
+		connection.ProjectCatalogEnv:       true,
+		EnvSandboxImageEnvAllow:            true,
+		isolationenv.ModelHosts:            true,
+		"ITERION_DISABLE_AUTH":             true,
+		"ITERION_COOKIE_SECURE":            true,
+		"ITERION_COOKIE_DOMAIN":            true,
+		// The lifts that stay reported: the isolation tier, the
+		// project-trust switches, the loading switches, the
+		// browser-facing guards of the server's own pages, the
+		// substitution kill-switch and the bot-var pin list.
+		isolationenv.SandboxDefault:           false,
+		isolationenv.SandboxOverride:          false,
+		isolationenv.SandboxFloor:             false,
+		isolationenv.HostStateGuard:           false,
+		isolationenv.SandboxDefaultImage:      false,
+		"ITERION_PI_TRUST_PROJECT":            false,
+		"ITERION_OPENCODE_TRUST_PROJECT":      false,
+		"ITERION_MCP_AUTOLOAD":                false,
+		"ITERION_MCP_HEALTHCHECK":             false,
+		"ITERION_SKIP_MCP_HEALTH":             false,
+		"ITERION_PLUGINS_ENABLE":              false,
+		"ITERION_PLUGINS_DISABLE":             false,
+		"ITERION_SKILLS":                      false,
+		"ITERION_CLAUDE_CODE_STRICT_MCP":      false,
+		"ITERION_SECURITY_HEADERS":            false,
+		"ITERION_ALLOWED_ORIGINS":             false,
+		"ITERION_REQUIRE_ORIGIN":              false,
+		"ITERION_REQUIRE_WS_ORIGIN":           false,
+		"ITERION_CANONICAL_REDIRECT":          false,
+		"ITERION_STUDIO_INSECURE_NONLOOPBACK": false,
+		"ITERION_SANDBOX_TLS_INSPECT":         false,
+		platformcfg.EnvBotVarsEnvPins:         false,
+	} {
+		denied, neutralize := devcontainer.ScreenImageEnvName(name)
+		if !denied {
+			t.Errorf("ScreenImageEnvName(%q) says the name is outside the class: the page lists it as one the operator is told about", name)
+		}
+		if neutralize != wantNeutralize {
+			side := "reported and keeps the image's value"
+			if wantNeutralize {
+				side = "overridden with an empty value"
+			}
+			t.Errorf("ScreenImageEnvName(%q) neutralize = %v: docs/sandbox.md says this one is %s — move the name on the page, or move the row", name, neutralize, side)
+		}
+		if !strings.Contains(page, "`"+name+"`") {
+			t.Errorf("docs/sandbox.md does not name %s: the guard lifts of the engine's namespace are enumerated there, on the side the screen puts them", name)
+		}
+	}
+}
+
+// TestTheEngineGuardLiftRowsNameTheirOwnConstants pins the engine rows of
+// the guard-lift sub-class to the constants that OWN the names
+// (pkg/sandbox/devcontainer's engineEnvNeutralisedNames). The rows cannot
+// all be keyed on their constant where they live — pkg/sandbox/devcontainer
+// must not depend on pkg/connection, on pkg/platformcfg, on pkg/backend/mcp
+// or on this package — so the spelling is held HERE instead, from the one
+// package that imports every owner.
+//
+// A renamed variable therefore reddens on the row that stopped answering
+// for it, instead of leaving a literal classifying a name nothing reads any
+// more.
+func TestTheEngineGuardLiftRowsNameTheirOwnConstants(t *testing.T) {
+	for name, owner := range map[string]string{
+		envtrust.DotenvEndpointsOptIn:      "envtrust.DotenvEndpointsOptIn (a project `.env` may plant the routing class)",
+		envtrust.EnvDotEnvForce:            "envtrust.EnvDotEnvForce (an engine child reads the workspace `.env`)",
+		mcp.EnvExpandUntrustedEnv:          "mcp.EnvExpandUntrustedEnv (a workflow-controlled config expands against the launcher's environment)",
+		mcp.EnvServerEnvPassthrough:        "mcp.EnvServerEnvPassthrough (a stdio MCP server child receives the launcher's variables)",
+		platformcfg.EnvCloudEnvPassthrough: "platformcfg.EnvCloudEnvPassthrough (workflow text reads the platform's credential-shaped variables)",
+		connection.ProjectCatalogEnv:       "connection.ProjectCatalogEnv (a repository-shipped connector package serves a consented connection)",
+		EnvSandboxImageEnvAllow:            "runtime.EnvSandboxImageEnvAllow (this screen's own escape hatch)",
+	} {
+		denied, neutralize := devcontainer.ScreenImageEnvName(name)
+		if !denied || !neutralize {
+			t.Errorf("ScreenImageEnvName(%q) = (denied %v, neutralize %v), want (true, true): %s lifts a guard on a route or on a credential, and an image's ENV is an inherited grant",
+				name, denied, neutralize, owner)
+		}
+		if reason := strings.TrimSpace(devcontainer.EngineImageEnvReason(name)); reason == "" {
+			t.Errorf("EngineImageEnvReason(%q) is empty: %s is answered by the shape or by a family rather than by the row that names the guard it lifts — the sweep would print no reason for it",
+				name, owner)
 		}
 	}
 }

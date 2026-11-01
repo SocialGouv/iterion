@@ -985,6 +985,58 @@ class gets one of two answers:
   bakes one. This is the **declarative redirection** of the operator's
   own credentials and model routes, and closing it is the whole promise
   of this screen (ARB-121 on Jo's question #63);
+- **`ITERION_` answers by sub-class, name by name**, because it is the
+  one MIXED namespace: iterion's own images bake `ITERION_VERSION`,
+  `ITERION_COMMIT` and `ITERION_BOTS_PATH` on purpose, while other
+  members of it choose exactly what this screen exists for. Neutralised:
+  the stores' and wires' hosts and credentials (`ITERION_MONGO_URI`,
+  `ITERION_S3_ENDPOINT` and the S3 keys, `ITERION_REDIS_*`,
+  `ITERION_SMTP_*`, `ITERION_SECRETS_*`, the `ITERION_OAUTH_FORFAIT_*`
+  wires the stored subscription is refreshed on), the platform
+  credential/routing policy (`ITERION_PLATFORM_*` — which credential
+  serves a route), the identity chain (`ITERION_OIDC_*`) and the
+  switches that **lift a guard** on a route or on a credential
+  (`ITERION_LLM_ENDPOINT_ALLOW_PRIVATE`,
+  `ITERION_CONNECTOR_ALLOW_PRIVATE`,
+  `ITERION_RUNNER_CLONE_ALLOW_PRIVATE`, `ITERION_OPENAI_USE_OAUTH`,
+  `ITERION_DISABLE_AUTH`, `ITERION_SECRETS_REDACT`) — including the seven
+  such lifts no credential or host word leaks out of, which the shape
+  cannot spell at all and an exact row answers: the opt-in that lets a
+  project `.env` plant the whole routing class
+  (`ITERION_DOTENV_ENDPOINTS`, ARB-122) and the switch that makes an
+  engine child read that file at all (`ITERION_DOTENV_FORCE`), the two
+  that hand the launcher's environment to a workflow-controlled MCP
+  config or to an MCP server child (`ITERION_MCP_EXPAND_UNTRUSTED_ENV`,
+  `ITERION_MCP_SERVER_ENV_PASSTHROUGH`), the one that lets workflow text
+  read the platform's credential-shaped variables
+  (`ITERION_CLOUD_ENV_PASSTHROUGH`), the grant that lets a
+  repository-shipped `connectors/<id>/` package serve a consented
+  connection and spend the operator's credential on a call the consent
+  never granted (`ITERION_CONNECTOR_PROJECT_CATALOG`), and this screen's
+  own escape hatch
+  (`ITERION_SANDBOX_IMAGE_ENV_ALLOW`, which a baked value would use to
+  allowlist the image out of the neutralisation). Reported: every
+  `ITERION_` name that chooses **neither** a credential nor a route and
+  lifts no guard on either — the three our own images bake, the bounds
+  on what a run may spend, the binaries a step runs, the permission
+  gate's mode. The partition is a measurement, not a list: the shared
+  credential-routing name shape (the one every `.env` loader refuses a
+  plant by, ARB-122) answers it, the engine's own credential and route
+  families answer the members that shape cannot see, and
+  pkg/platformcfg's sweep walks every `ITERION_` name spelled as a
+  literal in the engine's Go source, in the vendored claw it links and
+  in the manifests it embeds — 416 names, 94 of them neutralised and 322
+  reported — where a name whose side disagrees with the shape arrives
+  red until a row carries the reason (#2859). A name the engine
+  **composes** at runtime is outside that scan by construction — only
+  the prefix is a literal (`ITERION_PLUGIN_<NAME>_<KEY>`,
+  `ITERION_MEMORY_QUOTA_<VOLUME>`) — and the shape and the family rows
+  answer it on the ASSEMBLED name instead: measured,
+  `ITERION_PLUGIN_FIRECRAWL_API_URL` reads as a route and is emptied,
+  `ITERION_MEMORY_QUOTA_ORG` chooses neither and is reported. What the
+  scan's reach costs is that residue, not a verdict: a plugin key the
+  shape does not spell — `endpoints`, `addr` — lands reported with no
+  sweep entry to redden over it;
 - **the rest of the class is told, and keeps its value.** Emptying
   `PATH`, `HOME`, `GOROOT`, a loader library path or an `XDG_` dir
   breaks an image doing its job — iterion's own `full` variant bakes
@@ -1218,6 +1270,52 @@ still define the container" auto mode's rule**: the workspace is trusted
 to the extent admission allows it (a fork's head never reaches this
 code), and what this screen closes is the ENV road into the *operator's
 own* credentials and model routes, not a malicious image.
+
+The engine's own namespace keeps the same line, and its residue is named
+for the same reason: an `ITERION_` name that chooses neither a credential
+nor a route is **told and kept** — the permission gate's mode
+(`ITERION_PERMISSION`), the binaries a step runs (`ITERION_*_BIN`,
+`ITERION_ASSISTANT_PYTHON`), the config home every store is resolved from
+(`ITERION_HOME`, whose empty value would send the runner to the
+operator's own under `host_state`, worse than the planted path), and the
+bounds on what a run may spend. An image that bakes one of those is an
+image a repository chose, which is its own code: the operator reads the
+name under `planted` and `reported`, and the run's own channels — the
+workflow's `sandbox.env:`, the launch overlay and what the engine writes
+for its child — are applied on top of it.
+
+The guard lifts that stay on that reported side are named too, because
+the line runs through a family rather than around it — each lifts a
+guard, none of them on a route or on a credential:
+
+- the **isolation** tier (`ITERION_SANDBOX_DEFAULT`,
+  `ITERION_SANDBOX_OVERRIDE`, `ITERION_SANDBOX_FLOOR`,
+  `ITERION_SANDBOX_HOST_STATE_GUARD`, `ITERION_SANDBOX_DEFAULT_IMAGE` —
+  `internal/isolationenv`), which decides where the repository's code
+  runs and what is mounted under it, which is ARB-121's own subject.
+  `ITERION_SANDBOX_MODEL_HOSTS` is the one member of that inventory this
+  screen DOES empty, and the reason is the line itself: it decides which
+  host receives the run's real secrets substituted into a request body;
+- the **project-trust** switches (`ITERION_PI_TRUST_PROJECT`,
+  `ITERION_OPENCODE_TRUST_PROJECT`), which run the repository's own
+  skills, plugins and settings — the position an image already holds;
+- the **loading** switches (`ITERION_MCP_AUTOLOAD`,
+  `ITERION_MCP_HEALTHCHECK`, `ITERION_SKIP_MCP_HEALTH`,
+  `ITERION_PLUGINS_ENABLE`, `ITERION_PLUGINS_DISABLE`,
+  `ITERION_SKILLS`, `ITERION_CLAUDE_CODE_STRICT_MCP`), which decide what
+  is loaded, not where a call goes or what it carries;
+- the **browser-facing** guards of the server's own pages
+  (`ITERION_SECURITY_HEADERS`, `ITERION_ALLOWED_ORIGINS`,
+  `ITERION_REQUIRE_ORIGIN`, `ITERION_REQUIRE_WS_ORIGIN`,
+  `ITERION_CANONICAL_REDIRECT`, `ITERION_STUDIO_INSECURE_NONLOOPBACK`).
+  The cookie's own transport (`ITERION_COOKIE_SECURE`,
+  `ITERION_COOKIE_DOMAIN`) and the auth requirement
+  (`ITERION_DISABLE_AUTH`) are neutralised, which is the part of that
+  family that touches a credential;
+- `ITERION_SANDBOX_TLS_INSPECT`, whose off position removes the secret
+  substitution rather than widening it (the run's secrets then stay
+  placeholders), and `ITERION_BOT_VARS_ENV_PINS`, which chooses between
+  two operator-grade sources for a name this screen has already answered.
 
 **Not screened, said out loud.** `image inspect` is a local-store read,
 so only a driver that resolves images locally can do it: the **docker**

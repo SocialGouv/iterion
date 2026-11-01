@@ -119,6 +119,23 @@ var dispositionCases = []dispositionCase{
 	// name. ITERION_ is the measured one — iterion's own images bake
 	// ITERION_VERSION, ITERION_COMMIT and ITERION_BOTS_PATH.
 	{"ITERION_VERSION", reportedOnly},
+	// And the engine's namespace answers its own members by SUB-CLASS: the
+	// two switches a credential or host spelling leaks out of, the family
+	// row that answers a member no such spelling catches, the exact rows
+	// for the guard lifts the shape cannot spell at all, and the reported
+	// side — the three names our own images bake, a bound whose TOKEN
+	// spelling the shared shape reads, and a knob that chooses neither
+	// (image_env_engine_test.go holds the rows, pkg/platformcfg sweeps the
+	// whole inventory).
+	{"ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", neutralizeInImage},
+	{"ITERION_OPENAI_USE_OAUTH", neutralizeInImage},
+	{"ITERION_PLATFORM_FACADE_DEFAULT", neutralizeInImage},
+	{"ITERION_DOTENV_ENDPOINTS", neutralizeInImage},
+	{"ITERION_SANDBOX_IMAGE_ENV_ALLOW", neutralizeInImage},
+	{"ITERION_COMMIT", reportedOnly},
+	{"ITERION_BOTS_PATH", reportedOnly},
+	{"ITERION_CLOUD_MAX_TOKENS", reportedOnly},
+	{"ITERION_LOG_LEVEL", reportedOnly},
 	{"NIX_CONFIG", reportedOnly},
 	{"GIT_SSH_COMMAND", reportedOnly},
 	{"LD_LIBRARY_PATH", reportedOnly},
@@ -244,6 +261,11 @@ func screenEnvNameSkipping(name, kind, pattern string) imageEnvDisposition {
 			continue
 		}
 		if strings.HasPrefix(upper, guard.pattern) {
+			if guard.refine != nil {
+				if refined := guard.refine(upper); refined != notDenied {
+					return refined
+				}
+			}
 			return guard.image
 		}
 	}
