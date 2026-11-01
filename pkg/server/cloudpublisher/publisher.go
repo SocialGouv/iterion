@@ -3811,7 +3811,12 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 			retErr = errors.Join(retErr, fmt.Errorf("cloudpublisher: mark run %s failed after launch failure (run may be stuck queued): %w", runID, uerr))
 		}
 	}()
-	if err := store.PersistLaunch(ctx, func(ctx context.Context) error { return p.store.SaveRun(ctx, r) }); err != nil {
+	// PersistLaunchRun, not a PersistLaunch closure over r: a scheduler's
+	// guard runs this write in a transaction the driver replays, and SaveRun
+	// advances r.CASVersion in place — so the replay has to start from the
+	// run as it stood before the first attempt, or it offers a version the
+	// rolled-back document never reached and refuses the launch.
+	if err := store.PersistLaunchRun(ctx, r, p.store.SaveRun); err != nil {
 		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)
 	}
 	persisted = true
