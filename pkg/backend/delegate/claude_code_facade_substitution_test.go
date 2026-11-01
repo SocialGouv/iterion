@@ -172,11 +172,81 @@ func TestFacadeSubstitutionRefusal(t *testing.T) {
 			refuseFacadeSubstitution(t, ctx, "zai", "claude-opus-5-5"),
 			"zai", "claude-opus-5-5")
 
+		// A padded spelling of that port is the same route: net.LookupPort
+		// reads "0443" as 443, and the CLI's own URL parser drops it
+		// altogether, so both backends dial api.z.ai:443 and GLM answers the
+		// claude id. A port compared as a string reads it as the operator's
+		// own destination and the refusal never fires.
+		resetClaudeCredEnv(t)
+		t.Setenv("ANTHROPIC_BASE_URL", "https://api.z.ai:0443/api/anthropic")
+		ctx = ctxWithCreds(t, map[secrets.Provider]string{secrets.ProviderZAI: "zai-run"}, nil)
+		assertFacadeSubstitution(t,
+			refuseFacadeSubstitution(t, ctx, "zai", "claude-opus-5-5"),
+			"zai", "claude-opus-5-5")
+
 		resetClaudeCredEnv(t)
 		t.Setenv("ANTHROPIC_BASE_URL", "https://gateway.example:8443/anthropic")
 		ctx = ctxWithCreds(t, map[secrets.Provider]string{secrets.ProviderZAI: "zai-run"}, nil)
 		if err := refuseFacadeSubstitution(t, ctx, "zai", "claude-opus-5-5"); err != nil {
 			t.Errorf("an operator gateway on a non-default port must not be refused: %v", err)
+		}
+	})
+
+	t.Run("a respelling of the vendor's endpoint is no claim", func(t *testing.T) {
+		// The components a URL can carry without changing where it dials —
+		// userinfo, the absolute-FQDN host, a fragment — are not an operator
+		// naming a destination: the call still reaches the vendor, which
+		// still answers a claude id with GLM. Driven through the real seam,
+		// because the predicate is only half the path: the refusal reads the
+		// base URL the resolver stamped.
+		resetClaudeCredEnv(t)
+		t.Setenv("ANTHROPIC_BASE_URL", "https://token@api.z.ai./api/anthropic#frag")
+		ctx := ctxWithCreds(t, map[secrets.Provider]string{secrets.ProviderZAI: "zai-run"}, nil)
+		assertFacadeSubstitution(t,
+			refuseFacadeSubstitution(t, ctx, "zai", "claude-opus-5-5"),
+			"zai", "claude-opus-5-5")
+
+		// The same shape over ANOTHER host is the operator's claim: there the
+		// vendor's name is the userinfo and gateway.example is what is dialled.
+		resetClaudeCredEnv(t)
+		t.Setenv("ANTHROPIC_BASE_URL", "https://api.z.ai@gateway.example/api/anthropic")
+		ctx = ctxWithCreds(t, map[secrets.Provider]string{secrets.ProviderZAI: "zai-run"}, nil)
+		if err := refuseFacadeSubstitution(t, ctx, "zai", "claude-opus-5-5"); err != nil {
+			t.Errorf("a gateway carrying the vendor's name as userinfo is the operator's destination, not the vendor's: %v", err)
+		}
+	})
+
+	t.Run("a base URL with no readable host is no claim", func(t *testing.T) {
+		// Fail closed at the claim: a spelling url.Parse cannot read a host
+		// from parses nowhere for the fold, yet several of them are spellings
+		// the WHATWG parser the claude CLI spawns DOES resolve to api.z.ai —
+		// it reads a lone slash or a backslash after the scheme as the
+		// authority delimiter and strips the control characters out of the
+		// host. Reading any of them as the operator's claim lets the mislabel
+		// through, so each is refused here through the real seam: the typed
+		// ErrModelUnavailable fires and a declared fallback route takes over.
+		for _, tc := range []struct {
+			name     string
+			endpoint string
+		}{
+			{"a lone slash before the host", "https:/api.z.ai/api/anthropic"},
+			{"an empty authority", "https:///api.z.ai/api/anthropic"},
+			{"a percent-escaped host", "https://api%2Ez%2Eai/api/anthropic"},
+			{"a host-shaped value with no scheme", "api%2Ez%2Eai/api/anthropic"},
+			{"a newline in the host", "https://api.z.ai\n/api/anthropic"},
+			{"a tab in the host", "https://api.z.ai\t/api/anthropic"},
+			{"a carriage return in the host", "https://api.z.ai\r/api/anthropic"},
+			{"backslashes in place of the double slash", "https:\\\\api.z.ai\\\\api\\\\anthropic"},
+			{"a backslash after the scheme slash", "https:/\\\\api.z.ai/api/anthropic"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				resetClaudeCredEnv(t)
+				t.Setenv("ANTHROPIC_BASE_URL", tc.endpoint)
+				ctx := ctxWithCreds(t, map[secrets.Provider]string{secrets.ProviderZAI: "zai-run"}, nil)
+				assertFacadeSubstitution(t,
+					refuseFacadeSubstitution(t, ctx, "zai", "claude-opus-5-5"),
+					"zai", "claude-opus-5-5")
+			})
 		}
 	})
 
@@ -201,8 +271,11 @@ func TestFacadeSubstitutionRefusal(t *testing.T) {
 // OperatorEndpointClaim is the claim predicate both backends judge: only an
 // endpoint outside the vendor's published ensemble is the operator naming a
 // destination — unset, or any of the vendor's own hosts however respelled
-// (case, spacing, trailing slash, an explicit default port), is the facade's
-// wiring, and the substitution verdict applies to it.
+// (secrets.SameEndpoint folds every component that leaves the dialled
+// authority untouched), is the facade's wiring, and the substitution verdict
+// applies to it. The rows run both ways: a respelling the predicate reads as
+// a claim lets the mislabel through, and a different destination it reads as
+// the vendor's refuses a route nobody substituted.
 func TestOperatorEndpointClaim(t *testing.T) {
 	t.Run("zai", func(t *testing.T) {
 		for _, tc := range []struct {
@@ -218,8 +291,45 @@ func TestOperatorEndpointClaim(t *testing.T) {
 			{"a respelling of the mainland endpoint is no claim", strings.ToUpper(secrets.ZAIChinaBaseURL) + "/", false},
 			{"an explicit default port names the same endpoint", "https://api.z.ai:443/api/anthropic", false},
 			{"an explicit default port on the mainland endpoint", "https://open.bigmodel.cn:443/api/anthropic", false},
+			{"a padded spelling of that port is the same route", "https://api.z.ai:0443/api/anthropic", false},
+			{"a padded spelling on the mainland endpoint", "https://open.bigmodel.cn:0443/api/anthropic", false},
+			// Respellings that leave the dialled authority untouched: the
+			// call reaches the vendor, so the verdict is the vendor's
+			// (secrets.SameEndpoint states the fold and its bound).
+			{"userinfo does not route", "https://token@api.z.ai/api/anthropic", false},
+			{"a fragment never leaves the client", "https://api.z.ai/api/anthropic#frag", false},
+			{"the absolute-FQDN host is the same name", "https://api.z.ai./api/anthropic", false},
+			{"the absolute-FQDN mainland host is the same name", "https://open.bigmodel.cn./api/anthropic", false},
+			{"a query no vendor publishes", "https://api.z.ai/api/anthropic?x=1", false},
+			{"a percent-escaped path character", "https://api.z.ai/api/anthropi%63", false},
+			{"an empty path segment", "https://api.z.ai/api//anthropic", false},
+			{"a dot segment", "https://api.z.ai/api/./anthropic", false},
+			// A value url.Parse cannot read a host out of is no claim either,
+			// whatever its shape: the verdict fails closed — a spelling that
+			// parses nowhere or dials nowhere must not bless a route as the
+			// operator's own. Several of these the WHATWG parser the claude
+			// CLI spawns reads AS api.z.ai (a lone slash, backslashes, the
+			// control characters it strips), so reading them as a claim would
+			// let the mislabel through.
+			{"a lone slash is a path, not an authority", "https:/api.z.ai/api/anthropic", false},
+			{"an empty authority is no claim", "https:///api.z.ai/api/anthropic", false},
+			{"a percent-escaped host is no claim", "https://api%2Ez%2Eai/api/anthropic", false},
+			{"a host-shaped value with no scheme is no claim", "api%2Ez%2Eai/api/anthropic", false},
+			{"a newline in the host is no claim", "https://api.z.ai\n/api/anthropic", false},
+			{"a tab in the host is no claim", "https://api.z.ai\t/api/anthropic", false},
+			{"a carriage return in the host is no claim", "https://api.z.ai\r/api/anthropic", false},
+			{"backslashes in place of the double slash are no claim", "https:\\\\api.z.ai\\\\api\\\\anthropic", false},
+			{"a backslash authority start is no claim", "https:/\\\\api.z.ai/api/anthropic", false},
 			{"a non-default port is another destination", "https://api.z.ai:8443/api/anthropic", true},
 			{"a destination that differs is the claim", "https://gateway.example/anthropic", true},
+			{"the vendor's name as userinfo over another host is the claim", "https://api.z.ai@gateway.example/api/anthropic", true},
+			{"a host containing the vendor's name is the claim", "https://api.z.ai.gateway.example/api/anthropic", true},
+			// A port spelling the URL grammar refuses ("443.gateway.example"
+			// is no port) fails the parse outright — the WHATWG parser the
+			// CLI spawns fails it the same way, so nothing dials it, and the
+			// verdict fails closed with the other hostless spellings above.
+			{"a port-shaped label that parses nowhere is no claim", "https://api.z.ai:443.gateway.example/api/anthropic", false},
+			{"another scheme is another destination", "http://api.z.ai/api/anthropic", true},
 			{"another vendor's endpoint is a claim", secrets.MoonshotDefaultBaseURL, true},
 			{"another vendor's second host is a claim", secrets.MoonshotChinaBaseURL, true},
 		} {
@@ -243,7 +353,11 @@ func TestOperatorEndpointClaim(t *testing.T) {
 			{"a respelling of the .cn gateway is no claim", strings.ToUpper(secrets.MoonshotChinaBaseURL) + "/", false},
 			{"an explicit default port names the .ai endpoint", "https://api.moonshot.ai:443/anthropic", false},
 			{"an explicit default port names the .cn gateway", "https://api.moonshot.cn:443/anthropic", false},
+			{"a padded spelling of that port names the .ai endpoint", "https://api.moonshot.ai:0443/anthropic", false},
+			{"userinfo on the .cn gateway does not route", "https://token@api.moonshot.cn/anthropic", false},
+			{"the absolute-FQDN form of the .ai host", "https://api.moonshot.ai./anthropic", false},
 			{"a destination that differs is the claim", "https://moonshot-gateway.example/anthropic", true},
+			{"the vendor's name as userinfo over another host is the claim", "https://api.moonshot.ai@moonshot-gateway.example/anthropic", true},
 			{"another vendor's endpoint is a claim", secrets.ZAIDefaultBaseURL, true},
 			{"another vendor's second host is a claim", secrets.ZAIChinaBaseURL, true},
 		} {

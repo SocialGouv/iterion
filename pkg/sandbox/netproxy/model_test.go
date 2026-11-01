@@ -263,3 +263,26 @@ func TestAnExclusionOfABuiltInProviderIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// A model's conversation is never substituted, and that guarantee is carried
+// by the host table: a provider host the table does not know has its request
+// body materialised on its way out, every placeholder it names replaced by
+// the real secret. So every endpoint an Anthropic-wire facade publishes — the
+// set the engine's own routing verdict treats as the vendor's wiring — is a
+// built-in provider host here, whatever path the facade answers on.
+//
+// Read from pkg/secrets rather than spelled out, for the reason the preset's
+// twin is: a guard that names the vendors it knows cannot catch the one added
+// next to them.
+func TestEveryBlessedFacadeHostIsABuiltInProvider(t *testing.T) {
+	for _, host := range blessedFacadeHosts(t) {
+		if !builtInProviderHost(host) {
+			t.Errorf("builtInProviderHost(%q) = false — a blessed facade host whose body is substituted leaks every secret the conversation names", host)
+		}
+		// A facade answers the Anthropic wire under a path of its own
+		// (/api/anthropic, /anthropic): the host alone has to carry it.
+		if !modelRequest(host, "/api/paas/v4/files", nil) {
+			t.Errorf("modelRequest(%q, a path no model suffix matches) = false — the host table is what makes a facade's own path a model request", host)
+		}
+	}
+}

@@ -793,9 +793,20 @@ func AnthropicForfaitAccessToken(dir string) string {
 	return strings.TrimSpace(view.ClaudeAIOauth.AccessToken)
 }
 
+// anthropicWireHost is the host of the real Anthropic API — the one wire a
+// forfait bearer may be presented on.
+const anthropicWireHost = "api.anthropic.com"
+
 // AnthropicForfaitWireOK reports whether a Claude subscription bearer may be
 // sent to baseURL. Only the real Anthropic API qualifies: an empty value (the
-// SDK default) or the exact host api.anthropic.com.
+// SDK default) or the host api.anthropic.com on https, however respelled — the
+// endpoint's canonical dial name decides (canonicalEndpointHost), so the
+// absolute-FQDN and internationalised spellings of Anthropic's own host are
+// the same wire, and a userinfo carrying that name over another host
+// ("https://api.anthropic.com@elsewhere/") is the other host it dials. The
+// scheme is judged with the host: a forfait bearer carries the whole Claude
+// account, so a plaintext spelling of Anthropic's own host is refused — the
+// same refusal ValidateGatewayBaseURL makes for a gateway record.
 //
 // Everything else is a destination the OPERATOR chose — a z.ai/bigmodel facade
 // that wants the token as an x-api-key-style key, a corporate gateway, an
@@ -817,7 +828,10 @@ func AnthropicForfaitWireOK(baseURL string) bool {
 	if err != nil {
 		return false
 	}
-	return strings.EqualFold(u.Hostname(), "api.anthropic.com")
+	if u.Scheme != "https" {
+		return false // the wire is https: a plaintext scheme carries the account in the clear
+	}
+	return canonicalEndpointHost(u.Hostname()) == anthropicWireHost
 }
 
 // ClaudeCodeConfigDir returns the on-disk CLAUDE_CONFIG_DIR the Claude Code

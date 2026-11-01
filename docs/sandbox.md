@@ -651,7 +651,9 @@ sandbox:
 The shipped **`iterion-default`** preset is the recommended
 starting point for allowlist mode: it covers the LLM endpoints
 (anthropic, openai and the ChatGPT forfait's chatgpt.com, xAI/Grok,
-openrouter, bedrock, googleapis, azure, mistral, z.ai, moonshot)
+openrouter, bedrock, googleapis, azure, mistral, and both published
+hosts of each Anthropic-wire facade — z.ai with Zhipu's
+open.bigmodel.cn, moonshot with its .cn gateway)
 plus package registries (npm, PyPI, golang proxy) plus code hosts
 (github, gitlab, bitbucket) plus apt mirrors. It is **not**
 applied implicitly to a workflow that

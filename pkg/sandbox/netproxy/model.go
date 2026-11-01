@@ -21,6 +21,10 @@ import (
 // iterion-default preset, narrowed to the model endpoints — the preset's
 // **.googleapis.com also allows OAuth, whose token request carries a client
 // secret in its body.
+//
+// An Anthropic-wire facade sits here on BOTH its published hosts
+// (secrets.FacadeVendorEndpoints): a mainland gateway answers the same wire,
+// so its conversation is a model's as much as the default's.
 var modelHosts = map[string]bool{
 	"api.anthropic.com":                 true,
 	"api.openai.com":                    true,
@@ -28,6 +32,7 @@ var modelHosts = map[string]bool{
 	"api.x.ai":                          true,
 	"api.mistral.ai":                    true,
 	"api.z.ai":                          true,
+	"open.bigmodel.cn":                  true,
 	"api.moonshot.ai":                   true,
 	"api.moonshot.cn":                   true,
 	"generativelanguage.googleapis.com": true,

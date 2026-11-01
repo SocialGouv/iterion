@@ -178,6 +178,23 @@ const MoonshotDefaultBaseURL = "https://api.moonshot.ai/anthropic"
 // beside the default by FacadeVendorEndpoints.
 const MoonshotChinaBaseURL = "https://api.moonshot.cn/anthropic"
 
+// facadeVendorEndpoints is the published-endpoint table of the
+// Anthropic-wire facades: the default each resolver stamps, beside the
+// second hosts of the same wire. A facade joining the wire adds its row
+// HERE, once — FacadeVendorEndpoints answers the substitution verdicts from
+// it and FacadeProviders enumerates it, so a blessed endpoint is judged and
+// carried by the sandbox egress allowlist alike
+// (netproxy.iterionDefaultRules, netproxy.modelHosts: a node on a blessed
+// route whose host no rule allows dies at the CONNECT proxy, on an empty
+// payload rather than on a credential error).
+var facadeVendorEndpoints = []struct {
+	provider  Provider
+	endpoints []string
+}{
+	{ProviderZAI, []string{ZAIDefaultBaseURL, ZAIChinaBaseURL}},
+	{ProviderMoonshot, []string{MoonshotDefaultBaseURL, MoonshotChinaBaseURL}},
+}
+
 // FacadeVendorEndpoints returns every endpoint the named facade's vendor
 // publishes for the Anthropic wire — the default its resolver stamps and
 // the second hosts of the same wire. All of them wire the call to the
@@ -186,13 +203,24 @@ const MoonshotChinaBaseURL = "https://api.moonshot.cn/anthropic"
 // delegate.OperatorEndpointClaim, never one spelling of the vendor. A
 // provider that names no Anthropic-wire facade publishes nothing here.
 func FacadeVendorEndpoints(p Provider) []string {
-	switch p {
-	case ProviderZAI:
-		return []string{ZAIDefaultBaseURL, ZAIChinaBaseURL}
-	case ProviderMoonshot:
-		return []string{MoonshotDefaultBaseURL, MoonshotChinaBaseURL}
+	for _, facade := range facadeVendorEndpoints {
+		if facade.provider == p {
+			return append([]string(nil), facade.endpoints...)
+		}
 	}
 	return nil
+}
+
+// FacadeProviders returns every provider that publishes an Anthropic-wire
+// facade, in table order. It is how a caller enumerates the blessed set
+// without naming its members: a guard that spells the vendors out drifts the
+// day a third one lands, which is the drift it was written to catch.
+func FacadeProviders() []Provider {
+	out := make([]Provider, 0, len(facadeVendorEndpoints))
+	for _, facade := range facadeVendorEndpoints {
+		out = append(out, facade.provider)
+	}
+	return out
 }
 
 // XAIDefaultBaseURL is the host claw's OpenAI-compatible client targets

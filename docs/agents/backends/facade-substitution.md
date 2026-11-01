@@ -21,10 +21,39 @@ operator endpoint outside the vendor's published ensemble
 [secrets.FacadeVendorEndpoints](../../../pkg/secrets/byok.go)): unset, or
 any of the vendor's own hosts — the default AND the second published host
 of the same wire (Moonshot's `api.moonshot.cn` gateway, Zhipu's
-`open.bigmodel.cn` for the z.ai family) — however respelled (case,
-spacing, trailing slash, an explicit `:443`) is the facade's own wiring
-and the refusal applies. An endpoint that genuinely differs (the
-enterprise proxy) stays the operator's claim and passes.
+`open.bigmodel.cn` for the z.ai family) — however respelled — is the
+facade's own wiring and the refusal applies. A base URL that parses
+NOWHERE — a lone slash after the scheme, an empty authority, backslashes,
+a control character or a refused escape in the host — is no claim either
+(`secrets.EndpointHasHost`): the verdict fails closed, because the WHATWG
+parser the claude CLI spawns reads several of those shapes as the vendor's
+host. An endpoint that genuinely differs (the enterprise proxy) stays the
+operator's claim and passes.
+
+**One fold, both directions.** "Respelled" is
+[`secrets.SameEndpoint`](../../../pkg/secrets/endpoint_identity.go), the
+routing identity every credential-routing verdict compares through (the
+claim here, `AnthropicForfaitWireOK`'s wire pin): case, surrounding
+spacing, a trailing slash, the port the scheme implies — read as the
+number a dial resolves, so `:0443` folds like `:443` — userinfo, a query,
+a fragment, an absolute-FQDN or internationalised host, and the path's
+escapes and empty/dot segments all fold: none of them changes where the
+call is dialled. The authority never folds: another host, a non-default
+port, another scheme, or a host merely CONTAINING the vendor's name
+(`api.z.ai.elsewhere`, or the vendor's name worn as userinfo over
+another host) is another destination and stays the claim. Whitespace
+inside a host is no respelling either — nothing dials such a name, so it
+reads as written.
+
+**A blessed host the egress cannot reach is a dead route.** Every
+endpoint of the ensemble is a host of the sandbox allowlist and of the
+model-detection table (`netproxy.iterionDefaultRules`,
+`netproxy.modelHosts`), read from `secrets.FacadeProviders` by the guards
+in `pkg/sandbox/netproxy` so a vendor added to the ensemble cannot drift
+out of either: missing from the first, a sandboxed node on the blessed
+route dies at the CONNECT proxy on an empty payload rather than a
+credential error; missing from the second, its conversation is secret-
+substituted on the way out.
 
 **The record names the serving route.** Whichever route served, the run
 record carries provider AND model bound together — `NodesServed.provider`

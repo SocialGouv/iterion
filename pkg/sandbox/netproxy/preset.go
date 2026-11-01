@@ -67,8 +67,13 @@ func iterionDefaultRules() []string {
 		// "missing required field" on the empty payload. Surfaced
 		// during the 2026-05-20 dogfood: every reviewer_claude on a
 		// sandboxed run failed with the same shape until z.ai landed
-		// here.
+		// here. Both hosts of the family: Zhipu's open.bigmodel.cn
+		// answers the same wire (the GLM Coding Plan's own path), and
+		// the engine blesses a route pointed at it —
+		// secrets.FacadeVendorEndpoints publishes it beside the default,
+		// so the substitution verdict treats it as the vendor's.
 		"api.z.ai",
+		"open.bigmodel.cn",
 		// Moonshot's Anthropic-compatible facade (the Kimi family),
 		// reached whenever a node carries `provider: moonshot` or a
 		// `moonshot/` model spec. Same failure shape as z.ai's above when

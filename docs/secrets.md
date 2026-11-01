@@ -555,8 +555,9 @@ rewrite the plaintext request (Deno-parity secret handling):
   same proxy, their conversation naming secrets by their placeholders. A
   request to a model API keeps its body as sent: a provider's host
   (`api.anthropic.com`, `api.openai.com`, `openrouter.ai`, `api.x.ai`,
-  `api.mistral.ai`, `api.z.ai`, `api.moonshot.ai`/`.cn`, the Gemini and
-  Vertex AI hosts, Azure OpenAI, Bedrock runtime), a model API's path at
+  `api.mistral.ai`, `api.z.ai`/`open.bigmodel.cn`, `api.moonshot.ai`/`.cn`,
+  the Gemini and Vertex AI hosts, Azure OpenAI, Bedrock runtime), a model
+  API's path at
   any host (`/v1/messages`, `/chat/completions`, `/v1/completions`,
   `/responses` under any base (a gateway's, Copilot's, the ChatGPT
   forfait's `chatgpt.com/backend-api/codex/responses`), `/v1/embeddings`,
