@@ -42,14 +42,19 @@ type WorkspaceCommand struct {
 	Body string
 	// Path is the file the body was read from.
 	Path string
+	// AllowedTools is the frontmatter `allowed-tools:` list, parsed (both
+	// published shapes: `[Read, Grep]` and `Read, Grep`). nil when the block
+	// does not declare one — "no restriction declared", distinct from an
+	// empty list. The enforcement is the embedder's: the loop the command's
+	// body runs in intersects these with the node's tool set, never widens
+	// (iterion#1717).
+	AllowedTools []string
 	// DiscardedFrontmatter names the frontmatter keys this parser read and
-	// then THREW AWAY — everything but `description:`. Claude Code honours
-	// several of them (`allowed-tools:`, `model:`, `argument-hint:`,
-	// `disable-model-invocation:`), so a command that narrows itself means
-	// one thing there and another here. Surfacing the keys is what lets an
-	// embedder say so instead of expanding in silence; it is the divergence
-	// with a security consequence, and it was the only one a caller could
-	// not see.
+	// then THREW AWAY — everything but `description:` and `allowed-tools:`.
+	// Claude Code honours several of them (`model:`, `argument-hint:`,
+	// `disable-model-invocation:`), so a command that configures itself
+	// means one thing there and another here. Surfacing the keys is what
+	// lets an embedder say so instead of applying in silence.
 	DiscardedFrontmatter []string
 }
 
@@ -107,14 +112,16 @@ func ParseInvocation(prompt string) (name, args string, ok bool) {
 	return token, args, true
 }
 
-// discarded returns the frontmatter keys this package does not act on,
-// sorted and deduplicated. `description:` is the one it consumes.
-func discarded(keys []string) []string {
+// discardedExcept returns the frontmatter keys this package does not act
+// on, sorted and deduplicated. `description:` is consumed, honored names the
+// other keys that are (currently `allowed-tools:`).
+func discardedExcept(keys []string, honored ...string) []string {
 	var out []string
 	for _, k := range keys {
-		if k != "description" {
-			out = append(out, k)
+		if k == "description" || slices.Contains(honored, k) {
+			continue
 		}
+		out = append(out, k)
 	}
 	if len(out) == 0 {
 		return nil
@@ -252,13 +259,14 @@ func LookupWorkspace(workDir, name string, maxBytes int) (WorkspaceCommand, bool
 	if maxBytes > 0 && len(data) > maxBytes {
 		return WorkspaceCommand{}, false, ErrBodyTooLarge
 	}
-	body, desc, keys := stripFrontmatter(string(data))
+	body, desc, keys, allowedTools := stripFrontmatter(string(data))
 	return WorkspaceCommand{
 		Name:                 name,
 		Description:          desc,
 		Body:                 strings.TrimSpace(body),
 		Path:                 path,
-		DiscardedFrontmatter: discarded(keys),
+		AllowedTools:         allowedTools,
+		DiscardedFrontmatter: discardedExcept(keys, "allowed-tools"),
 	}, true, nil
 }
 

@@ -50,7 +50,7 @@ func LoadDirCommands(r *Registry, startDir string) error {
 			if derr != nil {
 				continue
 			}
-			body, desc, _ := stripFrontmatter(string(data))
+			body, desc, _, _ := stripFrontmatter(string(data))
 			source := filepath.Join(dir, e.Name())
 			captured := strings.TrimSpace(body)
 			cmdName := name
@@ -98,18 +98,22 @@ func findAncestorCommandDirs(startDir string) ([]string, error) {
 }
 
 // stripFrontmatter splits an optional leading YAML frontmatter block
-// (--- … ---) from the body and returns (body, description). The description
-// is the frontmatter `description:` when present, else the first non-empty
-// body line, capped for help display. The third return names every
-// `key:` the block declared, in source order, so a caller can report what
-// this parser understood and DISCARDED rather than let it vanish.
+// (--- … ---) from the body and returns (body, description, keys,
+// allowedTools). The description is the frontmatter `description:` when
+// present, else the first non-empty body line, capped for help display. The
+// third return names every `key:` the block declared, in source order, so a
+// caller can report what this parser understood and DISCARDED rather than
+// let it vanish. The fourth is the `allowed-tools:` list, parsed rather than
+// discarded: a command that narrows itself means the same thing on every
+// backend, and the embedder enforcing it needs the names (iterion#1717).
+// An absent or empty `allowed-tools:` is nil — "no restriction declared".
 //
 // The opening `---` must be closed by a line that is exactly `---`, and the
 // block between must carry at least one `key:` line. Without both checks a
 // Markdown horizontal rule reads as frontmatter and the text under it is
 // silently dropped — harmless when the body is help text, not harmless when
 // it is a prompt sent to a model.
-func stripFrontmatter(content string) (body, description string, keys []string) {
+func stripFrontmatter(content string) (body, description string, keys []string, allowedTools []string) {
 	content = strings.ReplaceAll(content, "\r\n", "\n")
 	body = content
 	if fm, rest, ok := splitFrontmatter(content); ok {
@@ -125,8 +129,11 @@ func stripFrontmatter(content string) (body, description string, keys []string) 
 				continue
 			}
 			keys = append(keys, key)
-			if key == "description" {
+			switch key {
+			case "description":
 				description = strings.Trim(strings.TrimSpace(line[i+1:]), `"'`)
+			case "allowed-tools":
+				allowedTools = parseAllowedTools(line[i+1:])
 			}
 		}
 	}
@@ -138,7 +145,24 @@ func stripFrontmatter(content string) (body, description string, keys []string) 
 			}
 		}
 	}
-	return body, capRunes(description, 117), keys
+	return body, capRunes(description, 117), keys, allowedTools
+}
+
+// parseAllowedTools reads an `allowed-tools:` value: the YAML inline list
+// (`[Read, Grep]`) or a comma-separated bare string (`Read, Grep`), the two
+// shapes the Claude Code docs publish. Entries are trimmed of quotes and
+// whitespace; empties are dropped.
+func parseAllowedTools(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimPrefix(raw, "[")
+	raw = strings.TrimSuffix(raw, "]")
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if t := strings.Trim(strings.TrimSpace(part), `"'`); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // splitFrontmatter returns the frontmatter block and the body that follows

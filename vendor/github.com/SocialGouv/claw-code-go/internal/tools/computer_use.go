@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -107,7 +106,17 @@ func ExecuteReadImage(ctx context.Context, input map[string]any) (ReadImageResul
 }
 
 func loadImageFromPath(path string) ([]byte, string, error) {
-	info, err := os.Stat(path)
+	// Open once, without following symlinks, and read from that descriptor:
+	// a stat-by-path followed by a second open-by-path would let a component
+	// swapped in between (a symlink planted by a concurrent local writer)
+	// escape the upstream gate's confinement.
+	f, err := openFileNoFollow(path)
+	if err != nil {
+		return nil, "", fmt.Errorf("read_image: open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
 	if err != nil {
 		return nil, "", fmt.Errorf("read_image: stat %s: %w", path, err)
 	}
@@ -118,15 +127,29 @@ func loadImageFromPath(path string) ([]byte, string, error) {
 		return nil, "", fmt.Errorf("read_image: %s exceeds 5 MB limit (%d bytes)", path, info.Size())
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := readImageData(f, path)
 	if err != nil {
-		return nil, "", fmt.Errorf("read_image: %w", err)
+		return nil, "", err
 	}
 	mt, err := sniffImageMediaType(filepath.Ext(path), data)
 	if err != nil {
 		return nil, "", err
 	}
 	return data, mt, nil
+}
+
+// readImageData reads r fully and re-enforces the 5 MB cap post-read: the
+// stat check is a pre-read hint, and a file growing between stat and read
+// must not bypass it — the url path re-checks the same way.
+func readImageData(r io.Reader, path string) ([]byte, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("read_image: %w", err)
+	}
+	if len(data) > maxImageBytes {
+		return nil, fmt.Errorf("read_image: %s exceeds 5 MB limit (%d bytes)", path, len(data))
+	}
+	return data, nil
 }
 
 // httpsOnlyClient is the package-default client used by loadImageFromURL.
