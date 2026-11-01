@@ -3,9 +3,11 @@ package runview
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -27,9 +29,12 @@ workflow locked:
   work -> done
 `
 
+// A tool-only bot, so the launch needs no LLM credential, whose command is
+// SHELL-shaped: a bare word is read as a registered tool name
+// (ir.ToolRecipeKindOf), and `true` names none — such a run fails its node.
 const toolOnlyBot = `
 tool noop:
-  command: "true"
+  command: "echo ok"
 
 workflow plain:
   entry: noop
@@ -101,10 +106,22 @@ func TestResumeExecutorSpecThreadsTheRunsProviderAllowlist(t *testing.T) {
 // The in-process lane stamps the launch's resolved policy on its run
 // document, so the resume above has something to replay. Mutant: the stamp
 // dropped → the loaded document carries no policy and this reddens.
+//
+// The run executes in a repository the test owns, and the test waits for it:
+// the launch returns while the engine goroutine is still scheduling, and a
+// `worktree: auto` run (the IR default) registers its per-run worktree in the
+// workspace's repository — the operator's own checkout for a launch with no
+// WorkDir, where 32 registrations accumulated in one day (#2781). Waiting is
+// also what lets the second half be asserted: the engine unregisters that
+// worktree as it finalizes, so the scratch repository ends as it started.
 func TestLaunchInProcessStampsTheRoutePolicyOnTheRunDocument(t *testing.T) {
-	svc, err := NewService(t.TempDir(), WithLogger(iterlog.Nop()))
+	repo := gittest.SourceRepo(t)
+	svc, err := NewService(t.TempDir(), WithLogger(iterlog.Nop()), WithWorkDir(repo))
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
+	}
+	if linked := gittest.LinkedWorktrees(t, repo); len(linked) != 0 {
+		t.Fatalf("the scratch repository starts with linked worktrees %v — the baseline the assertion below rests on is not one", linked)
 	}
 	res, err := svc.Launch(context.Background(), LaunchSpec{
 		FilePath:       "plain.bot",
@@ -114,11 +131,25 @@ func TestLaunchInProcessStampsTheRoutePolicyOnTheRunDocument(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tool-only launch under a list: %v", err)
 	}
+	<-res.Done
+
 	run, err := svc.store.LoadRun(context.Background(), res.RunID)
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
 	if run.LLMRoutePolicy == nil || !reflect.DeepEqual(run.LLMRoutePolicy.Providers, []string{"anthropic"}) {
 		t.Fatalf("run document policy = %+v, want the launch's list stamped", run.LLMRoutePolicy)
+	}
+	if run.Status != store.RunStatusFinished {
+		t.Fatalf("run status = %s, want %s — the worktree assertion below only means anything for a run that finished (error: %s / code %s)", run.Status, store.RunStatusFinished, run.Error, run.FailureCode)
+	}
+	// `worktree: auto` (the IR default) must really have given the run a
+	// worktree of its own, or the registration assertion below would hold of
+	// a run that registered nothing and witness nothing.
+	if filepath.Base(run.WorkDir) != res.RunID || filepath.Base(filepath.Dir(run.WorkDir)) != "worktrees" {
+		t.Fatalf("run workspace = %q, want the per-run worktree <store>/worktrees/%s — this run took no worktree, so the assertion below proves nothing", run.WorkDir, res.RunID)
+	}
+	if linked := gittest.LinkedWorktrees(t, repo); len(linked) != 0 {
+		t.Fatalf("the finished run left its worktree registered in the scratch repository: %v — against a launch's default workspace that registration lands in the operator's checkout and nothing comes back for it", linked)
 	}
 }

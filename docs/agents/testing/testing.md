@@ -104,17 +104,18 @@ Chantier and current state: [epic #1421](https://github.com/SocialGouv/iterion/i
   *"attested authoring commits require Git 2.46 or newer for guarded ref
   transactions"*. Re-enter devbox before diagnosing those failures as a
   regression in the code under test.
-- **A run's workspace must be a repository the TEST owns.** An engine built
-  without `WithWorkDir` defaults to `os.Getwd()` — the package directory,
-  inside the developer's checkout — so `worktree: auto` (the IR default)
-  registers the run's worktree in the REAL repository and the registration
-  outlives the `t.TempDir()` that held the checkout (#870: 1 773 dead
-  entries / 2.5 GB measured). Pass `gittest.SourceRepo(t)` (e2e goes through
-  `newEngine`), or `t.Chdir` into one where the CLI takes its workspace from
-  the cwd. `gittest.NoWorktreeLeaks(m)` in `TestMain` (e2e, `pkg/runview`,
-  `pkg/cli`) fails the suite naming the test behind any entry left behind,
-  and reclaims it **by recorded path** — never `git worktree prune`, which
-  would also drop an operator's checkout on an unmounted volume.
+- **A run's workspace must be a repository the TEST owns.** `worktree: auto`
+  (the IR default) registers the run's worktree in the workspace's repository,
+  outliving the `t.TempDir()` holding it (#870: 1 773 entries, 2.5 GB; #2781:
+  32/day) — so under `go test` an engine with no `WithWorkDir` refuses a cwd
+  in iterion's own repository and works in a throw-away dir, where `auto`
+  degrades in place. A run needing one takes `gittest.SourceRepo(t)` or a
+  `t.Chdir` into one, is WAITED for, and asserts
+  `gittest.LinkedWorktrees(t, repo)` empty — the engine unregisters on
+  SUCCESS only. `NoWorktreeLeaks(m)` in `TestMain` (e2e, `pkg/runview`,
+  `pkg/cli`) fails the suite naming the test behind any entry left, and
+  reclaims it **by recorded path** — never `git worktree prune`, which also
+  drops a checkout on an unmounted volume.
 - **A test never touches the operator's iterion home.** Under `go test`,
   `store.IterionHome()` never resolves to `~/.iterion`: without
   `ITERION_HOME` it is a directory the test process created. A package whose

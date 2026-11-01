@@ -1268,12 +1268,19 @@ const throwAwayWorkDirPrefix = "iterion-test-workdir"
 
 // defaultWorkDir fills an engine's missing workDir with the process cwd —
 // the `iterion run` contract, at every layer including a t.Chdir'd test
-// workspace. ONE cwd is refused: the package directory itself under `go
-// test`, where a skill or plugin mirror would write into the developer's
-// checkout (pkg/runtime/.claude, seen 2026-09-24) — that engine gets a
-// throw-away directory instead, recorded in workDirTemp until
-// releaseTempWorkDir removes it (#1803). A test that wants a known workDir
-// passes runtime.WithWorkDir itself.
+// workspace. ONE family of cwd is refused: under `go test`, a working tree
+// of iterion's own repository — the checkout this binary was compiled from,
+// the main checkout, any linked worktree of it, each under any spelling —
+// where the engine would treat the developer's repository as the run's
+// workspace: a skill or plugin mirror writes into its files
+// (pkg/runtime/.claude, seen 2026-09-24, #1803) and the default `worktree:
+// auto` registers a per-run worktree in the registry they all share, which
+// nothing comes back for (#2781). Such an engine gets a throw-away directory
+// instead — verified outside every repository, so `worktree: auto` degrades
+// in place there as it does for any non-repository workspace — recorded in
+// workDirTemp until releaseTempWorkDir removes it. A test that wants a known
+// workDir passes runtime.WithWorkDir itself: a repository it owns
+// (internal/gittest.SourceRepo) when the run must have one.
 func (e *Engine) defaultWorkDir() {
 	if e.workDir != "" {
 		return
@@ -1283,17 +1290,23 @@ func (e *Engine) defaultWorkDir() {
 		return
 	}
 	e.workDir = cwd
-	if testing.Testing() && cwd == runtimePackageDir() {
-		dir, dirErr := os.MkdirTemp("", throwAwayWorkDirPrefix)
-		if dirErr != nil {
-			e.logger.Error("no workDir and the test workdir could not be created: %v — the engine keeps the package directory as its workDir, mirrors will write into the checkout", dirErr)
-			return
-		}
-		e.workDir = dir
-		e.workDirTemp = dir
-		liveThrowAwayWorkDirs.Store(dir, nil)
-		everThrowAwayWorkDirs.Store(dir, struct{}{})
+	if !testing.Testing() {
+		return
 	}
+	checkout := compiledCheckout()
+	if !checkout.refuses(cwd) {
+		return
+	}
+	dir, dirErr := checkout.throwAwayWorkDir()
+	if dirErr != nil {
+		e.logger.Error("no workDir and no throw-away workdir for the refused cwd %s: %v — the engine keeps that cwd as its workDir, so mirrors write into it and `worktree: auto` registers a worktree in its repository (pass runtime.WithWorkDir, or point TMPDIR at a directory outside every git repository)", cwd, dirErr)
+		return
+	}
+	e.logger.Info("runtime: no workDir and the cwd %s is iterion's own checkout, or a worktree of its repository, under `go test` — this engine works in the throw-away directory %s (pass runtime.WithWorkDir, e.g. internal/gittest.SourceRepo, for a workspace the test owns)", cwd, dir)
+	e.workDir = dir
+	e.workDirTemp = dir
+	liveThrowAwayWorkDirs.Store(dir, nil)
+	everThrowAwayWorkDirs.Store(dir, struct{}{})
 }
 
 // liveThrowAwayWorkDirs holds every throw-away directory defaultWorkDir
@@ -1405,12 +1418,170 @@ func reclaimThrowAwayWorkDirs(live, ever *sync.Map) (throwAwayLeaks, error) {
 }
 
 // runtimePackageDir is the directory holding this package's source, from
-// the compile-time path of this file — how an engine test's cwd (the
-// package dir under `go test`) is recognised (#1803).
+// the compile-time path of this file — the seed moduleCheckoutRoot walks up
+// from to find the checkout a test's cwd may sit in (#1803).
 func runtimePackageDir() string {
 	_, file, _, ok := goruntime.Caller(0)
 	if !ok {
 		return ""
 	}
 	return filepath.Dir(file)
+}
+
+// moduleCheckoutRoot is the root of the source checkout this binary was
+// COMPILED from: the nearest ancestor of runtimePackageDir holding a go.mod.
+// Compile-time, not cwd-derived, because that is the tree a test's mirrors
+// write into and the one whose repository a `worktree: auto` run started from
+// a test's cwd registers its worktree in. Empty when no go.mod is reachable
+// (a binary shipped without its source tree), which disables the refusal
+// rather than guessing.
+func moduleCheckoutRoot() string {
+	dir := runtimePackageDir()
+	if dir == "" {
+		return ""
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return resolvedPath(dir)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// sourceCheckout is a source tree and the git repository holding it. The
+// REPOSITORY is what the refusal protects: `git worktree add` registers in
+// the one registry a main checkout and all its linked worktrees share, so
+// the compiled tree — one spelling of that repository among several — is a
+// strictly smaller set than what a registration reaches. repo is empty when
+// the tree lies in no repository at all (a source shipped without `.git`),
+// where only the tree's own files are at stake.
+type sourceCheckout struct {
+	tree string
+	repo string
+}
+
+// checkoutAt describes the checkout rooted at tree, resolving its repository
+// with the resolver the engine already trusts for a run's repo root:
+// gitlib.FindMainRepoRoot, which maps a linked worktree back to the main
+// checkout whose `.git` holds the registry.
+func checkoutAt(tree string) sourceCheckout {
+	if tree == "" {
+		return sourceCheckout{}
+	}
+	c := sourceCheckout{tree: resolvedPath(tree)}
+	if repo := gitlib.FindMainRepoRoot(c.tree); repo != "" {
+		c.repo = resolvedPath(repo)
+	}
+	return c
+}
+
+// compiledCheckout is the checkout this binary was built from, resolved once:
+// both sides walk the filesystem and the repository side shells out to git
+// for a linked worktree, while defaultWorkDir runs per engine, every subbot
+// child included.
+var compiledCheckout = sync.OnceValue(func() sourceCheckout {
+	return checkoutAt(moduleCheckoutRoot())
+})
+
+// refuses reports whether dir must not become a run's workspace under `go
+// test`. Two families, each with its own harm:
+//
+//   - dir is in the compiled tree with no `.git` of its own in between: it
+//     IS the checkout — the developer's files, which a mirror would write
+//     into (#1803).
+//   - dir is a working tree of the SAME repository as the checkout: the main
+//     checkout, a sibling linked worktree, a subdirectory of either, under
+//     any symlinked spelling. `git worktree add` from there registers in the
+//     registry they share (#2781).
+//
+// A repository nested under the compiled tree — a scratch repo a test built
+// under a $TMPDIR inside the checkout — is NOT refused: it owns its own
+// registry and the test owns its files, so the run works where it stands.
+func (c sourceCheckout) refuses(dir string) bool {
+	if dir == "" || c.tree == "" {
+		return false
+	}
+	if insideTree(dir, c.tree) && !gitEntryBelow(dir, c.tree) {
+		return true
+	}
+	repo := gitlib.FindMainRepoRoot(dir)
+	return repo != "" && c.repo != "" && samePath(resolvedPath(repo), c.repo)
+}
+
+// throwAwayWorkDir creates the directory an engine whose cwd was refused
+// works in, and VERIFIES what the refusal rests on rather than assuming it
+// of $TMPDIR: the path is absolute — a relative TMPDIR resolves against the
+// very cwd just refused — and it lies in no git repository and outside the
+// checkout, so `worktree: auto` degrades in place there instead of
+// registering a per-run worktree in a repository the test does not own. A
+// candidate failing either is removed and named in the error, which
+// defaultWorkDir reports with the cure.
+func (c sourceCheckout) throwAwayWorkDir() (string, error) {
+	dir, err := os.MkdirTemp("", throwAwayWorkDirPrefix)
+	if err != nil {
+		return "", err
+	}
+	abs, absErr := filepath.Abs(dir)
+	if absErr != nil {
+		return "", errors.Join(fmt.Errorf("absolute path of the temp dir %s: %w", dir, absErr), os.RemoveAll(dir))
+	}
+	if repo := gitlib.FindMainRepoRoot(abs); repo != "" {
+		return "", errors.Join(fmt.Errorf("the temp dir %s is in the git repository %s, whose registry a `worktree: auto` run there writes into", abs, repo), os.RemoveAll(abs))
+	}
+	if insideTree(abs, c.tree) {
+		return "", errors.Join(fmt.Errorf("the temp dir %s is inside the checkout %s, where a run's mirrors write", abs, c.tree), os.RemoveAll(abs))
+	}
+	return abs, nil
+}
+
+// insideTree reports whether dir is root or lies under it. Both sides are
+// symlink-resolved: a tree reached through a symlinked path is the same
+// tree, and a dir that compared unequal would be handed to the run.
+func insideTree(dir, root string) bool {
+	if dir == "" || root == "" {
+		return false
+	}
+	rel, err := filepath.Rel(resolvedPath(root), resolvedPath(dir))
+	if err != nil {
+		return false
+	}
+	// Rel emits ".." only as whole path elements, so a single-element ".."
+	// and a "../" prefix are the two ways out; a directory literally named
+	// "..foo" is inside.
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// gitEntryBelow reports whether a `.git` entry sits at dir or at an ancestor
+// of it strictly below root — a repository, or a linked worktree, of its own
+// nested inside root. Stats only, never git: it is the cheap half of the
+// refusal, so the usual test cwd (a package directory, with nothing between
+// it and the checkout root) costs microseconds instead of the milliseconds
+// of the git call FindMainRepoRoot makes for a linked worktree.
+func gitEntryBelow(dir, root string) bool {
+	dir, root = resolvedPath(dir), resolvedPath(root)
+	for dir != root {
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+	return false
+}
+
+// resolvedPath is dir with its symlinks resolved, lexically cleaned. A path
+// that cannot be resolved (it may not exist) is returned cleaned: comparing
+// the two unresolved forms is still better than comparing nothing.
+func resolvedPath(dir string) string {
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		return filepath.Clean(real)
+	}
+	return filepath.Clean(dir)
 }

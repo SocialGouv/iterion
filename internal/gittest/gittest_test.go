@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -240,5 +241,43 @@ func TestOwnerTest_NamesTheTestBehindALeakedPath(t *testing.T) {
 	got := ownerTest(filepath.Join(tmp, "TestRewindThenResume_SkipsUpstreamNodes3725362394", "001", "worktrees", "e2e-rewind-mini"), tmp)
 	if got != "TestRewindThenResume_SkipsUpstreamNodes" {
 		t.Errorf("ownerTest = %q, want the test name without t.TempDir()'s random suffix", got)
+	}
+}
+
+// LinkedWorktrees is the oracle a test asserts the engine's worktree cleanup
+// with, so it must name the linked worktrees and NOT the main checkout — and
+// it must keep doing so when git writes a line to stderr, which `Try`'s
+// combined output folds into the listing. A reading keyed on the first line
+// would then report the main checkout as a leak.
+func TestLinkedWorktrees_NamesTheLinkedOnesNotTheMainCheckout(t *testing.T) {
+	repo := SourceRepo(t)
+	if linked := LinkedWorktrees(t, repo); len(linked) != 0 {
+		t.Fatalf("a fresh repository reports linked worktrees %v", linked)
+	}
+
+	first := filepath.Join(t.TempDir(), "first")
+	second := filepath.Join(t.TempDir(), "second")
+	Run(t, repo, "worktree", "add", "--detach", first, "HEAD")
+	Run(t, repo, "worktree", "add", "--detach", second, "HEAD")
+
+	got := LinkedWorktrees(t, repo)
+	if len(got) != 2 {
+		t.Fatalf("LinkedWorktrees = %v, want the two linked worktrees", got)
+	}
+	for _, want := range []string{first, second} {
+		if !slices.ContainsFunc(got, func(p string) bool { return canonical(p) == canonical(want) }) {
+			t.Errorf("LinkedWorktrees = %v, missing %s", got, want)
+		}
+	}
+	if slices.ContainsFunc(got, func(p string) bool { return canonical(p) == canonical(repo) }) {
+		t.Errorf("LinkedWorktrees = %v, which names the main checkout %s", got, repo)
+	}
+
+	// Asked about a LINKED worktree: git still leads the listing with the
+	// MAIN checkout, so a reading keyed on position drops the main checkout
+	// and reports the very worktree it was asked about as a leak.
+	fromLinked := LinkedWorktrees(t, first)
+	if slices.ContainsFunc(fromLinked, func(p string) bool { return canonical(p) == canonical(first) }) {
+		t.Errorf("read from %s, LinkedWorktrees = %v, which names the repository it was asked about", first, fromLinked)
 	}
 }

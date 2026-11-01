@@ -3,6 +3,7 @@ package gittest
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -62,11 +63,7 @@ func RemoveWorktree(t testing.TB, repo, path string) {
 	// Captured before the removal: EvalSymlinks cannot resolve a path that
 	// no longer exists, and a store reached through a symlink would then
 	// never match the recorded pointer.
-	resolved := path
-	if r, err := filepath.EvalSymlinks(path); err == nil {
-		resolved = r
-	}
-	resolved = filepath.Clean(resolved)
+	resolved := canonical(path)
 
 	// Best effort: the directory may already be gone, which is precisely the
 	// case the registration sweep below exists for.
@@ -123,4 +120,41 @@ func pruneRegistration(common, resolvedPath string) (bool, error) {
 		return true, nil
 	}
 	return false, nil
+}
+
+// LinkedWorktrees returns the worktrees registered in repo other than repo
+// itself, sorted.
+//
+// It is how a test that gave a run a repository of its own asserts the other
+// half of the contract: the engine UNREGISTERS the per-run worktree it added
+// (finalizeOnExit). The paths are returned, not a count, because the leftover
+// path is what names the run that kept it.
+//
+// The main checkout is identified by its PATH, never by its position in the
+// listing: Try reports git's combined output, so one warning on stderr would
+// shift every line and turn the main checkout into a leak.
+func LinkedWorktrees(t testing.TB, repo string) []string {
+	t.Helper()
+	main := canonical(repo)
+	var linked []string
+	for line := range strings.SplitSeq(Run(t, repo, "worktree", "list", "--porcelain"), "\n") {
+		path, ok := strings.CutPrefix(strings.TrimSpace(line), "worktree ")
+		if !ok || canonical(path) == main {
+			continue
+		}
+		linked = append(linked, path)
+	}
+	sort.Strings(linked)
+	return linked
+}
+
+// canonical is path with its symlinks resolved and lexically cleaned, so
+// a fixture under a symlinked temp root (t.TempDir() via /tmp) compares equal
+// to the path git prints for it. A path that no longer exists cannot be
+// resolved and is returned cleaned — the state RemoveWorktree reads it in.
+func canonical(path string) string {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(real)
+	}
+	return filepath.Clean(path)
 }
