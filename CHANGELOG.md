@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.0.1](https://github.com/SocialGouv/iterion/compare/v5.0.0...v5.0.1) (2026-11-01)
+
+### Bug Fixes
+
+* **claw:** the gateway table memo keeps provenance, and a planted gateway key crosses empty ([1a4aae4](https://github.com/SocialGouv/iterion/commit/1a4aae49547b8d1330bcd61dc82c76f58cb754be)), references [#2813](https://github.com/SocialGouv/iterion/issues/2813) [#2813](https://github.com/SocialGouv/iterion/issues/2813)
+
+    <details><summary>why</summary>
+
+    Two blind spots of the #2813 gateway fix, found on re-review:
+
+    </details>
+
 ## [5.0.0](https://github.com/SocialGouv/iterion/compare/v4.10.0...v5.0.0) (2026-11-01)
 
 ### ⚠ BREAKING CHANGES
