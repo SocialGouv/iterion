@@ -106,7 +106,10 @@ func findAncestorCommandDirs(startDir string) ([]string, error) {
 // let it vanish. The fourth is the `allowed-tools:` list, parsed rather than
 // discarded: a command that narrows itself means the same thing on every
 // backend, and the embedder enforcing it needs the names (iterion#1717).
-// An absent or empty `allowed-tools:` is nil — "no restriction declared".
+// An ABSENT `allowed-tools:` is nil — "no restriction declared" — while a
+// DECLARED one is non-nil even when empty: `allowed-tools: []` narrows to
+// nothing, and conflating the two would let a file that says "no tools"
+// silently mean "all tools".
 //
 // The opening `---` must be closed by a line that is exactly `---`, and the
 // block between must carry at least one `key:` line. Without both checks a
@@ -134,6 +137,11 @@ func stripFrontmatter(content string) (body, description string, keys []string, 
 				description = strings.Trim(strings.TrimSpace(line[i+1:]), `"'`)
 			case "allowed-tools":
 				allowedTools = parseAllowedTools(line[i+1:])
+				if allowedTools == nil {
+					// The key is DECLARED: an empty list is a narrowing to
+					// nothing, not an absent restriction — keep it non-nil.
+					allowedTools = []string{}
+				}
 			}
 		}
 	}
