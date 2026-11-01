@@ -9,6 +9,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runops"
 	"github.com/SocialGouv/iterion/pkg/store"
 
@@ -214,4 +215,27 @@ func (conformanceWatchStore) AddWatchedIssues(_ context.Context, _ string, ids [
 
 func (conformanceWatchStore) RemoveWatchedIssues(_ context.Context, _ string, _ []string) ([]string, error) {
 	return nil, nil
+}
+
+// TestWatchCapabilitiesAreTheIRsNames pins the watch registrar's local
+// capability literals (capWatchSubscribe / capWatchUnsubscribe, kept as
+// copies so this package does not import the IR) to the compiler's
+// constants: C328 names ir.CapWatchSubscribe / ir.CapWatchUnsubscribe as the
+// grant to declare, and a rename on either side would leave the diagnostic
+// advising a capability that opens nothing. Registering with the IR's names
+// must expose both tools.
+func TestWatchCapabilitiesAreTheIRsNames(t *testing.T) {
+	reg := NewRegistry()
+	if err := RegisterClawWatchTools(reg, &WatchConfig{
+		Store:        conformanceWatchStore{},
+		RunID:        "run-1",
+		Capabilities: []string{ir.CapWatchSubscribe, ir.CapWatchUnsubscribe},
+	}); err != nil {
+		t.Fatalf("RegisterClawWatchTools: %v", err)
+	}
+	for _, name := range []string{"subscribe", "unsubscribe"} {
+		if _, err := reg.Resolve("mcp.iterion_watch." + name); err != nil {
+			t.Errorf("the IR's capability constants did not open %q: %v — the registrar's literals drifted from ir.CapWatch*", name, err)
+		}
+	}
 }

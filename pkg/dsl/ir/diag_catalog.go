@@ -297,6 +297,7 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagSecretSinkUngranted:          {"Secret reference reaches an ungranted sink", "Add the sink the diagnostic names to the secret's `sinks:` list, or move the reference to a sink the secret grants (docs/secrets.md, « sinks »)."},
 	DiagSecretEgressUnscoped:         {"Egress granted toward any host", "Add `hosts:` naming the hosts the proxy may substitute the secret toward, or drop `egress` from `sinks:`."},
 	DiagSandboxImageClassUnknown:     {"Sandbox image names no known class", "Name a stock class (`slim`, `full`, `sec`, `browser`, `rgaa`) for a published variant, or write the full reference (`registry/repo:tag`) of your own image — a bare word that is no class is pulled verbatim (a local or docker.io image)."},
+	DiagHostToolWithoutCapability:    {"Node names a host tool without its capability", "Declare the capability the message names in the node's (or the workflow's) `capabilities:` list — the tool opens only through it; a tool node holds the workflow's list."},
 	DiagGroupExpansionPastBudget:     {"A group's expansion expands past its bound", "Give the group smaller values, fewer markers or fewer uses: one field may not expand past 10 MiB, and the uses of a bot share ONE substitution budget — every string field an instance writes spends it, one record per field and one per 64 bytes (" + readbudget.Env + ", a larger count raises it, 0 removes it) — a value that big wants a file the nodes read, not a parameter."},
 }
 

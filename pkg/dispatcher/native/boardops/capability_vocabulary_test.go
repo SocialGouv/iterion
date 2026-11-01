@@ -45,3 +45,27 @@ func TestTheCapabilityNamesAreTheLeafsAndEachGatesATool(t *testing.T) {
 		}
 	}
 }
+
+// The leaf's tool→capability table (what the DSL compiler's C328 reads) and
+// this registry's pins are two spellings of one decision: drift either way
+// and an author is told to declare a capability that opens nothing, or a
+// tool answers to a capability no validator names.
+func TestTheLeafsToolTableMatchesTheRegistry(t *testing.T) {
+	seen := map[string]string{}
+	for _, tool := range allTools {
+		seen[tool.Name] = tool.Capability
+		want, ok := boardcaps.ToolCapability[tool.Name]
+		if !ok {
+			t.Errorf("tool %q gates on %q but the leaf's ToolCapability has no row — the compiler cannot name what opens it", tool.Name, tool.Capability)
+			continue
+		}
+		if want != tool.Capability {
+			t.Errorf("tool %q gates on %q, the leaf says %q", tool.Name, tool.Capability, want)
+		}
+	}
+	for name := range boardcaps.ToolCapability {
+		if _, ok := seen[name]; !ok {
+			t.Errorf("the leaf's ToolCapability names %q, which no tool of this registry serves", name)
+		}
+	}
+}

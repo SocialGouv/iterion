@@ -454,4 +454,6 @@ const (
 	DiagSandboxImageClassUnknown DiagCode = "C325" // sandbox.image is a bare word that names no stock image class — passed through verbatim at launch (warning)
 
 	DiagGroupExpansionPastBudget DiagCode = "C327" // a `use`'s {{params.*}} substitution expands one field past the 10 MiB size cap or spends past the read budget (ITERION_DSL_READ_BUDGET) — the lexer counts a marker and its value as one record each, so K markers × an S-byte value built a K·S-byte string no budget saw (error)
+
+	DiagHostToolWithoutCapability DiagCode = "C328" // a node names an iterion host tool (board/watch/runs) without the capability that opens it — dropped or refused at run time (warning)
 )

@@ -151,6 +151,19 @@ func ResolvesViaShorthand(name string) bool {
 	return internalMCPShorthands[strings.TrimSpace(name)]
 }
 
+// InternalMCPShorthands returns the sorted bare names of iterion's own MCP
+// tools — the set ResolvesViaShorthand decides over — exported so the
+// compiler's own copies (pkg/dsl/ir's C328 tool→capability table and family
+// wildcards) can pin themselves to it rather than drift as a third spelling.
+func InternalMCPShorthands() []string {
+	out := make([]string, 0, len(internalMCPShorthands))
+	for name := range internalMCPShorthands {
+		out = append(out, name)
+	}
+	sortStrings(out)
+	return out
+}
+
 // internalMCPShorthands are the bare names of iterion's own MCP tools. Kept in
 // sync with pkg/dispatcher/native/boardops and pkg/backend/tool's watch
 // registrar by the same conformance test that guards clawBuiltins.

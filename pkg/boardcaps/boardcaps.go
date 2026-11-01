@@ -24,3 +24,25 @@ const (
 	BoardClose   = "board.close"
 	BoardComment = "board.comment"
 )
+
+// ToolCapability maps every bare tool name of the board MCP family
+// (`mcp.iterion_board.*`) to the capability gating it — the compile-time
+// half of the runtime's refusal: the DSL compiler (C328) warns when a node
+// names one of these without holding the capability, and naming the tool is
+// what the board's own `capabilities:` documentation cannot do for the
+// author. boardops.allTools must carry exactly these names and pins — the
+// conformance test in that package holds the two tables to each other.
+var ToolCapability = map[string]string{
+	"add_labels":       BoardLabel,
+	"assign_issue":     BoardAssign,
+	"close_issue":      BoardClose,
+	"comment_issue":    BoardComment,
+	"create_issue":     BoardCreate,
+	"get_issue":        BoardRead,
+	"list_issues":      BoardRead,
+	"list_labels":      BoardRead,
+	"remove_labels":    BoardLabel,
+	"set_bot":          BoardAssign,
+	"set_labels":       BoardLabel,
+	"transition_issue": BoardMove,
+}
