@@ -783,16 +783,58 @@ func (cons *Consumer) Fetch(ctx context.Context, wait time.Duration) (*Delivery,
 // failure (the runner does).
 var ErrNoMessage = errors.New("queue/nats: no message ready")
 
-// Pending returns the number of messages currently waiting on the
-// durable consumer. Used by the runner's metrics goroutine to publish
-// the iterion_nats_pending_messages gauge — the same value KEDA pulls
-// via the JetStream scaler.
-func (cons *Consumer) Pending(ctx context.Context) (uint64, error) {
+// Sample is the consumer's delivery posture at one instant.
+type Sample struct {
+	// Pending counts messages never delivered to any pull request.
+	Pending uint64
+	// AckPending counts delivered-but-unacknowledged messages —
+	// in-flight runs, and the residue a frozen redelivery machinery
+	// leaves behind (issue #2890: five messages sat here for 15 hours
+	// while NumPending read zero).
+	AckPending uint64
+	// AckFloorSeq is the acknowledged stream sequence — the progress
+	// witness: a floor that never moves while AckPending holds is the
+	// frozen-consumer signature.
+	AckFloorSeq uint64
+	// DeliveredConsumerSeq is the consumer's own delivery sequence —
+	// the counter that FROZE during the #2890 wedge (stuck at the
+	// initial five deliveries while the stream kept advancing).
+	DeliveredConsumerSeq uint64
+}
+
+// Sample reads the durable consumer's counters. Used by the runner's
+// metrics goroutine to publish iterion_nats_pending_messages (the same
+// value KEDA pulls via the JetStream scaler) and to feed the stall
+// detector.
+func (cons *Consumer) Sample(ctx context.Context) (Sample, error) {
 	info, err := cons.cons.Info(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("queue/nats: consumer info: %w", err)
+		return Sample{}, fmt.Errorf("queue/nats: consumer info: %w", err)
 	}
-	return info.NumPending, nil
+	return Sample{
+		Pending:              info.NumPending,
+		AckPending:           uint64(info.NumAckPending),
+		AckFloorSeq:          info.AckFloor.Stream,
+		DeliveredConsumerSeq: info.Delivered.Consumer,
+	}, nil
+}
+
+// StreamLastSeq reads the stream's highest stored sequence — the inflow
+// witness: messages arriving while nothing delivers is the wedge shape
+// (issue #2890: stream 12977→12987 advancing, consumer delivery frozen).
+func (cons *Consumer) StreamLastSeq(ctx context.Context) (uint64, error) {
+	if cons == nil || cons.owner == nil {
+		return 0, fmt.Errorf("queue/nats: consumer not initialised")
+	}
+	stream, err := cons.owner.js.Stream(ctx, cons.owner.cfg.StreamName)
+	if err != nil {
+		return 0, fmt.Errorf("queue/nats: stream %s: %w", cons.owner.cfg.StreamName, err)
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("queue/nats: stream %s info: %w", cons.owner.cfg.StreamName, err)
+	}
+	return info.State.LastSeq, nil
 }
 
 // Delivery bundles a JetStream message with helpers to ack / nak /

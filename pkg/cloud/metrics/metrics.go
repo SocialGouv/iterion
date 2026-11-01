@@ -38,6 +38,7 @@ type Registry struct {
 
 	// --- Runner-side metrics -------------------------------------
 	NATSPendingMessages    prometheus.Gauge
+	NATSStalled            prometheus.Gauge
 	WorkspaceCloneDuration prometheus.Histogram
 	LLMTokensTotal         *prometheus.CounterVec // backend, model, direction
 	LLMCostUSDTotal        *prometheus.CounterVec // backend, model
@@ -153,6 +154,10 @@ func New() *Registry {
 		Name: "iterion_nats_pending_messages",
 		Help: "Pending JetStream messages on the iterion.queue.runs durable consumer.",
 	})
+	r.NATSStalled = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "iterion_nats_stalled",
+		Help: "1 when the runs consumer has held pending messages with no claim for the stall window — deliveries are wedged and runs will not start (issue #2890).",
+	})
 	r.WorkspaceCloneDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "iterion_workspace_clone_duration_seconds",
 		Help:    "Time spent cloning the workspace repository before engine start.",
@@ -247,7 +252,7 @@ func New() *Registry {
 	reg.MustRegister(
 		r.RunsCreatedTotal, r.RunsActive, r.RunDurationSeconds,
 		r.WSConnections, r.MongoChangeStreamLagS,
-		r.NATSPendingMessages, r.WorkspaceCloneDuration,
+		r.NATSPendingMessages, r.NATSStalled, r.WorkspaceCloneDuration,
 		r.LLMTokensTotal, r.LLMCostUSDTotal, r.DelegateIdleDeadlockTotal, r.DelegateBackgroundTotal, r.RunnerHeartbeatErrors,
 		r.RunnerAdmissionRejected, r.RolloutEpochRegression,
 		r.WebhookDeliveriesTotal, r.WebhookThrottledTotal,

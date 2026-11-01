@@ -365,15 +365,19 @@ func (r *Runner) parkOnDLQOnFinalDelivery(err error, delivery *natsq.Delivery, m
 // at Info) instead of never.
 func (r *Runner) pollPending(ctx context.Context) {
 	const staleAfter = 5 // consecutive failed samples before the gauge counts as stale
+	tr := stallTracker{stalledAfter: r.cfg.StalledAfter}
 	t := time.NewTicker(r.cfg.PendingPoll)
 	defer t.Stop()
 	failures := 0
+	lastDelivered := uint64(0) // consumer delivery sequence at the previous sample
+	lastInflow := uint64(0)    // stream last sequence at the previous sample
+	inflowKnown := false       // the first sample has no inflow baseline
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			pending, err := r.consumer.Pending(ctx)
+			sample, err := r.consumer.Sample(ctx)
 			if err != nil {
 				failures++
 				if failures == staleAfter {
@@ -387,7 +391,105 @@ func (r *Runner) pollPending(ctx context.Context) {
 				r.cfg.Logger.Info("runner: pending poll recovered after %d failed samples", failures)
 			}
 			failures = 0
-			r.cfg.Metrics.NATSPendingMessages.Set(float64(pending))
+			r.cfg.Metrics.NATSPendingMessages.Set(float64(sample.Pending))
+			// Delivery progress is fleet-global and needs a second witness:
+			// messages arriving while the consumer delivers nothing is the
+			// wedge shape. When the inflow read fails, delivery movement
+			// alone decides, so a degraded probe degrades to silence, not
+			// to a false alarm.
+			deliveredMoved := sample.DeliveredConsumerSeq != lastDelivered
+			lastDelivered = sample.DeliveredConsumerSeq
+			// Fleet-global delivery liveness: deliveries moving is life.
+			// When the stream is quiet there is nothing new to deliver, so
+			// stasis is also life; stasis counts against the runner only
+			// while messages keep arriving (the Oct 30 wedge: stream
+			// 12977→12987 advancing, consumer delivery frozen at its first
+			// five). A degraded inflow probe reads as life, never as an
+			// alarm.
+			progress := true
+			if inflow, err := r.consumer.StreamLastSeq(ctx); err == nil {
+				if inflowKnown && inflow != lastInflow {
+					progress = deliveredMoved
+				}
+				lastInflow = inflow
+				inflowKnown = true
+			}
+			hasWork := sample.Pending > 0 || sample.AckPending > 0
+			stalled, edge := tr.observe(hasWork, progress, time.Now())
+			r.cfg.Metrics.NATSStalled.Set(stalledGaugeValue(stalled))
+			switch edge {
+			case stallOnset:
+				// Work held by the consumer while messages arrive and
+				// nothing delivers means the broker or the durable consumer
+				// wedged: runs queue forever. The Oct 30 wedge was exactly
+				// this shape — five ack-pending messages, NumPending zero,
+				// redelivery frozen, consumer delivery sequence stuck while
+				// the stream advanced — held for 15 hours (issue #2890).
+				// This log and the iterion_nats_stalled gauge are the signal
+				// that must fire in minutes, not days.
+				r.cfg.Logger.Error("runner: the runs consumer has held work with no delivery for %s (pending=%d ack-pending=%d ack-floor=%d delivered=%d) — deliveries are wedged, runs will not start; recreate the consumer or replay the DLQ", time.Since(tr.since).Round(time.Second), sample.Pending, sample.AckPending, sample.AckFloorSeq, sample.DeliveredConsumerSeq)
+			case stallRecovered:
+				r.cfg.Logger.Info("runner: the runs consumer drain resumed after a stall")
+			}
 		}
 	}
+}
+
+// stallTracker turns consecutive hasWork samples into a stall signal.
+// Work is anything the consumer holds — queued (pending) or delivered
+// and unacknowledged (ack-pending: the Oct 30 wedge's shape, whose
+// zombie messages never appeared in NumPending). progress is the
+// caller's fleet-global delivery liveness: deliveries advancing, or the
+// stream quiescent so there is nothing new to deliver. A long delivery
+// mid-run holds ack-pending but a quiet stream means progress, and a
+// busy stream with no movement means the wedge — hasWork without
+// progress across the window is the alarm. Failed samples carry no
+// information, so the caller skips observe for them and the episode
+// clock neither advances nor resets.
+type stallTracker struct {
+	stalledAfter time.Duration // sustained hasWork-without-progress before stalling (0 = 10m)
+	since        time.Time     // first hasWork sample of the current episode
+	stalled      bool
+}
+
+type stallEdge int
+
+const (
+	stallNone stallEdge = iota
+	stallOnset
+	stallRecovered
+)
+
+func stalledGaugeValue(stalled bool) float64 {
+	if stalled {
+		return 1
+	}
+	return 0
+}
+
+// observe records one sample and returns whether the tracker is in the
+// stalled state, plus the transition edge when this sample crossed it.
+// progress is the delivery-liveness witness the caller computes across
+// samples — a progress sample is a sign of life that resets the window.
+func (s *stallTracker) observe(hasWork, progress bool, now time.Time) (stalled bool, edge stallEdge) {
+	limit := s.stalledAfter
+	if limit <= 0 {
+		limit = 10 * time.Minute
+	}
+	if !hasWork || progress {
+		s.since = time.Time{}
+		if s.stalled {
+			s.stalled = false
+			return false, stallRecovered
+		}
+		return false, stallNone
+	}
+	if s.since.IsZero() {
+		s.since = now
+	}
+	if !s.stalled && now.Sub(s.since) >= limit {
+		s.stalled = true
+		return true, stallOnset
+	}
+	return s.stalled, stallNone
 }

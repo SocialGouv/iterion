@@ -1301,7 +1301,12 @@ type Config struct {
 	WorkDir           string        // base directory for per-run workspaces
 	HeartbeatInterval time.Duration // how often to refresh the NATS KV lease
 	PendingPoll       time.Duration // how often to refresh nats_pending_messages (0 = 15s)
-	FetchWait         time.Duration // long-poll wait per fetch
+	// StalledAfter is how long the consumer may hold pending messages
+	// with no claim before the stall gauge fires and the runner logs
+	// the wedge (0 = 10m). A healthy fleet claims runs in seconds, so
+	// the window only trips on a wedged broker or consumer.
+	StalledAfter time.Duration
+	FetchWait    time.Duration // long-poll wait per fetch
 	// SchemaMismatchDelay is the redelivery delay applied when this runner
 	// rejects a delivery whose schema version it does not recognise (mixed
 	// fleet during a rolling schema bump). Must be long enough that the
