@@ -4236,7 +4236,11 @@ func TestBackground_ADeliveredResultNoLongerHoldsTheGrace(t *testing.T) {
 		"ITERION_CLAUDE_CODE_BACKGROUND_IDLE_SETTLE":    "1s",
 		"ITERION_CLAUDE_CODE_BACKGROUND_RESULT_WAIT":    "20s",
 	}, Task{})
-	if run.err != nil || run.elapsed > 4*time.Second || !restWrapUpAsked(run, "past the grace") {
+	// The 4 s ceiling measured 4.15 s on a saturated ARC shard (main witness
+	// on dfd8c8db4, 2026-11-01, flake register): the regression this prices —
+	// the grace HELD past the delivery — parks the run for the 20 s result
+	// wait, so 10 s keeps the signal decisive and drops the weather's.
+	if run.err != nil || run.elapsed > 10*time.Second || !restWrapUpAsked(run, "past the grace") {
 		t.Fatalf("err = %v, elapsed = %s: a delivered result still held the grace", run.err, run.elapsed)
 	}
 }
