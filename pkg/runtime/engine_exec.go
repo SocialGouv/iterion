@@ -863,7 +863,7 @@ func (e *Engine) snapshotAtNodeBoundary(rs *runState, nodeID string) {
 		// review panel enumerates only this namespace, so every file such
 		// a node wrote would land in the *Other changes* catch-all and the
 		// per-node grouping would collapse to one anonymous bucket.
-		if out, uerr := runGit(e.workDir, "update-ref", ref, "HEAD"); uerr != nil && e.logger != nil {
+		if out, uerr := runGitCombined(e.workDir, "update-ref", ref, "HEAD"); uerr != nil && e.logger != nil {
 			e.logger.Warn("snapshot: node %q iter %d: anchor clean tree at HEAD: %v\noutput: %s", nodeID, loopIter, uerr, out)
 		}
 	}
@@ -938,7 +938,7 @@ func (e *Engine) markPreNodeBoundary(rs *runState, nodeID string) {
 		}
 		target = "HEAD"
 	}
-	if out, err := runGit(e.workDir, "update-ref", ref, target); err != nil && e.logger != nil {
+	if out, err := runGitCombined(e.workDir, "update-ref", ref, target); err != nil && e.logger != nil {
 		e.logger.Warn("pre-snapshot: node %q iter %d: %v\noutput: %s", nodeID, loopIter, err, out)
 	}
 }

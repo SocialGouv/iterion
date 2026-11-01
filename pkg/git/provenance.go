@@ -70,6 +70,13 @@ func SnapshotWorkingTree(repoRoot, namespace string) (commit, tree string, err e
 	defer func() { _ = os.RemoveAll(tmp) }()
 	index := filepath.Join(tmp, "index")
 
+	// The answer is stdout: write-tree, rev-parse and commit-tree results go
+	// onward as SHAs, and git writes warnings, hints and advice on stderr
+	// whenever the environment gives it a reason to — read through the
+	// combined stream, one such line IS the SHA the next command is asked to
+	// resolve, and the snapshot dies on it ("not a valid object name").
+	// git's own reason stays in the error; the diagnostic-only calls
+	// (read-tree, add, update-ref) read nothing but that error.
 	runWithIndex := func(args ...string) (string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
@@ -78,9 +85,11 @@ func SnapshotWorkingTree(repoRoot, namespace string) (commit, tree string, err e
 			"LC_ALL=C", "LANG=C", "GIT_INDEX_FILE="+index,
 			"GIT_AUTHOR_NAME=Iterion", "GIT_AUTHOR_EMAIL=iterion@localhost",
 			"GIT_COMMITTER_NAME=Iterion", "GIT_COMMITTER_EMAIL=iterion@localhost")
-		out, cmdErr := cmd.CombinedOutput()
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		out, cmdErr := cmd.Output()
 		if cmdErr != nil {
-			return "", fmt.Errorf("git %s: %w (output: %s)", strings.Join(args, " "), cmdErr, strings.TrimSpace(string(out)))
+			return "", fmt.Errorf("git %s: %w (stderr: %s)", strings.Join(args, " "), cmdErr, strings.TrimSpace(stderr.String()))
 		}
 		return strings.TrimSpace(string(out)), nil
 	}

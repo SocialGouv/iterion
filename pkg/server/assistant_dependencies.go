@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -658,9 +659,18 @@ func restoreAssistantDependencyLock(path string, contents []byte, mode os.FileMo
 func assistantDependencyGit(ctx context.Context, workdir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", workdir}, args...)...)
 	cmd.Env = gitlib.SanitizeEnv(os.Environ())
-	out, err := cmd.CombinedOutput()
+	// The answer is stdout: these callers read a SHA, a path they then create
+	// a lock file at, a NUL-separated list, `git version` under Sscanf. git
+	// writes warnings, hints and advice on stderr whenever the environment
+	// gives it a reason to, and spliced into the answer such a line IS the
+	// value — a path that resolves nowhere, a version that parses as older
+	// than the one installed. git's reason stays in the error, the only place
+	// these callers read it (one matches "not a git repository" there).
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return string(out), nil
 }

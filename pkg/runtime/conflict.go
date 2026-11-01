@@ -376,14 +376,12 @@ func checkStagedAgainstVerdict(repoRoot string, verdict *LandingVerdict) error {
 	}
 	sort.Strings(paths)
 	for _, p := range paths {
-		ls, cancel := gitCmd("-C", repoRoot, "ls-files", "-s", "-z", "--", p)
-		out, err := ls.CombinedOutput()
-		cancel()
+		out, stderr, err := runGit(repoRoot, "ls-files", "-s", "-z", "--", p)
 		if err != nil {
-			return fmt.Errorf("cannot read the staged entry of %s: %v\noutput: %s", p, err, out)
+			return fmt.Errorf("cannot read the staged entry of %s: %v\nstderr: %s", p, err, stderr)
 		}
 		entries := []string{}
-		for _, e := range strings.Split(string(out), "\x00") {
+		for _, e := range strings.Split(out, "\x00") {
 			if e != "" {
 				entries = append(entries, e)
 			}
@@ -396,22 +394,27 @@ func checkStagedAgainstVerdict(repoRoot string, verdict *LandingVerdict) error {
 			return fmt.Errorf("cannot read the staged entry of %s: %q", p, entries[0])
 		}
 		staged := fields[1]
-		at, cancelAt := gitCmd("-C", repoRoot, "ls-tree", "--no-abbrev", base, "--", p)
-		out, err = at.CombinedOutput()
-		cancelAt()
+		out, stderr, err = runGit(repoRoot, "ls-tree", "--no-abbrev", base, "--", p)
 		if err != nil {
-			return fmt.Errorf("cannot read %s at the landed commit %s: %v\noutput: %s", p, base[:min(12, len(base))], err, out)
+			return fmt.Errorf("cannot read %s at the landed commit %s: %v\nstderr: %s", p, base[:min(12, len(base))], err, stderr)
 		}
-		judged := ""
-		for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		// One pathspec naming one file answers with one entry, so the
+		// listing is read as a SET and an ambiguity is refused, never
+		// resolved by position: picking a line by its rank makes the
+		// comparison depend on git's output order, which nothing here
+		// guarantees. Zero and several share one verdict — land by hand —
+		// because in both cases this check has no single blob to compare.
+		blobs := []string{}
+		for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
 			if f := strings.Fields(l); len(f) >= 3 {
-				judged = f[2]
+				blobs = append(blobs, f[2])
 			}
 		}
-		if judged == "" {
-			return fmt.Errorf("the landed commit %s carries no %s to compare the resolution with — land by hand",
-				base[:min(12, len(base))], p)
+		if len(blobs) != 1 {
+			return fmt.Errorf("the landed commit %s carries %d blobs for %s, want exactly one to compare the resolution with — land by hand",
+				base[:min(12, len(base))], len(blobs), p)
 		}
+		judged := blobs[0]
 		if staged != judged {
 			return fmt.Errorf("the resolution of %s is not the contract the verdict judged (judged blob %s, staged %s): "+
 				"take the run's version, or land by hand", p, judged, staged)

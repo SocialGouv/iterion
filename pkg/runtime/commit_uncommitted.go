@@ -58,9 +58,9 @@ func CommitUncommittedAndFinalize(
 		return fmt.Errorf("runtime: commit-uncommitted: commit message is required")
 	}
 
-	porcelain, err := runGit(r.WorkDir, "status", "--porcelain", "-z")
+	porcelain, stderr, err := runGit(r.WorkDir, "status", "--porcelain", "-z")
 	if err != nil {
-		return fmt.Errorf("runtime: commit-uncommitted: probe workdir: %w (output: %s)", err, strings.TrimSpace(porcelain))
+		return fmt.Errorf("runtime: commit-uncommitted: probe workdir: %w (stderr: %s)", err, stderr)
 	}
 	// The probe agrees with THIS gesture's staging (verdict 5, R138690): a
 	// worktree whose only dirt is a tracked-and-modified devbox.lock is a
@@ -222,7 +222,7 @@ func pathOnDiskOrInHead(dir, p string) bool {
 	if _, err := os.Lstat(filepath.Join(dir, p)); err == nil {
 		return true
 	}
-	_, err := runGit(dir, "cat-file", "-e", "HEAD:"+p)
+	_, _, err := runGit(dir, "cat-file", "-e", "HEAD:"+p)
 	return err == nil
 }
 
@@ -445,9 +445,9 @@ func noisePaths(dir, porcelain string) []string {
 // the paths' raw bytes: `-z` prints them as the index and the file system
 // carry them.
 func wipSetAside(dir, porcelain string) ([]string, error) {
-	staged, err := runGit(dir, "diff", "--cached", "--name-only", "-z")
+	staged, stderr, err := runGit(dir, "diff", "--cached", "--name-only", "-z")
 	if err != nil {
-		return nil, fmt.Errorf("read the staged set: %w (output: %s)", err, strings.TrimSpace(staged))
+		return nil, fmt.Errorf("read the staged set: %w (stderr: %s)", err, stderr)
 	}
 	carried := map[string]bool{}
 	for _, p := range strings.Split(staged, "\x00") {
@@ -465,7 +465,7 @@ func wipSetAside(dir, porcelain string) ([]string, error) {
 }
 
 func runGitInDir(workdir string, args ...string) error {
-	out, err := runGit(workdir, args...)
+	out, err := runGitCombined(workdir, args...)
 	if err != nil {
 		return fmt.Errorf("%w (output: %s)", err, strings.TrimSpace(out))
 	}

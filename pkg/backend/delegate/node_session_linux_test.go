@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/proctest"
+
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -640,6 +642,19 @@ func TestOnlyTheNodesWorkReachesItsEvents(t *testing.T) {
 // group to kill — -1 every process of the uid — 1 is the container's init, and
 // a second line could forge a sweep's report.
 func TestTheSandboxPidfileIsTrustedOnlyAsAPid(t *testing.T) {
+	// P is the probe's ANSWER, read off stdout: stderr is where the shell's
+	// environment talks (a profile echo, a MOTD), and read through the
+	// combined stream its first line IS the pid. SplitOutput is the seam;
+	// the polluted run at the bottom is the witness that the value survives
+	// a talking environment.
+	probe := func(script string) (string, string) {
+		t.Helper()
+		stdout, stderr, err := proctest.SplitOutput(exec.Command("sh", "-c", script))
+		if err != nil {
+			t.Fatalf("the probe failed: %v\nstdout: %q\nstderr: %q", err, stdout, stderr)
+		}
+		return string(stdout), stderr
+	}
 	pidFile := filepath.Join(t.TempDir(), "spawn.pid")
 	for content, want := range map[string]string{
 		"4567\n":                          "4567",
@@ -656,17 +671,27 @@ func TestTheSandboxPidfileIsTrustedOnlyAsAPid(t *testing.T) {
 		if err := os.WriteFile(pidFile, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		out, err := exec.Command("sh", "-c", readSandboxDelegatePID(pidFile)+`printf '%s' "$P"`).CombinedOutput()
-		if err != nil {
-			t.Fatalf("pidfile %q: the shell failed: %v\n%s", content, err, out)
-		}
-		if string(out) != want {
-			t.Errorf("pidfile %q: P = %q, want %q", content, out, want)
+		got, _ := probe(readSandboxDelegatePID(pidFile) + `printf '%s' "$P"`)
+		if got != want {
+			t.Errorf("pidfile %q: P = %q, want %q", content, got, want)
 		}
 	}
-	out, err := exec.Command("sh", "-c", readSandboxDelegatePID(filepath.Join(t.TempDir(), "absent.pid"))+`printf '%s' "$P"`).CombinedOutput()
-	if err != nil || len(out) != 0 {
-		t.Errorf("no pidfile: P = %q (%v), want nothing", out, err)
+	got, _ := probe(readSandboxDelegatePID(filepath.Join(t.TempDir(), "absent.pid")) + `printf '%s' "$P"`)
+	if got != "" {
+		t.Errorf("no pidfile: P = %q, want nothing", got)
+	}
+	// The environment talks and the pid still reads: one warning before the
+	// answer must not become part of it.
+	polluted := filepath.Join(t.TempDir(), "spawn.pid")
+	if err := os.WriteFile(polluted, []byte("4567\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, stderr := probe(`printf 'warning: the environment talks\n' >&2; ` + readSandboxDelegatePID(polluted) + `printf '%s' "$P"`)
+	if got != "4567" {
+		t.Errorf("a stderr line reached the value: P = %q, want 4567", got)
+	}
+	if !strings.Contains(stderr, "the environment talks") {
+		t.Errorf("stderr %q does not carry the injected warning — the witness would prove nothing", stderr)
 	}
 }
 

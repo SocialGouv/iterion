@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -583,8 +584,25 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		}
 	}
 
-	out, err := runtimeCmdContext(ctx, d.rt, args...).CombinedOutput()
-	if err != nil && isContainerNameConflict(out) {
+	// The container ID is the create's ANSWER, which `docker run --detach`
+	// prints on stdout; stderr is where the runtime talks about the
+	// environment — a published port discarded under host networking, an
+	// image whose platform does not match the host (the driver passes no
+	// --platform), podman's WARN[0000] lines. Read through the combined
+	// stream, such a line is part of the ID, and every later exec, stop and
+	// rm addresses a container that does not exist while the one just
+	// created runs on to its own exit. The diagnostic keeps its reader: the
+	// error message, and isContainerNameConflict, which matches the daemon's
+	// refusal — written on stderr.
+	createContainer := func() (string, string, error) {
+		cmd := runtimeCmdContext(ctx, d.rt, args...)
+		var errOut bytes.Buffer
+		cmd.Stderr = &errOut
+		stdout, runErr := cmd.Output()
+		return string(stdout), errOut.String(), runErr
+	}
+	out, createStderr, err := createContainer()
+	if err != nil && isContainerNameConflict([]byte(createStderr)) {
 		// A leftover container with the same name (one per run-id) is
 		// a recoverable state, not a hard failure. The two common
 		// causes are both transient:
@@ -597,14 +615,14 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		// operator sees the underlying cause.
 		d.logger.Warn("sandbox: container %q already exists from a prior run — force-removing and retrying", containerName)
 		if rmErr := forceRemoveContainer(ctx, d.rt, containerName); rmErr != nil {
-			return nil, fmt.Errorf("docker: run: %w\noutput: %s\n(also tried force-remove of stale container: %v)", err, string(out), rmErr)
+			return nil, fmt.Errorf("docker: run: %w\nstderr: %s\n(also tried force-remove of stale container: %v)", err, createStderr, rmErr)
 		}
-		out, err = runtimeCmdContext(ctx, d.rt, args...).CombinedOutput()
+		out, createStderr, err = createContainer()
 	}
 	if err != nil {
-		return nil, fmt.Errorf("docker: run: %w\noutput: %s", err, string(out))
+		return nil, fmt.Errorf("docker: run: %w\nstderr: %s", err, createStderr)
 	}
-	containerID := strings.TrimSpace(string(out))
+	containerID := strings.TrimSpace(out)
 
 	r := &Run{
 		driver:               d,

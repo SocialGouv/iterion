@@ -76,11 +76,11 @@ func (e *Engine) reclaimEarlyRefusalWorktree(ctx context.Context, runID string, 
 	// a release restores the baseline by design, so a drifted devbox.lock
 	// (which re-derives from devbox.json on the next devbox run) is not work
 	// this run is keeping.
-	out, err := runGit(wc.wtPath, "status", "--porcelain", "-z", "--ignored=matching", "--untracked-files=all")
+	out, _, err := runGit(wc.wtPath, "status", "--porcelain", "-z", "--ignored=matching", "--untracked-files=all")
 	if err != nil || len(runOutputPaths(wc.wtPath, out)) != 0 {
 		return false
 	}
-	if _, err := runGit(wc.wtPath, "update-ref", pristineWorktreeRef(runID), wc.originalTip); err != nil {
+	if _, _, err := runGit(wc.wtPath, "update-ref", pristineWorktreeRef(runID), wc.originalTip); err != nil {
 		return false
 	}
 	// Persist BEFORE removal: a crash may leave a marked checkout in place,
@@ -133,7 +133,7 @@ func RestoreReclaimedWorktree(ctx context.Context, st store.RunStore, run *store
 	defer func() { _ = lock.Unlock() }()
 	info, err := os.Lstat(run.WorkDir)
 	if os.IsNotExist(err) {
-		base, refErr := runGit(run.RepoRoot, "rev-parse", "--verify", pristineWorktreeRef(run.ID)+"^{commit}")
+		base, _, refErr := runGit(run.RepoRoot, "rev-parse", "--verify", pristineWorktreeRef(run.ID)+"^{commit}")
 		if refErr != nil || strings.TrimSpace(base) != run.BaseCommit {
 			return fmt.Errorf("runtime: reclaimed worktree baseline is missing or differs from recorded commit %s", run.BaseCommit)
 		}

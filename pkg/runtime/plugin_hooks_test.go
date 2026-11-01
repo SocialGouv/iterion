@@ -245,7 +245,7 @@ func TestMergePluginHooksOnResumeKeepsAnAgentEditAsWork(t *testing.T) {
 		t.Fatalf("resume merge: %v", err)
 	}
 
-	porcelain, err := runGit(ws, "status", "--porcelain", "-z")
+	porcelain, _, err := runGit(ws, "status", "--porcelain", "-z")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestMergePluginHooksNoOpMergeDoesNotTouchTheFile(t *testing.T) {
 	if !st1.ModTime().Equal(st2.ModTime()) {
 		t.Fatalf("a no-op merge rewrote settings.json (mtime %v → %v)", st1.ModTime(), st2.ModTime())
 	}
-	porcelain, err := runGit(ws, "status", "--porcelain", "-z")
+	porcelain, _, err := runGit(ws, "status", "--porcelain", "-z")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +312,7 @@ func TestMergePluginHooksChangedHooksPlusAgentEditRewritesWithoutRecording(t *te
 	if !settingsHasPermissions(t, settingsPath) {
 		t.Fatal("the agent's edit was clobbered by the merge")
 	}
-	porcelain, err := runGit(ws, "status", "--porcelain", "-z")
+	porcelain, _, err := runGit(ws, "status", "--porcelain", "-z")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +336,7 @@ func TestMergePluginHooksChangedHooksWithoutAgentEditRecords(t *testing.T) {
 	if n := hookLen(t, settingsPath, "PostToolUse"); n != 1 {
 		t.Fatalf("the changed hook set was not merged: PostToolUse = %d, want 1", n)
 	}
-	porcelain, err := runGit(ws, "status", "--porcelain", "-z")
+	porcelain, _, err := runGit(ws, "status", "--porcelain", "-z")
 	if err != nil {
 		t.Fatal(err)
 	}

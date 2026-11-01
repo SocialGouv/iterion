@@ -51,7 +51,7 @@ func keepSkillRepo(t *testing.T) (ws, skillsSrc string) {
 
 func porcelainOf(t *testing.T, dir string) string {
 	t.Helper()
-	porcelain, err := runGit(dir, "status", "--porcelain", "-z")
+	porcelain, _, err := runGit(dir, "status", "--porcelain", "-z")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2799,7 +2799,7 @@ func (e *Engine) markReviewGateGit(rs *runState, nodeID, key string) map[string]
 		return nil
 	}
 	if commit == "" {
-		if out, uerr := runGit(e.workDir, "update-ref", ref, "HEAD"); uerr != nil {
+		if out, uerr := runGitCombined(e.workDir, "update-ref", ref, "HEAD"); uerr != nil {
 			if e.logger != nil {
 				e.logger.Warn("review gate: anchor %q at HEAD: %v\noutput: %s", nodeID, uerr, out)
 			}
@@ -2851,7 +2851,7 @@ func reviewGateScope(runID string, seq int, worktree bool) map[string]any {
 // resumed run continues the sequence instead of restarting it.
 func nextReviewGateSeq(workDir, runID string) int {
 	prefix := strings.TrimSuffix(store.ReviewGateRef(runID, 0), "0")
-	out, err := runGit(workDir, "for-each-ref", "--format=%(refname)", prefix)
+	out, _, err := runGit(workDir, "for-each-ref", "--format=%(refname)", prefix)
 	if err != nil {
 		return 0
 	}
