@@ -16,9 +16,10 @@ interactive sessions).
   `iterion map find|neighbours|impact|path`, or the
   `local_map_*` tools of the iterion MCP server (`engine` in this repo's
   `.mcp.json`); committed indexes in [`docs/references/`](docs/references/map-packages.md).
-- **Semantic** — how does X work, which docs explain this code: graphify when
-  `graphify-out/` exists (MCP `query_graph`, CLI `graphify query "<q>"`) —
-  operator-local, so check its commit against HEAD ([graph](docs/agents/orientation/graphify.md)).
+- **Semantic** — how does X work, which docs explain this code: graphify —
+  the graph lives in the operator's primary checkout; `query_graph` narrow,
+  then `get_node`/`get_neighbors` on what it names
+  ([graph](docs/agents/orientation/graphify.md)).
 
 ## Setup and the gate you owe
 
