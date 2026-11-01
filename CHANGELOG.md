@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.0.2](https://github.com/SocialGouv/iterion/compare/v5.0.1...v5.0.2) (2026-11-01)
+
+### Bug Fixes
+
+* **runner:** the pending sampler detects a wedged runs consumer ([#2895](https://github.com/SocialGouv/iterion/issues/2895)) ([d643652](https://github.com/SocialGouv/iterion/commit/d64365270a94ae0748130972cc35a61c59d1f9d9)), references [#2890](https://github.com/SocialGouv/iterion/issues/2890)
+
+    <details><summary>why</summary>
+
+    A stall - work held by the consumer while deliveries stop - used to be silent: the Oct 30 incident held five messages in the ack-pending set for 15 hours (NumPending reading zero: they were delivered, the redelivery machinery was frozen) while messages kept arriving and every pod polled an empty fetch. No log line, metric or alarm named it (issue #2890).
+
+    </details>
+
 ## [5.0.1](https://github.com/SocialGouv/iterion/compare/v5.0.0...v5.0.1) (2026-11-01)
 
 ### Bug Fixes
