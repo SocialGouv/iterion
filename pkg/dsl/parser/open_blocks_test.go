@@ -230,10 +230,11 @@ func TestResyncReadsTheStackTheLoopsHold(t *testing.T) {
 
 // The ticket's measure: a 2.3 MB source of 40 000 agents each leaving a
 // list open took 66 s of CPU on the replay, quadratic in the open lists.
-// On the kept stack the reading is linear, and held to twenty seconds —
-// two orders of magnitude above its cost on a laptop, above the race
-// detector's and a loaded runner's slowdowns — so the bound reddens on the
-// class, never on the weather.
+// On the kept stack the reading is linear, and held to two minutes — the
+// class it prices (the open-block lookup rescanning the stream) took 66 s of
+// CPU at a quarter of this size before the fix, so the margin stays
+// decisive. Twenty seconds proved weather-able after all: a saturated ARC
+// shard under -race measured 25.68 s on 2026-11-01 (#2732's queue run).
 func TestBrokenListsParseInLinearTime(t *testing.T) {
 	withoutOpenBlocksCheck(t, func() {
 		const lists = 40_000
@@ -244,7 +245,7 @@ func TestBrokenListsParseInLinearTime(t *testing.T) {
 		if res.ErrorCount < lists {
 			t.Fatalf("%d errors for %d broken lists: the shape never reached the resync", res.ErrorCount, lists)
 		}
-		if bound := 20 * time.Second; took > bound {
+		if bound := 2 * time.Minute; took > bound {
 			t.Fatalf("%d broken lists (%d bytes) parsed in %s, past the %s bound: the open-block lookup is rescanning the stream", lists, len(src), took, bound)
 		}
 		t.Logf("%d broken lists (%d bytes) parsed in %s", lists, len(src), took)
@@ -256,10 +257,12 @@ func TestBrokenListsParseInLinearTime(t *testing.T) {
 // into the flat token slice, every splice recopied the stream's tail, and a
 // source whose broken lists repeat paid the tail per list: measured before
 // the queue, N=2000 → 0.33s, 4000 → 1.33s, 8000 → 5.30s, ×4 per doubling,
-// the memmove of the tail. The witness is the RATIO, never the clock:
-// doubling the lists costs ~2x when the splice is the queue's cut-and-join
-// and ~4x when it is a recopy, and neither figure moves with the machine.
-// Medians of three interleaved runs keep a loaded shard's pause off the
+// the memmove of the tail. The witness is the RATIO, never the clock —
+// but "neither figure moves with the machine" proved false at a 2x size
+// ratio: a saturated shard read 3.6x on a linear splice, and the 3x bound
+// sits one notch under the quadratic's 4x. The test therefore quadruples:
+// ~4x when linear, ~16x when quadratic, the bound at 8x — decisive on both
+// sides. Medians of three interleaved runs keep a load spike off the
 // verdict.
 func TestBrokenListSplicesStayLinear(t *testing.T) {
 	withoutOpenBlocksCheck(t, func() {
@@ -282,21 +285,25 @@ func TestBrokenListSplicesStayLinear(t *testing.T) {
 		var small, large []time.Duration
 		for r := 0; r < 3; r++ {
 			small = append(small, parse(lists))
-			large = append(large, parse(2*lists))
+			large = append(large, parse(4*lists))
 		}
-		// The ratio reads the BEST run of each size, not the median: a load
-		// spike on a shared runner can only inflate a run, so min/min is the
-		// reading load cannot fake — and a quadratic rescue scores ≥ 4x even
-		// on its best pair (a 3.2x median on a saturated ARC shard failed the
-		// 3x bound on 2026-10-31, witness on 63aac5608, flake register).
-		s, l := slices.Min(small), slices.Min(large)
+		slices.Sort(small)
+		slices.Sort(large)
+		s, l := small[1], large[1]
 		if s <= 0 {
 			t.Fatalf("the %d-list parse measured %s: no baseline to compare against", lists, s)
 		}
-		if ratio := float64(l) / float64(s); ratio > 3 {
-			t.Fatalf("doubling the broken lists cost %.1fx (%s then %s): the rescue's splice recopies the stream's tail", ratio, s, l)
+		// The size ratio is 4x, not 2x: the verdict must keep a decisive
+		// margin on BOTH sides. Quadrupling costs ~4x when the splice is the
+		// queue's cut-and-join and ~16x when it is a recopy, so the 8x bound
+		// sits at the geometric middle — a loaded shard inflating both arms
+		// unevenly (measured: 3.6x at a 2x ratio on a saturated ARC shard,
+		// 2026-10-31/11-01 witnesses, flake register) cannot cross it, and
+		// the quadratic class cannot duck under it.
+		if ratio := float64(l) / float64(s); ratio > 8 {
+			t.Fatalf("quadrupling the broken lists cost %.1fx (%s then %s): the rescue's splice recopies the stream's tail", ratio, s, l)
 		}
-		t.Logf("%d broken lists parsed in %s, %d in %s (%.2fx)", lists, s, 2*lists, l, float64(l)/float64(s))
+		t.Logf("%d broken lists parsed in %s, %d in %s (%.2fx)", lists, s, 4*lists, l, float64(l)/float64(s))
 	})
 }
 
