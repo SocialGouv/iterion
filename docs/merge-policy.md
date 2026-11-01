@@ -239,7 +239,7 @@ invocations do the wrong thing:
 # 1. `gh pr merge <n> --squash` WITHOUT --admin does NOT merge: it enqueues.
 # 2. `--admin` on a PR already in the queue answers "already queued".
 # So: dequeue first, then merge with --admin.
-gh api graphql -f query='mutation($id:ID!){ dequeuePullRequest(input:{pullRequestId:$id}){ clientMutationId } }' \
+gh api graphql -f query='mutation($id:ID!){ dequeuePullRequest(input:{id:$id}){ clientMutationId } }' \
   -f id="$(gh pr view <n> --repo <owner>/<repo> --json id --jq .id)"
 gh pr merge <n> --repo <owner>/<repo> --squash --admin
 ```
