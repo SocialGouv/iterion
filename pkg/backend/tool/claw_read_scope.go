@@ -30,15 +30,32 @@ import (
 // The zero value is valid: no workspace, no extra roots — every read
 // refuses, as an empty workspace string always did.
 type ReadScope struct {
-	mu        sync.RWMutex
-	workspace string
-	extra     []string
+	mu          sync.RWMutex
+	workspace   string
+	workspaceFn func() string
+	extra       []string
 }
 
 // NewReadScope anchors the scope at the run workspace. Empty workspace
 // keeps the process-cwd-less refusal behaviour of the pre-scope registry.
 func NewReadScope(workspace string) *ReadScope {
 	return &ReadScope{workspace: workspace}
+}
+
+// NewReadScopeWithProvider anchors the scope at a workspace PROVIDER,
+// consulted on every resolve, rather than a string captured at
+// construction. It is the scope twin of the command/skill provider seam
+// (#2870): a run whose workspace moves after the registry exists — the
+// engine replaces the executor's workDir when `worktree: auto` produces a
+// per-run worktree (ClawExecutor.SetWorkDir) — keeps its reads, AND the
+// bash/write_file/file_edit resolution RegisterClawBuiltinsWithScope
+// derives from the scope, rooted in the run's checkout (#2889). A nil
+// provider behaves as the empty workspace: every read refuses.
+func NewReadScopeWithProvider(workspace func() string) *ReadScope {
+	if workspace == nil {
+		workspace = func() string { return "" }
+	}
+	return &ReadScope{workspaceFn: workspace}
 }
 
 // AddExtraRoot widens the scope by one read-only root. Idempotent and
@@ -75,18 +92,31 @@ func (s *ReadScope) ExtraRoots() []string {
 }
 
 // snapshot returns the workspace and extra roots under one lock read, so a
-// resolve never judges a path against half an update.
+// resolve never judges a path against half an update. A provider-backed
+// scope answers with the provider's CURRENT workspace — consulted on every
+// call, so the read tools follow a workspace the host moves after
+// registration (#2889) exactly as its extra roots follow a root pushed
+// after registration (#2650).
 func (s *ReadScope) snapshot() (string, []string) {
 	if s == nil {
 		return "", nil
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.workspace, append([]string(nil), s.extra...)
+	return s.workspaceLocked(), append([]string(nil), s.extra...)
+}
+
+// workspaceLocked answers the scope's workspace: the provider's live answer
+// when one is wired, else the construction-time string.
+func (s *ReadScope) workspaceLocked() string {
+	if s.workspaceFn != nil {
+		return s.workspaceFn()
+	}
+	return s.workspace
 }
 
 func (s *ReadScope) canonicalWorkspaceLocked() string {
-	canon, err := canonicalReadRoot(s.workspace)
+	canon, err := canonicalReadRoot(s.workspaceLocked())
 	if err != nil {
 		return ""
 	}

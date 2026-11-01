@@ -615,7 +615,33 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// run's ${PROJECT_SCRATCH_DIR} as a read root (#2650) to the VERY
 	// registry the agents call; a scope of runview's own would widen reads
 	// nobody makes.
-	readScope := tool.NewReadScope(workspace)
+	//
+	// The scope's WORKSPACE is the executor's live workDir, through the one
+	// provider every workspace-scoped tool shares (#2870, #2889): the
+	// prompt path reads that field, and the engine replaces it at run start
+	// via SetWorkDir when `worktree: auto` produces a per-run worktree —
+	// after this registry exists. Binding bash's cwd, write_file's rebase
+	// and the read tools' containment to the same field the `command`/
+	// `skill` lookups take makes all of them share one source by
+	// construction; a captured string resolved in the construction-time
+	// checkout while the prompt path read the worktree's — two checkouts,
+	// possibly two commits. The fallback keeps the construction-time
+	// workspace for a direct executor use no engine ever pushes a workDir
+	// into (empty answers would disable the tools there). The closure is
+	// built BEFORE NewClawExecutor — the scope has to exist for
+	// WithClawReadScope below — and reads the variable at call time, which
+	// is safe: the executor consults the registry per Execute, never at
+	// construction, and every call happens after BuildExecutor returns.
+	var executor *model.ClawExecutor
+	workspaceProvider := func() string {
+		if executor != nil {
+			if dir := executor.WorkDir(); dir != "" {
+				return dir
+			}
+		}
+		return workspace
+	}
+	readScope := tool.NewReadScopeWithProvider(workspaceProvider)
 
 	planActive := false
 	planDir := filepath.Join(spec.StoreDir, "plan-mode")
@@ -801,7 +827,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		}
 	}
 
-	executor := model.NewClawExecutor(reg, spec.Workflow, opts...)
+	executor = model.NewClawExecutor(reg, spec.Workflow, opts...)
 
 	clawDefaults := tool.ClawDefaults{
 		IncludeWebSearch:            tool.ResolveWebSearchEnabled(),
@@ -814,26 +840,15 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		DisableWorkspaceCommands: model.SlashCommandsDisabled(),
 		CommandMaxBytes:          model.SlashCommandMaxBytesForRegistry(),
 	}
-	// The workspace-scoped lookup tools (`command`, `skill`) resolve
-	// against the executor's LIVE workDir — the field the prompt path
-	// (model.expandWorkspaceSlashCommand) reads, and the one the engine
-	// replaces at run start via SetWorkDir when `worktree: auto` produces
-	// a per-run worktree after this registry exists (#2870). Binding the
-	// provider to the same field makes the two surfaces share one source
-	// by construction; a captured string resolved `.claude/commands/` in
-	// the construction-time checkout while the prompt path read the
-	// worktree's — two checkouts, possibly two commits. The fallback keeps
-	// the construction-time workspace for a direct executor use no engine
-	// ever pushes a workDir into (empty answers would disable the tools
-	// there). Registered AFTER NewClawExecutor — the closure reads it —
-	// which is safe: the executor consults the registry per Execute, never
-	// at construction.
-	clawDefaults.WorkspaceProvider = func() string {
-		if dir := executor.WorkDir(); dir != "" {
-			return dir
-		}
-		return workspace
-	}
+	// The workspace-scoped tools (`command`/`skill` lookups, bash,
+	// write_file, file_edit and the read tools through the scope above)
+	// resolve against the executor's LIVE workDir — the field the prompt
+	// path (model.expandWorkspaceSlashCommand) reads, and the one the
+	// engine replaces at run start via SetWorkDir when `worktree: auto`
+	// produces a per-run worktree after this registry exists (#2870,
+	// #2889). The closure is the one the read scope was built with, so all
+	// surfaces share one source by construction.
+	clawDefaults.WorkspaceProvider = workspaceProvider
 	if planDir != "" {
 		clawDefaults.PlanMode = &clawtools.PlanModeState{Active: &planActive, Dir: planDir}
 	}

@@ -1217,10 +1217,12 @@ func (e *ClawExecutor) SetWorkDir(dir string) {
 // WorkDir reports the executor's current working directory — the value
 // SetWorkDir last pushed, or the construction-time WithWorkDir. It is the
 // live reading the prompt path resolves workspace slash commands against;
-// hosts registering the `command`/`skill` tools bind their workspace
-// provider to it (runview does) so the tools follow the same per-run
-// worktree (#2870). Empty until the engine's first SetWorkDir when the
-// executor was built without WithWorkDir.
+// hosts registering the workspace-scoped tools (`command`/`skill` lookups,
+// and the bash/write_file/read builtins through their provider-backed
+// scope) bind their workspace provider to it (runview does) so every
+// surface follows the same per-run worktree (#2870, #2889). Empty until
+// the engine's first SetWorkDir when the executor was built without
+// WithWorkDir.
 func (e *ClawExecutor) WorkDir() string {
 	return e.workDir
 }

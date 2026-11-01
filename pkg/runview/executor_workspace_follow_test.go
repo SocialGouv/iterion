@@ -98,3 +98,91 @@ func TestBuildExecutor_WorkspaceLookupToolsFollowSetWorkDir(t *testing.T) {
 		t.Fatalf("skill tool resolved outside the run worktree: %v", skill)
 	}
 }
+
+// The file and shell builtins are the other half of the same capture
+// (#2889, the #2870 class): bash, write_file and read_file resolved
+// relative paths and the shell's cwd against the workspace captured when
+// the registry was built — the launch checkout — while the engine replaces
+// the run's directory at run start (`worktree: auto` → SetWorkDir). They
+// must resolve `/x` in the RUN's worktree, through the same live reading
+// the `command`/`skill` lookup tools take.
+//
+// Mutant: RegisterClawBuiltinsWithScope capturing the scope's workspace
+// string again, or the scope built from a string instead of the executor's
+// workDir provider → every half below reddens (pwd prints the launch dir,
+// the write lands there, the worktree-only file reads as missing).
+func TestBuildExecutor_WorkspaceFileToolsFollowSetWorkDir(t *testing.T) {
+	// The checkout the executor is built against: the write must NOT land
+	// here, and the marker file does not exist here.
+	launch := t.TempDir()
+	// The run's worktree: where the shell starts, where relative paths go.
+	worktree := t.TempDir()
+	if err := os.WriteFile(filepath.Join(worktree, "wt-only.txt"), []byte("KUMQUAT-2889\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := &ir.Workflow{
+		Name: "workspace-follow-files",
+		Nodes: map[string]ir.Node{
+			"probe": &ir.AgentNode{
+				BaseNode: ir.BaseNode{ID: "probe"},
+				Tools:    []string{"bash", "write_file", "read_file"},
+			},
+		},
+	}
+	exec, err := BuildExecutor(ExecutorSpec{
+		Workflow: wf,
+		Store:    st,
+		RunID:    "workspace-follow-files",
+		StoreDir: t.TempDir(),
+		WorkDir:  launch,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = exec.Close() })
+
+	// What the engine does at run start once `worktree: auto` has produced
+	// the run's worktree (runtime.runPersistWorkspace).
+	exec.SetWorkDir(worktree)
+
+	ctx := context.Background()
+	bash, err := exec.Execute(ctx, &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "run-bash"},
+		Command:  "bash",
+	}, map[string]any{"command": "pwd"})
+	if err != nil {
+		t.Fatalf("bash tool node: %v", err)
+	}
+	if out, _ := bash["result"].(string); strings.TrimSpace(out) != worktree {
+		t.Fatalf("bash ran in the registration workspace, not the run worktree: %q", out)
+	}
+
+	if _, err := exec.Execute(ctx, &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "run-write"},
+		Command:  "write_file",
+	}, map[string]any{"path": "written.txt", "content": "from the run\n"}); err != nil {
+		t.Fatalf("write_file tool node: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(worktree, "written.txt")); err != nil {
+		t.Fatalf("write_file did not land in the run worktree: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(launch, "written.txt")); !os.IsNotExist(err) {
+		t.Fatalf("write_file leaked into the launch checkout")
+	}
+
+	read, err := exec.Execute(ctx, &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "run-read"},
+		Command:  "read_file",
+	}, map[string]any{"path": "wt-only.txt"})
+	if err != nil {
+		t.Fatalf("read_file tool node: %v", err)
+	}
+	if out, _ := read["result"].(string); !strings.Contains(out, "KUMQUAT-2889") {
+		t.Fatalf("read_file resolved outside the run worktree: %q", out)
+	}
+}

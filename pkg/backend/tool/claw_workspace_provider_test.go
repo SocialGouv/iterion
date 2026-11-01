@@ -139,3 +139,59 @@ func TestRegisterClawAll_WorkspaceStringIsTheStaticDefault(t *testing.T) {
 		t.Fatalf("command must resolve against the Workspace string: out=%q err=%v", out, err)
 	}
 }
+
+// The bash, write_file and read_file builtins resolve through the SAME
+// provider the lookup tools take — consulted on every call, never captured
+// at registration (#2889, the #2870 class). RegisterClawAll builds its
+// default read scope over that one provider, so the file/shell tools and
+// the command/skill lookups cannot drift into two different checkouts.
+//
+// Mutant: a registration capturing the provider's first answer (the old
+// `workspace, _ := scope.snapshot()` at the top of
+// RegisterClawBuiltinsWithScope, or NewReadScope(provider()) in
+// RegisterClawAll) → the second half of every subtest reddens.
+func TestClawWorkspaceProvider_BuiltinsFollowTheProvider(t *testing.T) {
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dirB, "only-b.txt"), []byte("KUMQUAT-2889\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cell := dirA
+	provider := func() string { return cell }
+	reg := NewRegistry()
+	if err := RegisterClawAll(reg, ClawDefaults{WorkspaceProvider: provider}); err != nil {
+		t.Fatalf("RegisterClawAll: %v", err)
+	}
+
+	// While the provider answers dirA: the shell starts there, and the
+	// worktree-only file refuses to read.
+	out, err := execTool(t, reg, "bash", map[string]any{"command": "pwd"})
+	if err != nil || strings.TrimSpace(out) != dirA {
+		t.Fatalf("bash must start in dirA: out=%q err=%v", out, err)
+	}
+	if _, err := execTool(t, reg, "read_file", map[string]any{"path": "only-b.txt"}); err == nil {
+		t.Fatalf("only-b.txt must not resolve while the provider answers dirA")
+	}
+
+	// The flip the engine's SetWorkDir push stands in for.
+	cell = dirB
+
+	out, err = execTool(t, reg, "bash", map[string]any{"command": "pwd"})
+	if err != nil || strings.TrimSpace(out) != dirB {
+		t.Fatalf("bash must follow the provider to dirB: out=%q err=%v", out, err)
+	}
+	out, err = execTool(t, reg, "read_file", map[string]any{"path": "only-b.txt"})
+	if err != nil || !strings.Contains(out, "KUMQUAT-2889") {
+		t.Fatalf("read_file must follow the provider to dirB: out=%q err=%v", out, err)
+	}
+	if _, err := execTool(t, reg, "write_file", map[string]any{"path": "written.txt", "content": "from the run\n"}); err != nil {
+		t.Fatalf("write_file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dirB, "written.txt")); err != nil {
+		t.Fatalf("write_file did not land in dirB: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dirA, "written.txt")); !os.IsNotExist(err) {
+		t.Fatalf("write_file leaked into dirA")
+	}
+}

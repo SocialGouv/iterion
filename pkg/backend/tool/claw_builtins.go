@@ -85,13 +85,26 @@ func RegisterClawBuiltinsWithEnv(reg *Registry, workspace string, bashExtraEnv [
 // the engine pushes the run's ${PROJECT_SCRATCH_DIR} once it resolves
 // (#2650), which is after the registry exists. Write tools are not
 // scope-aware: relative paths rebase onto the workspace as before.
+//
+// The workspace is re-read from the scope on EVERY CALL, never captured:
+// a provider-backed scope (NewReadScopeWithProvider) is the one resolution
+// the host shares with the `command`/`skill` lookup tools, so bash's
+// shell, write_file's and file_edit's rebase, and the read tools'
+// containment all follow a `worktree: auto` run's worktree — pushed
+// through ClawExecutor.SetWorkDir after this registry exists (#2889, the
+// #2870 class). A scope built from a string keeps the static answer, which
+// is what the in-container runner wants: its cwd IS the bind-mounted
+// worktree and never moves.
 func RegisterClawBuiltinsWithScope(reg *Registry, scope *ReadScope, bashExtraEnv []string) error {
-	workspace, _ := scope.snapshot()
+	workspace := func() string {
+		w, _ := scope.snapshot()
+		return w
+	}
 	bashExec := func(ctx context.Context, input map[string]any) (string, error) {
 		if rewritten, changed := rewrite.RewriteCommandFieldCtx(ctx, input); changed {
 			input = rewritten
 		}
-		return executeWorkspaceBash(ctx, input, workspace, bashExtraEnv)
+		return executeWorkspaceBash(ctx, input, workspace(), bashExtraEnv)
 	}
 
 	return registerClawSpecs(reg, []clawBuiltinSpec{
@@ -99,7 +112,7 @@ func RegisterClawBuiltinsWithScope(reg *Registry, scope *ReadScope, bashExtraEnv
 			return executeWorkspaceReadFile(input, scope)
 		}},
 		{tool: clawtools.WriteFileTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
-			return clawtools.ExecuteWriteFile(ctx, clawWorkspaceFileInput(input, workspace, "path"))
+			return clawtools.ExecuteWriteFile(ctx, clawWorkspaceFileInput(input, workspace(), "path"))
 		}},
 		{tool: workspaceGlobTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
 			return executeWorkspaceGlob(ctx, input, scope)
@@ -108,7 +121,7 @@ func RegisterClawBuiltinsWithScope(reg *Registry, scope *ReadScope, bashExtraEnv
 			return executeWorkspaceGrep(ctx, input, scope)
 		}},
 		{tool: clawtools.FileEditTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
-			return clawtools.ExecuteFileEdit(ctx, clawWorkspaceFileInput(input, workspace, "file_path"))
+			return clawtools.ExecuteFileEdit(ctx, clawWorkspaceFileInput(input, workspace(), "file_path"))
 		}},
 		{tool: clawtools.WebFetchTool(), exec: clawtools.ExecuteWebFetch},
 		{tool: clawtools.BashTool(), exec: bashExec},
@@ -143,14 +156,18 @@ func RegisterClawWorkspaceDiagnostics(reg *Registry, workspace string, bashExtra
 
 // RegisterClawWorkspaceDiagnosticsWithScope is RegisterClawWorkspaceDiagnostics
 // over a shared ReadScope, so the workspace_grep alias honours the same extra
-// read roots as the plain read tools (#2650).
+// read roots as the plain read tools (#2650) and diagnostic_shell's cwd
+// follows the scope's live workspace the way bash's does (#2889).
 func RegisterClawWorkspaceDiagnosticsWithScope(reg *Registry, scope *ReadScope, bashExtraEnv []string) error {
-	workspace, _ := scope.snapshot()
+	workspace := func() string {
+		w, _ := scope.snapshot()
+		return w
+	}
 	bashExec := func(ctx context.Context, input map[string]any) (string, error) {
 		if rewritten, changed := rewrite.RewriteCommandFieldCtx(ctx, input); changed {
 			input = rewritten
 		}
-		return executeWorkspaceBash(ctx, input, workspace, bashExtraEnv)
+		return executeWorkspaceBash(ctx, input, workspace(), bashExtraEnv)
 	}
 	return registerClawSpecs(reg, []clawBuiltinSpec{
 		{tool: workspaceGrepTool(), exec: func(ctx context.Context, input map[string]any) (string, error) {
@@ -730,25 +747,29 @@ type ClawDefaults struct {
 	// slash-command lookup. Leave empty to skip workspace
 	// gating.
 	//
-	// It is the STATIC form of the workspace the workspace-scoped lookup
-	// tools (`command`, `skill`) resolve against: RegisterClawAll wraps it
-	// once into the workspace provider, and never reads it again. A host
+	// It is the STATIC form of the workspace the workspace-scoped tools
+	// (bash, write_file, file_edit, the read tools through their scope, and
+	// the `command`/`skill` lookups) resolve against: RegisterClawAll wraps
+	// it once into the workspace provider, and never reads it again. A host
 	// whose workspace can move after registration — the engine replaces a
 	// run's workDir when `worktree: auto` produces a per-run worktree
 	// (ClawExecutor.SetWorkDir, #2870) — sets WorkspaceProvider instead.
 	Workspace string
 
 	// WorkspaceProvider, when non-nil, answers the workspace the
-	// workspace-scoped lookup tools (`command`, `skill`) resolve against,
-	// CONSULTED ON EVERY CALL. The provider is the one mechanism both
-	// surfaces share, so they cannot drift back into resolving
-	// `.claude/commands/` and `.claude/skills/` in two different checkouts
-	// (#2870): the prompt path reads the executor's workDir live, and the
-	// engine replaces that directory at run start — after the registry
-	// exists — when `worktree: auto` produces a per-run worktree.
+	// workspace-scoped tools resolve against, CONSULTED ON EVERY CALL:
+	// the `command`/`skill` lookups (#2870), and — through the read scope
+	// RegisterClawAll builds over this same provider — bash's shell cwd and
+	// validation, write_file's and file_edit's relative-path rebase, and
+	// the read tools' containment (#2889). The provider is the one
+	// mechanism every surface shares, so they cannot drift back into
+	// resolving in two different checkouts: the prompt path reads the
+	// executor's workDir live, and the engine replaces that directory at
+	// run start — after the registry exists — when `worktree: auto`
+	// produces a per-run worktree.
 	//
 	// When set, Workspace is not read at all — not even to seed the read
-	// scope (that takes the provider's first answer) — so the string can
+	// scope (that resolves through the provider) — so the string can
 	// never become a second, stale source of truth beside the provider.
 	WorkspaceProvider func() string
 
@@ -756,10 +777,13 @@ type ClawDefaults struct {
 	// read_image, workspace_grep) scope — workspace plus the extra
 	// read-only roots a
 	// host attaches after registration, the run's ${PROJECT_SCRATCH_DIR}
-	// being the canonical one (#2650). Nil builds a workspace-only scope
-	// from Workspace. A host that passes one here should hand the SAME
-	// instance to whatever attaches roots later (the engine's executor
-	// push), or the reads will not see them.
+	// being the canonical one (#2650). Nil builds a provider-backed scope
+	// over the workspace provider above. A host that passes one here should
+	// hand the SAME instance to whatever attaches roots later (the engine's
+	// executor push), or the reads will not see them — and, when it also
+	// sets WorkspaceProvider, build it with NewReadScopeWithProvider over
+	// the SAME provider, or bash (through the scope) and `command`
+	// (through the provider) resolve different checkouts.
 	ReadScope *ReadScope
 
 	// DisableWorkspaceCommands drops the `command` tool (the model-invoked
@@ -884,12 +908,14 @@ func RegisterClawAll(reg *Registry, defaults ClawDefaults) error {
 		defaults.LSP = clawlsp.NewRegistry()
 	}
 
-	// The ONE workspace provider the lookup tools (`command`, `skill`)
-	// share (#2870): the host's WorkspaceProvider when it has a live answer
-	// (a `worktree: auto` run's worktree, pushed via ClawExecutor.SetWorkDir
-	// after this registry exists), else the Workspace string wrapped once —
-	// the string is read here and nowhere else, so the two fields can never
-	// be two live sources of truth.
+	// The ONE workspace provider the workspace-scoped tools share (#2870):
+	// the lookup tools (`command`, `skill`), and — through the read scope
+	// below — bash's shell, write_file's and file_edit's rebase and the
+	// read tools' containment (#2889). The host's WorkspaceProvider when it
+	// has a live answer (a `worktree: auto` run's worktree, pushed via
+	// ClawExecutor.SetWorkDir after this registry exists), else the
+	// Workspace string wrapped once — the string is read here and nowhere
+	// else, so the two fields can never be two live sources of truth.
 	workspace := defaults.WorkspaceProvider
 	if workspace == nil {
 		workspace = staticWorkspaceProvider(defaults.Workspace)
@@ -897,7 +923,11 @@ func RegisterClawAll(reg *Registry, defaults ClawDefaults) error {
 
 	readScope := defaults.ReadScope
 	if readScope == nil {
-		readScope = NewReadScope(workspace())
+		// Provider-backed, not NewReadScope(workspace()): the first-answer
+		// capture is exactly the staleness the provider exists to remove —
+		// with it, bash ran in the construction-time checkout while
+		// `command` followed the run's worktree.
+		readScope = NewReadScopeWithProvider(workspace)
 	}
 	if err := RegisterClawBuiltinsWithScope(reg, readScope, defaults.BashExtraEnv); err != nil {
 		return err

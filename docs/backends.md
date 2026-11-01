@@ -276,8 +276,13 @@ The citations, per cell that is not self-evident from the table:
   field (`ClawDefaults.WorkspaceProvider`, consulted on every call) rather
   than a string captured when the registry was built — so the tools and
   the prompt path can never resolve `.claude/commands/` and
-  `.claude/skills/` in two different checkouts (#2870). The witness is
-  `TestBuildExecutor_WorkspaceLookupToolsFollowSetWorkDir`
+  `.claude/skills/` in two different checkouts (#2870). The same provider
+  backs bash's shell cwd and validation, `write_file`'s and `file_edit`'s
+  relative-path rebase, and the read tools' containment (their scope is
+  built over it), so the file and shell tools follow the same per-run
+  worktree (#2889). The witnesses are
+  `TestBuildExecutor_WorkspaceLookupToolsFollowSetWorkDir` and
+  `TestBuildExecutor_WorkspaceFileToolsFollowSetWorkDir`
   (pkg/runview/executor_workspace_follow_test.go).
 
   A command whose body — **or whose expanded text** — exceeds
