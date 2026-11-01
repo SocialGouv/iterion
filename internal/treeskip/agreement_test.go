@@ -23,7 +23,7 @@ import (
 // must describe. Without it every assertion below would hold over two empty
 // artifacts.
 var candidates = []string{
-	"vendor", "node_modules", ".git", "testdata", "dist", ".vitepress", "keepme",
+	"vendor", "node_modules", ".git", "testdata", "dist", ".vitepress", ".local", "keepme",
 }
 
 // floor is the subset of candidates every generated artifact must skip
@@ -32,7 +32,7 @@ var candidates = []string{
 // treeskip needs no edit here while removing one of these reddens.
 var floor = map[string]bool{
 	"vendor": true, "node_modules": true, ".git": true,
-	"testdata": true, "dist": true, ".vitepress": true,
+	"testdata": true, "dist": true, ".vitepress": true, ".local": true,
 }
 
 // The two generated artifacts of this repository — the committed maps and

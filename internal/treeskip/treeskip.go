@@ -1,7 +1,9 @@
 // Package treeskip names the trees this repository's generated artifacts
 // never describe: vendored or installed third-party code, sibling
-// worktrees, the engine's own run scratch, build output, and the
-// documentation site's own machinery.
+// worktrees, the engine's own run scratch, build output, the documentation
+// site's own machinery, and the operator-local scratch (`.local`, which
+// .gitignore covers — a walk that read it would describe a host's junk, and
+// #2898 measured that turning `task check` red on a clean main).
 //
 // One set, read by every generator. The names are a property of the
 // REPOSITORY, not of one artifact, and a repository-wide fact held in two
@@ -27,7 +29,7 @@ var dirs = map[string]bool{
 	"vendor": true, "node_modules": true, ".git": true, ".works": true,
 	".repos": true, ".iterion": true, ".devbox": true, "graphify-out": true,
 	".claude": true, ".task": true, "dist": true, ".pnpm-store": true,
-	".vitepress": true, "testdata": true,
+	".vitepress": true, "testdata": true, ".local": true,
 }
 
 // Dir reports whether a directory of this name names a skipped tree. It is
