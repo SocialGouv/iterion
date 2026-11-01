@@ -1989,18 +1989,21 @@ func (e *ClawExecutor) applyRunsEndpoint(task *delegate.Task, effectiveCaps []st
 
 // applyConnectorEndpoint wires the per-run connector MCP facade transport
 // (#2758) onto the task for sandboxed nodes declaring the `connectors`
-// capability: the same gateway listener as the board endpoint (one mux),
-// the same per-node token — whose grant then carries this node's caps, so
-// the facade's own capability check reads exactly what the node was granted.
-// A node with the capability but no facade wired (no server, no sandbox, no
-// connection plane) is left without the endpoint, and the delegate warns
-// loudly — board-style silent disablement is the wrong default for a
-// capability a workflow declared (ADR-098).
+// capability: the facade's URL on the gateway listener the engine pushed
+// (SetConnectorEndpoint), plus the per-node token — whose grant then
+// carries this node's caps, so the facade's own capability check reads
+// exactly what the node was granted. The endpoint arrives ONLY when the
+// listener's mux serves the facade; a host that does not (no server, no
+// sandbox, no connection plane — or the cloud runner pod, which serves
+// board/runs only, #2632) pushes nothing, leaving the node without the
+// endpoint, and the delegate warns loudly — board-style silent disablement
+// is the wrong default for a capability a workflow declared (ADR-098), and
+// a 404-per-call endpoint is worse than none.
 func (e *ClawExecutor) applyConnectorEndpoint(task *delegate.Task, effectiveCaps []string, sess *nodeBuildSession) {
-	if !delegate.HasConnectorsCapability(effectiveCaps) || e.sandbox == nil || e.boardEndpoint == "" || e.boardRegister == nil {
+	if !delegate.HasConnectorsCapability(effectiveCaps) || e.sandbox == nil || e.connectorEndpoint == "" || e.boardRegister == nil {
 		return
 	}
-	task.ConnectorHTTPEndpoint = strings.TrimSuffix(e.boardEndpoint, "/api/v1/mcp/board") + "/api/v1/mcp/connectors"
+	task.ConnectorHTTPEndpoint = e.connectorEndpoint
 	task.BoardRunToken = sess.boardTokenFor(func() string {
 		return e.boardRegister(effectiveCaps, e.sourceIssueID)
 	})

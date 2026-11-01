@@ -280,7 +280,7 @@ func TestBoardMCPTokenRegistry_RegisterFullReturnsError(t *testing.T) {
 	if !strings.Contains(err.Error(), "registry full") {
 		t.Errorf("error should say the registry is full, got: %v", err)
 	}
-	if _, ok := reg.lookup("one-too-many"); ok {
+	if _, ok := reg.Lookup("one-too-many"); ok {
 		t.Errorf("refused token must not be registered")
 	}
 }

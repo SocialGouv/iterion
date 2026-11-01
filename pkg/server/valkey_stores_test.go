@@ -81,7 +81,7 @@ func TestValkeyBoardMCPTokenStore_RegisterLookupRevoke(t *testing.T) {
 	if err := s.Register("tok1", []string{"board.read", "board.move"}, "", "", store.RunTrustFork, true, ""); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	g, ok := s.lookup("tok1")
+	g, ok := s.Lookup("tok1")
 	if !ok || !g.Capabilities["board.read"] || !g.Capabilities["board.move"] {
 		t.Fatalf("lookup = %+v ok=%v", g.Capabilities, ok)
 	}
@@ -95,7 +95,7 @@ func TestValkeyBoardMCPTokenStore_RegisterLookupRevoke(t *testing.T) {
 		t.Errorf("trust = %q stated=%v, want fork stated — a fork grant must survive the round trip", g.Trust, g.TrustStated)
 	}
 	s.Revoke("tok1")
-	if _, ok := s.lookup("tok1"); ok {
+	if _, ok := s.Lookup("tok1"); ok {
 		t.Errorf("revoked token should miss")
 	}
 	// TTL eviction.
@@ -103,7 +103,7 @@ func TestValkeyBoardMCPTokenStore_RegisterLookupRevoke(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 	mr.FastForward(boardMCPDefaultTTL + time.Minute)
-	if _, ok := s.lookup("tok2"); ok {
+	if _, ok := s.Lookup("tok2"); ok {
 		t.Errorf("token should have expired via TTL")
 	}
 }
@@ -172,7 +172,7 @@ func TestABoardTokenCarriesTheRunsWorkspace(t *testing.T) {
 	if err := s.Register("tok-ws", []string{"board.read"}, "", "t1", store.RunTrustDefault, true, "/srv/worktrees/issue-42"); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	g, ok := s.lookup("tok-ws")
+	g, ok := s.Lookup("tok-ws")
 	if !ok {
 		t.Fatal("lookup missed")
 	}
@@ -187,7 +187,7 @@ func TestABoardTokenCarriesTheRunsWorkspace(t *testing.T) {
 		[]byte(`{"caps":["board.read"],"trust":"fork","trust_stated":true}`), 0).Err(); err != nil {
 		t.Fatalf("seed legacy: %v", err)
 	}
-	g, ok = s.lookup("tok-legacy")
+	g, ok = s.Lookup("tok-legacy")
 	if !ok {
 		t.Fatal("legacy lookup missed")
 	}

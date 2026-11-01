@@ -165,6 +165,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/forge/github` | the GitHub implementation of forge.Admin: the outbound write-side client the orchestrator uses to list repos and create/update/delete the iterion… | — |
 | `pkg/forge/gitlab` | the GitLab implementation of forge.Admin: the OUTBOUND write-side client the orchestrator uses to list a connection's projects and… | — |
 | `pkg/git` | a minimal wrapper around the `git` CLI for the studio's modified-files panel. | — |
+| `pkg/hostmcp` | serves the host-owned MCP HTTP transports a SANDBOXED run reaches over the per-run gateway listener (C082): the board tools (/api/v1/mcp/board) and… | `TokenStore` |
 | `pkg/identity` | owns the multitenant user/team/membership domain. | `Store` |
 | `pkg/internal/appinfo` | — | — |
 | `pkg/internal/clilocate` | centralises the host-side probe used by backends that shell out to a CLI binary (claude, codex, …). | — |

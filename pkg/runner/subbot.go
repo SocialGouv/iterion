@@ -361,6 +361,16 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 		if req.ParentSandbox != nil {
 			opts = append(opts, runtime.WithSharedSandbox(req.ParentSandbox))
 		}
+		// The sandboxed host-MCP transport (#2632): a child with a sandbox of
+		// its own gets the listener; a child sharing the parent's sandbox
+		// inherits the endpoint through WithSharedSandbox. The per-node token
+		// comes from buildExecutor's BoardRegister (executorSpec), pinned to
+		// the child's tenant via its message copy. Scoped WITHOUT the
+		// connector facade, like the main loop's engine: the pod's mux
+		// serves board + runs only.
+		if r.boardMCP != nil {
+			opts = append(opts, runtime.WithBoardMCPScoped(r.boardMCP, false))
+		}
 		// One bundle identity: the engine receives exactly what compiled.
 		opts = append(opts, runtime.WithBundle(childBundle))
 		// Plugin/library skills the LAUNCHING instance resolved: the pod's

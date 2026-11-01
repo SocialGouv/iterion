@@ -287,6 +287,13 @@ type ClawExecutor struct {
 	// in by the engine after the sandbox starts (SetBoardEndpoint). Empty
 	// disables sandboxed board-emit wiring (C082).
 	boardEndpoint string
+	// connectorEndpoint is the connector facade's URL on the same listener,
+	// pushed separately (SetConnectorEndpoint) because a host may serve
+	// board/runs WITHOUT the facade: the cloud runner pod's mux does not
+	// (#2632), and empty there keeps the documented degradation — the
+	// delegate's loud warning, connector tools disabled — instead of an
+	// AlwaysLoad MCP server that 404s at every call.
+	connectorEndpoint string
 	// askUserEndpoint / askUserToken are the per-run gateway-reachable
 	// ask-user MCP HTTP endpoint + bearer token pushed in by the engine
 	// after the sandbox starts (SetAskUserEndpoint) — ADR-082 Phase 3.
@@ -480,6 +487,17 @@ func (e *ClawExecutor) SetSharedStateDir(dir string) {
 // "" leaves sandboxed board-emit disabled.
 func (e *ClawExecutor) SetBoardEndpoint(endpoint string) {
 	e.boardEndpoint = endpoint
+}
+
+// SetConnectorEndpoint installs the connector facade's URL on the per-run
+// host MCP listener (#2758) so the executor can wire
+// Task.ConnectorHTTPEndpoint for sandboxed `connectors`-cap nodes. Called
+// by the engine after the sandbox starts, and only when the listener's mux
+// actually serves the facade: the cloud runner pod's does not (#2632), so
+// a cloud sandboxed node keeps the endpoint empty and degrades with the
+// delegate's warning rather than an endpoint that 404s at every call.
+func (e *ClawExecutor) SetConnectorEndpoint(endpoint string) {
+	e.connectorEndpoint = endpoint
 }
 
 // SetAskUserEndpoint installs the per-run gateway-reachable ask-user

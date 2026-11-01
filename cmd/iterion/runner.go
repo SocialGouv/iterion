@@ -18,6 +18,8 @@ import (
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/credusage"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
@@ -359,6 +361,17 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		UsageCapTrust:  usageCapTrust,
 		BotsPaths:      botsPaths,
 		BotSources:     botsource.NewMongoStore(st.DB()),
+		// The sandboxed host-MCP transport (#2632): a sandboxed node's
+		// board.* / runs.* capabilities resolve against the tenant's Mongo
+		// board and the tenant-scoped run store, served by the pod's
+		// per-run gateway listener. The tenant pin is minted from the run
+		// message; this factory only answers the tenant it is handed.
+		BoardFor: func(tenantID string) native.BoardStore {
+			if tenantID == "" {
+				return nil
+			}
+			return boardmongo.New(st.DB(), tenantID)
+		},
 		// Sandbox-by-default: the runner is a product entry point like
 		// `iterion run` — an unset ITERION_SANDBOX_DEFAULT resolves to
 		// auto. Discovered live (run 019f8a05): lifting the chart's

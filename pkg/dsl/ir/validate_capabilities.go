@@ -64,10 +64,13 @@ var capShapeRe = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)?$`)
 // In addition, a warning (C082) is emitted when board.* capabilities are
 // granted to nodes running under a sandbox: the host stdio MCP server
 // can't reach the sandboxed process, so the runtime falls back to an
-// HTTP MCP transport. That fallback needs the iterion server's
-// BoardHTTPEndpoint+BoardRunToken plumbing — without it the cap silently
-// no-ops in the sandbox. The warning is intentional rather than blocking
-// because non-sandboxed runs of the same workflow are perfectly fine.
+// HTTP MCP transport. That fallback needs the BoardHTTPEndpoint+
+// BoardRunToken plumbing from the host the sandbox answers to — the
+// studio/server for an in-process run, the runner pod for a cloud run
+// (#2632); without it (a bare CLI run) the delegate disables the node's
+// board tools with a loud warning. The warning is intentional rather than
+// blocking because non-sandboxed runs of the same workflow are perfectly
+// fine.
 func (c *compiler) validateCapabilities(w *Workflow) {
 	// Workflow-level: emit one diagnostic per malformed entry, attributed
 	// to no specific node.
@@ -86,7 +89,7 @@ func (c *compiler) validateCapabilities(w *Workflow) {
 			c.validateOneCapability(cap, n.NodeID(), kind)
 			if sandboxActive && isBoardCapability(cap) {
 				c.warnfAt(DiagBoardCapInSandbox, n.NodeID(), "",
-					"%s capability %q runs under a sandbox: the runtime needs the HTTP board MCP transport (server-side BoardHTTPEndpoint+BoardRunToken). Without it the capability silently no-ops inside the container.",
+					"%s capability %q runs under a sandbox: the runtime needs the HTTP board MCP transport (BoardHTTPEndpoint+BoardRunToken) from the host the sandbox answers to — the studio/server locally, the runner pod on iterion.cloud. Without it the node's board tools are disabled with a delegate warning.",
 					kind, cap)
 			}
 		}

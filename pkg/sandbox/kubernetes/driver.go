@@ -659,6 +659,8 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		WorkspaceMount:        p.workspace,
 		SeedMounts:            seedMountTargets(info.SeedDirs),
 		ProxyEndpoint:         info.ProxyEndpoint,
+		HostGatewayAlias:      info.HostGatewayAlias,
+		RunnerPodIP:           os.Getenv(PodIPEnvVar),
 		CASecretName:          caSecretName,
 		SecretFilesSecretName: secretFilesSecretName,
 		Owner:                 owner,

@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -41,11 +42,13 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/credusage"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
+	"github.com/SocialGouv/iterion/pkg/hostmcp"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/notify"
@@ -1467,6 +1470,17 @@ type Config struct {
 	// driver answer, which is otherwise whatever this machine happens to
 	// have installed.
 	SandboxDrivers map[string]sandbox.DriverConstructor
+
+	// BoardFor, when non-nil, resolves the tenant-scoped board store a
+	// sandboxed node's board MCP calls dispatch to (C082 on the cloud path,
+	// #2632): the runner mints a per-node token against an in-process
+	// registry, and the engine's per-run gateway listener serves the
+	// grant-scoped routes (/api/v1/mcp/board + /api/v1/mcp/runs) to the
+	// sibling sandbox pod, which reaches them at the runner pod IP — the
+	// same path the egress proxy advertises. The tenant a token may touch
+	// is pinned at mint time from the run MESSAGE, never from the request.
+	// nil → sandboxed board-emit stays disabled, the pre-#2632 behaviour.
+	BoardFor func(tenantID string) native.BoardStore
 }
 
 // Runner is the long-running consumer loop.
@@ -1478,6 +1492,13 @@ type Runner struct {
 	// carrying a callback URL reaches a terminal state. Built in New;
 	// no-op unless the run requested a callback.
 	completionNotifier *notify.Notifier
+
+	// boardMCP serves the token-gated host MCP routes (/api/v1/mcp/board +
+	// /api/v1/mcp/runs) to sandboxed runs over the engine's per-run gateway
+	// listener; boardTokens holds the grants the per-node minter registers.
+	// Both nil unless Config.BoardFor is wired (#2632).
+	boardMCP    http.Handler
+	boardTokens *hostmcp.Registry
 
 	mu      sync.Mutex
 	current *inFlight          // non-nil while a run is being processed; guarded by mu
@@ -1640,7 +1661,27 @@ func New(ctx context.Context, cfg Config) (*Runner, error) {
 	// Run-completion webhook notifier (the env-configured construction
 	// every settling lane shares — see notify.NewFromEnv).
 	notifier := notify.NewFromEnv(cfg.Logger, 0)
-	return &Runner{cfg: cfg, consumer: cons, completionNotifier: notifier}, nil
+	r := &Runner{cfg: cfg, consumer: cons, completionNotifier: notifier}
+	r.boardMCP, r.boardTokens = boardMCPWiring(cfg)
+	return r, nil
+}
+
+// boardMCPWiring builds the sandboxed host-MCP transport (C082 on the cloud
+// path, #2632): one mux + one in-process registry for the pod's lifetime.
+// The listener is per run (the engine binds it beside the sandbox); tokens
+// are per node, minted scoped to the node's capabilities and pinned to the
+// run's tenant. The registry never leaves the pod: the only listener that
+// checks these tokens is the one this process serves. nil BoardFor → the
+// transport stays off, the pre-#2632 behaviour.
+func boardMCPWiring(cfg Config) (http.Handler, *hostmcp.Registry) {
+	if cfg.BoardFor == nil {
+		return nil, nil
+	}
+	mux := http.NewServeMux()
+	tokens := hostmcp.NewRegistry()
+	hostmcp.RegisterBoardRoutes(mux, "/api/v1/mcp/board", hostmcp.BoardResolver(cfg.BoardFor), tokens)
+	hostmcp.RegisterRunsRoutes(mux, "/api/v1/mcp/runs", cfg.Store, tokens)
+	return mux, tokens
 }
 
 // SetRolloutState publishes the final epoch claim into runner health just
@@ -2961,6 +3002,20 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// deterministic node failure under the usage-window retry is a
 	// resume loop that recreates the sandbox pod on every attempt.
 	engineOpts = append(engineOpts, runtime.WithSubbotRunner(r.subbotRunnerFor(msg, parentBundleDir, workDir, runLogger, snapshotRoot)))
+	// The sandboxed host-MCP transport's serving half (C082, #2632): with
+	// the handler wired, the engine binds a per-run gateway-reachable
+	// listener beside the sandbox (the sandbox pod reaches it at this pod's
+	// IP, the same path the egress proxy advertises) and stamps the
+	// endpoint onto the executor; the per-node token is minted by
+	// executorSpec's BoardRegister above. SCOPED without the connector
+	// facade: the pod's mux serves board + runs only (the connection plane
+	// lives on the server), so a `connectors`-capability node must keep the
+	// documented degradation — endpoint empty, the delegate's warning —
+	// rather than an endpoint that 404s at every call. Nil handler (no
+	// Config.BoardFor) leaves sandboxed board-emit disabled, as before.
+	if r.boardMCP != nil {
+		engineOpts = append(engineOpts, runtime.WithBoardMCPScoped(r.boardMCP, false))
+	}
 	engine := runtime.New(wf, r.cfg.Store, executor, engineOpts...)
 	if superviseHub != nil {
 		// The spawn resolves the run's OWN inputs: on a resume the message
@@ -3477,6 +3532,37 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// on cloud: the Mongo change-stream surfaces the transitions.
 		Inbox:    &model.StoreInboxBinder{Store: r.cfg.Store},
 		AsyncAsk: &model.StoreAsyncAskBinder{Store: r.cfg.Store},
+	}
+	// The sandboxed host-MCP transport (C082, #2632): mint a per-node token
+	// scoped to the node's capabilities and pinned to the run's tenant — the
+	// pin comes from the MESSAGE (the authoritative launch fact, same
+	// doctrine as WithTrust above), never from a caller-supplied value — and
+	// revoke it as the node returns. The engine-side half (the listener the
+	// sandbox dials) is wired where the engine is built, beside the same
+	// nil check. A run message without a tenant refuses to mint: an
+	// unpinned token would resolve no board, so the node degrades to
+	// capability-disabled with the delegate's loud warning instead of
+	// handing out a grant that 404s per call.
+	if r.boardTokens != nil {
+		tenantID := msg.TenantID
+		trust := msg.Trust
+		spec.BoardRegister = func(caps []string, sourceIssueID, runID string) string {
+			if tenantID == "" {
+				logger.Warn("runner: host MCP: run %s has no tenant; sandboxed board-emit disabled for a node", runID)
+				return ""
+			}
+			token := hostmcp.MintToken()
+			if token == "" {
+				logger.Warn("runner: host MCP: token generation failed; sandboxed board-emit disabled for a node")
+				return ""
+			}
+			if err := r.boardTokens.Register(token, caps, sourceIssueID, tenantID, trust, true, workDir); err != nil {
+				logger.Error("runner: host MCP: %v; sandboxed board-emit disabled for a node", err)
+				return ""
+			}
+			return token
+		}
+		spec.BoardRevoke = r.boardTokens.Revoke
 	}
 	return spec, usage, nil
 }

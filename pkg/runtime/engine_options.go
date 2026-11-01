@@ -44,9 +44,13 @@ type SharedSandbox struct {
 	// The parent's per-run MCP listeners, reachable from the same sandbox:
 	// a child's board-capability and interactive nodes use them instead of
 	// listeners of their own (none are started for a child).
-	BoardEndpoint   string
-	AskUserEndpoint string
-	AskUserToken    string
+	// ConnectorEndpoint is empty when the parent's host does not serve the
+	// connector facade (the cloud runner pod, #2632) — a child inherits the
+	// same degradation as a first-class run there.
+	BoardEndpoint     string
+	ConnectorEndpoint string
+	AskUserEndpoint   string
+	AskUserToken      string
 	// ScratchContainerLocal: the sandbox's ${PROJECT_SCRATCH_DIR} lives in
 	// the container and dies with it. The parent's teardown banks it
 	// (ADR-106); a child resumed on its own starts a sandbox without it.
@@ -81,12 +85,29 @@ func WithLogger(l *iterlog.Logger) EngineOption {
 	return func(e *Engine) { e.logger = l }
 }
 
-// WithBoardMCP wires the dedicated board/runs MCP HTTP handler used to serve a
-// per-run gateway-reachable listener when a sandbox is active (C082). The
-// handler must never be the full server mux. The historical option name is
+// WithBoardMCP wires the dedicated host MCP HTTP handler used to serve a
+// per-run gateway-reachable listener when a sandbox is active (C082): the
+// board tools, the read-only run tools AND the connector facade — the
+// shape of the server's dedicated mux (boardMCPServiceOption). The handler
+// must never be the full server mux. The historical option name is
 // retained for compatibility.
 func WithBoardMCP(h http.Handler) EngineOption {
-	return func(e *Engine) { e.boardMCPHandler = h }
+	return WithBoardMCPScoped(h, true)
+}
+
+// WithBoardMCPScoped is WithBoardMCP for a mux that serves only PART of the
+// host MCP surface: connectors says whether /api/v1/mcp/connectors is among
+// the routes. The cloud runner pod's mux serves board + runs only (#2632 —
+// the connection plane lives on the server), and a sandboxed node must NOT
+// be handed a connector endpoint that 404s at every call: with connectors
+// false the executor is never given one, so a `connectors`-capability node
+// keeps the documented degradation — the delegate's loud warning, tools
+// disabled — instead of an AlwaysLoad MCP server that fails per call.
+func WithBoardMCPScoped(h http.Handler, connectors bool) EngineOption {
+	return func(e *Engine) {
+		e.boardMCPHandler = h
+		e.boardMCPConnectors = connectors
+	}
 }
 
 // WithSandboxOverride sets the CLI / Launch-modal level sandbox mode.

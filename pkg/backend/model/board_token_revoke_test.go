@@ -75,6 +75,11 @@ func executorWithBoardTokens(t *testing.T, b delegate.Backend, minted *[]string,
 	)
 	e.SetSandbox(unmetSandboxRun{})
 	e.SetBoardEndpoint("http://127.0.0.1:1/api/v1/mcp/board")
+	// The fixture's node is connectors-cap: model the host whose mux SERVES
+	// the facade (the server path). Since the connector endpoint stopped
+	// being derived from the board endpoint (#2632 MED-1 — the cloud runner
+	// pod serves board/runs only), the push is explicit.
+	e.SetConnectorEndpoint("http://127.0.0.1:1/api/v1/mcp/connectors")
 	return e
 }
 

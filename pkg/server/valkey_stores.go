@@ -129,9 +129,9 @@ func (s *valkeyBoardMCPTokenStore) Register(token string, caps []string, sourceI
 	return nil
 }
 
-// Revoke is best-effort: it has no production caller today and the Redis
-// key's boardMCPDefaultTTL is the backstop that reaps a missed delete, so a
-// failure is logged (token prefix only) rather than propagated.
+// Revoke is best-effort: the Redis key's boardMCPDefaultTTL is the backstop
+// that reaps a missed delete, so a failure is logged (token prefix only —
+// the token itself never reaches a log) rather than propagated.
 func (s *valkeyBoardMCPTokenStore) Revoke(token string) {
 	ctx, cancel := valkeyCtx()
 	defer cancel()
@@ -144,7 +144,9 @@ func (s *valkeyBoardMCPTokenStore) Revoke(token string) {
 	}
 }
 
-func (s *valkeyBoardMCPTokenStore) lookup(token string) (boardMCPGrant, bool) {
+// Lookup returns the grant a token carries, false when the key is absent,
+// expired (Redis evicted it) or holds a payload no reader accepts.
+func (s *valkeyBoardMCPTokenStore) Lookup(token string) (boardMCPGrant, bool) {
 	ctx, cancel := valkeyCtx()
 	defer cancel()
 	b, err := s.rdb.Get(ctx, boardTokenKeyPrefix+token).Bytes()

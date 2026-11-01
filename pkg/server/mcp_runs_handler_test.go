@@ -62,10 +62,26 @@ func TestRunsMCPHTTPDoesNotListToolsWithoutCapability(t *testing.T) {
 	if err := reg.Register("token", []string{"board.read"}, "", "", store.RunTrustDefault, true, ""); err != nil {
 		t.Fatal(err)
 	}
-	id := json.RawMessage(`1`)
-	resp := dispatchRunsHTTP(context.Background(), mcpReq{JSONRPC: "2.0", ID: &id, Method: "tools/list"}, base, runops.Capabilities{})
-	encoded, _ := json.Marshal(resp.Result)
-	if string(encoded) != `{"tools":[]}` {
-		t.Fatalf("tools/list = %s", encoded)
+	mux := http.NewServeMux()
+	RegisterRunsMCPRoutes(mux, "/api/v1/mcp/runs", base, reg)
+
+	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/mcp/runs", bytes.NewReader(body))
+	req.Header.Set("X-Iterion-Run", "token")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Result struct {
+			Tools []any `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Result.Tools) != 0 {
+		t.Fatalf("a token without the runs.read capability must list no tools, got %d", len(resp.Result.Tools))
 	}
 }

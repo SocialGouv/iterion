@@ -55,17 +55,18 @@ import (
 // that backs it. Both lifecycle handles are owned by the engine and
 // must be shut down on Run() exit.
 type activeSandbox struct {
-	run             sandbox.Run
-	proxy           *netproxy.Proxy
-	workspaceFolder string       // in-container path the host worktree is bind-mounted to (Spec.WorkspaceFolder, e.g. "/workspace"); used by Engine to remap ${PROJECT_DIR}
-	attachmentsDir  string       // in-container path the run's attachments dir ACTUALLY landed at; empty when nothing was mounted (no attachments yet, or a driver that drops host binds) — the authority behind Engine.attachmentPath
-	sharedStateDir  string       // host ~/.iterion path host_state actually bind-mounted, at the same absolute path in-container; empty when not mounted — lets a backend keep per-run state OUT of the target repo's checkout
-	scratchHostDir  string       // host dir bind-mounted onto ${PROJECT_SCRATCH_DIR}; empty when the scratch is container-local and dies with the sandbox — then banked at teardown (ADR-106)
-	boardEndpoint   string       // http URL of the per-run gateway-reachable board MCP listener (C082); empty when not started (no handler / not sandboxed)
-	boardListener   *http.Server // the board listener to shut down at teardown; nil when not started
-	askUserEndpoint string       // http URL of the per-run gateway-reachable ask-user MCP listener (ADR-082 Phase 3); empty when not started (no interactive node / bind failure)
-	askUserToken    string       // per-run bearer token authorizing calls to askUserEndpoint (X-Iterion-Run)
-	askUserListener *http.Server // the ask-user listener to shut down at teardown; nil when not started
+	run               sandbox.Run
+	proxy             *netproxy.Proxy
+	workspaceFolder   string       // in-container path the host worktree is bind-mounted to (Spec.WorkspaceFolder, e.g. "/workspace"); used by Engine to remap ${PROJECT_DIR}
+	attachmentsDir    string       // in-container path the run's attachments dir ACTUALLY landed at; empty when nothing was mounted (no attachments yet, or a driver that drops host binds) — the authority behind Engine.attachmentPath
+	sharedStateDir    string       // host ~/.iterion path host_state actually bind-mounted, at the same absolute path in-container; empty when not mounted — lets a backend keep per-run state OUT of the target repo's checkout
+	scratchHostDir    string       // host dir bind-mounted onto ${PROJECT_SCRATCH_DIR}; empty when the scratch is container-local and dies with the sandbox — then banked at teardown (ADR-106)
+	boardEndpoint     string       // http URL of the per-run gateway-reachable board MCP listener (C082); empty when not started (no handler / not sandboxed)
+	connectorEndpoint string       // http URL of the connector facade on the SAME listener; empty when the handler does not serve /api/v1/mcp/connectors (the cloud runner pod's mux — #2632) so the executor never wires an endpoint that 404s
+	boardListener     *http.Server // the board listener to shut down at teardown; nil when not started
+	askUserEndpoint   string       // http URL of the per-run gateway-reachable ask-user MCP listener (ADR-082 Phase 3); empty when not started (no interactive node / bind failure)
+	askUserToken      string       // per-run bearer token authorizing calls to askUserEndpoint (X-Iterion-Run)
+	askUserListener   *http.Server // the ask-user listener to shut down at teardown; nil when not started
 	// hostGuardCleanup removes the #2069 per-run config copies at teardown;
 	// nil-safe (no guard, or a driver with no host binds staged nothing).
 	hostGuardCleanup func()
@@ -138,6 +139,15 @@ func startSandboxMCPListener(driver sandbox.Driver, handler http.Handler, path s
 	go func() { _ = srv.Serve(ln) }()
 	endpoint = "http://" + net.JoinHostPort(advertise, port) + path
 	return endpoint, srv, nil
+}
+
+// connectorEndpointFor derives the connector facade's URL on the same
+// listener from the board endpoint's (one mux, one listener): base plus the
+// connectors path. The derivation lives here — where the listener and its
+// board path are known — so the executor never rebuilds a URL from a suffix
+// convention it does not own.
+func connectorEndpointFor(boardEndpoint, boardPath string) string {
+	return strings.TrimSuffix(boardEndpoint, boardPath) + "/api/v1/mcp/connectors"
 }
 
 // workflowHasBoardCapability reports whether the workflow (or any of its
@@ -321,6 +331,12 @@ type SandboxParams struct {
 	// routes for a per-run gateway-reachable listener started alongside the
 	// egress proxy (C082). The historical name remains for compatibility.
 	BoardMCPHandler http.Handler
+	// BoardMCPConnectors says the handler ALSO serves /api/v1/mcp/connectors
+	// (the server's dedicated mux does; the cloud runner pod's does not —
+	// #2632). When false the connector endpoint stays empty and a
+	// `connectors`-capability node degrades with the delegate's documented
+	// warning instead of an endpoint that 404s at every call.
+	BoardMCPConnectors bool
 
 	// EffectiveBackend resolves a node's backend the way DISPATCH will —
 	// launch-time `--backend` overrides included. The engine
@@ -960,6 +976,9 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 			}
 		} else {
 			active.boardEndpoint = endpoint
+			if p.BoardMCPConnectors {
+				active.connectorEndpoint = connectorEndpointFor(endpoint, "/api/v1/mcp/board")
+			}
 			active.boardListener = srv
 			if logger != nil {
 				logger.Info("sandbox: host MCP listener on %s (sandboxed board/runs tools enabled)", endpoint)
@@ -2278,6 +2297,19 @@ type boardMCPSetter interface {
 	SetBoardEndpoint(endpoint string)
 }
 
+// connectorMCPSetter is the optional interface ClawExecutor implements so
+// the engine can push the connector facade's endpoint on the per-run host
+// MCP listener (#2758). It rides its own push — not a derivation from the
+// board endpoint — because a host may serve board/runs WITHOUT the
+// connector facade (the cloud runner pod, #2632): such a host never calls
+// it, and a sandboxed `connectors`-capability node then keeps the
+// documented degradation (the delegate's loud warning, tools disabled)
+// instead of an endpoint that 404s at every call. Type-asserted at call
+// time so test stubs need not implement it.
+type connectorMCPSetter interface {
+	SetConnectorEndpoint(endpoint string)
+}
+
 // askUserMCPSetter is the optional interface ClawExecutor implements so
 // the engine can push the per-run ask-user MCP HTTP endpoint + bearer
 // token (started with the sandbox) into the executor after the run
@@ -2425,6 +2457,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		Simulation:               e.simulation != (Simulation{}),
 		SecretHeld:               e.secretHeld(),
 		BoardMCPHandler:          e.boardMCPHandler,
+		BoardMCPConnectors:       e.boardMCPConnectors,
 		EffectiveBackend:         e.backendResolver(),
 	})
 	if sbErr != nil {
@@ -2469,7 +2502,8 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		// The facts a subbot child needs to execute in this sandbox.
 		e.activeShare = &SharedSandbox{
 			Run: active.run, WorkspaceFolder: active.workspaceFolder, SharedStateDir: active.sharedStateDir,
-			BoardEndpoint: active.boardEndpoint, AskUserEndpoint: active.askUserEndpoint, AskUserToken: active.askUserToken,
+			BoardEndpoint: active.boardEndpoint, ConnectorEndpoint: active.connectorEndpoint,
+			AskUserEndpoint: active.askUserEndpoint, AskUserToken: active.askUserToken,
 			ScratchContainerLocal: active.scratchHostDir == "",
 		}
 		if s, ok := e.executor.(sandboxSetter); ok {
@@ -2492,6 +2526,15 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		if active.boardEndpoint != "" {
 			if bs, ok := e.executor.(boardMCPSetter); ok {
 				bs.SetBoardEndpoint(active.boardEndpoint)
+			}
+		}
+		// #2758: the connector facade rides the same listener, but only when
+		// the handler actually serves it (BoardMCPConnectors) — the cloud
+		// runner pod's mux does not (#2632), and a node handed a 404 endpoint
+		// fails per call instead of degrading with the delegate's warning.
+		if active.connectorEndpoint != "" {
+			if cs, ok := e.executor.(connectorMCPSetter); ok {
+				cs.SetConnectorEndpoint(active.connectorEndpoint)
 			}
 		}
 		// ADR-082 Phase 3: hand the per-run ask-user MCP endpoint + token
@@ -3012,6 +3055,9 @@ func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSa
 	// and interactive nodes would otherwise read as configured-but-dead.
 	if bs, ok := e.executor.(boardMCPSetter); ok && shared.BoardEndpoint != "" {
 		bs.SetBoardEndpoint(shared.BoardEndpoint)
+	}
+	if cs, ok := e.executor.(connectorMCPSetter); ok && shared.ConnectorEndpoint != "" {
+		cs.SetConnectorEndpoint(shared.ConnectorEndpoint)
 	}
 	if as, ok := e.executor.(askUserMCPSetter); ok && shared.AskUserEndpoint != "" {
 		as.SetAskUserEndpoint(shared.AskUserEndpoint, shared.AskUserToken)

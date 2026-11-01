@@ -129,13 +129,14 @@ verified either way). On the rgaa image the second arm answers, so the
 per-run install disappears the day the bot declares `image: rgaa` — the
 fallback stays as the honest answer on every other image.
 
-## Running on iterion.cloud — what a sandboxed cloud run still does NOT get
+## Running on iterion.cloud — what a sandboxed cloud run gets, and what it still does not
 
 A cloud run executes inside the run's sandbox pod, not in the runner
-image. Decision (a) of
-[#2632](https://github.com/SocialGouv/iterion/issues/2632) is delivered
-(the `rgaa` image class, above); what follows is the honest interim
-state until the bot declares it, plus the two decisions still pending.
+image. Both decisions of
+[#2632](https://github.com/SocialGouv/iterion/issues/2632) are
+delivered: (a) the `rgaa` image class, above, and (b) the sandboxed
+board write path, below. What remains is the honest interim state of
+the image until the bot declares the class.
 
 - **The engine pre-install does not reach a run on the default image.**
   The runner image pre-installs the pinned ultra11y
@@ -157,20 +158,23 @@ state until the bot declares it, plus the two decisions still pending.
   says the layer did not run. The `browser` class and the `rgaa` class
   both ship Chromium at `/usr/bin/chromium`, named to the bot through
   `ULTRA11Y_BROWSER_PATH`.
-- **Board filing is off in the sandbox.** `publish` /
-  `publish_verify` write through the board MCP transport; in a
-  sandboxed run it is wired only when the runtime configured
-  `BoardHTTPEndpoint` + `BoardRunToken`
-  (`pkg/backend/delegate/claude_code_hooks.go`, `wireBoardMCP` — else
-  the warning "board capabilities granted but workflow is sandboxed
-  … board MCP disabled for this node"), and the server mounts those
-  routes only when the NATIVE board store exists
-  (`pkg/server/server.go`, `boardMCPServiceOption`). On iterion.cloud
-  the board is the tenant-scoped Mongo board (`CloudBoardFor`), not
-  the native store, so the endpoint is never configured and `publish`
-  cannot file: launch with `post_to_board=false` — the issue plan
-  stays a run artefact (`issues-<date>.json`). Making board writes
-  deterministic server-side is the second decision pending in #2632.
+- **Board filing works in the sandbox (since #2632 (b)).** `publish` /
+  `publish_verify` write through the board MCP transport
+  (`BoardHTTPEndpoint` + `BoardRunToken`,
+  `pkg/backend/delegate/claude_code_hooks.go`, `wireBoardMCP`). On the
+  cloud the runner pod serves it: the pod mints a per-node token scoped
+  to the node's `board.*` capabilities and pinned to the run's tenant
+  (`pkg/runner`, `executorSpec`), and the engine's per-run gateway
+  listener answers the sandbox at the runner pod IP, dispatching to the
+  tenant's Mongo board (`pkg/hostmcp`, resolved per grant — the server
+  side's twin is `boardMCPServiceOption` in `pkg/server/server.go`).
+  `post_to_board=true` can file from a sandboxed cloud run; with
+  `post_to_board=false` the issue plan stays a run artefact
+  (`issues-<date>.json`). The remaining cloud gap of the family: the
+  `connectors` capability's facade is served by the server only, so a
+  sandboxed cloud node declaring `connectors` gets no endpoint — the
+  delegate warns and disables its connector tools, exactly the
+  pre-#2632 degradation (never an endpoint that would 404 per call).
 - **Credentials.** A cloud launch spends the credentials of the
   account or team that launched it (BYOK); no platform key is
   provisioned for this bot.

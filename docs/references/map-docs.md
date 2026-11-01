@@ -270,7 +270,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/browser-security.md`](../browser-security.md) | Browser security posture — CORS, CSRF, cookies, CSP | What protects the studio from the *browser* side: which cross-origin requests | — |
 | [`docs/bundles.md`](../bundles.md) | Bundles — `.botz` packaged workflows | A **bundle** is a deterministic ZIP archive that ships a workflow | — |
 | [`docs/byok.md`](../byok.md) | BYOK API keys (cloud) — per-org, per-user, per-webhook | How iterion-cloud resolves the LLM provider API keys a run uses. | — |
-| [`docs/c082-board-emit-fix-plan.md`](../c082-board-emit-fix-plan.md) | C082 board-emit fix — implementation plan | Status: **RESOLVED + live-validated end-to-end (2026-06-14).** A sandboxed | — |
+| [`docs/c082-board-emit-fix-plan.md`](../c082-board-emit-fix-plan.md) | C082 board-emit fix — implementation plan | Status: **RESOLVED + live-validated end-to-end (2026-06-14), cloud half | — |
 | [`docs/changelog.md`](../changelog.md) | — | — | — |
 | [`docs/changelog/v0.md`](../changelog/v0.md) | Changelog — v0.x | Archived releases. | — |
 | [`docs/changelog/v1.md`](../changelog/v1.md) | Changelog — v1.x | Archived releases. | — |

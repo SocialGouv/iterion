@@ -171,7 +171,7 @@ func (h *connectorMCPHandler) serve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing X-Iterion-Run header", http.StatusUnauthorized)
 		return
 	}
-	grant, ok := h.registry.lookup(token)
+	grant, ok := h.registry.Lookup(token)
 	if !ok {
 		http.Error(w, "unknown run token", http.StatusUnauthorized)
 		return

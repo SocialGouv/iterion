@@ -2228,14 +2228,22 @@ iterion's built-in MCP tools reach a sandboxed `claude_code` node over a
 cannot see:
 
 - **board capabilities** (`board.*`) — served at `/api/v1/mcp/board`
-  ([pkg/server/mcp_board_handler.go](../pkg/server/mcp_board_handler.go));
+  ([pkg/hostmcp](../pkg/hostmcp/hostmcp.go), wrapped by
+  [pkg/server/mcp_board_handler.go](../pkg/server/mcp_board_handler.go)).
+  The serving host is the process the sandbox answers to: the
+  studio/server for an in-process run, the **runner pod** for a cloud
+  run (#2632) — there the board resolved per call is the grant's
+  tenant's Mongo board, and the pod's `NO_PROXY` carries the runner pod
+  IP so a proxy-mode run dials the listener direct;
 - **interactive questions** (`ask_user`, `ask_user_async`,
   `await_answers`) — served at `/api/v1/mcp/ask-user`
   ([pkg/askusermcp/http.go](../pkg/askusermcp/http.go)).
 
 Each request is authenticated by an ephemeral `X-Iterion-Run` token the
 runtime mints and registers for the run, so a sandboxed agent can call
-these tools but nothing else can. Outside a sandbox the same capabilities
+these tools but nothing else can. The grant is scoped to the node's
+capabilities, pinned to the run's tenant on cloud, revoked as the node
+returns, and a 24 h TTL reaps it if the process dies before that. Outside a sandbox the same capabilities
 are wired as host-side stdio MCP servers (`iterion __mcp-board` /
 `iterion __mcp-ask-user`). A user-declared stdio MCP server on `claude_code`
 is started by the CLI itself, from the config iterion hands it on
