@@ -476,8 +476,10 @@ func TestUntrackedAgentDraftDoesNotChangeTheVerdict(t *testing.T) {
 			t.Fatalf("invalid baseline: %v", got)
 		}
 	}
+	// Sized just past the docs/agents page budget (agentTreeBudgets): the
+	// guard must redden the moment the draft is staged.
 	const draft = "docs/agents/local draft.md"
-	writeTreeFile(t, root, draft, "# Draft\n\n"+strings.Repeat("x", 11000))
+	writeTreeFile(t, root, draft, "# Draft\n\n"+strings.Repeat("x", 13000))
 	for _, check := range []func(*testing.T, string) []string{budgetViolations, unindexedPages} {
 		if got := check(t, root); len(got) != 0 {
 			t.Errorf("untracked draft changed the verdict: %v", got)
