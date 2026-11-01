@@ -23,7 +23,7 @@ import (
 // must describe. Without it every assertion below would hold over two empty
 // artifacts.
 var candidates = []string{
-	"vendor", "node_modules", ".git", "testdata", "dist", ".vitepress", ".local", "keepme",
+	"vendor", "node_modules", ".git", "testdata", "dist", ".vitepress", ".local", ".gomodcache", "keepme",
 }
 
 // floor is the subset of candidates every generated artifact must skip
@@ -33,6 +33,7 @@ var candidates = []string{
 var floor = map[string]bool{
 	"vendor": true, "node_modules": true, ".git": true,
 	"testdata": true, "dist": true, ".vitepress": true, ".local": true,
+	".gomodcache": true,
 }
 
 // The two generated artifacts of this repository — the committed maps and

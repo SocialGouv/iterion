@@ -29,7 +29,7 @@ var dirs = map[string]bool{
 	"vendor": true, "node_modules": true, ".git": true, ".works": true,
 	".repos": true, ".iterion": true, ".devbox": true, "graphify-out": true,
 	".claude": true, ".task": true, "dist": true, ".pnpm-store": true,
-	".vitepress": true, "testdata": true, ".local": true,
+	".vitepress": true, "testdata": true, ".local": true, ".gomodcache": true,
 }
 
 // Dir reports whether a directory of this name names a skipped tree. It is
