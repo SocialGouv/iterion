@@ -125,6 +125,15 @@ type FSCatalog struct {
 	root string
 	fsys fs.FS
 
+	// quiet withholds the near-miss list from this tier's refusals (#2810).
+	// The list names the ids the OPERATOR installed, and a run over code the
+	// tenant does not control must not be told them — the same rule #1802
+	// applied to the connection aliases, one layer up. Only LocalCatalogs sets
+	// it: that is the one place a catalog is built with the RUN's trust in
+	// hand, and the plain constructors keep the suggestion because they serve
+	// the operator's own surfaces, where the near miss is the repair.
+	quiet bool
+
 	mu     sync.RWMutex
 	loaded map[string]*spec.Package
 }
@@ -268,7 +277,15 @@ func (c *FSCatalog) Connectors() []string {
 // suggest names the closest connector the catalog does hold, when there is an
 // obvious one. A "not found" that lists nothing sends the reader to the
 // filesystem; naming the near miss usually ends the search.
+//
+// A QUIET catalog suggests nothing: the list is tenant data, and the reader of
+// a refusal served to a run the tenant does not control is whoever wrote that
+// run's workspace — both the full list and the case-fold hint, which would
+// otherwise be an oracle for probing the installed ids one at a time.
 func (c *FSCatalog) suggest(want string) string {
+	if c.quiet {
+		return ""
+	}
 	have := c.Connectors()
 	if len(have) == 0 {
 		return ""

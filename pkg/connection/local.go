@@ -228,7 +228,17 @@ func LocalCatalogs(paths LocalPaths, trust ActionTrust) ([]Catalog, error) {
 			out = append(out, disabledCatalog{root: root, untrusted: !trust.tenantsOwnCode()})
 			continue
 		}
-		out = append(out, NewFSCatalogAs(kind, root))
+		tier := NewFSCatalogAs(kind, root)
+		// The refusal of a tier that does not hold the connector ends with the
+		// ids it DOES hold — the operator's install. The layered lookup joins
+		// that reason into the error a run reads, so for a run whose workspace
+		// holds code the tenant does not control the list is withheld (#2810):
+		// the refusal names the id that was asked for and nothing else, which
+		// is #1802's rule for the aliases applied to the packages. Read from
+		// the same trust the tier decision above already reads, so the two
+		// cannot disagree about whose code this run holds.
+		tier.quiet = !trust.tenantsOwnCode()
+		out = append(out, tier)
 	}
 	return out, nil
 }

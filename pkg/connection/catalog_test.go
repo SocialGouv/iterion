@@ -258,6 +258,95 @@ func trustedRun() connection.ActionTrust {
 	return connection.TrustOfRun(store.RunTrustDefault)
 }
 
+// TestACatalogRefusalTellsAnUntrustedRunTheIdNotTheInstall — #2810.
+//
+// A connector-not-found refusal used to end with the ids the OPERATOR
+// installed ("it holds: …"), and the layered lookup joins every tier's reason
+// (pkg/connection/local.go), so that list travelled in the error a run reads.
+// On the fork review lane a workflow authored outside the tenant provokes the
+// refusal by naming any id it likes, and the posted review carries the text —
+// which tells the fork exactly which connectors this tenant has, and (through
+// the case-fold hint) hands it an oracle for probing them one id at a time.
+// #1802 already decided the symmetric case one layer down: the trust refusal
+// fires BEFORE the connection lookup "so the wording cannot tell a fork which
+// aliases the tenant has". The package list is the same fact about the same
+// tenant, so it follows the same rule — decided where the tiers are BUILT
+// (#2769), because that is where the run's trust already is.
+//
+// Asserted through ResolveOperation, the exported catalogue half of a
+// resolution, whose error the resolver hands back verbatim — the text a run,
+// and the review it posts, actually reads.
+func TestACatalogRefusalTellsAnUntrustedRunTheIdNotTheInstall(t *testing.T) {
+	home := t.TempDir()
+	writeTierPackage(t, home, "POST", "/repos/{owner}/{repo}/issues/comments")
+	writeTierPackageAs(t, home, "tenantinternal", "POST", "/repos/{owner}/{repo}/issues/comments", spec.EffectRead)
+	paths := connection.LocalPaths{Home: home}
+
+	refusal := func(t *testing.T, trust connection.ActionTrust, id string) string {
+		t.Helper()
+		tiers, err := connection.LocalCatalogs(paths, trust)
+		if err != nil {
+			t.Fatalf("tiers: %v", err)
+		}
+		_, _, _, err = connection.ResolveOperation(connection.NewLayeredCatalog(tiers...), id+".issue.get")
+		if err == nil {
+			t.Fatalf("no tier holds %q, so the lookup must refuse", id)
+		}
+		return err.Error()
+	}
+
+	for _, tc := range []struct {
+		name  string
+		trust connection.ActionTrust
+	}{
+		{"a fork-trust run", connection.TrustOfRun(store.RunTrustFork)},
+		// Unstated is not trusted, by the same rule as the project tier: a
+		// builder that forgot to say whose code this run holds must not hand
+		// the list out either.
+		{"a run nobody stated the trust of", connection.ActionTrust{}},
+		{"a run whose trust says it cannot tell", connection.TrustUnknown()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := refusal(t, tc.trust, "nosuch")
+			// The refusal still names the id that was ASKED — that is the
+			// author's own text — and nothing else.
+			if !strings.Contains(got, `"nosuch"`) {
+				t.Errorf("refusal = %q, want it to name the id that failed", got)
+			}
+			for _, leak := range []string{"it holds", "did you mean", "probe", "tenantinternal"} {
+				if strings.Contains(got, leak) {
+					t.Errorf("refusal = %q, want no %q: a run over code the tenant does not control must not learn which connectors the tenant installed", got, leak)
+				}
+			}
+		})
+	}
+
+	// The ORACLE arm: asking for a case variant of an installed id. Under the
+	// defect the "did you mean" hint confirmed the id existed; the refusal must
+	// read identically whether or not the id is installed.
+	t.Run("the case hint is an oracle an untrusted run does not get", func(t *testing.T) {
+		got := refusal(t, connection.TrustOfRun(store.RunTrustFork), "TENANTINTERNAL")
+		if strings.Contains(got, "tenantinternal") {
+			t.Errorf("refusal = %q, want no mention of the installed id: the hint confirms its existence", got)
+		}
+	})
+
+	// The falsifier, and the operator's feature: the operator's OWN run keeps
+	// the suggestion — naming the near miss is the whole reason it exists.
+	t.Run("a trusted run is still told what the catalog holds", func(t *testing.T) {
+		got := refusal(t, trustedRun(), "nosuch")
+		for _, want := range []string{"it holds", "probe", "tenantinternal"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("refusal = %q, want it to keep naming %q — the suggestion is the operator's repair", got, want)
+			}
+		}
+		hint := refusal(t, trustedRun(), "TENANTINTERNAL")
+		if !strings.Contains(hint, "did you mean tenantinternal") {
+			t.Errorf("refusal = %q, want the case hint for the operator's own run", hint)
+		}
+	})
+}
+
 // TestTheProjectTierIsAGrantRatherThanADefault.
 //
 // `<workspace>/connectors` outranks every other tier, and the workspace is the
