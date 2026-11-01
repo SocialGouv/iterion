@@ -391,6 +391,16 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		defer delegate.SweepLocalNodeSession(b.logger, task, delegate.BackendClaw, token, since)
 	}
 
+	// The command narrowing (#1717): ONE scope per node execution, pinned
+	// here so every generation this execution runs — the first pass, the
+	// tool-use nudge, a retryLoop attempt — shares the bound a `command`
+	// invocation set (review MED-2). A pause carries it out through
+	// ErrAskUser's snapshot; the resume branch below re-pins the
+	// checkpointed one.
+	commandScope := &tool.CommandScope{}
+	commandScope.Restore(task.ResumeCommandNarrowing)
+	ctx = tool.WithCommandScope(ctx, commandScope)
+
 	// Resolve API client. Phase C: in cloud mode the runner stamps
 	// per-tenant BYOK credentials into ctx, ResolveWithContext then
 	// builds a fresh APIClient with the override key (no cache hit
@@ -841,9 +851,10 @@ func askUserResult(err error) (delegate.Result, bool) {
 			"_needs_interaction":     true,
 			"_interaction_questions": questions,
 		},
-		BackendName:         delegate.BackendClaw,
-		PendingConversation: ask.Conversation,
-		PendingToolUseID:    ask.PendingToolUseID,
+		BackendName:             delegate.BackendClaw,
+		PendingConversation:     ask.Conversation,
+		PendingToolUseID:        ask.PendingToolUseID,
+		PendingCommandNarrowing: ask.CommandNarrowing,
 	}, true
 }
 

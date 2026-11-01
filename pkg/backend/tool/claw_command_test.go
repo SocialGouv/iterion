@@ -157,14 +157,12 @@ func TestRegisterClawAll_WorkspaceCommandsKillSwitchDropsTheTool(t *testing.T) {
 	}
 }
 
-// The two divergences the lookup reports travel with the body, because this
-// surface's only channel is its own answer (#1716): the frontmatter it
-// discarded — the one with a security consequence, since nothing here
-// honours `allowed-tools:` while #1717's enforcement is deferred — and the
-// body forms claw expands differently. Mutant: drop the commandNotices call
-// from executeWorkspaceCommand → every assertion below reddens, and the
-// model invokes a command whose own header claims a narrowing that is not
-// there.
+// The divergences the lookup reports travel with the body, because this
+// surface's only channel is its own answer (#1716): the frontmatter it still
+// discards (`model:`, `disable-model-invocation:` — `allowed-tools:` is
+// honoured since #1717 and leaves the list) and the body forms claw expands
+// differently. Mutant: drop the commandNotices call from
+// executeWorkspaceCommand → every assertion below reddens.
 func TestClawCommand_ReportsTheDiscardedFrontmatterAndTheDivergentForms(t *testing.T) {
 	ws := writeCommandFile(t, "narrow",
 		"---\nallowed-tools: Read\nmodel: haiku\ndisable-model-invocation: true\ndescription: narrow\n---\nRead only. $1 is the target.\n")
@@ -177,14 +175,19 @@ func TestClawCommand_ReportsTheDiscardedFrontmatterAndTheDivergentForms(t *testi
 		t.Fatalf("execute: %v", err)
 	}
 	for _, want := range []string{
-		"declares allowed-tools, disable-model-invocation, model in its frontmatter",
-		"does not narrow the tools you hold (#1717)",
+		"declares disable-model-invocation, model in its frontmatter",
 		"uses $N",
 		"docs/backends.md#workspace-slash-commands",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output = %q, want it to carry %q", out, want)
 		}
+	}
+	// allowed-tools is enforced, not discarded: it names neither the
+	// discarded-keys notice nor (without a generation scope on the context)
+	// the narrowing notice.
+	if strings.Contains(out, "allowed-tools") || strings.Contains(out, "narrowed your tool surface") {
+		t.Errorf("output = %q — allowed-tools left the discarded set, and no scope means no narrowing notice", out)
 	}
 	// The notices lead, so the host persists them even when the answer is
 	// large enough to be stored as a preview of its first bytes

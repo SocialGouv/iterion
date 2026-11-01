@@ -21,6 +21,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/google/uuid"
@@ -509,6 +510,15 @@ type nodeBuildSession struct {
 	// node invoking the same command with a broader `tools:` set is a
 	// different exposure and has to be told.
 	ignoredFrontmatter []string
+	// commandNarrowing carries the `allowed-tools:` of a PROMPT-invoked
+	// workspace command (#1717), as DECLARED spellings: the build folds and
+	// intersects the node's resolved ToolDefs with them
+	// (tool.CommandNarrowedSet). nil = the invocation declared none (or none
+	// was invoked); an empty non-nil slice = a declared empty list, which
+	// narrows to the always-allowed trio. commandNarrowingBy names the
+	// command for the log line.
+	commandNarrowing   []string
+	commandNarrowingBy string
 	boardToken         string
 	boardMinted        bool
 }
@@ -568,6 +578,19 @@ func (s *nodeBuildSession) noteIgnoredFrontmatter(keys []string) bool {
 	}
 	s.ignoredFrontmatter = keys
 	return true
+}
+
+// noteCommandNarrowing records the `allowed-tools:` narrowing of the
+// workspace command this node's prompt invoked, as the DECLARED spellings
+// the build folds and applies to the resolved ToolDefs. Declared
+// distinguishes an absent key from an empty one: only a DECLARED list
+// narrows.
+func (s *nodeBuildSession) noteCommandNarrowing(command string, allowed []string, declared bool) {
+	if s == nil || !declared {
+		return
+	}
+	s.commandNarrowing = append([]string{}, allowed...)
+	s.commandNarrowingBy = command
 }
 
 // boardTokenFor returns the node's board run token, minting it on first
@@ -853,6 +876,10 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 				Backend:          servingBackendName,
 				Conversation:     result.PendingConversation,
 				PendingToolUseID: result.PendingToolUseID,
+				// The narrowing the paused generation held rides beside the
+				// conversation (#1717): the resume re-pins it, so the bound
+				// survives the operator's answer.
+				CommandNarrowing: result.PendingCommandNarrowing,
 				// The stranding fact rides the pause: a stranded crossing's
 				// checkpointed conversation is its own blind turns, and the
 				// resumed crossing must know or its capture becomes the
@@ -1595,6 +1622,28 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		if toolErr != nil {
 			return delegate.Task{}, fmt.Errorf("model: node %q: %w", f.id, toolErr)
 		}
+		// A prompt-invoked workspace command's `allowed-tools:` (#1717)
+		// narrows the node's set — INTERSECT, never widen: a name the command
+		// lists and the node never declared resolves to nothing on both ends
+		// of the fold. The model-invoked surface narrows mid-loop instead
+		// (tool.CommandScope), dispatch-side; the prompt surface narrows the
+		// ADVERTISED set, which the sandbox crossing then enforces for free —
+		// the runner serves only the tools this task advertises.
+		if sess != nil && sess.commandNarrowing != nil {
+			narrowed := tool.CommandNarrowedSet(sess.commandNarrowing)
+			declared := len(toolDefs)
+			kept := toolDefs[:0]
+			for _, td := range toolDefs {
+				if narrowed(td.Name) {
+					kept = append(kept, td)
+				}
+			}
+			toolDefs = kept
+			if e.logger != nil {
+				e.logger.Info("[%s#%d/claw] /%s allowed-tools narrows this node's tools to %d of %d",
+					f.id, LoopIterationFromContext(ctx), sess.commandNarrowingBy, len(toolDefs), declared)
+			}
+		}
 		task.ToolDefs = toolDefs
 		// Carried, not raised. A build error aborts the node before its
 		// fallback chain is walked; this refusal must reach Execute, where a
@@ -2134,6 +2183,16 @@ func applyResumeContinuity(task *delegate.Task, input map[string]any) {
 	}
 	if a, ok := input[delegate.ResumeAnswerKey].(string); ok {
 		task.ResumeAnswer = a
+	}
+	// The narrowing the paused generation held (#1717) decodes beside the
+	// conversation; a blob that does not decode restores nothing rather
+	// than failing the resume — the conversation itself is the load-bearing
+	// half, and a lost bound re-narrows on the next command invocation.
+	if raw, ok := input[delegate.ResumeCommandNarrowingKey].(json.RawMessage); ok && len(raw) > 0 {
+		var st delegate.CommandNarrowingState
+		if err := json.Unmarshal(raw, &st); err == nil {
+			task.ResumeCommandNarrowing = &st
+		}
 	}
 }
 

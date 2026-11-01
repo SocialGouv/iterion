@@ -1332,6 +1332,7 @@ func (e *Engine) resumeFromPauseWithHostInputs(ctx context.Context, r *store.Run
 			PendingToolUseID:   cp.BackendPendingToolUseID,
 			SessionStranded:    cp.BackendSessionStranded,
 			SessionStateRef:    cp.BackendSessionStateRef,
+			CommandNarrowing:   decodeCommandNarrowing(cp.BackendCommandNarrowing),
 		}
 		loopErr := e.reInvokeBackend(ctx, rs, humanNodeID, node, ni, answers, 0)
 		e.evictRunSessions(runID, loopErr)
@@ -2460,11 +2461,25 @@ func pinBackendRehydration(rs *runState, cp *store.Checkpoint) {
 		return
 	}
 	rs.resumeBackend = resumeBackendState{
-		nodeID:          cp.NodeID,
-		conversation:    cp.BackendConversation,
-		sessionID:       cp.BackendSessionID,
-		sessionStranded: cp.BackendSessionStranded,
+		nodeID:           cp.NodeID,
+		conversation:     cp.BackendConversation,
+		commandNarrowing: cp.BackendCommandNarrowing,
+		sessionID:        cp.BackendSessionID,
+		sessionStranded:  cp.BackendSessionStranded,
 	}
+}
+
+// decodeCommandNarrowing unmarshals the checkpointed narrowing blob; a blob
+// that does not decode restores nothing rather than failing the resume.
+func decodeCommandNarrowing(raw json.RawMessage) *delegate.CommandNarrowingState {
+	if len(raw) == 0 {
+		return nil
+	}
+	var st delegate.CommandNarrowingState
+	if err := json.Unmarshal(raw, &st); err != nil {
+		return nil
+	}
+	return &st
 }
 
 // restoreRunEnv re-establishes the engine's working directory from the
@@ -3219,6 +3234,11 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 	if len(ni.Conversation) > 0 && ni.PendingToolUseID != "" {
 		nodeInput[delegate.ResumeConversationKey] = ni.Conversation
 		nodeInput[delegate.ResumePendingToolUseIDKey] = ni.PendingToolUseID
+		if ni.CommandNarrowing != nil {
+			if raw, err := json.Marshal(ni.CommandNarrowing); err == nil {
+				nodeInput[delegate.ResumeCommandNarrowingKey] = raw
+			}
+		}
 		if a, ok := answers[delegate.AskUserQuestionKey].(string); ok {
 			nodeInput[delegate.ResumeAnswerKey] = a
 		}
@@ -3391,6 +3411,11 @@ func (e *Engine) pauseForBackendInteraction(rs *runState, nodeID string, ni *mod
 		BackendPendingToolUseID:   ni.PendingToolUseID,
 		BackendSessionStranded:    ni.SessionStranded,
 	}
+	if ni.CommandNarrowing != nil {
+		if raw, err := json.Marshal(ni.CommandNarrowing); err == nil {
+			pi.BackendCommandNarrowing = raw
+		}
+	}
 	if len(ni.SessionStateBlob) > 0 {
 		ref := newSessionRef()
 		if err := e.putSessionBlob(rs.ctx, rs.runID, ref, ni.SessionStateBlob); err != nil {
@@ -3433,6 +3458,10 @@ type pauseInfo struct {
 	BackendName               string
 	BackendConversation       json.RawMessage
 	BackendPendingToolUseID   string
+	// BackendCommandNarrowing is the marshalled delegate.CommandNarrowingState
+	// the paused generation held (#1717): checkpointed beside the
+	// conversation so the resumed generation re-pins the bound.
+	BackendCommandNarrowing json.RawMessage
 	// BackendSessionStranded is the sandbox-mirror stranding fact (#2461):
 	// the checkpointed conversation is a stranded crossing's own turns, so
 	// the crossing resumed from this pause keeps its captures out of the
@@ -3586,6 +3615,7 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, 
 	cp.BackendName = info.BackendName
 	cp.BackendConversation = info.BackendConversation
 	cp.BackendPendingToolUseID = info.BackendPendingToolUseID
+	cp.BackendCommandNarrowing = info.BackendCommandNarrowing
 	cp.BackendSessionStranded = info.BackendSessionStranded
 	cp.BackendSessionStateRef = info.BackendSessionStateRef
 	cp.RecoveryPause = info.RecoveryPause

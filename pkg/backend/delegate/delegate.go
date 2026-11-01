@@ -865,6 +865,12 @@ type Task struct {
 	// ask_user call, sent back to the LLM as the tool_result content.
 	ResumeAnswer string
 
+	// ResumeCommandNarrowing is the workspace-command `allowed-tools:`
+	// narrowing the paused generation held (#1717), checkpointed beside
+	// ResumeConversation: the resumed generation re-pins it before the
+	// loop restarts, so the bound survives the pause.
+	ResumeCommandNarrowing *CommandNarrowingState
+
 	// SessionStranded marks ResumeConversation as the turns of a crossing
 	// that held none of its session's history (a relayed mirror gap, or a
 	// seed the channel refused): the pause carried the fact, and the
@@ -1539,6 +1545,26 @@ type ErrAskUser struct {
 	// question refs so the pause interaction can list them and the
 	// resume path can fan the operator's answers back out.
 	AwaitPending []PendingAsync
+
+	// CommandNarrowing is the workspace-command `allowed-tools:` narrowing
+	// the paused generation held (#1717, review MED-1). It rides the pause
+	// beside Conversation so the resumed generation keeps the bound: the
+	// operator approved ONE call, not the restriction's lifting. Nil when
+	// no narrowing was active.
+	CommandNarrowing *CommandNarrowingState
+}
+
+// CommandNarrowingState is the checkpointed form of a generation's
+// workspace-command tool narrowing — the folded allowance, not the declared
+// spellings: Names are iterion tool names, Families the `mcp_<srv>_`
+// prefixes an `mcp__<srv>__*` entry resolved to, Wildcard the bare `*`.
+// It lives here (not in pkg/backend/tool, which imports this package) so
+// ErrAskUser, Result and the wire forms can all carry it.
+type CommandNarrowingState struct {
+	Command  string   `json:"command"`
+	Names    []string `json:"names,omitempty"`
+	Families []string `json:"families,omitempty"`
+	Wildcard bool     `json:"wildcard,omitempty"`
 }
 
 // AwaitPendingToQuestions serializes an AwaitPending slice into the
@@ -1803,6 +1829,11 @@ const (
 	ResumeConversationKey        = "_resume_conversation"
 	ResumePendingToolUseIDKey    = "_resume_pending_tool_use_id"
 	ResumeAnswerKey              = "_resume_answer"
+	// ResumeCommandNarrowingKey carries the checkpointed command
+	// narrowing (#1717) beside ResumeConversationKey: the resumed
+	// generation re-pins the bound the paused one held. The value is a
+	// JSON-marshalled CommandNarrowingState.
+	ResumeCommandNarrowingKey = "_resume_command_narrowing"
 	// ResumeSessionStrandedKey carries the stranding fact beside
 	// ResumeConversationKey: the conversation being resumed is one
 	// stranded crossing's own turns, so the resumed crossing's captures
@@ -1942,6 +1973,12 @@ type Result struct {
 	// answer in PendingConversation. Required when PendingConversation
 	// is non-nil.
 	PendingToolUseID string
+
+	// PendingCommandNarrowing is the workspace-command `allowed-tools:`
+	// narrowing the suspended generation held (#1717). It travels with
+	// PendingConversation through the checkpoint so the resumed generation
+	// keeps the bound the interrupted one held.
+	PendingCommandNarrowing *CommandNarrowingState
 
 	// SessionStranded travels with PendingConversation on a pause: the
 	// crossing that captured this conversation held none of its session's

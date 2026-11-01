@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
 )
 
 // ---------------------------------------------------------------------------
@@ -117,6 +118,16 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 
 	toolMap := buildToolMap(opts.Tools)
 
+	// The command narrowing (#1717): one CommandScope per NODE EXECUTION,
+	// pinned by the backend (ClawBackend.Execute) so the re-asks that share
+	// this context — the tool-use nudge, a retryLoop attempt — keep the
+	// bound the interrupted attempt set (review MED-2). A direct caller
+	// (the subagent runner, a test) that pinned none gets a fresh one: no
+	// generation runs scopeless, and none invents its own mid-loop.
+	if tool.CommandScopeFrom(ctx) == nil {
+		ctx = tool.WithCommandScope(ctx, &tool.CommandScope{})
+	}
+
 	// Copy messages to avoid mutating caller's slice.
 	messages := make([]api.Message, len(opts.Messages))
 	copy(messages, opts.Messages)
@@ -216,7 +227,7 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		if toolErr != nil {
 			// ErrAskUser (and any future suspension signal) bubbles up to
 			// the backend, which converts it into iterion's pause flow.
-			stashPauseConversation(toolErr, messages, opts)
+			stashPauseConversation(ctx, toolErr, messages, opts)
 			return result(), toolErr
 		}
 		messages = append(messages, api.Message{
@@ -336,13 +347,20 @@ func captureToolRoundTurn(opts GenerationOptions, messages []api.Message, step i
 // pending tool_use stays in the preserved-recent window (default 4) so its
 // ID remains addressable at resume time. Non-ask errors (and marshal
 // failures) leave the error untouched.
-func stashPauseConversation(toolErr error, messages []api.Message, opts GenerationOptions) {
+func stashPauseConversation(ctx context.Context, toolErr error, messages []api.Message, opts GenerationOptions) {
 	var askErr *delegate.ErrAskUser
 	if !errors.As(toolErr, &askErr) {
 		return
 	}
 	if convBytes, mErr := json.Marshal(maybeCompactPause(messages, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent, askErr.PendingToolUseID)); mErr == nil {
 		askErr.Conversation = convBytes
+	}
+	// The narrowing rides the pause (#1717, review MED-1): the resumed
+	// generation re-pins it, so the bound the interrupted loop held
+	// survives — the operator's answer approved one call, not the
+	// restriction's lifting.
+	if scope := tool.CommandScopeFrom(ctx); scope != nil {
+		askErr.CommandNarrowing = scope.Snapshot()
 	}
 }
 

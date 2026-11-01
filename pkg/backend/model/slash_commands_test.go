@@ -878,10 +878,11 @@ func TestExpandWorkspaceSlashCommandRefusesWhenTheArgumentsPushItOver(t *testing
 	}
 }
 
-// The frontmatter divergence is the one with a security consequence — a
-// command that narrows itself to `allowed-tools: Read, Grep` runs here with
-// the node's full set — and it was the only divergence with no runtime
-// signal at all. Documenting it in bold is not a diagnostic.
+// The frontmatter keys the lookup still DISCARDS (`model:` and its
+// siblings) owe the operator a runtime signal: a file that configures itself
+// must not mean one thing on claude_code and another here in silence.
+// `allowed-tools:` is no longer one of them — it is honoured (#1717), so it
+// leaves the warning and lands on the build session's narrowing instead.
 //
 // Mutation: drop the DiscardedFrontmatter warn block (or have claw surface
 // an empty list) and the operator gets nothing.
@@ -891,15 +892,25 @@ func TestExpandWorkspaceSlashCommandWarnsAboutDiscardedFrontmatter(t *testing.T)
 	ws := commandWorkspace(t, "narrow.md",
 		"---\ndescription: narrowed\nallowed-tools: Read, Grep\nmodel: claude-3-5-haiku\n---\nAudit the diff.\n")
 
-	got, hit := expandWorkspaceSlashCommand("/narrow", ws, delegate.BackendClaw, "n", 0, logger, nil, &nodeBuildSession{})
+	sess := &nodeBuildSession{}
+	got, hit := expandWorkspaceSlashCommand("/narrow", ws, delegate.BackendClaw, "n", 0, logger, nil, sess)
 	if !hit || got != "Audit the diff." {
 		t.Fatalf("= (%q, %v), want the command body", got, hit)
 	}
 	out := buf.String()
-	for _, want := range []string{"allowed-tools", "model", "#1717", "narrow"} {
+	for _, want := range []string{"model", "#1717", "narrow"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the frontmatter warning does not name %q:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "allowed-tools") {
+		t.Errorf("allowed-tools is honoured now — it must not be warned about as discarded:\n%s", out)
+	}
+	// …and the honouring is a FACT, not a docstring: the build session
+	// carries the narrowing the ToolDefs intersection applies.
+	if sess.commandNarrowingBy != "narrow" || !slices.Equal(sess.commandNarrowing, []string{"Read", "Grep"}) {
+		t.Errorf("narrowing = (%q, %v), want the command's declared list on the session",
+			sess.commandNarrowingBy, sess.commandNarrowing)
 	}
 	// It has to be visible at production level, like every other abstention.
 	if !strings.Contains(out, "[n#0/claw]") {
@@ -1011,7 +1022,7 @@ func TestCrossBackendFallbackReportsThePromptDivergence(t *testing.T) {
 // the delegate event loses the ignored frontmatter and this reddens.
 func TestLLMRouterCarriesTheBuildSessionOntoItsDelegateEvent(t *testing.T) {
 	ws := commandWorkspace(t, "route.md",
-		"---\ndescription: routing\nallowed-tools: Read\n---\nPick the route that fits.\n")
+		"---\ndescription: routing\nmodel: claude-3-5-haiku\n---\nPick the route that fits.\n")
 
 	captured := &capturingBackend{results: []delegate.Result{
 		{Output: map[string]any{"selected_route": "a", "reasoning": "r"}},
@@ -1040,7 +1051,7 @@ func TestLLMRouterCarriesTheBuildSessionOntoItsDelegateEvent(t *testing.T) {
 	if len(finished) != 1 {
 		t.Fatalf("%d delegate_finished events, want 1", len(finished))
 	}
-	if !slices.Contains(finished[0].CommandFrontmatterIgnored, "allowed-tools") {
+	if !slices.Contains(finished[0].CommandFrontmatterIgnored, "model") {
 		t.Errorf("the router's delegate event carries %v — the build session never reached it",
 			finished[0].CommandFrontmatterIgnored)
 	}
@@ -1053,13 +1064,14 @@ func TestLLMRouterCarriesTheBuildSessionOntoItsDelegateEvent(t *testing.T) {
 // The frontmatter divergence is keyed per NODE and rides the EVENT: a second
 // node invoking the same command file may grant a broader `tools:` set, so
 // its exposure is its own, and a deterministic gate reads events.jsonl, not
-// the log.
+// the log. The probe key is `model:` — `allowed-tools:` is honoured (#1717)
+// and no longer counts as discarded.
 //
 // Mutation: key the dedupe on the command file path (as the `$N` noise
 // suppression does) and the second node is told nothing.
 func TestFrontmatterDivergenceIsPerNodeAndOnTheEvent(t *testing.T) {
 	ws := commandWorkspace(t, "narrow.md",
-		"---\ndescription: narrowed\nallowed-tools: Read, Grep\n---\nAudit the diff.\n")
+		"---\ndescription: narrowed\nmodel: claude-3-5-haiku\n---\nAudit the diff.\n")
 	once := &slashWarnOnce{} // shared across nodes, as the run-scoped one is
 
 	var events []DelegateInfo
@@ -1070,7 +1082,7 @@ func TestFrontmatterDivergenceIsPerNodeAndOnTheEvent(t *testing.T) {
 			iterlog.New(iterlog.LevelInfo, &buf), once, sess); !hit {
 			t.Fatalf("%s: the command did not resolve", node)
 		}
-		if !strings.Contains(buf.String(), "allowed-tools") {
+		if !strings.Contains(buf.String(), "model") {
 			t.Errorf("%s: no frontmatter line — a second node with a broader tools: set gets no warning:\n%s",
 				node, buf.String())
 		}
@@ -1079,7 +1091,7 @@ func TestFrontmatterDivergenceIsPerNodeAndOnTheEvent(t *testing.T) {
 		events = append(events, di)
 	}
 	for i, di := range events {
-		if !slices.Contains(di.CommandFrontmatterIgnored, "allowed-tools") {
+		if !slices.Contains(di.CommandFrontmatterIgnored, "model") {
 			t.Errorf("node %d: delegate event does not carry the ignored frontmatter (%v) — a gate reading events.jsonl cannot see it",
 				i, di.CommandFrontmatterIgnored)
 		}

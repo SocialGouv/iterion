@@ -373,6 +373,9 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		if len(rs.resumeBackend.conversation) > 0 {
 			nodeInput[delegate.ResumeConversationKey] = rs.resumeBackend.conversation
 		}
+		if len(rs.resumeBackend.commandNarrowing) > 0 {
+			nodeInput[delegate.ResumeCommandNarrowingKey] = rs.resumeBackend.commandNarrowing
+		}
 		if rs.resumeBackend.sessionID != "" {
 			nodeInput[delegate.SessionIDKey] = rs.resumeBackend.sessionID
 		}

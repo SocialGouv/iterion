@@ -50,10 +50,11 @@ const commandArgsPrefix = "\n\nARGUMENTS: "
 // Nothing here fails a call with a Go error but a missing name: claude_code
 // answers an unknown command locally (is_error: false), so every domain
 // outcome — unknown name, unreadable file, oversized body, empty expansion
-// — is the tool's TEXT, for the model to report. So are the two divergences
-// the lookup reports (commandNotices): the enforcement of
-// `disable-model-invocation:` and the rest of the frontmatter stays #1717's,
-// the VISIBILITY of what was discarded is this surface's own.
+// — is the tool's TEXT, for the model to report. So are the notices the
+// answer opens with (commandNotices): the frontmatter the lookup still
+// discards, the body forms this backend expands differently, and the
+// `allowed-tools:` narrowing the invocation just applied to this
+// generation's tool surface (#1717).
 func RegisterClawCommand(reg *Registry, workDir string, maxBytes int) error {
 	return RegisterClawCommandWithProvider(reg, staticWorkspaceProvider(workDir), maxBytes)
 }
@@ -88,8 +89,8 @@ func RegisterClawCommandWithProvider(reg *Registry, workspace func() string, max
 			Required: []string{"name"},
 		},
 	}
-	return RegisterClawTool(reg, t, func(_ context.Context, input map[string]any) (string, error) {
-		return executeWorkspaceCommand(workspace(), maxBytes, input)
+	return RegisterClawTool(reg, t, func(ctx context.Context, input map[string]any) (string, error) {
+		return executeWorkspaceCommand(ctx, workspace(), maxBytes, input)
 	})
 }
 
@@ -101,7 +102,7 @@ func staticWorkspaceProvider(workDir string) func() string {
 	return func() string { return workDir }
 }
 
-func executeWorkspaceCommand(workDir string, maxBytes int, input map[string]any) (string, error) {
+func executeWorkspaceCommand(ctx context.Context, workDir string, maxBytes int, input map[string]any) (string, error) {
 	name, _ := input["name"].(string)
 	// The model thinks in invocations: accept the slash it would type.
 	name = strings.TrimSpace(strings.TrimPrefix(name, "/"))
@@ -131,6 +132,19 @@ func executeWorkspaceCommand(workDir string, maxBytes int, input map[string]any)
 	if maxBytes > 0 && len(expanded) > maxBytes {
 		return fmt.Sprintf("/%s (%s) reaches %d bytes with its arguments, over the %d-byte ceiling — not invoked", name, cmd.Path, len(expanded), maxBytes), nil
 	}
+	// The command is invoked: its `allowed-tools:` frontmatter now binds the
+	// rest of this generation (#1717). INTERSECT-ONLY, a deliberate
+	// divergence from the vendor's applySkillSideEffects: there the
+	// OPERATOR's next turn lifts the narrowing, but on this surface every
+	// invocation is model-side — a command without the key changes NOTHING,
+	// and a command with one can only shrink the scope further, because a
+	// restriction the model could lift by invoking a plain command would be
+	// none at all (review HIGH). A nil scope — a caller that is not a
+	// generation loop — narrows nothing, as it did before the gate existed.
+	if scope := CommandScopeFrom(ctx); scope != nil && cmd.AllowedTools != nil {
+		scope.Apply(name, cmd.AllowedTools)
+		return commandNotices(name, cmd, args) + narrowingNotice(scope) + expanded, nil
+	}
 	return commandNotices(name, cmd, args) + expanded, nil
 }
 
@@ -140,14 +154,14 @@ func executeWorkspaceCommand(workDir string, maxBytes int, input map[string]any)
 // (model.expandWorkspaceSlashCommand), addressed to the reader this surface
 // has.
 //
-// The frontmatter one is the divergence that carries a SECURITY
-// consequence: a command narrowing itself with `allowed-tools:` is bounded
-// on claude_code and keeps the node's whole tool set here, so an operator
-// reads a restriction nothing enforces. Saying nothing while #1717's
-// enforcement is deferred is the "one file means two things silently"
-// outcome the prompt path's warning exists to prevent, and the model-driven
-// surface needs it MORE: nobody typed the invocation, so nobody is watching
-// for the file's claims.
+// The discarded-frontmatter one is the divergence that carries a SECURITY
+// consequence: a command declaring `model:` means one thing on claude_code
+// and another here. Saying nothing is the "one file means two things
+// silently" outcome the prompt path's warning exists to prevent, and the
+// model-driven surface needs it MORE: nobody typed the invocation, so nobody
+// is watching for the file's claims. `allowed-tools:` is NOT among the keys
+// any more — the lookup honours it (#1717) and the invocation narrows this
+// generation's tool surface, which narrowingNotice says.
 //
 // The tool's own answer is the channel because it is the only one BOTH
 // placements have: `command` is PlacementSandbox, so in a sandboxed run the
@@ -160,7 +174,7 @@ func executeWorkspaceCommand(workDir string, maxBytes int, input map[string]any)
 func commandNotices(name string, cmd clawcmds.WorkspaceCommand, args string) string {
 	var b strings.Builder
 	if keys := cmd.DiscardedFrontmatter; len(keys) > 0 {
-		fmt.Fprintf(&b, "NOTE (iterion): /%s (%s) declares %s in its frontmatter — claude_code honours those, this backend ignores them, so the command does not narrow the tools you hold (#1717). Report this with your answer.\n",
+		fmt.Fprintf(&b, "NOTE (iterion): /%s (%s) declares %s in its frontmatter — claude_code honours those, this backend ignores them (#1717). Report this with your answer.\n",
 			noticeValue(name), cmd.Path, noticeValue(strings.Join(keys, ", ")))
 	}
 	if forms := clawcmds.DynamicBodyForms(cmd.Body, args); len(forms) > 0 {
@@ -171,6 +185,22 @@ func commandNotices(name string, cmd clawcmds.WorkspaceCommand, args string) str
 		return ""
 	}
 	return b.String() + "\n"
+}
+
+// narrowingNotice tells the model its tool surface just changed: the command
+// it invoked declared `allowed-tools:` and the rest of this generation is
+// bounded by it (#1717). Without the sentence the model meets the narrowing
+// as a refusal it cannot explain; with it the same answer that carries the
+// body also carries the bound, on the one channel both placements share.
+// Only the INVOCATION THAT NARROWS says so — a later plain command under an
+// active bound owes no repeat.
+func narrowingNotice(scope *CommandScope) string {
+	name, allowed, ok := scope.NarrowedBy()
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("NOTE (iterion): /%s narrowed your tool surface to [%s] for the rest of this generation — it only shrinks from here.\n\n",
+		noticeValue(name), noticeValue(strings.Join(allowed, ", ")))
 }
 
 // noticeValue bounds a value a notice interpolates from untrusted input, to

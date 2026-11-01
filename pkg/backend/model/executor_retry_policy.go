@@ -217,6 +217,11 @@ type ErrNeedsInteraction struct {
 	// that is awaiting an answer. Required when Conversation is non-nil.
 	PendingToolUseID string
 
+	// CommandNarrowing is the workspace-command narrowing the paused
+	// generation held (#1717): it checkpoints beside Conversation so the
+	// resumed generation re-pins the bound.
+	CommandNarrowing *delegate.CommandNarrowingState
+
 	// SessionStranded travels with Conversation when the crossing that
 	// captured it held none of its session's history (a relayed mirror
 	// gap, or a seed the sandbox channel refused). The runtime

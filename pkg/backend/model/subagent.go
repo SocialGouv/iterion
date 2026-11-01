@@ -261,6 +261,20 @@ func NewSubagentRunner(
 		if fromParentLoop {
 			genTools = filterSubagentTools(parent.Tools, allowed)
 		}
+		// A narrowed parent narrows its child too (#1717, review MED-3):
+		// `allowed-tools: Task` folds to `agent`, and a delegation past the
+		// bound would hand the child the node's FULL set — one more
+		// intersection, never a widening, coherent with the agent file's
+		// `tools:` above.
+		if scope := tool.CommandScopeFrom(ctx); scope != nil && scope.Active() {
+			kept := genTools[:0]
+			for _, gt := range genTools {
+				if scope.Allows(gt.Name) {
+					kept = append(kept, gt)
+				}
+			}
+			genTools = kept
+		}
 		maxSteps := defaultSubagentMaxSteps
 		if parent.MaxSteps > 0 {
 			maxSteps = parent.MaxSteps

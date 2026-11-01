@@ -108,6 +108,30 @@ func executeOneTool(
 		return *refusal, nil
 	}
 
+	// A workspace command's `allowed-tools:` narrowing (#1717) binds every
+	// dispatch that follows its invocation: refuse BEFORE the permission
+	// gate, whose Ask would pause the run for an approval that cannot widen
+	// the bound. The refusal is a synthetic tool_result like the gate's —
+	// the model reads which command narrowed and adapts.
+	if scope := tool.CommandScopeFrom(ctx); scope != nil {
+		if err := scope.CheckAllowed(tu.Name); err != nil {
+			block := api.ToolResult{
+				ToolUseID: tu.ID,
+				Content:   err.Error(),
+				IsError:   true,
+			}.ToContentBlock()
+			if onToolCall != nil {
+				onToolCall(ToolCallInfo{
+					ToolName:  tu.Name,
+					InputSize: len(tu.PartialJSON),
+					ToolUseID: tu.ID,
+					Error:     err,
+				})
+			}
+			return block, nil
+		}
+	}
+
 	if refusal, abort := permissionGateOutcome(policy, tu, hookInput, onToolCall); abort != nil {
 		return api.ContentBlock{}, abort
 	} else if refusal != nil {

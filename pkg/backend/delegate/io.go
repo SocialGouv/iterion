@@ -81,33 +81,39 @@ type IOTask struct {
 	// run's own briefs. Empty from a launcher that predates it: the runner
 	// keeps its workspace-only scope. Never set from a Task field — the
 	// launcher writes it at the crossing (model.ClawBackend.runnerIOTask).
-	ScratchDir             string                `json:"scratch_dir,omitempty"`
-	ReasoningEffort        string                `json:"reasoning_effort,omitempty"`
-	Ultracode              bool                  `json:"ultracode,omitempty"`
-	SecretsHygiene         bool                  `json:"secrets_hygiene,omitempty"`
-	SecretFiles            []SecretFileHint      `json:"secret_files,omitempty"`
-	CursorFragments        []string              `json:"cursor_fragments,omitempty"`
-	SkillHints             []SkillHint           `json:"skill_hints,omitempty"`
-	PresetFragment         string                `json:"preset_fragment,omitempty"`
-	CompactThresholdRatio  float64               `json:"compact_threshold_ratio,omitempty"`
-	CompactPreserveRecent  int                   `json:"compact_preserve_recent,omitempty"`
-	SessionID              string                `json:"session_id,omitempty"`
-	SessionSlot            string                `json:"session_slot,omitempty"`
-	ForkSession            bool                  `json:"fork_session,omitempty"`
-	SessionFingerprint     string                `json:"session_fingerprint,omitempty"`
-	ProviderHint           string                `json:"provider_hint,omitempty"`
-	InteractionEnabled     bool                  `json:"interaction_enabled,omitempty"`
-	ResumeConversation     json.RawMessage       `json:"resume_conversation,omitempty"`
-	ResumePendingToolUseID string                `json:"resume_pending_tool_use_id,omitempty"`
-	ResumeAnswer           string                `json:"resume_answer,omitempty"`
-	Memory                 *MemorySpec           `json:"memory,omitempty"`
-	AutoMemoryDir          string                `json:"auto_memory_dir,omitempty"`
-	AutoMemoryPrompt       string                `json:"auto_memory_prompt,omitempty"`
-	AmbientContext         string                `json:"ambient_context,omitempty"`
-	AmbientContextSource   string                `json:"ambient_context_source,omitempty"`
-	CompressMode           string                `json:"compress_mode,omitempty"`
-	Rewriters              []plugin.RewriterSpec `json:"rewriters,omitempty"`
-	SettingsHooks          json.RawMessage       `json:"settings_hooks,omitempty"`
+	ScratchDir             string           `json:"scratch_dir,omitempty"`
+	ReasoningEffort        string           `json:"reasoning_effort,omitempty"`
+	Ultracode              bool             `json:"ultracode,omitempty"`
+	SecretsHygiene         bool             `json:"secrets_hygiene,omitempty"`
+	SecretFiles            []SecretFileHint `json:"secret_files,omitempty"`
+	CursorFragments        []string         `json:"cursor_fragments,omitempty"`
+	SkillHints             []SkillHint      `json:"skill_hints,omitempty"`
+	PresetFragment         string           `json:"preset_fragment,omitempty"`
+	CompactThresholdRatio  float64          `json:"compact_threshold_ratio,omitempty"`
+	CompactPreserveRecent  int              `json:"compact_preserve_recent,omitempty"`
+	SessionID              string           `json:"session_id,omitempty"`
+	SessionSlot            string           `json:"session_slot,omitempty"`
+	ForkSession            bool             `json:"fork_session,omitempty"`
+	SessionFingerprint     string           `json:"session_fingerprint,omitempty"`
+	ProviderHint           string           `json:"provider_hint,omitempty"`
+	InteractionEnabled     bool             `json:"interaction_enabled,omitempty"`
+	ResumeConversation     json.RawMessage  `json:"resume_conversation,omitempty"`
+	ResumePendingToolUseID string           `json:"resume_pending_tool_use_id,omitempty"`
+	ResumeAnswer           string           `json:"resume_answer,omitempty"`
+	// ResumeCommandNarrowing is the checkpointed command narrowing (#1717)
+	// the resumed generation re-pins — it must cross beside the
+	// conversation: a resumed SANDBOXED node rebuilds its loop in the
+	// container, where the bound the paused generation held is otherwise
+	// lost.
+	ResumeCommandNarrowing *CommandNarrowingState `json:"resume_command_narrowing,omitempty"`
+	Memory                 *MemorySpec            `json:"memory,omitempty"`
+	AutoMemoryDir          string                 `json:"auto_memory_dir,omitempty"`
+	AutoMemoryPrompt       string                 `json:"auto_memory_prompt,omitempty"`
+	AmbientContext         string                 `json:"ambient_context,omitempty"`
+	AmbientContextSource   string                 `json:"ambient_context_source,omitempty"`
+	CompressMode           string                 `json:"compress_mode,omitempty"`
+	Rewriters              []plugin.RewriterSpec  `json:"rewriters,omitempty"`
+	SettingsHooks          json.RawMessage        `json:"settings_hooks,omitempty"`
 	// Retry is the launcher's claw retry budget, which is the backend's
 	// rather than the task's: no Task field carries it. The runner retries
 	// with it instead of reading its own env, so a variable a repository's
@@ -183,7 +189,11 @@ type IOResult struct {
 	SessionFingerprint  string          `json:"session_fingerprint,omitempty"`
 	PendingConversation json.RawMessage `json:"pending_conversation,omitempty"`
 	PendingToolUseID    string          `json:"pending_tool_use_id,omitempty"`
-	Error               string          `json:"error,omitempty"`
+	// PendingCommandNarrowing rides the pause the container raised (#1717):
+	// the bound the in-container generation held crosses back with the
+	// conversation, or the resumed crossing restarts unbounded.
+	PendingCommandNarrowing *CommandNarrowingState `json:"pending_command_narrowing,omitempty"`
+	Error                   string                 `json:"error,omitempty"`
 }
 
 // ToIOTask converts a [Task] to its wire form. The Sandbox handle and
@@ -250,6 +260,7 @@ func ToIOTask(t Task) IOTask {
 		ResumeConversation:     t.ResumeConversation,
 		ResumePendingToolUseID: t.ResumePendingToolUseID,
 		ResumeAnswer:           t.ResumeAnswer,
+		ResumeCommandNarrowing: t.ResumeCommandNarrowing,
 		Memory:                 t.Memory,
 		AutoMemoryDir:          t.AutoMemoryDir,
 		AutoMemoryPrompt:       t.AutoMemoryPrompt,
@@ -314,6 +325,7 @@ func FromIOTask(t IOTask) Task {
 		ResumeConversation:     t.ResumeConversation,
 		ResumePendingToolUseID: t.ResumePendingToolUseID,
 		ResumeAnswer:           t.ResumeAnswer,
+		ResumeCommandNarrowing: t.ResumeCommandNarrowing,
 		Memory:                 t.Memory,
 		AutoMemoryDir:          t.AutoMemoryDir,
 		AutoMemoryPrompt:       t.AutoMemoryPrompt,
@@ -340,17 +352,18 @@ func ToIOResult(r Result) IOResult {
 		ThinkingTokens:     r.ThinkingTokens,
 		ThinkingMs:         r.ThinkingMs,
 
-		DurationMS:          r.Duration.Milliseconds(),
-		ExitCode:            r.ExitCode,
-		Stderr:              r.Stderr,
-		BackendName:         r.BackendName,
-		RawOutputLen:        r.RawOutputLen,
-		ParseFallback:       r.ParseFallback,
-		FormattingPassUsed:  r.FormattingPassUsed,
-		SessionID:           r.SessionID,
-		SessionFingerprint:  r.SessionFingerprint,
-		PendingConversation: r.PendingConversation,
-		PendingToolUseID:    r.PendingToolUseID,
+		DurationMS:              r.Duration.Milliseconds(),
+		ExitCode:                r.ExitCode,
+		Stderr:                  r.Stderr,
+		BackendName:             r.BackendName,
+		RawOutputLen:            r.RawOutputLen,
+		ParseFallback:           r.ParseFallback,
+		FormattingPassUsed:      r.FormattingPassUsed,
+		SessionID:               r.SessionID,
+		SessionFingerprint:      r.SessionFingerprint,
+		PendingConversation:     r.PendingConversation,
+		PendingToolUseID:        r.PendingToolUseID,
+		PendingCommandNarrowing: r.PendingCommandNarrowing,
 	}
 }
 
@@ -371,17 +384,18 @@ func FromIOResult(r IOResult) Result {
 		ThinkingTokens:     r.ThinkingTokens,
 		ThinkingMs:         r.ThinkingMs,
 
-		Duration:            time.Duration(r.DurationMS) * time.Millisecond,
-		ExitCode:            r.ExitCode,
-		Stderr:              r.Stderr,
-		BackendName:         r.BackendName,
-		RawOutputLen:        r.RawOutputLen,
-		ParseFallback:       r.ParseFallback,
-		FormattingPassUsed:  r.FormattingPassUsed,
-		SessionID:           r.SessionID,
-		SessionFingerprint:  r.SessionFingerprint,
-		PendingConversation: r.PendingConversation,
-		PendingToolUseID:    r.PendingToolUseID,
+		Duration:                time.Duration(r.DurationMS) * time.Millisecond,
+		ExitCode:                r.ExitCode,
+		Stderr:                  r.Stderr,
+		BackendName:             r.BackendName,
+		RawOutputLen:            r.RawOutputLen,
+		ParseFallback:           r.ParseFallback,
+		FormattingPassUsed:      r.FormattingPassUsed,
+		SessionID:               r.SessionID,
+		SessionFingerprint:      r.SessionFingerprint,
+		PendingConversation:     r.PendingConversation,
+		PendingToolUseID:        r.PendingToolUseID,
+		PendingCommandNarrowing: r.PendingCommandNarrowing,
 	}
 }
 

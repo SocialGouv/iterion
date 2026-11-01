@@ -41,6 +41,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
 )
 
 // ErrWorkspaceAgentModel refuses a delegation whose resolved agent file
@@ -108,34 +109,13 @@ func (a WorkspaceAgent) ToolSet() map[string]bool {
 	return set
 }
 
-// workspaceAgentToolNames folds Claude Code's agent-file spellings onto the
-// tool names a claw node's effective set carries. Lower-cased first, so
-// `Glob`/`Grep`/`Bash` need no rows; the rows are the spellings that differ
-// past case. toolcatalog.CanonicalToolName is NOT this table: it folds onto
-// canonical CONCEPTS (`read`, `webfetch`), which are not the registry's tool
-// names (`read_file`, `web_fetch`), and toolcatalog.BuiltinAlias's exact-case
-// tier covers three of these. A frontmatter name no row and no effective
-// tool claims simply intersects to nothing — narrowing can only ever remove.
-var workspaceAgentToolNames = map[string]string{
-	"read":         "read_file",
-	"write":        "write_file",
-	"edit":         "file_edit",
-	"multiedit":    "file_edit",
-	"notebookedit": "notebook_edit",
-	"webfetch":     "web_fetch",
-	"websearch":    "web_search",
-	"todowrite":    "todo_write",
-	"task":         "agent",
-}
-
 // workspaceAgentToolName folds one frontmatter spelling onto an iterion tool
-// name.
+// name — tool.FoldCLISpelling's table, shared with the `command` tool's
+// `allowed-tools:` narrowing (#1717) so an agent file and a command file
+// never fold the same spelling two ways. model cannot be imported from tool
+// (model imports tool), so the table lives there.
 func workspaceAgentToolName(spelling string) string {
-	n := strings.ToLower(strings.TrimSpace(spelling))
-	if folded, ok := workspaceAgentToolNames[n]; ok {
-		return folded
-	}
-	return n
+	return tool.FoldCLISpelling(spelling)
 }
 
 // validWorkspaceAgentName reports whether name is one path segment of

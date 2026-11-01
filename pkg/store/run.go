@@ -2082,6 +2082,14 @@ type Checkpoint struct {
 	// an answer in BackendConversation. Required when BackendConversation
 	// is non-nil.
 	BackendPendingToolUseID string `json:"backend_pending_tool_use_id,omitempty" bson:"backend_pending_tool_use_id,omitempty"`
+	// BackendCommandNarrowing is the workspace-command `allowed-tools:`
+	// narrowing the paused generation held (#1717), marshalled
+	// delegate.CommandNarrowingState kept opaque here like the
+	// conversation. The resumed generation re-pins the bound: the
+	// operator's answer approved one call, not the restriction's lifting.
+	// Absent on checkpoints written before the field existed — the
+	// pre-field behaviour, a resumed generation that restarts unbounded.
+	BackendCommandNarrowing json.RawMessage `json:"backend_command_narrowing,omitempty" bson:"backend_command_narrowing,omitempty"`
 	// BackendSessionStranded records that BackendConversation is the turns
 	// of a crossing that held none of its session's history (a relayed
 	// mirror gap, or a seed the sandbox channel refused — #2461). The

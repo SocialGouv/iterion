@@ -6559,6 +6559,8 @@ export interface components {
             };
             artifacts_known?: boolean;
             /** Format: byte */
+            backend_command_narrowing?: string;
+            /** Format: byte */
             backend_conversation?: string;
             backend_name?: string;
             backend_pending_tool_use_id?: string;

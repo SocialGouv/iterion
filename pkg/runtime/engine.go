@@ -659,7 +659,11 @@ type resumeBackendState struct {
 	// consumer's json.RawMessage assertion in applyResumeContinuity
 	// (a plain []byte silently failed it and dropped the rehydration).
 	conversation json.RawMessage
-	sessionID    string
+	// commandNarrowing is the checkpointed command narrowing (#1717),
+	// injected under delegate.ResumeCommandNarrowingKey beside the
+	// conversation.
+	commandNarrowing json.RawMessage
+	sessionID        string
 	// sessionStranded is the sandbox-mirror stranding fact (#2461)
 	// checkpointed beside the conversation; injected under
 	// delegate.ResumeSessionStrandedKey so the resumed crossing keeps

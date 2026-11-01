@@ -930,6 +930,10 @@ func (e *ClawExecutor) newElementBuilder(
 			task.ResumeConversation = nil
 			task.ResumePendingToolUseID = ""
 			task.ResumeAnswer = ""
+			// The narrowing qualifies the conversation it paused with:
+			// dropped together, or a fall-through would bind the serving
+			// element to a restriction the DROPPED conversation set (#1717).
+			task.ResumeCommandNarrowing = nil
 			task.SessionID = ""
 			task.SessionFingerprint = ""
 			task.ForkSession = false

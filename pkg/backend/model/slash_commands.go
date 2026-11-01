@@ -174,22 +174,25 @@ func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, 
 		warnSlashCommand(logger, nodeID, iteration, "/%s uses %s — those mean something else here than in claude_code; see docs/backends.md#workspace-slash-commands",
 			safeDiag(name), strings.Join(forms, ", "))
 	}
-	// The frontmatter is the divergence that carries a SECURITY consequence
-	// and it was the only one that expanded in silence: a command narrowing
-	// itself with `allowed-tools:` is bounded on claude_code and keeps the
-	// node's whole tool set here, so the operator reads a restriction that
-	// nothing enforces. Same channel as the body divergences — documenting
-	// it in bold and saying nothing at runtime is the "one file means two
-	// things silently" outcome this warning exists to prevent. Enforcement
-	// is #1717; this is the diagnostic that stops it being invisible.
+	// The command's `allowed-tools:` frontmatter is HONOURED on this surface
+	// (#1717): recorded on the build session so the build intersects the
+	// node's resolved ToolDefs with it — intersect, never widen. The
+	// model-invoked surface (the `command` tool) narrows mid-loop instead,
+	// dispatch-side; both surfaces read the same folded set
+	// (tool.CommandNarrowedSet).
+	sess.noteCommandNarrowing(name, cmd.AllowedTools, cmd.AllowedTools != nil)
+	// The rest of the frontmatter is the divergence that stays: `model:` and
+	// its siblings are honoured by claude_code and ignored here, and a file
+	// that configures itself must not mean one thing there and another here
+	// in silence. Same channel as the body divergences.
 	// Keyed per NODE, through the build session, not per command file: a
-	// second node invoking the same command with a broader `tools:` set is a
-	// different exposure and has to be told. The session also carries the
-	// keys onto delegate_finished, so a deterministic gate reading
-	// events.jsonl sees what a log line cannot be asserted on.
+	// second node invoking the same command is a different exposure and has
+	// to be told. The session also carries the keys onto delegate_finished,
+	// so a deterministic gate reading events.jsonl sees what a log line
+	// cannot be asserted on.
 	if keys := cmd.DiscardedFrontmatter; len(keys) > 0 && sess.noteIgnoredFrontmatter(keys) {
 		warnSlashCommand(logger, nodeID, iteration,
-			"/%s (%s) declares %s in its frontmatter — claude_code honours those, this backend ignores them, so a command that narrows itself keeps this node's full tool set (#1717)",
+			"/%s (%s) declares %s in its frontmatter — claude_code honours those, this backend ignores them (#1717)",
 			safeDiag(name), cmd.Path, safeDiag(strings.Join(keys, ", ")))
 	}
 	return expanded, true

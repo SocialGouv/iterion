@@ -178,20 +178,37 @@ The citations, per cell that is not self-evident from the table:
     is refused wherever it points, because `os.Root` rejects absolute
     targets outright. What the boundary buys is that the repository under
     review cannot reach the host through it.
-  - A command's **frontmatter** other than `description:` (`model:`,
-    `allowed-tools:`, `argument-hint:`, `disable-model-invocation:`) is
-    honoured by `claude_code` and **ignored** by `claw`, which keeps only
-    the body. A command that narrows itself with `allowed-tools:` therefore
-    keeps the node's full tool set on `claw` — bound it with the node's own
-    `tools:` instead. This is the divergence with a security consequence, so
-    it is the one the runtime says out loud: a command
-    declaring any of those keys logs a warning naming them and #1717, where
-    the enforcement is tracked, and the keys ride the node's
-    `delegate_finished` event (`command_frontmatter_ignored`) so a
-    deterministic gate can read them out of `events.jsonl` — a log line
-    cannot be asserted on. It is keyed per NODE, not per command file: a
-    second node invoking the same command with a broader `tools:` set is a
-    different exposure. Documenting it was never enough.
+  - A command's **frontmatter** other than `description:` and
+    `allowed-tools:` (`model:`, `argument-hint:`,
+    `disable-model-invocation:`) is honoured by `claude_code` and
+    **ignored** by `claw`, which keeps only the body. A command declaring
+    any of those keys logs a warning naming them and #1717, and the keys
+    ride the node's `delegate_finished` event
+    (`command_frontmatter_ignored`) so a deterministic gate can read them
+    out of `events.jsonl` — a log line cannot be asserted on. It is keyed
+    per NODE, not per command file. `allowed-tools:` is the exception, and
+    the one with a security consequence: it is **honoured** — a command
+    that declares it narrows the node's tool set to that list (folded onto
+    claw's tool names, plus the always-allowed `command` / `tool_search` /
+    `todo_write`), on BOTH surfaces. A prompt-invoked command narrows the
+    node's advertised tools at build time — intersect, never widen — and a
+    model-invoked one (the `command` tool) narrows the rest of the
+    generation dispatch-side: a call outside the list is refused with the
+    command's name. The model-invoked narrowing is **intersect-only** — a
+    deliberate divergence from claude_code, where the operator's next turn
+    lifts the bound: on this surface EVERY invocation is model-side, so a
+    command without `allowed-tools:` changes nothing and a later command
+    can only shrink the scope further — a restriction the model could lift
+    itself would be none at all. The bound survives the loop's own
+    continuations: the tool-use nudge and retries share the generation's
+    scope, a pause (ask_user, permission gate) checkpoints it beside the
+    conversation, and a delegated subagent's set is intersected with it.
+    Three published value shapes fold with documented approximations:
+    `Bash(git:*)` grants the WHOLE `bash` tool (iterion has no per-prefix
+    granularity), `mcp__srv__tool` / `mcp__srv__*` fold to the sanitized
+    `mcp_srv_tool` / the server's whole family, and a bare `*` declares an
+    explicit no-restriction. `model:` stays refused-by-silence,
+    deliberately: a contributed command must not re-route a node's spend.
   - `$1`, `$2`, … (any index, not just the single digits) are **one-based**
     on `claw` (`$1` is the first argument) and **zero-based** on
     `claude_code`, whose docs define `$N` as shorthand for `$ARGUMENTS[N]`
@@ -239,13 +256,15 @@ The citations, per cell that is not self-evident from the table:
   declared — the asymmetry is deliberate, and claw's text-only body is the
   safe form of the same capability. The frontmatter divergence below covers
   both paths: `disable-model-invocation:` is among the keys the lookup
-  reads and discards, so on claw the model path is not bounded by it
-  (#1717 carries the enforcement). What the tool does carry is the notice:
-  its answer OPENS with the keys that were discarded and with the body
-  forms this backend expands differently, so the model reports a command
-  whose own header claims a narrowing nothing applies — and the host
-  persists that answer on the node's `tool_called` event, where a
-  deterministic gate can read it. The deterministic witness is
+  reads and discards, so on claw the model path is not bounded by it.
+  `allowed-tools:` is bounded, on both paths (#1717): the `command` tool's
+  invocation narrows the rest of the generation's dispatches to the folded
+  list, the refusal naming the command that narrowed — and the tool's
+  answer OPENS with a notice saying so, beside the keys still discarded and
+  the body forms this backend expands differently, so the model reports a
+  command whose header claims what does not apply — and the host persists
+  that answer on the node's `tool_called` event, where a deterministic gate
+  can read it. The deterministic witness is
   `pkg/backend/tool/claw_command_test.go`; the live one is the
   `via_claw_model_tool` node of `TestLive_Feat_WorkspaceCommands`, whose
   prompt does not open with the invocation.
