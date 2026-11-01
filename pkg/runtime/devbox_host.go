@@ -28,6 +28,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -45,8 +46,11 @@ const hostDevboxInstallTimeout = 15 * time.Minute
 // broke in cloud) is assertable without Nix.
 var (
 	// hostDevboxLookPath resolves the devbox binary on the executing
-	// host's PATH.
-	hostDevboxLookPath = func() (string, error) { return exec.LookPath("devbox") }
+	// host's PATH. envtrust.LookPath, not exec.LookPath: `devbox install`
+	// then runs that binary against the run's workspace, an authority
+	// question a PATH a project .env planted must not answer (#2876, the
+	// class #2809 closed site by site).
+	hostDevboxLookPath = func() (string, error) { return envtrust.LookPath("devbox") }
 
 	// hostEngineBinPath resolves the ABSOLUTE PATH of THIS engine's
 	// iterion binary. Used by provisionHostDevbox to stage a per-run
@@ -73,7 +77,7 @@ var (
 	runHostDevboxInstall = func(ctx context.Context, devboxBin, projectDir string, logger *iterlog.Logger) error {
 		ctx, cancel := context.WithTimeout(ctx, hostDevboxInstallTimeout)
 		defer cancel()
-		// #nosec G204 — devboxBin comes from exec.LookPath("devbox") and
+		// #nosec G204 — devboxBin comes from envtrust.LookPath("devbox") and
 		// projectDir from the run's own workspace/bundle resolution, not
 		// from request input.
 		cmd := exec.CommandContext(ctx, devboxBin, "install", "-c", projectDir)

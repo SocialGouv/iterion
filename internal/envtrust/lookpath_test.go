@@ -11,8 +11,11 @@ import (
 // A planted PATH is the repository under review choosing which executable
 // the launcher runs — the authority #1945 closed at the config, reopened one
 // fork down wherever a bare command name is resolved against the live PATH
-// (#2809). applyDotEnv fills only names that were UNSET, so a planted PATH
-// means the operator's process had none: LookPath resolves nothing, loudly.
+// (#2809). The plant proves the value is the file's, on both lanes: the
+// CLI's applyDotEnv fills only names that were UNSET (a planted PATH means
+// the operator's process had none), and the studio's projectenv REPLACES an
+// inherited PATH under the operator's opt-in — where the planted value is
+// no less the file's answer. Either way LookPath resolves nothing, loudly.
 // Red when the Planted check goes: the probe binary then resolves under the
 // planted PATH and the refusal case fails on its own assertion.
 func TestLookPathResolvesNothingUnderAPlantedPATH(t *testing.T) {

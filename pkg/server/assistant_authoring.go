@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/botsource"
@@ -967,7 +968,13 @@ func validateAuthoringPythonSyntax(parent context.Context, path, source string) 
 	if interpreter == "" {
 		interpreter = "python3"
 	}
-	resolved, err := exec.LookPath(interpreter)
+	// envtrust.LookPath, not exec.LookPath: the interpreter then parses a
+	// bot source the operator is authoring, and which python3 that is is an
+	// authority question a PATH a project .env planted must not answer —
+	// the refusal reads as the parser being unavailable (#2876, the class
+	// #2809 closed site by site). An explicit ITERION_ASSISTANT_PYTHON path
+	// consults no PATH and resolves exactly as before.
+	resolved, err := envtrust.LookPath(interpreter)
 	if err != nil {
 		return authoringValidationFailure{Code: "python_parser_unavailable", Message: "Python syntax parser is unavailable"}
 	}

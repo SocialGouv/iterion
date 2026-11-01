@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/SocialGouv/iterion/internal/envtrust"
 )
 
 // ErrNoChecker says an interpreter has no syntax checker here: the text is
@@ -45,7 +47,12 @@ func (b Bash) Check(interpreter, text string) error {
 	case "bash":
 		name = "bash"
 	case "sh", "":
-		if _, err := exec.LookPath("dash"); err != nil {
+		// envtrust.LookPath, not exec.LookPath: the dash found here then
+		// parses an untrusted bot's script text, and which binary that is
+		// is an authority question a PATH a project .env planted must not
+		// answer — the refusal reads as "no dash", the text goes unchecked
+		// and said so (#2876, the class #2809 closed site by site).
+		if _, err := envtrust.LookPath("dash"); err != nil {
 			return fmt.Errorf("%w: sh text is held to dash, which is not on this PATH (the sh here may be bash, which accepts what dash refuses)", ErrNoChecker)
 		}
 		name = "dash"
