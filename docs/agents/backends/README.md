@@ -7,7 +7,7 @@ native harness. Leaves, one line each:
 |---|---|
 | [backend-selection.md](backend-selection.md) | Wrong backend or wiring a new one. |
 | [Capability registry](../../backend-capability-registry.md) | Backend facts, unchanged seed, derived enumerations and mutation witnesses. |
-| [gateway.md](gateway.md) | Serving `openai_compatible/…` from the deployment env, its catalog, its refusals. |
+| [gateway.md](gateway.md) | Serving `openai_compatible/…` from the deployment env, its catalog, its refusals, where provider/model config lives. |
 | [fallbacks-and-parity.md](fallbacks-and-parity.md) | `fallbacks:`, C173/C176, a "dumber" node, a degrading forfait. |
 | [facade-substitution.md](facade-substitution.md) | GLM/Kimi served under a claude/gpt label, or a base URL the substitution verdict ignores. |
 | [metering.md](metering.md) | Trusted delegate counters, reserved output metadata, interaction spend. |
