@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.3.1](https://github.com/SocialGouv/iterion/compare/v5.3.0...v5.3.1) (2026-11-02)
+
+### Bug Fixes
+
+* **connection:** a read miss lists the tenant's aliases to an untrusted run ([6a768d8](https://github.com/SocialGouv/iterion/commit/6a768d828d3bd0fc3662cb6d37e7f3e84c2478f2)), references [#1802](https://github.com/SocialGouv/iterion/issues/1802) [#2810](https://github.com/SocialGouv/iterion/issues/2810) [#2896](https://github.com/SocialGouv/iterion/issues/2896)
+
+    <details><summary>why</summary>
+
+    #1802 refuses a mutating action before the store is read, so a fork's misspelt alias probes nothing there. A READ action resolves for a fork — the lane's contract — and a misspelt alias on it reached suggestAlias, whose error ends with the aliases the tenant does hold: the inventory a mutation is refused for, handed to the same reader one spelling mistake later, and a probe of which connections exist.
+
+    </details>
+
 ## [5.3.0](https://github.com/SocialGouv/iterion/compare/v5.2.0...v5.3.0) (2026-11-02)
 
 ### Features
