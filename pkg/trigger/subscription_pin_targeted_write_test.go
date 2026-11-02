@@ -199,3 +199,151 @@ func TestMongoSubscriptionStoreClearCredentialPinsIsAValueGuardedWriteTimeClear(
 		t.Fatal("last_error missing from the raw document — the clear dropped a health field")
 	}
 }
+
+// seedLegacyNamedSubscription writes one subscription whose secret pins
+// carry names a Mongo path cannot address — a '.' reads as a nested path
+// and a $ names an operator, so a targeted write addressing
+// "<field>.<name>" would match nothing stored under the literal key. New
+// names cannot hold those bytes (the routes' validators refuse them);
+// rows written before that guard existed can.
+func seedLegacyNamedSubscription(t *testing.T, st SubscriptionStore, ctx context.Context, id string) {
+	t.Helper()
+	if err := st.Create(ctx, Subscription{
+		ID: id, TenantID: "t1", BotID: "review-pr", Enabled: true,
+		KeyOverrides: map[string]string{"anthropic": "key-alive"},
+		SecretOverrides: map[string]string{
+			"dead.name":   "rec-dead",
+			"$rooted":     "rec-dead",
+			"forge_token": "rec-dead",
+			"mid$name":    "rec-alive",
+			"live":        "rec-alive",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// assertLegacyNamedPinsSwept pins the clear's two-arm contract on one
+// store: an unaddressable-named entry whose value names the deleted record
+// is dropped by the subdocument rewrite, not left standing behind a
+// silent no-match, and everything the clear does not name survives —
+// including a plain-named pin landed after the clear, which the rewrite
+// must judge from the row as the store holds it NOW.
+func assertLegacyNamedPinsSwept(t *testing.T, st SubscriptionStore, ctx context.Context, id string) {
+	t.Helper()
+	cleared, err := st.ClearCredentialPins(ctx, id, "rec-dead")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cleared {
+		t.Fatal("the clear reported nothing removed — the legacy-named dead pin is still stored and no delete can ever revisit it")
+	}
+	got, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"dead.name", "$rooted", "forge_token"} {
+		if _, standing := got.SecretOverrides[name]; standing {
+			t.Fatalf("legacy-named pin %q survives the clear: %v — the $unset arm cannot address it and the dead pin stands while the delete answers 204", name, got.SecretOverrides)
+		}
+	}
+	if got.SecretOverrides["mid$name"] != "rec-alive" || got.SecretOverrides["live"] != "rec-alive" {
+		t.Fatalf("secret_overrides = %v — the clear moved pins naming another record", got.SecretOverrides)
+	}
+	if got.KeyOverrides["anthropic"] != "key-alive" {
+		t.Fatalf("key_overrides = %v — the secret clear moved the other map", got.KeyOverrides)
+	}
+
+	// A pin landed after the first sweep survives a SECOND legacy sweep of
+	// the same row: the rewrite judges the row as the store holds it now,
+	// never the caller's snapshot — a wholesale write of a stale map would
+	// drop "added-later" here.
+	got.SecretOverrides["added-later"] = "sec-added"
+	if err := st.Update(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	cleared, err = st.ClearCredentialPins(ctx, id, "rec-alive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cleared {
+		t.Fatal("the second clear reported nothing removed — both rec-alive pins are stored")
+	}
+	got, err = st.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, standing := got.SecretOverrides["added-later"]; !standing {
+		t.Fatalf("secret_overrides = %v — the rewrite wrote a stale map back and clobbered a pin landed in between", got.SecretOverrides)
+	}
+	if _, standing := got.SecretOverrides["mid$name"]; standing {
+		t.Fatalf("the second clear left the unaddressable-named pin behind: %v", got.SecretOverrides)
+	}
+
+	// Every entry naming the record is gone: a repeat is the wanted state,
+	// reporting nothing cleared and writing nothing.
+	steady, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleared, err = st.ClearCredentialPins(ctx, id, "rec-dead")
+	if err != nil || cleared {
+		t.Fatalf("a repeat clear of swept legacy pins = (%v, %v), want (false, nil)", cleared, err)
+	}
+	after, err := st.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Version != steady.Version {
+		t.Fatalf("a no-op clear moved the version %d → %d — the fence must not punish an editor who did nothing", steady.Version, after.Version)
+	}
+}
+
+// The memory twin has no paths to mis-address, which is the point of
+// running the same contract on it: the two arms answer identically.
+func TestClearCredentialPins_DropsALegacyNameThePathCannotAddress(t *testing.T) {
+	st := NewMemorySubscriptionStore()
+	ctx := context.Background()
+	seedLegacyNamedSubscription(t, st, ctx, "legacy")
+	assertLegacyNamedPinsSwept(t, st, ctx, "legacy")
+}
+
+func TestMongoSubscriptionStoreClearCredentialPinsDropsALegacyNameThePathCannotAddress(t *testing.T) {
+	uri := os.Getenv("ITERION_TEST_MONGO_URI")
+	if uri == "" {
+		t.Skip("ITERION_TEST_MONGO_URI not set; requires Mongo conformance harness")
+	}
+	ctx, cancel := mongotest.Ctx(t)
+	defer cancel()
+	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := client.Database("iterion_pin_legacy_" + bson.NewObjectID().Hex())
+	t.Cleanup(func() {
+		dropCtx, dropCancel := mongotest.TeardownCtx()
+		defer dropCancel()
+		_ = db.Drop(dropCtx)
+		_ = client.Disconnect(dropCtx)
+	})
+	st := NewMongoSubscriptionStore(db)
+	if err := st.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	seedLegacyNamedSubscription(t, st, ctx, "legacy")
+	assertLegacyNamedPinsSwept(t, st, ctx, "legacy")
+
+	// The raw document carries the proof the memory twin cannot: the
+	// rewrite really removed the unaddressable ENTRY from the stored
+	// subdocument, and the surviving entries are still in it.
+	coll := db.Collection(SubscriptionsCollectionName)
+	var raw struct {
+		SecretOverrides map[string]string `bson:"secret_overrides"`
+	}
+	if err := coll.FindOne(ctx, bson.M{"_id": "legacy"}).Decode(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw.SecretOverrides) != 1 || raw.SecretOverrides["added-later"] != "sec-added" {
+		t.Fatalf("raw secret_overrides = %v, want only the pin landed after the sweeps", raw.SecretOverrides)
+	}
+}

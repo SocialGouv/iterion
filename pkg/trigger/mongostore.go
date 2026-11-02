@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -11,6 +12,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
+	"github.com/SocialGouv/iterion/pkg/internal/storekit"
 )
 
 // SubscriptionsCollectionName is the Mongo collection backing the cloud-mode
@@ -161,12 +163,15 @@ func (s *MongoSubscriptionStore) Delete(ctx context.Context, id string) error {
 // survives untouched. Each real removal also $inc's the row's version, so a
 // full-document editor holding a pre-sweep snapshot conflicts and re-reads
 // instead of writing the swept pin back — no update lane resurrects a swept
-// pin; the one writer left is a row born mid-delete, the delete's retry
-// sweep's to reach. A zero match on an entry means it moved or the row died
-// between the read and this write — the stored state is already the
-// wanted one, so nothing to clear is not a failure. Dotted paths are safe
-// because the routes' pin validators refuse a name holding a dot or a $ —
-// the addressability this $unset needs is enforced at write, not assumed.
+// pin; the row born mid-delete is the write routes' landed-pin
+// reconciliation's to sweep. A zero match on an entry means it moved or the
+// row died between the read and this write — the stored state is already
+// the wanted one, so nothing to clear is not a failure. Addressability is
+// two arms, not an assumption: an entry whose name holds '.' or '$' is
+// unreachable by any path, so it clears by rewriting the subdocument under
+// a version CAS (clearUnaddressablePin) — the routes' name guard keeps NEW
+// names addressable, and the webhooks twin carries the same arm for rows
+// that predate it.
 func (s *MongoSubscriptionStore) ClearCredentialPins(ctx context.Context, id, recordID string) (bool, error) {
 	sub, err := s.Get(ctx, id)
 	if err != nil {
@@ -174,14 +179,23 @@ func (s *MongoSubscriptionStore) ClearCredentialPins(ctx context.Context, id, re
 	}
 	cleared := false
 	for _, field := range []struct {
-		path string
-		pins map[string]string
+		path   string
+		pins   map[string]string
+		pinsOf func(Subscription) map[string]string
 	}{
-		{"key_overrides", sub.KeyOverrides},
-		{"secret_overrides", sub.SecretOverrides},
+		{"key_overrides", sub.KeyOverrides, func(c Subscription) map[string]string { return c.KeyOverrides }},
+		{"secret_overrides", sub.SecretOverrides, func(c Subscription) map[string]string { return c.SecretOverrides }},
 	} {
 		for name, val := range field.pins {
 			if val != recordID {
+				continue
+			}
+			if !storekit.PinNameAddressable(name) {
+				dropped, err := s.clearUnaddressablePin(ctx, id, field.path, field.pinsOf, name, recordID)
+				if err != nil {
+					return false, err
+				}
+				cleared = cleared || dropped
 				continue
 			}
 			res, err := s.coll.UpdateOne(ctx,
@@ -194,6 +208,45 @@ func (s *MongoSubscriptionStore) ClearCredentialPins(ctx context.Context, id, re
 		}
 	}
 	return cleared, nil
+}
+
+// clearPinCASAttempts bounds the rewrite arm's read-CAS retries. Each
+// attempt re-reads, so a writer that moved the row between the read and
+// the CAS wins it and the retry judges the row as the store now holds it
+// — a stale map is never written back. Exhaustion needs a writer moving
+// the row on every attempt of a rare legacy arm; it refuses explicitly
+// rather than reporting a clear that did not happen.
+const clearPinCASAttempts = 5
+
+// clearUnaddressablePin drops an entry whose stored name a Mongo path
+// cannot address (a legacy '.'/'$' name — the routes' validators refuse
+// new ones). The rewrite is value-guarded: the entry must still name
+// recordID on the row as THIS attempt read it, so an entry that moved or
+// was re-pointed between the caller's listing and here is already the
+// wanted state, not a failure. Twin of MongoConfigStore.clearUnaddressablePin.
+func (s *MongoSubscriptionStore) clearUnaddressablePin(ctx context.Context, id, path string, pinsOf func(Subscription) map[string]string, name, recordID string) (bool, error) {
+	for attempt := 0; attempt < clearPinCASAttempts; attempt++ {
+		row, err := s.Get(ctx, id)
+		if err != nil {
+			return false, err
+		}
+		pins := pinsOf(row)
+		if cur, ok := pins[name]; !ok || cur != recordID {
+			return false, nil
+		}
+		wanted := maps.Clone(pins)
+		delete(wanted, name)
+		res, err := s.coll.UpdateOne(ctx,
+			bson.M{"_id": id, "version": row.Version},
+			bson.M{"$set": bson.M{path: wanted}, "$inc": bson.M{"version": 1}})
+		if err != nil {
+			return false, fmt.Errorf("trigger: clear subscription credential pins: %w", err)
+		}
+		if res.MatchedCount > 0 {
+			return true, nil
+		}
+	}
+	return false, fmt.Errorf("trigger: clear subscription credential pins: the subdocument rewrite never landed on %s after %d attempts — the row keeps moving", id, clearPinCASAttempts)
 }
 
 func (s *MongoSubscriptionStore) ListByTenant(ctx context.Context, tenantID string) ([]Subscription, error) {

@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
@@ -35,11 +37,15 @@ import (
 // writer that VALIDATES can create a pin naming the dead record (the
 // validators Get the record and refuse a dead id), and the clear's version
 // bump turns a full-document editor holding a pre-sweep snapshot away with
-// a conflict instead of letting it write the swept pin back — nothing
-// re-sweeps behind this delete's 204, so the clear is the last writer that
-// ever touches those pins. The one resurrection left is a row BORN
-// mid-delete — a create whose validation beat the revocation — and the
-// delete's retry sweep is what reaches it.
+// a conflict instead of letting it write the swept pin back. A row BORN
+// mid-delete — a write whose validation beat the revocation and lands
+// after this sweep's listing, which therefore never sees it — is the
+// write routes' half to close: reconcileLandedPins re-checks every record
+// a just-landed write's pins name and sweeps a dead one immediately, so
+// the window is covered whatever the interleaving. This file's retry pass
+// (retryCredentialPinSweep) remains the reconciliation of an INTERRUPTED
+// sweep — a failed or hung-up first pass the delete's retry finishes —
+// not the born-mid-delete case.
 
 // pinSweepTimeout bounds a detached sweep. The delete answers on the
 // request's context; the sweep no longer does — a client that hangs up
@@ -130,9 +136,82 @@ func (s *Server) retryCredentialPinSweep(r *http.Request, tenantID, recordID str
 	if tenantID == "" || !s.mayClearTenantPins(r.Context(), id, tenantID) {
 		return nil, nil
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), pinSweepTimeout)
+	ctx, cancel := pinGuardCtx(r)
 	defer cancel()
 	return s.sweepCredentialPins(ctx, tenantID, recordID)
+}
+
+// pinGuardCtx detaches a pin guard from the request's lifetime, bounded by
+// pinSweepTimeout: the caller may be gone, the guard must not — a client
+// that hangs up mid-clear must not cancel it half-way, because the dead
+// pin that leaves standing seals the team's default with nobody watching.
+func pinGuardCtx(r *http.Request) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(r.Context()), pinSweepTimeout)
+}
+
+// reconcileLandedPins closes the write-side twin of the sweep's window. A
+// pin is judged against its record at VALIDATION time, so a write whose
+// validation beat the record's revocation can land after the delete's
+// sweep already listed — the sweep never sees the row, no client can
+// re-delete a gone record, and a pin naming the dead record would stand
+// forever, silently sealing the team's default on a cron subscription.
+// After the store write lands, the route re-checks every record its pins
+// name under the same detached context as the delete's sweep: one already
+// revoked sweeps immediately. The pair closes the window whatever the
+// interleaving — a write that lands before the sweep's listing is the
+// sweep's to clear; one that lands after names a record revoked before the
+// listing began, which is exactly what the re-check reads. The Gets run
+// under the tenant scope, the same derivation the write-time validators
+// used, so another tenant's record cannot read as missing.
+func (s *Server) reconcileLandedPins(ctx context.Context, tenantID string, keyPins, secretPins map[string]string) ([]string, error) {
+	var swept []string
+	var errs []error
+	if s.apiKeys != nil {
+		for _, keyID := range uniquePinRecords(keyPins) {
+			_, err := s.apiKeys.Get(store.WithTenant(ctx, tenantID), keyID)
+			switch {
+			case errors.Is(err, secrets.ErrApiKeyNotFound):
+				s2, sweepErr := s.sweepCredentialPins(ctx, tenantID, keyID)
+				swept = append(swept, s2...)
+				errs = append(errs, sweepErr)
+			case err != nil:
+				errs = append(errs, fmt.Errorf("api key %s: %w", keyID, err))
+			}
+		}
+	}
+	if s.genericSecrets != nil {
+		for _, secretID := range uniquePinRecords(secretPins) {
+			_, err := s.genericSecrets.Get(store.WithTenant(ctx, tenantID), secretID)
+			switch {
+			case errors.Is(err, secrets.ErrGenericSecretNotFound):
+				s2, sweepErr := s.sweepCredentialPins(ctx, tenantID, secretID)
+				swept = append(swept, s2...)
+				errs = append(errs, sweepErr)
+			case err != nil:
+				errs = append(errs, fmt.Errorf("stored secret %s: %w", secretID, err))
+			}
+		}
+	}
+	return swept, errors.Join(errs...)
+}
+
+// uniquePinRecords dedups the record ids a pin map names, sorted for a
+// stable receipt: two providers pinning one key cost one re-check and one
+// sweep, not two.
+func uniquePinRecords(pins map[string]string) []string {
+	if len(pins) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(pins))
+	ids := make([]string, 0, len(pins))
+	for _, id := range pins {
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids
 }
 
 // mayClearTenantPins reports whether the identity may sweep a tenant's

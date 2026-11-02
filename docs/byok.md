@@ -460,17 +460,26 @@ pin cannot resurrect: no writer can re-pin a deleted record (the
 write-time guards refuse it), and each real removal bumps the row's
 version — a full-document edit whose read predates the sweep conflicts
 (409 on the trigger PUT, the webhook config's CAS twin) and re-reads the
-swept row instead of writing the dead pin back. What the version cannot
-reach is a row BORN mid-delete: a create whose pin validated while the
-record still lived and lands after the sweep — both machine lanes carry
-that window, and the delete's retry sweep is what reaches it. The sweep
+swept row instead of writing the dead pin back. The version cannot reach
+a row BORN mid-delete — a write whose pin validated while the record
+still lived and lands after the sweep's listing, which therefore never
+sees it — and the write routes close that half themselves: every
+pin-landing write (both lanes' create and edit) re-checks the records its
+landed pins name, and one already revoked sweeps immediately under the
+same detached context as the delete's sweep; its receipt lands in the
+same audit line (`pins_cleared`). The sweep
 runs detached from the request: a
 client hanging up mid-sweep must not cancel the clear half-way. A sweep the
 store refuses answers 5xx — the client body stays opaque, the logged cause
 names both halves: the deletion that happened and the pins still standing
 — and the delete's RETRY finishes the sweep before its 404: revocation is
 the irreversible half, so "not found" is exactly the shape of an
-interrupted sweep, and the retry is the reconciliation path.
+interrupted sweep, and the retry is the reconciliation path. One stored
+shape the sweep's targeted writes cannot address at all is a pin name
+holding `.` or `$` (possible on rows written before the name guard): the
+Mongo clears rewrite that pin map's subdocument under a version CAS
+instead of `unset`-ing a path that would match nothing, so a legacy name
+cannot leave a dead pin standing behind a silent 204 either.
 
 **A pin is honoured or refused, never ignored.** Two shapes would be
 honoured by nobody: a provider the walk does not spend yet (the

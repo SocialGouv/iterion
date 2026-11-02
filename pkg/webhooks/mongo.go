@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -146,11 +147,14 @@ func (s *MongoConfigStore) DisableProvision(ctx context.Context, id, integration
 // a swept pin cannot resurrect through a writer that validates after the
 // delete — the write-time validators refuse a dead record's id; a write
 // that validated while the record lived can still land after the sweep,
-// the race the delete's 404-heal pass reconciles. Each real removal bumps
-// version, so an editor holding a pre-sweep snapshot conflicts and re-reads
-// instead of writing the swept pin back. Dotted paths are safe because the
-// routes' pin validators refuse a name holding a dot or a $ — the
-// addressability this $unset needs is enforced at write, not assumed.
+// the race the delete's 404-heal pass and the routes' landed-pin
+// reconciliation close. Each real removal bumps version, so an editor
+// holding a pre-sweep snapshot conflicts and re-reads instead of writing
+// the swept pin back. Addressability is two arms, not an assumption: an
+// entry whose name holds '.' or '$' — possible on rows written before the
+// routes' name guard existed — is unreachable by any path, so it clears by
+// rewriting the subdocument under a version CAS (clearUnaddressablePin),
+// never by a $unset that would silently match nothing.
 func (s *MongoConfigStore) ClearCredentialPins(ctx context.Context, id, recordID string) (bool, error) {
 	cfg, err := s.Get(ctx, id)
 	if err != nil {
@@ -158,14 +162,23 @@ func (s *MongoConfigStore) ClearCredentialPins(ctx context.Context, id, recordID
 	}
 	cleared := false
 	for _, field := range []struct {
-		path string
-		pins map[string]string
+		path   string
+		pins   map[string]string
+		pinsOf func(Config) map[string]string
 	}{
-		{"key_overrides", cfg.KeyOverrides},
-		{"secret_overrides", cfg.SecretOverrides},
+		{"key_overrides", cfg.KeyOverrides, func(c Config) map[string]string { return c.KeyOverrides }},
+		{"secret_overrides", cfg.SecretOverrides, func(c Config) map[string]string { return c.SecretOverrides }},
 	} {
 		for name, val := range field.pins {
 			if val != recordID {
+				continue
+			}
+			if !storekit.PinNameAddressable(name) {
+				dropped, err := s.clearUnaddressablePin(ctx, id, field.path, field.pinsOf, name, recordID)
+				if err != nil {
+					return false, err
+				}
+				cleared = cleared || dropped
 				continue
 			}
 			r, err := s.kit.Coll().UpdateOne(ctx,
@@ -181,6 +194,45 @@ func (s *MongoConfigStore) ClearCredentialPins(ctx context.Context, id, recordID
 		}
 	}
 	return cleared, nil
+}
+
+// clearPinCASAttempts bounds the rewrite arm's read-CAS retries. Each
+// attempt re-reads, so a writer that moved the row between the read and
+// the CAS wins it and the retry judges the row as the store now holds it
+// — a stale map is never written back. Exhaustion needs a writer moving
+// the row on every attempt of a rare legacy arm; it refuses explicitly
+// rather than reporting a clear that did not happen.
+const clearPinCASAttempts = 5
+
+// clearUnaddressablePin drops an entry whose stored name a Mongo path
+// cannot address (a legacy '.'/'$' name — the routes' validators refuse
+// new ones). The rewrite is value-guarded: the entry must still name
+// recordID on the row as THIS attempt read it, so an entry that moved or
+// was re-pointed between the caller's listing and here is already the
+// wanted state, not a failure.
+func (s *MongoConfigStore) clearUnaddressablePin(ctx context.Context, id, path string, pinsOf func(Config) map[string]string, name, recordID string) (bool, error) {
+	for attempt := 0; attempt < clearPinCASAttempts; attempt++ {
+		row, err := s.Get(ctx, id)
+		if err != nil {
+			return false, err
+		}
+		pins := pinsOf(row)
+		if cur, ok := pins[name]; !ok || cur != recordID {
+			return false, nil
+		}
+		wanted := maps.Clone(pins)
+		delete(wanted, name)
+		r, err := s.kit.Coll().UpdateOne(ctx,
+			bson.M{"_id": id, "version": row.Version},
+			bson.M{"$set": bson.M{path: wanted}, "$inc": bson.M{"version": 1}})
+		if err != nil {
+			return false, fmt.Errorf("webhooks: clear config credential pins: %w", err)
+		}
+		if r.MatchedCount > 0 {
+			return true, nil
+		}
+	}
+	return false, fmt.Errorf("webhooks: clear config credential pins: the subdocument rewrite never landed on %s after %d attempts — the row keeps moving", id, clearPinCASAttempts)
 }
 
 func (s *MongoConfigStore) Delete(ctx context.Context, id string) error {

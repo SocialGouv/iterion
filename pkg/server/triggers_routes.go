@@ -463,6 +463,32 @@ func (s *Server) handleCreateTrigger(w http.ResponseWriter, r *http.Request) {
 		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	// The pins just landed; close the born-mid-delete window before the
+	// answer — reconcileLandedPins sweeps a record revoked between this
+	// write's validation and its landing, the row the delete's sweep never
+	// listed (see credential_pin_sweep.go). Same posture as the delete
+	// chokepoint: the write happened, a failed clear answers 5xx instead
+	// of letting a dead pin stand unreported.
+	guardCtx, guardCancel := pinGuardCtx(r)
+	defer guardCancel()
+	pinsCleared, reconcileErr := s.reconcileLandedPins(guardCtx, tenant, sub.KeyOverrides, sub.SecretOverrides)
+	if len(pinsCleared) > 0 && s.logger != nil {
+		s.logger.Warn("triggers: subscription %s created with a pin naming a record deleted in flight; swept: %v", sub.ID, pinsCleared)
+	}
+	if reconcileErr != nil {
+		dispatcher.WriteErr(w, http.StatusInternalServerError, fmt.Errorf("subscription %s created, but re-checking the records its pins name failed: %w — a pin may name a record deleted in flight and stand until it is cleared", sub.ID, reconcileErr))
+		return
+	}
+	if len(pinsCleared) > 0 {
+		// The answer must not resell the swept pins — the honesty the
+		// delete's 204 owes: answer with the row as the store now holds it.
+		fresh, err := s.cfg.TriggerStore.Get(r.Context(), sub.ID)
+		if err != nil {
+			dispatcher.WriteErr(w, http.StatusInternalServerError, fmt.Errorf("subscription %s created, but reading back the swept row failed: %w", sub.ID, err))
+			return
+		}
+		sub = fresh
+	}
 	dispatcher.WriteJSON(w, http.StatusCreated, sub)
 }
 
@@ -527,6 +553,30 @@ func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 		}
 		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
 		return
+	}
+	// Same closure as the create route: the landed pins are re-checked
+	// against their records — a pin that validated while its record lived
+	// but landed after the record's delete sweep listed would otherwise
+	// stand unreconciled (see credential_pin_sweep.go).
+	guardCtx, guardCancel := pinGuardCtx(r)
+	defer guardCancel()
+	pinsCleared, reconcileErr := s.reconcileLandedPins(guardCtx, tenant, cur.KeyOverrides, cur.SecretOverrides)
+	if len(pinsCleared) > 0 && s.logger != nil {
+		s.logger.Warn("triggers: subscription %s updated with a pin naming a record deleted in flight; swept: %v", cur.ID, pinsCleared)
+	}
+	if reconcileErr != nil {
+		dispatcher.WriteErr(w, http.StatusInternalServerError, fmt.Errorf("subscription %s updated, but re-checking the records its pins name failed: %w — a pin may name a record deleted in flight and stand until it is cleared", cur.ID, reconcileErr))
+		return
+	}
+	if len(pinsCleared) > 0 {
+		// The answer must not resell the swept pins — the honesty the
+		// delete's 204 owes: answer with the row as the store now holds it.
+		fresh, err := s.cfg.TriggerStore.Get(r.Context(), cur.ID)
+		if err != nil {
+			dispatcher.WriteErr(w, http.StatusInternalServerError, fmt.Errorf("subscription %s updated, but reading back the swept row failed: %w", cur.ID, err))
+			return
+		}
+		cur = fresh
 	}
 	dispatcher.WriteJSON(w, http.StatusOK, cur)
 }
