@@ -365,3 +365,123 @@ func TestBotBindingTwins_UpdateCannotMoveTheRecordsIdentity(t *testing.T) {
 		})
 	}
 }
+
+// Every mutable field the store's Update may move, moved ONE AT A TIME and
+// read back: the memory twin applies the field-wise merge by hand, and a
+// merge line that drops its field must redden its assertion here — the
+// route answers the REQUEST's echo, so a store that keeps the old value is
+// a 200 that lies, divergent from the Mongo twin.
+func TestBotBindingTwins_UpdateMovesTheMutablePayloadFieldByField(t *testing.T) {
+	for _, tw := range bindingTwins(t) {
+		t.Run(tw.name, func(t *testing.T) {
+			ctx := store.WithTenant(context.Background(), "team-1")
+			seed := func(t *testing.T, id, name string) BotSecretBinding {
+				t.Helper()
+				b := contextBindingFixture(id, "team-1", "bot-doki", name)
+				if err := tw.store.Create(ctx, b); err != nil {
+					t.Fatalf("create %s: %v", id, err)
+				}
+				return b
+			}
+			reread := func(t *testing.T, id string) BotSecretBinding {
+				t.Helper()
+				got, err := tw.store.Get(ctx, id)
+				if err != nil {
+					t.Fatalf("get %s: %v", id, err)
+				}
+				return got
+			}
+
+			t.Run("kind", func(t *testing.T) {
+				b := seed(t, "f-kind", "n-kind")
+				b.Kind = BindingKindSecret
+				b.Context, b.SecretID = nil, "sec-9" // a coherent secret-kind payload
+				if err := tw.store.Update(ctx, b); err != nil {
+					t.Fatalf("update: %v", err)
+				}
+				if got := reread(t, "f-kind"); got.Kind != BindingKindSecret || got.SecretID != "sec-9" || got.Context != nil {
+					t.Errorf("the kind switch did not land: %+v", got)
+				}
+			})
+			t.Run("secret_id", func(t *testing.T) {
+				b := seed(t, "f-sec", "n-sec")
+				b.Context = &ContextSource{GitURL: b.Context.GitURL, Ref: b.Context.Ref, Path: b.Context.Path, SecretID: "sec-read-2"}
+				if err := tw.store.Update(ctx, b); err != nil {
+					t.Fatalf("update: %v", err)
+				}
+				if got := reread(t, "f-sec"); got.Context.SecretID != "sec-read-2" {
+					t.Errorf("context.secret_id did not move: %+v", got.Context)
+				}
+			})
+			t.Run("secret_name_for_workflow", func(t *testing.T) {
+				b := seed(t, "f-name", "n-name")
+				b.SecretNameForWorkflow = "n-name-renamed"
+				if err := tw.store.Update(ctx, b); err != nil {
+					t.Fatalf("update: %v", err)
+				}
+				if got := reread(t, "f-name"); got.SecretNameForWorkflow != "n-name-renamed" {
+					t.Errorf("the declared name did not move: %q", got.SecretNameForWorkflow)
+				}
+			})
+			t.Run("context", func(t *testing.T) {
+				b := seed(t, "f-ctx", "n-ctx")
+				b.Context.Ref = "v9.9.9"
+				if err := tw.store.Update(ctx, b); err != nil {
+					t.Fatalf("update: %v", err)
+				}
+				if got := reread(t, "f-ctx"); got.Context.Ref != "v9.9.9" {
+					t.Errorf("the context payload did not move: %+v", got.Context)
+				}
+			})
+			t.Run("allowed_hosts", func(t *testing.T) {
+				b := seed(t, "f-hosts", "n-hosts")
+				b.AllowedHosts = []string{"only.example"}
+				if err := tw.store.Update(ctx, b); err != nil {
+					t.Fatalf("update: %v", err)
+				}
+				if got := reread(t, "f-hosts"); len(got.AllowedHosts) != 1 || got.AllowedHosts[0] != "only.example" {
+					t.Errorf("allowed_hosts did not move: %v", got.AllowedHosts)
+				}
+			})
+			t.Run("updated_at", func(t *testing.T) {
+				b := seed(t, "f-stamp", "n-stamp")
+				later := b.UpdatedAt.Add(2 * time.Hour)
+				b.UpdatedAt = later
+				if err := tw.store.Update(ctx, b); err != nil {
+					t.Fatalf("update: %v", err)
+				}
+				if got := reread(t, "f-stamp"); !got.UpdatedAt.Equal(later) {
+					t.Errorf("updated_at did not move: %v, want %v", got.UpdatedAt, later)
+				}
+			})
+		})
+	}
+}
+
+// The declaration gate runs BEFORE any fetch: a binding under a name the
+// workflow never declares is refused without touching the network — the
+// undeclared case is the operator's misconfiguration to read on the record,
+// and a fetch it triggers would cost a clone per launch per dead binding.
+// A fetch-before-gate mutant turns the counter's assertion red.
+func TestAdv2_UndeclaredNameNeverFetches(t *testing.T) {
+	bindings := NewMemoryBotSecretBindingStore()
+	ctx := store.WithTenant(context.Background(), "team-1")
+	if err := bindings.Create(ctx, contextBindingFor("b1", "ghost", "x.md")); err != nil {
+		t.Fatal(err)
+	}
+	fetches := 0
+	fetch := func(context.Context, BotSecretBinding) (string, error) {
+		fetches++
+		return checkoutFunc(t, map[string]string{"x.md": "x"}, nil)(context.Background(), BotSecretBinding{})
+	}
+	resolved, skipped, err := resolveOne(t, bindings, fetch, map[string]bool{"handbook": true}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved) != 0 || len(skipped) != 1 {
+		t.Fatalf("resolved=%d skipped=%d, want 0/1", len(resolved), len(skipped))
+	}
+	if fetches != 0 {
+		t.Errorf("an undeclared name triggered %d fetch(es) — the declaration gate must run before the network", fetches)
+	}
+}

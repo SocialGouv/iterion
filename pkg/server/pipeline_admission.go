@@ -7,7 +7,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
@@ -15,6 +14,14 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// pipelineBoardLaunchActor is the machine actor the board lanes stamp as the
+// run's store identity — never the clicking operator: the run is the lane's
+// work, and a human's user id in the owner slot would make their PERSONAL
+// credentials spendable by a run they did not fund (the credential walk's
+// user tier reads the owner). Same shape as the other card lanes' actors
+// (boardDispatcherActor, scheduledLaunchActor, triggerSpineActor).
+const pipelineBoardLaunchActor = "pipeline-board"
 
 // pipelineAdmissionInterval is the backstop cadence of the ready-ticket
 // launch loop. It is not latency-critical (a couple of seconds to pick up a
@@ -899,12 +906,12 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runvi
 	// while keeping the request's values, and stamp the identity of the
 	// team this launch is FOR: the board's own, carried by the teamID
 	// parameter — the admission loop passes "" on a local board, where
-	// the stamp correctly no-ops.
-	launchActor := ""
-	if id, ok := auth.FromContext(ctx); ok {
-		launchActor = id.UserID
-	}
-	launchCtx := store.WithIdentity(context.WithoutCancel(ctx), teamID, launchActor)
+	// the stamp correctly no-ops. The actor is the lane's MACHINE one,
+	// never the clicking operator: their user id in the owner slot would
+	// make their personal credentials spendable by a run they did not
+	// fund — the very tier this lane never consulted before (Background
+	// carries no owner).
+	launchCtx := store.WithIdentity(context.WithoutCancel(ctx), teamID, pipelineBoardLaunchActor)
 	res, err := runs.Launch(launchCtx, spec)
 	if err != nil {
 		if !runview.RunMayHaveStarted(err) {

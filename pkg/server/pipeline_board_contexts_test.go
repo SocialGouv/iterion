@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -47,11 +48,13 @@ type handoffPublisher struct {
 	t          *testing.T
 	rs         store.RunStore
 	tenantSeen string
+	ownerSeen  string
 	runID      string
 }
 
 func (p *handoffPublisher) SubmitLaunch(ctx context.Context, runID string, spec runview.LaunchSpec, wf *ir.Workflow, cs *runview.CompiledSource) (int, error) {
 	p.tenantSeen, _ = store.TenantFromContext(ctx)
+	p.ownerSeen, _ = store.OwnerFromContext(ctx)
 	p.runID = runID
 	if _, err := p.rs.CreateRun(ctx, runID, wf.Name, nil); err != nil {
 		return 0, err
@@ -127,13 +130,24 @@ func TestLaunchTicketNow_BoundContextsRideTheLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := s.launchTicketNow(boundedCtx(t), "t1", s.runs, board, card); err != nil {
+	// The launch comes from an operator's click: the request ctx carries
+	// their identity. The stamp the lane adds must carry the TEAM (the
+	// tenant gates every team-keyed materialisation) but a MACHINE actor —
+	// the run is the board lane's work, and stamping the human would make
+	// their personal credentials spendable by a run they did not fund
+	// (SpendableBy measures the owner; every other card lane stamps its own
+	// machine actor: board-dispatcher, trigger-spine, cloud-scheduler).
+	clickCtx := auth.WithIdentity(boundedCtx(t), auth.Identity{TeamID: "t1", UserID: "operator-alice", Kind: auth.KindUser})
+	if _, err := s.launchTicketNow(clickCtx, "t1", s.runs, board, card); err != nil {
 		t.Fatalf("launchTicketNow = %v, want nil", err)
 	}
 	// The mechanism: the launch ctx carries the store tenant stamp of the
 	// team the board was selected from.
 	if pub.tenantSeen != "t1" {
 		t.Errorf("the launch ctx carries tenant %q, want t1 — an unstamped launch silently skips every team-keyed materialisation", pub.tenantSeen)
+	}
+	if pub.ownerSeen != pipelineBoardLaunchActor {
+		t.Errorf("the launch ctx carries owner %q, want the lane's machine actor %q — the clicking operator's personal credentials must not become spendable by the run", pub.ownerSeen, pipelineBoardLaunchActor)
 	}
 	// The behavior: the bound context is an attachment of the run.
 	held, err := rs.ListAttachments(context.Background(), pub.runID)
