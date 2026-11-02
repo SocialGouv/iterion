@@ -3817,7 +3817,27 @@ func testRouteDecisionRegistry(t *testing.T, s store.RunStore) {
 	})
 	mki("intent-declined-unbanked", nil)
 	mki("intent-declined-failed", func(r *store.Run) { r.Status = store.RunStatusFailed })
-	mki("intent-declined-none", func(r *store.Run) { r.MergeInto = "none" })
+	// BANKED: the bank fields must be set, else the bank guard declines
+	// the run first and the none-arm stays untested — two guards, one
+	// masking the other, neither witnessed.
+	mki("intent-declined-none", func(r *store.Run) {
+		r.MergeInto = "none"
+		r.FinalBranch, r.FinalCommit = "iterion/run/banked", "cafebabel"
+	})
+	// The opt-out reads FOLDED — case-insensitive, whitespace-trimmed,
+	// the one reading pkg/store.MergeIntoOptOut gives the intent
+	// evaluator and both sweep nets: a net matching "none" exactly
+	// would admit these on the same doc the router declines in silence,
+	// and the doc would ride the oldest-first page for its whole
+	// lookback.
+	mki("intent-declined-none-mixedcase", func(r *store.Run) {
+		r.MergeInto = "None"
+		r.FinalBranch, r.FinalCommit = "iterion/run/banked", "cafebabel"
+	})
+	mki("intent-declined-none-padded", func(r *store.Run) {
+		r.MergeInto = " none "
+		r.FinalBranch, r.FinalCommit = "iterion/run/banked", "cafebabel"
+	})
 	mki("intent-declined-skipped", func(r *store.Run) { r.MergeStatus = store.MergeStatusSkipped })
 	mki("intent-declined-bank", func(r *store.Run) { r.FinalBranchError = "push refused" })
 	mki("intent-declined-merged", func(r *store.Run) { r.MergeStatus = store.MergeStatusMerged })
@@ -3849,6 +3869,7 @@ func testRouteDecisionRegistry(t *testing.T, s store.RunStore) {
 	}
 	for _, declined := range []string{
 		"intent-declined-unbanked", "intent-declined-failed", "intent-declined-none",
+		"intent-declined-none-mixedcase", "intent-declined-none-padded",
 		"intent-declined-skipped", "intent-declined-bank", "intent-declined-merged",
 		"contract-declined-merged",
 	} {

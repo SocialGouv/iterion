@@ -203,7 +203,7 @@ func EvaluateAutoMerge(r *store.Run) (Verdict, bool) {
 	if r == nil || !r.AutoMerge {
 		return Verdict{}, false
 	}
-	if strings.EqualFold(strings.TrimSpace(r.MergeInto), "none") {
+	if store.MergeIntoOptOut(r.MergeInto) {
 		return Verdict{}, false
 	}
 	if !r.Status.IsFinalSuccess() {

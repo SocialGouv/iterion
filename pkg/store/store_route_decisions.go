@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -185,7 +184,7 @@ func (s *FilesystemRunStore) ListRoutableRuns(_ context.Context, since time.Time
 			// preconditions mirror routing.EvaluateAutoMerge and the
 			// router's own gates; keep the two readings aligned.
 			if r.Status != RunStatusFinished ||
-				strings.EqualFold(strings.TrimSpace(r.MergeInto), "none") ||
+				MergeIntoOptOut(r.MergeInto) ||
 				r.MergeStatus == MergeStatusSkipped ||
 				r.BankState() != BankStateReady {
 				continue

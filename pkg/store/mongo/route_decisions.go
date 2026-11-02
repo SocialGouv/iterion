@@ -136,11 +136,21 @@ func (s *Store) ListRoutableRuns(ctx context.Context, since time.Time, limit int
 					// behind the cap). The preconditions mirror
 					// routing.EvaluateAutoMerge and the router's own
 					// gates — keep the two readings aligned.
-					"auto_merge":         true,
-					"status":             store.RunStatusFinished,
-					"merge_into":         bson.M{"$nin": bson.A{"none"}},
-					"merge_status":       bson.M{"$nin": bson.A{store.MergeStatusSkipped}},
+					"auto_merge":   true,
+					"status":       store.RunStatusFinished,
+					"merge_status": bson.M{"$nin": bson.A{store.MergeStatusSkipped}},
+					// The opt-out reads FOLDED — case-insensitive,
+					// whitespace-trimmed — the same reading
+					// pkg/store.MergeIntoOptOut gives the intent
+					// evaluator and the FS twin. An exact "none"
+					// would admit " None " and starve the page
+					// behind a decline the router settles silently
+					// before any claim.
 					"final_branch_error": bson.M{"$in": bson.A{"", nil}},
+					"$expr": bson.M{"$ne": bson.A{
+						bson.M{"$toLower": bson.M{"$trim": bson.M{"input": bson.M{"$ifNull": bson.A{"$merge_into", ""}}}}},
+						"none",
+					}},
 					// The router's bank gate declines the unbanked
 					// shape before the claim (the terminal status
 					// lands BEFORE the bank push, measured up to 10+

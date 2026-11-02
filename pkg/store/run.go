@@ -1824,6 +1824,19 @@ const (
 	MergeStrategyMerge  MergeStrategy = "merge"
 )
 
+// MergeIntoOptOut reports whether a run's merge_into value is the
+// operator's explicit opt-out a launch intent must not override. This is
+// the ONE folded reading — case-insensitive, whitespace-trimmed, the way
+// the runtime's finalize reads the same field — shared by the intent
+// evaluator (routing.EvaluateAutoMerge) and the filesystem sweep net, and
+// mirrored in the mongo sweep net's $expr: readers of one run doc must
+// answer the same question, or a doc one net admits and the router
+// declines rides the oldest-first sweep page for its whole lookback and
+// starves newer landable runs behind the cap.
+func MergeIntoOptOut(mergeInto string) bool {
+	return strings.EqualFold(strings.TrimSpace(mergeInto), "none")
+}
+
 // RoutingPolicy is a run's launch-frozen outcome contract. The
 // expressions speak the SAME language as the bot DSL's edge conditions
 // (pkg/dsl/expr), resolved against the terminal checkpoint's outputs —
