@@ -402,19 +402,21 @@ func validateForgeBaseURL(raw string) (string, error) {
 	return "https://" + u.Host, nil
 }
 
-// validateKeyOverrides rejects a webhook key override that references a BYOK
-// key the webhook's tenant doesn't own, whose provider doesn't match, or that
-// the lane's own actor could never spend. The resolver is already
+// validateKeyOverrides rejects a machine lane's key override that references
+// a BYOK key the caller's tenant doesn't own, whose provider doesn't match,
+// or that the lane's own actor could never spend. The resolver is already
 // tenant-scoped (a foreign key_id silently won't match in secrets.Resolve),
 // so the cross-org arm is a fail-fast UX guard, not the security boundary;
 // the spendability arm is the opposite — it is the ONLY place that arm can be
 // enforced, because an unspendable pin produces no refusal downstream at all.
+// Both machine lanes that carry pins share it: the webhook routes and the
+// trigger subscription routes.
 //
 // actor is the identity the launch will resolve credentials under
-// (webhookActor for this lane). It fails CLOSED: an empty actor matches no
-// key's scope, so an unknown lane is treated as a machine lane rather than
-// skipping the arm — a credential guard with an unused opt-out is a seam
-// for the next caller's false negative.
+// (webhookActor / triggerSpineActor for the machine lanes). It fails CLOSED:
+// an empty actor matches no key's scope, so an unknown lane is treated as a
+// machine lane rather than skipping the arm — a credential guard with an
+// unused opt-out is a seam for the next caller's false negative.
 func (s *Server) validateKeyOverrides(ctx context.Context, tenantID, actor string, overrides map[string]string) error {
 	if len(overrides) == 0 || s.apiKeys == nil {
 		return nil
@@ -449,7 +451,7 @@ func (s *Server) validateKeyOverrides(ctx context.Context, tenantID, actor strin
 		// operator's explicit choice is never replaced in silence. The
 		// secret twin below has always refused the same shape.
 		if !secrets.SpendableBy(k, tenantID, actor) {
-			return fmt.Errorf("key_overrides[%s]: api key %q is not spendable by this webhook — it launches as %q, which sees only this team's org-scoped keys, so the pin would be dropped at launch; pin an org-scoped key of this team or clear the pin", prov, keyID, actor)
+			return fmt.Errorf("key_overrides[%s]: api key %q is not spendable by this lane — it launches as %q, which sees only this team's org-scoped keys, so the pin would be dropped at launch; pin an org-scoped key of this team or clear the pin", prov, keyID, actor)
 		}
 	}
 	return nil

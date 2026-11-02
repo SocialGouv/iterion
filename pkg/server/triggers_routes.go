@@ -326,8 +326,18 @@ type triggerSubscriptionReq struct {
 	Match      trigger.Matcher   `json:"match"`
 	Vars       map[string]string `json:"vars,omitempty"`
 	ArgsVar    string            `json:"args_var,omitempty"`
-	Cron       string            `json:"cron,omitempty"`
-	Enabled    *bool             `json:"enabled,omitempty"`
+	// Credential pins, the subscription's home for a key/secret id — the
+	// third place one lives (the BYOK key row and the webhook config are
+	// the other two). The spine launches under triggerSpineActor, so the
+	// write validates each pin against that actor: the same visibility
+	// question secrets.Resolve answers at fire time, asked here where a
+	// refusal is still an answer. On update a request that omits a pin
+	// keeps the stored one; an empty map is the explicit clear. The webhook
+	// routes share the two validators.
+	KeyOverrides    map[string]string `json:"key_overrides,omitempty"`
+	SecretOverrides map[string]string `json:"secret_overrides,omitempty"`
+	Cron            string            `json:"cron,omitempty"`
+	Enabled         *bool             `json:"enabled,omitempty"`
 	// Overlap policy + guard for schedule-kind subscriptions
 	// (pkg/schedgate; validated on create/update).
 	Overlap       string `json:"overlap,omitempty"`
@@ -418,6 +428,19 @@ func (s *Server) handleCreateTrigger(w http.ResponseWriter, r *http.Request) {
 		dispatcher.WriteErr(w, http.StatusBadRequest, err)
 		return
 	}
+	// The pins answer to the actor the spine will launch under, so a pin no
+	// machine lane can spend is refused here — the one place a refusal can
+	// still reach the operator (an unspendable pin is invisible to
+	// secrets.Resolve, which would seal the team's default in silence).
+	tenant := s.triggerTenant(r)
+	if err := s.validateKeyOverrides(teamTenantCtx(r.Context(), tenant), tenant, triggerSpineActor, req.KeyOverrides); err != nil {
+		dispatcher.WriteErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.validateSecretOverrides(teamTenantCtx(r.Context(), tenant), tenant, req.SecretOverrides); err != nil {
+		dispatcher.WriteErr(w, http.StatusBadRequest, err)
+		return
+	}
 	// The same refusal the schedule routes carry: a trigger guard is the
 	// same shell command, stored through a route a cloud server mounts. Its
 	// executor is not wired in cloud today, so this refuses a guard that
@@ -430,7 +453,7 @@ func (s *Server) handleCreateTrigger(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	sub := applyTriggerReq(trigger.Subscription{
 		ID:        uuid.NewString(),
-		TenantID:  s.triggerTenant(r),
+		TenantID:  tenant,
 		Origin:    "operator",
 		Enabled:   true,
 		CreatedAt: now,
@@ -444,8 +467,9 @@ func (s *Server) handleCreateTrigger(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
+	tenant := s.triggerTenant(r)
 	cur, err := s.cfg.TriggerStore.Get(r.Context(), r.PathValue("id"))
-	if err == nil && cur.TenantID != s.triggerTenant(r) {
+	if err == nil && cur.TenantID != tenant {
 		err = trigger.ErrSubscriptionNotFound
 	}
 	if errors.Is(err, trigger.ErrSubscriptionNotFound) {
@@ -463,6 +487,22 @@ func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 	if err := req.validatePolicy(); err != nil {
 		dispatcher.WriteErr(w, http.StatusBadRequest, err)
 		return
+	}
+	// A pin the request names is judged against the launch actor before it
+	// lands; one it omits keeps the stored value (the fold below), so an
+	// edit that says nothing about the pins can neither wipe one nor needs
+	// to re-pass one.
+	if req.KeyOverrides != nil {
+		if err := s.validateKeyOverrides(teamTenantCtx(r.Context(), tenant), tenant, triggerSpineActor, req.KeyOverrides); err != nil {
+			dispatcher.WriteErr(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	if req.SecretOverrides != nil {
+		if err := s.validateSecretOverrides(teamTenantCtx(r.Context(), tenant), tenant, req.SecretOverrides); err != nil {
+			dispatcher.WriteErr(w, http.StatusBadRequest, err)
+			return
+		}
 	}
 	// A guard the request CHANGES, not one it merely carries: the studio
 	// builds its payload from the stored subscription, guard included, so
@@ -517,6 +557,16 @@ func applyTriggerReq(base trigger.Subscription, req triggerSubscriptionReq) trig
 	base.Cron = req.Cron
 	base.Overlap = req.Overlap
 	base.MaxConcurrent = req.MaxConcurrent
+	// nil-means-untouched, like the guard pointers: the studio builds its
+	// trigger payload from the stored subscription, so a plain overwrite
+	// would drop a stored pin on every edit that says nothing about it.
+	// A present map replaces wholesale (an empty one is the clear).
+	if req.KeyOverrides != nil {
+		base.KeyOverrides = req.KeyOverrides
+	}
+	if req.SecretOverrides != nil {
+		base.SecretOverrides = req.SecretOverrides
+	}
 	base.Guard = req.guardOf(base.Guard)
 	if req.GuardTimeout != nil {
 		base.GuardTimeout = *req.GuardTimeout

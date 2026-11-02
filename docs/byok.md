@@ -437,6 +437,15 @@ mechanism; the wiring threads a webhook's pinned keys through to it:
    produces no refusal anywhere downstream, so the write is the only place
    it can be said.
 
+The trigger subscription routes write the sibling home for keys:
+`key_overrides` on `POST /api/v1/triggers` / `PUT /api/v1/triggers/{id}`
+lands on `trigger.Subscription.KeyOverrides`, which the evaluator and
+scheduler lanes already thread into the launch plan. The write validates
+against `trigger-spine` — the synthetic actor the spine resolves under —
+through the same `validateKeyOverrides`, so every arm above answers the
+subscription lane identically. On update, a request that omits the field
+keeps the stored pin; an empty map is the explicit clear.
+
 **A pin is honoured or refused, never ignored.** Two shapes would be
 honoured by nobody: a provider the walk does not spend yet (the
 `openai_compatible` gateway, until #2005 PR-C') and a key the launching

@@ -1251,7 +1251,7 @@ key's visibility against the identity that spends it: a key scoped to a USER
 is never visible to that actor, so a pin on one would be dropped at launch
 and the run would seal the team's default instead — invisibly, because the
 walk reports a key it *withholds*, never a pin it never saw. Such a pin is a
-400 at write (`not spendable by this webhook`), like the `openai_compatible`
+400 at write (`not spendable by this lane`), like the `openai_compatible`
 gateway pin above and like its `secret_overrides` twin, which
 requires an org-scoped secret. The team key list an admin picks from
 includes their own user-scoped keys (`GET /api/teams/{id}/api-keys`), so this

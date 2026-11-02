@@ -12,8 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
@@ -403,5 +406,205 @@ func TestTriggers_CloudRefusesAGuardItIsAskedToStore(t *testing.T) {
 		bytes.NewBufferString(`{`+base+`,"guard":"true"}`)))
 	if lrec.Code != http.StatusCreated {
 		t.Fatalf("local create with a guard = %d, want 201; body=%s", lrec.Code, lrec.Body.String())
+	}
+}
+
+// triggerPinServer builds a server whose trigger routes validate pins against
+// real stores: a BYOK key store and a generic-secret store, both seeded under
+// the tenant the requests are stamped with.
+func triggerPinServer(t *testing.T) (*Server, secrets.ApiKey, secrets.GenericSecret) {
+	t.Helper()
+	keys := secrets.NewMemoryApiKeyStore()
+	org := seedVendorKey(t, keys, "t1", "", "org-default", true)
+	gen := secrets.NewMemoryGenericSecretStore()
+	sec := secrets.GenericSecret{
+		ID: "sec-org", TenantID: "t1", ScopeTeamID: "t1",
+		Name: "forge_token", CreatedAt: time.Now().UTC(),
+	}
+	if err := gen.Create(store.WithTenant(t.Context(), "t1"), sec); err != nil {
+		t.Fatal(err)
+	}
+	srv := newTriggerTestServer(t)
+	srv.apiKeys = keys
+	srv.genericSecrets = gen
+	return srv, org, sec
+}
+
+// teamTriggerReq stamps the active team the trigger routes read the tenant
+// from. id lands as the {id} path value the direct handler calls read (the
+// mux is what populates it on a routed request); empty for id-less routes.
+func teamTriggerReq(t *testing.T, method, target, id, body string) *http.Request {
+	t.Helper()
+	ctx := auth.WithIdentity(t.Context(), auth.Identity{UserID: "op", TeamID: "t1"})
+	return orgReq(ctx, method, target, body, id)
+}
+
+// #2644, the carrier. The subscription routes are the WRITE the spine's pin
+// conveyor was waiting for: the lanes (pkg/trigger/pin_carriage_test.go) and
+// the LaunchSpec hop (trigger_pin_carriage_test.go) already carry pins, and
+// none of it mattered because no writer ever produced one. These witnesses
+// pin the route half: the request fields land in the stored subscription,
+// an edit that says nothing about a pin keeps it, and a pin no machine lane
+// can spend is refused where it is written — the only place a refusal can
+// still reach the operator.
+
+func TestTriggers_CreateStoresThePinsItIsGiven(t *testing.T) {
+	srv, org, sec := triggerPinServer(t)
+
+	body := `{"bot_id":"feature-dev","invocation":"board","mode":"board",
+		"match":{"sources":["board"]},
+		"key_overrides":{"anthropic":"` + org.ID + `"},
+		"secret_overrides":{"forge_token":"` + sec.ID + `"}}`
+	rec := httptest.NewRecorder()
+	srv.handleCreateTrigger(rec, teamTriggerReq(t, http.MethodPost, "/api/v1/triggers", "", body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create with pins = %d, want 201; body=%s", rec.Code, rec.Body.String())
+	}
+	var created trigger.Subscription
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if got := created.KeyOverrides["anthropic"]; got != org.ID {
+		t.Errorf("created.KeyOverrides[anthropic] = %q, want the pinned key %q — the answer would read like a subscription that pins nothing", got, org.ID)
+	}
+	if got := created.SecretOverrides["forge_token"]; got != sec.ID {
+		t.Errorf("created.SecretOverrides[forge_token] = %q, want the pinned secret %q", got, sec.ID)
+	}
+
+	// The stored row carries them too — the lanes read the store, not the
+	// create answer.
+	got, err := srv.cfg.TriggerStore.Get(t.Context(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.KeyOverrides["anthropic"] != org.ID || got.SecretOverrides["forge_token"] != sec.ID {
+		t.Errorf("stored pins = %v / %v, want the pinned key and secret", got.KeyOverrides, got.SecretOverrides)
+	}
+}
+
+func TestTriggers_AnEditOmittingThePinsKeepsTheStoredOnes(t *testing.T) {
+	srv, org, sec := triggerPinServer(t)
+
+	body := `{"bot_id":"feature-dev","invocation":"board","mode":"board",
+		"match":{"sources":["board"]},
+		"key_overrides":{"anthropic":"` + org.ID + `"},
+		"secret_overrides":{"forge_token":"` + sec.ID + `"}}`
+	rec := httptest.NewRecorder()
+	srv.handleCreateTrigger(rec, teamTriggerReq(t, http.MethodPost, "/api/v1/triggers", "", body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var created trigger.Subscription
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	// An edit that says nothing about the pins (the payload the studio
+	// builds from the stored subscription).
+	silent := httptest.NewRecorder()
+	srv.handleUpdateTrigger(silent, teamTriggerReq(t, http.MethodPut, "/api/v1/triggers/"+created.ID, created.ID,
+		`{"bot_id":"feature-dev","invocation":"board","mode":"board","match":{"sources":["board"]},"enabled":false}`))
+	if silent.Code != http.StatusOK {
+		t.Fatalf("an edit omitting the pins = %d, want 200; body=%s", silent.Code, silent.Body.String())
+	}
+	got, _ := srv.cfg.TriggerStore.Get(t.Context(), created.ID)
+	if got.KeyOverrides["anthropic"] != org.ID || got.SecretOverrides["forge_token"] != sec.ID {
+		t.Errorf("an edit that said nothing about the pins left %v / %v — the studio would wipe a pin on every toggle", got.KeyOverrides, got.SecretOverrides)
+	}
+
+	// A present map replaces wholesale: a second org secret proves the
+	// stored value actually moved.
+	sec2 := secrets.GenericSecret{
+		ID: "sec-org2", TenantID: "t1", ScopeTeamID: "t1",
+		Name: "forge_token", CreatedAt: time.Now().UTC(),
+	}
+	if err := srv.genericSecrets.Create(store.WithTenant(t.Context(), "t1"), sec2); err != nil {
+		t.Fatal(err)
+	}
+	repl := httptest.NewRecorder()
+	srv.handleUpdateTrigger(repl, teamTriggerReq(t, http.MethodPut, "/api/v1/triggers/"+created.ID, created.ID,
+		`{"bot_id":"feature-dev","invocation":"board","mode":"board","match":{"sources":["board"]},"secret_overrides":{"forge_token":"`+sec2.ID+`"}}`))
+	if repl.Code != http.StatusOK {
+		t.Fatalf("the replace = %d, want 200; body=%s", repl.Code, repl.Body.String())
+	}
+	if got, _ := srv.cfg.TriggerStore.Get(t.Context(), created.ID); got.SecretOverrides["forge_token"] != sec2.ID || got.KeyOverrides["anthropic"] != org.ID {
+		t.Errorf("the replace left %v / %v, want the new secret pin and the untouched key pin", got.SecretOverrides, got.KeyOverrides)
+	}
+
+	// An empty map is the explicit clear.
+	clear := httptest.NewRecorder()
+	srv.handleUpdateTrigger(clear, teamTriggerReq(t, http.MethodPut, "/api/v1/triggers/"+created.ID, created.ID,
+		`{"bot_id":"feature-dev","invocation":"board","mode":"board","match":{"sources":["board"]},"key_overrides":{},"secret_overrides":{}}`))
+	if clear.Code != http.StatusOK {
+		t.Fatalf("the explicit clear = %d, want 200; body=%s", clear.Code, clear.Body.String())
+	}
+	if got, _ := srv.cfg.TriggerStore.Get(t.Context(), created.ID); len(got.KeyOverrides) != 0 || len(got.SecretOverrides) != 0 {
+		t.Errorf("an empty pin map did not clear: %v / %v", got.KeyOverrides, got.SecretOverrides)
+	}
+}
+
+// The spine launches under triggerSpineActor, so a pin it can never spend is
+// refused at write — the same arm, through the same validator, the webhook
+// lane already answers with (machine_lane_pin_visibility_test.go). Reached
+// through the ROUTE because the validator call itself is the writer's guard.
+func TestTriggers_APinTheSpineCanNeverSpendIsRefusedAtTheRoutes(t *testing.T) {
+	srv, org, _ := triggerPinServer(t)
+	keys := srv.apiKeys
+	personal := seedVendorKey(t, keys, "t1", "alice", "alice-personal", false)
+
+	body := `{"bot_id":"feature-dev","invocation":"board","mode":"board",
+		"match":{"sources":["board"]},
+		"key_overrides":{"anthropic":"` + personal.ID + `"}}`
+	rec := httptest.NewRecorder()
+	srv.handleCreateTrigger(rec, teamTriggerReq(t, http.MethodPost, "/api/v1/triggers", "", body))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("create pinning a personal key = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "not spendable by this lane") || !strings.Contains(rec.Body.String(), triggerSpineActor) {
+		t.Errorf("the refusal %s does not name the lane and the actor it launches under — an operator cannot act on it", rec.Body.String())
+	}
+	if n, _ := srv.cfg.TriggerStore.ListByTenant(store.WithTenant(t.Context(), "t1"), "t1"); len(n) != 0 {
+		t.Errorf("the refused create stored %d subscription(s)", len(n))
+	}
+
+	// The secret twin answers the same shape the same way.
+	gen := secrets.NewMemoryGenericSecretStore()
+	bad := secrets.GenericSecret{
+		ID: "sec-personal", TenantID: "t1", ScopeTeamID: "t1", ScopeUserID: "alice",
+		Name: "forge_token", CreatedAt: time.Now().UTC(),
+	}
+	if err := gen.Create(store.WithTenant(t.Context(), "t1"), bad); err != nil {
+		t.Fatal(err)
+	}
+	srv.genericSecrets = gen
+	srec := httptest.NewRecorder()
+	srv.handleCreateTrigger(srec, teamTriggerReq(t, http.MethodPost, "/api/v1/triggers", "",
+		`{"bot_id":"feature-dev","invocation":"board","mode":"board","match":{"sources":["board"]},
+		 "secret_overrides":{"forge_token":"`+bad.ID+`"}}`))
+	if srec.Code != http.StatusBadRequest {
+		t.Fatalf("create pinning a user-scoped secret = %d, want 400; body=%s", srec.Code, srec.Body.String())
+	}
+
+	// A stored pin survives an edit that would replace it with an
+	// unspendable one: the refusal leaves the stored value alone.
+	base := `{"bot_id":"feature-dev","invocation":"board","mode":"board","match":{"sources":["board"]}`
+	create := httptest.NewRecorder()
+	srv.handleCreateTrigger(create, teamTriggerReq(t, http.MethodPost, "/api/v1/triggers", "",
+		base+`,"key_overrides":{"anthropic":"`+org.ID+`"}}`))
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create with an org pin = %d, want 201; body=%s", create.Code, create.Body.String())
+	}
+	var created trigger.Subscription
+	if err := json.Unmarshal(create.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	urec := httptest.NewRecorder()
+	srv.handleUpdateTrigger(urec, teamTriggerReq(t, http.MethodPut, "/api/v1/triggers/"+created.ID, created.ID,
+		base+`,"key_overrides":{"anthropic":"`+personal.ID+`"}}`))
+	if urec.Code != http.StatusBadRequest {
+		t.Fatalf("update to a personal pin = %d, want 400; body=%s", urec.Code, urec.Body.String())
+	}
+	if got, _ := srv.cfg.TriggerStore.Get(t.Context(), created.ID); got.KeyOverrides["anthropic"] != org.ID {
+		t.Errorf("the refused edit changed the stored pin to %v", got.KeyOverrides)
 	}
 }
