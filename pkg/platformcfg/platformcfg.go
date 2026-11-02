@@ -713,8 +713,13 @@ type RunnerPool struct {
 	// (grammar-checked: 1–31 chars [a-z0-9-], starting alphanumeric).
 	Name string `bson:"name" json:"name"`
 	// ProvidersServed names the LLM providers this pool's own env serves
-	// (today: ["openai_compatible"]). The publisher treats a provider the
-	// pool serves as funded for the pool's teams.
+	// (today: ["openai_compatible"]). The registry records it and NO
+	// production code reads it — the funding walk answers "is this route
+	// env-funded?" from the route's own provider
+	// (model.EffectiveProviders over the whole provider vocabulary), never
+	// from this field. TestProvidersServedHasNoProductionReader holds the
+	// claim: wiring a reader reddens it, and the fix is to say here, and in
+	// docs/sovereign-pools.md, what the reader does.
 	ProvidersServed []string `bson:"providers_served,omitempty" json:"providers_served,omitempty"`
 	// Note is free text for the operator (which team, which gateway).
 	Note string `bson:"note,omitempty" json:"note,omitempty"`
