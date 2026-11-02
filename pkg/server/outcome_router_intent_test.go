@@ -123,6 +123,34 @@ func TestOutcomeRouter_AFailedIntentRunIsLeftAlone(t *testing.T) {
 	}
 }
 
+// A bank failure declines the intent too: the launch intent grants
+// LANDING only, and a run whose bank push failed cannot land from it.
+// The contract lane reading the same gate ESCALATES with a
+// contract-flavored reason ("contract says merge but the bank recorded
+// an error") — speech an intent run carries nothing of, so the decline
+// stays silent: no merge, no registry row.
+func TestOutcomeRouter_ABankFailedIntentRunIsDeclinedNotEscalated(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	h := newRouterHarness(t)
+	ctx := context.Background()
+
+	intentBankedRun(t, h, "i6b-intent-bank-error", func(r *store.Run) {
+		r.FinalBranchError = "push rejected: protected branch"
+	})
+
+	h.s.routeOutcomeOffer(ctx, "i6b-intent-bank-error")
+
+	got, _ := h.st.LoadRun(ctx, "i6b-intent-bank-error")
+	if got.MergeStatus == store.MergeStatusMerged {
+		t.Fatalf("a bank-failed intent run must never be merged, got %q", got.MergeStatus)
+	}
+	if ds := h.decisions(t, "i6b-intent-bank-error"); len(ds) != 0 {
+		t.Fatalf("a bank-failed intent run must leave no row (the escalation the intent never carried), got %+v", ds)
+	}
+}
+
 // An explicit merge_into "none" is the operator's opt-out: the intent
 // must not override it (the engine's own finalization skips the merge
 // for the same launch), so the router declines without a row.
