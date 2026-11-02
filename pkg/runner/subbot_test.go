@@ -816,3 +816,52 @@ func TestSubbotChildInheritsTheBotSourceTier(t *testing.T) {
 		t.Fatalf("children of the parent = %d, want exactly one", children)
 	}
 }
+
+// TestSubbotRunnerRefusesALandingIntentAWorktreeNoneChildCannotActOn: a
+// child that declares `worktree: none` owns no finalization, and no bank
+// ever writes a subbot child's branch — the armed intent would sit on the
+// run doc unfired forever, declined in silence on every router sweep. The
+// launch refuses it BEFORE any child run is recorded: the error names the
+// contradictory declaration, and the store proves no dead-intent doc.
+func TestSubbotRunnerRefusesALandingIntentAWorktreeNoneChildCannotActOn(t *testing.T) {
+	r, st := subbotTestRunner(t)
+	dir := t.TempDir()
+	parentDir := filepath.Join(dir, "parent")
+	writeSubbotFixture(t, parentDir, "main.bot", subbotTestParent)
+	writeSubbotFixture(t, parentDir, "child.bot", `tool noop:
+  command: "echo landing"
+
+workflow child:
+  worktree: none
+  sandbox: none
+  entry: noop
+  noop -> done
+`)
+	msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent"}
+
+	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
+	_, err := run(context.Background(), runtime.SubbotRequest{
+		Source:        "child.bot",
+		ParentRunID:   msg.RunID,
+		NodeID:        "run_ticket",
+		ReattachKey:   "run_ticket",
+		Isolated:      true,
+		AutoMerge:     true,
+		MergeInto:     "main",
+		MergeStrategy: "merge",
+	})
+	if err == nil {
+		t.Fatal("subbot runner = nil error, want a refusal: a worktree:none child cannot land the armed intent")
+	}
+	if !strings.Contains(err.Error(), "worktree: none") {
+		t.Fatalf("refusal %q does not name the declaration that disarms the intent", err)
+	}
+	idCtx := store.WithIdentity(context.Background(), "t1", "u1")
+	ids, lerr := st.ListRuns(idCtx)
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("the refused launch left %d child run doc(s) behind (%v) — the dead intent is on the record", len(ids), ids)
+	}
+}

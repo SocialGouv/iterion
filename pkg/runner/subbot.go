@@ -223,6 +223,12 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
 		}
+		// A landing intent the child's own declaration disarms never fires:
+		// refused here, before any child run is recorded — the class C329
+		// closes at the parent's compile, one level down.
+		if err := runtime.RefuseUnlandableSubbotLanding(req, childWf.Worktree); err != nil {
+			return nil, err
+		}
 		// The deployment's multitenant ceiling (ITERION_CLOUD_MAX_*) clamps
 		// the child exactly as executeRun clamps the parent: a tenant bot
 		// could otherwise declare its spend in a child and leave the cap

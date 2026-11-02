@@ -123,6 +123,12 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
 		}
+		// A landing intent the child's own declaration disarms never fires:
+		// refused here, before any child run is recorded — the class C329
+		// closes at the parent's compile, one level down.
+		if err := runtime.RefuseUnlandableSubbotLanding(req, childWf.Worktree); err != nil {
+			return nil, err
+		}
 		childRunID, err := store.GenerateRunID()
 		if err != nil {
 			return nil, err

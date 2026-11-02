@@ -363,17 +363,38 @@ type SubbotRequest struct {
 	Isolated bool
 	// AutoMerge carries the subbot node's `auto_merge:` intent: the child's
 	// own workflow completion lands its banked branch. The host wires it
-	// into the child engine (WithAutoMerge), whose run doc then records it —
-	// on the cloud plane that recorded intent is what the instance's outcome
-	// router lands from. Meaningful only on an isolated child (the compile
-	// refuses it elsewhere): a child in the parent's workspace has no
-	// finalization of its own.
+	// into the child engine (WithAutoMerge), whose run doc then records it.
+	// The child acts on the intent through its OWN worktree finalization and
+	// through nothing else — a subbot child is never banked, so a recorded
+	// intent with FinalBranch empty is dead. Meaningful only on an isolated
+	// child (the compile refuses it elsewhere): a child in the parent's
+	// workspace has no finalization of its own, and neither has a child
+	// that renounces the worktree (`worktree: none`) — the launch refuses
+	// that shape (RefuseUnlandableSubbotLanding).
 	AutoMerge bool
 	// MergeInto / MergeStrategy carry the subbot node's landing target and
 	// strategy ("current" default, "none", or a branch; "squash" default or
 	// "merge"). Wired into the child engine beside AutoMerge.
 	MergeInto     string
 	MergeStrategy string
+}
+
+// RefuseUnlandableSubbotLanding refuses a landing intent the child cannot
+// act on. A child whose own workflow declares `worktree: none` runs in
+// place — no worktree of its own, no finalization of its own — and a subbot
+// child is never banked either (the bank serves queue-delivered runs only,
+// a child rides its parent's delivery), so the armed intent sits on the run
+// doc with FinalBranch empty and the instance's outcome router declines it
+// before the claim on every sweep, in silence. C329 refuses the same dead
+// intent at the parent's compile for a child without `isolated:`; this
+// closes the hole one level down, which only the child launch sees: the
+// parent's compile never reads the child .bot. Both hosts call it right
+// after the child compiles and before any child run is recorded.
+func RefuseUnlandableSubbotLanding(req SubbotRequest, childWorktreeMode string) error {
+	if !req.AutoMerge || childWorktreeMode != "none" {
+		return nil
+	}
+	return fmt.Errorf("the child workflow declares `worktree: none` — a child without a worktree of its own has no finalization to land from and no bank ever writes a subbot child's branch, so the auto_merge intent would sit on the run doc unfired forever; drop the landing fields, or remove `worktree: none` so the child owns a worktree")
 }
 
 // SubbotRunner compiles and runs a child .bot as a nested run and returns its
