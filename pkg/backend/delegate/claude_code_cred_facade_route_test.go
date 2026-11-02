@@ -171,6 +171,54 @@ func TestShouldDropSessionFork_FacadeLabelAcrossTheSlotStamp(t *testing.T) {
 	}
 }
 
+// The ambient label gained its fingerprint segment. A session persisted by a
+// binary that predates it carries the bare "anthropic-env", and an ambient
+// base URL rode a slot-less "facade:<base>" where today the same route
+// renders "anthropic-env:<fingerprint>:<base>" — so a strict comparison drops
+// the first fork of every in-flight ambient session after an upgrade, on the
+// deployment where the ambient forfait is the delivery channel. The parent
+// labels here are what the previous binary wrote; the current ones come from
+// the real renderer, so the bench follows the renderer if it changes.
+func TestShouldDropSessionFork_AmbientLabelAcrossTheFingerprintStamp(t *testing.T) {
+	resetClaudeCredEnv(t)
+	ambient := ambientEnvSource("pod-key")
+	ambientBase := ambient + ":https://gateway.internal/anthropic"
+	fork := func(parent string) Task { return Task{ForkSession: true, SessionFingerprint: parent} }
+
+	keep := []struct{ name, parent, current string }{
+		// The bare label names no credential: it is what the pre-stamp binary
+		// persisted for the pod's ambient key, so it cannot contradict the
+		// fingerprint that now names it — same wire, no base on either side.
+		{"pre_stamp_bare_session_on_the_pod_key", "anthropic-env", ambient},
+		// The fingerprint renaming the ambient-base route worked both shapes of
+		// the old binary: the slot-less facade label and the bare one.
+		{"pre_stamp_ambient_base_session", "facade:https://gateway.internal/anthropic", ambientBase},
+		{"stamped_parent_on_bare_resume", ambient, "anthropic-env"},
+		{"same_stamped_route", ambient, ambient},
+	}
+	for _, tc := range keep {
+		if drop, reason := shouldDropSessionFork(fork(tc.parent), tc.current); drop {
+			t.Errorf("%s: fork dropped (%s) — parent %q and current %q are one route", tc.name, reason, tc.parent, tc.current)
+		}
+	}
+
+	drop := []struct{ name, parent, current string }{
+		// The wire itself moved: the bare parent is direct, the current one
+		// rides a gateway. One fingerprint cannot rename that.
+		{"pre_stamp_bare_then_base_appears", "anthropic-env", ambientBase},
+		{"bare_to_slotless_facade_base", "anthropic-env", "facade:https://gateway.internal/anthropic"},
+		// Two named credentials are two accounts: a rotated pod key opens a
+		// fresh session, like two slots behind one gateway do.
+		{"rotated_pod_key", ambient, ambientEnvSource("new-pod-key")},
+		{"ambient_to_bound_facade", ambientBase, "facade:zai:https://gateway.internal/anthropic"},
+	}
+	for _, tc := range drop {
+		if dropped, _ := shouldDropSessionFork(fork(tc.parent), tc.current); !dropped {
+			t.Errorf("%s: fork kept — parent %q and current %q are different routes (signed thinking blocks would 400)", tc.name, tc.parent, tc.current)
+		}
+	}
+}
+
 // Under the AmbientRefused stamp a run-held facade key authenticates to the
 // VENDOR's own endpoint, never to the pod's ANTHROPIC_BASE_URL: the stamp
 // declares the pod's wiring outside the run's trust domain, and the base URL

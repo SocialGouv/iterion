@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -76,6 +77,40 @@ func TestAnthropicRouteSource_NoAmbientCredentialIsTheBareLabel(t *testing.T) {
 	}
 	if source != "anthropic-env" {
 		t.Errorf("source = %q, want the bare %q — a refusal is not an account", source, "anthropic-env")
+	}
+}
+
+// The meter moves only through the ambient credential channels: ExtraEnv
+// entries that name none of them — what the runner lane actually composes
+// (PATH provisioning, the engine-child marker) — leave the stamp where the
+// process env put it. That boundary is what keeps the pre-flight, which
+// composes no ExtraEnv, and the session on one meter (AnthropicRouteSource).
+func TestSetupCredsAndSession_ANonCredentialExtraEnvCannotMoveTheMeter(t *testing.T) {
+	clearRoutingEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
+	ctx := context.Background()
+	b := &ClaudeCodeBackend{Logger: iterlog.Nop()}
+	stamp := func(extra []string) string {
+		task := Task{NodeID: "env-noise", WorkDir: t.TempDir(), Command: "true", ExtraEnv: extra}
+		opts, cleanup := b.buildTransportOptions(task)
+		defer cleanup()
+		_, stamped, _, err := b.setupCredsAndSession(ctx, task, opts)
+		if err != nil {
+			t.Fatalf("setupCredsAndSession: %v", err)
+		}
+		return stamped
+	}
+	quiet := stamp(nil)
+	noisy := stamp([]string{
+		"PATH=/usr/bin:/bin",
+		envtrust.EngineChildEnvEntry(),
+		"ITERION_TEST_RUN_NOISE=1",
+	})
+	if noisy != quiet {
+		t.Errorf("ExtraEnv naming no credential channel moved the meter: %q != %q", noisy, quiet)
+	}
+	if noisy != ambientEnvSource("sk-pod") {
+		t.Errorf("session label = %q, want the pod key's %q", noisy, ambientEnvSource("sk-pod"))
 	}
 }
 

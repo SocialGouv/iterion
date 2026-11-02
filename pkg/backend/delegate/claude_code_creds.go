@@ -94,12 +94,16 @@ const AmbientCredFPEnvKey = "ITERION_AMBIENT_CRED_FP"
 // the wrong key.
 const facadeSourcePrefix = "facade:"
 
-// ambientSourcePrefix opens every ambient-credential routing label
-// ("anthropic-env:<fingerprint>", extended with ":<base-url>" when an
-// inherited base URL routed the session). One constant, read by the renderer
-// and by the parser: two spellings of a wire shape is how a reading ends up
-// charged to the wrong key.
-const ambientSourcePrefix = "anthropic-env:"
+// ambientSourceFamily opens every ambient-credential routing label, the bare
+// "anthropic-env" included. One constant, read by the renderer and by the
+// parser: two spellings of a wire shape is how a reading ends up charged to
+// the wrong key.
+const ambientSourceFamily = "anthropic-env"
+
+// ambientSourcePrefix opens every FINGERPRINTED ambient-credential routing
+// label ("anthropic-env:<fingerprint>", extended with ":<base-url>" when an
+// inherited base URL routed the session).
+const ambientSourcePrefix = ambientSourceFamily + ":"
 
 // isForfaitSuppressed reports whether the given env map declares the
 // suppression marker. Cheap enough to call from every reader of
@@ -401,21 +405,40 @@ func shouldDropSessionFork(task Task, currentFingerprint string) (bool, string) 
 }
 
 // sameSessionRoute reports whether two provider fingerprints name the same
-// route for session reuse. Equal labels do. So does a facade label with no
-// slot against one with a slot, on the same rendered base URL: the slot-less
-// form names no credential — it is what a binary that predates the slot stamp
-// persisted, and what an ambient base URL renders — so it cannot contradict a
-// slot, and before the stamp both rendered the same string. Without this, every
-// facade session persisted before the stamp would be dropped on its first fork
-// after an upgrade. Two DIFFERENT slots on one base URL are two vendors behind
-// one gateway, and stay apart.
+// route for session reuse. Equal labels do. So do two labels that render the
+// same base URL — "" on the direct wire — when at least one of them names no
+// credential: the credential half is what a stamp adds, and a label without
+// one cannot contradict a label with one. The facade stamp went through this
+// once ("facade:<base>" against "facade:<slot>:<base>"), the ambient
+// fingerprint again ("anthropic-env" and "facade:<base>" against the
+// fingerprinted "anthropic-env:<fp>[:<base>]"): without the rule, every
+// session persisted by the previous binary — on the deployment where the
+// ambient forfait is the delivery channel, that is most of them — would be
+// dropped on its first fork after an upgrade. Two labels that each NAME a
+// credential on one base URL name two accounts on one provider, and stay
+// apart (two slots behind one gateway, a rotated pod key).
 func sameSessionRoute(a, b string) bool {
 	if a == b {
 		return true
 	}
-	slotA, baseA, okA := splitFacadeLabel(a)
-	slotB, baseB, okB := splitFacadeLabel(b)
-	return okA && okB && baseA == baseB && (slotA == "" || slotB == "")
+	credA, baseA, okA := routeLabelCredential(a)
+	credB, baseB, okB := routeLabelCredential(b)
+	return okA && okB && baseA == baseB && (credA == "" || credB == "" || credA == credB)
+}
+
+// routeLabelCredential names what a routing label carries for the fork
+// guard: its credential half — a facade slot or an ambient fingerprint, ""
+// when the label names none — and the base URL it rode, "" on the direct
+// wire. ok=false for a label of no parseable family: the bound-route names
+// (anthropic-direct, anthropic-oauth, …) compare by equality alone.
+func routeLabelCredential(label string) (cred, base string, ok bool) {
+	if slot, base, ok := splitFacadeLabel(label); ok {
+		return slot, base, true
+	}
+	if fp, base, ok := splitAmbientLabel(label); ok {
+		return fp, base, true
+	}
+	return "", "", false
 }
 
 // providerFingerprint derives a stable identifier for the routing
@@ -429,7 +452,7 @@ func sameSessionRoute(a, b string) bool {
 // facadeLabel first for exactly that reason.
 func providerFingerprint(env map[string]string) string {
 	if env == nil {
-		return "anthropic-env"
+		return ambientSourceFamily
 	}
 	// The suppression marker wins over CLAUDE_CONFIG_DIR because the
 	// poisoned sentinel written by the zai no-key branch is NOT a
@@ -471,12 +494,14 @@ func providerFingerprint(env map[string]string) string {
 	// from the process env", which is also Anthropic-direct semantically.
 	// Where an inherited credential answers, its fingerprint opens the
 	// label: the meter keys the account the spawn spends, not "no
-	// credential". Bare "anthropic-env" is the spawn that inherits nothing,
-	// whose "Not logged in" is a refusal rather than an account.
+	// credential". Bare "anthropic-env" is the spawn whose spend no
+	// inherited credential names — nothing inherited at all, its "Not
+	// logged in" a refusal rather than an account, or a cloud-provider mode
+	// answering instead (the switch outranks the ambient channels).
 	if fp := env[AmbientCredFPEnvKey]; fp != "" {
 		return ambientSourcePrefix + fp
 	}
-	return "anthropic-env"
+	return ambientSourceFamily
 }
 
 // facadeLabel renders an operator-supplied ANTHROPIC_BASE_URL as a
@@ -816,8 +841,9 @@ func ambientCredChannels(credEnv, selected map[string]string, sandboxed bool) []
 // a node's own ExtraEnv entry over either. The CLI resolves these variables
 // in ambientCredentialChannels' order, and a cloud-provider switch set ON
 // outranks every one of them — there the credential is a cloud account's and
-// no variable here names one. "" when the spawn inherits nothing: its
-// "Not logged in" is a refusal, not an account.
+// no variable here names one. "" when no inherited variable names the
+// credential the spawn spends: nothing inherited at all — its "Not logged
+// in" is a refusal, not an account — or a cloud mode answering instead.
 func ambientCredentialValue(env map[string]string, sandboxed bool) string {
 	if on, _ := spawnCloudProviderSwitches(env, sandboxed); len(on) > 0 {
 		return ""
@@ -1356,11 +1382,18 @@ func facadeHintRefusal(ctx context.Context, providerHint string, env map[string]
 // answered here: it judges the (slot, model) pair, and a pre-flight that
 // carries no model cannot pose the question — the refusal surfaces at
 // dispatch, classified `unavailable`, where the chain's routes take it.
-// A node's own env additions (Task.ExtraEnv) are not composed: they can only
-// move a route that holds no bundle credential, so the pre-flight reads the
-// meter of the credential the spawn would inherit (the pod's ambient key,
-// fingerprinted in the label) — a node key added on top opens its own meter
-// the session stamps, and covers itself mid-run through the guard.
+// Task.ExtraEnv is not composed, and no reachable lane makes that a
+// divergence: this pre-flight runs on the runner pod (runCredKeys.routeKey),
+// whose executor installs no run env — SetRunExtraEnv has no runner-lane
+// caller — and whose engine layer is PATH provisioning, so a task's
+// ExtraEnv there carries no ambient-credential variable and the label this
+// renders from the process env is the one the session stamps. The lanes
+// that DO install a run env (the studio and the dispatcher, whose project
+// snapshot can plant ANTHROPIC_API_KEY into ExtraEnv) run no label
+// pre-flight at all — the local guard books one process-wide meter. A lane
+// that both runs this pre-flight and feeds a credential through ExtraEnv
+// must compose those entries here first; the agreement witness
+// (TestAnthropicRouteSourceAgreesWithTheSession) gains the row that day.
 func AnthropicRouteSource(ctx context.Context, providerHint string) (source string, refused bool) {
 	task := Task{ProviderHint: providerHint}
 	env, selected, inheritAmbient := anthropicCredRouteForTask(ctx, task)
@@ -1402,11 +1435,12 @@ func AnthropicWireFacadeSlot(source string) string {
 
 // AmbientSourceFingerprint reads the ambient credential's fingerprint out of
 // a routing label, ok=false for every other shape — the bare "anthropic-env"
-// (a session that inherited nothing), the bound-route labels, a label of the
-// family that carries no fingerprint. The runner keys a label that parses on
-// the PLATFORM meter under this fingerprint: the ambient credential is one
-// account for the whole deployment, and the fingerprint is the only fact of
-// it a label carries.
+// (a session whose spend no inherited credential names: nothing inherited at
+// all, or a cloud-provider mode answering instead), the bound-route labels,
+// a label of the family that carries no fingerprint. The runner keys a label
+// that parses on the PLATFORM meter under this fingerprint: the ambient
+// credential is one account for the whole deployment, and the fingerprint is
+// the only fact of it a label carries.
 func AmbientSourceFingerprint(source string) (string, bool) {
 	rest, ok := strings.CutPrefix(source, ambientSourcePrefix)
 	if !ok {
@@ -1437,6 +1471,26 @@ func splitFacadeLabel(label string) (slot, base string, ok bool) {
 		return head, tail, true
 	}
 	return "", rest, true
+}
+
+// splitAmbientLabel parses an ambient-credential routing label into the
+// fingerprint of the credential it names and the base URL it rode:
+// "anthropic-env:<fingerprint>:<base>" → (fingerprint, base, true),
+// "anthropic-env:<fingerprint>" → (fingerprint, "", true), the bare
+// "anthropic-env" → ("", "", true), anything else → ok=false. The one parser
+// for providerFingerprint's ambient shape, beside splitFacadeLabel for the
+// same reason: the fingerprint is a hex digest, so the first ":" always
+// opens the base half.
+func splitAmbientLabel(label string) (fp, base string, ok bool) {
+	if label == ambientSourceFamily {
+		return "", "", true
+	}
+	rest, ok := strings.CutPrefix(label, ambientSourcePrefix)
+	if !ok {
+		return "", "", false
+	}
+	fp, base, _ = strings.Cut(rest, ":")
+	return fp, base, true
 }
 
 // UsageMeterBackendForProvider names the meter backend a provider's refusals
