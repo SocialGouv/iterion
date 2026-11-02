@@ -343,6 +343,12 @@ func routeSlot(creds secrets.Credentials, route routeKey) string {
 // reading (runCredKeys.slotForSource) an unstamped label is never answered
 // with the bundle's precedence: the ledger charges what it can name.
 // "anthropic-env" names the pod's ambient env — no bundle credential, "" .
+// The fingerprinted members of the family (delegate.AmbientSourceFingerprint)
+// name the inherited account for the USAGE meter; the ledger books slots, and
+// an ambient spend holds no slot of the run — so they are named-no-slot like
+// the bare form. Left unnamed, the label would fall through to the
+// (backend, model) booking and charge the pod's or a node's own spend to the
+// bundle default the session never touched.
 func slotOfSource(source string) (slot string, named bool) {
 	switch {
 	case strings.HasPrefix(source, "facade:"):
@@ -353,7 +359,7 @@ func slotOfSource(source string) (slot string, named bool) {
 		return string(secrets.ProviderAnthropic), true
 	case source == "anthropic-oauth":
 		return string(secrets.OAuthKindClaudeCode), true
-	case source == "anthropic-env":
+	case source == "anthropic-env" || strings.HasPrefix(source, "anthropic-env:"):
 		return "", true
 	}
 	return "", false

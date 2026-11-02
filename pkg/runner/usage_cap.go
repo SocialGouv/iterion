@@ -210,12 +210,21 @@ func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 // against. A rotated token therefore opens a fresh meter instead of
 // inheriting the readings of the account it replaced.
 //
-// "anthropic-env" is the POD's inherited env: the session carried no bundle
-// credential at all — an `anthropic`-pinned node on a run whose wire is held
-// by a z.ai key reaches it, and on a pod with no ambient auth its "Not
-// logged in" is a refusal. It is keyed on the scope with no credential,
-// never on the bundle default: charged to the head of the precedence, that
-// refusal would bench a healthy z.ai key the session never touched.
+// An ambient-credential label ("anthropic-env:<fingerprint>") is the POD's
+// inherited key — or a node's own key on top of it — and it is ONE account
+// for the whole deployment: keyed on the PLATFORM scope under the
+// fingerprint the delegate computed host-side (AmbientSourceFingerprint
+// reads it back), so what one tenant's run measures reaches every other
+// run that would spend the same key, and a node key never shares a meter
+// with the pod key it sits beside. Keying it on the run's scope would
+// split one account into one ledger per borrower — the split
+// usageCapCredKeys exists to prevent for shared credentials.
+//
+// Bare "anthropic-env" is the session that inherited nothing — a pod with
+// no ambient auth, whose "Not logged in" is a refusal. It is keyed on the
+// scope with no credential, never on the bundle default: charged to the
+// head of the precedence, that refusal would bench a healthy z.ai key the
+// session never touched.
 //
 // Every facade renders as "facade:<slot>:<base-url>", and the SLOT is what
 // names the vendor now that two ride this wire — the delegate stamps it on the
@@ -236,11 +245,18 @@ func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 // ambient env, a label from a binary that predates the stamp) names no slot at
 // all, and there the bundle default is the only answer available.
 func (k runCredKeys) forSource(source string) string {
+	if fp, ok := delegate.AmbientSourceFingerprint(source); ok {
+		return usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, fp)
+	}
 	return k.keyForSlot(k.slotForSource(source))
 }
 
 // slotForSource names the slot a reading's source label is charged to — ""
-// when no bundle credential ran — by the rules forSource documents.
+// when no bundle credential ran — by the rules forSource documents. The
+// whole "anthropic-env" family lands here: bare for a session that
+// inherited nothing, fingerprinted labels being answered by forSource
+// before this walk, and a fingerprint-less member (a hand-written label, a
+// future shape) charging nobody rather than the bundle default.
 func (k runCredKeys) slotForSource(source string) string {
 	switch {
 	case strings.HasPrefix(source, "facade:"):
@@ -257,7 +273,7 @@ func (k runCredKeys) slotForSource(source string) string {
 			return string(secrets.OAuthKindClaudeCode)
 		}
 		return ""
-	case source == "anthropic-env":
+	case source == "anthropic-env" || strings.HasPrefix(source, "anthropic-env:"):
 		return ""
 	}
 	_, slot := k.firstHeld()

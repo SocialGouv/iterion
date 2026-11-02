@@ -10,7 +10,8 @@ import (
 // The runner's pre-flight reads the ledger the session will write: for every
 // credential shape, AnthropicRouteSource names what the session stamps, on the
 // host and in a sandbox. The pod's ambient key is forwarded explicitly into a
-// sandbox and inherited on the host, and both name no credential of the run.
+// sandbox and inherited on the host, and both name the ambient meter — the
+// platform account its fingerprint keys.
 func TestAnthropicRouteSourceAgreesWithTheSession(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -23,8 +24,8 @@ func TestAnthropicRouteSourceAgreesWithTheSession(t *testing.T) {
 		{name: "the run's own key", own: map[secrets.Provider]string{secrets.ProviderAnthropic: "own-key"}, want: "anthropic-direct"},
 		{name: "a key pinned for the route", hint: "anthropic", ambient: map[string]string{"ANTHROPIC_API_KEY": "ambient-key"},
 			pinned: map[secrets.Provider]string{secrets.ProviderAnthropic: "pinned-key"}, want: "anthropic-direct"},
-		{name: "the pod's ambient key", ambient: map[string]string{"ANTHROPIC_API_KEY": "ambient-key"}, want: "anthropic-env"},
-		{name: "the pod's ambient key on a direct hint", hint: "anthropic", ambient: map[string]string{"ANTHROPIC_API_KEY": "ambient-key"}, want: "anthropic-env"},
+		{name: "the pod's ambient key", ambient: map[string]string{"ANTHROPIC_API_KEY": "ambient-key"}, want: ambientEnvSource("ambient-key")},
+		{name: "the pod's ambient key on a direct hint", hint: "anthropic", ambient: map[string]string{"ANTHROPIC_API_KEY": "ambient-key"}, want: ambientEnvSource("ambient-key")},
 		// A sandbox remaps the forfait's config dir; it still names the forfait.
 		{name: "the run's forfait", ambient: map[string]string{"ANTHROPIC_API_KEY": "ambient-key"}, forfait: true, want: "anthropic-oauth"},
 		{name: "the run's forfait on a direct hint", hint: "anthropic", ambient: map[string]string{"ANTHROPIC_API_KEY": "ambient-key"}, forfait: true, want: "anthropic-oauth"},
