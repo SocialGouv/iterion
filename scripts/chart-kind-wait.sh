@@ -15,8 +15,8 @@
 #
 # Whitespace go-yaml — the parser helm reads values with — tolerates (a tab
 # separating key and value, spaces or tabs around a trailing comment and
-# before the line end) is trimmed, so a file helm accepts is not refused
-# here as "not an integer".
+# before the line end, CRLF line endings) is trimmed, so a file helm
+# accepts is not refused here as "not an integer" or as unset.
 # Usage: scripts/chart-kind-wait.sh <values file>
 set -eu
 
@@ -27,7 +27,7 @@ values=${1:?usage: chart-kind-wait.sh <values file>}
 # exactly two spaces under `server:`, never the runner's — values.yaml keeps
 # the two side by side at the same indent.
 deadline=$(awk '
-  /^[A-Za-z][A-Za-z0-9_-]*:/ { top = $1; sub(/:$/, "", top) }
+  /^[A-Za-z][A-Za-z0-9_-]*:/ { top = $1; sub(/\r$/, "", top); sub(/:$/, "", top) }
   top == "server" && $0 ~ /^  progressDeadlineSeconds:/ {
     v = $0
     sub(/^  progressDeadlineSeconds:[ \t]*/, "", v)
