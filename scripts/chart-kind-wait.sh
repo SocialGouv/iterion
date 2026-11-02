@@ -23,11 +23,13 @@ set -eu
 values=${1:?usage: chart-kind-wait.sh <values file>}
 [ -f "$values" ] || { echo "chart-kind-wait: no values file at $values" >&2; exit 1; }
 
-# A top-level key closes the previous block: the knob is the one nested
-# exactly two spaces under `server:`, never the runner's — values.yaml keeps
-# the two side by side at the same indent.
+# Any column-0 key closes the previous block — whatever it starts with:
+# go-yaml accepts `_helpers:` or `2nd:` as top-level keys, and a block
+# nested under one must not keep the previous top key. The knob is the one
+# nested exactly two spaces under `server:`, never the runner's — values.yaml
+# keeps the two side by side at the same indent.
 deadline=$(awk '
-  /^[A-Za-z][A-Za-z0-9_-]*:/ { top = $1; sub(/\r$/, "", top); sub(/:$/, "", top) }
+  /^[^ \t\r#]/ { top = $1; sub(/\r$/, "", top); sub(/:$/, "", top) }
   top == "server" && $0 ~ /^  progressDeadlineSeconds:/ {
     v = $0
     sub(/^  progressDeadlineSeconds:[ \t]*/, "", v)

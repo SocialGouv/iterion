@@ -80,6 +80,27 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 		}
 	})
 
+	t.Run("a column-0 key go-yaml accepts closes the server block", func(t *testing.T) {
+		// go-yaml — helm's parser — accepts top-level keys starting with
+		// `_` or a digit; a block nested under one must not keep the
+		// previous top key, or the watch is sized from a knob that is not
+		// the server's while the install runs on Kubernetes' default.
+		stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\n  replicas: 1\n_helpers:\n  progressDeadlineSeconds: 300\n"))
+		if err == nil {
+			t.Fatalf("chart-kind-wait = %q — it sized the watch from _helpers's knob while the server block has no knob of its own; stderr: %s", strings.TrimSpace(stdout), strings.TrimSpace(stderr))
+		}
+		if !strings.Contains(stderr, "server.progressDeadlineSeconds") {
+			t.Fatalf("refusal does not name server.progressDeadlineSeconds — stderr: %s", strings.TrimSpace(stderr))
+		}
+		stdout, stderr, err = runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: 600\n2nd:\n  progressDeadlineSeconds: 300\n"))
+		if err != nil {
+			t.Fatalf("chart-kind-wait refused a server knob that precedes a digit-keyed block — %s", strings.TrimSpace(stderr))
+		}
+		if got, want := strings.TrimSpace(stdout), "720s"; got != want {
+			t.Fatalf("chart-kind-wait = %q, want %q — the server's own 600 s must win over the digit-keyed block that follows it", got, want)
+		}
+	})
+
 	t.Run("whitespace go-yaml tolerates is not refused", func(t *testing.T) {
 		// go-yaml — the parser helm reads values with — accepts trailing
 		// spaces and tabs after the value, a tab between key and value,
