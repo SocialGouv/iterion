@@ -280,6 +280,12 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 		// the runner hands it to the child engine, which then keeps its own
 		// worktree rather than working in this run's tree.
 		Isolated: sn.Isolated,
+		// The child's landing intent: the host arms the child engine's own
+		// finalization with it, and the child's run doc records it for the
+		// instance-side landing (cloud plane) and the resume replay.
+		AutoMerge:     sn.AutoMerge,
+		MergeInto:     sn.MergeInto,
+		MergeStrategy: sn.MergeStrategy,
 		// The child executes where THIS run executes.
 		ParentSandbox: e.activeShare,
 	})

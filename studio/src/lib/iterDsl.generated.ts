@@ -471,8 +471,11 @@ export const iterDslPropertiesByKind = {
   ],
   "secrets": [],
   "subbot": [
+    "auto_merge",
     "description",
     "isolated",
+    "merge_into",
+    "merge_strategy",
     "needs",
     "output",
     "source",

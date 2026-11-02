@@ -123,6 +123,19 @@ type SubbotDecl struct {
 	// workspace-safety guard may fan it out in parallel. Mirror of an
 	// agent/judge node's `readonly:`. Default false = conservatively mutating.
 	Isolated bool
+	// AutoMerge arms the child run's worktree-finalization landing: when its
+	// own workflow completes, the engine merges its banked branch (the
+	// launch-intent vocabulary of the runs API). Requires `isolated: true` —
+	// a child running in the parent's workspace has no finalization of its
+	// own, so the intent would be dead on arrival.
+	AutoMerge bool
+	// MergeInto is the child's landing target ("current" default, "none", or
+	// a branch name); empty means the child's own default. Read only when
+	// AutoMerge arms the landing.
+	MergeInto string
+	// MergeStrategy is "squash" (default) or "merge". Read only when
+	// AutoMerge arms the landing.
+	MergeStrategy string
 	// Comments are the `##` lines written around this declaration, each
 	// carrying the address it was written at (Comment.Anchor, Comment.Place).
 	Comments []*Comment

@@ -21,13 +21,15 @@ import (
 // wired — the registry row says so explicitly and an operator acts.
 //
 // The outcome router: the instance-side answer to "a run produced work
-// and nobody routed it". A terminal run that carries a RoutingPolicy is
-// offered here from two independent paths — the run-outcome bus (fast,
-// lossy by design) and a periodic sweep over the store (the source of
-// truth: six terminal paths never publish an event, and the bus's own
-// doc names the poll as its backstop). The decision is read from the
-// launch-frozen contract by pkg/routing (strict, fail-closed), claimed
-// once per EPISODE in the durable registry (unique (run_id,
+// and nobody routed it". A terminal run that carries a routing carrier —
+// a launch-frozen RoutingPolicy contract, or the launch intent
+// (auto_merge: the run was launched to land) — is offered here from two
+// independent paths — the run-outcome bus (fast, lossy by design) and a
+// periodic sweep over the store (the source of truth: six terminal paths
+// never publish an event, and the bus's own doc names the poll as its
+// backstop). The decision is read by pkg/routing — Evaluate for the
+// contract, EvaluateAutoMerge for the intent (strict, fail-closed) —
+// claimed once per EPISODE in the durable registry (unique (run_id,
 // outcome_seq)), and only then acted on. Measured motivation, one
 // campaign, 48h: a converged run waited 8h51 for a human; another was
 // marked "handled" by its external observer and converged unseen; a
@@ -192,7 +194,10 @@ func (s *Server) routeOutcomeOfferBefore(ctx context.Context, runID string, upda
 		s.logWarn("server: outcome router: load run %s: %v", runID, err)
 		return
 	}
-	if run == nil || run.RoutingPolicy == nil {
+	// Two carriers reach the decision: a launch-frozen contract, or the
+	// launch intent itself (auto_merge). A run carrying neither is nobody's
+	// to land here.
+	if run == nil || (run.RoutingPolicy == nil && !run.AutoMerge) {
 		return
 	}
 	if !updatedBefore.IsZero() && run.UpdatedAt.After(updatedBefore) {
@@ -226,16 +231,39 @@ func (s *Server) routeOutcomeOfferBefore(ctx context.Context, runID string, upda
 		return
 	}
 
-	// --- The contract's verdict, adjusted by what the BANK allows.
-	// Evaluate is the single trusted reading and enforces its own
-	// status preconditions (a merge verdict only ever names a run that
-	// completed its workflow — an interrupted run's earlier-pass
-	// outputs escalate inside Evaluate itself). What Evaluate cannot
-	// know is the bank: those two guards live here. ---
-	verdict := routing.Evaluate(run)
-	decision := verdict.Decision
-	reason := verdict.Reason
+	// --- The verdict, adjusted by what the BANK allows. Evaluate is the
+	// single trusted reading of a CONTRACT and enforces its own status
+	// preconditions (a merge verdict only ever names a run that completed
+	// its workflow — an interrupted run's earlier-pass outputs escalate
+	// inside Evaluate itself); EvaluateAutoMerge is the same reading for
+	// the launch intent, and grants landing only — it never escalates.
+	// What neither reading can know is the bank: those guards live here. ---
+	var decision routing.Decision
+	var reason string
+	var policyHash string
+	if run.RoutingPolicy != nil {
+		verdict := routing.Evaluate(run)
+		decision = verdict.Decision
+		reason = verdict.Reason
+		policyHash = verdict.PolicyHash
+	} else {
+		// The launch intent's verdict: merge a completed workflow, decline
+		// everything else in silence — a failed run keeps the continuation
+		// (retry, redelivery, operator) that already owns it.
+		verdict, intent := routing.EvaluateAutoMerge(run)
+		if !intent {
+			return
+		}
+		decision = verdict.Decision
+		reason = verdict.Reason
+	}
 	if decision == routing.DecisionMerge && run.BankState() == store.BankStateFailed {
+		if run.RoutingPolicy == nil {
+			// The intent grants landing only: a bank the run cannot land
+			// from is a decline, never the escalation the intent never
+			// carried.
+			return
+		}
 		decision = routing.DecisionEscalate
 		reason = fmt.Sprintf("contract says merge but the bank recorded an error: %s", run.FinalBranchError)
 	}
@@ -258,7 +286,7 @@ func (s *Server) routeOutcomeOfferBefore(ctx context.Context, runID string, upda
 		OutcomeSeq: run.OutcomeSeq,
 		Decision:   string(decision),
 		Reason:     reason,
-		PolicyHash: run.RoutingPolicy.Hash,
+		PolicyHash: policyHash,
 	}, staleBefore)
 	if err != nil {
 		s.logWarn("server: outcome router: claim %s:%d: %v", run.ID, run.OutcomeSeq, err)
@@ -306,11 +334,24 @@ func (s *Server) routeOutcomeOfferBefore(ctx context.Context, runID string, upda
 	switch decision {
 	case routing.DecisionMerge:
 		req := runview.MergeRequest{}
-		if run.RoutingPolicy.MergeInto != "" {
-			req.MergeInto = run.RoutingPolicy.MergeInto
-		}
-		if run.RoutingPolicy.MergeStrategy != "" {
-			req.Strategy = run.RoutingPolicy.MergeStrategy
+		if run.RoutingPolicy != nil {
+			if run.RoutingPolicy.MergeInto != "" {
+				req.MergeInto = run.RoutingPolicy.MergeInto
+			}
+			if run.RoutingPolicy.MergeStrategy != "" {
+				req.Strategy = run.RoutingPolicy.MergeStrategy
+			}
+		} else {
+			// The intent lands where the launch pointed: the run doc's own
+			// finalization record — the same record the worktree plane
+			// merges into and a resume replays. "none" cannot reach here:
+			// EvaluateAutoMerge declines it before the claim.
+			if run.MergeInto != "" {
+				req.MergeInto = run.MergeInto
+			}
+			if run.MergeStrategy != "" {
+				req.Strategy = run.MergeStrategy
+			}
 		}
 		_, mergeErr := s.runs.PerformMergeCtx(tctx, run.ID, req)
 		if mergeErr != nil {
@@ -319,12 +360,12 @@ func (s *Server) routeOutcomeOfferBefore(ctx context.Context, runID string, upda
 			// Best-effort: the failed row's bounded re-claim retries the
 			// MERGE; the alert claim keys per episode so retries don't spam.
 			s.notifyRouteDecision(tctx, run, alert.KindRouteActionFailed,
-				"contract-decided merge failed: "+mergeErr.Error(),
+				"routing-decided merge failed: "+mergeErr.Error(),
 				fmt.Sprintf("route:%s:%d:action_failed", run.ID, run.OutcomeSeq))
 			return
 		}
 		if s.logger != nil {
-			s.logger.Info("server: outcome router: run %s episode %d merged by its contract (%s)", run.ID, run.OutcomeSeq, reason)
+			s.logger.Info("server: outcome router: run %s episode %d merged by its routing (%s)", run.ID, run.OutcomeSeq, reason)
 		}
 		s.finishRouteDecision(tctx, rds, run, store.RouteDecisionSucceeded, "")
 	case routing.DecisionRelaunch:

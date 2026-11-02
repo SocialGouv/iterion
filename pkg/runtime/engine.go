@@ -361,6 +361,19 @@ type SubbotRequest struct {
 	// parallel fan-out this same flag admits only overlaps while each child
 	// owns a tree of its own.
 	Isolated bool
+	// AutoMerge carries the subbot node's `auto_merge:` intent: the child's
+	// own workflow completion lands its banked branch. The host wires it
+	// into the child engine (WithAutoMerge), whose run doc then records it —
+	// on the cloud plane that recorded intent is what the instance's outcome
+	// router lands from. Meaningful only on an isolated child (the compile
+	// refuses it elsewhere): a child in the parent's workspace has no
+	// finalization of its own.
+	AutoMerge bool
+	// MergeInto / MergeStrategy carry the subbot node's landing target and
+	// strategy ("current" default, "none", or a branch; "squash" default or
+	// "merge"). Wired into the child engine beside AutoMerge.
+	MergeInto     string
+	MergeStrategy string
 }
 
 // SubbotRunner compiles and runs a child .bot as a nested run and returns its

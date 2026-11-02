@@ -67,3 +67,108 @@ workflow w:
 		t.Fatal("expected C119 (DiagSubbotNoSource)")
 	}
 }
+
+const subbotLandingSrc = `
+tool a:
+  command: "true"
+
+workflow w:
+  entry: a
+
+  a -> lot
+  lot -> done
+
+subbot lot:
+  source: "child.bot"
+  isolated: true
+  auto_merge: true
+  merge_into: "main"
+  merge_strategy: merge
+`
+
+// TestCompileSubbotLandingIntent checks the landing declaration compiles
+// into the node: the arming flag, the target and the strategy the host
+// runners wire into the child engine.
+func TestCompileSubbotLandingIntent(t *testing.T) {
+	w := mustCompile(t, subbotLandingSrc)
+	n, ok := w.Nodes["lot"].(*SubbotNode)
+	if !ok {
+		t.Fatalf("lot is not a SubbotNode: %T", w.Nodes["lot"])
+	}
+	if !n.AutoMerge || n.MergeInto != "main" || n.MergeStrategy != "merge" {
+		t.Fatalf("landing intent = (%t, %q, %q), want (true, main, merge)", n.AutoMerge, n.MergeInto, n.MergeStrategy)
+	}
+	if !n.Isolated {
+		t.Fatalf("isolated lost at compile")
+	}
+}
+
+// TestSubbotLandingNeedsIsolation asserts C329: an auto_merge on a child
+// running in the parent's workspace arms a landing that never fires —
+// the child has no finalization of its own — so the intent is refused
+// where it is written, not discovered at the terminal.
+func TestSubbotLandingNeedsIsolation(t *testing.T) {
+	src := `
+tool a:
+  command: "true"
+
+workflow w:
+  entry: a
+
+  a -> lot
+  lot -> done
+
+subbot lot:
+  source: "child.bot"
+  auto_merge: true
+`
+	if !hasDiag(compileFile(t, src).Diagnostics, DiagSubbotLandingWithoutIsolated) {
+		t.Fatal("expected C329 (DiagSubbotLandingWithoutIsolated)")
+	}
+}
+
+// TestSubbotLandingFieldsNeedAutoMerge asserts C330: merge_into /
+// merge_strategy without the arming flag would be dropped in silence.
+func TestSubbotLandingFieldsNeedAutoMerge(t *testing.T) {
+	src := `
+tool a:
+  command: "true"
+
+workflow w:
+  entry: a
+
+  a -> lot
+  lot -> done
+
+subbot lot:
+  source: "child.bot"
+  isolated: true
+  merge_into: "main"
+`
+	if !hasDiag(compileFile(t, src).Diagnostics, DiagSubbotLandingWithoutAutoMerge) {
+		t.Fatal("expected C330 (DiagSubbotLandingWithoutAutoMerge)")
+	}
+}
+
+// TestSubbotLandingStrategyEnum asserts the strategy's closed vocabulary.
+func TestSubbotLandingStrategyEnum(t *testing.T) {
+	src := `
+tool a:
+  command: "true"
+
+workflow w:
+  entry: a
+
+  a -> lot
+  lot -> done
+
+subbot lot:
+  source: "child.bot"
+  isolated: true
+  auto_merge: true
+  merge_strategy: rebase
+`
+	if !hasDiag(compileFile(t, src).Diagnostics, DiagBadTemplateRef) {
+		t.Fatal("expected the merge_strategy enum refusal")
+	}
+}

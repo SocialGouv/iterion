@@ -1671,6 +1671,10 @@
       "additionalProperties": false,
       "description": "Runs another .bot as a nested child run; its outputs read back as {{outputs.<subbot>.<field>}} (C119).",
       "properties": {
+        "auto_merge": {
+          "description": "Lands the child when its own workflow completes: its banked branch merges at finalization (locally) or the instance merges it from the bank (cloud); requires isolated (C329)",
+          "type": "boolean"
+        },
         "description": {
           "description": "Free-text description shown by the studio and the reports",
           "type": "string"
@@ -1678,6 +1682,16 @@
         "isolated": {
           "description": "Asserts the child runs in its own workspace",
           "type": "boolean"
+        },
+        "merge_into": {
+          "description": "auto_merge: current (default), none or a branch name; read only under auto_merge (C330)",
+          "pattern": "^[^\\n\\r\\x85]*$",
+          "type": "string"
+        },
+        "merge_strategy": {
+          "description": "auto_merge: squash (default) or merge; another word is refused at compile",
+          "pattern": "^[^\\n\\r\\x85]*$",
+          "type": "string"
         },
         "needs": {
           "anyOf": [

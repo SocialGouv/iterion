@@ -1841,14 +1841,43 @@ func (c *compiler) compileSubbots() {
 		if sd.Output != "" {
 			c.validateSchemaRef(sd.Name, "output", sd.Output)
 		}
+		c.validateSubbotLanding(sd)
 		c.nodes[sd.Name] = &SubbotNode{
-			BaseNode:     BaseNode{ID: sd.Name, Description: sd.Description},
-			Source:       sd.Source,
-			With:         c.compileWithMappings(sd.Name, sd.With),
-			OutputSchema: sd.Output,
-			Needs:        sd.Needs,
-			Isolated:     sd.Isolated,
+			BaseNode:      BaseNode{ID: sd.Name, Description: sd.Description},
+			Source:        sd.Source,
+			With:          c.compileWithMappings(sd.Name, sd.With),
+			OutputSchema:  sd.Output,
+			Needs:         sd.Needs,
+			Isolated:      sd.Isolated,
+			AutoMerge:     sd.AutoMerge,
+			MergeInto:     sd.MergeInto,
+			MergeStrategy: sd.MergeStrategy,
 		}
+	}
+}
+
+// validateSubbotLanding refuses a landing intent the child cannot act on. A
+// subbot running in the parent's workspace executes in place — no worktree,
+// no finalization of its own — so `auto_merge:` there would arm a landing
+// that never fires and the child's converged work would wait for a human.
+// And `merge_into:` / `merge_strategy:` without the arming flag would be
+// dropped in silence. Both are closed where they are written.
+func (c *compiler) validateSubbotLanding(sd *ast.SubbotDecl) {
+	landingFields := sd.AutoMerge || sd.MergeInto != "" || sd.MergeStrategy != ""
+	if landingFields && !sd.Isolated {
+		c.errorfAt(DiagSubbotLandingWithoutIsolated, sd.Name, "",
+			"subbot %q declares a landing intent (auto_merge/merge_into/merge_strategy) without `isolated: true` — the child runs in this run's workspace and has no finalization of its own to land from", sd.Name)
+	}
+	if !sd.AutoMerge && (sd.MergeInto != "" || sd.MergeStrategy != "") {
+		c.errorfAt(DiagSubbotLandingWithoutAutoMerge, sd.Name, "",
+			"subbot %q declares `merge_into:` or `merge_strategy:` without `auto_merge: true` — the landing they configure is never armed", sd.Name)
+	}
+	switch sd.MergeStrategy {
+	case "", "squash", "merge":
+	default:
+		c.errorfAt(DiagBadTemplateRef, sd.Name, "",
+			"subbot %q has invalid merge_strategy %q; valid values are squash, merge", sd.Name, sd.MergeStrategy)
+		sd.MergeStrategy = ""
 	}
 }
 

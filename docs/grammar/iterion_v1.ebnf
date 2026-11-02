@@ -390,7 +390,10 @@ subbot_prop = "description" ":" str_value NEWLINE
             | with_block NEWLINE
             | "output" ":" IDENT NEWLINE
             | "needs" ":" needs_value NEWLINE
-            | "isolated" ":" BOOL_LIT NEWLINE ;
+            | "isolated" ":" BOOL_LIT NEWLINE
+            | "auto_merge" ":" BOOL_LIT NEWLINE
+            | "merge_into" ":" ( str_value | IDENT ) NEWLINE
+            | "merge_strategy" ":" ( str_value | IDENT ) NEWLINE ;
 
 (* ---------- Compile-time groups ---------- *)
 

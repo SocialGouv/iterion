@@ -1021,6 +1021,9 @@ func (w *writer) node(n nodeAt) *yaml.Node {
 		p.str("output", d.Output)
 		p.set("needs", identOrList(d.Needs))
 		p.bool("isolated", d.Isolated)
+		p.bool("auto_merge", d.AutoMerge)
+		p.str("merge_into", d.MergeInto)
+		p.str("merge_strategy", d.MergeStrategy)
 		return p.node()
 	}
 	w.fail(fmt.Errorf("author: no writer for a %s node", n.kind))

@@ -545,6 +545,9 @@ var Kinds = append([]Kind{
 			pOutput,
 			pNeeds,
 			prop("isolated", Bool, "Asserts the child runs in its own workspace"),
+			prop("auto_merge", Bool, "Lands the child when its own workflow completes: its banked branch merges at finalization (locally) or the instance merges it from the bank (cloud); requires isolated (C329)"),
+			word(prop("merge_strategy", StringOrIdent, "auto_merge: squash (default) or merge; another word is refused at compile")),
+			word(prop("merge_into", StringOrIdent, "auto_merge: current (default), none or a branch name; read only under auto_merge (C330)")),
 		}},
 	{Name: "emit", Role: Node, Doc: "Publishes a named run-scoped event with an immutable payload (ADR-051).",
 		Properties: []Property{

@@ -338,6 +338,9 @@ nodes:
     output: verdict
     needs: slots
     isolated: true
+    auto_merge: true
+    merge_into: main
+    merge_strategy: merge
   - emit: ready
     description: Announces readiness
     event: ready

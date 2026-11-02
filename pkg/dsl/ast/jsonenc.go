@@ -813,15 +813,18 @@ type jsonComputeExpr struct {
 type jsonSubbotDecl struct {
 	// File is the declaration's file of origin, set by
 	// MarshalFileWithProvenance alone: the transport never carries it.
-	File        string           `json:"file,omitempty"`
-	Name        string           `json:"name"`
-	Description string           `json:"description,omitempty"`
-	Source      string           `json:"source,omitempty"`
-	With        []*jsonWithEntry `json:"with,omitempty"`
-	Output      string           `json:"output,omitempty"`
-	Needs       []string         `json:"needs,omitempty"`
-	Isolated    bool             `json:"isolated,omitempty"`
-	Comments    []*jsonComment   `json:"comments,omitempty"`
+	File          string           `json:"file,omitempty"`
+	Name          string           `json:"name"`
+	Description   string           `json:"description,omitempty"`
+	Source        string           `json:"source,omitempty"`
+	With          []*jsonWithEntry `json:"with,omitempty"`
+	Output        string           `json:"output,omitempty"`
+	Needs         []string         `json:"needs,omitempty"`
+	Isolated      bool             `json:"isolated,omitempty"`
+	AutoMerge     bool             `json:"auto_merge,omitempty"`
+	MergeInto     string           `json:"merge_into,omitempty"`
+	MergeStrategy string           `json:"merge_strategy,omitempty"`
+	Comments      []*jsonComment   `json:"comments,omitempty"`
 }
 
 type jsonEmitDecl struct {
@@ -1039,12 +1042,15 @@ func toJSON(f *File) (*jsonFile, error) {
 	}
 	for _, s := range f.Subbots {
 		js := &jsonSubbotDecl{
-			Name:        s.Name,
-			Description: s.Description,
-			Source:      s.Source,
-			Output:      s.Output,
-			Needs:       s.Needs,
-			Isolated:    s.Isolated,
+			Name:          s.Name,
+			Description:   s.Description,
+			Source:        s.Source,
+			Output:        s.Output,
+			Needs:         s.Needs,
+			Isolated:      s.Isolated,
+			AutoMerge:     s.AutoMerge,
+			MergeInto:     s.MergeInto,
+			MergeStrategy: s.MergeStrategy,
 		}
 		for _, w := range s.With {
 			js.With = append(js.With, &jsonWithEntry{Key: w.Key, Value: w.Value})
@@ -1985,12 +1991,15 @@ func fromJSON(jf *jsonFile) (*File, error) {
 
 	for _, js := range jf.Subbots {
 		sd := &SubbotDecl{
-			Name:        js.Name,
-			Description: js.Description,
-			Source:      js.Source,
-			Output:      js.Output,
-			Needs:       js.Needs,
-			Isolated:    js.Isolated,
+			Name:          js.Name,
+			Description:   js.Description,
+			Source:        js.Source,
+			Output:        js.Output,
+			Needs:         js.Needs,
+			Isolated:      js.Isolated,
+			AutoMerge:     js.AutoMerge,
+			MergeInto:     js.MergeInto,
+			MergeStrategy: js.MergeStrategy,
 		}
 		for _, w := range js.With {
 			sd.With = append(sd.With, &WithEntry{Key: w.Key, Value: w.Value})

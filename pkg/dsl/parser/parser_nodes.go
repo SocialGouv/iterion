@@ -1072,6 +1072,20 @@ func (p *parser) parseSubbotDecl() *ast.SubbotDecl {
 			if v := p.parseBool(); v != nil {
 				sd.Isolated = *v
 			}
+		case t.Type == TokenIdent && t.Value == "auto_merge":
+			p.next()
+			p.expect(TokenColon)
+			if v := p.parseBool(); v != nil {
+				sd.AutoMerge = *v
+			}
+		case t.Type == TokenIdent && t.Value == "merge_into":
+			p.next()
+			p.expect(TokenColon)
+			sd.MergeInto = p.expectStringOrIdentLine()
+		case t.Type == TokenIdent && t.Value == "merge_strategy":
+			p.next()
+			p.expect(TokenColon)
+			sd.MergeStrategy = p.expectStringOrIdentLine()
 		case t.Type == TokenNeeds:
 			p.next()
 			p.expect(TokenColon)

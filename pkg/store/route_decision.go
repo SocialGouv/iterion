@@ -77,7 +77,8 @@ type RouteDecisionStore interface {
 	// first (audit surface).
 	ListRouteDecisions(ctx context.Context, runID string) ([]RouteDecision, error)
 	// ListRoutableRuns is the sweep net's query: ids of runs that
-	// carry a routing policy and sit in a terminal status, updated
+	// carry a routing carrier — a launch-frozen contract OR the launch
+	// intent (auto_merge) — and sit in a terminal status, updated
 	// since the given instant, oldest first. Runs whose CURRENT episode
 	// is settled — a "succeeded" row, or a "failed" one at the attempt
 	// cap — are excluded (anti-join): without it, past one batch of

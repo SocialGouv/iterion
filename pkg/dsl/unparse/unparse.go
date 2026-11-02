@@ -1102,6 +1102,15 @@ func (w *fileWriter) writeSubbots(subbots []*ast.SubbotDecl) {
 		if s.Isolated {
 			writeProp(&w.b, "isolated", "true")
 		}
+		if s.AutoMerge {
+			writeProp(&w.b, "auto_merge", "true")
+		}
+		if s.MergeStrategy != "" {
+			writeProp(&w.b, "merge_strategy", s.MergeStrategy)
+		}
+		if s.MergeInto != "" {
+			writeQuotedProp(&w.b, "merge_into", s.MergeInto)
+		}
 		w.ensureBody(mark)
 	}
 }

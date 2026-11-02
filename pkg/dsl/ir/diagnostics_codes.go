@@ -456,4 +456,18 @@ const (
 	DiagGroupExpansionPastBudget DiagCode = "C327" // a `use`'s {{params.*}} substitution expands one field past the 10 MiB size cap or spends past the read budget (ITERION_DSL_READ_BUDGET) — the lexer counts a marker and its value as one record each, so K markers × an S-byte value built a K·S-byte string no budget saw (error)
 
 	DiagHostToolWithoutCapability DiagCode = "C328" // a node names an iterion host tool (board/watch/runs) without the capability that opens it — dropped or refused at run time (warning)
+
+	// A subbot's landing intent (`auto_merge:`, `merge_into:`,
+	// `merge_strategy:`) only acts through the child's own finalization: a
+	// child running in the parent's workspace has none, so the intent would
+	// arm a landing that never fires — the converged run waits for a human,
+	// the exact incident the intent exists to close. Closed where it is
+	// written, like C314: an error, not a terminal an author never sees.
+	DiagSubbotLandingWithoutIsolated DiagCode = "C329" // a subbot declares a landing intent (auto_merge/merge_into/merge_strategy) without `isolated: true` — the child runs in this run's workspace and has no finalization of its own to land from (error)
+
+	// A landing configuration whose arming flag is absent would be dropped
+	// in silence: the author wrote a target or a strategy the child never
+	// reads. The pairing is refused at compile so the declaration either
+	// arms a landing or is not written.
+	DiagSubbotLandingWithoutAutoMerge DiagCode = "C330" // a subbot declares `merge_into:` or `merge_strategy:` without `auto_merge: true` — the value would be dropped in silence (error)
 )

@@ -281,7 +281,7 @@ Generated from the parser's property registry (`iterion dsl spec --write`). Form
 - `recovery` (`recovery:` in tool) — max_repair_attempts int · max_agent_attempts int · model str · agent_tools [tool]
 - `compute` — description str · input id · output id · publish id · artifact_labels [tool] · await wait_all|best_effort · expr {expr}
 - `expr` (`expr:` in compute) — entries `<field>: "expression"`
-- `subbot` — description str · source str · with with{} · output id · needs id|[id] · isolated bool
+- `subbot` — description str · source str · with with{} · output id · needs id|[id] · isolated bool · auto_merge bool · merge_strategy str|id · merge_into str|id
 - `emit` — description str · event str · with with{}
 - `wait` — description str · event str · timeout str · output id
 - `await_answers` — description str · from str|id · timeout str

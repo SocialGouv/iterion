@@ -3745,6 +3745,37 @@ func testRouteDecisionRegistry(t *testing.T, s store.RunStore) {
 	if err != nil || len(ids) != 1 || ids[0] != "routable-b" {
 		t.Fatalf("ListRoutableRuns(limit=1) = (%v, %v), want the oldest routable run [routable-b]", ids, err)
 	}
+
+	// The launch intent is a routing carrier of its own: a terminal run
+	// with no contract but auto_merge=true sits in the same net (the
+	// instance lands what it was launched to land), while an unarmed
+	// no-policy run stays out.
+	if _, err := s.CreateRun(ctx, "routable-intent", "wf", nil); err != nil {
+		t.Fatalf("CreateRun routable-intent: %v", err)
+	}
+	ri, err := s.LoadRun(ctx, "routable-intent")
+	if err != nil {
+		t.Fatalf("LoadRun routable-intent: %v", err)
+	}
+	ri.Status = store.RunStatusFinished
+	ri.AutoMerge = true
+	if err := s.SaveRun(ctx, ri); err != nil {
+		t.Fatalf("SaveRun routable-intent: %v", err)
+	}
+	ids, err = rds.ListRoutableRuns(ctx, time.Now().Add(-time.Hour), 50)
+	if err != nil {
+		t.Fatalf("ListRoutableRuns (intent): %v", err)
+	}
+	found = map[string]bool{}
+	for _, id := range ids {
+		found[id] = true
+	}
+	if !found["routable-intent"] {
+		t.Fatalf("an auto_merge terminal run must be swept: %v", ids)
+	}
+	if found["no-policy"] {
+		t.Fatalf("an unarmed no-policy run must stay out of the sweep: %v", ids)
+	}
 }
 
 // testCredFingerprintMeter exercises the credential-concurrency meter

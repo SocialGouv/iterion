@@ -230,7 +230,17 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			ExecutionContext: childContextSeed,
 		}, childWf, hash, s.executionContextPolicy, s.workDir)
 		childContext.LaunchSurface = "runview-subbot"
-		opts := s.engineOptions(runLogger, hash, childPath, "", finalizationOpts{}, launchExtras{}, childBundle)
+		// The node's landing intent arms the child's OWN finalization: when
+		// the child's workflow completes, its worktree merges (AutoMerge) —
+		// the same intent the runs API records on a launch. The child's run
+		// doc carries it (engine_run's SaveRun block), so a cloud landing and
+		// a resume replay read the same record the launch wrote.
+		childFin := finalizationOpts{
+			autoMerge:     req.AutoMerge,
+			mergeInto:     req.MergeInto,
+			mergeStrategy: store.MergeStrategy(req.MergeStrategy),
+		}
+		opts := s.engineOptions(runLogger, hash, childPath, "", childFin, launchExtras{}, childBundle)
 		opts = append(opts, runtime.WithWorkDir(childWorkDir))
 		opts = append(opts,
 			runtime.WithParentRunID(req.ParentRunID),

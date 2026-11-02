@@ -177,6 +177,32 @@ func Evaluate(r *store.Run) Verdict {
 	return v
 }
 
+// EvaluateAutoMerge is the ONE reading of a run's launch intent. A run
+// launched with auto_merge was launched to land: when its workflow COMPLETED,
+// the intent alone decides a landing — no contract needed. The second return
+// is false when the intent grants nothing here, and the caller must then
+// decline SILENTLY: unlike a contract, the intent carries no escalation
+// powers — a failed or opted-out run keeps whatever continuation (retry,
+// redelivery, operator) already owns it. The preconditions mirror the
+// engine's own worktree finalization: the merge fires on a completed
+// workflow only (finalizeOnExit short-circuits on error), and an explicit
+// merge_into "none" is the operator's opt-out the intent must not override.
+func EvaluateAutoMerge(r *store.Run) (Verdict, bool) {
+	if r == nil || !r.AutoMerge {
+		return Verdict{}, false
+	}
+	if strings.EqualFold(strings.TrimSpace(r.MergeInto), "none") {
+		return Verdict{}, false
+	}
+	if !r.Status.IsFinalSuccess() {
+		return Verdict{}, false
+	}
+	return Verdict{
+		Decision: DecisionMerge,
+		Reason:   "launch intent auto_merge: the run was launched to land its completed workflow",
+	}, true
+}
+
 // Validate parses every expression and normalises the policy; called at
 // launch so a malformed contract is refused BEFORE any work happens,
 // never discovered at the terminal.

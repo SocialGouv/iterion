@@ -156,7 +156,7 @@ func (s *FilesystemRunStore) ListRoutableRuns(_ context.Context, since time.Time
 			continue
 		}
 		r, err := s.loadRunRaw(e.Name())
-		if err != nil || r.RoutingPolicy == nil || r.UpdatedAt.Before(since) {
+		if err != nil || (r.RoutingPolicy == nil && !r.AutoMerge) || r.UpdatedAt.Before(since) {
 			continue
 		}
 		switch r.Status {

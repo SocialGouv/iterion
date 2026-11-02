@@ -482,6 +482,9 @@ A node: `subbot <name>:` at the top level or inside a `group`.
 | `output` | ident | Schema the node's structured output must match |
 | `needs` | ident \| ident list | Resource(s) leased from the workflow's resources: block for the node's duration |
 | `isolated` | bool | Asserts the child runs in its own workspace |
+| `auto_merge` | bool | Lands the child when its own workflow completes: its banked branch merges at finalization (locally) or the instance merges it from the bank (cloud); requires isolated (C329) |
+| `merge_strategy` | string\|ident | auto_merge: squash (default) or merge; another word is refused at compile |
+| `merge_into` | string\|ident | auto_merge: current (default), none or a branch name; read only under auto_merge (C330) |
 
 ### emit
 

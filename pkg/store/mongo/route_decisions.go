@@ -116,7 +116,13 @@ func (s *Store) ListRoutableRuns(ctx context.Context, since time.Time, limit int
 	}
 	pipeline := mongo.Pipeline{
 		{{Key: "$match", Value: notDeleted(bson.M{
-			"routing_policy": bson.M{"$exists": true, "$ne": nil},
+			// Either routing carrier: a launch-frozen contract, or the
+			// launch intent itself — a run with neither is nobody's to
+			// route.
+			"$or": bson.A{
+				bson.M{"routing_policy": bson.M{"$exists": true, "$ne": nil}},
+				bson.M{"auto_merge": true},
+			},
 			"status": bson.M{"$in": bson.A{
 				store.RunStatusFinished, store.RunStatusFailed, store.RunStatusFailedResumable,
 			}},

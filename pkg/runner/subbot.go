@@ -351,6 +351,14 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			// The node's `isolated:` assertion: the child keeps a worktree of
 			// its own instead of working in the tree this request lends it.
 			runtime.WithIsolatedChild(req.Isolated),
+			// The node's landing intent: the child's run doc records it at
+			// creation (the same block the resume replay reads), and where the
+			// child owns a worktree its own finalization performs the landing.
+			// On the in-place plane the recorded intent is what the instance's
+			// outcome router lands from the banked branch.
+			runtime.WithAutoMerge(req.AutoMerge),
+			runtime.WithMergeInto(req.MergeInto),
+			runtime.WithMergeStrategy(req.MergeStrategy),
 			// Recursive wiring: a child that declares subbot nodes resolves
 			// its own children relative to ITS directory.
 			runtime.WithSubbotRunner(r.subbotRunnerFor(&child, filepath.Dir(childPath), childWorkDir, childLogger, snapshotRoot...)),
