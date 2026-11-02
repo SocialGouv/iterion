@@ -2,12 +2,18 @@ package trigger
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
 
 // ErrSubscriptionNotFound is returned by Get/Update/Delete for an unknown id.
 var ErrSubscriptionNotFound = fmt.Errorf("trigger: subscription not found")
+
+// ErrSubscriptionConflict is returned by Update when the row moved since the
+// caller's copy was read — its version no longer matches the stored one. The
+// caller re-reads and reapplies; nothing it held was written.
+var ErrSubscriptionConflict = errors.New("trigger: subscription changed concurrently; re-read and retry")
 
 // SubscriptionStore persists trigger subscriptions. It mirrors
 // forge.RepoIntegrationStore: an interface with an in-memory impl (tests /
@@ -17,6 +23,12 @@ var ErrSubscriptionNotFound = fmt.Errorf("trigger: subscription not found")
 type SubscriptionStore interface {
 	Create(ctx context.Context, s Subscription) error
 	Get(ctx context.Context, id string) (Subscription, error)
+	// Update replaces the row as a full document, committing only against
+	// the version the caller's copy carries (a read of the row returns that
+	// version): ErrSubscriptionConflict when the row moved since — the
+	// caller re-reads and reapplies, never writes over what it did not see.
+	// A version-0 copy also matches a document written before the field
+	// existed, so a deployed row's first versioned write lands.
 	Update(ctx context.Context, s Subscription) error
 	Delete(ctx context.Context, id string) error
 
@@ -47,14 +59,15 @@ type SubscriptionStore interface {
 	// happens at write time against the stored row — never against the
 	// caller's listing copy — so a health stamp, a pin edit, or a second
 	// record's sweep landing between the caller's list and this clear
-	// survives untouched, and a swept pin cannot resurrect through a writer
-	// that validates after the delete — the write-time validators refuse a
-	// dead record's id. A write that validated while the record lived can
-	// still land after the sweep; that race is the delete's 404-heal pass's
-	// to re-sweep, not this clear's to prevent. A clear
-	// that removes nothing writes nothing. ErrSubscriptionNotFound when the
-	// row is gone — to the sweep, a row that died mid-flight has no pins
-	// left to clear.
+	// survives untouched. Every real removal also bumps the row's version,
+	// so a full-document editor holding a pre-sweep snapshot conflicts and
+	// re-reads instead of writing the swept pin back — no update lane
+	// resurrects a swept pin. The one writer left that can store a pin
+	// naming a record deleted mid-request is a row BORN mid-delete (a
+	// create whose validation beat the revocation): the delete's retry
+	// sweep is what reaches it. A clear that removes nothing writes
+	// nothing. ErrSubscriptionNotFound when the row is gone — to the sweep,
+	// a row that died mid-flight has no pins left to clear.
 	ClearCredentialPins(ctx context.Context, id, recordID string) (bool, error)
 
 	// ListByTenant returns every subscription owned by a tenant

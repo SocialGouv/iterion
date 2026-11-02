@@ -51,8 +51,30 @@ func (s *MongoSubscriptionStore) Get(ctx context.Context, id string) (Subscripti
 	return mongoutil.FindOne[Subscription](ctx, s.coll, bson.M{"_id": id}, ErrSubscriptionNotFound, "trigger: get subscription")
 }
 
+// Update replaces the row as a full document, committing only against the
+// version the caller's copy carries: a zero-match disambiguates — row gone
+// answers ErrSubscriptionNotFound, a row still there moved under the caller
+// and answers ErrSubscriptionConflict. The version-0 arm also matches a
+// document written before the field existed, so a deployed row's first
+// versioned write lands. The replace stamps the next version (the doc
+// carries it incremented), mirroring the memory twin's CAS.
 func (s *MongoSubscriptionStore) Update(ctx context.Context, sub Subscription) error {
-	return mongoutil.ReplaceOneChecked(ctx, s.coll, bson.M{"_id": sub.ID}, sub, nil, ErrSubscriptionNotFound, "trigger: update subscription")
+	filter := bson.M{"_id": sub.ID, "version": sub.Version}
+	if sub.Version == 0 {
+		delete(filter, "version")
+		filter["$or"] = bson.A{bson.M{"version": 0}, bson.M{"version": bson.M{"$exists": false}}}
+	}
+	sub.Version++
+	if err := mongoutil.ReplaceOneChecked(ctx, s.coll, filter, sub, nil, ErrSubscriptionNotFound, "trigger: update subscription"); err != nil {
+		if errors.Is(err, ErrSubscriptionNotFound) {
+			if _, getErr := s.Get(ctx, sub.ID); getErr != nil {
+				return getErr
+			}
+			return ErrSubscriptionConflict
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *MongoSubscriptionStore) MarkLaunchError(ctx context.Context, id, lastError string, at time.Time) error {
@@ -136,11 +158,11 @@ func (s *MongoSubscriptionStore) Delete(ctx context.Context, id string) error {
 // come from a read taken HERE, not from the caller's listing copy, and each
 // removal is one $unset whose filter still matches the dead value, so a
 // health stamp, a pin edit, or a second record's sweep landing in between
-// survives untouched and a swept pin cannot resurrect through a writer
-// that validates after the delete — the write-time validators refuse a
-// dead record's id; a write that validated while the record lived can
-// still land after the sweep, the race the delete's 404-heal pass
-// reconciles. A zero match on an entry means it moved or the row died
+// survives untouched. Each real removal also $inc's the row's version, so a
+// full-document editor holding a pre-sweep snapshot conflicts and re-reads
+// instead of writing the swept pin back — no update lane resurrects a swept
+// pin; the one writer left is a row born mid-delete, the delete's retry
+// sweep's to reach. A zero match on an entry means it moved or the row died
 // between the read and this write — the stored state is already the
 // wanted one, so nothing to clear is not a failure. Dotted paths are safe
 // because the routes' pin validators refuse a name holding a dot or a $ —
@@ -164,7 +186,7 @@ func (s *MongoSubscriptionStore) ClearCredentialPins(ctx context.Context, id, re
 			}
 			res, err := s.coll.UpdateOne(ctx,
 				bson.M{"_id": id, field.path + "." + name: recordID},
-				bson.M{"$unset": bson.M{field.path + "." + name: ""}})
+				bson.M{"$unset": bson.M{field.path + "." + name: ""}, "$inc": bson.M{"version": 1}})
 			if err != nil {
 				return false, fmt.Errorf("trigger: clear subscription credential pins: %w", err)
 			}

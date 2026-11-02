@@ -543,6 +543,110 @@ func TestTriggers_AnEditOmittingThePinsKeepsTheStoredOnes(t *testing.T) {
 	}
 }
 
+// The clean path of the resurrection window: a delete's sweep ran, and the
+// edit that says nothing about the pins lands after it. The route re-reads,
+// so its write carries the swept (cleared) row — the dead pin stays gone.
+func TestTriggers_AnEditAfterASweepLandsTheSweptRow(t *testing.T) {
+	srv, org, sec := triggerPinServer(t)
+
+	body := `{"bot_id":"feature-dev","invocation":"board","mode":"board",
+		"match":{"sources":["board"]},
+		"key_overrides":{"anthropic":"` + org.ID + `"},
+		"secret_overrides":{"forge_token":"` + sec.ID + `"}}`
+	rec := httptest.NewRecorder()
+	srv.handleCreateTrigger(rec, teamTriggerReq(t, http.MethodPost, "/api/v1/triggers", "", body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var created trigger.Subscription
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	// The delete's sweep half, driven the way the delete route drives it.
+	swept, err := srv.sweepCredentialPins(store.WithTenant(t.Context(), "t1"), "t1", org.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(swept) != 1 || swept[0] != "trigger "+created.ID {
+		t.Fatalf("the sweep touched %v, want exactly trigger %s", swept, created.ID)
+	}
+
+	silent := httptest.NewRecorder()
+	srv.handleUpdateTrigger(silent, teamTriggerReq(t, http.MethodPut, "/api/v1/triggers/"+created.ID, created.ID,
+		`{"bot_id":"feature-dev","invocation":"board","mode":"board","match":{"sources":["board"]},"enabled":false}`))
+	if silent.Code != http.StatusOK {
+		t.Fatalf("the post-sweep edit = %d, want 200; body=%s", silent.Code, silent.Body.String())
+	}
+	got, err := srv.cfg.TriggerStore.Get(t.Context(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.KeyOverrides) != 0 {
+		t.Errorf("the swept key pin stands again: %v — a pin naming the deleted key seals the team's default in silence", got.KeyOverrides)
+	}
+	if got.SecretOverrides["forge_token"] != sec.ID {
+		t.Errorf("the sweep moved a secret pin that names no deleted key: %v", got.SecretOverrides)
+	}
+}
+
+// sweepBeatenStore interposes the delete's sweep at the finding's window:
+// the route's read has already taken the row when the sweep's clear lands,
+// so the route's write carries a pre-sweep version. The clear and the write
+// both go through the real store — the wrapper adds no semantics, it only
+// orders the two writers the way the race does.
+type sweepBeatenStore struct {
+	trigger.SubscriptionStore
+	inner    *trigger.MemorySubscriptionStore
+	recordID string
+}
+
+func (w *sweepBeatenStore) Update(ctx context.Context, s trigger.Subscription) error {
+	if _, err := w.inner.ClearCredentialPins(ctx, s.ID, w.recordID); err != nil {
+		return err
+	}
+	return w.inner.Update(ctx, s)
+}
+
+// The raced path of the same window: an edit whose read predates the sweep
+// is beaten, not landed — the version the clear bumped conflicts it, the
+// edit answers 409, and the swept row is what stays stored.
+func TestTriggers_AnEditBeatenByASweepConflictsInsteadOfResurrecting(t *testing.T) {
+	srv, org, _ := triggerPinServer(t)
+	inner, ok := srv.cfg.TriggerStore.(*trigger.MemorySubscriptionStore)
+	if !ok {
+		t.Fatalf("the trigger store is %T, want *trigger.MemorySubscriptionStore", srv.cfg.TriggerStore)
+	}
+	srv.cfg.TriggerStore = &sweepBeatenStore{SubscriptionStore: inner, inner: inner, recordID: org.ID}
+
+	body := `{"bot_id":"feature-dev","invocation":"board","mode":"board",
+		"match":{"sources":["board"]},
+		"key_overrides":{"anthropic":"` + org.ID + `"}}`
+	rec := httptest.NewRecorder()
+	srv.handleCreateTrigger(rec, teamTriggerReq(t, http.MethodPost, "/api/v1/triggers", "", body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var created trigger.Subscription
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	beaten := httptest.NewRecorder()
+	srv.handleUpdateTrigger(beaten, teamTriggerReq(t, http.MethodPut, "/api/v1/triggers/"+created.ID, created.ID,
+		`{"bot_id":"feature-dev","invocation":"board","mode":"board","match":{"sources":["board"]},"enabled":false}`))
+	if beaten.Code != http.StatusConflict {
+		t.Fatalf("an edit beaten by the sweep = %d, want 409; body=%s", beaten.Code, beaten.Body.String())
+	}
+	got, err := inner.Get(t.Context(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, stands := got.KeyOverrides["anthropic"]; stands {
+		t.Errorf("the dead pin stands again: %v — the beaten edit resurrected it", got.KeyOverrides)
+	}
+}
+
 // The spine launches under triggerSpineActor, so a pin it can never spend is
 // refused at write — the same arm, through the same validator, the webhook
 // lane already answers with (machine_lane_pin_visibility_test.go). Reached

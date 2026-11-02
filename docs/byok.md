@@ -456,8 +456,15 @@ the delete's audit line lists the `pins_cleared` surfaces, and a launch
 after the sweep falls back exactly as an explicit clear would. The sweep
 judges each row as the store holds it at write time — a pin edit or a
 second delete's sweep landing mid-sweep survives untouched, and a swept
-pin cannot resurrect, because no writer can re-pin a deleted record (the
-write-time guards refuse it). The sweep runs detached from the request: a
+pin cannot resurrect: no writer can re-pin a deleted record (the
+write-time guards refuse it), and each real removal bumps the row's
+version — a full-document edit whose read predates the sweep conflicts
+(409 on the trigger PUT, the webhook config's CAS twin) and re-reads the
+swept row instead of writing the dead pin back. What the version cannot
+reach is a row BORN mid-delete: a create whose pin validated while the
+record still lived and lands after the sweep — both machine lanes carry
+that window, and the delete's retry sweep is what reaches it. The sweep
+runs detached from the request: a
 client hanging up mid-sweep must not cancel the clear half-way. A sweep the
 store refuses answers 5xx — the client body stays opaque, the logged cause
 names both halves: the deletion that happened and the pins still standing

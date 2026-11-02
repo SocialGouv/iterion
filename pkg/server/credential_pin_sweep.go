@@ -33,11 +33,13 @@ import (
 // store's value-scoped clear, judged against the row as the store holds it
 // at write time — the load-bearing invariant is that after the delete no
 // writer that VALIDATES can create a pin naming the dead record (the
-// validators Get the record and refuse a dead id). The one resurrection
-// left is a write that validated while the record lived and lands after
-// the clear — the race the delete's 404-heal pass exists to re-sweep — and
-// nothing the sweep saw is ever lost to it: a concurrent writer only ever
-// removes.
+// validators Get the record and refuse a dead id), and the clear's version
+// bump turns a full-document editor holding a pre-sweep snapshot away with
+// a conflict instead of letting it write the swept pin back — nothing
+// re-sweeps behind this delete's 204, so the clear is the last writer that
+// ever touches those pins. The one resurrection left is a row BORN
+// mid-delete — a create whose validation beat the revocation — and the
+// delete's retry sweep is what reaches it.
 
 // pinSweepTimeout bounds a detached sweep. The delete answers on the
 // request's context; the sweep no longer does — a client that hangs up

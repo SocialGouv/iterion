@@ -515,7 +515,16 @@ func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 	}
 	cur = applyTriggerReq(cur, req)
 	cur.UpdatedAt = time.Now().UTC()
+	// Update commits against the version this request read. A write that
+	// landed in between — a pin sweep's clear most importantly: a swept pin
+	// written back from a pre-sweep read would stand forever, with no sweep
+	// ever coming behind the delete's 204 — conflicts, and the edit answers
+	// 409 so the client re-reads the swept row instead of reviving it.
 	if err := s.cfg.TriggerStore.Update(r.Context(), cur); err != nil {
+		if errors.Is(err, trigger.ErrSubscriptionConflict) {
+			dispatcher.WriteErr(w, http.StatusConflict, err)
+			return
+		}
 		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
 		return
 	}

@@ -13,6 +13,14 @@ import (
 // local single-host runs. It loads from subscriptions.yaml + the dispatcher
 // config + schedules.yaml at boot and is the store the InProcBus evaluator
 // queries. Goroutine-safe; mirrors forge.MemoryRepoIntegrationStore.
+//
+// Every Subscription crossing a boundary is a storekit.Snapshot copy (the
+// forge and webhooks twin discipline): readers own their maps and callers'
+// payloads stay theirs, because the clear below mutates the stored pin maps
+// IN PLACE under the write lock — a handed-out shared header would make any
+// post-lock reader of it (a route's JSON marshal, the sweep's pinsName) race
+// that delete into Go's unrecoverable concurrent map iteration and map
+// write (#2644).
 type MemorySubscriptionStore struct {
 	mu    sync.RWMutex
 	items map[string]Subscription
@@ -25,7 +33,7 @@ func NewMemorySubscriptionStore() *MemorySubscriptionStore {
 func (m *MemorySubscriptionStore) Create(_ context.Context, s Subscription) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.items[s.ID] = s
+	m.items[s.ID] = storekit.Snapshot(s)
 	return nil
 }
 
@@ -36,16 +44,21 @@ func (m *MemorySubscriptionStore) Get(_ context.Context, id string) (Subscriptio
 	if !ok {
 		return Subscription{}, ErrSubscriptionNotFound
 	}
-	return s, nil
+	return storekit.Snapshot(s), nil
 }
 
 func (m *MemorySubscriptionStore) Update(_ context.Context, s Subscription) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.items[s.ID]; !ok {
+	cur, ok := m.items[s.ID]
+	if !ok {
 		return ErrSubscriptionNotFound
 	}
-	m.items[s.ID] = s
+	if cur.Version != s.Version {
+		return ErrSubscriptionConflict
+	}
+	s.Version++
+	m.items[s.ID] = storekit.Snapshot(s)
 	return nil
 }
 
@@ -94,7 +107,9 @@ func (m *MemorySubscriptionStore) MarkRunOutcome(_ context.Context, id, runID, s
 // stamp, a pin edit, or a second record's sweep landing after that copy was
 // taken survives untouched. Both maps are scanned unconditionally — the
 // contract removes every entry naming the record, so the first map's drop
-// never spares the second its judgment.
+// never spares the second its judgment. Each real removal bumps the row's
+// version, so a full-document editor holding a pre-sweep snapshot conflicts
+// instead of writing the swept pin back.
 func (m *MemorySubscriptionStore) ClearCredentialPins(_ context.Context, id, recordID string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -106,6 +121,7 @@ func (m *MemorySubscriptionStore) ClearCredentialPins(_ context.Context, id, rec
 	droppedSecrets := storekit.DropStringMapValues(&s.SecretOverrides, recordID)
 	cleared := droppedKeys || droppedSecrets
 	if cleared {
+		s.Version++
 		m.items[id] = s
 	}
 	return cleared, nil
@@ -159,5 +175,5 @@ func (m *MemorySubscriptionStore) filter(keep func(Subscription) bool) []Subscri
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
-	return out
+	return storekit.Snapshot(out)
 }

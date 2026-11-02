@@ -155,6 +155,14 @@ type Subscription struct {
 	CreatedAt time.Time `json:"created_at" bson:"created_at"`
 	UpdatedAt time.Time `json:"updated_at" bson:"updated_at"`
 
+	// Version is the row's optimistic-concurrency stamp: server-managed and
+	// never in the API payload. A full-document Update commits only against
+	// the version its read carried and stamps the next one, and the pin
+	// sweep's clear bumps it — an editor holding a pre-sweep snapshot
+	// conflicts and re-reads instead of writing a swept pin back (#2644).
+	// Mirrors webhooks.Config.Version.
+	Version int64 `bson:"version" json:"-"`
+
 	// LastError is the verdict of the last direct launch this subscription
 	// asked for: empty means it went through, a message says why it did not
 	// (an org launch-gate denial, a run service that refused the run).
