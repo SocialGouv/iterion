@@ -85,6 +85,17 @@ func (s *Service) resolveAllConflictsWithAgent(ctx context.Context, runID, model
 	if err != nil {
 		return nil, err
 	}
+	// The boundary refusal precedes every model question: it needs no
+	// spec, and a credential-less host would otherwise answer "no LLM
+	// credential" (500) before the policy refusal (403) ever ran — the
+	// order the boundary witness pins on a blanked environment.
+	// The boundary refusal precedes every model question: it needs no
+	// spec, and a credential-less host would otherwise answer "no LLM
+	// credential" (500) before the policy refusal (403) ever ran — the
+	// order the boundary witness pins on a blanked environment.
+	if err := contentBoundaryRefusal(r.ContentBoundary); err != nil {
+		return nil, err
+	}
 	if err := s.preStampPoolRefusal(ctx, r); err != nil {
 		return nil, err
 	}

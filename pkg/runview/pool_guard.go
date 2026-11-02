@@ -43,10 +43,23 @@ func poolContentRefusal(pool, spec string) error {
 // semantics (the gateway pin escapes). A run with neither stamp takes the
 // pool path.
 func contentRefusal(boundary *store.RunContentBoundary, pool, spec string) error {
+	if err := contentBoundaryRefusal(boundary); err != nil {
+		return err
+	}
+	return poolContentRefusal(pool, spec)
+}
+
+// contentBoundaryRefusal is the spec-free half of contentRefusal: a
+// team_gateway boundary refuses EVERY spec, so a caller that has not
+// resolved its model yet — and may never, where it holds no credential —
+// can answer the policy question first. The refusal must reach the HTTP
+// layer as a refusal, not as the resolver's "no credential" 500 that a
+// credential-less host would produce first.
+func contentBoundaryRefusal(boundary *store.RunContentBoundary) error {
 	if boundary != nil && boundary.Kind == store.ContentBoundaryTeamGateway {
 		return fmt.Errorf("%w: the run's content boundary is the team gateway %q — no server-side vendor default speaks for it", ErrPoolContentRefused, boundary.GatewayHost)
 	}
-	return poolContentRefusal(pool, spec)
+	return nil
 }
 
 // frozenContentBoundary reads the run document's content boundary. The
