@@ -105,6 +105,14 @@ type ProviderResolution struct {
 	// for a supervisor. A refusal built on this walk can say which node
 	// pinned what; sorted, deduplicated.
 	Pins map[string][]string
+	// Sites maps each site to the KNOWN providers its routes name, in the
+	// order the walk read them — the chain order the executor resolves, so
+	// a reader that must pick "the credential this site spends" walks the
+	// list the same way. Sorted pins answer "who named this provider";
+	// Sites answers "what does this site name", which is the direction the
+	// credential plan (#2288) reads. First occurrence wins, so a chain that
+	// names a provider twice holds it once.
+	Sites map[string][]string
 	// Forbidden maps a provider OUTSIDE the view's allowlist
 	// (RouteView.AllowedProviders, ADR-129 §5) to the sites that named it —
 	// the same site keys as Pins. A forbidden provider is excluded from
@@ -380,6 +388,9 @@ type providerAccumulator struct {
 	// recorded under (fallbackSite).
 	site string
 	pins map[string][]string
+	// siteProviders is the read-order twin of pins: the known providers
+	// each site named, first occurrence first (ProviderResolution.Sites).
+	siteProviders map[string][]string
 	// vars and late are the walk's vars reading (RouteView.Vars/LateVars);
 	// field resolves a routing field against them, and a late name stays
 	// as written exactly as a raw `${…}` would.
@@ -456,6 +467,12 @@ func (a *providerAccumulator) result() ProviderResolution {
 			}
 		}
 		res.Pins[p] = deduped
+	}
+	for site, provs := range a.siteProviders {
+		if res.Sites == nil {
+			res.Sites = make(map[string][]string, len(a.siteProviders))
+		}
+		res.Sites[site] = append([]string(nil), provs...)
 	}
 	if len(a.allowed) > 0 {
 		res.Forbidden = sortedDedupSites(a.forbidden)
@@ -855,6 +872,7 @@ func (a *providerAccumulator) hint(raw string) bool {
 		}
 		a.providers[h] = true
 		a.pin(h)
+		a.recordSiteProvider(h)
 		ff, seen := a.forfaitFirst[h]
 		a.forfaitFirst[h] = (!seen || ff) && delegate.ForfaitFirst(a.backend, h)
 		if a.route != nil {
@@ -882,6 +900,24 @@ func (a *providerAccumulator) pin(provider string) {
 		}
 	}
 	a.pins[provider] = append(a.pins[provider], a.site)
+}
+
+// recordSiteProvider appends the provider to its site's read-order list —
+// ProviderResolution.Sites, the direction the credential plan reads. First
+// occurrence wins: the chain order is what survives, not a repeat count.
+func (a *providerAccumulator) recordSiteProvider(provider string) {
+	if a.site == "" {
+		return
+	}
+	for _, p := range a.siteProviders[a.site] {
+		if p == provider {
+			return
+		}
+	}
+	if a.siteProviders == nil {
+		a.siteProviders = map[string][]string{}
+	}
+	a.siteProviders[a.site] = append(a.siteProviders[a.site], provider)
 }
 
 // chainHints splits a `provider:` field into its lower-cased hints the

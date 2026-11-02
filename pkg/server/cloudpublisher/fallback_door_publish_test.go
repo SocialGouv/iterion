@@ -62,7 +62,7 @@ func newDoorPublishFixture(t *testing.T, consenting bool) *doorPublishFixture {
 	kid := secrets.NewApiKeyID()
 	sealed, _ := secrets.SealAPIKey(sealer, kid, []byte("sk-ant-tenant"))
 	if err := keys.Create(store.WithTenant(ctx, poolTeam), secrets.ApiKey{ID: kid, ScopeTeamID: poolTeam,
-		Provider: secrets.ProviderAnthropic, Name: "own", SealedSecret: sealed, Fingerprint: "fp-own", CreatedAt: time.Now().UTC()}); err != nil {
+		Provider: secrets.ProviderAnthropic, Name: "own", SealedSecret: sealed, Fingerprint: secrets.APIKeyFingerprint(secrets.ProviderAnthropic, "sk-ant-tenant", ""), CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("seed tenant key: %v", err)
 	}
 	// The DONOR's zai key, pledged through the broker's own store.
@@ -89,7 +89,7 @@ func newDoorPublishFixture(t *testing.T, consenting bool) *doorPublishFixture {
 	dsealed, _ := secrets.SealAPIKey(sealer, dkid, []byte("zai-donated-key"))
 	if err := donorKeys.Create(store.WithTenant(ctx, "donor-team"), secrets.ApiKey{ID: dkid, TenantID: "donor-team",
 		ScopeTeamID: "donor-team", ScopeUserID: "donor", Provider: secrets.ProviderZAI, Name: "lent",
-		SealedSecret: dsealed, Fingerprint: "fp-donor-zai", CreatedAt: time.Now().UTC()}); err != nil {
+		SealedSecret: dsealed, Fingerprint: secrets.APIKeyFingerprint(secrets.ProviderZAI, "zai-donated-key", ""), CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("seed donor key: %v", err)
 	}
 	// Donor B's key rides the SAME store (a resume's landscape flip is
@@ -98,7 +98,7 @@ func newDoorPublishFixture(t *testing.T, consenting bool) *doorPublishFixture {
 	dsealed2, _ := secrets.SealAPIKey(sealer, dkid2, []byte("zai-donated-b"))
 	if err := donorKeys.Create(store.WithTenant(ctx, "donor-b"), secrets.ApiKey{ID: dkid2, TenantID: "donor-b",
 		ScopeTeamID: "donor-b", ScopeUserID: "donor-b", Provider: secrets.ProviderZAI, Name: "lent-b",
-		SealedSecret: dsealed2, Fingerprint: "fp-donor-b", CreatedAt: time.Now().UTC()}); err != nil {
+		SealedSecret: dsealed2, Fingerprint: secrets.APIKeyFingerprint(secrets.ProviderZAI, "zai-donated-b", ""), CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("seed donor B key: %v", err)
 	}
 	pools := credpool.NewMemoryPoolStore()

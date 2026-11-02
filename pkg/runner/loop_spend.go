@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"sort"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -195,15 +196,19 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 	if perr != nil {
 		publishedAt = time.Time{}
 	}
-	// NO fine table rides yet (ADR-121 § Delivery 2, #2255): the emitter's
-	// route key names a CHANNEL (providerFingerprint's routing label), not
-	// a credential - the run's own OAuth and a donor's lent OAuth stamp the
-	// same label, so a table keyed on it cannot tell whose money spent, and
-	// the broker would book zero on every door-served run (revi R30d246).
-	// The coarse whole-attempt booking stands until the publisher stamps a
-	// node-to-credential-fingerprint plan into the message; the broker's
-	// fine consumer (Outcome.ByFingerprint + effectiveCharge) is shipped
-	// and tested, waiting for that producer.
+	// The fine table rides when the publisher stamped its plan (#2288,
+	// ADR-121 § Delivery 2): the emitter's route key names a CHANNEL
+	// (providerFingerprint's routing label), not a credential - the run's
+	// own OAuth and a donor's lent OAuth stamp the same label, so a table
+	// keyed on it cannot tell whose money spent (revi R30d246). The plan
+	// does: it names, per node and serving provider, the fingerprint of the
+	// sealed credential, and the emitter groups the attempt's spend by it.
+	// The broker's fine consumer (Outcome.ByFingerprint + effectiveCharge)
+	// then books only the lease credential's slice. A publication without
+	// a plan - an older publisher, or a routing walk the publisher could
+	// not read - reports no table and keeps the coarse whole-attempt
+	// booking, which is the conservative-on-ignore direction.
+	byFingerprint := fineFingerprintSpend(usage)
 	if err := r.cfg.CredPool.ReportAttempt(bg, msg.RunID, publishedAt, credpool.Outcome{
 		CostUSD:         costUSD,
 		InputTokens:     in,
@@ -212,9 +217,32 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 		Condition:       condition,
 		CooldownUntil:   cooldownUntil,
 		Interim:         interim,
+		ByFingerprint:   byFingerprint,
 	}); err != nil {
 		r.cfg.Logger.Warn("runner: credential-pool report for run %s: %v (the donor's slot frees on lease expiry)", msg.RunID, err)
 	}
+}
+
+// fineFingerprintSpend builds the report's per-credential table from the
+// emitter's plan-keyed grouping, in a stable order so two reports of the
+// same attempt carry the same rows. Nil when the publication carried no
+// plan — the nil-vs-empty distinction is the broker's contract (NIL keeps
+// the coarse whole-attempt booking; a present table books only the lease
+// credential's slice).
+func fineFingerprintSpend(usage *metricsEmitter) []credpool.FingerprintSpend {
+	if usage == nil || len(usage.credPlan) == 0 {
+		return nil
+	}
+	totals := usage.FingerprintSpendTotals()
+	if len(totals) == 0 {
+		return []credpool.FingerprintSpend{}
+	}
+	out := make([]credpool.FingerprintSpend, 0, len(totals))
+	for fp := range totals {
+		out = append(out, totals[fp])
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Fingerprint < out[j].Fingerprint })
+	return out
 }
 
 // classifyPoolCondition maps a terminal execution error onto what it means

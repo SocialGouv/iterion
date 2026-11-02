@@ -73,7 +73,7 @@ func runChain(t *testing.T, node *ir.AgentNode, backends map[string]*scriptedBac
 // runChainWith is runChain with any backends and a retry policy.
 func runChainWith(t *testing.T, node *ir.AgentNode, regd map[string]delegate.Backend, scripted map[string]*scriptedBackend, rp model.RetryPolicy) (*metricsEmitter, *eventLog) {
 	t.Helper()
-	usage := newMetricsEmitter(discardEmitter{}, metrics.New())
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
 	log := &eventLog{inner: usage}
 	hooks := model.NewStoreEventHooks(context.Background(), log, "run", iterlog.Nop(), nil, nil)
 	reg := delegate.NewRegistry()

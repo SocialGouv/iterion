@@ -342,10 +342,12 @@ type Pledge struct {
 	// fallback door). Off (the default) keeps the pledge in the
 	// whole-bundle tier only; the mark ADDS a lane and removes none. An
 	// armed door holds a runs/day unit and a concurrency slot until the
-	// run publishes even when the fallback never fires, and the ATTEMPT'S
-	// WHOLE SPEND books against your ledger's ceilings (the spend report
-	// is per attempt, not per credential) — zero spend is not zero cost,
-	// and the consent UI says so.
+	// run publishes even when the fallback never fires. The spend that
+	// books against your ledger's ceilings is the slice that ran on YOUR
+	// credential: the run's report carries a per-credential table (#2288)
+	// and the lease books only its own fingerprint's share — a rung the
+	// fallback never fired on books nothing. On a whole-bundle run every
+	// credential is the pool's, so the whole attempt books, as before.
 	FallbackUse bool `bson:"fallback_use,omitempty" json:"fallback_use,omitempty"`
 	// CooldownUntil holds the pledge out of the pool until the provider's
 	// quota window resets. Set from ErrRateLimited.ResetAt.

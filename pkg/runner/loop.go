@@ -3497,7 +3497,7 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 	// (and the per-run totals) as they are written to Mongo. Wrapping
 	// at the runner boundary keeps pkg/backend/model free of any
 	// metrics dependency.
-	usage := newMetricsEmitter(emitter, r.cfg.Metrics)
+	usage := newMetricsEmitter(emitter, r.cfg.Metrics, msg.CredPlan)
 	vars, err := stringifyVars(msg.Vars)
 	if err != nil {
 		return zero, nil, err

@@ -48,8 +48,12 @@ func newPoolHarnessForRun(t *testing.T, limits credpool.Limits, runID string) *p
 	if err != nil {
 		t.Fatalf("seal: %v", err)
 	}
+	// donorFingerprint is the record's audit identity (OAuthRecord.Fingerprint,
+	// stamped by every real connect): the acquired lease carries it, which is
+	// what the fine booking slices by (cred_plan_fine_booking_test.go).
 	if err := oauth.Upsert(ctx, secrets.OAuthRecord{
 		UserID: "donor", Kind: secrets.OAuthKindClaudeCode, SealedPayload: sealed,
+		Fingerprint: donorFingerprint,
 	}); err != nil {
 		t.Fatalf("seed oauth: %v", err)
 	}
@@ -94,7 +98,7 @@ func newPoolHarnessForRun(t *testing.T, limits credpool.Limits, runID string) *p
 // usageWith drives the PRODUCTION hook so the reported cost is the one the
 // real chain produces, not a number the test typed in.
 func usageWith(costUSD float64, tokens int) *metricsEmitter {
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New())
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
 	hooks := model.NewStoreEventHooks(
 		context.Background(), usage, "run-1", iterlog.New(iterlog.LevelError, nil), nil, nil,
 	)
@@ -250,7 +254,7 @@ func TestRecordPoolSpend_authFailureAbsorbedByRecoveryStillParksTheDonor(t *test
 	h := newPoolHarness(t, credpool.Limits{MaxUSDPerDay: 10})
 	ctx := context.Background()
 
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New())
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
 	st, err := store.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("store: %v", err)

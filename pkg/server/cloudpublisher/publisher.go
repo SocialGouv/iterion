@@ -1474,6 +1474,14 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// same stage, through the same composer, or it judges a program this
 	// launch does not.
 	attributed, attributedSites := attributedRoutes(view)
+	// The fine plan rides ONLY a pool-served run: it is the producer the
+	// lease's fine booking slices by, and a lease-less run has no consumer
+	// for it. Derived from the same post-ladder walk the refusal reads —
+	// the rungs' providers are the door's, and those are the rows the
+	// broker books on.
+	if res.poolLease() != nil && view.Workflow != nil {
+		res.plan = model.CredentialPlan(model.EffectiveProviders(view, knownPoolProviders), bundle)
+	}
 	// ALL THREE arms through ONE producer (unfundedRefusalFor): the deployment
 	// knob stays permissive — one funded provider lets the run start, the
 	// other route's failure is the run's to report — the sovereign policy
@@ -1587,6 +1595,14 @@ type credResolution struct {
 	// The caller stamps them on the run document so the per-key
 	// concurrency meter can count alive runs by credential.
 	fingerprints []string
+	// plan is the node-and-provider → credential-fingerprint map the
+	// publisher stamps on the RunMessage (queue.RunMessage.CredPlan) —
+	// model.CredentialPlan's join of the routing walk and the sealed
+	// bundle, so the runner's fine spend table keys in the lease's space
+	// (#2288). Nil unless a pool lease serves the run AND the walk is
+	// narrow-safe: the plan is the fine booking's producer, and half of
+	// one would book the donor's share as zero.
+	plan map[string]string
 	// tiers names which resolution tiers funded the credentials above
 	// (store.CredentialTier*), sorted and deduplicated. Plural because one
 	// run is: a team forfait can serve the implementer while the platform's
@@ -1789,14 +1805,10 @@ func fundedAPIKeySlots(bundle secrets.RunBundle) []secrets.Provider {
 
 // providerOfOAuthKind maps an OAuth slot to the provider its credential
 // authenticates against; "" for a kind the stamp does not know (kept).
+// Read through model.OAuthProvider so the fine plan's keys and the
+// stamp's funding readings answer from one table (#2288).
 func providerOfOAuthKind(kind string) string {
-	switch secrets.OAuthKind(kind) {
-	case secrets.OAuthKindClaudeCode:
-		return string(secrets.ProviderAnthropic)
-	case secrets.OAuthKindCodex:
-		return string(secrets.ProviderOpenAI)
-	}
-	return ""
+	return model.OAuthProvider(kind)
 }
 
 // skipTracker remembers the earliest reopening among the credentials one
@@ -3859,6 +3871,10 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// never re-derived on the wire path. Nil until the producer lands;
 		// a nil pointer serialises as absent.
 		ContentBoundary: r.ContentBoundary,
+		// The fine plan rides beside the credentials it names (#2288): the
+		// runner's fine spend table keys in the lease's fingerprint space
+		// through it. Nil on a run no lease serves.
+		CredPlan: creds.plan,
 		// Cap. 3 sharding: when this run is a child shard, the runner
 		// pod that picks it up sees its place in the set so the studio
 		// can group siblings and so a future event-based aggregator
@@ -4378,6 +4394,10 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		Budget:        wire,
 		BackendConfig: queue.BackendConfig{Default: queue.BackendClaw},
 		PoolGrantless: creds.poolLease() == nil,
+		// The fine plan re-derived with the re-sealed bundle, the same rule
+		// the launch stamps (#2288): the resumed attempt's donors may be
+		// different donors, and the plan must name THESE credentials.
+		CredPlan: creds.plan,
 		// Never inside the millisecond of the instant this delivery's
 		// identity follows — the run's marker, or the lease its grant
 		// opened — so the identity comparisons that read the pair never

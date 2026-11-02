@@ -460,8 +460,9 @@ function PledgeCard({
             Also lend to <strong>fallback rungs</strong> of runs that hold their own credential
             (the deployment's routing policy needing a kind they lack). An armed rung holds a
             runs/day unit and a concurrency slot on your pledge until the run publishes, even
-            when the fallback never fires, and the attempt's whole spend books against your
-            ceilings — zero spend is not zero cost.
+            when the fallback never fires. Only the spend that ran on <strong>your</strong>{' '}
+            credential books against your ceilings — a rung the fallback never fired on books
+            nothing.
           </span>
         }
       />

@@ -212,7 +212,12 @@ They come back on three paths, and the distinction matters:
 | sweeper — the pod died without reporting | freed | **kept** (it ran) |
 
 `Report` closes the lease with a compare-and-set and charges the donor only
-if it wins, so a redelivered report cannot debit twice. A resumed run that
+if it wins, so a redelivered report cannot debit twice. The report carries
+the attempt's spend **per credential** (#2288): the lease books only the
+slice that ran on its own fingerprint — on a whole-bundle run every sealed
+credential is the pool's, so the whole attempt books as before; on a
+door-served run, spend on the team's own credentials stays off the donor's
+ledger, and a rung the fallback never fired on books nothing. A resumed run that
 **reported** *renews* its admission instead of taking a second one: it is
 the same run, and charging it again would let one flaky run that resumes a
 few times consume a contributor's whole day. Reporting is what earns the

@@ -11,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -78,6 +79,20 @@ type metricsEmitter struct {
 	// claw node can be pointed at any provider the registry knows).
 	byRoute map[routeKey]routeTotals
 
+	// credPlan is the publisher's stamped node-and-provider →
+	// credential-fingerprint plan (queue.RunMessage.CredPlan): the
+	// launch-frozen answer to "which sealed credential does this node's
+	// route spend". Nil on publications that carry no plan — the fine
+	// table below never fills, and the pool report keeps the coarse
+	// whole-attempt booking.
+	credPlan map[string]string
+	// byFingerprint is the fine table the pool report slices by (#2288):
+	// the same observations byRoute carries, grouped by the CREDENTIAL
+	// that served them instead of the (backend, model, source) route.
+	// Filled only from the plan — an observation the plan names nothing
+	// for books nobody, never the donor by guess.
+	byFingerprint map[string]credpool.FingerprintSpend
+
 	// sawAuthFailure records that the provider rejected this run's
 	// credential at some point, even if the attempt did not END on that
 	// error. Recovery converts an auth failure into a human pause, so by
@@ -126,7 +141,7 @@ func (t routeTotals) tokens() int64 {
 	return t.inputTokens + t.outputTokens + t.aggregateTokens
 }
 
-func newMetricsEmitter(inner model.EventEmitter, reg *metrics.Registry) *metricsEmitter {
+func newMetricsEmitter(inner model.EventEmitter, reg *metrics.Registry, credPlan map[string]string) *metricsEmitter {
 	return &metricsEmitter{
 		inner:          inner,
 		reg:            reg,
@@ -136,6 +151,8 @@ func newMetricsEmitter(inner model.EventEmitter, reg *metrics.Registry) *metrics
 		priceByModel:   make(map[string]modelRate),
 		byRoute:        make(map[routeKey]routeTotals),
 		declinedRoutes: make(map[routeKey]bool),
+		credPlan:       credPlan,
+		byFingerprint:  make(map[string]credpool.FingerprintSpend),
 	}
 }
 
@@ -252,6 +269,57 @@ func (m *metricsEmitter) RouteTotals() map[routeKey]routeTotals {
 		out[k] = v
 	}
 	return out
+}
+
+// FingerprintSpendTotals snapshots the fine table (#2288): the run's
+// consumption grouped by the CREDENTIAL that served each observation —
+// the fingerprints the publisher's plan named, the space the pool lease's
+// own stamp lives in. Empty on a publication that carried no plan (or one
+// whose observations named nothing): the report then sends no table and
+// the broker keeps the coarse whole-attempt booking.
+func (m *metricsEmitter) FingerprintSpendTotals() map[string]credpool.FingerprintSpend {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[string]credpool.FingerprintSpend, len(m.byFingerprint))
+	for k, v := range m.byFingerprint {
+		out[k] = v
+	}
+	return out
+}
+
+// fingerprintFor resolves the credential fingerprint one observation books:
+// the plan's entry for the node the event names, refined by the provider
+// the serving chain element resolved — the event's own `provider` word
+// when it stamps one, the claude_code label's slot and the model's prefix
+// when it does not. "" when the plan names nothing for it: the observation
+// books nobody in the fine table, never the donor by guess.
+func (m *metricsEmitter) fingerprintFor(nodeID string, route routeKey, provider string) string {
+	if len(m.credPlan) == 0 || nodeID == "" {
+		return ""
+	}
+	if provider == "" {
+		provider = planProviderFor(route)
+	}
+	if provider == "" {
+		return ""
+	}
+	return m.credPlan[nodeID+model.PlanKeySep+provider]
+}
+
+// addFingerprintLocked folds one observation into its credential bucket.
+// Called under m.mu, beside addRouteLocked — the two tables read the same
+// observation, and a guard that dropped one would drop it from both.
+func (m *metricsEmitter) addFingerprintLocked(fp string, cost float64, in, out, aggregate int64) {
+	if fp == "" {
+		return
+	}
+	t := m.byFingerprint[fp]
+	t.Fingerprint = fp
+	t.CostUSD += cost
+	t.InputTokens += in
+	t.OutputTokens += out
+	t.AggregateTokens += aggregate
+	m.byFingerprint[fp] = t
 }
 
 // The executor writes through this emitter, but the ENGINE writes straight
@@ -407,6 +475,8 @@ func (m *metricsEmitter) observe(evt store.Event) {
 			}
 		}
 		m.addRouteLocked(backend, modelName, "", costDelta, int64(inputT), int64(outputT), 0)
+		m.addFingerprintLocked(m.fingerprintFor(evt.NodeID, routeKey{backend: backend, model: modelName}, ""),
+			costDelta, int64(inputT), int64(outputT), 0)
 		if unreported, _ := evt.Data["usage_unreported"].(bool); unreported {
 			k := routeKey{backend: backend, model: modelName}
 			t := m.byRoute[k]
@@ -486,6 +556,7 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		tokensF := toFloat(evt.Data["tokens"])
 		effective, _ := evt.Data["effective_model"].(string)
 		served, _ := evt.Data["route_model"].(string)
+		provider, _ := evt.Data["provider"].(string)
 		var source string
 		if backend == delegate.BackendClaudeCode {
 			source, _ = evt.Data["fingerprint"].(string)
@@ -511,6 +582,8 @@ func (m *metricsEmitter) observe(evt store.Event) {
 			m.runAggregateTokens += int64(tokensF)
 			m.runCostUSD += costDelta
 			m.addRouteLocked(backend, modelName, source, costDelta, 0, 0, int64(tokensF))
+			m.addFingerprintLocked(m.fingerprintFor(evt.NodeID, routeKey{backend: backend, model: modelName, source: source}, provider),
+				costDelta, 0, 0, int64(tokensF))
 		}
 		m.mu.Unlock()
 		if summarised {
@@ -528,6 +601,7 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		tokensF := toFloat(evt.Data["tokens"])
 		effective, _ := evt.Data["effective_model"].(string)
 		served, _ := evt.Data["route_model"].(string)
+		provider, _ := evt.Data["provider"].(string)
 		// Only claude_code's labels name a credential slot the ledger reads
 		// (routeSlot); keying another backend's route on its label would only
 		// split one route in two.
@@ -586,6 +660,8 @@ func (m *metricsEmitter) observe(evt store.Event) {
 			// per-credential endpoint see "not split" instead of a
 			// confident, wrong input figure (#992).
 			m.addRouteLocked(backend, modelName, source, costDelta, 0, 0, int64(tokensF))
+			m.addFingerprintLocked(m.fingerprintFor(evt.NodeID, routeKey{backend: backend, model: modelName, source: source}, provider),
+				costDelta, 0, 0, int64(tokensF))
 		}
 		m.mu.Unlock()
 		if summarised {
