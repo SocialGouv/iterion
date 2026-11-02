@@ -1,12 +1,30 @@
 package model
 
 import (
+	"path/filepath"
 	"sync"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
+
+// mustCanonicalRoot resolves root the way ReadScope.AddExtraRoot stores
+// it (absolute, symlinks evaluated), so assertions meet the scope on its
+// own side of a symlinked TMPDIR — /var→/private/var on macOS, a linked
+// scratch dir in a sandbox — instead of red on the spelling.
+func mustCanonicalRoot(t *testing.T, root string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("canonicalize %q: %v", root, err)
+	}
+	abs, err := filepath.Abs(resolved)
+	if err != nil {
+		t.Fatalf("abs %q: %v", root, err)
+	}
+	return abs
+}
 
 // The race class #2897 closes: SetWorkDir writes the field the workspace
 // provider reads LIVE on every workspace tool call, so a run whose engine
@@ -26,9 +44,13 @@ func TestSetWorkDirConcurrentWithWorkspaceProviderReads(t *testing.T) {
 
 	for _, tc := range []struct {
 		name string
-		// seedPulses is the number of SetWorkDir calls the writer makes
-		// before the reader joins, so the pair is exercised in both
-		// orders: writes-first and reads-first.
+		// seedPulses weights the write/read mix (the writer runs 32 more
+		// writes than the reader runs reads), but close(start) releases
+		// both goroutines together — the interleaving order is the
+		// scheduler's, not the test's. The witness needs no order: the
+		// verdict holds either way, every read observing one of the
+		// pushed workspaces, the count staying exact, the extra root
+		// attaching exactly once.
 		seedPulses int
 	}{
 		{name: "writer moves first", seedPulses: 32},
@@ -91,9 +113,10 @@ func TestSetWorkDirConcurrentWithWorkspaceProviderReads(t *testing.T) {
 			if len(seen) != rounds {
 				t.Fatalf("observed %d reads; want %d", len(seen), rounds)
 			}
+			wantRoot := mustCanonicalRoot(t, extra)
 			roots := scope.ExtraRoots()
-			if len(roots) != 1 || roots[0] != extra {
-				t.Fatalf("scope attached %v; want exactly %q once (idempotent attachment)", roots, extra)
+			if len(roots) != 1 || roots[0] != wantRoot {
+				t.Fatalf("scope attached %v; want exactly the canonical %q once (idempotent attachment)", roots, wantRoot)
 			}
 		})
 	}

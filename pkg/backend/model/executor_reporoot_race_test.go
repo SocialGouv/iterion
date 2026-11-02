@@ -25,9 +25,12 @@ func TestSetRepoRootConcurrentWithRepoRootReads(t *testing.T) {
 
 	for _, tc := range []struct {
 		name string
-		// seedPulses is the number of SetRepoRoot calls the writer makes
-		// before the reader joins, so the pair is exercised in both
-		// orders: writes-first and reads-first.
+		// seedPulses weights the write/read mix (the writer runs 32 more
+		// writes than the reader runs reads), but close(start) releases
+		// both goroutines together — the interleaving order is the
+		// scheduler's, not the test's. The witness needs no order: the
+		// verdict holds either way, every read observing one of the
+		// pushed roots and the count staying exact.
 		seedPulses int
 	}{
 		{name: "writer moves first", seedPulses: 32},

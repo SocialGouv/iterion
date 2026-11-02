@@ -55,8 +55,9 @@ func TestSetScratchDirWidensTheRegisteredReadTools(t *testing.T) {
 	if err := call(); err != nil {
 		t.Fatalf("after SetScratchDir, read_file(%q) refused: %v", brief, err)
 	}
-	if got := scope.ExtraRoots(); len(got) != 1 || got[0] != scratch {
-		t.Fatalf("ExtraRoots = %v, want [%q]", got, scratch)
+	wantRoot := mustCanonicalRoot(t, scratch)
+	if got := scope.ExtraRoots(); len(got) != 1 || got[0] != wantRoot {
+		t.Fatalf("ExtraRoots = %v, want the canonical [%q]", got, wantRoot)
 	}
 }
 
