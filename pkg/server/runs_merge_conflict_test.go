@@ -298,3 +298,61 @@ func readBody(t *testing.T, resp *http.Response) string {
 	}
 	return b.String()
 }
+
+// stampBoundary writes the run's content boundary directly into the store —
+// the document is the stamp's authority, as at launch.
+func stampBoundary(t *testing.T, srv *Server, runID string, b *store.RunContentBoundary) {
+	t.Helper()
+	st, err := store.New(srv.cfg.StoreDir)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	r, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	r.ContentBoundary = b
+	if err := st.SaveRun(context.Background(), r); err != nil {
+		t.Fatalf("SaveRun stamp: %v", err)
+	}
+}
+
+// The first HTTP-level witness of the D12 family: a team_gateway-boundary
+// run's agent resolve answers 403 with the stable error code.
+func TestResolveWithAgent_ATeamGatewayBoundaryRunIsRefused403(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	// The refusal must not depend on the caller holding a credential: the
+	// first CI run answered 500 "no LLM credential detected" on a host with
+	// none, and the 403 never reached. Blank every channel the resolver's
+	// detect consults so the order is judged here as it is on CI.
+	for _, key := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "ZAI_API_KEY", "XAI_API_KEY", "OPENROUTER_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ITERION_BACKEND_PREFERENCE"} {
+		t.Setenv(key, "")
+	}
+	t.Setenv("HOME", t.TempDir())
+	srv, hs := newTestServer(t)
+
+	repoDir := setupConflictingRepo(t)
+	runID := "run-boundary-403"
+	seedConflictRun(t, srv, repoDir, runID)
+	stampBoundary(t, srv, runID, &store.RunContentBoundary{Kind: store.ContentBoundaryTeamGateway, GatewayHost: "gw.example"})
+
+	resp := postJSON(t, hs.URL+"/api/runs/"+runID+"/merge", map[string]any{
+		"merge_strategy": "squash",
+	})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("/merge status=%d, want 409 (conflict)", resp.StatusCode)
+	}
+
+	resp = postJSON(t, hs.URL+"/api/runs/"+runID+"/merge/conflicts/resolve-with-agent", nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("resolve-with-agent status=%d, want 403 — the boundary refusal must reach the HTTP layer", resp.StatusCode)
+	}
+	var body map[string]any
+	decodeJSONResp(t, resp, &body)
+	if body["error_code"] != runview.ContentBoundaryRefusedErrorCode {
+		t.Fatalf("error_code=%v, want %q", body["error_code"], runview.ContentBoundaryRefusedErrorCode)
+	}
+}

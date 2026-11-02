@@ -11,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
@@ -139,6 +140,22 @@ func TestUsageCapPreflight_APooledRunIsNotParkedForASupervisorTheSpawnRefuses(t 
 	t.Run("the same supervisor off a pool stays a route", func(t *testing.T) {
 		if err := preflight(t, wholeRunOnTheWire(), ""); err == nil {
 			t.Error("started an unpooled run whose whole-run supervisor rides the capped wire — the pool filter may only drop what a pool stamp drops")
+		}
+	})
+
+	t.Run("a team_gateway boundary drops every supervisor from the walk", func(t *testing.T) {
+		wf := wholeRunOnTheWire()
+		msg := &queue.RunMessage{
+			RunID: "run-boundary", Vars: map[string]any{"mono_family": "gpt"},
+			ContentBoundary: &store.RunContentBoundary{Kind: store.ContentBoundaryTeamGateway, GatewayHost: "gw.example"},
+		}
+		r := capRunner(capTestPolicy(), soft, &capStatusStore{})
+		if err := r.usageCapPreflight(ctx, wf, msg, iterlog.Nop()); err != nil {
+			t.Errorf("parked a boundary-stamped run for a supervisor its own spawn refuses to start: %v", err)
+		}
+		sups := preflightSupervisors(ctx, wf, msg, map[string]any{"mono_family": "gpt"}, wf.LaunchVarEdgeFilter(map[string]any{"mono_family": "gpt"}), iterlog.Nop())
+		if len(sups) != 0 {
+			t.Errorf("the supervisor walk of a team_gateway run is %v, want empty — the boundary refuses every spec, the spawn too", sups)
 		}
 	})
 

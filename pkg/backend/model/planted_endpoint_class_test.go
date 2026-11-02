@@ -238,7 +238,7 @@ func TestAPlantedRoutingNameCrossesAsAnEmptyIntoTheSandbox(t *testing.T) {
 
 	// Control: the operator's own, which must keep crossing — host and
 	// container on one endpoint is what the forwarding exists for.
-	env, _, err := forwardableProviderEnv(context.Background(), "openai/gpt-4o-mini")
+	env, _, err := forwardableProviderEnv(context.Background(), "openai/gpt-4o-mini", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestAPlantedRoutingNameCrossesAsAnEmptyIntoTheSandbox(t *testing.T) {
 
 	// The same bytes, planted by this host's project `.env`.
 	envtrust.MarkPlanted("OPENAI_BASE_URL")
-	env, _, err = forwardableProviderEnv(context.Background(), "openai/gpt-4o-mini")
+	env, _, err = forwardableProviderEnv(context.Background(), "openai/gpt-4o-mini", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv with a planted endpoint: %v", err)
 	}

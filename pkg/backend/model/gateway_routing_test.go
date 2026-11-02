@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
@@ -279,7 +280,7 @@ func TestForwardableProviderEnv_GatewayEnvRidesOnlyGatewayNodes(t *testing.T) {
 		// this test dials nothing.
 		t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://93.184.216.34/v1")
 		t.Setenv("OPENAI_COMPATIBLE_API_KEY", "gw-secret")
-		env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/m")
+		env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/m", "")
 		if err != nil {
 			t.Fatalf("forwardableProviderEnv: %v", err)
 		}
@@ -289,8 +290,8 @@ func TestForwardableProviderEnv_GatewayEnvRidesOnlyGatewayNodes(t *testing.T) {
 		if env["OPENAI_COMPATIBLE_API_KEY"] != "gw-secret" {
 			t.Errorf("gateway key in the sandbox env = %q, want the set key", env["OPENAI_COMPATIBLE_API_KEY"])
 		}
-		if v, ok := env["ITERION_LLM_ENDPOINT_ALLOW_PRIVATE"]; ok {
-			t.Errorf("the escape hatch crossed although it was not lifted (=%q)", v)
+		if v, ok := env["ITERION_LLM_ENDPOINT_ALLOW_PRIVATE"]; !ok || v != "" {
+			t.Errorf("the escape hatch = (%q, %v), want present-and-empty — an absent name lets the workspace .env lift the address-class rule", v, ok)
 		}
 	})
 
@@ -299,7 +300,7 @@ func TestForwardableProviderEnv_GatewayEnvRidesOnlyGatewayNodes(t *testing.T) {
 		t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "http://127.0.0.1:9/v1")
 		t.Setenv("OPENAI_COMPATIBLE_API_KEY", "gw-secret")
 		t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
-		env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/m")
+		env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/m", "")
 		if err != nil {
 			t.Fatalf("forwardableProviderEnv: %v", err)
 		}
@@ -319,7 +320,7 @@ func TestForwardableProviderEnv_GatewayEnvRidesOnlyGatewayNodes(t *testing.T) {
 		clearGatewayEnv(t)
 		t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://93.184.216.34/v1")
 		t.Setenv("OPENAI_COMPATIBLE_API_KEY", "gw-secret")
-		env, _, err := forwardableProviderEnv(context.Background(), "anthropic/claude-x")
+		env, _, err := forwardableProviderEnv(context.Background(), "anthropic/claude-x", "")
 		if err != nil {
 			t.Fatalf("forwardableProviderEnv: %v", err)
 		}
@@ -346,7 +347,7 @@ func TestForwardableProviderEnv_GatewayEnvRidesOnlyGatewayNodes(t *testing.T) {
 		t.Setenv("OPENAI_COMPATIBLE_API_KEY", "gw-planted")
 		envtrust.MarkPlanted("OPENAI_COMPATIBLE_BASE_URL", "OPENAI_COMPATIBLE_API_KEY")
 
-		if _, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/m"); !errors.Is(err, compatgw.ErrNotConfigured) {
+		if _, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/m", ""); !errors.Is(err, compatgw.ErrNotConfigured) {
 			t.Fatalf("a planted gateway route crossing = %v, want ErrNotConfigured — loud, by name, and nothing crossed", err)
 		}
 
@@ -358,14 +359,14 @@ func TestForwardableProviderEnv_GatewayEnvRidesOnlyGatewayNodes(t *testing.T) {
 		envtrust.ResetForTest()
 		t.Setenv(envtrust.EnvPlantedNames, "")
 		envtrust.MarkPlanted("OPENAI_COMPATIBLE_API_KEY")
-		if _, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/m"); err == nil || !strings.Contains(err.Error(), "does not speak for the operator") {
+		if _, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/m", ""); err == nil || !strings.Contains(err.Error(), "does not speak for the operator") {
 			t.Fatalf("operator endpoint + planted key = %v, want the planted-pair refusal — the pair is one presentation, refused whole", err)
 		}
 
 		// And the operator's own pair crosses whole.
 		envtrust.ResetForTest()
 		t.Setenv(envtrust.EnvPlantedNames, "")
-		env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/m")
+		env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/m", "")
 		if err != nil {
 			t.Fatalf("the operator's own gateway: %v", err)
 		}
@@ -403,7 +404,7 @@ func TestForwardableProviderEnv_GatewayEnvRidesOnlyGatewayNodes(t *testing.T) {
 			t.Fatalf("the live dispatch-head read stamped a planted table source=operator (window %d) — catalogEnv's planted filter is gone", got.Spec.ContextWindow)
 		}
 
-		env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/m")
+		env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/m", "")
 		if err != nil {
 			t.Fatalf("forwardableProviderEnv: %v", err)
 		}
@@ -599,7 +600,7 @@ func TestForwardableProviderEnv_CarriesTheHostResolution(t *testing.T) {
 	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "sk-test")
 	compatgw.ResetCatalogCaches()
 
-	env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/gw/m")
+	env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/gw/m", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -608,12 +609,29 @@ func TestForwardableProviderEnv_CarriesTheHostResolution(t *testing.T) {
 		t.Errorf("env carries %v, want the forwarded record", raw)
 	}
 	// A vendor node never sees it.
-	env, _, err = forwardableProviderEnv(context.Background(), "anthropic/claude-opus-5")
+	env, _, err = forwardableProviderEnv(context.Background(), "anthropic/claude-opus-5", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
 	if _, ok := env["ITERION_OPENAI_COMPATIBLE_RESOLVED"]; ok {
 		t.Error("a vendor node received the gateway resolution")
+	}
+
+	// No record: the name still crosses, explicit-empty — the in-container
+	// catalog must not answer from a stale image snapshot the host never
+	// consulted.
+	clearGatewayEnv(t)
+	t.Setenv("OPENAI_COMPATIBLE_MODELS", "")
+	t.Setenv("OPENAI_COMPATIBLE_CATALOG_PROVIDER", "")
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://198.51.100.7")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "sk-test")
+	compatgw.ResetCatalogCaches()
+	env, _, err = forwardableProviderEnv(context.Background(), "openai_compatible/gw/m", "")
+	if err != nil {
+		t.Fatalf("forwardableProviderEnv: %v", err)
+	}
+	if v, ok := env["ITERION_OPENAI_COMPATIBLE_RESOLVED"]; !ok || v != "" {
+		t.Errorf("no-record RESOLVED = (%q, %v), want present-and-empty — the in-container catalog must not answer from a snapshot the host never consulted", v, ok)
 	}
 }
 
@@ -627,7 +645,7 @@ func TestCheckGatewayEnv_AMalformedOperatorTableRefuses(t *testing.T) {
 	t.Setenv("OPENAI_COMPATIBLE_MODELS", `{"gw/m":{"input_usd_per_mtok":0.1}}`) // unpaired price
 	compatgw.ResetCatalogCaches()
 
-	err := checkGatewayEnv(false)
+	err := checkGatewaySource(context.Background(), "", false)
 	if err == nil || !strings.Contains(err.Error(), "OPENAI_COMPATIBLE_MODELS") {
 		t.Fatalf("checkGatewayEnv = %v, want the malformed-table refusal naming the variable", err)
 	}
@@ -649,7 +667,7 @@ func TestForwardableProviderEnv_CarriesTheHostFlagsAcrossTheHandOff(t *testing.T
 	if host.Spec.ToolCall == nil || *host.Spec.ToolCall {
 		t.Fatalf("host resolution tool_call = %v, want known false", host.Spec.ToolCall)
 	}
-	env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/gw/m")
+	env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/gw/m", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -672,4 +690,157 @@ func TestForwardableProviderEnv_CarriesTheHostFlagsAcrossTheHandOff(t *testing.T
 	if got.Spec.Temperature == nil || *got.Spec.Temperature {
 		t.Errorf("container temperature = %v (record %s), want known false", got.Spec.Temperature, forwarded)
 	}
+}
+
+// The ambient stamp's dispatch seam: a run holding its own gateway pair is
+// validated on ITS URL — syntax plus the public-address rule under strict —
+// and the pod's environment is never consulted (a malformed operator table,
+// a decoy pair, nothing of it applies to a run that carries its own
+// source). A stamped run holding NO pair gets the typed ambient refusal at
+// the seam, before any env read.
+func TestCheckGatewaySource_RunPairServesAndTheEnvIsNeverRead(t *testing.T) {
+	runPair := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		AmbientRefused: true,
+		APIKeys:        map[secrets.Provider]string{secrets.ProviderOpenAICompatible: "sk-run-gw"},
+		APIBaseURLs:    map[secrets.Provider]string{secrets.ProviderOpenAICompatible: "https://run-gw.example"},
+	})
+
+	// No env gateway configured at all: the run's pair is the source.
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "")
+	compatgw.ResetCatalogCaches()
+	if err := checkGatewaySource(runPair, "openai_compatible/m", true); err != nil {
+		t.Fatalf("the run's pair must serve without any env gateway: %v", err)
+	}
+
+	// A malformed operator table is the env source's problem: the run's
+	// pair never reads it.
+	t.Setenv("OPENAI_COMPATIBLE_MODELS", `{"gw/m":{"input_usd_per_mtok":0.1}}`)
+	compatgw.ResetCatalogCaches()
+	if err := checkGatewaySource(runPair, "openai_compatible/m", true); err != nil {
+		t.Fatalf("the run's pair must not read the operator table: %v", err)
+	}
+	compatgw.ResetCatalogCaches()
+
+	// A decoy env pair planted beside the run's pair is never consulted.
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://decoy-gw.example/pod")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "sk-pod-decoy")
+	compatgw.ResetCatalogCaches()
+	if err := checkGatewaySource(runPair, "openai_compatible/m", true); err != nil {
+		t.Fatalf("the decoy env pair changed the run-pair verdict: %v", err)
+	}
+	compatgw.ResetCatalogCaches()
+
+	// A stamped run holding NO pair: the typed ambient refusal at the seam,
+	// before any env read — even a VALID env pair stays unconsulted.
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://env-gw.example")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "sk-env")
+	t.Setenv("OPENAI_COMPATIBLE_MODELS", "")
+	compatgw.ResetCatalogCaches()
+	stampedNoPair := secrets.WithCredentials(context.Background(), secrets.Credentials{AmbientRefused: true})
+	err := checkGatewaySource(stampedNoPair, "openai_compatible/m", true)
+	var ambient *ErrAmbientCredentialRefused
+	if !errors.As(err, &ambient) {
+		t.Fatalf("err = %v, want the typed ambient refusal at the seam", err)
+	}
+
+	// Unstamped, the env path answers exactly as before: a valid env pair
+	// passes strict, a malformed table refuses naming the variable.
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://env-gw.example")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "sk-env")
+	t.Setenv("OPENAI_COMPATIBLE_MODELS", "")
+	compatgw.ResetCatalogCaches()
+	if err := checkGatewaySource(context.Background(), "openai_compatible/m", false); err != nil {
+		t.Fatalf("the env source broke: %v", err)
+	}
+	t.Setenv("OPENAI_COMPATIBLE_MODELS", `{"gw/m":{"input_usd_per_mtok":0.1}}`)
+	compatgw.ResetCatalogCaches()
+	err = checkGatewaySource(context.Background(), "openai_compatible/m", false)
+	if err == nil || !strings.Contains(err.Error(), "OPENAI_COMPATIBLE_MODELS") {
+		t.Fatalf("err = %v, want the malformed-table refusal naming the variable", err)
+	}
+}
+
+// The strict dispatch gate applies to a run-held URL too — the private-
+// address rule at the seam, liftable by the operator's escape hatch, the
+// same treatment the env pair gets.
+func TestCheckGatewaySource_RunHeldPrivateURLRefusedAndLifted(t *testing.T) {
+	privatePair := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		AmbientRefused: true,
+		APIKeys:        map[secrets.Provider]string{secrets.ProviderOpenAICompatible: "sk-run-gw"},
+		APIBaseURLs:    map[secrets.Provider]string{secrets.ProviderOpenAICompatible: "https://10.0.0.7:8443"},
+	})
+	if err := checkGatewaySource(privatePair, "openai_compatible/m", true); err == nil ||
+		!strings.Contains(err.Error(), "public address") {
+		t.Fatalf("err = %v, want the private-address refusal for a run-held URL", err)
+	}
+	// The operator's escape hatch lowers the strict the CALLER computes
+	// (strict = !ITERION_LLM_ENDPOINT_ALLOW_PRIVATE, the same expression
+	// the env pair's dispatch uses): with it set, the private gateway is
+	// served and nothing names an env variable.
+	t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
+	if err := checkGatewaySource(privatePair, "openai_compatible/m", false); err != nil {
+		t.Fatalf("the escape hatch must lift the private-address rule for a run-held URL: %v", err)
+	}
+}
+
+// A run-held pair serves the crossing itself: the gateway env names carry
+// the RUN's money and the operator's env gateway is never read for it. The
+// escape hatch crosses as the operator's inherited answer on EVERY gateway
+// arm — the dial (checkGatewaySource), the host client and the netproxy pin
+// already judge the run-held URL at the operator's strictness, and a
+// crossing that told the container otherwise would have the same run pass
+// outside the sandbox and refuse inside it. Empty when the operator said
+// nothing: an absent name lets the workspace .env lift the rule. A vendor
+// node never sees the pair.
+func TestForwardableProviderEnv_GatewayPairBeatsTheEnvGateway(t *testing.T) {
+	clearGatewayEnv(t)
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://93.184.216.34/v1")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "env-gw-secret")
+	compatgw.ResetCatalogCaches()
+
+	runPair := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:     map[secrets.Provider]string{secrets.ProviderOpenAICompatible: "sk-run-gw"},
+		APIBaseURLs: map[secrets.Provider]string{secrets.ProviderOpenAICompatible: "https://run-gw.example"},
+	})
+
+	t.Run("the operator's inherited lift crosses with the pair", func(t *testing.T) {
+		t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
+		env, _, err := forwardableProviderEnv(runPair, "openai_compatible/m", "")
+		if err != nil {
+			t.Fatalf("forwardableProviderEnv: %v", err)
+		}
+		if env["OPENAI_COMPATIBLE_BASE_URL"] != "https://run-gw.example" {
+			t.Errorf("endpoint = %q, want the RUN's pair URL — the env gateway is not the run's money", env["OPENAI_COMPATIBLE_BASE_URL"])
+		}
+		if env["OPENAI_COMPATIBLE_API_KEY"] != "sk-run-gw" {
+			t.Errorf("gateway key = %q, want the run's pair key", env["OPENAI_COMPATIBLE_API_KEY"])
+		}
+		if env["ITERION_LLM_ENDPOINT_ALLOW_PRIVATE"] != "1" {
+			t.Errorf("hatch = %q, want the operator's lift — the dial and the pin judge the run-held URL at the operator's strictness; a crossing that says otherwise refuses inside the sandbox a run that passes outside it", env["ITERION_LLM_ENDPOINT_ALLOW_PRIVATE"])
+		}
+	})
+
+	t.Run("an unset hatch crosses explicit-empty beside the pair", func(t *testing.T) {
+		t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "")
+		env, _, err := forwardableProviderEnv(runPair, "openai_compatible/m", "")
+		if err != nil {
+			t.Fatalf("forwardableProviderEnv: %v", err)
+		}
+		if v, ok := env["ITERION_LLM_ENDPOINT_ALLOW_PRIVATE"]; !ok || v != "" {
+			t.Errorf("hatch = (%q, %v), want present-and-empty — an absent name lets the workspace .env lift the address-class rule", v, ok)
+		}
+	})
+
+	t.Run("a vendor node never sees the pair", func(t *testing.T) {
+		env, _, err := forwardableProviderEnv(runPair, "anthropic/claude-x", "")
+		if err != nil {
+			t.Fatalf("forwardableProviderEnv: %v", err)
+		}
+		for _, name := range []string{"OPENAI_COMPATIBLE_BASE_URL", "OPENAI_COMPATIBLE_API_KEY"} {
+			if env[name] != "" {
+				t.Errorf("vendor node carries %s=%q — the run's gateway pair leaked to a non-gateway node", name, env[name])
+			}
+		}
+	})
 }

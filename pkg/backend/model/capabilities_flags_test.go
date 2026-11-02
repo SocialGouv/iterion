@@ -299,7 +299,7 @@ func TestEveryLaunchSeamSaysAnUnknownGatewayIdOutLoud(t *testing.T) {
 		name: "the sandbox hand-off",
 		id:   "zz-seam-handoff",
 		call: func(t *testing.T, id string) {
-			if _, _, err := forwardableProviderEnv(context.Background(), modelroute.OpenAICompatible+"/"+id); err != nil {
+			if _, _, err := forwardableProviderEnv(context.Background(), modelroute.OpenAICompatible+"/"+id, ""); err != nil {
 				t.Fatalf("forwardableProviderEnv: %v", err)
 			}
 		},

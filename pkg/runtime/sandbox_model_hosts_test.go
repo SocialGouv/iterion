@@ -64,7 +64,7 @@ func TestADeclaredModelGatewaysBodyIsNeverMaterialised(t *testing.T) {
 	spec := compileSandboxSpec(t, netPolicySource(`    network:
       mode: open`))
 	rw := &recordingRewriter{}
-	prx, endpoint, caPEM, err := startNetworkProxy(spec, inspectingDriver{drv}, "run-gw", rw, func(store.EventType, map[string]any) error { return nil }, nil)
+	prx, endpoint, caPEM, err := startNetworkProxy(spec, inspectingDriver{drv}, "run-gw", rw, func(store.EventType, map[string]any) error { return nil }, nil, "")
 	if err != nil {
 		t.Fatalf("startNetworkProxy: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestAnInvalidModelGatewayFailsTheProxy(t *testing.T) {
 	}
 	spec := compileSandboxSpec(t, netPolicySource(`    network:
       mode: open`))
-	prx, _, _, err := startNetworkProxy(spec, inspectingDriver{drv}, "run-bad-gw", &recordingRewriter{}, func(store.EventType, map[string]any) error { return nil }, nil)
+	prx, _, _, err := startNetworkProxy(spec, inspectingDriver{drv}, "run-bad-gw", &recordingRewriter{}, func(store.EventType, map[string]any) error { return nil }, nil, "")
 	if err == nil || !strings.Contains(err.Error(), "model host #1") {
 		if prx != nil {
 			_ = prx.Shutdown(context.Background())
@@ -135,7 +135,7 @@ func TestAnInvalidModelGatewayFailsTheProxyWithoutInspection(t *testing.T) {
 	spec := compileSandboxSpec(t, netPolicySource(`    network:
       mode: allowlist
       rules: ["api.github.com"]`))
-	prx, _, _, err := startNetworkProxy(spec, drv, "run-bad-gw-2", nil, func(store.EventType, map[string]any) error { return nil }, nil)
+	prx, _, _, err := startNetworkProxy(spec, drv, "run-bad-gw-2", nil, func(store.EventType, map[string]any) error { return nil }, nil, "")
 	if err == nil || !strings.Contains(err.Error(), "model host #1") {
 		if prx != nil {
 			_ = prx.Shutdown(context.Background())
@@ -183,14 +183,14 @@ func TestTheInspectionBoundReachesTheRunsProxy(t *testing.T) {
 	spec := compileSandboxSpec(t, netPolicySource(`    network:
       mode: open`))
 	t.Setenv("ITERION_SANDBOX_INSPECT_MAX_BODY", "nope")
-	if prx, _, _, err := startNetworkProxy(spec, inspectingDriver{drv}, "run-bad-bound", &recordingRewriter{}, func(store.EventType, map[string]any) error { return nil }, nil); err == nil || !strings.Contains(err.Error(), "ITERION_SANDBOX_INSPECT_MAX_BODY") {
+	if prx, _, _, err := startNetworkProxy(spec, inspectingDriver{drv}, "run-bad-bound", &recordingRewriter{}, func(store.EventType, map[string]any) error { return nil }, nil, ""); err == nil || !strings.Contains(err.Error(), "ITERION_SANDBOX_INSPECT_MAX_BODY") {
 		if prx != nil {
 			_ = prx.Shutdown(context.Background())
 		}
 		t.Fatalf("an invalid bound: err = %v, want a refusal naming the variable", err)
 	}
 	t.Setenv("ITERION_SANDBOX_INSPECT_MAX_BODY", "32")
-	prx, endpoint, caPEM, err := startNetworkProxy(spec, inspectingDriver{drv}, "run-bound", &recordingRewriter{}, func(store.EventType, map[string]any) error { return nil }, nil)
+	prx, endpoint, caPEM, err := startNetworkProxy(spec, inspectingDriver{drv}, "run-bound", &recordingRewriter{}, func(store.EventType, map[string]any) error { return nil }, nil, "")
 	if err != nil || prx == nil || caPEM == nil {
 		t.Fatalf("startNetworkProxy: %v", err)
 	}

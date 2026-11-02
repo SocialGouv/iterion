@@ -45,7 +45,7 @@ func hostGatewayEnv(t *testing.T) {
 func TestForwardableProviderEnv_CrossesTheGatewayCatalogSourcesAsExplicitEmpties(t *testing.T) {
 	hostGatewayEnv(t)
 
-	env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/no-table-has-this-id")
+	env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/no-table-has-this-id", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestForwardableProviderEnv_CrossesTheGatewayCatalogSourcesAsExplicitEmpties
 
 	// Gateway-only, like the endpoint and the record: no vendor node has
 	// business seeing the gateway's catalog env.
-	env, _, err = forwardableProviderEnv(context.Background(), "anthropic/claude-opus-5")
+	env, _, err = forwardableProviderEnv(context.Background(), "anthropic/claude-opus-5", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestForwardableProviderEnv_DoesNotLaunderAPlantedTableIntoTheCrossedRecord(
 	envtrust.MarkPlanted(compatgw.CatalogModelsEnv, compatgw.ResolvedEnvName)
 	compatgw.ResetCatalogCaches()
 
-	env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/gw/m")
+	env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/gw/m", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestForwardableProviderEnv_AGatewayWithNoKeyCrossesNothing(t *testing.T) {
 	hostGatewayEnv(t)
 	t.Setenv(compatgw.APIKeyEnv, "")
 
-	env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/no-table-has-this-id")
+	env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/no-table-has-this-id", "")
 	if err == nil {
 		t.Fatalf("a gateway with no key crossed: %s=%q, %s=%q", compatgw.BaseURLEnv, env[compatgw.BaseURLEnv], compatgw.APIKeyEnv, env[compatgw.APIKeyEnv])
 	}
@@ -143,7 +143,7 @@ func TestForwardableProviderEnv_AGatewayWithNoKeyCrossesNothing(t *testing.T) {
 
 	// The control, same seam: the pair the operator exported does cross.
 	hostGatewayEnv(t)
-	env, _, err = forwardableProviderEnv(context.Background(), "openai_compatible/no-table-has-this-id")
+	env, _, err = forwardableProviderEnv(context.Background(), "openai_compatible/no-table-has-this-id", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv with the pair: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestForwardableProviderEnv_TheCrossedEmptyOutranksTheSandboxSpecEnv(t *test
 	hostGatewayEnv(t)
 	ctx := context.Background()
 
-	crossing, _, err := forwardableProviderEnv(ctx, "openai_compatible/no-table-has-this-id")
+	crossing, _, err := forwardableProviderEnv(ctx, "openai_compatible/no-table-has-this-id", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}

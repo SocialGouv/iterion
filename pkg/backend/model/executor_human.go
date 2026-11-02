@@ -60,7 +60,7 @@ func (e *ClawExecutor) executeHumanLLMWithSpend(ctx context.Context, node *ir.Hu
 	// `${VAR:-default}` (recipes use the latter for model fallbacks like
 	// "openai/${ITERION_RENOVACY_MODEL_GPT:-gpt-5.5}").
 	modelSpec := e.resolveRoutingField(node.Model)
-	client, err := e.registry.Resolve(modelSpec)
+	client, err := e.registry.ResolveWithContext(ctx, modelSpec)
 	if err != nil {
 		return nil, nil, fmt.Errorf("model: human node %q: %w", node.ID, err)
 	}

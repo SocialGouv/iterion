@@ -300,7 +300,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// Execute, the sandbox runner below, a continued conversation). The
 	// refusal names the variable, never a value.
 	if modelroute.Parse(task.Model).Gateway() {
-		if err := checkGatewayEnv(!secrets.LLMEndpointAllowPrivate()); err != nil {
+		if err := checkGatewaySource(ctx, task.Model, !secrets.LLMEndpointAllowPrivate()); err != nil {
 			return delegate.Result{}, fmt.Errorf("claw backend: node %q: %w", task.NodeID, err)
 		}
 	}
@@ -1630,7 +1630,7 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// finds nothing and bails with "API key required for OpenAI-
 	// compatible provider". Pass through only the keys we know
 	// providers consume: anything else stays on the host.
-	runnerEnv, refused, err := forwardableProviderEnv(ctx, task.Model)
+	runnerEnv, refused, err := forwardableProviderEnv(ctx, task.Model, task.ProviderHint)
 	if err != nil {
 		return delegate.Result{}, err
 	}
@@ -1661,6 +1661,9 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		runnerEnv[k] = v
 	}
 	runnerEnv["HOME"] = clawRunnerHome(ctx, task)
+	if err := refuseUnproxiedGatewayCrossing(ctx, task); err != nil {
+		return delegate.Result{}, err
+	}
 	// The runner is this binary re-entered, and its cwd in the container is
 	// the workspace: the invocation-class marker is what stops it auto-loading
 	// the `.env` of the repository it was handed, whose endpoint names would
@@ -2401,6 +2404,39 @@ func sandboxProxyEnv(handle sandbox.Run) map[string]string {
 	return map[string]string{compatgw.SandboxProxyEndpointEnv: endpoint}
 }
 
+// refuseUnproxiedGatewayCrossing refuses a sandboxed, gateway-routed node
+// whose run holds a sealed gateway credential but whose sandbox handle
+// carries no proxy endpoint: the credential's egress guard is the proxy's
+// pin set, and without one the key dials the gateway directly, past the
+// network policy. The host passthrough is exempt — nothing of the run
+// executes in a container, and the host's own dial guard judged the URL at
+// the dispatch seam (checkGatewaySource).
+func refuseUnproxiedGatewayCrossing(ctx context.Context, task delegate.Task) error {
+	if task.Sandbox == nil || !modelroute.Parse(task.Model).Gateway() {
+		return nil
+	}
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	key, _, err := creds.GatewayCredentialForRoute(secrets.ProviderOpenAICompatible)
+	if err != nil || key == "" {
+		return nil
+	}
+	if hr, isHost := task.Sandbox.(sandbox.HostRun); isHost && hr.HostExecutesCommands() {
+		return nil
+	}
+	if proxied, isProxied := task.Sandbox.(sandbox.ProxiedRun); isProxied && proxied.ProxyEndpoint() != "" {
+		return nil
+	}
+	return &delegate.ErrCapabilityUnsupported{
+		NodeID:     task.NodeID,
+		Backend:    delegate.BackendClaw,
+		Capability: "egress pinning for a sealed gateway credential",
+		Remedy:     "give the sandbox a network policy that starts the proxy, or route the node to a model the run's own keys serve",
+	}
+}
+
 // forwardableProviderEnv builds the env map ClawBackend hands to
 // sandbox.Run.Command so the in-container runner can reach the same
 // provider APIs as the host. Empty entries are skipped — we never
@@ -2433,9 +2469,14 @@ type crossingRefusals struct {
 	planted []string
 }
 
-func forwardableProviderEnv(ctx context.Context, model string) (map[string]string, crossingRefusals, error) {
+func forwardableProviderEnv(ctx context.Context, model, providerHint string) (map[string]string, crossingRefusals, error) {
 	env := map[string]string{}
 	var refused crossingRefusals
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		creds = secrets.Credentials{}
+		ok = false
+	}
 	for _, name := range providerCredentialEnvVars {
 		v := os.Getenv(name)
 		// A value a workspace .env planted on the host is the repository
@@ -2549,6 +2590,19 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 		agentMaxBytes = ""
 	}
 	env[WorkspaceAgentMaxBytesEnv] = agentMaxBytes
+	// A stamped run's glm node takes z.ai's own endpoint: the pod's
+	// ANTHROPIC_BASE_URL is outside the run's trust domain — the same
+	// choice registry.go's GLM branch makes in process.
+	if ok && creds.AmbientRefused && GLMOnAnthropicWire(model) {
+		env["ANTHROPIC_BASE_URL"] = ""
+	}
+	// The gateway escape hatch crosses EXPLICITLY: an absent name lets the
+	// workspace .env inside the container lift the address-class rule
+	// (applyDotEnv fills missing names), so the empty is the base — "the
+	// operator said nothing". The lift below overwrites it for every
+	// gateway arm, the run's own pair included, at the same strictness the
+	// dial and the pin already judge that URL with.
+	env["ITERION_LLM_ENDPOINT_ALLOW_PRIVATE"] = ""
 	// A gateway-served node carries the gateway env, and ONLY a gateway
 	// node does: the endpoint is operator infrastructure, the key to it is
 	// not a vendor credential, and no other node has business seeing
@@ -2558,37 +2612,57 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	// the operator's choice explicitly rather than left to re-derive it
 	// from whatever the sandbox env happens to carry.
 	if modelroute.Parse(model).Gateway() {
-		// The read is envtrust.Inherited, not os.Getenv: a gateway route a
-		// workspace .env planted on the host must not cross raw — the
-		// repository under review picking where a sandboxed node's traffic,
-		// and its key, goes (the sharp case of #2813). A planted name reads
-		// as UNSET here: ErrNotConfigured fails the node loudly, by name.
-		cfg, err := compatgw.FromEnv(envtrust.Inherited)
-		if err != nil {
-			return nil, crossingRefusals{}, err
+		// The run's sealed pair first: the crossing carries the RUN's money
+		// on the wire the node names, and the operator's env gateway is
+		// never read for it — the same order checkGatewaySource applies at
+		// the dispatch seam.
+		pairServed := false
+		if ok {
+			if key, baseURL, perr := creds.GatewayCredentialForRoute(secrets.ProviderOpenAICompatible); perr == nil && key != "" && baseURL != "" {
+				env[compatgw.APIKeyEnv] = key
+				env[compatgw.BaseURLEnv] = baseURL
+				pairServed = true
+			}
 		}
-		allowPrivate := secrets.LLMEndpointAllowPrivate()
-		if err := cfg.Validate(!allowPrivate); err != nil {
-			return nil, crossingRefusals{}, err
+		if !pairServed {
+			// The read is envtrust.Inherited, not os.Getenv: a gateway route a
+			// workspace .env planted on the host must not cross raw — the
+			// repository under review picking where a sandboxed node's traffic,
+			// and its key, goes (the sharp case of #2813). A planted name reads
+			// as UNSET here: ErrNotConfigured fails the node loudly, by name.
+			cfg, err := compatgw.FromEnv(envtrust.Inherited)
+			if err != nil {
+				return nil, crossingRefusals{}, err
+			}
+			allowPrivate := secrets.LLMEndpointAllowPrivate()
+			if err := cfg.Validate(!allowPrivate); err != nil {
+				return nil, crossingRefusals{}, err
+			}
+			env[compatgw.BaseURLEnv] = cfg.BaseURL
+			// Crosses always, never absent: FromEnv above refuses a gateway with
+			// no key (and a half-planted pair) rather than returning one, so
+			// there is no keyless crossing left to leave the name absent for —
+			// and absent is the one state the workspace `.env` of the repository
+			// under review gets to fill.
+			env[compatgw.APIKeyEnv] = cfg.APIKey
 		}
-		env[compatgw.BaseURLEnv] = cfg.BaseURL
-		// Crosses always, never absent: FromEnv above refuses a gateway with
-		// no key (and a half-planted pair) rather than returning one, so
-		// there is no keyless crossing left to leave the name absent for —
-		// and absent is the one state the workspace `.env` of the repository
-		// under review gets to fill.
-		env[compatgw.APIKeyEnv] = cfg.APIKey
-		if allowPrivate {
+		// The operator's inherited lift crosses for EVERY gateway arm, the
+		// run's own pair included: checkGatewaySource, the host client and
+		// the netproxy pin already judge a run-held URL at the operator's
+		// strictness, and a crossing that said otherwise would have the
+		// same run pass outside the sandbox and refuse inside it (Revi
+		// #2721 R2). A PLANTED value stays "" here — the lift is the
+		// operator's, read through Inherited at LLMEndpointAllowPrivate.
+		if secrets.LLMEndpointAllowPrivate() {
 			env["ITERION_LLM_ENDPOINT_ALLOW_PRIVATE"] = "1"
 		}
-		// The host's OWN catalog resolution rides along, so the in-container
-		// catalog answers with the same record the host answered with — the
-		// image's snapshot can be older than the host's, and a window, a
-		// price or a capability flag quietly differing across the IPC is a
-		// lie one side tells the other: a `tool_call:false` the operator
-		// declared must not read unknown container-side under a record that
-		// still claims `source=operator`. Top precedence container-side
-		// (compatgw.ResolvedEnvRecord, the shape both sides share).
+		// The host's OWN catalog resolution rides along — pair-served and
+		// env-gateway alike — so the in-container catalog answers with the
+		// same record the host answered with: the image's snapshot can be
+		// older than the host's, and a window, a price or a capability flag
+		// quietly differing across the IPC is a lie one side tells the
+		// other. Top precedence container-side (compatgw.ResolvedEnvRecord,
+		// the shape both sides share).
 		//
 		// And the name crosses EXPLICITLY, an empty record included: the
 		// runner auto-loads the workspace .env, which only fills names
@@ -2646,12 +2720,27 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 	if os.Getenv("ITERION_OPENAI_USE_OAUTH") == "0" {
 		env["ITERION_OPENAI_USE_OAUTH"] = "0"
 	}
-	creds, ok := secrets.CredentialsFromContext(ctx)
 	if !ok {
 		return env, refused, nil
 	}
+	// The node-aware crossing: a run-held key rides only the nodes its
+	// provider serves — clawPinnedProvider from the spec's own prefix, the
+	// widened route hint when the model carries none (a bare chain element
+	// id). No provider to read, no narrowing: a hintless bare id would
+	// otherwise lose every key at once.
+	nodeProv := clawPinnedProvider(model)
+	if nodeProv == "" {
+		if h := strings.ToLower(strings.TrimSpace(providerHint)); h != "" && h != "auto" {
+			if p := secrets.Provider(h); p.Valid() {
+				nodeProv = p
+			}
+		}
+	}
 	for provider, key := range creds.APIKeys {
 		if key == "" {
+			continue
+		}
+		if nodeProv != "" && provider != nodeProv {
 			continue
 		}
 		if name := byokEnvVar[provider]; name != "" {

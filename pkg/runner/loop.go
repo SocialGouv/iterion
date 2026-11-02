@@ -2835,6 +2835,10 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// refusal) never judged it. Empty-safe: a trusted launch stamps
 		// nothing, so this is inert until the lane marks a run untrusted.
 		runtime.WithTrust(msg.Trust, msg.RepoSHAExpected),
+		// The frozen content boundary rides beside the pool stamp: the
+		// same doc ≡ message rule, and a doc the engine rebuilt without it
+		// would read unstamped to every server-side guard.
+		runtime.WithContentBoundary(msg.ContentBoundary),
 		// Sandbox defaults from the operator config (ITERION_SANDBOX_DEFAULT /
 		// ITERION_SANDBOX_HOST_STATE). pkg/cli/run.go wires these for `iterion
 		// run`; the cloud runner must too — else cfg.Sandbox.* is read and
@@ -3067,7 +3071,20 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 				spawnVars = run.Inputs
 			}
 		}
-		specs := runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, engine.ResolveVars(spawnVars), runLogger), msg.RunnerPool, runLogger)
+		// The ambient stamp's twin of the pool filter: on a run whose
+		// credentials refuse the pod environment, only gateway-model
+		// supervisors spawn — a vendor-family supervisor would spin
+		// refusal-per-evaluation for a run that must not spend it.
+		ambientRefusedRun := false
+		if creds, ok := secrets.CredentialsFromContext(ctx); ok {
+			ambientRefusedRun = creds.AmbientRefused
+		}
+		specs := runview.AmbientSurvivingSpecs(runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, engine.ResolveVars(spawnVars), runLogger), msg.ContentBoundary, msg.RunnerPool, runLogger), ambientRefusedRun, runLogger)
+		// F12: a supervisor's evaluations are the run's money — each one
+		// books its tokens on its own route (source supervisor:<name>), the
+		// same route totals recordCredentialSpend meters per credential at
+		// the run's end.
+		meterSupervisorSpecs(ctx, specs, usage)
 		stopSup := supervise.StartDeclared(ctx, superviseHub, &supervise.StoreInjector{Store: r.cfg.Store},
 			msg.RunID, specs, runLogger)
 		defer stopSup()

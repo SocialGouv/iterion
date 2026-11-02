@@ -41,7 +41,7 @@ func TestForwardableProviderEnv_ForwardsEmptyEndpoints(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 
-	env, _, err := forwardableProviderEnv(context.Background(), "openai/gpt-6")
+	env, _, err := forwardableProviderEnv(context.Background(), "openai/gpt-6", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestForwardableProviderEnv_HostSetEndpointStillCrosses(t *testing.T) {
 	t.Setenv("XAI_BASE_URL", "https://operator-proxy.example/v1")
 	t.Setenv("XAI_API_KEY", "sk-x")
 
-	env, _, err := forwardableProviderEnv(context.Background(), "xai/grok-4")
+	env, _, err := forwardableProviderEnv(context.Background(), "xai/grok-4", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestForwardableProviderEnv_ForwardsAnEmptyGatewayRecordWhenTheHostDoesNotKn
 	t.Setenv(compatgw.ResolvedEnvName, "")
 	compatgw.ResetCatalogCaches()
 
-	env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/no-table-has-this-id")
+	env, _, err := forwardableProviderEnv(context.Background(), "openai_compatible/no-table-has-this-id", "")
 	if err != nil {
 		t.Fatalf("forwardableProviderEnv: %v", err)
 	}

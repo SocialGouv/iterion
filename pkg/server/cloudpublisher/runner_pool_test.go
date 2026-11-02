@@ -278,3 +278,73 @@ func TestSubmitResumeWireCarriesTheFrozenStamp(t *testing.T) {
 		t.Fatal("SubmitResume no longer stamps the resume message with the run's frozen pool — pool-stamped resumes would publish onto the shared stream unstamped")
 	}
 }
+
+// The gateway stamp is a frozen credential fact under the PinnedProviders
+// doctrine: it travels with the run and is replayed by every lane that
+// copies the other frozen facts, never re-derived. Witnessed at the source
+// level, lane by lane: a lane that copies the pool stamp without the
+// gateway stamp beside it drops the pair mid-carriage, and the stamp dies
+// at its first hop. Red when a lane loses its copy.
+func TestContentBoundaryTravelsBesideThePoolStamp(t *testing.T) {
+	pubSrc, err := os.ReadFile("publisher.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	forkSrc, err := os.ReadFile("../../runview/fork.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subbotSrc, err := os.ReadFile("../../runner/subbot.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loopSrc, err := os.ReadFile("../../runner/loop.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lanes := []struct {
+		name        string
+		body        string
+		poolCopy    string
+		gatewayCopy string
+	}{
+		{"SubmitLaunch", laneBody(t, pubSrc, "publisher.go", "func (p *Publisher) SubmitLaunch("),
+			"RunnerPool:", "ContentBoundary: r.ContentBoundary"},
+		{"SubmitResume", laneBody(t, pubSrc, "publisher.go", "func (p *Publisher) SubmitResume("),
+			"RunnerPool: prior.RunnerPool", "ContentBoundary: prior.ContentBoundary"},
+		{"fork", laneBody(t, forkSrc, "fork.go", "func (s *Service) Fork("),
+			"child.RunnerPool = parent.RunnerPool", "child.ContentBoundary = parent.ContentBoundary"},
+		{"subbot", laneBody(t, subbotSrc, "subbot.go", "func (r *Runner) subbotRunnerFor("),
+			"runtime.WithRunnerPool(child.RunnerPool)", "runtime.WithContentBoundary(child.ContentBoundary)"},
+	}
+	for _, lane := range lanes {
+		if !strings.Contains(lane.body, lane.poolCopy) {
+			t.Errorf("%s no longer copies the pool stamp its witness names — re-anchor this witness", lane.name)
+			continue
+		}
+		if !strings.Contains(lane.body, lane.gatewayCopy) {
+			t.Errorf("%s copies the pool stamp without the gateway stamp beside it — a frozen credential fact travels with the run, replayed by every lane, never re-derived", lane.name)
+		}
+	}
+	// The runner MAIN loop replays the stamp beside the pool stamp: its own
+	// comment holds doc ≡ message, and the message carries the field.
+	if !strings.Contains(string(loopSrc), "runtime.WithContentBoundary(msg.ContentBoundary)") {
+		t.Fatal("the runner main loop no longer replays the content boundary beside the pool stamp")
+	}
+}
+
+// laneBody returns the source of the function anchored by decl, up to the
+// next top-level func, so an unrelated field elsewhere cannot satisfy a
+// lane's witness.
+func laneBody(t *testing.T, src []byte, file, decl string) string {
+	t.Helper()
+	start := strings.Index(string(src), decl)
+	if start < 0 {
+		t.Fatalf("%s: %q not found — the lane moved; re-anchor this witness", file, decl)
+	}
+	end := strings.Index(string(src)[start:], "\nfunc ")
+	if end < 0 {
+		t.Fatalf("%s: end of %q not found", file, decl)
+	}
+	return string(src[start : start+end])
+}
