@@ -138,7 +138,7 @@ func shieldGitRepo(t *testing.T) (string, string) {
 	writeWSFile(t, ws, "README.md", "seed\n")
 	gitRun(t, ws, "add", "-A")
 	gitRun(t, ws, "commit", "-m", "seed")
-	out := gitOut(t, ws, "rev-parse", "HEAD")
+	out := mustGitOut(t, ws, "rev-parse", "HEAD")
 	writeWSFile(t, ws, "package-lock.json", `{"lockfileVersion":1,"dependencies":{"leftpad":{"version":"2.0.0"}}}`)
 	writeWSFile(t, ws, "README.md", "seed\n+ drift\n")
 	gitRun(t, ws, "add", "-A")
@@ -155,7 +155,7 @@ func gitRun(t *testing.T, dir string, args ...string) {
 	}
 }
 
-func gitOut(t *testing.T, dir string, args ...string) string {
+func mustGitOut(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	c := exec.Command("git", itgit.NoAutoMaintenance(args...)...)
 	c.Dir = dir
