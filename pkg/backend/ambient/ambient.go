@@ -381,7 +381,7 @@ func headReadsAsGit(path string) bool {
 		return false
 	}
 	return strings.IndexFunc(oid, func(r rune) bool {
-		return !('0' <= r && r <= '9' || 'a' <= r && r <= 'f')
+		return (r < '0' || r > '9') && (r < 'a' || r > 'f')
 	}) == -1
 }
 
