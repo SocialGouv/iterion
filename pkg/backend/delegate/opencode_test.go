@@ -510,6 +510,9 @@ func TestOpenCodeRefusesGatedNode(t *testing.T) {
 	if unsupported.Remedy == "" || !strings.Contains(execErr.Error(), "permission: off") {
 		t.Fatalf("refusal %q must name the way out", execErr)
 	}
+	if !strings.Contains(unsupported.Remedy, "claude_code") {
+		t.Fatalf("remedy %q must name an enforcing backend read from the registry — an empty registry would pass the non-empty check", unsupported.Remedy)
+	}
 }
 
 // TestOpenCodeRefusesAskGatedNode: permission: ask on a hookless CLI hits the

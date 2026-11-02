@@ -159,32 +159,38 @@ func TestCLILiveOpenCodeConfigContentDeny(t *testing.T) {
 
 	// The v1 agent-level fail-open, re-measured: the operator's global config
 	// grants the DEFAULT agent (build) bash=allow; the env content denies.
+	// HARD arm, symmetric with the invalid-string one: the sentinel MUST
+	// exist while the hole is open, and the run MUST exit 0 (the hole is
+	// silent) — the day opencode closes it, this arm reddens.
 	t.Run("an agent-level allow still beats the env deny on 2.x", func(t *testing.T) {
 		sentinel, res := runOpenCodePermissionProbe(t, cli, openCodeProbe{
 			operatorPermission: `, "agent":{"build":{"permission":{"bash":"allow"}}}`,
 			configContent:      `{"permission":{"bash":{"*":"allow","touch *":"deny"}}}`,
 		})
 		res.log(t)
-		if _, err := os.Stat(sentinel); err == nil {
-			t.Log("agent-level allow beat the env deny — the v1 fail-open persists on 2.x")
-			return
+		if _, err := os.Stat(sentinel); err != nil {
+			t.Fatalf("agent-level: sentinel absent (%v) — opencode closed the agent-level fail-open; re-read this bench and the flip's owed list", err)
 		}
-		t.Logf("sentinel absent — the env deny held against the agent-level allow on 2.x (stat err %v)", err)
+		if res.exitErr != nil {
+			t.Fatalf("agent-level: the run failed loudly (%v) — the fail-open is no longer silent; re-read this bench", res.exitErr)
+		}
 	})
 
 	// The v1 default_agent fail-open, re-measured: the operator selects a
-	// custom agent whose permission allows bash.
+	// custom agent whose permission allows bash. HARD arm, same contract as
+	// the agent-level one.
 	t.Run("default_agent allow vs the env deny on 2.x", func(t *testing.T) {
 		sentinel, res := runOpenCodePermissionProbe(t, cli, openCodeProbe{
 			operatorPermission: `, "default_agent":"wide", "agent":{"wide":{"permission":{"bash":"allow"}}}`,
 			configContent:      `{"permission":{"bash":{"*":"allow","touch *":"deny"}}}`,
 		})
 		res.log(t)
-		if _, err := os.Stat(sentinel); err == nil {
-			t.Log("default_agent allow beat the env deny — the v1 fail-open persists on 2.x")
-			return
+		if _, err := os.Stat(sentinel); err != nil {
+			t.Fatalf("default_agent: sentinel absent (%v) — opencode closed the default_agent fail-open; re-read this bench and the flip's owed list", err)
 		}
-		t.Logf("sentinel absent — the env deny held against default_agent on 2.x (stat err %v)", err)
+		if res.exitErr != nil {
+			t.Fatalf("default_agent: the run failed loudly (%v) — the fail-open is no longer silent; re-read this bench", res.exitErr)
+		}
 	})
 }
 

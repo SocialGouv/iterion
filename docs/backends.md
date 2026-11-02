@@ -2893,6 +2893,11 @@ opencode --format json [-m <provider/model>] [--variant <effort>] [--session <id
 
 with the composed prompt on **stdin**.
 
+> **This argv is the 1.x shape.** The 2.x line rejects every flag placed
+> before `run` (`Unrecognized flag: --format in command opencode`, measured
+> on 2.2.5 — which takes them only after the subcommand), so the wired
+> backend cannot run against a 2.x install at all: #2915.
+
 ```iter fragment
 prompt task:
   Implement the feature described in the issue and run the tests.
@@ -2935,8 +2940,11 @@ agent implement:
 
 #### What it does NOT bring
 
-The observations below were measured against **opencode 1.1.19**; opencode
-moves fast, so re-measure before trusting a claim against another build.
+The observations below were measured against **opencode 1.1.19** unless a
+bullet names a newer build — the 2.x re-measurements this page carries
+(2.2.5) say so where they stand, and the fail-open section below names its
+own build per table. opencode moves fast, so re-measure before trusting a
+claim against another build.
 
 - **No permission gate, in any mode.** opencode exposes no `PreToolUse`
   hook, so a node with an armed gate is refused at compile time (**C176**)
@@ -3044,7 +3052,7 @@ blocks the wired backend itself on the 2.x line, ahead of any gate work):
 | no policy anywhere | created | control: the bench executes, the rows below are not vacuous |
 | `OPENCODE_CONFIG_CONTENT={"permission":{"bash":{"*":"allow","touch *":"deny"}}}` | absent | denied AT THE CALL (`Permission denied: shell` — `shell` is the 2.x internal name; the `bash` key holds through a compatibility mapping), the denial is fed back to the model, the turn finishes, exit 0 |
 | the same with the 2.x-native `shell` key | absent | the native key holds too — a translation may target either spelling |
-| `{"permission":{"bash":"deny"}}` (whole tool) | absent | the tool is WITHHELD from the model, as on 1.19 (a forced call errors `No tool named "bash"`), exit 0 |
+| `{"permission":{"bash":"deny"}}` (whole tool) | absent | the tool is WITHHELD from the model, as on 1.19 (a forced call errors `No tool named "shell" is currently available` — `bash` is translated to the 2.x-internal `shell` before evaluation), exit 0 |
 | invalid `OPENCODE_CONFIG_CONTENT` (`{"permission":{"bash":"deny",}`) | **created** | **fail-OPEN, silent, still**: dropped without a word, exit 0 — a policy iterion emits must be marshalled, never string-built |
 | file `permission:{"*":"ask","bash":{…allow}}` + env deny | absent | the v1 key-position fail-open is CLOSED by the env delivery: `OPENCODE_CONFIG_CONTENT` wins over the file (the #11628 precedence fix, observed) |
 | file `agent.build.permission.bash=allow` + env deny | **created** | **fail-OPEN persists**: an agent-level permission merges after the env content |
