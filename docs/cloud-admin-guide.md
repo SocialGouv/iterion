@@ -526,6 +526,56 @@ The full binding resolution chain (user > binding > team) and what
 `allowed_hosts` enforces is in
 [secrets-reference.md](secrets-reference.md).
 
+#### Binding a context document to a bot
+
+A binding of **kind `context`** ties REFERENCE MATERIAL — not a
+credential — to one bot: a file inside a git repository the operator
+controls, materialised as a run attachment of **every** run of that bot
+(schedules and webhook launches included), under a name the workflow
+declares in its `attachments:` block (ADR
+[147](adr/147-operator-bound-bot-context-is-a-pinned-source.md)).
+
+```bash
+curl -X POST https://iterion.example.com/api/teams/$TEAM_ID/bots/doki/bindings \
+  -d '{
+    "kind": "context",
+    "secret_name_for_workflow": "handbook",
+    "context": {
+      "git_url": "https://gitlab.example.com/org/doki-context.git",
+      "ref": "v1.4.2",
+      "path": "handbook/pricing.pdf",
+      "secret_id": "sec_…"
+    }
+  }'
+```
+
+- `secret_name_for_workflow` is the name the workflow declares in
+  `attachments:` — here `handbook`. A name the workflow does not declare
+  delivers a file no node can reach, so the binding is skipped (and
+  flagged) rather than stored unread.
+- **Pin a tag or sha in `ref`.** A moving branch makes the document
+  change under the operator's feet — the silent-drift failure the whole
+  pinned-source design exists to prevent
+  (`pkg/pluginsource`'s doctrine, reused).
+- `context.secret_id` is the READ credential (a stored team-scoped PAT
+  or deploy key), referenced by id, never inlined; omit it for a public
+  repository. A context binding exposes no secret to the workflow —
+  `secret_id` at the top level stays empty for this kind.
+- Precedence when several sources claim the same attachment name:
+  **author < operator < launch** — a bundle's `attachments/` default is
+  the author's suggestion, a context binding overrides it, and a
+  per-launch upload overrides both.
+- A binding that cannot be materialised (remote refuses the pin, path
+  missing from the checkout, document past the size bound) does NOT fail
+  the launch: the run proceeds without it, and the binding is flagged
+  `degraded_reason` on the list endpoint until a launch resolves it
+  again. The flag is the readout — a silently missing context is the
+  defect this feature exists to fix.
+
+On the wire the document travels as a run attachment (blob-store
+reference in cloud), so the runner pod reads it through the ordinary
+attachment contract — no queue-message change.
+
 ### 2.3 Watch usage
 
 UI path: `/orgs/<id>` → Usage. The run/cost counters are **org-scoped**

@@ -1159,6 +1159,12 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		if opt, ok := s.boardMCPServiceOption(logger, cfg.Store); ok {
 			opts = append(opts, opt)
 		}
+		// Operator-bound context documents (ADR-147): materialised into
+		// every launch this service drives. Nil-guarded — a replica
+		// without the fetcher keeps the binding route's refusal instead.
+		if r := s.botContextResolver(); r != nil {
+			opts = append(opts, runview.WithBotContextResolver(r))
+		}
 		svc, svcErr := runview.NewService("", opts...)
 		if svcErr != nil {
 			// ADR-103 §5: a cloud replica without the run resolver is not
@@ -1201,6 +1207,9 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		}
 		if s.cfg.Mode != "cloud" && s.localSecrets != nil && s.sealer != nil {
 			svcOpts = append(svcOpts, runview.WithLocalSecrets(s.localSecrets, s.sealer))
+		}
+		if r := s.botContextResolver(); r != nil {
+			svcOpts = append(svcOpts, runview.WithBotContextResolver(r))
 		}
 		if s.usageCapSource != nil {
 			svcOpts = append(svcOpts, runview.WithUsageCapSource(s.usageCapSource))

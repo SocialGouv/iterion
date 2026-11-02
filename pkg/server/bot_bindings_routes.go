@@ -32,8 +32,9 @@ type botBindingReq struct {
 }
 
 // BindingContextNotMaterialisedCode is the stable code a client reads when it
-// creates a context binding before the materialisation slice lands: the only
-// part of a 501 body that survives redaction.
+// creates a context binding on a deployment that cannot materialise it into
+// runs (no pinned-source fetcher wired): the only part of a 501 body that
+// survives redaction.
 const BindingContextNotMaterialisedCode = "context_binding_not_materialised"
 
 // bindingStoreError maps what the store refuses onto what the caller is owed:
@@ -147,15 +148,18 @@ func (s *Server) handleCreateBotBinding(w http.ResponseWriter, r *http.Request) 
 		httpError(w, http.StatusBadRequest, "%s is not a team-scoped secret in this org", field)
 		return
 	}
-	// The context kind is stored and served, and nothing materialises it into
-	// a run yet. Refusing it by name is the honest half of that state: a
-	// binding accepted here would be an operator-visible no-op, which is the
-	// very defect the kind exists to fix (#1908, ADR-147). The reason travels
-	// as an error_code, the only field a 5xx body keeps (httpx.WriteErrorJSON
-	// redacts the message), so a client can say what is missing.
-	if b.EffectiveKind() == secrets.BindingKindContext {
+	// The context kind is stored and served, and this server materialises it
+	// into every launch of the bot when it has the two ingredients (the
+	// binding store and the pinned-source fetcher — botContextResolver). On
+	// a deployment missing either, accepting the binding would store an
+	// operator-visible no-op — the very defect the kind exists to fix
+	// (#1908, ADR-147) — so the refusal stays, by name. The reason travels
+	// as an error_code, the only field a 5xx body keeps
+	// (httpx.WriteErrorJSON redacts the message), so a client can say what
+	// is missing.
+	if b.EffectiveKind() == secrets.BindingKindContext && s.botContextResolver() == nil {
 		s.httpErrorCode(w, r, http.StatusNotImplemented, BindingContextNotMaterialisedCode,
-			"a context binding is not materialised into runs yet — it arrives with the materialisation slice of #1908")
+			"this deployment does not materialise context bindings into runs (no pinned-source fetcher wired)")
 		return
 	}
 	// The binding must land in the team it is created FOR — a binding

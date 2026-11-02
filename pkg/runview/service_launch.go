@@ -235,6 +235,11 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		if err := validateRoutingPolicyForLaunch(spec.RoutingPolicy, wf); err != nil {
 			return nil, err
 		}
+		// Operator-bound context documents (ADR-147): resolved HERE, on the
+		// launching replica, and folded into the promote chain — the
+		// publisher's PromoteForHandoff then lands them in the shared blob
+		// store the runner reads back.
+		s.composeBoundContexts(parent, runID, &spec, wf)
 		pos, err := s.publisher.SubmitLaunch(parent, runID, spec, wf, cs)
 		if err != nil {
 			return nil, err
@@ -344,6 +349,11 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		return nil, err
 	}
 	hash := cs.Hash
+	// Operator-bound context documents (ADR-147): resolved on this process
+	// and folded into the promote chain, so the engine's
+	// runPromoteAttachments delivers them between the bundle's defaults
+	// (author) and the launch's uploads — the D4 precedence.
+	s.composeBoundContexts(parent, runID, &spec, wf)
 	if err := validateRoutingPolicyForLaunch(spec.RoutingPolicy, wf); err != nil {
 		return nil, err
 	}

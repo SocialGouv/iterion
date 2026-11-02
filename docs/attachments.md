@@ -18,6 +18,18 @@ local / desktop / cloud, the upload protocol, and the security model.
 > sandbox mount), just bound at answer time instead of launch time. See
 > [human-in-the-loop.md](human-in-the-loop.md#handing-the-workflow-a-file).
 
+> **Attachments can also arrive without any upload.** A bundle's
+> `attachments/` directory gives the AUTHOR's defaults, and a bot
+> binding of kind `context` gives the OPERATOR's reference documents (a
+> pinned git source materialised into every run of the bot, schedules
+> included — ADR
+> [147](adr/147-operator-bound-bot-context-is-a-pinned-source.md), setup
+> in
+> [cloud-admin-guide.md](cloud-admin-guide.md#binding-a-context-document-to-a-bot)).
+> When several sources claim one name the precedence is **author <
+> operator < launch**: a context binding overrides a bundle default, a
+> per-launch upload overrides both.
+
 ## DSL
 
 ```iter fragment

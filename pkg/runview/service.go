@@ -789,6 +789,12 @@ type Service struct {
 	// only signal left. Wired by the cloud server from the identity store.
 	currentPoolForTenant func(ctx context.Context, tenantID string) (string, error)
 
+	// botContexts, when non-nil, materialises the bot's operator-bound
+	// context documents into every launch this service drives (ADR-147).
+	// Nil on a service that cannot materialise — launches then behave as
+	// before the seam existed.
+	botContexts *BotContextResolver
+
 	// alertSettings, when non-nil, requests construction of an alert
 	// Manager that observes the run event stream (via the file-event
 	// tail) and fans stall / budget / failure alerts out to a webhook,
