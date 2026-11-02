@@ -48,7 +48,7 @@ this contract are a **red gate**, so follow it exactly.
 | Status | Meaning | Requires |
 |---|---|---|
 | `covered-deterministic` | Exercised end-to-end by a CI-runnable, credential-free test | ≥1 resolving test reference |
-| `covered-live` | Exercised end-to-end only in the repo's opt-in/live layer | ≥1 resolving test reference AND a justification in Notes (why deterministic is impossible) |
+| `covered-live` | Exercised end-to-end only in the repo's opt-in/live layer | ≥1 resolving test reference AND a justification in Notes (why deterministic is impossible) opening with the gate: `gate: paid` (a real credential / model turn — money) or `gate: tool` (a real external tool, no credential, no money) — #2794's free/paid split |
 | `unit-only` | Deliberately terminal at unit level — an e2e would only re-test the harness | a justification in Notes |
 | `excluded` | Not testable in this repo's harness at all | the reason in Notes |
 | `uncovered` | Real gap — remaining work | nothing (Notes may hold the plan) |
@@ -116,7 +116,7 @@ the feature.
 |---|---|---|---|---|---|
 | cli.run-budget-override | run: per-run budget cap flags override the file | cli | covered-deterministic | TestRunBudgetOverride (e2e/budget_test.go) | |
 | runtime.await-best-effort | convergence: `await: best_effort` proceeds on partial branches | runtime | uncovered | | plan: stub one failing branch |
-| backends.live-model-quality | model output quality on real providers | backends | covered-live | TestLive_ModelQuality (e2e/live_test.go) | essence of the feature IS the live model; no deterministic equivalent |
+| backends.live-model-quality | model output quality on real providers | backends | covered-live | TestLive_ModelQuality (e2e/live_test.go) | gate: paid — essence of the feature IS the live model; no deterministic equivalent |
 | util.slugify | slug normalisation helper | util | unit-only | | pure function, fully asserted in util/slug_test.go; e2e adds no risk coverage |
 | integrations.third-party-oauth | real OAuth consent flow with provider X | integrations | excluded | | needs a real provider tenant; no sandbox exists |
 ```
