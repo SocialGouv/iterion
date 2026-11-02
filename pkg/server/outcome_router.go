@@ -101,7 +101,7 @@ func (s *Server) startOutcomeRouter() {
 	}
 	s.goUntilShutdown("server.outcomeRouterSweep", s.outcomeRouterSweepLoop)
 	if s.logger != nil {
-		s.logger.Info("server: outcome router attached (policy-carrying terminal runs are decided by their launch-frozen contract)")
+		s.logger.Info("server: outcome router attached (a terminal run's launch-frozen contract, or its auto_merge launch intent, decides it)")
 	}
 }
 
