@@ -77,13 +77,24 @@ func recoverySpecOf(v RouteView, spec string) string {
 	return spec
 }
 
+// agentRecoveryIDSuffix turns a tool node's id into the id of the synthetic
+// agent rung 4 dispatches (recoveryAgentNode): the id every event of a
+// recovery dispatch carries. The credential plan (#2288) reads it too — its
+// rung rows must key on the id the runtime's observations join, never on the
+// tool node's own.
+const agentRecoveryIDSuffix = "__recover"
+
+// agentRecoveryNodeID names the runtime id of the rung-4 agent built for a
+// tool node.
+func agentRecoveryNodeID(toolID string) string { return toolID + agentRecoveryIDSuffix }
+
 // recoveryAgentNode is the rung-4 synthetic agent as dispatch builds it
 // (agentRecovery): same id, same single-field route, same tool set. The
 // walks resolve overrides and the backend against it, so a launch-time
 // routing cell sees the rung exactly where dispatch does.
 func recoveryAgentNode(toolID, spec string, agentTools []string) *ir.AgentNode {
 	return &ir.AgentNode{
-		BaseNode:  ir.BaseNode{ID: toolID + "__recover"},
+		BaseNode:  ir.BaseNode{ID: agentRecoveryNodeID(toolID)},
 		LLMFields: ir.LLMFields{Model: spec},
 		Tools:     agentTools,
 	}

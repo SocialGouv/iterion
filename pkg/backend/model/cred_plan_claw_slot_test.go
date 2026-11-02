@@ -6,6 +6,8 @@ import (
 	"maps"
 	"testing"
 
+	"github.com/SocialGouv/claw-code-go/pkg/api"
+
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -260,4 +262,122 @@ func containsProviderName(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// The override arm of the claw slot reading (revi round 3): a launch
+// override cell whose provider hint decides the route still leaves claw's
+// SLOT on the model's prefix — the same registry reading the node-route arm
+// above serves. Without the prefix's row here, a hint-steered override
+// books nobody on exactly the nodes an operator re-pointed at launch.
+func TestEffectiveProviders_aClawProviderOverrideAlsoRecordsThePrefixSlot(t *testing.T) {
+	t.Parallel()
+
+	nodeOf := func() ir.Node {
+		return &ir.AgentNode{BaseNode: ir.BaseNode{ID: "impl"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "zai", Model: "anthropic/claude-opus-5"}}
+	}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{"impl": nodeOf()}}
+	var ovs ModelOverrides
+	ovs.SetProvider("impl", "openai")
+	res := EffectiveProviders(RouteView{Workflow: wf, Overrides: ovs}, knownForTest)
+	if !res.NarrowSafe {
+		t.Fatalf("the walk widened on an override-steered claw route: %+v", res)
+	}
+	if got := res.Sites["impl"]; !slicesEqual(got, []string{"openai", "anthropic"}) {
+		t.Fatalf("Sites[impl] = %v, want [openai anthropic] — the override names the route, the prefix names the slot claw funds", got)
+	}
+	plan := CredentialPlan(res, planBundle())
+	if got := plan["impl|anthropic"]; got != "fp-own-anthropic" {
+		t.Fatalf("plan[impl|anthropic] = %q, want %q — the prefix's slot plans the credential the route funds (the override's openai hint names no claw slot)", got, "fp-own-anthropic")
+	}
+}
+
+// The rescue-route arm of the claw slot reading (revi round 3): an authored
+// `fallbacks:` route on claw reads through resolveRoute like the primary,
+// and its hint decides the route its model's prefix never does. Without the
+// prefix's row, the fired rescue books nobody — the donor's rung spent, the
+// plan silent.
+func TestEffectiveProviders_aClawFallbackHintAlsoRecordsThePrefixSlot(t *testing.T) {
+	t.Parallel()
+
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"impl": &ir.AgentNode{
+			BaseNode:  ir.BaseNode{ID: "impl"},
+			LLMFields: ir.LLMFields{Backend: "claw", Provider: "anthropic", Model: "anthropic/claude-opus-5"},
+			Fallbacks: []ir.Fallback{{Name: "donor", Backend: "claw", Provider: "zai", Model: "openai/gpt-5"}},
+		},
+	}}
+	res := EffectiveProviders(RouteView{Workflow: wf}, knownForTest)
+	if !res.NarrowSafe {
+		t.Fatalf("the walk widened on a hint-steered claw fallback: %+v", res)
+	}
+	if got := res.Sites["impl#donor"]; !slicesEqual(got, []string{"zai", "openai"}) {
+		t.Fatalf("Sites[impl#donor] = %v, want [zai openai] — the fallback's hint names the route, its model's prefix names the slot", got)
+	}
+	plan := CredentialPlan(res, planBundle())
+	if got := plan["impl|openai"]; got != "fp-own-openai" {
+		t.Fatalf("plan[impl|openai] = %q, want %q — the fired rescue's prefix slot plans its credential", got, "fp-own-openai")
+	}
+}
+
+// The run-level chain's claw stage reads through the same rescue-route arm,
+// and its providers spread onto every node: the stage's hint names the
+// route claw walks, its model's prefix names the slot the registry funds.
+// Without the prefix in the chain's spread, the fired stage books nobody on
+// every node it rescues.
+func TestCredentialPlan_aClawRunFallbackStagePlansItsPrefixSlot(t *testing.T) {
+	t.Parallel()
+
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"impl":   agentWith("impl", "anthropic", "anthropic/claude-opus-5"),
+		"review": agentWith("review", "openai", "openai/gpt-5"),
+	}}
+	view := RouteView{Workflow: wf, RunFallbacks: []FallbackEntry{{Backend: "claw", Provider: "zai", Model: "openai/gpt-5"}}}
+	res := EffectiveProviders(view, knownForTest)
+	if !res.NarrowSafe {
+		t.Fatalf("the walk widened on a hint-steered run fallback: %+v", res)
+	}
+	plan := CredentialPlan(res, planBundle())
+	for _, node := range []string{"impl", "review"} {
+		if got := plan[node+"|openai"]; got != "fp-own-openai" {
+			t.Fatalf("plan[%s|openai] = %q, want %q — the chain stage's prefix slot plans on every node", node, got, "fp-own-openai")
+		}
+		if got := plan[node+"|zai"]; got != "fp-donor-zai" {
+			t.Fatalf("plan[%s|zai] = %q, want %q — the stage's hint stays recorded beside the prefix", node, got, "fp-donor-zai")
+		}
+	}
+}
+
+// The wiring witness (revi round 3): ClawBackend.Execute stamps
+// GenerationOptions.Provider from servingProvider before applyHooks copies
+// it onto every step — the chain the runner's plan join reads. A wiring
+// that drops the word leaves every step wordless while the unit tables
+// above stay green, and a hint-steered claw route then books nobody.
+func TestClawBackendExecute_stampsTheServingSlotOnEveryStep(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry()
+	mock := &captureRequestClient{stream: mockStreamEvents("ok", "end_turn")}
+	reg.Register("openai", func(string) (api.APIClient, error) { return mock, nil })
+	reg.Register("anthropic", func(string) (api.APIClient, error) { return mock, nil })
+
+	var steps []LLMStepInfo
+	hooks := EventHooks{OnLLMStepFinish: func(_ string, step LLMStepInfo) { steps = append(steps, step) }}
+	backend := NewClawBackend(reg, hooks, RetryPolicy{})
+	_, err := backend.Execute(context.Background(), delegate.Task{
+		NodeID:       "impl",
+		ProviderHint: "zai",
+		Model:        "anthropic/claude-opus-5",
+		UserPrompt:   "ping",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(steps) == 0 {
+		t.Fatal("the loop produced no step event — the witness premise is broken")
+	}
+	for _, step := range steps {
+		if step.Provider != "anthropic" {
+			t.Fatalf("step provider = %q, want \"anthropic\" — the slot the client was resolved from (the prefix, never the zai hint) must ride every step", step.Provider)
+		}
+	}
 }

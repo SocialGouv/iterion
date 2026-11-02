@@ -263,3 +263,47 @@ func TestCredentialPlan_TwiceFundedProviderBehindAMixedWalkPlansNothing(t *testi
 		t.Fatalf("plan = %v, want nil — a twice-funded provider behind a mixed walk has no total per-(node, provider) answer", plan)
 	}
 }
+
+// recoveryRungWorkflow is the Verified Action whose rung 4 the plan must
+// answer: a tool node with a postcondition and an agent-recovery budget
+// (ir.ToolRecoveryAgentRung's predicate), the rung's spec naming the model
+// the recovery dispatch spends.
+func recoveryRungWorkflow() *ir.Workflow {
+	return &ir.Workflow{Nodes: map[string]ir.Node{
+		"heal": &ir.ToolNode{
+			BaseNode:      ir.BaseNode{ID: "heal"},
+			Command:       "make build",
+			Goal:          "the build passes",
+			Postcondition: "test -f built",
+			Policy:        ir.PolicyRecover,
+			Recovery:      &ir.RecoverySpec{MaxAgentAttempts: 1, Model: "anthropic/claude-opus-5"},
+		},
+	}}
+}
+
+func TestCredentialPlan_theAgentRecoveryRungPlansUnderTheRuntimeID(t *testing.T) {
+	t.Parallel()
+
+	// Rung 4 dispatches a synthetic agent under `<tool>__recover`
+	// (recoveryAgentNode), and the recovery dispatch's events carry THAT id
+	// — the tool node never spends a token under its own. The plan must key
+	// the rung's rows where the runtime's observations join, or a fired
+	// recovery books nobody under real spend. The tool node's own row stays
+	// (the launch vocabulary's reading, inert for a recipe-only node); the
+	// runtime-id row is the one the runner's join reads.
+	res := EffectiveProviders(RouteView{Workflow: recoveryRungWorkflow()}, knownForTest)
+	if !res.NarrowSafe {
+		t.Fatalf("the rung walk widened — test premise broken: %+v", res)
+	}
+	if got := res.Sites["heal#agent_recovery"]; !slices.Equal(got, []string{"anthropic"}) {
+		t.Fatalf("Sites[heal#agent_recovery] = %v, want [anthropic] — the walk reads the rung at its site", got)
+	}
+	plan := CredentialPlan(res, planBundle())
+	want := map[string]string{
+		"heal|anthropic":          "fp-own-anthropic",
+		"heal__recover|anthropic": "fp-own-anthropic",
+	}
+	if !maps.Equal(plan, want) {
+		t.Fatalf("plan = %v, want %v — the rung keys a second row under the runtime id the recovery dispatch's events carry", plan, want)
+	}
+}

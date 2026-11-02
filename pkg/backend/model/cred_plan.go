@@ -49,7 +49,10 @@ const PlanKeySep = "|"
 // of the sealed bundle — the same strings the runner reads back from its
 // own credentials (RunBundle's fingerprint maps, mirrored into
 // Credentials.Fingerprints at claim) and the lease carries, so producer
-// and consumer meet in one space. The run-level fallback chain names its
+// and consumer meet in one space. A Verified Action's rung-4 recovery keys
+// a second row under the synthetic agent's runtime id
+// (`<tool>__recover`), the id the recovery dispatch's own events carry
+// (agentRecoveryPlanNode). The run-level fallback chain names its
 // providers on no node of its own (`run-fallback#<stage>` sites): the
 // derivation folds it onto EVERY node that has a site of its own — a
 // superset of where ir.ApplyRunFallback actually lands the chain (agent
@@ -75,6 +78,13 @@ func CredentialPlan(res ProviderResolution, bundle secrets.RunBundle) map[string
 			continue
 		}
 		nodeProvs[node] = append(nodeProvs[node], provs...)
+		// Rung 4 dispatches under the synthetic agent's runtime id, not the
+		// tool node's: the same providers key a second row there, or every
+		// fired recovery observation joins nothing and books nobody under
+		// real spend.
+		if rung := agentRecoveryPlanNode(site); rung != "" {
+			nodeProvs[rung] = append(nodeProvs[rung], provs...)
+		}
 	}
 	if len(nodeProvs) == 0 {
 		return nil
@@ -118,6 +128,31 @@ func siteNode(site string) (node string, isRunFallback bool) {
 		return site[:idx], false
 	}
 	return site, false
+}
+
+// agentRecoverySiteSuffix is the walk's site for a Verified Action's rung-4
+// agent recovery (override_fold's agent-recovery arm) — the launch
+// vocabulary the pins and the refusals read.
+const agentRecoverySiteSuffix = "#agent_recovery"
+
+// agentRecoveryPlanNode names the plan-key node half a rung-4 walk site
+// rows under — the synthetic agent's runtime id (agentRecoveryNodeID,
+// recoveryAgentNode), the id every event of a recovery dispatch carries —
+// and "" for any other site. The walk records the rung at
+// `<tool>#agent_recovery`; keying its rows on the tool node alone would
+// leave every fired recovery observation joining `<tool>__recover|…`, a key
+// the plan never stamped.
+//
+// An authored fallback route whose author named it "agent_recovery" spells
+// the same site: its extra `<tool>__recover` rows stay inert (nothing
+// dispatches under that id on a run without the rung) and its own node rows
+// are unchanged — the duplication only ever adds, the same booking-safe
+// over-claim the run-level chain's spread is.
+func agentRecoveryPlanNode(site string) string {
+	if !strings.HasSuffix(site, agentRecoverySiteSuffix) {
+		return ""
+	}
+	return agentRecoveryNodeID(strings.TrimSuffix(site, agentRecoverySiteSuffix))
 }
 
 // containsProvider reports whether provs names p.

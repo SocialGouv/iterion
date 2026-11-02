@@ -102,6 +102,19 @@ type metricsEmitter struct {
 	// donor's daily quota each time (measured on prod: 2 runs, credential
 	// dead, pledge still "active").
 	sawAuthFailure bool
+
+	// missedPlan accumulates the observations a STAMPED plan named nothing
+	// for, on the routes a plan is supposed to answer. Env-funded spend is
+	// excluded — the openai_compatible gateway and a claude_code session
+	// riding the pod's ambient env are credentials the runner's environment
+	// holds, which no plan row ever names on purpose, so their empty joins
+	// are correct, not drift. The pool report reads this for the
+	// join-drift telltale: an empty fine table under spend is silent drift
+	// no other signal surfaces, and a partial one under-books the lease's
+	// slice invisibly while its other rows book.
+	missedPlanCost         float64
+	missedPlanTokens       int64
+	missedPlanObservations int64
 }
 
 // modelRate is the per-token cost (USD) for a given model, derived
@@ -235,10 +248,20 @@ func (m *metricsEmitter) noteDeclinedRoute(k routeKey) (first bool) {
 // addRoute is the locked entry the OnUsage sink calls from the
 // coordinator goroutine — a different one than the event stream's, so it
 // takes the mutex observe holds on the same maps and totals.
+//
+// The sink's observation joins the credential plan like an event's: the
+// source is the node half the walk recorded (a supervisor's
+// `supervisor:<name>` site), and an observation that books nobody is a
+// miss the report must count — a sink path that stayed outside the fine
+// table would book the lease $0 under real spend with the telltale quiet.
 func (m *metricsEmitter) addRoute(backend, modelName, source string, cost float64, in, out, aggregate int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.addRouteLocked(backend, modelName, source, cost, in, out, aggregate)
+	route := routeKey{backend: backend, model: modelName, source: source}
+	fp := m.fingerprintFor(source, route, "")
+	m.addFingerprintLocked(fp, cost, in, out, aggregate)
+	m.notePlanMissLocked(fp, route, cost, in+out+aggregate)
 }
 
 // addRouteLocked folds one observation into its (backend, model) bucket.
@@ -320,6 +343,45 @@ func (m *metricsEmitter) addFingerprintLocked(fp string, cost float64, in, out, 
 	t.OutputTokens += out
 	t.AggregateTokens += aggregate
 	m.byFingerprint[fp] = t
+}
+
+// planRouteFundedByEnv reports that a route's spend belongs to a credential
+// the runner's ENVIRONMENT holds rather than one the plan could name: the
+// openai_compatible gateway (EnvFunded — the walk records no bundle row for
+// it on purpose), and a claude_code session that rode the pod's ambient
+// anthropic env. Booking nobody for these is correct, never drift.
+func planRouteFundedByEnv(route routeKey) bool {
+	if modelroute.Parse(route.model).Gateway() {
+		return true
+	}
+	return route.backend == delegate.BackendClaudeCode && route.source == "anthropic-env"
+}
+
+// notePlanMissLocked folds one observation the plan named nothing for into
+// the join-drift accounting. Called under m.mu, beside addFingerprintLocked
+// — the same observation feeds both, and a guard that dropped one would
+// drop it from both. A spendless observation (no cost, no tokens) counts
+// nothing: a free call that joins nothing is not money the lease loses.
+func (m *metricsEmitter) notePlanMissLocked(fp string, route routeKey, cost float64, tokens int64) {
+	if len(m.credPlan) == 0 || fp != "" || planRouteFundedByEnv(route) {
+		return
+	}
+	if cost == 0 && tokens == 0 {
+		return
+	}
+	m.missedPlanCost += cost
+	m.missedPlanTokens += tokens
+	m.missedPlanObservations++
+}
+
+// MissedPlanSpend snapshots the join-drift accounting (#2288): the spend
+// the stamped plan's keys answered nothing for, on the routes a plan is
+// supposed to answer (env-funded routes excluded). Zero observations on a
+// plan-stamped run means every non-env observation joined a row.
+func (m *metricsEmitter) MissedPlanSpend() (costUSD float64, tokens int64, observations int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.missedPlanCost, m.missedPlanTokens, m.missedPlanObservations
 }
 
 // The executor writes through this emitter, but the ENGINE writes straight
@@ -482,8 +544,10 @@ func (m *metricsEmitter) observe(evt store.Event) {
 			}
 		}
 		m.addRouteLocked(backend, modelName, "", costDelta, int64(inputT), int64(outputT), 0)
-		m.addFingerprintLocked(m.fingerprintFor(evt.NodeID, routeKey{backend: backend, model: modelName}, provider),
-			costDelta, int64(inputT), int64(outputT), 0)
+		stepRoute := routeKey{backend: backend, model: modelName}
+		stepFP := m.fingerprintFor(evt.NodeID, stepRoute, provider)
+		m.addFingerprintLocked(stepFP, costDelta, int64(inputT), int64(outputT), 0)
+		m.notePlanMissLocked(stepFP, stepRoute, costDelta, int64(inputT)+int64(outputT))
 		if unreported, _ := evt.Data["usage_unreported"].(bool); unreported {
 			k := routeKey{backend: backend, model: modelName}
 			t := m.byRoute[k]
@@ -589,8 +653,10 @@ func (m *metricsEmitter) observe(evt store.Event) {
 			m.runAggregateTokens += int64(tokensF)
 			m.runCostUSD += costDelta
 			m.addRouteLocked(backend, modelName, source, costDelta, 0, 0, int64(tokensF))
-			m.addFingerprintLocked(m.fingerprintFor(evt.NodeID, routeKey{backend: backend, model: modelName, source: source}, provider),
-				costDelta, 0, 0, int64(tokensF))
+			errRoute := routeKey{backend: backend, model: modelName, source: source}
+			errFP := m.fingerprintFor(evt.NodeID, errRoute, provider)
+			m.addFingerprintLocked(errFP, costDelta, 0, 0, int64(tokensF))
+			m.notePlanMissLocked(errFP, errRoute, costDelta, int64(tokensF))
 		}
 		m.mu.Unlock()
 		if summarised {
@@ -667,8 +733,10 @@ func (m *metricsEmitter) observe(evt store.Event) {
 			// per-credential endpoint see "not split" instead of a
 			// confident, wrong input figure (#992).
 			m.addRouteLocked(backend, modelName, source, costDelta, 0, 0, int64(tokensF))
-			m.addFingerprintLocked(m.fingerprintFor(evt.NodeID, routeKey{backend: backend, model: modelName, source: source}, provider),
-				costDelta, 0, 0, int64(tokensF))
+			finRoute := routeKey{backend: backend, model: modelName, source: source}
+			finFP := m.fingerprintFor(evt.NodeID, finRoute, provider)
+			m.addFingerprintLocked(finFP, costDelta, 0, 0, int64(tokensF))
+			m.notePlanMissLocked(finFP, finRoute, costDelta, int64(tokensF))
 		}
 		m.mu.Unlock()
 		if summarised {

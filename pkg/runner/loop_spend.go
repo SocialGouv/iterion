@@ -209,18 +209,33 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 	// not read - reports no table and keeps the coarse whole-attempt
 	// booking, which is the conservative-on-ignore direction.
 	byFingerprint := fineFingerprintSpend(usage)
-	// A stamped plan whose table came back EMPTY while the attempt spent is
-	// a join drift, and the broker's booking of zero for the lease is then
-	// silent: the plan promised a per-credential answer for every node, yet
-	// no observation hit one (the loop's provider word absent on an old
-	// container, a spec whose prefix drifted from what served, a model no
-	// event named). One line at the report is the telltale every such shape
-	// surfaces through — without it the first evidence is a donor's ledger
-	// staying flat under real spend. A table with rows, or a plan-less
-	// publication (nil, the coarse contract), needs no line: rows that miss
-	// the lease's fingerprint are the door never having fired.
-	if byFingerprint != nil && len(byFingerprint) == 0 && costUSD > 0 {
-		r.cfg.Logger.Warn("runner: credential-pool report for run %s carries a stamped plan but an EMPTY fine table while the attempt spent %.6f USD — every observation missed the plan's keys; the lease books $0 for this attempt", msg.RunID, costUSD)
+	// A stamped plan whose keys answered nothing while the attempt spent
+	// real, env-unfunded money is a join drift, and the broker's booking of
+	// zero for the lease is then silent: the plan promised a per-credential
+	// answer for every node, yet no observation hit one (the loop's
+	// provider word absent on an old container, a spec whose prefix drifted
+	// from what served, a model no event named). One line at the report is
+	// the telltale every such shape surfaces through — without it the first
+	// evidence is a donor's ledger staying flat under real spend.
+	//
+	// The emptiness that is CORRECT stays quiet: the gateway and the
+	// claude_code ambient env fund spend from the runner's environment,
+	// which no plan row ever names on purpose, so the accounting counts
+	// only the routes a plan is supposed to answer. The same accounting
+	// names the PARTIAL misses — runtime nodes the walk cannot see (a claw
+	// subagent loop's `subagent:*` id, a model arg the Task tool carried) —
+	// whose slice the fine table under-books while its other rows book.
+	// One line per report, in either shape, is the whole alarm budget; a
+	// table with rows and no miss, or a plan-less publication (nil, the
+	// coarse contract), needs no line.
+	if byFingerprint != nil {
+		if missCost, missTokens, missObs := usage.MissedPlanSpend(); missObs > 0 {
+			if len(byFingerprint) == 0 {
+				r.cfg.Logger.Warn("runner: credential-pool report for run %s carries a stamped plan but an EMPTY fine table while %.6f USD / %d tokens of the attempt's spend joined none of its keys — the lease books $0 for this attempt", msg.RunID, missCost, missTokens)
+			} else {
+				r.cfg.Logger.Warn("runner: credential-pool report for run %s carries a stamped plan whose keys answered none of %d observation(s) totalling %.6f USD / %d tokens (a runtime node the walk cannot see — a subagent loop, a runtime model arg, a spec that drifted) — the fine table under-books that slice", msg.RunID, missObs, missCost, missTokens)
+			}
+		}
 	}
 	if err := r.cfg.CredPool.ReportAttempt(bg, msg.RunID, publishedAt, credpool.Outcome{
 		CostUSD:         costUSD,

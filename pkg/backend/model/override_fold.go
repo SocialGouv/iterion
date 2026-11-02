@@ -242,7 +242,7 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 						b = ""
 					}
 					acc.backend = b
-					acc.site = n.NodeID() + "#agent_recovery"
+					acc.site = n.NodeID() + agentRecoverySiteSuffix
 					acc.resolveNode(syn, &syn.LLMFields, v.Overrides)
 				}
 				continue
