@@ -8,7 +8,6 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -197,11 +196,14 @@ func botFileWriterAllowed() map[string]bool {
 // stored bot file outside the lock; one chokepoint now takes it, and the
 // next writer added beside them must go through it or name itself here.
 func TestEveryWriterOfABotSFileGoesThroughTheLockedChokepoint(t *testing.T) {
-	_, self, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("no caller information: the walk cannot find its own package")
+	// The walk judges this package's files in the tree under test: go test
+	// runs with the working directory at the package directory, while
+	// runtime.Caller paths are recorded at compile time and reused across
+	// checkouts by the shared build cache.
+	pkgDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
 	}
-	pkgDir := filepath.Dir(self)
 	entries, err := os.ReadDir(pkgDir)
 	if err != nil {
 		t.Fatal(err)

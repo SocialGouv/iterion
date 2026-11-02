@@ -93,3 +93,28 @@ func GoFiles(t *testing.T, repoRoot string, visit func(rel, path string)) {
 		t.Fatalf("walk %s: %v", repoRoot, err)
 	}
 }
+
+// ModuleRoot resolves the module root of the tree the test PROCESS runs in:
+// go test executes each package's tests with the working directory set to
+// that package's directory inside the tree under test, so the root is a
+// fixed walk upward from there — never runtime.Caller, whose absolute paths
+// are recorded at compile time and reused across checkouts by the shared
+// build cache (a cached package compiled elsewhere walks the other tree).
+func ModuleRoot(t testing.TB) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("working directory: %v", err)
+	}
+	dir := wd
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatalf("no go.mod above %s", wd)
+		}
+		dir = parent
+	}
+}

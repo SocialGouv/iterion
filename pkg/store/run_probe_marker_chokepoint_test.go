@@ -7,11 +7,12 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
 )
 
 // RunRetryState.ProbeFrom answers TWO questions, and they expire differently:
@@ -215,15 +216,12 @@ func namesProbeFromPath(quoted string) bool {
 
 func moduleRootForProbeWalk(t *testing.T) string {
 	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot locate this test's own file")
-	}
-	root := filepath.Dir(filepath.Dir(filepath.Dir(file))) // pkg/store/<file> -> module root
-	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
-		t.Fatalf("module root %s has no go.mod: %v", root, err)
-	}
-	return root
+	// The walk must judge the tree under test, not whichever checkout last
+	// compiled this package: the shared build cache reuses binaries across
+	// checkouts of identical content, and their recorded absolute paths
+	// would walk the other tree (paid: the operator checkout's run-state
+	// parasites reached this sweep through a cached binary's paths).
+	return sweepwalk.ModuleRoot(t)
 }
 
 // walkProbeMarkerSelectors reports each `.ProbeFrom` selector of the module's
