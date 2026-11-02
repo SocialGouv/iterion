@@ -352,7 +352,7 @@ func stashPauseConversation(ctx context.Context, toolErr error, messages []api.M
 	if !errors.As(toolErr, &askErr) {
 		return
 	}
-	if convBytes, mErr := json.Marshal(maybeCompactPause(messages, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent, askErr.PendingToolUseID)); mErr == nil {
+	if convBytes, mErr := json.Marshal(maybeCompactPause(ctx, messages, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent, askErr.PendingToolUseID)); mErr == nil {
 		askErr.Conversation = convBytes
 	}
 	// The narrowing rides the pause (#1717, review MED-1): the resumed
@@ -379,7 +379,7 @@ func stashPauseConversation(ctx context.Context, toolErr error, messages []api.M
 // from a context-window rejection — deliberately does not fire them: a
 // Block there could only turn a recoverable overflow into a failed node.
 func compactBetweenIterations(ctx context.Context, messages []api.Message, opts GenerationOptions) []api.Message {
-	compacted, info, ok := maybeCompact(messages, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent)
+	compacted, info, ok := maybeCompact(ctx, messages, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent)
 	if !ok {
 		return messages
 	}
@@ -395,7 +395,7 @@ func compactBetweenIterations(ctx context.Context, messages []api.Message, opts 
 	// live history keeps the originals.
 	if opts.OnBeforeCompact != nil {
 		if modified := opts.OnBeforeCompact(messages); modified != nil {
-			if reCompacted, reInfo, reOk := maybeCompact(modified, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent); reOk {
+			if reCompacted, reInfo, reOk := maybeCompact(ctx, modified, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent); reOk {
 				compacted, info = reCompacted, reInfo
 			}
 		}

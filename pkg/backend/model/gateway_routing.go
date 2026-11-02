@@ -8,7 +8,6 @@ import (
 	httpdial "github.com/SocialGouv/iterion/pkg/secure/httpdial"
 	"net"
 	"net/url"
-	"os"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
@@ -106,18 +105,21 @@ func checkGatewaySource(ctx context.Context, spec string, strict bool) error {
 	if ambientRefused(ctx) {
 		return &ErrAmbientCredentialRefused{Provider: string(secrets.ProviderOpenAICompatible), Spec: spec}
 	}
-	return checkGatewayEnv(strict)
+	return checkGatewayEnv(ctx, strict)
 }
 
-func checkGatewayEnv(strict bool) error {
+func checkGatewayEnv(ctx context.Context, strict bool) error {
 	// The operator table is judged HERE (not only inside the catalog
 	// resolution): a malformed table must REFUSE the route — naming the
 	// variable — instead of silently degrading the gateway to unknown
 	// while the run continues unpriced.
-	if err := compatgw.CheckOperatorTable(os.Getenv); err != nil {
+	// The closure idiom (#2808): the seam's reader bound to the caller's
+	// ctx, handed as a value to both compatgw reads.
+	getenv := func(name string) string { return envGetenv(ctx, name) }
+	if err := compatgw.CheckOperatorTable(getenv); err != nil {
 		return err
 	}
-	cfg, err := compatgw.FromEnv(os.Getenv)
+	cfg, err := compatgw.FromEnv(getenv)
 	if err != nil {
 		return err
 	}

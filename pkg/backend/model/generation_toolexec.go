@@ -8,7 +8,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
-	"os"
 	"strings"
 	"time"
 
@@ -420,10 +419,10 @@ func diagnosticShellFailureOutput(toolName, output string, err error) (string, b
 // about the route's capability id: the wire id of a vendor route. A gateway
 // route has none, and gets claw's unknown-model threshold rather than a
 // vendor's window matched on the alias's spelling.
-func compactionConfig(model string, ratio float64, preserveRecent int) clawrt.CompactionConfig {
+func compactionConfig(ctx context.Context, model string, ratio float64, preserveRecent int) clawrt.CompactionConfig {
 	route := modelroute.Parse(model)
 	if route.Gateway() {
-		return gatewayCompactionConfig(route.Wire, ratio, preserveRecent)
+		return gatewayCompactionConfig(ctx, route.Wire, ratio, preserveRecent)
 	}
 	return clawrt.DefaultCompactionConfigForModel(route.CapabilityID(), ratio, preserveRecent)
 }
@@ -434,7 +433,7 @@ func compactionConfig(model string, ratio float64, preserveRecent int) clawrt.Co
 // both come through compactionConfig. An unknown window keeps claw's
 // default floor: a guess the catalog's provenance admits to, never a
 // vendor's window borrowed by name.
-func gatewayCompactionConfig(wireModel string, ratio float64, preserveRecent int) clawrt.CompactionConfig {
+func gatewayCompactionConfig(ctx context.Context, wireModel string, ratio float64, preserveRecent int) clawrt.CompactionConfig {
 	if ratio <= 0 {
 		ratio = 0.85
 	}
@@ -445,7 +444,10 @@ func gatewayCompactionConfig(wireModel string, ratio float64, preserveRecent int
 		PreserveRecentMessages: preserveRecent,
 		MaxEstimatedTokens:     clawrt.DefaultCompactionConfig().MaxEstimatedTokens,
 	}
-	res := compatgw.ResolveCatalog(wireModel, modelspecs.Default(), os.Getenv)
+	// The closure idiom (#2808): the seam's reader bound to the
+	// invocation's ctx, handed as a value.
+	getenv := func(name string) string { return envGetenv(ctx, name) }
+	res := compatgw.ResolveCatalog(wireModel, modelspecs.Default(), getenv)
 	if res.Known() && res.Spec.ContextWindow > 0 {
 		cfg.MaxEstimatedTokens = int(float64(res.Spec.ContextWindow) * ratio)
 	}
@@ -461,8 +463,8 @@ func gatewayCompactionConfig(wireModel string, ratio float64, preserveRecent int
 // `compacted=false`) and a bounded summarisation for long ones — the
 // last preserveRecent turns are kept verbatim. The shared wrapper also
 // removes any tool protocol half-pair exposed by the raw message boundary.
-func maybeCompact(messages []api.Message, model string, ratio float64, preserveRecent int) (out []api.Message, info CompactInfo, compacted bool) {
-	cfg := compactionConfig(model, ratio, preserveRecent)
+func maybeCompact(ctx context.Context, messages []api.Message, model string, ratio float64, preserveRecent int) (out []api.Message, info CompactInfo, compacted bool) {
+	cfg := compactionConfig(ctx, model, ratio, preserveRecent)
 	res := compactMessagesToolSafe(messages, cfg, nil)
 	if res == nil {
 		return messages, CompactInfo{}, false
@@ -477,12 +479,12 @@ func maybeCompact(messages []api.Message, model string, ratio float64, preserveR
 // maybeCompactPause is the pause-aware compaction path. It preserves exactly
 // the tool_use named by the suspension while pruning any other incomplete
 // calls before the conversation is checkpointed.
-func maybeCompactPause(messages []api.Message, model string, ratio float64, preserveRecent int, pendingToolUseID string) []api.Message {
+func maybeCompactPause(ctx context.Context, messages []api.Message, model string, ratio float64, preserveRecent int, pendingToolUseID string) []api.Message {
 	allowedPending := map[string]struct{}{}
 	if pendingToolUseID != "" {
 		allowedPending[pendingToolUseID] = struct{}{}
 	}
-	cfg := compactionConfig(model, ratio, preserveRecent)
+	cfg := compactionConfig(ctx, model, ratio, preserveRecent)
 	if res := compactMessagesToolSafe(messages, cfg, allowedPending); res != nil {
 		messages = res.CompactedMessages
 	}

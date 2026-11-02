@@ -275,7 +275,7 @@ func TestEveryLaunchSeamSaysAnUnknownGatewayIdOutLoud(t *testing.T) {
 	}{{
 		name: "the mid-run compaction sizing",
 		id:   "zz-seam-compaction",
-		call: func(t *testing.T, id string) { gatewayCompactionConfig(id, 0, 0) },
+		call: func(t *testing.T, id string) { gatewayCompactionConfig(context.Background(), id, 0, 0) },
 	}, {
 		name: "the sandbox hand-off",
 		id:   "zz-seam-handoff",

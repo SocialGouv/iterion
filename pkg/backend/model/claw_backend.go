@@ -732,7 +732,11 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	gwRoute := modelroute.Parse(task.Model)
 	var gwResolved compatgw.Resolved
 	if gwRoute.Gateway() {
-		gwResolved = compatgw.ResolveCatalog(gwRoute.Wire, modelspecs.Default(), os.Getenv)
+		// The closure idiom (#2808): the seam's reader bound to the
+		// dispatch's ctx, handed as a value — a carried environment is what
+		// the catalog answers from.
+		getenv := func(name string) string { return envGetenv(ctx, name) }
+		gwResolved = compatgw.ResolveCatalog(gwRoute.Wire, modelspecs.Default(), getenv)
 		if budget := gatewayOutputBudget(gwResolved); opts.MaxTokens <= 0 && budget > 0 {
 			opts.MaxTokens = budget
 			opts.MaxTokensWindow = gwResolved.Spec.ContextWindow
@@ -2027,7 +2031,8 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// table): the in-container stamp rode the relay as output keys, which
 	// the wipe below would otherwise read as model-written.
 	if gwRoute := modelroute.Parse(task.Model); gwRoute.Gateway() {
-		res.GatewaySpec = gatewaySpecRecord(compatgw.ResolveCatalog(gwRoute.Wire, modelspecs.Default(), os.Getenv))
+		getenv := func(name string) string { return envGetenv(ctx, name) }
+		res.GatewaySpec = gatewaySpecRecord(compatgw.ResolveCatalog(gwRoute.Wire, modelspecs.Default(), getenv))
 	}
 	stampDelegateOutputMeta(res.Output, res, delegate.BackendClaw)
 	if ioRes.Error != "" {

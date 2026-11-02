@@ -94,14 +94,14 @@ func TestRoutingProvidersArePinnedToTheRegistry(t *testing.T) {
 // threshold), or when the gateway's capability id is its wire id.
 func TestCompactionReadsTheCapabilityIDNotTheSpec(t *testing.T) {
 	unknown := clawrt.DefaultCompactionConfig().MaxEstimatedTokens
-	bare := compactionConfig("claude-opus-4-8", 0, 0).MaxEstimatedTokens
+	bare := compactionConfig(context.Background(), "claude-opus-4-8", 0, 0).MaxEstimatedTokens
 	if bare <= unknown {
 		t.Fatalf("fixture: claw no longer knows claude-opus-4-8's window (threshold %d)", bare)
 	}
-	if got := compactionConfig("anthropic/claude-opus-4-8", 0, 0).MaxEstimatedTokens; got != bare {
+	if got := compactionConfig(context.Background(), "anthropic/claude-opus-4-8", 0, 0).MaxEstimatedTokens; got != bare {
 		t.Errorf("anthropic/claude-opus-4-8 compacts at %d, want %d — its bare id's window", got, bare)
 	}
-	if got := compactionConfig("openai_compatible/claude-opus-4-8", 0, 0).MaxEstimatedTokens; got != unknown {
+	if got := compactionConfig(context.Background(), "openai_compatible/claude-opus-4-8", 0, 0).MaxEstimatedTokens; got != unknown {
 		t.Errorf("gateway alias openai_compatible/claude-opus-4-8 compacts at %d, want the unknown-model threshold %d", got, unknown)
 	}
 }

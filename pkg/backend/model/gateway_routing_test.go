@@ -544,15 +544,15 @@ func TestCompactionConfig_AGatewayRouteSizesFromItsCatalogWindow(t *testing.T) {
 	t.Setenv("ITERION_OPENAI_COMPATIBLE_RESOLVED", "")
 	compatgw.ResetCatalogCaches()
 
-	if got := compactionConfig("openai_compatible/m1", 0, 0).MaxEstimatedTokens; got != int(200000*0.85) {
+	if got := compactionConfig(context.Background(), "openai_compatible/m1", 0, 0).MaxEstimatedTokens; got != int(200000*0.85) {
 		t.Errorf("default-ratio trigger = %d, want 200000×0.85", got)
 	}
-	if got := compactionConfig("openai_compatible/m1", 0.5, 0).MaxEstimatedTokens; got != 100000 {
+	if got := compactionConfig(context.Background(), "openai_compatible/m1", 0.5, 0).MaxEstimatedTokens; got != 100000 {
 		t.Errorf("authored-ratio trigger = %d, want 100000", got)
 	}
 	compatgw.ResetCatalogCaches()
 	t.Setenv("OPENAI_COMPATIBLE_MODELS", "")
-	if got := compactionConfig("openai_compatible/no-such", 0, 0).MaxEstimatedTokens; got != clawrt.DefaultCompactionConfig().MaxEstimatedTokens {
+	if got := compactionConfig(context.Background(), "openai_compatible/no-such", 0, 0).MaxEstimatedTokens; got != clawrt.DefaultCompactionConfig().MaxEstimatedTokens {
 		t.Errorf("unknown-window trigger = %d, want claw's default floor", got)
 	}
 }

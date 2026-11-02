@@ -421,7 +421,10 @@ func (r *Registry) registerDefaults() {
 	// every factory here: an env change needs a restart, and the resolved
 	// client is cached per spec.
 	r.providers[modelroute.OpenAICompatible] = func(modelID string) (api.APIClient, error) {
-		cfg, err := compatgw.FromEnv(os.Getenv)
+		// Process-scoped like every factory here: the seam's process
+		// default, handed as a value (the closure idiom, #2808).
+		getenv := func(name string) string { return envGetenv(ctx, name) }
+		cfg, err := compatgw.FromEnv(getenv)
 		if err != nil {
 			return nil, err
 		}

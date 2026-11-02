@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
+	clawrt "github.com/SocialGouv/claw-code-go/pkg/runtime"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -273,5 +274,41 @@ func TestACommandHookRunsOnTheCarriedEnv(t *testing.T) {
 	blocked, _ = runCommandHook(withCarriedEnv(context.Background(), carriedEnv{"ITERION_ENVSEAM_HOOK": "no"}), "PostToolUse", hooks.Context{ToolName: "bash"}, hook, logger)
 	if blocked {
 		t.Error("a carried env holding ITERION_ENVSEAM_HOOK=no blocked the hook: it read another environment's value")
+	}
+}
+
+// The slice-4 witnesses (#2808): the reader a HANDOFF carries. compatgw's
+// entry points take a func(string) string, so the seam reaches them as a
+// closure bound at the call site (the scanner's closure idiom). Both
+// directions: the carried environment answers, and the process's does not
+// leak. The mutant each witnesses against is os.Getenv handed back at the
+// site — one side reddens whatever the process holds. Only VALID tables
+// are carried: compatgw memoises a parse refusal process-wide (the sticky
+// operatorRefusal), while distinct valid tables are memoised by content
+// and are parallel-safe.
+func TestGatewayEnvChecksReadTheCarriedEnvThroughTheHandoff(t *testing.T) {
+	t.Parallel()
+	if err := checkGatewayEnv(withCarriedEnv(context.Background(), carriedEnv{
+		"OPENAI_COMPATIBLE_BASE_URL": "https://gw.invalid",
+		"OPENAI_COMPATIBLE_API_KEY":  "sk-carried",
+	}), false); err != nil {
+		t.Errorf("carried gateway pair: %v — the handoff did not read the carried environment", err)
+	}
+	if err := checkGatewayEnv(withCarriedEnv(context.Background(), carriedEnv{"ANTHROPIC_API_KEY": "sk-other"}), false); err == nil {
+		t.Error("a carried env without the gateway pair: nil error — the process's gateway env leaked")
+	}
+}
+
+func TestGatewayCompactionReadsTheCarriedCatalogThroughTheHandoff(t *testing.T) {
+	t.Parallel()
+	const id = "openai_compatible/gw/kimi72-seam-witness"
+	table := `{"gw/kimi72-seam-witness":{"context_window":4096,"max_output_tokens":128}}`
+	cfg := compactionConfig(withCarriedEnv(context.Background(), carriedEnv{"OPENAI_COMPATIBLE_MODELS": table}), id, 0.5, 0)
+	if cfg.MaxEstimatedTokens != 2048 {
+		t.Errorf("carried catalog: MaxEstimatedTokens = %d, want 2048 (window 4096 x ratio 0.5)", cfg.MaxEstimatedTokens)
+	}
+	cfg = compactionConfig(withCarriedEnv(context.Background(), carriedEnv{"ANTHROPIC_API_KEY": "sk-other"}), id, 0.5, 0)
+	if want := clawrt.DefaultCompactionConfig().MaxEstimatedTokens; cfg.MaxEstimatedTokens != want {
+		t.Errorf("a carried env without the table: MaxEstimatedTokens = %d, want the default %d — the process's table leaked", cfg.MaxEstimatedTokens, want)
 	}
 }

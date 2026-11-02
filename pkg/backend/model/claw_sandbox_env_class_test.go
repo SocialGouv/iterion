@@ -1680,6 +1680,42 @@ func runnerReach(mod typedModule, problem func(string, ...any)) (reached map[str
 	return reached, cut
 }
 
+// litClosure is a function literal with its parameter flow, precomputed
+// per declaration so readThroughClosure can recognise the closure idiom.
+type litClosure struct {
+	lit  *ast.FuncLit
+	flow paramFlow
+}
+
+// readThroughClosure reports whether the env read of arg happens inside a
+// function literal whose own FIRST parameter carries the name — the
+// closure idiom a context-bound reader takes at a handoff site
+// (getenv := func(name string) string { return envGetenv(ctx, name) }),
+// the only shape in which a carried environment can be handed to a package
+// taking a func(string) string (compatgw's, #2808 slice 4). The literal
+// must BE a reader (isReaderRef: it hands that parameter to an exact-name
+// reader), so the exemption is the same as a top-level reader's — the
+// literal's callers and handoffs own the attribution: a local call
+// spelling a constant is attributed by readsOf, a handoff is classified
+// in getterHandoffs, and a literal reading anything else reddens here.
+func readThroughClosure(lits []litClosure, info *types.Info, readers envReaders, arg ast.Expr) bool {
+	var best *litClosure
+	pos := arg.Pos()
+	for i := range lits {
+		l := &lits[i]
+		if l.lit.Body.Pos() <= pos && pos < l.lit.Body.End() {
+			if best == nil || l.lit.Body.Pos() > best.lit.Body.Pos() {
+				best = l
+			}
+		}
+	}
+	if best == nil {
+		return false
+	}
+	i, ok := best.flow.passedAs(arg)
+	return ok && i == 0 && readers.isReaderRef(info, best.lit)
+}
+
 // scanPackageEnvReads collects every env name this package reads, by site,
 // and what the sandbox runner reaches of it. A read whose name is not a
 // constant is a problem, unless the function reads the variable its own
@@ -1889,6 +1925,19 @@ func scanPackageEnvReads(t *testing.T) envScan {
 			callTargets := map[*ast.Ident]bool{}
 			handedTo := map[*ast.Ident]string{}
 			lookups := map[*ast.Ident]bool{}
+			// The closure idiom (#2808, slice 4): a context-bound reader at
+			// a handoff site — getenv := func(name string) string { return
+			// envGetenv(ctx, name) }. Collect this declaration's literal
+			// flows once, so a read whose name is a literal's own first
+			// parameter is attributed like a top-level reader's (its callers
+			// and handoffs own it) instead of refused as non-constant.
+			var litClosures []litClosure
+			ast.Inspect(decl, func(n ast.Node) bool {
+				if fl, ok := n.(*ast.FuncLit); ok {
+					litClosures = append(litClosures, litClosure{fl, newParamFlow(info, nil, fl.Type, fl.Body)})
+				}
+				return true
+			})
 			ast.Inspect(decl, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
 				if !ok {
@@ -1952,6 +2001,9 @@ func scanPackageEnvReads(t *testing.T) envScan {
 						if i, ok := flow.passedAs(rd.arg); ok && readers.args[where][i] == exactName {
 							continue
 						}
+						if readThroughClosure(litClosures, info, readers, rd.arg) {
+							continue
+						}
 						if pair := [2]string{where, rd.callee}; dynamicEnvReads[pair] != "" {
 							scan.dynamicUsed[pair] = true
 							continue
@@ -1993,6 +2045,17 @@ func scanPackageEnvReads(t *testing.T) envScan {
 				}
 				fn, ok := info.Uses[id].(*types.Func)
 				if !ok {
+					// A variable or field HOLDING an env reader (the closure
+					// idiom's getenv) follows the reader rule: called at the
+					// read, or handed to a call getterHandoffs classifies —
+					// any other reference is a reader out of sight.
+					if v, isVar := info.Uses[id].(*types.Var); isVar && readers.holds(v) {
+						if callee, handed := handedTo[id]; handed {
+							scan.handoffs[callee] = append(scan.handoffs[callee], at(id.Pos()))
+							return true
+						}
+						problem("%s: the env reader held by %s referenced other than by calling it: call it at the read, so the name it reads is spelled there", at(id.Pos()), v.Name())
+					}
 					return true
 				}
 				label := funcLabel(fn)
