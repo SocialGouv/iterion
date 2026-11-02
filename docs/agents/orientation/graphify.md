@@ -45,9 +45,11 @@ confirm in the code before asserting anything.
 ## Scope and freshness
 
 `.graphifyignore` defines what enters the graph: code and curated docs, minus
-Go tests (`*_test.go`: 37 % of the nodes and 70 % of the edges when measured
-on 2026-10-01), vendored, worktree and generated noise, and secrets — `.env`
-and `.secrets/` never enter the graph nor the payload sent to the LLM API.
+tests named as such (Go `*_test.go`, 37 % of the nodes and 70 % of the edges
+when measured on 2026-10-01; JS/TS `*.test.ts(x)`, `*.test.mjs`,
+`*.spec.ts(x)`; Python `test_*.py`), vendored, worktree and generated noise,
+and secrets — `.env` and `.secrets/` never enter the graph nor the payload
+sent to the LLM API.
 
 **Nothing committed to this repository refreshes the graph** — refresh is
 operator-local. On this machine a Claude Code session-start hook does it:

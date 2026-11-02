@@ -66,6 +66,20 @@ Edges are `imports`, `contains`, `declares`, `calls`, `references`,
 In a session, the same queries are MCP tools: `local_map_find`,
 `local_map_neighbours`, `local_map_impact`, `local_map_path`.
 
+The map tools and `local_validate` run the binary the `engine` server
+started with — the `iterion` on your `PATH` at that moment — and resolve
+the map and relative paths against the tree the session started in, the
+one where `local_bots_list` reports its default bots; an absolute path is
+used as given. A binary out of step with a tree can fail every map query
+(`compile bots/<name>/main.bot: …`) or call a valid bot invalid. Before
+editing a bot, validate it with the compiler of the tree it lives in —
+`go run ./cmd/iterion validate <the .bot>`, run there: if it passes, the
+binary is the problem, not the bot. Refreshing it is the operator's step:
+rebuild, replace the `iterion` on `PATH`, then reconnect every session's
+server — a running server keeps the binary it started with. The cache key
+below hashes the tree, not the binary, so a cache another binary built
+can hide the failure until a file the key covers changes.
+
 ## Using it from a `.bot`
 
 Two ways, and the cheap one comes first.
