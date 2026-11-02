@@ -412,6 +412,147 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 	})
 }
 
+// TestChartKindWaitRefusesFlowAndGluedComment pins the two forms go-yaml
+// does not read the way a line reader does. A flow collection open past
+// its opening line: go-yaml ignores indentation inside flow, so no line
+// reader can tell which key owns a later line — helm 4.1.1 renders the
+// mis-anchored file clean with no server deadline and Kubernetes' 600 s
+// default applies at install, while a watch sized from the interior
+// value makes helm give up while the server pod is still Progressing.
+// A `#` glued to the value: go-yaml starts a comment only at a `#`
+// preceded by whitespace, so `600#x` is the plain scalar "600#x" — helm
+// 4.1.1 renders it verbatim and the API refuses the Deployment — and
+// the guard refuses it with the value, not sized from its leading
+// digits. The same subtests pin what is NOT refused: the braces of a
+// plain value are its own, and braces quoted or commented away open
+// nothing.
+func TestChartKindWaitRefusesFlowAndGluedComment(t *testing.T) {
+	t.Run("a flow that stays open past its opening line is refused", func(t *testing.T) {
+		_, stderr, err := runKindWait(t, valuesFile(t, "metrics: {\n  enabled: true,\nserver: 2,\n  progressDeadlineSeconds: 100\n}\n"))
+		if err == nil {
+			t.Fatalf("chart-kind-wait sized the watch from a value inside a flow map — go-yaml puts it at metrics.progressDeadlineSeconds and the server's knob stays unset, so Kubernetes' 600 s default applies at install")
+		}
+		for _, want := range []string{"flow", "first at line 1"} {
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("refusal does not name %q — stderr: %s", want, strings.TrimSpace(stderr))
+			}
+		}
+	})
+
+	t.Run("the opening line is named wherever it sits", func(t *testing.T) {
+		_, stderr, err := runKindWait(t, valuesFile(t, "mode: cloud\nreplicas: 1\nwait: {\n  for: 1\n}\n"))
+		if err == nil {
+			t.Fatalf("chart-kind-wait accepted a flow opened two lines down")
+		}
+		if !strings.Contains(stderr, "first at line 3") {
+			t.Fatalf("refusal does not name the opening line — stderr: %s", strings.TrimSpace(stderr))
+		}
+	})
+
+	t.Run("a flow under server is refused whichever entry holds the knob", func(t *testing.T) {
+		// The knob inside the nested map is not the server's deadline —
+		// helm 4.1.1 renders that file clean with no server deadline and
+		// Kubernetes' 600 s default applies. The layout that leaves the
+		// knob last reads the right value by accident of its line order,
+		// and the layout that leaves it interior sizes a watch the
+		// install does not have; a line reader cannot tell the shapes
+		// apart, so both are refused.
+		for _, form := range []string{
+			"server:\n  meta: {x: 1,\n  progressDeadlineSeconds: 100\n  }\n",
+			"server: {\n  progressDeadlineSeconds: 600\n}\n",
+		} {
+			_, stderr, err := runKindWait(t, valuesFile(t, form))
+			if err == nil {
+				t.Fatalf("chart-kind-wait sized the watch from %q — a flow under server is not a form this guard reads", form)
+			}
+			if !strings.Contains(stderr, "flow") {
+				t.Fatalf("refusal does not name the flow — stderr: %s", strings.TrimSpace(stderr))
+			}
+		}
+	})
+
+	t.Run("a comment that swallows the closing brace is refused", func(t *testing.T) {
+		// helm 4.1.1 refuses the file too — the flow never closes ("did
+		// not find expected ',' or '}'") — both sides refuse loudly.
+		_, stderr, err := runKindWait(t, valuesFile(t, "foo: {a: 1 # x}\n"))
+		if err == nil {
+			t.Fatalf("chart-kind-wait accepted a flow whose closing brace a comment swallows")
+		}
+		if !strings.Contains(stderr, "flow") {
+			t.Fatalf("refusal does not name the flow — stderr: %s", strings.TrimSpace(stderr))
+		}
+	})
+
+	t.Run("a single-line flow is refused as the invisible form it is", func(t *testing.T) {
+		_, stderr, err := runKindWait(t, valuesFile(t, "server: {progressDeadlineSeconds: 600}\n"))
+		if err == nil {
+			t.Fatalf("chart-kind-wait sized the watch from a single-line flow mapping")
+		}
+		for _, want := range []string{"server.progressDeadlineSeconds", "the only form this guard reads"} {
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("refusal does not name %q — stderr: %s", want, strings.TrimSpace(stderr))
+			}
+		}
+	})
+
+	t.Run("a # glued to the value is the string go-yaml hands over", func(t *testing.T) {
+		_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: 600#x\n"))
+		if err == nil {
+			t.Fatalf("chart-kind-wait sized the watch from 600#x as if it were 600 — go-yaml hands the string over and the API refuses the Deployment")
+		}
+		if !strings.Contains(stderr, "not an integer") {
+			t.Fatalf("refusal does not name the non-integer — stderr: %s", strings.TrimSpace(stderr))
+		}
+	})
+
+	t.Run("a # separated by whitespace is still the comment", func(t *testing.T) {
+		stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: 600 # deadline\n"))
+		if err != nil {
+			t.Fatalf("chart-kind-wait refused a comment separated by whitespace — go-yaml strips it like the guard does; stderr: %s", strings.TrimSpace(stderr))
+		}
+		if got, want := strings.TrimSpace(stdout), "720s"; got != want {
+			t.Fatalf("chart-kind-wait = %q, want %q — the comment goes, the value stays", got, want)
+		}
+	})
+
+	t.Run("the braces of a plain value are its own, not a flow", func(t *testing.T) {
+		// In block context go-yaml reads each line as one plain scalar —
+		// flow indicators mid-scalar are the scalar's characters (helm
+		// 4.1.1 parses every form) — so none of them is refused as flow.
+		for _, form := range []string{
+			"note: a:{b\n",
+			"url: https://example.com/{id}\n",
+			"label: x}y\n",
+			"open: v{1\n",
+			"both: a}b{c\n",
+		} {
+			stdout, stderr, err := runKindWait(t, valuesFile(t, form+"server:\n  progressDeadlineSeconds: 600\n"))
+			if err != nil {
+				t.Fatalf("chart-kind-wait refused %q as flow — go-yaml reads it as one plain scalar; stderr: %s", form, strings.TrimSpace(stderr))
+			}
+			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
+				t.Fatalf("chart-kind-wait = %q, want %q on %q", got, want, form)
+			}
+		}
+	})
+
+	t.Run("braces quoted or commented away open no flow", func(t *testing.T) {
+		for _, form := range []string{
+			"quoted: \"a} b{ c\"\nserver:\n  progressDeadlineSeconds: 600\n",
+			"single: 'x[' # also not a flow\nserver:\n  progressDeadlineSeconds: 600\n",
+			"server:\n  progressDeadlineSeconds: 600 # { a brace in a comment\n",
+		} {
+			stdout, stderr, err := runKindWait(t, valuesFile(t, form))
+			if err != nil {
+				t.Fatalf("chart-kind-wait refused %q — braces inside a quoted scalar or a comment open nothing; stderr: %s", form, strings.TrimSpace(stderr))
+			}
+			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
+				t.Fatalf("chart-kind-wait = %q, want %q on %q", got, want, form)
+			}
+		}
+	})
+}
+
 // taskfileTasks mirrors the shape TestTheInlinedTasksMatchTheirTaskfileEntry
 // reads: task command entries are scalar nodes, block or plain.
 type taskfileTasks struct {

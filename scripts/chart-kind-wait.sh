@@ -23,11 +23,20 @@
 # nested block, not to the knob — with the top key and the knob key bare
 # or quoted, an optional space before the colon, and the value on the
 # same line. What a line reader cannot resolve is refused loudly, never
-# guessed: anchors and merge keys, flow mappings, and a scalar on the
-# line after the key stay invisible to it, and such a file is refused
-# rather than sized from a value helm does not use. (The merge-key route
-# cannot reach an install either way: the chart's values schema rejects
-# the top-level anchor holder it needs.)
+# guessed: anchors and merge keys, a flow mapping or sequence that stays
+# open past its opening line, and a scalar on the line after the key
+# stay invisible to it, and such a file is refused rather than sized
+# from a value helm does not use. go-yaml ignores indentation inside
+# flow, so a line reader cannot tell which key owns a later line — a
+# flow interior read as a column-0 key re-anchors the reader and a knob
+# one line down is read from a map it does not belong to (helm 4.1.1
+# renders that file clean with no server deadline, and Kubernetes' 600 s
+# default applies at install) — the file is refused at the line that
+# opens the flow. Braces quoted or commented away open nothing, and the
+# braces of a plain value are the value's own (`a:{b`, `https://…/{id}`
+# are one scalar to go-yaml), so neither is refused as flow. (The
+# merge-key route cannot reach an install either way: the chart's values
+# schema rejects the top-level anchor holder it needs.)
 #
 # The knob's value is resolved the way go-yaml — the parser helm reads
 # values with — resolves it, so a file helm accepts is not refused here as
@@ -42,9 +51,13 @@
 # "600" byte-identical to 600), so it is accepted here. A negative
 # deadline is refused as well: it cannot budget the watch.
 #
-# Whitespace go-yaml tolerates (a tab separating key and value, spaces or
-# tabs around a trailing comment and before the line end, CRLF line
-# endings) is trimmed, so such a file is not refused either.
+# A `#` separated from the value by whitespace is a comment, and the
+# whitespace go-yaml tolerates around one (a tab separating key and
+# value, spaces or tabs before the line end, CRLF line endings) is
+# trimmed, so such a file is not refused. A `#` glued to the value is
+# part of it: go-yaml hands `600#x` over as the string it spells — helm
+# renders it verbatim and the API refuses the Deployment — so it is
+# refused here as well, not sized from its leading digits.
 # Usage: scripts/chart-kind-wait.sh <values file>
 set -eu
 
@@ -59,7 +72,60 @@ values=${1:?usage: chart-kind-wait.sh <values file>}
 # space allowed before the colon, and the last declaration winning, the
 # way go-yaml merges duplicate keys and documents. It is never the
 # runner's — values.yaml keeps the two side by side at the same indent.
+rc=0
 raw=$(awk '
+  # A flow collection open past its opening line makes the file
+  # unreadable line by line: go-yaml ignores indentation inside flow, so
+  # no line reader can tell which key owns a later line. flow_scan
+  # carries the brace depth across lines and returns nonzero for any
+  # line after which a collection is still open. Braces inside a quoted
+  # scalar or a comment do not count, and the braces of a plain value
+  # are its own — in block context go-yaml reads `a:{b` and `https://…/{id}` as
+  # one scalar — so a `{` opens a flow only at a value start, right
+  # after the `key: ` separator.
+  function flow_scan(s,    n, i, c, nxt, vs, ins, ids, esc, prev, q) {
+    n = length(s)
+    q = sprintf("%c", 39)
+    vs = 1; ins = 0; ids = 0; esc = 0; prev = " "
+    for (i = 1; i <= n; i++) {
+      c = substr(s, i, 1)
+      if (ids) {
+        if (esc) esc = 0
+        else if (c == "\\") esc = 1
+        else if (c == "\"") ids = 0
+      } else if (ins) {
+        if (c == q) {
+          if (substr(s, i + 1, 1) == q) i++
+          else ins = 0
+        }
+      } else if (c == "#" && (prev == " " || prev == "\t")) {
+        return depth != 0
+      } else if (c == "\"") {
+        ids = 1
+      } else if (c == q) {
+        ins = 1
+      } else if (c == "{" || c == "[") {
+        if (vs || depth > 0) depth++
+        vs = 0
+      } else if (c == "}" || c == "]") {
+        if (depth > 0) depth--
+        vs = 0
+      } else if (c == ":") {
+        nxt = substr(s, i + 1, 1)
+        vs = nxt == "" || nxt == " " || nxt == "\t"
+      } else if (c != " " && c != "\t") {
+        vs = 0
+      }
+      prev = c
+    }
+    return depth != 0
+  }
+  {
+    if (flow_scan($0)) {
+      bad = 1
+      if (first == 0) first = NR
+    }
+  }
   /^[^ \t\r#]/ { top = $1; sub(/\r$/, "", top); sub(/:$/, "", top); gsub(/^["'"'"']+|["'"'"']+$/, "", top); ind = 0 }
   top == "server" && ind == 0 && $0 ~ /^[ \t]+[^ \t#]/ { match($0, /^[ \t]+/); ind = RLENGTH }
   top == "server" && ind > 0 && $0 !~ /^[ \t]*#/ && match($0, /^[ \t]+/) && RLENGTH == ind {
@@ -74,13 +140,24 @@ raw=$(awk '
       v = line
       sub(/^[ \t]+/, "", v)
       sub(/^[^:]*:[ \t]*/, "", v)
-      sub(/[ \t]*#.*/, "", v)
+      sub(/[ \t]+#.*/, "", v)
       gsub(/["'"'"']/, "", v)
       sub(/[ \t]+$/, "", v)
     }
   }
-  END { print v }
-' "$values")
+  END { if (bad) { print first; exit 5 } print v }
+' "$values") || rc=$?
+case $rc in
+  0) ;;
+  5)
+    echo "chart-kind-wait: $values opens a flow mapping or sequence that stays open past its opening line (first at line $raw) — go-yaml ignores indentation inside flow, so a line reader cannot tell which key owns a later line; write the knob plainly in the values file the install reads" >&2
+    exit 1
+    ;;
+  *)
+    echo "chart-kind-wait: could not read $values (awk exited $rc)" >&2
+    exit 1
+    ;;
+esac
 
 if [ -z "$raw" ]; then
   echo "chart-kind-wait: $values does not set server.progressDeadlineSeconds on a plain \`progressDeadlineSeconds:\` line nested under \`server:\` — that is the only form this guard reads; anchors and merge keys, flow mappings, and a scalar on the line after the key stay invisible to it — and the install would silently watch Kubernetes' default 600 s; write the knob plainly in the values file the install reads" >&2
