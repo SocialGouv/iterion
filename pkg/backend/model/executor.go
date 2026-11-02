@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
@@ -76,8 +77,14 @@ type ClawExecutor struct {
 	hooks        EventHooks
 	retry        RetryPolicy
 	logger       *iterlog.Logger
-	workDir      string // working directory for backend subprocesses
-	repoRoot     string // source-of-truth repo path (project-rooted memory uses this)
+	// workDir is the working directory for backend subprocesses and tool
+	// node shell exec. Atomic because it is read LIVE during Execute: the
+	// workspace provider every workspace-scoped tool consults (and the
+	// prompt path) calls WorkDir on every bash/read/write/glob/grep call,
+	// while the engine may still push a per-run worktree via SetWorkDir
+	// (#2897). Access goes through WorkDir/SetWorkDir only.
+	workDir  atomic.Pointer[string]
+	repoRoot string // source-of-truth repo path (project-rooted memory uses this)
 	// readScope is the claw read tools' scope, shared with the registry
 	// the host built (runview hands the same instance to both). The
 	// engine's SetScratchDir push attaches the run's ${PROJECT_SCRATCH_DIR}
@@ -632,7 +639,7 @@ func WithBackendRegistry(dr *delegate.Registry) ClawExecutorOption {
 // WithWorkDir sets the working directory for backend subprocesses.
 // When set, backend nodes will run their CLI in this directory.
 func WithWorkDir(dir string) ClawExecutorOption {
-	return func(e *ClawExecutor) { e.workDir = dir }
+	return func(e *ClawExecutor) { e.workDir.Store(&dir) }
 }
 
 // WithDefaultBackend sets the workflow-level default backend.
@@ -1209,9 +1216,12 @@ func (e *ClawExecutor) SetMirroredSkills(paths []string) {
 // (claude_code, codex) and tool node shell exec. The engine calls this
 // at run start when `worktree: auto` produces a per-run worktree path
 // that wasn't known at executor construction time. Safe to call before
-// Execute; not safe to call concurrently with an in-flight Execute.
+// Execute, and safe concurrently with in-flight Execute: the field is
+// atomic because the workspace provider reads it live on every
+// workspace tool call (#2897). A call in flight resolves against either
+// the previous or the new directory, never a torn one.
 func (e *ClawExecutor) SetWorkDir(dir string) {
-	e.workDir = dir
+	e.workDir.Store(&dir)
 }
 
 // WorkDir reports the executor's current working directory — the value
@@ -1224,7 +1234,10 @@ func (e *ClawExecutor) SetWorkDir(dir string) {
 // the engine's first SetWorkDir when the executor was built without
 // WithWorkDir.
 func (e *ClawExecutor) WorkDir() string {
-	return e.workDir
+	if dir := e.workDir.Load(); dir != nil {
+		return *dir
+	}
+	return ""
 }
 
 // SetRepoRoot updates the source-of-truth repository root. The engine

@@ -946,7 +946,7 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// that judges the tree's cleanliness would otherwise read as
 			// uncommitted work of the run. Removed on success or failure via
 			// the returned cleanup.
-			wd := e.workDir
+			wd := e.WorkDir()
 			if wd == "" {
 				wd = "."
 			}
@@ -1200,8 +1200,8 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []
 	// (#2844).
 	cmd.Env = append(cmd.Env, e.engineChildEnvEntries()...)
 
-	if e.workDir != "" {
-		cmd.Dir = e.workDir
+	if dir := e.WorkDir(); dir != "" {
+		cmd.Dir = dir
 	}
 	return toolCommand{cmd: cmd}
 }
@@ -1438,8 +1438,8 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 	// CLI (#1799), nor claim the re-entered iterion is a human's call
 	// (#2844).
 	cmd.Env = append(cmd.Env, e.engineChildEnvEntries()...)
-	if e.workDir != "" {
-		cmd.Dir = e.workDir
+	if dir := e.WorkDir(); dir != "" {
+		cmd.Dir = dir
 	}
 	return toolCommand{cmd: cmd}
 }

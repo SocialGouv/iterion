@@ -49,7 +49,7 @@ func (e *ClawExecutor) SessionResumeCapability(node ir.Node) (string, bool) {
 
 func (e *ClawExecutor) packerTask() delegate.Task {
 	return delegate.Task{
-		WorkDir:        e.workDir,
+		WorkDir:        e.WorkDir(),
 		StoreDir:       e.storeDir,
 		SharedStateDir: e.sharedStateDir,
 		Sandbox:        e.sandbox,

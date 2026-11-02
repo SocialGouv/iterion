@@ -196,7 +196,7 @@ func (e *ClawExecutor) resolvePermissionPolicy(f backendFields) (*permission.Pol
 	// from the ambient process: the engine updates workDir at run start for
 	// `worktree: auto`, and the gate rebuilt in a child process receives
 	// this value through PolicyConfig.
-	pol.SetPathRoot(e.workDir)
+	pol.SetPathRoot(e.WorkDir())
 	return pol, nil
 }
 
@@ -1377,7 +1377,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		HasTools:              len(f.tools) > 0,
 		ToolMaxSteps:          f.toolMaxSteps,
 		MaxTokens:             f.maxTokens,
-		WorkDir:               e.workDir,
+		WorkDir:               e.WorkDir(),
 		HomeScope:             RunnerHomeScopeFromContext(ctx),
 		ExtraEnv:              e.taskExtraEnv(),
 		ReasoningEffort:       wireEffort(effort),
@@ -1777,7 +1777,7 @@ func (e *ClawExecutor) buildUserPromptParts(ctx context.Context, f backendFields
 	// ask_user prepend just below, and the schema re-ask that appends its
 	// feedback to this text. Expanding later would emit one prompt and
 	// send another.
-	expanded, hit := expandWorkspaceSlashCommand(userText, e.workDir, backendName, f.id, LoopIterationFromContext(ctx), e.logger, &e.slashWarnedOnce, sess)
+	expanded, hit := expandWorkspaceSlashCommand(userText, e.WorkDir(), backendName, f.id, LoopIterationFromContext(ctx), e.logger, &e.slashWarnedOnce, sess)
 	if hit {
 		userText = expanded
 		// The blocks above were split around the INVOCATION, so their TEXT

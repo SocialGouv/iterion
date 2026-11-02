@@ -214,7 +214,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 		// A router prompt may invoke a workspace `.claude/commands/`
 		// command too. Resolved per backend, inside assemble, because the
 		// substitution is claw's alone — claude_code expands it natively.
-		routerText, _ := expandWorkspaceSlashCommand(userText, e.workDir, bn, node.ID, LoopIterationFromContext(ctx), e.logger, &e.slashWarnedOnce, sess)
+		routerText, _ := expandWorkspaceSlashCommand(userText, e.WorkDir(), bn, node.ID, LoopIterationFromContext(ctx), e.logger, &e.slashWarnedOnce, sess)
 		// ONE prompt event, emitted here rather than before the chain, and
 		// carrying the text this backend actually receives. Before the
 		// chain it could only carry the invocation; emitting a second,
@@ -235,7 +235,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 			UserPrompt:       routerText,
 			OutputSchema:     jsonSchema,
 			Model:            expanded,
-			WorkDir:          e.workDir,
+			WorkDir:          e.WorkDir(),
 			// wireEffort collapses the "ultracode" mode to xhigh so the raw token
 			// never reaches the provider; identity for every other level. Routers
 			// don't get the orchestration prerogative (they route, not orchestrate).

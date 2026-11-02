@@ -51,6 +51,13 @@ func NewReadScope(workspace string) *ReadScope {
 // bash/write_file/file_edit resolution RegisterClawBuiltinsWithScope
 // derives from the scope, rooted in the run's checkout (#2889). A nil
 // provider behaves as the empty workspace: every read refuses.
+//
+// Contract: the provider runs while the scope's lock is HELD — every
+// resolve answers workspace and extra roots under one lock read. A
+// provider that re-enters the scope (AddExtraRoot, ExtraRoots) deadlocks
+// on that lock; it must answer from state it owns. The host closure
+// runview wires reads the executor's workDir (an atomic field, #2897) and
+// nothing else.
 func NewReadScopeWithProvider(workspace func() string) *ReadScope {
 	if workspace == nil {
 		workspace = func() string { return "" }

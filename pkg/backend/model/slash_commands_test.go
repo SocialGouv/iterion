@@ -37,11 +37,12 @@ func commandWorkspace(t *testing.T, rel, body string) string {
 // commandExecutor is an executor whose single prompt is `promptBody`, rooted
 // at workDir.
 func commandExecutor(workDir, promptBody string) *ClawExecutor {
-	return &ClawExecutor{
+	e := &ClawExecutor{
 		logger:  iterlog.Nop(),
-		workDir: workDir,
 		prompts: map[string]*ir.Prompt{"u": {Name: "u", Body: promptBody}},
 	}
+	e.SetWorkDir(workDir)
+	return e
 }
 
 func promptParts(t *testing.T, e *ClawExecutor, input map[string]any, backend string) (string, []delegate.ContentBlock) {
