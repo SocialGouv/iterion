@@ -28,11 +28,19 @@ import (
 // carried environment that answers empty where redaction expects a value
 // is a secret printed in a log.
 //
-// A reader with no context in scope — a per-process factory (the
-// registry's, whose resolved clients are cached per process), an exported
-// surface the campaign does not break — calls the seam with
+// A reader with no context in scope calls the seam with
 // context.Background(): the read stays process-scoped, and greppable,
-// until an envelope reaches it.
+// until an envelope reaches it. The complete list of those sites:
+// the registry's per-process factories (a resolved client is cached per
+// process, so no envelope could reach them anyway) and their helpers
+// (moonshotBaseURL, xaiBaseURL, withClientIdentity, openAIStreamUsage,
+// codexCLIVersion), OpenAIForfaitServes, NewClawExecutor's env defaults,
+// RetryPolicyFromEnv's envRetryCount, resolveBackendName, the
+// slash-command knobs (SlashCommandsDisabled, slashCommandMaxBytes),
+// treeNoiseEnvAppend and lookupToolEnv. The risk this carries, declared:
+// the day the run-envelope wiring lands, a name read both through a
+// carried ctx and at one of these sites has TWO values in one process —
+// the wiring names each site it takes over when it lands.
 
 // carriedEnv is the environment a context carries: a fixed map, HERMETIC
 // — a name the map does not hold reads as unset, never as the process

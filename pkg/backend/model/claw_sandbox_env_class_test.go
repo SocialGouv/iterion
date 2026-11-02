@@ -168,9 +168,16 @@ var dynamicEnvReads = map[[2]string]string{
 }
 
 // envEnumerations: functions that hand the whole environment on, and read
-// no knob from it.
+// no knob from it. envEnviron is the seam's root — the one place the
+// process environment is enumerated; every other entry is a caller of it,
+// tracked because envEnumerators names the seam (a whole-env consumer the
+// table does not know fails the scan).
 var envEnumerations = map[string]string{
-	"envEnviron": whySinkGuard + ": the env seam's whole-env read (#2808) hands the context-carried environment (the process's by default) to the package's whole-env readers — BuildSecretGuard, for which every value in the env is a secret candidate; " + whyHostTool + " ((*ClawExecutor).toolNodeCommand and (*ClawExecutor).toolNodeScriptCommand); and runCommandHook, whose command inherits the env of the process that runs it — in a container, the runner's own, which is the point",
+	"envEnviron":                            "the env seam's whole-env read (#2808): answers the context-carried environment, or the process's by default, for every consumer below",
+	"BuildSecretGuard":                      whySinkGuard + ": every value in the env is a secret candidate",
+	"(*ClawExecutor).toolNodeCommand":       whyHostTool,
+	"(*ClawExecutor).toolNodeScriptCommand": whyHostTool,
+	"runCommandHook":                        "a settings hook's command inherits the env of the process that runs it — in a container, the runner's own, which is the point",
 }
 
 // getterHandoffs: calls into another package handed a reader itself, which
@@ -524,11 +531,15 @@ var templateExpanders = map[string][2]int{
 	"expandBracedEnvSteps": {0, 1},
 }
 
-// envEnumerators hand back the whole environment.
+// envEnumerators hand back the whole environment. envEnviron is one too:
+// the seam's own read is attributed to it, and every CALLER of it is a
+// whole-env reader the table below must classify — a new consumer of the
+// whole environment arrives red here, not invisible behind the seam.
 var envEnumerators = map[string]bool{
 	"os.Environ":                    true,
 	"syscall.Environ":               true,
 	"golang.org/x/sys/unix.Environ": true,
+	"envEnviron":                    true,
 }
 
 const (

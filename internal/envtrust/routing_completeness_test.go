@@ -133,6 +133,11 @@ func TestEveryRoutingShapedNameTheTreeReadsIsInTheClass(t *testing.T) {
 		"AWS_ENDPOINT_URL",                          // the global override
 		"AWS_ENDPOINT_URL_BEDROCK_RUNTIME",          // the per-service spelling
 		"OTEL_EXPORTER_OTLP_ENDPOINT",               // the vendored exporters
+		// The seam spelling's floor: ITERION_CLAW_SLASH_COMMANDS is read
+		// ONLY through pkg/backend/model's envGetenv, so a walk that stops
+		// matching the seam form stops finding it — the seam learning is
+		// load-bearing, and this line is what proves it.
+		"ITERION_CLAW_SLASH_COMMANDS",
 	} {
 		if !found[want] {
 			t.Fatalf("the walk no longer finds %s (found %d names): either the reader is gone, or the walk stopped matching the read forms the tree uses", want, len(found))
