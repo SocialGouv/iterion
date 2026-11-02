@@ -1,12 +1,15 @@
 // Package model provides the ModelRegistry and claw-based NodeExecutor
 // for resolving "provider/model-id" specs and executing LLM nodes.
 //
-// The package defines one Registry constructor: NewRegistry, funded by the
-// process env. A second exported constructor returning *Registry would be a
-// second funding decision taken outside the auxiliary channel (#2645): if
-// it serves server-side auxiliary surfaces it belongs behind
-// auxllm.Registry instead, and otherwise its reason is stated on the pin
-// the auxllm sweep holds over this constructor set.
+// The package defines two Registry constructors, each a funding decision
+// stated on the pin the auxllm sweep holds over this constructor set
+// (#2645): NewRegistry, funded by the process env — auxllm.Registry is the
+// auxiliary channel wrapping it — and NewSandboxRunnerRegistry, the runner
+// plane's own registry whose env the crossing forwards deliberately
+// (#2244). A further exported constructor returning *Registry would be a
+// third funding decision taken outside the auxiliary channel: if it serves
+// server-side auxiliary surfaces it belongs behind auxllm.Registry
+// instead, and otherwise its reason is stated on the pin.
 package model
 
 import (
