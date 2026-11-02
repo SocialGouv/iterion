@@ -87,7 +87,7 @@ func BuildOpenAPISpec() (map[string]any, error) {
 		WebhookConfigs:    webhooks.NewMemoryConfigStore(),
 		WebhookDeliveries: webhooks.NewMemoryDeliveryStore(),
 		WebhookCounter:    webhooks.NewMemoryCounter(),
-		ForgeConnections:  forge.NewMemoryConnectionStore(),
+		ForgeConnections:  connection.NewMemoryForgeStore(),
 		// The connector-connection CRUD (#2759) registers on these three;
 		// the memory twin and the baked catalog are its in-memory stand-ins.
 		Connections:                 connection.NewMemoryStore(),

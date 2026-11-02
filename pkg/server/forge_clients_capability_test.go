@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 )
 
@@ -117,7 +118,7 @@ func assertsAs[T any](v any) bool {
 func TestForgeAdminForEveryConnectionShapeIsAnIssueClient(t *testing.T) {
 	s := newWebhookTestServer(t)
 	s.forgeGitHubApp = ForgeGitHubAppConfig{AppID: 42, PrivateKey: testAppKeyPEM(t), AppSlug: "iterion-forge-x"}
-	sealed, err := forge.SealPAT(s.sealer, "c-1", "ghp_fixture")
+	sealed, err := connection.SealForgePAT(s.sealer, "c-1", "ghp_fixture")
 	if err != nil {
 		t.Fatal(err)
 	}

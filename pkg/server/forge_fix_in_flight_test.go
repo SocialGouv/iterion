@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/deeplink"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
@@ -323,7 +324,7 @@ func TestFixerLaunch_ClaimsThroughTheWebhookTail(t *testing.T) {
 	// The REAL catalog: the role comes from each bot's manifest, so without it
 	// every role reads `unknown` and this test would pass by claiming nothing.
 	s.cfg.Bots.Paths = []string{botsDirAbs(t)}
-	s.forgeConnections = forge.NewMemoryConnectionStore()
+	s.forgeConnections = connection.NewMemoryForgeStore()
 	if err := s.forgeConnections.Create(context.Background(), forge.Connection{
 		ID: "conn1", TenantID: "t1", Provider: forge.ProviderGitHub,
 	}); err != nil {

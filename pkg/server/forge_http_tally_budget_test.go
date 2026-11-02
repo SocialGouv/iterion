@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -479,11 +480,11 @@ func TestTeamControlsGitHubOrg_ChargesAnAppConnectionToItsInstallation(t *testin
 		t.Fatal(err)
 	}
 	s.sealer = sealer
-	sealed, err := forge.SealOAuthTokens(sealer, "c-app", "ghs_sealed", "", time.Now().Add(time.Hour))
+	sealed, err := connection.SealForgeOAuthTokens(sealer, "c-app", "ghs_sealed", "", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	if err := conns.Create(context.Background(), forge.Connection{
 		ID: "c-app", TenantID: "t1", Provider: forge.ProviderGitHub, Kind: forge.KindGitHubApp,
 		Status: forge.StatusActive, ForgeBaseURL: srv.URL, InstallationID: 55, SealedPayload: sealed,

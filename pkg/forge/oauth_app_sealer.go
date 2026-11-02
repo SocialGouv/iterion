@@ -1,10 +1,15 @@
 package forge
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
+
+// errNilSealer is returned by every seal/open helper in this package when
+// called without a configured secrets.Sealer.
+var errNilSealer = errors.New("forge: nil sealer")
 
 // SealOAuthAppSecret seals a forge OAuth app's client_secret, binding the
 // sealed blob to the app id via AAD "forge_oauth_app:<id>" (same convention as

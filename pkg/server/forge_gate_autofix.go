@@ -228,7 +228,7 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 		// Escalated at the failure that spent the budget; re-filing is a
 		// deduped no-op that only exists so a board outage at that moment
 		// does not lose the notice.
-		if conn, cerr := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), grant.ConnectionID); cerr == nil && conn.TenantID == grant.TeamID {
+		if conn, cerr := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), grant.TeamID, grant.ConnectionID); cerr == nil {
 			s.escalateExhaustedAutofix(ctx, conn, grant.TeamID, repo, number, prURL, reviewed, gateCtx, prior.BotID, prior.Attempts, prior.Error)
 		}
 		return nil
@@ -248,8 +248,8 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 		return nil
 	}
 
-	conn, err := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), grant.ConnectionID)
-	if err != nil || conn.TenantID != grant.TeamID {
+	conn, err := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), grant.TeamID, grant.ConnectionID)
+	if err != nil {
 		return nil
 	}
 	if connHost := hostOfURL(conn.BaseURL()); connHost == "" || !strings.EqualFold(connHost, host) {

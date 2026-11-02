@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
@@ -22,7 +23,7 @@ import (
 // context mints a grant.
 func wireForgePublishForT1(t *testing.T, s *Server) {
 	t.Helper()
-	s.forgeConnections = forge.NewMemoryConnectionStore()
+	s.forgeConnections = connection.NewMemoryForgeStore()
 	s.forgePublishTokens = NewForgePublishTokenRegistry()
 	if err := s.forgeConnections.Create(context.Background(), forge.Connection{ID: "conn1", TenantID: "t1", Provider: forge.ProviderGitHub}); err != nil {
 		t.Fatal(err)

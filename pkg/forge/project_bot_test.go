@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -173,7 +174,7 @@ func newProjectBotOrch(t *testing.T) (*Orchestrator, *fakeBotForge, Connection) 
 	o.LogWarn = func(format string, args ...any) { t.Logf("warn: "+format, args...) }
 
 	const connID = "conn-oauth"
-	sealed, err := SealOAuthTokens(sealer, connID, testOAuthGrant, "refresh", o.clock().Add(2*time.Hour))
+	sealed, err := connection.SealForgeOAuthTokens(sealer, connID, testOAuthGrant, "refresh", o.clock().Add(2*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +265,7 @@ func TestProvision_ProjectBot_MintsAndPinsItsOwnToken(t *testing.T) {
 	if b, _ := o.Bindings.ListByTenantBot(ctx, "t1", "review-pr"); len(b) != 0 {
 		t.Errorf("bindings = %+v, want none", b)
 	}
-	got, _ := o.Connections.Get(ctx, conn.ID)
+	got, _ := o.Connections.Get(ctx, conn.TenantID, conn.ID)
 	if got.ManagedSecretID != "" {
 		t.Errorf("connection.ManagedSecretID = %q, want none", got.ManagedSecretID)
 	}

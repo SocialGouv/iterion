@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -35,7 +36,7 @@ func (f *fakeReviewClient) CreatePullReview(_ context.Context, repo string, numb
 func newForgePublishTestServer(t *testing.T) (*Server, *fakeReviewClient) {
 	t.Helper()
 	s := New(Config{}, iterlog.New(iterlog.LevelError, nil))
-	s.forgeConnections = forge.NewMemoryConnectionStore()
+	s.forgeConnections = connection.NewMemoryForgeStore()
 	s.forgePublishTokens = NewForgePublishTokenRegistry()
 	s.gateSettles = newMemoryGateSettleStore(nil) // wired with the grants, as New does
 	s.gateDecisions = newMemoryGateDecisionStore(nil)

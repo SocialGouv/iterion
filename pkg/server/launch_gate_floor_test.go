@@ -12,6 +12,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/budgetfloor"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
@@ -524,7 +525,7 @@ func TestHandleLaunchRun_RepoQuotaBindsTheDirectLaunch(t *testing.T) {
 		// A PAT connection carrying its managed secret already: the launch
 		// then reaches neither the App reachability probe nor a mint, which
 		// is what lets this test drive the handler with no forge at all.
-		conns := forge.NewMemoryConnectionStore()
+		conns := connection.NewMemoryForgeStore()
 		if err := conns.Create(context.Background(), forge.Connection{
 			ID: "conn-1", TenantID: "t1", Provider: forge.ProviderGitHub,
 			Kind: forge.KindPAT, ManagedSecretID: "sec-1",

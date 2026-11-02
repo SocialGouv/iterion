@@ -123,11 +123,9 @@ func (s *Server) handleDeleteBoardBinding(w http.ResponseWriter, r *http.Request
 // and any other caller (the remote CLI goes through the HTTP one).
 func (s *Server) bindTeamBoard(ctx context.Context, teamID string, req boardBindingReq) (forge.BoardBinding, error) {
 	// The team id is authorized from the PATH; the connection id arrives in the
-	// BODY, and ConnectionStore.Get is keyed on the id alone with no tenant
-	// filter — so an id belonging to another team resolves perfectly well.
-	// Checking ownership here is therefore this route's own responsibility, as
-	// it is for every peer forge route (connAdminFor, the launch path, the
-	// approval routes).
+	// BODY — and since #2760 the store's Get takes the tenant as its first
+	// argument, so a foreign id answers not-found at the read itself instead of
+	// by a check this route had to remember.
 	//
 	// Skipping it is not a read leak that ends with the response: the binding
 	// is PERSISTED with that connection, so the sync worker keeps using another
@@ -141,7 +139,7 @@ func (s *Server) bindTeamBoard(ctx context.Context, teamID string, req boardBind
 	if err := s.assertProjectGrant(ctx, conn); err != nil {
 		return forge.BoardBinding{}, err
 	}
-	bc, provider, err := s.boardClientFor(ctx, req.ConnectionID)
+	bc, provider, err := s.boardClientFor(ctx, teamID, req.ConnectionID)
 	if err != nil {
 		return forge.BoardBinding{}, err
 	}
@@ -245,8 +243,10 @@ func (s *Server) connectionOwnedBy(ctx context.Context, teamID, connID string) (
 	if s.forgeConnections == nil {
 		return forge.Connection{}, errors.New("forge connections are not configured on this instance")
 	}
-	conn, err := s.forgeConnections.Get(ctx, connID)
-	if err != nil || conn.TenantID != teamID {
+	// The tenant is in the store's filter (#2760): a foreign connection is a
+	// not-found there, so the ownership check can no longer be forgotten here.
+	conn, err := s.forgeConnections.Get(ctx, teamID, connID)
+	if err != nil {
 		return forge.Connection{}, errConnectionNotOwned
 	}
 	return conn, nil
@@ -262,14 +262,14 @@ func (s *Server) assertConnectionOwnedBy(ctx context.Context, teamID, connID str
 // boardClientFor resolves a forge connection into a project-board client. The
 // indirection through a field is what lets a test inject a fake without a
 // connection store, and what keeps the cloud/local difference in ONE place.
-func (s *Server) boardClientFor(ctx context.Context, connID string) (forge.BoardClient, forge.Provider, error) {
+func (s *Server) boardClientFor(ctx context.Context, teamID, connID string) (forge.BoardClient, forge.Provider, error) {
 	if s.boardClientForConnection != nil {
 		return s.boardClientForConnection(ctx, connID)
 	}
 	if s.forgeConnections == nil {
 		return nil, "", errors.New("forge connections are not configured on this instance")
 	}
-	conn, err := s.forgeConnections.Get(ctx, connID)
+	conn, err := s.forgeConnections.Get(ctx, teamID, connID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -302,7 +302,7 @@ func (s *Server) boardClientForBoundBinding(ctx context.Context, b forge.BoardBi
 	if s.boardClientForBinding != nil {
 		return s.boardClientForBinding(ctx, b)
 	}
-	bc, _, err := s.boardClientFor(ctx, b.ConnectionID)
+	bc, _, err := s.boardClientFor(ctx, b.TenantID, b.ConnectionID)
 	return bc, err
 }
 

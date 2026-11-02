@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/brand"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgeforgejo "github.com/SocialGouv/iterion/pkg/forge/forgejo"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
@@ -142,7 +143,7 @@ func (s *Server) forgeAdminFor(ctx context.Context, conn forge.Connection) (forg
 	if conn.Kind == forge.KindGitHubApp {
 		return s.githubAppClientFor(ctx, conn)
 	}
-	token, err := forge.AdminTokenFor(s.sealer, conn)
+	token, err := connection.ForgeAdminToken(s.sealer, conn)
 	if err != nil {
 		return nil, err
 	}
@@ -286,7 +287,7 @@ func (s *Server) recordForgeAppSlug(conn forge.Connection, slug string) {
 		return
 	}
 	ctx := store.WithTenant(context.Background(), conn.TenantID)
-	fresh, err := s.forgeConnections.Get(ctx, conn.ID)
+	fresh, err := s.forgeConnections.Get(ctx, conn.TenantID, conn.ID)
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Warn("forge: record app slug %q for connection %s: %v", slug, conn.ID, err)

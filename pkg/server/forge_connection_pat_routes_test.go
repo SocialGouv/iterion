@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/audit"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -118,7 +119,7 @@ func seedPATConnectionWithRepo(t *testing.T, s *Server, baseURL, token string) f
 	if w.Code != http.StatusOK {
 		t.Fatalf("enable: code=%d body=%s", w.Code, w.Body.String())
 	}
-	conn, err := s.forgeConnections.Get(context.Background(), connID)
+	conn, err := s.forgeConnections.Get(context.Background(), "t1", connID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +193,7 @@ func TestForgeConnectionReplaceToken_SameAccountKeepsEverythingWorking(t *testin
 		t.Fatal("the token value leaked into the response body")
 	}
 
-	got, err := s.forgeConnections.Get(context.Background(), conn.ID)
+	got, err := s.forgeConnections.Get(context.Background(), conn.TenantID, conn.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +203,7 @@ func TestForgeConnectionReplaceToken_SameAccountKeepsEverythingWorking(t *testin
 	if got.ID != conn.ID || got.AccountLogin != "botuser" {
 		t.Fatalf("the row must be replaced in place: %+v", got)
 	}
-	tok, err := forge.AdminTokenFor(s.sealer, got)
+	tok, err := connection.ForgeAdminToken(s.sealer, got)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,14 +277,14 @@ func TestForgeConnectionReplaceToken_DifferentAccountIsRefused(t *testing.T) {
 	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "@mallory") {
 		t.Fatalf("code=%d body=%s, want a 422 naming the mismatching account", w.Code, w.Body.String())
 	}
-	got, err := s.forgeConnections.Get(context.Background(), conn.ID)
+	got, err := s.forgeConnections.Get(context.Background(), conn.TenantID, conn.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Status != forge.StatusRevoked || got.AccountLogin != "botuser" {
 		t.Fatalf("a refused swap moved the row: %+v", got)
 	}
-	tok, _ := forge.AdminTokenFor(s.sealer, got)
+	tok, _ := connection.ForgeAdminToken(s.sealer, got)
 	if tok != "glpat-old" {
 		t.Fatalf("a refused swap replaced the sealed token with %q", tok)
 	}
@@ -312,7 +313,7 @@ func TestForgeConnectionReplaceToken_AllowAccountChangeIsAudited(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("patch: code=%d body=%s", w.Code, w.Body.String())
 	}
-	got, err := s.forgeConnections.Get(context.Background(), conn.ID)
+	got, err := s.forgeConnections.Get(context.Background(), conn.TenantID, conn.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +330,7 @@ func TestForgeConnectionReplaceToken_AllowAccountChangeIsAudited(t *testing.T) {
 // patched; the token field travels alone.
 func TestForgeConnectionReplaceToken_Guards(t *testing.T) {
 	s := newForgeTestServer(t)
-	sealed, err := forge.SealOAuthTokens(s.sealer, "c-oauth", "acc", "ref", time.Now().UTC().Add(time.Hour))
+	sealed, err := connection.SealForgeOAuthTokens(s.sealer, "c-oauth", "acc", "ref", time.Now().UTC().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}

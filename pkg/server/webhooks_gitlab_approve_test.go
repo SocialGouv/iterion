@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/gitlab"
@@ -108,7 +109,7 @@ func TestGitLabComment_ReviewApprove_UsesCommandGateWithRaisedFloor(t *testing.T
 // forge_token binding, which is intentionally unset here.
 func TestGitLabReviewApprove_ThroughConnectionAdmin(t *testing.T) {
 	s := newWebhookTestServer(t)
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	if err := conns.Create(context.Background(), forge.Connection{ID: "conn-gl", TenantID: "t1", Provider: forge.ProviderGitLab}); err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +204,7 @@ func TestGitLabReviewApprove_TokenBindingWritesTheStatusWithoutAConnection(t *te
 // author cannot force-green their own gate.
 func TestGitLabReviewApprove_AuthorCannotApproveOwnMR(t *testing.T) {
 	s := newWebhookTestServer(t)
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	if err := conns.Create(context.Background(), forge.Connection{ID: "conn-gl", TenantID: "t1", Provider: forge.ProviderGitLab}); err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +320,7 @@ func TestGitLabReviewApprove_ConfigurationRefusalRepliesOnMR(t *testing.T) {
 // best-effort reply on the MR, answer 200.
 func TestGitLabReviewApprove_WriteFailureRepliesAnd200(t *testing.T) {
 	s := newWebhookTestServer(t)
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	if err := conns.Create(context.Background(), forge.Connection{ID: "conn-gl", TenantID: "t1", Provider: forge.ProviderGitLab}); err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +358,7 @@ func TestGitLabReviewApprove_WriteFailureRepliesAnd200(t *testing.T) {
 // second status write.
 func TestGitLabReviewApprove_IdempotentOnRedelivery(t *testing.T) {
 	s := newWebhookTestServer(t)
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	if err := conns.Create(context.Background(), forge.Connection{ID: "conn-gl", TenantID: "t1", Provider: forge.ProviderGitLab}); err != nil {
 		t.Fatal(err)
 	}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 )
 
@@ -22,7 +23,7 @@ func newBoardBindingTestServer(t *testing.T, bc forge.BoardClient) *Server {
 	t.Helper()
 	s := newOrgTestServer(t)
 	s.boardBindings = forge.NewMemoryBoardBindingStore()
-	s.forgeConnections = forge.NewMemoryConnectionStore()
+	s.forgeConnections = connection.NewMemoryForgeStore()
 	// conn-1 belongs to t1; conn-other belongs to a DIFFERENT tenant. Both are
 	// resolvable by id — the store's Get is global by design — which is exactly
 	// what makes the ownership check the binding's own responsibility.
@@ -231,7 +232,7 @@ func TestBoardBindingIsTenantScoped(t *testing.T) {
 
 // TestBoardBindingRefusesAnotherTenantsConnection is the credential boundary.
 // The team id comes from the PATH (and is authorized), but the connection id
-// comes from the BODY — and forge.ConnectionStore.Get is keyed on the id
+// comes from the BODY — and connection.ForgeStore.Get is keyed on the id
 // alone, with no tenant filter, so an id from another team resolves fine.
 //
 // Without the ownership check, an admin of team A names team B's connection
@@ -298,7 +299,7 @@ func TestBoardClientForBoundBindingRechecksOwnership(t *testing.T) {
 
 	// And after it is deleted outright — a dangling credential is not a
 	// licence to keep writing.
-	if err := s.forgeConnections.Delete(ctx, "conn-1"); err != nil {
+	if err := s.forgeConnections.Delete(ctx, "t1", "conn-1"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, err := s.boardClientForBoundBinding(ctx, ok); err == nil {

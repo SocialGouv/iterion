@@ -53,8 +53,8 @@ func (s *Server) handleForgeDeliveryPreflight(w http.ResponseWriter, r *http.Req
 		return
 	}
 	ctx := store.WithTenant(r.Context(), grant.TeamID)
-	conn, err := s.forgeConnections.Get(ctx, grant.ConnectionID)
-	if err != nil || conn.TenantID != grant.TeamID {
+	conn, err := s.forgeConnections.Get(ctx, grant.TeamID, grant.ConnectionID)
+	if err != nil {
 		httpError(w, http.StatusNotFound, "connection not found")
 		return
 	}

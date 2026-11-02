@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/orgsso"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
 	"github.com/SocialGouv/iterion/pkg/identity"
@@ -306,7 +307,7 @@ func (s *Server) teamControlsGitHubOrg(ctx context.Context, teamID, org string) 
 		if conn.Provider != forge.ProviderGitHub || conn.Status != forge.StatusActive {
 			continue
 		}
-		token, err := forge.AdminTokenFor(s.sealer, conn)
+		token, err := connection.ForgeAdminToken(s.sealer, conn)
 		if err != nil {
 			continue
 		}

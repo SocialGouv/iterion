@@ -7,12 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 type lifecycleHarness struct {
 	sealer  secrets.Sealer
-	conns   *MemoryConnectionStore
+	conns   *connection.MemoryForgeStore
 	secrets secrets.GenericSecretStore
 	now     time.Time
 	worker  *RefreshWorker
@@ -23,7 +24,7 @@ func newLifecycleHarness(t *testing.T, optedIn bool, minter func(context.Context
 	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
 	h := &lifecycleHarness{
 		sealer:  sealer,
-		conns:   NewMemoryConnectionStore(),
+		conns:   connection.NewMemoryForgeStore(),
 		secrets: secrets.NewMemoryGenericSecretStore(),
 		now:     time.Unix(1700000000, 0).UTC(),
 	}
@@ -41,7 +42,7 @@ func newLifecycleHarness(t *testing.T, optedIn bool, minter func(context.Context
 
 func (h *lifecycleHarness) conn(t *testing.T) Connection {
 	t.Helper()
-	c, err := h.conns.Get(context.Background(), "conn-gh")
+	c, err := h.conns.Get(context.Background(), "t1", "conn-gh")
 	if err != nil {
 		t.Fatal(err)
 	}

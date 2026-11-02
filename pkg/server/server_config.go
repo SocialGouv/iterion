@@ -241,7 +241,7 @@ type Config struct {
 	// when a bot is enabled on it. Both (plus WebhookConfigs + GenericSecrets
 	// + Sealer + the auth stack) must be present for /api/teams/:id/forge/*
 	// and the OAuth callback to register.
-	ForgeConnections  forge.ConnectionStore
+	ForgeConnections  connection.ForgeStore
 	ForgeIntegrations forge.RepoIntegrationStore
 	// Connections + ConnectorCatalog wire the connector-connection CRUD
 	// (pkg/connection, ADR-098): /api/teams/:id/connections, tenant-scoped in

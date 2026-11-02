@@ -684,8 +684,8 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	conn, err := s.forgeConnections.Get(r.Context(), grant.ConnectionID)
-	if err != nil || conn.TenantID != grant.TeamID {
+	conn, err := s.forgeConnections.Get(r.Context(), grant.TeamID, grant.ConnectionID)
+	if err != nil {
 		httpError(w, http.StatusNotFound, "connection not found")
 		return
 	}
@@ -1846,8 +1846,8 @@ func (s *Server) repoIntegrationFor(ctx context.Context, teamID, host, repo stri
 		if !strings.EqualFold(ri.RepoFullName, repo) {
 			continue
 		}
-		conn, cerr := s.forgeConnections.Get(ctx, ri.ConnectionID)
-		if cerr != nil || conn.TenantID != teamID || conn.IsSecurityReadOnly() || !strings.EqualFold(hostOfURL(conn.BaseURL()), host) {
+		conn, cerr := s.forgeConnections.Get(ctx, ri.TenantID, ri.ConnectionID)
+		if cerr != nil || conn.IsSecurityReadOnly() || !strings.EqualFold(hostOfURL(conn.BaseURL()), host) {
 			continue
 		}
 		// One repo provisioned twice on the same host — through two connections,
@@ -1879,11 +1879,12 @@ func (s *Server) forgeConnectionForPR(ctx context.Context, teamID, preferredConn
 		// the "first connection on this host" fallback below — then every
 		// review comment and commit status posted through it would 403: its
 		// App holds no pull_requests/statuses grant, by design.
-		return c.TenantID == teamID && !c.IsSecurityReadOnly() &&
+		// The tenant match is the store's now (#2760): Get filters on it.
+		return !c.IsSecurityReadOnly() &&
 			strings.EqualFold(hostOfURL(c.BaseURL()), host)
 	}
 	if preferredConnID != "" {
-		if c, err := s.forgeConnections.Get(ctx, preferredConnID); err == nil && matches(c) {
+		if c, err := s.forgeConnections.Get(ctx, teamID, preferredConnID); err == nil && matches(c) {
 			return c, true
 		} else if s.logger != nil {
 			// Falling through to another connection is the historical
@@ -1897,7 +1898,7 @@ func (s *Server) forgeConnectionForPR(ctx context.Context, teamID, preferredConn
 	// repoIntegrationFor makes for the policy, so a repo re-provisioned onto
 	// a newer connection posts under that one and not the row left behind.
 	if ri, ok := s.repoIntegrationFor(ctx, teamID, host, repo); ok {
-		if c, err := s.forgeConnections.Get(ctx, ri.ConnectionID); err == nil && matches(c) {
+		if c, err := s.forgeConnections.Get(ctx, teamID, ri.ConnectionID); err == nil && matches(c) {
 			return c, true
 		}
 	}

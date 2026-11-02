@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 )
 
@@ -17,7 +18,7 @@ import (
 func TestScheduledForgeOverrides(t *testing.T) {
 	newWorld := func(t *testing.T) (*Server, forge.Connection) {
 		s := newForgeTestServer(t)
-		sealed, err := forge.SealPAT(s.sealer, "c1", "glpat-token")
+		sealed, err := connection.SealForgePAT(s.sealer, "c1", "glpat-token")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -46,7 +47,7 @@ func TestScheduledForgeOverrides(t *testing.T) {
 		}
 		// The mint is stamped on the connection so the refresh worker keeps
 		// rotating the plaintext under the same id.
-		conn, err := s.forgeConnections.Get(context.Background(), "c1")
+		conn, err := s.forgeConnections.Get(context.Background(), "t1", "c1")
 		if err != nil || conn.ManagedSecretID != secID {
 			t.Fatalf("managed secret not stamped on the connection: got %q want %q (%v)", conn.ManagedSecretID, secID, err)
 		}

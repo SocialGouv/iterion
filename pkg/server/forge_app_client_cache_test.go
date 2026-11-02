@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 )
 
@@ -69,7 +70,7 @@ func TestForgeAdminForReusesOneAppClientPerConnection(t *testing.T) {
 // worth keeping, and caching it would pin a token the connection may rotate.
 func TestForgeAdminForBuildsBearerClientsPerCall(t *testing.T) {
 	s := newWebhookTestServer(t)
-	sealed, err := forge.SealPAT(s.sealer, "c-pat", "ghp_fixture")
+	sealed, err := connection.SealForgePAT(s.sealer, "c-pat", "ghp_fixture")
 	if err != nil {
 		t.Fatal(err)
 	}

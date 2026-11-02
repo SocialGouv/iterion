@@ -825,7 +825,7 @@ type cloudStores struct {
 	botBindings      *secrets.MongoBotSecretBindingStore
 	webhooks         *webhooks.MongoStores
 	configShares     *configshare.MongoStore
-	forgeConn        *forge.MongoConnectionStore
+	forgeConn        *connection.MongoForgeStore
 	connections      *connection.MongoStore
 	forgeIntegration *forge.MongoRepoIntegrationStore
 	boardBinding     *forge.MongoBoardBindingStore
@@ -875,7 +875,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		botBindings:      secrets.NewMongoBotSecretBindingStore(st.DB()),
 		webhooks:         webhooks.NewMongoStores(st.DB()),
 		configShares:     configshare.NewMongoStore(st.DB()),
-		forgeConn:        forge.NewMongoConnectionStore(st.DB()),
+		forgeConn:        connection.NewMongoForgeStore(st.DB()),
 		connections:      connection.NewMongoStore(st.DB()),
 		forgeIntegration: forge.NewMongoRepoIntegrationStore(st.DB()),
 		boardBinding:     forge.NewMongoBoardBindingStore(st.DB()),

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/configshare"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -198,7 +199,7 @@ func forgeMintFixture(t *testing.T) (*derivationFixture, *mockGitLab, string) {
 		c.GenericSecrets = secrets.NewMemoryGenericSecretStore()
 		c.ConfigShares = configshare.NewMemoryStore()
 		c.Sealer = sealer
-		c.ForgeConnections = forge.NewMemoryConnectionStore()
+		c.ForgeConnections = connection.NewMemoryForgeStore()
 		c.ForgeIntegrations = forge.NewMemoryRepoIntegrationStore()
 	})
 	if f.s.forgeOrchestrator == nil {

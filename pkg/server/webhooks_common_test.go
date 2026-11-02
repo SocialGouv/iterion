@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
@@ -40,7 +41,7 @@ func TestIterionBotIdentity_OneSetForBothGuards(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newWebhookTestServer(t)
-			conns := forge.NewMemoryConnectionStore()
+			conns := connection.NewMemoryForgeStore()
 			tc.conn.ID = "c1"
 			tc.conn.TenantID = "t1"
 			tc.conn.Provider = forge.Provider(tc.provider)
@@ -66,7 +67,7 @@ func TestIterionBotIdentity_OneSetForBothGuards(t *testing.T) {
 // recognised.
 func TestIterionBotIdentity_ProjectBotLoginReplacesTheConnectionAccount(t *testing.T) {
 	s := newWebhookTestServer(t)
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	conn := forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitLab, Kind: forge.KindOAuthApp,
 		AccountLogin: "alice", BotIdentity: forge.BotIdentityProjectToken}
 	if err := conns.Create(context.Background(), conn); err != nil {
@@ -98,7 +99,7 @@ func TestIterionBotIdentity_ProjectBotLoginReplacesTheConnectionAccount(t *testi
 // ordinary human gesture — it must never launch a bot run.
 func TestGitHubWebhook_HumanAccountConnectionNeverTreatedAsBot(t *testing.T) {
 	s := newWebhookTestServer(t)
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	if err := conns.Create(context.Background(), forge.Connection{
 		ID: "c1", TenantID: "t1", Provider: "github", Kind: "oauth_app", AccountLogin: "alice-maintainer",
 	}); err != nil {

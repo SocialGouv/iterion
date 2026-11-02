@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -78,7 +79,7 @@ func (f fakeRefresher) Refresh(context.Context, Connection, string) (RefreshedTo
 	return RefreshedToken{AccessToken: f.newAccess, ExpiresAt: f.expiresAt}, nil
 }
 
-func seedOAuthConn(t *testing.T, sealer secrets.Sealer, connStore ConnectionStore, secStore secrets.GenericSecretStore, expiresAt time.Time) (Connection, string) {
+func seedOAuthConn(t *testing.T, sealer secrets.Sealer, connStore connection.ForgeStore, secStore secrets.GenericSecretStore, expiresAt time.Time) (Connection, string) {
 	t.Helper()
 	ctx := context.Background()
 	const connID = "conn-oauth"
@@ -91,7 +92,7 @@ func seedOAuthConn(t *testing.T, sealer secrets.Sealer, connStore ConnectionStor
 	if err := secStore.Create(ctx, secrets.GenericSecret{ID: secID, TenantID: "t1", ScopeTeamID: "t1", Name: "forge_gitlab_x", SealedSecret: oldSealed}); err != nil {
 		t.Fatal(err)
 	}
-	blob, err := sealConnectionSecret(sealer, connID, connectionSecret{AccessToken: "old-access", RefreshToken: "refresh-1", ExpiresAt: expiresAt})
+	blob, err := connection.SealForgeCredential(sealer, connID, connection.ForgeCredential{AccessToken: "old-access", RefreshToken: "refresh-1", ExpiresAt: expiresAt})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +110,7 @@ func seedOAuthConn(t *testing.T, sealer secrets.Sealer, connStore ConnectionStor
 
 func TestRefreshWorker_RotatesTokenAndSecret(t *testing.T) {
 	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
-	connStore := NewMemoryConnectionStore()
+	connStore := connection.NewMemoryForgeStore()
 	secStore := secrets.NewMemoryGenericSecretStore()
 	now := time.Unix(1700000000, 0).UTC()
 	// token expires in 2 minutes → inside the 5m lead window.
@@ -134,8 +135,8 @@ func TestRefreshWorker_RotatesTokenAndSecret(t *testing.T) {
 	}
 
 	// connection blob now holds the new access token + bumped expiry.
-	conn, _ := connStore.Get(context.Background(), "conn-oauth")
-	sec, err := openConnectionSecret(sealer, conn.ID, conn.SealedPayload)
+	conn, _ := connStore.Get(context.Background(), "t1", "conn-oauth")
+	sec, err := connection.OpenForgeCredential(sealer, conn.ID, conn.SealedPayload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +167,7 @@ func TestRefreshWorker_RotatesTokenAndSecret(t *testing.T) {
 // uses a tenant-asserting store so the memory store's laxness can't hide it.
 func TestRefreshWorker_RewritesManagedSecretWithTenantScopedStore(t *testing.T) {
 	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
-	connStore := NewMemoryConnectionStore()
+	connStore := connection.NewMemoryForgeStore()
 	secStore := tenantScopedSecretStore{secrets.NewMemoryGenericSecretStore()}
 	now := time.Unix(1700000000, 0).UTC()
 	_, secID := seedOAuthConn(t, sealer, connStore, secStore, now.Add(2*time.Minute))
@@ -196,7 +197,7 @@ func TestRefreshWorker_RewritesManagedSecretWithTenantScopedStore(t *testing.T) 
 
 func TestRefreshWorker_UnauthorizedMarksNeedsReauth(t *testing.T) {
 	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
-	connStore := NewMemoryConnectionStore()
+	connStore := connection.NewMemoryForgeStore()
 	secStore := secrets.NewMemoryGenericSecretStore()
 	now := time.Unix(1700000000, 0).UTC()
 	_, secID := seedOAuthConn(t, sealer, connStore, secStore, now.Add(time.Minute))
@@ -209,7 +210,7 @@ func TestRefreshWorker_UnauthorizedMarksNeedsReauth(t *testing.T) {
 	if _, err := w.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce should swallow per-conn revoke, got %v", err)
 	}
-	conn, _ := connStore.Get(context.Background(), "conn-oauth")
+	conn, _ := connStore.Get(context.Background(), "t1", "conn-oauth")
 	if conn.Status != StatusNeedsReauth {
 		t.Errorf("status = %q, want needs_reauth", conn.Status)
 	}
@@ -239,7 +240,7 @@ func (c countingRefresher) Refresh(context.Context, Connection, string) (Refresh
 // cycle. Mirrors the ErrUnauthorized → needs_reauth test.
 func TestRefreshWorker_PermissionsNotGrantedMarksDegradedAndStops(t *testing.T) {
 	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
-	connStore := NewMemoryConnectionStore()
+	connStore := connection.NewMemoryForgeStore()
 	secStore := secrets.NewMemoryGenericSecretStore()
 	now := time.Unix(1700000000, 0).UTC()
 	_, secID := seedOAuthConn(t, sealer, connStore, secStore, now.Add(time.Minute))
@@ -259,7 +260,7 @@ func TestRefreshWorker_PermissionsNotGrantedMarksDegradedAndStops(t *testing.T) 
 	if calls != 1 {
 		t.Fatalf("first tick Refresh calls = %d, want 1", calls)
 	}
-	conn, _ := connStore.Get(context.Background(), "conn-oauth")
+	conn, _ := connStore.Get(context.Background(), "t1", "conn-oauth")
 	if conn.Status != StatusDegraded {
 		t.Errorf("status = %q, want degraded", conn.Status)
 	}
@@ -284,11 +285,11 @@ func TestRefreshWorker_PermissionsNotGrantedMarksDegradedAndStops(t *testing.T) 
 
 func TestRefreshWorker_SkipsPAT(t *testing.T) {
 	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
-	connStore := NewMemoryConnectionStore()
+	connStore := connection.NewMemoryForgeStore()
 	now := time.Unix(1700000000, 0).UTC()
 	// A PAT connection with an expiry in-window must NOT be returned by the
 	// expiry scan (PATs don't refresh).
-	blob, _ := sealConnectionSecret(sealer, "conn-pat", connectionSecret{PATToken: "pat"})
+	blob, _ := connection.SealForgeCredential(sealer, "conn-pat", connection.ForgeCredential{PATToken: "pat"})
 	exp := now.Add(time.Minute)
 	_ = connStore.Create(context.Background(), Connection{ID: "conn-pat", TenantID: "t1", Provider: ProviderGitLab, Kind: KindPAT, SealedPayload: blob, AccessTokenExpiresAt: &exp})
 
@@ -308,13 +309,13 @@ func TestRefreshWorker_SkipsPAT(t *testing.T) {
 // tokens (#2682, PIC 2026-10-22).
 func TestRefreshWorker_TheLoserOfARotatingRefreshRaceWritesNothing(t *testing.T) {
 	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
-	connStore := NewMemoryConnectionStore()
+	connStore := connection.NewMemoryForgeStore()
 	secStore := secrets.NewMemoryGenericSecretStore()
 	now := time.Unix(1700000000, 0).UTC()
 	loaded, _ := seedOAuthConn(t, sealer, connStore, secStore, now.Add(time.Minute))
 
 	// The winner's write lands first: new tokens, a later expiry, a refresh stamp.
-	winnerBlob, err := sealConnectionSecret(sealer, loaded.ID, connectionSecret{AccessToken: "new-access", RefreshToken: "refresh-2", ExpiresAt: now.Add(2 * time.Hour)})
+	winnerBlob, err := connection.SealForgeCredential(sealer, loaded.ID, connection.ForgeCredential{AccessToken: "new-access", RefreshToken: "refresh-2", ExpiresAt: now.Add(2 * time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +338,7 @@ func TestRefreshWorker_TheLoserOfARotatingRefreshRaceWritesNothing(t *testing.T)
 	if err := w.refreshOne(context.Background(), loaded); err != nil {
 		t.Fatalf("the loser must end quietly, got %v", err)
 	}
-	got, err := connStore.Get(context.Background(), loaded.ID)
+	got, err := connStore.Get(context.Background(), loaded.TenantID, loaded.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +358,7 @@ func TestRefreshWorker_TheLoserOfARotatingRefreshRaceWritesNothing(t *testing.T)
 // its revocation stays: the revoke sets only the fields it owns.
 func TestRefreshWorker_ARevocationKeepsAnOperatorWriteThatLandedMeanwhile(t *testing.T) {
 	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
-	connStore := NewMemoryConnectionStore()
+	connStore := connection.NewMemoryForgeStore()
 	secStore := secrets.NewMemoryGenericSecretStore()
 	now := time.Unix(1700000000, 0).UTC()
 	loaded, _ := seedOAuthConn(t, sealer, connStore, secStore, now.Add(time.Minute))
@@ -376,7 +377,7 @@ func TestRefreshWorker_ARevocationKeepsAnOperatorWriteThatLandedMeanwhile(t *tes
 	if err := w.refreshOne(context.Background(), loaded); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := connStore.Get(context.Background(), loaded.ID)
+	got, _ := connStore.Get(context.Background(), loaded.TenantID, loaded.ID)
 	if got.Status != StatusNeedsReauth {
 		t.Fatalf("status = %q, want needs_reauth: the forge really revoked this one", got.Status)
 	}
@@ -387,14 +388,14 @@ func TestRefreshWorker_ARevocationKeepsAnOperatorWriteThatLandedMeanwhile(t *tes
 
 // ctxFailingStore fails its writes on a done context, as the Mongo driver does.
 type ctxFailingStore struct {
-	*MemoryConnectionStore
+	*connection.MemoryForgeStore
 }
 
 func (s ctxFailingStore) Update(ctx context.Context, c Connection) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return s.MemoryConnectionStore.Update(ctx, c)
+	return s.MemoryForgeStore.Update(ctx, c)
 }
 
 // hookRefresher runs fn on Refresh — the hook a test uses to end the sweep's
@@ -414,7 +415,7 @@ func (h hookRefresher) Refresh(context.Context, Connection, string) (RefreshedTo
 // one and marked a healthy connection revoked with nobody racing it.
 func TestRefreshWorker_ATermEndingAfterTheForgeAnsweredStillWritesTheRotatedToken(t *testing.T) {
 	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
-	connStore := ctxFailingStore{NewMemoryConnectionStore()}
+	connStore := ctxFailingStore{connection.NewMemoryForgeStore()}
 	secStore := secrets.NewMemoryGenericSecretStore()
 	now := time.Unix(1700000000, 0).UTC()
 	loaded, secID := seedOAuthConn(t, sealer, connStore, secStore, now.Add(time.Minute))
@@ -434,8 +435,8 @@ func TestRefreshWorker_ATermEndingAfterTheForgeAnsweredStillWritesTheRotatedToke
 	if err := w.refreshOne(term, loaded); err != nil {
 		t.Fatalf("the renewal must finish on its own context, got %v", err)
 	}
-	got, _ := connStore.Get(context.Background(), loaded.ID)
-	cur, err := openConnectionSecret(sealer, got.ID, got.SealedPayload)
+	got, _ := connStore.Get(context.Background(), loaded.TenantID, loaded.ID)
+	cur, err := connection.OpenForgeCredential(sealer, got.ID, got.SealedPayload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -452,11 +453,11 @@ func TestRefreshWorker_ATermEndingAfterTheForgeAnsweredStillWritesTheRotatedToke
 // connection is the successor's, whose term opens with a pass.
 func TestRefreshWorker_ADoneTermStartsNoFurtherRenewal(t *testing.T) {
 	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
-	connStore := NewMemoryConnectionStore()
+	connStore := connection.NewMemoryForgeStore()
 	secStore := secrets.NewMemoryGenericSecretStore()
 	now := time.Unix(1700000000, 0).UTC()
 	seedOAuthConn(t, sealer, connStore, secStore, now.Add(time.Minute))
-	blob, err := sealConnectionSecret(sealer, "conn-2", connectionSecret{AccessToken: "a2", RefreshToken: "r2", ExpiresAt: now.Add(time.Minute)})
+	blob, err := connection.SealForgeCredential(sealer, "conn-2", connection.ForgeCredential{AccessToken: "a2", RefreshToken: "r2", ExpiresAt: now.Add(time.Minute)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,7 +494,7 @@ func TestRefreshWorker_ADoneTermStartsNoFurtherRenewal(t *testing.T) {
 // loser's Get, if any, already happened). Only a write that carries its own
 // condition survives it.
 type racingStore struct {
-	*MemoryConnectionStore
+	*connection.MemoryForgeStore
 	winner func()
 	once   bool
 }
@@ -507,12 +508,12 @@ func (s *racingStore) beforeWrite() {
 
 func (s *racingStore) Update(ctx context.Context, c Connection) error {
 	s.beforeWrite()
-	return s.MemoryConnectionStore.Update(ctx, c)
+	return s.MemoryForgeStore.Update(ctx, c)
 }
 
-func (s *racingStore) RevokeIfPayload(ctx context.Context, id string, expected []byte, at time.Time, clearExpiry bool) (bool, error) {
+func (s *racingStore) RevokeIfPayload(ctx context.Context, tenantID, id string, expected []byte, at time.Time, clearExpiry bool) (bool, error) {
 	s.beforeWrite()
-	return s.MemoryConnectionStore.RevokeIfPayload(ctx, id, expected, at, clearExpiry)
+	return s.MemoryForgeStore.RevokeIfPayload(ctx, tenantID, id, expected, at, clearExpiry)
 }
 
 // The winner's renewal lands between the loser's last read and its write.
@@ -521,15 +522,15 @@ func (s *racingStore) RevokeIfPayload(ctx context.Context, id string, expected [
 // nothing and the row stays the winner's.
 func TestRefreshWorker_AWinnerLandingRightBeforeTheLosersWriteStillWins(t *testing.T) {
 	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
-	inner := NewMemoryConnectionStore()
+	inner := connection.NewMemoryForgeStore()
 	secStore := secrets.NewMemoryGenericSecretStore()
 	now := time.Unix(1700000000, 0).UTC()
 	loaded, _ := seedOAuthConn(t, sealer, inner, secStore, now.Add(time.Minute))
-	winnerBlob, err := sealConnectionSecret(sealer, loaded.ID, connectionSecret{AccessToken: "new-access", RefreshToken: "refresh-2", ExpiresAt: now.Add(2 * time.Hour)})
+	winnerBlob, err := connection.SealForgeCredential(sealer, loaded.ID, connection.ForgeCredential{AccessToken: "new-access", RefreshToken: "refresh-2", ExpiresAt: now.Add(2 * time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	st := &racingStore{MemoryConnectionStore: inner}
+	st := &racingStore{MemoryForgeStore: inner}
 	st.winner = func() {
 		won := loaded
 		won.SealedPayload = winnerBlob
@@ -549,8 +550,8 @@ func TestRefreshWorker_AWinnerLandingRightBeforeTheLosersWriteStillWins(t *testi
 	if err := w.refreshOne(context.Background(), loaded); err != nil {
 		t.Fatalf("the loser must end quietly, got %v", err)
 	}
-	got, _ := inner.Get(context.Background(), loaded.ID)
-	cur, err := openConnectionSecret(sealer, got.ID, got.SealedPayload)
+	got, _ := inner.Get(context.Background(), loaded.TenantID, loaded.ID)
+	cur, err := connection.OpenForgeCredential(sealer, got.ID, got.SealedPayload)
 	if err != nil {
 		t.Fatal(err)
 	}

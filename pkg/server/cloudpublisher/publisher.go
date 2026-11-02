@@ -38,11 +38,13 @@ import (
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/forge"
+
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
@@ -105,7 +107,7 @@ type Config struct {
 	// bot login to the runner, so an installation token's commits are
 	// attributed to the App bot (the runner can't self-resolve it — see
 	// RunBundle.ForgeAppBotLogin).
-	ForgeConnections forge.ConnectionStore
+	ForgeConnections connection.ForgeStore
 	// PluginSources, when non-nil, resolves the launching team's git-hosted
 	// org-private plugins at launch (pkg/pluginsource). This is the DURABLE
 	// counterpart to a plugin installed into the pod's iterion home, which a
@@ -223,7 +225,7 @@ type Publisher struct {
 	sealer               secrets.Sealer
 	oauthForfait         secrets.OAuthStore
 	rotatedOAuthKinds    map[string]bool
-	forgeConns           forge.ConnectionStore
+	forgeConns           connection.ForgeStore
 	pluginSources        *pluginsource.Resolver
 	sandboxImage         func(context.Context) string
 	credPool             *credpool.Broker

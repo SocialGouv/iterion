@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -195,7 +196,7 @@ func (s *Server) autoCreateForgeOAuthApp(w http.ResponseWriter, r *http.Request,
 		if !ok {
 			return // forgeConnForTenant already wrote the 404
 		}
-		tok, err := forge.AdminTokenFor(s.sealer, conn)
+		tok, err := connection.ForgeAdminToken(s.sealer, conn)
 		if err != nil {
 			httpError(w, http.StatusInternalServerError, "open connection token: %v", err)
 			return

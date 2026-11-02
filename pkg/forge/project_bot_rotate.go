@@ -77,7 +77,7 @@ func (o *Orchestrator) rotateProjectBot(ctx context.Context, ri RepoIntegration)
 	if ri.ProjectBot.ExpiresAt.Sub(now) > lifetime/2 {
 		return false, nil
 	}
-	conn, err := o.Connections.Get(ctx, ri.ConnectionID)
+	conn, err := o.Connections.Get(ctx, ri.TenantID, ri.ConnectionID)
 	if err != nil {
 		return false, o.recordProjectBotRotation(ctx, ri, conn, nil, fmt.Errorf("resolve connection %s: %w", ri.ConnectionID, err))
 	}

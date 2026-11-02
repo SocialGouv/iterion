@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -32,7 +33,7 @@ func TestForgeDeliveryPreflightUsesActualTokenProof(t *testing.T) {
 			s.sealer, _ = secrets.NewAESGCMSealer(make([]byte, 32))
 			s.genericSecrets = secrets.NewMemoryGenericSecretStore()
 			ctx := store.WithTenant(t.Context(), "team1")
-			conn, _ := s.forgeConnections.Get(ctx, "conn1")
+			conn, _ := s.forgeConnections.Get(ctx, "team1", "conn1")
 			conn.Kind, conn.Status, conn.ManagedSecretID = forge.KindGitHubApp, forge.StatusActive, "managed"
 			conn.GrantedPermissions = map[string]string{"contents": "write", "workflows": "write"}
 			if name == "inactive" {
@@ -175,7 +176,7 @@ func TestForgeDeliveryPreflightNeverAnswersItsOwnOutageAsAVerdict(t *testing.T) 
 			mem := secrets.NewMemoryGenericSecretStore()
 			s.genericSecrets = mem
 			ctx := store.WithTenant(t.Context(), "team1")
-			conn, _ := s.forgeConnections.Get(ctx, "conn1")
+			conn, _ := s.forgeConnections.Get(ctx, "team1", "conn1")
 			conn.Kind, conn.Status, conn.ManagedSecretID = forge.KindGitHubApp, forge.StatusActive, "managed"
 			conn.GrantedPermissions = map[string]string{"contents": "write", "workflows": "write"}
 			if err := s.forgeConnections.Update(ctx, conn); err != nil {
@@ -280,7 +281,7 @@ func TestForgeDeliveryPreflightAnswersAVerdictOnlyFromALiveProofOfTheMountedToke
 			mem := secrets.NewMemoryGenericSecretStore()
 			s.genericSecrets = mem
 			ctx := store.WithTenant(t.Context(), "team1")
-			conn, _ := s.forgeConnections.Get(ctx, "conn1")
+			conn, _ := s.forgeConnections.Get(ctx, "team1", "conn1")
 			conn.Kind, conn.Status, conn.ManagedSecretID = forge.KindGitHubApp, forge.StatusActive, "managed"
 			conn.GrantedPermissions = map[string]string{"contents": "write", "workflows": "write"}
 			if err := s.forgeConnections.Update(ctx, conn); err != nil {
@@ -329,11 +330,14 @@ func TestForgeDeliveryPreflightAnswersAVerdictOnlyFromALiveProofOfTheMountedToke
 // or refuses the write, would let the sweep below pass without ever varying
 // what the handler reads.
 type forgePreflightVerbatimConnStore struct {
-	forge.ConnectionStore
+	connection.ForgeStore
 	conn forge.Connection
 }
 
-func (s forgePreflightVerbatimConnStore) Get(context.Context, string) (forge.Connection, error) {
+func (s forgePreflightVerbatimConnStore) Get(_ context.Context, tenantID, id string) (forge.Connection, error) {
+	if tenantID != s.conn.TenantID || id != s.conn.ID {
+		return forge.Connection{}, forge.ErrConnectionNotFound
+	}
 	return s.conn, nil
 }
 
@@ -967,7 +971,7 @@ func TestForgeDeliveryPreflightRefusesOnlyFromTheProvidersAnswer(t *testing.T) {
 						mem := secrets.NewMemoryGenericSecretStore()
 						s.genericSecrets = mem
 						ctx := store.WithTenant(t.Context(), "team1")
-						conn, _ := s.forgeConnections.Get(ctx, "conn1")
+						conn, _ := s.forgeConnections.Get(ctx, "team1", "conn1")
 						conn.Provider, conn.Kind, conn.Status, conn.ManagedSecretID = forge.ProviderGitHub, forge.KindGitHubApp, forge.StatusActive, "managed"
 						conn.GrantedPermissions = map[string]string{"contents": "write", "workflows": "write"}
 						cs.apply(&conn)

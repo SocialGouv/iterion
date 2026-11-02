@@ -297,7 +297,7 @@ type Server struct {
 	// configShareFC overrides forge-client resolution in tests (nil in prod →
 	// shareFileClient resolves the team forge_token + builds a GitHub client).
 	configShareFC    func(context.Context, *configshare.Share) (forge.FileClient, error)
-	forgeConnections forge.ConnectionStore
+	forgeConnections connection.ForgeStore
 	// connectionStore + connectorCatalog back /api/teams/:id/connections
 	// (pkg/connection). Nil in local mode — see Config.Connections.
 	connectionStore  connection.Store

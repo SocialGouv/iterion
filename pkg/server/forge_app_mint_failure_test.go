@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -74,7 +75,7 @@ func TestForgeEnable_AppTokenMintFailureKeepsTheWorkingRepo(t *testing.T) {
 	s.forgeOrchestrator.Bots = gateBotLookup
 	logs := &lockedBuffer{}
 	s.logger = iterlog.New(iterlog.LevelWarn, logs)
-	sealed, err := forge.SealPAT(s.sealer, "c-app", "ghs_install")
+	sealed, err := connection.SealForgePAT(s.sealer, "c-app", "ghs_install")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +189,7 @@ func TestForgeEnable_AppliedHookWriteWithALostAnswerKeepsTheFreshConfig(t *testi
 	s := newForgeTestServer(t)
 	s.forgeGitHubApp = ForgeGitHubAppConfig{AppID: 42, PrivateKey: testAppKeyPEM(t), AppSlug: "iterion-forge-x"}
 	s.forgeOrchestrator.Bots = gateBotLookup
-	sealed, err := forge.SealPAT(s.sealer, "c-app", "ghs_install")
+	sealed, err := connection.SealForgePAT(s.sealer, "c-app", "ghs_install")
 	if err != nil {
 		t.Fatal(err)
 	}

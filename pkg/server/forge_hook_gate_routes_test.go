@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
@@ -66,7 +67,7 @@ func (m *refusingGitLab) server() *httptest.Server {
 // with the given hook-base pin ("" = follow the deployment's public URL).
 func seedForgeConn(t *testing.T, s *Server, connID, baseURL, webhookBase string) {
 	t.Helper()
-	sealed, err := forge.SealPAT(s.sealer, connID, "glpat-token")
+	sealed, err := connection.SealForgePAT(s.sealer, connID, "glpat-token")
 	if err != nil {
 		t.Fatal(err)
 	}

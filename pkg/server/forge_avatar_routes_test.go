@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/brand"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
 )
@@ -112,7 +113,7 @@ func TestForgeConnect_BotIdentityGetsTheAvatar(t *testing.T) {
 	if !bytes.Equal(gl.gotBytes, brand.BotAvatar(brand.VariantPlain)) {
 		t.Error("the connect uploaded something other than the plain iterion-bot avatar")
 	}
-	stored, err := s.forgeConnections.Get(context.Background(), conn.ID)
+	stored, err := s.forgeConnections.Get(context.Background(), conn.TenantID, conn.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +173,7 @@ func TestForgeConnect_AvatarFailureIsRecordedNotFatal(t *testing.T) {
 	if !strings.Contains(conn.AvatarError, "is too big") {
 		t.Errorf("avatar_error = %q, want GitLab's reason quoted", conn.AvatarError)
 	}
-	stored, _ := s.forgeConnections.Get(context.Background(), conn.ID)
+	stored, _ := s.forgeConnections.Get(context.Background(), conn.TenantID, conn.ID)
 	if stored.AvatarError != conn.AvatarError {
 		t.Errorf("persisted avatar_error = %q", stored.AvatarError)
 	}
@@ -181,7 +182,7 @@ func TestForgeConnect_AvatarFailureIsRecordedNotFatal(t *testing.T) {
 func seedAvatarConn(t *testing.T, s *Server, c forge.Connection) forge.Connection {
 	t.Helper()
 	if c.Kind == forge.KindPAT {
-		sealed, err := forge.SealPAT(s.sealer, c.ID, "tok")
+		sealed, err := connection.SealForgePAT(s.sealer, c.ID, "tok")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -279,7 +280,7 @@ func TestForgeConnectionAvatar_Policy(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("code=%d body=%s", w.Code, w.Diagnostic(t))
 		}
-		stored, _ := s.forgeConnections.Get(context.Background(), glBot.ID)
+		stored, _ := s.forgeConnections.Get(context.Background(), glBot.TenantID, glBot.ID)
 		if stored.AvatarError != "" || stored.AvatarAppliedAt == nil || time.Since(*stored.AvatarAppliedAt) > time.Minute {
 			t.Errorf("persisted = error %q applied_at %v", stored.AvatarError, stored.AvatarAppliedAt)
 		}
@@ -300,7 +301,7 @@ func TestForgeConnectionAvatar_Policy(t *testing.T) {
 		if w.Code != http.StatusBadGateway || !strings.Contains(w.Diagnostic(t), "is too big") {
 			t.Errorf("code=%d body=%s", w.Code, w.Diagnostic(t))
 		}
-		stored, _ := s.forgeConnections.Get(context.Background(), glBot.ID)
+		stored, _ := s.forgeConnections.Get(context.Background(), glBot.TenantID, glBot.ID)
 		if !strings.Contains(stored.AvatarError, "is too big") {
 			t.Errorf("persisted avatar_error = %q", stored.AvatarError)
 		}
@@ -331,7 +332,7 @@ func TestForgeConnectionAvatar_ConcurrentProvisionWriteSurvives(t *testing.T) {
 	mux.HandleFunc("PUT /api/v4/user/avatar", func(w http.ResponseWriter, r *http.Request) {
 		// The concurrent writer, replayed verbatim from the orchestrator: a
 		// full-document update carrying the managed secret id.
-		c, err := s.forgeConnections.Get(context.Background(), "c-race")
+		c, err := s.forgeConnections.Get(context.Background(), "t1", "c-race")
 		if err != nil {
 			t.Errorf("get during upload: %v", err)
 		}
@@ -348,7 +349,7 @@ func TestForgeConnectionAvatar_ConcurrentProvisionWriteSurvives(t *testing.T) {
 	if w := avatarReq(s, "c-race", ""); w.Code != http.StatusOK {
 		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 	}
-	stored, _ := s.forgeConnections.Get(context.Background(), "c-race")
+	stored, _ := s.forgeConnections.Get(context.Background(), "t1", "c-race")
 	if stored.ManagedSecretID != "sec-managed-forge-token" {
 		t.Fatalf("the avatar apply lost a concurrent write: managed_secret_id=%q", stored.ManagedSecretID)
 	}
@@ -360,7 +361,7 @@ func TestForgeConnectionAvatar_ConcurrentProvisionWriteSurvives(t *testing.T) {
 // cancelAwareStore is the memory store with the one behaviour Mongo has and
 // the memory store lacks: a write on a dead context fails.
 type cancelAwareStore struct {
-	forge.ConnectionStore
+	connection.ForgeStore
 	updates int
 }
 
@@ -369,7 +370,7 @@ func (c *cancelAwareStore) Update(ctx context.Context, conn forge.Connection) er
 		return err
 	}
 	c.updates++
-	return c.ConnectionStore.Update(ctx, conn)
+	return c.ForgeStore.Update(ctx, conn)
 }
 
 // The apply owns its own context: an operator who closes the tab mid-click
@@ -378,7 +379,7 @@ func (c *cancelAwareStore) Update(ctx context.Context, conn forge.Connection) er
 // hence the cancel-aware wrapper).
 func TestForgeConnectionAvatar_CompletesOnACancelledRequest(t *testing.T) {
 	s := newForgeTestServer(t)
-	cs := &cancelAwareStore{ConnectionStore: s.forgeConnections}
+	cs := &cancelAwareStore{ForgeStore: s.forgeConnections}
 	s.forgeConnections = cs
 	gl := &mockGitLabAvatar{bot: true}
 	srv := gl.server()
@@ -394,7 +395,7 @@ func TestForgeConnectionAvatar_CompletesOnACancelledRequest(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 	}
-	stored, _ := s.forgeConnections.Get(context.Background(), "c-cancel")
+	stored, _ := s.forgeConnections.Get(context.Background(), "t1", "c-cancel")
 	if stored.AvatarAppliedAt == nil || stored.AvatarError != "" || cs.updates != 1 || gl.count() != 1 {
 		t.Fatalf("not completed and recorded: applied_at=%v error=%q updates=%d uploads=%d", stored.AvatarAppliedAt, stored.AvatarError, cs.updates, gl.count())
 	}
@@ -424,7 +425,7 @@ func TestForgeConnectionAvatar_LegacyConnectionLearnsItsKind(t *testing.T) {
 			if w.Code != tc.wantCode {
 				t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 			}
-			stored, _ := s.forgeConnections.Get(context.Background(), "c-legacy")
+			stored, _ := s.forgeConnections.Get(context.Background(), "t1", "c-legacy")
 			if stored.AccountKind != tc.wantKind {
 				t.Errorf("account_kind = %q, want %q recorded from WhoAmI", stored.AccountKind, tc.wantKind)
 			}
@@ -482,7 +483,7 @@ func TestForgeConnect_AutoApplyIsAudited(t *testing.T) {
 // connection even though the round-trips' context has expired.
 func TestForgeConnectionAvatar_RecordsWhenTheForgeHangs(t *testing.T) {
 	s := newForgeTestServer(t)
-	cs := &cancelAwareStore{ConnectionStore: s.forgeConnections}
+	cs := &cancelAwareStore{ForgeStore: s.forgeConnections}
 	s.forgeConnections = cs
 	release := make(chan struct{})
 	mux := http.NewServeMux()
@@ -506,7 +507,7 @@ func TestForgeConnectionAvatar_RecordsWhenTheForgeHangs(t *testing.T) {
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 	}
-	stored, _ := s.forgeConnections.Get(context.Background(), "c-hang")
+	stored, _ := s.forgeConnections.Get(context.Background(), "t1", "c-hang")
 	if !strings.Contains(stored.AvatarError, "deadline exceeded") || cs.updates != 1 {
 		t.Fatalf("the timeout was not recorded: avatar_error=%q updates=%d", stored.AvatarError, cs.updates)
 	}
@@ -524,7 +525,7 @@ func TestForgeConnectionAvatar_RefusalRecordsOnlyTheKind(t *testing.T) {
 	if w := avatarReq(s, "c-legacy2", ""); w.Code != http.StatusConflict {
 		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 	}
-	stored, _ := s.forgeConnections.Get(context.Background(), "c-legacy2")
+	stored, _ := s.forgeConnections.Get(context.Background(), "t1", "c-legacy2")
 	if stored.AccountKind != forge.AccountKindUser || stored.AvatarAppliedAt == nil || !stored.AvatarAppliedAt.Equal(then) || stored.AvatarError != "kept as is" {
 		t.Fatalf("refusal rewrote more than the kind: %+v", stored)
 	}
@@ -571,7 +572,7 @@ func TestForgeConnectionAvatar_ForcedApplyBailsWhenWhoAmIHangs(t *testing.T) {
 	if w.Code != http.StatusBadGateway || !strings.Contains(w.Diagnostic(t), "could not read the account") {
 		t.Fatalf("code=%d body=%s", w.Code, w.Diagnostic(t))
 	}
-	stored, _ := s.forgeConnections.Get(context.Background(), "c-slow-user")
+	stored, _ := s.forgeConnections.Get(context.Background(), "t1", "c-slow-user")
 	if uploads != 0 || stored.AvatarError != "" || stored.AvatarAppliedAt != nil {
 		t.Fatalf("uploaded on a dead context or recorded a misleading reason: uploads=%d error=%q applied=%v", uploads, stored.AvatarError, stored.AvatarAppliedAt)
 	}
@@ -607,7 +608,7 @@ func TestForgeConnectionAvatar_UnreadableAccountAsksForTheWord(t *testing.T) {
 	if body["needs_force"] != true || body["account_login"] != "svc" || !strings.Contains(msg, "would not say whether @svc") || !strings.Contains(msg, "insufficient scope") {
 		t.Fatalf("refusal must offer the forced retry, name the account and the forge's reason: %v", body)
 	}
-	stored, _ := s.forgeConnections.Get(context.Background(), "c-unreadable")
+	stored, _ := s.forgeConnections.Get(context.Background(), "t1", "c-unreadable")
 	if uploads != 0 || stored.AccountKind != "" || stored.AvatarError != "" || stored.AvatarAppliedAt != nil {
 		t.Fatalf("a refusal to vouch must upload and record nothing: uploads=%d stored=%+v", uploads, stored)
 	}
@@ -636,7 +637,7 @@ func TestForgeConnectionAvatar_RejectedCredentialIsAReconnectProblem(t *testing.
 	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "reconnect it first") || strings.Contains(w.Body.String(), "needs_force") {
 		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 	}
-	stored, _ := s.forgeConnections.Get(context.Background(), "c-dead-token")
+	stored, _ := s.forgeConnections.Get(context.Background(), "t1", "c-dead-token")
 	if stored.Status != forge.StatusRevoked || !strings.Contains(stored.StatusReason, "401") {
 		t.Fatalf("a live 401 must mark the connection revoked with the reason: status=%q reason=%q", stored.Status, stored.StatusReason)
 	}
@@ -675,7 +676,7 @@ func TestForgeConnectionAvatar_SpentBudgetOutranksTheForgesAnswer(t *testing.T) 
 			t.Fatalf("body %q: code=%d body=%s", body, w.Code, w.Diagnostic(t))
 		}
 	}
-	stored, _ := s.forgeConnections.Get(context.Background(), "c-stalled-403")
+	stored, _ := s.forgeConnections.Get(context.Background(), "t1", "c-stalled-403")
 	if uploads != 0 || stored.AvatarError != "" || stored.AvatarAppliedAt != nil {
 		t.Fatalf("uploaded on a dead context or recorded a misleading reason: uploads=%d stored=%+v", uploads, stored)
 	}
@@ -772,7 +773,7 @@ func TestForgeConnectionAvatar_UnreachableForgeIsNotAVouchMatter(t *testing.T) {
 			t.Fatalf("body %q: code=%d body=%s", body, w.Code, w.Diagnostic(t))
 		}
 	}
-	stored, _ := s.forgeConnections.Get(context.Background(), "c-unreachable")
+	stored, _ := s.forgeConnections.Get(context.Background(), "t1", "c-unreachable")
 	if stored.AvatarError != "" || stored.AvatarAppliedAt != nil {
 		t.Fatalf("an unreachable forge must record nothing: %+v", stored)
 	}
@@ -786,12 +787,12 @@ func TestForgeConnectionAvatar_UnreachableForgeIsNotAVouchMatter(t *testing.T) {
 	}
 }
 
-// failingUpdateStore wraps the memory ConnectionStore and injects a caller-
+// failingUpdateStore wraps the memory ForgeStore and injects a caller-
 // controlled failure on Update. It exists to prove that a persist error
 // AFTER a successful forge round-trip does not answer 502 — the doctrine
 // forgeUpstreamStatus writes down: only an iterion fault reaches 500.
 type failingUpdateStore struct {
-	forge.ConnectionStore
+	connection.ForgeStore
 	failOnUpdate error
 }
 
@@ -799,7 +800,7 @@ func (f *failingUpdateStore) Update(ctx context.Context, conn forge.Connection) 
 	if f.failOnUpdate != nil {
 		return f.failOnUpdate
 	}
-	return f.ConnectionStore.Update(ctx, conn)
+	return f.ForgeStore.Update(ctx, conn)
 }
 
 // A persist that fails AFTER SetAvatar succeeded is iterion's own state
@@ -811,8 +812,8 @@ func (f *failingUpdateStore) Update(ctx context.Context, conn forge.Connection) 
 func TestForgeConnectionAvatar_StoreFailAfterUploadIsIterionFault500(t *testing.T) {
 	s := newForgeTestServer(t)
 	failing := &failingUpdateStore{
-		ConnectionStore: s.forgeConnections,
-		failOnUpdate:    errors.New("mongo: connection reset by peer"),
+		ForgeStore:   s.forgeConnections,
+		failOnUpdate: errors.New("mongo: connection reset by peer"),
 	}
 	s.forgeConnections = failing
 	gl := &mockGitLabAvatar{bot: true}
@@ -933,7 +934,7 @@ func TestForgeConnect_AvatarInspectionFailurePreservesConnectionAndImage(t *test
 	if conn.Status != forge.StatusActive || conn.AvatarAppliedAt != nil || conn.AvatarError == "" || gl.count() != 0 {
 		t.Fatalf("inspection failure: status=%s applied=%v error=%q uploads=%d", conn.Status, conn.AvatarAppliedAt, conn.AvatarError, gl.count())
 	}
-	stored, err := s.forgeConnections.Get(context.Background(), conn.ID)
+	stored, err := s.forgeConnections.Get(context.Background(), conn.TenantID, conn.ID)
 	if err != nil || stored.AvatarError != conn.AvatarError {
 		t.Fatalf("inspection failure not recorded: %v", err)
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/lease"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -99,7 +100,7 @@ type Orchestrator struct {
 	ProvisionLeases lease.Store
 	// ProvisionLeaseTTL is overrideable; correctness survives lease expiry.
 	ProvisionLeaseTTL time.Duration
-	Connections       ConnectionStore
+	Connections       connection.ForgeStore
 	Integrations      RepoIntegrationStore
 	Webhooks          webhooks.ConfigStore
 	Secrets           secrets.GenericSecretStore
@@ -309,12 +310,11 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		return ProvisionResult{}, fmt.Errorf("forge: provision requires at least one bot")
 	}
 
-	conn, err := o.Connections.Get(ctx, req.ConnectionID)
+	conn, err := o.Connections.Get(ctx, req.TenantID, req.ConnectionID)
 	if err != nil {
+		// The tenant is in the store's filter: another tenant's connection
+		// reads as not-found, so the read itself cannot leak existence.
 		return ProvisionResult{}, err
-	}
-	if conn.TenantID != req.TenantID {
-		return ProvisionResult{}, ErrConnectionNotFound // cross-tenant — do not leak existence
 	}
 
 	ctx, release, err := o.provisionLease(ctx, req.TenantID, conn.ID, req.RepoFullName)
@@ -1158,7 +1158,7 @@ func (o *Orchestrator) restoreConfig(ctx context.Context, w configWrite) error {
 // unrestricted) only if the connection resolves no host, which should not
 // happen.
 func forgeTokenEgressHosts(conn *Connection) []string {
-	h := hostOf(conn.BaseURL())
+	h := conn.Host()
 	if h == "" {
 		return nil
 	}
@@ -1239,7 +1239,7 @@ func (o *Orchestrator) ensureManagedSecret(ctx context.Context, conn *Connection
 	if conn.ManagedSecretID != "" {
 		return conn.ManagedSecretID, nil
 	}
-	sec, err := openConnectionSecret(o.Sealer, conn.ID, conn.SealedPayload)
+	sec, err := connection.OpenForgeCredential(o.Sealer, conn.ID, conn.SealedPayload)
 	if err != nil {
 		return "", err
 	}
@@ -1321,7 +1321,7 @@ func (o *Orchestrator) Deprovision(ctx context.Context, tenantID, integrationID 
 		ri.Version++
 	}
 	if ri.HookID != "" {
-		if conn, cerr := o.Connections.Get(ctx, ri.ConnectionID); cerr == nil {
+		if conn, cerr := o.Connections.Get(ctx, ri.TenantID, ri.ConnectionID); cerr == nil {
 			if admin, aerr := o.AdminFor(ctx, conn); aerr == nil {
 				if derr := admin.DeleteHook(ctx, ri.RepoFullName, ri.HookID); derr != nil && !errors.Is(derr, ErrHookNotFound) {
 					return fmt.Errorf("forge: delete forge hook: %w", derr)
@@ -1617,12 +1617,9 @@ func keysOfInvByBot(m map[string][]bundle.Invocation) []string {
 // DeprovisionConnection tears down every integration for a connection, then
 // deletes the connection's managed secret and the connection itself.
 func (o *Orchestrator) DeprovisionConnection(ctx context.Context, tenantID, connID string) error {
-	conn, err := o.Connections.Get(ctx, connID)
+	conn, err := o.Connections.Get(ctx, tenantID, connID)
 	if err != nil {
 		return err
-	}
-	if conn.TenantID != tenantID {
-		return ErrConnectionNotFound
 	}
 	items, err := o.Integrations.ListProvisionsByConnection(ctx, tenantID, connID)
 	if err != nil {
@@ -1661,7 +1658,7 @@ func (o *Orchestrator) DeprovisionConnection(ctx context.Context, tenantID, conn
 			}
 		}
 	}
-	return o.Connections.Delete(ctx, connID)
+	return o.Connections.Delete(ctx, tenantID, connID)
 }
 
 // HookBaseURL is the origin every hook of this connection is registered

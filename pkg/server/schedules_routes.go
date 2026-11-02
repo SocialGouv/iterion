@@ -270,7 +270,7 @@ func (s *Server) resolveRepoIntegrationID(ctx context.Context, teamID, repoURL s
 		return ""
 	}
 	for _, ri := range integrations {
-		conn, cerr := s.forgeConnections.Get(ctx, ri.ConnectionID)
+		conn, cerr := s.forgeConnections.Get(ctx, teamID, ri.ConnectionID)
 		// A watch-only connection's row is not a lifecycle anchor: the
 		// schedule would be deleted with the vulnerability watch.
 		if cerr != nil || conn.IsSecurityReadOnly() {

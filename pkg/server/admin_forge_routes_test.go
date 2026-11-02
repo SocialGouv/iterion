@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -24,7 +25,7 @@ func adminForgeReq(ctx context.Context, method, path, body, appID string) *http.
 
 func TestAdminForgeOAuthApps_PlatformRegistrationServesEveryTeam(t *testing.T) {
 	s := newForgeOAuthAppTestServer(t)
-	s.forgeConnections = forge.NewMemoryConnectionStore()
+	s.forgeConnections = connection.NewMemoryForgeStore()
 	ctx := superAdminCtx()
 
 	for _, tc := range []struct{ name, body, want string }{
@@ -109,7 +110,7 @@ func TestAdminForgeOAuthApps_PlatformRegistrationServesEveryTeam(t *testing.T) {
 	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "1 connection(s) across 1 team(s)") {
 		t.Fatalf("delete in use: code=%d body=%s", w.Code, w.Body.String())
 	}
-	if err := s.forgeConnections.Delete(context.Background(), "c1"); err != nil {
+	if err := s.forgeConnections.Delete(context.Background(), "t9", "c1"); err != nil {
 		t.Fatal(err)
 	}
 	// A team's app is not reachable through the platform route.

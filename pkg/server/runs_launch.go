@@ -638,9 +638,10 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		id, _ := auth.FromContext(r.Context())
-		conn, err := s.forgeConnections.Get(r.Context(), req.ConnectionID)
-		if err != nil || conn.TenantID != id.TeamID {
-			// Cross-team ids 404 (non-enumeration), like every forge route.
+		conn, err := s.forgeConnections.Get(r.Context(), id.TeamID, req.ConnectionID)
+		if err != nil {
+			// Cross-team ids 404 (non-enumeration), like every forge route —
+			// since #2760 the tenant is the store's filter, not a check here.
 			s.httpErrorFor(w, r, http.StatusNotFound, "connection not found")
 			span.SetStatus(codes.Error, "connection not found")
 			return
