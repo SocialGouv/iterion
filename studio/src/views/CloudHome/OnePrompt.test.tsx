@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-import OnePrompt from "@/views/CloudHome/OnePrompt";
+import OnePrompt, { SETUP_PROMPT } from "@/views/CloudHome/OnePrompt";
 
 // The block a visitor pastes is the product of this section: the guards
 // assert on what is RENDERED, not on the exported constant — a JSX refactor
@@ -21,9 +21,11 @@ describe("the one-prompt onboarding section of the product home", () => {
       "iterion remote login https://iterion.cloud",
     );
     // The funding step: a visitor already covered by the pool needs no key,
-    // so the block must say the credential is conditional, not mandatory.
+    // so the block must say the credential is conditional, not mandatory,
+    // and name the wire ids the CLI actually accepts.
     expect(container.textContent).toContain("already funded");
-    expect(container.textContent).toContain("OpenAI-compatible gateway");
+    expect(container.textContent).toContain("wire ids");
+    expect(container.textContent).toContain("moonshot");
   });
 
   it("names the section for the cloud onboarding, not a generic quickstart", () => {
@@ -42,6 +44,22 @@ describe("the one-prompt onboarding section of the product home", () => {
     expect(
       screen.getByRole("button", { name: /cloud setup prompt/i }),
     ).toBeTruthy();
+  });
+
+  // What the visitor copies must be what the block displays — the one
+  // invariant the rendering checks above cannot see: a refactor that keeps
+  // the <pre> intact but truncates or substitutes the button's value passes
+  // every other assertion in this file. This stub was seen RED against a
+  // truncated `value` before being trusted.
+  it("copies the whole displayed prompt to the clipboard", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    render(<OnePrompt />);
+    fireEvent.click(screen.getByRole("button", { name: /cloud setup prompt/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(SETUP_PROMPT));
   });
 
   it("links the full walkthrough in the documentation site", () => {

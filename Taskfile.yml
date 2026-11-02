@@ -691,7 +691,7 @@ tasks:
       - ./scripts/prompt-parity.sh
 
   check:fast:
-    desc: "Fast inner-iteration layer (format + vet + fast-only lint + bot fmt + dsl + map + positioning) — NOT a replacement for `task check`, which stays owed before every push"
+    desc: "Fast inner-iteration layer (format + vet + fast-only lint + bot fmt + dsl + map + positioning + prompt parity) — NOT a replacement for `task check`, which stays owed before every push"
     cmds:
       # Sequential on purpose: the point is a fast, stable gate, not maximum
       # parallelism — six Go invocations racing on one GOCACHE made the vet

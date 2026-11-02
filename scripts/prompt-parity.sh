@@ -17,8 +17,12 @@ cd "$(dirname "$0")/.."
 NEEDLE='Set up Iterion Cloud (https://iterion.cloud'
 
 extract_md() {
+  # Fence-aware: the needle matches only INSIDE a fenced block, so prose
+  # quoting the prompt's first line ahead of the block cannot hijack the
+  # extraction into a false drift.
   awk -v needle="$NEEDLE" '
-    index($0, needle) { inblock = 1 }
+    /^```/ { infence = !infence }
+    infence && index($0, needle) { inblock = 1 }
     inblock && /^```$/ { exit }
     inblock { sub(/[ \t]+$/, ""); print }
   ' "$1"
@@ -50,7 +54,11 @@ read_copy() {
   local body
   body="$("$extractor" "$file")"
   if [ -z "$body" ]; then
-    echo "::error::$name carries no setup prompt — expected a block starting with: $NEEDLE"
+    # stderr, not stdout: this echo is captured by the caller's command
+    # substitution, and a stdout line would vanish into `$reference` while
+    # `set -e` kills the script with no output at all — the exact trap
+    # scripts/brand/positioning-check.sh documents and neutralises.
+    echo "::error::$name carries no setup prompt — expected a block starting with: $NEEDLE" >&2
     exit 1
   fi
   printf '%s\n' "$body"
@@ -59,7 +67,10 @@ read_copy() {
 reference="$(read_copy "README.md" README.md extract_md)"
 
 fail() {
-  echo "::error::setup-prompt drift: $1 differs from README.md — the four copies (README.md, docs/getting-started.md, docs/index.md, studio/src/views/CloudHome/OnePrompt.tsx) must stay identical; 'task prompt:parity' re-checks after your edit."
+  # Two named files, no blame: the star topology diffs every copy against
+  # README.md, so a drift in EITHER file produces this failure and the
+  # message must not pre-judge which one moved.
+  echo "::error::setup-prompt drift: README.md and $1 disagree — one of them drifted; the four copies (README.md, docs/getting-started.md, docs/index.md, studio/src/views/CloudHome/OnePrompt.tsx) must stay identical; 'task prompt:parity' re-checks after your edit."
   exit 1
 }
 

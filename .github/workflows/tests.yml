@@ -1220,6 +1220,13 @@ jobs:
         run: ./scripts/ci/tap-entry-check.sh
       - name: Positioning
         run: ./scripts/brand/positioning-check.sh
+      - name: Setup prompt parity
+        # bash + awk + diff, all present on a bare runner — the same shape as
+        # the two checks above: content guards run DIRECTLY in the required
+        # job, because `task check` is not wired into any workflow (a guard
+        # that only a local session can run protects nothing between a PR
+        # and main).
+        run: ./scripts/prompt-parity.sh
       - name: OpenGraph card is not stale
         # bash + coreutils + python3, all present on a bare runner — no
         # browser, no fonts, no devbox. The script says why it checks the
