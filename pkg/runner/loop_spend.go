@@ -209,6 +209,19 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 	// not read - reports no table and keeps the coarse whole-attempt
 	// booking, which is the conservative-on-ignore direction.
 	byFingerprint := fineFingerprintSpend(usage)
+	// A stamped plan whose table came back EMPTY while the attempt spent is
+	// a join drift, and the broker's booking of zero for the lease is then
+	// silent: the plan promised a per-credential answer for every node, yet
+	// no observation hit one (the loop's provider word absent on an old
+	// container, a spec whose prefix drifted from what served, a model no
+	// event named). One line at the report is the telltale every such shape
+	// surfaces through — without it the first evidence is a donor's ledger
+	// staying flat under real spend. A table with rows, or a plan-less
+	// publication (nil, the coarse contract), needs no line: rows that miss
+	// the lease's fingerprint are the door never having fired.
+	if byFingerprint != nil && len(byFingerprint) == 0 && costUSD > 0 {
+		r.cfg.Logger.Warn("runner: credential-pool report for run %s carries a stamped plan but an EMPTY fine table while the attempt spent %.6f USD — every observation missed the plan's keys; the lease books $0 for this attempt", msg.RunID, costUSD)
+	}
 	if err := r.cfg.CredPool.ReportAttempt(bg, msg.RunID, publishedAt, credpool.Outcome{
 		CostUSD:         costUSD,
 		InputTokens:     in,

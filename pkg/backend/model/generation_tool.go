@@ -34,6 +34,14 @@ type GenerationOptions struct {
 	// holding slashes of its own ("meta-llama/…") would lose a segment.
 	Model string
 
+	// Provider names the slot the client was resolved from — the
+	// servingProvider word the delegate events carry (a `provider/` prefix's
+	// pin, a hint that names the slot). The step hooks copy it onto every
+	// llm_step_finished so a per-step observation joins the credential plan
+	// on the loop's own answer instead of re-deriving one from the spec.
+	// Empty when the loop builder stamped none.
+	Provider string
+
 	// System is the system prompt (plain string form).
 	System string
 

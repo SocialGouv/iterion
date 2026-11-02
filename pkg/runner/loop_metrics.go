@@ -447,6 +447,13 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		const backend = "claw"
 		inputT := toFloat(evt.Data["input_tokens"])
 		outputT := toFloat(evt.Data["output_tokens"])
+		// The slot word the loop stamped — the same `provider` the delegate
+		// events carry — read FIRST in the fingerprint join: a hint-steered
+		// claw route can spend a slot the model spec's own prefix does not
+		// name, and a join re-derived from the spec books nobody on exactly
+		// those routes. An event that carries no word (a container whose
+		// runner predates the stamp) falls back to the spec derivation.
+		provider, _ := evt.Data["provider"].(string)
 
 		// Single critical section: resolve the per-node model name,
 		// accumulate run-level token + cost totals, and compute the
@@ -475,7 +482,7 @@ func (m *metricsEmitter) observe(evt store.Event) {
 			}
 		}
 		m.addRouteLocked(backend, modelName, "", costDelta, int64(inputT), int64(outputT), 0)
-		m.addFingerprintLocked(m.fingerprintFor(evt.NodeID, routeKey{backend: backend, model: modelName}, ""),
+		m.addFingerprintLocked(m.fingerprintFor(evt.NodeID, routeKey{backend: backend, model: modelName}, provider),
 			costDelta, int64(inputT), int64(outputT), 0)
 		if unreported, _ := evt.Data["usage_unreported"].(bool); unreported {
 			k := routeKey{backend: backend, model: modelName}

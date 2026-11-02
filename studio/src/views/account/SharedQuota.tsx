@@ -462,7 +462,8 @@ function PledgeCard({
             runs/day unit and a concurrency slot on your pledge until the run publishes, even
             when the fallback never fires. Only the spend that ran on <strong>your</strong>{' '}
             credential books against your ceilings — a rung the fallback never fired on books
-            nothing.
+            nothing. If the run's routes can't all be read, the attempt's whole spend books, as
+            on a whole-bundle run.
           </span>
         }
       />

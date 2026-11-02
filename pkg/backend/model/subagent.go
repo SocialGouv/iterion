@@ -314,8 +314,9 @@ func NewSubagentRunner(
 		}
 
 		opts := GenerationOptions{
-			Model:  modelSpec,
-			System: system,
+			Model:    modelSpec,
+			Provider: clawSpecProvider(modelSpec),
+			System:   system,
 			Messages: []api.Message{{
 				Role:    "user",
 				Content: []api.ContentBlock{{Type: "text", Text: spec.Prompt}},

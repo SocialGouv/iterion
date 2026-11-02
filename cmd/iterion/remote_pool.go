@@ -215,7 +215,7 @@ func init() {
 	remotePoolShareCmd.Flags().IntVar(&remotePoolFromHour, "from-hour", 0, "Share from this local hour (with --to-hour)")
 	remotePoolShareCmd.Flags().IntVar(&remotePoolToHour, "to-hour", 0, "Share until this local hour (exclusive)")
 	remotePoolShareCmd.Flags().StringSliceVar(&remotePoolBots, "bots", nil, "Only these bot ids may use it (default: any)")
-	remotePoolShareCmd.Flags().BoolVar(&remotePoolFallbackUse, "fallback-use", false, "Also lend to FALLBACK rungs of runs that hold their own credential (the routing policy's ladder); an armed rung holds a runs/day unit and a concurrency slot until the run publishes even when the fallback never fires, and only the spend that ran on YOUR credential books against your ceilings")
+	remotePoolShareCmd.Flags().BoolVar(&remotePoolFallbackUse, "fallback-use", false, "Also lend to FALLBACK rungs of runs that hold their own credential (the routing policy's ladder); an armed rung holds a runs/day unit and a concurrency slot until the run publishes even when the fallback never fires, and only the spend that ran on YOUR credential books against your ceilings — unless the run's routes can't all be read, in which case the whole attempt books, as on a whole-bundle run")
 	remotePoolDonorsCmd.Flags().StringVar(&remoteTeamFlag, "team", "", "Team id (default: switched/active team)")
 
 	remotePoolPolicyCmd.Flags().StringVar(&remoteTeamFlag, "team", "", "Team id (default: switched/active team)")

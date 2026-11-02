@@ -108,12 +108,17 @@ func TestCredentialPlan_OAuthForfaitFundsItsProvider(t *testing.T) {
 	}
 }
 
-func TestCredentialPlan_RunFallbackProvidersLandOnEveryNode(t *testing.T) {
+func TestCredentialPlan_RunFallbackProvidersSpreadOntoEveryNodedSite(t *testing.T) {
 	t.Parallel()
 
-	// The run-level chain lands on every agent node through
-	// ir.ApplyRunFallback: a chain rung naming the donor's provider may be
-	// served at ANY of them, so every node plans that provider.
+	// The derivation SPREADS the run-level chain onto every node with a
+	// site of its own — wider than ir.ApplyRunFallback applies it (agent
+	// nodes declaring no routes of their own; a judge, or an agent with
+	// authored fallbacks, never takes the chain). The spread is a booking-
+	// safe over-claim: a chain rung naming the donor's provider may be
+	// served at any routeless agent, so every node plans that provider,
+	// and the extra rows on nodes the chain never reaches stay inert — an
+	// observation joins on the provider its serving element resolved.
 	wf := &ir.Workflow{Nodes: map[string]ir.Node{
 		"impl":   agentWith("impl", "anthropic", "anthropic/claude-opus-5"),
 		"review": agentWith("review", "openai", "openai/gpt-5"),

@@ -641,10 +641,13 @@ func (a *providerAccumulator) field(raw string) string {
 // z.ai key; pi's documented z.ai form is `model: "anthropic/glm-5.2"` +
 // `provider: "zai"`, the hint overriding the prefix); only a node with no
 // hint at all routes on the prefix of its effective model (override, then
-// DSL), the way claw's registry does. Anything the walk cannot resolve
-// widens. Every field arrives through the walk's vars reading first: a
-// `{{vars.x}}` whose value the run itself decided resolves like the
-// literal it will be at dispatch, a late name stays as written.
+// DSL). claw is the exception on the slot: its registry never lets the
+// hint name a different credential slot than the prefix's, so a decided
+// claw chain records the prefix's slot beside its hints
+// (prefixSlotForClaw). Anything the walk cannot resolve widens. Every
+// field arrives through the walk's vars reading first: a `{{vars.x}}`
+// whose value the run itself decided resolves like the literal it will be
+// at dispatch, a late name stays as written.
 func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, overrides ModelOverrides) {
 	a.beginRoute(true)
 	defer a.endRoute()
@@ -662,6 +665,7 @@ func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, ov
 	if strings.TrimSpace(ov.Provider) != "" {
 		a.noteWireDefault(prov, m)
 		if a.chainDecides(prov, m) {
+			a.prefixSlotForClaw(m)
 			return
 		}
 		// The override named no resolvable hint ("auto", or a ${VAR} this
@@ -675,9 +679,41 @@ func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, ov
 	}
 	a.noteWireDefault(chain, m)
 	if a.chainDecides(chain, m) {
+		a.prefixSlotForClaw(m)
 		return
 	}
 	a.prefixOrWiden(m)
+}
+
+// prefixSlotForClaw records, on a route whose `provider:` chain just
+// decided for backend CLAW, the providers the model's own prefix spends —
+// beside the hints the chain recorded. claw's hint decides the ROUTE the
+// element dispatch walks, never the SLOT the registry funds: the registry
+// reads it at exactly one switch (forcing Anthropic-direct for models
+// Anthropic serves) and the credential crossing forwards no hint-named
+// slot, so the spend follows the prefix — a GLM id on the anthropic wire
+// rides z.ai (prefixOrWiden's reading). Without this second reading the
+// walk names only the hint's slot, and the credential plan keys the
+// node's spend on a slot the route never funds: every observation books
+// nobody (revi R30d246's $0 harm, on hint-steered claw routes), or —
+// before the event word was claw-true — the hint's credential for a
+// prefix spend.
+//
+// A spec naming no `provider/` prefix reads nothing here. The element
+// build hands such a stage the node's baseline model (or the portability
+// screen refuses a backend-changing stage whole), and the registry refuses
+// a bare claw spec at Execute outright — so the slot question is answered
+// by the node's own rows or by no spend at all, never by this reading;
+// widening it would nil the plans of runs whose other routes are perfectly
+// readable.
+func (a *providerAccumulator) prefixSlotForClaw(mdl string) {
+	if a.backend != delegate.BackendClaw {
+		return
+	}
+	if providerFromModelPrefix(mdl) == "" {
+		return
+	}
+	a.prefixOrWiden(mdl)
 }
 
 // resolveRoute is the fallback-route half, with the same precedence: the
@@ -692,6 +728,7 @@ func (a *providerAccumulator) resolveRoute(provider, mdl string) {
 	a.envDeferred("model", mdl)
 	a.noteWireDefault(provider, mdl)
 	if a.chainDecides(provider, mdl) {
+		a.prefixSlotForClaw(mdl)
 		return
 	}
 	a.prefixOrWiden(mdl)

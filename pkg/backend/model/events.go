@@ -65,6 +65,13 @@ type LLMStepInfo struct {
 	Thinking string
 	// Iteration is the 0-based loop iteration (see LLMRequestInfo.Iteration).
 	Iteration int
+	// Provider names the slot the loop's client was resolved from
+	// (GenerationOptions.Provider, the servingProvider word): the same
+	// provider word the delegate events carry, so a per-step observation
+	// joins the credential plan on the loop's own answer instead of
+	// re-deriving one from the model spec. Empty when the loop builder
+	// stamped none (an older runner binary, a relay predating the field).
+	Provider string
 }
 
 // ToolCallEntry describes a single tool call within a step.
@@ -395,9 +402,11 @@ func applyHooks(nodeID string, iteration int, h EventHooks, opts *GenerationOpti
 	}
 	if h.OnLLMStepFinish != nil {
 		fn := h.OnLLMStepFinish
+		provider := opts.Provider
 		opts.OnStepFinish = func(step StepResult) {
 			li := toLLMStepInfo(step)
 			li.Iteration = iteration
+			li.Provider = provider
 			fn(nodeID, li)
 		}
 	}

@@ -448,19 +448,41 @@ func providerLabel(p string) string {
 
 // servingProvider names the provider of the route a chain element ran: the
 // effective hint the build resolved (RouteProviderHint's GLM→zai minting
-// included), and on claw — which routes on the model spec and leaves the
-// hint empty — the provider the spec pins (zai for `anthropic/glm-*`).
+// included), and on claw — which routes on the model spec — the provider
+// the spec pins (zai for `anthropic/glm-*`).
+//
+// On claw the prefix answers OVER the hint: the registry reads the hint at
+// exactly one switch (forcing Anthropic-direct for models Anthropic serves)
+// and never lets it name a different slot than the spec's own — the
+// credential crossing forwards no hint-named slot either — so a hint whose
+// value differs from the prefix describes a spend claw never makes. The
+// hint answers only for a spec that names no prefix (which claw refuses at
+// Execute, so the word is inert there).
 // "" when the route deferred to the wire's default precedence: what served
 // there is a fact of the credential the process held, which the session
 // fingerprint reports on the backends that have one.
 func servingProvider(backendName string, task *delegate.Task) string {
-	if task.ProviderHint != "" {
-		return task.ProviderHint
-	}
+	hint := strings.ToLower(strings.TrimSpace(task.ProviderHint))
 	if backendName == delegate.BackendClaw {
 		if p := clawPinnedProvider(task.Model); p.Valid() {
 			return string(p)
 		}
+		return hint
+	}
+	if hint != "" {
+		return task.ProviderHint
+	}
+	return ""
+}
+
+// clawSpecProvider is the provider word for a HINT-LESS claw generation —
+// the human node's LLM half, the review companion, a subagent loop: the
+// spec's own pin, GLM folded (clawPinnedProvider). It is servingProvider's
+// answer for a task that names no hint, so the step events those loops
+// emit carry the same word a node's own loop stamps.
+func clawSpecProvider(spec string) string {
+	if p := clawPinnedProvider(spec); p.Valid() {
+		return string(p)
 	}
 	return ""
 }

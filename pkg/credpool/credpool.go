@@ -346,8 +346,11 @@ type Pledge struct {
 	// books against your ledger's ceilings is the slice that ran on YOUR
 	// credential: the run's report carries a per-credential table (#2288)
 	// and the lease books only its own fingerprint's share — a rung the
-	// fallback never fired on books nothing. On a whole-bundle run every
-	// credential is the pool's, so the whole attempt books, as before.
+	// fallback never fired on books nothing. That slicing assumes the
+	// publisher read every route the run may take: a walk it could not
+	// read (a template it cannot resolve, a provider outside its
+	// vocabulary) stamps no plan, and the whole attempt books — the
+	// coarse whole-attempt booking, as on a whole-bundle run.
 	FallbackUse bool `bson:"fallback_use,omitempty" json:"fallback_use,omitempty"`
 	// CooldownUntil holds the pledge out of the pool until the provider's
 	// quota window resets. Set from ErrRateLimited.ResetAt.

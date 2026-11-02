@@ -50,9 +50,16 @@ const PlanKeySep = "|"
 // own credentials (RunBundle's fingerprint maps, mirrored into
 // Credentials.Fingerprints at claim) and the lease carries, so producer
 // and consumer meet in one space. The run-level fallback chain names its
-// providers on no node of its own (`run-fallback#<stage>` sites): its
-// providers land on EVERY node that has a route of its own, which is how
-// ir.ApplyRunFallback applies the chain.
+// providers on no node of its own (`run-fallback#<stage>` sites): the
+// derivation folds it onto EVERY node that has a site of its own — a
+// superset of where ir.ApplyRunFallback actually lands the chain (agent
+// nodes declaring no routes of their own; a judge, or an agent with
+// authored `fallbacks:`, never takes it). The extra rows stay inert: an
+// observation joins on the provider its serving element resolved, which a
+// node the chain never reached names only from its own routes, and a
+// twice-funded chain provider refuses the plan whole — the conservative
+// direction. Spreading wider than the application is a booking-safe
+// over-claim, never a misattribution.
 func CredentialPlan(res ProviderResolution, bundle secrets.RunBundle) map[string]string {
 	if !res.NarrowSafe || len(res.Sites) == 0 {
 		return nil

@@ -448,6 +448,15 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 		"finish_reason": step.FinishReason,
 		"tool_calls":    len(step.ToolCalls),
 	}
+	// The slot the loop's client was resolved from — the delegate events'
+	// own `provider` word, so a per-step observation (the only one a priced
+	// claw loop leaves) joins the credential plan on the loop's answer
+	// instead of a re-derivation from the model spec. Omitted when empty so
+	// observers tell "unknown" from a measured word by the key's absence —
+	// the putDelegateModelFields convention.
+	if step.Provider != "" {
+		data["provider"] = step.Provider
+	}
 	if step.CacheReadTokens > 0 {
 		data["cache_read_tokens"] = step.CacheReadTokens
 	}

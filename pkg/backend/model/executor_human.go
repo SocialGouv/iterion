@@ -67,7 +67,8 @@ func (e *ClawExecutor) executeHumanLLMWithSpend(ctx context.Context, node *ir.Hu
 
 	// Build GenerationOptions.
 	genOpts := GenerationOptions{
-		Model: modelSpec,
+		Model:    modelSpec,
+		Provider: clawSpecProvider(modelSpec),
 	}
 
 	// Reasoning effort (dynamic override from input, then static node property).
