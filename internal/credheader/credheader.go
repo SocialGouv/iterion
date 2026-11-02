@@ -78,6 +78,25 @@ func CarriesName(raw, name string) bool {
 	return false
 }
 
+// LineValue returns the value of the LAST line whose header NAME is name.
+// The CLI applies the block per line into an http.Header, last write wins,
+// so a later line of the same name is the one the request carries — the
+// same order that puts the whole block over every route's own auth. The
+// value runs from the first colon, trimmed of the space around it, as the
+// CLI's own parser reads it (claw's ParseCustomHeaders). ok=false when raw
+// holds no line of that name, or one with an empty value — nothing the
+// request would carry.
+func LineValue(raw, name string) (value string, ok bool) {
+	for _, line := range strings.Split(raw, "\n") {
+		lineName, lineValue, found := headerLine(line)
+		if !found || !strings.EqualFold(lineName, strings.TrimSpace(name)) {
+			continue
+		}
+		value, ok = lineValue, true
+	}
+	return value, ok && value != ""
+}
+
 // StripCredentialLines returns raw without the lines whose header name
 // authenticates, and the names it refused — sorted, deduplicated, lower-case,
 // and the NAMES only: the value of such a line IS the credential, so it never
@@ -107,18 +126,25 @@ func StripCredentialLines(raw string) (kept string, refused []string) {
 	return strings.Join(keptLines, "\n"), refused
 }
 
-// headerLineName reads the header name a line declares, in the CLI's format:
-// the text before the first colon, trimmed of space and of a \r line ending.
-// Reports false for a line with no name — a blank line, a comment, a line with
-// no colon — which this package never judges and never drops.
-func headerLineName(line string) (string, bool) {
-	name, _, found := strings.Cut(strings.TrimSpace(strings.TrimSuffix(line, "\r")), ":")
+// headerLine reads the "Name: Value" pair a line declares, in the CLI's
+// format: the text before the first colon is the name, trimmed of space and
+// of a \r line ending; the text after it, trimmed likewise, is the value.
+// Reports false for a line with no name — a blank line, a comment, a line
+// with no colon — which this package never judges and never drops.
+func headerLine(line string) (name, value string, ok bool) {
+	rawName, value, found := strings.Cut(strings.TrimSpace(strings.TrimSuffix(line, "\r")), ":")
 	if !found {
-		return "", false
+		return "", "", false
 	}
-	name = strings.TrimSpace(name)
+	name = strings.TrimSpace(rawName)
 	if name == "" {
-		return "", false
+		return "", "", false
 	}
-	return name, true
+	return name, strings.TrimSpace(value), true
+}
+
+// headerLineName reads the header name a line declares, in the CLI's format.
+func headerLineName(line string) (string, bool) {
+	name, _, ok := headerLine(line)
+	return name, ok
 }

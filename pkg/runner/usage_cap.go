@@ -275,7 +275,7 @@ func (k runCredKeys) slotForSource(source string) string {
 			return string(secrets.OAuthKindClaudeCode)
 		}
 		return ""
-	case source == "anthropic-env" || strings.HasPrefix(source, "anthropic-env:"):
+	case delegate.IsAmbientSource(source):
 		return ""
 	}
 	_, slot := k.firstHeld()

@@ -162,6 +162,34 @@ func TestCarriesName_ReadsTheNameAlone(t *testing.T) {
 	}
 }
 
+// LineValue answers the value the request would carry: the LAST line of the
+// name wins (the CLI applies the block per line, last write wins), trimmed
+// of the space around it; a block holding none, or one whose value is
+// empty, answers ok=false — nothing the request would carry.
+func TestLineValue_LastLineOfTheNameWins(t *testing.T) {
+	cases := []struct {
+		raw   string
+		want  string
+		wantO bool
+	}{
+		{"Authorization: Bearer sk-x", "Bearer sk-x", true},
+		{"Authorization:  Bearer  sk-x  ", "Bearer  sk-x", true},
+		{"X-Tenant: acme\nAuthorization: Bearer first\nX-Note: n\nAuthorization: Bearer second", "Bearer second", true},
+		{"authorization: bearer sk-x", "bearer sk-x", true},
+		{"X-Tenant: acme", "", false},
+		{"Authorization:", "", false},
+		{"Authorization:   ", "", false},
+		{"Authorization", "", false},
+		{"", "", false},
+	}
+	for _, tc := range cases {
+		got, ok := credheader.LineValue(tc.raw, credheader.NameAuthorization)
+		if got != tc.want || ok != tc.wantO {
+			t.Errorf("LineValue(%q) = %q, %v, want %q, %v", tc.raw, got, ok, tc.want, tc.wantO)
+		}
+	}
+}
+
 // The name set is the subject of the vendored-producer guard in
 // pkg/backend/model: keep it non-empty and lower-case here, or that guard
 // compares against nothing.

@@ -78,7 +78,9 @@ const FacadeSlotEnvKey = "ITERION_FACADE_SLOT"
 // of the credential a spawn inherits where the resolver bound no route: the
 // pod's ambient key on a host or inside a sandbox, a node's own env entry
 // over either. anthropicFingerprintEnvForTask writes it into the label env
-// only — never into a spawn env — so providerFingerprint renders the meter
+// only — never into a spawn env with a value (the resolver's pin walk clears
+// it there, mergeCmdEnv reading "" as unset, like its two sibling markers) —
+// so providerFingerprint renders the meter
 // the session will actually spend, and the pre-flight (AnthropicRouteSource)
 // renders the same one from the same map. The value is a
 // secrets.FingerprintSHA256 digest: the label it feeds rides run records and
@@ -835,25 +837,63 @@ func ambientCredChannels(credEnv, selected map[string]string, sandboxed bool) []
 	return out
 }
 
-// ambientCredentialValue is the credential a spawn authenticates with where
-// the resolver bound no route of its own: the pod's inherited env on a host
-// spawn, the layer ambientAnthropicEnvForSandbox forwards on a sandboxed one,
-// a node's own ExtraEnv entry over either. The CLI resolves these variables
-// in ambientCredentialChannels' order, and a cloud-provider switch set ON
-// outranks every one of them — there the credential is a cloud account's and
-// no variable here names one. "" when no inherited variable names the
-// credential the spawn spends: nothing inherited at all — its "Not logged
-// in" is a refusal, not an account — or a cloud mode answering instead.
+// ambientCredentialValue is the credential-set digest a spawn authenticates
+// with where the resolver bound no route of its own: the pod's inherited env
+// on a host spawn, the layer ambientAnthropicEnvForSandbox forwards on a
+// sandboxed one, a node's own ExtraEnv entry over either. The wire is not a
+// precedence: a key and a bearer both live go out together as x-api-key AND
+// Authorization (ambientCredChannels names the state), and an Authorization
+// line in ANTHROPIC_CUSTOM_HEADERS rides over every route's own auth — so
+// the digest names the SET, in ambientCredentialChannels' order with the
+// header credential last, and a channel appearing or leaving renders a
+// different meter. A single live channel digests its bare value, the shape
+// sessions already carry. "" when no inherited credential names the spend:
+// nothing inherited at all — its "Not logged in" is a refusal, not an
+// account — or a cloud mode answering instead.
 func ambientCredentialValue(env map[string]string, sandboxed bool) string {
 	if on, _ := spawnCloudProviderSwitches(env, sandboxed); len(on) > 0 {
 		return ""
 	}
+	pairs := make([][2]string, 0, len(ambientCredentialChannels)+1)
 	for _, k := range ambientCredentialChannels {
 		if v := spawnEnvValue(env, k, sandboxed); v != "" {
-			return v
+			pairs = append(pairs, [2]string{k, v})
 		}
 	}
-	return ""
+	if v, ok := ambientAuthorizationValue(env, sandboxed); ok {
+		pairs = append(pairs, [2]string{"ANTHROPIC_CUSTOM_HEADERS", v})
+	}
+	switch len(pairs) {
+	case 0:
+		return ""
+	case 1:
+		return pairs[0][1]
+	default:
+		return ambientCredentialSet(pairs)
+	}
+}
+
+// ambientAuthorizationValue is the credential an ambient ANTHROPIC_CUSTOM_HEADERS
+// block authenticates with: the value of its last Authorization line
+// (credheader.LineValue — the CLI applies the block per line, last write
+// wins). ok=false when the block carries none, or one with an empty value —
+// nothing the request would carry.
+func ambientAuthorizationValue(env map[string]string, sandboxed bool) (string, bool) {
+	return credheader.LineValue(spawnEnvValue(env, "ANTHROPIC_CUSTOM_HEADERS", sandboxed), credheader.NameAuthorization)
+}
+
+// ambientCredentialSet renders a multi-channel live set as one string the
+// fingerprint digests: each channel length-prefixed, so two different sets
+// cannot render the same text even where a value embeds a line of the
+// other's shape. The request carries every one of these credentials
+// together, so the meter keys the set — not the winner of a precedence the
+// wire does not apply.
+func ambientCredentialSet(pairs [][2]string) string {
+	var b strings.Builder
+	for _, kv := range pairs {
+		fmt.Fprintf(&b, "%s=%d:%s\n", kv[0], len(kv[1]), kv[1])
+	}
+	return b.String()
 }
 
 // ambientSourceFingerprint is the meter-side identity of that inherited
@@ -1433,6 +1473,17 @@ func AnthropicWireFacadeSlot(source string) string {
 	return slot
 }
 
+// IsAmbientSource reports that a routing label belongs to the
+// ambient-credential family — the bare "anthropic-env" or a fingerprinted
+// member ("anthropic-env:<fingerprint>[:<base-url>]"). The one spelling of
+// the family outside this package: readers that branch on the family use it
+// instead of restating the prefix (two spellings of a wire shape is how a
+// reading ends up charged to the wrong key). AmbientSourceFingerprint is the
+// narrow half — only the fingerprinted members parse to a credential.
+func IsAmbientSource(source string) bool {
+	return source == ambientSourceFamily || strings.HasPrefix(source, ambientSourcePrefix)
+}
+
 // AmbientSourceFingerprint reads the ambient credential's fingerprint out of
 // a routing label, ok=false for every other shape — the bare "anthropic-env"
 // (a session whose spend no inherited credential names: nothing inherited at
@@ -1442,15 +1493,8 @@ func AnthropicWireFacadeSlot(source string) string {
 // credential is one account for the whole deployment, and the fingerprint is
 // the only fact of it a label carries.
 func AmbientSourceFingerprint(source string) (string, bool) {
-	rest, ok := strings.CutPrefix(source, ambientSourcePrefix)
-	if !ok {
-		return "", false
-	}
-	fp, _, _ := strings.Cut(rest, ":")
-	if fp == "" {
-		return "", false
-	}
-	return fp, true
+	fp, _, _ := splitAmbientLabel(source)
+	return fp, fp != ""
 }
 
 // splitFacadeLabel parses a facade routing label into the slot that built it
@@ -1589,10 +1633,14 @@ func anthropicCredRouteForTask(ctx context.Context, task Task) (env, selected ma
 		env[kv[0]] = kv[1]
 	}
 	// These labels belong to the resolver, never to process provisioning.
-	// Otherwise an extra env entry can forge a usage-meter slot or turn a
-	// funded route into the "no credential" suppression sentinel.
+	// Otherwise an extra env entry can forge a usage-meter slot, forge the
+	// ambient fingerprint the meter keys on, or turn a funded route into the
+	// "no credential" suppression sentinel. anthropicFingerprintEnvForTask
+	// writes the ambient marker back when an inherited credential answers;
+	// here it is cleared so a forged value cannot survive where none does.
 	env[FacadeSlotEnvKey] = ""
 	env[ForfaitSuppressedEnvKey] = ""
+	env[AmbientCredFPEnvKey] = ""
 	if selected[FacadeSlotEnvKey] == "" && (selected["ANTHROPIC_API_KEY"] != "" || selected["CLAUDE_CONFIG_DIR"] != "") {
 		// A bound direct credential owns its route as a whole. Applying just
 		// its key after ExtraEnv could restore a context key at an unrelated

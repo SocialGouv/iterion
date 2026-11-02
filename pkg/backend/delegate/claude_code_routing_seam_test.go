@@ -183,7 +183,11 @@ func assertRoutingPinned(t *testing.T, label string, s routingSpawn, argvs ...st
 func clearRoutingEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range append(slices.Clone(wantRoutingKeys), append(routingCredentialKeys,
-		"CLAUDE_CONFIG_DIR", "ZAI_API_KEY", "MOONSHOT_API_KEY", "MOONSHOT_BASE_URL", FacadeSlotEnvKey, ForfaitSuppressedEnvKey)...) {
+		// ANTHROPIC_CUSTOM_HEADERS is a routing PIN (ClaudeCodeRoutingEnv),
+		// not a settings-refused credential — but the ambient label reads an
+		// Authorization line in it on a host spawn, so a test that answers a
+		// label starts from it unset too.
+		"CLAUDE_CONFIG_DIR", "ZAI_API_KEY", "MOONSHOT_API_KEY", "MOONSHOT_BASE_URL", FacadeSlotEnvKey, ForfaitSuppressedEnvKey, "ANTHROPIC_CUSTOM_HEADERS")...) {
 		t.Setenv(key, "")
 		if err := os.Unsetenv(key); err != nil {
 			t.Fatal(err)

@@ -359,7 +359,7 @@ func slotOfSource(source string) (slot string, named bool) {
 		return string(secrets.ProviderAnthropic), true
 	case source == "anthropic-oauth":
 		return string(secrets.OAuthKindClaudeCode), true
-	case source == "anthropic-env" || strings.HasPrefix(source, "anthropic-env:"):
+	case delegate.IsAmbientSource(source):
 		return "", true
 	}
 	return "", false
