@@ -163,6 +163,10 @@ var classification = map[store.FailureCode]Disposition{
 	store.FailureSchemaUnusable:         DispositionDeterministic,
 	store.FailureProviderRequestInvalid: DispositionDeterministic,
 	store.FailureCapabilityUnsupported:  DispositionDeterministic,
+	// The node's declared grant was refused (ADR-151): the same IR meets
+	// the same `capabilities:` on every attempt, so a retry hears the same
+	// no — and the cure is an author's declaration, not a redelivery.
+	store.FailureCapabilityDenied: DispositionDeterministic,
 	// The workflow requested an EXPLICIT sandbox mode (`sandbox: { mode:
 	// inline, image/build: … }`) and the host has no driver that can
 	// honour it. Every redelivery reaches the same absent runtime — a

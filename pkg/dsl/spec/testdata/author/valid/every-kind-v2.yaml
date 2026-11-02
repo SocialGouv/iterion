@@ -295,6 +295,7 @@ nodes:
     permission: off
     needs: gpu
     parallel_safe: true
+    capabilities: [board.read]
     goal: The tag exists
     postcondition: git rev-parse --verify v1
     policy: recover

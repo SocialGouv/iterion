@@ -32,6 +32,15 @@ const (
 // what the board's own `capabilities:` documentation cannot do for the
 // author. boardops.allTools must carry exactly these names and pins — the
 // conformance test in that package holds the two tables to each other.
+// ConnectorID is the connector id the board's NATIVE action transport owns
+// (docs/adr/151, iterion#2834): the first segment of every `board.*` action
+// id a tool node writes, e.g. `board.issue.list`. It lives in this leaf for
+// the same reason the capability names do: the DSL compiler reads it to
+// know a `board.*` action needs no `connection:` (a native connector holds
+// no credential), and reading one string must not link the dispatcher into
+// every binary that compiles a .bot.
+const ConnectorID = "board"
+
 var ToolCapability = map[string]string{
 	"add_labels":       BoardLabel,
 	"assign_issue":     BoardAssign,

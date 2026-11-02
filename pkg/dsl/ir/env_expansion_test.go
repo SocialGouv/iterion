@@ -259,6 +259,7 @@ tool gate:
   permission: off
   needs: gpu
   parallel_safe: true
+  capabilities: [board.read]
   goal: "the tag exists"
   postcondition: "git rev-parse --verify v1"
   policy: recover

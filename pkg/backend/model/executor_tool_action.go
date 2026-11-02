@@ -50,6 +50,17 @@ type ConnectorResolver interface {
 
 // executeToolNodeAction runs a connector operation.
 func (e *ClawExecutor) executeToolNodeAction(ctx context.Context, node *ir.ToolNode, input map[string]any) (map[string]any, error) {
+	// A registered NATIVE transport owns its connector outright (ADR-151):
+	// the board's facade executes in process against the instance's store,
+	// with no credential, no base URL and no catalog resolution — which is
+	// also why its node declares no `connection:`. The lookup is by the
+	// id's first segment and nothing else; HTTP below stays the default.
+	if transport := e.actionTransportFor(node.Action); transport != nil {
+		if err := e.checkToolNodePolicy(ctx, node, actionToolName(node), actionToolName(node), actionToolName(node)); err != nil {
+			return nil, err
+		}
+		return e.executeToolNodeNativeAction(ctx, node, transport, input)
+	}
 	if e.connectors == nil {
 		// Explicit rather than a silent no-op: a bot that declares an action
 		// and runs somewhere with no catalog wired must say so, not report a

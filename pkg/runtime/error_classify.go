@@ -34,6 +34,16 @@ func ClassifyError(err error) ErrorCode {
 	if errors.As(err, &rerr) {
 		return rerr.Code
 	}
+	// A refused GRANT, read by interface before the tool-failure arm below
+	// and before every needle: a native action's denial reaches here wrapped
+	// as a tool node's failure, and the same IR meets the same
+	// `capabilities:` on every attempt, so the catch-all's one retry would
+	// only buy the same refusal. The interface — not a concrete type —
+	// because the engine must not learn what a transport is
+	// (CapabilityDenial, ADR-151).
+	if IsCapabilityDenial(err) {
+		return ErrCodeCapabilityDenied
+	}
 	// A tool node's failure, checked by TYPE before any provider reading:
 	// its stderr is data, and an HTTP-looking line in it ("status code 400",
 	// "error 401") says nothing about the model provider. Every execution

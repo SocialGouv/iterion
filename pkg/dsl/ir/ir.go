@@ -407,6 +407,13 @@ type ToolNode struct {
 	Compress      string       // compress output-compression mode: on|ultra|off ("" = inherit)
 	Permission    string       // permission gate mode override: off|ask|deny ("" = inherit workflow)
 
+	// Capabilities are the host capabilities granted to the node (ADR-151,
+	// #78=A) — declared exactly like on an agent/judge: nil = inherit the
+	// workflow's, a declared `capabilities: []` = no grant (#1801). The
+	// `action:` recipe's native transport reads them; a command:/script:
+	// node has no consumer for them (C329 warns).
+	Capabilities []string
+
 	// Verified Action quad (ADR-044). All optional; a node with an empty
 	// Postcondition runs the recipe with exit-code = success (unchanged).
 	Goal          string        // natural-language outcome (fuel for recovery rungs)

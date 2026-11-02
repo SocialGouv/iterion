@@ -479,4 +479,8 @@ const (
 	// while the run asks its guard: a launch that holds no grant renders
 	// the empty value and is not refused.
 	DiagMintedVarInScriptBody DiagCode = "C331" // a `{{vars.x}}` naming a server-minted credential (the forge publish grant) in a tool node's `script:` body — refused at run before the temp file exists (warning)
+
+	DiagToolCapabilitiesInert DiagCode = "C332" // a tool node declares `capabilities:` but no native action reads it (a shell recipe, or an HTTP action authorized by its connection) — only the action: recipe's native transport reads the grant (ADR-151) (warning)
+
+	DiagActionConnectionOnNative DiagCode = "C333" // `connection:` on an action whose connector is native and credential-free (board.*, ADR-151) — nothing reads the alias (warning)
 )

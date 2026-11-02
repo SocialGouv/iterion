@@ -176,6 +176,18 @@ func CapabilityUnsupportedRecipe() Recipe {
 	})
 }
 
+// CapabilityDeniedRecipe: no retry at all. The node's declared grant was
+// refused — the same IR meets the same `capabilities:` on every attempt, so
+// a re-run hears the same no. The cure is the declaration, then a resume.
+func CapabilityDeniedRecipe() Recipe {
+	return RecipeFunc(func(_ context.Context, _ *runtime.RuntimeError, _ int) Action {
+		return Action{
+			Kind:   ActionFailTerminal,
+			Reason: "the node named something its `capabilities:` grant does not open — declare the capability on the node (or the workflow), then resume",
+		}
+	})
+}
+
 // ModelUnavailableRecipe: no retry at all. The provider answered about
 // the MODEL, not about this request, so a second call from the same
 // image asks the same question and is told the same thing — and the
@@ -369,6 +381,7 @@ func DefaultRecipes() map[runtime.ErrorCode]Recipe {
 			return Action{Kind: ActionFailTerminal, Reason: runtime.ProviderRequestRemedy(err)}
 		}),
 		runtime.ErrCodeCapabilityUnsupported: CapabilityUnsupportedRecipe(),
+		runtime.ErrCodeCapabilityDenied:      CapabilityDeniedRecipe(),
 		runtime.ErrCodeAmbiguousEffect:       AmbiguousEffectRecipe(),
 	}
 }

@@ -1695,6 +1695,7 @@ func (c *compiler) compileTools() {
 			Compress:      t.Compress,
 			Permission:    t.Permission,
 			Needs:         t.Needs,
+			Capabilities:  t.Capabilities,
 			Goal:          t.Goal,
 			Postcondition: t.Postcondition,
 			PostcondRefs:  postcondRefs,

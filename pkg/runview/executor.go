@@ -327,6 +327,15 @@ type ExecutorSpec struct {
 	// tenant chose, so an unguarded client is a way to reach a metadata
 	// endpoint from inside the deployment.
 	ConnectorClient *http.Client
+
+	// ActionTransports are the NATIVE action transports this run executes in
+	// process (ADR-151, iterion#2834) — the board's facade over the
+	// instance's own store being the first. A surface that holds the store
+	// builds one with NativeBoardTransport; a surface that does not (the
+	// golden recorder) leaves this empty, and a workflow whose board action
+	// then reaches it is refused at admission with the wiring named, never
+	// reported as a success the node never performed.
+	ActionTransports []model.ActionTransport
 }
 
 // BuildExecutor wires up the default ClawExecutor: registry, default
@@ -435,7 +444,22 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// refused for all of them. Wiring the refusal at each launch surface
 	// instead is how the catalog became a capability some surfaces had and
 	// others silently lacked (LocalConnectors' own doc).
-	if err := admitConnectorActions(spec.Workflow, spec.Connectors); err != nil {
+	//
+	// The NATIVE board transport (ADR-151) is served by the fs store this
+	// same function opens below for the claw board tools whenever a StoreDir
+	// is set — so a local surface owes nothing for a board.* action, and the
+	// admission check must see that default or it would refuse the very runs
+	// the wiring serves. The placeholder carries no store (admission reads
+	// only its facade Package); the REAL registration happens where the store
+	// is opened. An explicit ActionTransports entry — the cloud runner's
+	// Mongo board (#2465) — always wins over the fs default.
+	admitTransports := spec.ActionTransports
+	boardDefaultApplies := spec.StoreDir != "" && WorkflowHasNativeBoardAction(spec.Workflow) &&
+		!actionTransportsOwn(spec.ActionTransports, boardops.ConnectorID)
+	if boardDefaultApplies {
+		admitTransports = append(admitTransports, boardops.NewActionTransport(nil, boardops.CallEnv{}))
+	}
+	if err := admitConnectorActions(spec.Workflow, spec.Connectors, admitTransports); err != nil {
 		return nil, err
 	}
 	if spec.Logger == nil {
@@ -706,6 +730,9 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	if spec.Connectors != nil {
 		opts = append(opts, model.WithConnectors(spec.Connectors, spec.ConnectorClient))
 	}
+	if len(spec.ActionTransports) > 0 {
+		opts = append(opts, model.WithActionTransports(spec.ActionTransports...))
+	}
 	usageGuard, err := resolveUsageGuard(spec)
 	if err != nil {
 		return nil, err
@@ -804,6 +831,15 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 			}
 			if err := tool.RegisterClawBoardTools(toolReg, boardCfg); err != nil {
 				spec.Logger.Warn("runview: RegisterClawBoardTools: %v", err)
+			}
+			// The board's NATIVE action transport (ADR-151): same store the
+			// claw tools just got, so a `tool … action: board.*` node and an
+			// agent's board MCP call read ONE board. An explicit
+			// ActionTransports entry — the cloud runner's Mongo board — was
+			// already wired above and wins: the fs default yields to it.
+			if boardDefaultApplies {
+				opts = append(opts, model.WithActionTransports(
+					NativeBoardTransport(ns, resolveSourceIssueID(spec))))
 			}
 		}
 	}

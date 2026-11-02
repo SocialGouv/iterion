@@ -228,10 +228,11 @@ func strList(vals []string) *yaml.Node {
 
 // declaredList is strList for the lists whose EMPTY form is a declared
 // value — an agent's or judge's `tools:` (toolcatalog.ToolsDeclared), and
-// the `capabilities:` of an agent, judge or workflow (#1801): nil is absent
-// and writes nothing, an empty slice is the author saying "none" and writes
-// `[]`, as the .bot writes it back. Dropping the line would turn a closed
-// node into an open one — or a declared no-grant back into an inheritance.
+// the `capabilities:` of an agent, judge, tool node (ADR-151) or workflow
+// (#1801): nil is absent and writes nothing, an empty slice is the author
+// saying "none" and writes `[]`, as the .bot writes it back. Dropping the
+// line would turn a closed node into an open one — or a declared no-grant
+// back into an inheritance.
 func declaredList(vals []string) *yaml.Node {
 	if vals == nil {
 		return nil
@@ -1311,6 +1312,11 @@ func (w *writer) tool(d *ast.ToolNodeDecl) *yaml.Node {
 	p.str("compress", d.Compress)
 	p.str("permission", d.Permission)
 	p.set("needs", identOrList(d.Needs))
+	// Same declared-list semantics as an agent/judge (ADR-151): nil writes
+	// nothing (inherit the workflow's), a declared `capabilities: []` writes
+	// `[]` back — dropping the line would turn a declared no-grant into an
+	// inheritance (#1801).
+	p.set("capabilities", declaredList(d.Capabilities))
 	p.bool("parallel_safe", d.ParallelSafe)
 	p.str("goal", d.Goal)
 	p.str("postcondition", d.Postcondition)

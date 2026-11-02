@@ -541,6 +541,14 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 	case TokenNeeds:
 		p.expect(TokenColon)
 		td.Needs = p.parseNeedsList()
+	case TokenCapabilities:
+		// A tool node declares its host capabilities like an agent or judge
+		// (ADR-151, #78=A): one authorization surface, never a second regime.
+		// The grant is read by the `action:` recipe's native transport (a
+		// board.* action gates on it exactly like the board MCP tools do);
+		// on a command:/script: node nothing consumes it and C329 says so.
+		p.expect(TokenColon)
+		td.Capabilities = p.parseDeclaredCapabilityList()
 	case TokenIdent:
 		// Verified Action quad (ADR-044). These property names are not
 		// reserved keywords, so they arrive as plain identifiers (the

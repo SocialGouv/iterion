@@ -3591,6 +3591,25 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		Inbox:    &model.StoreInboxBinder{Store: r.cfg.Store},
 		AsyncAsk: &model.StoreAsyncAskBinder{Store: r.cfg.Store},
 	}
+	// The board's NATIVE action transport (ADR-151, #2834): on the runner
+	// the instance's board is the TENANT's Mongo store (#2465), resolved
+	// through the same Config.BoardFor the sandboxed host-MCP transport
+	// uses — never the pod-local fs store BuildExecutor would default to
+	// (it yields to this explicit registration). The run's tenant comes
+	// from the MESSAGE, the authoritative launch fact — same doctrine as
+	// the token pin below. And a runner that CANNOT resolve that store
+	// refuses the run here, at admission: letting the fs default serve a
+	// pod-local board that is not the instance's would answer reads with
+	// an empty board and nobody would learn why (#2465's whole point).
+	if runview.WorkflowHasNativeBoardAction(wf) {
+		if r.cfg.BoardFor == nil || msg.TenantID == "" {
+			return zero, nil, fmt.Errorf("runner: workflow declares a native board action (board.*) but this runner resolves no tenant board (Config.BoardFor wired: %t, run tenant %q) — refusing rather than reading a pod-local board that is not the instance's",
+				r.cfg.BoardFor != nil, msg.TenantID)
+		}
+		if bt := runview.NativeBoardTransport(r.cfg.BoardFor(msg.TenantID), ""); bt != nil {
+			spec.ActionTransports = append(spec.ActionTransports, bt)
+		}
+	}
 	// The sandboxed host-MCP transport (C082, #2632): mint a per-node token
 	// scoped to the node's capabilities and pinned to the run's tenant — the
 	// pin comes from the MESSAGE (the authoritative launch fact, same

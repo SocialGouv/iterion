@@ -507,6 +507,7 @@ var Kinds = append([]Kind{
 			prop("permission", Ident, "Parsed for symmetry but NOT enforced on a tool node (C112 warns): the command runs directly, the gate is an agent's"),
 			pNeeds,
 			prop("parallel_safe", Bool, "Declares the node safe to run beside a mutating branch"),
+			prop("capabilities", ToolList, "Host capabilities granted to the node, exactly as on an agent/judge (ADR-151, C080/C081): `capabilities: []` grants NOTHING (overrides the workflow's), no line inherits it. Read by the action: recipe's native transport — a board.* action gates on it; on a command:/script: node the list is inert (C329)"),
 			prop("goal", String, "Verified action: what the command is for, in one line"),
 			prop("postcondition", String, "Verified action: command whose exit code is the truth oracle at every rung"),
 			checked("policy", "Verified action: required (default), recover or best_effort (C103–C106)", "required", "recover", "best_effort"),

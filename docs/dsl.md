@@ -525,7 +525,7 @@ tool run_tests:
   needs: [test_slot]
 ```
 
-`command` and `script` are mutually exclusive. A script adds `language: js|py|sh|bash` (default `sh`). Tools also accept `input`, `output`, `publish`, `artifact_labels`, `deliverables`, `await`, `sandbox`, `compress`, `permission`, `needs`, and `env_expansion: braced | none` — what the engine expands in the node's bodies before they run ([the rule and the decline](#template-namespaces)).
+`command` and `script` are mutually exclusive. A script adds `language: js|py|sh|bash` (default `sh`). Tools also accept `input`, `output`, `publish`, `artifact_labels`, `deliverables`, `await`, `sandbox`, `compress`, `permission`, `needs`, `capabilities` (the host-capability grant — read by the `action:` recipe's native transport, inert on a shell recipe, [C329](references/diagnostics.md)), and `env_expansion: braced | none` — what the engine expands in the node's bodies before they run ([the rule and the decline](#template-namespaces)).
 
 **Declared deliverables.** `deliverables: ["report.md", "out/annex.html"]` names the files the node produces that the run collects and serves as downloads — workspace-relative paths, each served under its base name, the declared twin of the `[iterion] attachment=` line a tool prints ([attachments](attachments.md#a-node-declares-the-files-it-produces)). The compiler refuses a path the run could never collect ([C317](references/diagnostics.md)) and two entries one node would serve under the same name ([C318](references/diagnostics.md)). `agent` and `judge` nodes accept the same property; a `human` node's file comes from the operator's upload and a `compute` node writes none, so neither accepts it.
 
@@ -578,6 +578,19 @@ tool comment:
 ```
 
 `command:`, `script:` and `action:` are mutually exclusive — a node has exactly one answer to "how does this do its work". `action:` names an operation of a connector package (`<connector>.<resource>.<verb>`), `connection:` the binding that authenticates it, and each `params:` value renders the same `{{...}}` namespaces a command does, then coerces to the type the operation declares (so `"{{outputs.pick.number}}"` reaches an integer field as a number, not as `"42"`).
+
+**The native `board` connector needs no `connection:`** ([ADR-151](adr/151-board-actions-behind-the-action-seam.md)). A `board.*` action is executed by the engine itself against the instance's own kanban board — the fs store locally, the tenant's Mongo board on a cloud runner (#2465) — through a registered *native action transport*, not over HTTP, so there is no credential to name (a `connection:` line on one is inert and [C330](references/diagnostics.md) says so). What authorizes it is the same surface an agent uses: the node's **`capabilities:`** grant, which a tool node now declares exactly like an agent or judge — no line inherits the workflow's, a declared `capabilities: []` grants nothing (#1801). The transport hands the grant to the very `caps.Has` gate every board transport shares: one authorization surface, never a second regime (#78=A).
+
+```iter fragment
+tool filed_plan:
+  action: board.issue.list
+  capabilities: [board.read]
+  params:
+    label: "rgaa-audit"
+  output: board_plan
+```
+
+The facade is **read-only for now**: `board.issue.list` and `board.issue.get`, each `deterministic` with `effect: read`. The mutating verbs (`board.issue.create/label/transition`, …) are [#2834](https://github.com/SocialGouv/iterion/issues/2834)'s second lot; a workflow that names one is refused at admission with the exposed set listed, and a write today still goes through an agent/judge node's `board.*` capabilities. On a native action `retry:` is inert — the retry ladder's guards are HTTP-answer semantics, and a store refusal is not re-issued in a sleep loop. A plane that cannot serve the native board (a runner with no tenant store wired) refuses the run at admission rather than reading a pod-local board that is not the instance's.
 
 A parameter's name is the **vendor's**, not iterion's, so quote the ones that are not identifiers — `"user-id": 1`, `"status-types": "pull"`. The Forgejo package ships 22 of them, two of which are required path parameters.
 

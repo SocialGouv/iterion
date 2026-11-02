@@ -55,6 +55,11 @@ type ClawExecutor struct {
 	// (ADR-098). Nil means no catalog is wired, and an action node then fails
 	// EXPLICITLY rather than reporting a success it never performed.
 	connectors ConnectorResolver
+	// actionTransports are the registered NATIVE action transports (ADR-151):
+	// one per connector id they own. A `board.*` action resolves and executes
+	// through its registration instead of the HTTP path below — registration
+	// IS the seam (G110), so this map, never an `if` on the id.
+	actionTransports map[string]ActionTransport
 	// connectorClient is the guarded HTTP client every connector call goes
 	// through. A connector reaches hosts a tenant chose, so an unguarded
 	// client here would be a way to a metadata endpoint; nil is refused by

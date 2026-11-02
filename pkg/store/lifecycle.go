@@ -123,6 +123,14 @@ const (
 	// image, the backend, or `sandbox: none`.
 	FailureCapabilityUnsupported FailureCode = "CAPABILITY_UNSUPPORTED"
 
+	// FailureCapabilityDenied: the node named something its declared
+	// `capabilities:` grant does not open — a board verb without board.read
+	// on the tool node, the native action transport answering #78=A
+	// (ADR-151). Deterministic by construction: the same IR meets the same
+	// grant on every attempt, so no retry and no auto-resume can change the
+	// answer; the cure is the declaration, then a resume.
+	FailureCapabilityDenied FailureCode = "CAPABILITY_DENIED"
+
 	// FailureSandboxDriverUnavailable: an EXPLICIT sandbox mode was
 	// requested (a workflow's `sandbox:` block declaring `mode: inline`
 	// with an image / build) but no driver is available on this host —
@@ -317,6 +325,7 @@ var ReservedFailureCodes = []FailureCode{
 	FailureSchemaUnusable,
 	FailureProviderRequestInvalid,
 	FailureCapabilityUnsupported,
+	FailureCapabilityDenied,
 	FailureSandboxDriverUnavailable,
 	FailureSandboxCredentialUnreachable,
 	FailureCredentialAmbientRefused,

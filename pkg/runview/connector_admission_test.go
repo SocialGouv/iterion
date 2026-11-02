@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/connector/exec"
 	connspec "github.com/SocialGouv/iterion/pkg/connector/spec"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -89,7 +92,7 @@ func TestAdmissionRefusesOnlyTheUnservedCase(t *testing.T) {
 			if tc.wired {
 				connectors = stubResolver{}
 			}
-			err := admitConnectorActions(&ir.Workflow{Name: "canary", Nodes: tc.nodes}, connectors)
+			err := admitConnectorActions(&ir.Workflow{Name: "canary", Nodes: tc.nodes}, connectors, nil)
 			if tc.wantErr && err == nil {
 				t.Error("want a refusal")
 			}
@@ -161,7 +164,7 @@ func TestTheAdmissionRefusalHasExactlyOneWayOut(t *testing.T) {
 	} {
 		t.Run("value="+tc.value, func(t *testing.T) {
 			t.Setenv(ConnectorAdmissionEnv, tc.value)
-			err := admitConnectorActions(wf, nil)
+			err := admitConnectorActions(wf, nil, nil)
 			if tc.wantErr && err == nil {
 				t.Errorf("%s=%q must not lift the refusal", ConnectorAdmissionEnv, tc.value)
 			}
@@ -173,8 +176,114 @@ func TestTheAdmissionRefusalHasExactlyOneWayOut(t *testing.T) {
 	// And the refusal NAMES the variable, or the way out is one only its
 	// author can find.
 	t.Setenv(ConnectorAdmissionEnv, "")
-	err := admitConnectorActions(wf, nil)
+	err := admitConnectorActions(wf, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), ConnectorAdmissionEnv) {
 		t.Errorf("the refusal must name %s: %v", ConnectorAdmissionEnv, err)
+	}
+}
+
+// --- The native seam at admission (ADR-151, #2834) -------------------------
+
+// A native connector answers through NO catalog: without its registered
+// transport the refusal is a WIRING one, and it stays one even when an HTTP
+// catalog IS wired — installing a package cannot serve the instance's own
+// board.
+func TestANativeActionWithoutItsTransportIsAWiringRefusal(t *testing.T) {
+	board := &ir.ToolNode{Action: "board.issue.list", Capabilities: []string{"board.read"}}
+	board.ID = "plan"
+	wf := &ir.Workflow{Name: "canary", Nodes: map[string]ir.Node{"plan": board}}
+
+	for _, tc := range []struct {
+		name       string
+		connectors model.ConnectorResolver
+	}{
+		{"no catalog", nil},
+		{"catalog wired — a native id answers through none", stubResolver{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := admitConnectorActions(wf, tc.connectors, nil)
+			var missing *NativeTransportMissingError
+			if !errors.As(err, &missing) {
+				t.Fatalf("err = %T %v, want *NativeTransportMissingError", err, err)
+			}
+			for _, want := range []string{"plan", "board.issue.list", "ExecutorSpec.ActionTransports"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal must name %q: %v", want, err)
+				}
+			}
+		})
+	}
+}
+
+// Served is served: a registered transport answers for its connector, and a
+// verb the facade does NOT expose is refused with the set it does serve —
+// the read-only lot's boundary, said before the first node runs.
+func TestNativeAdmissionServedAndFacadeGap(t *testing.T) {
+	transport := boardops.NewActionTransport(nil, boardops.CallEnv{})
+
+	served := &ir.ToolNode{Action: "board.issue.get"}
+	served.ID = "get"
+	if err := admitConnectorActions(
+		&ir.Workflow{Name: "canary", Nodes: map[string]ir.Node{"get": served}},
+		nil, []model.ActionTransport{transport}); err != nil {
+		t.Fatalf("board.issue.get with its transport registered: %v", err)
+	}
+
+	future := &ir.ToolNode{Action: "board.issue.create"}
+	future.ID = "file"
+	err := admitConnectorActions(
+		&ir.Workflow{Name: "canary", Nodes: map[string]ir.Node{"file": future}},
+		nil, []model.ActionTransport{transport})
+	var gap *FacadeOperationError
+	if !errors.As(err, &gap) {
+		t.Fatalf("board.issue.create: err = %T %v, want *FacadeOperationError", err, err)
+	}
+	for _, want := range []string{"board.issue.create", "board.issue.list", "board.issue.get"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the facade-gap refusal must name %q: %v", want, err)
+		}
+	}
+}
+
+// The fs default: a LOCAL surface (StoreDir set) owes nothing for a board.*
+// action — BuildExecutor registers the transport over the store it opens for
+// the claw board tools, and admission sees that default. The run then reads
+// the instance's board end to end, with no catalog and no credential.
+func TestBuildExecutorServesABoardActionFromTheLocalStore(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	storeDir := t.TempDir()
+	board, err := native.NewStore(filepath.Join(storeDir, "dispatcher"))
+	if err != nil {
+		t.Fatalf("native.NewStore: %v", err)
+	}
+	defer board.Close()
+	if _, err := board.Create(native.Issue{Title: "on the instance board"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	node := &ir.ToolNode{Action: "board.issue.list", Capabilities: []string{"board.read"}}
+	node.ID = "plan"
+	exec, err := BuildExecutor(ExecutorSpec{
+		Ctx:      context.Background(),
+		Store:    st,
+		RunID:    "run-native-board",
+		StoreDir: storeDir,
+		Workflow: &ir.Workflow{Name: "canary", Nodes: map[string]ir.Node{"plan": node}},
+	})
+	if err != nil {
+		t.Fatalf("BuildExecutor: %v — the fs default must serve a board action on a local surface", err)
+	}
+	defer exec.Close()
+
+	out, err := exec.Execute(context.Background(), node, nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	items, _ := out["data"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("got %d issues, want the one the instance board holds", len(items))
 	}
 }

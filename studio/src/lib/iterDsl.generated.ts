@@ -493,6 +493,7 @@ export const iterDslPropertiesByKind = {
     "action",
     "artifact_labels",
     "await",
+    "capabilities",
     "command",
     "compress",
     "connection",

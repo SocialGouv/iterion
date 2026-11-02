@@ -90,6 +90,10 @@ const (
 	// Raised when a node's failure leaves a remote effect UNDECIDED — see
 	// the AmbiguousEffect interface below.
 	ErrCodeAmbiguousEffect = store.FailureAmbiguousEffect
+	// Raised when a node's declared grant was REFUSED — a capability the
+	// workflow never opted into (#78=A, ADR-151). Deterministic by
+	// definition: the same IR meets the same grant on every attempt.
+	ErrCodeCapabilityDenied = store.FailureCapabilityDenied
 )
 
 // AmbiguousEffect is implemented by an error whose operation may or may not
@@ -151,6 +155,38 @@ func IsAmbiguousEffect(err error) bool {
 		if wrapped.As(&one) && one != nil {
 			return IsAmbiguousEffect(one.Unwrap())
 		}
+	}
+	return false
+}
+
+// CapabilityDenial is implemented by an error whose cause is a REFUSED
+// grant: the node named something (a board verb, a host tool) its
+// `capabilities:` list does not open. The seam discipline is
+// AmbiguousEffect's: an interface any transport can implement — the board's
+// native facade today — without the engine learning what the transport is
+// (ADR-151), and one reading of it here so no call site drifts into its own
+// rule.
+//
+// The refusal is DETERMINISTIC: the same IR meets the same grant on every
+// attempt, so the classifier (pkg/runtime/recovery) fails it terminally
+// rather than re-running the node to hear the same no.
+type CapabilityDenial interface {
+	error
+	// CapabilityDenied reports whether the failure is a refused grant.
+	CapabilityDenied() bool
+}
+
+// IsCapabilityDenial reports whether err — or any error it wraps — is a
+// refused grant. A RuntimeError carrying the persisted code answers too, so
+// a denial reloaded from a run document classifies the same.
+func IsCapabilityDenial(err error) bool {
+	var denial CapabilityDenial
+	if errors.As(err, &denial) && denial.CapabilityDenied() {
+		return true
+	}
+	var rt *RuntimeError
+	if errors.As(err, &rt) && rt != nil && rt.Code == ErrCodeCapabilityDenied {
+		return true
 	}
 	return false
 }

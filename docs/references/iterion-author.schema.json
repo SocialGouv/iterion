@@ -1930,6 +1930,13 @@
             "best_effort"
           ]
         },
+        "capabilities": {
+          "description": "Host capabilities granted to the node, exactly as on an agent/judge (ADR-151, C080/C081): `capabilities: []` grants NOTHING (overrides the workflow's), no line inherits it. Read by the action: recipe's native transport — a board.* action gates on it; on a command:/script: node the list is inert (C329)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "command": {
           "description": "Shell command, run through bash -c (exclusive with script)",
           "type": "string"
@@ -4649,6 +4656,13 @@
             "wait_all",
             "best_effort"
           ]
+        },
+        "capabilities": {
+          "description": "Host capabilities granted to the node, exactly as on an agent/judge (ADR-151, C080/C081): `capabilities: []` grants NOTHING (overrides the workflow's), no line inherits it. Read by the action: recipe's native transport — a board.* action gates on it; on a command:/script: node the list is inert (C329)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "command": {
           "description": "Shell command, run through bash -c (exclusive with script)",

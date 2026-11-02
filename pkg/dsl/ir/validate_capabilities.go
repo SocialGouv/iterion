@@ -53,6 +53,22 @@ var KnownCapabilities = map[string]bool{
 // capShapeRe enforces the lowercase `domain` or `domain.action` shape.
 var capShapeRe = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)?$`)
 
+// NativeConnectorIDs is the set of connector ids a NATIVE action transport
+// owns (ADR-151, iterion#2834): an in-process, credential-free connector the
+// engine executes itself rather than reaching over HTTP. Membership decides
+// one compile-time question — `connection:` is optional for these (C261 does
+// not fire) — and nothing else; the transport registry that executes them
+// lives in pkg/backend/model. A new native connector adds its id HERE as part
+// of its seam registration (G110: registration IS the seam — the compiler's
+// half of it), never an `if` at a call site.
+//
+// The id strings come from the capability vocabulary leaf (iterion#2857):
+// reading them must not link the dispatcher into a binary that compiles a
+// .bot.
+var NativeConnectorIDs = map[string]bool{
+	boardcaps.ConnectorID: true,
+}
+
 // validateCapabilities walks every agent/judge node in the workflow and
 // validates the shape and known-ness of each capability. Workflow-level
 // capabilities are validated through inheritance: when a node has no
@@ -79,6 +95,25 @@ func (c *compiler) validateCapabilities(w *Workflow) {
 	}
 	sandboxActive := workflowSandboxRequiresHTTPBoard(w)
 	for _, n := range w.Nodes {
+		// A tool node declares `capabilities:` too (ADR-151, #78=A) and gets
+		// the SAME shape/known checks — one authorization surface, never a
+		// second regime. What it does NOT get is C082: the sandbox warning
+		// exists because an LLM node's board tools reach the host through an
+		// MCP transport the sandbox may not have, while a tool node's board
+		// action runs IN the engine — the transport question is exactly what
+		// the native seam removes (#2632's second half). What it gets
+		// instead is C329: on a command:/script: node no consumer reads the
+		// list, and an inert grant reads as configured.
+		if tn, ok := n.(*ToolNode); ok {
+			for _, cap := range tn.Capabilities {
+				c.validateOneCapability(cap, tn.ID, "tool")
+			}
+			if len(tn.Capabilities) > 0 && tn.Action == "" {
+				c.warnfAt(DiagToolCapabilitiesInert, tn.ID, "",
+					"tool %q declares `capabilities:` but its recipe is command:/script: — only the action: recipe's native transport reads the grant (ADR-151), so this list opens nothing", tn.ID)
+			}
+			continue
+		}
 		ln, ok := n.(LLMNode)
 		if !ok {
 			continue

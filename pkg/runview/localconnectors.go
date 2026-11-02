@@ -9,6 +9,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/connection"
+	"github.com/SocialGouv/iterion/pkg/connector/spec"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -208,10 +209,15 @@ const ConnectorAdmissionEnv = "ITERION_CONNECTOR_ADMISSION"
 // The predicate is the executor's own — a nil INTERFACE, not a nil pointer
 // inside one (LocalConnectors returns the former deliberately), so the two
 // guards cannot disagree about what "wired" means.
-func admitConnectorActions(wf *ir.Workflow, connectors model.ConnectorResolver) error {
-	if connectors != nil {
-		return nil
-	}
+//
+// Since ADR-151 the question is two-staged: a NATIVE connector (board.*) is
+// served by a registered transport, not by the catalog — so a native action
+// with no transport registered is a WIRING gap (the surface did not hand its
+// store over), refused by name, whether or not an HTTP catalog exists; and a
+// native action whose operation the facade does not expose is refused too,
+// with the exposed set listed, because "the verb does not exist yet" is also
+// known before the first node runs.
+func admitConnectorActions(wf *ir.Workflow, connectors model.ConnectorResolver, transports []model.ActionTransport) error {
 	if os.Getenv(ConnectorAdmissionEnv) == "off" {
 		return nil
 	}
@@ -219,5 +225,75 @@ func admitConnectorActions(wf *ir.Workflow, connectors model.ConnectorResolver) 
 	if len(nodes) == 0 {
 		return nil
 	}
-	return &UnservedActionsError{Nodes: nodes}
+	owned := make(map[string]model.ActionTransport, len(transports))
+	for _, t := range transports {
+		if t != nil {
+			owned[t.Connector()] = t
+		}
+	}
+	var unserved []ActionNode
+	for _, n := range nodes {
+		transport, native := owned[n.Connector]
+		if native {
+			if pkg := transport.Package(); pkg != nil {
+				if _, ok := pkg.Operation(n.Action); !ok {
+					return &FacadeOperationError{Node: n, Exposed: operationIDs(pkg)}
+				}
+			}
+			continue
+		}
+		if ir.NativeConnectorIDs[n.Connector] {
+			// A native connector answers through NO catalog: its transport is
+			// the only way, and this surface did not wire one.
+			return &NativeTransportMissingError{Node: n}
+		}
+		if connectors == nil {
+			unserved = append(unserved, n)
+		}
+	}
+	if len(unserved) > 0 {
+		return &UnservedActionsError{Nodes: unserved}
+	}
+	return nil
+}
+
+// operationIDs lists a facade's operation ids, sorted — the set a refusal
+// prints so the author reads what the connector DOES expose.
+func operationIDs(pkg *spec.Package) []string {
+	ops := pkg.Operations()
+	out := make([]string, 0, len(ops))
+	for _, op := range ops {
+		out = append(out, op.ID)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// NativeTransportMissingError is the admission refusal of a workflow whose
+// native action (board.*) reaches a surface that wired no transport for it:
+// the store was not handed over, and no package install can fix that.
+type NativeTransportMissingError struct {
+	Node ActionNode
+}
+
+func (e *NativeTransportMissingError) Error() string {
+	return fmt.Sprintf("runview: tool node %q declares `action: %s`, a NATIVE connector action, but this process wires no native transport for connector %q — "+
+		"the surface building this run must hand the instance's board store over (ExecutorSpec.ActionTransports, runview.NativeBoardTransport); "+
+		"no connector package or connection serves a native id. "+ConnectorAdmissionEnv+"=off keeps the old behaviour — the run starts and fails at the node.",
+		e.Node.NodeID, e.Node.Action, e.Node.Connector)
+}
+
+// FacadeOperationError is the admission refusal of a native action whose
+// verb the registered facade does not expose — today the read-only facade
+// (board.issue.list/get) versus the mutating verbs a later lot adds.
+type FacadeOperationError struct {
+	Node ActionNode
+	// Exposed is the facade's operation set, sorted.
+	Exposed []string
+}
+
+func (e *FacadeOperationError) Error() string {
+	return fmt.Sprintf("runview: tool node %q declares `action: %s`, which the native facade for connector %q does not expose (it serves: %s) — "+
+		"the mutating board verbs land with their capability opt-in (#2834's second lot); a write today goes through an agent/judge node's board.* capabilities.",
+		e.Node.NodeID, e.Node.Action, e.Node.Connector, strings.Join(e.Exposed, ", "))
 }

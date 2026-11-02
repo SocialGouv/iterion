@@ -1032,6 +1032,13 @@ func (w *fileWriter) writeTools(tools []*ast.ToolNodeDecl) {
 		if len(t.Needs) > 0 {
 			fmt.Fprintf(&w.b, "  needs: [%s]\n", strings.Join(t.Needs, ", "))
 		}
+		// The declared-list rule of #1801, on a tool node too (ADR-151):
+		// nil writes nothing (inherit the workflow's), a declared empty list
+		// writes `capabilities: []` — dropping it would turn a declared
+		// no-grant back into an inheritance on the round trip.
+		if t.Capabilities != nil {
+			fmt.Fprintf(&w.b, "  capabilities: [%s]\n", refList(&w.b, t.Capabilities))
+		}
 		// Verified Action quad (ADR-044).
 		if t.Goal != "" {
 			writeQuotedProp(&w.b, "goal", t.Goal)

@@ -884,6 +884,13 @@ type ToolNodeDecl struct {
 	Permission     string        // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	Needs          []string      // resource names acquired before running (workflow.resources)
 
+	// Capabilities are the host capabilities granted to the node (ADR-151,
+	// #78=A): a tool node declares them exactly like an agent or judge —
+	// nil = inherit the workflow's, a declared `capabilities: []` = no grant
+	// (#1801). The `action:` recipe's native transport is what reads them
+	// (a board.* action gates on the grant like the board MCP tools do).
+	Capabilities []string
+
 	// Verified Action quad (ADR-044) — all optional; a tool node without
 	// these behaves exactly as before (recipe only, exit-code = success).
 	Goal          string         // natural-language outcome (fuel for recovery rungs)

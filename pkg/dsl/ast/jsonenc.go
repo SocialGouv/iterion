@@ -617,6 +617,7 @@ type jsonToolNodeDecl struct {
 	Policy         string             `json:"policy,omitempty"`
 	Recovery       *jsonRecoveryBlock `json:"recovery,omitempty"`
 	Needs          []string           `json:"needs,omitempty"`
+	Capabilities   *[]string          `json:"capabilities,omitempty"`
 	ParallelSafe   bool               `json:"parallel_safe,omitempty"`
 	EnvExpansion   string             `json:"env_expansion,omitempty"`
 	Comments       []*jsonComment     `json:"comments,omitempty"`
@@ -1165,6 +1166,7 @@ func toolToJSON(t *ToolNodeDecl) *jsonToolNodeDecl {
 		Policy:         t.Policy,
 		Recovery:       recoveryBlockToJSON(t.Recovery),
 		Needs:          t.Needs,
+		Capabilities:   declaredListToJSON(t.Capabilities),
 		ParallelSafe:   t.ParallelSafe,
 		EnvExpansion:   t.EnvExpansion,
 	}
@@ -2133,6 +2135,7 @@ func toolFromJSON(jt *jsonToolNodeDecl) (*ToolNodeDecl, error) {
 		Policy:         jt.Policy,
 		Recovery:       recoveryBlockFromJSON(jt.Recovery),
 		Needs:          jt.Needs,
+		Capabilities:   declaredListFromJSON(jt.Capabilities),
 		ParallelSafe:   jt.ParallelSafe,
 		EnvExpansion:   jt.EnvExpansion,
 	}, nil

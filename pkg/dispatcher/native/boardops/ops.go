@@ -77,6 +77,30 @@ func AllCapabilities() []string {
 // ErrCapabilityDenied is returned when a granted-cap check fails.
 var ErrCapabilityDenied = errors.New("capability denied")
 
+// CapabilityDeniedError is the TYPED form of the refusal, so the engine's
+// recovery classifier can read it by shape (runtime.CapabilityDenied, the
+// interface this implements structurally — boardops must not import the
+// runtime) instead of matching the message: a refused grant is
+// deterministic — the same IR meets the same `capabilities:` on every
+// attempt — and classifying it is what keeps a re-run from buying the same
+// no (ADR-151). errors.Is still reaches ErrCapabilityDenied through Unwrap,
+// so every existing check (the stdio/HTTP transports' method-not-allowed
+// mapping) holds unchanged.
+type CapabilityDeniedError struct {
+	Tool       string
+	Capability string
+}
+
+func (e *CapabilityDeniedError) Error() string {
+	return fmt.Sprintf("%s: tool %q needs capability %q", ErrCapabilityDenied, e.Tool, e.Capability)
+}
+
+// Unwrap keeps errors.Is(err, ErrCapabilityDenied) true for the typed form.
+func (e *CapabilityDeniedError) Unwrap() error { return ErrCapabilityDenied }
+
+// CapabilityDenied marks the refusal for runtime.CapabilityDenial.
+func (e *CapabilityDeniedError) CapabilityDenied() bool { return true }
+
 // Tool describes one MCP-style tool exposed by the board. Description
 // and InputSchema are JSON-encodable so the same struct serves both
 // transports.
@@ -330,7 +354,7 @@ func CallWithEnv(store native.BoardStore, caps Capabilities, name string, rawArg
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}
 	if !caps.Has(t.Capability) {
-		return nil, fmt.Errorf("%w: tool %q needs capability %q", ErrCapabilityDenied, name, t.Capability)
+		return nil, &CapabilityDeniedError{Tool: name, Capability: t.Capability}
 	}
 	if name == "create_issue" {
 		return doCreate(store, rawArgs, env)

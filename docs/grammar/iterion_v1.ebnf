@@ -304,6 +304,7 @@ tool_prop = "description" ":" str_value NEWLINE
           | "permission" ":" permission_mode NEWLINE
           | "needs" ":" needs_value NEWLINE
           | "parallel_safe" ":" BOOL_LIT NEWLINE
+          | "capabilities" ":" tool_ref_list NEWLINE
           | "goal" ":" str_value NEWLINE
           | "postcondition" ":" str_value NEWLINE
           | "policy" ":" action_policy NEWLINE

@@ -302,6 +302,8 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagGroupExpansionPastBudget:      {"A group's expansion expands past its bound", "Give the group smaller values, fewer markers or fewer uses: one field may not expand past 10 MiB, and the uses of a bot share ONE substitution budget — every string field an instance writes spends it, one record per field and one per 64 bytes (" + readbudget.Env + ", a larger count raises it, 0 removes it) — a value that big wants a file the nodes read, not a parameter."},
 	DiagSubbotLandingWithoutIsolated:  {"Subbot landing intent without isolation", "Declare `isolated: true` on the subbot so the child owns a worktree: a child running in this run's workspace has no finalization of its own, so `auto_merge:` (and `merge_into:` / `merge_strategy:`) would arm a landing that never fires and the child's converged work would wait for a human."},
 	DiagSubbotLandingWithoutAutoMerge: {"Subbot landing fields without auto_merge", "A `merge_into:` / `merge_strategy:` on a subbot is read only when `auto_merge: true` arms the landing — either add the arming flag or drop the fields."},
+	DiagToolCapabilitiesInert:         {"Tool node capabilities nothing reads", "Give the node an `action:` whose native transport consumes the grant (a board.* action), or drop the list — on a command:/script: node or an HTTP action it is inert, which reads as configured."},
+	DiagActionConnectionOnNative:      {"Connection on a credential-free action", "Drop `connection:` — a native connector (board.*) holds no credential, so the alias authenticates nothing; it stays required for an HTTP connector."},
 }
 
 // HintFor returns the catalogue fix line for code, or "" when the code has
