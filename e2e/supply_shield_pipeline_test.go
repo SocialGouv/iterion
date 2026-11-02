@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	itgit "github.com/SocialGouv/iterion/pkg/git"
 	iterruntime "github.com/SocialGouv/iterion/pkg/runtime"
 )
 
@@ -147,7 +148,7 @@ func shieldGitRepo(t *testing.T) (string, string) {
 
 func gitRun(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	c := exec.Command("git", args...)
+	c := exec.Command("git", itgit.NoAutoMaintenance(args...)...)
 	c.Dir = dir
 	if out, err := c.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
@@ -156,7 +157,7 @@ func gitRun(t *testing.T, dir string, args ...string) {
 
 func gitOut(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	c := exec.Command("git", args...)
+	c := exec.Command("git", itgit.NoAutoMaintenance(args...)...)
 	c.Dir = dir
 	out, err := c.Output()
 	if err != nil {
