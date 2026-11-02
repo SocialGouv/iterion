@@ -53,6 +53,12 @@ func TestServingProvider_clawReadsThePrefixOverTheHint(t *testing.T) {
 		// the hint (the zai hint spends ONLY the z.ai key).
 		{"claude_code hint-first, unchanged", delegate.BackendClaudeCode, "zai", "anthropic/claude-opus-4-8", "zai"},
 		{"claude_code bare → empty", delegate.BackendClaudeCode, "", "claude-opus-4-8", ""},
+		// The word leaves FOLDED on every backend: the plan's keys hold the
+		// walk's lower-case words, so an authored route whose `provider:`
+		// text is not lower-case — or a ${VAR} expanding to it — stamps a
+		// word the plan can still match.
+		{"claude_code folds the authored case", delegate.BackendClaudeCode, "ZAI", "anthropic/claude-opus-4-8", "zai"},
+		{"claude_code folds space and case", delegate.BackendClaudeCode, " Moonshot ", "claude-opus-5", "moonshot"},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {

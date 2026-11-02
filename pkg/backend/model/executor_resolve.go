@@ -249,10 +249,14 @@ func (e *ClawExecutor) resolveChainUnder(node ir.Node, nodeBackend string) []cha
 		if !e.fallbackWhenActive(node.NodeID(), fb) {
 			continue
 		}
+		// The route joins the chain in the folded form parseProviderChain
+		// folds the legacy field to: one vocabulary reaches dispatch, the
+		// dedupe and the serving-provider stamp, whatever case the author
+		// — or a ${VAR} expansion — wrote.
 		el := chainElement{
 			Label:    fb.Name,
 			Backend:  e.resolveRoutingField(fb.Backend),
-			Provider: e.resolveRoutingField(fb.Provider),
+			Provider: strings.ToLower(e.resolveRoutingField(fb.Provider)),
 			Model:    e.resolveRoutingField(fb.Model),
 			Skip:     fb.Action == ir.FallbackActionSkip,
 		}

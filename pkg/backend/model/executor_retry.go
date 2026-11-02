@@ -458,6 +458,12 @@ func providerLabel(p string) string {
 // value differs from the prefix describes a spend claw never makes. The
 // hint answers only for a spec that names no prefix (which claw refuses at
 // Execute, so the word is inert there).
+// The word leaves FOLDED on every backend (lower-case, trimmed): the
+// credential plan's keys and every join compare the folded form — the
+// walk's hint() and the chain parse fold the same way — so a route whose
+// `provider:` text is not lower-case (an authored route, a ${VAR}
+// expansion) must not stamp a word the plan can never match.
+//
 // "" when the route deferred to the wire's default precedence: what served
 // there is a fact of the credential the process held, which the session
 // fingerprint reports on the backends that have one.
@@ -469,10 +475,7 @@ func servingProvider(backendName string, task *delegate.Task) string {
 		}
 		return hint
 	}
-	if hint != "" {
-		return task.ProviderHint
-	}
-	return ""
+	return hint
 }
 
 // clawSpecProvider is the provider word for a HINT-LESS claw generation —
