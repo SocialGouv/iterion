@@ -80,7 +80,7 @@ func TestEveryAuxiliarySurfaceResolvesThroughTheChannel(t *testing.T) {
 				constructors[name] = rel
 			}
 		}
-		calls := registryConstructions(file, modelImportName(file))
+		calls := registryConstructions(file, modelImportsOf(file))
 		if exempt[rel] > 0 {
 			if calls != exempt[rel] {
 				t.Errorf("%s is exempt for %d model.NewRegistry call(s) (the run's own execution plane) and now "+
@@ -123,13 +123,15 @@ func TestEveryAuxiliarySurfaceResolvesThroughTheChannel(t *testing.T) {
 	}
 }
 
-// registryConstructions counts `<modelPkg>.NewRegistry(…)` calls in the file,
-// where modelPkg is the name THIS file imports pkg/backend/model under.
-// It reads the AST rather than scanning text: a `NewRegistry(` inside a
-// comment or a string satisfies a grep, and a call split across lines
-// defeats a line-oriented one.
-func registryConstructions(file *ast.File, modelPkg string) (calls int) {
-	if modelPkg == "" {
+// registryConstructions counts the NewRegistry calls the file reaches the
+// model package's constructor through: `<name>.NewRegistry(…)` for any name
+// the file binds the package to, and — under a dot import — the bare
+// `NewRegistry(…)`, which is that same constructor with no selector left to
+// name it by. It reads the AST rather than scanning text: a `NewRegistry(`
+// inside a comment or a string satisfies a grep, and a call split across
+// lines defeats a line-oriented one.
+func registryConstructions(file *ast.File, mi modelImports) (calls int) {
+	if !mi.dotBound && len(mi.names) == 0 {
 		return 0 // the file does not import the model package at all
 	}
 	ast.Inspect(file, func(n ast.Node) bool {
@@ -137,12 +139,21 @@ func registryConstructions(file *ast.File, modelPkg string) (calls int) {
 		if !ok {
 			return true
 		}
+		// A dot import declares the package's exported names bare, so its
+		// constructor reads as a plain ident call. Without a dot import a
+		// bare NewRegistry cannot be the model package's: the file reaches
+		// the package only through the names it binds.
+		if id, ok := call.Fun.(*ast.Ident); ok {
+			if mi.dotBound && id.Name == "NewRegistry" {
+				calls++
+			}
+			return true
+		}
 		sel, ok := call.Fun.(*ast.SelectorExpr)
 		if !ok || sel.Sel.Name != "NewRegistry" {
 			return true
 		}
-		pkg, ok := sel.X.(*ast.Ident)
-		if ok && pkg.Name == modelPkg {
+		if pkg, ok := sel.X.(*ast.Ident); ok && mi.names[pkg.Name] {
 			calls++
 		}
 		return true
@@ -150,20 +161,41 @@ func registryConstructions(file *ast.File, modelPkg string) (calls int) {
 	return calls
 }
 
-// modelImportName returns the local name under which the file imports
-// pkg/backend/model, or "" when it does not.
-func modelImportName(file *ast.File) string {
+// modelImports records every binding a file holds on the model package: the
+// named ones (default or aliased) in names, and dotBound for the dot import,
+// which binds no name at all — its exported names read bare.
+type modelImports struct {
+	names    map[string]bool
+	dotBound bool
+}
+
+// modelImportsOf returns every binding the file holds on the model package,
+// or the zero modelImports when it holds none. One name is one shape, not
+// the answer: Go accepts importing the same package twice under distinct
+// names, and a dot import declares its names with no selector — a gate
+// reading one name reads one shape, and the sweep judges every shape the
+// file can reach the package through.
+func modelImportsOf(file *ast.File) modelImports {
 	const path = `"github.com/SocialGouv/iterion/pkg/backend/model"`
+	var mi modelImports
 	for _, imp := range file.Imports {
 		if imp.Path == nil || imp.Path.Value != path {
 			continue
 		}
+		name := "model"
 		if imp.Name != nil {
-			return imp.Name.Name
+			name = imp.Name.Name
 		}
-		return "model"
+		if name == "." {
+			mi.dotBound = true
+			continue
+		}
+		if mi.names == nil {
+			mi.names = map[string]bool{}
+		}
+		mi.names[name] = true
 	}
-	return ""
+	return mi
 }
 
 // registryConstructors returns the exported, receiver-less functions of the
@@ -302,6 +334,50 @@ func f() { d := delegate.NewRegistry(); r := model.NewRegistry(); _, _ = d, r }`
 			calls: 1,
 		},
 		{
+			// A dot import binds no name: the constructor reads as a bare
+			// NewRegistry() call, and the gate that refuses the selector
+			// form must refuse this one too.
+			name: "a dot-imported construction is still ours",
+			src: `package p
+import . "github.com/SocialGouv/iterion/pkg/backend/model"
+func f() { r := NewRegistry(); _ = r }`,
+			calls: 1,
+		},
+		{
+			// The same package may be imported twice under distinct names,
+			// and the second binding is as much ours as the first — a
+			// gate matching one name judges one binding of many.
+			name: "a construction through a second binding of the same package is still ours",
+			src: `package p
+import (
+	"github.com/SocialGouv/iterion/pkg/backend/model"
+	m2 "github.com/SocialGouv/iterion/pkg/backend/model"
+)
+func f() { r := m2.NewRegistry(); _ = r }`,
+			calls: 1,
+		},
+		{
+			// Without a dot import a bare NewRegistry is not the model
+			// package's: the file reaches the package only through the
+			// names it binds, and a file's own NewRegistry shadows nothing
+			// of ours.
+			name: "a bare NewRegistry without a dot import is not ours",
+			src: `package p
+import "github.com/SocialGouv/iterion/pkg/backend/model"
+func NewRegistry() *struct{} { return nil }
+func f() { r := NewRegistry(); _ = r }`,
+			calls: 0,
+		},
+		{
+			// The gate judges construction, not import presence: a dot
+			// import that builds no registry is no offence.
+			name: "a dot import without a construction is not a call",
+			src: `package p
+import . "github.com/SocialGouv/iterion/pkg/backend/model"
+func f() { s := ParseModelSpec("openai/x"); _ = s }`,
+			calls: 0,
+		},
+		{
 			name: "no import of the model package at all",
 			src: `package p
 import "strings"
@@ -323,7 +399,7 @@ func f() { _ = model.ParseModelSpec("openai/x"); _ = hint }`,
 			if err != nil {
 				t.Fatalf("parse: %v", err)
 			}
-			if got := registryConstructions(file, modelImportName(file)); got != tc.calls {
+			if got := registryConstructions(file, modelImportsOf(file)); got != tc.calls {
 				t.Errorf("registryConstructions = %d, want %d", got, tc.calls)
 			}
 		})
