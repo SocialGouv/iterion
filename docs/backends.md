@@ -3309,9 +3309,13 @@ the engine resolves the identity itself and builds every client with claw's
 `.env` — cannot authenticate or re-identify a request the engine routed
 ([#2244](https://github.com/SocialGouv/iterion/issues/2244)). The sandboxed
 `__claw-runner` is the channel's one reader: its environment is the crossing's
-own forwarded env, already filtered. Identity headers an engine-routed node
-should carry belong in the route's credential or `ITERION_LLM_USER_AGENT`, not
-the ambient block.
+own forwarded env, already filtered. That crossing is also the only channel an
+engine-routed node has for an arbitrary identity header (`x-tenant` and
+friends): an in-process node carries no ambient block, the route's credential
+carries the one credential the provider's contract defines (bearer or key —
+never an arbitrary header name), and `ITERION_LLM_USER_AGENT` carries only the
+user-agent leg. A node that must present additional identity headers runs
+sandboxed; an in-process one has no channel for them today.
 
 **ToS caveat.** Presenting as another tool is a decision between you
 and the endpoint you target (e.g. your z.ai subscription's supported-
