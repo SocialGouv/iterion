@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.1.0](https://github.com/SocialGouv/iterion/compare/v5.0.2...v5.1.0) (2026-11-02)
+
+### Features
+
+* **dsl:** C328 — naming a host tool without its capability is told at compile time ([#1801](https://github.com/SocialGouv/iterion/issues/1801)) ([c51f98b](https://github.com/SocialGouv/iterion/commit/c51f98b3ce7dd7bd3ad87b10ba21e656593f6257)), references [#2857](https://github.com/SocialGouv/iterion/issues/2857)
+
+    <details><summary>why</summary>
+
+    The capability gate's verdict was only learnable at run time: the grant filters registration, so an agent naming create_issue without board.create loses the tool to a process-log line and a tool node whose bare command resolves to a host tool fails dispatch on "unknown tool" — a call that still reaches the board layer is refused on boardops.ErrCapabilityDenied. The compiler now says it, and names the capability to declare:
+
+    </details>
+
 ## [5.0.2](https://github.com/SocialGouv/iterion/compare/v5.0.1...v5.0.2) (2026-11-01)
 
 ### Bug Fixes
