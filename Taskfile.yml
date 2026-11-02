@@ -316,6 +316,11 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run TestLive_Lite_ClawSubagents -timeout 10m ./e2e/...
 
+  test:live:claw-workspace-agents:
+    desc: 'Run the claw named-workspace-subagent live e2e test (#1714) — an `agent` call with subagent_type resolves <workspace>/.claude/agents/<name>.md, the file’s body drives the child, `tools:` narrows it, and a tools: [] agent reads nothing (requires ANTHROPIC_API_KEY; ~$0.05/run on haiku)'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_ClawWorkspaceAgents$' -timeout 15m ./e2e/...
+
   test:live:claw-reasoning:
     desc: Run the reasoning_effort propagation live e2e test (requires OPENAI_API_KEY)
     cmds:

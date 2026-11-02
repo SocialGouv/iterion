@@ -137,6 +137,14 @@
       "verdict": "never"
     },
     {
+      "target": "test:live:claw-workspace-agents",
+      "last_run": "2026-11-02T09:19:27.48750165Z",
+      "verdict": "pass",
+      "duration_sec": 36,
+      "cost_usd": 0.009076999999999998,
+      "ref": "716f827865e9"
+    },
+    {
       "target": "test:live:coverage",
       "last_run": "0001-01-01T00:00:00Z",
       "verdict": "never"

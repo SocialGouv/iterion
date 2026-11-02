@@ -1,0 +1,99 @@
+## Fixture: feat_claw_workspace_agents
+##
+## Live proof of #1714: a claw node's `agent` call naming a subagent_type
+## resolves `<workspace>/.claude/agents/<name>.md` through iterion's own
+## resolver (pkg/backend/model/workspace_agents.go) — the file a plugin's
+## `contributes: agents` mirrors there, which claude_code discovers natively.
+##
+## Node 1 (coordinator) delegates to probe-scout, whose file declares
+## `tools: [Read]` and a body that orders a SCOUT-REPORT marker: the marker
+## reaching the answer proves the file's BODY was the child's system prompt
+## (a generic child never saw the instruction), and the unguessable token in
+## probe-token.txt proves the child really read the file with the narrowed
+## tool set (the node holds read_file; the file's Read folds onto it).
+##
+## Node 2 (blind_check) is the cheap counter-example: blind-scribe declares
+## `tools: []`, and the node itself holds no read_file either, so NO
+## conversation in the run can reach the token — the narrowing holding live
+## is the refusal shape a mis-declared agent takes.
+
+dsl: 2
+
+prompt coordinator_system:
+  You have an `agent` tool that spawns sub-agents. The tool input takes:
+   - description (3-5 word task summary)
+   - prompt (the task itself)
+   - subagent_type (the subagent's name)
+   - name (optional)
+
+  This workspace declares a named subagent: probe-scout.
+
+prompt coordinator_user:
+  Delegate EXACTLY ONE task through the `agent` tool, with subagent_type
+  "probe-scout": ask it to read the file probe-token.txt and report the
+  token it contains. You MUST issue the tool call — do not skip it, do not
+  read the file yourself, and do not guess the outcome.
+
+  Then fill the output schema from the tool result: the token the sub-agent
+  reported, and the result's workspace_agent / workspace_agent_description
+  fields (empty strings when absent).
+
+prompt blind_system:
+  You have an `agent` tool that spawns sub-agents. The tool input takes:
+   - description (3-5 word task summary)
+   - prompt (the task itself)
+   - subagent_type (the subagent's name)
+   - name (optional)
+
+  This workspace declares a named subagent: blind-scribe.
+
+prompt blind_user:
+  Delegate EXACTLY ONE task through the `agent` tool, with subagent_type
+  "blind-scribe": ask it to read the file probe-token.txt and report the
+  token it contains. You MUST issue the tool call — do not skip it and do
+  not guess the outcome.
+
+  Then fill the output schema from what actually happened: token is the
+  token the sub-agent reported (empty string when it reported none), and
+  child_report is a one-line summary of the sub-agent's own answer.
+
+schema coordinator_output:
+  token: string
+  workspace_agent: string
+  workspace_agent_description: string
+
+schema blind_output:
+  token: string
+  child_report: string
+
+agent coordinator:
+  backend: claw
+  model: "anthropic/claude-haiku-4-5-20251001"
+  output: coordinator_output
+  system: coordinator_system
+  user: coordinator_user
+  tools: [agent, read_file]
+  tool_max_steps: 8
+  session: fresh
+
+agent blind_check:
+  backend: claw
+  model: "anthropic/claude-haiku-4-5-20251001"
+  output: blind_output
+  system: blind_system
+  user: blind_user
+  tools: [agent]
+  tool_max_steps: 8
+  session: fresh
+
+workflow feat_claw_workspace_agents:
+  entry: coordinator
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "8m"
+    max_cost_usd: 0.5
+    max_tokens: 100000
+
+  coordinator -> blind_check
+  blind_check -> done

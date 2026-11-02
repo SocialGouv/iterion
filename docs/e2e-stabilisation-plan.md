@@ -48,11 +48,11 @@ Repeated from #1424 verbatim so the plan cannot drift from its own definition:
 | sandbox | 9 | 8 | 0 | 0 | 0 | 1 |
 | webhooks | 9 | 9 | 0 | 0 | 0 | 0 |
 | observability | 8 | 8 | 0 | 0 | 0 | 0 |
-| plugins | 8 | 7 | 1 | 0 | 0 | 0 |
+| plugins | 9 | 7 | 2 | 0 | 0 | 0 |
 | forge | 7 | 7 | 0 | 0 | 0 | 0 |
 | integrations | 6 | 3 | 0 | 0 | 0 | 3 |
 | desktop | 1 | 0 | 0 | 0 | 1 | 0 |
-| Total | 409 | 393 | 6 | 0 | 4 | 6 |
+| Total | 410 | 393 | 7 | 0 | 4 | 6 |
 
 The surface axis is the matrix's **Family** column — the one the gate reads and
 the "front door per family" section documents. The `ID` prefix is a naming

@@ -259,6 +259,7 @@ Status legend: ✅ implemented · 🚧 planned.
 | Webhooks | `pkg/webhooks/*_test.go` (parsers) + server stubs (deterministic) | ✅ |
 | Schedule (trigger → run) | `TestLive_Feat_Schedule` | ✅ |
 | claude_code background work (session waits for its async subagent; lifecycle-off witness) | `TestLive_Feat_ClaudeCodeBackgroundWork` (`task test:live:claude-bg`) | ✅ |
+| claw named workspace subagents (`.claude/agents/<name>.md` resolved by the `agent` tool's subagent_type; tools: narrowing; tools: [] counter-example) | `TestLive_Feat_ClawWorkspaceAgents` (`task test:live:claw-workspace-agents`) | ✅ |
 | Bundles / Expr-Compute / Codex | skills+bundle bots / `ExhaustiveDSLCoverage` / dual-model (covered) | ✅ |
 
 ## Cost discipline

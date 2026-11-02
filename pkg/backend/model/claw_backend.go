@@ -665,6 +665,10 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		Model:    task.Model,
 		Tools:    opts.Tools,
 		MaxSteps: opts.MaxSteps,
+		// WorkDir is where a file-backed subagent resolves from (#1714); the
+		// sandboxed runner's re-entry fills it from the forwarded task, so an
+		// in-container child reads the same workspace.
+		WorkDir: task.WorkDir,
 	})
 	// A child conversation spends inside a tool call, after this node's own
 	// usage is counted: without this accumulator the run's budget would

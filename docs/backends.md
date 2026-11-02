@@ -2230,8 +2230,12 @@ effective set (never widens it), and `model:` refuses the delegation
 (#1717 — a contributed file does not re-route the node's spend). The
 resolver is iterion-side by arbitration (ARB-83): iterion's `SubagentRunner`
 executes every spawn a workflow drives, on this backend and claude_code
-alike. This cell is wired and covered by deterministic tests; no live e2e
-has paid for it, so it does not read `proven`.
+alike. The live e2e exists — `task test:live:claw-workspace-agents`
+(TestLive_Feat_ClawWorkspaceAgents, #1714): a delegation to a declared agent
+must come back with the file's body as the child's prompt, its `tools:`
+narrowing the child, and the resolution reported in the tool result, while a
+`tools: []` agent reads nothing. Last verdict: see the ledger
+(`e2e/testdata/live/ledger.json`).
 
 ### `codex`
 
