@@ -1309,7 +1309,16 @@ type Config struct {
 	// the wedge (0 = 10m). A healthy fleet claims runs in seconds, so
 	// the window only trips on a wedged broker or consumer.
 	StalledAfter time.Duration
-	FetchWait    time.Duration // long-poll wait per fetch
+	// DisableStallSelfHeal turns off the stall onset's consumer
+	// recreate. The self-heal deletes and re-creates the durable runs
+	// consumer once per frozen-stall episode — the Oct 30 wedge never
+	// self-resolved and only a deletion cleared it (#2890) — and held
+	// deliveries a still-executing run owns redeliver onto the run
+	// lock (parking on the DLQ, never double-executing). Operators who
+	// would rather gate that deletion by hand set this and run
+	// \`admin dlq replay\` / \`consumer rm\` themselves.
+	DisableStallSelfHeal bool
+	FetchWait            time.Duration // long-poll wait per fetch
 	// SchemaMismatchDelay is the redelivery delay applied when this runner
 	// rejects a delivery whose schema version it does not recognise (mixed
 	// fleet during a rolling schema bump). Must be long enough that the
@@ -1761,6 +1770,13 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 			if errors.Is(err, context.Canceled) {
 				return err
+			}
+			if r.consumer.RecoverIfGone(loopCtx, err) {
+				// A sibling's stall self-heal deleted the consumer under
+				// us and this pod rebuilt its handle; CreateOrUpdate is
+				// idempotent, racing pods converge on one consumer.
+				r.cfg.Logger.Warn("runner: the runs consumer was deleted (a pod's stall self-heal) — recreated, fetching resumes")
+				continue
 			}
 			r.cfg.Logger.Warn("runner: fetch error: %v (backing off)", err)
 			select {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	natsgo "github.com/nats-io/nats.go"
@@ -39,5 +40,49 @@ func TestIsTransientPublishError(t *testing.T) {
 				t.Errorf("IsTransientPublishError(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
+	}
+}
+
+// A pool-attached Consumer refuses the runner-side recreate before any
+// broker call: the pool consumer is the server reconciler's topology,
+// and Recreate's delete would land on the SHARED fleet consumer the
+// owner/cfg still name (revi round 1, R124668).
+func TestRecreateRefusesAPoolAttachedConsumer(t *testing.T) {
+	cons := &Consumer{pool: "honorabilite", owner: &Conn{cfg: Config{StreamName: StreamRuns, ConsumerName: ConsumerRunners}}}
+	err := cons.Recreate(context.Background())
+	if err == nil {
+		t.Fatal("pool-attached Recreate: want the typed refusal, got nil")
+	}
+	if !strings.Contains(err.Error(), "reconciler") {
+		t.Fatalf("pool-attached Recreate: want the reconciler ownership error, got %v", err)
+	}
+	// RecoverIfGone reads as no-gone for the same reason: the fetch-path
+	// recovery must not route a pool pod onto the shared consumer.
+	if cons.RecoverIfGone(context.Background(), errors.New("anything")) {
+		t.Fatal("pool-attached RecoverIfGone: want false (the reconciler owns the topology)")
+	}
+}
+
+// IsConsumerGone matches the two sentinel shapes and the no-responders
+// descriptions through wrapped chains, and stays false on unrelated
+// errors and on nil.
+func TestIsConsumerGoneShapes(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"deleted sentinel", fmt.Errorf("fetch wait: %w", jetstream.ErrConsumerDeleted), true},
+		{"not-found sentinel", fmt.Errorf("info: %w", jetstream.ErrConsumerNotFound), true},
+		{"no responders text", errors.New("queue/nats: fetch error: nats: no responders available for request"), false},
+		{"unrelated", errors.New("connection closed"), false},
+	}
+	for _, tc := range cases {
+		if got := IsConsumerGone(tc.err); got != tc.want {
+			t.Errorf("%s: IsConsumerGone=%v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

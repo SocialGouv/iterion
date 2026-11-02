@@ -428,10 +428,67 @@ func (r *Runner) pollPending(ctx context.Context) {
 				// This log and the iterion_nats_stalled gauge are the signal
 				// that must fire in minutes, not days.
 				r.cfg.Logger.Error("runner: the runs consumer has held work with no delivery for %s (pending=%d ack-pending=%d ack-floor=%d delivered=%d) — deliveries are wedged, runs will not start; recreate the consumer or replay the DLQ", time.Since(tr.since).Round(time.Second), sample.Pending, sample.AckPending, sample.AckFloorSeq, sample.DeliveredConsumerSeq)
+				r.selfHealStall(ctx, sample)
 			case stallRecovered:
 				r.cfg.Logger.Info("runner: the runs consumer drain resumed after a stall")
 			}
 		}
+	}
+}
+
+// selfHealStall recreates the runs consumer when the stall is still
+// frozen at its onset posture: the Oct 30 wedge never self-resolved and
+// only a consumer deletion cleared it (issue #2890). Guards, in order:
+// the operator's off switch; a fresh Sample — if deliveries moved since
+// the onset, a sibling healed or the wedge resolved, and deleting a live
+// consumer would only churn redeliveries; then Recreate, whose delete +
+// idempotent re-create converges when several pods heal the same wedge.
+// Messages a still-executing run holds redeliver onto the run lock and
+// park on the lock-failure DLQ for replay — never double-executed.
+// stallHealDecision is what the guards decided for one onset.
+type stallHealDecision int
+
+const (
+	stallHealSkippedDisabled stallHealDecision = iota
+	stallHealSkippedUnreadable
+	stallHealSkippedResolved
+	stallHealPerformed
+)
+
+// decideStallHeal is the guard half of the self-heal, pure so a
+// regression in the interlocks cannot silently delete a healthy
+// consumer (revi round 1, finding Re92388): the off switch wins first,
+// an unreadable posture skips (no information, no deletion), and a
+// delivery sequence that moved since the onset means the wedge resolved
+// or a sibling healed — only the unchanged frozen posture deletes.
+func decideStallHeal(disabled bool, onset, fresh natsq.Sample, freshErr error) stallHealDecision {
+	if disabled {
+		return stallHealSkippedDisabled
+	}
+	if freshErr != nil {
+		return stallHealSkippedUnreadable
+	}
+	if fresh.DeliveredConsumerSeq != onset.DeliveredConsumerSeq {
+		return stallHealSkippedResolved
+	}
+	return stallHealPerformed
+}
+
+func (r *Runner) selfHealStall(ctx context.Context, onset natsq.Sample) {
+	fresh, freshErr := r.consumer.Sample(ctx)
+	switch decideStallHeal(r.cfg.DisableStallSelfHeal, onset, fresh, freshErr) {
+	case stallHealSkippedDisabled:
+		r.cfg.Logger.Warn("runner: stall self-heal disabled — recreate the runs consumer by hand (consumer rm + restart, or admin dlq replay)")
+	case stallHealSkippedUnreadable:
+		r.cfg.Logger.Warn("runner: stall self-heal skipped — posture unreadable: %v", freshErr)
+	case stallHealSkippedResolved:
+		r.cfg.Logger.Info("runner: stall self-heal skipped — deliveries moved since the onset (%d → %d): the wedge resolved on its own or a sibling healed it", onset.DeliveredConsumerSeq, fresh.DeliveredConsumerSeq)
+	case stallHealPerformed:
+		if err := r.consumer.Recreate(ctx); err != nil {
+			r.cfg.Logger.Error("runner: stall self-heal recreate failed: %v — the consumer stays wedged; recreate it by hand", err)
+			return
+		}
+		r.cfg.Logger.Warn("runner: stall self-heal deleted and recreated the runs consumer — held work redelivers from the stream; deliveries an executing run still holds park on the DLQ for replay")
 	}
 }
 

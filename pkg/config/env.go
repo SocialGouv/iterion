@@ -88,6 +88,9 @@ func loadEnv(cfg *Config) error {
 	if err := lookupDuration("ITERION_RUNNER_SCHEMA_MISMATCH_DELAY", &cfg.Runner.SchemaMismatchDelay); err != nil {
 		return err
 	}
+	if err := lookupBool("ITERION_RUNNER_DISABLE_STALL_SELFHEAL", &cfg.Runner.DisableStallSelfHeal); err != nil {
+		return err
+	}
 	if err := lookupUint64("ITERION_RUNNER_EPOCH", &cfg.Rollout.RunnerEpoch); err != nil {
 		return err
 	}

@@ -24,6 +24,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -665,10 +667,28 @@ func (c *Conn) SubscribeCancel(ctx context.Context, runID string, admitted store
 // to drain the queue. It is created lazily so a process that only
 // publishes (the server) doesn't pay the cost of consumer setup.
 type Consumer struct {
+	// mu guards cons: the fetch loop reads the handle on every cycle
+	// while the stall self-heal (Recreate) swaps it after a deletion.
+	mu     sync.Mutex
 	cons   jetstream.Consumer
 	owner  *Conn
 	cfg    Config
 	logger *iterlog.Logger
+	// pool names the sovereign pool this Consumer is attached to
+	// (AttachPoolConsumer); empty for the shared default pool. A pool
+	// consumer is the server reconciler's topology — the runner never
+	// creates, deletes or recreates it.
+	pool string
+}
+
+// handle returns the current consumer handle. Callers hold the returned
+// value for one operation: a Recreate may swap it concurrently, and the
+// old handle's next operation then fails with a consumer-gone error the
+// caller already recovers from.
+func (cons *Consumer) handle() jetstream.Consumer {
+	cons.mu.Lock()
+	defer cons.mu.Unlock()
+	return cons.cons
 }
 
 // NewConsumer creates / updates the durable consumer on the runs
@@ -731,7 +751,7 @@ func (cons *Consumer) Fetch(ctx context.Context, wait time.Duration) (*Delivery,
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	batch, err := cons.cons.FetchNoWait(1)
+	batch, err := cons.handle().FetchNoWait(1)
 	if err != nil {
 		return nil, fmt.Errorf("queue/nats: fetch: %w", err)
 	}
@@ -749,7 +769,7 @@ func (cons *Consumer) Fetch(ctx context.Context, wait time.Duration) (*Delivery,
 	}
 	timeoutCtx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
-	batch2, err := cons.cons.Fetch(1, jetstream.FetchContext(timeoutCtx))
+	batch2, err := cons.handle().Fetch(1, jetstream.FetchContext(timeoutCtx))
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
@@ -807,7 +827,7 @@ type Sample struct {
 // value KEDA pulls via the JetStream scaler) and to feed the stall
 // detector.
 func (cons *Consumer) Sample(ctx context.Context) (Sample, error) {
-	info, err := cons.cons.Info(ctx)
+	info, err := cons.handle().Info(ctx)
 	if err != nil {
 		return Sample{}, fmt.Errorf("queue/nats: consumer info: %w", err)
 	}
@@ -835,6 +855,96 @@ func (cons *Consumer) StreamLastSeq(ctx context.Context) (uint64, error) {
 		return 0, fmt.Errorf("queue/nats: stream %s info: %w", cons.owner.cfg.StreamName, err)
 	}
 	return info.State.LastSeq, nil
+}
+
+// IsConsumerGone reports whether err is the broker saying the durable
+// consumer no longer exists — the shape every other pod's fetch sees
+// while the stall self-heal has the consumer deleted for recreation.
+func IsConsumerGone(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, jetstream.ErrConsumerDeleted) || errors.Is(err, jetstream.ErrConsumerNotFound) {
+		return true
+	}
+	// Server API errors of the same codes do not always unwrap to the
+	// sentinel through the pull-request path; the descriptions are the
+	// API's own and stable across the versions this module vendors.
+	msg := err.Error()
+	return strings.Contains(msg, "consumer deleted") || strings.Contains(msg, "consumer not found")
+}
+
+// RecoverIfGone recreates the consumer when err says it is gone, and
+// reports whether a recreate happened. Two shapes say gone: the
+// sentinel errors, and — the one a deleted consumer's pull request
+// actually returns — nats.ErrNoResponders, which a dead broker cannot
+// be told apart from by shape alone. The second shape is verified
+// against the broker: Info on a live connection answers the
+// consumer-not-found sentinel for a deleted consumer, and anything
+// else (dead connection, live consumer) reads as no-gone so a broker
+// outage never triggers a recreate.
+func (cons *Consumer) RecoverIfGone(ctx context.Context, err error) bool {
+	if cons == nil || cons.owner == nil {
+		return false
+	}
+	if cons.pool != "" {
+		// A pool consumer is the server reconciler's topology: its
+		// disappearance is the reconciler's to repair, and a runner-side
+		// Recreate would delete the SHARED fleet consumer (owner/cfg name
+		// it even on a pool-attached handle) and rebind this pod onto
+		// shared runs' messages.
+		return false
+	}
+	if !IsConsumerGone(err) {
+		if !errors.Is(err, nats.ErrNoResponders) {
+			return false
+		}
+		if _, ierr := cons.handle().Info(ctx); !IsConsumerGone(ierr) {
+			return false
+		}
+	}
+	if rerr := cons.Recreate(ctx); rerr != nil {
+		cons.logger.Error("queue/nats: consumer recreate after deletion failed: %v", rerr)
+		return false
+	}
+	return true
+}
+
+// Recreate deletes and re-creates the durable runs consumer, swapping
+// this handle to the fresh one. The self-heal behind the stall detector:
+// the Oct 30 wedge froze the consumer's raft state — deliveries stopped
+// while pull requests kept waiting — and never self-resolved; only
+// deleting the consumer did (issue #2890). Recreate is safe to call from
+// several pods: the delete of an already-deleted consumer is tolerated,
+// and CreateOrUpdateConsumer is idempotent, so a racing pair converges on
+// one consumer. Redeliveries of messages a still-executing run holds are
+// refused by the run lock onto the lock-failure DLQ for replay — they
+// never double-execute.
+func (cons *Consumer) Recreate(ctx context.Context) error {
+	if cons != nil && cons.pool != "" {
+		// The refusal outranks every other check: a pool-attached
+		// Consumer's owner/cfg still name the SHARED fleet stream, so an
+		// ungated recreate would delete the fleet's consumer and rebind
+		// the pool pod onto shared runs' messages.
+		return fmt.Errorf("queue/nats: consumer %s is pool %q's topology — the server's reconciler owns it; the runner never recreates a pool consumer", cons.owner.cfg.ConsumerName, cons.pool)
+	}
+	if cons == nil || cons.owner == nil || cons.owner.js == nil {
+		return fmt.Errorf("queue/nats: consumer not initialised")
+	}
+	cons.mu.Lock()
+	defer cons.mu.Unlock()
+	if err := cons.owner.js.DeleteConsumer(ctx, cons.owner.cfg.StreamName, cons.owner.cfg.ConsumerName); err != nil {
+		// Already as deleted as we need it — a sibling healed first.
+		if !IsConsumerGone(err) {
+			return fmt.Errorf("queue/nats: delete consumer %s: %w", cons.owner.cfg.ConsumerName, err)
+		}
+	}
+	fresh, err := cons.owner.PrepareConsumer(ctx)
+	if err != nil {
+		return fmt.Errorf("queue/nats: recreate consumer %s: %w", cons.owner.cfg.ConsumerName, err)
+	}
+	cons.cons = fresh.cons
+	return nil
 }
 
 // Delivery bundles a JetStream message with helpers to ack / nak /
