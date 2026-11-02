@@ -1,6 +1,7 @@
 package chart_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +27,27 @@ func runKindWait(t *testing.T, values string) (string, string, error) {
 	cmd.Stderr = &stderr
 	err = cmd.Run()
 	return stdout.String(), stderr.String(), err
+}
+
+// uniqueMatch returns the index of the only candidate containing want, and
+// fails with an error when the candidates hold none or several: which
+// command a witness reads must never depend on the order commands were
+// added.
+func uniqueMatch(candidates []string, want, what string) (int, error) {
+	var hits []int
+	for i, c := range candidates {
+		if strings.Contains(c, want) {
+			hits = append(hits, i)
+		}
+	}
+	switch len(hits) {
+	case 1:
+		return hits[0], nil
+	case 0:
+		return 0, fmt.Errorf("%s has no command containing %q", what, want)
+	default:
+		return 0, fmt.Errorf("%s has %d commands containing %q — the witness cannot tell which one to read; keep one so what wins does not depend on the order commands were added", what, len(hits), want)
+	}
 }
 
 // TestChartKindWaitFollowsTheValuesDeadline pins the derivation both
@@ -78,6 +100,98 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 		}
 		if got, want := strings.TrimSpace(stdout), "720s"; got != want {
 			t.Fatalf("chart-kind-wait = %q, want %q — the server's knob must win whichever block comes first", got, want)
+		}
+	})
+
+	t.Run("the last duplicate declaration wins", func(t *testing.T) {
+		// go-yaml — helm's values parser — merges duplicate keys and
+		// multiple documents last-wins (proven on helm 4.1.1: a repeated
+		// server block and a second --- document both render the last
+		// value through helm template), so the watch must follow the last
+		// declaration whichever way the file spells it — a repeated block
+		// left at first-wins sizes the watch for a deadline the install
+		// does not have, the #2780 failure with every gate green.
+		for _, tc := range []struct{ name, content, want string }{
+			{"repeated block, 600 then 1200", "server:\n  progressDeadlineSeconds: 600\nserver:\n  progressDeadlineSeconds: 1200\n", "1320s"},
+			{"repeated block, 1200 then 600", "server:\n  progressDeadlineSeconds: 1200\nserver:\n  progressDeadlineSeconds: 600\n", "720s"},
+			{"second document, 600 then 1200", "server:\n  progressDeadlineSeconds: 600\n---\nserver:\n  progressDeadlineSeconds: 1200\n", "1320s"},
+			{"second document, 1200 then 600", "server:\n  progressDeadlineSeconds: 1200\n---\nserver:\n  progressDeadlineSeconds: 600\n", "720s"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				stdout, stderr, err := runKindWait(t, valuesFile(t, tc.content))
+				if err != nil {
+					t.Fatalf("chart-kind-wait refused a duplicate form helm merges — %s", strings.TrimSpace(stderr))
+				}
+				if got, want := strings.TrimSpace(stdout), tc.want; got != want {
+					t.Fatalf("chart-kind-wait = %q, want %q — the watch must follow the declaration go-yaml leaves last", got, want)
+				}
+			})
+		}
+		t.Run("a last zero hides the earlier deadline", func(t *testing.T) {
+			_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: 600\nserver:\n  progressDeadlineSeconds: 0\n"))
+			if err == nil {
+				t.Fatalf("chart-kind-wait sized the watch from the earlier 600 — go-yaml leaves the 0 last and the templates skip it")
+			}
+			if !strings.Contains(stderr, "600 s default") {
+				t.Fatalf("refusal does not name the 600 s default — stderr: %s", strings.TrimSpace(stderr))
+			}
+		})
+	})
+
+	t.Run("the block's own indent is read", func(t *testing.T) {
+		// YAML fixes no indent width: go-yaml accepts the server block at
+		// one, three, four or eight spaces, and an indented comment fixes
+		// nothing. A deeper key belongs to a nested block — its knob is a
+		// different key helm does not read as the deadline (both orders:
+		// which one comes first must not decide the verdict).
+		for _, form := range []string{
+			"server:\n progressDeadlineSeconds: 600\n",
+			"server:\n   progressDeadlineSeconds: 600\n",
+			"server:\n    progressDeadlineSeconds: 600\n",
+			"server:\n        progressDeadlineSeconds: 600\n",
+			"server:\n  # a comment at a foreign indent fixes nothing\n    progressDeadlineSeconds: 600\n",
+		} {
+			stdout, stderr, err := runKindWait(t, valuesFile(t, form))
+			if err != nil {
+				t.Fatalf("chart-kind-wait refused %q — go-yaml accepts the block at its own indent; stderr: %s", form, strings.TrimSpace(stderr))
+			}
+			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
+				t.Fatalf("chart-kind-wait = %q, want %q on %q", got, want, form)
+			}
+		}
+		for _, form := range []string{
+			"server:\n  hpa:\n    progressDeadlineSeconds: 900\n  progressDeadlineSeconds: 600\n",
+			"server:\n  progressDeadlineSeconds: 600\n  hpa:\n    progressDeadlineSeconds: 900\n",
+		} {
+			stdout, stderr, err := runKindWait(t, valuesFile(t, form))
+			if err != nil {
+				t.Fatalf("chart-kind-wait refused %q — the nested block's knob is not the server's deadline; stderr: %s", form, strings.TrimSpace(stderr))
+			}
+			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
+				t.Fatalf("chart-kind-wait = %q, want %q on %q — the deeper 900 belongs to hpa, not to the deadline", got, want, form)
+			}
+		}
+	})
+
+	t.Run("quoted keys and a space before the colon are not refused", func(t *testing.T) {
+		// YAML spells keys bare or quoted and allows space before the
+		// colon; go-yaml accepts each form and helm installs it (proven on
+		// helm 4.1.1: every form renders the 600 it spells).
+		for _, form := range []string{
+			"\"server\":\n  progressDeadlineSeconds: 600\n",
+			"'server':\n  progressDeadlineSeconds: 600\n",
+			"\"server\" :\n  progressDeadlineSeconds: 600\n",
+			"server :\n  progressDeadlineSeconds: 600\n",
+			"server:\n  \"progressDeadlineSeconds\": 600\n",
+			"server:\n  'progressDeadlineSeconds' : 600\n",
+		} {
+			stdout, stderr, err := runKindWait(t, valuesFile(t, form))
+			if err != nil {
+				t.Fatalf("chart-kind-wait refused %q — go-yaml accepts the key spelled that way; stderr: %s", form, strings.TrimSpace(stderr))
+			}
+			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
+				t.Fatalf("chart-kind-wait = %q, want %q on %q", got, want, form)
+			}
 		}
 	})
 
@@ -156,6 +270,23 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 		}
 	})
 
+	t.Run("a quoted decimal installs like the bare integer", func(t *testing.T) {
+		// go-yaml hands "600" to the templates as the string "600", but
+		// the templates print the scalar verbatim, so the applied manifest
+		// holds the bare integer and installs like the unquoted form —
+		// helm 4.1.1 renders "600" byte-identical to 600. Refusing it
+		// would stop an install helm runs.
+		for _, form := range []string{`"600"`, `'600'`} {
+			stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: "+form+"\n"))
+			if err != nil {
+				t.Fatalf("chart-kind-wait refused %q — the manifest helm applies reads it as the integer it spells; stderr: %s", form, strings.TrimSpace(stderr))
+			}
+			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
+				t.Fatalf("chart-kind-wait %q = %q, want %q", form, got, want)
+			}
+		}
+	})
+
 	t.Run("negative deadline is refused", func(t *testing.T) {
 		_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: -600\n"))
 		if err == nil {
@@ -214,6 +345,22 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 		}
 	})
 
+	t.Run("a scalar on the line after the key is refused", func(t *testing.T) {
+		// go-yaml accepts the scalar on its own, deeper line and renders
+		// it; a line reader cannot pair it with its key, so the guard
+		// refuses loudly — naming the one form it reads — instead of
+		// sizing the watch from a value it never saw.
+		stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds:\n    600\n"))
+		if err == nil {
+			t.Fatalf("chart-kind-wait printed %q — the scalar on the following line is not visible to a line reader", strings.TrimSpace(stdout))
+		}
+		for _, want := range []string{"server.progressDeadlineSeconds", "the only form this guard reads"} {
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("refusal does not name %q — stderr: %s", want, strings.TrimSpace(stderr))
+			}
+		}
+	})
+
 	t.Run("missing file is refused", func(t *testing.T) {
 		_, _, err := runKindWait(t, filepath.Join(t.TempDir(), "absent.yaml"))
 		if err == nil {
@@ -259,20 +406,57 @@ func TestChartKindInstallDerivesItsWaitFromTheValuesFile(t *testing.T) {
 	if !ok {
 		t.Fatalf("Taskfile.yml has no chart:kind task")
 	}
-	var install string
+	cmds := make([]string, 0, len(task.Cmds))
 	for _, c := range task.Cmds {
-		if strings.Contains(c.Value, "helm upgrade --install") {
-			install = c.Value
-		}
+		cmds = append(cmds, c.Value)
 	}
-	if install == "" {
-		t.Fatalf("chart:kind has no `helm upgrade --install` command anymore")
+	idx, err := uniqueMatch(cmds, "helm upgrade --install", "chart:kind")
+	if err != nil {
+		t.Fatal(err)
 	}
+	install := cmds[idx]
 	if !strings.Contains(install, "scripts/chart-kind-wait.sh") {
 		t.Fatalf("chart:kind's install no longer calls scripts/chart-kind-wait.sh — the client wait drifts from the values deadline again; cmd: %s", install)
 	}
 	if !strings.Contains(install, `--timeout "$KIND_WAIT"`) {
 		t.Fatalf("chart:kind's install must pass the helper's output to --timeout; cmd: %s", install)
+	}
+}
+
+// TestWitnessSelectorsRequireAUniqueMatch pins the selection rule both
+// wiring witnesses share: a selector that matches none or several commands
+// is an error, not a silent first/last win that drifts with the order
+// commands were added.
+func TestWitnessSelectorsRequireAUniqueMatch(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		candidates []string
+		want       string
+		hit        int
+		errPart    string
+	}{
+		{"the single match is returned", []string{"kind up", "helm upgrade --install iterion ./charts/iterion", "kind down"}, "helm upgrade --install", 1, ""},
+		{"no match is an error", []string{"kind up", "kind down"}, "helm upgrade --install", 0, "no command containing"},
+		{"two matches are an error", []string{"helm upgrade --install a", "kind up", "helm upgrade --install b"}, "helm upgrade --install", 0, "2 commands containing"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hit, err := uniqueMatch(tc.candidates, tc.want, "chart:kind")
+			if tc.errPart == "" {
+				if err != nil {
+					t.Fatalf("uniqueMatch refused the single match: %v", err)
+				}
+				if hit != tc.hit {
+					t.Fatalf("uniqueMatch = %d, want %d", hit, tc.hit)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("uniqueMatch accepted a selector matching several commands — a witness must refuse the ambiguity instead of reading whichever command comes last")
+			}
+			if !strings.Contains(err.Error(), tc.errPart) {
+				t.Fatalf("error %q does not name %q", err, tc.errPart)
+			}
+		})
 	}
 }
 
@@ -306,15 +490,15 @@ func TestChartCloudE2EInstallDerivesItsWaitFromTheValuesFile(t *testing.T) {
 	if !ok {
 		t.Fatalf("tests.yml has no cloud-e2e job")
 	}
-	var install string
+	names := make([]string, 0, len(job.Steps))
 	for _, st := range job.Steps {
-		if st.Name == "Helm install (values-dev.yaml)" {
-			install = st.Run
-		}
+		names = append(names, st.Name)
 	}
-	if install == "" {
-		t.Fatalf("cloud-e2e has no step named \"Helm install (values-dev.yaml)\"")
+	idx, err := uniqueMatch(names, "Helm install (values-dev.yaml)", "cloud-e2e")
+	if err != nil {
+		t.Fatal(err)
 	}
+	install := job.Steps[idx].Run
 	if !strings.Contains(install, "scripts/chart-kind-wait.sh") {
 		t.Fatalf("cloud-e2e's install no longer calls scripts/chart-kind-wait.sh — a fixed client cap decides the install again; run: %s", install)
 	}
