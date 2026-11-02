@@ -1618,7 +1618,7 @@ func selectedAnthropicCredEnvForCLI(ctx context.Context, providerHint string, sa
 	// served every credential the run carries, and the refusal below is
 	// the honest answer (the facade paths' env fallback is gated the same
 	// way).
-	if !ambientAnthropicAuthConfigured() && !(hasCreds && creds.AmbientRefused) {
+	if !ambientAnthropicAuthConfigured() && (!hasCreds || !creds.AmbientRefused) {
 		if zai := os.Getenv("ZAI_API_KEY"); zai != "" {
 			return zaiEnv(zai), false
 		}
