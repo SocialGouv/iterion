@@ -45,9 +45,10 @@ func TestChartKindWaitFollowsTheValuesDeadline(t *testing.T) {
 
 // TestChartKindWaitDerivesAndRefuses exercises the helper's contract on
 // scratch values files: the margin arithmetic, the two block orders
-// (runner's knob before or after the server's), and the refusals — an
-// unset knob, a zero, a non-integer, a missing file, and the runner's own
-// deadline, which is not the server's.
+// (runner's knob before or after the server's), the whitespace forms
+// go-yaml tolerates, and the refusals — an unset knob, a zero, a
+// non-integer, a missing file, and the runner's own deadline, which is
+// not the server's.
 func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 	t.Run("deadline plus the 120s margin", func(t *testing.T) {
 		stdout, stderr, err := runKindWait(t, valuesFile(t, "mode: cloud\nserver:\n  progressDeadlineSeconds: 600\n"))
@@ -76,6 +77,27 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 		}
 		if got, want := strings.TrimSpace(stdout), "720s"; got != want {
 			t.Fatalf("chart-kind-wait = %q, want %q — the server's knob must win whichever block comes first", got, want)
+		}
+	})
+
+	t.Run("whitespace go-yaml tolerates is not refused", func(t *testing.T) {
+		// go-yaml — the parser helm reads values with — accepts trailing
+		// spaces and tabs after the value, a tab between key and value,
+		// and a tab before a comment; trimming them keeps the refusal
+		// path for values helm would refuse too.
+		for _, form := range []string{
+			"server:\n  progressDeadlineSeconds: 600   \n",
+			"server:\n  progressDeadlineSeconds: 600\t\n",
+			"server:\n  progressDeadlineSeconds:\t600\n",
+			"server:\n  progressDeadlineSeconds: 600\t# trailing comment\n",
+		} {
+			stdout, stderr, err := runKindWait(t, valuesFile(t, form))
+			if err != nil {
+				t.Fatalf("chart-kind-wait refused %q — go-yaml accepts it, so helm installs it; stderr: %s", form, strings.TrimSpace(stderr))
+			}
+			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
+				t.Fatalf("chart-kind-wait = %q, want %q — deadline + 120 s margin on %q", got, want, form)
+			}
 		}
 	})
 

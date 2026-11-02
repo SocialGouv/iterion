@@ -12,6 +12,11 @@
 # unset means Kubernetes' 600 s default applies, and a 0 renders through a
 # `with` that skips it — either would silently shrink the watch. The first
 # `server.progressDeadlineSeconds:` declaration in the file wins.
+#
+# Whitespace go-yaml — the parser helm reads values with — tolerates (a tab
+# separating key and value, spaces or tabs around a trailing comment and
+# before the line end) is trimmed, so a file helm accepts is not refused
+# here as "not an integer".
 # Usage: scripts/chart-kind-wait.sh <values file>
 set -eu
 
@@ -25,10 +30,11 @@ deadline=$(awk '
   /^[A-Za-z][A-Za-z0-9_-]*:/ { top = $1; sub(/:$/, "", top) }
   top == "server" && $0 ~ /^  progressDeadlineSeconds:/ {
     v = $0
-    sub(/^  progressDeadlineSeconds:[ ]*/, "", v)
-    sub(/[ ]*#.*/, "", v)
+    sub(/^  progressDeadlineSeconds:[ \t]*/, "", v)
+    sub(/[ \t]*#.*/, "", v)
     sub(/\r$/, "", v)
     gsub(/["'"'"']/, "", v)
+    sub(/[ \t]+$/, "", v)
     print v
     exit
   }
