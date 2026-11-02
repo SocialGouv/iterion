@@ -12,7 +12,8 @@
 // never re-judged, and the runner's own guard reads the deployment-wide policy
 // rather than the lowered one (pkg/runner/usage_cap.go). A real guarantee
 // needs durable allocation — reserve at admission, settle after completion,
-// reconcile on crash — which is tracked on #950 and not built here.
+// reconcile on crash — which is tracked on #950 and not built here; its
+// design is docs/adr/155-reserved-capacity-is-a-durable-allocation.md.
 //
 // What it does buy is real and was measured missing: unreserved work meets its
 // ceiling first, so it is sent to another credential while the named workload
