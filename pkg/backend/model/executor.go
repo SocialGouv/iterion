@@ -1286,8 +1286,10 @@ func (e *ClawExecutor) RepoRoot() string {
 // docs/backends.md); the narrower per-run scratch is its own fix.
 // Empty, or no read scope wired (WithClawReadScope), is a no-op.
 // Only the READ tools take the root; the write tools' contract is
-// untouched. Safe to call before Execute; not safe to call concurrently
-// with an in-flight Execute.
+// untouched. Safe before Execute and concurrently with an in-flight
+// Execute (#2897): the scope is RWMutex-guarded and every resolve reads
+// workspace and extra roots under one lock, so a push lands whole or
+// not at all — never a torn view mid-update.
 func (e *ClawExecutor) SetScratchDir(dir string) {
 	if e.readScope == nil {
 		return
