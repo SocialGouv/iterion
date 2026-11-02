@@ -48,7 +48,11 @@ var agentTreeBudgets = []agentTreeBudget{
 	// docs/dsl.md and this leaf is the cross-cutting doctrine that page
 	// does not carry (precedences, the gate diagnostics, roster rules).
 	{"docs/agents/engine/dsl-quick-reference.md", 10752},
-	{"docs/agents/**/*.md", 13312}, // flakes.md is an append-only register: one row per machine-dependent failure — the budget follows that growth
+	// flakes.md is an append-only register: one row per machine-dependent
+	// failure, so its budget follows that growth on its own row — the shared
+	// glob below keeps the ceiling every other non-README page holds.
+	{"docs/agents/testing/flakes.md", 13312},
+	{"docs/agents/**/*.md", 12288},
 }
 
 type agentTreeBudget struct {
