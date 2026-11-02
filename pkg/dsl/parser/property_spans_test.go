@@ -163,11 +163,27 @@ func TestARefusedPropertyIsNotRecorded(t *testing.T) {
 	// its second witness, for a Set that turns quadratic without the table
 	// growing. Measured as a RATIO, never as a duration: quadrupling the
 	// input costs ~4x while Set is linear in a one-entry table and ~16x when
-	// it is not, and neither figure moves with the machine. The 10s bound
-	// this replaces read 44.8s and 59.4s on two loaded shards under -race
-	// (2026-10-29, race-shard (1) on #2843) with the table perfectly
-	// correct — only the clock had been borrowed, so no rerun could clear it.
-	quarter, full := parse(large/4), parse(large)
+	// it is not. The 10s bound this replaces read 44.8s and 59.4s on two
+	// loaded shards under -race (2026-10-29, race-shard (1) on #2843) with
+	// the table perfectly correct — only the clock had been borrowed, so no
+	// rerun could clear it. A single-sample ratio still borrows the clock:
+	// the T48 gate (2026-11-02) measured 8.6x against the first 8x bound
+	// because a mid-parse preemption inflates the larger run more than the
+	// baseline. The ratio therefore reads min-of-3 on both sides, the repair
+	// T41 gave TestBrokenListSplicesStayLinear: load only inflates a min,
+	// and a quadratic Set scores ~16x even at ITS best — the 8x bound stays
+	// decisive. Same family, flakes.md carries both.
+	minOf := func(strays int) time.Duration {
+		t.Helper()
+		best := time.Duration(0)
+		for i := 0; i < 3; i++ {
+			if took := parse(strays); best == 0 || took < best {
+				best = took
+			}
+		}
+		return best
+	}
+	quarter, full := minOf(large/4), minOf(large)
 	if quarter <= 0 {
 		t.Fatalf("the %d-stray parse measured %s: no baseline to compare against", large/4, quarter)
 	}
