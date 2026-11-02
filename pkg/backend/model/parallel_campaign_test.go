@@ -31,12 +31,14 @@ import (
 // and a table line whose file no longer touches a global reddens as freed.
 // Read at b06f9b290 with this campaign applied: 215 deterministic test files
 // (a 216th is live-tagged), 75 serial by table and 2 by design, 138 parallel.
-// The dotenv-belt tour added claw_stream_belt_test.go and the watchdog
-// crossing witness (t.Setenv), 77 serial by table; #2808's slices freed
+// In absolute, read on 2026-11-02: 90 serial by table and 2 by design —
+// 75 at the campaign's creation, a drift of +18 lines added by
+// intermediate slices without moving this prose (the guards keep the
+// TABLE honest, not this sentence), and #2808's slices freeing
 // secretguard_ambient_test.go, session_ledger_test.go and
 // claw_vendored_tool_env_test.go (their reads ride the ctx-carried
-// environment) — 74 by table. The guards above re-check the partition
-// every run.
+// environment): 93 -> 90. The guards above re-check the partition every
+// run.
 // That reading is prose on purpose — asserting the COUNT would redden every
 // commit that adds a test file to this contended package, while the two
 // directional guards already force each new file into a conscious answer.
@@ -47,7 +49,7 @@ import (
 // does not free, which is the fact #2808 needs. Derived at b06f9b290 and
 // checked against the code on every run:
 //
-//	65 files	Setenv
+//	68 files	Setenv
 //	 3 files	SetCredentialsLookup, Setenv
 //	 2 files	SetDefault (modelspecs, through seedSpecs)
 //	 1 file 	SetCredentialsLookup, SetOAuthDirLookup, Setenv
