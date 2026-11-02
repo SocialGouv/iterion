@@ -48,7 +48,7 @@ var agentTreeBudgets = []agentTreeBudget{
 	// docs/dsl.md and this leaf is the cross-cutting doctrine that page
 	// does not carry (precedences, the gate diagnostics, roster rules).
 	{"docs/agents/engine/dsl-quick-reference.md", 10752},
-	{"docs/agents/**/*.md", 12288}, // flakes.md is an append-only register: one row per machine-dependent failure — the budget follows that growth
+	{"docs/agents/**/*.md", 13312}, // flakes.md is an append-only register: one row per machine-dependent failure — the budget follows that growth
 }
 
 type agentTreeBudget struct {
@@ -492,9 +492,15 @@ func TestUntrackedAgentDraftDoesNotChangeTheVerdict(t *testing.T) {
 		}
 	}
 	// Sized just past the docs/agents page budget (agentTreeBudgets): the
-	// guard must redden the moment the draft is staged.
+	// guard must redden the moment the draft is staged. The size reads the
+	// live budget, so the witness follows the table instead of decoupling
+	// from it at the next budget raise.
+	budget, ok := firstBudget(agentTreeBudgets, "docs/agents/local draft.md")
+	if !ok {
+		t.Fatal("no budget matches a docs/agents draft")
+	}
 	const draft = "docs/agents/local draft.md"
-	writeTreeFile(t, root, draft, "# Draft\n\n"+strings.Repeat("x", 13000))
+	writeTreeFile(t, root, draft, "# Draft\n\n"+strings.Repeat("x", budget.max))
 	for _, check := range []func(*testing.T, string) []string{budgetViolations, unindexedPages} {
 		if got := check(t, root); len(got) != 0 {
 			t.Errorf("untracked draft changed the verdict: %v", got)
