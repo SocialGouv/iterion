@@ -3,7 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-10-28
 - **Authors**: devthejo (session with Claude), operator-arbitrated — the #2668 lane, arbitration of 2026-10-28: "2668.3 = ADR d'abord, le canari RÉÉCRIT pour le nouveau contrat"
-- **Landed by this change**: the contract and the rewritten canary. Owed by the slices behind it: the `WorkspaceExporter` widening, the kubernetes drain, the collector, and the `pkg/store/mongo` twin — in that order, each with its own witness.
+- **Landed by this change**: the contract and the rewritten canary. Landed since: the `WorkspaceExporter` widening with the kubernetes drain (emptyDir at the declared path, the drain at teardown, the `sandbox_runfiles_drain_failed` event, the named cap) and the `pkg/store/mongo` run-files twin. Still owed: the `deliverables:` collector (#2690) and the pod-side read of declared workspace files it needs on a pod.
 - **Relates to**: [082-sandbox-by-default.md](082-sandbox-by-default.md) and [031-sandbox-one-long-lived-sleep-infinity-container-per-run.md](031-sandbox-one-long-lived-sleep-infinity-container-per-run.md) (this names a new clause of the driver contract they set) · [sandbox.md](../sandbox.md#a-promise-the-driver-drops-takes-its-variable-with-it) (its "Known gap — run-files on pods" is what this closes) · [attachments.md](../attachments.md) (`required=true`, the loud half of #2668)
 
 ## Context

@@ -564,6 +564,18 @@ const (
 	//   - driver: the sandbox driver
 	//   - error: the export failure
 	EventSandboxWorkspaceExportFailed EventType = "sandbox_workspace_export_failed"
+	// EventSandboxRunFilesDrainFailed fires when the read-back drain of a
+	// declared run-files path (ADR-143) fails at sandbox teardown: the
+	// container wrote its artifact files into the emptyDir the driver
+	// served, and the bytes were not recovered into the run file store
+	// before the pod went away. The sibling of
+	// EventSandboxWorkspaceExportFailed and the answer to the same
+	// question ADR-143 §4 asks — a drain that failed must stay
+	// distinguishable from a run that wrote nothing, because an empty
+	// artifact-files panel is the silence #2668 is about. Data:
+	//   - driver: the sandbox driver
+	//   - error: the drain failure
+	EventSandboxRunFilesDrainFailed EventType = "sandbox_runfiles_drain_failed"
 	// EventSandboxHostBindsDropped fires when the selected driver has no
 	// host filesystem and the runtime removes the host bind mounts the run
 	// declared — a bot's own `sandbox.mounts:` type=bind entries and the

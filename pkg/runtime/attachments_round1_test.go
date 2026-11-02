@@ -84,7 +84,9 @@ func TestACopyingDriverHandsNodesTheContainerPath(t *testing.T) {
 }
 
 // The drop event, on a copying driver, does not list the directory a seed
-// carries; it says so under `carried`.
+// carries; it says so under `carried`. The run-files path is no longer in
+// the dropped set at all: the read-back contract (ADR-143) serves it with
+// an emptyDir the driver keeps, so there is nothing to drop or withdraw.
 func TestTheDropEventDoesNotListWhatASeedCarries(t *testing.T) {
 	p := canaryParams(t)
 	attachTo(t, p.AttachmentsHostDir, "spec", "spec.md")
@@ -96,8 +98,8 @@ func TestTheDropEventDoesNotListWhatASeedCarries(t *testing.T) {
 	if len(dropped) != 1 {
 		t.Fatalf("sandbox_host_binds_dropped emitted %d times, want 1", len(dropped))
 	}
-	if want := []string{"/iterion/artifact-files"}; !reflect.DeepEqual(dropped[0]["mounts"], want) {
-		t.Fatalf("the drop event lists %v, want %v (the attachments are carried)", dropped[0]["mounts"], want)
+	if want := []string{}; !reflect.DeepEqual(dropped[0]["mounts"], want) {
+		t.Fatalf("the drop event lists %v, want nothing dropped — the attachments are carried and the run-files path is a kept emptyDir (ADR-143)", dropped[0]["mounts"])
 	}
 	if want := []string{attachmentsContainerPath}; !reflect.DeepEqual(dropped[0]["carried"], want) {
 		t.Fatalf("the drop event carries %v, want %v", dropped[0]["carried"], want)

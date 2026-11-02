@@ -274,7 +274,7 @@ promise made on it must go with it. On the pod backend:
 
 | Promise | On docker | On kubernetes |
 |---|---|---|
-| `ITERION_ARTIFACT_FILES_DIR` (where an in-sandbox tool drops files for the artifact-files panel) | set, bind-mounted | **absent** — a tool falls back to a temp dir |
+| `ITERION_ARTIFACT_FILES_DIR` (where an in-sandbox tool drops files for the artifact-files panel) | set, bind-mounted | set — the path is served by an **`emptyDir` the driver keeps** (ADR-143), capped at the read-back cap, and **drained at teardown** into the run file store, from where the panel and its downloads read |
 | `ITERION_ENGINE_BIN` (the engine's own iterion binary, for a bot script that re-enters the CLI; never resolved from the workspace) | set — the container path the bind mount or the image bakes | set — the container path, via per-exec env, so no bind to drop |
 | Attachments path handed to nodes | the container path | the container path — the directory is **copied in** at start (`RunInfo.SeedDirs`, an `emptyDir` per seed, the workspace's tar pipeline; `sandbox_attachments_copied` on the run's stream), its files read-only. A driver that can neither bind nor copy **refuses the run** that holds attachments: `ATTACHMENTS_UNDELIVERABLE`, `sandbox_skipped` with `refused: true` and the names — a run that goes on without what it was given is the worst of the three outcomes (#2086) |
 | The bot's bundle `devbox.json` | provisioned from the mount | provisioned — the config is **carried** into the sandbox by the install prologue, since the bundle itself cannot be read from in-container (see [devbox provisioning](#best-effort-never-silent)) |
@@ -305,22 +305,33 @@ named a directory the pod never had, a gate wrapper redirecting its
 report into it died on "Directory nonexistent", and four lots read an
 oracle verdict out of an environment failure.
 
-**Known gap — run-files on pods.** Nothing collects a pod's run files:
-the collector reads the host directory the bind would have served, and
-the pod writes to a temp dir that dies with it. Closing it needs a
-read-back seam the driver does not have — an emptyDir at the container
-path plus a drain at teardown, i.e. `WorkspaceExporter`'s shape widened
-past the workspace. Until then the artifact-files panel is empty for a
-pod run, and the variable stays honestly unset rather than naming a
-directory nobody reads. The contract that seam implements is written:
-[ADR-143](adr/143-sandbox-read-back-contract.md) — a read-back path is
-declared, served by storage the driver owns, and drained at teardown, so
-the variable is named *because* the content comes back.
-`TestSandboxSpec_NoPromiseSurvivesTheBindThatServedIt`
-([pkg/runtime](../pkg/runtime/sandbox_bind_promise_canary_test.go)) walks
-every `spec.Env` value and every path in `spec.PostCreate` against the
-mounts the driver keeps, so the next promise made on a dropped bind
-fails in CI rather than in a campaign.
+**Run files on pods — the read-back contract.** The pod case is the
+contract [ADR-143](adr/143-sandbox-read-back-contract.md) wrote: a
+read-back path is **declared** (`spec.ReadBackPaths`, alongside the
+mounts, never inferred), **served by storage the driver owns** (an
+`emptyDir` at the container path, sized to the read-back cap — the mount
+type `type=emptydir,target=…[,size=…]` is available to bot
+`sandbox.mounts:` on kubernetes too), and **drained at teardown**
+(`WorkspaceExporter.ExportRunFiles`, the export seam's second half)
+into the run file store's directory, from where the runner's upload
+bridges it to the durable read source. A drain that fails is
+`sandbox_runfiles_drain_failed` on the run — a failed drain must stay
+distinguishable from a run that wrote nothing, because an empty
+artifact-files panel is exactly the silence that once made every
+cloud deliverable disappear (#2668). The set is capped, and the cap is
+named and metered (`sandbox.ReadBackCapBytes`): the emptyDir's
+sizeLimit spends it on the pod, the drain's meter enforces it on the
+host. What the contract does not promise: a pod that dies before
+teardown takes its `emptyDir` with it — bytes that must survive an
+abrupt end are published as the run goes (`attachment=`), not left for
+the drain.
+`TestSandboxSpec_NoPromiseSurvivesTheBindThatServedIt` and
+`TestSandboxSpec_TheRunFilesPathIsNamedExactlyWhenAMountServesIt`
+([pkg/runtime](../pkg/runtime/sandbox_bind_promise_canary_test.go)) walk
+every `spec.Env` value, every path in `spec.PostCreate`, and the
+declared read-back paths against the mounts the driver keeps, so the
+next promise made on a dropped bind — or a variable naming a path no
+kept mount serves — fails in CI rather than in a campaign.
 
 ### Host state mounts (`~/.iterion`, `~/.claude`)
 

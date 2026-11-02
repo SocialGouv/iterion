@@ -43,6 +43,8 @@ func (f proxiedFakeRun) RefreshSecretFile(ctx context.Context, name string, valu
 
 func (f proxiedFakeRun) ExportWorkspace(ctx context.Context) error { return nil }
 
+func (f proxiedFakeRun) ExportRunFiles(ctx context.Context) error { return nil }
+
 func (f proxiedFakeRun) CaptureWorkspaceHead(ctx context.Context) (string, error) {
 	return "", nil
 }
@@ -108,6 +110,8 @@ func (f nonProxiedFakeRun) RefreshSecretFile(ctx context.Context, name string, v
 }
 
 func (f nonProxiedFakeRun) ExportWorkspace(ctx context.Context) error { return nil }
+
+func (f nonProxiedFakeRun) ExportRunFiles(ctx context.Context) error { return nil }
 
 func (f nonProxiedFakeRun) CaptureWorkspaceHead(ctx context.Context) (string, error) {
 	return "", nil

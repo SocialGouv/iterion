@@ -614,23 +614,57 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// dir on the host), and cleared again below when the driver drops host
 	// binds. attachmentPath keys off it rather than re-predicting.
 	attachmentsDir := addOptionalBindMount(spec, p.AttachmentsHostDir, p.AttachmentsContainerPath, "/run/iterion/attachments", "attachments", true, logger)
-	// The value the bot gave the run-files variable before the runtime's
-	// own took its place; handed back if that promise is withdrawn
-	// (finalizeMountsForDriver).
+	// The run-files path is a DECLARED read-back path (ADR-143): the
+	// runtime names it in spec.ReadBackPaths exactly when it also arranges
+	// the storage that serves it — the host bind on a driver with a
+	// filesystem, driver-owned storage (an emptyDir, capped) on a driver
+	// with none — and the spec is refused at admission if the pairing is
+	// broken. The value the bot gave the run-files variable before the
+	// runtime's own took its place; handed back if that promise is
+	// withdrawn (finalizeMountsForDriver).
 	botRunFilesDir := ""
-	if runFilesContainerPath := addOptionalBindMount(spec, p.RunFilesHostDir, p.RunFilesContainerPath, "/iterion/artifact-files", "run-files", false, logger); runFilesContainerPath != "" {
-		// Tool scripts find the path via $ITERION_ARTIFACT_FILES_DIR
-		// so recipe authors don't have to hard-code container paths. The
-		// runtime's value wins where the bind is real: the run-files
-		// collector reads that directory and no other, so a bot's own value
-		// would send files where nothing collects them. The promise is
-		// withdrawn with the bind when the driver drops host binds
-		// (finalizeMountsForDriver).
-		if spec.Env == nil {
-			spec.Env = map[string]string{}
+	var readBackDirs []sandbox.ReadBackDir
+	if p.RunFilesHostDir != "" {
+		if _, statErr := os.Stat(p.RunFilesHostDir); statErr == nil {
+			target := p.RunFilesContainerPath
+			if target == "" {
+				target = "/iterion/artifact-files"
+			}
+			var runFilesContainerPath string
+			if caps.SupportsHostBindMounts {
+				runFilesContainerPath = addOptionalBindMount(spec, p.RunFilesHostDir, target, target, "run-files", false, logger)
+			} else {
+				// Storage the driver keeps: an emptyDir at the declared
+				// path, sized to the read-back cap so a pod spends neither
+				// the node's ephemeral storage nor the drain's meter past
+				// one named figure. Kept by dropUnsupportedHostBinds (it is
+				// not a host bind), so the variable naming it survives.
+				spec.Mounts = append(spec.Mounts, fmt.Sprintf("type=emptydir,target=%s,size=%dMi", target, sandbox.ReadBackCapBytes>>20))
+				runFilesContainerPath = target
+			}
+			if runFilesContainerPath != "" {
+				// Tool scripts find the path via $ITERION_ARTIFACT_FILES_DIR
+				// so recipe authors don't have to hard-code container paths.
+				// The runtime's value wins where the mount is real: the
+				// read-back drain collects that directory and no other, so
+				// a bot's own value would send files where nothing collects
+				// them. The promise is withdrawn with the mount when the
+				// driver drops host binds (finalizeMountsForDriver).
+				if spec.Env == nil {
+					spec.Env = map[string]string{}
+				}
+				botRunFilesDir = spec.Env[runFilesEnvVar]
+				spec.Env[runFilesEnvVar] = runFilesContainerPath
+				spec.ReadBackPaths = append(spec.ReadBackPaths, target)
+				readBackDirs = append(readBackDirs, sandbox.ReadBackDir{
+					ContainerPath: target,
+					HostDir:       p.RunFilesHostDir,
+				})
+			}
+		} else if !errors.Is(statErr, fs.ErrNotExist) && logger != nil {
+			// Same report addOptionalBindMount gives its optional mounts.
+			logger.Warn("runtime: sandbox run-files host dir %s: %v — skipping mount", p.RunFilesHostDir, statErr)
 		}
-		botRunFilesDir = spec.Env[runFilesEnvVar]
-		spec.Env[runFilesEnvVar] = runFilesContainerPath
 	}
 	// Tool scripts find the canonical tree-noise pathspecs via
 	// $ITERION_TREE_NOISE (pkg/treenoise) so a scope gate filters the tree
@@ -885,6 +919,12 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		MaxDurationSeconds: workflowMaxDurationSeconds(p.Workflow),
 		HostGatewayAlias:   wantsBoardListener || wantsAskUserListener,
 		SeedDirs:           seeds,
+		// The drain manifest mirrors the declaration: the container path
+		// the runtime named and the run file store's scratch dir it will
+		// land in. Only a driver that carries the content between Start
+		// and teardown receives it — a bind-mount driver's declared path
+		// already lives on the host through its bind (ADR-143).
+		ReadBackDirs: readBackDirs,
 	}
 
 	prepared, err := driver.Prepare(ctx, *spec)
@@ -2626,6 +2666,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		if active.run != nil {
 			e.captureSandboxWorkspaceIntegrity(active.run)
 			exportSandboxWorkspaceOnCleanup(active.run, e.logger, emitForSandbox)
+			drainRunFilesOnCleanup(active.run, e.logger, emitForSandbox)
 			e.bankScratchOnCleanup(ctx, runID, active)
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), sandboxShutdownTimeout)
@@ -2649,11 +2690,12 @@ const sandboxShutdownTimeout = 30 * time.Second
 
 // SandboxTeardownBudget bounds what the engine still does in a sandbox once
 // its run was cancelled or parked, before it returns: the workspace HEAD
-// capture, the export, the scratch's bank (its archive and upload, its
-// record, the resume of the processes its quiesce stopped — each on a budget
-// of its own), the shutdown. The runner's lease covers that teardown, then
-// its own post-engine steps (runner.LeaseUnwindCeiling).
+// capture, the export, the run-files drain, the scratch's bank (its archive
+// and upload, its record, the resume of the processes its quiesce stopped —
+// each on a budget of its own), the shutdown. The runner's lease covers that
+// teardown, then its own post-engine steps (runner.LeaseUnwindCeiling).
 const SandboxTeardownBudget = sandboxHeadCaptureTimeout + sandboxWorkspaceExportTimeout +
+	sandboxRunFilesDrainTimeout +
 	scratchBankTimeout + scratchBankRecordBudget + scratchResumeBudget +
 	sandboxShutdownTimeout
 
@@ -2751,6 +2793,52 @@ func exportSandboxWorkspaceOnCleanup(
 	}
 	if logger != nil {
 		logger.Info("runtime: sandbox workspace exported back to host")
+	}
+}
+
+// sandboxRunFilesDrainTimeout bounds the read-back drain at teardown (a
+// tar stream of the run-files tree, sized like the workspace export it
+// shares the cleanup with — the whole teardown then fits the budget the
+// runner's lease is unwound on).
+const sandboxRunFilesDrainTimeout = 2 * time.Minute
+
+// drainRunFilesOnCleanup performs the read-back drain (ADR-143 §3-4) at
+// sandbox teardown: a driver that carries the run's declared read-back
+// paths streams them into the run file store's dir BEFORE the sandbox is
+// destroyed — the container's bytes only exist there, and the runner's
+// uploadRunFiles bridges them into the durable store once the engine has
+// returned. Drivers that share the host filesystem don't implement the
+// export seam — no-op; a run that declared no read-back path drains
+// nothing by construction.
+//
+// Runs on its own background ctx, like the workspace export beside it: a
+// cancelled run still flushes what it produced. A failure is loud (warn +
+// event), never silent — ADR-143 §4: a drain that fails must be
+// distinguishable from a run that wrote nothing, and an empty
+// artifact-files panel is exactly the silence this ticket is about.
+func drainRunFilesOnCleanup(
+	run sandbox.Run,
+	logger *iterlog.Logger,
+	emitEvent func(store.EventType, map[string]any) error,
+) {
+	exporter, ok := run.(sandbox.WorkspaceExporter)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sandboxRunFilesDrainTimeout)
+	defer cancel()
+	if err := exporter.ExportRunFiles(ctx); err != nil {
+		if logger != nil {
+			logger.Warn("runtime: sandbox run-files drain FAILED — the run's artifact files are not recoverable host-side and the panel reads empty (ADR-143): %v", err)
+		}
+		_ = emitEvent(store.EventSandboxRunFilesDrainFailed, map[string]any{
+			"driver": run.Driver(),
+			"error":  err.Error(),
+		})
+		return
+	}
+	if logger != nil {
+		logger.Info("runtime: sandbox run files drained back to host")
 	}
 }
 

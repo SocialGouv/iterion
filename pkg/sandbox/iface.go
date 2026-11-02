@@ -159,7 +159,11 @@ type SecretFileRefresher interface {
 }
 
 // WorkspaceExporter is an optional interface a [Run] may implement to
-// copy the sandbox workspace BACK to the host at end of run.
+// copy the sandbox workspace BACK to the host at end of run, and to drain
+// the declared read-back paths with it (ADR-143). One capability, two
+// halves: a driver whose container holds content the host must recover
+// after teardown implements THIS seam, never a second export interface
+// beside it — the next content kind would otherwise need a new engine `if`.
 //
 // It exists for drivers whose workspace is a COPY of the host workspace
 // (kubernetes: tar-streamed into the pod's emptyDir): without a reverse
@@ -171,13 +175,22 @@ type SecretFileRefresher interface {
 // passthrough share the host filesystem and intentionally do NOT
 // implement this — callers gate on the type assertion.
 //
-// The engine calls it once, at sandbox teardown, BEFORE the sandbox is
-// destroyed. A failure must be surfaced by the caller (log + event) —
-// it means the run's un-pushed work is about to be lost with the pod.
+// The engine calls each half once, at sandbox teardown, BEFORE the
+// sandbox is destroyed. A failure must be surfaced by the caller (log +
+// event) — it means the run's un-pushed work is about to be lost with
+// the pod.
 type WorkspaceExporter interface {
 	// ExportWorkspace copies the sandbox workspace back onto the host
 	// workspace it was populated from. No-op for workspace-less runs.
 	ExportWorkspace(ctx context.Context) error
+
+	// ExportRunFiles drains every declared read-back dir
+	// ([RunInfo.ReadBackDirs]) from the container into the host directory
+	// each entry names, so the run file store receives what the container
+	// wrote (ADR-143 §3: the drain is the clause that makes naming the
+	// path legal). No-op when nothing was declared. A drain that fails is
+	// an event on the run, never an empty set — the caller surfaces it.
+	ExportRunFiles(ctx context.Context) error
 }
 
 // WorkspaceHeadCapturer is an optional interface a [Run] implements
@@ -524,6 +537,15 @@ type RunInfo struct {
 	// receives a seed. A ReadOnly seed's files are made read-only once
 	// copied — the directory itself stays whatever the driver's volume is.
 	SeedDirs []SeedDir
+
+	// ReadBackDirs is the drain manifest for the run's declared read-back
+	// paths ([Spec.ReadBackPaths], ADR-143): each entry pairs the
+	// container path whose content the run must recover with the host
+	// directory that receives it at teardown. Only a driver carrying that
+	// content (an exporter — the kubernetes Run) receives entries; a
+	// bind-mount driver's declared path already lives on the host through
+	// its bind, and a run that declared nothing drains nothing.
+	ReadBackDirs []ReadBackDir
 
 	// ProxyEndpoint, if non-empty, is the URL of the iterion network
 	// proxy (HTTPS_PROXY value) injected into the sandbox by drivers

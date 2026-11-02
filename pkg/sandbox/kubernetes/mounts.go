@@ -37,6 +37,16 @@ const (
 	//   type=secret,source=<sec-name>,target=<container-path>[,key=<key>][,readonly]
 	MountTypeSecret MountType = "secret"
 
+	// MountTypeEmptyDir: storage the driver owns — an emptyDir volume at
+	// target, no source. This is how a declared read-back path is served
+	// on a pod (ADR-143 §2): the container writes a real directory for
+	// its whole life and the run drains it at teardown. Optional
+	// `size=<quantity>` renders an emptyDir sizeLimit (a Kubernetes
+	// quantity, e.g. `256Mi`); unwritten, the volume spends the node's
+	// ephemeral storage up to the pod's own limit.
+	//   type=emptydir,target=<container-path>[,size=<quantity>]
+	MountTypeEmptyDir MountType = "emptydir"
+
 	// MountTypeBind is the docker driver's default. Rejected here.
 	MountTypeBind MountType = "bind"
 )
@@ -45,9 +55,10 @@ const (
 // `sandbox.mounts` entry.
 type parsedMount struct {
 	Type     MountType
-	Source   string // PVC / ConfigMap / Secret name
+	Source   string // PVC / ConfigMap / Secret name (emptydir takes none)
 	Target   string // path inside the container
 	Key      string // optional ConfigMap/Secret key projection
+	Size     string // optional emptyDir sizeLimit (a Kubernetes quantity)
 	ReadOnly bool
 }
 
@@ -84,6 +95,8 @@ func parseMount(s string) (parsedMount, error) {
 			out.Target = v
 		case "key":
 			out.Key = v
+		case "size":
+			out.Size = v
 		case "readonly", "ro":
 			b, err := strconv.ParseBool(v)
 			if err != nil {
@@ -95,10 +108,26 @@ func parseMount(s string) (parsedMount, error) {
 		}
 	}
 	if out.Type == "" {
-		return out, fmt.Errorf("mount %q: type is required (one of pvc, configmap, secret)", s)
+		return out, fmt.Errorf("mount %q: type is required (one of pvc, configmap, secret, emptydir)", s)
 	}
-	if out.Source == "" {
+	// emptydir is the one sourceless type: its storage is the driver's own,
+	// never a cluster object a source would name. Anything else written
+	// after `source=` on one is an authoring error, not a hint.
+	if out.Type == MountTypeEmptyDir {
+		if out.Source != "" {
+			return out, fmt.Errorf("mount %q: type=emptydir takes no source — its storage is driver-owned (a cluster object is a pvc)", s)
+		}
+		if out.Key != "" {
+			return out, fmt.Errorf("mount %q: type=emptydir takes no key", s)
+		}
+	} else if out.Source == "" {
 		return out, fmt.Errorf("mount %q: source is required", s)
+	}
+	if out.Size != "" && out.Type != MountTypeEmptyDir {
+		return out, fmt.Errorf("mount %q: size= is an emptydir key", s)
+	}
+	if out.Size != "" && strings.ContainsAny(out.Size, " \t\n") {
+		return out, fmt.Errorf("mount %q: size %q is not a Kubernetes quantity", s, out.Size)
 	}
 	if out.Target == "" {
 		return out, fmt.Errorf("mount %q: target is required", s)
@@ -126,8 +155,13 @@ func translateMounts(specMounts []string) (volumes []map[string]any, volumeMount
 		// Generate a deterministic volume name. Including the index
 		// keeps it unique across multiple entries that point at the
 		// same source (e.g. two ConfigMap projections of different
-		// keys onto different paths).
+		// keys onto different paths). An emptydir names no source —
+		// the index alone names its volume, suffixed so the name stays
+		// a valid DNS-1123 label (no trailing dash).
 		volName := fmt.Sprintf("mount-%d-%s", i, sanitizeVolumeName(m.Source))
+		if m.Type == MountTypeEmptyDir {
+			volName = fmt.Sprintf("mount-%d-emptydir", i)
+		}
 
 		vm := map[string]any{
 			"name":      volName,
@@ -144,6 +178,16 @@ func translateMounts(specMounts []string) (volumes []map[string]any, volumeMount
 		volumeMounts = append(volumeMounts, vm)
 
 		switch m.Type {
+		case MountTypeEmptyDir:
+			vol := map[string]any{
+				"name":     volName,
+				"emptyDir": map[string]any{},
+			}
+			if m.Size != "" {
+				vol["emptyDir"].(map[string]any)["sizeLimit"] = m.Size
+			}
+			volumes = append(volumes, vol)
+
 		case MountTypePVC:
 			vol := map[string]any{
 				"name": volName,

@@ -176,6 +176,39 @@ type Spec struct {
 	// writes this field only where it also lays host binds. They may ignore
 	// the field.
 	BindSourceChecks []BindSourceCheck
+
+	// ReadBackPaths names the container paths whose content the run must
+	// recover after the container is gone (ADR-143). It is a DECLARATION,
+	// never inferred from the mounts: the runtime names a path here when it
+	// also arranges the storage that serves it — a host bind where the
+	// driver has a filesystem, driver-owned storage (an emptyDir) where it
+	// has none — and a spec whose declaration no mount serves is refused at
+	// admission (Validate) rather than served silently half-way. The run
+	// reads the content back at teardown through the driver's drain
+	// (WorkspaceExporter.ExportRunFiles), keyed on RunInfo.ReadBackDirs.
+	ReadBackPaths []string
+}
+
+// ReadBackCapBytes caps one run's read-back set (ADR-143: the cap is named
+// and metered, never "whatever the container wrote"). The runtime sizes the
+// serving emptyDir's sizeLimit with it and the drain meters extracted bytes
+// against it, so a run cannot spend a node's ephemeral storage or the run
+// file store past the same figure. Same class as the scratch bank's cap
+// (ADR-106): how big one run's by-product tree may be.
+const ReadBackCapBytes int64 = 256 << 20
+
+// ReadBackDir is one entry of the drain manifest: a declared read-back
+// container path and the host directory that receives its content at
+// teardown. The driver drains the path; the run file store owns the
+// directory (its write target), and the two meet only here.
+type ReadBackDir struct {
+	// ContainerPath is the declared path inside the container (absolute,
+	// clean — the same text Spec.ReadBackPaths carries).
+	ContainerPath string
+	// HostDir is the host directory the drained content lands in: the run
+	// file store's own write target, so no consumer of the drained set
+	// needs to know it (ADR-143 — no consumer reads the set by host path).
+	HostDir string
 }
 
 // BindSourceCheck is one bind source the driver must re-verify immediately
@@ -361,7 +394,55 @@ func (s *Spec) Validate() error {
 			return fmt.Errorf("sandbox.secretFiles[%s]: env %q is not a valid environment variable name", sf.Name, sf.Env)
 		}
 	}
+	for _, p := range s.ReadBackPaths {
+		if !strings.HasPrefix(p, "/") || path.Clean(p) != p || p == "/" {
+			return fmt.Errorf("sandbox: read-back path %q must be a clean absolute container path", p)
+		}
+		// ADR-143: named ⇒ served. The declaration is checked against the
+		// mounts as they stand, whatever their type — a host bind on a
+		// driver that has a filesystem, driver-owned storage where it has
+		// none — so a read-back path no mount serves refuses here instead
+		// of becoming the promise-about-a-directory-nobody-has defect the
+		// bind-dropping rule (#815) exists for.
+		if specMountServing(s.Mounts, p) == "" {
+			return fmt.Errorf("sandbox: read-back path %q is served by no mount — declare it only alongside the storage that serves it (ADR-143)", p)
+		}
+	}
 	return nil
+}
+
+// specMountServing returns the mount whose target is containerPath or a
+// parent of it, or "" when none does. The admission half of the read-back
+// contract: the declaration is asked of the mounts as they stand, not of
+// the driver's intentions.
+func specMountServing(mounts []string, containerPath string) string {
+	want := path.Clean(containerPath)
+	for _, m := range mounts {
+		tgt := mountTargetOf(m)
+		if tgt == "" {
+			continue
+		}
+		if c := path.Clean(tgt); want == c || strings.HasPrefix(want, c+"/") {
+			return m
+		}
+	}
+	return ""
+}
+
+// mountTargetOf extracts a mount string's `target=` field ("dst" and
+// "destination" are the same key's aliases), "" when it names none.
+func mountTargetOf(m string) string {
+	for _, part := range strings.Split(m, ",") {
+		k, v, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if !ok {
+			continue
+		}
+		switch strings.TrimSpace(k) {
+		case "target", "dst", "destination":
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 func validEnvName(name string) bool {

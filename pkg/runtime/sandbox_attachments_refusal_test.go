@@ -103,11 +103,14 @@ func TestSandboxRefusesARunWhoseAttachmentsNoDriverCanDeliver(t *testing.T) {
 		if len(dropped) != 1 {
 			t.Fatalf("sandbox_host_binds_dropped emitted %d times, want 1", len(dropped))
 		}
-		if want := []string{"/iterion/artifact-files", "/run/iterion/attachments"}; !reflect.DeepEqual(dropped[0]["mounts"], want) {
+		// The attachments bind is the only one gone: the run-files path is
+		// served by a kept emptyDir now (ADR-143), so nothing of it is
+		// dropped and the variable naming it is never withdrawn.
+		if want := []string{"/run/iterion/attachments"}; !reflect.DeepEqual(dropped[0]["mounts"], want) {
 			t.Fatalf("the drop event lists %v, want %v", dropped[0]["mounts"], want)
 		}
-		if want := []string{runFilesEnvVar}; !reflect.DeepEqual(dropped[0]["withdrawn"], want) {
-			t.Fatalf("the drop event withdraws %v, want %v", dropped[0]["withdrawn"], want)
+		if withdrawn, present := dropped[0]["withdrawn"]; present {
+			t.Fatalf("the drop event withdraws %v, want no withdrawal — the run-files variable is served by a kept mount", withdrawn)
 		}
 	})
 	t.Run("a host filesystem: the binds stay, nothing is dropped or refused", func(t *testing.T) {
