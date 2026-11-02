@@ -32,11 +32,12 @@ import (
 // The listing below only PICKS the rows to visit. The removal itself is the
 // store's value-scoped clear, judged against the row as the store holds it
 // at write time — the load-bearing invariant is that after the delete no
-// writer can CREATE a pin naming the dead record (the write-time validators
-// refuse it), so the set of pin entries holding that id can only shrink
-// between the list and the clear: whatever the sweep does not see by then
-// is already gone by choice of a concurrent writer, never lost by the
-// sweep.
+// writer that VALIDATES can create a pin naming the dead record (the
+// validators Get the record and refuse a dead id). The one resurrection
+// left is a write that validated while the record lived and lands after
+// the clear — the race the delete's 404-heal pass exists to re-sweep — and
+// nothing the sweep saw is ever lost to it: a concurrent writer only ever
+// removes.
 
 // pinSweepTimeout bounds a detached sweep. The delete answers on the
 // request's context; the sweep no longer does — a client that hangs up

@@ -92,7 +92,9 @@ func (m *MemorySubscriptionStore) MarkRunOutcome(_ context.Context, id, runID, s
 // ClearCredentialPins judges the row the store holds under the same lock as
 // the write: the caller's listing copy names nothing here, so a health
 // stamp, a pin edit, or a second record's sweep landing after that copy was
-// taken survives untouched.
+// taken survives untouched. Both maps are scanned unconditionally — the
+// contract removes every entry naming the record, so the first map's drop
+// never spares the second its judgment.
 func (m *MemorySubscriptionStore) ClearCredentialPins(_ context.Context, id, recordID string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -100,8 +102,9 @@ func (m *MemorySubscriptionStore) ClearCredentialPins(_ context.Context, id, rec
 	if !ok {
 		return false, ErrSubscriptionNotFound
 	}
-	cleared := storekit.DropStringMapValues(&s.KeyOverrides, recordID) ||
-		storekit.DropStringMapValues(&s.SecretOverrides, recordID)
+	droppedKeys := storekit.DropStringMapValues(&s.KeyOverrides, recordID)
+	droppedSecrets := storekit.DropStringMapValues(&s.SecretOverrides, recordID)
+	cleared := droppedKeys || droppedSecrets
 	if cleared {
 		m.items[id] = s
 	}

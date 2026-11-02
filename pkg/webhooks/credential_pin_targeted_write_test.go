@@ -119,6 +119,38 @@ func TestClearCredentialPins_IsAValueGuardedWriteTimeClear(t *testing.T) {
 	})
 }
 
+// The drop is unconditional across BOTH maps: the contract removes every
+// entry whose value names recordID, so a config whose key pins AND secret
+// pins name the same id must leave neither standing — a short-circuit on
+// the first map's drop leaves the second map's dead pin stored under a
+// "cleared" answer, and the memory twin then diverges from its Mongo twin,
+// which scans both.
+func TestClearCredentialPins_SweepsBothMapsUnconditionally(t *testing.T) {
+	onConfigStoreTwins(t, func(t *testing.T, s ConfigStore) {
+		ctx := context.Background()
+		if err := s.Create(ctx, Config{ID: "both-maps", TenantID: "tenant", TokenHash: "hash",
+			KeyOverrides:    map[string]string{"anthropic": "dead-everywhere", "openai": "key-alive"},
+			SecretOverrides: map[string]string{"forge_token": "dead-everywhere"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		cleared, err := s.ClearCredentialPins(ctx, "both-maps", "dead-everywhere")
+		if err != nil || !cleared {
+			t.Fatalf("the both-maps clear = (%v, %v), want (true, nil)", cleared, err)
+		}
+		got, err := s.Get(ctx, "both-maps")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got.KeyOverrides) != 1 || got.KeyOverrides["openai"] != "key-alive" {
+			t.Fatalf("key_overrides = %v, want only the surviving pin", got.KeyOverrides)
+		}
+		if _, stands := got.SecretOverrides["forge_token"]; stands {
+			t.Fatalf("secret_overrides = %v — the secret map was never scanned once the key map dropped something; the contract removes every entry naming the record", got.SecretOverrides)
+		}
+	})
+}
+
 // Two records dying together sweep the same rows: each clear must keep the
 // other's target. A wholesale rewrite from a stale snapshot would resurrect
 // the pin the concurrent sweep just cleared — and which order lands last

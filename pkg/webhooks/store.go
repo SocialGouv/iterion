@@ -32,8 +32,10 @@ type ConfigStore interface {
 	// write time against the stored row — never against the caller's
 	// listing copy — so a pin edit or a second record's sweep landing
 	// between the caller's list and this clear survives untouched, and a
-	// swept pin cannot resurrect: no writer can re-pin a deleted record,
-	// the write-time validators refuse it. Each real removal bumps
+	// swept pin cannot resurrect through a writer that validates after the
+	// delete — the write-time validators refuse a dead record's id; a write
+	// that validated while the record lived can still land after the sweep,
+	// the race the delete's 404-heal pass re-sweeps. Each real removal bumps
 	// version, so an editor holding a pre-sweep snapshot conflicts and
 	// re-reads instead of writing the swept pin back; a clear that removes
 	// nothing writes nothing and moves no version. ErrNotFound when the

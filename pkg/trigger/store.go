@@ -47,8 +47,11 @@ type SubscriptionStore interface {
 	// happens at write time against the stored row — never against the
 	// caller's listing copy — so a health stamp, a pin edit, or a second
 	// record's sweep landing between the caller's list and this clear
-	// survives untouched, and a swept pin cannot resurrect: no writer can
-	// re-pin a deleted record, the write-time validators refuse it. A clear
+	// survives untouched, and a swept pin cannot resurrect through a writer
+	// that validates after the delete — the write-time validators refuse a
+	// dead record's id. A write that validated while the record lived can
+	// still land after the sweep; that race is the delete's 404-heal pass's
+	// to re-sweep, not this clear's to prevent. A clear
 	// that removes nothing writes nothing. ErrSubscriptionNotFound when the
 	// row is gone — to the sweep, a row that died mid-flight has no pins
 	// left to clear.

@@ -417,7 +417,31 @@ func validateForgeBaseURL(raw string) (string, error) {
 // an empty actor matches no key's scope, so an unknown lane is treated as a
 // machine lane rather than skipping the arm — a credential guard with an
 // unused opt-out is a seam for the next caller's false negative.
+// validateCredentialPinKeys rejects a pin name a Mongo path cannot address.
+// Both stores hold the pins as one subdocument and the sweep's $unset
+// addresses each entry as "<field>.<name>", so a name holding a dot reads
+// as a nested path — the $unset matches nothing, the clear reports nothing
+// removed, and the dead pin stands while the delete answers 204 — and a $
+// names an operator or an unstashable field. It runs inside the validators,
+// before their store-nil early return: addressability holds whether or not
+// the record store is wired, and both machine lanes' routes pass through
+// this one guard, so every stored pin name stays addressable.
+func validateCredentialPinKeys(field string, pins map[string]string) error {
+	for name := range pins {
+		if name == "" {
+			return fmt.Errorf("%s: a pin name is required", field)
+		}
+		if strings.ContainsAny(name, ".$") {
+			return fmt.Errorf("%s[%q]: a pin name must not hold '.' or '$' — the pin sweep addresses each entry as a Mongo path", field, name)
+		}
+	}
+	return nil
+}
+
 func (s *Server) validateKeyOverrides(ctx context.Context, tenantID, actor string, overrides map[string]string) error {
+	if err := validateCredentialPinKeys("key_overrides", overrides); err != nil {
+		return err
+	}
 	if len(overrides) == 0 || s.apiKeys == nil {
 		return nil
 	}
@@ -462,6 +486,9 @@ func (s *Server) validateKeyOverrides(ctx context.Context, tenantID, actor strin
 // key-override guard, the resolver is already tenant-scoped (a foreign id
 // silently won't bind), so this is a fail-fast UX check.
 func (s *Server) validateSecretOverrides(ctx context.Context, tenantID string, overrides map[string]string) error {
+	if err := validateCredentialPinKeys("secret_overrides", overrides); err != nil {
+		return err
+	}
 	if len(overrides) == 0 || s.genericSecrets == nil {
 		return nil
 	}

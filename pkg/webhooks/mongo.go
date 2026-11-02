@@ -143,11 +143,14 @@ func (s *MongoConfigStore) DisableProvision(ctx context.Context, id, integration
 // come from a read taken HERE, not from the caller's listing copy, and each
 // removal is one $unset whose filter still matches the dead value, so a pin
 // edit or a second record's sweep landing in between survives untouched and
-// a swept pin cannot resurrect: no writer can re-pin a deleted record, the
-// write-time validators refuse it. Each real removal bumps version, so an
-// editor holding a pre-sweep snapshot conflicts and re-reads instead of
-// writing the swept pin back. Dotted paths are safe: a pin's map key is a
-// provider name or a workflow secret name — never a dot or a $.
+// a swept pin cannot resurrect through a writer that validates after the
+// delete — the write-time validators refuse a dead record's id; a write
+// that validated while the record lived can still land after the sweep,
+// the race the delete's 404-heal pass reconciles. Each real removal bumps
+// version, so an editor holding a pre-sweep snapshot conflicts and re-reads
+// instead of writing the swept pin back. Dotted paths are safe because the
+// routes' pin validators refuse a name holding a dot or a $ — the
+// addressability this $unset needs is enforced at write, not assumed.
 func (s *MongoConfigStore) ClearCredentialPins(ctx context.Context, id, recordID string) (bool, error) {
 	cfg, err := s.Get(ctx, id)
 	if err != nil {

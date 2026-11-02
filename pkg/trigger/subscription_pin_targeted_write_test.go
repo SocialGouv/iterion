@@ -105,10 +105,44 @@ func assertPinsClearedByValue(t *testing.T, st SubscriptionStore, ctx context.Co
 	}
 }
 
+// The drop is unconditional across BOTH maps. The contract removes every
+// entry whose value names recordID, and a row whose key pins AND secret
+// pins name the same id — reachable across the two id spaces only by a
+// collision or a hand-seeded store, but the contract carves that out
+// nowhere — must leave neither standing: a short-circuit on the first
+// map's drop leaves the second map's dead pin stored under a "cleared"
+// answer, and the memory twin then diverges from its Mongo twin, which
+// scans both.
+func assertBothMapsSwept(t *testing.T, st SubscriptionStore, ctx context.Context) {
+	t.Helper()
+	if err := st.Create(ctx, Subscription{
+		ID: "both-maps", TenantID: "t1", BotID: "review-pr", Enabled: true,
+		KeyOverrides:    map[string]string{"anthropic": "dead-everywhere", "openai": "key-alive"},
+		SecretOverrides: map[string]string{"forge_token": "dead-everywhere"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cleared, err := st.ClearCredentialPins(ctx, "both-maps", "dead-everywhere")
+	if err != nil || !cleared {
+		t.Fatalf("the both-maps clear = (%v, %v), want (true, nil)", cleared, err)
+	}
+	got, err := st.Get(ctx, "both-maps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.KeyOverrides) != 1 || got.KeyOverrides["openai"] != "key-alive" {
+		t.Fatalf("key_overrides = %v, want only the surviving pin", got.KeyOverrides)
+	}
+	if _, stands := got.SecretOverrides["forge_token"]; stands {
+		t.Fatalf("secret_overrides = %v — the secret map was never scanned once the key map dropped something; the contract removes every entry naming the record", got.SecretOverrides)
+	}
+}
+
 func TestClearCredentialPins_IsAValueGuardedWriteTimeClear(t *testing.T) {
 	st := NewMemorySubscriptionStore()
 	seedPinnedSubscription(t, st, context.Background(), "swept")
 	assertPinsClearedByValue(t, st, context.Background(), "swept")
+	assertBothMapsSwept(t, st, context.Background())
 }
 
 func TestMongoSubscriptionStoreClearCredentialPinsIsAValueGuardedWriteTimeClear(t *testing.T) {
@@ -135,6 +169,7 @@ func TestMongoSubscriptionStoreClearCredentialPinsIsAValueGuardedWriteTimeClear(
 	}
 	seedPinnedSubscription(t, st, ctx, "swept")
 	assertPinsClearedByValue(t, st, ctx, "swept")
+	assertBothMapsSwept(t, st, ctx)
 
 	// The raw document carries the proof the memory twin cannot: the
 	// per-entry $unset really removed the dead ENTRY (not a defaulted

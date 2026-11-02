@@ -136,12 +136,15 @@ func (s *MongoSubscriptionStore) Delete(ctx context.Context, id string) error {
 // come from a read taken HERE, not from the caller's listing copy, and each
 // removal is one $unset whose filter still matches the dead value, so a
 // health stamp, a pin edit, or a second record's sweep landing in between
-// survives untouched and a swept pin cannot resurrect: no writer can re-pin
-// a deleted record, the write-time validators refuse it. A zero match on an
-// entry means it moved or the row died between the read and this write —
-// the stored state is already the wanted one, so nothing to clear is not a
-// failure. Dotted paths are safe: a pin's map key is a provider name or a
-// workflow secret name — never a dot or a $.
+// survives untouched and a swept pin cannot resurrect through a writer
+// that validates after the delete — the write-time validators refuse a
+// dead record's id; a write that validated while the record lived can
+// still land after the sweep, the race the delete's 404-heal pass
+// reconciles. A zero match on an entry means it moved or the row died
+// between the read and this write — the stored state is already the
+// wanted one, so nothing to clear is not a failure. Dotted paths are safe
+// because the routes' pin validators refuse a name holding a dot or a $ —
+// the addressability this $unset needs is enforced at write, not assumed.
 func (s *MongoSubscriptionStore) ClearCredentialPins(ctx context.Context, id, recordID string) (bool, error) {
 	sub, err := s.Get(ctx, id)
 	if err != nil {
