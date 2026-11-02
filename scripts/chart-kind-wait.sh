@@ -10,8 +10,24 @@
 #
 # A values file that leaves the knob unset, or sets it to 0, is refused:
 # unset means Kubernetes' 600 s default applies, and a 0 renders through a
-# `with` that skips it — either would silently shrink the watch. The first
-# `server.progressDeadlineSeconds:` declaration in the file wins.
+# `with` that skips it — either would silently shrink the watch. The knob
+# is the last server.progressDeadlineSeconds declaration in the file:
+# go-yaml — the parser helm reads values with — merges duplicate keys and
+# multiple documents last-wins (proven on helm 4.1.1: a repeated `server:`
+# block and a second `---` document both render the last value), so the
+# last declaration is the deadline the install runs.
+#
+# The extractor reads the plain block form: the knob nested under
+# `server:` at whatever uniform indent the block's keys use — the block's
+# first indented key fixes that indent, and a deeper key belongs to a
+# nested block, not to the knob — with the top key and the knob key bare
+# or quoted, an optional space before the colon, and the value on the
+# same line. What a line reader cannot resolve is refused loudly, never
+# guessed: anchors and merge keys, flow mappings, and a scalar on the
+# line after the key stay invisible to it, and such a file is refused
+# rather than sized from a value helm does not use. (The merge-key route
+# cannot reach an install either way: the chart's values schema rejects
+# the top-level anchor holder it needs.)
 #
 # The knob's value is resolved the way go-yaml — the parser helm reads
 # values with — resolves it, so a file helm accepts is not refused here as
@@ -20,8 +36,11 @@
 # 600), and a float that is integral lands as its integer (600.0 renders
 # as 600). A value go-yaml hands over as a string — a word, base-60 like
 # 1:30, a non-integral float — helm renders verbatim and the API refuses,
-# so it is refused here too. A negative deadline is refused as well: it
-# cannot budget the watch.
+# so it is refused here too. A quoted decimal is the one string form that
+# installs anyway: the templates print the scalar verbatim and the applied
+# manifest reads it back as the integer it spells (helm 4.1.1 renders
+# "600" byte-identical to 600), so it is accepted here. A negative
+# deadline is refused as well: it cannot budget the watch.
 #
 # Whitespace go-yaml tolerates (a tab separating key and value, spaces or
 # tabs around a trailing comment and before the line end, CRLF line
@@ -34,25 +53,37 @@ values=${1:?usage: chart-kind-wait.sh <values file>}
 
 # Any column-0 key closes the previous block — whatever it starts with:
 # go-yaml accepts `_helpers:` or `2nd:` as top-level keys, and a block
-# nested under one must not keep the previous top key. The knob is the one
-# nested exactly two spaces under `server:`, never the runner's — values.yaml
-# keeps the two side by side at the same indent.
+# nested under one must not keep the previous top key. The knob is read
+# wherever go-yaml merges one: the block's own indent (its first indented
+# key fixes it — a deeper key is a nested block), keys bare or quoted, a
+# space allowed before the colon, and the last declaration winning, the
+# way go-yaml merges duplicate keys and documents. It is never the
+# runner's — values.yaml keeps the two side by side at the same indent.
 raw=$(awk '
-  /^[^ \t\r#]/ { top = $1; sub(/\r$/, "", top); sub(/:$/, "", top) }
-  top == "server" && $0 ~ /^  progressDeadlineSeconds:/ {
-    v = $0
-    sub(/^  progressDeadlineSeconds:[ \t]*/, "", v)
-    sub(/[ \t]*#.*/, "", v)
-    sub(/\r$/, "", v)
-    gsub(/["'"'"']/, "", v)
-    sub(/[ \t]+$/, "", v)
-    print v
-    exit
+  /^[^ \t\r#]/ { top = $1; sub(/\r$/, "", top); sub(/:$/, "", top); gsub(/^["'"'"']+|["'"'"']+$/, "", top); ind = 0 }
+  top == "server" && ind == 0 && $0 ~ /^[ \t]+[^ \t#]/ { match($0, /^[ \t]+/); ind = RLENGTH }
+  top == "server" && ind > 0 && $0 !~ /^[ \t]*#/ && match($0, /^[ \t]+/) && RLENGTH == ind {
+    line = $0
+    sub(/\r$/, "", line)
+    key = line
+    sub(/^[ \t]+/, "", key)
+    sub(/:.*/, "", key)
+    sub(/[ \t]+$/, "", key)
+    gsub(/^["'"'"']+|["'"'"']+$/, "", key)
+    if (key == "progressDeadlineSeconds") {
+      v = line
+      sub(/^[ \t]+/, "", v)
+      sub(/^[^:]*:[ \t]*/, "", v)
+      sub(/[ \t]*#.*/, "", v)
+      gsub(/["'"'"']/, "", v)
+      sub(/[ \t]+$/, "", v)
+    }
   }
+  END { print v }
 ' "$values")
 
 if [ -z "$raw" ]; then
-  echo "chart-kind-wait: $values does not set server.progressDeadlineSeconds — the install would silently watch Kubernetes' default 600 s; set the knob in the values file the install reads" >&2
+  echo "chart-kind-wait: $values does not set server.progressDeadlineSeconds on a plain \`progressDeadlineSeconds:\` line nested under \`server:\` — that is the only form this guard reads; anchors and merge keys, flow mappings, and a scalar on the line after the key stay invisible to it — and the install would silently watch Kubernetes' default 600 s; write the knob plainly in the values file the install reads" >&2
   exit 1
 fi
 
