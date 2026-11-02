@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/permissionhook"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
@@ -488,7 +489,21 @@ func (b *CLIAgentBackend) preparePermissionHook(ctx context.Context, task Task, 
 		return nil, func() {}, nil
 	}
 	if proto.PermissionHook == nil {
-		return nil, nil, fmt.Errorf("delegate: %s: permission: %s is enabled but this CLI cannot enforce it", backendName, policy.Mode)
+		// Typed, like every other pre-dispatch capability refusal (the
+		// claude_code family): a gate this CLI cannot enforce is a
+		// deterministic defect of the ROUTE, and recovery must classify it
+		// CAPABILITY_UNSUPPORTED rather than retry a refusal that no attempt
+		// can change. opencode is the case today — its in-process policy
+		// could enforce a deny but is deliberately not wired until a live
+		// denial earns the gate (#1640).
+		return nil, nil, &ErrCapabilityUnsupported{
+			NodeID:     task.NodeID,
+			Backend:    backendName,
+			Capability: "permission-" + policy.Mode.String(),
+			Remedy: fmt.Sprintf(
+				"this CLI exposes no hook iterion can enforce the gate through; run the node ungated (`permission: off`), or route it to a backend that enforces permission: %s (%s)",
+				policy.Mode, strings.Join(enforcingBackendsFor("permission-"+policy.Mode.String()), ", ")),
+		}
 	}
 	if policy.CanAsk() {
 		return nil, nil, fmt.Errorf("delegate: %s: permission policy can ask for operator approval, but an external CLI hook cannot pause the iterion run; use permission: deny without ask rules", backendName)
@@ -648,6 +663,21 @@ func (b *CLIAgentBackend) preparePermissionHook(ctx context.Context, task Task, 
 		return nil, nil, fmt.Errorf("delegate: %s: register permission hook: %w", backendName, err)
 	}
 	return []string{hook.HomeEnv + "=" + permissionHome}, cleanup, nil
+}
+
+// enforcingBackendsFor lists the registered backends that CAN enforce one
+// permission capability (shipped or partial in the derived registry), sorted
+// so a refusal's remedy reads the same on every run. The list is read from
+// the same cells the compiler's gate table is derived from, so a backend
+// that earns membership appears in the remedy the day its cell flips.
+func enforcingBackendsFor(capability string) []string {
+	set := backendcaps.Set(capability, backendcaps.Shipped, backendcaps.Partial)
+	names := make([]string, 0, len(set))
+	for name := range set {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // externalHookPolicy derives the policy carried to a Kimi/Grok PreToolUse

@@ -40,7 +40,7 @@ into a 🟢, live in [state-of-the-art.md](state-of-the-art.md#backends--only-tw
 | `pi` | 🟠 | Supported, with iterion's permission gate. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). Permission gate, ask_user, board capabilities and workflow-declared MCP servers (all three transports — streamable http, legacy sse, stdio) work via an embedded extension, which loads on the **rpc transport only**: a node declaring `permission:` is refused under `ITERION_PI_MODE=print` rather than run ungated. | Explicit only. |
 | `kimi` | 🟠 | Supported through the generic CLI-agent protocol, with iterion's permission gate in **`deny` only** — an external `PreToolUse` hook can hard-block a call but cannot pause the run for `ask`, so `ask` is refused at compile time (C176). A gated node needs an unsandboxed run — `sandbox: none` on the workflow, or `--sandbox none` (C136 warns) — and session resume/fork is not wired. | Explicit only. |
 | `grok` | 🟠 | Same generic CLI-agent protocol, and the same **`deny`-only** gate, `sandbox: none` requirement and unwired session resume/fork. | Explicit only. |
-| `opencode` | 🟠 | Supported through the generic CLI-agent protocol (`opencode --format json [-m provider/model] [--variant <effort>] run`, prompt on stdin). Multi-provider, reports a provider-computed cost, and carries a reasoning-effort dial. **Cannot enforce iterion's permission gate at all** — neither `ask` nor `deny` — so a gated node is refused at compile time (C176); `interaction: async` is refused by C267 and a synchronous `interaction:` warned as inert (C271); session resume/fork is wired (`--session <id>` / `--fork=true`) but `session: persist` and MCP forwarding are not; and a workspace carrying `.opencode/plugin[s]/` is **refused** unless `ITERION_OPENCODE_TRUST_PROJECT=1`. | Explicit only. |
+| `opencode` | 🟠 | Supported through the generic CLI-agent protocol (`opencode --format json [-m provider/model] [--variant <effort>] run`, prompt on stdin). Multi-provider, reports a provider-computed cost, and carries a reasoning-effort dial. **Cannot enforce iterion's permission gate at all** — neither `ask` nor `deny` — so a gated node is refused at compile time (C176) and typed (`CAPABILITY_UNSUPPORTED`) at dispatch; `interaction: async` is refused by C267 and a synchronous `interaction:` warned as inert (C271); session resume/fork is wired (`--session <id>` / `--fork=true`) but `session: persist` and MCP forwarding are not; and a workspace carrying `.opencode/plugin[s]/` is **refused** unless `ITERION_OPENCODE_TRUST_PROJECT=1`. | Explicit only. |
 | `codex` | 🟠 | Supported Codex CLI backend. Uses Codex's native tool loop and sandbox; see its capability boundaries below. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
 
 ### Parity doctrine: `claw` ↔ `claude_code`
@@ -380,9 +380,16 @@ The citations, per cell that is not self-evident from the table:
   (`pkg/backend/delegate/pi.go`), which is its own parity gap. Nothing
   pi does has a live e2e; every pi cell stays unknown.
 - **opencode.** The gate is refused in **both** modes (C176): opencode
-  exposes no `PreToolUse` hook at all, and its own declarative policy
-  (`OPENCODE_PERMISSION`) is deliberately not wired — gate membership is
-  earned by a live denial, and none has been bought. `ask_user` is
+  exposes no `PreToolUse` hook at all, and its own declarative policy is
+  deliberately not wired — gate membership is earned by a live denial, and
+  none has been bought. The 1.x delivery (`OPENCODE_PERMISSION`) is
+  **removed from the 2.x line** (zero occurrences in the 2.2.5 binary); the
+  2.x mechanism is `OPENCODE_CONFIG_CONTENT`, re-measured on 2.2.5 by
+  `TestCLILiveOpenCodeConfigContentDeny` — see
+  [the fail-open table](#opencode-permission-not-a-gate-alone). A gated node
+  that reaches dispatch anyway (a launch-time override route the compiler
+  never saw) is refused with the **typed** capability refusal
+  (`CAPABILITY_UNSUPPORTED`), never run ungated and never retried. `ask_user` is
   `refused (C267)` for the async pair and `warned (C271)` for the
   synchronous one (the tool list never reaches the CLI, so the node
   never pauses — the interaction protocol is prompt text only). Sandbox is `unwired (no image)`:
@@ -2933,16 +2940,24 @@ moves fast, so re-measure before trusting a claim against another build.
 
 - **No permission gate, in any mode.** opencode exposes no `PreToolUse`
   hook, so a node with an armed gate is refused at compile time (**C176**)
-  and again at dispatch — never run ungated. opencode *does* carry a
-  declarative in-process policy (`OPENCODE_PERMISSION`, a JSON map of
-  tool → `ask|allow|deny`, verified to reach its resolved configuration),
-  which is a plausible route to native `deny` enforcement. It is deliberately
-  **not** wired: membership in the compiler's gate table is earned by a live
-  denial, never declared, and no credential was available to witness one.
-  Note also that in a headless run an `ask` verdict is auto-*rejected* (and
-  later builds add a `--auto` flag that auto-*allows* it instead) — neither
-  is "pause and ask the operator". The policy's own measured limit is the
-  reason the cell is refused rather than merely unwired: it
+  and again at dispatch (the typed capability refusal,
+  `CAPABILITY_UNSUPPORTED`) — never run ungated, never retried. opencode
+  *does* carry a declarative in-process policy, but the 1.x delivery
+  (`OPENCODE_PERMISSION`, verified to reach its resolved configuration) is
+  **removed from the 2.x line**: the 2.2.5 binary carries no occurrence of
+  the variable, and the 2.x env-delivered config is `OPENCODE_CONFIG_CONTENT`
+  (highest user precedence since upstream
+  [#11628](https://github.com/anomalyco/opencode/issues/11628)). The 2.x
+  mechanism is re-measured by `TestCLILiveOpenCodeConfigContentDeny` — it
+  holds alone and against a key-positioned file allow, and still fails open
+  beside an agent-level permission, a `default_agent`, or an invalid policy
+  string. It is deliberately **not** wired: membership in the compiler's
+  gate table is earned by a live denial, never declared, and no credential
+  has witnessed one. Note also that in a headless run an `ask` verdict is
+  auto-*rejected* (and later builds add a `--auto` flag that auto-*allows*
+  it instead) — neither is "pause and ask the operator". The policy's own
+  measured limit is the reason the cell is refused rather than merely
+  unwired: it
   [fails OPEN beside an operator config](#opencode-permission-not-a-gate-alone).
 - **No async questions.** `interaction: async` is refused by **C267**;
   `interaction:` in its synchronous form is inert, as on every CLI-agent
@@ -3015,6 +3030,33 @@ moves precedence under a last-match lookup),
 `edit` key, sub-agents (`task`) run under THEIR agent's permission, and a bash
 command is split into sub-commands (tree-sitter) and judged one by one where
 iterion judges the whole line as one candidate.
+
+**Re-measured on 2.2.5** (`TestCLILiveOpenCodeConfigContentDeny`, scripted
+model, 0 USD — the delivery host now runs the 2.x line, where
+`OPENCODE_PERMISSION` no longer exists; the policy travels in
+`OPENCODE_CONFIG_CONTENT`, and the probe drives the CLI directly because
+iterion's 1.x argv — `opencode --format json -m … run` — is REJECTED by the
+2.x parser, which takes those flags only after `run`. That argv divergence
+blocks the wired backend itself on the 2.x line, ahead of any gate work):
+
+| probe (2.2.5) | sentinel | reading |
+|---|---|---|
+| no policy anywhere | created | control: the bench executes, the rows below are not vacuous |
+| `OPENCODE_CONFIG_CONTENT={"permission":{"bash":{"*":"allow","touch *":"deny"}}}` | absent | denied AT THE CALL (`Permission denied: shell` — `shell` is the 2.x internal name; the `bash` key holds through a compatibility mapping), the denial is fed back to the model, the turn finishes, exit 0 |
+| the same with the 2.x-native `shell` key | absent | the native key holds too — a translation may target either spelling |
+| `{"permission":{"bash":"deny"}}` (whole tool) | absent | the tool is WITHHELD from the model, as on 1.19 (a forced call errors `No tool named "bash"`), exit 0 |
+| invalid `OPENCODE_CONFIG_CONTENT` (`{"permission":{"bash":"deny",}`) | **created** | **fail-OPEN, silent, still**: dropped without a word, exit 0 — a policy iterion emits must be marshalled, never string-built |
+| file `permission:{"*":"ask","bash":{…allow}}` + env deny | absent | the v1 key-position fail-open is CLOSED by the env delivery: `OPENCODE_CONFIG_CONTENT` wins over the file (the #11628 precedence fix, observed) |
+| file `agent.build.permission.bash=allow` + env deny | **created** | **fail-OPEN persists**: an agent-level permission merges after the env content |
+| file `default_agent:"wide"` with `wide.permission.bash=allow` + env deny | **created** | **fail-OPEN persists** |
+
+So on the 2.x line the env delivery closes exactly one of the four v1 holes
+(key position) and the other three stand. The flip's owed list is unchanged
+in shape — a dedicated iterion-defined agent selected with `--agent` (the
+last row of the 1.19 table held on 1.x) plus positive confirmation the agent
+loaded, a marshalled policy, `ask` refused, the `list` → `ls` canonical row
+— and now carries the 2.x additions: re-measure the dedicated-agent row on
+2.x, and fix the 1.x argv divergence first.
 
 #### ⚠️ The target repository runs as code
 

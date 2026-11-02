@@ -92,10 +92,15 @@ var opencodeProtocol = CLIAgentProtocol{
 	ExtraArgsFor: opencodeExtraArgsFor,
 
 	// PermissionHook nil: opencode exposes no PreToolUse hook. Its own
-	// policy (OPENCODE_PERMISSION) is declarative and in-process, but
-	// membership in the compiler's gate table is earned by a live denial,
-	// never declared, so a gated node is refused rather than trusted —
-	// preparePermissionHook produces that refusal.
+	// policy is declarative and in-process — OPENCODE_PERMISSION on the 1.x
+	// line, REMOVED on 2.x where OPENCODE_CONFIG_CONTENT is the env
+	// delivery (re-measured on 2.2.5 by TestCLILiveOpenCodeConfigContentDeny:
+	// holds alone, fails open beside an agent-level permission, a
+	// default_agent, or an invalid string) — but membership in the
+	// compiler's gate table is earned by a live denial, never declared, so
+	// a gated node is refused rather than trusted: preparePermissionHook
+	// produces that refusal, typed (ErrCapabilityUnsupported) so recovery
+	// never retries it (#1640).
 }
 
 // OpenCodeBackend drives opencode. It wraps the CLIAgentBackend with the

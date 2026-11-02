@@ -547,14 +547,17 @@ and evaluated by each gated backend before every tool runs:
   C136 warns about the coupling at compile time.
 - **opencode** — cannot enforce the gate in any mode: it exposes no
   `PreToolUse` hook, so a node with an armed gate is refused at compile
-  time (C176) and again at dispatch rather than run ungated. Its own
-  declarative policy (`OPENCODE_PERMISSION`) is a plausible route to
-  native `deny`, deliberately not wired — membership in the gate table is
-  earned by a live denial, never declared. Note that a headless opencode
-  run auto-*rejects* an `ask` verdict (measured on 1.1.19; later builds add
-  a `--auto` flag that auto-*allows* it instead). The policy also fails
-  OPEN beside three operator configurations and an invalid policy string,
-  measured on 1.19.0 — which is why it is refused rather than merely
+  time (C176) and again at dispatch — typed (`CAPABILITY_UNSUPPORTED`), never
+  retried — rather than run ungated. Its own declarative policy is a
+  plausible route to native `deny`, deliberately not wired — membership in
+  the gate table is earned by a live denial, never declared. The 1.x
+  delivery (`OPENCODE_PERMISSION`) is removed from the 2.x line; the 2.x
+  mechanism (`OPENCODE_CONFIG_CONTENT`) is re-measured on 2.2.5: it holds
+  alone and past a key-positioned file allow, and still fails OPEN beside an
+  agent-level permission, a `default_agent`, or an invalid policy string.
+  Note that a headless opencode run auto-*rejects* an `ask` verdict
+  (measured on 1.1.19; later builds add a `--auto` flag that auto-*allows*
+  it instead) — which is why it is refused rather than merely
   unwired: [backends.md](backends.md#opencode-permission-not-a-gate-alone).
 - **claude_code** — a broad PreToolUse hook (`wirePermissionHook` in
   claude_code.go) evaluates the policy. Under the always-on

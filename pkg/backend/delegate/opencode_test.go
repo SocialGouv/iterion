@@ -2,6 +2,7 @@ package delegate
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -479,7 +480,9 @@ func TestOpenCodeResolveEnvPinsHostState(t *testing.T) {
 }
 
 // TestOpenCodeRefusesGatedNode: opencode declares no PermissionHook, so a
-// node carrying an armed gate is refused rather than run ungated.
+// node carrying an armed gate is refused rather than run ungated — with the
+// TYPED capability refusal, so recovery classifies it CAPABILITY_UNSUPPORTED
+// (deterministic, never retried) instead of an untyped spawn-class error.
 func TestOpenCodeRefusesGatedNode(t *testing.T) {
 	policy, err := permission.NewPolicy(permission.ModeDeny, nil, nil, []string{"Bash"})
 	if err != nil {
@@ -488,6 +491,7 @@ func TestOpenCodeRefusesGatedNode(t *testing.T) {
 	ws := t.TempDir()
 	b := NewOpenCodeBackend(nil, "")
 	_, execErr := b.Execute(context.Background(), Task{
+		NodeID:     "n1",
 		WorkDir:    ws,
 		BaseDir:    ws,
 		UserPrompt: "hi",
@@ -496,8 +500,35 @@ func TestOpenCodeRefusesGatedNode(t *testing.T) {
 	if execErr == nil {
 		t.Fatal("a gated node ran on opencode; it cannot enforce the gate")
 	}
-	if !strings.Contains(execErr.Error(), BackendOpenCode) || !strings.Contains(execErr.Error(), "cannot enforce") {
-		t.Fatalf("refusal %q must name the backend and the reason", execErr)
+	var unsupported *ErrCapabilityUnsupported
+	if !errors.As(execErr, &unsupported) {
+		t.Fatalf("refusal %q (%T) must be the typed capability refusal", execErr, execErr)
+	}
+	if unsupported.Backend != BackendOpenCode || unsupported.NodeID != "n1" || unsupported.Capability != "permission-deny" {
+		t.Fatalf("refusal = %+v, want backend %q, node n1, capability permission-deny", unsupported, BackendOpenCode)
+	}
+	if unsupported.Remedy == "" || !strings.Contains(execErr.Error(), "permission: off") {
+		t.Fatalf("refusal %q must name the way out", execErr)
+	}
+}
+
+// TestOpenCodeRefusesAskGatedNode: permission: ask on a hookless CLI hits the
+// same typed refusal, named permission-ask — an ask verdict cannot pause an
+// opencode run (headless auto-rejects, --auto auto-allows).
+func TestOpenCodeRefusesAskGatedNode(t *testing.T) {
+	policy, err := permission.NewPolicy(permission.ModeAsk, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewOpenCodeBackend(nil, "")
+	ws := t.TempDir()
+	_, execErr := b.Execute(context.Background(), Task{NodeID: "n1", WorkDir: ws, BaseDir: ws, UserPrompt: "hi", Permission: policy})
+	var unsupported *ErrCapabilityUnsupported
+	if !errors.As(execErr, &unsupported) {
+		t.Fatalf("refusal %v (%T) must be the typed capability refusal", execErr, execErr)
+	}
+	if unsupported.Capability != "permission-ask" {
+		t.Fatalf("capability = %q, want permission-ask", unsupported.Capability)
 	}
 }
 
