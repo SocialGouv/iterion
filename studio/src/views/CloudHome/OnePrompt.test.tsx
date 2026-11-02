@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-import OnePrompt, { SETUP_PROMPT } from "@/views/CloudHome/OnePrompt";
+import OnePrompt from "@/views/CloudHome/OnePrompt";
 
 // The block a visitor pastes is the product of this section: the guards
 // assert on what is RENDERED, not on the exported constant — a JSX refactor
@@ -46,20 +46,23 @@ describe("the one-prompt onboarding section of the product home", () => {
     ).toBeTruthy();
   });
 
-  // What the visitor copies must be what the block displays — the one
-  // invariant the rendering checks above cannot see: a refactor that keeps
-  // the <pre> intact but truncates or substitutes the button's value passes
-  // every other assertion in this file. This stub was seen RED against a
-  // truncated `value` before being trusted.
-  it("copies the whole displayed prompt to the clipboard", async () => {
+  // What the visitor copies must be what the block displays. The payload is
+  // bound to the RENDERED text, not to a constant, so the invariant holds in
+  // both directions: truncating the button's value OR amputating the <pre>
+  // turns this red. Seen red against both mutants before being trusted. (The
+  // parity of the source copies behind that text is scripts/prompt-parity.sh,
+  // run by `task prompt:parity`.)
+  it("copies exactly the prompt the block displays", async () => {
     const writeText = vi.fn(async () => {});
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText },
     });
-    render(<OnePrompt />);
+    const { container } = render(<OnePrompt />);
+    const displayed = container.querySelector("pre")?.textContent ?? "";
+    expect(displayed).toContain("iterion remote login");
     fireEvent.click(screen.getByRole("button", { name: /cloud setup prompt/i }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith(SETUP_PROMPT));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(displayed));
   });
 
   it("links the full walkthrough in the documentation site", () => {
