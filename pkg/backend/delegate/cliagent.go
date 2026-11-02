@@ -348,6 +348,18 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 		backendName = "cli_agent"
 	}
 
+	// Binary resolution and the image-gap refusal come FIRST: a refusal must
+	// precede the side effects below (the ambient overlay and the permission
+	// shadow home both write to disk), and a node whose CLI is absent cannot
+	// be served whatever its ambient or permission policy resolves to.
+	binary, err := b.resolveBinary(task)
+	if err != nil {
+		return Result{BackendName: backendName, ExitCode: -1}, err
+	}
+	if err := refuseAbsentImageCLI(task, proto, backendName, binary); err != nil {
+		return Result{BackendName: backendName, ExitCode: -1}, err
+	}
+
 	// Before the permission shadow: a gated node's shadow home is built from
 	// the home the policy serves, so it never links a withheld file back in.
 	task, releaseAmbient, err := b.applyAmbient(task, backendName)
@@ -361,11 +373,6 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 		return Result{BackendName: backendName, ExitCode: -1}, err
 	}
 	defer permissionCleanup()
-
-	binary, err := b.resolveBinary(task)
-	if err != nil {
-		return Result{BackendName: backendName, ExitCode: -1}, err
-	}
 
 	systemPrompt := task.BuildSystemPrompt()
 	if proto.SystemPromptSuffix != nil {
