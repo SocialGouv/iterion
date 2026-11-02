@@ -362,7 +362,13 @@ func (r *Run) dropRacedDrainLeftovers(hostDir string, before, landed map[string]
 			continue
 		}
 		path := filepath.Join(hostDir, filepath.FromSlash(rel))
-		if !strings.HasPrefix(path, hostDir+string(os.PathSeparator)) {
+		// Containment by filepath.Rel, matching the walks above: Rel
+		// cleans both of its sides, so a hostDir carrying a trailing
+		// separator still reads as the base — a prefix compare against
+		// the raw dir would refuse every candidate and fail a drain
+		// that landed — and a candidate climbing out of hostDir still
+		// reads as outside.
+		if back, backErr := filepath.Rel(hostDir, path); backErr != nil || back == ".." || strings.HasPrefix(back, ".."+string(os.PathSeparator)) {
 			return fmt.Errorf("refusing to remove %q: outside %s", path, hostDir)
 		}
 		if err := os.Remove(path); err != nil {

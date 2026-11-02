@@ -176,6 +176,46 @@ func TestExportRunFilesDropsWhatOnlyTheRacedAttemptLanded(t *testing.T) {
 	}
 }
 
+// TestExportRunFilesSweepSurvivesATrailingSeparatorHostDir: the sweep's
+// containment judgment reads paths, not shapes — a host dir carrying a
+// trailing separator names the same directory on the host, so the sweep
+// must sweep it as it sweeps the cleaned form, not refuse every
+// candidate as outside and fail a drain that landed.
+func TestExportRunFilesSweepSurvivesATrailingSeparatorHostDir(t *testing.T) {
+	raced := podTree(t, map[string]string{
+		"report.md": "# partial",
+		"stale.txt": "the pod dropped me before the settled archive",
+	})
+	settled := podTree(t, map[string]string{"report.md": "# complete"})
+	hostDst := t.TempDir() + string(os.PathSeparator)
+	own := filepath.Join(hostDst, "host-own.txt")
+	if err := os.WriteFile(own, []byte("the host already had me"), 0o600); err != nil {
+		t.Fatalf("write the host's own file: %v", err)
+	}
+	// Attempt 1 archives the mid-write tree and exits 1 on the measured
+	// race stderr; attempt 2 archives the settled tree — the sweep then
+	// judges stale.txt's containment against the separator-carrying dir.
+	kubectl, calls := exportShimSeq(t, []string{raced, settled}, 1, measuredRaceStderr)
+	r := drainRun([]sandbox.ReadBackDir{{ContainerPath: "/iterion/artifact-files", HostDir: hostDst}}, kubectl)
+
+	if err := r.ExportRunFiles(context.Background()); err != nil {
+		t.Fatalf("ExportRunFiles = %v, want the drain to land over a trailing-separator host dir", err)
+	}
+	if _, err := os.Stat(filepath.Join(hostDst, "stale.txt")); err == nil {
+		t.Fatal("a file the pod dropped between attempts survived the retried drain — the sweep never swept the trailing-separator host dir")
+	}
+	got, err := os.ReadFile(filepath.Join(hostDst, "report.md"))
+	if err != nil || string(got) != "# complete" {
+		t.Errorf("drained report.md = %q (%v), want attempt 2's settled archive as the landed set", got, err)
+	}
+	if _, err := os.Stat(own); err != nil {
+		t.Fatalf("the sweep removed %s — a file the host already had is never touched: %v", own, err)
+	}
+	if calls() != 2 {
+		t.Errorf("the drain archived the pod %d times, want the raced attempt retried once", calls())
+	}
+}
+
 // TestExportRunFilesCuresATypeFlipBetweenAttempts: the same race the
 // retry exists for includes a path changing KIND between attempts — a
 // raced attempt's extract must not leave a member standing where the
