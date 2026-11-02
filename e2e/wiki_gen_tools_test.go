@@ -92,7 +92,7 @@ func TestWikiGen_ScanRepo_NoopStateMachine(t *testing.T) {
 		"input.wiki_dir":      shqs("wiki"),
 		"input.cache_path":    shqs(cachePath),
 	})
-	head := gitOut(t, ws, "rev-parse", "HEAD")
+	head := testGitOut(t, ws, "rev-parse", "HEAD")
 
 	current := scan()
 	if current["noop_skip"] != true {
@@ -147,7 +147,7 @@ func TestWikiGen_GenIndexes_RegeneratesFromFrontmatter(t *testing.T) {
 	gitRun(t, ws, "add", "-A")
 	gitRun(t, ws, "commit", "-m", "docs: seed wiki")
 
-	headBefore := gitOut(t, ws, "rev-parse", "HEAD")
+	headBefore := testGitOut(t, ws, "rev-parse", "HEAD")
 	out := runWikiTool(t, ws, shieldNode(t, "wiki-gen/main.bot", "gen_indexes").Command, map[string]string{
 		"input.workspace_dir": shqs(ws),
 		"input.wiki_dir":      shqs("wiki"),
@@ -159,7 +159,7 @@ func TestWikiGen_GenIndexes_RegeneratesFromFrontmatter(t *testing.T) {
 	if out["committed"] != true {
 		t.Fatalf("regeneration must commit the changed indexes: %v", out)
 	}
-	if gitOut(t, ws, "rev-parse", "HEAD") == headBefore {
+	if testGitOut(t, ws, "rev-parse", "HEAD") == headBefore {
 		t.Fatal("committed=true but HEAD did not move")
 	}
 
@@ -366,7 +366,7 @@ func TestWikiGen_UpdateCache_PersistsHeadAndPageShas(t *testing.T) {
 	if err := json.Unmarshal(b, &cache); err != nil {
 		t.Fatalf("cache not valid JSON: %v", err)
 	}
-	if cache.V != 1 || cache.GitHead != gitOut(t, ws, "rev-parse", "HEAD") {
+	if cache.V != 1 || cache.GitHead != testGitOut(t, ws, "rev-parse", "HEAD") {
 		t.Fatalf("cache head/version = %s/%d, want the repo HEAD/1", cache.GitHead, cache.V)
 	}
 	if _, ok := cache.Pages[filepath.Join("wiki", "quickstart.md")]; !ok {
