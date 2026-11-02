@@ -83,8 +83,18 @@ type ClawExecutor struct {
 	// prompt path) calls WorkDir on every bash/read/write/glob/grep call,
 	// while the engine may still push a per-run worktree via SetWorkDir
 	// (#2897). Access goes through WorkDir/SetWorkDir only.
-	workDir  atomic.Pointer[string]
-	repoRoot string // source-of-truth repo path (project-rooted memory uses this)
+	workDir atomic.Pointer[string]
+	// repoRoot is the run's source-of-truth repository path; project-rooted
+	// memory resolves its scope under it. The engine pushes it at run
+	// start, before the first node — the first task's value is every
+	// task's value (auto_memory resolves and caches its space on the first
+	// buildTask) — while buildTask reads it live on every node, the same
+	// pushed-field/live-reader shape as workDir. Atomic so a future
+	// mid-run push cannot resurrect the torn-read race the workDir fix
+	// closed (#2897): a read resolves against the previous or the new
+	// root, never a torn or empty one. Access goes through
+	// RepoRoot/SetRepoRoot only.
+	repoRoot atomic.Pointer[string]
 	// readScope is the claw read tools' scope, shared with the registry
 	// the host built (runview hands the same instance to both). The
 	// engine's SetScratchDir push attaches the run's ${PROJECT_SCRATCH_DIR}
@@ -1246,8 +1256,24 @@ func (e *ClawExecutor) WorkDir() string {
 // main repo even when the run executes from a worktree or dispatcher
 // workspace. Empty string means "no project root captured" — memory
 // specs that require it will fall back to WorkDir's encoded key.
+//
+// The run-start push happens before the first node, and the first task's
+// value is every task's value: auto_memory resolves and caches its space
+// off that first buildTask, so a mid-run push changes the tasks' reported
+// root without moving the cached space. The field is atomic anyway —
+// buildTask reads it live on every node, so a mid-run push of a plain
+// string would be the data race class #2897 closed on workDir.
 func (e *ClawExecutor) SetRepoRoot(dir string) {
-	e.repoRoot = dir
+	e.repoRoot.Store(&dir)
+}
+
+// RepoRoot reports the repository root SetRepoRoot last pushed, or ""
+// when the engine never captured one.
+func (e *ClawExecutor) RepoRoot() string {
+	if dir := e.repoRoot.Load(); dir != nil {
+		return *dir
+	}
+	return ""
 }
 
 // SetScratchDir records the run's resolved ${PROJECT_SCRATCH_DIR} and

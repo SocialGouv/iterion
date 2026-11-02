@@ -1414,7 +1414,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	// one of those consumers made the other silently key on WorkDir instead,
 	// which for a `worktree: auto` run is a fresh path every time: the space
 	// changed per run and the memory was always empty.
-	task.RepoRoot = e.repoRoot
+	task.RepoRoot = e.RepoRoot()
 	// Command-output compression mode (precedence: run override > node DSL >
 	// workflow DSL > ITERION_COMPRESS env). Stored as a string so the delegate
 	// layer + IPC wire form stay decoupled from the rewrite enum; "" (off) is
