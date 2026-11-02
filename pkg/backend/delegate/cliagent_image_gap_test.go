@@ -26,6 +26,9 @@ var cliAbsentProtocols = []CLIAgentProtocol{kimiProtocol, grokProtocol, opencode
 // failure the ticket measured as `exec: not found` with no cause and no cure.
 func TestRefuseAbsentImageCLINamesTheBackend(t *testing.T) {
 	t.Setenv("PATH", t.TempDir()) // an empty PATH: no CLI resolves here
+	// A host env pin left over from the operator's shell would resolve the
+	// binary by another route: the gate answers the DEFAULT binary only.
+	t.Setenv("ITERION_OPENCODE_BIN", "")
 	for _, proto := range cliAbsentProtocols {
 		t.Run(proto.Name, func(t *testing.T) {
 			if !backendcaps.UnservedByPublishedImages(proto.Name) {
@@ -75,19 +78,48 @@ func TestRefuseAbsentImageCLISilentWhenCLIResolves(t *testing.T) {
 }
 
 // TestRefuseAbsentImageCLIKeepsAnExplicitPinUntyped: an operator-pinned
-// `command:` that resolves to nothing is THEIR pin defect, not the image gap
-// this refusal names — it keeps the legacy spawn error.
+// binary that resolves to nothing is THEIR pin defect, not the image gap
+// this refusal names — it keeps the legacy spawn error. The discrimination
+// is by the pin's SOURCE, never by the resolved value: a pin textually
+// equal to the default binary is still a pin.
 func TestRefuseAbsentImageCLIKeepsAnExplicitPinUntyped(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "kimi-pinned")
-	b := &CLIAgentBackend{Protocol: kimiProtocol, Command: missing, Logger: testLogger()}
-	_, err := b.Execute(context.Background(), Task{NodeID: "n1", UserPrompt: "hi"})
-	if err == nil {
-		t.Fatal("expected the missing pinned binary to fail")
-	}
-	var absent *ErrBackendCLIAbsent
-	if errors.As(err, &absent) {
-		t.Fatalf("an explicit command: pin was retyped as an image gap: %v", err)
-	}
+	t.Run("absolute command pin", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "kimi-pinned")
+		b := &CLIAgentBackend{Protocol: kimiProtocol, Command: missing, Logger: testLogger()}
+		_, err := b.Execute(context.Background(), Task{NodeID: "n1", UserPrompt: "hi"})
+		if err == nil {
+			t.Fatal("expected the missing pinned binary to fail")
+		}
+		var absent *ErrBackendCLIAbsent
+		if errors.As(err, &absent) {
+			t.Fatalf("an explicit command: pin was retyped as an image gap: %v", err)
+		}
+	})
+	t.Run("command pin equal to the default", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		b := &CLIAgentBackend{Protocol: kimiProtocol, Command: "kimi", Logger: testLogger()}
+		_, err := b.Execute(context.Background(), Task{NodeID: "n1", UserPrompt: "hi"})
+		if err == nil {
+			t.Fatal("expected the unpinned PATH to fail the spawn")
+		}
+		var absent *ErrBackendCLIAbsent
+		if errors.As(err, &absent) {
+			t.Fatalf("a command: pin equal to the default was retyped as an image gap: %v", err)
+		}
+	})
+	t.Run("env pin equal to the default", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		t.Setenv("ITERION_OPENCODE_BIN", "opencode")
+		b := &CLIAgentBackend{Protocol: opencodeProtocol, Logger: testLogger()}
+		_, err := b.Execute(context.Background(), Task{NodeID: "n1", UserPrompt: "hi"})
+		if err == nil {
+			t.Fatal("expected the unpinned PATH to fail the spawn")
+		}
+		var absent *ErrBackendCLIAbsent
+		if errors.As(err, &absent) {
+			t.Fatalf("an env pin equal to the default was retyped as an image gap: %v", err)
+		}
+	})
 }
 
 // TestRefuseAbsentImageCLIMeasuredAbsenceOnly: a backend the published images

@@ -356,7 +356,7 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 	if err != nil {
 		return Result{BackendName: backendName, ExitCode: -1}, err
 	}
-	if err := refuseAbsentImageCLI(task, proto, backendName, binary); err != nil {
+	if err := refuseAbsentImageCLI(task, proto, backendName, binary, b.Command); err != nil {
 		return Result{BackendName: backendName, ExitCode: -1}, err
 	}
 

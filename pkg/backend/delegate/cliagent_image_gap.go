@@ -2,6 +2,7 @@ package delegate
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -53,8 +54,9 @@ func (e *ErrBackendCLIAbsent) Error() string {
 // Deliberately under-refusing, like the sandbox-side admission:
 //
 //   - an explicit binary (the node's `command:`, the protocol's host env
-//     pin) resolves to something OTHER than DefaultBinary, and its absence
-//     is the operator's own pin defect, not the image gap this error names.
+//     pin) is the operator's own choice BY SOURCE — even one textually equal
+//     to the default binary — and its absence is their pin defect, not the
+//     image gap this error names.
 //   - a backend whose cell is not UnwiredNoImage (claude_code, claw, codex,
 //     pi — and every custom registration, whose image is the operator's)
 //     keeps the legacy error: a measured absence is a fact, the absence of
@@ -69,8 +71,20 @@ func (e *ErrBackendCLIAbsent) Error() string {
 // (C321) and the run-start refusal, so the day an image bakes one of these
 // CLIs the cell flips, this refusal lifts itself, and its witnesses fail —
 // the derivation discipline is what keeps the three planes in agreement.
-func refuseAbsentImageCLI(task Task, proto CLIAgentProtocol, backendName, binary string) error {
-	if !task.Hostless() || binary == "" || binary != proto.DefaultBinary {
+func refuseAbsentImageCLI(task Task, proto CLIAgentProtocol, backendName, binary, command string) error {
+	if !task.Hostless() || binary == "" {
+		return nil
+	}
+	// The pin is read by SOURCE, never by the resolved value: a `command:` or
+	// a host env pin textually equal to DefaultBinary is still the operator's
+	// pin. When neither is set, resolveCLIBinary answered DefaultBinary by
+	// construction, so no value comparison is needed here. An INVALID pin
+	// (a relative path with a separator) already failed resolveCLIBinary
+	// above, so any non-empty value counts as a pin.
+	if command != "" {
+		return nil
+	}
+	if proto.HostBinaryEnv != "" && strings.TrimSpace(os.Getenv(proto.HostBinaryEnv)) != "" {
 		return nil
 	}
 	if !backendcaps.UnservedByPublishedImages(backendName) {
