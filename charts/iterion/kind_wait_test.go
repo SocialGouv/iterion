@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -48,6 +49,37 @@ func uniqueMatch(candidates []string, want, what string) (int, error) {
 	default:
 		return 0, fmt.Errorf("%s has %d commands containing %q — the witness cannot tell which one to read; keep one so what wins does not depend on the order commands were added", what, len(hits), want)
 	}
+}
+
+// timeoutFlag matches a --timeout flag and, when present, its value: a
+// quoted shell word or a bare word. The value stays empty for a flag that
+// carries none.
+var timeoutFlag = regexp.MustCompile(`--timeout(?:[ =]("[^"]*"|\S+))?`)
+
+// soleTimeout inspects every --timeout flag on an install command and
+// errors when any of them carries something other than the derived
+// variable, or when the command carries none. helm accepts a repeated
+// flag and keeps the LAST occurrence (pflag sets the value once per
+// occurrence), so a literal --timeout 5m beside the variable sets the
+// real cap while a substring pin on the variable stays green — the
+// fixed-cap regression #2780 closed. A literal reds wherever it sits in
+// the order; the caller passes the expansion its shell quotes, `$VAR` or
+// `${VAR}`.
+func soleTimeout(cmd, variable string) error {
+	matches := timeoutFlag.FindAllStringSubmatch(cmd, -1)
+	if len(matches) == 0 {
+		return fmt.Errorf("no --timeout flag on %q — the derived cap is not wired at all", cmd)
+	}
+	for _, m := range matches {
+		got := m[1]
+		if len(got) > 1 && got[0] == '"' && got[len(got)-1] == '"' {
+			got = got[1 : len(got)-1]
+		}
+		if got != variable {
+			return fmt.Errorf("--timeout carries %q, not the derived %q — helm keeps the last repeated flag, so this literal sets the real cap while the wiring reads intact", got, variable)
+		}
+	}
+	return nil
 }
 
 // TestChartKindWaitFollowsTheValuesDeadline pins the derivation both
@@ -418,8 +450,8 @@ func TestChartKindInstallDerivesItsWaitFromTheValuesFile(t *testing.T) {
 	if !strings.Contains(install, "scripts/chart-kind-wait.sh") {
 		t.Fatalf("chart:kind's install no longer calls scripts/chart-kind-wait.sh — the client wait drifts from the values deadline again; cmd: %s", install)
 	}
-	if !strings.Contains(install, `--timeout "$KIND_WAIT"`) {
-		t.Fatalf("chart:kind's install must pass the helper's output to --timeout; cmd: %s", install)
+	if err := soleTimeout(install, `$KIND_WAIT`); err != nil {
+		t.Fatalf("chart:kind's install must pass the helper's output to --timeout and nothing else: %v — cmd: %s", err, install)
 	}
 }
 
@@ -452,6 +484,45 @@ func TestWitnessSelectorsRequireAUniqueMatch(t *testing.T) {
 			}
 			if err == nil {
 				t.Fatalf("uniqueMatch accepted a selector matching several commands — a witness must refuse the ambiguity instead of reading whichever command comes last")
+			}
+			if !strings.Contains(err.Error(), tc.errPart) {
+				t.Fatalf("error %q does not name %q", err, tc.errPart)
+			}
+		})
+	}
+}
+
+// TestSoleTimeoutRefusesAnyLiteralTimeout pins the rule both wiring
+// witnesses share through soleTimeout: every --timeout occurrence on the
+// install command must carry the derived variable. helm accepts a
+// repeated flag and keeps its last value, so the literal reds in either
+// position — a guard keyed on the order commands happen to list their
+// flags would let the trailing mutant through.
+func TestSoleTimeoutRefusesAnyLiteralTimeout(t *testing.T) {
+	const variable = `$KIND_WAIT`
+	for _, tc := range []struct {
+		name    string
+		cmd     string
+		valid   bool
+		errPart string
+	}{
+		{"the quoted variable passes", `--wait --timeout "$KIND_WAIT"`, true, ""},
+		{"the = form of the variable passes", `--timeout="$KIND_WAIT"`, true, ""},
+		{"a trailing literal reds", `--wait --timeout "$KIND_WAIT" --timeout 5m`, false, "--timeout carries \"5m\""},
+		{"a leading literal reds too", `--timeout 5m --wait --timeout "$KIND_WAIT"`, false, "--timeout carries \"5m\""},
+		{"a flag without value reds", `--wait --timeout "$KIND_WAIT" --timeout`, false, "--timeout carries \"\""},
+		{"no flag at all reds", `helm upgrade --install iterion ./charts/iterion --wait`, false, "no --timeout flag"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := soleTimeout(tc.cmd, variable)
+			if tc.valid {
+				if err != nil {
+					t.Fatalf("soleTimeout refused a correctly derived cap: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("soleTimeout accepted %q — a literal beside the derived variable must red, whichever side it sits on; cmd: %s", variable, tc.cmd)
 			}
 			if !strings.Contains(err.Error(), tc.errPart) {
 				t.Fatalf("error %q does not name %q", err, tc.errPart)
@@ -502,8 +573,8 @@ func TestChartCloudE2EInstallDerivesItsWaitFromTheValuesFile(t *testing.T) {
 	if !strings.Contains(install, "scripts/chart-kind-wait.sh") {
 		t.Fatalf("cloud-e2e's install no longer calls scripts/chart-kind-wait.sh — a fixed client cap decides the install again; run: %s", install)
 	}
-	if !strings.Contains(install, `--timeout "${KIND_WAIT}"`) {
-		t.Fatalf("cloud-e2e's install must pass the helper's output to --timeout; run: %s", install)
+	if err := soleTimeout(install, `${KIND_WAIT}`); err != nil {
+		t.Fatalf("cloud-e2e's install must pass the helper's output to --timeout and nothing else: %v — run: %s", err, install)
 	}
 	// The runner kill must not preempt helm's verdict: the derived cap is
 	// what the helper prints for values-dev.yaml — derived HERE by running
