@@ -89,6 +89,7 @@ var crossedByItsOwnBranch = map[string]string{
 	"ITERION_OPENAI_USE_OAUTH":   `crosses as the refusal "0", or as "1" beside a ChatGPT forfait the container was handed: the run's own, or the host's that a host-wide "1" orders, written at the dispatch`,
 	"ITERION_CODEX_HOST_VERSION": "the host's `codex --version` probe, sent when no ITERION_CODEX_VERSION override is set",
 	"CLAW_BASH_TIMEOUT":          "the deployment's bash budget, spent where bash runs — the container for a sandboxed node; a duration, not a path, so the launcher's value crosses as-is when set (forwardableToolEnv)",
+	"CLAW_PROC_WAIT_DELAY":       "the drain bound bash grants a process that outlives its exit, spent where bash runs — the container for a sandboxed node; a duration, not a path, so the launcher's value crosses as-is when set (forwardableToolEnv)",
 	"CLAW_CONFIG_HOME":           "the skill lookup reads it in the container and no iterion-seeded mount serves a claw config home, so there is nothing to rewrite to and the launcher's value crosses as-is when set (forwardableToolEnv)",
 	// The two cross as the host's own answer to the question their reader
 	// asks (envtrust.Inherited, explicit empty included), so the twin

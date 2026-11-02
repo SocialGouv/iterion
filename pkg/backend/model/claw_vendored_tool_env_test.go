@@ -73,6 +73,8 @@ var vendoredToolEnvDecision = map[string]struct {
 		"the session todo list lives outside the workspace, keyed on the launcher's own directory — the read happens on the launcher, the name never crosses"},
 	"CLAW_BASH_TIMEOUT": {toolClassForwarded, "bash",
 		"the deployment's bash budget, spent where bash runs — the container for a sandboxed node; a duration, not a path, so the launcher's value crosses as-is (forwardableToolEnv), the way the ITERION_CLAW_STREAM_* knobs do"},
+	"CLAW_PROC_WAIT_DELAY": {toolClassForwarded, "bash",
+		"the drain bound bash grants a process that outlives its exit, spent where bash runs — the container for a sandboxed node; a duration, not a path, so the launcher's value crosses as-is (forwardableToolEnv), the same shape as CLAW_BASH_TIMEOUT"},
 	"CLAW_CONFIG_HOME": {toolClassForwarded, "skill",
 		"the skill lookup reads it in the container; no iterion-seeded mount serves a claw config home, so there is nothing to rewrite to and the launcher's value crosses as-is — resolving where host_state binds the host, skipped where the path does not exist"},
 	"CODEX_HOME": {toolClassForwarded, "skill",

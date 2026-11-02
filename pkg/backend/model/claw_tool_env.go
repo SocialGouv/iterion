@@ -22,6 +22,9 @@ import "os"
 //     node is the container (bash is tool.PlacementSandbox and the runner
 //     registers it locally). Same shape as the ITERION_CLAW_STREAM_* knobs
 //     in providerCredentialEnvVars.
+//   - CLAW_PROC_WAIT_DELAY crosses as-is for the same reason: the drain bound
+//     bash grants a process that outlives its exit — a duration, spent where
+//     bash runs.
 //   - CLAW_CONFIG_HOME crosses as-is: the skill tool's lookup reads it in the
 //     container (skill is sandbox-placed, registered by the runner), and no
 //     iterion-seeded mount serves a claw config home, so there is nothing to
@@ -42,6 +45,9 @@ func forwardableToolEnv() map[string]string {
 	// (claw_sandbox_env_class_test.go) classifies names it can SEE.
 	if v := os.Getenv("CLAW_BASH_TIMEOUT"); v != "" {
 		env["CLAW_BASH_TIMEOUT"] = v
+	}
+	if v := os.Getenv("CLAW_PROC_WAIT_DELAY"); v != "" {
+		env["CLAW_PROC_WAIT_DELAY"] = v
 	}
 	if v := os.Getenv("CLAW_CONFIG_HOME"); v != "" {
 		env["CLAW_CONFIG_HOME"] = v

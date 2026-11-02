@@ -3259,7 +3259,7 @@ vars below are forwarded into the container):
 
 1. `ITERION_LLM_USER_AGENT` — iterion surface, injected into every claw
    provider factory ([pkg/backend/model/registry.go](../pkg/backend/model/registry.go)
-   `withClientIdentity`).
+   `withClientIdentity`, which reads the chain here by name).
 2. `CLAW_USER_AGENT` — claw's own env override (works for any
    claw-code-go embedder).
 3. The per-path default (`claw-code-go/<version>`, or
@@ -3268,12 +3268,14 @@ vars below are forwarded into the container):
 For arbitrary headers, claw honours **`ANTHROPIC_CUSTOM_HEADERS`** with
 Claude Code's exact semantics: newline-separated `Name: Value` pairs,
 applied **last** on every request so they can override any default
-header — including the User-Agent:
+header — including the User-Agent. The channel serves a **sandboxed**
+node (the runner reads the forwarded block); an in-process node on the
+host ignores it — the engine resolves its identity itself (below):
 
 ```bash
 # ~/.iterion/env — identify as a specific tool against a gated endpoint
 ITERION_LLM_USER_AGENT="my-tool/1.0"
-# or arbitrary headers, Claude Code style (overrides UA too):
+# arbitrary headers for a sandboxed node, Claude Code style (overrides UA too):
 ANTHROPIC_CUSTOM_HEADERS="User-Agent: my-tool/1.0
 X-My-Header: value"
 ```
@@ -3301,9 +3303,15 @@ under review write the headers of every request the node sends. The host
 environment is the supported channel for it; a value set through the sandbox
 spec or a repository's `devcontainer.json` does not reach the runner.
 
-An in-process (non-sandboxed) claw node still reads the variable through claw's
-own identity resolution, for every provider: that half is claw's to close
-(`api.ResolveExplicitIdentity` is the seam) and needs a `claw-code-go` bump.
+An in-process (non-sandboxed) claw node no longer reads the variable at all:
+the engine resolves the identity itself and builds every client with claw's
+`NoAmbientHeaders`, so an ambient block — the operator's shell, or a planted
+`.env` — cannot authenticate or re-identify a request the engine routed
+([#2244](https://github.com/SocialGouv/iterion/issues/2244)). The sandboxed
+`__claw-runner` is the channel's one reader: its environment is the crossing's
+own forwarded env, already filtered. Identity headers an engine-routed node
+should carry belong in the route's credential or `ITERION_LLM_USER_AGENT`, not
+the ambient block.
 
 **ToS caveat.** Presenting as another tool is a decision between you
 and the endpoint you target (e.g. your z.ai subscription's supported-

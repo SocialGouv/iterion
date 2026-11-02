@@ -66,6 +66,11 @@ type Registry struct {
 	providers        map[string]ProviderFactory
 	providersWithKey map[string]KeyedProviderFactory
 	cache            map[string]*cacheEntry
+	// forwardedEnv reports that this process's environment is the sandbox
+	// crossing's forwarded env, not the operator's shell: claw's own ambient
+	// identity read stays the reader of what forwardableProviderEnv vetted.
+	// Only a sandbox runner's registry sets it (NewSandboxRunnerRegistry).
+	forwardedEnv bool
 }
 
 // NewRegistry creates a model registry pre-loaded with built-in providers.
@@ -76,6 +81,18 @@ func NewRegistry() *Registry {
 		cache:            make(map[string]*cacheEntry),
 	}
 	r.registerDefaults()
+	return r
+}
+
+// NewSandboxRunnerRegistry is the registry an `iterion __claw-runner` builds:
+// the environment it reads is the env the launcher's crossing composed —
+// keys, routing and the header block already filtered of credential lines by
+// forwardableProviderEnv. Claw's own identity resolution is the designed
+// reader of that channel, so the ambient read stays open here, and closed on
+// every registry the ENGINE builds for itself (NewRegistry).
+func NewSandboxRunnerRegistry() *Registry {
+	r := NewRegistry()
+	r.forwardedEnv = true
 	return r
 }
 
@@ -204,7 +221,7 @@ func (r *Registry) registerDefaults() {
 					secrets.SubscriptionOAuthNotice(secrets.ProviderAnthropic))
 			})
 		}
-		return p.NewClient(withClientIdentity(cfg))
+		return p.NewClient(r.withClientIdentity(cfg))
 	}
 	r.providersWithKey["anthropic"] = func(modelID, apiKey string) (api.APIClient, error) {
 		p := anthropicprovider.New()
@@ -212,7 +229,7 @@ func (r *Registry) registerDefaults() {
 		// per-tenant base-URL override should ride alongside the BYOK
 		// key record once the cloud-side z.ai BYOK lands — see
 		// .plans/zai-glm-oauth.md.
-		return p.NewClient(withClientIdentity(api.ProviderConfig{
+		return p.NewClient(r.withClientIdentity(api.ProviderConfig{
 			APIKey:  apiKey,
 			Model:   modelID,
 			BaseURL: os.Getenv("ANTHROPIC_BASE_URL"),
@@ -265,11 +282,11 @@ func (r *Registry) registerDefaults() {
 		if shouldTryOAuth {
 			if view, err := secrets.LoadCodexCredentialsFromDisk(); err == nil && view.IsChatGPTMode() {
 				applyCodexOAuth(&cfg, view)
-				return p.NewClient(withClientIdentity(cfg))
+				return p.NewClient(r.withClientIdentity(cfg))
 			}
 		}
 		cfg.APIKey = apiKey
-		return p.NewClient(withClientIdentity(cfg))
+		return p.NewClient(r.withClientIdentity(cfg))
 	}
 	r.providersWithKey["openai"] = func(modelID, apiKey string) (api.APIClient, error) {
 		p := openaiprovider.New()
@@ -280,7 +297,7 @@ func (r *Registry) registerDefaults() {
 			OpenAIModelVerbatim: true,
 		}
 		cfg.OpenAIStreamUsage = openAIStreamUsage(cfg.BaseURL)
-		return p.NewClient(withClientIdentity(cfg))
+		return p.NewClient(r.withClientIdentity(cfg))
 	}
 	// AWS Bedrock — auth via aws-sdk-go-v2 standard credential chain
 	// (AWS_REGION, AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, profile,
@@ -294,21 +311,21 @@ func (r *Registry) registerDefaults() {
 	// GOOGLE_CLOUD_REGION defaults to us-east5.
 	r.providers["vertex"] = func(modelID string) (api.APIClient, error) {
 		p := vertexprovider.New()
-		return p.NewClient(withClientIdentity(api.ProviderConfig{Model: modelID}))
+		return p.NewClient(r.withClientIdentity(api.ProviderConfig{Model: modelID}))
 	}
 	// Azure Foundry (Azure OpenAI Service) — auth via AZURE_OPENAI_API_KEY
 	// or azidentity DefaultAzureCredential. Requires AZURE_OPENAI_ENDPOINT
 	// and AZURE_OPENAI_DEPLOYMENT (or modelID is treated as the deployment).
 	r.providers["foundry"] = func(modelID string) (api.APIClient, error) {
 		p := foundryprovider.New()
-		return p.NewClient(withClientIdentity(api.ProviderConfig{
+		return p.NewClient(r.withClientIdentity(api.ProviderConfig{
 			APIKey: os.Getenv("AZURE_OPENAI_API_KEY"),
 			Model:  modelID,
 		}))
 	}
 	r.providersWithKey["foundry"] = func(modelID, apiKey string) (api.APIClient, error) {
 		p := foundryprovider.New()
-		return p.NewClient(withClientIdentity(api.ProviderConfig{APIKey: apiKey, Model: modelID}))
+		return p.NewClient(r.withClientIdentity(api.ProviderConfig{APIKey: apiKey, Model: modelID}))
 	}
 	// xAI Grok — OpenAI-compatible chat completions at api.x.ai.
 	// Auth via XAI_API_KEY (or cloud BYOK under provider "xai"). Model
@@ -318,7 +335,7 @@ func (r *Registry) registerDefaults() {
 	// tool calling, and reasoning-model detection stay shared.
 	r.providers["xai"] = func(modelID string) (api.APIClient, error) {
 		p := openaiprovider.New()
-		return p.NewClient(withClientIdentity(api.ProviderConfig{
+		return p.NewClient(r.withClientIdentity(api.ProviderConfig{
 			APIKey:              os.Getenv("XAI_API_KEY"),
 			Model:               modelID,
 			BaseURL:             xaiBaseURL(),
@@ -327,7 +344,7 @@ func (r *Registry) registerDefaults() {
 	}
 	r.providersWithKey["xai"] = func(modelID, apiKey string) (api.APIClient, error) {
 		p := openaiprovider.New()
-		return p.NewClient(withClientIdentity(api.ProviderConfig{
+		return p.NewClient(r.withClientIdentity(api.ProviderConfig{
 			APIKey:              apiKey,
 			Model:               modelID,
 			BaseURL:             xaiBaseURL(),
@@ -364,7 +381,7 @@ func (r *Registry) registerDefaults() {
 				Detail:   "the moonshot facade does not serve it — it would answer with a Kimi model under the requested label; route the node to a kimi-* id",
 			}
 		}
-		return moonshotprovider.New().NewClient(withClientIdentity(api.ProviderConfig{
+		return moonshotprovider.New().NewClient(r.withClientIdentity(api.ProviderConfig{
 			APIKey:  key,
 			Model:   modelID,
 			BaseURL: moonshotBaseURL(),
@@ -381,7 +398,7 @@ func (r *Registry) registerDefaults() {
 				Detail:   "the moonshot facade does not serve it — it would answer with a Kimi model under the requested label; route the node to a kimi-* id",
 			}
 		}
-		return moonshotprovider.New().NewClient(withClientIdentity(api.ProviderConfig{
+		return moonshotprovider.New().NewClient(r.withClientIdentity(api.ProviderConfig{
 			APIKey:  apiKey,
 			Model:   modelID,
 			BaseURL: moonshotBaseURL(),
@@ -437,12 +454,39 @@ func xaiBaseURL() string {
 	return base
 }
 
-// withClientIdentity injects ITERION_LLM_USER_AGENT (the iterion-branded
-// User-Agent override) into a claw ProviderConfig; claw resolves the rest of
-// the precedence chain. See docs/backends.md § Client identity.
-func withClientIdentity(cfg api.ProviderConfig) api.ProviderConfig {
-	cfg.UserAgent = os.Getenv("ITERION_LLM_USER_AGENT")
+// withClientIdentity injects the identity the ENGINE resolved into a claw
+// ProviderConfig, and closes the ambient-header read on engine-resolved
+// routes (#2244): the documented User-Agent chain is read HERE, by name —
+// ITERION_LLM_USER_AGENT, then CLAW_USER_AGENT, empty = claw's honest
+// default — and NoAmbientHeaders stops claw from reading the process
+// environment again behind the engine's back. ANTHROPIC_CUSTOM_HEADERS is
+// whatever the operator's shell (or a planted .env, #2813) wrote, and a
+// credential line in it would authenticate the node's request in place of
+// the credential the engine resolved — the exact line the sandbox crossing
+// refuses; the engine's own in-process clients refuse the whole read.
+//
+// A sandbox runner's registry (NewSandboxRunnerRegistry) keeps claw's
+// ambient read: its process environment IS the crossing's forwarded env,
+// already vetted by forwardableProviderEnv — refusing it there would drop
+// the identity lines the crossing deliberately sent. See
+// docs/backends.md § Client identity.
+func (r *Registry) withClientIdentity(cfg api.ProviderConfig) api.ProviderConfig {
+	cfg.UserAgent = engineClientUserAgent()
+	if !r.forwardedEnv {
+		cfg.NoAmbientHeaders = true
+	}
 	return cfg
+}
+
+// engineClientUserAgent resolves the documented client-identity chain
+// explicitly: ITERION_LLM_USER_AGENT (iterion's surface), then CLAW_USER_AGENT
+// (claw's own override), empty = claw resolves its honest default. The read is
+// deliberate and named here, not claw's to re-do under NoAmbientHeaders.
+func engineClientUserAgent() string {
+	if ua := strings.TrimSpace(os.Getenv("ITERION_LLM_USER_AGENT")); ua != "" {
+		return ua
+	}
+	return os.Getenv("CLAW_USER_AGENT")
 }
 
 // codexCLIVersion resolves the Codex CLI version string to send in the
@@ -758,7 +802,7 @@ func (r *Registry) ResolveWithContext(ctx context.Context, spec string) (api.API
 				// gate above refuses this shape first.
 				operatorBase = ""
 			}
-			return anthropicprovider.New().NewClient(withClientIdentity(api.ProviderConfig{
+			return anthropicprovider.New().NewClient(r.withClientIdentity(api.ProviderConfig{
 				APIKey:  zai,
 				Model:   modelID,
 				BaseURL: glmBaseURL(operatorBase),
@@ -952,7 +996,7 @@ func (r *Registry) openAIFromCtxForfait(ctx context.Context, modelID string) (ap
 	if !ok {
 		return nil, false, nil
 	}
-	client, cerr := openaiprovider.New().NewClient(withClientIdentity(openAIForfaitConfig(modelID, view)))
+	client, cerr := openaiprovider.New().NewClient(r.withClientIdentity(openAIForfaitConfig(modelID, view)))
 	return client, true, cerr
 }
 
@@ -1048,7 +1092,7 @@ func (r *Registry) anthropicFromCtxForfaitOnWire(ctx context.Context, modelID, b
 		BaseURL:    baseURL,
 		OAuthToken: token,
 	}
-	client, cerr := anthropicprovider.New().NewClient(withClientIdentity(cfg))
+	client, cerr := anthropicprovider.New().NewClient(r.withClientIdentity(cfg))
 	return client, true, cerr
 }
 

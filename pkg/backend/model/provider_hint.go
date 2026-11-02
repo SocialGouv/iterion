@@ -127,7 +127,7 @@ func (r *Registry) resolveAnthropicDirect(ctx context.Context, modelID string) (
 	p := anthropicprovider.New()
 	if creds, ok := credentialsLookup(ctx); ok {
 		if k := creds(string(secrets.ProviderAnthropic)); k != "" {
-			return p.NewClient(withClientIdentity(api.ProviderConfig{APIKey: k, Model: modelID}))
+			return p.NewClient(r.withClientIdentity(api.ProviderConfig{APIKey: k, Model: modelID}))
 		}
 	}
 	// The forfait on the DIRECT wire: the empty base URL stands in for the
@@ -143,7 +143,7 @@ func (r *Registry) resolveAnthropicDirect(ctx context.Context, modelID string) (
 		return nil, &ErrProviderHintUnfunded{Provider: "anthropic", Model: modelID}
 	}
 	if k := os.Getenv("ANTHROPIC_API_KEY"); k != "" {
-		return p.NewClient(withClientIdentity(api.ProviderConfig{APIKey: k, Model: modelID}))
+		return p.NewClient(r.withClientIdentity(api.ProviderConfig{APIKey: k, Model: modelID}))
 	}
 	if tok := secrets.AnthropicForfaitAccessTokenFromDisk(); tok != "" {
 		// Same guard as the env factory: the opt-out is enforced at the
@@ -155,7 +155,7 @@ func (r *Registry) resolveAnthropicDirect(ctx context.Context, modelID string) (
 			iterlog.NewFromEnv(os.Stderr).Warn("claw: %s",
 				secrets.SubscriptionOAuthNotice(secrets.ProviderAnthropic))
 		})
-		return p.NewClient(withClientIdentity(api.ProviderConfig{Model: modelID, OAuthToken: tok}))
+		return p.NewClient(r.withClientIdentity(api.ProviderConfig{Model: modelID, OAuthToken: tok}))
 	}
 	return nil, &ErrProviderHintUnfunded{Provider: "anthropic", Model: modelID}
 }
