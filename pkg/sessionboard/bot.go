@@ -9,6 +9,7 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 
+	"github.com/SocialGouv/iterion/pkg/backend/auxllm"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -92,7 +93,7 @@ type LLMEvaluator struct {
 // The client resolves lazily on first Evaluate so construction never
 // blocks.
 func NewLLMEvaluator(modelSpec string) *LLMEvaluator {
-	return &LLMEvaluator{registry: model.NewRegistry(), pinned: modelSpec}
+	return &LLMEvaluator{registry: auxllm.Registry(), pinned: modelSpec}
 }
 
 func resolveModel(pinned string) (string, error) {

@@ -21,6 +21,7 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 
+	"github.com/SocialGouv/iterion/pkg/backend/auxllm"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -120,7 +121,7 @@ func (s *Service) resolveAllConflictsWithAgent(ctx context.Context, runID, model
 		}, nil
 	}
 
-	registry := model.NewRegistry()
+	registry := auxllm.Registry()
 	spec, err := resolveResolverModel(registry, modelSpec)
 	if err != nil {
 		return nil, err

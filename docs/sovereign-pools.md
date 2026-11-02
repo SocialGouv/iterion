@@ -52,7 +52,11 @@ The isolation chain, in the order a run meets it:
    to decrypt.
 7. **Server-side auxiliary surfaces**: the merge-conflict resolver,
    declared supervisors and the session board send content derived from a
-   run to a model resolved outside the run's own execution. On a run
+   run to a model resolved outside the run's own execution. All three take
+   their model registry from one credential channel
+   (`pkg/backend/auxllm.Registry` — the server process env today), so the
+   run's own gateway credential, once #2005 PR-C' reopens the sealed bundle
+   server-side, funds them from one place instead of three (#2645). On a run
    stamped to a pool they consult the run document's frozen stamp and
    refuse with `ErrPoolContentRefused` (HTTP 403 on the resolver route),
    naming the remedy — unless the surface's model is itself

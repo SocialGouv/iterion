@@ -70,6 +70,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/authoringlock` | owns the lock that serializes the writers of one stored bot file: its identity (where it lives and what it is called), its exclusive take, and the… | — |
 | `pkg/backend/ambient` | iterion's switch for what an agent node inherits from its surroundings besides its prompt (ADR-119). | — |
 | `pkg/backend/automemory` | iterion's switch for the backends' native auto-memory: the MEMORY.md an agent maintains across runs to carry what it learned. | — |
+| `pkg/backend/auxllm` | the ONE credential channel a server-side auxiliary LLM surface resolves through: the merge-conflict resolver (pkg/runview/conflict_agent.go), a… | — |
 | `pkg/backend/backendcaps` | owns the declarative inventory of built-in backends. | — |
 | `pkg/backend/compatgw` | serves `openai_compatible/<gateway model id>` from the deployment's environment: OPENAI_COMPATIBLE_BASE_URL names an OpenAI-compatible gateway… | — |
 | `pkg/backend/cost` | holds the per-model token-pricing table used to annotate generation outputs with `_tokens` / `_model` / `_cost_usd`. | — |

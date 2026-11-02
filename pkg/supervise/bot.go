@@ -10,6 +10,7 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 
+	"github.com/SocialGouv/iterion/pkg/backend/auxllm"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -130,7 +131,7 @@ type LLMEvaluator struct {
 // NewLLMEvaluator constructs an evaluator. The model client is resolved
 // on the first Evaluate call so construction never blocks on detection.
 func NewLLMEvaluator() *LLMEvaluator {
-	return &LLMEvaluator{registry: model.NewRegistry()}
+	return &LLMEvaluator{registry: auxllm.Registry()}
 }
 
 // ResolveModel is the model spec a supervisor's evaluator resolves at its
