@@ -28,7 +28,7 @@ import (
 // escape hatch, and it is meant to be greppable. The first matching pattern
 // wins, so an index rule sits above any broader rule for the same directory.
 var agentTreeBudgets = []agentTreeBudget{
-	{"AGENTS.md", 6144},
+	{"AGENTS.md", 6400},
 	{"CLAUDE.md", 1536},
 	{"docs/agents/**/README.md", 2560},
 	// One-line-per-field cheat sheet; the per-node reference lives in

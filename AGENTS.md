@@ -54,6 +54,9 @@ interactive sessions).
   per command, `cmd/iterion/`), output through `Printer`. Logs: `pkg/log`.
   Errors and tracing: extend `pkg/errtrack`, never a second tracker. Run state
   lives in `.iterion/`.
+- **Provider/model config lives in the DB** — the override cascade
+  (global/org/team/bot/bot-in-team/binding) is the ladder; env tables are
+  runner-side fallbacks ([gateway.md](docs/agents/backends/gateway.md)).
 - **Pay discoveries back.** A discovery lands in the tree: content in its
   page, one line in its index. A paragraph that would grow this file belongs
   there.
