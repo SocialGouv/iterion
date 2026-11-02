@@ -11,6 +11,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -170,7 +171,16 @@ func TestRun_aLeaderWhoseEveryPassIsUnreachableHandsOverToAHealthyPeer(t *testin
 // The mirror, as its own isolated scenario: a net whose passes find nothing
 // to do is the healthiest state the net has, and its holder keeps the lease.
 // Two guards, two scenarios, or neither is proven.
+//
+// The 150 ms TTL and the idle window after it are the mechanism under test,
+// so they run in virtual time: on the wall clock a scheduler stall longer
+// than the step-down margin ends the holder's term inside the scenario, and
+// a peer takes the lease — the runner's red, not the lease's (#2854).
 func TestRun_aLeaderWhosePassesFindNothingToDoKeepsItsLease(t *testing.T) {
+	synctest.Test(t, testRunAnIdleHolderKeepsItsLease)
+}
+
+func testRunAnIdleHolderKeepsItsLease(t *testing.T) {
 	const tick = 50 * time.Millisecond
 	const leaseTTL = 3 * tick
 	st := NewMemoryStore()
