@@ -4,11 +4,12 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io/fs"
-	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
 )
 
 // The channel's whole value is being the ONLY door: an auxiliary surface
@@ -21,10 +22,12 @@ import (
 // not the aux channel's), and this package. Anything else is an auxiliary
 // surface reaching around the door.
 //
-// What the sweep cannot see: a second exported constructor added INSIDE
-// pkg/backend/model would be a second channel this walk never judges. Its
-// reason belongs in that package's docs, and if it serves auxiliary
-// surfaces it belongs HERE instead.
+// What the sweep cannot judge through call sites: a second exported
+// constructor defined INSIDE pkg/backend/model would be a second channel —
+// an auxiliary surface would call it as model.NewSomethingRegistry, and the
+// predicate below reads NewRegistry calls only. modelRegistryConstructors
+// pins that package's constructor set, and the package doc of
+// pkg/backend/model carries the doctrine the pin enforces.
 func TestEveryAuxiliarySurfaceResolvesThroughTheChannel(t *testing.T) {
 	// An exemption names a file AND how many model.NewRegistry calls its
 	// reason covers — a file is not a licence, and a second call cannot
@@ -39,50 +42,42 @@ func TestEveryAuxiliarySurfaceResolvesThroughTheChannel(t *testing.T) {
 		"cmd/iterion/claw_runner.go": 1,
 	}
 
-	repoRoot := filepath.Join("..", "..", "..")
+	// modelRegistryConstructors pins the exported constructors pkg/backend/
+	// model defines that return *Registry, on the record like every ledger
+	// in these sweeps. An unpinned addition reddens until it carries its
+	// reason — and if it serves auxiliary surfaces it belongs behind
+	// auxllm.Registry instead. A pinned name that vanished reddens until
+	// the entry is dropped.
+	modelRegistryConstructors := map[string]string{
+		// The one constructor today: the env-funded registry the channel
+		// wraps.
+		"NewRegistry": "the env-funded registry; auxllm.Registry is the auxiliary channel wrapping it",
+	}
+	constructors := map[string]string{}
+
 	var offenders []string
-	err := filepath.WalkDir(repoRoot, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if d.IsDir() {
-			switch d.Name() {
-			// Same skip list as runview's ExecutorSpec sweep and the MCP
-			// start-policy sweep: a .go file under testdata is never
-			// compiled, so judging it would accuse source that cannot run.
-			case "vendor", "node_modules", ".git", ".iterion", "studio", "testdata":
-				return filepath.SkipDir
-			}
-			// A nested checkout (a git worktree, a sibling clone) holds
-			// another tree's files: its older copies would report as
-			// offenders of a rule they predate.
-			if path != repoRoot {
-				if _, statErr := os.Stat(filepath.Join(path, ".git")); statErr == nil {
-					return filepath.SkipDir
-				}
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") {
-			return nil
-		}
-		rel := filepath.ToSlash(strings.TrimPrefix(path, repoRoot+string(filepath.Separator)))
+	sweepwalk.GoFiles(t, filepath.Join("..", "..", ".."), func(rel, path string) {
 		// Test files build registries as fixtures — providers exercised
 		// against planted env, run planes driven through their public API.
 		// The contract judges PRODUCTION construction: any auxiliary
 		// surface exists in a production file, and that file is judged.
 		if strings.HasSuffix(rel, "_test.go") {
-			return nil
+			return
 		}
 		// This package IS the channel: Registry is the one sanctioned
 		// direct construction outside the run planes.
 		if strings.HasPrefix(rel, "pkg/backend/auxllm/") {
-			return nil
+			return
 		}
 		file, perr := parser.ParseFile(token.NewFileSet(), path, nil, 0)
 		if perr != nil {
 			t.Errorf("parse %s: %v", rel, perr)
-			return nil
+			return
+		}
+		if strings.HasPrefix(rel, "pkg/backend/model/") {
+			for _, name := range registryConstructors(file) {
+				constructors[name] = rel
+			}
 		}
 		calls := registryConstructions(file, modelImportName(file))
 		if exempt[rel] > 0 {
@@ -92,16 +87,32 @@ func TestEveryAuxiliarySurfaceResolvesThroughTheChannel(t *testing.T) {
 					"auxllm.Registry, or raise the count with the reason it deserves",
 					rel, exempt[rel], calls)
 			}
-			return nil
+			return
 		}
 		if calls > 0 {
 			offenders = append(offenders, rel)
 		}
-		return nil
 	})
-	if err != nil {
-		t.Fatalf("walk: %v", err)
+
+	// Both directions of the constructor pin, each in one stable order:
+	// every constructor model defines is pinned, and every pinned one is
+	// still defined.
+	for _, name := range sortedKeys(constructors) {
+		if _, pinned := modelRegistryConstructors[name]; !pinned {
+			t.Errorf("pkg/backend/model now defines %s (%s), a second exported constructor returning "+
+				"*Registry — a funding decision no call site of this sweep judges, so an auxiliary surface "+
+				"could resolve through it unseen. Add it to modelRegistryConstructors with the reason it "+
+				"deserves; if it serves auxiliary surfaces it belongs behind auxllm.Registry instead.",
+				name, constructors[name])
+		}
 	}
+	for _, name := range sortedKeys(modelRegistryConstructors) {
+		if _, found := constructors[name]; !found {
+			t.Errorf("modelRegistryConstructors pins %s, and pkg/backend/model no longer defines it — "+
+				"drop the entry", name)
+		}
+	}
+
 	if len(offenders) > 0 {
 		t.Errorf("these build a model.Registry directly, outside the auxiliary credential channel — run-derived "+
 			"content they send would be funded by whatever the process env carries, judged by nobody: %v\n"+
@@ -109,6 +120,17 @@ func TestEveryAuxiliarySurfaceResolvesThroughTheChannel(t *testing.T) {
 			"gets, #2645); only the run's own execution planes may construct a registry of their own, and those "+
 			"live in this test's exempt map with their reason.", offenders)
 	}
+}
+
+// sortedKeys keeps both directions of the constructor pin in one order
+// whatever the map iteration gives.
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for name := range m {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // registryConstructions counts `<modelPkg>.NewRegistry(…)` calls in the file,
@@ -152,6 +174,97 @@ func modelImportName(file *ast.File) string {
 		return "model"
 	}
 	return ""
+}
+
+// registryConstructors returns the exported, receiver-less functions of the
+// file whose sole result is *Registry — the constructors of the model
+// package's own registry type. It reads declarations, so a constructor is
+// counted however its body builds the registry.
+func registryConstructors(file *ast.File) []string {
+	var names []string
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil || fn.Name == nil || !fn.Name.IsExported() {
+			continue
+		}
+		results := fn.Type.Results
+		if results == nil || len(results.List) != 1 {
+			continue
+		}
+		star, ok := results.List[0].Type.(*ast.StarExpr)
+		if !ok {
+			continue
+		}
+		if id, ok := star.X.(*ast.Ident); ok && id.Name == "Registry" {
+			names = append(names, fn.Name.Name)
+		}
+	}
+	return names
+}
+
+// The constructor pin is a blocking gate too, so its predicate owes the same
+// proof as the call-site one: a change to the shape it reads reddens HERE
+// instead of silently pinning nothing.
+func TestTheConstructorPredicateReadsTheShapesItClaims(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		src   string
+		names []string
+	}{
+		{
+			name: "an exported constructor returning *Registry",
+			src: `package p
+type Registry struct{}
+func NewRegistry() *Registry { return &Registry{} }`,
+			names: []string{"NewRegistry"},
+		},
+		{
+			name: "a method returning the type is not a constructor",
+			src: `package p
+type Registry struct{}
+func (r *Registry) Clone() *Registry { return r }`,
+		},
+		{
+			name: "an unexported function is not a constructor",
+			src: `package p
+type Registry struct{}
+func newRegistry() *Registry { return &Registry{} }`,
+		},
+		{
+			name: "a second result disqualifies the function",
+			src: `package p
+type Registry struct{}
+func Pair() (*Registry, error) { return &Registry{}, nil }`,
+		},
+		{
+			name: "another type's pointer is not the registry",
+			src: `package p
+type Cache struct{}
+func NewCache() *Cache { return &Cache{} }`,
+		},
+		{
+			name: "a value result is not the pinned pointer shape",
+			src: `package p
+type Registry struct{}
+func Value() Registry { return Registry{} }`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file, err := parser.ParseFile(token.NewFileSet(), "x.go", tc.src, 0)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			got := registryConstructors(file)
+			if len(got) != len(tc.names) {
+				t.Fatalf("registryConstructors = %v, want %v", got, tc.names)
+			}
+			for i := range got {
+				if got[i] != tc.names[i] {
+					t.Errorf("registryConstructors = %v, want %v", got, tc.names)
+				}
+			}
+		})
+	}
 }
 
 // The sweep is a blocking gate, so its predicate owes proof that it reads

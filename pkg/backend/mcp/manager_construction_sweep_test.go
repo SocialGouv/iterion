@@ -5,14 +5,14 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
-	"io/fs"
-	"os"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
 )
 
 // Every Manager outside this package has to say which servers its launcher
@@ -81,47 +81,17 @@ func TestEveryManagerOutsideThisPackageDeclaresItsStartPolicy(t *testing.T) {
 	// lands here is a site nobody decided about.
 	expectedUnreadable := map[string]bool{}
 
-	repoRoot := filepath.Join("..", "..", "..")
 	var offenders []string
-	err := filepath.WalkDir(repoRoot, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if d.IsDir() {
-			switch d.Name() {
-			// testdata is skipped because the toolchain skips it: a .go
-			// file there is never compiled, so judging it would accuse
-			// source that cannot run. runview's ExecutorSpec sweep walks
-			// the same tree by the same rules; the two lists must say the
-			// same thing or one of them is wrong and no reader can tell
-			// which.
-			case "vendor", "node_modules", ".git", ".iterion", "studio", "testdata":
-				return filepath.SkipDir
-			}
-			// A nested checkout (a git worktree, a sibling clone an operator
-			// keeps on disk) holds another tree's files: none are tracked
-			// here, and its older copies would report as offenders of a rule
-			// they predate.
-			if path != repoRoot {
-				if _, statErr := os.Stat(filepath.Join(path, ".git")); statErr == nil {
-					return filepath.SkipDir
-				}
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") {
-			return nil
-		}
-		rel := filepath.ToSlash(strings.TrimPrefix(path, repoRoot+string(filepath.Separator)))
+	sweepwalk.GoFiles(t, filepath.Join("..", "..", ".."), func(rel, path string) {
 		// This package's own tests exercise the zero value on purpose.
 		if strings.HasPrefix(rel, "pkg/backend/mcp/") {
-			return nil
+			return
 		}
 		exemptHere, isExempt := exempt[rel]
 		file, perr := parser.ParseFile(token.NewFileSet(), path, nil, 0)
 		if perr != nil {
 			t.Errorf("parse %s: %v", rel, perr)
-			return nil
+			return
 		}
 		missing, gaveUp := managerBuiltWithoutAStartPolicy(file, mcpImportName(file))
 		// An exemption covers the calls this guard cannot READ — never the
@@ -139,7 +109,7 @@ func TestEveryManagerOutsideThisPackageDeclaresItsStartPolicy(t *testing.T) {
 					"new one inline, or raise the count with the reason it deserves",
 					rel, exemptHere.unarmed, exemptHere.unreadable, exemptHere.reason, missing, gaveUp)
 			}
-			return nil
+			return
 		}
 		if missing > 0 {
 			offenders = append(offenders, rel)
@@ -147,11 +117,7 @@ func TestEveryManagerOutsideThisPackageDeclaresItsStartPolicy(t *testing.T) {
 		if gaveUp > 0 {
 			unreadable = append(unreadable, rel)
 		}
-		return nil
 	})
-	if err != nil {
-		t.Fatalf("walk: %v", err)
-	}
 	if len(offenders) > 0 {
 		t.Errorf("these build an mcp.Manager without declaring which servers the launcher may start, so they "+
 			"inherit the zero value (operator-installed servers only) — which silently refuses a "+
