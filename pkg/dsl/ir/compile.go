@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/readbudget"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -1861,7 +1862,10 @@ func (c *compiler) compileSubbots() {
 // no finalization of its own — so `auto_merge:` there would arm a landing
 // that never fires and the child's converged work would wait for a human.
 // And `merge_into:` / `merge_strategy:` without the arming flag would be
-// dropped in silence. Both are closed where they are written.
+// dropped in silence. Both are closed where they are written. The landing
+// values' closed vocabularies are named at compile too: a strategy or a
+// target the child's finalize would only fail at merge time is refused
+// here, where the author is still looking at the line.
 func (c *compiler) validateSubbotLanding(sd *ast.SubbotDecl) {
 	landingFields := sd.AutoMerge || sd.MergeInto != "" || sd.MergeStrategy != ""
 	if landingFields && !sd.Isolated {
@@ -1878,6 +1882,21 @@ func (c *compiler) validateSubbotLanding(sd *ast.SubbotDecl) {
 		c.errorfAt(DiagBadTemplateRef, sd.Name, "",
 			"subbot %q has invalid merge_strategy %q; valid values are squash, merge", sd.Name, sd.MergeStrategy)
 		sd.MergeStrategy = ""
+	}
+	// merge_into reads FOLDED everywhere the intent is read — the opt-out
+	// (pkg/store.MergeIntoOptOut), the default, or a branch name git
+	// accepts. Anything else would compile and die at the child's finalize
+	// (merge_status=failed, the router's bounded retries, then the alert):
+	// refused where written instead, naming what was written. The value is
+	// kept as written — the compile error refuses the workflow, the field
+	// never silently becomes another target.
+	switch strings.ToLower(strings.TrimSpace(sd.MergeInto)) {
+	case "", "none", "current":
+	default:
+		if err := gitlib.ValidateBranchName(sd.MergeInto); err != nil {
+			c.errorfAt(DiagBadTemplateRef, sd.Name, "",
+				"subbot %q has invalid merge_into %q: %v — valid values are none, current, or a branch name", sd.Name, sd.MergeInto, err)
+		}
 	}
 }
 

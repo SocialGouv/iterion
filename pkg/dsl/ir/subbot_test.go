@@ -157,8 +157,9 @@ subbot lot:
 // TestSubbotLandingStrategyEnum asserts the strategy's closed vocabulary,
 // and that the code it rides still admits this carrier: the refusal is a
 // C004 member, so the author greps the code and lands on the catalogue's
-// fix line and the reference row — both must name `merge_strategy`, or the
-// remedy describes a check that does not know the refusal exists.
+// fix line and the reference row — both must name `merge_strategy` and
+// `merge_into`, or the remedy describes a check that does not know the
+// refusals exist.
 func TestSubbotLandingStrategyEnum(t *testing.T) {
 	src := `
 tool a:
@@ -180,8 +181,10 @@ subbot lot:
 		t.Fatal("expected the merge_strategy enum refusal")
 	}
 	hint := HintFor(DiagBadTemplateRef)
-	if !strings.Contains(hint, "merge_strategy") {
-		t.Fatalf("the C004 fix line does not admit the subbot merge_strategy carrier: %s", hint)
+	for _, carrier := range []string{"merge_strategy", "merge_into"} {
+		if !strings.Contains(hint, carrier) {
+			t.Fatalf("the C004 fix line does not admit the subbot %s carrier: %s", carrier, hint)
+		}
 	}
 	doc, err := os.ReadFile("../../../docs/references/diagnostics.md")
 	if err != nil {
@@ -197,7 +200,88 @@ subbot lot:
 	if c004 == "" {
 		t.Fatal("docs/references/diagnostics.md has no C004 row")
 	}
-	if !strings.Contains(c004, "merge_strategy") {
-		t.Fatalf("the C004 reference row does not admit the subbot merge_strategy carrier: %s", c004)
+	for _, carrier := range []string{"merge_strategy", "merge_into"} {
+		if !strings.Contains(c004, carrier) {
+			t.Fatalf("the C004 reference row does not admit the subbot %s carrier: %s", carrier, c004)
+		}
+	}
+}
+
+// TestSubbotLandingMergeIntoVocabulary asserts merge_into's closed
+// vocabulary, read the way every intent reader folds it (case-insensitive,
+// whitespace-trimmed): the opt-out, the default, or a branch name git
+// accepts. A target git would misread — a padded branch name, a stray word
+// — compiles today and dies at the child's finalize (merge_status=failed,
+// the router's bounded retries, then the alert); refused where written
+// instead, naming what was written, with the written value kept verbatim.
+func TestSubbotLandingMergeIntoVocabulary(t *testing.T) {
+	refused := `
+tool a:
+  command: "true"
+
+workflow w:
+  entry: a
+
+  a -> lot
+  lot -> done
+
+subbot lot:
+  source: "child.bot"
+  isolated: true
+  auto_merge: true
+  merge_into: "main "
+`
+	diags := compileFile(t, refused).Diagnostics
+	if !hasDiag(diags, DiagBadTemplateRef) {
+		t.Fatal("expected the merge_into vocabulary refusal for a target git would misread")
+	}
+	found := false
+	for _, d := range diags {
+		if d.Code == DiagBadTemplateRef && strings.Contains(d.Error(), "merge_into") && strings.Contains(d.Error(), `"main "`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the refusal does not name the field and the value as written: %v", diags)
+	}
+
+	// The folded opt-out and the folded default compile — the reading the
+	// runtime and the router give the same field — and the written value
+	// survives verbatim (never silently rewritten).
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{"folded opt-out", " None "},
+		{"folded default", "Current"},
+		{"plain branch", "main"},
+	} {
+		src := `
+tool a:
+  command: "true"
+
+workflow w:
+  entry: a
+
+  a -> lot
+  lot -> done
+
+subbot lot:
+  source: "child.bot"
+  isolated: true
+  auto_merge: true
+  merge_into: "` + tc.value + `"
+`
+		res := compileFile(t, src)
+		if hasDiag(res.Diagnostics, DiagBadTemplateRef) {
+			t.Fatalf("%s (%q): compile refused a value every intent reader folds", tc.name, tc.value)
+		}
+		n, ok := res.Workflow.Nodes["lot"].(*SubbotNode)
+		if !ok {
+			t.Fatalf("%s: lot is not a SubbotNode: %T", tc.name, res.Workflow.Nodes["lot"])
+		}
+		if n.MergeInto != tc.value {
+			t.Fatalf("%s: merge_into = %q, want the written value %q verbatim", tc.name, n.MergeInto, tc.value)
+		}
 	}
 }
