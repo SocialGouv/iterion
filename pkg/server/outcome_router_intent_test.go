@@ -147,3 +147,75 @@ func TestOutcomeRouter_TheIntentHonorsAnExplicitNone(t *testing.T) {
 		t.Fatalf("an opted-out intent run must leave no row, got %+v", ds)
 	}
 }
+
+// The probe, replayed as a witness: a run whose LOCAL finalize refused
+// to merge (a wip-banked HEAD is recorded merge_status=skipped — the
+// bank commit is unreviewed output the run itself chose not to commit)
+// is LANDED anyway by the router on the intent alone. The refusal
+// binds: the router declines, the banked work stays on its storage
+// branch for the operator to review. The same refusal with no recorded
+// target at all (a detached-HEAD child) must not grow one at merge
+// time — whatever the repo root happens to have checked out.
+func TestOutcomeRouter_ARefusedFinalizeIsNeverLandedByItsIntent(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	h := newRouterHarness(t)
+	ctx := context.Background()
+
+	intentBankedRun(t, h, "i8-intent-wip-banked", func(r *store.Run) {
+		r.MergeStatus = store.MergeStatusSkipped
+	})
+	intentBankedRun(t, h, "i8-intent-detached", func(r *store.Run) {
+		r.MergeInto = ""
+		r.MergeStatus = store.MergeStatusSkipped
+	})
+
+	h.s.routeOutcomeOffer(ctx, "i8-intent-wip-banked")
+	h.s.routeOutcomeOffer(ctx, "i8-intent-detached")
+
+	for _, id := range []string{"i8-intent-wip-banked", "i8-intent-detached"} {
+		got, _ := h.st.LoadRun(ctx, id)
+		if got.MergeStatus == store.MergeStatusMerged {
+			t.Fatalf("run %s: a skipped finalize must never be landed by the intent, got merged", id)
+		}
+		if ds := h.decisions(t, id); len(ds) != 0 {
+			t.Fatalf("run %s: the declined refusal must leave no row, got %+v", id, ds)
+		}
+	}
+}
+
+// The contract lane shares the refusal: success_when held on a skipped
+// run escalates instead of merging — the intent only declines in
+// silence, a contract is audible. The row is the escalation record.
+func TestOutcomeRouter_AContractCannotLandARefusedFinalize(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	h := newRouterHarness(t)
+	ctx := context.Background()
+
+	r := intentBankedRun(t, h, "i9-contract-skipped", func(r *store.Run) {
+		r.AutoMerge = false
+		r.RoutingPolicy = mergePolicy("merge")
+		r.Checkpoint = outputs(true, false)
+		r.MergeStatus = store.MergeStatusSkipped
+	})
+
+	h.s.routeOutcomeOffer(ctx, r.ID)
+
+	got, _ := h.st.LoadRun(ctx, r.ID)
+	if got.MergeStatus == store.MergeStatusMerged {
+		t.Fatalf("a skipped finalize must never be landed by a contract, got merged")
+	}
+	ds := h.decisions(t, r.ID)
+	if len(ds) != 1 {
+		t.Fatalf("the refused merge must escalate audibly, got %d rows: %+v", len(ds), ds)
+	}
+	if ds[0].Decision != "escalate" || ds[0].State != store.RouteDecisionSucceeded {
+		t.Fatalf("refusal row = %+v, want escalate/succeeded", ds[0])
+	}
+	if !strings.Contains(ds[0].Reason, "skipped") {
+		t.Fatalf("refusal row reason = %q, want the refusal named", ds[0].Reason)
+	}
+}

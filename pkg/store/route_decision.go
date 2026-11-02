@@ -76,17 +76,21 @@ type RouteDecisionStore interface {
 	// ListRouteDecisions returns a run's decisions, newest episode
 	// first (audit surface).
 	ListRouteDecisions(ctx context.Context, runID string) ([]RouteDecision, error)
-	// ListRoutableRuns is the sweep net's query: ids of runs that
-	// carry a routing carrier — a launch-frozen contract OR the launch
-	// intent (auto_merge) — and sit in a terminal status, updated
-	// since the given instant, oldest first. Runs whose CURRENT episode
-	// is settled — a "succeeded" row, or a "failed" one at the attempt
-	// cap — are excluded (anti-join): without it, past one batch of
-	// decided terminals per lookback the head of the list is all
-	// already-decided runs and the very runs the net exists for become
-	// unreachable. The bus is the fast path; this list is the source of
-	// truth (six terminal paths never publish, and the bus is lossy by
-	// design — its own doc says the poll is the backstop).
+	// ListRoutableRuns is the sweep net's query: ids of runs the ROUTER
+	// CAN ACT ON at this terminal — either routing carrier (a
+	// launch-frozen contract, or the launch intent auto_merge), a
+	// terminal status, not already merged, and for the intent carrier
+	// only the mergeable shapes (a declined intent — failed, opted-out,
+	// finalize-refused, bank-failed — settles no row, so the net itself
+	// must refuse it), updated since the given instant, oldest first.
+	// Runs whose CURRENT episode is settled — a "succeeded" row, or a
+	// "failed" one at the attempt cap — are excluded (anti-join):
+	// without it, past one batch of decided terminals per lookback the
+	// head of the list is all already-decided runs and the very runs
+	// the net exists for become unreachable. The bus is the fast path;
+	// this list is the source of truth (six terminal paths never
+	// publish, and the bus is lossy by design — its own doc says the
+	// poll is the backstop).
 	ListRoutableRuns(ctx context.Context, since time.Time, limit int) ([]string, error)
 }
 

@@ -116,12 +116,32 @@ func (s *Store) ListRoutableRuns(ctx context.Context, since time.Time, limit int
 	}
 	pipeline := mongo.Pipeline{
 		{{Key: "$match", Value: notDeleted(bson.M{
+			// A run the router's merged gate declines before any verdict
+			// has no actionable episode: it must not occupy the batch.
+			"merge_status": bson.M{"$nin": bson.A{store.MergeStatusMerged}},
 			// Either routing carrier: a launch-frozen contract, or the
 			// launch intent itself — a run with neither is nobody's to
 			// route.
 			"$or": bson.A{
 				bson.M{"routing_policy": bson.M{"$exists": true, "$ne": nil}},
-				bson.M{"auto_merge": true},
+				bson.M{
+					// Intent-only arm: the intent's declines are
+					// SILENT — no registry row settles them, so the
+					// anti-join cannot lift them out. The net itself
+					// refuses every shape the intent reading or a
+					// pre-claim gate declines (a failed, opted-out,
+					// finalize-refused or bank-failed run admitted
+					// here rides the oldest-first page for its whole
+					// lookback and starves newer landable runs
+					// behind the cap). The preconditions mirror
+					// routing.EvaluateAutoMerge and the router's own
+					// gates — keep the two readings aligned.
+					"auto_merge":         true,
+					"status":             store.RunStatusFinished,
+					"merge_into":         bson.M{"$nin": bson.A{"none"}},
+					"merge_status":       bson.M{"$nin": bson.A{store.MergeStatusSkipped}},
+					"final_branch_error": bson.M{"$in": bson.A{"", nil}},
+				},
 			},
 			"status": bson.M{"$in": bson.A{
 				store.RunStatusFinished, store.RunStatusFailed, store.RunStatusFailedResumable,

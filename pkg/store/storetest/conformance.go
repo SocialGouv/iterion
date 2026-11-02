@@ -3776,6 +3776,77 @@ func testRouteDecisionRegistry(t *testing.T, s store.RunStore) {
 	if found["no-policy"] {
 		t.Fatalf("an unarmed no-policy run must stay out of the sweep: %v", ids)
 	}
+
+	// The intent's declines are SILENT — no registry row ever settles
+	// them, so the anti-join has nothing to read. The net itself must
+	// therefore refuse every shape the router would decline unclaimed:
+	// a non-finished run, an opted-out one, a finalize-refused one
+	// (merge_status=skipped), a bank-failed one, and a run already
+	// merged (the router's merged gate declines it before any verdict).
+	// Admitted, each shape rides the oldest-first page for its whole
+	// lookback, and a page of them starves newer landable runs behind
+	// the cap. A banked, unmerged, mergeable intent run — merge_status
+	// still empty, the cloud landing shape — stays swept.
+	mki := func(id string, mut func(r *store.Run)) {
+		t.Helper()
+		if _, err := s.CreateRun(ctx, id, "wf", nil); err != nil {
+			t.Fatalf("CreateRun %s: %v", id, err)
+		}
+		r, err := s.LoadRun(ctx, id)
+		if err != nil {
+			t.Fatalf("LoadRun %s: %v", id, err)
+		}
+		r.Status = store.RunStatusFinished
+		r.AutoMerge = true
+		if mut != nil {
+			mut(r)
+		}
+		if err := s.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+	}
+	mki("routable-intent-banked", func(r *store.Run) {
+		r.FinalBranch, r.FinalCommit = "iterion/run/banked", "cafebabel"
+	})
+	mki("intent-declined-failed", func(r *store.Run) { r.Status = store.RunStatusFailed })
+	mki("intent-declined-none", func(r *store.Run) { r.MergeInto = "none" })
+	mki("intent-declined-skipped", func(r *store.Run) { r.MergeStatus = store.MergeStatusSkipped })
+	mki("intent-declined-bank", func(r *store.Run) { r.FinalBranchError = "push refused" })
+	mki("intent-declined-merged", func(r *store.Run) { r.MergeStatus = store.MergeStatusMerged })
+	// The same merged shape on the contract carrier: the router's merged
+	// gate declines it before any verdict, so the net refuses it too.
+	if _, err := s.CreateRun(ctx, "contract-declined-merged", "wf", nil); err != nil {
+		t.Fatalf("CreateRun contract-declined-merged: %v", err)
+	}
+	cm, err := s.LoadRun(ctx, "contract-declined-merged")
+	if err != nil {
+		t.Fatalf("LoadRun contract-declined-merged: %v", err)
+	}
+	cm.Status = store.RunStatusFinished
+	cm.RoutingPolicy = pol
+	cm.MergeStatus = store.MergeStatusMerged
+	if err := s.SaveRun(ctx, cm); err != nil {
+		t.Fatalf("SaveRun contract-declined-merged: %v", err)
+	}
+	ids, err = rds.ListRoutableRuns(ctx, time.Now().Add(-time.Hour), 50)
+	if err != nil {
+		t.Fatalf("ListRoutableRuns (declined intents): %v", err)
+	}
+	found = map[string]bool{}
+	for _, id := range ids {
+		found[id] = true
+	}
+	if !found["routable-intent-banked"] {
+		t.Fatalf("a banked, unmerged intent run must be swept: %v", ids)
+	}
+	for _, declined := range []string{
+		"intent-declined-failed", "intent-declined-none", "intent-declined-skipped",
+		"intent-declined-bank", "intent-declined-merged", "contract-declined-merged",
+	} {
+		if found[declined] {
+			t.Fatalf("declined run %s must stay out of the sweep (its decline settles no row — a page of them starves newer landable runs): %v", declined, ids)
+		}
+	}
 }
 
 // testCredFingerprintMeter exercises the credential-concurrency meter

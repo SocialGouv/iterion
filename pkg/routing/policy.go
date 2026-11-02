@@ -151,6 +151,15 @@ func Evaluate(r *store.Run) Verdict {
 			return v
 		}
 		if allows(p, "merge") {
+			if r.MergeStatus == store.MergeStatusSkipped {
+				// The worktree finalize REFUSED to merge (a wip-banked
+				// HEAD, or no merge target at all): the contract cannot
+				// land what finalize refused — that verdict escalates so
+				// the operator hears the refusal and decides.
+				v.Decision = DecisionEscalate
+				v.Reason = "success_when held but the finalize refused to merge (merge_status=skipped: wip-banked HEAD or no merge target)"
+				return v
+			}
 			v.Decision = DecisionMerge
 			v.Reason = "success_when held: " + p.SuccessWhen
 			return v
@@ -185,8 +194,11 @@ func Evaluate(r *store.Run) Verdict {
 // powers — a failed or opted-out run keeps whatever continuation (retry,
 // redelivery, operator) already owns it. The preconditions mirror the
 // engine's own worktree finalization: the merge fires on a completed
-// workflow only (finalizeOnExit short-circuits on error), and an explicit
-// merge_into "none" is the operator's opt-out the intent must not override.
+// workflow only (finalizeOnExit short-circuits on error), an explicit
+// merge_into "none" is the operator's opt-out the intent must not
+// override, and a finalize that REFUSED to merge (merge_status=skipped:
+// a wip-banked HEAD, or no merge target at all — a detached HEAD) is
+// the finalize's own verdict the intent does not second-guess.
 func EvaluateAutoMerge(r *store.Run) (Verdict, bool) {
 	if r == nil || !r.AutoMerge {
 		return Verdict{}, false
@@ -195,6 +207,9 @@ func EvaluateAutoMerge(r *store.Run) (Verdict, bool) {
 		return Verdict{}, false
 	}
 	if !r.Status.IsFinalSuccess() {
+		return Verdict{}, false
+	}
+	if r.MergeStatus == store.MergeStatusSkipped {
 		return Verdict{}, false
 	}
 	return Verdict{

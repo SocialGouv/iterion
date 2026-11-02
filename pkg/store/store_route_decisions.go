@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -156,12 +157,40 @@ func (s *FilesystemRunStore) ListRoutableRuns(_ context.Context, since time.Time
 			continue
 		}
 		r, err := s.loadRunRaw(e.Name())
-		if err != nil || (r.RoutingPolicy == nil && !r.AutoMerge) || r.UpdatedAt.Before(since) {
+		if err != nil || r.UpdatedAt.Before(since) {
 			continue
 		}
-		switch r.Status {
-		case RunStatusFinished, RunStatusFailed, RunStatusFailedResumable:
-		default:
+		// The net carries only runs the router can act on: every shape
+		// it declines before claiming would otherwise occupy the page
+		// for its whole lookback — its decline settles no row, so the
+		// anti-join cannot lift it out.
+		if r.MergeStatus == MergeStatusMerged {
+			continue
+		}
+		if r.RoutingPolicy != nil {
+			// Contract carrier: every verdict claims, so any of the
+			// three terminal statuses is actionable.
+			switch r.Status {
+			case RunStatusFinished, RunStatusFailed, RunStatusFailedResumable:
+			default:
+				continue
+			}
+		} else if r.AutoMerge {
+			// Intent-only carrier: the decline is SILENT (no registry
+			// row), so the net itself refuses every shape the intent
+			// reading or a pre-claim gate declines — a failed,
+			// opted-out, finalize-refused or bank-failed run admitted
+			// here rides the oldest-first page for its whole lookback
+			// and starves newer landable runs behind the cap. The
+			// preconditions mirror routing.EvaluateAutoMerge and the
+			// router's own gates; keep the two readings aligned.
+			if r.Status != RunStatusFinished ||
+				strings.EqualFold(strings.TrimSpace(r.MergeInto), "none") ||
+				r.MergeStatus == MergeStatusSkipped ||
+				r.BankState() == BankStateFailed {
+				continue
+			}
+		} else {
 			continue
 		}
 		if settled, err := s.episodeSettled(r.ID, r.OutcomeSeq); err != nil || settled {

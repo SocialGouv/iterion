@@ -18,6 +18,10 @@ func TestEvaluateAutoMerge_LandsOnlyWhatItWasLaunchedToLand(t *testing.T) {
 	failed := &store.Run{ID: "r", Status: store.RunStatusFailed, AutoMerge: true}
 	cancelled := &store.Run{ID: "r", Status: store.RunStatusCancelled, AutoMerge: true}
 	notArmed := &store.Run{ID: "r", Status: store.RunStatusFinished, AutoMerge: false}
+	// The finalize REFUSED to merge: a wip-banked HEAD (or no merge
+	// target at all — a detached HEAD) is recorded merge_status=skipped,
+	// and the intent must not override that refusal.
+	skipped := &store.Run{ID: "r", Status: store.RunStatusFinished, AutoMerge: true, MergeStatus: store.MergeStatusSkipped}
 
 	cases := []struct {
 		name   string
@@ -30,6 +34,7 @@ func TestEvaluateAutoMerge_LandsOnlyWhatItWasLaunchedToLand(t *testing.T) {
 		{"a failed run keeps its own continuation", failed, false},
 		{"a cancelled run is an operator's stop", cancelled, false},
 		{"an unarmed run is nobody's to land", notArmed, false},
+		{"a finalize refusal is not overridden", skipped, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
