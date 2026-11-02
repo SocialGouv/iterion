@@ -480,13 +480,19 @@ func (r *Registry) withClientIdentity(cfg api.ProviderConfig) api.ProviderConfig
 
 // engineClientUserAgent resolves the documented client-identity chain
 // explicitly: ITERION_LLM_USER_AGENT (iterion's surface), then CLAW_USER_AGENT
-// (claw's own override), empty = claw resolves its honest default. The read is
+// (claw's own override), empty = claw resolves its honest default. Both legs
+// trim: claw's own read of CLAW_USER_AGENT trims (vendored identity.go
+// ResolveIdentity), and this named read must resolve the identity claw itself
+// would from the same environment — a padded value kept verbatim would ride
+// the wire in both lanes (the sandbox runner sets the explicit UA too, so
+// claw's trim never runs there either), and a whitespace-only one would
+// replace the honest default instead of falling through to it. The read is
 // deliberate and named here, not claw's to re-do under NoAmbientHeaders.
 func engineClientUserAgent() string {
 	if ua := strings.TrimSpace(os.Getenv("ITERION_LLM_USER_AGENT")); ua != "" {
 		return ua
 	}
-	return os.Getenv("CLAW_USER_AGENT")
+	return strings.TrimSpace(os.Getenv("CLAW_USER_AGENT"))
 }
 
 // codexCLIVersion resolves the Codex CLI version string to send in the

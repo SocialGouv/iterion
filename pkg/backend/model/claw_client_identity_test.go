@@ -146,3 +146,28 @@ func TestEngineClientUserAgentChain(t *testing.T) {
 		t.Errorf("an empty chain must stay empty — claw resolves its honest default, got %q", got)
 	}
 }
+
+// Both legs of the chain trim: claw's own read of CLAW_USER_AGENT trims
+// (vendored identity.go ResolveIdentity), and the engine's named read must
+// resolve the identity claw itself would from the same environment. A padded
+// value kept verbatim rides the wire in both lanes — the sandbox runner sets
+// the explicit UA too, so claw's trim never runs there either — and a
+// whitespace-only CLAW_USER_AGENT would replace claw's honest default on the
+// wire instead of falling through to it.
+func TestEngineClientUserAgentTrimsBothLegs(t *testing.T) {
+	t.Setenv("ITERION_LLM_USER_AGENT", "")
+	t.Setenv("CLAW_USER_AGENT", "  operator-agent/1\t")
+	if got := engineClientUserAgent(); got != "operator-agent/1" {
+		t.Errorf("padded CLAW_USER_AGENT = %q, want trimmed operator-agent/1", got)
+	}
+
+	t.Setenv("CLAW_USER_AGENT", "   ")
+	if got := engineClientUserAgent(); got != "" {
+		t.Errorf("whitespace-only CLAW_USER_AGENT = %q, want empty — claw's honest default must carry", got)
+	}
+
+	t.Setenv("ITERION_LLM_USER_AGENT", "\titerion-tool/1\n")
+	if got := engineClientUserAgent(); got != "iterion-tool/1" {
+		t.Errorf("padded ITERION_LLM_USER_AGENT = %q, want trimmed iterion-tool/1", got)
+	}
+}
