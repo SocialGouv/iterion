@@ -168,13 +168,14 @@ func TestSandboxedClawNodeToolEnvCrossing(t *testing.T) {
 	// hermetic, so the names the crossing must NOT carry are present here
 	// and the assertions below prove the crossing, not the process.
 	launcherEnv := carriedEnv{
-		"CLAW_BASH_TIMEOUT": "17m",
-		"CLAW_CONFIG_HOME":  "/launcher/claw-config",
-		"CLAW_TODOS_DIR":    "/launcher/todos",
-		"CODEX_HOME":        "/launcher/codex-home",
-		"CLAUDE_CONFIG_DIR": "/launcher/claude-config",
-		"DISPLAY":           ":0",
-		"WAYLAND_DISPLAY":   "wayland-1",
+		"CLAW_BASH_TIMEOUT":    "17m",
+		"CLAW_PROC_WAIT_DELAY": "5s",
+		"CLAW_CONFIG_HOME":     "/launcher/claw-config",
+		"CLAW_TODOS_DIR":       "/launcher/todos",
+		"CODEX_HOME":           "/launcher/codex-home",
+		"CLAUDE_CONFIG_DIR":    "/launcher/claude-config",
+		"DISPLAY":              ":0",
+		"WAYLAND_DISPLAY":      "wayland-1",
 	}
 	for _, name := range []string{"BRAVE_API_KEY", "SEARXNG_URL", "SEARXNG_ENDPOINT", "CLAW_WEB_SEARCH_BRAVE_URL", "CLAW_WEB_SEARCH_DDG_URL"} {
 		launcherEnv[name] = "launcher-search-value"
@@ -184,6 +185,9 @@ func TestSandboxedClawNodeToolEnvCrossing(t *testing.T) {
 	toolEnv := forwardableToolEnv(ctx)
 	if got := toolEnv["CLAW_BASH_TIMEOUT"]; got != "17m" {
 		t.Errorf("CLAW_BASH_TIMEOUT crossed as %q, want the launcher's %q: a sandboxed node's bash runs on claw's default budget while the host's dial says otherwise", got, "17m")
+	}
+	if got := toolEnv["CLAW_PROC_WAIT_DELAY"]; got != "5s" {
+		t.Errorf("CLAW_PROC_WAIT_DELAY crossed as %q, want the launcher's %q: a sandboxed node's bash drain runs on claw's default bound while the host's dial says otherwise", got, "5s")
 	}
 	if got := toolEnv["CLAW_CONFIG_HOME"]; got != "/launcher/claw-config" {
 		t.Errorf("CLAW_CONFIG_HOME crossed as %q, want the launcher's value: the in-container skill lookup otherwise walks other roots than the host's, with nothing said", got)

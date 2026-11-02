@@ -92,7 +92,12 @@ narrowing: a child and its parent key on the same family root, so the
 child writes where the parent reads. The cross-run caches that keep
 referencing the shared scratch (docs-refresh, sec-audit-deps, wiki-gen)
 keep it readable — that is exactly what "still references" measures. The
-reach never grew: another repository encodes another key, another
+signal's bound, named: it reads the RESOLVED vars — a reference spelled
+inline in a tool body or a prompt template, never through a var, is not
+seen, and the shared root then stays out (fail-closed; no in-tree bot
+reads the scratch that way — they all go through a `run_dir`-shaped var,
+and an inline `${PROJECT_SCRATCH_DIR}` in a tool body already draws C315).
+The reach never grew: another repository encodes another key, another
 operator resolves another iterion home, and a driver with no host
 filesystem (kubernetes — a pod rejects `type=bind`) gets a
 container-local scratch that the teardown banks per run (ADR-106); the

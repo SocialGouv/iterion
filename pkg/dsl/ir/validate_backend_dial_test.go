@@ -896,14 +896,15 @@ func TestApplyRunFallback_DrilledJSONVarIsScreened(t *testing.T) {
 	}
 }
 
-// The five names varExpandFn answers from engine state — PROJECT_DIR,
-// BUNDLE_DIR, BUNDLE_SKILLS_DIR, PROJECT_MEMORY_DIR, PROJECT_SCRATCH_DIR —
-// read "" through the screen's process-env expansion, where dispatch reads
-// a path: decided-empty where the run is decided-full is a disagreement.
+// The names varExpandFn answers from engine state — the
+// EngineSuppliedVarNames list, iterated so a seventh name can never leave
+// this witness enumerating five — read "" through the screen's
+// process-env expansion, where dispatch reads a path: decided-empty where
+// the run is decided-full is a disagreement.
 // A var whose text references one stays UNDECIDED for the screen — the same
 // posture as a var nothing answers anywhere else.
 func TestLaunchVarsView_EngineSuppliedNamesStayUndecided(t *testing.T) {
-	for _, name := range []string{"PROJECT_DIR", "BUNDLE_DIR", "BUNDLE_SKILLS_DIR", "PROJECT_MEMORY_DIR", "PROJECT_SCRATCH_DIR"} {
+	for _, name := range EngineSuppliedVarNames {
 		w := &Workflow{Vars: map[string]*Var{
 			"b": {Name: "b", Type: VarString, HasDefault: true, Default: "${" + name + "}/x"},
 		}}
