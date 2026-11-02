@@ -237,9 +237,88 @@ func TestAnUntrustedMutationNeverReadsTheTenantsConnectionStore(t *testing.T) {
 type watchingStore struct {
 	*connection.MemoryStore
 	reads int
+	lists int
 }
 
 func (s *watchingStore) ByAlias(ctx context.Context, tenantID, connector, alias string) (connection.Connection, error) {
 	s.reads++
 	return s.MemoryStore.ByAlias(ctx, tenantID, connector, alias)
+}
+
+func (s *watchingStore) List(ctx context.Context, tenantID, connector string) ([]connection.Connection, error) {
+	s.lists++
+	return s.MemoryStore.List(ctx, tenantID, connector)
+}
+
+// missResolver is a resolver whose store counts its lookups, seeded with
+// exactly one connection — alias "main" — so a misspelt probe has something to
+// leak.
+func missResolver(t *testing.T, trust connection.ActionTrust) (*connection.Resolver, *watchingStore) {
+	t.Helper()
+	st := &watchingStore{MemoryStore: connection.NewMemoryStore()}
+	r := &connection.Resolver{
+		Catalog:  connection.NewMemoryCatalog(trustProbePackage()),
+		Store:    st,
+		Sealer:   sealer(t),
+		TenantID: "tenant-a",
+		Trust:    trust,
+	}
+	c := conn("c1", "tenant-a", "main")
+	c.GrantedScopes, c.ScopesKnown = []string{"issue"}, true
+	seed(t, r, st, c)
+	return r, st
+}
+
+// TestAnUntrustedRunLearnsNoAliasesFromAReadMiss is the alias half of #1802,
+// the residual #2810's catalog half left behind.
+//
+// A mutating action is refused before the store is read, so its misspelt alias
+// probes nothing (#1802). A READ action resolves for a fork — the lane's
+// contract — and a misspelt alias on it reached suggestAlias, whose whole
+// function is to end the error with the aliases the tenant DOES hold: the
+// inventory a mutation was refused for, handed to the same reader one spelling
+// mistake later. The gate reads the run's trust rather than the operation's
+// effect, because the fact withheld — which connections exist — does not
+// depend on what was asked.
+func TestAnUntrustedRunLearnsNoAliasesFromAReadMiss(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		trust       connection.ActionTrust
+		wantSuggest bool // the tenant's own run: naming what exists is its repair
+	}{
+		{"a fork-trust run is told nothing", connection.TrustOfRun(store.RunTrustFork), false},
+		// Fail-closed like every other trust read: a resolver nobody stated
+		// resolves reads, and for the same reason learns nothing about what
+		// exists.
+		{"a resolver nobody stated is told nothing either", connection.TrustUnknown(), false},
+		// The arm that makes the refusals above a WITHHELD list rather than a
+		// fixture that has nothing to list.
+		{"the tenant's own run keeps the suggestion", connection.TrustOfRun(store.RunTrustDefault), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, st := missResolver(t, tc.trust)
+			_, _, _, _, err := r.ResolveAction(context.Background(), "probe.issue.get", "mian")
+			if err == nil {
+				t.Fatal("a misspelt alias must be refused even on the read the lane allows")
+			}
+			if !strings.Contains(err.Error(), `"mian"`) {
+				t.Errorf("refusal = %v, want it to name the alias that was asked for — the repair still starts from what missed", err)
+			}
+			if !tc.wantSuggest {
+				if strings.Contains(err.Error(), "main") || strings.Contains(err.Error(), "it has") {
+					t.Errorf("refusal = %v, want it to carry no alias the tenant holds — the list is the inventory the run may not read", err)
+				}
+				if st.lists != 0 {
+					t.Errorf("the miss read the tenant's alias list %d time(s) — a suggestion that is never served must not be probed for either", st.lists)
+				}
+				return
+			}
+			if !strings.Contains(err.Error(), "it has: main") {
+				t.Errorf("refusal = %v, want the suggestion — the operator's run is who the list exists for", err)
+			}
+			if st.lists != 1 {
+				t.Errorf("lists = %d, want exactly 1 — the suggestion comes from a real probe of the store, not from nowhere", st.lists)
+			}
+		})
+	}
 }
