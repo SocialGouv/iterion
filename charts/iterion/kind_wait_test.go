@@ -128,6 +128,53 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 		}
 	})
 
+	t.Run("integer forms go-yaml resolves are not refused", func(t *testing.T) {
+		// go-yaml — helm's values parser — resolves each form to the
+		// pinned value (verified live through helm template on the chart):
+		// refusing one would stop an install helm runs. 0600 is the trap —
+		// go-yaml reads a leading-0 form as octal — so the witness pins the
+		// converted value, not the decimal misread.
+		for _, tc := range []struct{ form, want string }{
+			{"+600", "720s"},
+			{"1_800", "1920s"},
+			{"0x2580", "9720s"},
+			{"0o754", "612s"},
+			{"0b101", "125s"},
+			{"0600", "504s"},
+			{"08", "128s"},
+			{"600.0", "720s"},
+			{"6e2", "720s"},
+		} {
+			stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: "+tc.form+"\n"))
+			if err != nil {
+				t.Fatalf("chart-kind-wait refused %q — go-yaml resolves it and helm installs it; stderr: %s", tc.form, strings.TrimSpace(stderr))
+			}
+			if got, want := strings.TrimSpace(stdout), tc.want; got != want {
+				t.Fatalf("chart-kind-wait %q = %q, want %q — the watch must follow the value go-yaml hands the install", tc.form, got, want)
+			}
+		}
+	})
+
+	t.Run("negative deadline is refused", func(t *testing.T) {
+		_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: -600\n"))
+		if err == nil {
+			t.Fatalf("chart-kind-wait accepted a negative deadline — a negative deadline cannot budget the install watch")
+		}
+		if !strings.Contains(stderr, "negative") {
+			t.Fatalf("refusal does not name the negative deadline — stderr: %s", strings.TrimSpace(stderr))
+		}
+	})
+
+	t.Run("a deadline beyond the exact integer range is refused", func(t *testing.T) {
+		_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: 123456789012345678901234567890\n"))
+		if err == nil {
+			t.Fatalf("chart-kind-wait accepted a 30-digit deadline — the watch is printed through awk doubles, which round past 2^53, so the printed wait would not be the deadline the file sets")
+		}
+		if !strings.Contains(stderr, "exact integer range") {
+			t.Fatalf("refusal does not name the range — stderr: %s", strings.TrimSpace(stderr))
+		}
+	})
+
 	t.Run("unset knob is refused", func(t *testing.T) {
 		path := valuesFile(t, "server:\n  replicas: 1\n")
 		_, stderr, err := runKindWait(t, path)
@@ -152,12 +199,17 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 	})
 
 	t.Run("non-integer is refused", func(t *testing.T) {
-		_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: many\n"))
-		if err == nil {
-			t.Fatalf("chart-kind-wait accepted a non-integer deadline")
-		}
-		if !strings.Contains(stderr, "not an integer") {
-			t.Fatalf("refusal does not name the bad value — stderr: %s", strings.TrimSpace(stderr))
+		// 600.5 and 1:30 — base-60, which go-yaml hands over as a string —
+		// render verbatim and the API refuses the Deployment: same verdict
+		// here as at the install.
+		for _, form := range []string{"many", "600.5", "1:30"} {
+			_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: "+form+"\n"))
+			if err == nil {
+				t.Fatalf("chart-kind-wait accepted %q as a deadline — helm renders it verbatim and the API refuses it", form)
+			}
+			if !strings.Contains(stderr, "not an integer") {
+				t.Fatalf("refusal of %q does not name the bad value — stderr: %s", form, strings.TrimSpace(stderr))
+			}
 		}
 	})
 
