@@ -1,6 +1,7 @@
 package connection
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -51,6 +52,34 @@ func TestForgeCredential_SealOpenRoundTrip(t *testing.T) {
 
 	if _, err := ForgeAdminToken(sealer, ForgeConnection{ID: "c2", SealedPayload: pair}); err != nil {
 		t.Fatalf("ForgeAdminToken: %v", err)
+	}
+}
+
+// The AAD is the PRESERVED one, pinned as a literal rather than through the
+// package's own constructor: this test opens the sealed bytes with a
+// hand-written "forge_conn:<id>" and never calls forgeConnAAD, so a refactor
+// that drifts the constant — the migration every existing credential would
+// not survive — reddens it instead of passing on same-build agreement.
+func TestForgeCredential_TheAADIsThePreservedForgeConnLiteral(t *testing.T) {
+	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := SealForgePAT(sealer, "c1", "glpat-xyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sealer.Open(sealed, []byte("forge_conn:c1"))
+	if err != nil {
+		t.Fatalf("the payload must open under the forge_conn: AAD every prior build wrote: %v", err)
+	}
+	if !strings.Contains(string(raw), "glpat-xyz") {
+		t.Fatalf("the opened blob is not the PAT payload: %q", raw)
+	}
+	// The generic connector AAD does NOT open a forge credential: the two
+	// formats stay distinct, so a payload cannot be replayed across models.
+	if _, err := sealer.Open(sealed, []byte("connection:c1")); err == nil {
+		t.Fatal("a forge payload opened under the generic connection AAD")
 	}
 }
 
