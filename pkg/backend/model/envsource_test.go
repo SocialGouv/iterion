@@ -3,11 +3,15 @@ package model
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
+
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -224,4 +228,50 @@ func TestMigratedReadersReadTheirOwnCarriedEnv(t *testing.T) {
 			t.Errorf("a carried env naming no OPENAI_BASE_URL: BaseURL = %q (the process leaked)", cfg.BaseURL)
 		}
 	})
+}
+
+// The slice-3 witnesses (#2808): the three remaining whole-env readers —
+// the two tool-node command builders and the settings command hook — run
+// their child on the environment the CONTEXT carries. The mutant each
+// witnesses against is os.Environ() back at the site: the carried name
+// vanishes from the child's env (red), and the process's own PATH — which
+// no carried map here names — reappears (red the other way).
+func TestToolNodeCommandsRunOnTheCarriedEnv(t *testing.T) {
+	t.Parallel()
+	e := &ClawExecutor{}
+	ctx := withCarriedEnv(context.Background(), carriedEnv{"ITERION_ENVSEAM_TOOLCMD": "carried"})
+
+	cmd := e.toolNodeCommand(ctx, "true", nil).cmd
+	if got := envValue(cmd.Env, "ITERION_ENVSEAM_TOOLCMD"); got != "carried" {
+		t.Errorf("toolNodeCommand env ITERION_ENVSEAM_TOOLCMD = %q, want the carried value", got)
+	}
+	sc := e.toolNodeScriptCommand(ctx, []string{"sh"}, "s.sh", nil).cmd
+	if got := envValue(sc.Env, "ITERION_ENVSEAM_TOOLCMD"); got != "carried" {
+		t.Errorf("toolNodeScriptCommand env ITERION_ENVSEAM_TOOLCMD = %q, want the carried value", got)
+	}
+	if os.Getenv("PATH") != "" {
+		// Hermetic: the process's own PATH is not the carried env's, so it
+		// must not reach the child (the os.Environ mutant reddens here).
+		if got := envValue(cmd.Env, "PATH"); got != "" {
+			t.Errorf("toolNodeCommand env PATH = %q: the process environment leaked into the child", got)
+		}
+		if got := envValue(sc.Env, "PATH"); got != "" {
+			t.Errorf("toolNodeScriptCommand env PATH = %q: the process environment leaked into the child", got)
+		}
+	}
+}
+
+func TestACommandHookRunsOnTheCarriedEnv(t *testing.T) {
+	t.Parallel()
+	logger := iterlog.New(iterlog.LevelWarn, io.Discard)
+	hook := settingsHookEntry{Type: "command", Command: `[ "$ITERION_ENVSEAM_HOOK" = "yes" ] && exit 2; exit 0`}
+
+	blocked, _ := runCommandHook(withCarriedEnv(context.Background(), carriedEnv{"ITERION_ENVSEAM_HOOK": "yes"}), "PostToolUse", hooks.Context{ToolName: "bash"}, hook, logger)
+	if !blocked {
+		t.Error("the hook saw no ITERION_ENVSEAM_HOOK=yes: the carried environment did not reach its command")
+	}
+	blocked, _ = runCommandHook(withCarriedEnv(context.Background(), carriedEnv{"ITERION_ENVSEAM_HOOK": "no"}), "PostToolUse", hooks.Context{ToolName: "bash"}, hook, logger)
+	if blocked {
+		t.Error("a carried env holding ITERION_ENVSEAM_HOOK=no blocked the hook: it read another environment's value")
+	}
 }
