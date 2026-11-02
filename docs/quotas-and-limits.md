@@ -474,7 +474,11 @@ gates already enforce.
 >
 > A real guarantee needs durable allocation — reserve at admission, settle
 > against actual spend when the attempt ends, reconcile on crash — tracked on
-> [#950](https://github.com/SocialGouv/iterion/issues/950) and not built.
+> [#950](https://github.com/SocialGouv/iterion/issues/950) and **not built**.
+> Its design is
+> [ADR-155](adr/155-reserved-capacity-is-a-durable-allocation.md): what this
+> deployment enforces is what is documented above, not what that record
+> decides.
 
 The difference is not academic. On 2026-09-08 campaign bots and the PR
 reviewer shared one Anthropic subscription; when its five-hour window closed
