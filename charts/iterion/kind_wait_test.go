@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -289,8 +290,9 @@ type workflowJobs struct {
 // TestChartCloudE2EInstallDerivesItsWaitFromTheValuesFile witnesses the CI
 // install the same way: cloud-e2e derives its --timeout from values-dev's
 // deadline through the same helper, and its job cap outlives what the
-// verdict needs — the derived helm cap (32 m) on top of the job's preamble
-// — so helm's timeout, not the runner kill, reports a slow install.
+// verdict needs — the helm cap derived from values-dev.yaml on top of the
+// job's preamble — so helm's timeout, not the runner kill, reports a slow
+// install.
 func TestChartCloudE2EInstallDerivesItsWaitFromTheValuesFile(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "tests.yml"))
 	if err != nil {
@@ -320,14 +322,25 @@ func TestChartCloudE2EInstallDerivesItsWaitFromTheValuesFile(t *testing.T) {
 		t.Fatalf("cloud-e2e's install must pass the helper's output to --timeout; run: %s", install)
 	}
 	// The runner kill must not preempt helm's verdict: the derived cap is
-	// 32 m (1800 s deadline + 120 s margin, values-dev.yaml) and only
-	// fires after the job's preamble — checkout, image build, kind up,
-	// image load, chart deps — measured at 4.0-4.7 m on recent success
-	// runs. The floor sums both budgets; tests.yml runs the job at 40 m,
-	// two above it.
-	const helmCapMinutes = 32
+	// what the helper prints for values-dev.yaml — derived HERE by running
+	// the same helper the install runs, so a deadline bump in values-dev
+	// flows into this floor instead of leaving a stale constant behind —
+	// and the cap only fires after the job's preamble — checkout, image
+	// build, kind up, image load, chart deps — measured at 4.0-4.7 m on
+	// recent success runs. The floor sums both budgets, the cap rounded up
+	// to the whole minutes the field counts; tests.yml runs the job at
+	// 40 m, two above it.
+	stdout, stderr, err := runKindWait(t, filepath.Join("values-dev.yaml"))
+	if err != nil {
+		t.Fatalf("chart-kind-wait values-dev.yaml: %v — %s", err, strings.TrimSpace(stderr))
+	}
+	helmSeconds, err := strconv.Atoi(strings.TrimSuffix(strings.TrimSpace(stdout), "s"))
+	if err != nil {
+		t.Fatalf("chart-kind-wait values-dev.yaml printed %q — not a seconds count: %v", strings.TrimSpace(stdout), err)
+	}
+	helmCapMinutes := (helmSeconds + 59) / 60 // round up: the field counts whole minutes
 	const preambleBudgetMinutes = 6
 	if job.TimeoutMinutes < helmCapMinutes+preambleBudgetMinutes {
-		t.Fatalf("cloud-e2e timeout-minutes = %d — below the %d m a verdict needs (32 m helm cap + %d m preamble budget); a lower cap lets the runner kill replace helm's timeout with a silence", job.TimeoutMinutes, helmCapMinutes+preambleBudgetMinutes, preambleBudgetMinutes)
+		t.Fatalf("cloud-e2e timeout-minutes = %d — below the %d m a verdict needs (%d m helm cap for values-dev.yaml + %d m preamble budget); a lower cap lets the runner kill replace helm's timeout with a silence", job.TimeoutMinutes, helmCapMinutes+preambleBudgetMinutes, helmCapMinutes, preambleBudgetMinutes)
 	}
 }
