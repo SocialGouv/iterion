@@ -13,6 +13,9 @@ hero:
       text: Quickstart →
       link: /quickstart
     - theme: alt
+      text: Cloud in one prompt →
+      link: /getting-started
+    - theme: alt
       text: Install & all modes
       link: /install
     - theme: alt
@@ -64,6 +67,32 @@ features:
     link: /cloud-overview
     linkText: Iterion Cloud
 ---
+
+## 🚀 Get started with Iterion Cloud in one prompt
+
+The cloud onboarding, ready to paste: give the whole block below to a fresh
+session of your AI coding agent — Claude Code, Codex CLI, pi, Cursor, … — and
+it installs the CLI and the agent skill, connects to
+[Iterion Cloud](https://iterion.cloud), registers the MCP server, and verifies
+readiness. No forge, no repository, no run — the [full
+walkthrough](getting-started.md) continues from there. It works with any
+provider you already hold (Anthropic, OpenAI, xAI, ZAI, Kimi, …), and asks
+for a credential only when the instance's shared pool doesn't already fund
+your account. Going fully local instead? The [quickstart](quickstart.md) needs no
+account at all.
+
+```text
+Set up Iterion Cloud (https://iterion.cloud — source: https://github.com/SocialGouv/iterion) so it can deploy AI agents on my repositories. Work in order, and pause to ask me whenever a step needs a human decision.
+
+1. Install the CLI: `curl -fsSL https://socialgouv.github.io/iterion/install.sh | sh`, then run `iterion version`.
+2. Install the skill that teaches you the .bot DSL: `npx skills add https://github.com/SocialGouv/iterion --skill iterion-dsl`.
+3. Connect the CLI to the cloud: `iterion remote login https://iterion.cloud`. It opens a browser approval page — stop and ask me to approve it there. If I cannot open a browser, ask me for a personal access token and run `iterion remote login https://iterion.cloud --token <my-token>` instead.
+4. Register the Iterion MCP server: `claude mcp add iterion -- iterion mcp`. If you are not Claude Code, register the same stdio server in your own MCP configuration instead (command `iterion`, args `["mcp"]`).
+5. Cloud runs spend an LLM credential. First ask me whether my account is already funded — the instance runs a shared credential pool and platform credentials that let members test for free while capacity lasts (availability is not guaranteed), and my org may already hold keys. If nothing does, ask me for a key from any provider I use — Anthropic, OpenAI, xAI, ZAI, Moonshot (Kimi), OpenRouter, Bedrock, Vertex, or Azure (wire ids: `anthropic`, `openai`, `xai`, `zai`, `moonshot`, `openrouter`, `bedrock`, `vertex`, `azure`) — and store it with `iterion remote api-keys create --provider <provider> --name default --from-env <MY_KEY_ENV_VAR>`. The secret travels through the environment only, never a command argument or a file.
+6. Verify, read-only: `iterion remote status` names the instance and my account, `iterion remote bots list` returns the bot catalog, and your `remote_status` / `remote_bots_list` MCP tools answer.
+
+Do not connect any forge or git host, do not enable a repository, and do not launch a run — that is my next step, not yours. If a step fails, stop there and tell me what to fix. Finish by reporting each step's outcome and how to undo the setup (`iterion remote logout`, `claude mcp remove iterion`).
+```
 
 ## ✨ See it
 

@@ -22,17 +22,40 @@ Kubernetes gave cloud workloads a declarative control plane. Iterion brings that
 - [Why Iterion?](docs/why-iterion.md) — origin + recipe + asymptote + lab
 - [Philosophy](docs/philosophy.md) — maximum power, modularity, cloud-nativeness, git-native first class, product-open
 - [Current state](docs/current-state.md) — as-built capabilities, architecture, defaults, and limits
+- [Get started with Iterion Cloud in one prompt](#get-started-with-iterion-cloud-in-one-prompt)
 - [What is Iterion?](#what-is-iterion)
 - [Features](#features)
 - [Ready-to-run agent workflows](#agent-workflows)
 - [Getting Started](#getting-started)
-  - [Get started in one prompt](#get-started-in-one-prompt)
   - [Installation](#installation)
   - [Your first bot](#your-first-bot)
 - [Workflow files](#workflow-files)
 - [A Taste of the DSL](#a-taste-of-the-dsl)
 - [Documentation](#documentation)
 - [License](#license)
+
+---
+
+<a id="get-started-with-iterion-cloud-in-one-prompt"></a>
+
+## ⚡ Get started with Iterion Cloud in one prompt
+
+Paste the block below into a fresh session of your AI coding agent — Claude Code, Codex CLI, pi, Cursor, … — and it installs the CLI and the agent skill, connects the CLI to [iterion.cloud](https://iterion.cloud), registers the MCP server, and verifies everything is ready to deploy agents on your repositories — no forge connection, no run launched. It is the **cloud onboarding**: for a fully local setup, take the [quickstart](docs/quickstart.md) instead.
+
+```text
+Set up Iterion Cloud (https://iterion.cloud — source: https://github.com/SocialGouv/iterion) so it can deploy AI agents on my repositories. Work in order, and pause to ask me whenever a step needs a human decision.
+
+1. Install the CLI: `curl -fsSL https://socialgouv.github.io/iterion/install.sh | sh`, then run `iterion version`.
+2. Install the skill that teaches you the .bot DSL: `npx skills add https://github.com/SocialGouv/iterion --skill iterion-dsl`.
+3. Connect the CLI to the cloud: `iterion remote login https://iterion.cloud`. It opens a browser approval page — stop and ask me to approve it there. If I cannot open a browser, ask me for a personal access token and run `iterion remote login https://iterion.cloud --token <my-token>` instead.
+4. Register the Iterion MCP server: `claude mcp add iterion -- iterion mcp`. If you are not Claude Code, register the same stdio server in your own MCP configuration instead (command `iterion`, args `["mcp"]`).
+5. Cloud runs spend an LLM credential. First ask me whether my account is already funded — the instance runs a shared credential pool and platform credentials that let members test for free while capacity lasts (availability is not guaranteed), and my org may already hold keys. If nothing does, ask me for a key from any provider I use — Anthropic, OpenAI, xAI, ZAI, Moonshot (Kimi), OpenRouter, Bedrock, Vertex, or Azure (wire ids: `anthropic`, `openai`, `xai`, `zai`, `moonshot`, `openrouter`, `bedrock`, `vertex`, `azure`) — and store it with `iterion remote api-keys create --provider <provider> --name default --from-env <MY_KEY_ENV_VAR>`. The secret travels through the environment only, never a command argument or a file.
+6. Verify, read-only: `iterion remote status` names the instance and my account, `iterion remote bots list` returns the bot catalog, and your `remote_status` / `remote_bots_list` MCP tools answer.
+
+Do not connect any forge or git host, do not enable a repository, and do not launch a run — that is my next step, not yours. If a step fails, stop there and tell me what to fix. Finish by reporting each step's outcome and how to undo the setup (`iterion remote logout`, `claude mcp remove iterion`).
+```
+
+The full walkthrough, plus the follow-up that deploys your first agent on a repo: [docs/getting-started.md](docs/getting-started.md).
 
 ---
 
@@ -178,27 +201,6 @@ List them anytime with `iterion bots list`; see [docs/examples.md](docs/examples
 <a id="getting-started"></a>
 
 ## 🚀 Getting Started
-
-<a id="get-started-in-one-prompt"></a>
-
-### Get started in one prompt
-
-Paste the block below into a fresh session of your AI coding agent: it installs the CLI and the agent skill, connects the CLI to [iterion.cloud](https://iterion.cloud), registers the MCP server, and verifies everything is ready to deploy agents on your repositories — no forge connection, no run launched.
-
-```text
-Set up Iterion (https://github.com/SocialGouv/iterion) so it can deploy AI agents on my repositories, connected to https://iterion.cloud. Work in order, and pause to ask me whenever a step needs a human decision.
-
-1. Install the CLI: `curl -fsSL https://socialgouv.github.io/iterion/install.sh | sh`, then run `iterion version`.
-2. Install the skill that teaches you the .bot DSL: `npx skills add https://github.com/SocialGouv/iterion --skill iterion-dsl`.
-3. Connect the CLI to the cloud: `iterion remote login https://iterion.cloud`. It opens a browser approval page — stop and ask me to approve it there. If I cannot open a browser, ask me for a personal access token and run `iterion remote login https://iterion.cloud --token <my-token>` instead.
-4. Register the Iterion MCP server: `claude mcp add iterion -- iterion mcp`. If you are not Claude Code, register the same stdio server in your own MCP configuration instead (command `iterion`, args `["mcp"]`).
-5. Cloud runs need an LLM credential. If my account has none yet, ask me for an Anthropic API key and store it with `iterion remote api-keys create --provider anthropic --name default --from-env ANTHROPIC_API_KEY` — the key travels through the environment only, never a command argument or a file.
-6. Verify, read-only: `iterion remote status` names the instance and my account, `iterion remote bots list` returns the bot catalog, and your `remote_status` / `remote_bots_list` MCP tools answer.
-
-Do not connect any forge or git host, do not enable a repository, and do not launch a run — that is my next step, not yours. If a step fails, stop there and tell me what to fix. Finish by reporting each step's outcome and how to undo the setup (`iterion remote logout`, `claude mcp remove iterion`).
-```
-
-The full walkthrough, plus the follow-up that deploys your first agent on a repo: [docs/getting-started.md](docs/getting-started.md).
 
 <a id="installation"></a>
 
