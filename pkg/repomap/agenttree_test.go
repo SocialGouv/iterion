@@ -499,11 +499,11 @@ func TestUntrackedAgentDraftDoesNotChangeTheVerdict(t *testing.T) {
 	// guard must redden the moment the draft is staged. The size reads the
 	// live budget, so the witness follows the table instead of decoupling
 	// from it at the next budget raise.
-	budget, ok := firstBudget(agentTreeBudgets, "docs/agents/local draft.md")
+	const draft = "docs/agents/local draft.md"
+	budget, ok := firstBudget(agentTreeBudgets, draft)
 	if !ok {
 		t.Fatal("no budget matches a docs/agents draft")
 	}
-	const draft = "docs/agents/local draft.md"
 	writeTreeFile(t, root, draft, "# Draft\n\n"+strings.Repeat("x", budget.max))
 	for _, check := range []func(*testing.T, string) []string{budgetViolations, unindexedPages} {
 		if got := check(t, root); len(got) != 0 {
