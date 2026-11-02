@@ -73,8 +73,20 @@ func ClaudeCodeSandboxCredential(ctx context.Context, providerHint string, home 
 		return "the run's resolved credential (" + key + ")", true
 	}
 	if inheritAmbient {
-		if key := credEnvChannel(ambientAnthropicEnvForSandbox(), claudeSandboxCredentialEnvKeys); key != "" {
+		ambient := ambientAnthropicEnvForSandbox()
+		if key := credEnvChannel(ambient, claudeSandboxCredentialEnvKeys); key != "" {
 			return "the launcher env forwarded into the container (" + key + ")", true
+		}
+		// An Authorization line in the forwarded custom-header block is a
+		// credential the same spawn carries: named so a header-only pod is
+		// not refused as credential-less. The strong reading
+		// (spawnAuthorizationHeader), not the block's presence — a block of
+		// other header names carries nothing the CLI would authenticate
+		// with, and naming it would admit a launch that dies "Not logged in".
+		// sandboxed=true: the answer is the forwarded map alone — the
+		// container's env, no host fallback (spawnEnvValue).
+		if spawnAuthorizationHeader(ambient, true) {
+			return "the launcher env forwarded into the container (ANTHROPIC_CUSTOM_HEADERS)", true
 		}
 	}
 	if home.Mounted && home.HomeDir != "" {

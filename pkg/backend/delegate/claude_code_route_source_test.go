@@ -29,6 +29,20 @@ func TestAnthropicRouteSourceAgreesWithTheSession(t *testing.T) {
 		// A sandbox remaps the forfait's config dir; it still names the forfait.
 		{name: "the run's forfait", ambient: map[string]string{"ANTHROPIC_API_KEY": "ambient-key"}, forfait: true, want: "anthropic-oauth"},
 		{name: "the run's forfait on a direct hint", hint: "anthropic", ambient: map[string]string{"ANTHROPIC_API_KEY": "ambient-key"}, forfait: true, want: "anthropic-oauth"},
+		// The live channel SET across the sandbox boundary: the wire shape
+		// itself is pinned by TestAnthropicRouteSource_TheLiveChannelSetNamesTheMeter,
+		// here the pair of lanes must agree on it.
+		{name: "the pod's key and bearer together", ambient: map[string]string{"ANTHROPIC_AUTH_TOKEN": "pod-bearer", "ANTHROPIC_API_KEY": "sk-pod"},
+			want: ambientSetSource([2]string{"ANTHROPIC_AUTH_TOKEN", "pod-bearer"}, [2]string{"ANTHROPIC_API_KEY", "sk-pod"})},
+		// The custom-header credential rides the boundary too: the forwarder
+		// carries the block a host spawn inherits, so a header-only pod is
+		// one account on both lanes, not the bare credential-less label.
+		{name: "the pod's header credential", ambient: map[string]string{"ANTHROPIC_CUSTOM_HEADERS": "Authorization: Bearer gw-secret"},
+			want: ambientEnvSource("Bearer gw-secret")},
+		{name: "the pod's bearer and header credential together", ambient: map[string]string{
+			"ANTHROPIC_AUTH_TOKEN":     "pod-bearer",
+			"ANTHROPIC_CUSTOM_HEADERS": "X-Tenant: acme\nAuthorization: Bearer hdr-secret"},
+			want: ambientSetSource([2]string{"ANTHROPIC_AUTH_TOKEN", "pod-bearer"}, [2]string{"ANTHROPIC_CUSTOM_HEADERS", "Bearer hdr-secret"})},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

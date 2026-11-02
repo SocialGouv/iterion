@@ -17,6 +17,13 @@ func ambientEnvSource(key string) string {
 	return ambientSourcePrefix + secrets.FingerprintSHA256(key)
 }
 
+// ambientSetSource renders the label of a multi-channel ambient set, through
+// the production renderer: the pairs ride in ambientCredentialChannels' order
+// with the header credential last, the order the request carries them.
+func ambientSetSource(pairs ...[2]string) string {
+	return ambientSourcePrefix + secrets.FingerprintSHA256(ambientCredentialSet(pairs))
+}
+
 // The pod's ambient key opens its own meter, named by its fingerprint and
 // carrying the value in clear nowhere: the label rides run records a
 // run-reader can open. A different key is a different account and renders a
@@ -147,6 +154,43 @@ func TestAnthropicRouteSource_ACloudSwitchLeavesNoAmbientKeyInTheLabel(t *testin
 	}
 	if source != "anthropic-env" {
 		t.Errorf("source = %q, want the bare %q — bedrock spends the cloud account, not the ambient key", source, "anthropic-env")
+	}
+}
+
+// The switch pod's two lanes name two meters, and that split is a fact of
+// the forwarding layer, not of the stamp: the host spawn inherits the switch
+// and boots the cloud mode (no ambient key is named), while the sandboxed
+// spawn carries no switch — ambientForwardedChannels deliberately keeps the
+// switches out, since a forwarded switch would boot the mode in the
+// container WITHOUT the cloud credential chains a host spawn inherits, and
+// its CLI spends the ambient key instead. That key is what the sandboxed
+// session actually bills, so its stamp keys it; the pre-flight cannot model
+// both lanes at once. The pair is the open switch-pod question
+// (fleet/arbitrations.md, ARB-w-usagecap-switch-pod) — this test pins the
+// sandboxed half so the meter the container spends cannot drift while the
+// question stands, and it is the row to flip in the same change that makes
+// the lanes agree.
+func TestAnthropicRouteSource_ACloudSwitchPodStampsTwoLaneMeters(t *testing.T) {
+	clearRoutingEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
+	t.Setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+	ctx := context.Background()
+	preflight, refused := AnthropicRouteSource(ctx, "")
+	if refused {
+		t.Fatal("the bedrock route refused")
+	}
+	if preflight != ambientSourceFamily {
+		t.Errorf("pre-flight = %q, want the bare %q — the host lane boots the cloud mode, no ambient key is named", preflight, ambientSourceFamily)
+	}
+	b := &ClaudeCodeBackend{Logger: iterlog.Nop()}
+	task := Task{NodeID: "route-source-bedrock"}
+	task.Sandbox = &captureSandboxCmdRun{}
+	_, stamped, _, err := b.setupCredsAndSession(ctx, task, nil)
+	if err != nil {
+		t.Fatalf("sandboxed session: %v", err)
+	}
+	if want := ambientEnvSource("sk-pod"); stamped != want {
+		t.Errorf("sandboxed session stamps %q, want the ambient key's %q — that key is what the in-container CLI spends", stamped, want)
 	}
 }
 

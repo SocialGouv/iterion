@@ -308,6 +308,21 @@ func taskSandboxed(task Task) bool {
 	return task.Sandbox != nil && task.Sandbox.Driver() != "noop"
 }
 
+// ambientForwardedChannels are the ambient variables whose value rides the
+// request the CLI builds, in ambientCredentialChannels' order with the
+// custom-header block last. ONE list serves both readers of the ambient
+// layer — the forwarder copying the process env into a sandboxed spawn and
+// the fingerprint keying the meter (ambientCredentialValue) — because a
+// channel one reads and the other does not puts the pre-flight and the
+// sandboxed session on two meters: the per-borrower split #2022 closes,
+// reopened by list drift. The cloud-provider switches are deliberately NOT
+// here: a switch forwarded into the container would boot its mode there
+// without the cloud credential chains a host spawn inherits, trading a
+// working token-auth spawn for a failing cloud one; the switch pod's
+// two-lane meter pair is an open question (fleet/arbitrations.md,
+// ARB-w-usagecap-switch-pod), not drift this list may silently reintroduce.
+var ambientForwardedChannels = append(append([]string{}, ambientCredentialChannels...), "ANTHROPIC_CUSTOM_HEADERS")
+
 // ambientAnthropicEnvForSandbox returns the Anthropic-flavoured
 // credential vars present in THIS process' environment, for explicit
 // forwarding into a sandboxed CLI spawn.
@@ -328,15 +343,13 @@ func taskSandboxed(task Task) bool {
 // inherited host env.
 func ambientAnthropicEnvForSandbox() map[string]string {
 	env := map[string]string{}
-	for _, k := range []string{
-		"ANTHROPIC_API_KEY",
-		"ANTHROPIC_AUTH_TOKEN",
-		"ANTHROPIC_BASE_URL",
-		"CLAUDE_CODE_OAUTH_TOKEN",
-	} {
+	for _, k := range ambientForwardedChannels {
 		if v := os.Getenv(k); v != "" {
 			env[k] = v
 		}
+	}
+	if v := os.Getenv("ANTHROPIC_BASE_URL"); v != "" {
+		env["ANTHROPIC_BASE_URL"] = v
 	}
 	if len(env) == 0 {
 		return nil

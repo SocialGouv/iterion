@@ -138,6 +138,35 @@ func TestForkRunWithAForwardedKeyAdmits(t *testing.T) {
 	}
 }
 
+// TestForkRunWithAForwardedAuthorizationHeaderAdmits: the launcher's
+// ANTHROPIC_CUSTOM_HEADERS block is forwarded beside the token channels
+// (ambientForwardedChannels), and an Authorization line in it is the
+// credential the pod spends — the probe must name it, or a header-only pod
+// is refused as credential-less on a run that authenticates fine. A block
+// of other header names carries nothing the CLI authenticates with and
+// stays a refusal — the strong reading, not the block's presence.
+func TestForkRunWithAForwardedAuthorizationHeaderAdmits(t *testing.T) {
+	clearCredentialEnv(t)
+	t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "Authorization: Bearer gw-admission-secret")
+	err := credentialAdmissionRun(t, credentialWorkflow("review", "claude_code", "none"), store.RunTrustFork, nil)
+	if !errors.Is(err, errCanaryStop) {
+		t.Fatalf("fork run with a forwarded header credential = %v, want admission (canary)", err)
+	}
+}
+
+// TestForkRunWithANamelessHeaderBlockIsRefused is the block-presence
+// control: no Authorization line, no credential — the run still has no
+// channel and keeps the typed refusal.
+func TestForkRunWithANamelessHeaderBlockIsRefused(t *testing.T) {
+	clearCredentialEnv(t)
+	t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Tenant: acme")
+	err := credentialAdmissionRun(t, credentialWorkflow("review", "claude_code", "none"), store.RunTrustFork, nil)
+	var rerr *RuntimeError
+	if !errors.As(err, &rerr) || rerr.Code != ErrCodeSandboxCredentialUnreachable {
+		t.Fatalf("fork run with a header block of no Authorization = %v, want the typed credential refusal", err)
+	}
+}
+
 // TestForkRunWithMountedLoginAdmits: while host_state is mounted (nothing
 // on main floors it for an untrusted run), the operator's file-based login
 // DOES reach a docker sandbox — refusing here would kill a run that works.
