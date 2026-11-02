@@ -865,7 +865,10 @@ jobs:
     # Keep the same fork/bot isolation and operator escape hatch as every
     # other job using the scale set.
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
-    timeout-minutes: 25
+    # 40 m keeps the job above the 32 m helm cap the install derives from
+    # values-dev's deadline (scripts/chart-kind-wait.sh): helm's own timeout
+    # reports a slow install, this cap only catches a runaway job.
+    timeout-minutes: 40
     env:
       KIND_CLUSTER: iterion-e2e
       IMG: iterion-e2e:ci
@@ -912,10 +915,13 @@ jobs:
       - name: Helm install (values-dev.yaml)
         # CI-specific overrides on top of values-dev.yaml: the image built
         # above, metrics on, auth off. The dev stores (devStack.*) run on
-        # emptyDirs: no PVC binding to wait for. --timeout 10m covers the
-        # image pulls of a cold kind node.
+        # emptyDirs: no PVC binding to wait for. The client wait derives from
+        # the values file's own deadline (scripts/chart-kind-wait.sh), so a
+        # slow-registry day exhausts the deadline's budget instead of a fixed
+        # cap while the workload is still Progressing.
         run: |
           set -euo pipefail
+          KIND_WAIT=$(sh scripts/chart-kind-wait.sh ./charts/iterion/values-dev.yaml)
           kubectl create namespace "${NS}"
           helm install "${RELEASE}" ./charts/iterion \
             --namespace "${NS}" \
@@ -925,7 +931,7 @@ jobs:
             --set "image.pullPolicy=Never" \
             --set "metrics.enabled=true" \
             --set "config.disableAuth=true" \
-            --wait --timeout 10m
+            --wait --timeout "${KIND_WAIT}"
 
       - name: Wait for /readyz on server
         # `iterion.fullname` renders as `<release>-iterion` for the

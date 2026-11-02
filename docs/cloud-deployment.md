@@ -53,10 +53,14 @@ install step hangs rather than reports. A `0` is not a way to remove the
 deadline — both templates render the key through a `with`, which skips a
 zero.
 
-One caveat on the smoke path: `task chart:kind` also caps its own wait with
-`helm --timeout 5m`, so a pull slower than that fails the smoke whatever this
-knob says. The deadline decides whether the Deployment is called **Failed**;
-the helm timeout decides how long the client is willing to watch.
+The install clients follow the same knob: `task chart:kind` and the
+`cloud-e2e` CI job derive their `helm --timeout` from the values file's own
+`server.progressDeadlineSeconds` plus a 120 s margin
+(`scripts/chart-kind-wait.sh`), so the deadline — not a fixed client cap —
+decides whether a slow install is called **Failed**. The helper refuses a
+values file that leaves the knob unset or zero: either would silently shrink
+the watch to Kubernetes' default 600 s (and a `0` renders through a `with`
+that skips it anyway).
 
 ## Topology
 
@@ -979,6 +983,9 @@ devbox run -- task chart:kind
 ```
 
 Renders + lints the chart, checks `appVersion` matches `package.json`.
+The install watch derives from `values-dev.yaml`'s own
+`server.progressDeadlineSeconds` (1800 s + a 120 s margin, so 1920 s): a
+slow first pull exhausts the deadline's budget, never a fixed client cap.
 For a real install + workflow exec, see the `cloud-e2e` CI job in
 [.github/workflows/tests.yml](../.github/workflows/tests.yml).
 
