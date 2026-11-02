@@ -14,9 +14,9 @@ import (
 // dialFunc is the shape of the proxy's upstream dialer.
 type dialFunc = func(ctx context.Context, network, addr string) (net.Conn, error)
 
-// pinEntry is one pinned host: how strictly its answers are judged, and
-// whether the pin serves the run's own credential — a strictness the
-// operator's escape hatch does not lift.
+// pinEntry is one pinned host: how strictly its answers are judged (the
+// operator's inherited lift admits a private answer for it), and whether
+// the pin serves the run's own credential.
 type pinEntry struct {
 	strict  bool
 	runHeld bool

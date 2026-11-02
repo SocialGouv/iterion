@@ -1292,8 +1292,9 @@ func startNetworkProxy(
 	// reloaded mid-run names (the desktop's refresh) is pinned from the next
 	// connection on. A gateway named and replaced again before any
 	// connection is made through the proxy is not.
-	// The run's own credential pins its gateway strictly, whatever the
-	// operator's hatch admits for the environment's gateway.
+	// The run's own credential pins its gateway at the OPERATOR's
+	// inherited strictness — the same answer the dial judges that URL
+	// with; a planted hatch does not speak for the operator.
 	if runGatewayHost != "" {
 		opts.PinRunSource = func() (string, bool) { return runGatewayHost, secrets.LLMEndpointAllowPrivate() }
 	}

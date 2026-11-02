@@ -785,43 +785,62 @@ func TestCheckGatewaySource_RunHeldPrivateURLRefusedAndLifted(t *testing.T) {
 }
 
 // A run-held pair serves the crossing itself: the gateway env names carry
-// the RUN's money and the operator's env gateway is never read for it, and
-// the escape hatch crosses explicit-empty — a tenant URL is judged strictly
-// in-container whatever the host lifted. A vendor node never sees the pair.
+// the RUN's money and the operator's env gateway is never read for it. The
+// escape hatch crosses as the operator's inherited answer on EVERY gateway
+// arm — the dial (checkGatewaySource), the host client and the netproxy pin
+// already judge the run-held URL at the operator's strictness, and a
+// crossing that told the container otherwise would have the same run pass
+// outside the sandbox and refuse inside it. Empty when the operator said
+// nothing: an absent name lets the workspace .env lift the rule. A vendor
+// node never sees the pair.
 func TestForwardableProviderEnv_GatewayPairBeatsTheEnvGateway(t *testing.T) {
 	clearGatewayEnv(t)
 	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://93.184.216.34/v1")
 	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "env-gw-secret")
-	// The host lifted the address-class rule; a run-held URL must not
-	// inherit the lift across the boundary.
-	t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
 	compatgw.ResetCatalogCaches()
 
 	runPair := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		APIKeys:     map[secrets.Provider]string{secrets.ProviderOpenAICompatible: "sk-run-gw"},
 		APIBaseURLs: map[secrets.Provider]string{secrets.ProviderOpenAICompatible: "https://run-gw.example"},
 	})
-	env, _, err := forwardableProviderEnv(runPair, "openai_compatible/m", "")
-	if err != nil {
-		t.Fatalf("forwardableProviderEnv: %v", err)
-	}
-	if env["OPENAI_COMPATIBLE_BASE_URL"] != "https://run-gw.example" {
-		t.Errorf("endpoint = %q, want the RUN's pair URL — the env gateway is not the run's money", env["OPENAI_COMPATIBLE_BASE_URL"])
-	}
-	if env["OPENAI_COMPATIBLE_API_KEY"] != "sk-run-gw" {
-		t.Errorf("gateway key = %q, want the run's pair key", env["OPENAI_COMPATIBLE_API_KEY"])
-	}
-	if v, ok := env["ITERION_LLM_ENDPOINT_ALLOW_PRIVATE"]; !ok || v != "" {
-		t.Errorf("hatch = (%q, %v), want present-and-empty — a run-held tenant URL is judged strictly in-container whatever the host lifted", v, ok)
-	}
 
-	env, _, err = forwardableProviderEnv(runPair, "anthropic/claude-x", "")
-	if err != nil {
-		t.Fatalf("forwardableProviderEnv: %v", err)
-	}
-	for _, name := range []string{"OPENAI_COMPATIBLE_BASE_URL", "OPENAI_COMPATIBLE_API_KEY"} {
-		if env[name] != "" {
-			t.Errorf("vendor node carries %s=%q — the run's gateway pair leaked to a non-gateway node", name, env[name])
+	t.Run("the operator's inherited lift crosses with the pair", func(t *testing.T) {
+		t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
+		env, _, err := forwardableProviderEnv(runPair, "openai_compatible/m", "")
+		if err != nil {
+			t.Fatalf("forwardableProviderEnv: %v", err)
 		}
-	}
+		if env["OPENAI_COMPATIBLE_BASE_URL"] != "https://run-gw.example" {
+			t.Errorf("endpoint = %q, want the RUN's pair URL — the env gateway is not the run's money", env["OPENAI_COMPATIBLE_BASE_URL"])
+		}
+		if env["OPENAI_COMPATIBLE_API_KEY"] != "sk-run-gw" {
+			t.Errorf("gateway key = %q, want the run's pair key", env["OPENAI_COMPATIBLE_API_KEY"])
+		}
+		if env["ITERION_LLM_ENDPOINT_ALLOW_PRIVATE"] != "1" {
+			t.Errorf("hatch = %q, want the operator's lift — the dial and the pin judge the run-held URL at the operator's strictness; a crossing that says otherwise refuses inside the sandbox a run that passes outside it", env["ITERION_LLM_ENDPOINT_ALLOW_PRIVATE"])
+		}
+	})
+
+	t.Run("an unset hatch crosses explicit-empty beside the pair", func(t *testing.T) {
+		t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "")
+		env, _, err := forwardableProviderEnv(runPair, "openai_compatible/m", "")
+		if err != nil {
+			t.Fatalf("forwardableProviderEnv: %v", err)
+		}
+		if v, ok := env["ITERION_LLM_ENDPOINT_ALLOW_PRIVATE"]; !ok || v != "" {
+			t.Errorf("hatch = (%q, %v), want present-and-empty — an absent name lets the workspace .env lift the address-class rule", v, ok)
+		}
+	})
+
+	t.Run("a vendor node never sees the pair", func(t *testing.T) {
+		env, _, err := forwardableProviderEnv(runPair, "anthropic/claude-x", "")
+		if err != nil {
+			t.Fatalf("forwardableProviderEnv: %v", err)
+		}
+		for _, name := range []string{"OPENAI_COMPATIBLE_BASE_URL", "OPENAI_COMPATIBLE_API_KEY"} {
+			if env[name] != "" {
+				t.Errorf("vendor node carries %s=%q — the run's gateway pair leaked to a non-gateway node", name, env[name])
+			}
+		}
+	})
 }

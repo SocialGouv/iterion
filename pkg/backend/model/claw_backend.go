@@ -2592,12 +2592,12 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 	if ok && creds.AmbientRefused && GLMOnAnthropicWire(model) {
 		env["ANTHROPIC_BASE_URL"] = ""
 	}
-	// The gateway escape hatch is ALWAYS-explicit on the crossing: an
-	// absent name lets the workspace .env inside the container lift the
-	// address-class rule (applyDotEnv fills missing names); the empty
-	// outranks it. The env-gateway arm below writes "1" over this when the
-	// HOST lifted the rule — a run-held tenant URL never inherits that
-	// lift.
+	// The gateway escape hatch crosses EXPLICITLY: an absent name lets the
+	// workspace .env inside the container lift the address-class rule
+	// (applyDotEnv fills missing names), so the empty is the base — "the
+	// operator said nothing". The lift below overwrites it for every
+	// gateway arm, the run's own pair included, at the same strictness the
+	// dial and the pin already judge that URL with.
 	env["ITERION_LLM_ENDPOINT_ALLOW_PRIVATE"] = ""
 	// A gateway-served node carries the gateway env, and ONLY a gateway
 	// node does: the endpoint is operator infrastructure, the key to it is
@@ -2641,9 +2641,16 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 			// and absent is the one state the workspace `.env` of the repository
 			// under review gets to fill.
 			env[compatgw.APIKeyEnv] = cfg.APIKey
-			if allowPrivate {
-				env["ITERION_LLM_ENDPOINT_ALLOW_PRIVATE"] = "1"
-			}
+		}
+		// The operator's inherited lift crosses for EVERY gateway arm, the
+		// run's own pair included: checkGatewaySource, the host client and
+		// the netproxy pin already judge a run-held URL at the operator's
+		// strictness, and a crossing that said otherwise would have the
+		// same run pass outside the sandbox and refuse inside it (Revi
+		// #2721 R2). A PLANTED value stays "" here — the lift is the
+		// operator's, read through Inherited at LLMEndpointAllowPrivate.
+		if secrets.LLMEndpointAllowPrivate() {
+			env["ITERION_LLM_ENDPOINT_ALLOW_PRIVATE"] = "1"
 		}
 		// The host's OWN catalog resolution rides along — pair-served and
 		// env-gateway alike — so the in-container catalog answers with the
