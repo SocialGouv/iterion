@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
@@ -727,11 +728,16 @@ func sourceIssueID(r *store.Run) string {
 
 // resolveMergeTargetForPersistence resolves the merge target into a
 // branch name so PendingMergeInto can be recorded for the finalize
-// path. "" / "current" → currently-checked-out branch; anything else
-// passes through. Returns "" if the resolution fails; callers should
-// fall back to current-branch lookup at finalize time.
+// path. "" / "current" — read FOLDED, the way every other reader of
+// merge_into reads it (the compile's validation, the engine's own
+// finalize, the opt-out) — resolves to the currently-checked-out
+// branch; anything else passes through as written. Returns "" if the
+// resolution fails; callers should fall back to current-branch lookup
+// at finalize time.
 func resolveMergeTargetForPersistence(target, repoRoot string) string {
-	if target != "" && target != "current" {
+	switch strings.ToLower(strings.TrimSpace(target)) {
+	case "", "current":
+	default:
 		return target
 	}
 	out, err := runtime.GitSymbolicRef(repoRoot)
