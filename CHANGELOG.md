@@ -3,6 +3,42 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.4.0](https://github.com/SocialGouv/iterion/compare/v5.3.1...v5.4.0) (2026-11-02)
+
+### Features
+
+* **cloud:** surface the copy-paste setup prompt on README, docs home and the landing ([#2908](https://github.com/SocialGouv/iterion/issues/2908)) ([313992b](https://github.com/SocialGouv/iterion/commit/313992bf6590170181c6a49025446fda73b0aa62)), references [docs/getting-started.md#the-prompt](https://github.com/docs/getting-started.md/issues/the-prompt) [#2005](https://github.com/SocialGouv/iterion/issues/2005)
+
+    <details><summary>why</summary>
+
+    The prompt lived two clicks deep (docs/getting-started.md#the-prompt, the README's Getting Started); the product landing and the docs home did not carry it at all. Each surface now leads with it, labelled as the cloud onboarding:
+
+    </details>
+
+### Bug Fixes
+
+* **auxllm:** the server-side auxiliary LLM surfaces resolve through one credential channel ([#2645](https://github.com/SocialGouv/iterion/issues/2645)) ([e958555](https://github.com/SocialGouv/iterion/commit/e95855597bb09a532314e0c499c236021edaa53c)), references [#2005](https://github.com/SocialGouv/iterion/issues/2005)
+
+    <details><summary>why</summary>
+
+    The merge-conflict resolver, the supervisors and the session board each built their own model.NewRegistry() off the server process env — three sites for one decision: which credential funds run-derived content sent from the server. They now resolve through pkg/backend/auxllm.Registry, with identical behaviour today, so the run's gateway credential (#2005 PR-C') branches one site instead of three.
+
+    </details>
+* **claw:** make the executor workDir field atomic against live workspace reads ([#2897](https://github.com/SocialGouv/iterion/issues/2897)) ([a3ffd4d](https://github.com/SocialGouv/iterion/commit/a3ffd4dd27f869b9696f71111d0ca2d55fc742cb)), references [#2889](https://github.com/SocialGouv/iterion/issues/2889) [#2870](https://github.com/SocialGouv/iterion/issues/2870)
+
+    <details><summary>why</summary>
+
+    SetWorkDir/WorkDir traded a plain string while the workspace provider reads the field live on every bash/read/write/glob/grep call - the detector reported Read WorkDir (ReadScope.workspaceLocked) vs Write SetWorkDir. The field becomes an atomic.Pointer[string] and every internal reader goes through WorkDir, so the class closes by construction: any future access to the field is forced through atomic ops.
+
+    </details>
+* **claw:** the repoRoot field gets the workDir atomic treatment ([#2897](https://github.com/SocialGouv/iterion/issues/2897)) ([0b25fd7](https://github.com/SocialGouv/iterion/commit/0b25fd71faa198db8c7f11a41492bf456c5e06c9))
+
+    <details><summary>why</summary>
+
+    The round-1 review flagged the neighbor field: repoRoot keeps the same pushed-field/live-reader shape workDir had pre-fix - the engine pushes it at run start (engine_run.go / resume.go, alongside SetWorkDir) while buildTask reads it live on every node (task.RepoRoot) - with no reader per tool call today, so no push/read pair ever overlapped. Refuted as a live race, confirmed as the latent class: the new SetWorkDir doc advertises concurrent-with-Execute safety, and repoRoot is the one neighbor…
+
+    </details>
+
 ## [5.3.1](https://github.com/SocialGouv/iterion/compare/v5.3.0...v5.3.1) (2026-11-02)
 
 ### Bug Fixes
