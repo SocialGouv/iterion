@@ -38,9 +38,11 @@ func TestEveryAuxiliarySurfaceResolvesThroughTheChannel(t *testing.T) {
 		// RUN'S OWN LLM nodes, funded through the run's credential ctx
 		// (ResolveWithContext), not through the auxiliary channel.
 		"pkg/runview/executor.go": 1,
-		// The in-container runner: the run's own execution plane, inside the
-		// sandbox the launcher assembled — same class as the executor above.
-		"cmd/iterion/claw_runner.go": 1,
+		// cmd/iterion/claw_runner.go held an exemption for one NewRegistry
+		// call (the run's own execution plane, same class as the executor
+		// above) until #2244 moved its construction to the runner's own
+		// constructor — NewSandboxRunnerRegistry, pinned below. It has zero
+		// NewRegistry calls now; the file needs no licence.
 	}
 
 	// modelRegistryConstructors pins the exported constructors pkg/backend/
@@ -53,6 +55,10 @@ func TestEveryAuxiliarySurfaceResolvesThroughTheChannel(t *testing.T) {
 		// The one constructor today: the env-funded registry the channel
 		// wraps.
 		"NewRegistry": "the env-funded registry; auxllm.Registry is the auxiliary channel wrapping it",
+		// The sandbox runner's own registry (iterion __claw-runner): the
+		// run's execution plane inside the crossing-assembled sandbox, whose
+		// env is forwarded by the crossing itself — not an auxiliary surface.
+		"NewSandboxRunnerRegistry": "the runner plane's registry; the crossing forwards its env deliberately (#2244)",
 	}
 	constructors := map[string]string{}
 
