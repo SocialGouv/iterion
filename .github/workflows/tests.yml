@@ -865,9 +865,12 @@ jobs:
     # Keep the same fork/bot isolation and operator escape hatch as every
     # other job using the scale set.
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
-    # 40 m keeps the job above the 32 m helm cap the install derives from
-    # values-dev's deadline (scripts/chart-kind-wait.sh): helm's own timeout
-    # reports a slow install, this cap only catches a runaway job.
+    # 40 m keeps the job above the verdict it owes: the 32 m helm cap the
+    # install derives from values-dev's deadline (scripts/chart-kind-wait.sh)
+    # only fires after this job's preamble — checkout, image build, kind up,
+    # image load, chart deps — measured at 4.0-4.7 m on success runs. Below
+    # the 38 m floor (32 + 6, witnessed in charts/iterion/kind_wait_test.go)
+    # the runner kill replaces helm's timeout with a silence.
     timeout-minutes: 40
     env:
       KIND_CLUSTER: iterion-e2e

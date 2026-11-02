@@ -209,9 +209,9 @@ type workflowJobs struct {
 
 // TestChartCloudE2EInstallDerivesItsWaitFromTheValuesFile witnesses the CI
 // install the same way: cloud-e2e derives its --timeout from values-dev's
-// deadline through the same helper, and its job cap outlives the derived
-// helm cap (32 m) so helm's timeout — not the runner kill — reports a slow
-// install.
+// deadline through the same helper, and its job cap outlives what the
+// verdict needs — the derived helm cap (32 m) on top of the job's preamble
+// — so helm's timeout, not the runner kill, reports a slow install.
 func TestChartCloudE2EInstallDerivesItsWaitFromTheValuesFile(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "tests.yml"))
 	if err != nil {
@@ -240,9 +240,15 @@ func TestChartCloudE2EInstallDerivesItsWaitFromTheValuesFile(t *testing.T) {
 	if !strings.Contains(install, `--timeout "${KIND_WAIT}"`) {
 		t.Fatalf("cloud-e2e's install must pass the helper's output to --timeout; run: %s", install)
 	}
-	// 1800 s deadline + 120 s margin = 32 m: the job must outlive the cap it
-	// installs, or its runner kill replaces helm's verdict with a silence.
-	if job.TimeoutMinutes < 33 {
-		t.Fatalf("cloud-e2e timeout-minutes = %d — below helm's derived 32 m cap; keep the job above the cap so helm's timeout reports the slow install", job.TimeoutMinutes)
+	// The runner kill must not preempt helm's verdict: the derived cap is
+	// 32 m (1800 s deadline + 120 s margin, values-dev.yaml) and only
+	// fires after the job's preamble — checkout, image build, kind up,
+	// image load, chart deps — measured at 4.0-4.7 m on recent success
+	// runs. The floor sums both budgets; tests.yml runs the job at 40 m,
+	// two above it.
+	const helmCapMinutes = 32
+	const preambleBudgetMinutes = 6
+	if job.TimeoutMinutes < helmCapMinutes+preambleBudgetMinutes {
+		t.Fatalf("cloud-e2e timeout-minutes = %d — below the %d m a verdict needs (32 m helm cap + %d m preamble budget); a lower cap lets the runner kill replace helm's timeout with a silence", job.TimeoutMinutes, helmCapMinutes+preambleBudgetMinutes, preambleBudgetMinutes)
 	}
 }
