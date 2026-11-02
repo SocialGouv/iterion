@@ -1,5 +1,6 @@
 # Architecture decision records
 
+- [154 — The sovereign pool boundary](154-the-sovereign-pool-boundary-is-a-namespace-and-an-enforced-proxy.md): a namespace per pool, a standing default-deny egress policy the runner cannot author, and an enforced egress proxy out of the pod.
 - [138 — Forge provisioning identities](138-forge-provisioning-immutable-identities.md): immutable webhook epochs, optimistic activation, write redirects and the hybrid reconciler boundary.
 - [156 — Bearer token hashing doctrine](156-bearer-token-hashing-doctrine.md): a stored bearer token is its unsalted SHA-256 digest (CSPRNG ≥ 128 bits); HMAC under a derived key is for derivations, never for a human-chosen input.
 
