@@ -4,8 +4,9 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"testing"
 
@@ -97,7 +98,7 @@ func TestEveryAuxiliarySurfaceResolvesThroughTheChannel(t *testing.T) {
 	// Both directions of the constructor pin, each in one stable order:
 	// every constructor model defines is pinned, and every pinned one is
 	// still defined.
-	for _, name := range sortedKeys(constructors) {
+	for _, name := range slices.Sorted(maps.Keys(constructors)) {
 		if _, pinned := modelRegistryConstructors[name]; !pinned {
 			t.Errorf("pkg/backend/model now defines %s (%s), a second exported constructor returning "+
 				"*Registry — a funding decision no call site of this sweep judges, so an auxiliary surface "+
@@ -106,7 +107,7 @@ func TestEveryAuxiliarySurfaceResolvesThroughTheChannel(t *testing.T) {
 				name, constructors[name])
 		}
 	}
-	for _, name := range sortedKeys(modelRegistryConstructors) {
+	for _, name := range slices.Sorted(maps.Keys(modelRegistryConstructors)) {
 		if _, found := constructors[name]; !found {
 			t.Errorf("modelRegistryConstructors pins %s, and pkg/backend/model no longer defines it — "+
 				"drop the entry", name)
@@ -120,17 +121,6 @@ func TestEveryAuxiliarySurfaceResolvesThroughTheChannel(t *testing.T) {
 			"gets, #2645); only the run's own execution planes may construct a registry of their own, and those "+
 			"live in this test's exempt map with their reason.", offenders)
 	}
-}
-
-// sortedKeys keeps both directions of the constructor pin in one order
-// whatever the map iteration gives.
-func sortedKeys[V any](m map[string]V) []string {
-	out := make([]string, 0, len(m))
-	for name := range m {
-		out = append(out, name)
-	}
-	sort.Strings(out)
-	return out
 }
 
 // registryConstructions counts `<modelPkg>.NewRegistry(…)` calls in the file,
@@ -296,6 +286,20 @@ func f() { r := m.NewRegistry(); _ = r }`,
 import "github.com/SocialGouv/iterion/pkg/backend/delegate"
 func f() { r := delegate.NewRegistry(); _ = r }`,
 			calls: 0,
+		},
+		{
+			// A file that imports model beside a foreign package must count
+			// OUR call and refuse the foreign one in the same walk — without
+			// this case the import-based early return is the only path that
+			// ever refuses a foreign NewRegistry.
+			name: "a foreign NewRegistry beside a model import is not ours",
+			src: `package p
+import (
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
+)
+func f() { d := delegate.NewRegistry(); r := model.NewRegistry(); _, _ = d, r }`,
+			calls: 1,
 		},
 		{
 			name: "no import of the model package at all",
