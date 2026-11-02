@@ -3815,8 +3815,14 @@ func testRouteDecisionRegistry(t *testing.T, s store.RunStore) {
 	mki("routable-intent-banked", func(r *store.Run) {
 		r.FinalBranch, r.FinalCommit = "iterion/run/banked", "cafebabel"
 	})
+	// intent-declined-unbanked is the bank guard's OWN witness and stays
+	// unbanked on purpose — every other declined shape below is BANKED, so
+	// the guard it exercises is the only one left to decline it.
 	mki("intent-declined-unbanked", nil)
-	mki("intent-declined-failed", func(r *store.Run) { r.Status = store.RunStatusFailed })
+	mki("intent-declined-failed", func(r *store.Run) {
+		r.Status = store.RunStatusFailed
+		r.FinalBranch, r.FinalCommit = "iterion/run/banked", "cafebabel"
+	})
 	// BANKED: the bank fields must be set, else the bank guard declines
 	// the run first and the none-arm stays untested — two guards, one
 	// masking the other, neither witnessed.
@@ -3838,9 +3844,36 @@ func testRouteDecisionRegistry(t *testing.T, s store.RunStore) {
 		r.MergeInto = " none "
 		r.FinalBranch, r.FinalCommit = "iterion/run/banked", "cafebabel"
 	})
-	mki("intent-declined-skipped", func(r *store.Run) { r.MergeStatus = store.MergeStatusSkipped })
-	mki("intent-declined-bank", func(r *store.Run) { r.FinalBranchError = "push refused" })
-	mki("intent-declined-merged", func(r *store.Run) { r.MergeStatus = store.MergeStatusMerged })
+	// BANKED, like the none shapes above: skipped, failed and merged are
+	// each the ISOLATED witness of their own guard (the finished-status
+	// gate, the merge_status=skipped check, the top-level merged gate on
+	// the intent carrier) — unbanked, the bank guard declines them first
+	// and the guard they exist to exercise is never reached (two guards,
+	// one masking the other). The merged gate itself stays witnessed on the
+	// contract carrier too: contract-declined-merged below is unbanked and
+	// the contract arm has no bank guard, so deleting the gate goes red
+	// there regardless — this banked intent twin adds the intent carrier's
+	// own isolated witness.
+	mki("intent-declined-skipped", func(r *store.Run) {
+		r.MergeStatus = store.MergeStatusSkipped
+		r.FinalBranch, r.FinalCommit = "iterion/run/banked", "cafebabel"
+	})
+	// BANKED: on the mongo net the bank-failed shape trips THREE arms of
+	// the bank gate at once (final_branch, final_commit and
+	// final_branch_error are each refused alone); unbanked, deleting the
+	// final_branch_error arm keeps the suite green through the other two —
+	// same mask as the shapes above. Banked, the error arm is the only one
+	// left (the FS bank state reads the error first, so both nets decline
+	// it through the error arm alone), and intent-declined-unbanked stays
+	// the bank-UNBANKED arm's own witness.
+	mki("intent-declined-bank", func(r *store.Run) {
+		r.FinalBranchError = "push refused"
+		r.FinalBranch, r.FinalCommit = "iterion/run/banked", "cafebabel"
+	})
+	mki("intent-declined-merged", func(r *store.Run) {
+		r.MergeStatus = store.MergeStatusMerged
+		r.FinalBranch, r.FinalCommit = "iterion/run/banked", "cafebabel"
+	})
 	// The same merged shape on the contract carrier: the router's merged
 	// gate declines it before any verdict, so the net refuses it too.
 	if _, err := s.CreateRun(ctx, "contract-declined-merged", "wf", nil); err != nil {
