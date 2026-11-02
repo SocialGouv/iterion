@@ -681,8 +681,14 @@ tasks:
       - task: brand:check
       - task: brand:positioning
       - task: brand:og:check
+      - task: prompt:parity
       - task: dsl:check
       - task: map:check
+
+  prompt:parity:
+    desc: Fail if the cloud setup prompt drifted apart across README, the docs pages and the studio landing
+    cmds:
+      - ./scripts/prompt-parity.sh
 
   check:fast:
     desc: "Fast inner-iteration layer (format + vet + fast-only lint + bot fmt + dsl + map + positioning) — NOT a replacement for `task check`, which stays owed before every push"
@@ -696,6 +702,7 @@ tasks:
       - task: dsl:check
       - task: map:check
       - task: brand:positioning
+      - task: prompt:parity
       - golangci-lint run --fast-only
 
   # The reading golden is review-only at the release cut (corpus-reading --cut).

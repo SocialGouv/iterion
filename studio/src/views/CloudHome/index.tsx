@@ -8,6 +8,7 @@ import { useThemeStore } from "@/store/theme";
 import StackCompatibility from "./StackCompatibility";
 import PlatformFeatures from "./PlatformFeatures";
 import MissionExamples from "./MissionExamples";
+import OnePrompt from "./OnePrompt";
 import "./cloud-home.css";
 
 const GITHUB = "https://github.com/SocialGouv/iterion";
@@ -94,7 +95,8 @@ export default function CloudHome({ marketplaceEnabled = false, signedIn = false
           <div className="ch-hero-copy"><a className="ch-open-source" href={GITHUB} target="_blank" rel="noreferrer"><span className="ch-open-dot" /> OPEN SOURCE. OPEN POSSIBILITIES. <ChevronRight size={13} /></a><h1 id="ch-title">Your agents called.<br /><span>They need an<br />orchestrator.</span></h1><p className="ch-hero-description"><strong>Build, run and orchestrate agentic AI workflows.</strong><br />Linux runs apps. Kubernetes orchestrates containers. Iterion orchestrates agents.</p><div className="ch-hero-ctas"><Link href={entryHref} className="ch-button ch-button-primary">{entryCta} <ArrowUpRight size={17} /></Link><a href="#workflows" className="ch-button ch-button-text"><ArrowRight size={15} /> Explore use cases</a></div><div className="ch-hero-footnote"><span><Check size={13} /> Git native</span><span><Check size={13} /> Model agnostic</span><span><Check size={13} /> MIT licensed</span></div><GitHubStar /></div>
           <HeroVisual />
         </section>
-        <div className="ch-container"><MissionExamples />
+        <div className="ch-container"><OnePrompt />
+          <MissionExamples />
           <PlatformFeatures />
           <StackCompatibility />
           <section className="ch-final-cta" aria-labelledby="ch-deployment-heading">

@@ -111,7 +111,7 @@ const sidebar = [
   {
     text: 'Start here',
     items: [
-      { text: 'Get started in one prompt', link: '/getting-started' },
+      { text: 'Cloud setup in one prompt', link: '/getting-started' },
       { text: 'Quickstart', link: '/quickstart' },
       { text: 'Current state', link: '/current-state' },
       { text: 'Changelog', link: '/changelog' },
@@ -364,7 +364,7 @@ export default withMermaid(
         {
           text: 'Get started',
           items: [
-            { text: 'One prompt (agent setup)', link: '/getting-started' },
+            { text: 'One prompt (cloud setup)', link: '/getting-started' },
             { text: 'Quickstart (AI devs)', link: '/quickstart' },
             { text: 'Install & all modes', link: '/install' },
           ],
