@@ -1510,6 +1510,19 @@ func AmbientSourceFingerprint(source string) (string, bool) {
 	return fp, fp != ""
 }
 
+// AmbientCredentialFingerprint is the fingerprint of the credential THIS
+// process inherits — the pod's ambient channels read the way a host spawn
+// reads them (ambientCredentialValue over the process env), hashed the way
+// the session's own label hashes them. It is what a route with no credential
+// of the run spends when the pod carries the ambient one, and "" when the pod
+// carries none — its "Not logged in" a refusal — or a cloud-provider switch
+// answers instead. The runner keys its nothing-held default on it (the
+// fp'd ambient label AmbientSourceFingerprint parses), so the ledger the
+// pre-flight reads is the one the coming session writes.
+func AmbientCredentialFingerprint() string {
+	return ambientSourceFingerprint(nil, false)
+}
+
 // splitFacadeLabel parses a facade routing label into the slot that built it
 // and the rendered base URL: "facade:<slot>:<base>" → (slot, base, true), the
 // slot-less "facade:<base>" → ("", base, true), anything else → ok=false. The

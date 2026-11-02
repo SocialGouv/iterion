@@ -16,6 +16,9 @@ import (
 
 // blankAnthropicWireEnv keeps the pod's own anthropic-wire credentials out of
 // a route's resolution: the delegate reads them as the ambient fallback.
+// ANTHROPIC_CUSTOM_HEADERS goes too: an Authorization line in it is one of
+// the channels the ambient fingerprint digests, and a pod that exports one
+// must not hand these tests a different meter than a bare one.
 func blankAnthropicWireEnv(t *testing.T) {
 	t.Helper()
 	for _, name := range []string{
@@ -23,6 +26,7 @@ func blankAnthropicWireEnv(t *testing.T) {
 		"CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR",
 		"ZAI_API_KEY", "MOONSHOT_API_KEY", "MOONSHOT_BASE_URL",
 		"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+		"ANTHROPIC_CUSTOM_HEADERS",
 	} {
 		t.Setenv(name, "")
 	}

@@ -77,6 +77,7 @@ func capLLMWorkflow() *ir.Workflow {
 }
 
 func TestUsageCapPreflight_BlocksBeforeSpendingAnything(t *testing.T) {
+	blankAnthropicWireEnv(t) // the wall is the bare meter's: a pod with no ambient credential
 	ctx := t.Context()
 	resets := time.Now().UTC().Add(30 * time.Hour)
 	caps := usagecap.NewMemStore()
@@ -129,6 +130,7 @@ func TestUsageCapPreflight_BlocksBeforeSpendingAnything(t *testing.T) {
 // the settings store starts refusing runs on the same Runner value —
 // no restart, no reconstruction — once the resolver's TTL elapses.
 func TestUsageCapPreflight_RuntimeSettingsChangeIsLive(t *testing.T) {
+	blankAnthropicWireEnv(t) // the wall is the bare meter's: a pod with no ambient credential
 	ctx := t.Context()
 	caps := usagecap.NewMemStore()
 	key := usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, "")
@@ -253,8 +255,11 @@ func TestUsageCapPreflight_FailsOpen(t *testing.T) {
 
 // One tenant's own subscription is a different meter from the deployment's:
 // merging them would let one tenant's spend park another's runs, and would
-// consult the wrong ledger for both.
+// consult the wrong ledger for both. The pod's ambient channels are blanked
+// first: these rows answer for a pod with no inherited credential, and a
+// machine that exports one (the forfait pod does) must not move the meters.
 func TestUsageCapKey_SeparatesTenantCredentialsFromThePlatform(t *testing.T) {
+	blankAnthropicWireEnv(t)
 	msg := &queue.RunMessage{TenantID: "team-7"}
 
 	if got := usageCapKey(context.Background(), msg); got != usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, "") {
@@ -378,6 +383,7 @@ func capToolOnlyWorkflow() *ir.Workflow {
 // 92% against a 75% cap. The LLM-shaped run must still be refused (asserted
 // in the same test, so a fix that simply disabled the cap fails here).
 func TestUsageCapPreflight_SparesAWorkflowThatCannotCallAModel(t *testing.T) {
+	blankAnthropicWireEnv(t) // the wall is the bare meter's: a pod with no ambient credential
 	ctx := t.Context()
 	caps := usagecap.NewMemStore()
 	if err := caps.Record(ctx, usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, ""),
@@ -461,8 +467,11 @@ func TestUsageCapPreflight_RotatedCredentialIsNotParkedByTheOldAccounts(t *testi
 // The meter key names the credential the run actually spends: the delegate
 // ranks a ctx API key above an OAuth dir, so the fingerprint must follow
 // the same preference, and legacy credentials without fingerprints keep the
-// fingerprint-less key they always had.
+// fingerprint-less key they always had. The pod's ambient channels are
+// blanked first: a machine that exports one must not hand the legacy rows a
+// fingerprint they never carried.
 func TestUsageCapKey_FingerprintFollowsTheSpendingCredential(t *testing.T) {
+	blankAnthropicWireEnv(t)
 	msg := &queue.RunMessage{TenantID: "team-7"}
 
 	both := secrets.WithCredentials(context.Background(), secrets.Credentials{
@@ -546,6 +555,7 @@ func TestUsageCapCredKeys_ReadingFollowsTheSessionSource(t *testing.T) {
 // tenant shapes were probed: both keys held and the anthropic one capped,
 // and an openai-only tenant metered on the platform key.
 func TestUsageCapPreflight_SparesARunPinnedOffTheAnthropicWire(t *testing.T) {
+	blankAnthropicWireEnv(t) // the unpinned-judge rows cap the bare meter: a pod with no ambient credential
 	offWire := func() *ir.Workflow {
 		return &ir.Workflow{
 			Name:  "rite",

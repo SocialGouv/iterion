@@ -144,3 +144,90 @@ func TestSlotOfSource_TheFingerprintedAmbientLabelNamesNoSlot(t *testing.T) {
 		t.Errorf("routeSlot booked the ambient spend on %q — want nobody", got)
 	}
 }
+
+// The NOTHING-HELD default reads the ledger the coming session writes. A run
+// holding no credential spends the pod's ambient one — a supervisor walking
+// the registry's order into "else the pod's ambient env", an unreadable route
+// keeping the run default — and since claw supervisors report no readings,
+// the ambient account's refusal readings are the only evidence that account
+// ever produces. They land on the fingerprinted ambient label (the test above
+// pins the label's meter), so the pre-flight reading the bare no-credential
+// meter would sail past every wall that account ever raises. On the
+// ambient-forfait deployment — supervisor nodes and unreadable routes
+// launching into a walled pod account — that is the whole pre-flight blind.
+func TestTheNothingHeldDefaultReadsTheAmbientLedger(t *testing.T) {
+	blankAnthropicWireEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
+	want := usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, secrets.FingerprintSHA256("sk-pod"))
+
+	// The default-precedence session names the pod's account, and the label
+	// it stamps keys on THAT meter — the one the pre-flight must read.
+	label, refused := delegate.AnthropicRouteSource(secrets.WithCredentials(context.Background(), secrets.Credentials{}), "")
+	if refused {
+		t.Fatal("the hintless default refused — the pod's ambient key is spendable on an unstamped run")
+	}
+	if _, ok := delegate.AmbientSourceFingerprint(label); !ok {
+		t.Fatalf("the default-precedence session stamps %q, which names no ambient account", label)
+	}
+
+	// Tenant B holds nothing: its supervisor and its unreadable routes spend
+	// the pod's env, and their pre-flight reads the account's own meter.
+	ctxB := secrets.WithCredentials(context.Background(), secrets.Credentials{})
+	keysB := usageCapCredKeys(ctxB, &queue.RunMessage{TenantID: "team-b"})
+	if got := keysB.defaultKey(); got != want {
+		t.Errorf("the nothing-held run default = %q, want the pod account's meter %q", got, want)
+	}
+	route := model.WireRoute{NodeID: "n1", Backend: delegate.BackendClaudeCode, Readable: false}
+	if key, metered := keysB.routeKey(ctxB, route); !metered || key != want {
+		t.Errorf("the unreadable route = %q metered=%v, want %q — it keeps the run default, and the default spends the pod's env", key, metered, want)
+	}
+	supKey, metered := keysB.supervisorKey(ctxB, "anthropic/claude-sonnet-4")
+	if !metered || supKey != want {
+		t.Errorf("the supervisor = %q metered=%v, want %q — its own doc spends the pod's ambient env when nothing is held", supKey, metered, want)
+	}
+
+	// End to end across tenants: the wall tenant A measured on the ambient
+	// account parks tenant B's supervisor, which spends the same account.
+	store := usagecap.NewMemStore()
+	ctxA := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:      map[secrets.Provider]string{secrets.ProviderZAI: "zai-team-a"},
+		Fingerprints: map[string]string{string(secrets.ProviderZAI): "fp-zai-a"},
+	})
+	if err := store.Record(context.Background(), usageCapCredKeys(ctxA, &queue.RunMessage{TenantID: "team-a"}).forSource(label), usagecap.Reading{
+		Window:      usagecap.WindowFiveHour,
+		Utilization: 1,
+		Status:      usagecap.StatusRejected,
+		ObservedAt:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	readings, err := store.Latest(context.Background(), supKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pol := usagecap.Policy{FiveHour: usagecap.WindowPolicy{MaxPercent: 80, Mode: usagecap.ModeSoft}}
+	if d := usagecap.Preflight(readings, pol, time.Now().UTC(), usagecap.DefaultTrust()); !d.Blocked {
+		t.Fatalf("tenant B's supervisor pre-flight read %d readings and did not block — the ambient wall it would spend past reached no meter it reads", len(readings))
+	}
+}
+
+// The veto and the bare pod: a STAMPED run answers every ambient fallback
+// with a typed refusal — its nothing-held default spends nothing of the pod's
+// and stays on the no-credential meter — and a pod with no ambient credential
+// has no account to read, so its meter stays bare too.
+func TestTheNothingHeldDefaultKeepsTheBareMeterWithoutAnAmbientSpend(t *testing.T) {
+	blankAnthropicWireEnv(t)
+	bare := usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, "")
+	msg := &queue.RunMessage{TenantID: "team-b"}
+
+	stamped := usageCapCredKeys(secrets.WithCredentials(context.Background(), secrets.Credentials{AmbientRefused: true}), msg)
+	key, metered := stamped.supervisorKey(context.Background(), "anthropic/claude-sonnet-4")
+	if !metered || key != bare {
+		t.Errorf("a stamped run's supervisor = %q metered=%v, want the bare %q — the run refuses the pod env, so its default spends nothing of it", key, metered, bare)
+	}
+
+	keys := usageCapCredKeys(secrets.WithCredentials(context.Background(), secrets.Credentials{}), msg)
+	if got := keys.defaultKey(); got != bare {
+		t.Errorf("a pod with no ambient credential = %q, want the bare %q — no inherited account names the spend", got, bare)
+	}
+}

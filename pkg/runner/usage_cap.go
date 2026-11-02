@@ -74,6 +74,15 @@ type runCredKeys struct {
 	// struct's scope exists to prevent. So the owner's scope travels with the
 	// slot instead of being re-derived from the run.
 	pinnedScopes map[string]string
+	// ambientFP is the fingerprint of the credential the pod inherits, read
+	// host-side once (delegate.AmbientCredentialFingerprint). "" when the pod
+	// carries none — its "Not logged in" a refusal — a cloud-provider switch
+	// answers instead, or the run refuses the pod env (the stamp: every
+	// ambient fallback answers a typed refusal, so the run's nothing-held
+	// default spends nothing of the pod's). It is the meter key of the
+	// nothing-held default, not a slot of the run: no label of the run
+	// resolves to it, only a session with no credential of its own spends it.
+	ambientFP string
 }
 
 // scopeFor returns the meter scope a reading on this slot belongs to: the
@@ -125,6 +134,13 @@ func (k runCredKeys) bySlot(slot string) string {
 func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 	k := runCredKeys{scope: usagecap.ScopePlatform}
 	creds, ok := secrets.CredentialsFromContext(ctx)
+	// The pod's ambient credential exists whether or not the run carries a
+	// bundle, and a stamped run refuses it: its nothing-held default stays on
+	// the no-credential meter. Read host-side, once, beside the bundle's own
+	// facts.
+	if !ok || !creds.AmbientRefused {
+		k.ambientFP = delegate.AmbientCredentialFingerprint()
+	}
 	if !ok {
 		return k
 	}
@@ -304,11 +320,11 @@ func (k runCredKeys) keyForSlot(slot string) string {
 // metered; other backends route on the spec, as the spend ledger books them
 // (credentialSlotForRoute) — opencode, which books on nobody, on the pod's
 // ambient meter. A slot off the anthropic wire is not what the cap meters. A
-// route the walk cannot read keeps the run's default credential — what the
-// pre-flight read before it read routes.
+// route the walk cannot read keeps the run's default credential — defaultKey,
+// the ledger the coming session writes.
 func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key string, metered bool) {
 	if !route.Readable {
-		return k.forSource(""), true
+		return k.defaultKey(), true
 	}
 	hint := model.RouteProviderHint(ctx, route.Backend, route.Hint, route.Model)
 	if route.Backend == delegate.BackendClaudeCode {
@@ -337,6 +353,9 @@ func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key s
 	if slot != "" && secrets.WireFamily(slot) != secrets.WireFamilyAnthropic {
 		return "", false
 	}
+	if slot == "" {
+		return k.nothingHeldKey(), true
+	}
 	return k.keyForSlot(slot), true
 }
 
@@ -359,11 +378,38 @@ func (k runCredKeys) firstHeld() (fp, slot string) {
 	return "", ""
 }
 
+// defaultKey is the meter key the pre-flight reads for a spend it cannot
+// attribute to a route: the run's default credential when the bundle holds
+// one (forSource's "" answer), and when it holds none, the ledger the coming
+// session writes — the pod's ambient account's meter where the pod carries
+// the credential (nothingHeldKey), the bare no-credential meter where it does
+// not. Keying the nothing-held arm on the bare meter would read a ledger no
+// ambient wall ever lands on: the account's refusals travel under its
+// fingerprinted label, and a claw supervisor reports no readings of its own.
+func (k runCredKeys) defaultKey() string {
+	if _, slot := k.firstHeld(); slot != "" {
+		return k.keyForSlot(slot)
+	}
+	return k.nothingHeldKey()
+}
+
+// nothingHeldKey is the meter key of a session with no credential of the run:
+// the pod's ambient account's meter where the pod carries the credential —
+// the same platform-scope key the account's fp'd ambient labels key on — and
+// the scope's no-credential meter otherwise ("Not logged in" refusals, a
+// cloud-provider switch's spend, a stamped run's refused fallbacks).
+func (k runCredKeys) nothingHeldKey() string {
+	if k.ambientFP != "" {
+		return usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, k.ambientFP)
+	}
+	return k.keyForSlot("")
+}
+
 // usageCapKey is the run's DEFAULT credential key — the one a session with no
 // source label is charged to, and what the pre-flight reads for a route it
 // cannot read (runCredKeys.routeKey).
 func usageCapKey(ctx context.Context, msg *queue.RunMessage) string {
-	return usageCapCredKeys(ctx, msg).forSource("")
+	return usageCapCredKeys(ctx, msg).defaultKey()
 }
 
 // usageGuardFor builds the guard for one run: the machine-wide policy
@@ -842,8 +888,11 @@ func supervisorRouteID(name string, i int) string {
 // the route, else the Claude forfait while the claw factory takes it (not under
 // ITERION_FORBID_SUBSCRIPTION_OAUTH, not behind a non-Anthropic
 // ANTHROPIC_BASE_URL — anthropicFromCtxForfait), else the pod's ambient env —
-// a GLM id there the z.ai key first; `zai/…` and `moonshot/…` that provider's
-// key, else the ambient env. A spec the registry cannot parse spends nothing;
+// keyed on that env's own meter (nothingHeldKey, the account's fingerprinted
+// label), since a claw supervisor reports no readings of its own and the
+// account's refusals are the only evidence it produces; a GLM id there the
+// z.ai key first; `zai/…` and `moonshot/…` that provider's key, else the
+// ambient env the same way. A spec the registry cannot parse spends nothing;
 // any other provider is off the wire the cap meters.
 func (k runCredKeys) supervisorKey(ctx context.Context, spec string) (key string, metered bool) {
 	// Read as the registry reads it: untrimmed, case-sensitive.
@@ -874,6 +923,12 @@ func (k runCredKeys) supervisorKey(ctx context.Context, spec string) (key string
 		slot = heldForRoute(creds, provider)
 	default:
 		return "", false
+	}
+	if slot == "" {
+		// Nothing the run holds funds this spec: the registry walks on into
+		// the pod's ambient env, and that env's own meter is where the
+		// account's evidence lives (nothingHeldKey).
+		return k.nothingHeldKey(), true
 	}
 	return k.keyForSlot(slot), true
 }

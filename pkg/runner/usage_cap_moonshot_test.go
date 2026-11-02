@@ -483,6 +483,7 @@ func TestCredentialSlotForRoute_AClawOpenAIRouteIsBookedWhereClawSpent(t *testin
 // pre-flight read — and the pinned key keeps its owner's. A run holding pinned
 // keys alone takes its scope from them.
 func TestUsageCapCredKeys_APinnedKeyDoesNotScopeTheDefaultCredential(t *testing.T) {
+	blankAnthropicWireEnv(t) // pinned keys alone hold the default: a pod with no ambient credential
 	msg := &queue.RunMessage{TenantID: "team-7", OrgID: "org-1"}
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		PinnedAPIKeys:        map[secrets.Provider]string{secrets.ProviderZAI: "org-zai"},

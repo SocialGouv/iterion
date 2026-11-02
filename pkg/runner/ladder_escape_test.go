@@ -66,6 +66,7 @@ func TestLadderEscapes(t *testing.T) {
 // OPERATOR rescue stays excluded: the pre-flight's rescue carve-out is
 // about operator routes, not about the policy's spend plan.
 func TestUsageCapPreflight_PolicyLadderEscapesThePark(t *testing.T) {
+	blankAnthropicWireEnv(t) // the wall is the bare meter's: a pod with no ambient credential
 	ctx := t.Context()
 	caps := usagecap.NewMemStore()
 	key := usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, "")
