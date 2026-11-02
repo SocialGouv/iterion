@@ -74,6 +74,7 @@ var serialFamily = map[string]string{
 	"claw_stream_belt_test.go":                 "Setenv",
 	"claw_stream_watchdog_crossing_test.go":    "Setenv",
 	"claw_drain_bound_override_test.go":        "Setenv",
+	"envsource_process_test.go":                "Setenv",
 	"claw_envfwd_empty_endpoint_test.go":       "Setenv",
 	"claw_envfwd_gateway_catalog_test.go":      "Setenv",
 	"claw_gateway_structured_output_test.go":   "Setenv",

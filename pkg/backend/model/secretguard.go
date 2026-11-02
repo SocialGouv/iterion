@@ -3,7 +3,6 @@ package model
 import (
 	"context"
 	"net/url"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,12 +33,13 @@ import (
 // ancestors instead (a resume, a sub-bot child, a fork), any number per name:
 // registered for redaction only, never a value a declared secret resolves to.
 //
-// Returns nil when redaction is disabled via ITERION_SECRETS_REDACT=off,
-// in which case every guard method is a no-op. Otherwise returns a
-// non-nil guard even with zero known values, so the heuristic detector
-// pass still scrubs unknown token shapes from the run's sinks.
+// Returns nil only when the guard would have nothing to do at all: no
+// known values, no secret-file hints, and the heuristic pass off.
+// ITERION_SECRETS_REDACT=off disables SINK redaction (known + heuristic),
+// never the Layer 1 mirror — with known secrets present the guard stays
+// non-nil and Materialize keeps answering (docs/secrets.md).
 func BuildSecretGuard(ctx context.Context, wf *ir.Workflow, vars map[string]string, recorded map[string][]string) *secretguard.Guard {
-	cfg := secretGuardConfigFromEnv()
+	cfg := secretGuardConfigFromEnv(ctx)
 
 	var known []secretguard.Secret
 
@@ -63,7 +63,7 @@ func BuildSecretGuard(ctx context.Context, wf *ir.Workflow, vars map[string]stri
 
 	// 2. Sensitive host env vars (local runs, where keys come from the
 	//    environment rather than an injected bundle).
-	for _, raw := range os.Environ() {
+	for _, raw := range envEnviron(ctx) {
 		eq := strings.IndexByte(raw, '=')
 		if eq <= 0 {
 			continue
@@ -312,37 +312,38 @@ func resolveSecretValue(expr string, vars map[string]string) string {
 }
 
 // secretGuardConfigFromEnv resolves the guard's tunables from the
-// environment, falling back to the production defaults.
-func secretGuardConfigFromEnv() secretguard.Config {
+// environment the context carries (the env seam, #2808), falling back to
+// the production defaults.
+func secretGuardConfigFromEnv(ctx context.Context) secretguard.Config {
 	cfg := secretguard.DefaultConfig()
 	// Master kill-switch: disable all sink redaction (known + heuristic)
 	// while leaving placeholder materialisation intact.
-	if !envFlagEnabled("ITERION_SECRETS_REDACT", true) {
+	if !envFlagEnabled(ctx, "ITERION_SECRETS_REDACT", true) {
 		cfg.RedactKnown = false
 		cfg.Heuristic = false
 	}
-	if !envFlagEnabled("ITERION_SECRETS_REDACT_HEURISTIC", true) {
+	if !envFlagEnabled(ctx, "ITERION_SECRETS_REDACT_HEURISTIC", true) {
 		cfg.Heuristic = false
 	}
-	if !envFlagEnabled("ITERION_SECRETS_REDACT_DECODE", true) {
+	if !envFlagEnabled(ctx, "ITERION_SECRETS_REDACT_DECODE", true) {
 		cfg.RecurseDecode = false
 	}
-	if v := strings.TrimSpace(os.Getenv("ITERION_SECRETS_REDACT_MIN_SCORE")); v != "" {
+	if v := strings.TrimSpace(envGetenv(ctx, "ITERION_SECRETS_REDACT_MIN_SCORE")); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
 			cfg.MinScore = f
 		}
 	}
-	if !envFlagEnabled("ITERION_SECRETS_PLACEHOLDERS", true) {
+	if !envFlagEnabled(ctx, "ITERION_SECRETS_PLACEHOLDERS", true) {
 		cfg.Placeholders = false
 	}
 	return cfg
 }
 
-// envFlagEnabled reads a boolean-ish env var. Recognised falsey values
-// are "0", "false", "off", "no" (case-insensitive); anything else
-// (including unset) returns def.
-func envFlagEnabled(name string, def bool) bool {
-	v := strings.TrimSpace(strings.ToLower(os.Getenv(name)))
+// envFlagEnabled reads a boolean-ish env var through the seam. Recognised
+// falsey values are "0", "false", "off", "no" (case-insensitive); anything
+// else (including unset) returns def.
+func envFlagEnabled(ctx context.Context, name string, def bool) bool {
+	v := strings.TrimSpace(strings.ToLower(envGetenv(ctx, name)))
 	if v == "" {
 		return def
 	}

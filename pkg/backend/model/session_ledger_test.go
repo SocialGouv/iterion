@@ -212,7 +212,7 @@ func TestEveryClaudeTaskCarriesTheSecretRedactor(t *testing.T) {
 func TestEveryClaudeTaskUnmaterialisesWithTheSinkSwitchOff(t *testing.T) {
 	const secret = "sk-live-4f9a8b7c6d5e3a2b1c0d"
 	t.Setenv("ITERION_SECRETS_REDACT", "off")
-	guard := secretguard.New([]secretguard.Secret{{Name: "api_key", Value: secret}}, secretGuardConfigFromEnv())
+	guard := secretguard.New([]secretguard.Secret{{Name: "api_key", Value: secret}}, secretGuardConfigFromEnv(context.Background()))
 	check := func(t *testing.T, tasks []delegate.Task) {
 		t.Helper()
 		if len(tasks) != 1 || tasks[0].UnmaterializeSecrets == nil {

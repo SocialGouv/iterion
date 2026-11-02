@@ -170,7 +170,7 @@ var dynamicEnvReads = map[[2]string]string{
 // envEnumerations: functions that hand the whole environment on, and read
 // no knob from it.
 var envEnumerations = map[string]string{
-	"BuildSecretGuard":                      whySinkGuard + ": every value in the env is a secret candidate",
+	"envEnviron":                            whySinkGuard + ": the env seam's whole-env read (#2808) hands the context-carried environment (the process's by default) to the package's whole-env readers — BuildSecretGuard, for which every value in the env is a secret candidate",
 	"(*ClawExecutor).toolNodeCommand":       whyHostTool,
 	"(*ClawExecutor).toolNodeScriptCommand": whyHostTool,
 	"runCommandHook":                        "a settings hook's command inherits the env of the process that runs it — in a container, the runner's own, which is the point",
