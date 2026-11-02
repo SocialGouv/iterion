@@ -14,6 +14,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
@@ -94,9 +95,11 @@ func deleteTeamSecret(srv *Server, secretID, team string) *httptest.ResponseReco
 	return w
 }
 
-// sweptSurfaces waits for the delete's audit line and returns the
-// pins_cleared list it carries — best-effort and detached, so the poll is
-// how a test reads it at all.
+// sweptSurfaces waits for a delete's audit line that carries pins_cleared
+// and returns the list — best-effort and detached, so the poll is how a
+// test reads it at all. Events without the list (a delete whose sweep
+// failed and reported nothing cleared) are skipped: the caller wants a
+// receipt, not the first line with the action.
 func sweptSurfaces(t *testing.T, auditStore *audit.MemoryStore, tenant, action string) []string {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -110,6 +113,9 @@ func sweptSurfaces(t *testing.T, auditStore *audit.MemoryStore, tenant, action s
 				continue
 			}
 			cleared, _ := e.Meta["pins_cleared"].([]string)
+			if len(cleared) == 0 {
+				continue
+			}
 			return cleared
 		}
 		if time.Now().After(deadline) {
@@ -227,16 +233,16 @@ func TestDeleteGenericSecret_SweepsThePinsThatNameIt(t *testing.T) {
 	}
 }
 
-// failingPinSweep breaks ONLY the targeted write: the list succeeds, the
-// clear cannot. The delete must answer an explicit half-done receipt —
-// the key row is gone (revocation is the irreversible half and happened
-// first) while the un-swept pin stays and the operator is told so.
+// failingPinSweep breaks ONLY the clear: the list succeeds, the removal
+// cannot. The delete must answer an explicit half-done receipt — the key
+// row is gone (revocation is the irreversible half and happened first)
+// while the un-swept pin stays and the operator is told so.
 type failingPinSweep struct {
 	webhooks.ConfigStore
 }
 
-func (f failingPinSweep) SetCredentialPins(ctx context.Context, id string, keyOverrides, secretOverrides map[string]string) error {
-	return fmt.Errorf("sweep store down: %w", errors.New("write refused"))
+func (f failingPinSweep) ClearCredentialPins(ctx context.Context, id, recordID string) (bool, error) {
+	return false, fmt.Errorf("sweep store down: %w", errors.New("write refused"))
 }
 
 func TestDeleteApiKey_AFailedSweepIsAHalfDoneReceipt(t *testing.T) {
@@ -267,5 +273,278 @@ func TestDeleteApiKey_AFailedSweepIsAHalfDoneReceipt(t *testing.T) {
 	}
 	if wh1.KeyOverrides["anthropic"] != dead.ID {
 		t.Fatalf("the un-swept pin vanished from the store — the receipt must describe the state that IS: %v", wh1.KeyOverrides)
+	}
+}
+
+// TestDeleteApiKey_RetryFinishesAnInterruptedSweep is the reconciliation
+// witness: the row is already gone when the sweep fails, so a bare retry
+// would answer 404 before any sweep ran and the dead pin would seal the
+// team's default forever. The retry must finish the sweep — clearing the
+// pin, receipting the audit line — and STILL answer 404: the deletion did
+// happen. Muting the 404-path sweep (the mutant) leaves the pin standing
+// behind the 404 and this red.
+func TestDeleteApiKey_RetryFinishesAnInterruptedSweep(t *testing.T) {
+	srv, spy, _, auditStore := newPinSweepServer(t)
+	dead := seedSweepKey(t, spy, "team-a", "key-dead", secrets.ProviderAnthropic)
+	mem := webhooks.NewMemoryConfigStore()
+	seedSweepWebhook(t, mem, webhooks.Config{ID: "wh-1", TenantID: "team-a",
+		KeyOverrides: map[string]string{"anthropic": dead.ID}})
+	srv.webhookConfigs = failingPinSweep{ConfigStore: mem}
+
+	if w := deleteTeamKey(srv, dead.ID, "team-a"); w.Code != http.StatusInternalServerError {
+		t.Fatalf("delete with a broken sweep = %d body=%s, want 500", w.Code, w.Body.String())
+	}
+	if _, err := spy.Get(store.WithTenant(context.Background(), "team-a"), dead.ID); !errors.Is(err, secrets.ErrApiKeyNotFound) {
+		t.Fatalf("the key survived the failed sweep (%v)", err)
+	}
+
+	// The store is healthy again — the very situation of a retry.
+	srv.webhookConfigs = mem
+	if w := deleteTeamKey(srv, dead.ID, "team-a"); w.Code != http.StatusNotFound {
+		t.Fatalf("retry = %d body=%s, want 404 — the row is gone, a success receipt would claim a deletion that did not happen", w.Code, w.Body.String())
+	}
+	wh1, err := mem.Get(context.Background(), "wh-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wh1.KeyOverrides) != 0 {
+		t.Fatalf("the retry answered 404 over a standing pin: %v — the retry must finish the interrupted sweep", wh1.KeyOverrides)
+	}
+	if cleared := sweptSurfaces(t, auditStore, "team-a", "byok.deleted"); len(cleared) != 1 || cleared[0] != "webhook wh-1" {
+		t.Fatalf("the heal's audit receipt = %v, want [webhook wh-1]", cleared)
+	}
+}
+
+// TestDeleteGenericSecret_RetryFinishesAnInterruptedSweep is the secret
+// twin of the reconciliation witness: same shape, its own 404 branch — a
+// gate proven on one branch says nothing about its sibling.
+func TestDeleteGenericSecret_RetryFinishesAnInterruptedSweep(t *testing.T) {
+	srv, _, _, auditStore := newPinSweepServer(t)
+	if err := srv.genericSecrets.Create(store.WithTenant(t.Context(), "team-a"), secrets.GenericSecret{
+		ID: "sec-1", ScopeTeamID: "team-a", Name: "FORGE_TOKEN", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mem := webhooks.NewMemoryConfigStore()
+	seedSweepWebhook(t, mem, webhooks.Config{ID: "wh-1", TenantID: "team-a",
+		SecretOverrides: map[string]string{"forge_token": "sec-1"}})
+	srv.webhookConfigs = failingPinSweep{ConfigStore: mem}
+
+	if w := deleteTeamSecret(srv, "sec-1", "team-a"); w.Code != http.StatusInternalServerError {
+		t.Fatalf("delete with a broken sweep = %d body=%s, want 500", w.Code, w.Body.String())
+	}
+
+	srv.webhookConfigs = mem
+	if w := deleteTeamSecret(srv, "sec-1", "team-a"); w.Code != http.StatusNotFound {
+		t.Fatalf("retry = %d body=%s, want 404 — the row is gone, a success receipt would claim a deletion that did not happen", w.Code, w.Body.String())
+	}
+	wh1, err := mem.Get(context.Background(), "wh-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wh1.SecretOverrides) != 0 {
+		t.Fatalf("the retry answered 404 over a standing pin: %v — the retry must finish the interrupted sweep", wh1.SecretOverrides)
+	}
+	if cleared := sweptSurfaces(t, auditStore, "team-a", "secret.deleted"); len(cleared) != 1 || cleared[0] != "webhook wh-1" {
+		t.Fatalf("the heal's audit receipt = %v, want [webhook wh-1]", cleared)
+	}
+}
+
+// TestDeleteApiKey_TheHealDemandsTheTenantRight: the 404 path has no row to
+// read a scope from, so the heal gates on the tenant itself — and it must
+// demand the same right the delete demands for a team-scoped record
+// (canManageTeam), never sweep because a path spelled a tenant. A caller
+// without the grant gets the bare 404 and the pin stands.
+func TestDeleteApiKey_TheHealDemandsTheTenantRight(t *testing.T) {
+	srv, spy, _, _ := newPinSweepServer(t)
+	dead := seedSweepKey(t, spy, "team-a", "key-dead", secrets.ProviderAnthropic)
+	mem := webhooks.NewMemoryConfigStore()
+	seedSweepWebhook(t, mem, webhooks.Config{ID: "wh-1", TenantID: "team-a",
+		KeyOverrides: map[string]string{"anthropic": dead.ID}})
+	srv.webhookConfigs = failingPinSweep{ConfigStore: mem}
+	if w := deleteTeamKey(srv, dead.ID, "team-a"); w.Code != http.StatusInternalServerError {
+		t.Fatalf("delete with a broken sweep = %d body=%s, want 500", w.Code, w.Body.String())
+	}
+
+	// The retrying caller holds no grant over team-a: not a super-admin,
+	// and the identity store answers every read with not-found.
+	authSvc := &auth.Service{}
+	authSvc.SetStoreForTest(noGrantIdentityStore{})
+	srv.authSvc = authSvc
+	srv.webhookConfigs = mem
+
+	r := httptest.NewRequest(http.MethodDelete, "/api/teams/team-a/api-keys/"+dead.ID, nil)
+	r.SetPathValue("id", "team-a")
+	r.SetPathValue("key_id", dead.ID)
+	ctx := auth.WithIdentity(r.Context(), auth.Identity{UserID: "u9", TeamID: "team-a"})
+	r = r.WithContext(store.WithTenant(ctx, "team-a"))
+	w := httptest.NewRecorder()
+	srv.handleDeleteApiKey(w, r)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("unauthorized retry = %d body=%s, want 404", w.Code, w.Body.String())
+	}
+	wh1, err := mem.Get(context.Background(), "wh-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wh1.KeyOverrides["anthropic"] != dead.ID {
+		t.Fatalf("an unauthorized retry swept the team's pins: %v — the heal must demand the right the delete itself demands", wh1.KeyOverrides)
+	}
+}
+
+// ctxCheckingPinSweep refuses to list under a dead context — the shape of a
+// real store (the Mongo driver checks ctx), which a memory store cannot
+// witness. The sweep the route runs must outlive the request: a client
+// hanging up mid-sweep must not cancel the clear half-way and leave the
+// dead pin standing with nobody watching. Passing the request context
+// through (the mutant) fails the list under the canceled context and this
+// red.
+type ctxCheckingPinSweep struct {
+	webhooks.ConfigStore
+}
+
+func (c ctxCheckingPinSweep) ListByTenant(ctx context.Context, tenantID string) ([]webhooks.Config, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("list under a dead context: %w", err)
+	}
+	return c.ConfigStore.ListByTenant(ctx, tenantID)
+}
+
+func TestDeleteApiKey_TheSweepOutlivesADisconnectedClient(t *testing.T) {
+	srv, spy, _, _ := newPinSweepServer(t)
+	dead := seedSweepKey(t, spy, "team-a", "key-dead", secrets.ProviderAnthropic)
+	mem := webhooks.NewMemoryConfigStore()
+	seedSweepWebhook(t, mem, webhooks.Config{ID: "wh-1", TenantID: "team-a",
+		KeyOverrides: map[string]string{"anthropic": dead.ID}})
+	srv.webhookConfigs = ctxCheckingPinSweep{ConfigStore: mem}
+
+	r := httptest.NewRequest(http.MethodDelete, "/api/teams/team-a/api-keys/"+dead.ID, nil)
+	r.SetPathValue("id", "team-a")
+	r.SetPathValue("key_id", dead.ID)
+	ctx, cancel := context.WithCancel(auth.WithIdentity(r.Context(), auth.Identity{UserID: "u1", IsSuperAdmin: true, TeamID: "team-a"}))
+	defer cancel()
+	r = r.WithContext(store.WithTenant(ctx, "team-a"))
+	cancel() // the client hung up before the delete even ran
+
+	w := httptest.NewRecorder()
+	srv.handleDeleteApiKey(w, r)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("delete under a hung-up client = %d body=%s, want 204", w.Code, w.Body.String())
+	}
+	wh1, err := mem.Get(context.Background(), "wh-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wh1.KeyOverrides) != 0 {
+		t.Fatalf("the hung-up client left the pin standing: %v — the sweep must not ride the request's context", wh1.KeyOverrides)
+	}
+}
+
+// TestDeleteGenericSecret_TheSweepOutlivesADisconnectedClient is the secret
+// twin of the disconnect witness: same detach, its own route — a guard
+// proven on one route says nothing about its sibling.
+func TestDeleteGenericSecret_TheSweepOutlivesADisconnectedClient(t *testing.T) {
+	srv, _, _, _ := newPinSweepServer(t)
+	if err := srv.genericSecrets.Create(store.WithTenant(t.Context(), "team-a"), secrets.GenericSecret{
+		ID: "sec-1", ScopeTeamID: "team-a", Name: "FORGE_TOKEN", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mem := webhooks.NewMemoryConfigStore()
+	seedSweepWebhook(t, mem, webhooks.Config{ID: "wh-1", TenantID: "team-a",
+		SecretOverrides: map[string]string{"forge_token": "sec-1"}})
+	srv.webhookConfigs = ctxCheckingPinSweep{ConfigStore: mem}
+
+	r := httptest.NewRequest(http.MethodDelete, "/api/teams/team-a/secrets/sec-1", nil)
+	r.SetPathValue("id", "team-a")
+	r.SetPathValue("secret_id", "sec-1")
+	ctx, cancel := context.WithCancel(auth.WithIdentity(r.Context(), auth.Identity{UserID: "u1", IsSuperAdmin: true, TeamID: "team-a"}))
+	defer cancel()
+	r = r.WithContext(store.WithTenant(ctx, "team-a"))
+	cancel()
+
+	w := httptest.NewRecorder()
+	srv.handleDeleteGenericSecret(w, r)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("delete under a hung-up client = %d body=%s, want 204", w.Code, w.Body.String())
+	}
+	wh1, err := mem.Get(context.Background(), "wh-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wh1.SecretOverrides) != 0 {
+		t.Fatalf("the hung-up client left the pin standing: %v — the sweep must not ride the request's context", wh1.SecretOverrides)
+	}
+}
+
+// noGrantIdentityStore answers every read with not-found: the shape of a
+// caller whose only standing is the session itself, wired so the
+// canManageTeam gate reads a refusal instead of a nil store.
+type noGrantIdentityStore struct {
+	identity.Store
+}
+
+func (noGrantIdentityStore) GetMembership(context.Context, string, string) (identity.Membership, error) {
+	return identity.Membership{}, identity.ErrNotFound
+}
+
+func (noGrantIdentityStore) GetTeam(context.Context, string) (identity.Team, error) {
+	return identity.Team{}, identity.ErrNotFound
+}
+
+// landingEditPinSweep performs an operator's pin edit INSIDE the sweep's
+// listing call — the list-to-write window, the exact interleaving the
+// finding names: a listing copy taken before the edit must never become a
+// wholesale rewrite that loses the edit. Without the write-time judgment
+// (the mutant rewrites the row wholesale from the listing copy) the edit
+// vanishes with a 204 and no trace.
+type landingEditPinSweep struct {
+	webhooks.ConfigStore
+	tenant  string
+	landing func(ctx context.Context, s webhooks.ConfigStore)
+}
+
+func (l *landingEditPinSweep) ListByTenant(ctx context.Context, tenantID string) ([]webhooks.Config, error) {
+	rows, err := l.ConfigStore.ListByTenant(ctx, tenantID)
+	if err == nil && tenantID == l.tenant && l.landing != nil {
+		landing := l.landing
+		l.landing = nil
+		landing(ctx, l.ConfigStore)
+	}
+	return rows, err
+}
+
+func TestDeleteApiKey_APinEditLandingMidSweepSurvives(t *testing.T) {
+	srv, spy, _, _ := newPinSweepServer(t)
+	dead := seedSweepKey(t, spy, "team-a", "key-dead", secrets.ProviderAnthropic)
+	mem := webhooks.NewMemoryConfigStore()
+	seedSweepWebhook(t, mem, webhooks.Config{ID: "wh-1", TenantID: "team-a",
+		KeyOverrides:    map[string]string{"anthropic": dead.ID, "openai": "key-alive"},
+		SecretOverrides: map[string]string{"forge_token": "sec-1"}})
+	srv.webhookConfigs = &landingEditPinSweep{ConfigStore: mem, tenant: "team-a",
+		landing: func(ctx context.Context, s webhooks.ConfigStore) {
+			cfg, err := s.Get(ctx, "wh-1")
+			if err != nil {
+				t.Errorf("landing read: %v", err)
+				return
+			}
+			cfg.SecretOverrides["added"] = "sec-added"
+			if err := s.Update(ctx, cfg); err != nil {
+				t.Errorf("landing edit: %v", err)
+			}
+		}}
+
+	if w := deleteTeamKey(srv, dead.ID, "team-a"); w.Code != http.StatusNoContent {
+		t.Fatalf("delete = %d body=%s, want 204", w.Code, w.Body.String())
+	}
+	wh1, err := mem.Get(context.Background(), "wh-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wh1.KeyOverrides) != 1 || wh1.KeyOverrides["openai"] != "key-alive" {
+		t.Fatalf("key_overrides = %v, want the dead pin gone and the live one standing", wh1.KeyOverrides)
+	}
+	if wh1.SecretOverrides["added"] != "sec-added" || wh1.SecretOverrides["forge_token"] != "sec-1" {
+		t.Fatalf("secret_overrides = %v — the sweep rewrote the map from its listing copy and lost the pin edit that landed mid-sweep, an explicit choice gone with a 204 and no trace", wh1.SecretOverrides)
 	}
 }

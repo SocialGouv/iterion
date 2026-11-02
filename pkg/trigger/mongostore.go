@@ -131,37 +131,44 @@ func (s *MongoSubscriptionStore) Delete(ctx context.Context, id string) error {
 	return mongoutil.DeleteOneChecked(ctx, s.coll, bson.M{"_id": id}, ErrSubscriptionNotFound, "trigger: delete subscription")
 }
 
-// SetCredentialPins writes the two pin maps and nothing else — the same
-// targeted-field discipline as MarkLaunchError: $set or $unset per map,
-// never a whole-row replace, so a health stamp landing between the sweep's
-// list and this write survives.
-func (s *MongoSubscriptionStore) SetCredentialPins(ctx context.Context, id string, keyOverrides, secretOverrides map[string]string) error {
-	set, unset := bson.M{}, bson.M{}
-	if len(keyOverrides) > 0 {
-		set["key_overrides"] = keyOverrides
-	} else {
-		unset["key_overrides"] = ""
-	}
-	if len(secretOverrides) > 0 {
-		set["secret_overrides"] = secretOverrides
-	} else {
-		unset["secret_overrides"] = ""
-	}
-	update := bson.M{}
-	if len(set) > 0 {
-		update["$set"] = set
-	}
-	if len(unset) > 0 {
-		update["$unset"] = unset
-	}
-	res, err := s.coll.UpdateOne(ctx, bson.M{"_id": id}, update)
+// ClearCredentialPins removes every pin entry whose value names recordID —
+// the Mongo twin of the memory store's value-scoped drop. The entry names
+// come from a read taken HERE, not from the caller's listing copy, and each
+// removal is one $unset whose filter still matches the dead value, so a
+// health stamp, a pin edit, or a second record's sweep landing in between
+// survives untouched and a swept pin cannot resurrect: no writer can re-pin
+// a deleted record, the write-time validators refuse it. A zero match on an
+// entry means it moved or the row died between the read and this write —
+// the stored state is already the wanted one, so nothing to clear is not a
+// failure. Dotted paths are safe: a pin's map key is a provider name or a
+// workflow secret name — never a dot or a $.
+func (s *MongoSubscriptionStore) ClearCredentialPins(ctx context.Context, id, recordID string) (bool, error) {
+	sub, err := s.Get(ctx, id)
 	if err != nil {
-		return fmt.Errorf("trigger: set subscription credential pins: %w", err)
+		return false, err
 	}
-	if res.MatchedCount == 0 {
-		return ErrSubscriptionNotFound
+	cleared := false
+	for _, field := range []struct {
+		path string
+		pins map[string]string
+	}{
+		{"key_overrides", sub.KeyOverrides},
+		{"secret_overrides", sub.SecretOverrides},
+	} {
+		for name, val := range field.pins {
+			if val != recordID {
+				continue
+			}
+			res, err := s.coll.UpdateOne(ctx,
+				bson.M{"_id": id, field.path + "." + name: recordID},
+				bson.M{"$unset": bson.M{field.path + "." + name: ""}})
+			if err != nil {
+				return false, fmt.Errorf("trigger: clear subscription credential pins: %w", err)
+			}
+			cleared = cleared || res.MatchedCount > 0
+		}
 	}
-	return nil
+	return cleared, nil
 }
 
 func (s *MongoSubscriptionStore) ListByTenant(ctx context.Context, tenantID string) ([]Subscription, error) {

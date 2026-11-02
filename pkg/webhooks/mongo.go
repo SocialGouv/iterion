@@ -138,40 +138,46 @@ func (s *MongoConfigStore) DisableProvision(ctx context.Context, id, integration
 	return nil
 }
 
-// SetCredentialPins writes the two pin maps and nothing else — the Mongo
-// twin of DisableProvision's targeted write: $set or $unset per map, plus a
-// version bump so a pre-sweep snapshot fails its fence and re-reads rather
-// than writing the swept pin back.
-func (s *MongoConfigStore) SetCredentialPins(ctx context.Context, id string, keyOverrides, secretOverrides map[string]string) error {
-	set, unset := bson.M{}, bson.M{}
-	if len(keyOverrides) > 0 {
-		set["key_overrides"] = keyOverrides
-	} else {
-		unset["key_overrides"] = ""
-	}
-	if len(secretOverrides) > 0 {
-		set["secret_overrides"] = secretOverrides
-	} else {
-		unset["secret_overrides"] = ""
-	}
-	update := bson.M{"$inc": bson.M{"version": 1}}
-	if len(set) > 0 {
-		update["$set"] = set
-	}
-	if len(unset) > 0 {
-		update["$unset"] = unset
-	}
-	r, err := s.kit.Coll().UpdateOne(ctx, bson.M{"_id": id}, update)
+// ClearCredentialPins removes every pin entry whose value names recordID —
+// the Mongo twin of the memory store's value-scoped drop. The entry names
+// come from a read taken HERE, not from the caller's listing copy, and each
+// removal is one $unset whose filter still matches the dead value, so a pin
+// edit or a second record's sweep landing in between survives untouched and
+// a swept pin cannot resurrect: no writer can re-pin a deleted record, the
+// write-time validators refuse it. Each real removal bumps version, so an
+// editor holding a pre-sweep snapshot conflicts and re-reads instead of
+// writing the swept pin back. Dotted paths are safe: a pin's map key is a
+// provider name or a workflow secret name — never a dot or a $.
+func (s *MongoConfigStore) ClearCredentialPins(ctx context.Context, id, recordID string) (bool, error) {
+	cfg, err := s.Get(ctx, id)
 	if err != nil {
-		return fmt.Errorf("webhooks: set config credential pins: %w", err)
+		return false, err
 	}
-	if r.MatchedCount == 0 {
-		if _, err := s.Get(ctx, id); err != nil {
-			return err
+	cleared := false
+	for _, field := range []struct {
+		path string
+		pins map[string]string
+	}{
+		{"key_overrides", cfg.KeyOverrides},
+		{"secret_overrides", cfg.SecretOverrides},
+	} {
+		for name, val := range field.pins {
+			if val != recordID {
+				continue
+			}
+			r, err := s.kit.Coll().UpdateOne(ctx,
+				bson.M{"_id": id, field.path + "." + name: recordID},
+				bson.M{"$unset": bson.M{field.path + "." + name: ""}, "$inc": bson.M{"version": 1}})
+			if err != nil {
+				return false, fmt.Errorf("webhooks: clear config credential pins: %w", err)
+			}
+			// A zero match means the entry moved or the row died between the
+			// read and this write — the stored state is already the wanted
+			// one, so nothing to clear is not a failure.
+			cleared = cleared || r.MatchedCount > 0
 		}
-		return ErrConflict
 	}
-	return nil
+	return cleared, nil
 }
 
 func (s *MongoConfigStore) Delete(ctx context.Context, id string) error {

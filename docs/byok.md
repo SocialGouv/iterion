@@ -453,9 +453,17 @@ a pin that resolves to nothing (the resolver drops an unresolvable pin id
 in silence and the walk seals the team's default, exactly the replacement
 the write-time guards refuse). Revocation never waits on a config edit:
 the delete's audit line lists the `pins_cleared` surfaces, and a launch
-after the sweep falls back exactly as an explicit clear would. A sweep the
+after the sweep falls back exactly as an explicit clear would. The sweep
+judges each row as the store holds it at write time — a pin edit or a
+second delete's sweep landing mid-sweep survives untouched, and a swept
+pin cannot resurrect, because no writer can re-pin a deleted record (the
+write-time guards refuse it). The sweep runs detached from the request: a
+client hanging up mid-sweep must not cancel the clear half-way. A sweep the
 store refuses answers 5xx — the client body stays opaque, the logged cause
-names both halves: the deletion that happened and the pins still standing.
+names both halves: the deletion that happened and the pins still standing
+— and the delete's RETRY finishes the sweep before its 404: revocation is
+the irreversible half, so "not found" is exactly the shape of an
+interrupted sweep, and the retry is the reconciliation path.
 
 **A pin is honoured or refused, never ignored.** Two shapes would be
 honoured by nobody: a provider the walk does not spend yet (the

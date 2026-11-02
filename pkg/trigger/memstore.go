@@ -5,6 +5,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/internal/storekit"
 )
 
 // MemorySubscriptionStore is the in-memory SubscriptionStore for tests and
@@ -87,36 +89,23 @@ func (m *MemorySubscriptionStore) MarkRunOutcome(_ context.Context, id, runID, s
 	return nil
 }
 
-// SetCredentialPins replaces the two pin maps and touches nothing else:
-// the health stamps and every other field stay as the store holds them,
-// because the sweep calling this read the row in a list moments ago and a
-// health write landing in between must survive.
-func (m *MemorySubscriptionStore) SetCredentialPins(_ context.Context, id string, keyOverrides, secretOverrides map[string]string) error {
+// ClearCredentialPins judges the row the store holds under the same lock as
+// the write: the caller's listing copy names nothing here, so a health
+// stamp, a pin edit, or a second record's sweep landing after that copy was
+// taken survives untouched.
+func (m *MemorySubscriptionStore) ClearCredentialPins(_ context.Context, id, recordID string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s, ok := m.items[id]
 	if !ok {
-		return ErrSubscriptionNotFound
+		return false, ErrSubscriptionNotFound
 	}
-	setPinMap(&s.KeyOverrides, keyOverrides)
-	setPinMap(&s.SecretOverrides, secretOverrides)
-	m.items[id] = s
-	return nil
-}
-
-// setPinMap stores m as the field's whole value: nil or empty clears it, a
-// non-empty map replaces it wholesale — a partial map would read as the
-// operator keeping pins the caller dropped.
-func setPinMap(dst *map[string]string, m map[string]string) {
-	if len(m) == 0 {
-		*dst = nil
-		return
+	cleared := storekit.DropStringMapValues(&s.KeyOverrides, recordID) ||
+		storekit.DropStringMapValues(&s.SecretOverrides, recordID)
+	if cleared {
+		m.items[id] = s
 	}
-	out := make(map[string]string, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	*dst = out
+	return cleared, nil
 }
 
 func (m *MemorySubscriptionStore) Delete(_ context.Context, id string) error {

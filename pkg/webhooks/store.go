@@ -26,17 +26,20 @@ type ConfigStore interface {
 	// DisableProvision disables one immutable endpoint without replacing policy.
 	// It also works on a frozen migration source; authority must match.
 	DisableProvision(ctx context.Context, id, integrationID string) error
-	// SetCredentialPins replaces ONLY a config's credential pins — the two
-	// machine-lane maps (key_overrides: provider → api key id,
-	// secret_overrides: secret name → secret id). A nil or empty map clears
-	// its field. A TARGETED field write rather than a whole-config
-	// replacement: the credential delete sweep calls it for a config it
-	// only listed, so a read-modify-replace would race an operator's
-	// concurrent edit and lose or resurrect whole settings arms. The write
-	// still bumps version, so an editor holding a pre-sweep snapshot
-	// conflicts and re-reads instead of writing the swept pin back.
-	// ErrNotFound when the config is gone.
-	SetCredentialPins(ctx context.Context, id string, keyOverrides, secretOverrides map[string]string) error
+	// ClearCredentialPins removes, from the config as the store holds it
+	// NOW, every key_overrides / secret_overrides entry whose value names
+	// recordID, reporting whether it removed any. The judgment happens at
+	// write time against the stored row — never against the caller's
+	// listing copy — so a pin edit or a second record's sweep landing
+	// between the caller's list and this clear survives untouched, and a
+	// swept pin cannot resurrect: no writer can re-pin a deleted record,
+	// the write-time validators refuse it. Each real removal bumps
+	// version, so an editor holding a pre-sweep snapshot conflicts and
+	// re-reads instead of writing the swept pin back; a clear that removes
+	// nothing writes nothing and moves no version. ErrNotFound when the
+	// config is gone; a config holding no such entry is a no-op, not an
+	// error.
+	ClearCredentialPins(ctx context.Context, id, recordID string) (bool, error)
 	Delete(ctx context.Context, id string) error
 	ListByTenant(ctx context.Context, tenantID string) ([]Config, error)
 	MarkUsed(ctx context.Context, id string, t time.Time) error
