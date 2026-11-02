@@ -54,9 +54,13 @@ The isolation chain, in the order a run meets it:
    declared supervisors and the session board send content derived from a
    run to a model resolved outside the run's own execution. All three take
    their model registry from one credential channel
-   (`pkg/backend/auxllm.Registry` — the server process env today), so the
+   (`pkg/backend/auxllm.Registry` — the server process env today). The
+   resolver and the session board resolve through plain `Resolve`, so the
    run's own gateway credential, once #2005 PR-C' reopens the sealed bundle
-   server-side, funds them from one place instead of three (#2645). On a run
+   server-side, funds them from that one place (#2645); declared
+   supervisors resolve through `ResolveWithContext` on the run's ctx, whose
+   sealed credentials already fund them where the ctx carries them — the
+   PR-C' change must touch that call site too (`pkg/supervise/bot.go`). On a run
    stamped to a pool they consult the run document's frozen stamp and
    refuse with `ErrPoolContentRefused` (HTTP 403 on the resolver route),
    naming the remedy — unless the surface's model is itself
