@@ -83,6 +83,15 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
 		}
+		// A landing intent the child cannot act on never fires — its own
+		// `worktree: none` declaration, a parent sandbox it would adopt (the
+		// sandbox mounts one tree whatever the child declares), or a store
+		// with no filesystem root: refused here, before any child run is
+		// recorded — the class C329 closes at the parent's compile, one
+		// level down.
+		if err := runtime.RefuseUnlandableSubbotLanding(req, childWf.Worktree, s.Root()); err != nil {
+			return nil, err
+		}
 		childRunID, err := store.GenerateRunID()
 		if err != nil {
 			return nil, err
@@ -186,6 +195,14 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			// The node's `isolated:` assertion: the child keeps a worktree of
 			// its own instead of working in the tree this request lends it.
 			runtime.WithIsolatedChild(req.Isolated),
+			// The node's landing intent: the child's run doc records it at
+			// creation (the same block the resume replay reads), and the
+			// child's own worktree finalization performs the landing. The
+			// in-place shapes are refused above, so a recorded intent always
+			// has a finalization to fire it.
+			runtime.WithAutoMerge(req.AutoMerge),
+			runtime.WithMergeInto(req.MergeInto),
+			runtime.WithMergeStrategy(req.MergeStrategy),
 			// Recursive wiring so a child that itself declares subbot nodes can
 			// run them (grandchild sources resolve relative to the CHILD's
 			// dir); the ctx-carried depth keeps the recursion bounded.

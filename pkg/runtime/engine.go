@@ -369,10 +369,12 @@ type SubbotRequest struct {
 	// intent with FinalBranch empty is dead. Meaningful only on an isolated
 	// child (the compile refuses it elsewhere): a child in the parent's
 	// workspace has no finalization of its own, and the launch refuses the
-	// two shapes that leave the child without a worktree to finalize — a
-	// child whose own workflow renounces it (`worktree: none`) and a
+	// three shapes that leave the child without a worktree to finalize — a
+	// child whose own workflow renounces it (`worktree: none`), a
 	// deployment whose run store has no filesystem root, where every child
-	// runs in place (RefuseUnlandableSubbotLanding).
+	// runs in place, and a parent whose live sandbox the child adopts (the
+	// sandbox mounts one workspace whatever the child declares)
+	// (RefuseUnlandableSubbotLanding).
 	AutoMerge bool
 	// MergeInto / MergeStrategy carry the subbot node's landing target and
 	// strategy ("current" default, "none", or a branch; "squash" default or
@@ -382,27 +384,44 @@ type SubbotRequest struct {
 }
 
 // RefuseUnlandableSubbotLanding refuses a landing intent the child cannot
-// act on. Two shapes are dead the same way. A child whose worktree mode is
+// act on. Three shapes are dead the same way. A child whose worktree mode is
 // anything but the canonical `auto` — the declared `worktree: none`, an
 // unset or foreign value — runs in place: the engine builds a child
 // worktree for `worktree: auto` and nothing else (engine_run's decisive
 // arm), so the guard mirrors that predicate rather than matching the
-// author's vocabulary alone. And on a deployment whose run store has no
+// author's vocabulary alone. On a deployment whose run store has no
 // filesystem root (the cloud plane) every `worktree: auto` child runs in
 // place in its parent's workspace clone too, because there is nowhere
-// durable to host a per-run worktree. Neither plane has a bank for the
-// child either (the bank serves queue-delivered runs only, a child rides
-// its parent's delivery), so the armed intent sits on the run doc with
-// FinalBranch empty and the instance's outcome router declines it before
-// the claim on every sweep, in silence. C329 refuses the same dead intent
-// at the parent's compile for a child without `isolated:`; this closes the
-// hole one level down, which only the child launch sees: the parent's
-// compile never reads the child .bot, and the plane is the host's fact.
-// Both hosts call it right after the child compiles and before any child
-// run is recorded, passing their store's root (empty = the cloud plane).
+// durable to host a per-run worktree. And a child that adopts its parent's
+// live sandbox (ParentSandbox carrying a started Run) runs in place as
+// well, whatever its own workflow declares: the sandbox mounts ONE
+// workspace tree, which overrides `isolated:` (worktree.go's
+// runsInParentWorkspace) — the same decisive arm reads that predicate
+// before it reads the worktree mode, so the guard reads it first too. No
+// shape has a bank for the child either (the bank serves queue-delivered
+// runs only, a child rides its parent's delivery), so the armed intent
+// sits on the run doc with FinalBranch empty and the instance's outcome
+// router declines it before the claim on every sweep, in silence. C329
+// refuses the same dead intent at the parent's compile for a child without
+// `isolated:`; this closes the hole one level down, which only the child
+// launch sees: the parent's compile never reads the child .bot, and the
+// plane is the host's fact. Every child-launch host calls it right after
+// the child compiles and before any child run is recorded, passing its
+// store's root (empty = the cloud plane) — the CLI runner `iterion run`
+// and `iterion resume` share (pkg/cli), the dispatcher daemon's direct
+// engine path (pkg/dispatcher), the studio's in-process runner
+// (pkg/runview) and the queue runner (pkg/runner).
 func RefuseUnlandableSubbotLanding(req SubbotRequest, childWorktreeMode, childStoreRoot string) error {
 	if !req.AutoMerge {
 		return nil
+	}
+	if req.ParentSandbox != nil && req.ParentSandbox.Run != nil {
+		// The parent's live sandbox is shared with this child: it mounts
+		// one workspace tree whatever the child declares, so no worktree
+		// mode gives the child a finalization of its own — refuse before
+		// the child-declaration arms, whose remediation would be false
+		// advice under the shared sandbox.
+		return fmt.Errorf("the parent run's live sandbox is shared with this child — it mounts one workspace whatever the child declares, so the child runs in place in the parent's tree, has no worktree finalization of its own to land from and no bank ever writes a subbot child's branch, so the auto_merge intent would sit on the run doc unfired forever; drop the landing fields — the child's commits reach the forge through the parent run's own landing")
 	}
 	if childWorktreeMode == "none" {
 		return fmt.Errorf("the child workflow declares `worktree: none` — a child without a worktree of its own has no finalization to land from and no bank ever writes a subbot child's branch, so the auto_merge intent would sit on the run doc unfired forever; drop the landing fields, or remove `worktree: none` so the child owns a worktree")

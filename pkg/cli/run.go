@@ -719,6 +719,16 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
 		}
+		// A landing intent the child cannot act on never fires — its own
+		// `worktree: none` declaration, a parent sandbox it would adopt (the
+		// sandbox mounts one tree whatever the child declares), or a store
+		// with no filesystem root: refused here, before any child run is
+		// recorded — the class C329 closes at the parent's compile, one
+		// level down. This runner is what `iterion run` and `iterion resume`
+		// share, so the refusal covers both hosts with one call.
+		if err := runtime.RefuseUnlandableSubbotLanding(req, childWf.Worktree, s.Root()); err != nil {
+			return nil, err
+		}
 		childRunID, err := store.GenerateRunID()
 		if err != nil {
 			return nil, err
@@ -787,6 +797,14 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			// The node's `isolated:` assertion: the child keeps a worktree of
 			// its own instead of working in the tree this request lends it.
 			runtime.WithIsolatedChild(req.Isolated),
+			// The node's landing intent: the child's run doc records it at
+			// creation (the same block the resume replay reads), and the
+			// child's own worktree finalization performs the landing. The
+			// in-place shapes are refused above, so a recorded intent always
+			// has a finalization to fire it.
+			runtime.WithAutoMerge(req.AutoMerge),
+			runtime.WithMergeInto(req.MergeInto),
+			runtime.WithMergeStrategy(req.MergeStrategy),
 			// The child executes in the parent's sandbox when the parent has
 			// one — the same tree, on every driver, on this host as on the
 			// runner and the studio.
