@@ -83,10 +83,11 @@ func TrustUnknown() ActionTrust { return ActionTrust{} }
 // mid-rollout, a hand-edited row) are refused by construction rather than by
 // enumeration.
 //
-// ONE predicate for the two decisions that rest on this single fact — whether a
-// mutating action resolves (mayMutate) and whether the workspace's own
-// connector packages may be BELIEVED about what an operation does
-// (projectTierConsulted). Two copies would let a resolver refuse the mutation
+// ONE predicate for every decision that rests on this single fact — whether a
+// mutating action resolves (mayMutate), whether the workspace's own connector
+// packages may be BELIEVED about what an operation does
+// (projectTierConsulted), and which aliases a resolver may suggest to a run
+// (suggestAlias). Two copies would let a resolver refuse the mutation
 // and still read the effect from the package the reviewed tree declared, which
 // is #2769 exactly: the refusal's predicate is `effect:` as the catalog served
 // it, so the tier that serves and the verdict that reads it cannot answer to
