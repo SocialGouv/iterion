@@ -389,6 +389,13 @@ type RunnerConfig struct {
 	// the run on the DLQ for an operator's resume (issue #481). Fleets with a
 	// slow lame-duck turnover (long DrainTimeout) should raise it.
 	SchemaMismatchDelay time.Duration `yaml:"schema_mismatch_delay"`
+	// DisableStallSelfHeal turns off the runner's stall-onset consumer
+	// recreate: once per frozen-stall episode the runs consumer is
+	// deleted and re-created, and held deliveries a still-executing run
+	// owns redeliver onto the run lock (parking on the DLQ for replay,
+	// never double-executing). Operators who gate that deletion by hand
+	// set this.
+	DisableStallSelfHeal bool `yaml:"disable_stall_self_heal"`
 }
 
 // RolloutConfig is the shared generation fence used by both the cloud

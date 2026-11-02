@@ -1,8 +1,11 @@
 package runner
 
 import (
+	"errors"
 	"testing"
 	"time"
+
+	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 )
 
 // The tracker must trip only after hasWork has held — with the runner
@@ -123,5 +126,27 @@ func TestStallTrackerDefaultWindow(t *testing.T) {
 	tr := stallTracker{}
 	if stalled, _ := tr.observe(true, false, time.Now()); stalled {
 		t.Fatal("default window tripped on the first sample")
+	}
+}
+
+// The self-heal's interlocks, decided purely (revi round 1, Re92388):
+// the off switch, an unreadable posture, and a moved delivery sequence
+// each skip the deletion; only the unchanged frozen posture performs it.
+func TestDecideStallHealArms(t *testing.T) {
+	t.Parallel()
+
+	onset := natsq.Sample{Pending: 3, AckPending: 5, DeliveredConsumerSeq: 42}
+
+	if got := decideStallHeal(true, onset, onset, nil); got != stallHealSkippedDisabled {
+		t.Fatalf("disabled: got %v, want skipped-disabled", got)
+	}
+	if got := decideStallHeal(false, onset, natsq.Sample{}, errors.New("info failed")); got != stallHealSkippedUnreadable {
+		t.Fatalf("unreadable: got %v, want skipped-unreadable", got)
+	}
+	if got := decideStallHeal(false, onset, natsq.Sample{DeliveredConsumerSeq: 43}, nil); got != stallHealSkippedResolved {
+		t.Fatalf("deliveries moved: got %v, want skipped-resolved", got)
+	}
+	if got := decideStallHeal(false, onset, onset, nil); got != stallHealPerformed {
+		t.Fatalf("frozen posture: got %v, want performed", got)
 	}
 }
