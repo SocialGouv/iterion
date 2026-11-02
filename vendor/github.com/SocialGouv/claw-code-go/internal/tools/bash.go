@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/SocialGouv/claw-code-go/internal/api"
 	"github.com/SocialGouv/claw-code-go/internal/permissions"
@@ -26,7 +27,52 @@ const (
 	// the model asking for a longer deadline mid-turn is not.
 	maxBashTimeoutSeconds = 600
 	maxOutputSize         = 10000
+	// defaultBashProcWaitDelay bounds the wait for the output pipes once the
+	// shell itself is gone: a descendant the command left behind (a dev
+	// server, a watcher) keeps the pipes open, and without the bound
+	// cmd.Wait hangs the call for the descendant's whole life. The bound is
+	// also the most the tail of the output gets to arrive after the kill —
+	// the last lines a long-lived descendant writes are lost past it, which
+	// is why the operator override exists (CLAW_PROC_WAIT_DELAY).
+	defaultBashProcWaitDelay = 2 * time.Second
 )
+
+// procWaitDelay resolves the drain bound on one bash call. It reads
+// CLAW_PROC_WAIT_DELAY (a Go duration like "5s", or a bare number of
+// seconds — the same shape bashTimeout reads CLAW_BASH_TIMEOUT); unset or
+// unparsable falls back to defaultBashProcWaitDelay. 0 or negative removes
+// the bound — os/exec arms its drain timer only for a POSITIVE WaitDelay,
+// so a negative is NORMALIZED to 0 here: passed through raw it would fire
+// the timer at once and cut every drain, the exact opposite of the
+// operator's ask (and bashTimeout's negative = unbounded, the shape this
+// mirrors). The off words the engine's ITERION_PROC_WAIT_DELAY reads
+// (off/none/unbounded) are NOT read here — claw's duration-knob idiom
+// (CLAW_BASH_TIMEOUT) is a silent default on garbage, and this knob keeps
+// it. The escape hatch's consequence, named once: a wedged pipe holder
+// then parks cmd.Wait, and the call with it, for as long as the holder
+// lives.
+func procWaitDelay() time.Duration {
+	v := strings.TrimSpace(os.Getenv("CLAW_PROC_WAIT_DELAY"))
+	if v == "" {
+		return defaultBashProcWaitDelay
+	}
+	if d, err := time.ParseDuration(v); err == nil {
+		if d < 0 {
+			return 0
+		}
+		return d
+	}
+	if n, err := strconv.Atoi(v); err == nil {
+		if int64(n) > int64(math.MaxInt64/time.Second) || int64(n) < int64(math.MinInt64/time.Second) {
+			return defaultBashProcWaitDelay
+		}
+		if d := time.Duration(n) * time.Second; d >= 0 {
+			return d
+		}
+		return 0
+	}
+	return defaultBashProcWaitDelay
+}
 
 // bashTimeout resolves the bound on one bash call. It reads CLAW_BASH_TIMEOUT
 // (a Go duration like "15m", or a bare number of seconds); 0 or negative leaves
@@ -237,8 +283,12 @@ func ExecuteBashWithEnv(callerCtx context.Context, input map[string]any, mode pe
 	// Safety net: if a descendant somehow survives the group kill and
 	// keeps stdout/stderr open, Go force-closes the pipes after
 	// WaitDelay so cmd.Wait — and the io.Copy goroutines feeding buf —
-	// unblock instead of hanging the entire runner.
-	cmd.WaitDelay = 2 * time.Second
+	// unblock instead of hanging the entire runner. The operator's dial
+	// is CLAW_PROC_WAIT_DELAY (procWaitDelay): the tail a long-lived
+	// descendant writes past the bound is lost exactly like the
+	// engine's sites (#2469's class), and 2s is not every deployment's
+	// number.
+	cmd.WaitDelay = procWaitDelay()
 
 	var buf bashOutput
 	cmd.Stdout = &buf
@@ -271,6 +321,15 @@ func ExecuteBashWithEnv(callerCtx context.Context, input map[string]any, mode pe
 		}
 		if ctx.Err() == context.Canceled {
 			return output, fmt.Errorf("command cancelled: %w", ctx.Err())
+		}
+		if errors.Is(err, exec.ErrWaitDelay) {
+			// The shell exited SUCCESSFULLY but a descendant kept the
+			// pipes open past the drain bound, so the tail of the output
+			// may be missing. This tool's answer is the bytes, so the
+			// cut stays an error (the DrainCutShort rule of #2469's
+			// engine-side split) — and it names the knob so the operator
+			// can widen the bound instead of guessing.
+			return output, fmt.Errorf("command's output was cut %s after the command itself finished — its tail may be missing (raise the bound with CLAW_PROC_WAIT_DELAY): %w", cmd.WaitDelay, exec.ErrWaitDelay)
 		}
 		// For non-zero exit codes, return output with error appended
 		return output, fmt.Errorf("command exited with error: %v", err)

@@ -83,6 +83,12 @@ type Client struct {
 	// ExtraHeaders are applied last on every request (override wins),
 	// merged over the ANTHROPIC_CUSTOM_HEADERS environment variable.
 	ExtraHeaders map[string]string
+	// NoAmbientHeaders ignores the process environment's identity overrides
+	// (ANTHROPIC_CUSTOM_HEADERS, CLAW_USER_AGENT): only UserAgent and
+	// ExtraHeaders above reach the wire. For endpoints chosen by someone
+	// other than the operator, where ambient headers may carry secrets
+	// meant for the operator's own endpoints.
+	NoAmbientHeaders bool
 }
 
 // NewClient creates a new API client with the given API key and model.
@@ -132,8 +138,8 @@ func (c *Client) StreamResponse(ctx context.Context, req CreateMessageRequest) (
 	// Resolve the client identity once per call (not per retry attempt).
 	// Resolution is lazy — here rather than in NewClient — so callers that
 	// construct a Client directly (bypassing the provider adapters) still
-	// get the identity + env-override behaviour.
-	identity, err := ResolveIdentity(c.UserAgent, DefaultUserAgent(), c.ExtraHeaders)
+	// get the identity + env-override behaviour, NoAmbientHeaders honoured.
+	identity, err := ResolveIdentityFlagged(c.NoAmbientHeaders, c.UserAgent, DefaultUserAgent(), c.ExtraHeaders)
 	if err != nil {
 		return nil, err
 	}

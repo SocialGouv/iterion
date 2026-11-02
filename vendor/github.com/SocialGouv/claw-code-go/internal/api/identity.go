@@ -133,6 +133,19 @@ func ResolveExplicitIdentity(explicitUA, fallbackUA string, explicitExtra map[st
 	return Identity{UserAgent: ua, ExtraHeaders: extra}
 }
 
+// ResolveIdentityFlagged resolves the identity NoAmbientHeaders decides:
+// with the flag the environment is never read (ResolveExplicitIdentity),
+// without it the operator's overrides merge under the explicit config
+// (ResolveIdentity). The one reader every client build shares, so a provider
+// honours the flag by calling it — a provider that re-derives the choice is
+// a provider whose ambient read a flag cannot close.
+func ResolveIdentityFlagged(noAmbient bool, explicitUA, fallbackUA string, explicitExtra map[string]string) (Identity, error) {
+	if noAmbient {
+		return ResolveExplicitIdentity(explicitUA, fallbackUA, explicitExtra), nil
+	}
+	return ResolveIdentity(explicitUA, fallbackUA, explicitExtra)
+}
+
 // Apply sets the User-Agent and then the extra headers on h. It must run
 // after all default headers so that extra headers — like Claude Code's
 // ANTHROPIC_CUSTOM_HEADERS — can override any of them.

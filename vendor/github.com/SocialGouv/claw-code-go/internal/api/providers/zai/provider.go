@@ -51,6 +51,7 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 		client.OAuthToken = cfg.OAuthToken
 	}
 	client.UserAgent = cfg.UserAgent
+	client.NoAmbientHeaders = cfg.NoAmbientHeaders
 	client.ExtraHeaders = cfg.ExtraHeaders
 	return client, nil
 }

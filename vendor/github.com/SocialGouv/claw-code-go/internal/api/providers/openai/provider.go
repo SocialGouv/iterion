@@ -119,15 +119,9 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 	if authMode == AuthModeChatGPTOAuth {
 		defaultUA = chatgptOriginator + "/" + clientVersion
 	}
-	var identity api.Identity
-	if cfg.NoAmbientHeaders {
-		identity = api.ResolveExplicitIdentity(cfg.UserAgent, defaultUA, cfg.ExtraHeaders)
-	} else {
-		resolved, err := api.ResolveIdentity(cfg.UserAgent, defaultUA, cfg.ExtraHeaders)
-		if err != nil {
-			return nil, err
-		}
-		identity = resolved
+	identity, err := api.ResolveIdentityFlagged(cfg.NoAmbientHeaders, cfg.UserAgent, defaultUA, cfg.ExtraHeaders)
+	if err != nil {
+		return nil, err
 	}
 	httpClient, imageHTTPClient := api.NewStreamingHTTPClient(), newImageHTTPClient()
 	if cfg.HTTPClient != nil {

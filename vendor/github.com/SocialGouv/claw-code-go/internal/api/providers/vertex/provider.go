@@ -83,7 +83,7 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 		return nil, fmt.Errorf("vertex provider: failed to obtain Application Default Credentials: %w (run `gcloud auth application-default login`)", err)
 	}
 
-	identity, err := api.ResolveIdentity(cfg.UserAgent, api.DefaultUserAgent(), cfg.ExtraHeaders)
+	identity, err := api.ResolveIdentityFlagged(cfg.NoAmbientHeaders, cfg.UserAgent, api.DefaultUserAgent(), cfg.ExtraHeaders)
 	if err != nil {
 		return nil, err
 	}

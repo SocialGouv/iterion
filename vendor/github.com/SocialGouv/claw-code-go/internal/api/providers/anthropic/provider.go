@@ -37,6 +37,7 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 	}
 	client.UserAgent = cfg.UserAgent
 	client.ExtraHeaders = cfg.ExtraHeaders
+	client.NoAmbientHeaders = cfg.NoAmbientHeaders
 	return client, nil
 }
 

@@ -60,6 +60,9 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 	if err := api.RefuseOpenAIOnlyOptions("bedrock", cfg); err != nil {
 		return nil, err
 	}
+	if cfg.NoAmbientHeaders {
+		return nil, fmt.Errorf("bedrock provider: NoAmbientHeaders has nothing to withhold — a SigV4-signed request carries no ambient client identity, so accepting the option would promise a guarantee that is already the only behaviour")
+	}
 	model := normalizeModelID(cfg.Model)
 	if model == "" {
 		return nil, fmt.Errorf("bedrock provider: cfg.Model is required (e.g. anthropic.claude-sonnet-4-20250514-v1:0)")

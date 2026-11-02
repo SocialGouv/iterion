@@ -87,7 +87,8 @@ type ProviderConfig struct {
 	// (ANTHROPIC_CUSTOM_HEADERS, CLAW_USER_AGENT): only UserAgent and
 	// ExtraHeaders above reach the wire. For endpoints chosen by someone
 	// other than the operator, where ambient headers may carry secrets.
-	// Honoured by the OpenAI provider.
+	// Honoured by every provider that resolves a client identity; bedrock,
+	// whose SigV4 requests carry none, refuses it by name.
 	NoAmbientHeaders bool
 
 	// HTTPClient, when set, carries every request of the OpenAI provider
@@ -136,13 +137,11 @@ const (
 
 // RefuseOpenAIOnlyOptions returns an error when cfg sets an option that only
 // the OpenAI provider honours. A caller relying on one of them — an
-// egress-policy client, a no-ambient-headers guarantee — learns that it did
-// not apply, instead of silently getting the provider's defaults.
+// egress-policy client — learns that it did not apply, instead of silently
+// getting the provider's defaults. NoAmbientHeaders is not one of them: every
+// identity-resolving provider honours it, and bedrock refuses it by name.
 func RefuseOpenAIOnlyOptions(provider string, cfg ProviderConfig) error {
 	var set []string
-	if cfg.NoAmbientHeaders {
-		set = append(set, "NoAmbientHeaders")
-	}
 	if cfg.HTTPClient != nil {
 		set = append(set, "HTTPClient")
 	}

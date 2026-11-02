@@ -91,7 +91,7 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 		apiKey = strings.TrimSpace(os.Getenv("AZURE_OPENAI_API_KEY"))
 	}
 
-	identity, err := api.ResolveIdentity(cfg.UserAgent, api.DefaultUserAgent(), cfg.ExtraHeaders)
+	identity, err := api.ResolveIdentityFlagged(cfg.NoAmbientHeaders, cfg.UserAgent, api.DefaultUserAgent(), cfg.ExtraHeaders)
 	if err != nil {
 		return nil, err
 	}
