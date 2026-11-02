@@ -123,10 +123,12 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
 		}
-		// A landing intent the child's own declaration disarms never fires:
-		// refused here, before any child run is recorded — the class C329
-		// closes at the parent's compile, one level down.
-		if err := runtime.RefuseUnlandableSubbotLanding(req, childWf.Worktree); err != nil {
+		// A landing intent the child cannot act on never fires — its own
+		// `worktree: none` declaration, or a store with no filesystem root
+		// (the cloud plane runs every child in place): refused here, before
+		// any child run is recorded — the class C329 closes at the parent's
+		// compile, one level down.
+		if err := runtime.RefuseUnlandableSubbotLanding(req, childWf.Worktree, s.store.Root()); err != nil {
 			return nil, err
 		}
 		childRunID, err := store.GenerateRunID()

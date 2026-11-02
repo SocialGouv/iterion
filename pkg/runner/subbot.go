@@ -223,10 +223,13 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
 		}
-		// A landing intent the child's own declaration disarms never fires:
-		// refused here, before any child run is recorded — the class C329
-		// closes at the parent's compile, one level down.
-		if err := runtime.RefuseUnlandableSubbotLanding(req, childWf.Worktree); err != nil {
+		// A landing intent the child cannot act on never fires — its own
+		// `worktree: none` declaration, or this deployment's plane (the
+		// runner's store has no filesystem root: every child runs in place
+		// and no bank ever writes a child's branch): refused here, before
+		// any child run is recorded — the class C329 closes at the parent's
+		// compile, one level down.
+		if err := runtime.RefuseUnlandableSubbotLanding(req, childWf.Worktree, r.cfg.Store.Root()); err != nil {
 			return nil, err
 		}
 		// The deployment's multitenant ceiling (ITERION_CLOUD_MAX_*) clamps
@@ -358,10 +361,11 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			// its own instead of working in the tree this request lends it.
 			runtime.WithIsolatedChild(req.Isolated),
 			// The node's landing intent: the child's run doc records it at
-			// creation (the same block the resume replay reads), and where the
-			// child owns a worktree its own finalization performs the landing.
-			// On the in-place plane the recorded intent is what the instance's
-			// outcome router lands from the banked branch.
+			// creation (the same block the resume replay reads), and the
+			// child's own worktree finalization performs the landing. The
+			// in-place plane is refused above: no child ever runs here
+			// without a worktree of its own, so a recorded intent always
+			// has a finalization to fire it.
 			runtime.WithAutoMerge(req.AutoMerge),
 			runtime.WithMergeInto(req.MergeInto),
 			runtime.WithMergeStrategy(req.MergeStrategy),

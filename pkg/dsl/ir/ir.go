@@ -513,11 +513,14 @@ type SubbotNode struct {
 	// of AgentNode/JudgeNode Readonly. Default false = conservatively mutating.
 	Isolated bool
 	// AutoMerge arms the child's worktree-finalization landing: when the
-	// child's own workflow completes, its banked branch merges (the same
-	// launch-intent vocabulary the runs API carries). On the cloud plane the
-	// child's run doc records the intent and the instance's outcome router
-	// performs the landing from the banked branch. Requires Isolated: a child
-	// running in the parent's workspace has no finalization of its own.
+	// child's own workflow completes, its own worktree finalization merges
+	// its branch (the same launch-intent vocabulary the runs API carries).
+	// The child is the only actor: no bank ever writes a subbot child's
+	// branch, so a launch whose plane leaves the child without a worktree
+	// (`worktree: none` in the child .bot, or a run store with no
+	// filesystem root) refuses the landing fields outright. Requires
+	// Isolated: a child running in the parent's workspace has no
+	// finalization of its own.
 	AutoMerge bool
 	// MergeInto is the child's landing target ("current" default, "none", or a
 	// branch name); MergeStrategy is "squash" (default) or "merge". Both are

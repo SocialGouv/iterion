@@ -368,9 +368,11 @@ type SubbotRequest struct {
 	// through nothing else — a subbot child is never banked, so a recorded
 	// intent with FinalBranch empty is dead. Meaningful only on an isolated
 	// child (the compile refuses it elsewhere): a child in the parent's
-	// workspace has no finalization of its own, and neither has a child
-	// that renounces the worktree (`worktree: none`) — the launch refuses
-	// that shape (RefuseUnlandableSubbotLanding).
+	// workspace has no finalization of its own, and the launch refuses the
+	// two shapes that leave the child without a worktree to finalize — a
+	// child whose own workflow renounces it (`worktree: none`) and a
+	// deployment whose run store has no filesystem root, where every child
+	// runs in place (RefuseUnlandableSubbotLanding).
 	AutoMerge bool
 	// MergeInto / MergeStrategy carry the subbot node's landing target and
 	// strategy ("current" default, "none", or a branch; "squash" default or
@@ -380,21 +382,38 @@ type SubbotRequest struct {
 }
 
 // RefuseUnlandableSubbotLanding refuses a landing intent the child cannot
-// act on. A child whose own workflow declares `worktree: none` runs in
-// place — no worktree of its own, no finalization of its own — and a subbot
-// child is never banked either (the bank serves queue-delivered runs only,
-// a child rides its parent's delivery), so the armed intent sits on the run
-// doc with FinalBranch empty and the instance's outcome router declines it
-// before the claim on every sweep, in silence. C329 refuses the same dead
-// intent at the parent's compile for a child without `isolated:`; this
-// closes the hole one level down, which only the child launch sees: the
-// parent's compile never reads the child .bot. Both hosts call it right
-// after the child compiles and before any child run is recorded.
-func RefuseUnlandableSubbotLanding(req SubbotRequest, childWorktreeMode string) error {
-	if !req.AutoMerge || childWorktreeMode != "none" {
+// act on. Two shapes are dead the same way. A child whose own workflow
+// declares `worktree: none` runs in place — no worktree of its own, no
+// finalization of its own. And on a deployment whose run store has no
+// filesystem root (the cloud plane) every `worktree: auto` child runs in
+// place in its parent's workspace clone too, because there is nowhere
+// durable to host a per-run worktree. Neither plane has a bank for the
+// child either (the bank serves queue-delivered runs only, a child rides
+// its parent's delivery), so the armed intent sits on the run doc with
+// FinalBranch empty and the instance's outcome router declines it before
+// the claim on every sweep, in silence. C329 refuses the same dead intent
+// at the parent's compile for a child without `isolated:`; this closes the
+// hole one level down, which only the child launch sees: the parent's
+// compile never reads the child .bot, and the plane is the host's fact.
+// Both hosts call it right after the child compiles and before any child
+// run is recorded, passing their store's root (empty = the cloud plane).
+func RefuseUnlandableSubbotLanding(req SubbotRequest, childWorktreeMode, childStoreRoot string) error {
+	if !req.AutoMerge {
 		return nil
 	}
-	return fmt.Errorf("the child workflow declares `worktree: none` — a child without a worktree of its own has no finalization to land from and no bank ever writes a subbot child's branch, so the auto_merge intent would sit on the run doc unfired forever; drop the landing fields, or remove `worktree: none` so the child owns a worktree")
+	if childWorktreeMode == "none" {
+		return fmt.Errorf("the child workflow declares `worktree: none` — a child without a worktree of its own has no finalization to land from and no bank ever writes a subbot child's branch, so the auto_merge intent would sit on the run doc unfired forever; drop the landing fields, or remove `worktree: none` so the child owns a worktree")
+	}
+	if childStoreRoot == "" {
+		// The cloud plane: a run store with no filesystem root runs every
+		// `worktree: auto` child in place (the per-run workspace clone is
+		// already the isolation), and no bank ever writes a subbot child's
+		// branch — banking serves queue-delivered runs only, and a child
+		// rides its parent's delivery. Same dead intent, refused while the
+		// host still knows the plane.
+		return fmt.Errorf("this deployment's run store has no filesystem root (the cloud plane) — the child runs in place in its parent's workspace, has no worktree of its own to finalize and no bank ever writes a subbot child's branch, so the auto_merge intent would sit on the run doc unfired forever and the instance's outcome router would decline it in silence on every sweep; drop the landing fields — the child's commits reach the forge through the parent run's own landing — or launch the child as its own run when an independent landing is wanted")
+	}
+	return nil
 }
 
 // SubbotRunner compiles and runs a child .bot as a nested run and returns its
