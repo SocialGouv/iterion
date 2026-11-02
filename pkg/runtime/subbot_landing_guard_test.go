@@ -6,14 +6,15 @@ import (
 )
 
 // The launch guard refuses every shape whose landing intent can never fire:
-// a child whose own workflow declares `worktree: none` (no worktree of its
-// own, no finalization of its own), and a child on a deployment whose run
-// store has no filesystem root — the cloud plane runs every child in place
-// and no bank ever writes a subbot child's branch, so FinalBranch stays
-// empty and the instance's outcome router declines the intent in silence on
-// every sweep. Every other shape passes — "auto" over a rooted store may
-// finalize, and an intent the node never armed is C330's compile-time
-// refusal, not a launch error.
+// a child whose worktree mode is anything but the canonical `auto` — the
+// declared `worktree: none`, an unset or foreign value (the engine builds a
+// child worktree for `auto` and nothing else) — and a child on a deployment
+// whose run store has no filesystem root — the cloud plane runs every child
+// in place and no bank ever writes a subbot child's branch, so FinalBranch
+// stays empty and the instance's outcome router declines the intent in
+// silence on every sweep. Every other shape passes — "auto" over a rooted
+// store may finalize, and an intent the node never armed is C330's
+// compile-time refusal, not a launch error.
 func TestRefuseUnlandableSubbotLanding(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -25,7 +26,9 @@ func TestRefuseUnlandableSubbotLanding(t *testing.T) {
 		{"intent on a worktree:none child", SubbotRequest{AutoMerge: true, NodeID: "lot"}, "none", "/store", true},
 		{"no intent on a worktree:none child", SubbotRequest{NodeID: "lot"}, "none", "/store", false},
 		{"intent on the auto default", SubbotRequest{AutoMerge: true, NodeID: "lot"}, "auto", "/store", false},
-		{"intent on an unset mode", SubbotRequest{AutoMerge: true, NodeID: "lot"}, "", "/store", false},
+		{"intent on an unset mode", SubbotRequest{AutoMerge: true, NodeID: "lot"}, "", "/store", true},
+		{"intent on a foreign mode", SubbotRequest{AutoMerge: true, NodeID: "lot"}, "Auto", "/store", true},
+		{"no intent on an unset mode", SubbotRequest{NodeID: "lot"}, "", "/store", false},
 		{"intent on the cloud plane (no store root)", SubbotRequest{AutoMerge: true, NodeID: "lot"}, "auto", "", true},
 		{"intent on an unset mode over the cloud plane", SubbotRequest{AutoMerge: true, NodeID: "lot"}, "", "", true},
 		{"no intent on the cloud plane", SubbotRequest{NodeID: "lot"}, "auto", "", false},

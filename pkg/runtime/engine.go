@@ -382,9 +382,12 @@ type SubbotRequest struct {
 }
 
 // RefuseUnlandableSubbotLanding refuses a landing intent the child cannot
-// act on. Two shapes are dead the same way. A child whose own workflow
-// declares `worktree: none` runs in place — no worktree of its own, no
-// finalization of its own. And on a deployment whose run store has no
+// act on. Two shapes are dead the same way. A child whose worktree mode is
+// anything but the canonical `auto` — the declared `worktree: none`, an
+// unset or foreign value — runs in place: the engine builds a child
+// worktree for `worktree: auto` and nothing else (engine_run's decisive
+// arm), so the guard mirrors that predicate rather than matching the
+// author's vocabulary alone. And on a deployment whose run store has no
 // filesystem root (the cloud plane) every `worktree: auto` child runs in
 // place in its parent's workspace clone too, because there is nowhere
 // durable to host a per-run worktree. Neither plane has a bank for the
@@ -412,6 +415,14 @@ func RefuseUnlandableSubbotLanding(req SubbotRequest, childWorktreeMode, childSt
 		// rides its parent's delivery. Same dead intent, refused while the
 		// host still knows the plane.
 		return fmt.Errorf("this deployment's run store has no filesystem root (the cloud plane) — the child runs in place in its parent's workspace, has no worktree of its own to finalize and no bank ever writes a subbot child's branch, so the auto_merge intent would sit on the run doc unfired forever and the instance's outcome router would decline it in silence on every sweep; drop the landing fields — the child's commits reach the forge through the parent run's own landing — or launch the child as its own run when an independent landing is wanted")
+	}
+	if childWorktreeMode != "auto" {
+		// Unset or foreign over a rooted store: the compile canonicalizes
+		// the mode (empty resolves to `auto`, C142 refuses the rest), so a
+		// value here names a child the engine will run in place — the
+		// guard reads the engine's own predicate and lets no mode outside
+		// it pass.
+		return fmt.Errorf("the child's worktree mode is %q, not `auto` — the engine builds a child worktree only for `worktree: auto`: a child without a worktree of its own has no finalization to land from and no bank ever writes a subbot child's branch, so the auto_merge intent would sit on the run doc unfired forever; drop the landing fields, or give the child `worktree: auto`", childWorktreeMode)
 	}
 	return nil
 }
