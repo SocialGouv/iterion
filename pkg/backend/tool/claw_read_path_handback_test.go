@@ -243,3 +243,81 @@ func TestReadImageAnswersToTheReadScope(t *testing.T) {
 		}
 	}
 }
+
+// The exclusion list is not a frozen name table (#2868): it follows the
+// paths a credential is actually read from. Under BOTH roots the real
+// layouts refuse at any depth, the one project-position carrier (.npmrc)
+// refuses at a root, and an env-derived location (KUBECONFIG naming a
+// file INSIDE a read root, the sandboxed runner's own shape) refuses by
+// name nobody planted in a list — while a fixture or template that merely
+// carries one of those names outside any real location still reads.
+func TestCredentialExclusionFollowsTheRealReadPaths(t *testing.T) {
+	scope, _, workspace, scratch := handbackFixture(t)
+
+	// The env-derived half: a kubeconfig the process would actually read,
+	// living under the scratch root (the runner's HOME shape).
+	kube := filepath.Join(scratch, "runner-home", "cluster-kubeconfig")
+	t.Setenv("KUBECONFIG", kube)
+
+	refused := []string{
+		".kube/config",                   // the kubeconfig layout
+		".npmrc",                         // project-position carrier, at the root
+		"runner-home-x/.aws/credentials", // a home-like dir held under a root
+		"deep/nest/.codex/auth.json",     // the codex layout
+		".docker/config.json",            // docker's credential store
+		".claude/.credentials.json",      // claude_code's
+		".config/gh/hosts.yml",           // gh's oauth tokens
+		"runner-home/cluster-kubeconfig", // the KUBECONFIG-derived location (scratch only)
+	}
+	for _, rel := range refused {
+		for _, root := range []string{workspace, scratch} {
+			path := filepath.Join(root, rel)
+			// The derived KUBECONFIG path exists under the scratch root only.
+			if rel == "runner-home/cluster-kubeconfig" && root == workspace {
+				continue
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("TOKEN=x\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := executeWorkspaceReadFile(map[string]any{"path": path}, scope); err == nil ||
+				!strings.Contains(err.Error(), "credential") {
+				t.Fatalf("read_file(%q) under %s must refuse as a credential — a real location, got %v", rel, root, err)
+			}
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	// The doctrine's other half: the same NAMES outside every real
+	// location stay readable — a template, a fixture, testdata.
+	readable := []string{
+		"deploy/kubeconfig",        // not .kube/config — kubectl never reads it here
+		"deploy/kubeconfig.tpl",    // a template
+		"fixtures/credentials",     // a fixture, not ~/.aws/credentials
+		"testdata/auth.json",       // testdata, not .codex/auth.json
+		"testdata/secrets.json",    // testdata, not the iterion home's
+		"sub/project/.npmrc",       // a nested fixture, not a read root's own
+		"fixtures/kubeconfig-copy", // a copy for a test
+	}
+	for _, rel := range readable {
+		for _, root := range []string{workspace, scratch} {
+			path := filepath.Join(root, rel)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("fixture\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := executeWorkspaceReadFile(map[string]any{"path": path}, scope); err != nil {
+				t.Fatalf("read_file(%q) under %s must READ — a fixture outside every real credential location, got %v", rel, root, err)
+			}
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}

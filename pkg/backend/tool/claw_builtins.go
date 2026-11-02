@@ -266,7 +266,7 @@ func executeScopedReadImage(ctx context.Context, input map[string]any, scope *Re
 	if err != nil {
 		return clawtools.ReadImageResult{}, fmt.Errorf("read_image: %w", err)
 	}
-	if sensitiveWorkspacePath(raw) || sensitiveWorkspacePath(path) {
+	if gate := newCredentialReadGate(scope); gate.refused(raw) || gate.refused(path) {
 		return clawtools.ReadImageResult{}, fmt.Errorf("read_image: %q is excluded as a credential or secret file", raw)
 	}
 	scoped := make(map[string]any, len(input))

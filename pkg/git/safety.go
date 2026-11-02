@@ -13,7 +13,7 @@ import (
 //
 // It lives here, in the package both its writer and its refusers import,
 // because the sites that must REFUSE it match on this name: the claw
-// workspace tools (`sensitiveWorkspacePath`), a bundle manifest's
+// workspace tools (`credentialReadGate`), a bundle manifest's
 // `authoring.editable_files` (`authoringSensitivePath`) and the pod → host
 // export list (`exportExcludes`). A rename that moved only the writer's
 // literal would silently un-protect the file. The review-scope handlers

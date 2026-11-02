@@ -64,7 +64,7 @@ func TestWorkspaceGrep_DoesNotFollowSymlinksOutOfTheWorkspace(t *testing.T) {
 	if err := os.WriteFile(secret, []byte("needle-private-key\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// An innocuous name inside the workspace: sensitiveWorkspacePath sees
+	// An innocuous name inside the workspace: the credential gate sees
 	// "notes.txt" and waves it through.
 	if err := os.Symlink(secret, filepath.Join(workspace, "notes.txt")); err != nil {
 		t.Skipf("symlink unavailable: %v", err)

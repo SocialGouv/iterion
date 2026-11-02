@@ -220,12 +220,19 @@ func resolveReadPath(scope *ReadScope, raw string) (string, error) {
 // scope root contains the path, so an extra root's file is opened with the
 // same no-follow discipline as a workspace one.
 func openReadFile(scope *ReadScope, raw string) (*os.File, error) {
+	return openReadFileGated(scope, raw, newCredentialReadGate(scope))
+}
+
+// openReadFileGated is openReadFile over a credential gate the caller
+// already built — a grep/glob walk shares one derivation across every
+// file it visits instead of paying it per open.
+func openReadFileGated(scope *ReadScope, raw string, gate credentialReadGate) (*os.File, error) {
 	workspace, extra := scope.snapshot()
 	path, err := resolveReadPath(scope, raw)
 	if err != nil {
 		return nil, err
 	}
-	if sensitiveWorkspacePath(raw) || sensitiveWorkspacePath(path) {
+	if gate.refused(raw) || gate.refused(path) {
 		return nil, fmt.Errorf("path is a protected credential or secret file")
 	}
 	root := containingRoot(path, workspace, extra)

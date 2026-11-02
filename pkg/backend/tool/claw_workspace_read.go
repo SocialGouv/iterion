@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
@@ -73,15 +74,16 @@ func executeWorkspaceReadFile(input map[string]any, scope *ReadScope) (string, e
 	}
 	// Same boundary as workspace_grep and glob: the path is resolved and
 	// contained inside the active read scope (workspace plus its declared
-	// read roots, #2650), and a credential file is refused. Without this
-	// an absolute path skipped the join entirely and only got
+	// read roots, #2650), and a credential file is refused — the gate's
+	// list follows the paths credentials are actually read from (#2868).
+	// Without this an absolute path skipped the join entirely and only got
 	// filepath.Clean, so the model could read ~/.ssh/id_rsa or
 	// ~/.iterion/secrets.json through the one read tool that had no guard.
 	path, err := resolveReadPath(scope, rawPath)
 	if err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
 	}
-	if sensitiveWorkspacePath(rawPath) || sensitiveWorkspacePath(path) {
+	if gate := newCredentialReadGate(scope); gate.refused(rawPath) || gate.refused(path) {
 		return "", fmt.Errorf("read_file: %q is excluded as a credential or secret file", rawPath)
 	}
 
@@ -341,43 +343,59 @@ func workspacePathInput(input map[string]any, toolName string) (string, error) {
 	return path, nil
 }
 
-// sensitiveWorkspacePath reports whether a read target is a credential or
-// secret file the read tools refuse, under the workspace and under every
-// declared read root alike.
+// credentialReadGate is one tool call's view of the credential exclusion
+// (#2868): claw's first-party CredentialReadGuard — whose list follows the
+// paths credentials are actually read from (real layouts at any depth,
+// the process's own env/home-derived locations, .npmrc anchored at a read
+// root) — plus iterion's own carriers. Built ONCE per tool invocation:
+// the derivation resolves a dozen paths, which a grep/glob walk must not
+// pay per visited entry.
+type credentialReadGate struct {
+	guard *clawtools.CredentialReadGuard
+	roots []string
+}
+
+// newCredentialReadGate derives the gate from the process environment
+// (os.Getenv — the derivation reads HOME, KUBECONFIG, NPM_CONFIG_USERCONFIG
+// and their siblings; in a sandboxed runner that IS the runner's own
+// environment, whose HOME lives under the scratch read root) and anchors
+// the root-relative carriers on the scope's current roots.
+func newCredentialReadGate(scope *ReadScope) credentialReadGate {
+	workspace, extra := scope.snapshot()
+	roots := make([]string, 0, len(extra)+1)
+	if strings.TrimSpace(workspace) != "" {
+		roots = append(roots, workspace)
+	}
+	roots = append(roots, extra...)
+	return credentialReadGate{guard: clawtools.NewCredentialReadGuard(os.Getenv), roots: roots}
+}
+
+// refused reports whether a read target is a credential or secret
+// location, under the workspace and under every declared read root alike.
+// iterion's own carriers are checked first; the guard judges the rest.
 //
-// Every comparison is case-folded, the way the extension switch below
-// already is: a file system that folds case (macOS, Windows) makes `.ENV`
-// and `.env` THE SAME FILE, so a list of names read in one spelling only
-// is a bypass of itself. Folding errs closed — on a case-sensitive file
-// system a distinct `.ENV` is refused rather than read, which costs a
-// refusal, never a leak.
-func sensitiveWorkspacePath(path string) bool {
+// Every comparison in the guard is case-folded: a file system that folds
+// case (macOS, Windows) makes `.ENV` and `.env` THE SAME FILE, so a list
+// read in one spelling only is a bypass of itself. Folding errs closed —
+// on a case-sensitive file system a distinct `.ENV` is refused rather
+// than read, which costs a refusal, never a leak.
+func (g credentialReadGate) refused(path string) bool {
+	return iterionCredentialPath(path) || g.guard.Refused(path, g.roots...)
+}
+
+// iterionCredentialPath covers the carriers the first-party guard cannot
+// know: the clone's own credential store and the iterion home's secrets.
+func iterionCredentialPath(path string) bool {
 	clean := strings.ToLower(filepath.ToSlash(filepath.Clean(path)))
 	base := filepath.Base(clean)
-	if base == ".env" || strings.HasPrefix(base, ".env.") || base == ".netrc" || base == ".git-credentials" || base == "cli-auth.json" {
-		return true
-	}
 	// The clone's own credential store: `.git/iterion-credentials` holds the
-	// run's live forge token in plaintext. `.git-credentials` above is git's
-	// DEFAULT store, which a repo-targeted run never writes — this is the one
-	// credential file such a run is guaranteed to have. A prefix match also
-	// covers the sibling the atomic replace writes first (`.tmp` on the host,
+	// run's live forge token in plaintext. A prefix match also covers the
+	// sibling the atomic replace writes first (`.tmp` on the host,
 	// `.tmp.$$` in the sandbox), which a failed replace leaves on disk.
 	if strings.HasPrefix(base, gitlib.CredentialStoreFile) {
 		return true
 	}
-	if strings.Contains(base, "id_rsa") || strings.Contains(base, "id_ed25519") {
-		return true
-	}
-	switch strings.ToLower(filepath.Ext(base)) {
-	case ".pem", ".key", ".p12":
-		return true
-	}
-	for _, fragment := range []string{
-		"/.ssh/", "/.aws/", "/.gnupg/", "/.docker/config.json",
-		"/.claude/.credentials.json", "/.codex/auth.json",
-		"/.iterion/secrets.json", "/.iterion/secrets.key",
-	} {
+	for _, fragment := range []string{"/.iterion/secrets.json", "/.iterion/secrets.key"} {
 		if strings.Contains("/"+clean, fragment) {
 			return true
 		}

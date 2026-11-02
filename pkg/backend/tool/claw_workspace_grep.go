@@ -49,7 +49,8 @@ func executeWorkspaceGrepWithLimits(ctx context.Context, input map[string]any, s
 	if err != nil {
 		return "", err
 	}
-	if sensitiveWorkspacePath(rawPath) {
+	gate := newCredentialReadGate(scope)
+	if gate.refused(rawPath) {
 		return "", fmt.Errorf("grep: %q is excluded as a credential or secret file", rawPath)
 	}
 	searchPath, err := resolveReadPath(scope, rawPath)
@@ -92,7 +93,7 @@ func executeWorkspaceGrepWithLimits(ctx context.Context, input map[string]any, s
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if sensitiveWorkspacePath(path) || info.IsDir() && sensitiveWorkspacePath(filepath.Join(path, "_")) {
+		if gate.refused(path) || info.IsDir() && gate.refused(filepath.Join(path, "_")) {
 			if info.IsDir() {
 				return filepath.SkipDir
 			}
@@ -118,7 +119,7 @@ func executeWorkspaceGrepWithLimits(ctx context.Context, input map[string]any, s
 			truncated = inputReason
 			return filepath.SkipAll
 		}
-		f, err := openReadFile(scope, path)
+		f, err := openReadFileGated(scope, path, gate)
 		if err != nil {
 			return nil
 		}
@@ -150,7 +151,7 @@ func executeWorkspaceGrepWithLimits(ctx context.Context, input map[string]any, s
 		}
 		return nil
 	}
-	if !info.IsDir() && sensitiveWorkspacePath(searchPath) {
+	if !info.IsDir() && gate.refused(searchPath) {
 		return "", fmt.Errorf("path is a protected credential file")
 	}
 	entryLimited, err := walkWorkspaceGrep(ctx, searchPath, info, limits.maxVisitedEntries, visit)

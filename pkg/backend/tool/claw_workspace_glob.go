@@ -70,7 +70,8 @@ func executeWorkspaceGlobWithLimits(ctx context.Context, input map[string]any, s
 	if !info.IsDir() {
 		return "", fmt.Errorf("glob: path %q is not a directory", rawPath)
 	}
-	if sensitiveWorkspacePath(searchPath) {
+	gate := newCredentialReadGate(scope)
+	if gate.refused(searchPath) {
 		return "", fmt.Errorf("glob: path is a protected credential directory")
 	}
 
@@ -103,7 +104,7 @@ func executeWorkspaceGlobWithLimits(ctx context.Context, input map[string]any, s
 			truncated = fmt.Sprintf("visited-entry limit (%d)", limits.maxVisitedEntries)
 			return filepath.SkipAll
 		}
-		if sensitiveWorkspacePath(path) {
+		if gate.refused(path) {
 			if info.IsDir() {
 				return filepath.SkipDir
 			}

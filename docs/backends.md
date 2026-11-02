@@ -100,6 +100,26 @@ narrowed list crosses the sandbox envelope as `IOTask.ScratchReadRoots`
 (`ScratchDir` carries its first entry for a runner that predates the
 list).
 
+Under every read root the credential exclusion applies alike, and since
+#2868 its list is not a frozen name table: it follows the paths a
+credential is actually read from (claw's first-party
+`CredentialReadGuard`, vendored). Real layouts refuse at any depth
+(`.kube/config`, `.aws/`, `.codex/auth.json`, `.docker/config.json`,
+`.claude/.credentials.json`, `.config/gh/hosts.yml`, the gcloud ADC, ssh
+and gnupg dirs), the process's own env/home-derived locations refuse
+wherever a root reaches them (`KUBECONFIG`, `NPM_CONFIG_USERCONFIG`,
+`CODEX_HOME`, `AWS_SHARED_CREDENTIALS_FILE`, `DOCKER_CONFIG`,
+`GH_CONFIG_DIR`, `CLAUDE_CONFIG_DIR`, `HOME` — in a sandboxed runner that
+is the runner's own env, whose HOME lives under the scratch root),
+`.npmrc` refuses at a project position (the root of the workspace or of a
+declared read root), and the intrinsic carriers (the `.env` family,
+`.netrc`, `.git-credentials`, `cli-auth.json`, private keys, the clone's
+`.git/iterion-credentials`, the iterion home's `secrets.json`) refuse
+wherever they appear. The consequence an author feels: a fixture or
+template carrying one of those names OUTSIDE a real location —
+`testdata/auth.json`, `fixtures/credentials`, a `kubeconfig.tpl` — reads
+freely. The verdict is always a refusal, never a redaction.
+
 Only reads take the extra root. `write_file` and `file_edit` are not
 scope-aware: a relative path rebases onto the workspace, an absolute one
 passes through, exactly as before. And a path one read tool emits is
