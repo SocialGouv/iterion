@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -40,6 +41,11 @@ type sharedTierPolicy struct {
 	// it pinned-only and those routes park on the key's own refusal with a
 	// durable retry.
 	refusedPinned string
+	// refusals is the record ADR-131 §5 owes: the slots this run's FROZEN
+	// pair order refused for a credential the walk HELD, said once at the
+	// walk's end. nil records nothing — the preview has no walk to report
+	// (it names each exclusion per candidate, exclusionReason).
+	refusals *pairOrderRefusals
 	// runNative is the OR of every tier's native probe of ONE resolution —
 	// the question `auto` asks since #1998: a Claude-native credential any
 	// tier holds, open or closed, keeps every tier's facade key off the
@@ -154,11 +160,46 @@ func (pol sharedTierPolicy) withProviderAllowlist(allowed map[string]bool) share
 	return pol
 }
 
-// withSlotWhitelist returns the policy with the whitelist set. The one
+// slotExcluder names WHICH of the run's frozen lists holds a credential slot
+// out of the seal. The gate the walk seals through is their composition
+// (withProviderAllowlist over withSlotWhitelist), so a message that
+// prescribes a remedy cannot read its knob off that one boolean: it asks
+// here, and the operator reads the list that actually holds the slot out
+// (ADR-129 §7, ADR-131 §5).
+type slotExcluder int
+
+const (
+	// excludedByProviderAllowlist: the tenant's providers allowlist refuses
+	// the slot's provider, or the slot maps to no provider — not provably
+	// inside the list, the posture withProviderAllowlist keeps. Named first,
+	// because widening the pair order alone would not lift it.
+	excludedByProviderAllowlist slotExcluder = iota
+	// excludedByPairOrder: the providers allowlist admits the slot, so the
+	// run's frozen routing pair order is what names no pair for it.
+	excludedByPairOrder
+)
+
+// excluderOfSlot judges one slot, for the callers that have already
+// established the composed gate refuses it: allowed is the run's frozen
+// providers allowlist, nil when none is in force. A gate joined to the
+// composition later extends THIS judgement with its own arm — one
+// vocabulary, not a guess per message.
+func excluderOfSlot(allowed map[string]bool, slot string) slotExcluder {
+	if allowed != nil {
+		if prov := providerOfSlot(slot); prov == "" || !allowed[prov] {
+			return excludedByProviderAllowlist
+		}
+	}
+	return excludedByPairOrder
+}
+
+// withSlotWhitelist returns the policy with the whitelist set, reporting the
+// frozen list's refusals of HELD credentials into rec (ADR-131 §5). The one
 // construction site for the gate: a nil admits everything (today's
 // behavior for an unwired launch).
-func (pol sharedTierPolicy) withSlotWhitelist(pairOrder []string) sharedTierPolicy {
+func (pol sharedTierPolicy) withSlotWhitelist(pairOrder []string, rec *pairOrderRefusals) sharedTierPolicy {
 	pol.slotSealable = func(slot string) bool { return llmroute.SlotSealable(pairOrder, slot) }
+	pol.refusals = rec
 	return pol
 }
 
@@ -169,6 +210,54 @@ func (pol sharedTierPolicy) sealableSlot(slot string) bool {
 		return true
 	}
 	return pol.slotSealable(slot)
+}
+
+// sealableHeldSlot is the seal gate for a credential the walk HOLDS: the
+// same answer, plus the record ADR-131 §5 owes — a credential the walk
+// resolved that the run's frozen pair order refuses is remembered, and the
+// walk's end names it once. Every tier's fill and restore asks THIS one, the
+// platform key leg included: which side of the resolve a tier's gate sits on
+// decides whether its refusal can be named at all, so they all ask with the
+// credential in hand. The key legs also ask it INSIDE their usability
+// predicate (heldSlotUsable), one candidate earlier, where a refused slot
+// answers before its meter is read. The pure sealableSlot is left to the sites that hold
+// nothing to report (the door's pre-acquisition want) or whose refusal
+// already has a line of its own: the pool grant, released with its reason,
+// and the preview, which names every exclusion per candidate.
+func (pol sharedTierPolicy) sealableHeldSlot(slot string) bool {
+	if pol.sealableSlot(slot) {
+		return true
+	}
+	pol.refusals.note(slot)
+	return false
+}
+
+// heldSlotUsable joins the seal gate to a tier's key-usability predicate, so
+// every key leg asks the frozen list with the CREDENTIAL IN HAND and BEFORE
+// its meter: the candidate's slot reaches the §5 record, and a slot the list
+// refuses answers unusable without the predicate's skip exit arming the run's
+// retry clock (apiKeyUsable → skipTracker.note → credResolution's
+// skippedReopensAt → store.Run.SkippedCredReopensAt, a durable write).
+//
+// A slot outside the run's routing is not a credential "passed over for a
+// window": waking the run when it reopens cannot change the resolution — the
+// resume replays the frozen list as stored, so the slot is refused again —
+// while every arming spends one attempt of a bounded retry budget
+// (pkg/runner's usageWindowRetryAt). The forfait legs already gate before
+// their window read; this is the key legs' parity, and it costs less than the
+// gate after the resolve: a refused slot's meter is never read at all.
+//
+// A PINNED key bypasses this predicate inside secrets.Resolve, as it bypasses
+// the usability one: the operator named that key, so the pin still resolves
+// and its fate is named by warnRefusedPins (a DROPPED pin, not an honoured
+// one). The gate after the resolve is what keeps it out of the bundle.
+func (pol sharedTierPolicy) heldSlotUsable(inner func(secrets.ApiKey) bool) func(secrets.ApiKey) bool {
+	return func(k secrets.ApiKey) bool {
+		if !pol.sealableHeldSlot(slotOfProvider(k.Provider)) {
+			return false
+		}
+		return inner(k)
+	}
 }
 
 // inOrder runs one tier's forfait and key passes in the policy's order.
@@ -343,6 +432,19 @@ func (p *Publisher) newTierNative(ctx context.Context, tier, keyScope, botID str
 // credential.
 func holdsLLMCredential(b secrets.RunBundle) bool {
 	return len(b.APIKeys) > 0 || len(b.PinnedAPIKeys) > 0 || len(b.OAuthCredentials) > 0
+}
+
+// llmCredentialOwed reports whether the walk ends owing this run an LLM
+// credential it did not get: the bundle holds none, the workflow calls a
+// model (a nil one is unknown — read as yes, since a run refused the
+// credential it needed is the failure that matters), and the run is not
+// env-funded (its routes ride the runner's gateway and consult no tier).
+//
+// ONE judgement, read by the "no credential resolved" warning and by ADR-131
+// §5's line — which is that warning's only explanation — so the two cannot
+// disagree about whether the run was left unfunded.
+func llmCredentialOwed(bundle secrets.RunBundle, wf *ir.Workflow, envFunded bool) bool {
+	return !envFunded && !holdsLLMCredential(bundle) && (wf == nil || wf.UsesLLM())
 }
 
 // holdsDefaultLLMCredential reports whether an UNPINNED route has something

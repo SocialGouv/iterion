@@ -131,7 +131,7 @@ func (p *Publisher) fillFromOrg(
 			}
 			// The adaptive-routing whitelist: an unlisted slot is invisible
 			// to this tier.
-			if !policy.sealableSlot(slotOfKind(string(rec.Kind))) {
+			if !policy.sealableHeldSlot(slotOfKind(string(rec.Kind))) {
 				continue
 			}
 			payload, err := secrets.OpenOAuthPayload(p.sealer, rec.UserID, rec.Kind, rec.SealedPayload)
@@ -185,7 +185,7 @@ func (p *Publisher) fillFromOrg(
 			if len(missing) > 0 {
 				octx := store.WithTenant(ctx, orgScope)
 				resolved, err := secrets.Resolve(octx, p.apiKeys, orgScope, "", audienceBotID, missing, nil, p.sealer,
-					p.apiKeyUsable(octx, meter, runID, botID, skips), withheld.note)
+					policy.heldSlotUsable(p.apiKeyUsable(octx, meter, runID, botID, skips)), withheld.note)
 				if err != nil {
 					p.logger.Warn("cloudpublisher: org api-key resolve for org %s: %v", orgID, err)
 				} else {
@@ -203,7 +203,7 @@ func (p *Publisher) fillFromOrg(
 							continue
 						}
 						// The adaptive-routing whitelist.
-						if !policy.sealableSlot(slotOfProvider(prov)) {
+						if !policy.sealableHeldSlot(slotOfProvider(prov)) {
 							continue
 						}
 						// Decided again: a key filled earlier in this loop

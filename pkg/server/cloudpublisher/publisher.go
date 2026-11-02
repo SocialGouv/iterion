@@ -674,8 +674,15 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// frozen one on a resume — names the (harness, credential) pairs a run
 	// may occupy; a slot no listed pair names is invisible to every tier.
 	// nil (an unwired launch) admits everything: today's behavior.
+	//
+	// ADR-131 §5's second half rides the same gate: the frozen list is
+	// replayed as stored AND says once what it held out. The record is
+	// opened here and emitted at the walk's end (never per site). It carries
+	// the allowlist because its line prescribes a remedy: a slot the OTHER
+	// frozen list holds out too is not lifted by widening this one.
+	pairRefusals := newPairOrderRefusals(routePolicy, allowed)
 	if routePolicy != nil {
-		policy = policy.withSlotWhitelist(routePolicy.PairOrder)
+		policy = policy.withSlotWhitelist(routePolicy.PairOrder, pairRefusals)
 	}
 	// ADR-129 §5: the allowlist bounds what any tier may seal — the pruned
 	// provider is funded by no channel (the nil-allowed gate admits
@@ -716,6 +723,13 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// way the function leaves — mid-walk it would cry wolf on every launch of
 	// a team that scopes its keys at all.
 	defer func() { withheld.warn(p, runID) }()
+	// Deferred for the reason the withholdings are: a walk that returns an
+	// error exits before any trailing statement, and a launch that failed
+	// while the frozen list held a credential out is exactly when the fact
+	// matters. Said once, whichever way the function leaves. The funding fact
+	// is read AT that moment — the line's level follows whether the walk
+	// ended up owing this run a credential, which only its end knows.
+	defer func() { pairRefusals.warn(p, runID, llmCredentialOwed(bundle, wf, envFunded)) }()
 	res := credResolution{}
 	err = walkCredentialTiers(func() bool { return holdsDefaultLLMCredential(bundle) },
 		func() bool { return res.grant != nil }, func(tier credentialTier) error {
@@ -754,7 +768,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					// passed over so the priority walk yields the next key of that
 					// provider — the BYOK tier becomes an ordered fallback chain.
 					resolved, err := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, audienceBotID, allKnownProviders, overrides, p.sealer,
-						p.apiKeyUsable(ctx, usagecap.TenantScope(tenantID), runID, botID, skips), withheld.note)
+						policy.heldSlotUsable(p.apiKeyUsable(ctx, usagecap.TenantScope(tenantID), runID, botID, skips)), withheld.note)
 					if err != nil {
 						return fmt.Errorf("cloudpublisher: resolve creds: %w", err)
 					}
@@ -764,17 +778,21 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 						if len(r.Plaintext) == 0 {
 							continue
 						}
-						// The adaptive-routing whitelist: an unlisted slot is
-						// never SEALED by this tier (the resolve above read it —
-						// a refused unlisted key may note a reopening).
-						if !policy.sealableSlot(slotOfProvider(prov)) {
+						// The adaptive-routing whitelist, asked again at the
+						// SEAL: the usability predicate above already refuses
+						// an unlisted slot — with the credential in hand, which
+						// is what reaches the §5 record and what leaves its
+						// meter unread — but a PINNED candidate bypasses every
+						// predicate inside secrets.Resolve, and what may seal
+						// must not depend on an optimisation.
+						if !policy.sealableHeldSlot(slotOfProvider(prov)) {
 							continue
 						}
 						setAPIKey(&bundle, prov, string(r.Plaintext), r.BaseURL, r.Fingerprint, false)
 						apiKeyFPs[prov] = r.Fingerprint
 						usedIDs = append(usedIDs, r.KeyID)
 					}
-					p.warnRefusedPins(ctx, runID, tenantID, botID, overrides, resolved, withheld)
+					p.warnRefusedPins(ctx, runID, tenantID, botID, overrides, resolved, withheld, allowed, pairRefusals, policy.sealableSlot)
 					// A provider whose EVERY key was refused resolves to nothing under
 					// the predicate. Remember what an unfiltered walk would have chosen:
 					// if the end of the resolution finds that wire still empty — no
@@ -935,10 +953,11 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 							}
 							// The adaptive-routing whitelist: an unlisted slot is
 							// never SEALED by this tier, and remembered by no skip
-							// (the restore is gated by the same predicate). The
-							// store read above still happened — an unlisted slot's
-							// refusal may note a reopening in the skip tracker.
-							if !policy.sealableSlot(slotOfKind(string(rec.Kind))) {
+							// (the restore is gated by the same predicate). Asked
+							// BEFORE the window read below, so an unlisted slot
+							// arms no reopening in the skip tracker — the parity
+							// the key legs reach through heldSlotUsable.
+							if !policy.sealableHeldSlot(slotOfKind(string(rec.Kind))) {
 								continue
 							}
 							payload, err := secrets.OpenOAuthPayload(p.sealer, rec.UserID, rec.Kind, rec.SealedPayload)
@@ -1174,7 +1193,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 								}
 								// The whitelist gates the restore like the fill: an
 								// unlisted slot never comes back.
-								if !policy.sealableSlot(slotOfProvider(prov)) {
+								if !policy.sealableHeldSlot(slotOfProvider(prov)) {
 									break
 								}
 								outcome := sealDefault
@@ -1234,7 +1253,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 										runID, kind, sf.fp, botID)
 									continue
 								}
-								if !policy.sealableSlot(slotOfKind(kind)) {
+								if !policy.sealableHeldSlot(slotOfKind(kind)) {
 									break
 								}
 								setOAuthCredential(&bundle, kind, sf.payload, sf.fp, sf.id, sf.connectedAt)
@@ -1483,11 +1502,15 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// most common cloud shape, so gating the Warn on the whole bundle would
 	// silence it exactly where it matters.
 	noLLMCred := !holdsLLMCredential(bundle)
+	// The same judgement ADR-131 §5's line reads for its level: the symptom
+	// and its only explanation must not disagree about whether this run was
+	// left unfunded.
+	credentialOwed := llmCredentialOwed(bundle, wf, envFunded)
 	if envFunded {
 		if p.logger != nil {
 			p.logger.Info("cloudpublisher: run %s is env-funded — every model route rides the runner's openai_compatible gateway; no LLM credential acquired", runID)
 		}
-	} else if noLLMCred && (wf == nil || wf.UsesLLM()) {
+	} else if credentialOwed {
 		tiersConsulted := "byok, oauth-forfait, org, pool, platform"
 		if sovereign {
 			tiersConsulted = "byok, oauth-forfait (llm_fallback=none — the shared tiers were not consulted)"
@@ -2041,7 +2064,7 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 					continue
 				}
 				// The adaptive-routing whitelist.
-				if !policy.sealableSlot(slotOfKind(string(rec.Kind))) {
+				if !policy.sealableHeldSlot(slotOfKind(string(rec.Kind))) {
 					continue
 				}
 				payload, err := secrets.OpenOAuthPayload(p.sealer, rec.UserID, rec.Kind, rec.SealedPayload)
@@ -2086,10 +2109,6 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 				if bundle.APIKeys[prov] != "" || bundle.PinnedAPIKeys[prov] != "" {
 					continue
 				}
-				// The adaptive-routing whitelist.
-				if !policy.sealableSlot(slotOfProvider(prov)) {
-					continue
-				}
 				family := secrets.WireFamily(string(prov))
 				pin := pinned[strings.ToLower(string(prov))]
 				if sealDecision(prov, taken[family], pin, mayDefault) != sealNone {
@@ -2099,7 +2118,7 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 			if len(missing) > 0 {
 				pctx := store.WithTenant(ctx, secrets.PlatformTenantID)
 				resolved, err := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", audienceBotID, missing, nil, p.sealer,
-					p.apiKeyUsable(pctx, usagecap.ScopePlatform, runID, botID, skips), withheld.note)
+					policy.heldSlotUsable(p.apiKeyUsable(pctx, usagecap.ScopePlatform, runID, botID, skips)), withheld.note)
 				if err != nil {
 					p.logger.Warn("cloudpublisher: platform api-key resolve: %v", err)
 				} else {
@@ -2114,6 +2133,19 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 					for _, prov := range missing {
 						r, ok := resolved[prov]
 						if !ok || len(r.Plaintext) == 0 {
+							continue
+						}
+						// The adaptive-routing whitelist, asked where the two
+						// other key legs ask it — at the seal, and before it
+						// inside the usability predicate (heldSlotUsable), so
+						// the slot this tier held and the frozen list refuses
+						// reaches the §5 record (ADR-131 §5) instead of being
+						// dropped before any read, and reaches no meter. A
+						// refused slot in `missing` costs this tier what it
+						// costs the tenant and org legs: its place in the one
+						// key list the resolve reads. Nothing new is sealed —
+						// the restore asks this same gate.
+						if !policy.sealableHeldSlot(slotOfProvider(prov)) {
 							continue
 						}
 						// Decided again: a key filled earlier in this loop
@@ -2701,17 +2733,61 @@ func (p *Publisher) evaluateCredentialWindows(ctx context.Context, readings []us
 // function was written to end. It is reported first, because "your pin was
 // refused" outranks "your pin is rate-limited".
 //
+// A pin a frozen list of the run leaves no slot for is the third shape: the
+// fill resolved the key and passed it over (nothing is sealed), so the pin is
+// DROPPED — and a dropped pin must be named as dropped, by the list that
+// dropped it. The evidence line below is skipped for it: "the pin is
+// honoured, so this run will meet that wall" would promise a wall this run
+// never meets, and with no evidence at all the operator would hear nothing
+// about a pin that did not act.
+//
 // Nothing is logged for a healthy pin, so the line means something when it
 // appears.
-func (p *Publisher) warnRefusedPins(ctx context.Context, runID, tenantID, botID string, overrides map[secrets.Provider]string, resolved map[secrets.Provider]secrets.Resolution, withheld *audienceWithholdings) {
+//
+// sealable is the walk's seal gate in its COMPOSED form — the pin's fate is
+// whatever the walk actually did with the key — and `allowed` lets
+// excluderOfSlot name WHICH frozen list answered: prescribing "widen
+// pair_order" for a slot that list already admits sends the operator to the
+// wrong knob, and for an allowlist refusal this line is the only statement
+// the pin gets (the §5 record notes the pair order's refusals only, and the
+// prune line at the head of the walk speaks of routes, not pins).
+//
+// Two lists may refuse one slot, and then ONE knob does not lift it: the
+// allowlist arm asks pairRefusals for the clause the §5 line's own
+// alsoHeldByTheAllowlist is the mirror of, so neither message sends an
+// operator to widen a list, relaunch, and meet the other one.
+func (p *Publisher) warnRefusedPins(ctx context.Context, runID, tenantID, botID string, overrides map[secrets.Provider]string, resolved map[secrets.Provider]secrets.Resolution, withheld *audienceWithholdings, allowed map[string]bool, pairRefusals *pairOrderRefusals, sealable func(slot string) bool) {
 	if len(overrides) == 0 {
 		return
 	}
+	// Judged ONCE, read twice: the line below names the pin's fate, and the
+	// usage-evidence loop skips a pin that never acted. Only a pin the walk
+	// RESOLVED to its own key can be dropped — a pin that matched nothing
+	// left the walk to choose, and that choice is not this pin's fate.
+	dropped := map[secrets.Provider]bool{}
 	for prov, keyID := range overrides {
-		if withheld.holds(keyID) {
+		r, ok := resolved[prov]
+		if !ok || keyID == "" || r.KeyID != keyID {
+			continue
+		}
+		if !sealable(slotOfProvider(prov)) {
+			dropped[prov] = true
+		}
+	}
+	for prov, keyID := range overrides {
+		switch {
+		case withheld.holds(keyID):
 			p.logger.Warn(
 				"cloudpublisher: run %s pinned api key %s for %s, but %s — the pin does NOT lift an audience, and the walk moved on",
 				runID, keyID, prov, withheld.cause(keyID))
+		case dropped[prov] && excluderOfSlot(allowed, slotOfProvider(prov)) == excludedByProviderAllowlist:
+			p.logger.Warn(
+				"cloudpublisher: run %s pinned api key %s for %s, but that provider is outside this run's providers allowlist (%s) — the pin is DROPPED, not honoured: the walk sealed no credential for it. Widen the providers list, or repin the webhook to a provider this run may spend%s",
+				runID, keyID, prov, model.ProviderAllowlistNames(allowed), pairRefusals.alsoRefusedByThePairOrder(slotOfProvider(prov)))
+		case dropped[prov]:
+			p.logger.Warn(
+				"cloudpublisher: run %s pinned api key %s for %s, but this run's frozen routing pair order names no pair for the %s slot — the pin is DROPPED, not honoured: the walk sealed no credential for it. Widen pair_order, or repin the webhook to a provider this run may occupy",
+				runID, keyID, prov, slotOfProvider(prov))
 		}
 	}
 	if p.usageCaps == nil {
@@ -2721,8 +2797,9 @@ func (p *Publisher) warnRefusedPins(ctx context.Context, runID, tenantID, botID 
 		r, ok := resolved[prov]
 		// Only the key the pin actually selected: a pin that matched
 		// nothing left the walk to choose, and that choice already passed
-		// the predicate.
-		if !ok || keyID == "" || r.KeyID != keyID || r.Fingerprint == "" {
+		// the predicate. A DROPPED pin is out too — it was named above as
+		// dropped, and the wall below belongs to a run that spends the key.
+		if !ok || keyID == "" || r.KeyID != keyID || r.Fingerprint == "" || dropped[prov] {
 			continue
 		}
 		backend := usageBackendForProvider(prov)

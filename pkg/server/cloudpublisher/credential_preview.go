@@ -63,7 +63,9 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	// answer).
 	x.policy = p.sharedTierPolicyFor(ctx)
 	if spec.LLMRoutePolicy != nil {
-		x.policy = x.policy.withSlotWhitelist(spec.LLMRoutePolicy.PairOrder)
+		// No refusal record: a preview is not a walk, and it names every
+		// exclusion per candidate already (exclusionReason).
+		x.policy = x.policy.withSlotWhitelist(spec.LLMRoutePolicy.PairOrder, nil)
 		// The tenant's provider allowlist joins the same gate the live walk
 		// runs (the parity doctrine): a slot whose provider the list excludes
 		// is sealed by NO tier, so no candidate names a credential the live
@@ -483,16 +485,12 @@ func (x *credentialPreview) add(c runview.CredentialPreviewCandidate) int {
 	return len(x.out.Candidates) - 1
 }
 
-// exclusionReason names the gate that excluded a credential slot: the
-// tenant's providers allowlist when it refuses the slot's provider (or the
-// slot maps to no provider — not provably inside the list), the launch's
-// routing pair order otherwise. The operator reads the knob that actually
-// holds the slot out.
+// exclusionReason names the gate that excluded a credential slot, through
+// the ONE judgement every message prescribing a remedy asks (excluderOfSlot):
+// the tenant's providers allowlist, or the launch's routing pair order.
 func (x *credentialPreview) exclusionReason(slot string) string {
-	if x.allowed != nil {
-		if prov := providerOfSlot(slot); prov == "" || !x.allowed[prov] {
-			return " Outside this launch's providers allowlist — the live launch seals no credential for it."
-		}
+	if excluderOfSlot(x.allowed, slot) == excludedByProviderAllowlist {
+		return " Outside this launch's providers allowlist — the live launch seals no credential for it."
 	}
 	return " Outside the launch's routing pair order — the live launch seals no credential for it."
 }
