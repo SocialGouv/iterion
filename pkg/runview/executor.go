@@ -652,11 +652,12 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	}
 
 	// The read tools' scope, shared by the registry (clawDefaults below)
-	// and the executor (WithClawReadScope): the engine's SetScratchDir push
+	// and the executor (WithClawReadScope): the engine's SetScratchDirs push
 	// — run start and resume, after the sandbox decision — attaches the
-	// run's ${PROJECT_SCRATCH_DIR} as a read root (#2650) to the VERY
-	// registry the agents call; a scope of runview's own would widen reads
-	// nobody makes.
+	// run's scratch read roots (#2650; the run family's subtree first, the
+	// shared ${PROJECT_SCRATCH_DIR} behind it while still referenced,
+	// #2869) to the VERY registry the agents call; a scope of runview's
+	// own would widen reads nobody makes.
 	//
 	// The scope's WORKSPACE is the executor's live workDir, through the one
 	// provider every workspace-scoped tool shares (#2870, #2889): the

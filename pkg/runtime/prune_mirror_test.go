@@ -1003,7 +1003,7 @@ func TestRestoreResumeWorkspace_UnresolvedContributionsSkipPrune(t *testing.T) {
 	}
 	eng := New(wf, s, nil, WithContributionsUnresolved())
 	r := &store.Run{ID: "unresolved-resume", WorkDir: workDir}
-	if err := eng.restoreResumeWorkspace(r); err != nil {
+	if err := eng.restoreResumeWorkspace(context.Background(), r); err != nil {
 		t.Fatalf("restoreResumeWorkspace: %v", err)
 	}
 

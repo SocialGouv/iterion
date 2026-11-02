@@ -56,7 +56,7 @@ func TestRegisterSandboxLocalTools_ScratchDirIsAReadRoot(t *testing.T) {
 
 	// The scope the proxy builds carries the scratch: the brief reads.
 	reg := tool.NewRegistry()
-	if err := registerSandboxLocalTools(reg, workspace, scratch, nil, 0, nil, false); err != nil {
+	if err := registerSandboxLocalTools(reg, workspace, []string{scratch}, nil, 0, nil, false); err != nil {
 		t.Fatalf("registerSandboxLocalTools: %v", err)
 	}
 	brief := filepath.Join(scratch, "briefs", "lot-01.md")
@@ -81,10 +81,64 @@ func TestRegisterSandboxLocalTools_ScratchDirIsAReadRoot(t *testing.T) {
 	// pre-#2650 envelope, or the AddExtraRoot call removed), the same brief
 	// is outside every root and the read refuses.
 	bare := tool.NewRegistry()
-	if err := registerSandboxLocalTools(bare, workspace, "", nil, 0, nil, false); err != nil {
+	if err := registerSandboxLocalTools(bare, workspace, nil, nil, 0, nil, false); err != nil {
 		t.Fatalf("registerSandboxLocalTools without scratch: %v", err)
 	}
 	if _, err := readFile(t, bare, brief); err == nil || !strings.Contains(err.Error(), "outside workspace") {
 		t.Fatalf("without the scratch root, read_file(%q) = %v, want a refusal", brief, err)
+	}
+}
+
+// The runner side of the #2869 narrowing: the launcher crosses the run
+// family's subtree FIRST and the shared project scratch behind it while
+// still referenced; the in-container scope must register BOTH, in that
+// order, and a path outside the two still refuses.
+func TestRegisterSandboxLocalTools_NarrowedRootsBothRead(t *testing.T) {
+	workspace := t.TempDir()
+	shared := t.TempDir()
+	runSubtree := filepath.Join(shared, "runs", "run-1")
+
+	for _, plant := range []string{
+		filepath.Join(runSubtree, "briefs", "own.md"),
+		filepath.Join(shared, "cache", "dismissed.json"),
+	} {
+		if err := os.MkdirAll(filepath.Dir(plant), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(plant, []byte("body of "+filepath.Base(plant)+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reg := tool.NewRegistry()
+	if err := registerSandboxLocalTools(reg, workspace, []string{runSubtree, shared}, nil, 0, nil, false); err != nil {
+		t.Fatalf("registerSandboxLocalTools: %v", err)
+	}
+	readFile := func(path string) (string, error) {
+		td, err := reg.Resolve("read_file")
+		if err != nil {
+			t.Fatalf("resolve read_file: %v", err)
+		}
+		raw, _ := json.Marshal(map[string]any{"path": path})
+		return td.Execute(context.Background(), raw)
+	}
+	if out, err := readFile(filepath.Join(runSubtree, "briefs", "own.md")); err != nil || !strings.Contains(out, "own.md") {
+		t.Fatalf("the run subtree did not read: %q, %v", out, err)
+	}
+	if out, err := readFile(filepath.Join(shared, "cache", "dismissed.json")); err != nil || !strings.Contains(out, "dismissed.json") {
+		t.Fatalf("the shared scratch did not read while referenced: %q, %v", out, err)
+	}
+	// The narrowed list alone (no shared root): the run subtree reads, the
+	// shared cache refuses.
+	narrow := tool.NewRegistry()
+	if err := registerSandboxLocalTools(narrow, workspace, []string{runSubtree}, nil, 0, nil, false); err != nil {
+		t.Fatalf("registerSandboxLocalTools narrowed: %v", err)
+	}
+	if _, err := func() (string, error) {
+		td, _ := narrow.Resolve("read_file")
+		raw, _ := json.Marshal(map[string]any{"path": filepath.Join(shared, "cache", "dismissed.json")})
+		return td.Execute(context.Background(), raw)
+	}(); err == nil || !strings.Contains(err.Error(), "outside workspace") {
+		t.Fatalf("with the narrowed list alone, the shared cache must refuse, got %v", err)
 	}
 }

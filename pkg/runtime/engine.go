@@ -146,12 +146,15 @@ type workDirSetter interface{ SetWorkDir(string) }
 
 type repoRootSetter interface{ SetRepoRoot(string) }
 
-// scratchDirSetter receives the run's resolved ${PROJECT_SCRATCH_DIR} so
-// the claw read tools accept it as a read root (#2650). Pushed from
+// scratchDirSetter receives the run's scratch READ ROOTS so the claw read
+// tools accept them (#2650, narrowed by #2869): the run family's own
+// subtree (${RUN_SCRATCH_DIR}) always, and the shared project scratch
+// (${PROJECT_SCRATCH_DIR}) only while the workflow still references it —
+// an empty shared means the narrowed scope stands alone. Pushed from
 // pushExecutorVars only, which every path reaches after e.repoRoot is
-// settled AND after the sandbox decision — the value is keyed on the
-// repo root and differs between host and container.
-type scratchDirSetter interface{ SetScratchDir(string) }
+// settled AND after the sandbox decision — the values are keyed on the
+// repo root and differ between host and container.
+type scratchDirSetter interface{ SetScratchDirs(run, shared string) }
 
 type varsSetter interface{ SetVars(map[string]any) }
 
@@ -182,6 +185,7 @@ type Engine struct {
 	workspaceTracker       workspacetrack.Tracker    // iterion-owned workspace versioning; nil = disabled (see WithWorkspaceTracker)
 	filePath               string                    // .bot source path stored verbatim as the launcher wrote it, set via WithFilePath; the sandbox bind-mount source absolutises at bundleResourceDir
 	parentRunID            string                    // immediate parent run, set via WithParentRunID for nested executions
+	runScratchOwner        string                    // run-family root ${RUN_SCRATCH_DIR} keys on, settled once per execution by runInitState/restoreRunEnv (#2869)
 	trust                  store.RunTrust            // who wrote the code in this run's workspace, set via WithTrust
 	repoSHAExpected        string                    // the commit the admission pinned, set via WithTrust
 	botSourceTier          string                    // which bot-resolution tier served the launch (store.BotSourceTier*), set via WithBotSourceTier; the #1959 isolation floor reads it

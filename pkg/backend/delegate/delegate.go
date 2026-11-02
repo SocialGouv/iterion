@@ -613,6 +613,16 @@ type Task struct {
 	// worktree they execute in.
 	RepoRoot string
 
+	// ScratchReadRoots are the run's scratch read roots as the RUNNER must
+	// see them (#2869): the run family's own subtree first, then the
+	// shared project scratch while the workflow still references it. The
+	// claw backend reads them at the sandbox crossing to narrow the
+	// in-container runner's read scope; every other backend and every
+	// unsandboxed execution ignores the field (their read scope lives in
+	// the registry's ReadScope). Empty means no narrowing was pushed —
+	// the crossing keeps its legacy project-scratch root.
+	ScratchReadRoots []string
+
 	// ReasoningEffort is the reasoning effort level sent on the wire.
 	// Valid values: "none", "low", "medium", "high", "xhigh", "max". The DSL also
 	// accepts "ultracode", but the runtime remaps that to "xhigh" before

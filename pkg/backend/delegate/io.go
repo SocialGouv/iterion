@@ -75,16 +75,29 @@ type IOTask struct {
 	WorkDir               string           `json:"work_dir,omitempty"`
 	BaseDir               string           `json:"base_dir,omitempty"`
 	RepoRoot              string           `json:"repo_root,omitempty"`
-	// ScratchDir is the run's ${PROJECT_SCRATCH_DIR} as the RUNNER sees it
-	// — the fixed container path on a sandbox crossing, where the host path
+	// ScratchDir is the run's scratch read root as the RUNNER sees it —
+	// the fixed container path on a sandbox crossing, where the host path
 	// would not exist. The runner's read tools (read_file, glob, grep)
 	// accept it as a read root beside the workspace (#2650): bots keep
 	// their run state there by design, and claude_code's unbounded Read
 	// reaches it, so without it a sandboxed claw node cannot read the
 	// run's own briefs. Empty from a launcher that predates it: the runner
-	// keeps its workspace-only scope. Never set from a Task field — the
-	// launcher writes it at the crossing (model.ClawBackend.runnerIOTask).
+	// keeps its workspace-only scope. Since the narrowing (#2869) it
+	// carries the FIRST of ScratchReadRoots — the run family's own
+	// subtree — when the launcher pushes one; the full ordered list is
+	// ScratchReadRoots. Written by the launcher at the crossing
+	// (model.ClawBackend.runnerIOTask) from the engine's SetScratchDirs
+	// push, which Task.ScratchReadRoots carried.
 	ScratchDir string `json:"scratch_dir,omitempty"`
+	// ScratchReadRoots is the ordered narrowing list (#2869): the run
+	// family's scratch subtree first, then the shared project scratch
+	// while the workflow still references it. A runner that reads it
+	// registers every entry; one that predates it registers ScratchDir
+	// alone (the narrowed subtree — an old runner never widens, it loses
+	// the shared root a still-referencing workflow wanted, the safe
+	// direction). Empty from a launcher that predates the narrowing:
+	// ScratchDir alone then holds the legacy project scratch.
+	ScratchReadRoots []string `json:"scratch_read_roots,omitempty"`
 	// SkillAllowlist is the run's pinned skill set as the RUNNER serves it
 	// (iterion#1719): name → path WORKSPACE-RELATIVE, so the value means the
 	// same thing on both sides of the sandbox wire (the host's absolute
@@ -280,6 +293,7 @@ func ToIOTask(t Task) IOTask {
 		WorkDir:                t.WorkDir,
 		BaseDir:                t.BaseDir,
 		RepoRoot:               t.RepoRoot,
+		ScratchReadRoots:       t.ScratchReadRoots,
 		ReasoningEffort:        t.ReasoningEffort,
 		Ultracode:              t.Ultracode,
 		SecretsHygiene:         t.SecretsHygiene,
@@ -345,6 +359,7 @@ func FromIOTask(t IOTask) Task {
 		WorkDir:                t.WorkDir,
 		BaseDir:                t.BaseDir,
 		RepoRoot:               t.RepoRoot,
+		ScratchReadRoots:       t.ScratchReadRoots,
 		ReasoningEffort:        t.ReasoningEffort,
 		Ultracode:              t.Ultracode,
 		SecretsHygiene:         t.SecretsHygiene,

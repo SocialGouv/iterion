@@ -72,28 +72,33 @@ read ceiling (64 MiB): zlib holds ~1000:1, so a compressed bomb — or
 many small streams summing to one — fails the read with an explicit
 `ErrBudgetExceeded` instead of allocating. claude_code reads PDFs
 natively; this is the same capability wired on claw (the parity
-doctrine above). The run's `${PROJECT_SCRATCH_DIR}` is a READ root of
-claw's `read_file`/`glob`/`grep`/`read_image` beside the workspace
+doctrine above). The run's scratch is a READ root of claw's
+`read_file`/`glob`/`grep`/`read_image` beside the workspace
 (#2650 — a bot's agents must read the briefs the run itself wrote
 there, as claude_code's unbounded `Read` does); other attachment paths
 stay outside the read scope — reach them through `bash`.
 
-What that root holds, measured: it is the PROJECT scratch dir —
-`<iterion home>/projects/<encoded repo root>/scratch`, the iterion home
-being `$ITERION_HOME` or `~/.iterion` — and it is shared between the
-runs of one repository on purpose, because a sub-bot child writes its
-fan-in there from its own container and docs-refresh, sec-audit-deps and
-wiki-gen treat it as cross-run memory (`pkg/runtime/scratch_sweep.go`,
-`applyScratchMount`, which creates it `0700` when it binds it). A claw
-agent can therefore read what other runs OF THE SAME REPOSITORY left
-there, scanner output included — the breadth claude_code's unbounded
-`Read` already had. It reaches no further: another repository encodes
-another key, another operator resolves another iterion home, and a
-driver with no host filesystem (kubernetes — a pod rejects `type=bind`)
-gets a container-local scratch that the teardown banks per run
-(ADR-106), so no host directory is shared into the pod at all.
-Narrowing the root to the run's own subtree is a separate change, and it
-has to keep the fan-in and those caches readable.
+Which scratch, since #2869: the run family's OWN subtree
+(`${RUN_SCRATCH_DIR}` — `<project scratch>/runs/<family root>`, where the
+family root is the run's id, or the topmost ancestor's for a sub-bot
+child) is always the first root, and the SHARED project scratch
+(`${PROJECT_SCRATCH_DIR}` — `<iterion home>/projects/<encoded repo
+root>/scratch`, the iterion home being `$ITERION_HOME` or `~/.iterion`)
+rides along as a second root only while the workflow still references it
+in a resolved var. A bot whose state all moved to `${RUN_SCRATCH_DIR}`
+reads no other run's leftovers; an unmigrated one keeps the breadth
+claude_code's unbounded `Read` already had. The fan-in survives the
+narrowing: a child and its parent key on the same family root, so the
+child writes where the parent reads. The cross-run caches that keep
+referencing the shared scratch (docs-refresh, sec-audit-deps, wiki-gen)
+keep it readable — that is exactly what "still references" measures. The
+reach never grew: another repository encodes another key, another
+operator resolves another iterion home, and a driver with no host
+filesystem (kubernetes — a pod rejects `type=bind`) gets a
+container-local scratch that the teardown banks per run (ADR-106); the
+narrowed list crosses the sandbox envelope as `IOTask.ScratchReadRoots`
+(`ScratchDir` carries its first entry for a runner that predates the
+list).
 
 Only reads take the extra root. `write_file` and `file_edit` are not
 scope-aware: a relative path rebases onto the workspace, an absolute one

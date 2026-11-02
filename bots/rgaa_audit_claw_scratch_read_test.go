@@ -73,7 +73,7 @@ func TestRgaaAuditScratchBriefsAreClawReadable(t *testing.T) {
 		t.Fatalf("without the scratch root, read_file(%q) must refuse with 'outside workspace', got %v", brief, err)
 	}
 
-	// The engine's SetScratchDir push, replayed.
+	// The engine's SetScratchDirs push, replayed.
 	scope.AddExtraRoot(scratch)
 	out, err := readBrief()
 	if err != nil {

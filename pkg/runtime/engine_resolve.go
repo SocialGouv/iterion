@@ -1124,6 +1124,7 @@ var engineSuppliedVarFns = map[string]func(e *Engine) string{
 	"BUNDLE_SKILLS_DIR":   (*Engine).bundleSkillsDirVarValue,
 	"PROJECT_MEMORY_DIR":  (*Engine).projectMemoryDirVarValue,
 	"PROJECT_SCRATCH_DIR": (*Engine).projectScratchDirVarValue,
+	"RUN_SCRATCH_DIR":     (*Engine).runScratchDirVarValue,
 }
 
 // varExpandFn returns the os.Expand callback var values are resolved
@@ -1249,6 +1250,56 @@ func (e *Engine) projectScratchDirVarValue() string {
 	}
 	return memory.WorkspaceScratchDir(base)
 }
+
+// runScratchDirVarValue resolves ${RUN_SCRATCH_DIR} — the run's OWN
+// scratch subtree (#2869), the `run_scratch` twin of the shared
+// ${PROJECT_SCRATCH_DIR}: <project scratch>/runs/<family root>. The
+// family root is the run's own id, or — for a sub-bot child — the topmost
+// ancestor's, so a fan-in family writes and reads ONE subtree (the child
+// fan-in the shared scratch carried) while a different run of the same
+// repository can no longer read what this one left. Sandboxed, the value
+// rides the same fixed container path the shared scratch resolves to —
+// the backing (bind or bank, ADR-106) is the project scratch's, so the
+// subtree crosses the envelope with it.
+//
+// Empty owner (a caller that never settled one) falls back to the shared
+// scratch rather than inventing a subtree keyed on nothing.
+func (e *Engine) runScratchDirVarValue() string {
+	base := e.projectScratchDirVarValue()
+	if e.runScratchOwner == "" {
+		return base
+	}
+	return filepath.Join(base, "runs", e.runScratchOwner)
+}
+
+// resolveRunScratchOwner settles the run-family root the per-run scratch
+// subtree keys on: the run itself, or the topmost persisted ancestor for
+// a sub-bot child. parentID is the run's recorded parent (e.parentRunID
+// at launch, r.ParentRunID on resume — the engine field is restored after
+// this runs, so the record's value is the one to walk). A missing parent
+// row is non-fatal — legacy launch paths create parent and child in
+// different stores — and the walk then keeps the last id it reached.
+// Called once per execution, before the first var resolution expands
+// ${RUN_SCRATCH_DIR}.
+func (e *Engine) resolveRunScratchOwner(ctx context.Context, runID, parentID string) string {
+	owner := runID
+	seen := map[string]bool{runID: true}
+	for id, hops := parentID, 0; id != "" && !seen[id] && hops < maxScratchLineageWalk; hops++ {
+		seen[id] = true
+		owner = id
+		r, err := e.store.LoadRun(ctx, id)
+		if err != nil || r == nil {
+			break
+		}
+		id = r.ParentRunID
+	}
+	return owner
+}
+
+// maxScratchLineageWalk bounds the parent-chain walk of
+// resolveRunScratchOwner — a corrupted cycle costs the subtree its root
+// keying, never the run its start.
+const maxScratchLineageWalk = 32
 
 // validateVarConstraints enforces the constraints a var declares —
 // `[enum: ...]` and `[matching: "<re>"]` — on launch-provided var values.

@@ -1127,6 +1127,10 @@ func (e *Engine) applyPresetFocus() {
 // pushExecutorVars resolve the scratch read root the way the nodes
 // about to execute will resolve ${PROJECT_SCRATCH_DIR}.
 func (e *Engine) runInitState(ctx context.Context, runID string, inputs map[string]any) *runState {
+	// Settle the run-family root before any var expansion: ${RUN_SCRATCH_DIR}
+	// keys on it (#2869), and a sub-bot child's fan-in subtree is its
+	// family's, not its own.
+	e.runScratchOwner = e.resolveRunScratchOwner(ctx, runID, e.parentRunID)
 	rs := e.newRunState(runID, inputs)
 	rs.ctx = ctx
 	rs.vars = e.resolveVars(inputs)
@@ -1134,7 +1138,7 @@ func (e *Engine) runInitState(ctx context.Context, runID string, inputs map[stri
 	if r, err := e.store.LoadRun(ctx, runID); err == nil && r != nil {
 		rs.isWorktree = r.Worktree
 	}
-	e.pushExecutorVars(rs.vars)
+	e.pushExecutorVars(ctx, runID, rs.vars)
 	return rs
 }
 

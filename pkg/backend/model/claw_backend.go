@@ -2221,11 +2221,22 @@ func (b *ClawBackend) runnerIOTask(task delegate.Task, funds map[string]credrout
 	ioTask.CredentialFunds = funds
 	ioTask.SettingsHooks = settingsHooksForWire(task.WorkDir, task.NodeID, task.Iteration, b.logger)
 	ioTask.Retry = b.retry.wire()
-	// The runner's read tools take the container's scratch as a second read
-	// root (#2650): the bot's briefs live under ${PROJECT_SCRATCH_DIR},
-	// outside the workspace bind, and claude_code's Read reaches them —
-	// without the root a sandboxed claw node reads none of them.
-	ioTask.ScratchDir = sandboxScratchContainerDir
+	// The runner's read tools take the container's scratch as a read root
+	// (#2650): the bot's briefs live under ${PROJECT_SCRATCH_DIR}, outside
+	// the workspace bind, and claude_code's Read reaches them — without the
+	// root a sandboxed claw node reads none of them. The narrowing (#2869):
+	// the engine's SetScratchDirs push rode the task (Task.ScratchReadRoots,
+	// container paths — the push happens after the sandbox decision), so the
+	// runner's roots are the run family's subtree FIRST, with the shared
+	// project scratch behind it only while the workflow still references
+	// it. ScratchDir carries the first root for a runner that predates the
+	// list; the legacy constant stays for a task whose push never happened
+	// (a direct backend use no engine drove).
+	if len(ioTask.ScratchReadRoots) > 0 {
+		ioTask.ScratchDir = ioTask.ScratchReadRoots[0]
+	} else {
+		ioTask.ScratchDir = sandboxScratchContainerDir
+	}
 	// The pinned skill set crosses workspace-RELATIVE: the host's absolute
 	// paths would not exist in the container, and the runner joins each
 	// entry against its own workspace (cmd/iterion registerSandboxLocalTools).

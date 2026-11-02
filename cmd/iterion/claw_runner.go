@@ -174,7 +174,15 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	// that built the call; the launcher relays them).
 	registry := model.NewSandboxRunnerRegistry(ioTask.CredentialFunds)
 	relayHooks := relayEventHooks(dispatcher, stderr)
-	toolDefs, toolErr := makeHybridToolDefs(ioTask.ToolDefs, dispatcher, workspace, ioTask.ScratchDir, registry, relayHooks, ioTask.SlashCommandMaxBytes, ioTask.SkillAllowlist, ioTask.SkillAllowlistArmed)
+	// The scratch read roots (#2650, narrowed by #2869): the ordered list
+	// when the launcher pushes one (run family's subtree first, the shared
+	// project scratch behind it while still referenced); ScratchDir alone
+	// for a launcher that predates the list.
+	scratchRoots := ioTask.ScratchReadRoots
+	if len(scratchRoots) == 0 && ioTask.ScratchDir != "" {
+		scratchRoots = []string{ioTask.ScratchDir}
+	}
+	toolDefs, toolErr := makeHybridToolDefs(ioTask.ToolDefs, dispatcher, workspace, scratchRoots, registry, relayHooks, ioTask.SlashCommandMaxBytes, ioTask.SkillAllowlist, ioTask.SkillAllowlistArmed)
 	if toolErr != nil {
 		return emitFatal(dispatcher, stderr, fmt.Errorf("build the in-container tool set: %w", toolErr))
 	}

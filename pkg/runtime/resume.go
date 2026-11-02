@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/memory"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/workspacetrack"
 )
@@ -220,7 +222,7 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 		e.onResumeAdmitted = nil
 		admitted()
 	}
-	e.restoreRunEnv(r)
+	e.restoreRunEnv(ctx, r)
 	e.parentRunID = r.ParentRunID
 	ctx, resourceCleanup, resourceErr := e.beginRunResources(ctx, runID, r.ParentRunID != "" && !r.Worktree)
 	if resourceErr != nil {
@@ -1935,7 +1937,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	// NOT used as the source of truth — re-resolving from r.Inputs
 	// ensures any post-launch engine fix (env-expansion, new var
 	// defaults) applies on resume too.
-	e.restoreRunEnv(r)
+	e.restoreRunEnv(ctx, r)
 
 	// Re-mirror bundle skills on resume so a `.botz` upgrade between
 	// the original launch and the resume picks up the new skill bodies
@@ -2039,10 +2041,10 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 
 	// Push the freshly-resolved vars into the executor so substitutions
 	// in tool commands and prompt templates see the same map the engine
-	// just built — and, with them, the scratch read root THIS resume's
+	// just built — and, with them, the scratch read roots THIS resume's
 	// startSandbox just pinned: a banked-and-restored scratch (ADR-106)
-	// must stay readable by the resumed node's agents (#2650).
-	e.pushExecutorVars(rs.vars)
+	// must stay readable by the resumed node's agents (#2650, #2869).
+	e.pushExecutorVars(ctx, runID, rs.vars)
 
 	// This runState came from a RESUME, so its first workspace boundary
 	// closes the window in which the run was stopped. An empty
@@ -2239,7 +2241,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run, prepared .
 		return err
 	}
 
-	if err := e.restoreResumeWorkspace(r); err != nil {
+	if err := e.restoreResumeWorkspace(ctx, r); err != nil {
 		return err
 	}
 
@@ -2283,10 +2285,10 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run, prepared .
 	// exactly how it was missed once already.
 	rs.resumed = true
 
-	// Vars and the scratch read root (#2650) in one push, after THIS
+	// Vars and the scratch read roots (#2650, #2869) in one push, after THIS
 	// resume's startSandbox pinned the value — the restored scratch
 	// (ADR-106) stays readable by the resumed node's agents.
-	e.pushExecutorVars(rs.vars)
+	e.pushExecutorVars(ctx, runID, rs.vars)
 
 	e.restampWorkflowSource(ctx, r)
 	// An answered human gate on the restart node never reaches this
@@ -2357,8 +2359,8 @@ func (e *Engine) claimForFailureResume(ctx context.Context, runID string, loaded
 // contributions + hooks (best-effort), and the preset's "## Focus" bias +
 // library skill hints so a failed-then-resumed run keeps running as the
 // selected sous-bot.
-func (e *Engine) restoreResumeWorkspace(r *store.Run) error {
-	e.restoreRunEnv(r)
+func (e *Engine) restoreResumeWorkspace(ctx context.Context, r *store.Run) error {
+	e.restoreRunEnv(ctx, r)
 	e.defaultWorkDir()
 	ClearMirroredTierMarkers(e.workDir, e.logger)
 	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
@@ -2494,7 +2496,13 @@ func decodeCommandNarrowing(raw json.RawMessage) *delegate.CommandNarrowingState
 // it always carries the right absolute path even when the worktree on
 // disk was removed (in which case the failing tool will produce a clear
 // error rather than silently ending up somewhere else).
-func (e *Engine) restoreRunEnv(r *store.Run) {
+//
+// restoreRunEnv also settles the run-family root ${RUN_SCRATCH_DIR} keys
+// on (#2869): the resume arms resolve vars right after this, and the
+// expansion must name the same subtree the launch's push made a read
+// root.
+func (e *Engine) restoreRunEnv(ctx context.Context, r *store.Run) {
+	e.runScratchOwner = e.resolveRunScratchOwner(ctx, r.ID, r.ParentRunID)
 	if r.WorkDir != "" {
 		e.workDir = r.WorkDir
 	} else {
@@ -2519,30 +2527,124 @@ func (e *Engine) restoreRunEnv(r *store.Run) {
 }
 
 // pushExecutorVars refreshes the executor's run-level state: the resolved
-// vars map, and the scratch read root that keys off the same engine
+// vars map, and the scratch read roots that key off the same engine
 // fields. It is the ONE site that pushes either, reached after every
 // resolveVars — the launch path through runInitState, the paused and
 // parallel and review and recovery resumes through resumeRebuildState,
 // the failure resume through resumeFromFailure.
 //
-// One site because the scratch root (#2650) is only right once BOTH facts
-// ${PROJECT_SCRATCH_DIR} keys on are settled: e.repoRoot (assigned in Run
-// after runPersistWorkspace, restored by restoreRunEnv on resume) and the
-// sandbox decision (startSandbox pins e.containerWorkspace, and a
+// One site because the scratch roots (#2650) are only right once BOTH
+// facts ${PROJECT_SCRATCH_DIR} keys on are settled: e.repoRoot (assigned
+// in Run after runPersistWorkspace, restored by restoreRunEnv on resume)
+// and the sandbox decision (startSandbox pins e.containerWorkspace, and a
 // sandboxed run's scratch is the fixed container path). Pushed any
 // earlier, a `worktree: auto` run attaches a root keyed on the WORKTREE
 // while the bots' briefs live under the repo-root-keyed dir the var
 // names, and claw's read tools keep refusing them — the defect #2650
-// set out to remove. Vars and root travel together so a seventh entry
+// set out to remove. Vars and roots travel together so a seventh entry
 // point inherits both; projectScratchDirVarValue is the same resolver
-// the var expansion dispatches to, so the root cannot drift from the
+// the var expansion dispatches to, so the roots cannot drift from the
 // path the nodes are told to write.
-func (e *Engine) pushExecutorVars(vars map[string]any) {
+//
+// The narrowing (#2869): the first root is the run family's OWN subtree
+// (${RUN_SCRATCH_DIR} — <project scratch>/runs/<family root>, so a
+// sub-bot child and its parent share one); the shared project scratch
+// rides along as a second root ONLY while the workflow still references
+// ${PROJECT_SCRATCH_DIR} in a resolved var — a bot whose state all moved
+// to ${RUN_SCRATCH_DIR} reads no other run's leftovers, and an unmigrated
+// one keeps today's posture. The read scope follows the paths the
+// workflow actually uses.
+func (e *Engine) pushExecutorVars(ctx context.Context, runID string, vars map[string]any) {
 	if sv, ok := e.executor.(varsSetter); ok {
 		sv.SetVars(vars)
 	}
 	if s, ok := e.executor.(scratchDirSetter); ok {
-		s.SetScratchDir(e.projectScratchDirVarValue())
+		if e.runScratchOwner == "" {
+			// Every entry point settles the owner before resolving vars;
+			// a seventh one that forgot gets the answer here rather than a
+			// subtree keyed on nothing.
+			e.runScratchOwner = e.resolveRunScratchOwner(ctx, runID, e.parentRunID)
+		}
+		shared := e.projectScratchDirVarValue()
+		if !varsReferencePath(vars, shared, e.runScratchDirVarValue()) {
+			shared = ""
+		}
+		e.ensureRunScratchDir()
+		s.SetScratchDirs(e.runScratchDirVarValue(), shared)
+	}
+}
+
+// varsReferencePath reports whether any resolved var value names dir or a
+// path beneath it — the signal that the workflow still keeps state under
+// the shared ${PROJECT_SCRATCH_DIR}, whose read root then rides along
+// (#2869). A value at-or-under except does NOT count: the run's own
+// subtree lives BENEATH the shared root, so a ${RUN_SCRATCH_DIR}
+// reference would otherwise read as a shared one. A false positive (a
+// value quoting the path without using it) attaches the shared root: the
+// permissive direction, never the narrowing of a path the run does read.
+func varsReferencePath(vars map[string]any, dir, except string) bool {
+	if dir == "" {
+		return false
+	}
+	dirClean := filepath.Clean(dir)
+	prefix := dirClean + string(filepath.Separator)
+	exceptClean := filepath.Clean(except)
+	exceptPrefix := exceptClean + string(filepath.Separator)
+	var found bool
+	var walk func(v any)
+	walk = func(v any) {
+		if found {
+			return
+		}
+		switch t := v.(type) {
+		case string:
+			clean := filepath.Clean(t)
+			if clean != dirClean && !strings.HasPrefix(clean, prefix) {
+				return
+			}
+			if except != "" && (clean == exceptClean || strings.HasPrefix(clean, exceptPrefix)) {
+				return
+			}
+			found = true
+		case map[string]any:
+			for _, vv := range t {
+				walk(vv)
+			}
+		case []any:
+			for _, vv := range t {
+				walk(vv)
+			}
+		}
+	}
+	for _, v := range vars {
+		walk(v)
+	}
+	return found
+}
+
+// ensureRunScratchDir creates the run family's scratch subtree on the
+// host, so the narrowed read root (#2869) exists from the run's start:
+// the scope skips a root that does not resolve, and an agent reading its
+// own brief before the first write would otherwise meet a refusal shaped
+// like "outside the read roots". Host-side covers the bind-backed
+// sandbox too (the container path is backed by this directory); a
+// container-local scratch (kubernetes) is created by the in-container
+// runner at registration. Best-effort: a mkdir failure degrades to the
+// pre-narrowing behaviour, never a run failure.
+func (e *Engine) ensureRunScratchDir() {
+	if e.runScratchOwner == "" {
+		return
+	}
+	base := e.repoRoot
+	if base == "" {
+		base = e.workDir
+	}
+	if base == "" {
+		return
+	}
+	dir := filepath.Join(memory.WorkspaceScratchDir(base), "runs", e.runScratchOwner)
+	if err := os.MkdirAll(dir, 0o700); err != nil && e.logger != nil {
+		e.logger.Warn("runtime: create the run scratch subtree %s: %v — the narrowed read root attaches when the first write creates it", dir, err)
 	}
 }
 

@@ -81,7 +81,7 @@ func TestResume_NonWorktreeSubdirKeepsLaunchScratchDir(t *testing.T) {
 	if want := memory.WorkspaceScratchDir(repo); launchVar != want {
 		t.Fatalf("launch ${PROJECT_SCRATCH_DIR} = %q, want the repo-root-keyed %q", launchVar, want)
 	}
-	launchRoot := launchSpy.lastScratch(t)
+	launchRun, launchShared := launchSpy.lastScratch(t)
 
 	// A fresh engine with NO WithWorkDir, as a runner restart sees the
 	// resume: the environment must be rebuilt from the record alone.
@@ -98,9 +98,13 @@ func TestResume_NonWorktreeSubdirKeepsLaunchScratchDir(t *testing.T) {
 	if resumedVar != launchVar {
 		t.Errorf("resume moved ${PROJECT_SCRATCH_DIR}: launch %q, resume %q — a crash-resume loses the scratch it filled", launchVar, resumedVar)
 	}
-	// The scratch read root pushed to claw travels with the var (#2650):
-	// same directory on both sides of the pause.
-	if resumedRoot := resumeSpy.lastScratch(t); resumedRoot != launchRoot {
-		t.Errorf("resume pushed scratch read root %q, want the launch's %q", resumedRoot, launchRoot)
+	// The scratch read roots pushed to claw travel with the var (#2650,
+	// #2869): same subtree, same shared root, on both sides of the pause.
+	resumedRun, resumedShared := resumeSpy.lastScratch(t)
+	if resumedRun != launchRun {
+		t.Errorf("resume pushed run scratch root %q, want the launch's %q", resumedRun, launchRun)
+	}
+	if resumedShared != launchShared {
+		t.Errorf("resume pushed shared scratch root %q, want the launch's %q", resumedShared, launchShared)
 	}
 }

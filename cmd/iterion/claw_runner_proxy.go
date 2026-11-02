@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -340,9 +341,17 @@ func relaySessionMirrorGap(d *proxyDispatcher, stderr io.Writer, reason string, 
 // exactly those entries — joined against THIS container's workspace — and
 // refuses everything else, so a checkout under review cannot plant a skill
 // under a walked root (iterion#1719). Disarmed, the workspace walk stands.
-func registerSandboxLocalTools(reg *tool.Registry, workspace, scratchDir string, subagent tool.SubagentRunner, commandMaxBytes int, skillAllowlist map[string]string, skillArmed bool) error {
+func registerSandboxLocalTools(reg *tool.Registry, workspace string, scratchRoots []string, subagent tool.SubagentRunner, commandMaxBytes int, skillAllowlist map[string]string, skillArmed bool) error {
 	readScope := tool.NewReadScope(workspace)
-	readScope.AddExtraRoot(scratchDir)
+	for _, root := range scratchRoots {
+		// A container-local root (kubernetes banks the scratch instead of
+		// binding it) does not exist until something creates it — and the
+		// scope skips a root that does not resolve, so the run's own
+		// subtree would refuse its first read. Best-effort: a mkdir
+		// failure degrades to that skip, never a registration failure.
+		_ = os.MkdirAll(root, 0o700)
+		readScope.AddExtraRoot(root)
+	}
 	if err := tool.RegisterClawBuiltinsWithScope(reg, readScope, nil); err != nil {
 		return err
 	}
@@ -410,22 +419,23 @@ func makeHybridToolDefs(
 	defs []delegate.IOToolDef,
 	d *proxyDispatcher,
 	workspace string,
-	scratchDir string,
+	scratchRoots []string,
 	modelReg *model.Registry,
 	hooks model.EventHooks,
 	commandMaxBytes int,
 	skillAllowlist map[string]string,
 	skillArmed bool,
 ) ([]delegate.ToolDef, error) {
-	return buildHybridToolDefs(defs, d, workspace, sandboxLocalToolRegistrar(scratchDir, modelReg, hooks, commandMaxBytes, skillAllowlist, skillArmed))
+	return buildHybridToolDefs(defs, d, workspace, sandboxLocalToolRegistrar(scratchRoots, modelReg, hooks, commandMaxBytes, skillAllowlist, skillArmed))
 }
 
 // sandboxLocalToolRegistrar closes the in-container registration over what a
 // child conversation needs: the model registry that resolves this container's
 // API clients, and the hooks that relay the child's turns to the launcher so
 // a sandboxed delegation is metered and auditable like an unsandboxed one.
-// scratchDir is the container's ${PROJECT_SCRATCH_DIR}, a read root for the
-// local read tools (#2650).
+// scratchRoots are the container's scratch read roots for the local read
+// tools (#2650) — the run family's subtree first, then the shared project
+// scratch while the workflow still references it (#2869).
 // commandMaxBytes is the launcher's own answer for the `command` tool's
 // ceiling, carried by the task (delegate.IOTask.SlashCommandMaxBytes).
 //
@@ -435,9 +445,9 @@ func makeHybridToolDefs(
 // one does (model.ParentLoop, which the in-container Execute fills from the
 // forwarded task). Lifecycle hooks are nil, as they are for this runner's own
 // loop — the launcher owns that layer.
-func sandboxLocalToolRegistrar(scratchDir string, modelReg *model.Registry, hooks model.EventHooks, commandMaxBytes int, skillAllowlist map[string]string, skillArmed bool) func(*tool.Registry, string) error {
+func sandboxLocalToolRegistrar(scratchRoots []string, modelReg *model.Registry, hooks model.EventHooks, commandMaxBytes int, skillAllowlist map[string]string, skillArmed bool) func(*tool.Registry, string) error {
 	return func(reg *tool.Registry, workspace string) error {
-		return registerSandboxLocalTools(reg, workspace, scratchDir,
+		return registerSandboxLocalTools(reg, workspace, scratchRoots,
 			model.NewSubagentRunner(modelReg, reg, hooks, nil, ""), commandMaxBytes, skillAllowlist, skillArmed)
 	}
 }

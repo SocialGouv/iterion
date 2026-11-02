@@ -331,6 +331,7 @@ var EngineSuppliedVarNames = []string{
 	"BUNDLE_SKILLS_DIR",
 	"PROJECT_MEMORY_DIR",
 	"PROJECT_SCRATCH_DIR",
+	"RUN_SCRATCH_DIR",
 }
 
 // referencesEngineSuppliedName reports whether reading raw as a var of
