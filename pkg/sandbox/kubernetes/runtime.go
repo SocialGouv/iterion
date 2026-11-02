@@ -57,8 +57,10 @@ const kubeBinaryName = "kubectl"
 // to scope sibling pod creation when the engine doesn't pass an
 // explicit namespace, and as the cheapest "are we in-cluster" probe
 // — the kubelet mounts it for every pod that hasn't opted out via
-// automountServiceAccountToken: false.
-const inClusterNamespacePath = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+// automountServiceAccountToken: false. A var so tests can point it
+// at a scratch path: on a pod-shaped host (every ARC runner) the real
+// mount exists, and a test that consults it measures the machine.
+var inClusterNamespacePath = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 
 // Detect reports whether this process can act as the kubernetes
 // driver: kubectl on PATH and the in-cluster service-account token

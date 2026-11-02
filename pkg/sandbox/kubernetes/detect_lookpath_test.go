@@ -28,6 +28,14 @@ func TestDetectResolvesNoKubectlUnderAPlantedPATH(t *testing.T) {
 	t.Setenv(envtrust.EnvPlantedNames, "")
 	t.Setenv("PATH", dir)
 
+	// This test judges the kubectl lookup order, not the machine: on a
+	// pod-shaped host (every ARC runner) the real in-cluster mount exists
+	// and Detect legitimately succeeds, so the namespace seam points at an
+	// absent scratch path and the probe fails where the test expects.
+	nsMount := inClusterNamespacePath
+	inClusterNamespacePath = filepath.Join(t.TempDir(), "namespace")
+	t.Cleanup(func() { inClusterNamespacePath = nsMount })
+
 	// The operator's own PATH resolves the binary; the probe then fails
 	// one check later, on the absent in-cluster namespace mount.
 	if _, _, err := Detect(); err == nil || !strings.Contains(err.Error(), "not running in a kubernetes pod") {
