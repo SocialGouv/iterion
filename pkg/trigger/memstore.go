@@ -87,6 +87,38 @@ func (m *MemorySubscriptionStore) MarkRunOutcome(_ context.Context, id, runID, s
 	return nil
 }
 
+// SetCredentialPins replaces the two pin maps and touches nothing else:
+// the health stamps and every other field stay as the store holds them,
+// because the sweep calling this read the row in a list moments ago and a
+// health write landing in between must survive.
+func (m *MemorySubscriptionStore) SetCredentialPins(_ context.Context, id string, keyOverrides, secretOverrides map[string]string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.items[id]
+	if !ok {
+		return ErrSubscriptionNotFound
+	}
+	setPinMap(&s.KeyOverrides, keyOverrides)
+	setPinMap(&s.SecretOverrides, secretOverrides)
+	m.items[id] = s
+	return nil
+}
+
+// setPinMap stores m as the field's whole value: nil or empty clears it, a
+// non-empty map replaces it wholesale — a partial map would read as the
+// operator keeping pins the caller dropped.
+func setPinMap(dst *map[string]string, m map[string]string) {
+	if len(m) == 0 {
+		*dst = nil
+		return
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	*dst = out
+}
+
 func (m *MemorySubscriptionStore) Delete(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

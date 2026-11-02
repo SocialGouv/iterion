@@ -138,6 +138,42 @@ func (s *MongoConfigStore) DisableProvision(ctx context.Context, id, integration
 	return nil
 }
 
+// SetCredentialPins writes the two pin maps and nothing else — the Mongo
+// twin of DisableProvision's targeted write: $set or $unset per map, plus a
+// version bump so a pre-sweep snapshot fails its fence and re-reads rather
+// than writing the swept pin back.
+func (s *MongoConfigStore) SetCredentialPins(ctx context.Context, id string, keyOverrides, secretOverrides map[string]string) error {
+	set, unset := bson.M{}, bson.M{}
+	if len(keyOverrides) > 0 {
+		set["key_overrides"] = keyOverrides
+	} else {
+		unset["key_overrides"] = ""
+	}
+	if len(secretOverrides) > 0 {
+		set["secret_overrides"] = secretOverrides
+	} else {
+		unset["secret_overrides"] = ""
+	}
+	update := bson.M{"$inc": bson.M{"version": 1}}
+	if len(set) > 0 {
+		update["$set"] = set
+	}
+	if len(unset) > 0 {
+		update["$unset"] = unset
+	}
+	r, err := s.kit.Coll().UpdateOne(ctx, bson.M{"_id": id}, update)
+	if err != nil {
+		return fmt.Errorf("webhooks: set config credential pins: %w", err)
+	}
+	if r.MatchedCount == 0 {
+		if _, err := s.Get(ctx, id); err != nil {
+			return err
+		}
+		return ErrConflict
+	}
+	return nil
+}
+
 func (s *MongoConfigStore) Delete(ctx context.Context, id string) error {
 	return s.kit.Delete(ctx, id, "delete config")
 }

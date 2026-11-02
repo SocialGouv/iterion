@@ -26,6 +26,17 @@ type ConfigStore interface {
 	// DisableProvision disables one immutable endpoint without replacing policy.
 	// It also works on a frozen migration source; authority must match.
 	DisableProvision(ctx context.Context, id, integrationID string) error
+	// SetCredentialPins replaces ONLY a config's credential pins — the two
+	// machine-lane maps (key_overrides: provider → api key id,
+	// secret_overrides: secret name → secret id). A nil or empty map clears
+	// its field. A TARGETED field write rather than a whole-config
+	// replacement: the credential delete sweep calls it for a config it
+	// only listed, so a read-modify-replace would race an operator's
+	// concurrent edit and lose or resurrect whole settings arms. The write
+	// still bumps version, so an editor holding a pre-sweep snapshot
+	// conflicts and re-reads instead of writing the swept pin back.
+	// ErrNotFound when the config is gone.
+	SetCredentialPins(ctx context.Context, id string, keyOverrides, secretOverrides map[string]string) error
 	Delete(ctx context.Context, id string) error
 	ListByTenant(ctx context.Context, tenantID string) ([]Config, error)
 	MarkUsed(ctx context.Context, id string, t time.Time) error

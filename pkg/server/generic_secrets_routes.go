@@ -221,7 +221,20 @@ func (s *Server) handleDeleteGenericSecret(w http.ResponseWriter, r *http.Reques
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	s.auditTenant(r, rec.ScopeTeamID, "secret.deleted", "secret", rec.ID, map[string]any{"name": rec.Name})
+	// The chokepoint's half of the pin guards (see handleDeleteApiKeyIn):
+	// a secret_overrides pin naming this record would outlive it and leave
+	// the workflow secret unfilled in silence — on every fire, forever, on
+	// a cron subscription.
+	swept, sweepErr := s.sweepCredentialPins(r.Context(), rec.ScopeTeamID, rec.ID)
+	meta := map[string]any{"name": rec.Name}
+	if len(swept) > 0 {
+		meta["pins_cleared"] = swept
+	}
+	s.auditTenant(r, rec.ScopeTeamID, "secret.deleted", "secret", rec.ID, meta)
+	if sweepErr != nil {
+		httpError(w, http.StatusInternalServerError, "secret %s deleted, but clearing the pins that name it failed: %v — a surviving pin keeps its workflow secret unfilled until it is cleared", rec.ID, sweepErr)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -67,6 +67,31 @@ func (s *MemoryConfigStore) DisableProvision(_ context.Context, id, integrationI
 	return nil
 }
 
+func (s *MemoryConfigStore) SetCredentialPins(_ context.Context, id string, keyOverrides, secretOverrides map[string]string) error {
+	_, err := s.kit.Mutate(id, func(c *Config) bool {
+		setStringMap(&c.KeyOverrides, keyOverrides)
+		setStringMap(&c.SecretOverrides, secretOverrides)
+		c.Version++
+		return true
+	})
+	return err
+}
+
+// setStringMap stores m as the field's whole value: nil or empty clears it,
+// a non-empty map replaces it wholesale. The store never merges — a partial
+// map would read as the operator keeping pins the caller dropped.
+func setStringMap(dst *map[string]string, m map[string]string) {
+	if len(m) == 0 {
+		*dst = nil
+		return
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	*dst = out
+}
+
 func (s *MemoryConfigStore) Delete(_ context.Context, id string) error {
 	return s.kit.Delete(id)
 }

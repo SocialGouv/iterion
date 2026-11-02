@@ -41,6 +41,16 @@ type SubscriptionStore interface {
 	// when the row is gone.
 	MarkRunOutcome(ctx context.Context, id, runID, status, errMsg, errCode string, at time.Time) error
 
+	// SetCredentialPins replaces ONLY a subscription's credential pins —
+	// the two machine-lane maps (key_overrides: provider → api key id,
+	// secret_overrides: secret name → secret id). A nil or empty map clears
+	// its field. A TARGETED field write under the same discipline as
+	// MarkLaunchError: the credential delete sweep calls it for a row it
+	// only listed, so a read-modify-replace would clobber a health stamp
+	// landing in between. ErrSubscriptionNotFound when the row is gone —
+	// to the sweep, a row that died mid-flight has no pins left to clear.
+	SetCredentialPins(ctx context.Context, id string, keyOverrides, secretOverrides map[string]string) error
+
 	// ListByTenant returns every subscription owned by a tenant
 	// ("" tenant = the local single-host scope).
 	ListByTenant(ctx context.Context, tenantID string) ([]Subscription, error)

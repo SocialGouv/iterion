@@ -446,6 +446,17 @@ through the same `validateKeyOverrides`, so every arm above answers the
 subscription lane identically. On update, a request that omits the field
 keeps the stored pin; an empty map is the explicit clear.
 
+**A pin does not outlive its subject.** Deleting a pinned api key or stored
+secret sweeps every pin that names it — webhook configs and trigger
+subscriptions of the same tenant — at the delete route, instead of leaving
+a pin that resolves to nothing (the resolver drops an unresolvable pin id
+in silence and the walk seals the team's default, exactly the replacement
+the write-time guards refuse). Revocation never waits on a config edit:
+the delete's audit line lists the `pins_cleared` surfaces, and a launch
+after the sweep falls back exactly as an explicit clear would. A sweep the
+store refuses answers 5xx — the client body stays opaque, the logged cause
+names both halves: the deletion that happened and the pins still standing.
+
 **A pin is honoured or refused, never ignored.** Two shapes would be
 honoured by nobody: a provider the walk does not spend yet (the
 `openai_compatible` gateway, until #2005 PR-C') and a key the launching

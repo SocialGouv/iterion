@@ -762,7 +762,22 @@ func (s *Server) handleDeleteApiKeyIn(w http.ResponseWriter, r *http.Request, sc
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	s.auditApiKey(r, key.ScopeTeamID, "deleted", key.ID, map[string]any{"name": key.Name, "provider": string(key.Provider)})
+	// The chokepoint's half of the pin guards: a pin that passed its write
+	// validation outlives its key unless swept, and a stored pin naming a
+	// dead key seals the team's default in silence — the replacement the
+	// write-time validator exists to refuse. Revocation must not wait on a
+	// config edit, so the delete sweeps; the audit line carries the
+	// surfaces that lost a pin.
+	swept, sweepErr := s.sweepCredentialPins(r.Context(), key.TenantID, key.ID)
+	meta := map[string]any{"name": key.Name, "provider": string(key.Provider)}
+	if len(swept) > 0 {
+		meta["pins_cleared"] = swept
+	}
+	s.auditApiKey(r, key.ScopeTeamID, "deleted", key.ID, meta)
+	if sweepErr != nil {
+		httpError(w, http.StatusInternalServerError, "api key %s deleted, but clearing the pins that name it failed: %v — a surviving pin still reads as live and seals the team default until it is cleared", key.ID, sweepErr)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

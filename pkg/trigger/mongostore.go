@@ -131,6 +131,39 @@ func (s *MongoSubscriptionStore) Delete(ctx context.Context, id string) error {
 	return mongoutil.DeleteOneChecked(ctx, s.coll, bson.M{"_id": id}, ErrSubscriptionNotFound, "trigger: delete subscription")
 }
 
+// SetCredentialPins writes the two pin maps and nothing else — the same
+// targeted-field discipline as MarkLaunchError: $set or $unset per map,
+// never a whole-row replace, so a health stamp landing between the sweep's
+// list and this write survives.
+func (s *MongoSubscriptionStore) SetCredentialPins(ctx context.Context, id string, keyOverrides, secretOverrides map[string]string) error {
+	set, unset := bson.M{}, bson.M{}
+	if len(keyOverrides) > 0 {
+		set["key_overrides"] = keyOverrides
+	} else {
+		unset["key_overrides"] = ""
+	}
+	if len(secretOverrides) > 0 {
+		set["secret_overrides"] = secretOverrides
+	} else {
+		unset["secret_overrides"] = ""
+	}
+	update := bson.M{}
+	if len(set) > 0 {
+		update["$set"] = set
+	}
+	if len(unset) > 0 {
+		update["$unset"] = unset
+	}
+	res, err := s.coll.UpdateOne(ctx, bson.M{"_id": id}, update)
+	if err != nil {
+		return fmt.Errorf("trigger: set subscription credential pins: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrSubscriptionNotFound
+	}
+	return nil
+}
+
 func (s *MongoSubscriptionStore) ListByTenant(ctx context.Context, tenantID string) ([]Subscription, error) {
 	return s.find(ctx, bson.M{"tenant_id": tenantID})
 }
