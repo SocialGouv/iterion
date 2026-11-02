@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/supervise"
 )
 
 // metricsEmitter wraps a model.EventEmitter and taps llm_step_finished
@@ -713,4 +714,28 @@ func toFloat(raw any) float64 {
 		return float64(v)
 	}
 	return 0
+}
+
+// meterSupervisorSpecs wires each surviving supervisor spec's evaluation
+// cost onto the run's usage ledger (F12): the OnUsage sink books the route
+// the evaluation will actually resolve — the pin, the env default, the
+// ctx-funded detector family, the same resolution preflightSupervisors
+// judged; a private re-derivation would file tokens under a name neither
+// the walk nor the rates recognise — under its supervisor:<name> source,
+// the same route totals recordCredentialSpend meters per credential at the
+// run's end.
+//
+// The slice ELEMENTS carry the sink, never copies: StartDeclared receives
+// this slice's backing array, and a sink set on a copied struct books
+// nowhere — the evaluation spends, the ledger stays empty.
+func meterSupervisorSpecs(ctx context.Context, specs []supervise.Spec, usage *metricsEmitter) {
+	for i := range specs {
+		resolved, rerr := supervise.ResolveModel(ctx, specs[i].Model, specs[i].ProviderHint)
+		if rerr != nil {
+			resolved = ""
+		}
+		specs[i].OnUsage = func(in, out int) {
+			usage.addRoute(delegate.BackendClaw, resolved, "supervisor:"+specs[i].Name, 0, int64(in), int64(out), int64(in)+int64(out))
+		}
+	}
 }

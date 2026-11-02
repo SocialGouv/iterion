@@ -1,11 +1,13 @@
 package runner
 
 import (
+	"context"
 	"sync"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/supervise"
 )
 
 // The locked entry the OnUsage closure calls must stay locked: the sink
@@ -33,4 +35,28 @@ func TestSupervisorUsageSink_IsRaceFreeAgainstTheEventStream(t *testing.T) {
 		}
 	}()
 	wg.Wait()
+}
+
+// The wiring a source pin cannot see: the sink must land on the slice
+// ELEMENT StartDeclared receives, not on a copy of it — a sink set on a
+// copied struct books nowhere, and every supervisor evaluation spends
+// while the run's ledger stays empty (Revi #2721 R1: the OnUsage closure
+// was assigned to a copy of specs[i] and never reached StartDeclared).
+func TestMeterSupervisorSpecs_TheSinkRidesTheSliceElement(t *testing.T) {
+	specs := []supervise.Spec{{Name: "pacer", Model: "openai_compatible/does-not-resolve"}}
+	m := newMetricsEmitter(nil, nil)
+	meterSupervisorSpecs(context.Background(), specs, m)
+	if specs[0].OnUsage == nil {
+		t.Fatal("meterSupervisorSpecs left OnUsage nil on the slice element — StartDeclared would receive a sink-less spec and every evaluation would spend off the ledger")
+	}
+	specs[0].OnUsage(10, 5)
+	// A gateway id resolves to itself — the route the evaluation books on
+	// names the wire id the walk judged.
+	got, ok := m.byRoute[routeKey{backend: delegate.BackendClaw, model: "openai_compatible/does-not-resolve", source: "supervisor:pacer"}]
+	if !ok {
+		t.Fatalf("the sink booked no supervisor:pacer route; ledger: %v", m.byRoute)
+	}
+	if got.inputTokens != 10 || got.outputTokens != 5 || got.aggregateTokens != 15 {
+		t.Errorf("the sink booked (%d, %d, %d); want (10, 5, 15)", got.inputTokens, got.outputTokens, got.aggregateTokens)
+	}
 }

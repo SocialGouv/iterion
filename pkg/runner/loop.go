@@ -17,7 +17,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	"io"
 	"net/http"
@@ -3062,21 +3061,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// books its tokens on its own route (source supervisor:<name>), the
 		// same route totals recordCredentialSpend meters per credential at
 		// the run's end.
-		for i := range specs {
-			spec := specs[i]
-			// Book on the route the evaluation will actually resolve —
-			// the pin, the env default, the ctx-funded detector family —
-			// the same resolution preflightSupervisors judged; a private
-			// re-derivation would file tokens under a name neither the
-			// walk nor the rates recognise.
-			resolved, rerr := supervise.ResolveModel(ctx, spec.Model, spec.ProviderHint)
-			if rerr != nil {
-				resolved = ""
-			}
-			spec.OnUsage = func(in, out int) {
-				usage.addRoute(delegate.BackendClaw, resolved, "supervisor:"+spec.Name, 0, int64(in), int64(out), int64(in)+int64(out))
-			}
-		}
+		meterSupervisorSpecs(ctx, specs, usage)
 		stopSup := supervise.StartDeclared(ctx, superviseHub, &supervise.StoreInjector{Store: r.cfg.Store},
 			msg.RunID, specs, runLogger)
 		defer stopSup()
