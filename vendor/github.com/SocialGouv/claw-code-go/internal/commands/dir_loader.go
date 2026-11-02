@@ -121,8 +121,9 @@ func stripFrontmatter(content string) (body, description string, keys []string, 
 	body = content
 	if fm, rest, ok := splitFrontmatter(content); ok {
 		body = rest
-		for _, line := range strings.Split(fm, "\n") {
-			line = strings.TrimSpace(line)
+		lines := strings.Split(fm, "\n")
+		for li := 0; li < len(lines); li++ {
+			line := strings.TrimSpace(lines[li])
 			i := strings.IndexByte(line, ':')
 			if i <= 0 {
 				continue
@@ -137,6 +138,13 @@ func stripFrontmatter(content string) (body, description string, keys []string, 
 				description = strings.Trim(strings.TrimSpace(line[i+1:]), `"'`)
 			case "allowed-tools":
 				allowedTools = parseAllowedTools(line[i+1:])
+				if allowedTools == nil {
+					// The YAML block-list shape the reference also accepts:
+					// the value sits on the FOLLOWING lines as indented
+					// `- entry` items. Without the lookahead the shape read
+					// as a declared EMPTY list — fail-closed, but wrong.
+					allowedTools, li = parseAllowedToolsBlock(lines, li)
+				}
 				if allowedTools == nil {
 					// The key is DECLARED: an empty list is a narrowing to
 					// nothing, not an absent restriction — keep it non-nil.
@@ -171,6 +179,31 @@ func parseAllowedTools(raw string) []string {
 		}
 	}
 	return out
+}
+
+// parseAllowedToolsBlock reads the YAML block-list shape of an
+// `allowed-tools:` key whose own line carried no value: the FOLLOWING lines,
+// each an indented `- entry`. It returns the entries and the index of the
+// last line consumed, so the caller's loop resumes past them. A first line
+// that is not a block item ends the list immediately (nil, from) — the key
+// then reads as a declared empty list.
+func parseAllowedToolsBlock(lines []string, from int) ([]string, int) {
+	var out []string
+	for from+1 < len(lines) {
+		next := lines[from+1]
+		if !strings.HasPrefix(next, " ") && !strings.HasPrefix(next, "\t") {
+			break
+		}
+		entry := strings.TrimSpace(next)
+		if !strings.HasPrefix(entry, "-") {
+			break
+		}
+		from++
+		if t := strings.Trim(strings.TrimSpace(entry[1:]), `"'`); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out, from
 }
 
 // splitFrontmatter returns the frontmatter block and the body that follows
