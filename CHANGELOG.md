@@ -3,6 +3,32 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.2.0](https://github.com/SocialGouv/iterion/compare/v5.1.0...v5.2.0) (2026-11-02)
+
+### Features
+
+* **claw:** honour a workspace command's allowed-tools frontmatter ([#1717](https://github.com/SocialGouv/iterion/issues/1717)) ([685b427](https://github.com/SocialGouv/iterion/commit/685b427dae98b22d8426c1791820a70a1f3fd904))
+
+    <details><summary>why</summary>
+
+    A command that narrows itself with allowed-tools: was bounded on claude_code and ran with the node's full tool set on claw, on both surfaces of the capability. It now narrows on both:
+
+    </details>
+* **runner:** serve the sandboxed board/runs MCP transport on the cloud runner pod ([#2632](https://github.com/SocialGouv/iterion/issues/2632)) ([1c1c94d](https://github.com/SocialGouv/iterion/commit/1c1c94d1448c57d4ac4b35389f6476b0d13826d6))
+
+    <details><summary>why</summary>
+
+    A sandboxed node with board.* capabilities on iterion.cloud could not write: the runner pod built its engine without runtime.WithBoardMCP and its executor without BoardRegister/BoardRevoke, so the delegate disabled the board MCP and Acci/rgaa-audit ran with post_to_board=false.
+
+    </details>
+* **runner:** the stall onset self-heals the runs consumer ([#2904](https://github.com/SocialGouv/iterion/issues/2904)) ([7581a99](https://github.com/SocialGouv/iterion/commit/7581a994bdd56e2041f383afb2a5f7a66825fa5f)), references [#2890](https://github.com/SocialGouv/iterion/issues/2890)
+
+    <details><summary>why</summary>
+
+    The Oct 30 wedge froze the durable consumer's raft state - deliveries stopped while pull requests kept waiting - and never self-resolved: only deleting the consumer cleared it, by hand, 15 hours later (issue #2890). The stall detector's onset now carries the heal: Recreate deletes and re-creates the durable consumer, guarded by DisableStallSelfHeal (ITERION_RUNNER_DISABLE_STALL_SELFHEAL, wired through pkg/config and cmd), a pure three-arm decision function (off switch / unreadable posture /…
+
+    </details>
+
 ## [5.1.0](https://github.com/SocialGouv/iterion/compare/v5.0.2...v5.1.0) (2026-11-02)
 
 ### Features
