@@ -136,11 +136,14 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 	})
 
 	t.Run("the last duplicate declaration wins", func(t *testing.T) {
-		// go-yaml — helm's values parser — merges duplicate keys and
-		// multiple documents last-wins (proven on helm 4.1.1: a repeated
-		// server block and a second --- document both render the last
-		// value through helm template), so the watch must follow the last
-		// declaration whichever way the file spells it — a repeated block
+		// go-yaml — helm's values parser — scopes duplicate declarations
+		// (both rules proven on helm 4.1.1 through helm template): inside
+		// one document a repeated server block replaces the whole map, so
+		// a knob the earlier block alone held renders no field, while ---
+		// documents merge per key, so a knob from an earlier document
+		// survives a later one that does not repeat it. Both-declared
+		// forms render the last value through either rule, so the watch
+		// must follow the declaration the install runs with — a block
 		// left at first-wins sizes the watch for a deadline the install
 		// does not have, the #2780 failure with every gate green.
 		for _, tc := range []struct{ name, content, want string }{
@@ -159,6 +162,34 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 				}
 			})
 		}
+		t.Run("a block re-open drops the declaration the earlier block held", func(t *testing.T) {
+			// go-yaml replaces the whole server map when the block repeats
+			// inside one document: the knob only in the earlier block
+			// renders nothing and Kubernetes' 600 s default applies. The
+			// guard must refuse on the unset path — sizing the watch from
+			// the 600 it remembers is the #2780 failure with the guard
+			// green, and this is the shape rounds 1-6 missed.
+			_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: 600\nserver:\n  replicas: 1\n"))
+			if err == nil {
+				t.Fatalf("chart-kind-wait sized the watch from the earlier block's 600 — go-yaml replaces the whole server map on the re-open, no deadline renders and Kubernetes' default 600 s applies")
+			}
+			if !strings.Contains(stderr, "does not set server.progressDeadlineSeconds") {
+				t.Fatalf("refusal does not route to the unset path — stderr: %s", strings.TrimSpace(stderr))
+			}
+		})
+		t.Run("a document boundary keeps the declaration the earlier document held", func(t *testing.T) {
+			// helm merges --- documents per key: the knob from the earlier
+			// document renders (helm 4.1.1, probe-measured) — the mirror
+			// witness that keeps the drop from overshooting onto every
+			// block open.
+			stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: 600\n---\nserver:\n  replicas: 1\n"))
+			if err != nil {
+				t.Fatalf("chart-kind-wait refused a knob helm keeps across the document boundary — %s", strings.TrimSpace(stderr))
+			}
+			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
+				t.Fatalf("chart-kind-wait = %q, want %q — the 600 from the earlier document survives the --- boundary", got, want)
+			}
+		})
 		t.Run("a last zero hides the earlier deadline", func(t *testing.T) {
 			_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: 600\nserver:\n  progressDeadlineSeconds: 0\n"))
 			if err == nil {
@@ -491,6 +522,51 @@ func TestChartKindWaitRefusesFlowAndGluedComment(t *testing.T) {
 		for _, want := range []string{"server.progressDeadlineSeconds", "the only form this guard reads"} {
 			if !strings.Contains(stderr, want) {
 				t.Fatalf("refusal does not name %q — stderr: %s", want, strings.TrimSpace(stderr))
+			}
+		}
+	})
+
+	t.Run("the indented content of a block scalar is not flow", func(t *testing.T) {
+		// A literal or folded block scalar's content is raw text: go-yaml
+		// reads no key in it, so a `{` or `[` opening one of its lines is
+		// a character of the string, not a flow collection — helm 4.1.1
+		// installs the file (probe-measured on the nested blobs below,
+		// the shapes the values schema allows) and the watch must be
+		// sized, not refused. The scalar ends at the line no deeper than
+		// its opener, and reading resumes there.
+		for _, form := range []string{
+			"server:\n  progressDeadlineSeconds: 600\n  notes: |\n    {\n      \"a\": [1,\n        2]\n    }\n",
+			"nats:\n  blob: >\n    [1,\n     2]\nserver:\n  progressDeadlineSeconds: 600\n",
+			"server:\n  notes: |\n    {\n  progressDeadlineSeconds: 600\n",
+		} {
+			stdout, stderr, err := runKindWait(t, valuesFile(t, form))
+			if err != nil {
+				t.Fatalf("chart-kind-wait refused %q — block scalar content is a string, not flow, and helm installs it; stderr: %s", form, strings.TrimSpace(stderr))
+			}
+			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
+				t.Fatalf("chart-kind-wait = %q, want %q on %q", got, want, form)
+			}
+		}
+	})
+
+	t.Run("a comment-only value is refused as unset, not as a refused string", func(t *testing.T) {
+		// `progressDeadlineSeconds: # note` is null to go-yaml: helm
+		// renders no field (probe-measured: zero occurrences) and
+		// Kubernetes' 600 s default applies. The quoted "#x" form lands
+		// in the manifest as `progressDeadlineSeconds: #x`, where the
+		// whitespace before the # starts a comment and the field reads
+		// back empty — same verdict. The refusal routes to the unset
+		// path, not to an API refusal the install never sees.
+		for _, form := range []string{"# note", "#", `"#x"`} {
+			_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: "+form+"\n"))
+			if err == nil {
+				t.Fatalf("chart-kind-wait accepted the comment-only value %q — no deadline renders and Kubernetes' default 600 s applies", form)
+			}
+			if !strings.Contains(stderr, "does not set server.progressDeadlineSeconds") {
+				t.Fatalf("refusal of %q does not route to the unset path — stderr: %s", form, strings.TrimSpace(stderr))
+			}
+			if strings.Contains(stderr, "not an integer") {
+				t.Fatalf("refusal of %q still claims the API refuses the Deployment — helm renders no field to refuse", form)
 			}
 		}
 	})

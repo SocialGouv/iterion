@@ -11,11 +11,15 @@
 # A values file that leaves the knob unset, or sets it to 0, is refused:
 # unset means Kubernetes' 600 s default applies, and a 0 renders through a
 # `with` that skips it — either would silently shrink the watch. The knob
-# is the last server.progressDeadlineSeconds declaration in the file:
-# go-yaml — the parser helm reads values with — merges duplicate keys and
-# multiple documents last-wins (proven on helm 4.1.1: a repeated `server:`
-# block and a second `---` document both render the last value), so the
-# last declaration is the deadline the install runs.
+# is the server.progressDeadlineSeconds declaration the install runs
+# with, and go-yaml — the parser helm reads values with — scopes which
+# one that is (both rules measured on helm 4.1.1): inside one document a
+# repeated `server:` block replaces the whole map, so a knob declared
+# only in the earlier block renders no field and Kubernetes' 600 s
+# default applies, while helm merges `---` documents per key, so a knob
+# from an earlier document survives a later one that does not repeat it.
+# The reader drops the knob when a column-0 `server:` line re-opens the
+# block in the same document and keeps it across a `---` boundary.
 #
 # The extractor reads the plain block form: the knob nested under
 # `server:` at whatever uniform indent the block's keys use — the block's
@@ -32,9 +36,15 @@
 # one line down is read from a map it does not belong to (helm 4.1.1
 # renders that file clean with no server deadline, and Kubernetes' 600 s
 # default applies at install) — the file is refused at the line that
-# opens the flow. Braces quoted or commented away open nothing, and the
-# braces of a plain value are the value's own (`a:{b`, `https://…/{id}`
-# are one scalar to go-yaml), so neither is refused as flow. (The
+# opens the flow. The indented content of a literal or folded block
+# scalar is raw text to go-yaml — no line of it is a key — so the flow
+# scan skips those lines, and a `{` or `[` opening one is a character of
+# the string, not a flow collection (helm 4.1.1 installs such a file); a
+# line no deeper than the opener ends the scalar and is read like the
+# rest of the file. Braces quoted or commented away open nothing, and
+# the braces of a plain value are the value's own (`a:{b`,
+# `https://…/{id}` are one scalar to go-yaml), so neither is refused as
+# flow. (The
 # merge-key route cannot reach an install either way: the chart's values
 # schema rejects the top-level anchor holder it needs.)
 #
@@ -57,7 +67,13 @@
 # trimmed, so such a file is not refused. A `#` glued to the value is
 # part of it: go-yaml hands `600#x` over as the string it spells — helm
 # renders it verbatim and the API refuses the Deployment — so it is
-# refused here as well, not sized from its leading digits.
+# refused here as well, not sized from its leading digits. A value that
+# resolves to one starting with `#` is no scalar at all:
+# `progressDeadlineSeconds: # note` is null to go-yaml, and a quoted
+# `"#x"` renders as `progressDeadlineSeconds: #x`, where the whitespace
+# before the `#` makes the applied manifest read the field as empty —
+# Kubernetes' 600 s default applies either way, so both route to the
+# unset refusal instead of claiming an API refusal helm never sees.
 # Usage: scripts/chart-kind-wait.sh <values file>
 set -eu
 
@@ -69,9 +85,12 @@ values=${1:?usage: chart-kind-wait.sh <values file>}
 # nested under one must not keep the previous top key. The knob is read
 # wherever go-yaml merges one: the block's own indent (its first indented
 # key fixes it — a deeper key is a nested block), keys bare or quoted, a
-# space allowed before the colon, and the last declaration winning, the
-# way go-yaml merges duplicate keys and documents. It is never the
-# runner's — values.yaml keeps the two side by side at the same indent.
+# space allowed before the colon, and the scoping rules of the parser:
+# the last declaration inside the block wins, a column-0 re-open of the
+# block in the same document drops what the earlier one held (go-yaml
+# replaces the whole map), and a `---` document boundary keeps it (helm
+# merges documents per key). It is never the runner's — values.yaml
+# keeps the two side by side at the same indent.
 rc=0
 raw=$(awk '
   # A flow collection open past its opening line makes the file
@@ -120,13 +139,47 @@ raw=$(awk '
     }
     return depth != 0
   }
+  # A literal (|) or folded (>) block scalar opens at a value start:
+  # after the `key: ` separator the line carries only the indicator
+  # with its optional indentation and chomping markers, and maybe a
+  # trailing comment. bind records the indent of the opener so the
+  # content lines can be told from the structure that follows the scalar.
+  function block_open(s,    t) {
+    t = s
+    sub(/\r$/, "", t)
+    sub(/[ \t]+#.*/, "", t)
+    sub(/[ \t]+$/, "", t)
+    if (t !~ /^[ \t]*[^ \t#][^:]*:[ \t]*[|>][|+0-9-]*$/) return 0
+    match(t, /^[ \t]*/)
+    bind = RLENGTH
+    return 1
+  }
+  BEGIN { doc = 0; sdoc = -1; in_block = 0; bind = 0 }
   {
+    # Block scalar content is raw text: go-yaml reads no key in it, so
+    # blank and deeper lines are skipped whole while a scalar is open;
+    # any other line ends the scalar and is read like the rest.
+    if (in_block && ($0 ~ /^[ \t]*\r?$/ || (match($0, /^[ \t]+/) && RLENGTH > bind)))
+      next
+    in_block = 0
     if (flow_scan($0)) {
       bad = 1
       if (first == 0) first = NR
     }
+    if (block_open($0))
+      in_block = 1
   }
-  /^[^ \t\r#]/ { top = $1; sub(/\r$/, "", top); sub(/:$/, "", top); gsub(/^["'"'"']+|["'"'"']+$/, "", top); ind = 0 }
+  # A column-0 --- starts a document: helm merges documents per key, so
+  # the knob survives a boundary; doc counts the boundaries so a block
+  # re-open is dropped only inside the document it repeats in.
+  /^---([ \t]|$)/ { doc++ }
+  # A column-0 key closes the previous block for the reader. A column-0
+  # server: line re-opening the block in the SAME document drops the
+  # remembered knob: go-yaml replaces the whole map on the repeat (helm
+  # 4.1.1 renders no field for a knob the earlier block alone held), so
+  # sizing the watch from it repeats the #2780 failure with the guard
+  # green.
+  /^[^ \t\r#]/ { top = $1; sub(/\r$/, "", top); sub(/:$/, "", top); gsub(/^["'"'"']+|["'"'"']+$/, "", top); ind = 0; if (top == "server") { if (sdoc == doc) v = ""; sdoc = doc } }
   top == "server" && ind == 0 && $0 ~ /^[ \t]+[^ \t#]/ { match($0, /^[ \t]+/); ind = RLENGTH }
   top == "server" && ind > 0 && $0 !~ /^[ \t]*#/ && match($0, /^[ \t]+/) && RLENGTH == ind {
     line = $0
@@ -143,6 +196,12 @@ raw=$(awk '
       sub(/[ \t]+#.*/, "", v)
       gsub(/["'"'"']/, "", v)
       sub(/[ \t]+$/, "", v)
+      # A value resolving to one starting with `#` is null to go-yaml
+      # (`key: # note`) or reads back empty in the applied manifest (a
+      # quoted "#x" renders as `progressDeadlineSeconds: #x`, where the
+      # whitespace before the # starts a comment): no deadline renders,
+      # so it routes to the unset refusal, not the string one.
+      if (substr(v, 1, 1) == "#") v = ""
     }
   }
   END { if (bad) { print first; exit 5 } print v }
