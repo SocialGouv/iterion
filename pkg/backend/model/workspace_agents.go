@@ -27,6 +27,7 @@ package model
 // than a convention.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -317,11 +318,11 @@ func workspaceAgentTools(v any) ([]string, bool, error) {
 // A planted value still reads as a value; it does not speak for the
 // operator, the same authority rule every security switch follows
 // (claw_host_forfait.go, plugin/config.go, runview/executor.go).
-func workspaceAgentMaxBytes() int {
+func workspaceAgentMaxBytes(ctx context.Context) int {
 	if envtrust.Planted(WorkspaceAgentMaxBytesEnv) {
 		return defaultWorkspaceAgentMaxBytes
 	}
-	raw := strings.TrimSpace(os.Getenv(WorkspaceAgentMaxBytesEnv))
+	raw := strings.TrimSpace(envGetenv(ctx, WorkspaceAgentMaxBytesEnv))
 	if raw == "" {
 		return defaultWorkspaceAgentMaxBytes
 	}

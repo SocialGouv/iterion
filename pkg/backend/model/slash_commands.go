@@ -1,8 +1,8 @@
 package model
 
 import (
+	"context"
 	"errors"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,7 +25,7 @@ const SlashCommandsEnv = "ITERION_CLAW_SLASH_COMMANDS"
 // reader, shared by the prompt path below and the host that builds the
 // tool registry — the two surfaces of one capability cannot disagree.
 func SlashCommandsDisabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(SlashCommandsEnv))) {
+	switch strings.ToLower(strings.TrimSpace(envGetenv(context.Background(), SlashCommandsEnv))) {
 	case "off", "0", "false":
 		return true
 	}
@@ -225,7 +225,7 @@ func slashCommandUserContent(blocks []delegate.ContentBlock, expanded string) []
 // when it parses, the built-in default otherwise. A non-numeric value is
 // ignored rather than obeyed — a typo must not silently remove a bound.
 func slashCommandMaxBytes() int {
-	raw := strings.TrimSpace(os.Getenv(SlashCommandMaxBytesEnv))
+	raw := strings.TrimSpace(envGetenv(context.Background(), SlashCommandMaxBytesEnv))
 	if raw == "" {
 		return defaultSlashCommandMaxBytes
 	}

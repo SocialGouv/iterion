@@ -104,6 +104,12 @@ func NewSandboxRunnerRegistry() *Registry {
 // from the standard env vars / SDK credential chains documented in each
 // provider package.
 func (r *Registry) registerDefaults() {
+	// The factories resolve per PROCESS — a resolved client is cached per
+	// spec and an env change needs a restart — so their env reads carry no
+	// run envelope: the seam's process default (envGetenv over a background
+	// context, #2808). The ctx-carrying resolutions (ResolveWithContext and
+	// below) read the envelope the caller carries.
+	ctx := context.Background()
 	r.providers["anthropic"] = func(modelID string) (api.APIClient, error) {
 		p := anthropicprovider.New()
 		// ANTHROPIC_BASE_URL forwards to claw the same redirect the
@@ -121,19 +127,19 @@ func (r *Registry) registerDefaults() {
 		// so `backend: claw` and `backend: claude_code` behave the
 		// same way for desktop users who just dropped a ZAI_API_KEY
 		// line in ~/.iterion/env.
-		apiKey := os.Getenv("ANTHROPIC_API_KEY")
-		baseURL := os.Getenv("ANTHROPIC_BASE_URL")
-		authToken := os.Getenv("ANTHROPIC_AUTH_TOKEN")
+		apiKey := envGetenv(ctx, "ANTHROPIC_API_KEY")
+		baseURL := envGetenv(ctx, "ANTHROPIC_BASE_URL")
+		authToken := envGetenv(ctx, "ANTHROPIC_AUTH_TOKEN")
 		// A GLM id is served by z.ai, never by api.anthropic.com: with
 		// ZAI_API_KEY at hand it goes there whatever Anthropic credential the
 		// env also carries — a sandboxed node receives the run's default keys
 		// beside the one its route is funded with — through glmBaseURL, the
 		// endpoint the in-process path (ResolveWithContext) picks too.
-		if zai := os.Getenv("ZAI_API_KEY"); zai != "" && modelServedByZAI(modelID) {
+		if zai := envGetenv(ctx, "ZAI_API_KEY"); zai != "" && modelServedByZAI(modelID) {
 			apiKey, authToken, baseURL = zai, "", glmBaseURL(baseURL)
 		}
 		if apiKey == "" && authToken == "" {
-			if zai := os.Getenv("ZAI_API_KEY"); zai != "" {
+			if zai := envGetenv(ctx, "ZAI_API_KEY"); zai != "" {
 				// The synthesis reroutes the call to z.ai. For a GLM id that
 				// IS the route; for any other id the facade would accept the
 				// label and serve its own model under it — the substitution
@@ -235,7 +241,7 @@ func (r *Registry) registerDefaults() {
 		return p.NewClient(r.withClientIdentity(api.ProviderConfig{
 			APIKey:  apiKey,
 			Model:   modelID,
-			BaseURL: os.Getenv("ANTHROPIC_BASE_URL"),
+			BaseURL: envGetenv(ctx, "ANTHROPIC_BASE_URL"),
 		}))
 	}
 	r.providers["openai"] = func(modelID string) (api.APIClient, error) {
@@ -252,7 +258,7 @@ func (r *Registry) registerDefaults() {
 		// "qwen/q") and never swaps a "claude…" id for another model.
 		cfg := api.ProviderConfig{
 			Model:               modelID,
-			BaseURL:             os.Getenv("OPENAI_BASE_URL"),
+			BaseURL:             envGetenv(ctx, "OPENAI_BASE_URL"),
 			OpenAIModelVerbatim: true,
 		}
 		cfg.OpenAIStreamUsage = openAIStreamUsage(cfg.BaseURL)
@@ -279,9 +285,9 @@ func (r *Registry) registerDefaults() {
 		//     ResolveWithContext → openAIFromCtxForfait (reads
 		//     Credentials.OAuthDir("codex")), so a runner with no ~/.codex
 		//     still uses the connected ChatGPT-forfait.
-		apiKey := os.Getenv("OPENAI_API_KEY")
-		oauthForced := os.Getenv("ITERION_OPENAI_USE_OAUTH") == "1"
-		shouldTryOAuth := openAIOAuthAllowed() && (apiKey == "" || oauthForced)
+		apiKey := envGetenv(ctx, "OPENAI_API_KEY")
+		oauthForced := envGetenv(ctx, "ITERION_OPENAI_USE_OAUTH") == "1"
+		shouldTryOAuth := openAIOAuthAllowed(ctx) && (apiKey == "" || oauthForced)
 		if shouldTryOAuth {
 			if view, err := secrets.LoadCodexCredentialsFromDisk(); err == nil && view.IsChatGPTMode() {
 				applyCodexOAuth(&cfg, view)
@@ -296,7 +302,7 @@ func (r *Registry) registerDefaults() {
 		cfg := api.ProviderConfig{
 			APIKey:              apiKey,
 			Model:               modelID,
-			BaseURL:             os.Getenv("OPENAI_BASE_URL"),
+			BaseURL:             envGetenv(ctx, "OPENAI_BASE_URL"),
 			OpenAIModelVerbatim: true,
 		}
 		cfg.OpenAIStreamUsage = openAIStreamUsage(cfg.BaseURL)
@@ -322,7 +328,7 @@ func (r *Registry) registerDefaults() {
 	r.providers["foundry"] = func(modelID string) (api.APIClient, error) {
 		p := foundryprovider.New()
 		return p.NewClient(r.withClientIdentity(api.ProviderConfig{
-			APIKey: os.Getenv("AZURE_OPENAI_API_KEY"),
+			APIKey: envGetenv(ctx, "AZURE_OPENAI_API_KEY"),
 			Model:  modelID,
 		}))
 	}
@@ -339,7 +345,7 @@ func (r *Registry) registerDefaults() {
 	r.providers["xai"] = func(modelID string) (api.APIClient, error) {
 		p := openaiprovider.New()
 		return p.NewClient(r.withClientIdentity(api.ProviderConfig{
-			APIKey:              os.Getenv("XAI_API_KEY"),
+			APIKey:              envGetenv(ctx, "XAI_API_KEY"),
 			Model:               modelID,
 			BaseURL:             xaiBaseURL(),
 			OpenAIModelVerbatim: true,
@@ -359,7 +365,7 @@ func (r *Registry) registerDefaults() {
 	// "moonshot"). Model specs look like `moonshot/kimi-k2`. No Claude-forfait
 	// or subscription path applies: this wire only ever takes an account key.
 	r.providers["moonshot"] = func(modelID string) (api.APIClient, error) {
-		key := strings.TrimSpace(os.Getenv("MOONSHOT_API_KEY"))
+		key := strings.TrimSpace(envGetenv(ctx, "MOONSHOT_API_KEY"))
 		if key == "" {
 			// Named rather than degraded. A client built with no credential
 			// is non-nil, so the caller proceeds and every call answers 401
@@ -433,7 +439,7 @@ func (r *Registry) registerDefaults() {
 // send a Moonshot key to another vendor's gateway. Same reasoning, and the
 // same variable, as delegate.moonshotEnv.
 func moonshotBaseURL() string {
-	if base := strings.TrimSpace(os.Getenv("MOONSHOT_BASE_URL")); base != "" {
+	if base := strings.TrimSpace(envGetenv(context.Background(), "MOONSHOT_BASE_URL")); base != "" {
 		return base
 	}
 	return secrets.MoonshotDefaultBaseURL
@@ -446,7 +452,7 @@ func moonshotBaseURL() string {
 // `…/v1/v1/chat/completions` (the openai client always appends
 // `/v1/chat/completions`).
 func xaiBaseURL() string {
-	base := strings.TrimSpace(os.Getenv("XAI_BASE_URL"))
+	base := strings.TrimSpace(envGetenv(context.Background(), "XAI_BASE_URL"))
 	if base == "" {
 		base = secrets.XAIDefaultBaseURL
 	}
@@ -457,22 +463,6 @@ func xaiBaseURL() string {
 	return base
 }
 
-// withClientIdentity injects the identity the ENGINE resolved into a claw
-// ProviderConfig, and closes the ambient-header read on engine-resolved
-// routes (#2244): the documented User-Agent chain is read HERE, by name —
-// ITERION_LLM_USER_AGENT, then CLAW_USER_AGENT, empty = claw's honest
-// default — and NoAmbientHeaders stops claw from reading the process
-// environment again behind the engine's back. ANTHROPIC_CUSTOM_HEADERS is
-// whatever the operator's shell (or a planted .env, #2813) wrote, and a
-// credential line in it would authenticate the node's request in place of
-// the credential the engine resolved — the exact line the sandbox crossing
-// refuses; the engine's own in-process clients refuse the whole read.
-//
-// A sandbox runner's registry (NewSandboxRunnerRegistry) keeps claw's
-// ambient read: its process environment IS the crossing's forwarded env,
-// already vetted by forwardableProviderEnv — refusing it there would drop
-// the identity lines the crossing deliberately sent. See
-// docs/backends.md § Client identity.
 func (r *Registry) withClientIdentity(cfg api.ProviderConfig) api.ProviderConfig {
 	cfg.UserAgent = engineClientUserAgent()
 	if !r.forwardedEnv {
@@ -518,7 +508,7 @@ var (
 )
 
 func codexCLIVersion() string {
-	if v := os.Getenv("ITERION_CODEX_VERSION"); v != "" {
+	if v := envGetenv(context.Background(), "ITERION_CODEX_VERSION"); v != "" {
 		return v
 	}
 	codexVersionOnce.Do(func() {
@@ -547,7 +537,7 @@ func codexCLIVersion() string {
 		}
 		codexVersionCached = fields[len(fields)-1]
 	})
-	return newerCodexVersion(newerCodexVersion(codexVersionCached, os.Getenv(codexHostVersionEnv)), api.ChatGPTClientVersion)
+	return newerCodexVersion(newerCodexVersion(codexVersionCached, envGetenv(context.Background(), codexHostVersionEnv)), api.ChatGPTClientVersion)
 }
 
 // codexHostVersionEnv carries the launcher's own `codex --version` probe into
@@ -803,7 +793,7 @@ func (r *Registry) ResolveWithContext(ctx context.Context, spec string) (api.API
 	// and api.anthropic.com refused a model it does not serve.
 	if providerName == "anthropic" && modelServedByZAI(modelID) {
 		if zai := creds(string(secrets.ProviderZAI)); zai != "" {
-			operatorBase := os.Getenv("ANTHROPIC_BASE_URL")
+			operatorBase := envGetenv(ctx, "ANTHROPIC_BASE_URL")
 			if runCreds, ok := secrets.CredentialsFromContext(ctx); ok && runCreds.AmbientRefused {
 				// The pod's routing env is outside a stamped run's trust
 				// domain: the run's z.ai key authenticates to z.ai's own
@@ -959,8 +949,8 @@ func applyCodexOAuth(cfg *api.ProviderConfig, view secrets.CodexCredentialsView)
 // spent: no ITERION_OPENAI_USE_OAUTH=0 refusal, and no OPENAI_BASE_URL — a
 // forfait's Codex headers never go to a third-party endpoint. The disk
 // factory, the per-run forfait and the sandbox crossing all read it.
-func openAIOAuthAllowed() bool {
-	return os.Getenv("ITERION_OPENAI_USE_OAUTH") != "0" && os.Getenv("OPENAI_BASE_URL") == ""
+func openAIOAuthAllowed(ctx context.Context) bool {
+	return envGetenv(ctx, "ITERION_OPENAI_USE_OAUTH") != "0" && envGetenv(ctx, "OPENAI_BASE_URL") == ""
 }
 
 // openAIStreamUsage decides whether a factory-built client asks its endpoint
@@ -969,13 +959,13 @@ func openAIOAuthAllowed() bool {
 // opts in, and only when the operator set ITERION_OPENAI_STREAM_USAGE=1 —
 // providers that reject stream_options must not see it unasked.
 func openAIStreamUsage(baseURL string) bool {
-	return baseURL != "" && os.Getenv("ITERION_OPENAI_STREAM_USAGE") == "1"
+	return baseURL != "" && envGetenv(context.Background(), "ITERION_OPENAI_STREAM_USAGE") == "1"
 }
 
 // codexForfaitView loads the ChatGPT-mode forfait materialised in dir, when
 // this process may spend one there.
-func codexForfaitView(dir string) (secrets.CodexCredentialsView, bool) {
-	if dir == "" || !openAIOAuthAllowed() {
+func codexForfaitView(ctx context.Context, dir string) (secrets.CodexCredentialsView, bool) {
+	if dir == "" || !openAIOAuthAllowed(ctx) {
 		return secrets.CodexCredentialsView{}, false
 	}
 	view, err := secrets.LoadCodexCredentialsFrom(dir)
@@ -991,7 +981,7 @@ func codexForfaitView(dir string) (secrets.CodexCredentialsView, bool) {
 // and the sandbox's env factory makes from what forwardableProviderEnv hands
 // it. The runner's spend ledger asks it to book the route where it went.
 func OpenAIForfaitServes(creds secrets.Credentials) bool {
-	_, ok := codexForfaitView(creds.OAuthDir(string(secrets.OAuthKindCodex)))
+	_, ok := codexForfaitView(context.Background(), creds.OAuthDir(string(secrets.OAuthKindCodex)))
 	return ok
 }
 
@@ -1001,18 +991,18 @@ func OpenAIForfaitServes(creds secrets.Credentials) bool {
 // OAuth is disabled, no codex dir is resolved, or the dir has no ChatGPT-mode
 // auth.json — the caller then falls back to the shared resolver.
 func (r *Registry) openAIFromCtxForfait(ctx context.Context, modelID string) (api.APIClient, bool, error) {
-	view, ok := codexForfaitView(oauthDirLookup(ctx, "codex"))
+	view, ok := codexForfaitView(ctx, oauthDirLookup(ctx, "codex"))
 	if !ok {
 		return nil, false, nil
 	}
-	client, cerr := openaiprovider.New().NewClient(r.withClientIdentity(openAIForfaitConfig(modelID, view)))
+	client, cerr := openaiprovider.New().NewClient(r.withClientIdentity(openAIForfaitConfig(ctx, modelID, view)))
 	return client, true, cerr
 }
 
 // openAIForfaitConfig is the ChatGPT-forfait client's configuration: the
 // request's model sent verbatim, like every client of claw's OpenAI provider.
-func openAIForfaitConfig(modelID string, view secrets.CodexCredentialsView) api.ProviderConfig {
-	cfg := api.ProviderConfig{Model: modelID, BaseURL: os.Getenv("OPENAI_BASE_URL"), OpenAIModelVerbatim: true}
+func openAIForfaitConfig(ctx context.Context, modelID string, view secrets.CodexCredentialsView) api.ProviderConfig {
+	cfg := api.ProviderConfig{Model: modelID, BaseURL: envGetenv(ctx, "OPENAI_BASE_URL"), OpenAIModelVerbatim: true}
 	applyCodexOAuth(&cfg, view)
 	return cfg
 }
@@ -1036,7 +1026,7 @@ func openAIForfaitConfig(modelID string, view secrets.CodexCredentialsView) api.
 // BILLING: like the env path, this spends the subscription's EXTRA-USAGE
 // balance rather than the plan's limits, hence the same one-time notice.
 func (r *Registry) anthropicFromCtxForfait(ctx context.Context, modelID string) (api.APIClient, bool, error) {
-	return r.anthropicFromCtxForfaitOnWire(ctx, modelID, os.Getenv("ANTHROPIC_BASE_URL"))
+	return r.anthropicFromCtxForfaitOnWire(ctx, modelID, envGetenv(ctx, "ANTHROPIC_BASE_URL"))
 }
 
 // anthropicFromCtxForfaitOnWire is anthropicFromCtxForfait with the wire's
@@ -1084,7 +1074,7 @@ func (r *Registry) anthropicFromCtxForfaitOnWire(ctx context.Context, modelID, b
 		// CLAUDE.md recommends the flag on exactly those shared deployments: a
 		// hard refusal here would break every run whose tenant merely HAS a
 		// forfait connected.
-		if ambientAnthropicCredential() {
+		if ambientAnthropicCredential(ctx) {
 			return nil, false, nil
 		}
 		// Sole candidate: now the refusal IS the useful answer. Falling through
@@ -1111,11 +1101,11 @@ func (r *Registry) anthropicFromCtxForfaitOnWire(ctx context.Context, modelID, b
 // overloaded — a z.ai facade key or a gateway bearer is an ordinary credential,
 // while an `sk-ant-oat…` value is another subscription token, which is the very
 // thing the forbid flag refuses.
-func ambientAnthropicCredential() bool {
-	if os.Getenv("ANTHROPIC_API_KEY") != "" || os.Getenv("ZAI_API_KEY") != "" {
+func ambientAnthropicCredential(ctx context.Context) bool {
+	if envGetenv(ctx, "ANTHROPIC_API_KEY") != "" || envGetenv(ctx, "ZAI_API_KEY") != "" {
 		return true
 	}
-	tok := os.Getenv("ANTHROPIC_AUTH_TOKEN")
+	tok := envGetenv(ctx, "ANTHROPIC_AUTH_TOKEN")
 	return tok != "" && !secrets.IsAnthropicSubscriptionToken(tok)
 }
 

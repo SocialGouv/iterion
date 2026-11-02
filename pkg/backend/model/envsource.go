@@ -27,6 +27,12 @@ import (
 // — which is why the seam is a security surface, not only a refactor: a
 // carried environment that answers empty where redaction expects a value
 // is a secret printed in a log.
+//
+// A reader with no context in scope — a per-process factory (the
+// registry's, whose resolved clients are cached per process), an exported
+// surface the campaign does not break — calls the seam with
+// context.Background(): the read stays process-scoped, and greppable,
+// until an envelope reaches it.
 
 // carriedEnv is the environment a context carries: a fixed map, HERMETIC
 // — a name the map does not hold reads as unset, never as the process

@@ -172,7 +172,7 @@ func TestSandboxedClawNodeToolEnvCrossing(t *testing.T) {
 		t.Setenv(name, "launcher-search-value")
 	}
 
-	toolEnv := forwardableToolEnv()
+	toolEnv := forwardableToolEnv(context.Background())
 	if got := toolEnv["CLAW_BASH_TIMEOUT"]; got != "17m" {
 		t.Errorf("CLAW_BASH_TIMEOUT crossed as %q, want the launcher's %q: a sandboxed node's bash runs on claw's default budget while the host's dial says otherwise", got, "17m")
 	}

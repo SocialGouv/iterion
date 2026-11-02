@@ -1657,7 +1657,7 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// packages read that the classification forwards — see forwardableToolEnv
 	// for which and why, claw_vendored_tool_env_test.go for the derivation
 	// that keeps the list honest.
-	for k, v := range forwardableToolEnv() {
+	for k, v := range forwardableToolEnv(ctx) {
 		runnerEnv[k] = v
 	}
 	runnerEnv["HOME"] = clawRunnerHome(ctx, task)
@@ -2482,7 +2482,7 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 		ok = false
 	}
 	for _, name := range providerCredentialEnvVars {
-		v := os.Getenv(name)
+		v := envGetenv(ctx, name)
 		// A value a workspace .env planted on the host is the repository
 		// under review answering for the operator — a client identity, a
 		// routing name, the key a node's requests are spent under, an
@@ -2589,7 +2589,7 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 	// already denies it authority host-side, and the container's own
 	// applyDotEnv never marked it (the name was present), so forwarding the
 	// raw value would launder it past the in-container twin of that check.
-	agentMaxBytes := strings.TrimSpace(os.Getenv(WorkspaceAgentMaxBytesEnv))
+	agentMaxBytes := strings.TrimSpace(envGetenv(ctx, WorkspaceAgentMaxBytesEnv))
 	if envtrust.Planted(WorkspaceAgentMaxBytesEnv) {
 		agentMaxBytes = ""
 	}
@@ -2721,7 +2721,7 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 	// was handed — the run's, below, or the host's, which
 	// deliverHostCodexForfait writes at the dispatch — never as an order to
 	// spend whatever forfait the container's disk holds.
-	if os.Getenv("ITERION_OPENAI_USE_OAUTH") == "0" {
+	if envGetenv(ctx, "ITERION_OPENAI_USE_OAUTH") == "0" {
 		env["ITERION_OPENAI_USE_OAUTH"] = "0"
 	}
 	if !ok {
@@ -2796,7 +2796,7 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 		// on its plan — the order ResolveWithContext applies in process,
 		// under the same openAIOAuthAllowed.
 		nodeOwnKey := creds.APIKeys[secrets.ProviderOpenAI]
-		if nodeOwnKey == "" && openAIOAuthAllowed() {
+		if nodeOwnKey == "" && openAIOAuthAllowed(ctx) {
 			env["ITERION_OPENAI_USE_OAUTH"] = "1"
 		}
 	}
@@ -2812,7 +2812,7 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 	// clawPinnedProvider answers both: zai for a GLM spec, the spec's own
 	// provider otherwise.
 	if clawPinnedProvider(model) == secrets.ProviderAnthropic {
-		if err := applyForfaitAcrossSandbox(env, creds, model); err != nil {
+		if err := applyForfaitAcrossSandbox(ctx, env, creds, model); err != nil {
 			return nil, crossingRefusals{}, err
 		}
 	}
@@ -2888,7 +2888,7 @@ func zaiKeyReachable(ctx context.Context) bool {
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok && creds.APIKeyForRoute(secrets.ProviderZAI) != "" {
 		return true
 	}
-	return os.Getenv("ZAI_API_KEY") != ""
+	return envGetenv(ctx, "ZAI_API_KEY") != ""
 }
 
 // RouteProviderHint is the provider hint the executor hands a delegate for
@@ -2915,7 +2915,7 @@ func RouteProviderHint(ctx context.Context, backend, hint, model string) string 
 
 // applyForfaitAcrossSandbox is the body of the forfait crossing, split out so
 // the model gate above reads as one line.
-func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials, model string) error {
+func applyForfaitAcrossSandbox(ctx context.Context, env map[string]string, creds secrets.Credentials, model string) error {
 	// A resolved Claude Code forfait is mounted by
 	// runtime.addClaudeOAuthSecretFile and copied into a writable config dir by
 	// seedClaudeConfigDir — both per RUN, not per backend, so the dir is
@@ -2954,7 +2954,7 @@ func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials,
 	}
 	if creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "" &&
 		!heldAnthropicWireAPIKey(creds) &&
-		secrets.AnthropicForfaitWireOK(os.Getenv("ANTHROPIC_BASE_URL")) {
+		secrets.AnthropicForfaitWireOK(envGetenv(ctx, "ANTHROPIC_BASE_URL")) {
 		dir := creds.OAuthDir(string(secrets.OAuthKindClaudeCode))
 		// Validate BEFORE clearing. Once the shadows are gone the forfait is
 		// the node's ONLY credential in the container, and the in-container

@@ -232,7 +232,7 @@ func NewSubagentRunner(
 		var agent WorkspaceAgent
 		agentFound := false
 		if fromParentLoop && parent.WorkDir != "" {
-			a, found, err := LookupWorkspaceAgent(parent.WorkDir, spec.SubagentType, workspaceAgentMaxBytes())
+			a, found, err := LookupWorkspaceAgent(parent.WorkDir, spec.SubagentType, workspaceAgentMaxBytes(ctx))
 			if err != nil {
 				return "", err
 			}

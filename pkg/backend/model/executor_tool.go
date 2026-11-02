@@ -1331,7 +1331,7 @@ func (e *ClawExecutor) treeNoiseEnvAppend(nodeEnv map[string]string) []string {
 	if value, set := nodeEnv[treenoise.TreeNoiseEnvVar]; set && value != "" {
 		return nil
 	}
-	if value, inherited := os.LookupEnv(treenoise.TreeNoiseEnvVar); inherited && value != "" {
+	if value, inherited := envLookupEnv(context.Background(), treenoise.TreeNoiseEnvVar); inherited && value != "" {
 		return nil
 	}
 	for _, entry := range e.runExtraEnv {
@@ -2011,7 +2011,7 @@ func lookupToolEnv(name string) (string, bool) {
 	if !ir.ProcessEnvReadable(name) {
 		return "", false
 	}
-	return os.LookupEnv(name)
+	return envLookupEnv(context.Background(), name)
 }
 
 // looksLikeEnvRef reports whether body matches the shell convention

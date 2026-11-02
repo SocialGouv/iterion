@@ -2,7 +2,6 @@ package model
 
 import (
 	"context"
-	"os"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -33,7 +32,7 @@ func anthropicFunding(ctx context.Context) string {
 			// ("", nil) for a dir whose blob merely parses — counting it here
 			// would bless a dispatch the resolver serves with an
 			// unauthenticated client.
-			if tok, err := secrets.AnthropicForfaitToken(dir); err == nil && tok != "" && secrets.AnthropicForfaitWireOK(os.Getenv("ANTHROPIC_BASE_URL")) {
+			if tok, err := secrets.AnthropicForfaitToken(dir); err == nil && tok != "" && secrets.AnthropicForfaitWireOK(envGetenv(ctx, "ANTHROPIC_BASE_URL")) {
 				return "the run's Claude forfait"
 			}
 		}
@@ -46,9 +45,9 @@ func anthropicFunding(ctx context.Context) string {
 	// The env pair, with the factory's own shape: AUTH_TOKEN is spent via
 	// the OAuth branch, which a z.ai/bigmodel base URL gates OFF — counting
 	// it there would bless a dispatch the factory sends out credential-less.
-	base := strings.ToLower(os.Getenv("ANTHROPIC_BASE_URL"))
+	base := strings.ToLower(envGetenv(ctx, "ANTHROPIC_BASE_URL"))
 	isZAI := strings.Contains(base, "z.ai") || strings.Contains(base, "bigmodel")
-	if os.Getenv("ANTHROPIC_API_KEY") != "" || (os.Getenv("ANTHROPIC_AUTH_TOKEN") != "" && !isZAI) {
+	if envGetenv(ctx, "ANTHROPIC_API_KEY") != "" || (envGetenv(ctx, "ANTHROPIC_AUTH_TOKEN") != "" && !isZAI) {
 		return "the environment's anthropic credential"
 	}
 	// The factory's desktop fallback: this host's own Claude Code
@@ -56,7 +55,7 @@ func anthropicFunding(ctx context.Context) string {
 	// kill switch AND the redirected-wire gate both apply, and the probe
 	// honours both (a forfait the factory would skip funds nothing).
 	if !secrets.ForbidSubscriptionOAuth() &&
-		secrets.AnthropicForfaitWireOK(os.Getenv("ANTHROPIC_BASE_URL")) &&
+		secrets.AnthropicForfaitWireOK(envGetenv(ctx, "ANTHROPIC_BASE_URL")) &&
 		secrets.AnthropicForfaitAccessTokenFromDisk() != "" {
 		return "this host's Claude forfait"
 	}

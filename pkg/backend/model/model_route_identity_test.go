@@ -133,7 +133,7 @@ func TestAdaptiveThinkingReadsTheCapabilityID(t *testing.T) {
 // keyed factory drops OpenAIModelVerbatim; the ChatGPT forfait, which serves
 // only chatgpt.com, is pinned on its configuration below.
 func TestOpenAIProviderClientsSendTheWireIDVerbatim(t *testing.T) {
-	if !openAIForfaitConfig("gpt-5.4-mini", secrets.CodexCredentialsView{}).OpenAIModelVerbatim {
+	if !openAIForfaitConfig(context.Background(), "gpt-5.4-mini", secrets.CodexCredentialsView{}).OpenAIModelVerbatim {
 		t.Error("the ChatGPT-forfait client does not send the model verbatim")
 	}
 	var mu sync.Mutex

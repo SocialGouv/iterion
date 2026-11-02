@@ -3,7 +3,6 @@ package model
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -65,7 +64,7 @@ func (e *ClawExecutor) resolveBackendName(node ir.Node) string {
 	if e.staticProgramOnly {
 		return ""
 	}
-	if env := os.Getenv("ITERION_DEFAULT_BACKEND"); env != "" {
+	if env := envGetenv(context.Background(), "ITERION_DEFAULT_BACKEND"); env != "" {
 		return env
 	}
 	if resolved := e.detectorResolve(); resolved != "" {

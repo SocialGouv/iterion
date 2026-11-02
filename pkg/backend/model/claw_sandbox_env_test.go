@@ -417,10 +417,10 @@ func TestForwardableProviderEnv_CarriesTheWorkspaceAgentCeiling(t *testing.T) {
 	// resolves the same ceiling as the host: rebuild the in-container view
 	// from what crossed alone and ask the resolver itself.
 	t.Setenv(WorkspaceAgentMaxBytesEnv, "4096")
-	hostCeiling := workspaceAgentMaxBytes()
+	hostCeiling := workspaceAgentMaxBytes(context.Background())
 	env = envFor(t, context.Background())
 	t.Setenv(WorkspaceAgentMaxBytesEnv, env[WorkspaceAgentMaxBytesEnv])
-	if got := workspaceAgentMaxBytes(); got != hostCeiling {
+	if got := workspaceAgentMaxBytes(context.Background()); got != hostCeiling {
 		t.Errorf("in-container ceiling = %d, host = %d — the same file is bounded two ways", got, hostCeiling)
 	}
 
@@ -447,19 +447,19 @@ func TestForwardableProviderEnv_CarriesTheWorkspaceAgentCeiling(t *testing.T) {
 func TestAPlantedWorkspaceAgentCeilingSpeaksForNobody(t *testing.T) {
 	operatorEnv(t)
 	t.Setenv(WorkspaceAgentMaxBytesEnv, "4096")
-	if got := workspaceAgentMaxBytes(); got != 4096 {
+	if got := workspaceAgentMaxBytes(context.Background()); got != 4096 {
 		t.Fatalf("the operator's own override resolved to %d, want 4096", got)
 	}
 
 	t.Setenv(WorkspaceAgentMaxBytesEnv, "1")
 	envtrust.MarkPlanted(WorkspaceAgentMaxBytesEnv)
-	if got := workspaceAgentMaxBytes(); got != defaultWorkspaceAgentMaxBytes {
+	if got := workspaceAgentMaxBytes(context.Background()); got != defaultWorkspaceAgentMaxBytes {
 		t.Fatalf("a planted =1 resolved to %d — the repository under review moved the ceiling its agent files are read under", got)
 	}
 	// Through the resolver: the planted refusal-by-ceiling does not bite.
 	dir := t.TempDir()
 	writeWorkspaceAgent(t, dir, "auditor", "a body well past one byte\n")
-	if _, found, err := LookupWorkspaceAgent(dir, "auditor", workspaceAgentMaxBytes()); err != nil || !found {
+	if _, found, err := LookupWorkspaceAgent(dir, "auditor", workspaceAgentMaxBytes(context.Background())); err != nil || !found {
 		t.Errorf("under a planted =1 the file must still resolve: found=%t err=%v", found, err)
 	}
 }
