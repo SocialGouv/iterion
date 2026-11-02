@@ -1296,8 +1296,11 @@ func facadeHintRefusal(ctx context.Context, providerHint string, env map[string]
 // on the run's credential-less meter either way.
 func AnthropicRouteSource(ctx context.Context, providerHint string) (source string, refused bool) {
 	task := Task{ProviderHint: providerHint}
-	env, selected := anthropicCredRouteForTask(ctx, task)
+	env, selected, inheritAmbient := anthropicCredRouteForTask(ctx, task)
 	if facadeHintRefusal(ctx, providerHint, env) != nil {
+		return "", true
+	}
+	if ambientStampRefusal(ctx, inheritAmbient) != nil {
 		return "", true
 	}
 	return providerFingerprint(anthropicFingerprintEnvForTask(task, env, selected)), false
@@ -1433,8 +1436,8 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed 
 // It returns the resolver's selection beside the composed env: the credentials
 // bound for the route, which alone may name it (anthropicFingerprintEnvForTask)
 // and alone tell them from the operator's ambient env (credSpawnOf).
-func anthropicCredRouteForTask(ctx context.Context, task Task) (env, selected map[string]string) {
-	selected, inheritAmbient := selectedAnthropicCredEnvForCLI(ctx, task.ProviderHint, taskSandboxed(task))
+func anthropicCredRouteForTask(ctx context.Context, task Task) (env, selected map[string]string, inheritAmbient bool) {
+	selected, inheritAmbient = selectedAnthropicCredEnvForCLI(ctx, task.ProviderHint, taskSandboxed(task))
 	env = map[string]string{}
 	if inheritAmbient && taskSandboxed(task) {
 		for key, value := range ambientAnthropicEnvForSandbox() {
@@ -1470,7 +1473,7 @@ func anthropicCredRouteForTask(ctx context.Context, task Task) (env, selected ma
 	for key, value := range selected {
 		env[key] = value
 	}
-	return env, selected
+	return env, selected, inheritAmbient
 }
 
 // directCredentialChannels are the env entries that name a credential of the
@@ -1610,12 +1613,42 @@ func selectedAnthropicCredEnvForCLI(ctx context.Context, providerHint string, sa
 	// by env — ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN or a cloud-provider
 	// switch from the inherited env stays authoritative. The switches count
 	// because zaiEnv clears them: honouring the shortcut past one would
-	// turn a Bedrock/Vertex/Foundry host into a z.ai one.
-	if !ambientAnthropicAuthConfigured() {
+	// turn a Bedrock/Vertex/Foundry host into a z.ai one. A stamped run
+	// never takes it: the knob is the POD's money, the walk above already
+	// served every credential the run carries, and the refusal below is
+	// the honest answer (the facade paths' env fallback is gated the same
+	// way).
+	if !ambientAnthropicAuthConfigured() && !(hasCreds && creds.AmbientRefused) {
 		if zai := os.Getenv("ZAI_API_KEY"); zai != "" {
 			return zaiEnv(zai), false
 		}
 	}
 	// The caller composes ambient inheritance/forwarding with task additions.
 	return nil, true
+}
+
+// ambientStampRefusal refuses an UNPINNED claude_code route under the
+// ambient stamp: inheritAmbient means "serve the pod's inherited
+// credential", and a stamped run's pod env is exactly what the stamp
+// refuses — the wire's money is the run's sealed credential (the
+// slot-order walk served it before this ran) or nothing. The facade-hint
+// paths refuse the same rule per hint; the hintless wire — and the
+// explicit `anthropic` pin, whose non-pinned fallthrough lands here too —
+// refuse here. The error type is the facade refusal's: the operator-facing
+// sentence is the same, only the trigger differs.
+func ambientStampRefusal(ctx context.Context, inheritAmbient bool) error {
+	if !inheritAmbient {
+		return nil
+	}
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok || !creds.AmbientRefused {
+		return nil
+	}
+	refused := &ErrNoFacadeCredential{Provider: "anthropic", EnvVar: "ANTHROPIC_API_KEY"}
+	if os.Getenv("ANTHROPIC_API_KEY") != "" {
+		refused.Because = "the run refuses the ambient environment — ANTHROPIC_API_KEY is set here and the run does not spend it: fund it with a run-held key"
+	} else {
+		refused.Because = "the run refuses the ambient environment — fund it with a run-held key"
+	}
+	return refused
 }

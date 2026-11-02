@@ -204,7 +204,7 @@ func TestAuthFailureFast_FacadePinIsNamedByTheRouteItStamped(t *testing.T) {
 			resetClaudeCredEnv(t)
 			ctx := ctxWithCreds(t, map[secrets.Provider]string{secrets.ProviderZAI: "zai-byok"}, nil)
 			task := Task{ProviderHint: hint}
-			credEnv, selected := anthropicCredRouteForTask(ctx, task)
+			credEnv, selected, _ := anthropicCredRouteForTask(ctx, task)
 			if refusal := facadeHintRefusal(ctx, task.ProviderHint, credEnv); refusal != nil {
 				t.Fatalf("a funded facade pin was refused: %v", refusal)
 			}
@@ -232,7 +232,7 @@ func TestAuthFailureFast_FacadePinIsNamedByTheRouteItStamped(t *testing.T) {
 			resetClaudeCredEnv(t)
 			ctx := ctxWithCreds(t, nil, nil)
 			task := Task{ProviderHint: hint}
-			credEnv, selected := anthropicCredRouteForTask(ctx, task)
+			credEnv, selected, _ := anthropicCredRouteForTask(ctx, task)
 			var refused *ErrNoFacadeCredential
 			if !errors.As(facadeHintRefusal(context.Background(), task.ProviderHint, credEnv), &refused) {
 				t.Fatalf("an unfunded facade pin reached the spawn: env = %v", credEnv)
@@ -558,7 +558,7 @@ func TestAuthFailureFast_AmbientChannelsNameWhatTheSpawnCarried(t *testing.T) {
 			if tc.sandboxed {
 				task.Sandbox = k8sLikeRun{}
 			}
-			credEnv, selected := anthropicCredRouteForTask(ctx, task)
+			credEnv, selected, _ := anthropicCredRouteForTask(ctx, task)
 
 			err := authFailureFast(&res, task, credSpawnOf(ctx, credEnv, selected, taskSandboxed(task)))
 			var auth *ErrAuthFailed

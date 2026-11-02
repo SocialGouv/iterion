@@ -1744,8 +1744,14 @@ func settleLedger(l SessionLedger, sessionID string, told, terminated []string) 
 // a message naming neither the provider the operator pinned nor the credential
 // that was missing, and only after paying for the spawn.
 func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task, opts []claudesdk.Option) ([]claudesdk.Option, string, credSpawn, error) {
-	credEnv, selected := anthropicCredRouteForTask(ctx, task)
+	credEnv, selected, inheritAmbient := anthropicCredRouteForTask(ctx, task)
 	if err := facadeHintRefusal(ctx, task.ProviderHint, credEnv); err != nil {
+		return opts, "", credSpawn{}, err
+	}
+	// The hintless half of the same stamp doctrine: inheriting the pod's
+	// ambient credential is a spend the stamp refuses, whether the node
+	// runs in-process or crosses the sandbox.
+	if err := ambientStampRefusal(ctx, inheritAmbient); err != nil {
 		return opts, "", credSpawn{}, err
 	}
 	// The model half of the same refusal: a funded facade route whose id the
@@ -2332,8 +2338,13 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	// The structured-output pass loads the same scopes as the session: an
 	// omitted --setting-sources would load every scope, `local` included.
 	opts = append(opts, claudeAmbient(task).settingSourcesOption())
-	credEnv, selected := anthropicCredRouteForTask(ctx, task)
+	credEnv, selected, inheritAmbient := anthropicCredRouteForTask(ctx, task)
 	if err := facadeHintRefusal(ctx, task.ProviderHint, credEnv); err != nil {
+		return nil, credSpawn{}, nil, err
+	}
+	// The hintless half of the same stamp doctrine (Pass 2 resumes the
+	// same session on the same route, so it holds the same line).
+	if err := ambientStampRefusal(ctx, inheritAmbient); err != nil {
 		return nil, credSpawn{}, nil, err
 	}
 	// The substitution refusal of Pass 1 (setupCredsAndSession): this pass
