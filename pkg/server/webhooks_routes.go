@@ -82,6 +82,10 @@ type webhookConfigReq struct {
 	AuthorizedRepliers  []string          `json:"authorized_repliers,omitempty"`
 	MinReplierRole      *string           `json:"min_replier_role,omitempty"`
 	ForgeBaseURL        *string           `json:"forge_base_url,omitempty"`
+	// ConnectorConnectionID binds the webhook to a pkg/connection record:
+	// set, the inbound handler is the connector lane (#2761). An explicit
+	// empty string clears the binding.
+	ConnectorConnectionID *string `json:"connector_connection_id,omitempty"`
 }
 
 // overlapOrEmpty resolves an optional overlap policy. Empty is meaningful
@@ -310,6 +314,13 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		cfg.ForgeBaseURL = normalized
+	}
+	if req.ConnectorConnectionID != nil && *req.ConnectorConnectionID != "" {
+		if err := s.validateConnectorBinding(r.Context(), teamID, provider, *req.ConnectorConnectionID); err != nil {
+			httpError(w, http.StatusBadRequest, "%s", err.Error())
+			return
+		}
+		cfg.ConnectorConnectionID = *req.ConnectorConnectionID
 	}
 	// HMAC-mode webhooks need the minted plaintext sealed at rest so a
 	// later request can recompute HMAC(body) — the operator pastes the
@@ -587,6 +598,17 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		cfg.ForgeBaseURL = normalized
+	}
+	if req.ConnectorConnectionID != nil {
+		// An explicit empty string clears the binding — the webhook returns
+		// to the legacy provider lane.
+		if *req.ConnectorConnectionID != "" {
+			if err := s.validateConnectorBinding(r.Context(), teamID, cfg.Provider, *req.ConnectorConnectionID); err != nil {
+				httpError(w, http.StatusBadRequest, "%s", err.Error())
+				return
+			}
+		}
+		cfg.ConnectorConnectionID = *req.ConnectorConnectionID
 	}
 	// Re-normalise bot scope only when the caller touched it.
 	if req.BotIDs != nil || req.WildcardBots != nil {

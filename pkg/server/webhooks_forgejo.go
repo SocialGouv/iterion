@@ -39,7 +39,9 @@ func forgejoEventHeader(r *http.Request) string {
 // handleForgejoWebhook is the inbound handler for both Forgejo and
 // Gitea (one wire shape, two header names). Mirrors the GitHub flow:
 // signature gate FIRST, then event-kind filter, then parse → filter →
-// bot select → admission → launch.
+// bot select → admission → launch. A config bound to a connection
+// (ConnectorConnectionID) takes the connector lane instead of the event
+// switch — webhooks_connector.go, #2761.
 func (s *Server) handleForgejoWebhook(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	cfg, ok := webhookConfigFromContext(ctx)
@@ -53,6 +55,15 @@ func (s *Server) handleForgejoWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	event := forgejoEventHeader(r)
+
+	// The connector lane (#2761): a config bound to a connection is believed
+	// through it — the event matched against the package's declarations, the
+	// grant read off the connection — instead of the provider switch below.
+	if cfg.ConnectorConnectionID != "" {
+		s.handleConnectorDelivery(ctx, w, r, cfg, body, payloadHash, srcIP, event)
+		return
+	}
+
 	switch event {
 	case prforge.EventHeaderIssueComment:
 		// Universal slash-command path: /featurly, /seki… on a PR or issue

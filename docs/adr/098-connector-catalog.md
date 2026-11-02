@@ -529,6 +529,15 @@ re-deciding what an existing one meant. The cloud twin owes nothing: a
 declaration is read from the package at load time and never persisted, so there
 is no durable state here to ship a Mongo half for.
 
+**The first inbound lane landed** (#2761): a webhook config bound to a
+connection (`connector_connection_id`) is served by the connector lane
+(`pkg/server/webhooks_connector.go`) — the delivery is verified by the
+webhook's own HMAC secret, believed on the connection's `trigger` grant, and
+matched against the package's declared events, reaching a bot run with the
+declared trigger's id. One connector (Forgejo), one event: the vertical proof
+and the seam the second one implements, not the framework. Filters, payload
+mapping and polling cursors stay deferred as stated above.
+
 ## The execution profile — what schema v1 actually promises
 
 The review's F14/F15/F16 said the supported request/response semantics must be

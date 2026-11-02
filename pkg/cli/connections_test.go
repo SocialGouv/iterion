@@ -173,10 +173,11 @@ func TestConnectionsAddReportsTheGrantItStored(t *testing.T) {
 // where a grant is MADE and read back.
 //
 // `trigger` decides what may be believed about an inbound delivery, and the
-// ingress that would read it is the next lot — so the grant is accepted (the
-// operator's choice is not silently narrowed) and both surfaces say it is
-// inert. Through the shared rendering and the shared advice, so a third
-// capability cannot be printed by one command and forgotten by the other.
+// ingress reads it (#2761 — the connector webhook lane) — so the grant is
+// accepted AND owed no inert warning: what it buys today is a declared
+// vendor event believed on the connection's word. Through the shared
+// rendering and the shared advice, so a third capability cannot be printed
+// by one command and forgotten by the other.
 func TestConnectionsSaysWhatATriggerGrantBuysToday(t *testing.T) {
 	ws := connectionsWorkspace(t)
 	storeDir := filepath.Join(ws, ".iterion")
@@ -194,10 +195,13 @@ func TestConnectionsSaysWhatATriggerGrantBuysToday(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add: %v — `trigger` is a grant this build accepts", err)
 	}
-	for _, want := range []string{"action+trigger", "inert", "trigger"} {
+	for _, want := range []string{"action+trigger", "trigger"} {
 		if !strings.Contains(add.String(), want) {
 			t.Errorf("add must report %q, got:\n%s", want, add.String())
 		}
+	}
+	if strings.Contains(add.String(), "inert") {
+		t.Errorf("the ingress is wired — add must not call the grant inert, got:\n%s", add.String())
 	}
 
 	// Said on EVERY list, not only at `add`: the grant outlives the command
@@ -206,10 +210,11 @@ func TestConnectionsSaysWhatATriggerGrantBuysToday(t *testing.T) {
 	if err := cli.ConnectionsList(storeDir, &list); err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	for _, want := range []string{"action+trigger", "inert"} {
-		if !strings.Contains(list.String(), want) {
-			t.Errorf("list must report %q, got:\n%s", want, list.String())
-		}
+	if !strings.Contains(list.String(), "action+trigger") {
+		t.Errorf("list must report the grant, got:\n%s", list.String())
+	}
+	if strings.Contains(list.String(), "inert") {
+		t.Errorf("the ingress is wired — list must not call the grant inert, got:\n%s", list.String())
 	}
 
 	// And a value this build does not know names the WHOLE set it does: a
@@ -473,12 +478,12 @@ func TestAnHTTPOriginIsFlaggedOnAddAndOnEveryList(t *testing.T) {
 	}
 }
 
-// A grant this build honours is owed NO warning — and `agent` is honoured
-// since the facade landed (#2758). This is the ticket's own Done-when
-// witness: BOTH CLI surfaces stopped calling the grant inert, not because
-// either was edited (they were not — the warning is connection.GrantAdvice's
-// call) but because the one predicate changed. A `trigger` grant beside it is
-// still inert and must still be said, on add and on every list.
+// A grant this build honours is owed NO warning — `agent` is honoured since
+// the facade landed (#2758), `trigger` since the connector webhook ingress
+// landed (#2761). This is both tickets' Done-when witness: BOTH CLI surfaces
+// stopped calling either grant inert, not because either was edited (they
+// were not — the warning is connection.GrantAdvice's call) but because the
+// one predicate changed.
 func TestAnAgentGrantIsNoLongerReportedAsInertOnAddOrOnList(t *testing.T) {
 	ws := connectionsWorkspace(t)
 	storeDir := filepath.Join(ws, ".iterion")
@@ -503,8 +508,10 @@ func TestAnAgentGrantIsNoLongerReportedAsInertOnAddOrOnList(t *testing.T) {
 		t.Errorf("list must stop too — one predicate, both surfaces:\n%s", list.String())
 	}
 
-	// The trigger-granting record next to it keeps its warning, or the flip
-	// silenced a grant nothing honours yet.
+	// The trigger-granting record next to it is honoured too (#2761): no
+	// surface may call it inert either, or the flip that silenced `agent`
+	// would have gone further than the predicate — which is the one place
+	// both read — ever meant to.
 	var addTrigger, listBoth bytes.Buffer
 	if err := cli.ConnectionsAdd(cli.ConnectionAddOptions{
 		Connector: "forgejo", Scheme: "token", Alias: "inbound",
@@ -513,13 +520,13 @@ func TestAnAgentGrantIsNoLongerReportedAsInertOnAddOrOnList(t *testing.T) {
 	}, &addTrigger); err != nil {
 		t.Fatalf("add trigger: %v", err)
 	}
-	if !strings.Contains(addTrigger.String(), "inert") {
-		t.Errorf("the `trigger` grant is still inert and add must still say so, got:\n%s", addTrigger.String())
+	if strings.Contains(addTrigger.String(), "inert") {
+		t.Errorf("the `trigger` grant is honoured by the ingress — add must not call it inert, got:\n%s", addTrigger.String())
 	}
 	if err := cli.ConnectionsList(storeDir, &listBoth); err != nil {
 		t.Fatalf("list both: %v", err)
 	}
-	if n := strings.Count(listBoth.String(), "inert"); n != 1 {
-		t.Errorf("exactly the trigger-granting record is flagged, got %d warnings in:\n%s", n, listBoth.String())
+	if n := strings.Count(listBoth.String(), "inert"); n != 0 {
+		t.Errorf("no honoured grant is flagged, got %d warnings in:\n%s", n, listBoth.String())
 	}
 }

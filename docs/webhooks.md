@@ -873,6 +873,17 @@ operator is the security-critical knob — a malicious caller cannot escalate by
 renaming a key the org-admin has pinned (`handleGenericWebhook` in
 [pkg/server/webhooks_generic.go](../pkg/server/webhooks_generic.go)).
 
+## The connector lane: a webhook believed through a connection
+
+A webhook bound to a [pkg/connection](../pkg/connection/connection.go) record
+(`connector_connection_id` on create/PATCH, validated at write) leaves the
+provider switch to the connector lane (#2761, ADR-098): the connection must
+hold the `trigger` grant — the consent given when it was entrusted — and the
+event is matched against what the connector **package** declares
+(`triggers.yaml`), not an engine list. The signature gate is unchanged (the
+secret stays the webhook's own `hmac_secret_sealed`). Shipped on Forgejo;
+unbound webhooks run the legacy lane unchanged.
+
 ## Matching: project + event + author allowlists, bot scope
 
 Every webhook carries four selection filters plus a bot-agnostic hold gate

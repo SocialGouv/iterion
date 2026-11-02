@@ -16,31 +16,28 @@ import "errors"
 // WHERE THE SECRET LIVES is deliberately not here. A webhook's HMAC secret is
 // already durable state with a cloud twin — webhooks.Config.HMACSecretSealed,
 // sealed with an AAD bound to the webhook id, with pkg/webhooks/mongo.go
-// beside it — while pkg/connection has file and memory stores only and its own
-// doc (store.go:38-41) records the Mongo twin as still owed. Putting a second
-// sealed secret on a record with no cloud half would be a durable seam that
-// ships filesystem-only, which this repo calls a cloud hole rather than a
-// known limitation. So the connection carries the GRANT and the webhook config
-// carries the secret; the inbound half that binds one to the other is the next
-// lot of #2761.
-//
-// Until that lot lands the grant is INERT, and it is read anyway — by the
-// resolution chokepoint and by the CLI — for exactly the reason CapAgent is
-// (see agent.go): a capability nobody checks is configuration that looks like
-// a guarantee.
+// beside it — so the connection carries the GRANT and the webhook config
+// carries the secret. The inbound half that binds one to the other is the
+// connector webhook lane (#2761): webhooks.Config.ConnectorConnectionID names
+// the connection, and the lane (pkg/server/webhooks_connector.go) resolves it
+// tenant-scoped, requires this grant, and matches the delivery against the
+// package's declared events — a config without a binding keeps the legacy
+// provider lane, byte-identical.
 
-// ErrTriggerIngressUnwired is what a `trigger` grant is worth in this build.
-//
-// A SENTINEL for the same reason ErrAgentFacadeUnwired is one: "this
-// connection declares the wrong capability" is fixed on the record by its
-// operator, while "the capability it declares is one this build cannot
-// honour" is fixed by shipping the ingress. A substring match on a message
-// cannot carry that difference across a release.
+// ErrTriggerIngressUnwired is what a `trigger` grant is worth in a build with
+// no ingress. UNREACHABLE since the connector webhook lane landed (the second
+// half of #2761) and kept as the sentinel the predicate arms again the day a
+// build ships without it — the capability table in agent.go reads it, and a
+// substring match on a message could not carry "fixed by a release" versus
+// "fixed on the record" across one.
 var ErrTriggerIngressUnwired = errors.New("connection: the `trigger` capability is granted but inert — no connector webhook ingress reads it in this build (docs/adr/098-connector-catalog.md)")
 
 // TriggerIngressWired reports whether this build can serve CapTrigger.
 //
-// The single source of the answer, like AgentFacadeWired: the day the inbound
-// half exists there is one line to change and no second site still saying
-// otherwise.
-func TriggerIngressWired() bool { return false }
+// The single source of the answer, like AgentFacadeWired: the day the ingress
+// is gone there is one line to change and no second site still saying
+// otherwise. TRUE since #2761: the lane is pkg/server/webhooks_connector.go,
+// entered from the Forgejo webhook handler when the config names a
+// connection, believing the delivery on the connection's `trigger` grant and
+// the package's declared events.
+func TriggerIngressWired() bool { return true }

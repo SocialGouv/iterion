@@ -101,18 +101,19 @@ func TestAGrantMismatchIsNotTheFacadeBeingUnwired(t *testing.T) {
 
 // The CLI's half reads the SAME answer: one place decides whether a grant is
 // honoured, so no surface can keep saying otherwise after a flip. `agent`
-// stopped being owed the sentence when the facade landed (#2758); `trigger`
-// is still owed it.
+// stopped being owed the sentence when the facade landed (#2758), `trigger`
+// when the connector webhook ingress landed (#2761). Both predicates are
+// wired now, so every row below expects NO advice — the table stays because
+// the day either surface disappears, its row is what must redden.
 func TestGrantAdviceIsOwedExactlyWhenTheGrantIsInert(t *testing.T) {
-	// A TRIPWIRE, not a skip: the day either predicate flips, this reddens
-	// and whoever flipped it has to revisit the two CLI readers
-	// (`connections add` / `connections list`) together with this test —
-	// which is exactly what #2758's Done-when demanded for `agent`.
+	// A TRIPWIRE, not a skip: the day either predicate flips back, this
+	// reddens and whoever flipped it has to revisit the two CLI readers
+	// (`connections add` / `connections list`) together with this test.
 	if !connection.AgentFacadeWired() {
-		t.Fatal("AgentFacadeWired() is false: the MCP facade is gone from this build — `connections add` / `connections list` must warn about `agent` again, and this test's rows flip back")
+		t.Fatal("AgentFacadeWired() is false: the MCP facade is gone from this build — `connections add` / `connections list` must warn about `agent` again")
 	}
-	if connection.TriggerIngressWired() {
-		t.Fatal("TriggerIngressWired() is true: the connector webhook ingress landed — revisit the same two surfaces and this test together")
+	if !connection.TriggerIngressWired() {
+		t.Fatal("TriggerIngressWired() is false: the connector webhook ingress is gone from this build — `connections add` / `connections list` must warn about `trigger` again")
 	}
 	for _, tc := range []struct {
 		name string
@@ -123,9 +124,9 @@ func TestGrantAdviceIsOwedExactlyWhenTheGrantIsInert(t *testing.T) {
 		{"action and agent", []connection.Capability{connection.CapAction, connection.CapAgent}, false},
 		{"action alone", []connection.Capability{connection.CapAction}, false},
 		{"nothing", nil, false},
-		{"trigger alone", []connection.Capability{connection.CapTrigger}, true},
-		{"action and trigger", []connection.Capability{connection.CapAction, connection.CapTrigger}, true},
-		{"agent and trigger — one of the two is still inert", []connection.Capability{connection.CapAgent, connection.CapTrigger}, true},
+		{"trigger alone — honoured since the ingress landed", []connection.Capability{connection.CapTrigger}, false},
+		{"action and trigger", []connection.Capability{connection.CapAction, connection.CapTrigger}, false},
+		{"agent and trigger", []connection.Capability{connection.CapAgent, connection.CapTrigger}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			advice := connection.GrantAdvice(tc.caps)

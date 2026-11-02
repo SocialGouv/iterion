@@ -10,16 +10,17 @@ import (
 )
 
 // The `trigger` capability is what may be BELIEVED about an inbound delivery,
-// decided when the connection is entrusted (#2761). Nothing reads it for an
-// inbound event yet — the ingress is the next lot — so it lands the way
-// `agent` did: accepted, never silently narrowed, and READ at the two places
-// that exist, so the grant cannot be configuration that looks like a
-// guarantee.
+// decided when the connection is entrusted (#2761). The ingress now reads it
+// (the connector webhook lane, pkg/server/webhooks_connector.go), so the
+// grant is honoured — and these tests keep the chokepoint honest about what
+// that changes: a trigger-only connection asked for an ACTION is an ordinary
+// grant mismatch, not a build defect.
 
-// TestATriggerOnlyGrantIsRefusedTypedAndSaysTheGrantIsInert is the
-// chokepoint's half: the refusal says both halves of the truth — this use
-// needs `action`, and the `trigger` grant you do hold buys nothing yet.
-func TestATriggerOnlyGrantIsRefusedTypedAndSaysTheGrantIsInert(t *testing.T) {
+// TestATriggerOnlyGrantIsAnOrdinaryMismatchForANode is the chokepoint's half
+// after the ingress landed: the refusal names the missing grant, and NOTHING
+// about waiting for a release — the ingress exists, so "inert" would send the
+// operator to wait for what is already shipped.
+func TestATriggerOnlyGrantIsAnOrdinaryMismatchForANode(t *testing.T) {
 	store := connection.NewMemoryStore()
 	r := resolver(t, store)
 	c := conn("c1", "tenant-a", "main")
@@ -38,29 +39,30 @@ func TestATriggerOnlyGrantIsRefusedTypedAndSaysTheGrantIsInert(t *testing.T) {
 	if capErr.Want != connection.CapAction {
 		t.Errorf("Want = %q, want %q", capErr.Want, connection.CapAction)
 	}
-	if !errors.Is(err, connection.ErrTriggerIngressUnwired) {
-		t.Errorf("a grant that is trigger-only must unwrap to ErrTriggerIngressUnwired — a release fixes it, not the operator: %v", err)
+	if errors.Is(err, connection.ErrTriggerIngressUnwired) {
+		t.Errorf("the ingress is wired (#2761): the grant is honoured, so the release-fixed sentinel must not travel: %v", err)
 	}
 	if errors.Is(err, connection.ErrAgentFacadeUnwired) {
 		t.Errorf("it holds no `agent` grant, so the agent sentinel must not travel: %v", err)
 	}
-	// The sentence an operator ACTS on: the grant, and what is missing — which
-	// is what tells them whether to wait for a release or widen the record.
-	for _, want := range []string{"inert", "`trigger`", "no connector webhook ingress reads it"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the message must contain %q, got: %v", want, err)
-		}
+	// The operator's sentence: widen the grant. No "inert", no waiting on a
+	// release — the use exists and the record simply does not grant it.
+	if !strings.Contains(err.Error(), "an operator grants that use deliberately") {
+		t.Errorf("the refusal must direct the operator at the grant: %v", err)
+	}
+	if strings.Contains(err.Error(), "inert") {
+		t.Errorf("nothing is inert in this build — the word must not appear: %v", err)
 	}
 }
 
 // TestAnHonouredGrantMakesTheMismatchOrdinary.
 //
-// Before the facade landed, [agent, trigger] held TWO inert facts and both
-// sentinels travelled. Since #2758 the agent half is honoured, so the
-// record is an ordinary grant mismatch — the connection DOES serve the
-// facade, and the refusal for a node must say "widen the grant", not "wait
-// for a release". Both orders, because the predicate walks the list: which
-// answer a caller reads must not depend on the field order.
+// Before either surface landed, [agent, trigger] held TWO inert facts and
+// both sentinels travelled. Since #2758 (facade) and #2761 (ingress) BOTH
+// are honoured, so the record is an ordinary grant mismatch — the refusal
+// for a node must say "widen the grant", not "wait for a release". Both
+// orders, because the predicate walks the list: which answer a caller reads
+// must not depend on the field order.
 func TestAnHonouredGrantMakesTheMismatchOrdinary(t *testing.T) {
 	for _, caps := range [][]connection.Capability{
 		{connection.CapAgent, connection.CapTrigger},

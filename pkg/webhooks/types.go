@@ -408,6 +408,18 @@ type Config struct {
 	// default; every pre-existing row decodes to "" and behaves as before).
 	ProvisionedBy string `bson:"provisioned_by,omitempty" json:"provisioned_by,omitempty"`
 
+	// ConnectorConnectionID names the pkg/connection record this webhook's
+	// deliveries are BELIEVED through (#2761, ADR-098): when set, the inbound
+	// handler is the connector lane — the event is matched against what the
+	// connector PACKAGE declares (triggers.yaml), not an engine switch, and
+	// the connection must hold the `trigger` grant, which is what an operator
+	// consented to when entrusting it. The signature secret stays on
+	// HMACSecretSealed: the grant is the connection's, the secret is the
+	// webhook's (the split trigger.go states). Empty = the legacy
+	// provider-switch lane, byte-identical for every row written before the
+	// field existed.
+	ConnectorConnectionID string `bson:"connector_connection_id,omitempty" json:"connector_connection_id,omitempty"`
+
 	CreatedBy  string     `bson:"created_by" json:"created_by"`
 	CreatedAt  time.Time  `bson:"created_at" json:"created_at"`
 	UpdatedAt  time.Time  `bson:"updated_at" json:"updated_at"`
