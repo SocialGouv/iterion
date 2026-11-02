@@ -1,6 +1,10 @@
 package ir
 
-import "testing"
+import (
+	"os"
+	"strings"
+	"testing"
+)
 
 const subbotSrc = `
 schema verdict:
@@ -150,7 +154,11 @@ subbot lot:
 	}
 }
 
-// TestSubbotLandingStrategyEnum asserts the strategy's closed vocabulary.
+// TestSubbotLandingStrategyEnum asserts the strategy's closed vocabulary,
+// and that the code it rides still admits this carrier: the refusal is a
+// C004 member, so the author greps the code and lands on the catalogue's
+// fix line and the reference row — both must name `merge_strategy`, or the
+// remedy describes a check that does not know the refusal exists.
 func TestSubbotLandingStrategyEnum(t *testing.T) {
 	src := `
 tool a:
@@ -170,5 +178,26 @@ subbot lot:
 `
 	if !hasDiag(compileFile(t, src).Diagnostics, DiagBadTemplateRef) {
 		t.Fatal("expected the merge_strategy enum refusal")
+	}
+	hint := HintFor(DiagBadTemplateRef)
+	if !strings.Contains(hint, "merge_strategy") {
+		t.Fatalf("the C004 fix line does not admit the subbot merge_strategy carrier: %s", hint)
+	}
+	doc, err := os.ReadFile("../../../docs/references/diagnostics.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c004 string
+	for line := range strings.SplitSeq(string(doc), "\n") {
+		if strings.HasPrefix(line, "| **C004**") {
+			c004 = line
+			break
+		}
+	}
+	if c004 == "" {
+		t.Fatal("docs/references/diagnostics.md has no C004 row")
+	}
+	if !strings.Contains(c004, "merge_strategy") {
+		t.Fatalf("the C004 reference row does not admit the subbot merge_strategy carrier: %s", c004)
 	}
 }
