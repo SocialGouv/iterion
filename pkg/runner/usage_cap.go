@@ -318,10 +318,19 @@ func (k runCredKeys) keyForSlot(slot string) string {
 // spends nothing and is not metered. pi's hint names the provider it spends,
 // over the model's prefix; kimi and grok spend their own config and are not
 // metered; other backends route on the spec, as the spend ledger books them
-// (credentialSlotForRoute) — opencode, which books on nobody, on the pod's
-// ambient meter. A slot off the anthropic wire is not what the cap meters. A
-// route the walk cannot read keeps the run's default credential — defaultKey,
-// the ledger the coming session writes.
+// (credentialSlotForRoute). A slot off the anthropic wire is not what the cap
+// meters. A nothing-held answer keys the pod's ambient meter only where that
+// account is the route's next funder — the route names the ANTHROPIC provider
+// itself (a claw anthropic-wire spec with no GLM id detouring to z.ai's
+// synthesis, a pi route whose hint names anthropic): the spawn reaches the
+// pod's anthropic env, so the ambient account's own walls are the walls this
+// route crosses. Every other nothing-held shape funds elsewhere or is
+// unreadable — opencode resolves its own config, a gateway route the
+// deployment's gateway pair, a vendor id its own pod env, a GLM id z.ai's
+// synthesis — and the reading side books every one of those on nobody, so
+// keying it here would park the run on evidence no spend of its can raise.
+// A route the walk cannot read keeps the run's default credential —
+// defaultKey, the ledger the coming session writes.
 func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key string, metered bool) {
 	if !route.Readable {
 		return k.defaultKey(), true
@@ -354,9 +363,39 @@ func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key s
 		return "", false
 	}
 	if slot == "" {
-		return k.nothingHeldKey(), true
+		if nothingHeldFundsTheAmbientAccount(route, hint) {
+			return k.nothingHeldKey(), true
+		}
+		// The route's next funder is an account whose walls never land on
+		// this meter (or nothing funds it at all). Not metered.
+		return "", false
 	}
 	return k.keyForSlot(slot), true
+}
+
+// nothingHeldFundsTheAmbientAccount reports whether a route the run holds
+// nothing for names the pod's ambient ANTHROPIC account as its next funder —
+// the only shape the nothing-held meter may judge. claw routes on the
+// anthropic wire resolve through the registry's env factory and their spawn
+// carries the pod's anthropic env (inherited on the host, the forwarded
+// channels in a sandbox) — except a GLM id, whose key is z.ai's: the
+// synthesis reads the pod's ZAI env, another vendor's account, and without it
+// the id is refused or 404s, never capped. pi resolves providers from the
+// env allowlist it is handed, the pod's ANTHROPIC_API_KEY included, so an
+// anthropic hint names the ambient account too; a bare pi model names
+// nothing. Every other backend funds from config iterion does not read.
+func nothingHeldFundsTheAmbientAccount(route model.WireRoute, hint string) bool {
+	switch route.Backend {
+	case delegate.BackendClaw:
+		return wireForRoute(route.Backend, route.Model) == anthropicWire &&
+			!model.GLMOnAnthropicWire(route.Model)
+	case delegate.BackendPi:
+		if h := strings.ToLower(strings.TrimSpace(hint)); h != "" {
+			return h == string(secrets.ProviderAnthropic)
+		}
+		return providerFromModel(route.Model) == anthropicWire
+	}
+	return false
 }
 
 // firstHeld is the bundle-default precedence: the first slot of
@@ -884,16 +923,22 @@ func supervisorRouteID(name string, i int) string {
 
 // supervisorKey is the meter key a supervisor's resolved model spec spends,
 // and whether the cap meters it at all. It spends in process, in
-// Registry.ResolveWithContext's order: `anthropic/…` the Anthropic key held for
-// the route, else the Claude forfait while the claw factory takes it (not under
-// ITERION_FORBID_SUBSCRIPTION_OAUTH, not behind a non-Anthropic
+// Registry.ResolveWithContext's order: `anthropic/…` (no GLM id) the Anthropic
+// key held for the route, else the Claude forfait while the claw factory takes
+// it (not under ITERION_FORBID_SUBSCRIPTION_OAUTH, not behind a non-Anthropic
 // ANTHROPIC_BASE_URL — anthropicFromCtxForfait), else the pod's ambient env —
 // keyed on that env's own meter (nothingHeldKey, the account's fingerprinted
 // label), since a claw supervisor reports no readings of its own and the
-// account's refusals are the only evidence it produces; a GLM id there the
-// z.ai key first; `zai/…` and `moonshot/…` that provider's key, else the
-// ambient env the same way. A spec the registry cannot parse spends nothing;
-// any other provider is off the wire the cap meters.
+// account's refusals are the only evidence it produces. A GLM id there the
+// z.ai key: the registry has no zai factory, so with none held the spec is
+// refused (a hint) or the synthesis reads the pod's ZAI env — another
+// vendor's account the cap keeps no meter for — and it is not metered.
+// `zai/…` and `moonshot/…` that provider's key, a gateway spec the run's
+// gateway pair; with none held the registry reads each provider's OWN pod
+// env (MOONSHOT_API_KEY, the OPENAI_COMPATIBLE pair) or refuses — never the
+// pod's anthropic ambient env — so they are not metered either. A spec the
+// registry cannot parse spends nothing; any other provider is off the wire
+// the cap meters.
 func (k runCredKeys) supervisorKey(ctx context.Context, spec string) (key string, metered bool) {
 	// Read as the registry reads it: untrimmed, case-sensitive.
 	provider, _, err := model.ParseModelSpec(spec)
@@ -905,14 +950,24 @@ func (k runCredKeys) supervisorKey(ctx context.Context, spec string) (key string
 	switch secrets.Provider(provider) {
 	case secrets.ProviderAnthropic:
 		if model.GLMOnAnthropicWire(spec) {
-			slot = heldForRoute(creds, string(secrets.ProviderZAI))
+			if slot = heldForRoute(creds, string(secrets.ProviderZAI)); slot == "" {
+				// The GLM id funds z.ai's account next — the pod's ZAI env
+				// the synthesis reads, or a typed refusal — never the pod's
+				// ambient anthropic one. Not metered.
+				return "", false
+			}
+			return k.keyForSlot(slot), true
 		}
-		if slot == "" {
-			slot = heldForRoute(creds, string(secrets.ProviderAnthropic))
-		}
+		slot = heldForRoute(creds, string(secrets.ProviderAnthropic))
 		if slot == "" && creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "" &&
 			!secrets.ForbidSubscriptionOAuth() && secrets.AnthropicForfaitWireOK(os.Getenv("ANTHROPIC_BASE_URL")) {
 			slot = string(secrets.OAuthKindClaudeCode)
+		}
+		if slot == "" {
+			// Nothing the run holds funds this spec: the registry walks on
+			// into the pod's ambient env, and that env's own meter is where
+			// the account's evidence lives (nothingHeldKey).
+			return k.nothingHeldKey(), true
 		}
 	case secrets.ProviderZAI, secrets.ProviderMoonshot:
 		slot = heldForRoute(creds, provider)
@@ -925,10 +980,14 @@ func (k runCredKeys) supervisorKey(ctx context.Context, spec string) (key string
 		return "", false
 	}
 	if slot == "" {
-		// Nothing the run holds funds this spec: the registry walks on into
-		// the pod's ambient env, and that env's own meter is where the
-		// account's evidence lives (nothingHeldKey).
-		return k.nothingHeldKey(), true
+		// Nothing the run holds funds this spec either, and none of these
+		// providers walks into the pod's anthropic ambient env: the registry
+		// reads each from its own pod environment (ZAI_API_KEY — no registry
+		// factory exists for zai at all, so the spec is refused —
+		// MOONSHOT_API_KEY, the deployment's OPENAI_COMPATIBLE pair) or
+		// refuses. Keying the spec on the ambient account's meter would park
+		// the run on a wall another vendor's account raised. Not metered.
+		return "", false
 	}
 	return k.keyForSlot(slot), true
 }

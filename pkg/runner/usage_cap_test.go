@@ -683,7 +683,9 @@ func TestUsageCapPreflight_SparesARunPinnedOffTheAnthropicWire(t *testing.T) {
 // evaluations on the credential the registry serves: the slot's
 // fingerprint is the server's URL-folded stamp the bundle carried
 // (PR-B'1), never a recomputed hash — and a run holding no gateway
-// credential meters the gateway slot keyless, the vendor slots' shape.
+// credential meters nothing: the registry reads the gateway from the
+// deployment's OPENAI_COMPATIBLE env pair (or refuses a stamped run's
+// fallback outright), never from the pod's anthropic ambient env.
 func TestSupervisorKey_GatewaySlotMetersOnTheHeldPair(t *testing.T) {
 	msg := &queue.RunMessage{TenantID: "team-7", RunnerPool: ""}
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
@@ -700,12 +702,13 @@ func TestSupervisorKey_GatewaySlotMetersOnTheHeldPair(t *testing.T) {
 	if !strings.Contains(key, "fp-gw-server") {
 		t.Fatalf("the meter key does not carry the server's fingerprint: %q", key)
 	}
-	// No gateway credential held: the slot meters keyless, the vendor
-	// slots' pre-existing shape.
+	// No gateway credential held: nothing the registry would spend is on a
+	// meter the cap keeps — the env pair has no ledger, the stamped run's
+	// fallback answers a typed refusal.
 	ctx = secrets.WithCredentials(context.Background(), secrets.Credentials{AmbientRefused: true})
 	k = usageCapCredKeys(ctx, msg)
 	key, metered = k.supervisorKey(ctx, "openai_compatible/glm-5.3")
-	if !metered || strings.Contains(key, "fp-") {
-		t.Fatalf("a run holding no gateway credential = %q metered=%v, want a keyless gateway meter", key, metered)
+	if metered {
+		t.Fatalf("a run holding no gateway credential = %q metered=%v, want not metered — the deployment's env pair books on nobody", key, metered)
 	}
 }

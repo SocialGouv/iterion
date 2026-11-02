@@ -7,6 +7,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
@@ -229,5 +230,113 @@ func TestTheNothingHeldDefaultKeepsTheBareMeterWithoutAnAmbientSpend(t *testing.
 	keys := usageCapCredKeys(secrets.WithCredentials(context.Background(), secrets.Credentials{}), msg)
 	if got := keys.defaultKey(); got != bare {
 		t.Errorf("a pod with no ambient credential = %q, want the bare %q — no inherited account names the spend", got, bare)
+	}
+}
+
+// The nothing-held meter judges only the shapes the ambient account actually
+// funds. A claw route on the anthropic wire and a hint-less supervisor
+// `anthropic/…` spec walk the registry's order into the pod's ambient env —
+// its meter is where their walls land. Everything else with nothing held
+// funds an account whose walls never land there — opencode its own config, a
+// gateway spec the deployment's OPENAI_COMPATIBLE pair, a zai/moonshot spec
+// that provider's own env (zai: refused outright, the registry has no factory
+// for it), a GLM id z.ai's synthesis, a claw openai id the pod's openai env —
+// and keying any of them on the ambient meter parks the run on a wall
+// another vendor's account raised. Metering side and reading side must agree:
+// the reading side books every one of these shapes on nobody.
+func TestTheNothingHeldMeterJudgesOnlyTheShapesTheAmbientAccountFunds(t *testing.T) {
+	blankAnthropicWireEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
+	want := usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, secrets.FingerprintSHA256("sk-pod"))
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{})
+	keys := usageCapCredKeys(ctx, &queue.RunMessage{TenantID: "team-b"})
+
+	// Control: the shapes the ambient account funds keep its meter.
+	if key, metered := keys.supervisorKey(ctx, "anthropic/claude-sonnet-4"); !metered || key != want {
+		t.Errorf("the anthropic supervisor = %q metered=%v, want the ambient meter — its spec walks into the pod's env", key, metered)
+	}
+	clawAnthropic := model.WireRoute{NodeID: "n1", Backend: delegate.BackendClaw, Model: "claude-sonnet-4"}
+	if key, metered := keys.routeKey(ctx, clawAnthropic); !metered || key != want {
+		t.Errorf("the claw anthropic route = %q metered=%v, want the ambient meter — its spawn inherits the pod's env", key, metered)
+	}
+	// pi reads providers from the env allowlist it is handed, the pod's
+	// ANTHROPIC_API_KEY included, so a hint naming anthropic funds from the
+	// ambient account too.
+	piAnthropic := model.WireRoute{NodeID: "n7", Backend: delegate.BackendPi, Hint: "anthropic", Model: "claude-opus-5-5", Readable: true}
+	if key, metered := keys.routeKey(ctx, piAnthropic); !metered || key != want {
+		t.Errorf("the pi anthropic route = %q metered=%v, want the ambient meter — pi's env allowlist resolves the pod's key", key, metered)
+	}
+
+	// The shapes funded elsewhere: not metered, whatever the ambient
+	// account's meter says.
+	for _, tc := range []struct {
+		name  string
+		key   func() (string, bool)
+		call  string
+		funds string
+	}{
+		{"zai supervisor", func() (string, bool) { return keys.supervisorKey(ctx, "zai/glm-4.6") }, "supervisorKey(zai/glm-4.6)", "the registry has no zai factory — the spec is refused"},
+		{"moonshot supervisor", func() (string, bool) { return keys.supervisorKey(ctx, "moonshot/kimi-k2") }, "supervisorKey(moonshot/kimi-k2)", "the registry reads MOONSHOT_API_KEY"},
+		{"gateway supervisor", func() (string, bool) { return keys.supervisorKey(ctx, "openai_compatible/glm-5.3") }, "supervisorKey(openai_compatible/glm-5.3)", "the registry reads the deployment's gateway pair"},
+		{"GLM supervisor", func() (string, bool) { return keys.supervisorKey(ctx, "anthropic/glm-5.3") }, "supervisorKey(anthropic/glm-5.3)", "the synthesis reads the pod's ZAI env"},
+		{"openai supervisor", func() (string, bool) { return keys.supervisorKey(ctx, "openai/gpt-6") }, "supervisorKey(openai/gpt-6)", "the registry reads OPENAI_API_KEY"},
+		{"opencode route", func() (string, bool) {
+			return keys.routeKey(ctx, model.WireRoute{NodeID: "n2", Backend: delegate.BackendOpenCode, Model: "anthropic/claude-opus-5-5", Readable: true})
+		}, "routeKey(opencode)", "opencode resolves its own config"},
+		{"claw GLM route", func() (string, bool) {
+			return keys.routeKey(ctx, model.WireRoute{NodeID: "n3", Backend: delegate.BackendClaw, Model: "anthropic/glm-5.3", Readable: true})
+		}, "routeKey(claw glm)", "the z.ai synthesis funds the id"},
+		{"claw openai route", func() (string, bool) {
+			return keys.routeKey(ctx, model.WireRoute{NodeID: "n4", Backend: delegate.BackendClaw, Model: "openai/gpt-6", Readable: true})
+		}, "routeKey(claw openai)", "the pod's openai env funds the id"},
+		{"gateway route", func() (string, bool) {
+			return keys.routeKey(ctx, model.WireRoute{NodeID: "n5", Backend: delegate.BackendClaw, Model: "openai_compatible/glm-5.3", Readable: true})
+		}, "routeKey(gateway)", "the deployment's gateway pair books on nobody"},
+		{"zai-hinted pi route", func() (string, bool) {
+			return keys.routeKey(ctx, model.WireRoute{NodeID: "n6", Backend: delegate.BackendPi, Hint: "zai", Model: "glm-5.3", Readable: true})
+		}, "routeKey(pi zai)", "the z.ai key funds the hint"},
+	} {
+		if key, metered := tc.key(); metered {
+			t.Errorf("%s = %q metered=%v, want not metered — %s, an account whose walls never land on the ambient meter", tc.call, key, metered, tc.funds)
+		}
+	}
+}
+
+// End to end: the capped ambient wall parks only the run that would spend the
+// ambient account. The opencode route and the zai supervisor launch past it —
+// under a blanket nothing-held metering they would park on evidence no spend
+// of theirs can ever raise — while the claw anthropic route on the same pod
+// still stops.
+func TestUsageCapPreflight_TheAmbientWallParksOnlyTheRoutesThatSpendIt(t *testing.T) {
+	blankAnthropicWireEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
+	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
+	t.Setenv("ITERION_SUPERVISORS", "")
+	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
+	caps := usagecap.NewMemStore()
+	weekCapped(t, caps, platformKey(secrets.FingerprintSHA256("sk-pod")), time.Now().UTC().Add(30*time.Hour))
+
+	opencode := chainWorkflow(agentRoute("oc", delegate.BackendOpenCode, "", "anthropic/claude-opus-5-5"))
+	if err := preflightFor(t, caps, secrets.WithCredentials(context.Background(), secrets.Credentials{}), opencode); err != nil {
+		t.Errorf("parked an opencode route on the ambient wall: %v — opencode's spend is its own config's answer", err)
+	}
+
+	clawAnthropic := chainWorkflow(agentRoute("impl", delegate.BackendClaw, "", "claude-sonnet-4"))
+	if err := preflightFor(t, caps, secrets.WithCredentials(context.Background(), secrets.Credentials{}), clawAnthropic); err == nil {
+		t.Error("started a claw anthropic route on the pod's capped ambient credential — the account its spawn inherits")
+	}
+
+	// The supervisor rows ride an impl node that never crosses the wall, so
+	// the park (or its absence) names the SUPERVISOR's own metering.
+	supervised := func(model string) *ir.Workflow {
+		wf := chainWorkflow(agentRoute("impl", delegate.BackendOpenCode, "", "anthropic/claude-opus-5-5"))
+		wf.Supervisors = []*ir.Supervisor{{Name: "pacer", Model: model}}
+		return wf
+	}
+	if err := preflightWithSupervisors(t, caps, secrets.WithCredentials(context.Background(), secrets.Credentials{}), supervised("zai/glm-4.6"), ""); err != nil {
+		t.Errorf("parked a zai-pinned supervisor on the ambient wall: %v — the registry refuses the spec, it spends nothing", err)
+	}
+	if err := preflightWithSupervisors(t, caps, secrets.WithCredentials(context.Background(), secrets.Credentials{}), supervised("anthropic/claude-opus-5-5"), ""); err == nil {
+		t.Error("started an anthropic-pinned supervisor on the pod's capped ambient credential")
 	}
 }

@@ -373,9 +373,11 @@ func TestUsageCapPreflight_APiRouteIsJudgedOnTheKeyItSpends(t *testing.T) {
 }
 
 // kimi and grok spend their own config: no route of theirs is judged on a
-// ledger of the run's. opencode books on nobody too, but it may pick the
-// pod's ambient Anthropic credential, so it is judged on the pod's ambient
-// meter — never on the forfait holding the run's wire.
+// ledger of the run's. opencode books on nobody the same way — what it spends
+// is its own config's answer, never a credential iterion supplied, and the
+// reading side books its spend on nobody — so no meter judges it: not the
+// run's forfait, and not the pod's ambient account either, whose walls are
+// raised by the claude_code sessions that share it.
 func TestUsageCapPreflight_OwnConfigBackendsAreNotJudgedOnTheRunsCredentials(t *testing.T) {
 	blankAnthropicWireEnv(t)
 	kimi := chainWorkflow(agentRoute("kimi", delegate.BackendKimi, "moonshot", "kimi-k2"))
@@ -393,10 +395,14 @@ func TestUsageCapPreflight_OwnConfigBackendsAreNotJudgedOnTheRunsCredentials(t *
 	if err := preflightFor(t, forfait, forfaitBesidePinnedKeys(), opencode); err != nil {
 		t.Errorf("parked an opencode route on the run's forfait it never spends: %v", err)
 	}
+	// The pod carries the ambient credential, its account's meter is capped,
+	// and the opencode route still starts: a spend nothing ever books on
+	// that meter cannot be judged by it.
+	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
 	ambient := usagecap.NewMemStore()
-	weekCapped(t, ambient, platformKey(""), time.Now().UTC().Add(30*time.Hour))
-	if err := preflightFor(t, ambient, forfaitBesidePinnedKeys(), opencode); err == nil {
-		t.Error("started an opencode route on the pod's capped ambient credential")
+	weekCapped(t, ambient, platformKey(secrets.FingerprintSHA256("sk-pod")), time.Now().UTC().Add(30*time.Hour))
+	if err := preflightFor(t, ambient, forfaitBesidePinnedKeys(), opencode); err != nil {
+		t.Errorf("parked an opencode route on the pod's ambient account: %v — opencode's spend is its own config's answer, booked on nobody", err)
 	}
 }
 
