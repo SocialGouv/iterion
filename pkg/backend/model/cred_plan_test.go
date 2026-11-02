@@ -164,3 +164,97 @@ func TestCredentialPlan_SitesCarryTheChainOrder(t *testing.T) {
 		t.Fatalf("Pins[zai] = %v, want [impl] — Sites never disturbs Pins", got)
 	}
 }
+
+// nodeOn is agentWith plus the route's backend: the fact the twice-funded
+// shapes below turn on — the delegate precedence that decides which of the
+// two sealed credentials a route spends.
+func nodeOn(id, backend, provider, mdl string) *ir.AgentNode {
+	return &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: id},
+		LLMFields: ir.LLMFields{Backend: backend, Provider: provider, Model: mdl},
+	}
+}
+
+// twiceFundedBundle is the shape a shared tier seals when a route pins the
+// forfait's OWN provider (cloudpublisher's TestSharedTier_
+// aPinOnTheForfaitsOwnProviderIsFundedPinnedOnly): the subscription holds
+// the family while the key waits in the pinned channel for the routes that
+// name it. Two credentials, one provider — the plan's answer is the route
+// backend's, not the bundle's.
+func twiceFundedBundle(kind secrets.OAuthKind) secrets.RunBundle {
+	return secrets.RunBundle{
+		OAuthCredentials: map[string][]byte{string(kind): []byte("payload")},
+		OAuthFingerprints: map[string]string{
+			string(kind): "fp-" + string(kind) + "-forfait",
+		},
+		PinnedAPIKeys: map[secrets.Provider]string{
+			secrets.Provider(OAuthProvider(string(kind))): "sk-pinned",
+		},
+	}
+}
+
+func TestCredentialPlan_TwiceFundedProviderPlansTheForfaitForAForfaitFirstWalk(t *testing.T) {
+	t.Parallel()
+
+	// Every route naming the provider runs a forfait-first backend, so the
+	// runtime spends the forfait (its declared precedence reads key,
+	// forfait, pinned key) and never reaches the pinned key. The plan must
+	// name the subscription's fingerprint — the channel order the
+	// fingerprint reader follows would name the pinned key and book the
+	// forfait's spend on an instrument nobody spent.
+	for _, tc := range []struct {
+		name     string
+		provider string
+		backend  string
+		kind     secrets.OAuthKind
+	}{
+		{"anthropic beside a Claude forfait on claude_code", "anthropic", "claude_code", secrets.OAuthKindClaudeCode},
+		{"openai beside a codex forfait on codex", "openai", "codex", secrets.OAuthKindCodex},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bundle := twiceFundedBundle(tc.kind)
+			wf := &ir.Workflow{Nodes: map[string]ir.Node{
+				"impl": nodeOn("impl", tc.backend, tc.provider, tc.provider+"/claude-opus-5"),
+			}}
+			res := EffectiveProviders(RouteView{Workflow: wf}, knownForTest)
+			if !res.NarrowSafe {
+				t.Fatalf("the walk narrowed to nothing — test premise broken: %+v", res)
+			}
+			if !slices.Contains(res.ForfaitFirst, tc.provider) {
+				t.Fatalf("ForfaitFirst = %v, want %q — every route naming it runs %s", res.ForfaitFirst, tc.provider, tc.backend)
+			}
+			plan := CredentialPlan(res, bundle)
+			want := map[string]string{"impl|" + tc.provider: "fp-" + string(tc.kind) + "-forfait"}
+			if !maps.Equal(plan, want) {
+				t.Fatalf("plan = %v, want %v — a forfait-first backend spends the forfait before the pinned key, and the plan names what the runtime spends", plan, want)
+			}
+		})
+	}
+}
+
+func TestCredentialPlan_TwiceFundedProviderBehindAMixedWalkPlansNothing(t *testing.T) {
+	t.Parallel()
+
+	// The same twice-funded bundle behind a claw route beside the
+	// claude_code one: claw bills a Claude forfait as extra usage, so its
+	// anthropic site spends the pinned key while the claude_code site
+	// spends the forfait. One (node, provider) key cannot name both, and a
+	// plan naming either books the other's spend wrong — the derivation
+	// stamps nil, and the broker keeps the coarse whole-attempt booking,
+	// the conservative-on-ignore direction.
+	bundle := twiceFundedBundle(secrets.OAuthKindClaudeCode)
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"impl":   nodeOn("impl", "claude_code", "anthropic", "anthropic/claude-opus-5"),
+		"review": nodeOn("review", "claw", "anthropic", "anthropic/claude-opus-5"),
+	}}
+	res := EffectiveProviders(RouteView{Workflow: wf}, knownForTest)
+	if !res.NarrowSafe {
+		t.Fatalf("the walk narrowed to nothing — test premise broken: %+v", res)
+	}
+	if slices.Contains(res.ForfaitFirst, "anthropic") {
+		t.Fatalf("ForfaitFirst = %v, want it without anthropic — the claw route does not declare the forfait's precedence", res.ForfaitFirst)
+	}
+	if plan := CredentialPlan(res, bundle); plan != nil {
+		t.Fatalf("plan = %v, want nil — a twice-funded provider behind a mixed walk has no total per-(node, provider) answer", plan)
+	}
+}

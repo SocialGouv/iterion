@@ -35,6 +35,16 @@ const PlanKeySep = "|"
 // (spend on an unnamed node books nobody). With the walk narrow-safe every
 // route names its providers, and the plan covers the run's whole program.
 //
+// Nil also when a provider the plan would name is funded TWICE — a pinned
+// key beside its own forfait — on a walk that is not forfait-first for it:
+// which credential a route spends there depends on the backend it runs
+// (claude_code and codex read the forfait first, claw bills it as extra
+// usage, pi has no bridge to it), and one (node, provider) key cannot
+// carry two answers. res.ForfaitFirst — the same walk's own reading —
+// licenses the single answer where every route declares the forfait's
+// precedence; every other mix stays unstamped, and the broker keeps the
+// coarse whole-attempt booking, the conservative-on-ignore direction.
+//
 // The keys are `<node>|<provider>`; the values are the audit fingerprints
 // of the sealed bundle — the same strings the runner reads back from its
 // own credentials (RunBundle's fingerprint maps, mirrored into
@@ -62,6 +72,10 @@ func CredentialPlan(res ProviderResolution, bundle secrets.RunBundle) map[string
 	if len(nodeProvs) == 0 {
 		return nil
 	}
+	forfaitFirst := make(map[string]bool, len(res.ForfaitFirst))
+	for _, p := range res.ForfaitFirst {
+		forfaitFirst[p] = true
+	}
 	plan := make(map[string]string, len(nodeProvs))
 	for node, provs := range nodeProvs {
 		for p := range chain {
@@ -70,7 +84,10 @@ func CredentialPlan(res ProviderResolution, bundle secrets.RunBundle) map[string
 			}
 		}
 		for _, p := range provs {
-			if fp := sealedFingerprint(bundle, p); fp != "" {
+			if twiceFunded(bundle, p) && !forfaitFirst[p] {
+				return nil
+			}
+			if fp := sealedFingerprint(bundle, p, forfaitFirst[p]); fp != "" {
 				plan[node+PlanKeySep+p] = fp
 			}
 		}
@@ -106,6 +123,22 @@ func containsProvider(provs []string, p string) bool {
 	return false
 }
 
+// twiceFunded reports whether the bundle funds provider p TWICE: a key a
+// shared tier pinned for the route beside the provider's own OAuth forfait.
+// Only that pair splits the spend by backend — a default key outranks the
+// forfait on every backend (the delegates rank an API key above an OAuth
+// dir on the same wire), and the fill's one-credential-per-family rule
+// keeps every other combination single. The plan asks before it names a
+// fingerprint, because in this shape the answer is the route backend's,
+// not the bundle's.
+func twiceFunded(bundle secrets.RunBundle, p string) bool {
+	if bundle.PinnedAPIKeys[secrets.Provider(strings.ToLower(p))] == "" {
+		return false
+	}
+	kind := OAuthKindOfProvider(p)
+	return kind != "" && bundle.OAuthCredentials[kind] != nil
+}
+
 // sealedFingerprint names the audit fingerprint the RUNNER will hold for
 // provider p's credential — the same reading Credentials.Fingerprints
 // builds at claim (loop_credentials' stamped()): the bundle's own stamp
@@ -115,8 +148,25 @@ func containsProvider(provs []string, p string) bool {
 // the first that holds the key holds the identity — and the OAuth forfait
 // answers for a provider no key funds, its SUBSCRIPTION fingerprint the
 // only stable identity a refresh never rewrites.
-func sealedFingerprint(bundle secrets.RunBundle, p string) string {
+//
+// The one shape where a provider holds TWO credentials at once is a pinned
+// key beside its own forfait — the pair the shared tiers seal on purpose
+// when a route pins the forfait's own provider (claw bills a Claude forfait
+// as extra usage, pi has no bridge to it). There the delegate precedence
+// decides, not the channel order: a forfait-first backend spends the
+// forfait (its declared precedence reads key, forfait, pinned key), so
+// forfaitFirst names the subscription's fingerprint. CredentialPlan refuses
+// the shape for every other backend mix, where no per-(node, provider)
+// answer is total; the default key never meets the forfait (the fill's
+// one-credential-per-family rule), so forfaitFirst is inert beside it —
+// the key outranks the forfait on every backend.
+func sealedFingerprint(bundle secrets.RunBundle, p string, forfaitFirst bool) string {
 	prov := secrets.Provider(strings.ToLower(p))
+	if forfaitFirst && twiceFunded(bundle, p) {
+		if kind := OAuthKindOfProvider(p); kind != "" {
+			return bundle.OAuthFingerprints[kind]
+		}
+	}
 	var key, baseURL string
 	switch {
 	case bundle.APIKeys[prov] != "":
