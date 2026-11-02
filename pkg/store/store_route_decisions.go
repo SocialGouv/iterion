@@ -179,7 +179,7 @@ func (s *FilesystemRunStore) ListRoutableRuns(_ context.Context, since time.Time
 			// Intent-only carrier: the decline is SILENT (no registry
 			// row), so the net itself refuses every shape the intent
 			// reading or a pre-claim gate declines — a failed,
-			// opted-out, finalize-refused or bank-failed run admitted
+			// opted-out, finalize-refused or unbanked run admitted
 			// here rides the oldest-first page for its whole lookback
 			// and starves newer landable runs behind the cap. The
 			// preconditions mirror routing.EvaluateAutoMerge and the
@@ -187,7 +187,7 @@ func (s *FilesystemRunStore) ListRoutableRuns(_ context.Context, since time.Time
 			if r.Status != RunStatusFinished ||
 				strings.EqualFold(strings.TrimSpace(r.MergeInto), "none") ||
 				r.MergeStatus == MergeStatusSkipped ||
-				r.BankState() == BankStateFailed {
+				r.BankState() != BankStateReady {
 				continue
 			}
 		} else {

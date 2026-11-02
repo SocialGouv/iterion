@@ -130,7 +130,7 @@ func (s *Store) ListRoutableRuns(ctx context.Context, since time.Time, limit int
 					// anti-join cannot lift them out. The net itself
 					// refuses every shape the intent reading or a
 					// pre-claim gate declines (a failed, opted-out,
-					// finalize-refused or bank-failed run admitted
+					// finalize-refused or unbanked run admitted
 					// here rides the oldest-first page for its whole
 					// lookback and starves newer landable runs
 					// behind the cap). The preconditions mirror
@@ -141,6 +141,15 @@ func (s *Store) ListRoutableRuns(ctx context.Context, since time.Time, limit int
 					"merge_into":         bson.M{"$nin": bson.A{"none"}},
 					"merge_status":       bson.M{"$nin": bson.A{store.MergeStatusSkipped}},
 					"final_branch_error": bson.M{"$in": bson.A{"", nil}},
+					// The router's bank gate declines the unbanked
+					// shape before the claim (the terminal status
+					// lands BEFORE the bank push, measured up to 10+
+					// minutes on large repos) — a banked run re-enters
+					// the page once its bank save refreshes updated_at;
+					// a never-banked one (a child no bank ever writes)
+					// must not occupy it at all.
+					"final_branch": bson.M{"$nin": bson.A{"", nil}},
+					"final_commit": bson.M{"$nin": bson.A{"", nil}},
 				},
 			},
 			"status": bson.M{"$in": bson.A{

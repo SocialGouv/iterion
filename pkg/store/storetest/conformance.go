@@ -3746,10 +3746,12 @@ func testRouteDecisionRegistry(t *testing.T, s store.RunStore) {
 		t.Fatalf("ListRoutableRuns(limit=1) = (%v, %v), want the oldest routable run [routable-b]", ids, err)
 	}
 
-	// The launch intent is a routing carrier of its own: a terminal run
-	// with no contract but auto_merge=true sits in the same net (the
-	// instance lands what it was launched to land), while an unarmed
-	// no-policy run stays out.
+	// The launch intent is a routing carrier of its own: a terminal,
+	// BANKED run with no contract but auto_merge=true sits in the same
+	// net (the instance lands what it was launched to land), while an
+	// unarmed no-policy run stays out. The bank fields are part of the
+	// carrier shape: the router declines the unbanked shape before any
+	// claim (the terminal status lands before the bank push).
 	if _, err := s.CreateRun(ctx, "routable-intent", "wf", nil); err != nil {
 		t.Fatalf("CreateRun routable-intent: %v", err)
 	}
@@ -3759,6 +3761,7 @@ func testRouteDecisionRegistry(t *testing.T, s store.RunStore) {
 	}
 	ri.Status = store.RunStatusFinished
 	ri.AutoMerge = true
+	ri.FinalBranch, ri.FinalCommit = "iterion/run/banked", "cafebabel"
 	if err := s.SaveRun(ctx, ri); err != nil {
 		t.Fatalf("SaveRun routable-intent: %v", err)
 	}
@@ -3771,7 +3774,7 @@ func testRouteDecisionRegistry(t *testing.T, s store.RunStore) {
 		found[id] = true
 	}
 	if !found["routable-intent"] {
-		t.Fatalf("an auto_merge terminal run must be swept: %v", ids)
+		t.Fatalf("a banked auto_merge terminal run must be swept: %v", ids)
 	}
 	if found["no-policy"] {
 		t.Fatalf("an unarmed no-policy run must stay out of the sweep: %v", ids)
@@ -3781,12 +3784,16 @@ func testRouteDecisionRegistry(t *testing.T, s store.RunStore) {
 	// them, so the anti-join has nothing to read. The net itself must
 	// therefore refuse every shape the router would decline unclaimed:
 	// a non-finished run, an opted-out one, a finalize-refused one
-	// (merge_status=skipped), a bank-failed one, and a run already
-	// merged (the router's merged gate declines it before any verdict).
-	// Admitted, each shape rides the oldest-first page for its whole
-	// lookback, and a page of them starves newer landable runs behind
-	// the cap. A banked, unmerged, mergeable intent run — merge_status
-	// still empty, the cloud landing shape — stays swept.
+	// (merge_status=skipped), an unbanked one (the router's bank gate
+	// declines it before the claim — the terminal status lands BEFORE
+	// the bank push, measured up to 10+ minutes; the bank's own save
+	// re-enters a banked run, a never-banked one never enters), a
+	// bank-failed one, and a run already merged (the router's merged
+	// gate declines it before any verdict). Admitted, each shape rides
+	// the oldest-first page for its whole lookback, and a page of them
+	// starves newer landable runs behind the cap. A banked, unmerged,
+	// mergeable intent run — merge_status still empty, the cloud
+	// landing shape — stays swept.
 	mki := func(id string, mut func(r *store.Run)) {
 		t.Helper()
 		if _, err := s.CreateRun(ctx, id, "wf", nil); err != nil {
@@ -3808,6 +3815,7 @@ func testRouteDecisionRegistry(t *testing.T, s store.RunStore) {
 	mki("routable-intent-banked", func(r *store.Run) {
 		r.FinalBranch, r.FinalCommit = "iterion/run/banked", "cafebabel"
 	})
+	mki("intent-declined-unbanked", nil)
 	mki("intent-declined-failed", func(r *store.Run) { r.Status = store.RunStatusFailed })
 	mki("intent-declined-none", func(r *store.Run) { r.MergeInto = "none" })
 	mki("intent-declined-skipped", func(r *store.Run) { r.MergeStatus = store.MergeStatusSkipped })
@@ -3840,8 +3848,9 @@ func testRouteDecisionRegistry(t *testing.T, s store.RunStore) {
 		t.Fatalf("a banked, unmerged intent run must be swept: %v", ids)
 	}
 	for _, declined := range []string{
-		"intent-declined-failed", "intent-declined-none", "intent-declined-skipped",
-		"intent-declined-bank", "intent-declined-merged", "contract-declined-merged",
+		"intent-declined-unbanked", "intent-declined-failed", "intent-declined-none",
+		"intent-declined-skipped", "intent-declined-bank", "intent-declined-merged",
+		"contract-declined-merged",
 	} {
 		if found[declined] {
 			t.Fatalf("declined run %s must stay out of the sweep (its decline settles no row — a page of them starves newer landable runs): %v", declined, ids)
