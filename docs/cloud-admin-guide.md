@@ -570,7 +570,10 @@ curl -X POST https://iterion.example.com/api/teams/$TEAM_ID/bots/doki/bindings \
   the launch: the run proceeds without it, and the binding is flagged
   `degraded_reason` on the list endpoint until a launch resolves it
   again. The flag is the readout — a silently missing context is the
-  defect this feature exists to fix.
+  defect this feature exists to fix. Note the bound applies to the
+  delivered document (default 50 MiB), not to the fetch: the clone of
+  the source repository is depth-1 but otherwise unbounded, so point
+  bindings at small dedicated context repositories.
 
 On the wire the document travels as a run attachment (blob-store
 reference in cloud), so the runner pod reads it through the ordinary

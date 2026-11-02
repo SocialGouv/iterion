@@ -462,15 +462,23 @@ func (m *MemoryBotSecretBindingStore) Update(ctx context.Context, b BotSecretBin
 	if !ok || !visibleToTenant(ctx, cur.TenantID) {
 		return ErrBindingNotFound
 	}
-	b.TenantID = stampTenant(ctx, cur.TenantID)
-	if err := m.refuseNameConflict(b); err != nil {
+	// The Mongo twin updates field-wise ($set): the mutable payload moves,
+	// the record's identity and provenance (tenant, bot, creator, created)
+	// stay the stored ones, and the health readout survives (only
+	// Mark/ClearDegraded write it). The conflict check runs on the MERGED
+	// record for the same reason the unique index sees the stored bot_id.
+	merged := cur
+	merged.TenantID = stampTenant(ctx, cur.TenantID)
+	merged.Kind = b.Kind
+	merged.SecretID = b.SecretID
+	merged.SecretNameForWorkflow = b.SecretNameForWorkflow
+	merged.Context = b.Context
+	merged.AllowedHosts = b.AllowedHosts
+	merged.UpdatedAt = b.UpdatedAt
+	if err := m.refuseNameConflict(merged); err != nil {
 		return err
 	}
-	// Health is the engine's readout, written only by Mark/ClearDegraded:
-	// an operator's edit of the policy fields must not wipe it (nor
-	// resurrect a stale one — the next launch re-judges).
-	b.DegradedReason, b.DegradedAt = cur.DegradedReason, cur.DegradedAt
-	m.bindings[b.ID] = b
+	m.bindings[b.ID] = merged
 	return nil
 }
 

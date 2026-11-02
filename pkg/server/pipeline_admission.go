@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
@@ -889,7 +890,22 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runvi
 	// ref and the tier that served it — so a run says which tier it came
 	// from here exactly as on the other launch surfaces.
 	bot.Launch.Stamp(&spec)
-	res, err := runs.Launch(context.Background(), spec)
+	// The launch must not ride a bare Background: with no store tenant
+	// stamp the cloud run doc inherits an empty tenant
+	// (cloudpublisher reads store.TenantFromContext) and every team-keyed
+	// launch-time materialisation — the operator-bound contexts of
+	// ADR-147 — silently skips. Detach cancellation instead (a client
+	// disconnect must not abort the run; the runs_launch.go precedent)
+	// while keeping the request's values, and stamp the identity of the
+	// team this launch is FOR: the board's own, carried by the teamID
+	// parameter — the admission loop passes "" on a local board, where
+	// the stamp correctly no-ops.
+	launchActor := ""
+	if id, ok := auth.FromContext(ctx); ok {
+		launchActor = id.UserID
+	}
+	launchCtx := store.WithIdentity(context.WithoutCancel(ctx), teamID, launchActor)
+	res, err := runs.Launch(launchCtx, spec)
 	if err != nil {
 		if !runview.RunMayHaveStarted(err) {
 			s.revokeUnlaunchedGrant(minted)

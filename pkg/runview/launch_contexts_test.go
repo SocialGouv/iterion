@@ -163,13 +163,21 @@ func TestComposeBoundContexts_NoResolverNoTenantNoDeclarationNoOp(t *testing.T) 
 		t.Error("a tenant-less launch gained a promote")
 	}
 
-	// A workflow that declares no attachments delivers none — the declared
-	// name is what makes a file reachable (D6), and the binding is skipped
-	// degraded, not silently stored.
+	// A workflow that declares no attachments block delivers none — but the
+	// resolver, not the composition, is what judges: the binding is skipped
+	// and flagged DEGRADED on its record (a misconfiguration the operator
+	// can see), never silently passed over.
 	spec3 := &LaunchSpec{BotID: "doki"}
 	bare := &ir.Workflow{Name: "doki"}
 	svc2.composeBoundContexts(ctx, "run-z", spec3, bare)
 	if spec3.AttachmentPromote != nil {
 		t.Error("a workflow with no attachments block gained a promote")
+	}
+	got, err := svc2.botContexts.Bindings.Get(ctx, "b1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Degraded() {
+		t.Errorf("a context binding on a workflow with no attachments block must surface degraded — it was silently skipped: %+v", got)
 	}
 }

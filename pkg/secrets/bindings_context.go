@@ -144,6 +144,17 @@ func materialiseContextBinding(ctx context.Context, fetch ContextFetchFunc, b Bo
 // than the runtime's. The read is bounded: past maxBytes the document is
 // refused whole, not truncated — a truncated reference document reads as
 // complete to the agent.
+//
+// The known blind spot, documented rather than coded: a HARDLINK at the
+// bound path shares the host file's inode and OpenRoot cannot see it
+// (os.Root contains symlinks, not inodes). It stays theoretical here
+// because the checkout is produced exclusively by the fetcher's
+// `git fetch` + `checkout --force` — git writes regular files and never
+// links a worktree file to a host path — and because minting the link
+// requires write access to the fetcher's cache directory as the server's
+// own uid, a position from which the host file reads directly anyway. If
+// the fetcher ever gains a non-git producer (a tar extraction, say), this
+// read owes an nlink check before it owes a comment.
 func readContextFile(checkoutDir, relPath string, maxBytes int64) ([]byte, error) {
 	cleaned, err := cleanContextRelPath(relPath)
 	if err != nil {

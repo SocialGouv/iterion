@@ -324,3 +324,44 @@ func TestBotBindingTwins_UpdateNeverTouchesTheDegradedReadout(t *testing.T) {
 		})
 	}
 }
+
+// The twins agree on what Update may move: the mutable payload (kind, the
+// secret reference, the declared name, the context source, the hosts, the
+// update stamp), never the record's identity or provenance — the Mongo twin
+// updates field-wise ($set), so bot_id, created_by and created_at are
+// frozen there; the memory twin must refuse to move them too, or a fixture
+// exercises a mutation production ignores.
+func TestBotBindingTwins_UpdateCannotMoveTheRecordsIdentity(t *testing.T) {
+	for _, tw := range bindingTwins(t) {
+		t.Run(tw.name, func(t *testing.T) {
+			ctx := store.WithTenant(context.Background(), "team-1")
+			b := contextBindingFixture("bind-id", "team-1", "bot-doki", "handbook")
+			if err := tw.store.Create(ctx, b); err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			moved := contextBindingFixture("bind-id", "team-1", "bot-other", "handbook")
+			moved.CreatedBy = "mallory"
+			moved.CreatedAt = moved.CreatedAt.Add(-72 * time.Hour)
+			moved.Context.Ref = "v2.0.0"
+			if err := tw.store.Update(ctx, moved); err != nil {
+				t.Fatalf("update: %v", err)
+			}
+			got, err := tw.store.Get(ctx, "bind-id")
+			if err != nil {
+				t.Fatalf("get: %v", err)
+			}
+			if got.Context.Ref != "v2.0.0" {
+				t.Errorf("the mutable payload did not move: %+v", got.Context)
+			}
+			if got.BotID != "bot-doki" {
+				t.Errorf("bot_id moved to %q — the Mongo twin's field-wise update freezes it", got.BotID)
+			}
+			if got.CreatedBy != "alice" {
+				t.Errorf("created_by moved to %q", got.CreatedBy)
+			}
+			if !got.CreatedAt.Equal(b.CreatedAt) {
+				t.Errorf("created_at moved to %v", got.CreatedAt)
+			}
+		})
+	}
+}

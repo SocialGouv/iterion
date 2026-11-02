@@ -28,7 +28,13 @@ local / desktop / cloud, the upload protocol, and the security model.
 > [cloud-admin-guide.md](cloud-admin-guide.md#binding-a-context-document-to-a-bot)).
 > When several sources claim one name the precedence is **author <
 > operator < launch**: a context binding overrides a bundle default, a
-> per-launch upload overrides both.
+> per-launch upload overrides both. Two bounds to read correctly: the
+> size ceiling applies to the DELIVERED DOCUMENT, not to the fetch —
+> the clone is depth-1 but otherwise unbounded — and the contained read
+> of the pinned file refuses symlinks escaping the checkout but cannot
+> see a hardlink (the checkout only ever comes from `git fetch` +
+> `checkout`, which never links a worktree file to a host path; see
+> `readContextFile`'s comment for the full reasoning).
 
 ## DSL
 

@@ -56,7 +56,7 @@ func WithBotContextResolver(r *BotContextResolver) ServiceOption {
 // closure the hand-off invokes is then a pure store write.
 func (s *Service) composeBoundContexts(ctx context.Context, runID string, spec *LaunchSpec, wf *ir.Workflow) {
 	r := s.botContexts
-	if r == nil || r.Bindings == nil || r.Fetch == nil || spec.BotID == "" || wf == nil || len(wf.Attachments) == 0 {
+	if r == nil || r.Bindings == nil || r.Fetch == nil || spec.BotID == "" || wf == nil {
 		return
 	}
 	tenantID, _ := store.TenantFromContext(ctx)
