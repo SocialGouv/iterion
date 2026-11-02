@@ -59,6 +59,7 @@ func ledgerExecutor(be delegate.Backend) *ClawExecutor {
 }
 
 func TestEveryDelegateTaskCarriesTheRunsSessionLedger(t *testing.T) {
+	t.Parallel()
 	be := &ledgerBackend{script: []ledgerStep{{res: delegate.Result{BackendName: delegate.BackendClaudeCode, Output: map[string]any{"ok": true}}}}}
 	ledger := delegate.NewSessionLedger(nil)
 	ctx := WithSessionLedger(context.Background(), ledger)
@@ -74,6 +75,7 @@ func TestEveryDelegateTaskCarriesTheRunsSessionLedger(t *testing.T) {
 // the transcript its dead attempt extended — and is told what that attempt
 // left running, whatever it was built with.
 func TestADeclaredSessionRetryIsToldWhatItsDeadAttemptLeft(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []ir.SessionMode{ir.SessionInherit, ir.SessionInheritIfAvailable, ir.SessionPersist} {
 		t.Run(fmt.Sprint(mode), func(t *testing.T) {
 			be := &ledgerBackend{script: []ledgerStep{
@@ -105,6 +107,7 @@ func TestADeclaredSessionRetryIsToldWhatItsDeadAttemptLeft(t *testing.T) {
 }
 
 func TestACarriedSessionRetryIsToldWhatItsDeadAttemptLeft(t *testing.T) {
+	t.Parallel()
 	be := &ledgerBackend{script: []ledgerStep{
 		{res: delegate.Result{BackendName: delegate.BackendClaudeCode, SessionID: "s-fresh", Output: map[string]any{}},
 			err: &delegate.ErrTransient{Reason: "stream closed"}, terminated: []string{"agent (local_agent, t9)"}},
@@ -125,6 +128,7 @@ func TestACarriedSessionRetryIsToldWhatItsDeadAttemptLeft(t *testing.T) {
 
 // The schema re-ask resumes the answer's session in a process of its own.
 func TestASchemaReaskIsToldWhatTheAnswersProcessLeft(t *testing.T) {
+	t.Parallel()
 	be := &ledgerBackend{script: []ledgerStep{
 		{res: delegate.Result{BackendName: delegate.BackendClaudeCode, SessionID: "sess-1", Output: map[string]any{"verdict": true}},
 			terminated: []string{"checker (local_agent, t4)"}},
@@ -149,12 +153,14 @@ func TestASchemaReaskIsToldWhatTheAnswersProcessLeft(t *testing.T) {
 // A claude_code router keeps the CLI's native tools: its task is a claude
 // session like any other, and goes through the run's ledger.
 func TestTheLLMRouterTaskCarriesTheRunsSessionLedger(t *testing.T) {
-	t.Setenv("ANTHROPIC_API_KEY", "test-funding")
+	t.Parallel()
+	// The funding probe reads the environment the CONTEXT carries (the env
+	// seam, #2808) — the router's funding gate answers from this run's own.
 	be := &ledgerBackend{script: []ledgerStep{{res: delegate.Result{Output: map[string]any{"selected_route": "agent_a", "reasoning": "r"}}}}}
 	exec := newDelegateTestExecutor(be, EventHooks{})
 	ledger := delegate.NewSessionLedger(nil)
 	node := &ir.RouterNode{BaseNode: ir.BaseNode{ID: "r"}, LLMFields: ir.LLMFields{Backend: "test_backend", SystemPrompt: "sys"}, RouterMode: ir.RouterLLM}
-	if _, err := exec.executeLLMRouterUnified(WithSessionLedger(context.Background(), ledger), node, map[string]any{"_route_candidates": []string{"agent_a", "agent_b"}}); err != nil {
+	if _, err := exec.executeLLMRouterUnified(WithSessionLedger(withCarriedEnv(context.Background(), carriedEnv{"ANTHROPIC_API_KEY": "test-funding"}), ledger), node, map[string]any{"_route_candidates": []string{"agent_a", "agent_b"}}); err != nil {
 		t.Fatalf("router: %v", err)
 	}
 	if len(be.tasks) != 1 || be.tasks[0].SessionLedger != delegate.SessionLedger(ledger) {
@@ -166,6 +172,7 @@ func TestTheLLMRouterTaskCarriesTheRunsSessionLedger(t *testing.T) {
 // secrets iterion materialised into it. Every claude task — the router's
 // too — carries the mirror that turns them back into placeholders.
 func TestEveryClaudeTaskCarriesTheSecretRedactor(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-live-4f9a8b7c6d5e3a2b1c0d"
 	guard := secretguard.New([]secretguard.Secret{{Name: "api_key", Value: secret}}, secretguard.DefaultConfig())
 	check := func(t *testing.T, tasks []delegate.Task) {
@@ -210,9 +217,9 @@ func TestEveryClaudeTaskCarriesTheSecretRedactor(t *testing.T) {
 // (docs/secrets.md: "It is not a sink pass: ITERION_SECRETS_REDACT=off leaves
 // it on").
 func TestEveryClaudeTaskUnmaterialisesWithTheSinkSwitchOff(t *testing.T) {
+	t.Parallel()
 	const secret = "sk-live-4f9a8b7c6d5e3a2b1c0d"
-	t.Setenv("ITERION_SECRETS_REDACT", "off")
-	guard := secretguard.New([]secretguard.Secret{{Name: "api_key", Value: secret}}, secretGuardConfigFromEnv(context.Background()))
+	guard := secretguard.New([]secretguard.Secret{{Name: "api_key", Value: secret}}, secretGuardConfigFromEnv(withCarriedEnv(context.Background(), carriedEnv{"ITERION_SECRETS_REDACT": "off"})))
 	check := func(t *testing.T, tasks []delegate.Task) {
 		t.Helper()
 		if len(tasks) != 1 || tasks[0].UnmaterializeSecrets == nil {

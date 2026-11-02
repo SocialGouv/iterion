@@ -32,8 +32,11 @@ import (
 // Read at b06f9b290 with this campaign applied: 215 deterministic test files
 // (a 216th is live-tagged), 75 serial by table and 2 by design, 138 parallel.
 // The dotenv-belt tour added claw_stream_belt_test.go and the watchdog
-// crossing witness (t.Setenv), 77 serial by table — the guards above
-// re-check the partition every run.
+// crossing witness (t.Setenv), 77 serial by table; #2808's slices freed
+// secretguard_ambient_test.go, session_ledger_test.go and
+// claw_vendored_tool_env_test.go (their reads ride the ctx-carried
+// environment) — 74 by table. The guards above re-check the partition
+// every run.
 // That reading is prose on purpose — asserting the COUNT would redden every
 // commit that adds a test file to this contended package, while the two
 // directional guards already force each new file into a conscious answer.
@@ -44,7 +47,7 @@ import (
 // does not free, which is the fact #2808 needs. Derived at b06f9b290 and
 // checked against the code on every run:
 //
-//	68 files	Setenv
+//	65 files	Setenv
 //	 3 files	SetCredentialsLookup, Setenv
 //	 2 files	SetDefault (modelspecs, through seedSpecs)
 //	 1 file 	SetCredentialsLookup, SetOAuthDirLookup, Setenv
@@ -87,7 +90,6 @@ var serialFamily = map[string]string{
 	"claw_sandbox_credential_gateway_test.go":  "Setenv",
 	"claw_sandbox_env_test.go":                 "Setenv",
 	"claw_vendored_provider_env_test.go":       "Setenv",
-	"claw_vendored_tool_env_test.go":           "Setenv",
 	"codex_client_version_test.go":             "Setenv",
 	"cursors_test.go":                          "Setenv, Unsetenv",
 	"executor_auto_memory_test.go":             "Setenv",
@@ -141,9 +143,7 @@ var serialFamily = map[string]string{
 	"route_view_dispatch_test.go":              "Setenv",
 	"route_view_test.go":                       "Setenv",
 	"routing_template_test.go":                 "Setenv",
-	"secretguard_ambient_test.go":              "Setenv",
 	"secretguard_minted_test.go":               "Setenv",
-	"session_ledger_test.go":                   "Setenv",
 	"settings_hooks_test.go":                   "Setenv",
 	"slash_commands_test.go":                   "Setenv",
 	"stream_error_wire_test.go":                "Setenv",

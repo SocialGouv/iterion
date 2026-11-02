@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -98,6 +99,7 @@ var vendoredToolEnvDecision = map[string]struct {
 // #2802 extension of TestEveryVendoredProviderEnvNameIsDecided's walk to the
 // tool packages.
 func TestEveryVendoredToolEnvNameIsDecided(t *testing.T) {
+	t.Parallel()
 	root := moduleRoot(t)
 	dirs := vendoredToolDirs(t, root)
 	names := envNamesReadIn(t, dirs)
@@ -161,18 +163,25 @@ func TestEveryVendoredToolEnvNameIsDecided(t *testing.T) {
 // names — and none of the launcher-side names, however the launcher sets
 // them.
 func TestSandboxedClawNodeToolEnvCrossing(t *testing.T) {
-	t.Setenv("CLAW_BASH_TIMEOUT", "17m")
-	t.Setenv("CLAW_CONFIG_HOME", "/launcher/claw-config")
-	t.Setenv("CLAW_TODOS_DIR", "/launcher/todos")
-	t.Setenv("CODEX_HOME", "/launcher/codex-home")
-	t.Setenv("CLAUDE_CONFIG_DIR", "/launcher/claude-config")
-	t.Setenv("DISPLAY", ":0")
-	t.Setenv("WAYLAND_DISPLAY", "wayland-1")
-	for _, name := range []string{"BRAVE_API_KEY", "SEARXNG_URL", "SEARXNG_ENDPOINT", "CLAW_WEB_SEARCH_BRAVE_URL", "CLAW_WEB_SEARCH_DDG_URL"} {
-		t.Setenv(name, "launcher-search-value")
+	t.Parallel()
+	// The launcher's environment, carried on the ctx (the env seam, #2808):
+	// hermetic, so the names the crossing must NOT carry are present here
+	// and the assertions below prove the crossing, not the process.
+	launcherEnv := carriedEnv{
+		"CLAW_BASH_TIMEOUT": "17m",
+		"CLAW_CONFIG_HOME":  "/launcher/claw-config",
+		"CLAW_TODOS_DIR":    "/launcher/todos",
+		"CODEX_HOME":        "/launcher/codex-home",
+		"CLAUDE_CONFIG_DIR": "/launcher/claude-config",
+		"DISPLAY":           ":0",
+		"WAYLAND_DISPLAY":   "wayland-1",
 	}
+	for _, name := range []string{"BRAVE_API_KEY", "SEARXNG_URL", "SEARXNG_ENDPOINT", "CLAW_WEB_SEARCH_BRAVE_URL", "CLAW_WEB_SEARCH_DDG_URL"} {
+		launcherEnv[name] = "launcher-search-value"
+	}
+	ctx := withCarriedEnv(context.Background(), launcherEnv)
 
-	toolEnv := forwardableToolEnv(context.Background())
+	toolEnv := forwardableToolEnv(ctx)
 	if got := toolEnv["CLAW_BASH_TIMEOUT"]; got != "17m" {
 		t.Errorf("CLAW_BASH_TIMEOUT crossed as %q, want the launcher's %q: a sandboxed node's bash runs on claw's default budget while the host's dial says otherwise", got, "17m")
 	}
@@ -189,24 +198,25 @@ func TestSandboxedClawNodeToolEnvCrossing(t *testing.T) {
 	// The credential-bearing config dirs never cross as the launcher's path:
 	// without a resolved forfait they are absent, with one they point at the
 	// seeded in-sandbox mount.
-	env := envFor(t, context.Background())
+	env := envFor(t, ctx)
 	for _, name := range []string{"CODEX_HOME", "CLAUDE_CONFIG_DIR"} {
 		if got, ok := env[name]; ok {
 			t.Errorf("%s crossed as %q with no resolved forfait: the runner must never read the launcher's path — a path that does not exist in the container, or worse, names the host's credential dir under host_state's bind", name, got)
 		}
 	}
-	codexForfait := secrets.WithCredentials(context.Background(), secrets.Credentials{
+	codexForfait := secrets.WithCredentials(ctx, secrets.Credentials{
 		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindCodex): "/host/tmp/whatever"},
 	})
 	if got := envFor(t, codexForfait)["CODEX_HOME"]; got != secrets.CodexSandboxConfigDir {
 		t.Errorf("CODEX_HOME = %q with the run's codex forfait, want the seeded in-sandbox dir %q (never the launcher's %q)", got, secrets.CodexSandboxConfigDir, "/launcher/codex-home")
 	}
 
-	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-PLATFORM")
-	t.Setenv("ANTHROPIC_BASE_URL", "")
-	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
-	t.Setenv("ZAI_API_KEY", "")
-	claudeForfait := secrets.WithCredentials(context.Background(), secrets.Credentials{
+	platformEnv := maps.Clone(launcherEnv)
+	platformEnv["ANTHROPIC_API_KEY"] = "sk-ant-PLATFORM"
+	platformEnv["ANTHROPIC_BASE_URL"] = ""
+	platformEnv["ANTHROPIC_AUTH_TOKEN"] = ""
+	platformEnv["ZAI_API_KEY"] = ""
+	claudeForfait := secrets.WithCredentials(withCarriedEnv(context.Background(), platformEnv), secrets.Credentials{
 		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): forfaitDirForTest(t)},
 	})
 	if got := envFor(t, claudeForfait)["CLAUDE_CONFIG_DIR"]; got != secrets.ClaudeCodeSandboxConfigDir {
