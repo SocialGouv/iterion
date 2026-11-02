@@ -291,7 +291,19 @@ func (r *Resolver) checkUsable(conn Connection, pkg *spec.Package, tier Tier, op
 // suggestAlias names the aliases the tenant does have for this connector. A
 // bare "not found" on a name the operator is sure they created usually means a
 // different connector, and listing what exists says so in one line.
+//
+// A run whose workspace the tenant does not control is told nothing: the list
+// is tenant data, and the reader of a refusal served to such a run is whoever
+// wrote that run's workspace — a misspelt alias on a READ operation would make
+// the error an inventory of the tenant's connections (#1802's rule, applied by
+// #2810 one layer up to the catalog's packages). The gate reads the same
+// predicate those decisions read, and sits HERE rather than at the one call
+// site so every future caller inherits it. Withheld before the List call, so
+// the probe costs the tenant's store nothing either.
 func (r *Resolver) suggestAlias(ctx context.Context, connector string) string {
+	if !r.Trust.tenantsOwnCode() {
+		return ""
+	}
 	all, err := r.Store.List(ctx, r.TenantID, connector)
 	if err != nil || len(all) == 0 {
 		return " (this tenant has no " + connector + " connection at all)"

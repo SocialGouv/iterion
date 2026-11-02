@@ -947,6 +947,189 @@ func (cons *Consumer) Recreate(ctx context.Context) error {
 	return nil
 }
 
+// IsLeadershipChange reports whether err is the broker telling a pull
+// request the consumer's leader changed — the signal that opened the
+// Oct 30 wedge (issue #2890): the election itself costs seconds, but it
+// can leave the durable consumer's raft state frozen, after which every
+// fetch silently long-polls an empty answer forever. The sentinel does
+// not always survive the pull-request path's wrapping, so the API's own
+// (stable) description is matched too.
+func IsLeadershipChange(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, jetstream.ErrConsumerLeadershipChanged) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "leadership change")
+}
+
+// LeadershipRecovery is the typed outcome of RecoverFromLeadershipChange —
+// what the post-election verification decided and, for the frozen shape,
+// whether the recreate gesture landed.
+type LeadershipRecovery int
+
+const (
+	// LeadershipRecoveryDisabled: the operator's off switch won before any
+	// broker call (same switch as the stall-onset heal).
+	LeadershipRecoveryDisabled LeadershipRecovery = iota
+	// LeadershipRecoveryPoolOwned: a pool consumer's topology is the server
+	// reconciler's — the runner never recreates it (same rule as
+	// RecoverIfGone and Recreate).
+	LeadershipRecoveryPoolOwned
+	// LeadershipRecoveryUnreadable: the posture never read back twice inside
+	// the window (election still running, broker degraded) — no blind
+	// deletion; the posture stall detector keeps watch.
+	LeadershipRecoveryUnreadable
+	// LeadershipRecoveryCutShort: the caller's context (shutdown) ended the
+	// verification mid-window — no gesture was decided or performed.
+	LeadershipRecoveryCutShort
+	// LeadershipRecoveryNoWork: the consumer holds nothing — the election
+	// cost seconds and there is nothing to heal.
+	LeadershipRecoveryNoWork
+	// LeadershipRecoveryResumed: held work started moving again across the
+	// window — the fleet healed on its own.
+	LeadershipRecoveryResumed
+	// LeadershipRecoveryNoInflow: held work stayed frozen but the stream
+	// was quiet — which is ALSO the steady state of a healthy busy fleet
+	// (runs executing hold ack-pending for minutes while the queue sits
+	// drained). The two shapes are indistinguishable without inflow, so
+	// this arm never recreates: the posture stall detector owns it (it
+	// only trips while messages keep arriving).
+	LeadershipRecoveryNoInflow
+	// LeadershipRecoveryRecreated: held work stayed frozen while the stream
+	// kept advancing across the whole window — the wedge shape, and only
+	// it — so the consumer was deleted and recreated.
+	LeadershipRecoveryRecreated
+	// LeadershipRecoveryRecreateFailed: the wedge shape was seen but the
+	// recreate failed; the posture detector remains the net.
+	LeadershipRecoveryRecreateFailed
+)
+
+// DefaultLeadershipVerifyWindow bounds the post-election verification:
+// long enough for a NATS election and a few fleet-wide fetch cycles to
+// show delivery movement, short enough that a wedged consumer is healed
+// in seconds rather than by the (minutes-long) posture stall detector.
+const DefaultLeadershipVerifyWindow = 15 * time.Second
+
+// leadershipPollCadence spaces the posture samples inside the window.
+const leadershipPollCadence = 500 * time.Millisecond
+
+// decideLeadershipHeal is the guard half of the leadership recovery, pure
+// so a regression in the interlocks cannot silently delete a healthy
+// consumer: the off switch wins first, a pool consumer is never the
+// runner's to recreate, fewer than two readable postures carry no
+// movement information (no blind deletion), an empty consumer has nothing
+// to heal, and a delivery sequence that moved means the fleet recovered.
+// The last two arms are the wedge's own signature, and BOTH witnesses are
+// required (the stall detector's doctrine, pollPending): held work frozen
+// while the stream ADVANCES is the wedge; held work frozen over a quiet
+// stream is also the steady state of a healthy busy fleet — runs execute
+// for minutes holding ack-pending while the queue sits drained — so
+// without inflow nothing is deleted. The positive arm is named for the
+// gesture the caller then performs; a failed gesture maps to
+// LeadershipRecoveryRecreateFailed at the call site.
+func decideLeadershipHeal(disabled, pool bool, onset, fresh Sample, samples int, inflowMoved bool) LeadershipRecovery {
+	if disabled {
+		return LeadershipRecoveryDisabled
+	}
+	if pool {
+		return LeadershipRecoveryPoolOwned
+	}
+	if samples < 2 {
+		return LeadershipRecoveryUnreadable
+	}
+	if fresh.Pending == 0 && fresh.AckPending == 0 {
+		return LeadershipRecoveryNoWork
+	}
+	if fresh.DeliveredConsumerSeq != onset.DeliveredConsumerSeq {
+		return LeadershipRecoveryResumed
+	}
+	if !inflowMoved {
+		return LeadershipRecoveryNoInflow
+	}
+	return LeadershipRecoveryRecreated
+}
+
+// RecoverFromLeadershipChange verifies the consumer right after the
+// broker reported a leadership change, and recreates it when held work
+// stays frozen while the stream keeps advancing across the window — the
+// fast path of the #2890 self-heal, gated on the SAME two witnesses the
+// posture stall detector (minutes) uses: frozen deliveries AND inflow.
+// Without the inflow witness the wedge is indistinguishable from a
+// healthy busy fleet (runs executing hold ack-pending for minutes over a
+// drained queue), and a healthy election over one would pay a recreate
+// per pod per election — redelivering every executing run's held
+// delivery onto the lock-failure DLQ. The verification is deliberately
+// cheap: posture samples (consumer Info + the stream's last sequence) on
+// a fixed cadence, with an early exit as soon as two readable samples
+// prove there is nothing held or that deliveries moved. Recreate is
+// idempotent and converges when several pods see the same election. A
+// cancelled ctx cuts the verification short without any gesture.
+// window <= 0 selects DefaultLeadershipVerifyWindow.
+func (cons *Consumer) RecoverFromLeadershipChange(ctx context.Context, window time.Duration, disabled bool) LeadershipRecovery {
+	if cons == nil || cons.owner == nil {
+		return LeadershipRecoveryUnreadable
+	}
+	if disabled {
+		return LeadershipRecoveryDisabled
+	}
+	if cons.pool != "" {
+		return LeadershipRecoveryPoolOwned
+	}
+	if window <= 0 {
+		window = DefaultLeadershipVerifyWindow
+	}
+	deadline := time.Now().Add(window)
+	var onset, fresh Sample
+	var onsetInflow, lastInflow uint64
+	inflowKnown := false
+	samples := 0
+	for {
+		if s, err := cons.Sample(ctx); err == nil {
+			if samples == 0 {
+				onset = s
+				// The inflow witness degrades to silence, never to an
+				// alarm: an unreadable stream sequence means no recreate,
+				// and the posture detector keeps watch.
+				if seq, ierr := cons.StreamLastSeq(ctx); ierr == nil {
+					onsetInflow, lastInflow, inflowKnown = seq, seq, true
+				}
+			} else {
+				fresh = s
+				if inflowKnown {
+					if seq, ierr := cons.StreamLastSeq(ctx); ierr == nil {
+						lastInflow = seq
+					}
+				}
+			}
+			samples++
+			if samples >= 2 {
+				if d := decideLeadershipHeal(false, false, onset, fresh, samples, false); d == LeadershipRecoveryNoWork || d == LeadershipRecoveryResumed {
+					return d
+				}
+			}
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return LeadershipRecoveryCutShort
+		case <-time.After(leadershipPollCadence):
+		}
+	}
+	decision := decideLeadershipHeal(false, false, onset, fresh, samples, inflowKnown && lastInflow != onsetInflow)
+	if decision != LeadershipRecoveryRecreated {
+		return decision
+	}
+	if err := cons.Recreate(ctx); err != nil {
+		cons.logger.Error("queue/nats: leadership-change recreate failed: %v — the consumer stays wedged; recreate it by hand", err)
+		return LeadershipRecoveryRecreateFailed
+	}
+	return LeadershipRecoveryRecreated
+}
+
 // Delivery bundles a JetStream message with helpers to ack / nak /
 // term and to decode the body into a queue.RunMessage. Wrapping the
 // raw jetstream.Msg keeps the consumer-facing surface narrow.

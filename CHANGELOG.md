@@ -3,6 +3,147 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.3.0](https://github.com/SocialGouv/iterion/compare/v5.2.0...v5.3.0) (2026-11-02)
+
+### Features
+
+* **prod-watch:** the watch adopts the session's memory read-only after a window ([6ecd9ac](https://github.com/SocialGouv/iterion/commit/6ecd9ac072372e607569761a5cd06ad0f5374288)), references [#2835](https://github.com/SocialGouv/iterion/issues/2835)
+
+    <details><summary>why</summary>
+
+    A session runs the lifecycle on a fork of the watch state under <state_dir>/session/ and never writes the watch's; the watch's first tick past the window replayed it on its own cursors — an incident the session escalated posted again, the window's lines were re-read up to max_window_minutes. The tick now ADOPTS the fork's memory instead: the incidents it alerted (so they are not news), its cursors where they are ahead of the watch's (the Loki frontier, Sentry's since). The fork is read…
+
+    </details>
+
+### Bug Fixes
+
+* **ambient:** an empty .git directory is not a repository — git's own criteria ([50a30df](https://github.com/SocialGouv/iterion/commit/50a30df9391c50a14b703d34b8b97d480925f43c)), references [#2866](https://github.com/SocialGouv/iterion/issues/2866)
+
+    <details><summary>why</summary>
+
+    RepoRoot stopped its upward walk at the first .git directory, however empty, while git's own discovery (is_git_directory: a HEAD that validate_headref accepts — a "ref: refs/…" symbolic ref, a hex object id, or a symlink reading refs/…, dangling included — plus objects/ and made RepoRoot answer /tmp where git says "not a git repository". isGitEntry now holds a .git directory to git's criteria and keeps refusing an empty .git file; RepoRoot and IsRepoRoot, the only walks on this predicate, agree…
+
+    </details>
+* **claw:** a subagent's inherited ask verdict degrades to a refusal instead of pausing the run ([2b5af64](https://github.com/SocialGouv/iterion/commit/2b5af64f7a5bc3aebaeee6b7d659b28a4260e2c0)), references [#2812](https://github.com/SocialGouv/iterion/issues/2812) [#2877](https://github.com/SocialGouv/iterion/issues/2877)
+
+    <details><summary>why</summary>
+
+    Suite de #2812, which withheld the ask TOOLS from a child conversation at filterSubagentTools. The policy channel remained: the child inherits the parent loop's permission policy (ParentPermission, by design), and an `ask` verdict on a tool the child holds raised delegate.ErrAskUser from inside the parent's tool call — the run paused on a question attributed to nobody, and the child's conversation was not persisted for the resume to return to.
+
+    </details>
+* **claw:** the bash, write_file and read tools follow the run's workspace, not the registration one ([0ee51c9](https://github.com/SocialGouv/iterion/commit/0ee51c9df1f6b8fbb77c94a8411114ffb6f158f9)), references [#2870](https://github.com/SocialGouv/iterion/issues/2870) [#2889](https://github.com/SocialGouv/iterion/issues/2889)
+
+    <details><summary>why</summary>
+
+    RegisterClawBuiltinsWithScope captured the scope's workspace string at registration, so on a worktree:auto run bash's shell cwd, write_file's and file_edit's relative-path rebase and the read tools' containment resolved against the construction-time checkout while the prompt path and the command/skill lookups followed the worktree the engine pushes through ClawExecutor.SetWorkDir (#2870).
+
+    </details>
+* **claw:** the sandboxed runner installs the default lifecycle hooks too ([9d511e0](https://github.com/SocialGouv/iterion/commit/9d511e0af457572b2ad5f5392e2885383edfa378)), references [#2798](https://github.com/SocialGouv/iterion/issues/2798) [#1424](https://github.com/SocialGouv/iterion/issues/1424)
+
+    <details><summary>why</summary>
+
+    The re-measured integrations.claw-lifecycle-hooks row and the superseded docs/e2e_coverage.md note promised the dangerous-command refusal unconditionally, but the in-container __claw-runner built its ClawBackend without WithBackendLifecycleHooks: on a workspace whose settings carry no hooks opts.Hooks stayed nil, and a `rm -rf /` call executed in the container instead of being refused — unlike the in-process path the wiring test drives. The runner now rides the same NewDefaultLifecycleHooks the…
+
+    </details>
+* **connection:** a catalog refusal lists the tenant's packages to the tenant's runs only ([b284d33](https://github.com/SocialGouv/iterion/commit/b284d33558c5dae3dacf6bca87953f0d3c71293b)), references [#1802](https://github.com/SocialGouv/iterion/issues/1802) [#2810](https://github.com/SocialGouv/iterion/issues/2810)
+
+    <details><summary>why</summary>
+
+    A connector-not-found refusal ended with the ids the operator installed ("it holds: forgejo, probe, …"), and the layered lookup joins every tier's reason into the error a run reads — so on the fork review lane an outside workflow named any id it liked and the posted review carried the list, with the case-fold hint as an oracle for probing the installed ids one at a time. #1802 decided the symmetric case one layer down, for the connection aliases; the package list is the same fact about the same…
+
+    </details>
+* **model:** a minted grant referenced in a script: body is refused, never written to its temp file in clear ([49b5509](https://github.com/SocialGouv/iterion/commit/49b5509f2fda0791e2d3566bd28e2829364e42eb)), references [#2827](https://github.com/SocialGouv/iterion/issues/2827) [#2875](https://github.com/SocialGouv/iterion/issues/2875)
+
+    <details><summary>why</summary>
+
+    A {{vars.forge_publish_token}} in a script: body rendered the bearer as a language literal INTO the script's temp file — on disk for the node's lifetime, pushed into the workspace by a copy-based sandbox — while the previews (#2827) mask it and docs/secrets.md says a script body resolves nothing. The command: path is safe because its placeholder form is shell and MaterializeAuthoredShellEnv swaps it for a child-env reference; no such swap exists for a script, whose env read is each…
+
+    </details>
+* **prod-watch:** the sentry-cursor adoption never writes an at the plan refuses ([9dda05e](https://github.com/SocialGouv/iterion/commit/9dda05ee4ef410b1cadafabf6fba9986e286376a)), references [#2835](https://github.com/SocialGouv/iterion/issues/2835)
+
+    <details><summary>why</summary>
+
+    A fork whose Sentry cursor lost the offset on `at` — hand-edited, or written by an older bot — passed the adoption guard (it types `since` and the identity only) and landed `at: ''` in the watch state. The plan judges every cursor whole (armed_at, since, at each offset-ISO), so the next tick refused the state by name and the watchdog stayed down until an operator repaired state.json — exactly what the lenient reader promises never to do. The stamp falls back to `since`, the value the guard…
+
+    </details>
+* **prod-watch:** the state commit judges paths in git's own frame ([4e65598](https://github.com/SocialGouv/iterion/commit/4e6559814337dba7b6f9e0284551be6887964a53)), references [#2838](https://github.com/SocialGouv/iterion/issues/2838)
+
+    <details><summary>why</summary>
+
+    With state_commit=true a state dir spelled `./x`, holding a non-ASCII byte, a `"` or a `\`, or given absolute never committed: the preflight compared git's quoted, repo-normalized paths with the dir as typed, so every tick died refusing path(s) outside the state dir and the state never advanced on an ephemeral runner. The dir is now framed the way git frames paths — relpath against rev-parse --show-toplevel — and every reader of git's output takes -z (NUL-separated, unquoted): the staged diff,…
+
+    </details>
+* **repomap:** the generated-artifact walks skip the operator-local .local tree ([b1c5403](https://github.com/SocialGouv/iterion/commit/b1c5403d18b9057c21e9022f9356ace764a342f9)), references [#2898](https://github.com/SocialGouv/iterion/issues/2898)
+
+    <details><summary>why</summary>
+
+    .local/ is gitignored scratch, but treeskip did not name it, so a host's junk with Go files (.local/scratch/codex-sdks on the operator's host) landed phantom rows in docs/references/map-packages.md and turned the session's task check red on a clean main. The agreement guard plants a .local canary in its floor, so the maps and the graph both prove they skip it.
+
+    </details>
+* **runner:** the fetch loop recovers from a NATS leadership change in seconds ([#2890](https://github.com/SocialGouv/iterion/issues/2890)) ([10cabf3](https://github.com/SocialGouv/iterion/commit/10cabf33d148064f70463305ca1e4932d56a8e2d)), references [#2904](https://github.com/SocialGouv/iterion/issues/2904)
+
+    <details><summary>why</summary>
+
+    The Oct 30 wedge opened with `nats: leadership change (backing off)` and the fetch loop never recovered: the election can freeze the durable consumer's raft state, after which every fetch long-polls an empty answer forever — silent, since ErrNoMessage logs nothing. The stall detector landed this morning (#2904, 7581a994b) is the posture net, but it only trips after its window (default 10m) and only while messages keep arriving. The ticket asks for seconds, not the consumer's life.
+
+    </details>
+* **sandbox:** a phase cut reports the wedged in-pod tar, whichever leg died first ([6c27efa](https://github.com/SocialGouv/iterion/commit/6c27efab0028395ae71c1904cc7ba8616df6f3d4)), references [#2854](https://github.com/SocialGouv/iterion/issues/2854)
+
+    <details><summary>why</summary>
+
+    The copy pipe's two legs die at the phase deadline together, and which death the error named was the scheduler's order: a loaded runner let the host tar still be starting at the cut, the host leg led, and the typed error lost the in-pod cause ("in-pod tar extract") the test reads (FAIL 0.53s, run 40919550421). When the phase's context is already done, the far side's death now leads — the local tar died of the same cut through the pipe. The test's payload outgrows the pipe buffer, so the host…
+
+    </details>
+* **sandbox:** the kubectl lookup witness stops reading the pod it runs on ([6cedc55](https://github.com/SocialGouv/iterion/commit/6cedc55999cc0f55244265dc8a358017419c085c)), references [#2876](https://github.com/SocialGouv/iterion/issues/2876)
+
+    <details><summary>why</summary>
+
+    TestDetectResolvesNoKubectlUnderAPlantedPATH is red 2/2 on the ARC CI runners (41418469570 and its rerun): those hosts ARE kubernetes pods, the service-account mount exists, and Detect legitimately succeeds — the first assertion wanted the 'not running in a kubernetes pod' error. The namespace seam becomes a var and the witness points it at an absent scratch path, so it judges the lookup order on every host shape. The CI-log red is the mutation witness this fix answers.
+
+    </details>
+* **sandbox:** the phase cut carries the host tar's own cause too ([cc92769](https://github.com/SocialGouv/iterion/commit/cc927696f5c90b1983d9e497e1cc5578dc434eff)), references [#2854](https://github.com/SocialGouv/iterion/issues/2854)
+
+    <details><summary>why</summary>
+
+    The cut branch of the copy pipe returned the wedged in-pod tar's cause alone: a host tar that named an independent diagnostic before the cut reached it ("file changed as we read it") lost that tail — the same loss-class the in-pod side was closed against. Both tails now travel in the cut branch's error, the wedged far side still leading; an empty host tail renders exactly as before. Witnessed by mutation: the reverted branch reds the new test on "the cut branch dropped the host tar's own…
+
+    </details>
+* **security:** the LookPath class closes at its last sites, and the seam's justification covers both planting lanes ([9a73dc6](https://github.com/SocialGouv/iterion/commit/9a73dc69199b2e067f6739b7be5bda2f1f6f810d)), references [#2876](https://github.com/SocialGouv/iterion/issues/2876) [#2876](https://github.com/SocialGouv/iterion/issues/2876)
+
+    <details><summary>why</summary>
+
+    Review round 2 on the #2876 fix: the class is the rule everywhere, and four exec.LookPath sites still answered the authority question against the live PATH:
+
+    </details>
+* **security:** the remaining LookPath sites resolve under the operator's PATH, never a planted one ([a2d37aa](https://github.com/SocialGouv/iterion/commit/a2d37aa1f0e2a7c13e2c5e7d946182a17c56446a)), references [#1945](https://github.com/SocialGouv/iterion/issues/1945) [#2809](https://github.com/SocialGouv/iterion/issues/2809) [#2876](https://github.com/SocialGouv/iterion/issues/2876)
+
+    <details><summary>why</summary>
+
+    Which executable a launcher-started process runs is an authority question (#1945 at the config, #2809 at the envtrust.LookPath seam), and these sites still answered it against the LIVE PATH — which a project .env answers when it planted one (applyDotEnv fills only unset names, so a planted PATH means the operator's process had none). Each now goes through envtrust.LookPath, whose refusal is loud (exec.ErrNotFound) and reaches the caller exactly as a miss always did — no signature changes:
+
+    </details>
+* **studio:** the clamp announces its text once and leaves the control's tab stop alone ([f73b36a](https://github.com/SocialGouv/iterion/commit/f73b36ad55e911f10be4ac4c5c94bb16207e9c88)), references [#2790](https://github.com/SocialGouv/iterion/issues/2790) [#2803](https://github.com/SocialGouv/iterion/issues/2803) [#2790](https://github.com/SocialGouv/iterion/issues/2790) [#2803](https://github.com/SocialGouv/iterion/issues/2803)
+
+    <details><summary>why</summary>
+
+    Clipping is visual: the whole string stays in the accessibility tree as the block's own text, so the sr-only copy and the aria-describedby pointed at it announced a clamped block two and three times. Both channels go, together — a describedby whose target is gone is an axe aria-valid-attr-value violation of its own — and the standalone block keeps its focus stop and data-clamp-text. (#2790)
+
+    </details>
+* **train:** T40 coverage-chain landing repairs — stabilisation table re-derived, shield git calls guard auto-maintenance ([c4fb9de](https://github.com/SocialGouv/iterion/commit/c4fb9de7bd85f797a93da09d302c4ed77482bd59)), references [#2795](https://github.com/SocialGouv/iterion/issues/2795)
+
+    <details><summary>why</summary>
+
+    The bots-coverage split of the uncovered-catalog aggregate into six honest per-bot rows re-derived the matrix (409 rows) without carrying the plan's per-surface summary (still 404): the table now matches the committed matrix, as the committed-derivation guard demands. The one-tool-run shield harness predates the git auto-maintenance guard: its two direct exec.Command("git") callers now pass git.NoAutoMaintenance like every other test git caller.
+
+    </details>
+* **treeskip:** skip .gomodcache too — the other gitignored tree whose expected content is Go ([331918a](https://github.com/SocialGouv/iterion/commit/331918ad3958c07414667a0edde6851aa5df5044)), references [#2898](https://github.com/SocialGouv/iterion/issues/2898) [#2898](https://github.com/SocialGouv/iterion/issues/2898)
+
+    <details><summary>why</summary>
+
+    The review of the .local fix named it: a sandboxed go command dropping its module cache in .gomodcache/ would flood the generated maps with phantom rows, the same class as #2898 at a larger scale. The agreement guard's floor pins both.
+
+    </details>
+
 ## [5.2.0](https://github.com/SocialGouv/iterion/compare/v5.1.0...v5.2.0) (2026-11-02)
 
 ### Features

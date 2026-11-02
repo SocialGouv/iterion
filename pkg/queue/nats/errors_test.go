@@ -86,3 +86,31 @@ func TestIsConsumerGoneShapes(t *testing.T) {
 		}
 	}
 }
+
+// IsLeadershipChange matches the sentinel through the pull path's
+// wrapping and the API's own description — the exact string the Oct 30
+// runner logged ("nats: leadership change (backing off)", issue #2890) —
+// and stays false on nil, on unrelated errors, and on the consumer-gone
+// shapes the fetch loop routes to RecoverIfGone first.
+func TestIsLeadershipChangeShapes(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"wrapped sentinel", fmt.Errorf("queue/nats: fetch wait error: %w", jetstream.ErrConsumerLeadershipChanged), true},
+		{"the production string", errors.New("nats: leadership change (backing off)"), true},
+		{"upper-cased description", errors.New("Leadership Change"), true},
+		{"consumer deleted is not leadership", fmt.Errorf("fetch: %w", jetstream.ErrConsumerDeleted), false},
+		{"no responders is not leadership", errors.New("nats: no responders available for request"), false},
+		{"unrelated", errors.New("connection closed"), false},
+	}
+	for _, tc := range cases {
+		if got := IsLeadershipChange(tc.err); got != tc.want {
+			t.Errorf("%s: IsLeadershipChange=%v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

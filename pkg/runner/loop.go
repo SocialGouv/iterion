@@ -1314,11 +1314,22 @@ type Config struct {
 	// consumer once per frozen-stall episode — the Oct 30 wedge never
 	// self-resolved and only a deletion cleared it (#2890) — and held
 	// deliveries a still-executing run owns redeliver onto the run
-	// lock (parking on the DLQ, never double-executing). Operators who
-	// would rather gate that deletion by hand set this and run
-	// \`admin dlq replay\` / \`consumer rm\` themselves.
+	// lock (parking on the DLQ, never double-executing). The same
+	// switch gates the fast path: the post-election verification the
+	// fetch loop runs when the broker reports a leadership change.
+	// Operators who would rather gate that deletion by hand set this
+	// and run \`admin dlq replay\` / \`consumer rm\` themselves.
 	DisableStallSelfHeal bool
-	FetchWait            time.Duration // long-poll wait per fetch
+	// LeadershipVerifyWindow bounds the post-election verification the
+	// fetch loop runs when the broker reports a leadership change
+	// (#2890): held work frozen while the stream advances across the
+	// whole window is the wedge shape and pays a consumer recreate;
+	// anything else (nothing held, deliveries moving, a quiet stream —
+	// the healthy busy fleet reads exactly like that) heals or defers
+	// to the stall detector without touching the consumer. 0 →
+	// natsq.DefaultLeadershipVerifyWindow.
+	LeadershipVerifyWindow time.Duration
+	FetchWait              time.Duration // long-poll wait per fetch
 	// SchemaMismatchDelay is the redelivery delay applied when this runner
 	// rejects a delivery whose schema version it does not recognise (mixed
 	// fleet during a rolling schema bump). Must be long enough that the
@@ -1776,6 +1787,18 @@ func (r *Runner) Run(ctx context.Context) error {
 				// us and this pod rebuilt its handle; CreateOrUpdate is
 				// idempotent, racing pods converge on one consumer.
 				r.cfg.Logger.Warn("runner: the runs consumer was deleted (a pod's stall self-heal) — recreated, fetching resumes")
+				continue
+			}
+			if natsq.IsLeadershipChange(err) {
+				// The Oct 30 wedge (#2890) opened with exactly this
+				// signal: the election costs seconds, but it can freeze
+				// the durable consumer's raft state, after which every
+				// fetch long-polls an empty answer forever — silent,
+				// since ErrNoMessage logs nothing. Verify the posture
+				// right away instead of waiting for the (minutes-long)
+				// stall detector: a healthy election costs ~a second,
+				// and only the frozen shape pays a recreate.
+				r.logLeadershipRecovery(r.consumer.RecoverFromLeadershipChange(loopCtx, r.cfg.LeadershipVerifyWindow, r.cfg.DisableStallSelfHeal))
 				continue
 			}
 			r.cfg.Logger.Warn("runner: fetch error: %v (backing off)", err)

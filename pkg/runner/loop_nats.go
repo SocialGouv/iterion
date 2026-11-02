@@ -436,6 +436,37 @@ func (r *Runner) pollPending(ctx context.Context) {
 	}
 }
 
+// logLeadershipRecovery surfaces the post-election verification's typed
+// outcome at the level each arm deserves: the healthy shapes (nothing
+// held, deliveries resumed, a quiet stream under held work — the busy
+// fleet's steady state, which the stall detector owns) and the pool /
+// cut-short abstentions are Info or quieter, the operator's off switch
+// and the unreadable posture are Warn (the posture stall detector keeps
+// watch), the recreate is Warn with its redelivery consequences named,
+// and a failed recreate is Error with the manual remediation named.
+func (r *Runner) logLeadershipRecovery(outcome natsq.LeadershipRecovery) {
+	switch outcome {
+	case natsq.LeadershipRecoveryDisabled:
+		r.cfg.Logger.Warn("runner: leadership change — the consumer self-heal is disabled; if deliveries do not resume, recreate the runs consumer by hand (consumer rm + restart, or admin dlq replay)")
+	case natsq.LeadershipRecoveryPoolOwned:
+		r.cfg.Logger.Info("runner: leadership change on a pool consumer — the server's reconciler owns its topology, no runner-side heal")
+	case natsq.LeadershipRecoveryUnreadable:
+		r.cfg.Logger.Warn("runner: leadership change — the consumer posture stayed unreadable through the verify window (election still running or broker degraded); the stall detector keeps watch")
+	case natsq.LeadershipRecoveryCutShort:
+		r.cfg.Logger.Debug("runner: leadership change verification cut short by shutdown — no gesture performed")
+	case natsq.LeadershipRecoveryNoWork:
+		r.cfg.Logger.Info("runner: leadership change — the consumer holds nothing, fetching resumes")
+	case natsq.LeadershipRecoveryResumed:
+		r.cfg.Logger.Info("runner: leadership change — deliveries resumed after the election, no heal needed")
+	case natsq.LeadershipRecoveryNoInflow:
+		r.cfg.Logger.Info("runner: leadership change — held work but a quiet stream across the verify window: a healthy busy fleet reads exactly like this, so no recreate; the stall detector owns the shape if a wedge forms while messages arrive")
+	case natsq.LeadershipRecoveryRecreated:
+		r.cfg.Logger.Warn("runner: leadership change froze the runs consumer (held work, no delivery while the stream advanced across the verify window) — deleted and recreated; held work redelivers from the stream, deliveries an executing run still holds park on the DLQ for replay")
+	case natsq.LeadershipRecoveryRecreateFailed:
+		r.cfg.Logger.Error("runner: leadership change froze the runs consumer and the recreate failed — the stall detector remains the net; recreate the consumer by hand if the stall onset fires")
+	}
+}
+
 // selfHealStall recreates the runs consumer when the stall is still
 // frozen at its onset posture: the Oct 30 wedge never self-resolved and
 // only a consumer deletion cleared it (issue #2890). Guards, in order:
