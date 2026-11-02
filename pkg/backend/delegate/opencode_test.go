@@ -12,9 +12,9 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 )
 
-// TestOpenCodeBuildArgs pins the whole invocation: the `run` subcommand
-// closes argv, the prompt travels on stdin and NOT in argv, and the model /
-// effort dials are the CLI's own.
+// TestOpenCodeBuildArgs pins the whole invocation: the `run` subcommand OPENS
+// argv, the prompt travels on stdin and NOT in argv, and the model / effort
+// dials are the CLI's own, folded into one model reference.
 func TestOpenCodeBuildArgs(t *testing.T) {
 	b := &CLIAgentBackend{Protocol: opencodeProtocol}
 
@@ -29,18 +29,17 @@ func TestOpenCodeBuildArgs(t *testing.T) {
 		args, stdin := b.buildArgs(opencodeProtocol, task, promptArg, task.BuildSystemPrompt())
 
 		want := []string{
-			"--format", "json",
-			"-m", "anthropic/claude-sonnet-4-6",
-			"--variant", "high",
 			"run",
+			"--format", "json",
+			"-m", "anthropic/claude-sonnet-4-6#high",
 		}
 		if !reflect.DeepEqual(args, want) {
 			t.Fatalf("args = %v, want %v", args, want)
 		}
-		// The subcommand must be the LAST token: opencode reads everything
-		// after it as the positional message.
-		if args[len(args)-1] != "run" {
-			t.Fatalf("subcommand is not last: %v", args)
+		// The subcommand must be the FIRST token: opencode 2.x resolves it
+		// before it knows any flag, and refuses a flag it reads first.
+		if args[0] != "run" {
+			t.Fatalf("subcommand is not first: %v", args)
 		}
 		if stdin != promptArg {
 			t.Fatalf("stdin = %q, want the composed prompt %q", stdin, promptArg)
@@ -72,11 +71,61 @@ func TestOpenCodeBuildArgs(t *testing.T) {
 	t.Run("no dials when unset", func(t *testing.T) {
 		args, _ := b.buildArgs(opencodeProtocol, Task{UserPrompt: "x"}, "x", "")
 		for _, a := range args {
-			if a == "-m" || a == "--variant" {
+			if a == "-m" || a == "--variant" || strings.Contains(a, "#") {
 				t.Fatalf("unexpected dial with empty model/effort: %v", args)
 			}
 		}
 	})
+
+	t.Run("an effort with no model emits no model reference", func(t *testing.T) {
+		// `-m "#high"` is a hard refusal ("Invalid model reference: #high",
+		// measured on 2.2.5), so the dial is dropped — warned by name from
+		// OpenCodeBackend.Execute, never spelled into argv.
+		args, _ := b.buildArgs(opencodeProtocol, Task{UserPrompt: "x", ReasoningEffort: "high"}, "x", "")
+		for _, a := range args {
+			if a == "-m" || strings.Contains(a, "#") {
+				t.Fatalf("an effort with no model reached argv: %v", args)
+			}
+		}
+	})
+}
+
+// TestOpenCodeLegacyArgvDialect pins the ITERION_OPENCODE_ARGV=1 hatch: the
+// 1.x argv, byte for byte — every generated flag first, `--variant` for the
+// dial, `run` closing argv.
+func TestOpenCodeLegacyArgvDialect(t *testing.T) {
+	proto := opencodeLegacyProtocol()
+	b := &CLIAgentBackend{Protocol: proto}
+	task := Task{
+		UserPrompt:      "hello",
+		Model:           "anthropic/claude-sonnet-4-6",
+		ReasoningEffort: "ultracode",
+		SessionID:       "ses_1",
+		ForkSession:     true,
+	}
+	args, stdin := b.buildArgs(proto, task, "hello", "")
+	want := []string{
+		"--format", "json",
+		"-m", "anthropic/claude-sonnet-4-6",
+		"--variant", "high",
+		"--session", "ses_1", "--fork=true",
+		"run",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("legacy args = %v, want %v", args, want)
+	}
+	if args[len(args)-1] != "run" {
+		t.Fatalf("the 1.x subcommand is not last: %v", args)
+	}
+	if stdin != "hello" {
+		t.Fatalf("stdin = %q, want the prompt", stdin)
+	}
+	// The dialect decides POSITION and spelling only: every other field is
+	// the one the 2.x literal declares.
+	if proto.Name != opencodeProtocol.Name || proto.OutputFormat != opencodeProtocol.OutputFormat ||
+		!proto.PromptViaStdin || proto.HostBinaryEnv != opencodeProtocol.HostBinaryEnv {
+		t.Fatalf("the legacy dialect changed more than the argv shape: %+v", proto)
+	}
 }
 
 // TestOpenCodeProtocolLeavesSiblingsAlone guards the three protocols that
@@ -95,20 +144,40 @@ func TestOpenCodeProtocolLeavesSiblingsAlone(t *testing.T) {
 }
 
 func TestOpenCodeMapEffort(t *testing.T) {
-	cases := map[string][]string{
-		"":          nil,
-		"low":       {"--variant", "low"},
-		"high":      {"--variant", "high"},
-		"max":       {"--variant", "max"},
-		"xhigh":     {"--variant", "high"},
-		"ultracode": {"--variant", "high"},
-		"HIGH":      {"--variant", "high"},
+	// The 2.x dial is a bare variant name: it rides the model reference.
+	cases := map[string]string{
+		"":          "",
+		"low":       "low",
+		"high":      "high",
+		"max":       "max",
+		"xhigh":     "high",
+		"ultracode": "high",
+		"HIGH":      "high",
+		"  high  ":  "high",
 	}
 	for in, want := range cases {
-		if got := opencodeMapEffort(in); !reflect.DeepEqual(got, want) {
-			t.Errorf("opencodeMapEffort(%q) = %v, want %v", in, got, want)
+		if got := opencodeMapEffort(in); got != want {
+			t.Errorf("opencodeMapEffort(%q) = %q, want %q", in, got, want)
+		}
+		if got := opencodeModelRef(Task{Model: "scripted/m1", ReasoningEffort: in}); got != "scripted/m1"+variantSuffix(want) {
+			t.Errorf("opencodeModelRef(effort %q) = %q, want %q", in, got, "scripted/m1"+variantSuffix(want))
+		}
+		// The 1.x hatch spells the same level on its own flag.
+		var legacy []string
+		if want != "" {
+			legacy = []string{"--variant", want}
+		}
+		if got := opencodeLegacyMapEffort(in); !reflect.DeepEqual(got, legacy) {
+			t.Errorf("opencodeLegacyMapEffort(%q) = %v, want %v", in, got, legacy)
 		}
 	}
+}
+
+func variantSuffix(variant string) string {
+	if variant == "" {
+		return ""
+	}
+	return "#" + variant
 }
 
 func TestOpenCodeMapModel(t *testing.T) {

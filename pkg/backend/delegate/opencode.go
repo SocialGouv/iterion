@@ -18,8 +18,8 @@ import (
 // (`backend: "opencode"` in the DSL). It drives the `opencode` agent CLI,
 // whose headless protocol is disjoint from claude-code's Session mode:
 //
-//	opencode --format json [-m provider/model] [--variant <effort>] \
-//	         [--session <id> [--fork=true]] run
+//	opencode run --format json [-m provider/model[#variant]] \
+//	         [--session <id> [--fork=true]]
 //
 // with the prompt on stdin. See ADR-065 for the CLI-agent seam.
 const BackendOpenCode = backendcaps.OpenCode
@@ -27,6 +27,14 @@ const BackendOpenCode = backendcaps.OpenCode
 // openCodeTrustProjectEnv opts into the target repository's own `.opencode/`
 // resources. Refused by default — see openCodeProjectTrusted.
 const openCodeTrustProjectEnv = "ITERION_OPENCODE_TRUST_PROJECT"
+
+// openCodeLegacyArgvEnv pins the argv dialect to opencode 1.x: every
+// generated flag first, the `run` subcommand last, the effort dial on
+// `--variant`. The value is the major version it selects, so `=1` is the 1.x
+// argv; anything else leaves the 2.x default in place. It is the escape
+// hatch for a host still on the 1.x line, whose parser took either order —
+// see opencodeLegacyProtocol.
+const openCodeLegacyArgvEnv = "ITERION_OPENCODE_ARGV"
 
 // openCodeProjectConfigFiles are the workspace config files opencode reads.
 // Either can carry a `plugin:` list pointing at arbitrary TypeScript.
@@ -55,11 +63,12 @@ const openCodeMaxProjectLevels = 64
 // makes that behaviour benign. (A stdin left OPEN hangs opencode forever;
 // runOnce passes a nil Stdin here, which os/exec wires to the null device.)
 //
-// `run` is emitted by ExtraArgsFor rather than a dedicated protocol field,
-// after the session flags: opencode's parser accepts the subcommand token
-// after options that carry a value, so `opencode --format json -m … run` and
-// `opencode run --format json -m …` parse identically. A bare boolean is the
-// exception (see opencodeExtraArgsFor).
+// `run` LEADS argv: opencode 2.x resolves the subcommand before it knows any
+// flag, so a flag that precedes it is unrecognized — measured on 2.2.5,
+// `opencode --format json -m … run` exits 1 with "Unrecognized flag:
+// --format in command opencode" and prints its usage text on stdout. The 1.x
+// line parsed either order; a host still on it sets ITERION_OPENCODE_ARGV=1
+// (opencodeLegacyProtocol).
 //
 // There is no system-prompt flag, so the node's `system:` is folded into the
 // user prompt as a preamble by the shared CLIAgentBackend path.
@@ -67,16 +76,24 @@ var opencodeProtocol = CLIAgentProtocol{
 	Name:          BackendOpenCode,
 	DefaultBinary: "opencode",
 
+	// The subcommand opens argv; `run`'s own flags follow it.
+	Subcommand: "run",
+
 	PromptViaStdin: true,
 	PromptFlag:     "",
 
 	OutputFormatFlag: "--format",
 	OutputFormat:     "json",
 
-	ModelFlag: "-m",
-	MapModel:  opencodeMapModel,
+	// Model and effort are emitted together by opencodeExtraArgsFor:
+	// opencode 2.x carries the variant INSIDE the model reference
+	// (`-m provider/model#variant`, its own `run --help` wording) and has no
+	// `--variant` flag at all. Emitting the halves independently cannot
+	// spell it, and a variant with no model is a hard refusal.
+	ModelFlag: "",
+	MapModel:  nil,
 
-	MapEffort: opencodeMapEffort,
+	MapEffort: nil,
 
 	ParseOutputRich: parseOpenCodeOutput,
 
@@ -88,7 +105,7 @@ var opencodeProtocol = CLIAgentProtocol{
 	// the report and the spawn agree on one binary.
 	HostBinaryEnv: "ITERION_OPENCODE_BIN",
 
-	// The subcommand closes argv: every generated flag precedes it.
+	// The model reference and the session flags, which follow `run`.
 	ExtraArgsFor: opencodeExtraArgsFor,
 
 	// PermissionHook nil: opencode exposes no PreToolUse hook. Its own
@@ -126,12 +143,54 @@ func NewOpenCodeBackend(logger *iterlog.Logger, command string) *OpenCodeBackend
 }
 
 // Execute refuses a workspace whose own `.opencode/` would run as code, then
-// delegates to the shared CLI-agent path.
+// delegates to the shared CLI-agent path in the argv dialect the host speaks.
 func (b *OpenCodeBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	if err := refuseUntrustedOpenCodeProject(task.WorkDir); err != nil {
 		return Result{BackendName: BackendOpenCode, ExitCode: -1}, err
 	}
-	return b.cli.Execute(ctx, task)
+	cli := b.cli
+	if openCodeLegacyArgv() {
+		legacy := *cli
+		legacy.Protocol = opencodeLegacyProtocol()
+		cli = &legacy
+	} else {
+		b.warnEffortNeedsModel(task)
+	}
+	return cli.Execute(ctx, task)
+}
+
+// warnEffortNeedsModel reports a reasoning_effort the 2.x argv cannot carry:
+// the variant travels inside the model reference, and `-m "#variant"` with no
+// model is refused by the CLI ("Invalid model reference: #high", measured on
+// 2.2.5). The run the node asked for still happens, at the model's default
+// effort, so the dial is dropped with a named warning rather than rejected —
+// but never in silence.
+func (b *OpenCodeBackend) warnEffortNeedsModel(task Task) {
+	if b.Logger == nil || opencodeMapEffort(task.ReasoningEffort) == "" || opencodeMapModel(task.Model) != "" {
+		return
+	}
+	b.Logger.Warn("[%s#%d/%s] reasoning_effort %q is not emitted: opencode carries the variant inside the model reference (-m provider/model#variant), so the dial needs a model on the node",
+		task.NodeID, task.Iteration, BackendOpenCode, task.ReasoningEffort)
+}
+
+// openCodeLegacyArgv reports whether the operator pinned the 1.x argv.
+func openCodeLegacyArgv() bool {
+	return strings.TrimSpace(os.Getenv(openCodeLegacyArgvEnv)) == "1"
+}
+
+// opencodeLegacyProtocol is opencodeProtocol in the 1.x dialect: no leading
+// subcommand, `run` appended last by opencodeLegacyExtraArgsFor, the model on
+// its own `-m` and the effort on `--variant`. Derived from the 2.x literal so
+// that everything the two dialects agree on — the prompt on stdin, the
+// parser, the env, the screens — is stated once.
+func opencodeLegacyProtocol() CLIAgentProtocol {
+	proto := opencodeProtocol
+	proto.Subcommand = ""
+	proto.ModelFlag = "-m"
+	proto.MapModel = opencodeMapModel
+	proto.MapEffort = opencodeLegacyMapEffort
+	proto.ExtraArgsFor = opencodeLegacyExtraArgsFor
+	return proto
 }
 
 // openCodeProjectTrusted reports whether the operator opted into the target
@@ -310,31 +369,68 @@ func opencodeResolveEnv(context.Context) map[string]string {
 	return map[string]string{"OPENCODE_DISABLE_CLAUDE_CODE": "1"}
 }
 
-// opencodeExtraArgsFor emits the session flags, then the `run` subcommand
-// that closes argv.
+// opencodeExtraArgsFor emits the model reference, then the session flags —
+// everything that follows `run` and is not a protocol-level flag.
 //
 // A fresh session names none: opencode mints its own id and reports it on
 // every event of the JSON stream, which parseOpenCodeOutput reads. A resume
 // passes that id back with --session; a fork adds --fork, which opencode
 // rejects without a session to fork from, so it never travels alone.
 //
-// --fork carries its value: opencode's parser finds the subcommand before it
-// knows `run`'s own flags, so a bare boolean right before `run` takes `run`
-// as its value and the CLI prints its help instead (measured on 1.19.0).
+// --fork carries its value (`--fork=true`). Both forms parse under `run` on
+// 2.2.5 (measured), and the value-carrying one is what the 1.x hatch needs:
+// there the parser finds the subcommand before it knows `run`'s own flags, so
+// a bare boolean right before `run` takes `run` as its value and the CLI
+// prints its help instead (measured on 1.19.0).
 //
 // An id opencode does not hold is version-dependent: 1.19 exits 1 with
-// "Session not found" (measured), so a lost transcript fails the call; 2.x
-// creates a session under that id (read from its source), so there it
-// resumes as an empty conversation.
+// "Session not found", so a lost transcript fails the call; 2.2.5 CREATES a
+// session under that id (both measured), so there a resume whose transcript
+// is gone silently becomes an empty conversation.
 func opencodeExtraArgsFor(task Task) []string {
 	var args []string
-	if task.SessionID != "" {
-		args = append(args, "--session", task.SessionID)
-		if task.ForkSession {
-			args = append(args, "--fork=true")
-		}
+	if model := opencodeModelRef(task); model != "" {
+		args = append(args, "-m", model)
 	}
-	return append(args, "run")
+	return append(args, opencodeSessionArgs(task)...)
+}
+
+// opencodeLegacyExtraArgsFor emits the 1.x tail: the session flags, then the
+// `run` subcommand that CLOSES argv (ITERION_OPENCODE_ARGV=1). The model and
+// the effort travel on their own flags there, so the protocol emits them.
+func opencodeLegacyExtraArgsFor(task Task) []string {
+	return append(opencodeSessionArgs(task), "run")
+}
+
+// opencodeSessionArgs emits the session flags, which both dialects spell the
+// same way.
+func opencodeSessionArgs(task Task) []string {
+	if task.SessionID == "" {
+		return nil
+	}
+	args := []string{"--session", task.SessionID}
+	if task.ForkSession {
+		args = append(args, "--fork=true")
+	}
+	return args
+}
+
+// opencodeModelRef renders opencode 2.x's model reference —
+// `provider/model[#variant]`, the shape its own `run --help` documents — with
+// the reasoning dial folded in as the variant.
+//
+// The fold is conditional on a model: `-m "#high"` is refused outright
+// ("Invalid model reference: #high", measured on 2.2.5), so an effort with no
+// model emits no `-m` at all and OpenCodeBackend.Execute warns by name.
+func opencodeModelRef(task Task) string {
+	model := opencodeMapModel(task.Model)
+	if model == "" {
+		return ""
+	}
+	if variant := opencodeMapEffort(task.ReasoningEffort); variant != "" {
+		return model + "#" + variant
+	}
+	return model
 }
 
 // opencodeMapModel passes an iterion model spec through unchanged: opencode's
@@ -347,26 +443,42 @@ func opencodeMapModel(model string) string {
 }
 
 // opencodeMapEffort maps iterion's reasoning_effort dial onto opencode's
-// `--variant`. The accepted variant names are per-MODEL (opencode derives
-// them from the model's own reasoning options) and iterion cannot enumerate
-// them, so the level is passed through verbatim.
+// variant name, the token opencodeModelRef folds into `-m`. The accepted
+// names are per-MODEL (opencode derives them from the model's own reasoning
+// options) and iterion cannot enumerate them, so the level is passed through
+// verbatim and the CLI refuses an unknown one explicitly — measured on 2.2.5:
+// `{"error":{"type":"provider.no-route","message":"Variant unavailable for
+// scripted/m1: nonexistentvariant"}}`, exit 1.
 //
-// Measured on 1.1.19: a variant the model does not carry is DROPPED in
-// silence — `resolveVariant` returns the flag unchecked and the request then
-// does a bare record lookup that yields nothing. Neither the CLI nor this
-// parser can tell that from an honoured dial, so a node may run at the
-// model's default effort with no signal. `ultracode` is remapped to `high`:
-// opencode has no ultracode mode, whose orchestration half is Anthropic-only
-// (docs/ultracode.md) — the same remap grok does.
-func opencodeMapEffort(effort string) []string {
+// `ultracode` and `xhigh` are remapped to `high`: opencode has no ultracode
+// mode, whose orchestration half is Anthropic-only (docs/ultracode.md) — the
+// same remap grok does.
+func opencodeMapEffort(effort string) string {
 	effort = strings.TrimSpace(strings.ToLower(effort))
 	switch effort {
 	case "":
-		return nil
+		return ""
 	case "ultracode", "xhigh":
-		effort = "high"
+		return "high"
 	}
-	return []string{"--variant", effort}
+	return effort
+}
+
+// opencodeLegacyMapEffort spells the same dial the 1.x way, on its own
+// `--variant` flag (ITERION_OPENCODE_ARGV=1). The flag does not exist on the
+// 2.x parser, at the root or under `run`.
+//
+// Measured on 1.1.19: a variant the model does not carry is DROPPED in
+// silence there — `resolveVariant` returns the flag unchecked and the request
+// then does a bare record lookup that yields nothing. Neither the CLI nor
+// this parser can tell that from an honoured dial, so under the hatch a node
+// may run at the model's default effort with no signal.
+func opencodeLegacyMapEffort(effort string) []string {
+	variant := opencodeMapEffort(effort)
+	if variant == "" {
+		return nil
+	}
+	return []string{"--variant", variant}
 }
 
 // parseOpenCodeOutput walks opencode's `--format json` stream: one JSON

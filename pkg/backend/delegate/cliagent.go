@@ -43,6 +43,14 @@ type CLIAgentProtocol struct {
 	// Command override is empty (e.g. "kimi").
 	DefaultBinary string
 
+	// Subcommand is the CLI's leading verb, emitted as the FIRST token of
+	// argv — before the prompt and every generated flag (e.g. opencode's
+	// `run`, whose 2.x parser refuses a flag it reads before the
+	// subcommand). POSITION is why this is a field rather than ExtraArgs:
+	// everything else a protocol declares is appended. Empty emits nothing,
+	// which is every CLI whose flags stand alone.
+	Subcommand string
+
 	// PromptFlag delivers the user prompt on the command line. When
 	// PromptViaStdin is false, the prompt is passed as the flag's value:
 	// `<PromptFlag> <prompt>` (e.g. "-p <prompt>"). When PromptViaStdin is
@@ -944,6 +952,10 @@ func sanitizeFileSegment(s string) string {
 // returns the argument slice (excluding the binary itself) and the prompt to
 // pipe on stdin (empty unless the protocol uses stdin delivery).
 func (b *CLIAgentBackend) buildArgs(proto CLIAgentProtocol, task Task, promptArg, systemPrompt string) (args []string, stdinPrompt string) {
+	if proto.Subcommand != "" {
+		args = append(args, proto.Subcommand)
+	}
+
 	if proto.PromptViaStdin {
 		if proto.PromptFlag != "" {
 			args = append(args, proto.PromptFlag)
