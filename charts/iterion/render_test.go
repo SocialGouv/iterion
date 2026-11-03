@@ -520,6 +520,68 @@ func envMap(container any) map[string]map[string]any {
 	return out
 }
 
+// The iterion.cloud group had no render witness at all: this is net-new
+// coverage, not an extension of the datastore one next door. What it pins is
+// the pair of #2354 rules — the series each reads, the replica aggregation
+// (the gauges are per-pod readings of a per-pod image, so an un-aggregated
+// expr pages once per replica), and that the description carries BOTH cures
+// the operator has, since a page naming no remedy is a page that gets muted.
+func TestChartRenderCloudBotOverrideAlerts(t *testing.T) {
+	docs := manifests(t, mustRender(t, "-f", "values-prod.yaml", "--set", "metrics.prometheusRule.enabled=true"))
+	rules := ruleGroups(t, docs)["iterion.cloud"]
+	if len(rules) == 0 {
+		t.Fatal("no iterion.cloud group in the render")
+	}
+
+	shadow := rule(rules, "IterionBotOverrideShadowsNewer", map[string]string{"severity": "warning"})
+	if shadow == nil {
+		t.Fatal("no IterionBotOverrideShadowsNewer rule — the gauge would be scraped and read by nobody")
+	}
+	expr := fmt.Sprint(shadow["expr"])
+	if !strings.Contains(expr, "iterion_bot_override_shadows_newer") || !strings.Contains(expr, "> 0") {
+		t.Errorf("shadow rule expr = %q, want the gauge over 0", expr)
+	}
+	// Per-replica gauges: the server is multi-replica and the registry is
+	// shared with the runner, so an un-aggregated expr is one page per pod.
+	if !strings.Contains(expr, "max by (slug)") {
+		t.Errorf("shadow rule must aggregate per slug across replicas, got %q", expr)
+	}
+	desc := fmt.Sprint(dig(shadow, "annotations", "description"))
+	// The slug, the two version fields, and both cures the tree documents.
+	for _, want := range []string{
+		"{{ $labels.slug }}",
+		"bundle_version",
+		"shadowed_version",
+		"iterion remote admin bots push bots/",
+		"DELETE /api/admin/bots/",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("shadow rule description missing %q:\n%s", want, desc)
+		}
+	}
+
+	unavailable := rule(rules, "IterionBotShadowCheckUnavailable", map[string]string{"severity": "warning"})
+	if unavailable == nil {
+		t.Fatal("no IterionBotShadowCheckUnavailable rule — a check that cannot run would read as a clean inventory")
+	}
+	uexpr := fmt.Sprint(unavailable["expr"])
+	if !strings.Contains(uexpr, "iterion_bot_shadow_check_unavailable") || !strings.Contains(uexpr, "== 1") {
+		t.Errorf("unavailable rule expr = %q", uexpr)
+	}
+	if !strings.Contains(uexpr, "max(") {
+		t.Errorf("unavailable rule must aggregate across replicas, got %q", uexpr)
+	}
+
+	// The INFO class is deliberately UNALERTED: a free-form or suffixed pin
+	// cannot be ordered, so a page on it is one nobody can clear. The gauge
+	// exists; no rule may read it.
+	for _, r := range rules {
+		if strings.Contains(fmt.Sprint(r["expr"]), "iterion_bot_override_unorderable_version") {
+			t.Errorf("a rule alerts on the unorderable class (%v) — it is informational only", r["alert"])
+		}
+	}
+}
+
 func TestChartRenderDatastoreAlerts(t *testing.T) {
 	base := []string{"-f", "values-prod.yaml", "-f", "testdata/values-datastores.yaml"}
 	rules := ruleGroups(t, manifests(t, mustRender(t, base...)))["iterion.datastores"]

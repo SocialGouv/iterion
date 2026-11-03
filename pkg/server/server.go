@@ -291,7 +291,24 @@ type Server struct {
 	// bakedCatalog caches slug → version for the on-disk catalog, so the
 	// override-staleness comparison can be recomputed on every launch without
 	// re-walking every bot root each time (bot_override_staleness.go).
-	bakedCatalog   *platformcfg.Resolver[bakedCatalog]
+	bakedCatalog *platformcfg.Resolver[bakedCatalog]
+	// bakedCatalogWalkFailed carries the outcome of the LAST catalog walk
+	// next to the map that walk produced. The resolver above serves
+	// last-known values through a failure — its availability posture, and
+	// the right one — so the map alone cannot tell a fresh reading from one
+	// served blind, and a shadow check that could not run must never read as
+	// a clean inventory (bot_override_staleness.go).
+	bakedCatalogWalkFailed atomic.Bool
+	// overrideShadow* is the shadow observer's own memory, written by its
+	// pass and nothing else: the slug set the last pass published (so the
+	// next one retires only what disappeared, with no window in which a
+	// shadowing slug carries no series at all) and whether the platform rows
+	// were unreadable on the previous pass (so a store outage costs one
+	// warning per outage, not one per minute).
+	overrideShadowMu        sync.Mutex
+	overrideShadowSlugs     map[string]struct{}
+	overrideShadowRowsBlind bool
+
 	configShares   configshare.Store
 	configShareSvc *configshare.Service
 	// configShareFC overrides forge-client resolution in tests (nil in prod →

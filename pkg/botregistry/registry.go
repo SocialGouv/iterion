@@ -556,6 +556,28 @@ func DefaultPaths(workDir string) []string {
 	}
 }
 
+// AnyRootPresent reports whether discovery has anything to look at: at
+// least one of the roots is on disk, or fails to stat for a reason
+// discovery itself refuses loudly. It is the exact complement of
+// discoverBots' silent skip (os.IsNotExist → continue), so false means a
+// walk over these roots CANNOT read an entry — it is not the same fact as
+// a root that is there and holds no bundle, and a caller whose verdict is
+// "what serves below" must report unknown rather than empty for it.
+// TestAnEmptyWalkAndAnAbsentRootAreDifferentFacts holds the two to one
+// shape.
+//
+// Optimistic default paths stay free (DefaultPaths returns three roots a
+// workspace rarely all has): this answers "not one of them", never "one of
+// them is missing".
+func AnyRootPresent(paths []string) bool {
+	for _, root := range paths {
+		if _, err := os.Stat(root); !os.IsNotExist(err) {
+			return true
+		}
+	}
+	return false
+}
+
 // isScaffoldStagingDir reports whether a directory NAME is one of
 // botscaffold's staging directories ("."+slug+".scaffold-"+random), whose
 // leftover beside the roots is no bot. The spelling lives here because

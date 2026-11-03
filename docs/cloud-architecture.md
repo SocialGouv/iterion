@@ -318,6 +318,9 @@ FS adapter / Mongo adapter both treat it as untenanted.
 | `iterion_launch_denied_total{reason}` | server | Launch gate refusals |
 | `iterion_runs_orphan_recovered_total` | server | Sweeper flips |
 | `iterion_dlq_depth` | server | Sweeper poll of NATS state |
+| `iterion_bot_override_shadows_newer{slug}` | server | The five-minute shadow poll over the platform bot rows, per slug |
+| `iterion_bot_shadow_check_unavailable` | server | The same poll, when the catalog or the platform rows could not be read — a bot root that is not there included |
+| `iterion_bot_override_unorderable_version{slug}` | server | The same poll, for a pair whose versions do not order |
 
 All from a shared registry in
 [pkg/cloud/metrics/metrics.go](../pkg/cloud/metrics/metrics.go) so the

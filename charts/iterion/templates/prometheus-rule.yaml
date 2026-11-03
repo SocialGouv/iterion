@@ -56,6 +56,37 @@ spec:
           annotations:
             summary: "Inbound webhooks are being throttled"
             description: "Sustained rate-limit/quota rejections on inbound webhooks — a noisy forge integration or an abusive caller."
+        # A stored platform override outranks the baked catalog at every
+        # launch surface, forever (#2354): an override pushed once keeps
+        # serving after a later release bakes a newer bundle for the same
+        # slug, across every tenant. AGGREGATED, unlike the counters above:
+        # the gauge is each replica's reading of its OWN image against the
+        # shared platform rows, so a rolling release has the two generations
+        # disagreeing on purpose — max takes the pod that already runs the
+        # newer bake, and one page per slug instead of one per replica.
+        # Pinning an older bundle stays legitimate: this warns, it does not
+        # refuse, and an unorderable pin is reported on
+        # iterion_bot_override_unorderable_version, which no rule reads.
+        - alert: IterionBotOverrideShadowsNewer
+          expr: max by (slug) (iterion_bot_override_shadows_newer) > 0
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "A platform bot override is holding back a newer baked bundle"
+            description: "The platform override of {{ `{{ $labels.slug }}` }} is older than the bundle this deployment would otherwise serve, so every tenant keeps running the stored one. Read the pair on `iterion remote admin bots` — bundle_version is what serves, shadowed_version is what it holds back — then either re-push the current bundle (`iterion remote admin bots push bots/{{ `{{ $labels.slug }}` }}`) or drop the override and let the image serve (DELETE /api/admin/bots/{{ `{{ $labels.slug }}` }}). Prefer dropping it once the reason for the override has shipped."
+        # The gauge above reads 0 on a healthy deployment AND on one whose
+        # check could not run, so the check says which. An unreadable leg
+        # HOLDS the per-slug values rather than zeroing them, and this is
+        # what keeps that hold honest: no slug can be cleared while it is 1.
+        - alert: IterionBotShadowCheckUnavailable
+          expr: max(iterion_bot_shadow_check_unavailable) == 1
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "The bot override-shadow check cannot run"
+            description: "A server replica cannot read its bot catalog or the platform bot_sources rows, so iterion_bot_override_shadows_newer is holding its last values and no override can be certified current. Check the server logs for the catalog walk and the bot-source store; GET /api/admin/bots answers shadow_check_unavailable the same way."
     {{- if .Values.backup.enabled }}
     {{- $fullname := include "iterion.fullname" . }}
     # The off-cluster copy (#2013): a failed Job, a tier without a success

@@ -398,6 +398,9 @@ populated at runtime:
 | `iterion_llm_tokens_total{backend,model,direction}` | runner | input/output/cache_read/cache_write |
 | `iterion_llm_cost_usd_total{backend,model}` | runner | Added per claw-priced call; unknown models leave the counter untouched |
 | `iterion_runner_heartbeat_errors_total` | runner | Each KV lease refresh failure |
+| `iterion_bot_override_shadows_newer{slug}` | server | 1 while a platform bot override shadows a newer baked bundle (polled every five minutes, platform tier) |
+| `iterion_bot_shadow_check_unavailable` | server | 1 when that check could not run — no readable bot root included; the per-slug gauges hold their last values |
+| `iterion_bot_override_unorderable_version{slug}` | server | 1 for an override whose version cannot be ordered against the bundle below it; informational, unalerted |
 
 Wire a Prometheus PodMonitor:
 

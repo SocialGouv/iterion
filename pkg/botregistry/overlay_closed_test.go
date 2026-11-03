@@ -259,11 +259,11 @@ func TestAnOverlayToggleWaitsForAnotherProcesssLock(t *testing.T) {
 // one in a listed function is a new occurrence, and a stale entry fails too.
 func TestEveryUnreadOverlayOptInIsListed(t *testing.T) {
 	optIns := map[string]string{
-		"pkg/botregistry/registry.go EnsureNameFree #1":                   "a name is taken or free whatever the overlay decides of its visibility",
-		"pkg/server/bots_tenant.go mergedBotEntries #1":                   "the studio's gallery: every bot listed disabled, the refusal among the diagnostics it renders (DiscoveryErrorBanners)",
-		"pkg/server/bot_override_staleness.go newBakedCatalogResolver #1": "the override-staleness projection reads versions alone, which no overlay decides",
-		"pkg/server/bot_sources_routes.go platformPushWarnings #1":        "the baked manifest's invocations, which no overlay decides",
-		"pkg/server/bot_resolver.go effectiveEntriesWithSchema #1":        "the launch lanes' catalog read — webhook hand-off's consumers, the review gate's var default, the forge command map and its pause notice, the trigger spine's derivation: invocations, schemas and manifests, which no overlay decides; every bot listed disabled keeps the doors that DO read visibility (card launch, command discovery) routing none, and the launch itself resolves without the overlay",
+		"pkg/botregistry/registry.go EnsureNameFree #1":            "a name is taken or free whatever the overlay decides of its visibility",
+		"pkg/server/bots_tenant.go mergedBotEntries #1":            "the studio's gallery: every bot listed disabled, the refusal among the diagnostics it renders (DiscoveryErrorBanners)",
+		"pkg/server/bot_override_staleness.go walkBakedCatalog #1": "the override-staleness projection reads versions alone, which no overlay decides",
+		"pkg/server/bot_sources_routes.go platformPushWarnings #1": "the baked manifest's invocations, which no overlay decides",
+		"pkg/server/bot_resolver.go effectiveEntriesWithSchema #1": "the launch lanes' catalog read — webhook hand-off's consumers, the review gate's var default, the forge command map and its pause notice, the trigger spine's derivation: invocations, schemas and manifests, which no overlay decides; every bot listed disabled keeps the doors that DO read visibility (card launch, command discovery) routing none, and the launch itself resolves without the overlay",
 	}
 	root := filepath.Join("..", "..")
 	seen := map[string]bool{}
