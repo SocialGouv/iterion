@@ -103,8 +103,15 @@ type Orchestrator struct {
 	Connections       connection.ForgeStore
 	Integrations      RepoIntegrationStore
 	Webhooks          webhooks.ConfigStore
-	Secrets           secrets.GenericSecretStore
-	Sealer            secrets.Sealer
+	// Secrets holds the managed forge tokens this package mints. The ones
+	// it deletes (a project bot's on deprovision, a connection's on
+	// disconnect, a failed mint's compensation) are team-scoped and
+	// pinnable by any webhook config or trigger subscription of the tenant,
+	// so the server hands a store whose Delete also sweeps the credential
+	// pins naming the record (#2644) — this package holds no trigger store
+	// and cannot run that sweep itself.
+	Secrets secrets.GenericSecretStore
+	Sealer  secrets.Sealer
 	// Bindings, when set, gets a bot-secret binding per enabled bot pinning
 	// the managed forge token under the bot's workflow-secret name (forge_token).
 	// The webhook secret override (Tier-0) only reaches the DIRECT webhook launch

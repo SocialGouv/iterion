@@ -1089,17 +1089,21 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			Connections:          s.forgeConnections,
 			Integrations:         s.forgeIntegrations,
 			Webhooks:             s.webhookConfigs,
-			Secrets:              s.genericSecrets,
-			Sealer:               s.sealer,
-			Bindings:             s.botBindings,
-			Bots:                 s.forgeBotForge,
-			Invocations:          s.forgeBotInvocations,
-			Schedules:            cfg.ScheduledBots,
-			AdminFor:             s.forgeAdminFor,
-			AdminForToken:        s.forgeAdminForToken,
-			BotAvatar:            s.projectBotAvatar(),
-			GitHubAppMinter:      s.forgeAppMinter,
-			PublicURL:            cfg.PublicURL,
+			// The store hook of the delete sweep (#2644): the managed
+			// secrets the orchestrator deletes are pinnable by any
+			// webhook or subscription of the tenant, and a plain store
+			// delete would leave those pins dead in silence.
+			Secrets:         s.pinSweepingSecrets(),
+			Sealer:          s.sealer,
+			Bindings:        s.botBindings,
+			Bots:            s.forgeBotForge,
+			Invocations:     s.forgeBotInvocations,
+			Schedules:       cfg.ScheduledBots,
+			AdminFor:        s.forgeAdminFor,
+			AdminForToken:   s.forgeAdminForToken,
+			BotAvatar:       s.projectBotAvatar(),
+			GitHubAppMinter: s.forgeAppMinter,
+			PublicURL:       cfg.PublicURL,
 		}
 	}
 	s.hub = NewHub(logger)

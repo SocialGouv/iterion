@@ -131,7 +131,7 @@ func newForgeTestServer(t *testing.T) *Server {
 		Connections:  s.forgeConnections,
 		Integrations: s.forgeIntegrations,
 		Webhooks:     s.webhookConfigs,
-		Secrets:      s.genericSecrets,
+		Secrets:      s.pinSweepingSecrets(), // the store hook of the delete sweep, as New wires it
 		Sealer:       sealer,
 		Bots:         testForgeBotLookup,
 		AdminFor:     s.forgeAdminFor, // the REAL gitlab client, pointed at the mock
