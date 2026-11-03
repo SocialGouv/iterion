@@ -334,7 +334,8 @@ form in every hook/log:
   leaves it on.
 - **The model boundary.** What a model READS goes out in placeholder form
   whatever produced it: the rendered system and user prompts, the user
-  content blocks and the preset focus of every task cross into a backend
+  content blocks, the auto-memory section, the calibration fragments, the
+  skill hints and the preset focus of every task cross into a backend
   through one seam (`ClawExecutor.executeDelegate`, `Guard.RedactForModel`),
   which turns every known value back into its placeholder — a value an
   upstream node printed and a prompt reads through `{{outputs.A.x}}`, an
@@ -359,7 +360,43 @@ form in every hook/log:
   on every backend (the record keeps it whole), and the executor's DIRECT
   model calls — the human stand-in, the interaction stand-in, the review
   companion, the self-repair rung, the structured-output recovery — cross
-  it too (`generationForModel`).
+  it too (`generationForModel`). Three model-read texts take their pass
+  elsewhere, each for a structural reason. The mounted-secret hints are the
+  guard's OWN composition — a secret's declared name, its mount path, its
+  env-var name, never a value — so the boundary leaves them whole rather
+  than corrupting the reference the instruction exists to give. A routing
+  handoff is a FILE, which the incoming harness's prompt splices in from
+  inside the backend (`Task.HandoffSection`), downstream of the seam: its
+  grant pass therefore runs where the transcript is WRITTEN
+  (`HandoffRecorder.Seal`), which is also where the crossing's own fallback
+  data lands — the values are already placeholders there, since the
+  recorder observes post-redaction events. And a backend composes some text
+  for ITSELF rather than out of a task field — the instruction files it
+  reads under the work dir, the workspace-memory index and autoload a store
+  hands it — which no field pass can reach: those take the SAME pass
+  through `Task.ScreenModelText`, which the task carries from the seam to
+  wherever each backend composes them (claw at the request it builds, pi at
+  its `project_context` suffix), so a value an earlier node's agent wrote
+  into a `CLAUDE.md` or a memory entry reaches the next model as its
+  placeholder. `workspace` is the DEFAULT ambient policy, so that walk is on
+  unless the author turns it off. codex, claude_code and the other CLI
+  agents are out of reach by construction and need nothing: their own
+  binary loads the instruction files inside the child, and iterion never
+  composes that text — as does pi under `all`.
+  `TestEveryModelReadTextOfATaskCrossesTheBoundary` keeps the list honest:
+  it reads what `BuildSystemPrompt`, `HandoffPrompt` and the two ambient
+  composers compose and refuses a field, a new string leaf of one, or a new
+  helper or method a composer grows through, that the boundary neither
+  turns back nor records a reason for.
+- **Residual: the in-container claw runner screens none of what it composes
+  for itself.** A sandboxed claw node rebuilds its task from the `IOTask`
+  wire, which carries no closure by design (secret materialisation stays on
+  the parent side), and the container builds no guard of its own — so the
+  instruction-file block it composes in there is screened by nothing, while
+  the prompts it receives were screened on the host before the hop. Closing
+  it means either composing that block on the host or giving the runner a
+  guard; until then a declared secret written into a workspace instruction
+  file is readable by the next sandboxed node on that workspace.
 - A verified action's self-repair (`policy: recover`) quotes the failing
   command and its output to a model: both in placeholder form.
 - Both turn known values back into placeholders in the output of every tool
