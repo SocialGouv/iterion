@@ -408,6 +408,11 @@ pipeline. See [bots/feature-dev/](../../bots/feature-dev/).
 - Engine hardening: none needed — sandbox, verify gate, loop wiring and finalize (storage branch, no FF) all behaved first try.
 - Lessons for next run: the goal-directed v2 contract holds as-is; keep `reasoning_effort: high` (the shape, not the tier, carried it); the verify_build node re-derived `verify.sh` correctly from devbox — no skill gap. GATE PASSED → rollout continues (docs-refresh, adr-cartograph, rgaa-audit, dep-update-guard, secured-renovacy P2, sec-audit-source remediation).
 
+> Note (2026-11-03): `preprod` in the three June 2026 bilans below
+> (`preprod (ovh-dev) k8s runner`, `iterion preprod :edge`) names the ovh-dev
+> development cluster — Iterion runs no preproduction (operator ruling). The
+> bilans keep their original wording.
+
 ## 2026-06-25 — issue-comment → MR cloud-k8s e2e GREEN (Claude forfait + GLM; 8 more fixes) (run 019efbc6)
 - Status: **VALIDATED** — the full feature works end-to-end on the deployed preprod (ovh-dev) k8s runner. `/featurly` on project 194 **issue !2** → claude_code-forfait implementer wrote `main.go` → claw **GLM** reviewer approved → commit → push → **MR !13** opened (`iterion/fix-go-doc-comment → main`, author `project_194_bot`) → **back-link comment on issue !2** ("Created MR: …/merge_requests/13"). The 8-fix infra campaign below got the sandbox to *start*; these 8 more drove the run from "empty workspace" all the way to the MR + back-link.
 - Versions: iterion main `1712e4e56 → 31aa3636a` (8 commits) · `sandbox-full:edge` · chart unchanged.

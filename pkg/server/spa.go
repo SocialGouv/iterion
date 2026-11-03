@@ -187,11 +187,11 @@ var socialImageMeta = regexp.MustCompile(`(?i)(<meta\s+(?:property|name)="(?:og:
 // absolute URL OpenGraph specifies.
 //
 // index.html ships the path RELATIVE because one bundle serves iterion.cloud,
-// a preprod host and every self-hosted deployment, so no build-time value is
-// right for all three. But a relative og:image is dropped by the crawlers that
-// matter — LinkedIn in particular — and the preview renders text-only. The
-// server is the first place that knows its own origin, so it is where the two
-// requirements can both be met.
+// the project's development host and every self-hosted deployment, so no
+// build-time value is right for all three. But a relative og:image is dropped
+// by the crawlers that matter — LinkedIn in particular — and the preview
+// renders text-only. The server is the first place that knows its own origin,
+// so it is where the two requirements can both be met.
 //
 // A no-op when publicURL is unset, which is every local and desktop run: there
 // is no origin to name, nothing external crawls them, and the bytes are served

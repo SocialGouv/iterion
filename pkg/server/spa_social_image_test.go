@@ -12,7 +12,8 @@ import (
 )
 
 // The index as it ships: the social-card image is RELATIVE, because one bundle
-// serves iterion.cloud, preprod and every self-hosted deployment.
+// serves iterion.cloud, the project's development host and every self-hosted
+// deployment.
 const indexWithRelativeCard = `<!DOCTYPE html>
 <html lang="en"><head>
 <title>Iterion</title>

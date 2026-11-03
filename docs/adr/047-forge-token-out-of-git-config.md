@@ -197,3 +197,10 @@ for the validated in-sandbox push, so any `bash` node — or an external pull
 request's own build scripts — can read a push-capable token. That is this
 ADR's own follow-on above (no-push-credential clones for untrusted-input bots,
 per-run scoped tokens), unchanged by this amendment.
+
+## Addendum (2026-11-03) — the `preprod k8s runner` is the ovh-dev development runner
+
+The `preprod k8s runner` of Validation step 1 is the runner deployed on the
+ovh-dev development cluster: Iterion runs no preproduction (operator ruling,
+2026-11-03). The step keeps its wording; whether it was ever walked remains
+unrecorded, as the amended Consequences say.
