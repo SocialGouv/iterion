@@ -469,6 +469,52 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 		}
 	})
 
+	t.Run("a value continued onto a deeper line is refused", func(t *testing.T) {
+		// go-yaml (yaml.v3, probe-measured) folds a deeper line into the
+		// plain scalar above it — `600` then `0` is the string "600 0",
+		// and blank lines between them fold too — or refuses the file
+		// when the deeper line carries a `: ` (mapping values are not
+		// allowed in this context) or follows a comment (did not find
+		// expected key); helm renders the folded string verbatim and the
+		// API refuses the Deployment. A line reader sees the first line
+		// alone, so the guard refuses at the continuation, naming its
+		// line, instead of sizing 720 s from the 600 it read.
+		for _, tc := range []struct{ content, line string }{
+			{"server:\n  progressDeadlineSeconds: 600\n    0\n", "line 3"},
+			{"server:\n  progressDeadlineSeconds: 600\n\n    0\n", "line 4"},
+			{"server:\n  progressDeadlineSeconds: 600\n    foo: bar\n", "line 3"},
+			{"server:\n  progressDeadlineSeconds: 600\n    # c\n    0\n", "line 4"},
+			{"server:\n  progressDeadlineSeconds: 600\n    0\n  replicas: 1\n", "line 3"},
+		} {
+			stdout, stderr, err := runKindWait(t, valuesFile(t, tc.content))
+			if err == nil {
+				t.Fatalf("chart-kind-wait printed %q for %q — the deeper line folds into the value go-yaml hands over, so 600 is not the knob", strings.TrimSpace(stdout), tc.content)
+			}
+			for _, want := range []string{"continues the server.progressDeadlineSeconds value onto", tc.line} {
+				if !strings.Contains(stderr, want) {
+					t.Fatalf("refusal of %q does not name %q — stderr: %s", tc.content, want, strings.TrimSpace(stderr))
+				}
+			}
+		}
+		// A deeper comment line and a blank line before the next key are
+		// no continuation: go-yaml reads 600 (probe-measured), so the
+		// look-ahead must stay transparent to both.
+		for _, form := range []string{
+			"server:\n  progressDeadlineSeconds: 600\n    # a deeper comment folds nothing\n",
+			"server:\n  progressDeadlineSeconds: 600\n\n  replicas: 1\n",
+			"server:\n  progressDeadlineSeconds: 600\n    # note\n  replicas: 1\n",
+			"server:\n  progressDeadlineSeconds: 600\r\n\r\n  replicas: 1\r\n",
+		} {
+			stdout, stderr, err := runKindWait(t, valuesFile(t, form))
+			if err != nil {
+				t.Fatalf("chart-kind-wait refused %q — a deeper comment or a blank line continues no scalar; stderr: %s", form, strings.TrimSpace(stderr))
+			}
+			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
+				t.Fatalf("chart-kind-wait = %q, want %q on %q", got, want, form)
+			}
+		}
+	})
+
 	t.Run("missing file is refused", func(t *testing.T) {
 		_, _, err := runKindWait(t, filepath.Join(t.TempDir(), "absent.yaml"))
 		if err == nil {

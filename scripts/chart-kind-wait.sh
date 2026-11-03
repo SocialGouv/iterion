@@ -29,8 +29,10 @@
 # same line. What a line reader cannot resolve is refused loudly, never
 # guessed: anchors and merge keys, a flow mapping or sequence that stays
 # open past its opening line, and a scalar on the line after the key
-# stay invisible to it, and such a file is refused rather than sized
-# from a value helm does not use. go-yaml ignores indentation inside
+# stay invisible to it, and a value continued onto a deeper line is one
+# string to go-yaml (`600` then `0` is "600 0") where a line reader sees
+# its first line alone; such a file is refused rather than sized from a
+# value helm does not use. go-yaml ignores indentation inside
 # flow, so a line reader cannot tell which key owns a later line — a
 # flow interior read as a column-0 key re-anchors the reader and a knob
 # one line down is read from a map it does not belong to (helm 4.1.1
@@ -168,7 +170,7 @@ raw=$(awk '
     bind = RLENGTH
     return 1
   }
-  BEGIN { doc = 0; sdoc = -1; in_block = 0; bind = 0 }
+  BEGIN { doc = 0; sdoc = -1; in_block = 0; bind = 0; pend = 0; pind = 0; cont = 0 }
   {
     # A CRLF ending is the LF ending to go-yaml: the CR goes once, here,
     # so every rule below reads the line helm reads — `---` followed by
@@ -180,6 +182,19 @@ raw=$(awk '
     if (in_block && ($0 ~ /^[ \t]*$/ || (match($0, /^[ \t]+/) && RLENGTH > bind)))
       next
     in_block = 0
+    # A plain scalar continues onto any deeper content line that follows
+    # it — blank lines fold into it, a comment line is skipped — so the
+    # knob is then the multi-line string go-yaml hands over (`600` then
+    # `0` is "600 0", which helm renders verbatim and the API refuses),
+    # or go-yaml refuses the file (a deeper `key: value`, or content
+    # after a comment); the integer the first line spells is the value
+    # in neither case. pend is raised by a knob line that carries a
+    # value and lowered by the next content line, which is recorded as
+    # the continuation when it is deeper than the knob.
+    if (pend && $0 !~ /^[ \t]*(#.*)?$/) {
+      if (match($0, /^[ \t]+/) && RLENGTH > pind && cont == 0) cont = NR
+      pend = 0
+    }
     if (flow_scan($0)) {
       bad = 1
       if (first == 0) first = NR
@@ -219,14 +234,27 @@ raw=$(awk '
       # whitespace before the # starts a comment): no deadline renders,
       # so it routes to the unset refusal, not the string one.
       if (substr(v, 1, 1) == "#") v = ""
+      # A value on the knob line may continue below it: the next content
+      # line decides (the continuation check above), so a knob read as
+      # unset or null raises nothing.
+      pend = (v != "")
+      pind = ind
     }
   }
-  END { if (bad) { print first; exit 5 } print v }
+  END {
+    if (bad) { print first; exit 5 }
+    if (cont) { print cont; exit 6 }
+    print v
+  }
 ' "$values") || rc=$?
 case $rc in
   0) ;;
   5)
     echo "chart-kind-wait: $values opens a flow mapping or sequence that stays open past its opening line (first at line $raw) — go-yaml ignores indentation inside flow, so a line reader cannot tell which key owns a later line; write the knob plainly in the values file the install reads" >&2
+    exit 1
+    ;;
+  6)
+    echo "chart-kind-wait: $values continues the server.progressDeadlineSeconds value onto line $raw — go-yaml folds a deeper line into the plain scalar above it (\`600\` then \`0\` is the string \"600 0\", which helm renders verbatim and the API refuses the Deployment) or refuses the file outright, so the knob is not the integer its first line spells; write the value on the knob's own line" >&2
     exit 1
     ;;
   *)
