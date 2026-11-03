@@ -375,19 +375,25 @@ form in every hook/log:
   reads under the work dir, the workspace-memory index and autoload a store
   hands it — which no field pass can reach: those take the SAME pass
   through `Task.ScreenModelText`, which the task carries from the seam to
-  wherever each backend composes them (claw at the request it builds, pi at
-  its `project_context` suffix), so a value an earlier node's agent wrote
-  into a `CLAUDE.md` or a memory entry reaches the next model as its
+  wherever each backend composes them (claw at the request it builds and,
+  for the memory turn its compaction re-injects for the summariser, at that
+  hook — no request ever carries the turn itself; pi at its
+  `project_context` suffix), so a value an earlier node's agent wrote into
+  a `CLAUDE.md` or a memory entry reaches the next model as its
   placeholder. `workspace` is the DEFAULT ambient policy, so that walk is on
   unless the author turns it off. codex, claude_code and the other CLI
   agents are out of reach by construction and need nothing: their own
   binary loads the instruction files inside the child, and iterion never
-  composes that text — as does pi under `all`.
-  `TestEveryModelReadTextOfATaskCrossesTheBoundary` keeps the list honest:
-  it reads what `BuildSystemPrompt`, `HandoffPrompt` and the two ambient
-  composers compose and refuses a field, a new string leaf of one, or a new
-  helper or method a composer grows through, that the boundary neither
-  turns back nor records a reason for.
+  composes that text — as does pi under `all`. Two sweeps keep the list
+  honest. `TestEveryModelReadTextOfATaskCrossesTheBoundary` reads what
+  `BuildSystemPrompt`, `HandoffPrompt` and the two ambient composers
+  compose and refuses a field, a new string leaf of one, or a new helper or
+  method a composer grows through, that the boundary neither turns back nor
+  records a reason for. `TestEveryWriterOfSelfComposedModelTextNamesItsChokepoint`
+  reads claw's package for the gestures that make a text no field holds — a
+  system block appended, a compaction hook installed, a turn marked
+  injected — and refuses a writer that names no chokepoint; it keys on
+  those gestures, not on every message the loop builds.
 - **Residual: the in-container claw runner screens none of what it composes
   for itself.** A sandboxed claw node rebuilds its task from the `IOTask`
   wire, which carries no closure by design (secret materialisation stays on

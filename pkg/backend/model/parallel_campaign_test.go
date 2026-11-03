@@ -55,7 +55,7 @@ import (
 //	 1 file 	SetCredentialsLookup, SetOAuthDirLookup, Setenv
 //	 1 file 	SetCredentialsLookup, SetOAuthDirLookup
 //	 1 file 	Setenv, Unsetenv
-//	 1 file 	via memTest() in memory_tools_test.go (it sets ITERION_HOME)
+//	 2 files	via memTest() in memory_tools_test.go (it sets ITERION_HOME)
 //
 // The day #2808 lands, lines leave this table and their tests gain
 // t.Parallel() in the same commit. The two SetDefault files would need
@@ -122,6 +122,7 @@ var serialFamily = map[string]string{
 	"human_route_test.go":                      "Setenv",
 	"memory_global_gate_test.go":               "via memTest() in memory_tools_test.go",
 	"memory_tools_test.go":                     "Setenv",
+	"model_boundary_injected_turn_test.go":     "via memTest() in memory_tools_test.go",
 	"model_override_test.go":                   "Setenv",
 	"model_route_identity_test.go":             "Setenv",
 	"modelspecs_merge_test.go":                 "SetDefault",

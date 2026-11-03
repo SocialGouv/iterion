@@ -397,6 +397,11 @@ func compactBetweenIterations(ctx context.Context, messages []api.Message, opts 
 			return messages
 		}
 	}
+	// The turn a hook injects is text the loop composed for ITSELF, which
+	// the request chokepoint never sees: the summariser folds it in before
+	// any request carries it. It takes the model boundary's pass here, the
+	// one point every injector crosses (screenedInjector).
+	opts.OnBeforeCompact = screenedInjector(opts.OnBeforeCompact, opts.screenModelText())
 	// Compaction is about to fire: give OnBeforeCompact a chance to
 	// inject content (e.g. a session-memory user turn) so the summary
 	// preserves it. The injected slice feeds the summariser only; the

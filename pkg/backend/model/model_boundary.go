@@ -68,6 +68,60 @@ func (e *ClawExecutor) generationForModel(opts GenerationOptions) GenerationOpti
 	return opts
 }
 
+// screenedInjector wraps a compaction hook so the turns it ADDS cross the
+// model boundary before the summariser reads them. A hook's turn is text
+// the loop composed for itself — the workspace-memory index and autoload
+// re-read at compaction — which no field pass reached and the request
+// chokepoint never sees: compaction folds the turn into the summary before
+// any request carries it, so a value it quoted would reach the model
+// through the summary's excerpts. The wrap keys on identity, not on the
+// IsInjected marker the hook is asked to set: a turn of the returned slice
+// is the history's own when its Content is the very slice an input message
+// carries (same first block, same length), and every other turn — a turn
+// the hook added, marked or not, or an input turn whose blocks the hook
+// grew — takes the pass. The continuation turn an earlier compaction left
+// at the head of the history is the input's own, yet carries IsInjected:
+// it takes the pass too, so a history head that was never screened does
+// not reach the summariser in clear (the pass is idempotent on a
+// placeholder, so a turn that already crossed costs a scan). The history's
+// other messages crossed where they were born and are handed back as they
+// are; the screened turns are copies, the live history keeps its text. A
+// nil hook stays nil, so the loop's "no hook" branch is unchanged.
+func screenedInjector(inject func([]api.Message) []api.Message, screen func(string) string) func([]api.Message) []api.Message {
+	if inject == nil {
+		return nil
+	}
+	type contentSlice struct {
+		first *api.ContentBlock
+		n     int
+	}
+	return func(messages []api.Message) []api.Message {
+		own := make(map[contentSlice]struct{}, len(messages))
+		for i := range messages {
+			if len(messages[i].Content) > 0 {
+				own[contentSlice{&messages[i].Content[0], len(messages[i].Content)}] = struct{}{}
+			}
+		}
+		modified := inject(messages)
+		for i := range modified {
+			if len(modified[i].Content) == 0 {
+				continue
+			}
+			_, fromHistory := own[contentSlice{&modified[i].Content[0], len(modified[i].Content)}]
+			if fromHistory && !modified[i].IsInjected {
+				continue
+			}
+			blocks := make([]api.ContentBlock, len(modified[i].Content))
+			copy(blocks, modified[i].Content)
+			for j := range blocks {
+				blocks[j].Text = screen(blocks[j].Text)
+			}
+			modified[i].Content = blocks
+		}
+		return modified
+	}
+}
+
 // taskForModel returns task with every model-read text passed through the
 // guard's model-boundary pass. A nil guard (redaction off) is the identity.
 // The operator's answer at a resume takes it too: the record keeps the

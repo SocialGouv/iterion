@@ -161,7 +161,10 @@ func buildRequest(opts GenerationOptions, messages []api.Message, extraTools []a
 	// workspace-memory index and autoload — because no Task field holds
 	// them, so no field pass can reach them. Screening at the request
 	// rather than at each append covers a block added later by
-	// construction. The options are left as the caller built them: the tool
+	// construction. The one model-read text no request carries is the turn
+	// a compaction hook injects, which the summariser folds in first: it
+	// takes the pass at the summariser's door (compactBetweenIterations).
+	// The options are left as the caller built them: the tool
 	// loop reuses them across turns, and the record of what the run
 	// composed is not the model's view of it.
 	screen := opts.screenModelText()

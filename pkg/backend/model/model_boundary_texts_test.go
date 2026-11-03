@@ -391,6 +391,109 @@ func TestEveryModelReadTextOfATaskCrossesTheBoundary(t *testing.T) {
 	}
 }
 
+// selfComposedTextWriters are the sites of this package that write a text a
+// model reads which no Task field holds, keyed by the GESTURE that makes
+// one and the function it is in — a system block born (an assignment to
+// SystemBlocks), a compaction hook installed (an assignment to
+// OnBeforeCompact), a turn marked injected (a message literal carrying
+// IsInjected) — each with the chokepoint that screens what it writes and
+// that chokepoint's own witness. A gesture the sweep finds outside this
+// table is a writer no chokepoint is declared for.
+var selfComposedTextWriters = map[string]string{
+	"SystemBlocks@claw_backend.go:Execute":                   "buildRequest screens every system block the request carries (TestEverySystemTextTheRequestCarriesCrossesTheBoundary)",
+	"SystemBlocks@memory_tools.go:installWorkspaceMemory":    "buildRequest screens every system block the request carries (TestEverySystemTextTheRequestCarriesCrossesTheBoundary)",
+	"SystemBlocks@generation_request.go:buildRequest":        "the chokepoint itself: the blocks it assigns are the screened copies",
+	"OnBeforeCompact@memory_tools.go:installWorkspaceMemory": "compactBetweenIterations wraps the hook in screenedInjector (TestTheInjectedMemoryTurnCrossesTheBoundaryBeforeTheSummariser)",
+	"OnBeforeCompact@generation.go:compactBetweenIterations": "the chokepoint itself: the wrap that screens every injected turn before the summariser reads it",
+	"IsInjected@memory_tools.go:memoryPreCompactInjector":    "an injected turn, screened by compactBetweenIterations before the summariser reads it",
+}
+
+// The writer-side half of the class: the field sweep above judges what the
+// listed composers render out of a Task, so a producer of model-read text
+// that reads no Task field — the backend composing for itself — never
+// trips it. This reads every non-test file of the package for the three
+// gestures that make such a text and refuses a writer the table does not
+// enrol with its chokepoint, so a fourth system-block append or a second
+// injector has to say what screens it. The limit, stated rather than
+// claimed away: it keys on those gestures, not on every message literal of
+// the package — the loop's own fixed nudges, the prompt the seam passed,
+// the tool results the loop unmaterializes, the model's own replies and the
+// operator's queued turn are built as plain messages and are outside it.
+func TestEveryWriterOfSelfComposedModelTextNamesItsChokepoint(t *testing.T) {
+	t.Parallel()
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	files := 0
+	found := map[string]bool{}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, perr := parser.ParseFile(fset, filepath.Clean(name), nil, 0)
+		if perr != nil {
+			t.Fatal(perr)
+		}
+		files++
+		for _, d := range f.Decls {
+			// A package-level literal is a writer too; it is keyed on the
+			// file rather than a function.
+			within := "package"
+			if fn, ok := d.(*ast.FuncDecl); ok {
+				within = fn.Name.Name
+			}
+			ast.Inspect(d, func(n ast.Node) bool {
+				for _, gesture := range writerGestures(n) {
+					found[gesture+"@"+name+":"+within] = true
+				}
+				return true
+			})
+		}
+	}
+	if files < 40 {
+		t.Fatalf("parsed %d non-test files — the sweep is not reading the package", files)
+	}
+	for site := range found {
+		if _, enrolled := selfComposedTextWriters[site]; !enrolled {
+			t.Errorf("%s writes a text a model reads that no Task field holds, and no chokepoint is named for it: route it through buildRequest (a system block) or an OnBeforeCompact hook (an injected turn), and enrol it in selfComposedTextWriters with the chokepoint that screens it", site)
+		}
+	}
+	for site := range selfComposedTextWriters {
+		if !found[site] {
+			t.Errorf("selfComposedTextWriters names %s, which no longer writes: the site moved and the entry proves nothing", site)
+		}
+	}
+}
+
+// writerGestures names the self-composed-text gestures n performs: the
+// field written by an assignment to SystemBlocks or OnBeforeCompact, or
+// the key of a composite literal that sets SystemBlocks or IsInjected.
+func writerGestures(n ast.Node) []string {
+	var out []string
+	switch x := n.(type) {
+	case *ast.AssignStmt:
+		for _, lhs := range x.Lhs {
+			if sel, ok := lhs.(*ast.SelectorExpr); ok && (sel.Sel.Name == "SystemBlocks" || sel.Sel.Name == "OnBeforeCompact") {
+				out = append(out, sel.Sel.Name)
+			}
+		}
+	case *ast.CompositeLit:
+		for _, el := range x.Elts {
+			kv, ok := el.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			if key, ok := kv.Key.(*ast.Ident); ok && (key.Name == "SystemBlocks" || key.Name == "IsInjected") {
+				out = append(out, key.Name)
+			}
+		}
+	}
+	return out
+}
+
 // composedTaskFields parses the composers and returns the Task fields their
 // bodies read. Two ways out of a composer are refused rather than followed:
 // handing the WHOLE task to a call, and composing through a METHOD on the

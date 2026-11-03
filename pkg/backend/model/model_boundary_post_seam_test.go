@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -201,5 +202,122 @@ func TestClawExecuteHandsTheRequestBuilderTheBoundaryPass(t *testing.T) {
 	})
 	if !seen {
 		t.Errorf("Execute's GenerationOptions literal carries no %s: every system block it composes for itself reaches the model unscreened", field)
+	}
+}
+
+// The contract of the hook wrap, on the slice alone: every IsInjected turn
+// the wrapped hook returns takes the pass — the turn the hook adds and the
+// continuation an earlier compaction left in the history alike — and no
+// other turn is rewritten; what the wrap screens is a copy, so the live
+// history the loop keeps is untouched.
+func TestTheScreenedInjectorPassesEveryInjectedTurnAndNoOther(t *testing.T) {
+	t.Parallel()
+	const sentinel = "ghp-wrap-7a1b3d4f9c2e"
+	placeholder := secretguard.PlaceholderForName("api_token")
+	guard := secretguard.New([]secretguard.Secret{{Name: "api_token", Value: sentinel}}, secretguard.DefaultConfig())
+
+	turn := func(injected bool, text string) api.Message {
+		return api.Message{Role: "user", IsInjected: injected, Content: []api.ContentBlock{{Type: "text", Text: text}}}
+	}
+	history := []api.Message{
+		turn(true, "continuation summary quoting "+sentinel),
+		turn(false, "plain turn quoting "+sentinel),
+	}
+	hook := func(messages []api.Message) []api.Message {
+		return append([]api.Message{turn(true, "memory index quoting "+sentinel)}, messages...)
+	}
+
+	handed := screenedInjector(hook, guard.RedactForModel)(history)
+	if len(handed) != 3 {
+		t.Fatalf("the wrap changed the hook's shape: %d messages, want 3", len(handed))
+	}
+	for i, label := range []string{"the hook's own turn", "the earlier continuation"} {
+		if got := handed[i].Content[0].Text; strings.Contains(got, sentinel) || !strings.Contains(got, placeholder) {
+			t.Errorf("%s is handed to the summariser carrying the value: %q", label, got)
+		}
+	}
+	if got, want := handed[2].Content[0].Text, history[1].Content[0].Text; got != want {
+		t.Errorf("the wrap rewrote a non-injected history turn, which crossed the boundary where it was born: %q", got)
+	}
+	if !strings.Contains(history[0].Content[0].Text, sentinel) {
+		t.Error("the wrap rewrote the live history's continuation turn in place instead of screening a copy")
+	}
+	if screenedInjector(nil, guard.RedactForModel) != nil {
+		t.Error("a nil hook came back wrapped: the loop's no-hook branch would call it")
+	}
+}
+
+// The wrap keys on what a hook ADDS, not on the marker a hook is asked to
+// set: a turn absent from the input — unmarked, or grown onto an input
+// turn's blocks — is text the hook composed, and crosses the boundary
+// whether or not its author remembered IsInjected. The history's own turns
+// are recognised by identity (the very Content slice the input carries) and
+// handed back as they are.
+func TestEveryTurnAHookAddsCrossesTheBoundaryMarkedOrNot(t *testing.T) {
+	t.Parallel()
+	const sentinel = "ghp-unmarked-7a1b3d4f9c2e"
+	placeholder := secretguard.PlaceholderForName("api_token")
+	guard := secretguard.New([]secretguard.Secret{{Name: "api_token", Value: sentinel}}, secretguard.DefaultConfig())
+
+	turn := func(text string) api.Message {
+		return api.Message{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: text}}}
+	}
+	// The second history turn has room past its length: a hook that
+	// appends to its blocks shares the first block with the input.
+	grown := api.Message{Role: "user", Content: make([]api.ContentBlock, 1, 2)}
+	grown.Content[0] = api.ContentBlock{Type: "text", Text: "plain turn with room, quoting " + sentinel}
+	history := []api.Message{turn("plain turn quoting " + sentinel), grown}
+	hook := func(messages []api.Message) []api.Message {
+		out := []api.Message{turn("second injector quoting " + sentinel)}
+		out = append(out, messages[0])
+		out = append(out, api.Message{Role: "user", Content: append(messages[1].Content, api.ContentBlock{Type: "text", Text: "appended block quoting " + sentinel})})
+		return out
+	}
+
+	handed := screenedInjector(hook, guard.RedactForModel)(history)
+	if len(handed) != 3 || len(handed[2].Content) != 2 {
+		t.Fatalf("the wrap changed the hook's shape: %+v", handed)
+	}
+	if got := handed[0].Content[0].Text; strings.Contains(got, sentinel) || !strings.Contains(got, placeholder) {
+		t.Errorf("the hook's unmarked turn is handed to the summariser carrying the value: %q", got)
+	}
+	if got, want := handed[1].Content[0].Text, history[0].Content[0].Text; got != want {
+		t.Errorf("the wrap rewrote a history turn the hook handed back as it was: %q", got)
+	}
+	if got := handed[2].Content[1].Text; strings.Contains(got, sentinel) || !strings.Contains(got, placeholder) {
+		t.Errorf("the block the hook grew onto a history turn is handed to the summariser carrying the value: %q", got)
+	}
+	for i, msg := range history {
+		if !strings.Contains(msg.Content[0].Text, sentinel) {
+			t.Errorf("the wrap rewrote live history turn %d in place instead of screening a copy", i)
+		}
+	}
+
+	// The wiring: the same unmarked hook under compactBetweenIterations,
+	// asserted on the compacted history the next request carries.
+	opts := GenerationOptions{
+		Model:                 "test-only-unknown-model",
+		CompactPreserveRecent: 1,
+		ScreenModelText:       guard.RedactForModel,
+		OnBeforeCompact: func(messages []api.Message) []api.Message {
+			return append([]api.Message{turn("second injector quoting " + sentinel)}, messages...)
+		},
+	}
+	transcript := bigTranscript()[:4]
+	out := compactBetweenIterations(context.Background(), transcript, opts)
+	if len(out) >= len(transcript) {
+		t.Fatalf("compaction did not fire (%d → %d messages): the summary was never built, so this test proves nothing", len(transcript), len(out))
+	}
+	carried := 0
+	for i, msg := range out {
+		for _, block := range msg.Content {
+			if strings.Contains(block.Text, sentinel) {
+				t.Errorf("message %d of the compacted history reaches the model carrying the unmarked hook turn's value: %q", i, block.Text)
+			}
+			carried += strings.Count(block.Text, placeholder)
+		}
+	}
+	if carried == 0 && !t.Failed() {
+		t.Fatal("the compacted history carries no placeholder: the summariser did not fold the hook's turn in, so this test proves nothing")
 	}
 }
