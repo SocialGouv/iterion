@@ -154,23 +154,33 @@ func (b *OpenCodeBackend) Execute(ctx context.Context, task Task) (Result, error
 		legacy.Protocol = opencodeLegacyProtocol()
 		cli = &legacy
 	} else {
-		b.warnEffortNeedsModel(task)
+		b.warnEffortDial(task)
 	}
 	return cli.Execute(ctx, task)
 }
 
-// warnEffortNeedsModel reports a reasoning_effort the 2.x argv cannot carry:
-// the variant travels inside the model reference, and `-m "#variant"` with no
-// model is refused by the CLI ("Invalid model reference: #high", measured on
-// 2.2.5). The run the node asked for still happens, at the model's default
-// effort, so the dial is dropped with a named warning rather than rejected —
-// but never in silence.
-func (b *OpenCodeBackend) warnEffortNeedsModel(task Task) {
-	if b.Logger == nil || opencodeMapEffort(task.ReasoningEffort) == "" || opencodeMapModel(task.Model) != "" {
+// warnEffortDial reports a reasoning_effort the 2.x argv does not carry, in
+// the two shapes the fold cannot spell. The variant travels inside the model
+// reference: `-m "#variant"` with no model is refused by the CLI ("Invalid
+// model reference: #high") and a reference that already spells one refuses a
+// second ("Invalid model reference: provider/model#high#low"), both measured
+// on 2.2.5. The run the node asked for still happens — at the model's default
+// effort, or at the variant the operator wrote, whose explicit spelling
+// outranks the dial — and the dropped dial is named rather than rejected,
+// never in silence.
+func (b *OpenCodeBackend) warnEffortDial(task Task) {
+	if b.Logger == nil || opencodeMapEffort(task.ReasoningEffort) == "" {
 		return
 	}
-	b.Logger.Warn("[%s#%d/%s] reasoning_effort %q is not emitted: opencode carries the variant inside the model reference (-m provider/model#variant), so the dial needs a model on the node",
-		task.NodeID, task.Iteration, BackendOpenCode, task.ReasoningEffort)
+	model := opencodeMapModel(task.Model)
+	switch {
+	case model == "":
+		b.Logger.Warn("[%s#%d/%s] reasoning_effort %q is not emitted: opencode carries the variant inside the model reference (-m provider/model#variant), so the dial needs a model on the node",
+			task.NodeID, task.Iteration, BackendOpenCode, task.ReasoningEffort)
+	case strings.Contains(model, "#"):
+		b.Logger.Warn("[%s#%d/%s] reasoning_effort %q is not emitted: the model reference %q already spells its variant, which opencode takes over the dial (a second #variant is refused)",
+			task.NodeID, task.Iteration, BackendOpenCode, task.ReasoningEffort, model)
+	}
 }
 
 // openCodeLegacyArgv reports whether the operator pinned the 1.x argv.
@@ -406,13 +416,17 @@ func opencodeSessionArgs(task Task) []string {
 // `provider/model[#variant]`, the shape its own `run --help` documents — with
 // the reasoning dial folded in as the variant.
 //
-// The fold is conditional on a model: `-m "#high"` is refused outright
-// ("Invalid model reference: #high", measured on 2.2.5), so an effort with no
-// model emits no `-m` at all and OpenCodeBackend.Execute warns by name.
+// The fold is conditional on a model that does not already spell one:
+// `-m "#high"` is refused outright ("Invalid model reference: #high") and so
+// is a second `#` ("Invalid model reference: provider/model#high#low"), both
+// measured on 2.2.5. An effort with no model emits no `-m` at all; a
+// reference the operator wrote with its variant is emitted as written, the
+// explicit spelling outranking the dial. OpenCodeBackend.Execute warns by
+// name in both cases (warnEffortDial).
 func opencodeModelRef(task Task) string {
 	model := opencodeMapModel(task.Model)
-	if model == "" {
-		return ""
+	if model == "" || strings.Contains(model, "#") {
+		return model
 	}
 	if variant := opencodeMapEffort(task.ReasoningEffort); variant != "" {
 		return model + "#" + variant

@@ -163,8 +163,9 @@ printf '{"type":"step_finish","sessionID":"%s","part":{"tokens":{"input":3,"outp
 //   - `run`'s own flags follow it: --format, -m/--model, --session/-s,
 //     --fork (bare or =true), --title, --agent;
 //   - `--variant` exists nowhere, so it lands in the unknown-flag arm;
-//   - the variant rides the model reference, `provider/model#variant`, and a
-//     reference with no model is "Invalid model reference: <ref>";
+//   - the variant rides the model reference, `provider/model#variant`; a
+//     reference with no model, or with a second `#`, is "Invalid model
+//     reference: <ref>";
 //   - a model no provider serves is `provider.no-route` / "Model
 //     unavailable: <ref>" — this fake serves `scripted/…` only;
 //   - `--session <id>` continues that session or CREATES it under the id, so
@@ -173,7 +174,11 @@ printf '{"type":"step_finish","sessionID":"%s","part":{"tokens":{"input":3,"outp
 //   - `--fork` with no session is "--fork requires --continue or --session".
 //
 // Every refusal the CLI encodes in its stream travels on STDOUT with an EMPTY
-// stderr, which is the measured 2.x envelope.
+// stderr, which is the measured 2.x envelope. Its sessionID is the session the
+// turn had reached: a refusal raised once the session exists
+// (`provider.no-route`) carries the resumed `--session` id when one was
+// given, else the MINTED id; a pre-session one (an invalid model reference,
+// `--fork` with no session) carries "" — all three measured on 2.2.5.
 //
 // argv is recorded one line per invocation, so a test can assert what the CLI
 // actually received rather than what buildArgs returned.
@@ -192,7 +197,7 @@ func fakeOpenCode2xSessions(t *testing.T) (bin, store, argvLog string) {
 store='` + store + `'
 printf '%s\n' "$*" >> '` + argvLog + `'
 fail() {
-	printf '{"type":"error","timestamp":1,"sessionID":"","error":{"type":"%s","message":"%s"}}\n' "$1" "$2"
+	printf '{"type":"error","timestamp":1,"sessionID":"%s","error":{"type":"%s","message":"%s"}}\n' "${3-}" "$1" "$2"
 	exit 1
 }
 if [ "${1-}" != "run" ]; then
@@ -213,11 +218,12 @@ while [ $# -gt 0 ]; do
 	*) printf '\nERROR\n  Unrecognized flag: %s in command opencode run\n' "$1" >&2; exit 1 ;;
 	esac
 done
+next="ses_fake$(($(ls "$store" | wc -l) + 1))"
 case "$model" in
 '') ;;
-'#'*) fail unknown "Invalid model reference: $model" ;;
+'#'*|*'#'*'#'*) fail unknown "Invalid model reference: $model" ;;
 scripted/*) ;;
-*) fail provider.no-route "Model unavailable: $model" ;;
+*) id="${session:-$next}"; : > "$store/$id"; fail provider.no-route "Model unavailable: $model" "$id" ;;
 esac
 if [ "$fork" = 1 ] && [ -z "$session" ]; then
 	fail unknown "--fork requires --continue or --session"
@@ -226,7 +232,6 @@ prompt=$(cat)
 if [ -z "$prompt" ]; then
 	fail unknown "You must provide a message"
 fi
-next="ses_fake$(($(ls "$store" | wc -l) + 1))"
 if [ -z "$session" ]; then
 	id="$next"
 	: > "$store/$id"
@@ -264,10 +269,7 @@ printf '{"type":"step_finish","sessionID":"%s","part":{"tokens":{"input":3,"outp
 func TestOpenCodeArgvDialectReachesTheCLI(t *testing.T) {
 	run := func(t *testing.T, bin string, task Task) (Result, error) {
 		t.Helper()
-		ws := t.TempDir()
-		if err := os.Mkdir(filepath.Join(ws, ".git"), 0o750); err != nil {
-			t.Fatal(err)
-		}
+		ws := hermeticWorkspace(t)
 		task.NodeID, task.WorkDir, task.BaseDir = "n1", ws, ws
 		return NewOpenCodeBackend(testLogger(), bin).Execute(context.Background(), task)
 	}
@@ -314,10 +316,7 @@ func TestOpenCodeArgvDialectReachesTheCLI(t *testing.T) {
 // conversation.
 func TestOpenCode2xSessionRoundTrip(t *testing.T) {
 	bin, store, _ := fakeOpenCode2xSessions(t)
-	ws := t.TempDir()
-	if err := os.Mkdir(filepath.Join(ws, ".git"), 0o750); err != nil {
-		t.Fatal(err)
-	}
+	ws := hermeticWorkspace(t)
 	b := NewOpenCodeBackend(testLogger(), bin)
 	turn := func(t *testing.T, prompt, sessionID string, fork bool) (Result, error) {
 		t.Helper()
@@ -376,10 +375,7 @@ func TestOpenCode2xSessionRoundTrip(t *testing.T) {
 // the transcript did not come back.
 func TestOpenCode2xResumeOfAnUnknownSessionStartsIt(t *testing.T) {
 	bin, _, _ := fakeOpenCode2xSessions(t)
-	ws := t.TempDir()
-	if err := os.Mkdir(filepath.Join(ws, ".git"), 0o750); err != nil {
-		t.Fatal(err)
-	}
+	ws := hermeticWorkspace(t)
 	res, err := NewOpenCodeBackend(testLogger(), bin).Execute(context.Background(), Task{
 		NodeID:     "n1",
 		WorkDir:    ws,
@@ -403,10 +399,7 @@ func TestOpenCode2xResumeOfAnUnknownSessionStartsIt(t *testing.T) {
 // happens — the dial is dropped, named in a warning, never silently.
 func TestOpenCodeEffortWithoutAModelIsWarned(t *testing.T) {
 	bin, _, argvLog := fakeOpenCode2xSessions(t)
-	ws := t.TempDir()
-	if err := os.Mkdir(filepath.Join(ws, ".git"), 0o750); err != nil {
-		t.Fatal(err)
-	}
+	ws := hermeticWorkspace(t)
 	var logBuf bytes.Buffer
 	b := NewOpenCodeBackend(iterlog.New(iterlog.LevelWarn, &logBuf), bin)
 	if _, err := b.Execute(context.Background(), Task{
@@ -429,29 +422,82 @@ func TestOpenCodeEffortWithoutAModelIsWarned(t *testing.T) {
 // TestOpenCodeFailureReasonTravelsOnStdout: on the 2.x line opencode reports
 // WHY in its JSON stream on STDOUT and leaves stderr empty, even when the
 // process exits non-zero (measured on 2.2.5: a model no provider serves →
-// `{"error":{"type":"provider.no-route","message":"Model unavailable: …"}}`,
-// exit 1, no stderr). The node must carry that sentence, not `exit status 1`.
+// `{"sessionID":"ses_…","error":{"type":"provider.no-route","message":"Model
+// unavailable: …"}}`, exit 1, no stderr). The node must carry that sentence,
+// not `exit status 1` — and the session the failing turn minted, which the
+// error event is the only carrier of.
 func TestOpenCodeFailureReasonTravelsOnStdout(t *testing.T) {
 	bin, _, _ := fakeOpenCode2xSessions(t)
-	ws := t.TempDir()
-	if err := os.Mkdir(filepath.Join(ws, ".git"), 0o750); err != nil {
-		t.Fatal(err)
+	ws := hermeticWorkspace(t)
+	b := NewOpenCodeBackend(testLogger(), bin)
+	// The twin of TestCLIAgentNonZeroExitReportsWhatTheTurnSpent on this
+	// protocol: the parser reads sessionID off every event, "error"
+	// included, and the id is the one the turn had reached — the resumed
+	// session's when one was given, else the one the CLI minted (both
+	// measured on 2.2.5).
+	for _, tc := range []struct {
+		name, given string
+		want        func(t *testing.T, got string)
+	}{
+		{"fresh turn", "", func(t *testing.T, got string) {
+			if got == "" {
+				t.Fatal(`SessionID = "", want the id the failing turn minted — the 2.2.5 error event carries it`)
+			}
+		}},
+		{"resumed turn", "ses_given", func(t *testing.T, got string) {
+			if got != "ses_given" {
+				t.Fatalf("SessionID = %q, want the resumed %q — the 2.2.5 error event carries the session the turn was given", got, "ses_given")
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := b.Execute(context.Background(), Task{
+				NodeID:     "n1",
+				WorkDir:    ws,
+				BaseDir:    ws,
+				UserPrompt: "x",
+				Model:      "nosuch/model",
+				SessionID:  tc.given,
+			})
+			if err == nil {
+				t.Fatalf("a model no provider serves succeeded with %v", res.Output)
+			}
+			if !strings.Contains(err.Error(), "Model unavailable: nosuch/model") {
+				t.Fatalf("error = %v, want the CLI's own reason from its stdout stream", err)
+			}
+			if strings.TrimSpace(res.Stderr) != "" {
+				t.Fatalf("Stderr = %q, want empty — the reason travelled on stdout alone", res.Stderr)
+			}
+			tc.want(t, res.SessionID)
+		})
 	}
-	res, err := NewOpenCodeBackend(testLogger(), bin).Execute(context.Background(), Task{
-		NodeID:     "n1",
-		WorkDir:    ws,
-		BaseDir:    ws,
-		UserPrompt: "x",
-		Model:      "nosuch/model",
-	})
-	if err == nil {
-		t.Fatalf("a model no provider serves succeeded with %v", res.Output)
+}
+
+// TestOpenCodeAuthoredVariantOutranksTheDial: a model reference the operator
+// wrote with its variant is emitted as written when the node also sets a
+// reasoning_effort — a second `#` is "Invalid model reference" on 2.2.5, and
+// the fake refuses it the same way — and the dropped dial is named in a
+// warning, never silently.
+func TestOpenCodeAuthoredVariantOutranksTheDial(t *testing.T) {
+	bin, _, argvLog := fakeOpenCode2xSessions(t)
+	ws := hermeticWorkspace(t)
+	var logBuf bytes.Buffer
+	b := NewOpenCodeBackend(iterlog.New(iterlog.LevelWarn, &logBuf), bin)
+	if _, err := b.Execute(context.Background(), Task{
+		NodeID:          "n1",
+		WorkDir:         ws,
+		BaseDir:         ws,
+		UserPrompt:      "x",
+		Model:           "scripted/m1#low",
+		ReasoningEffort: "high",
+	}); err != nil {
+		t.Fatalf("the run was rejected instead of warned: %v", err)
 	}
-	if !strings.Contains(err.Error(), "Model unavailable: nosuch/model") {
-		t.Fatalf("error = %v, want the CLI's own reason from its stdout stream", err)
+	if got := strings.TrimSpace(readFileString(t, argvLog)); got != "run --format json -m scripted/m1#low" {
+		t.Fatalf("the CLI received %q, want the authored reference with no second variant", got)
 	}
-	if strings.TrimSpace(res.Stderr) != "" {
-		t.Fatalf("Stderr = %q, want empty — the reason travelled on stdout alone", res.Stderr)
+	if got := logBuf.String(); !strings.Contains(got, "reasoning_effort \"high\"") || !strings.Contains(got, "scripted/m1#low") {
+		t.Fatalf("logs = %q, want a warning naming the dropped dial and the kept variant", got)
 	}
 }
 
@@ -471,10 +517,7 @@ func readFileString(t *testing.T, path string) string {
 func TestOpenCodeSessionRoundTrip(t *testing.T) {
 	t.Setenv(openCodeLegacyArgvEnv, "1")
 	bin, store, _ := fakeOpenCodeSessions(t)
-	ws := t.TempDir()
-	if err := os.Mkdir(filepath.Join(ws, ".git"), 0o750); err != nil {
-		t.Fatal(err)
-	}
+	ws := hermeticWorkspace(t)
 	b := NewOpenCodeBackend(testLogger(), bin)
 	turn := func(t *testing.T, prompt, sessionID string, fork bool) (Result, error) {
 		t.Helper()
@@ -533,10 +576,7 @@ func TestOpenCodeSessionRoundTrip(t *testing.T) {
 func TestOpenCodeResumeOfAnUnknownSessionFails(t *testing.T) {
 	t.Setenv(openCodeLegacyArgvEnv, "1")
 	bin, _, _ := fakeOpenCodeSessions(t)
-	ws := t.TempDir()
-	if err := os.Mkdir(filepath.Join(ws, ".git"), 0o750); err != nil {
-		t.Fatal(err)
-	}
+	ws := hermeticWorkspace(t)
 	res, err := NewOpenCodeBackend(testLogger(), bin).Execute(context.Background(), Task{
 		NodeID:     "n1",
 		WorkDir:    ws,

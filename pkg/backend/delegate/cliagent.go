@@ -293,12 +293,15 @@ type CLIAgentParse struct {
 	// therefore silently absent from the reported token count and cost.
 	Notices []string
 
-	// Err is a failure the CLI reported *in its output stream* while exiting
-	// zero. The typed value (*ErrTransient, *ErrRateLimited, or a plain
-	// error) is returned verbatim from Execute so the executor's retry
-	// classifier keys on it — which is also why the CLIAgentBackend's own
-	// retry loop deliberately never re-runs on it: retry policy for a
-	// well-classified upstream failure belongs to the executor, not here.
+	// Err is a failure the CLI reported *in its output stream*, read on
+	// both exits. On a zero exit the typed value (*ErrTransient,
+	// *ErrRateLimited, or a plain error) is returned verbatim from Execute;
+	// on a non-zero exit it is wrapped beside the process error
+	// (failureReason), so errors.As reaches it either way and the
+	// executor's retry classifier keys on it — which is also why the
+	// CLIAgentBackend's own retry loop deliberately never re-runs on it:
+	// retry policy for a well-classified upstream failure belongs to the
+	// executor, not here.
 	Err error
 }
 
@@ -487,8 +490,11 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 		// below: a partial transcript is not the turn's answer, and running
 		// it here would report a ParseFallback for a parse the node never
 		// reached.
-		if reason := failureReason(proto, parsed); reason != "" {
-			return result, fmt.Errorf("%w: %s", err, reason)
+		if reason := failureReason(proto, parsed); reason != nil {
+			// Both wrapped: the process error for a caller matching on
+			// *exec.ExitError, the stream's typed reason for the executor's
+			// classifier (errors.As walks every %w).
+			return result, fmt.Errorf("%w: %w", err, reason)
 		}
 		return result, err
 	}
@@ -803,29 +809,50 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
-// failureReason renders what the CLI said about its own failure, for a
-// process exit the OS reported as a failure. The protocol's parser owns the
-// stream's shape, so a CLI whose reason travels in its machine-readable
-// stream is read the same way whatever the exit code. The parsed error
-// already names the backend, which the wrapping error does too, so the
-// duplicate prefix is dropped. Empty when the stream says nothing: a
-// transport failure keeps the error it has.
+// failureReason is what the CLI said about its own failure, for a process
+// exit the OS reported as a failure. The protocol's parser owns the stream's
+// shape, so a CLI whose reason travels in its machine-readable stream is read
+// the same way whatever the exit code. The parsed error already names the
+// backend, which the wrapping error does too, so the duplicate prefix is
+// dropped from the TEXT while the parsed value stays on the chain through
+// Unwrap: a *ErrRateLimited or *ErrTransient the parser typed is still the
+// one errors.As finds (CLIAgentParse.Err's contract). Nil when the stream
+// says nothing: a transport failure keeps the error it has.
 //
 // The sentence lands in the error's TEXT, which [IsNetworkError] matches
 // against the full networkErrorSignatures list, so a stream reason can
-// re-type a non-zero exit as transient for the executor's retry loop. That
-// is the channel a zero exit already used (parsed.Err is returned verbatim
-// there), and it is deliberate: a structured error EVENT is the CLI's own
-// claim, not the free-form stderr that transportErrorSignatures exists to
-// distrust. The cost is the one bounded, backed-off retry
-// networkErrorSignatures prices in; the gain is a provider blip absorbed
-// fast instead of aborting the run.
-func failureReason(proto CLIAgentProtocol, parsed CLIAgentParse) string {
+// re-type a non-zero exit as a network failure for the executor's retry
+// loop. That is the channel a zero exit already uses (parsed.Err is returned
+// verbatim there), and it is deliberate: a structured error EVENT is the
+// CLI's own claim, not the free-form stderr that transportErrorSignatures
+// exists to distrust. The price is the executor's TRANSIENT budget, not one
+// retry: a matching reason moves the node onto
+// pkg/backend/model.DefaultMaxAttemptsTransient — six attempts under an
+// exponential backoff, roughly a minute of retrying, so up to five further
+// CLI spawns — and the list holds phrases an application-level death also
+// produces (opencode 1.1.19 without credentials dies with "JSON Parse error:
+// Unexpected EOF", which matches "unexpected eof"), so such a death is
+// retried on that budget before it is reported. The gain is a provider blip
+// absorbed instead of aborting the run.
+func failureReason(proto CLIAgentProtocol, parsed CLIAgentParse) error {
 	if parsed.Err == nil {
-		return ""
+		return nil
 	}
-	return strings.TrimPrefix(parsed.Err.Error(), "delegate: "+proto.Name+": ")
+	return &streamReason{
+		text:  strings.TrimPrefix(parsed.Err.Error(), "delegate: "+proto.Name+": "),
+		cause: parsed.Err,
+	}
 }
+
+// streamReason is the parsed stream error with the backend prefix dropped
+// from its text; Unwrap keeps the parser's typed value on the chain.
+type streamReason struct {
+	text  string
+	cause error
+}
+
+func (r *streamReason) Error() string { return r.text }
+func (r *streamReason) Unwrap() error { return r.cause }
 
 // parseStdout applies the protocol's parser, preferring the rich contract.
 // A protocol with neither parser treats stdout as the assistant's text.

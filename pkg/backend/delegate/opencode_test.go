@@ -171,6 +171,15 @@ func TestOpenCodeMapEffort(t *testing.T) {
 			t.Errorf("opencodeLegacyMapEffort(%q) = %v, want %v", in, got, legacy)
 		}
 	}
+	// A reference that already spells its variant is emitted as written: a
+	// second `#` is "Invalid model reference" on 2.2.5, and the operator's
+	// explicit spelling outranks the dial (Execute warns —
+	// TestOpenCodeAuthoredVariantOutranksTheDial).
+	for _, effort := range []string{"", "high", "ultracode"} {
+		if got := opencodeModelRef(Task{Model: "scripted/m1#low", ReasoningEffort: effort}); got != "scripted/m1#low" {
+			t.Errorf("opencodeModelRef(authored #low, effort %q) = %q, want the authored reference unchanged", effort, got)
+		}
+	}
 }
 
 func variantSuffix(variant string) string {
@@ -515,14 +524,14 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 	})
 
 	t.Run("a clean workspace runs", func(t *testing.T) {
-		ws := t.TempDir()
+		ws := hermeticWorkspace(t)
 		if err := refuseUntrustedOpenCodeProject(ws); err != nil {
 			t.Errorf("clean workspace refused: %v", err)
 		}
 	})
 
 	t.Run("an EMPTY .opencode directory is not a reason to refuse", func(t *testing.T) {
-		ws := t.TempDir()
+		ws := hermeticWorkspace(t)
 		if err := os.MkdirAll(filepath.Join(ws, ".opencode"), 0o750); err != nil {
 			t.Fatal(err)
 		}
@@ -562,6 +571,26 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 	})
 }
 
+// hermeticWorkspace is a fresh workspace whose screen reads nothing the test
+// does not own: the operator's HOME is pinned to the workspace's parent, the
+// one level where openCodeProjectLevels ends its walk without screening, so
+// an opencode.json another process left in the runner's TMPDIR cannot redden
+// a row. A `.git` at the workspace root would not do it — the production walk
+// climbs past one, and nothing here narrows that.
+func hermeticWorkspace(t *testing.T) string {
+	t.Helper()
+	hermeticTempRoot(t)
+	return t.TempDir()
+}
+
+// hermeticTempRoot pins the operator's HOME to the parent every t.TempDir()
+// of this test shares, for a test whose workspace line is not its own to
+// move: the walk from any of its temp dirs ends there.
+func hermeticTempRoot(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", filepath.Dir(t.TempDir()))
+}
+
 // writeWorkspace materialises a temp workspace holding the given
 // workspace-relative files.
 func writeWorkspace(t *testing.T, files ...string) string {
@@ -593,6 +622,7 @@ func TestOpenCodeResolveEnvPinsHostState(t *testing.T) {
 // TYPED capability refusal, so recovery classifies it CAPABILITY_UNSUPPORTED
 // (deterministic, never retried) instead of an untyped spawn-class error.
 func TestOpenCodeRefusesGatedNode(t *testing.T) {
+	hermeticTempRoot(t)
 	// The witness is about the gate, not the image gap (#1643): the host
 	// carries an opencode, so the answer is the same on a CI runner.
 	stageHostCLI(t, "opencode")

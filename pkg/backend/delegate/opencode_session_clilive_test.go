@@ -93,7 +93,11 @@ func TestCLILiveOpenCodeSessionResume(t *testing.T) {
 		})
 	}
 
-	repo := filepath.Join(tmp, "repo")
+	// The repo lives UNDER the scratch HOME: the workspace screen walks the
+	// project's ancestors and stops at HOME without screening it, so a
+	// sibling of HOME would climb to the filesystem root and the proof would
+	// read whatever the runner's shared TMPDIR carries.
+	repo := filepath.Join(tmp, "home", "repo")
 	for _, args := range [][]string{
 		{"init", "-q", repo},
 		{"-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"},

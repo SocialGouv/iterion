@@ -282,6 +282,52 @@ func TestCLIAgentNonZeroExitCarriesTheParsedReason(t *testing.T) {
 	}
 }
 
+// TestCLIAgentNonZeroExitKeepsTheParsedErrorType: the parser's typed value is
+// what the executor's classifier keys on (isDelegateRetryable, IsUsageWindow
+// and ClassifyFallback all errors.As on it), and CLIAgentParse.Err promises it
+// reaches Execute's caller. A non-zero exit must not flatten it to prose.
+func TestCLIAgentNonZeroExitKeepsTheParsedErrorType(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake CLI is POSIX-only")
+	}
+	proto := CLIAgentProtocol{
+		Name:           "stubagent",
+		DefaultBinary:  "stubagent",
+		PromptViaStdin: true,
+		ParseOutputRich: func(string) CLIAgentParse {
+			return CLIAgentParse{Err: &ErrRateLimited{Provider: "stubagent", Detail: "upstream 429: slow down", Kind: RateLimitKindUsageWindow}}
+		},
+	}
+	for _, exit := range []int{0, 1} {
+		t.Run(fmt.Sprintf("exit %d", exit), func(t *testing.T) {
+			fake := filepath.Join(t.TempDir(), "fakecli")
+			script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' 'slow down'\nexit %d\n", exit)
+			if err := os.WriteFile(fake, []byte(script), 0o755); err != nil { // #nosec G306 — test fixture must be executable
+				t.Fatal(err)
+			}
+			b := &CLIAgentBackend{Protocol: proto, Command: fake, Logger: testLogger()}
+			_, err := b.Execute(context.Background(), Task{NodeID: "n1", UserPrompt: "x"})
+			var rl *ErrRateLimited
+			if !errors.As(err, &rl) {
+				t.Fatalf("error = %v (%T), want the parser's *ErrRateLimited reachable through errors.As", err, err)
+			}
+			if !IsUsageWindow(err) {
+				t.Fatalf("IsUsageWindow(%v) = false, want the typed Kind to travel", err)
+			}
+			if exit == 0 {
+				return
+			}
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) {
+				t.Fatalf("error = %v, want the process failure still wrapped beside the reason", err)
+			}
+			if !strings.Contains(err.Error(), "slow down") {
+				t.Fatalf("error = %v, want the reason's text too", err)
+			}
+		})
+	}
+}
+
 // TestCLIAgentNonZeroExitReportsWhatTheTurnSpent is the other half of the
 // same chokepoint: a turn that MINTED a session and spent tokens before it
 // died must report both. The session id is what `session: inherit` continues

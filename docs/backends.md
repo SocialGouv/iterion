@@ -2962,7 +2962,10 @@ agent implement:
   exit 1, measured on 2.2.5). `xhigh` and `ultracode` collapse onto `high`
   before argv. A variant with no model is a hard refusal (`Invalid model
   reference: #high`), so an effort on a node that names no model is dropped
-  with a warning naming it, never spelled into argv.
+  with a warning naming it, never spelled into argv. A reference that already
+  spells its variant (`provider/model#low`) is emitted as written — a second
+  `#` is `Invalid model reference` — and a `reasoning_effort` set beside it is
+  dropped with the same kind of warning.
 - **Session resume and fork** for `session: inherit`, `inherit_if_available`
   and `fork`. Every event of the stream carries the session id; iterion hands
   it back as `--session <id>` (plus `--fork=true` for a fork, which opencode
