@@ -57,10 +57,16 @@ The install clients follow the same knob: `task chart:kind` and the
 `cloud-e2e` CI job derive their `helm --timeout` from the values file's own
 `server.progressDeadlineSeconds` plus a 120 s margin
 (`scripts/chart-kind-wait.sh`), so the deadline — not a fixed client cap —
-decides whether a slow install is called **Failed**. The helper refuses a
-values file that leaves the knob unset or zero: either would silently shrink
-the watch to Kubernetes' default 600 s (and a `0` renders through a `with`
-that skips it anyway).
+decides whether a slow install is called **Failed**. The helper refuses every
+values file whose knob it cannot read as the positive integer go-yaml would
+hand the install, and names the cause: unset or zero (either would silently
+shrink the watch to Kubernetes' default 600 s — a `0` renders through a
+`with` that skips it anyway), negative or not an integer (helm renders such a
+value verbatim and the API refuses the Deployment), beyond the exact integer
+range the helper computes with, or written in a form a line reader cannot
+pair with its key — a flow mapping left open past its line, a scalar on the
+line after the key, a value continued onto a deeper line, an anchor or a
+merge key.
 
 ## Topology
 
