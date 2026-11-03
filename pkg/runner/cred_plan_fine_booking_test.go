@@ -740,3 +740,135 @@ func TestRecordPoolSpend_aFiredInteractionBooksTheDonorsSlice(t *testing.T) {
 		t.Fatalf("the donor's ledger = $%.6f, want $%.6f — impl's $2 and the interaction that ran on their subscription, never the team's own $8", day.CostUSD, slice)
 	}
 }
+
+// TestRecordPoolSpend_aFailedDelegationJoinsThePlanLikeAFinishedOne: a
+// delegation that dies (a timeout, a rate limit) burned its spend like a
+// finished one, and its delegate_error joins the credential plan the same
+// way — through the one booking entry, on the event's own provider word.
+// One shape per guard, the guard named with the mutant that reds it:
+//   - the donor-funded node FAILED: its spend books the donor's slice ($2,
+//     never the team's $8) — red when the error path books the route table
+//     without the plan join (no donor row: $0);
+//   - the team's codex node failed on a bare `gpt-5.5` under its
+//     `provider: openai` word: it joins the team's row and the donor books
+//     $2 — red when the error path drops the word (the bare model names
+//     nothing: a miss, the table voided, the donor charged $10, a warn);
+//   - a failed delegation the plan names nothing for voids the table (the
+//     whole $5 and a warn) — red when the error path loses its miss.
+func TestRecordPoolSpend_aFailedDelegationJoinsThePlanLikeAFinishedOne(t *testing.T) {
+	scenarios := []struct {
+		name     string
+		fire     func(hooks model.EventHooks)
+		want     float64
+		wantWarn bool
+	}{
+		{
+			name: "the donor's failed delegation books its slice",
+			fire: func(hooks model.EventHooks) {
+				hooks.OnDelegateError("impl", model.DelegateInfo{
+					BackendName: "claude_code", Provider: "anthropic", Tokens: 900, CostUSD: 2,
+					Error: errors.New("rate limited mid-run"),
+				})
+				hooks.OnDelegateFinished("review", model.DelegateInfo{
+					BackendName: "codex", Provider: "openai", Tokens: 100, CostUSD: 8,
+				})
+			},
+			want: 2,
+		},
+		{
+			name: "a failure joins on its word, not on its bare model",
+			fire: func(hooks model.EventHooks) {
+				hooks.OnDelegateFinished("impl", model.DelegateInfo{
+					BackendName: "claude_code", Provider: "anthropic", Tokens: 900, CostUSD: 2,
+				})
+				hooks.OnDelegateError("review", model.DelegateInfo{
+					BackendName: "codex", Provider: "openai", RouteModel: "gpt-5.5", Tokens: 100, CostUSD: 8,
+					Error: errors.New("timed out"),
+				})
+			},
+			want: 2,
+		},
+		{
+			name: "an unplaced failure voids the table",
+			fire: func(hooks model.EventHooks) {
+				hooks.OnDelegateFinished("impl", model.DelegateInfo{
+					BackendName: "claude_code", Provider: "anthropic", Tokens: 900, CostUSD: 2,
+				})
+				hooks.OnDelegateError("ghost", model.DelegateInfo{
+					BackendName: "claw", Provider: "anthropic", Tokens: 100, CostUSD: 3,
+					Error: errors.New("timed out"),
+				})
+			},
+			want:     5,
+			wantWarn: true,
+		},
+	}
+	for _, sc := range scenarios {
+		t.Run(sc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			h := newPoolHarnessForRun(t, credpoolLimitsForFine(), "run-1")
+			h.runner.cfg.Logger = iterlog.New(iterlog.LevelWarn, &buf)
+			plan := finePlan(t)
+			usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
+			sc.fire(model.NewStoreEventHooks(
+				context.Background(), usage, "run-1", iterlog.New(iterlog.LevelError, nil), nil, nil,
+			))
+
+			h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-1", CredPlan: plan}, usage, nil, false)
+			if warned := strings.Contains(buf.String(), voidedTableWarn); warned != sc.wantWarn {
+				t.Fatalf("the report logged %q, want the voided-table warn: %v", buf.String(), sc.wantWarn)
+			}
+			day, _, err := h.ledger.Usage(context.Background(), donorPledgeID(), time.Now().UTC())
+			if err != nil {
+				t.Fatalf("usage: %v", err)
+			}
+			if day.CostUSD != sc.want {
+				t.Fatalf("the donor's ledger = $%.2f, want $%.2f", day.CostUSD, sc.want)
+			}
+		})
+	}
+}
+
+// TestMetricsEmitter_aStepJoinsOnItsLoopsWordOverTheRecordedRoute: the step
+// branch reads the loop's own provider word FIRST — the slot its client was
+// resolved from — as every delegate branch reads the event's word; the
+// node's recorded route is the runner's re-derivation, which can name
+// another provider the plan holds a row for. The divergence is constructed
+// (today's claw loops stamp the word their request's spec also derives), so
+// this is the shape that reds a step join that stops reading the word: the
+// recorded openai route would take the donor's step onto the team's row,
+// booking the donor short.
+func TestMetricsEmitter_aStepJoinsOnItsLoopsWordOverTheRecordedRoute(t *testing.T) {
+	wf := fineBookingWorkflow()
+	impl := wf.Nodes["impl"].(*ir.AgentNode)
+	impl.Fallbacks = []ir.Fallback{{Name: "own-rescue", Provider: "openai", Model: "openai/gpt-5"}}
+	res := model.EffectiveProviders(model.RouteView{Workflow: wf}, planKnownProviders)
+	if !res.NarrowSafe {
+		t.Fatalf("the two-route walk widened — test premise broken: %+v", res)
+	}
+	plan := model.CredentialPlan(res, fineBookingBundle())
+	if plan["impl|anthropic"] != donorFingerprint || plan["impl|openai"] != "fp-own-openai" {
+		t.Fatalf("plan = %v, want impl rows for both its routes — the premise (two planned providers on one node) broke", plan)
+	}
+
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
+	hooks := model.NewStoreEventHooks(
+		context.Background(), usage, "run-1", iterlog.New(iterlog.LevelError, nil), nil, nil,
+	)
+	hooks.OnLLMRequest("impl", model.LLMRequestInfo{Model: "openai/gpt-5", WireModel: "gpt-5"})
+	hooks.OnLLMStepFinish("impl", model.LLMStepInfo{
+		Number: 1, InputTokens: 20000, OutputTokens: 2000, Provider: "anthropic",
+	})
+
+	rows, miss := usage.fineSnapshot()
+	if miss.observations != 0 {
+		t.Fatalf("a step its word places counted %d miss(es), want 0", miss.observations)
+	}
+	donor := rows[donorFingerprint]
+	if donor.InputTokens != 20000 || donor.OutputTokens != 2000 {
+		t.Fatalf("the donor's fine row = (in %d, out %d), want (20000, 2000) — the step books on its loop's word; table: %v", donor.InputTokens, donor.OutputTokens, rows)
+	}
+	if own, booked := rows["fp-own-openai"]; booked {
+		t.Fatalf("the team's row took the step (%+v) — the recorded route answered over the loop's word", own)
+	}
+}

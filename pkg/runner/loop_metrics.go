@@ -267,17 +267,35 @@ func (m *metricsEmitter) noteDeclinedRoute(k routeKey) (first bool) {
 func (m *metricsEmitter) addRoute(backend, modelName, source string, cost float64, in, out, aggregate int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.addRouteLocked(backend, modelName, source, cost, in, out, aggregate)
-	route := routeKey{backend: backend, model: modelName, source: source}
-	fp := m.fingerprintFor(source, route, "")
+	m.bookObservationLocked(source, routeKey{backend: backend, model: modelName, source: source}, "", cost, in, out, aggregate)
+}
+
+// bookObservationLocked folds one priced observation into every table that
+// reads it: its (backend, model, source) route bucket, and — on a run whose
+// publisher stamped a credential plan — the plan join (#2288): the
+// fingerprint the plan names for (nodeID, provider) takes the observation
+// into its fine row, and an observation the plan names nothing for counts
+// as a miss. provider is the observation's own word (the serving element's
+// provider the event carries), "" when it carries none — the join then
+// derives one from the route.
+//
+// The ONE entry every observation path takes — the OnUsage sink and the
+// step, delegate_error and delegate_finished branches — so no path can book
+// the route table without the join: a path that skipped the fine row would
+// ship a table without its slice, and one that skipped the miss would ship
+// it unvoided, either way booking the lease short. Called with m.mu held,
+// alongside the run-total accumulation it mirrors.
+func (m *metricsEmitter) bookObservationLocked(nodeID string, route routeKey, provider string, cost float64, in, out, aggregate int64) {
+	m.addRouteLocked(route.backend, route.model, route.source, cost, in, out, aggregate)
+	fp := m.fingerprintFor(nodeID, route, provider)
 	m.addFingerprintLocked(fp, cost, in, out, aggregate)
 	m.notePlanMissLocked(fp, route, cost, in+out+aggregate)
 }
 
 // addRouteLocked folds one observation into its (backend, model) bucket.
-// Called with m.mu held, alongside the run-total accumulation it mirrors —
-// the two must never diverge, so they are updated in the same critical
-// section.
+// Called with m.mu held, through bookObservationLocked — the run totals,
+// the route table and the plan join must never diverge, so they are
+// updated in the same critical section.
 func (m *metricsEmitter) addRouteLocked(backend, modelName, source string, cost float64, in, out, aggregate int64) {
 	if m.byRoute == nil {
 		m.byRoute = make(map[routeKey]routeTotals)
@@ -340,8 +358,9 @@ func (m *metricsEmitter) fingerprintFor(nodeID string, route routeKey, provider 
 }
 
 // addFingerprintLocked folds one observation into its credential bucket.
-// Called under m.mu, beside addRouteLocked — the two tables read the same
-// observation, and a guard that dropped one would drop it from both.
+// Called under m.mu, from bookObservationLocked beside addRouteLocked — the
+// two tables read the same observation, and a guard that dropped one would
+// drop it from both.
 func (m *metricsEmitter) addFingerprintLocked(fp string, cost float64, in, out, aggregate int64) {
 	if fp == "" {
 		return
@@ -368,9 +387,9 @@ func planRouteFundedByEnv(route routeKey) bool {
 }
 
 // notePlanMissLocked folds one observation the plan named nothing for into
-// the join-miss accounting. Called under m.mu, beside addFingerprintLocked
-// — the same observation feeds both, and a guard that dropped one would
-// drop it from both. A spendless observation (no cost, no tokens) counts
+// the join-miss accounting. Called under m.mu, from bookObservationLocked
+// beside addFingerprintLocked — the same observation feeds both, and a
+// guard that dropped one would drop it from both. A spendless observation (no cost, no tokens) counts
 // nothing: a free call that joins nothing is not money the lease loses.
 func (m *metricsEmitter) notePlanMissLocked(fp string, route routeKey, cost float64, tokens int64) {
 	if len(m.credPlan) == 0 || fp != "" || planRouteFundedByEnv(route) {
@@ -543,11 +562,7 @@ func (m *metricsEmitter) observe(evt store.Event) {
 				}
 			}
 		}
-		m.addRouteLocked(backend, modelName, "", costDelta, int64(inputT), int64(outputT), 0)
-		stepRoute := routeKey{backend: backend, model: modelName}
-		stepFP := m.fingerprintFor(evt.NodeID, stepRoute, provider)
-		m.addFingerprintLocked(stepFP, costDelta, int64(inputT), int64(outputT), 0)
-		m.notePlanMissLocked(stepFP, stepRoute, costDelta, int64(inputT)+int64(outputT))
+		m.bookObservationLocked(evt.NodeID, routeKey{backend: backend, model: modelName}, provider, costDelta, int64(inputT), int64(outputT), 0)
 		if unreported, _ := evt.Data["usage_unreported"].(bool); unreported {
 			k := routeKey{backend: backend, model: modelName}
 			t := m.byRoute[k]
@@ -652,11 +667,7 @@ func (m *metricsEmitter) observe(evt store.Event) {
 			}
 			m.runAggregateTokens += int64(tokensF)
 			m.runCostUSD += costDelta
-			m.addRouteLocked(backend, modelName, source, costDelta, 0, 0, int64(tokensF))
-			errRoute := routeKey{backend: backend, model: modelName, source: source}
-			errFP := m.fingerprintFor(evt.NodeID, errRoute, provider)
-			m.addFingerprintLocked(errFP, costDelta, 0, 0, int64(tokensF))
-			m.notePlanMissLocked(errFP, errRoute, costDelta, int64(tokensF))
+			m.bookObservationLocked(evt.NodeID, routeKey{backend: backend, model: modelName, source: source}, provider, costDelta, 0, 0, int64(tokensF))
 		}
 		m.mu.Unlock()
 		if summarised {
@@ -732,11 +743,7 @@ func (m *metricsEmitter) observe(evt store.Event) {
 			// either way, and only this way does a reader of the public
 			// per-credential endpoint see "not split" instead of a
 			// confident, wrong input figure (#992).
-			m.addRouteLocked(backend, modelName, source, costDelta, 0, 0, int64(tokensF))
-			finRoute := routeKey{backend: backend, model: modelName, source: source}
-			finFP := m.fingerprintFor(evt.NodeID, finRoute, provider)
-			m.addFingerprintLocked(finFP, costDelta, 0, 0, int64(tokensF))
-			m.notePlanMissLocked(finFP, finRoute, costDelta, int64(tokensF))
+			m.bookObservationLocked(evt.NodeID, routeKey{backend: backend, model: modelName, source: source}, provider, costDelta, 0, 0, int64(tokensF))
 		}
 		m.mu.Unlock()
 		if summarised {
