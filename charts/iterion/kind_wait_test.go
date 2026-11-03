@@ -122,18 +122,41 @@ func serverDeployment(name, deadline string) string {
 // margin, so the server's deadline — not pull time — decides the server
 // rollout's verdict. Removing the knob from values-dev.yaml, or sizing the
 // wait from anything but the render, reds here: the client watch no longer
-// covers the deadline it installs.
+// covers the deadline it installs. values-dev runs one server pod, the
+// rollout that deadline bounds whole, so the helper prints no warning.
 func TestChartKindWaitFollowsTheRenderedDeadline(t *testing.T) {
-	if got, want := mustWait(t, "iterion", ".", "-f", "values-dev.yaml"), "1920s"; got != want {
+	stdout, stderr, err := runKindWait(t, "iterion", ".", "-f", "values-dev.yaml")
+	if err != nil {
+		t.Fatalf("chart-kind-wait iterion . -f values-dev.yaml: %v — %s", err, strings.TrimSpace(stderr))
+	}
+	if got, want := strings.TrimSpace(stdout), "1920s"; got != want {
 		t.Fatalf("chart-kind-wait iterion . -f values-dev.yaml = %q, want %q — the 1800 s deadline values-dev renders plus the 120 s margin; the client watch must cover the deadline it installs", got, want)
 	}
+	if warning := strings.TrimSpace(stderr); warning != "" {
+		t.Fatalf("chart-kind-wait warns on values-dev.yaml, whose one server pod the deadline bounds whole: %s", warning)
+	}
+}
+
+// helperLines keeps the lines the helper itself writes to stderr, the ones
+// it prefixes with its name; helm's and yq's messages are theirs.
+func helperLines(stderr string) string {
+	var own []string
+	for _, l := range strings.Split(stderr, "\n") {
+		if strings.HasPrefix(l, "chart-kind-wait: ") {
+			own = append(own, l)
+		}
+	}
+	return strings.Join(own, "\n")
 }
 
 // TestChartKindWaitDerivesAndRefuses exercises the helper's contract: the
 // margin arithmetic on the render, the server's deadline alone beside a
-// runner's that outlives it (the limit the helper's header states), a --set
-// override the file never held, the values forms a line reader of the file
-// could not pair with their key, and the refusals — a deadline the render
+// runner's that outlives it (the limit the helper's header states), the
+// warning on a server of several pods or of an autoscaled count (the
+// one-pod limit it states too), messages that print the install without
+// the arguments a credential can ride in, a --set override the file never
+// held, the values forms a line reader of the file could not pair with
+// their key, and the refusals — a deadline the render
 // leaves out (unset or 0), a string or a float, a release with no server
 // Deployment or several, a render helm refuses, a 0, a negative, a leading
 // zero, a sign, base prefix or underscore, or an int32 overflow in the
@@ -157,6 +180,76 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 		}
 		if got, want := mustWait(t, "iterion", ".", "-f", values), "720s"; got != want {
 			t.Fatalf("chart-kind-wait = %q, want %q — the wait follows the server Deployment's 600 s alone; the runner's 30000 s is the limit the header states, not a deadline the wait is sized from", got, want)
+		}
+	})
+	t.Run("a server of several pods gets the wait and a warning naming the count", func(t *testing.T) {
+		// Each pod that turns Ready restarts the deadline, so a wait of one
+		// deadline plus the margin can end while the rollout is still
+		// Progressing: the wait is printed, and the warning says so.
+		stdout, stderr, err := runKindWait(t, "iterion", ".", "-f", valuesFile(t, "mode: cloud\nserver:\n  replicas: 3\n  hpa:\n    enabled: false\n  progressDeadlineSeconds: 600\n"))
+		if err != nil {
+			t.Fatalf("chart-kind-wait refused a three-pod server: %v — %s", err, strings.TrimSpace(stderr))
+		}
+		if got, want := strings.TrimSpace(stdout), "720s"; got != want {
+			t.Fatalf("chart-kind-wait = %q, want %q — the deadline still sizes the wait", got, want)
+		}
+		if !strings.Contains(stderr, "warning: Deployment/iterion renders spec.replicas: 3") || !strings.Contains(stderr, "restarts the deadline") {
+			t.Fatalf("the warning must name the count and why the rollout can outlast the wait:\n%s", stderr)
+		}
+	})
+	t.Run("an autoscaled server gets the wait and a warning naming the autoscaler", func(t *testing.T) {
+		// values.yaml enables the server HPA, and the template then leaves
+		// spec.replicas to it.
+		stdout, stderr, err := runKindWait(t, "iterion", ".", "-f", valuesFile(t, "mode: cloud\nserver:\n  progressDeadlineSeconds: 600\n"))
+		if err != nil {
+			t.Fatalf("chart-kind-wait refused an autoscaled server: %v — %s", err, strings.TrimSpace(stderr))
+		}
+		if got, want := strings.TrimSpace(stdout), "720s"; got != want {
+			t.Fatalf("chart-kind-wait = %q, want %q — the deadline still sizes the wait", got, want)
+		}
+		if !strings.Contains(stderr, "warning: Deployment/iterion renders no spec.replicas") || !strings.Contains(stderr, "server HPA") {
+			t.Fatalf("the warning must name the autoscaler the count is left to:\n%s", stderr)
+		}
+	})
+	t.Run("the messages print the install without its other arguments", func(t *testing.T) {
+		// A --set can carry a credential and CI logs keep stderr: a message
+		// prints the release, the chart and the values files alone. Each case
+		// reaches a different message of the helper; helm's own message on a
+		// values path it cannot open carries that path, so the URL case
+		// judges the helper's lines alone. This subtest's name holds no
+		// comma: helm splits a -f value on commas, and the values files sit
+		// in a temp dir named after it.
+		const secret = "kind-wait-sentinel-credential"
+		local := valuesFile(t, "mode: local\n")
+		unset := valuesFile(t, "mode: cloud\n")
+		chart := filepath.Join(t.TempDir(), "nochart")
+		for _, tc := range []struct {
+			name     string
+			args     []string
+			shown    string // the install as the message must print it
+			cause    string
+			helmEcho bool // helm's own message carries the secret
+		}{
+			{"a render helm refuses", []string{"iterion", chart, "-f", local, "--set", "secrets.llm.anthropicApiKey=" + secret}, "iterion " + chart + " -f " + local + " [2 more arguments not shown]", "failed (helm's message above)", false},
+			{"no server Deployment", []string{"iterion", ".", "-f", local, "--namespace", "ns", "--set", "secrets.auth.mongoURI=mongodb://u:" + secret + "@db", "--set-string=secrets.auth.jwtSecret=" + secret}, "iterion . -f " + local + " [5 more arguments not shown]", "carries no Deployment", false},
+			{"no deadline", []string{"iterion", ".", "--values=" + unset, "--set", "secrets.auth.jwtSecret=" + secret}, "iterion . --values=" + unset + " [2 more arguments not shown]", "renders no spec.progressDeadlineSeconds", false},
+			{"a flag before the release", []string{"--set", "secrets.auth.jwtSecret=" + secret, "iterion", ".", "-f", unset}, "-f " + unset + " [4 more arguments not shown]", "renders no spec.progressDeadlineSeconds", false},
+			{"a values URL's userinfo", []string{"iterion", ".", "-f", "file://kind-wait:" + secret + "@/nonexistent/values.yaml"}, "iterion . -f file://***@/nonexistent/values.yaml", "failed (helm's message above)", true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				stderr := mustRefuseWait(t, tc.args...)
+				own := helperLines(stderr)
+				judged := stderr
+				if tc.helmEcho {
+					judged = own
+				}
+				if strings.Contains(judged, secret) {
+					t.Fatalf("the refusal prints an argument the install may carry a credential in:\n%s", judged)
+				}
+				if !strings.Contains(own, "`helm template "+tc.shown+"`") || !strings.Contains(own, tc.cause) {
+					t.Fatalf("the refusal must print the install as `helm template %s` and name its cause %q:\n%s", tc.shown, tc.cause, stderr)
+				}
+			})
 		}
 	})
 	t.Run("a --set override is read from the render, not the file", func(t *testing.T) {
@@ -393,52 +486,153 @@ func scriptLines(script string) []string {
 	return lines
 }
 
-// installWiring is what a wiring witness reads off an install script: the
-// one argument list both commands expand, the helper call's arguments and
-// the install command's arguments after its verb.
-type installWiring struct {
-	list    string // the list's text, as declared
-	helper  string // what follows scripts/chart-kind-wait.sh, up to the closing )
-	install string // what follows the install verb
+// installSite is the shape one install script must have: its argument list
+// declared once, the helper called on the list's expansion verbatim, one
+// install on that expansion plus the derived wait, and beside them only the
+// inert lines named here. The shape is an allowlist: a line the witness
+// does not know — a fallback cap, a second assignment of the wait, an edit
+// of the list between the helper and the install — reds for being unknown,
+// whatever its spelling, where a denylist passes every form it does not
+// name.
+type installSite struct {
+	what        string   // the site, in messages
+	listPrefix  string   // a one-line declaration: this prefix, then the list
+	listOpen    string   // a block declaration: this line, the list's parts, then a lone )
+	expansion   string   // the list's expansion, as both commands pass it
+	helperLine  string   // the helper call, verbatim
+	installVerb string   // the install command, up to the list's expansion
+	timeoutVar  string   // the wait, as the install expands it
+	inert       []string // whole lines that touch neither the list nor the wait
 }
 
-// sameArguments judges a wiring: the helper is called on the list's
-// expansion and nothing else, the install passes that same expansion first
-// and then only the wait flags, so the helper never reads a render the
-// install does not apply and the install never applies a -f or --set the
-// helper did not see. The list itself must carry the chart and values-dev.
-func sameArguments(t *testing.T, what string, w installWiring, expansion, timeoutVar string) {
-	t.Helper()
-	if !strings.Contains(w.list, "./charts/iterion") || !regexp.MustCompile(`(-f|--values) (\./)?charts/iterion/values-dev\.yaml`).MatchString(w.list) {
-		t.Fatalf("%s's shared argument list must carry the chart and values-dev.yaml, got: %s", what, w.list)
+// The two install sites. Task runs a cmd without errexit, so chart:kind's
+// helper call stops the cmd itself on a refusal; the cloud-e2e step runs
+// under bash -e and its own set -e, where a failed substitution stops it.
+var (
+	chartKindSite = installSite{
+		what:        "chart:kind",
+		listPrefix:  "set -- ",
+		expansion:   `"$@"`,
+		helperLine:  `KIND_WAIT=$(sh scripts/chart-kind-wait.sh "$@") || exit 1`,
+		installVerb: "helm upgrade --install ",
+		timeoutVar:  `$KIND_WAIT`,
 	}
-	if strings.TrimSpace(w.helper) != expansion {
-		t.Fatalf("%s calls scripts/chart-kind-wait.sh on %q, want the list's expansion %q alone — the helper must render the install's own arguments, no more and no fewer", what, strings.TrimSpace(w.helper), expansion)
+	cloudE2ESite = installSite{
+		what:        "cloud-e2e",
+		listOpen:    "install=(",
+		expansion:   `"${install[@]}"`,
+		helperLine:  `KIND_WAIT=$(sh scripts/chart-kind-wait.sh "${install[@]}")`,
+		installVerb: "helm install ",
+		timeoutVar:  `${KIND_WAIT}`,
+		inert:       []string{"set -euo pipefail", `kubectl create namespace "${NS}"`},
 	}
-	words := strings.Fields(w.install)
-	if len(words) == 0 || words[0] != expansion {
-		t.Fatalf("%s's install does not start with the list's expansion %q: %s", what, expansion, w.install)
-	}
-	allowed := map[string]bool{"--wait": true, "--timeout": true, `"` + timeoutVar + `"`: true, timeoutVar: true}
-	for _, word := range words[1:] {
-		if !allowed[word] {
-			t.Fatalf("%s's install carries %q outside the shared list — an argument the helper never saw changes the render the wait was sized from; add it to the list: %s", what, word, w.install)
+)
+
+// installWiring is what readInstallScript reads off an install script.
+type installWiring struct {
+	list     string   // the list's text, its parts joined by a space
+	listDecl []string // the declaration's lines, as the shell runs them
+	install  string   // what follows the install verb
+}
+
+// readInstallScript reads an install script against its site's shape and
+// returns the wiring, or an error naming the first line that breaks it:
+// the list declared once, then the helper line verbatim, then one install,
+// the site's inert lines anywhere, and no other line.
+func readInstallScript(site installSite, script string) (installWiring, error) {
+	var w installWiring
+	helper := false
+	lines := scriptLines(script)
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		switch {
+		case site.listPrefix != "" && strings.HasPrefix(line, site.listPrefix),
+			site.listOpen != "" && line == site.listOpen:
+			if w.listDecl != nil {
+				return w, fmt.Errorf("%s declares its argument list twice — which one the install reads depends on the order: %q", site.what, line)
+			}
+			if site.listPrefix != "" {
+				w.listDecl, w.list = []string{line}, strings.TrimPrefix(line, site.listPrefix)
+				continue
+			}
+			end := slices.Index(lines[i+1:], ")")
+			if end < 0 {
+				return w, fmt.Errorf("%s opens its argument list with %q and never closes it on a lone )", site.what, line)
+			}
+			w.listDecl = lines[i : i+end+2]
+			w.list = strings.Join(lines[i+1:i+1+end], " ")
+			i += end + 1
+		case strings.Contains(line, "chart-kind-wait"):
+			if line != site.helperLine {
+				return w, fmt.Errorf("%s calls the helper as %q, want exactly %q — the substitution's output must be the wait and nothing else: text after it (a fallback `|| KIND_WAIT=10m`, a second assignment) replaces the derived cap whenever it runs, and other arguments render a release the install does not apply", site.what, line, site.helperLine)
+			}
+			if w.listDecl == nil {
+				return w, fmt.Errorf("%s calls the helper before declaring the list it expands", site.what)
+			}
+			if helper {
+				return w, fmt.Errorf("%s calls the helper twice", site.what)
+			}
+			helper = true
+		case strings.HasPrefix(line, site.installVerb):
+			if !helper {
+				return w, fmt.Errorf("%s installs before the helper sized the wait: %q", site.what, line)
+			}
+			if w.install != "" {
+				return w, fmt.Errorf("%s installs twice — the wiring of one install says nothing of the other's cap: %q", site.what, line)
+			}
+			w.install = strings.TrimPrefix(line, site.installVerb)
+		case slices.Contains(site.inert, line):
+		default:
+			return w, fmt.Errorf("%s carries a line the wiring witness does not know: %q — beside the list, the helper call and the install, the script may hold only the site's inert lines %q: an unknown line can reassign KIND_WAIT or edit the list between the helper and the install (a fallback cap, an appended -f), and the install would no longer watch the wait its render owes; a line that touches neither joins the site's inert lines in this witness", site.what, line, site.inert)
 		}
 	}
-	if err := soleTimeout(w.install, timeoutVar); err != nil {
-		t.Fatalf("%s's install must pass the helper's output to --timeout and nothing else: %v — cmd: %s", what, err, w.install)
+	if w.listDecl == nil || !helper || w.install == "" {
+		return w, fmt.Errorf("%s must declare the list, call the helper on it and install with it; script:\n%s", site.what, script)
 	}
+	return w, judgeWiring(site, w)
 }
 
-// helperArguments extracts what a line passes to scripts/chart-kind-wait.sh:
-// the text after the script path up to the closing ) of the substitution.
-func helperArguments(t *testing.T, what, line string) string {
-	t.Helper()
-	m := regexp.MustCompile(`^KIND_WAIT=\$\(sh scripts/chart-kind-wait\.sh (.*)\)`).FindStringSubmatch(line)
-	if m == nil {
-		t.Fatalf("%s must capture the helper's output as KIND_WAIT=$(sh scripts/chart-kind-wait.sh …), got: %s", what, line)
+// valuesDev matches values-dev.yaml handed to a -f/--values flag.
+var valuesDev = regexp.MustCompile(`(-f|--values) (\./)?charts/iterion/values-dev\.yaml`)
+
+// judgeWiring judges what the shape leaves free: the list carries the
+// chart and values-dev, and the install passes the list's expansion first
+// and then only the wait flags, so it never applies a -f or --set the
+// helper did not render.
+func judgeWiring(site installSite, w installWiring) error {
+	if !strings.Contains(w.list, "./charts/iterion") || !valuesDev.MatchString(w.list) {
+		return fmt.Errorf("%s's shared argument list must carry the chart and values-dev.yaml, got: %s", site.what, w.list)
 	}
-	return m[1]
+	words := strings.Fields(w.install)
+	if len(words) == 0 || words[0] != site.expansion {
+		return fmt.Errorf("%s's install does not start with the list's expansion %q: %s", site.what, site.expansion, w.install)
+	}
+	allowed := map[string]bool{"--wait": true, "--timeout": true, `"` + site.timeoutVar + `"`: true, site.timeoutVar: true}
+	for _, word := range words[1:] {
+		if !allowed[word] {
+			return fmt.Errorf("%s's install carries %q outside the shared list — an argument the helper never saw changes the render the wait was sized from; add it to the list: %s", site.what, word, w.install)
+		}
+	}
+	if err := soleTimeout(w.install, site.timeoutVar); err != nil {
+		return fmt.Errorf("%s's install must pass the helper's output to --timeout and nothing else: %w — cmd: %s", site.what, err, w.install)
+	}
+	return nil
+}
+
+// helmInstalls matches a helm command that installs or upgrades a release.
+var helmInstalls = regexp.MustCompile(`\bhelm\s+(?:install|upgrade)\b`)
+
+// otherInstalls returns the commands besides the one at idx that install
+// with helm: an install the wiring witness does not read escapes the
+// derived wait whatever cap it carries.
+func otherInstalls(cmds []string, idx int) []string {
+	var others []string
+	for i, c := range cmds {
+		if i != idx && helmInstalls.MatchString(c) {
+			others = append(others, c)
+		}
+	}
+	return others
 }
 
 // taskfileTasks reads the piece of Taskfile.yml the chart:kind witness
@@ -449,15 +643,23 @@ type taskfileTasks struct {
 	} `yaml:"tasks"`
 }
 
-// TestChartKindInstallSharesItsArgumentsWithTheHelper is the wiring
-// witness of the smoke: chart:kind declares its helm arguments once
-// (`set -- …`), runs the helper on "$@" and installs with "$@" plus the
-// derived --timeout — so the wait is sized from the render the install
-// applies. The list is then run through the helper here: values-dev
-// renders 1800, the task's install watches 1920 s. A literal cap, a second
-// -f on either command, or a helper call on a values file reds on its own
-// assertion.
-func TestChartKindInstallSharesItsArgumentsWithTheHelper(t *testing.T) {
+// cmdText is the shell text of one Taskfile cmd: the scalar, or the cmd of
+// the mapping form.
+func cmdText(n yaml.Node) string {
+	if n.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			if n.Content[i].Value == "cmd" {
+				return n.Content[i+1].Value
+			}
+		}
+	}
+	return n.Value
+}
+
+// chartKindCmds returns chart:kind's commands and the index of its install,
+// refusing a second command that installs with helm.
+func chartKindCmds(t *testing.T) ([]string, int) {
+	t.Helper()
 	src, err := os.ReadFile(filepath.Join("..", "..", "Taskfile.yml"))
 	if err != nil {
 		t.Fatal(err)
@@ -472,53 +674,39 @@ func TestChartKindInstallSharesItsArgumentsWithTheHelper(t *testing.T) {
 	}
 	cmds := make([]string, 0, len(task.Cmds))
 	for _, c := range task.Cmds {
-		cmds = append(cmds, c.Value)
+		cmds = append(cmds, cmdText(c))
 	}
 	idx, err := uniqueMatch(cmds, "helm upgrade --install", "chart:kind")
 	if err != nil {
 		t.Fatal(err)
 	}
-	lines := scriptLines(cmds[idx])
-	var w installWiring
-	var setLine string
-	for _, line := range lines {
-		switch {
-		case strings.HasPrefix(line, "set -- "):
-			if setLine != "" {
-				t.Fatalf("chart:kind declares its argument list twice — which one the install reads depends on order: %q then %q", setLine, line)
-			}
-			setLine = line
-			w.list = strings.TrimPrefix(line, "set -- ")
-		case strings.Contains(line, "scripts/chart-kind-wait.sh"):
-			if w.helper != "" {
-				t.Fatalf("chart:kind calls scripts/chart-kind-wait.sh twice: %s", cmds[idx])
-			}
-			if setLine == "" {
-				t.Fatalf("chart:kind calls the helper before declaring the list it expands: %s", cmds[idx])
-			}
-			w.helper = helperArguments(t, "chart:kind", line)
-		case strings.HasPrefix(line, "helm upgrade --install "):
-			if w.helper == "" {
-				t.Fatalf("chart:kind installs before the helper sized the wait: %s", cmds[idx])
-			}
-			w.install = strings.TrimPrefix(line, "helm upgrade --install ")
-		default:
-			if strings.Contains(line, "values-dev") || strings.Contains(line, "--set") {
-				t.Fatalf("chart:kind carries helm arguments outside the shared list: %s", line)
-			}
-		}
+	if others := otherInstalls(cmds, idx); len(others) > 0 {
+		t.Fatalf("chart:kind installs with helm outside the command the wiring witness reads — that install escapes the derived wait: %q", others)
 	}
-	if setLine == "" || w.helper == "" || w.install == "" {
-		t.Fatalf("chart:kind must declare the list (set -- …), call the helper on it and install with it; cmd: %s", cmds[idx])
+	return cmds, idx
+}
+
+// TestChartKindInstallSharesItsArgumentsWithTheHelper is the wiring
+// witness of the smoke: chart:kind declares its helm arguments once
+// (`set -- …`), runs the helper on "$@" and installs with "$@" plus the
+// derived --timeout, and holds no other line — so the wait is sized from
+// the render the install applies, and nothing between the two replaces it.
+// The list is then run through the helper here: values-dev renders 1800,
+// the task's install watches 1920 s. TestInstallScriptsHoldNothingButTheirShape
+// pins what the shape refuses.
+func TestChartKindInstallSharesItsArgumentsWithTheHelper(t *testing.T) {
+	cmds, idx := chartKindCmds(t)
+	w, err := readInstallScript(chartKindSite, cmds[idx])
+	if err != nil {
+		t.Fatal(err)
 	}
-	sameArguments(t, "chart:kind", w, `"$@"`, `$KIND_WAIT`)
 
 	// The list, run through the helper the task runs, from the repository
 	// root the task runs in: the wait the smoke installs with.
 	helmBinary(t)
 	yqBinary(t)
 	var stdout, stderr strings.Builder
-	cmd := exec.Command("sh", "-c", setLine+"\nexec sh \"$KIND_WAIT_SCRIPT\" \"$@\"")
+	cmd := exec.Command("sh", "-c", strings.Join(w.listDecl, "\n")+"\nexec sh \"$KIND_WAIT_SCRIPT\" \"$@\"")
 	cmd.Dir = filepath.Join("..", "..")
 	cmd.Env = append(os.Environ(), "KIND_WAIT_SCRIPT="+kindWaitScript(t))
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -527,6 +715,90 @@ func TestChartKindInstallSharesItsArgumentsWithTheHelper(t *testing.T) {
 	}
 	if got, want := strings.TrimSpace(stdout.String()), "1920s"; got != want {
 		t.Fatalf("chart:kind's list sizes the wait at %q, want %q — values-dev renders 1800 and the margin is 120 s", got, want)
+	}
+	if warning := strings.TrimSpace(stderr.String()); warning != "" {
+		t.Fatalf("the helper warns on chart:kind's own list, so the smoke's wait no longer covers its server rollout: %s", warning)
+	}
+}
+
+// TestInstallScriptsHoldNothingButTheirShape mutates each site's real
+// install script one edit at a time — the edits that keep a substring or
+// denylist reading green: a cap assigned between the helper and the
+// install, a fallback or a second assignment on the helper line, the list
+// extended or trimmed after the helper rendered it, a second install — and
+// requires readInstallScript to refuse each on its own cause. The
+// unmutated script must pass first, so each refusal is the edit's.
+func TestInstallScriptsHoldNothingButTheirShape(t *testing.T) {
+	cmds, idx := chartKindCmds(t)
+	job, step := cloudE2EJob(t)
+	type mutant struct {
+		name     string
+		from, to string // the edit: from must occur in the real script exactly once
+		errPart  string
+	}
+	// edit inserts a line right after the helper call, before the install.
+	edit := func(site installSite, name, line, errPart string) mutant {
+		return mutant{name, site.helperLine + "\n", site.helperLine + "\n" + line + "\n", errPart}
+	}
+	for _, s := range []struct {
+		site    installSite
+		script  string
+		mutants []mutant
+	}{
+		{chartKindSite, cmds[idx], []mutant{
+			edit(chartKindSite, "a literal cap between the helper and the install", "KIND_WAIT=5m", "does not know"),
+			edit(chartKindSite, "the list extended after the helper rendered it", `set "$@" -f charts/iterion/values-prod.yaml`, "does not know"),
+			edit(chartKindSite, "a second install beside the wired one", "helm upgrade --install iterion ./charts/iterion -f charts/iterion/values-prod.yaml --wait --timeout 5m", "installs twice"),
+			{"a fallback cap in place of the exit", chartKindSite.helperLine + "\n", `KIND_WAIT=$(sh scripts/chart-kind-wait.sh "$@") || KIND_WAIT=5m` + "\n", "calls the helper as"},
+			{"a second assignment glued to the helper line", chartKindSite.helperLine + "\n", chartKindSite.helperLine + "; KIND_WAIT=5m\n", "calls the helper as"},
+			{"the helper called on a values file", chartKindSite.helperLine + "\n", `KIND_WAIT=$(sh scripts/chart-kind-wait.sh iterion ./charts/iterion -f charts/iterion/values-dev.yaml) || exit 1` + "\n", "calls the helper as"},
+		}},
+		{cloudE2ESite, job.Steps[step].Run, []mutant{
+			edit(cloudE2ESite, "the list extended after the helper rendered it", "install+=(-f ./charts/iterion/values-prod.yaml)", "does not know"),
+			edit(cloudE2ESite, "a list part dropped after the helper rendered it", "unset 'install[3]'", "does not know"),
+			edit(cloudE2ESite, "an exported literal cap", "export KIND_WAIT=10m", "does not know"),
+			edit(cloudE2ESite, "a cap read from a file", "read -r KIND_WAIT < /tmp/cap", "does not know"),
+			{"a fallback cap on the helper line", cloudE2ESite.helperLine + "\n", cloudE2ESite.helperLine + " || KIND_WAIT=10m\n", "calls the helper as"},
+		}},
+	} {
+		if _, err := readInstallScript(s.site, s.script); err != nil {
+			t.Fatalf("%s's real script must pass before its mutants mean anything: %v", s.site.what, err)
+		}
+		for _, m := range s.mutants {
+			t.Run(s.site.what+"/"+m.name, func(t *testing.T) {
+				if n := strings.Count(s.script, m.from); n != 1 {
+					t.Fatalf("the edit's anchor %q occurs %d times in %s's script, want once — the mutant would not be the edit it names", m.from, n, s.site.what)
+				}
+				_, err := readInstallScript(s.site, strings.Replace(s.script, m.from, m.to, 1))
+				if err == nil {
+					t.Fatalf("readInstallScript accepted %s's script with %s — the install would run a wait other than the derived one while the wiring reads intact", s.site.what, m.name)
+				}
+				if !strings.Contains(err.Error(), m.errPart) {
+					t.Fatalf("the refusal does not name %q: %v", m.errPart, err)
+				}
+			})
+		}
+	}
+}
+
+// TestOtherInstallsSeeEveryHelmInstall pins the guard both witnesses run
+// over the commands they do not read: any helm install or upgrade beside
+// the wired one is named — a Taskfile cmd in its mapping form too — and the
+// other helm verbs are not.
+func TestOtherInstallsSeeEveryHelmInstall(t *testing.T) {
+	var tf taskfileTasks
+	src := "tasks:\n  smoke:\n    cmds:\n      - kind create cluster\n      - |\n        set -- iterion ./charts/iterion\n        helm upgrade --install \"$@\" --wait\n      - helm test iterion\n      - cmd: helm install shadow ./charts/iterion --wait --timeout 5m\n      - helm  upgrade shadow ./charts/iterion\n      - helm dependency update ./charts/iterion\n"
+	if err := yaml.Unmarshal([]byte(src), &tf); err != nil {
+		t.Fatal(err)
+	}
+	var cmds []string
+	for _, c := range tf.Tasks["smoke"].Cmds {
+		cmds = append(cmds, cmdText(c))
+	}
+	got := otherInstalls(cmds, 1)
+	want := []string{"helm install shadow ./charts/iterion --wait --timeout 5m", "helm  upgrade shadow ./charts/iterion"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("otherInstalls = %q, want %q — a second install, in either cmd form, escapes the wiring the witness reads", got, want)
 	}
 }
 
@@ -606,28 +878,28 @@ func TestSoleTimeoutRefusesAnyLiteralTimeout(t *testing.T) {
 	}
 }
 
-// workflowJobs reads the pieces of tests.yml the cloud-e2e witness needs.
-type workflowJobs struct {
-	Jobs map[string]struct {
-		TimeoutMinutes int               `yaml:"timeout-minutes"`
-		Env            map[string]string `yaml:"env"`
-		Steps          []struct {
-			Name string `yaml:"name"`
-			Run  string `yaml:"run"`
-		} `yaml:"steps"`
-	} `yaml:"jobs"`
+// workflowStep, workflowJob and workflowJobs read the pieces of tests.yml
+// the cloud-e2e witness needs.
+type workflowStep struct {
+	Name           string `yaml:"name"`
+	Run            string `yaml:"run"`
+	TimeoutMinutes int    `yaml:"timeout-minutes"`
 }
 
-// TestChartCloudE2EInstallSharesItsArgumentsWithTheHelper witnesses the CI
-// install the same way: cloud-e2e declares its helm arguments once (a bash
-// array), runs the helper on "${install[@]}" and installs with it plus the
-// derived --timeout. The job's own list is then run through the helper
-// here, with the job's env, so the cap the floor below reads is the one
-// the job derives — a deadline bump in values-dev, or a --set on the list,
-// flows into the floor instead of leaving a stale constant behind. The job
-// cap must outlive that helm cap on top of the preamble, so helm's timeout,
-// not the runner kill, reports a slow install.
-func TestChartCloudE2EInstallSharesItsArgumentsWithTheHelper(t *testing.T) {
+type workflowJob struct {
+	TimeoutMinutes int               `yaml:"timeout-minutes"`
+	Env            map[string]string `yaml:"env"`
+	Steps          []workflowStep    `yaml:"steps"`
+}
+
+type workflowJobs struct {
+	Jobs map[string]workflowJob `yaml:"jobs"`
+}
+
+// cloudE2EJob returns the cloud-e2e job and the index of its install step,
+// refusing another step that installs with helm.
+func cloudE2EJob(t *testing.T) (workflowJob, int) {
+	t.Helper()
 	src, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "tests.yml"))
 	if err != nil {
 		t.Fatal(err)
@@ -641,63 +913,41 @@ func TestChartCloudE2EInstallSharesItsArgumentsWithTheHelper(t *testing.T) {
 		t.Fatalf("tests.yml has no cloud-e2e job")
 	}
 	names := make([]string, 0, len(job.Steps))
+	runs := make([]string, 0, len(job.Steps))
 	for _, st := range job.Steps {
 		names = append(names, st.Name)
+		runs = append(runs, st.Run)
 	}
 	idx, err := uniqueMatch(names, "Helm install (values-dev.yaml)", "cloud-e2e")
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := job.Steps[idx].Run
-	lines := scriptLines(run)
-	var w installWiring
-	var listLines []string
-	inList := false
-	for _, line := range lines {
-		switch {
-		case line == "install=(":
-			if listLines != nil {
-				t.Fatalf("cloud-e2e declares its argument list twice: %s", run)
-			}
-			inList = true
-			listLines = []string{line}
-		case inList:
-			listLines = append(listLines, line)
-			if line == ")" {
-				inList = false
-				w.list = strings.Join(listLines[1:len(listLines)-1], " ")
-			}
-		case strings.Contains(line, "scripts/chart-kind-wait.sh"):
-			if w.helper != "" {
-				t.Fatalf("cloud-e2e calls scripts/chart-kind-wait.sh twice: %s", run)
-			}
-			if w.list == "" {
-				t.Fatalf("cloud-e2e calls the helper before declaring the list it expands: %s", run)
-			}
-			w.helper = helperArguments(t, "cloud-e2e", line)
-		case strings.HasPrefix(line, "helm install "):
-			if w.helper == "" {
-				t.Fatalf("cloud-e2e installs before the helper sized the wait: %s", run)
-			}
-			w.install = strings.TrimPrefix(line, "helm install ")
-		default:
-			if strings.Contains(line, "values-dev") || strings.Contains(line, "--set") {
-				t.Fatalf("cloud-e2e carries helm arguments outside the shared list: %s", line)
-			}
-		}
+	if others := otherInstalls(runs, idx); len(others) > 0 {
+		t.Fatalf("cloud-e2e installs with helm outside the step the wiring witness reads — that install escapes the derived wait: %q", others)
 	}
-	if w.list == "" || w.helper == "" || w.install == "" {
-		t.Fatalf("cloud-e2e must declare the list (install=( … )), call the helper on it and install with it; run: %s", run)
-	}
-	sameArguments(t, "cloud-e2e", w, `"${install[@]}"`, `${KIND_WAIT}`)
+	return job, idx
+}
 
-	// The runner kill must not preempt helm's verdict: the derived cap is
-	// what the helper prints for the job's own list, run here with the
-	// job's env from the repository root the job runs in, and the cap only
-	// fires after the job's preamble — checkout, image build, kind up,
-	// image load, chart deps — measured at 4.0-4.7 m on recent success
-	// runs. The floor sums both budgets, the cap rounded up to the whole
-	// minutes the field counts; tests.yml runs the job at 40 m, two above.
+// TestChartCloudE2EInstallSharesItsArgumentsWithTheHelper witnesses the CI
+// install the same way: cloud-e2e declares its helm arguments once (a bash
+// array), runs the helper on "${install[@]}" and installs with it plus the
+// derived --timeout, and holds no other line but the step's set -e and its
+// namespace. The job's own list is then run through the helper here, with
+// the job's env, so the cap the floor below reads is the one the job
+// derives — a deadline bump in values-dev, or a --set on the list, flows
+// into the floor instead of leaving a stale constant behind. The job cap
+// must outlive every bound the job runs under — the preamble, that helm
+// cap, and the steps after the install, each capped by its own
+// timeout-minutes — so a slow run ends on a message, not the runner kill.
+func TestChartCloudE2EInstallSharesItsArgumentsWithTheHelper(t *testing.T) {
+	job, step := cloudE2EJob(t)
+	w, err := readInstallScript(cloudE2ESite, job.Steps[step].Run)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The derived cap is what the helper prints for the job's own list, run
+	// here with the job's env from the repository root the job runs in.
 	helmBinary(t)
 	yqBinary(t)
 	env := os.Environ()
@@ -709,12 +959,15 @@ func TestChartCloudE2EInstallSharesItsArgumentsWithTheHelper(t *testing.T) {
 		env = append(env, key+"="+value)
 	}
 	var stdout, stderr strings.Builder
-	cmd := exec.Command("bash", "-c", "set -euo pipefail\n"+strings.Join(listLines, "\n")+"\nexec sh \"$KIND_WAIT_SCRIPT\" \"${install[@]}\"")
+	cmd := exec.Command("bash", "-c", "set -euo pipefail\n"+strings.Join(w.listDecl, "\n")+"\nexec sh \"$KIND_WAIT_SCRIPT\" \"${install[@]}\"")
 	cmd.Dir = filepath.Join("..", "..")
 	cmd.Env = append(env, "KIND_WAIT_SCRIPT="+kindWaitScript(t))
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("the helper refused cloud-e2e's own list (%s): %v — %s", w.list, err, strings.TrimSpace(stderr.String()))
+	}
+	if warning := strings.TrimSpace(stderr.String()); warning != "" {
+		t.Fatalf("the helper warns on cloud-e2e's own list, so the job's wait no longer covers its server rollout: %s", warning)
 	}
 	helmSeconds, err := strconv.Atoi(strings.TrimSuffix(strings.TrimSpace(stdout.String()), "s"))
 	if err != nil {
@@ -723,10 +976,26 @@ func TestChartCloudE2EInstallSharesItsArgumentsWithTheHelper(t *testing.T) {
 	if got, want := helmSeconds, 1920; got != want {
 		t.Fatalf("cloud-e2e's list sizes the wait at %d s, want %d — values-dev renders 1800 and the margin is 120 s; a --set on the list that moves the deadline moves this witness too", got, want)
 	}
-	helmCapMinutes := (helmSeconds + 59) / 60 // round up: the field counts whole minutes
+
+	// The floor sums every bound the job runs under: the preamble before
+	// the install — checkout, image build, kind up, image load, chart deps —
+	// measured at 4.0-4.7 m on recent success runs; the derived helm cap,
+	// rounded up to the whole minutes the field counts; and every step
+	// after the install, which a slow install that succeeds still runs —
+	// the readiness wait, the e2e run, the failure diagnostics — each of
+	// which must carry its own timeout-minutes, so a hang there ends on
+	// GitHub's step timeout and the sum bounds them all.
+	helmCapMinutes := (helmSeconds + 59) / 60
 	const preambleBudgetMinutes = 6
-	if job.TimeoutMinutes < helmCapMinutes+preambleBudgetMinutes {
-		t.Fatalf("cloud-e2e timeout-minutes = %d — below the %d m a verdict needs (%d m helm cap for the job's list + %d m preamble budget); a lower cap lets the runner kill replace helm's timeout with a silence", job.TimeoutMinutes, helmCapMinutes+preambleBudgetMinutes, helmCapMinutes, preambleBudgetMinutes)
+	postInstallMinutes := 0
+	for _, st := range job.Steps[step+1:] {
+		if st.TimeoutMinutes <= 0 {
+			t.Fatalf("cloud-e2e's step %q runs after the install with no timeout-minutes — a step with no bound of its own leaves the job cap unable to outlive it, and its hang would end on the runner kill; give it one", st.Name)
+		}
+		postInstallMinutes += st.TimeoutMinutes
+	}
+	if floor := preambleBudgetMinutes + helmCapMinutes + postInstallMinutes; job.TimeoutMinutes < floor {
+		t.Fatalf("cloud-e2e timeout-minutes = %d — below the %d m every bound of the job sums to (%d m preamble budget + %d m helm cap for the job's list + %d m of the steps after the install); a lower cap lets the runner kill replace a verdict with a silence", job.TimeoutMinutes, floor, preambleBudgetMinutes, helmCapMinutes, postInstallMinutes)
 	}
 }
 

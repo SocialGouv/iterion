@@ -67,8 +67,14 @@ every workload of the release, so a Deployment whose own deadline outlives
 the server's — the runner's 30000 s, a lame-duck drain budget
 `values-dev.yaml` keeps — is cut by the client cap, not its deadline, if it
 is still Progressing when the wait ends, and a StatefulSet (NATS) has no
-deadline, only the cap. Nothing reads the values file
-itself: the render already applies what stands between a file and the field
+deadline, only the cap. And the deadline bounds the whole server rollout for
+one pod only: Kubernetes measures it from the rollout's last sign of
+progress, not its start, and each pod that turns Ready is one — with several
+server pods (`server.replicas` above 1, or the HPA owning the count) the
+rollout can stay Progressing past the wait, so the helper prints the wait
+with a warning naming the count; `values-dev.yaml` runs one pod. Nothing
+reads the values file itself: the render already applies what stands between
+a file and the field
 (go-yaml's reading of the file, the `--set` overrides, the `with` that skips
 an unset or `0` knob, the StatefulSet of `mode=local`), and a reader of the
 file would have to reimplement all of it. That render is the install's own
@@ -90,7 +96,10 @@ integral float (`6e2`, or the `1e+06` helm prints for a values number of a
 million or more — quote such a number) and a signed, hex, octal, binary or
 underscored spelling are read as the integers they denote, and a leading
 zero makes octal digits octal (`010` is 8) where a YAML 1.2 reader such as
-yq reads 10 — so the helper sizes the wait from plain digits alone.
+yq reads 10 — so the helper sizes the wait from plain digits alone. Its
+messages print the install as its release, its chart and its values files,
+never its other arguments: a `--set` can carry a credential, and CI logs keep
+stderr.
 
 ## Topology
 
@@ -1015,8 +1024,9 @@ devbox run -- task chart:kind
 Renders + lints the chart, checks `appVersion` matches `package.json`.
 The install watch follows the rendered server Deployment's
 `progressDeadlineSeconds` (`values-dev.yaml` sets 1800 s; plus a 120 s margin,
-so 1920 s): a slow first pull exhausts the server's deadline budget, never a
-fixed client cap; the runner's longer drain deadline is not followed.
+so 1920 s): a slow first pull of its one server pod exhausts the server's
+deadline budget, never a fixed client cap; the runner's longer drain deadline
+is not followed.
 For a real install + workflow exec, see the `cloud-e2e` CI job in
 [.github/workflows/tests.yml](../.github/workflows/tests.yml).
 

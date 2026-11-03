@@ -865,14 +865,18 @@ jobs:
     # Keep the same fork/bot isolation and operator escape hatch as every
     # other job using the scale set.
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
-    # 40 m keeps the job above the verdict it owes: the 32 m helm cap the
-    # install derives from the deadline its own render gives the server
-    # Deployment (values-dev's 1800 s, read by scripts/chart-kind-wait.sh)
-    # only fires after this job's preamble — checkout, image build, kind up,
-    # image load, chart deps — measured at 4.0-4.7 m on success runs. Below
-    # the 38 m floor (32 + 6, witnessed in charts/iterion/kind_wait_test.go)
-    # the runner kill replaces helm's timeout with a silence.
-    timeout-minutes: 40
+    # 60 m keeps the job above every bound it runs under, so a slow run ends
+    # on a message — helm's timeout or a step's own — never the runner
+    # kill's silence: this job's preamble (checkout, image build, kind up,
+    # image load, chart deps), measured at 4.0-4.7 m on success runs and
+    # budgeted 6 m; the 32 m helm cap the install derives from the deadline
+    # its own render gives the server Deployment (values-dev's 1800 s, read
+    # by scripts/chart-kind-wait.sh); and the steps after the install, which
+    # a slow install that succeeds still runs, each capped by its own
+    # timeout-minutes (19 m together). Below the 57 m floor (6 + 32 + 19,
+    # witnessed in charts/iterion/kind_wait_test.go) a kill can replace a
+    # verdict.
+    timeout-minutes: 60
     env:
       KIND_CLUSTER: iterion-e2e
       IMG: iterion-e2e:ci
@@ -960,6 +964,9 @@ jobs:
         # server (no `-server` suffix); the runner template appends
         # `-runner`. Mismatched names here would silently hang for the
         # full --timeout before erroring.
+        # Each step after the install carries its own cap (the job cap's
+        # floor sums them): here the two 180 s waits.
+        timeout-minutes: 7
         run: |
           set -euo pipefail
           kubectl -n "${NS}" wait --for=condition=Available --timeout=180s \
@@ -968,6 +975,7 @@ jobs:
             deployment/${RELEASE}-iterion-runner
 
       - name: Port-forward server
+        timeout-minutes: 2 # 30 probes a second apart
         run: |
           kubectl -n "${NS}" port-forward svc/${RELEASE}-iterion 4891:4891 &
           # Give port-forward a moment to come up before curl-ing.
@@ -995,6 +1003,7 @@ jobs:
         # The previous source mixed YAML idioms with the DSL and 400'd
         # at parse time on `:8` — see commit history for the parse
         # error trace from the cloud-e2e diagnostics.
+        timeout-minutes: 3 # the 90 s poll and its requests
         run: |
           set -euo pipefail
           SOURCE=$'schema result:\n  stdout: string\n\ntool t1:\n  command: "echo hello cloud"\n  output: result\n\nworkflow ci_smoke:\n  entry: t1\n  t1 -> done\n'
@@ -1022,6 +1031,7 @@ jobs:
         # Confirms N1 wiring (post-fix from cloud_ready_review.md): the
         # registered counters are actually incremented by the live
         # cloudpublisher / runner code paths, not just declared.
+        timeout-minutes: 2 # a 3 s settle and two scrapes
         run: |
           set -euo pipefail
           kubectl -n "${NS}" port-forward svc/${RELEASE}-iterion 9090:9090 &
@@ -1034,6 +1044,7 @@ jobs:
 
       - name: Dump diagnostics on failure
         if: failure()
+        timeout-minutes: 5 # pods, events, descriptions and logs
         run: |
           kubectl -n "${NS}" get pods -o wide
           # Events sorted by timestamp surface image-pull, probe, and
@@ -1100,7 +1111,7 @@ jobs:
     # merge-queue note at the top of this file.
     if: github.event_name != 'merge_group'
     # Catches values typing drift cheaply (~30s) so a broken values.yaml
-    # surfaces before the 25-minute cloud-e2e kind cluster bootstrap. The
+    # surfaces before the cloud-e2e kind cluster bootstrap. The
     # --strict pass on values-prod.yaml additionally rejects unknown
     # keys, the most common foot-gun on a Helm chart upgrade.
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
