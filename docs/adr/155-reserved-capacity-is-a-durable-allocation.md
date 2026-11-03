@@ -45,13 +45,16 @@ What a preference cannot do, read on `70b5b1972`:
   reconstruct the fact, it has no bot→reservation resolver at all.
 - **The pool is unreachable for a workload that holds a credential.**
   `walkCredentialPlan` deactivates `credentialTierPool` when
-  `hasCredentials()`, which live resolution states as
-  `len(bundle.APIKeys) == 0 && len(bundle.OAuthCredentials) == 0`. A
-  floor-HELD credential is never sealed, so the bundle *is* empty at the
-  pool tier and an unreserved bot the reserve held out does reach the pool —
-  deliberate, and the restore step refuses to hand the held credential back.
-  What stays inexpressible is the ticket's own ask: Revi on a pool of
-  forfaits *while Revi's team holds a healthy credential*.
+  `hasCredentials()` — `holdsDefaultLLMCredential(bundle)` in live
+  resolution, `len(x.api)+len(x.oauth) > 0` in the preview — and the tier's
+  own BODY then re-asks the question as
+  `len(bundle.APIKeys) == 0 && len(bundle.OAuthCredentials) == 0`, a second
+  guard the preview does not carry. A floor-HELD credential is never sealed,
+  so the bundle *is* empty at both and an unreserved bot the reserve held
+  out does reach the pool — deliberate, and the restore step refuses to hand
+  the held credential back. What stays inexpressible is the ticket's own
+  ask: Revi on a pool of forfaits *while Revi's team holds a healthy
+  credential*.
 - **Execution capacity is not reservable at all.** `MaxAckPending` is one
   process-wide int applied verbatim to the shared durable and to every pool
   consumer (`poolConsumerConfig`); its only knob is
@@ -193,10 +196,11 @@ second half stays open by decision, in the consequences.
    stdlib plus `pkg/clock` and nothing else, the rule `pkg/budgetfloor`
    holds literally (`context`, `fmt`, `sort`, `strings`, `time`), while the
    Mongo twin beside it adds `pkg/internal/mongoutil` and the driver —
-   exactly what `pkg/credusage`, `pkg/orgusage`, `pkg/lease` and
-   `pkg/usagecap` already are. So the launch gate and the credential walk
-   import it without inverting the graph, and this decision does not
-   contradict the Mongo twin it asks for below.
+   exactly what `pkg/credusage`, `pkg/orgusage` and `pkg/lease` already are
+   (`pkg/usagecap` is that shape plus `pkg/secrets`, for its env half). So
+   the launch gate and the credential walk import it without inverting the
+   graph, and this decision does not contradict the Mongo twin it asks for
+   below.
    `Reserve(subject, requested) → (allowance, AllocationID, DenyReason,
    error)`, `Renew` (a resume re-checks spend without consuming a second
    unit, the rule `credpool.Ledger.Renew` already states),
@@ -222,10 +226,21 @@ second half stays open by decision, in the consequences.
    post-increment document, compensate with the mirror `$inc` on refusal —
    the shape of `orgusage.AllowRun` and of `credpool`'s day bucket. One
    round trip to admit, two to refuse, and the allow/deny decision itself is
-   atomic: `AllowRun`'s own words. It is deliberately NOT a *conditional*
-   (filtered) update — `{outstanding: {$lte: cap - requested}}` yields no
-   count on a miss and cannot tell a full subject from an absent one, which
-   is why the two precedents filter on `_id` alone. `credpool.Ledger` and
+   atomic: `AllowRun`'s own words. `requested` is named PER AXIS, because
+   neither precedent has one to copy (`orgusage.AllowRun` takes
+   `maxRuns`/`maxCostMillis` and no ask; `credpool.decide` DERIVES the
+   allowance through `shareAcrossSlots`): one slot on the countable axes,
+   the run's clamped budget ask on the monthly dollars, the reserve's share
+   on the window percentage. Incrementing by zero on the money axis would
+   leave the counter holding none of the promise and hand two concurrent
+   admissions the same remainder — the overshoot this record exists to
+   close. Where the ledger grants LESS than the ask, the same path corrects
+   the counter to what it promised, by the mirror `$inc` of
+   `requested - allowance`: outstanding is never a different quantity from
+   the allowance handed out. It is deliberately NOT a *conditional* (filtered) update —
+   `{outstanding: {$lte: cap - requested}}` yields no count on a miss and
+   cannot tell a full subject from an absent one, which is why the two
+   precedents filter on `_id` alone. `credpool.Ledger` and
    `orgusage.Counter` become **adapters** over it, so there is one tracker
    and not three; unit 2 carries them.
 4. **The sweeper is a correctness carrier, not a cost optimisation.**
@@ -239,53 +254,77 @@ second half stays open by decision, in the consequences.
    `capPolicyFor`'s `effective` policy on the `RunMessage`; `usageGuardFor`
    enforces the stamp. The fact travels **with** the result, written by the
    side that knows. The live re-read of the DEPLOYMENT cap stays, so a cap
-   tightened mid-run still bites. Both ends have an unstamped arm and both
-   fall back to the DEPLOYMENT policy — the UNLOWERED ceiling
-   (`capPolicyFor` lowers `effective` only, over a `deployment` that stays
-   `base`; `usageGuardFor` reads `r.cfg.UsageCapSource`) — so for that run
-   the reserve is not held: the lax direction, and neither arm may be
-   silent. A message with no stamp can only be one queued across a deploy of
-   the single binary that publishes (`cmd/iterion/server.go`), a
-   drain-length window: logged and counted, nothing else changes. A STAMPED
-   message on a runner that predates the reader is the long window — a
-   separately rolled image — and it is decision 10's case: the reserve
-   counts as unheld on the runner side until the fleet's floor clears the
-   release that reads the stamp. Both `claw` and `claude_code` lanes read
-   the stamp, or it is typed-refused for the one that does not (backend
-   parity).
+   tightened mid-run still bites, and the run is held to the TIGHTER of the
+   two: a stamp never LOOSENS what the runner's own source already caps.
+   Without that rule the stamp has an uncapping arm — `capPolicyFor` returns
+   a ZERO `botCapPolicy` when the publisher has no cap policy wired, and
+   `usagecap` reads `MaxPercent` 0 as "unenforced", so an empty stamp would
+   be indistinguishable from a real lowered policy of nothing. Both ends
+   have an unstamped arm and both fall back to the DEPLOYMENT policy — the
+   UNLOWERED ceiling (`capPolicyFor` lowers `effective` only, over a
+   `deployment` that stays `base`; `usageGuardFor` reads
+   `r.cfg.UsageCapSource`) — so for that run the reserve is not held: the
+   lax direction, and neither arm may be silent. A message with no stamp is
+   one queued by the previous image of the single binary that publishes
+   (`cmd/iterion/server.go`), and its window is RETENTION, not a drain:
+   `DefaultStreamMaxAge` (24h) for a queued message, `DefaultDLQMaxAge` (7d)
+   for a parked one, which `handleDLQReplay` re-publishes verbatim — the
+   frozen payload, stamp absent, reached by an operator gesture rather than
+   by a drain. That handler already loads the run doc and decodes the
+   message, so it is where a re-stamp belongs; until it carries one, the
+   seven days are an accepted bound, logged and counted. A STAMPED message
+   on a runner that predates the reader is the long window — a separately
+   rolled image — and it is decision 10's case: the reserve counts as unheld
+   on the runner side until the fleet's floor clears the release that reads
+   the stamp. Both `claw` and `claude_code` lanes read the stamp, or it is
+   typed-refused for the one that does not (backend parity).
 6. **The pool becomes an arbitrated capacity tier.** A reservation may be
    marked pool-eligible (default OFF), and then `credentialTierPool` stays
-   active for that workload even though it holds its own credential. One
-   rule, in `walkCredentialPlan`, so live resolution and the preview cannot
-   disagree. `budgetFloorWarnings` gains its third advisory shape: a
-   reservation marked pool-eligible on a deployment where no enabled pool
-   admits its tenant holds nothing.
+   active for that workload even though it holds its own credential.
+   Eligibility is ONE predicate — `poolEligible(bundle, botID)` — called by
+   the plan arm, by the tier body's own guard and by the preview. The body's
+   guard is why flipping the plan arm alone changes nothing: the tier is
+   reached and the grant refused at the acquire, while the preview reports
+   the tier ACTIVE — the disagreement this decision exists to prevent, and a
+   guard copied into the body is how it returns. `budgetFloorWarnings` gains
+   its third advisory shape: a reservation marked pool-eligible on a
+   deployment where no enabled pool admits its tenant holds nothing.
 7. **The meter carries the workload.** `credusage.Key` and `Spend` gain
    `BotID`, `docID` leaves an empty one out exactly as it does for `RepoID`,
-   and a repo's share of a reservation resolves against **that
+   and `aggregateRepos` becomes ONE fold over both additive dimensions — the
+   bot cleared beside the repo. The write half alone is not additive: it
+   splits a credential-month into rows no pre-dimension listing can tell
+   apart, since `List`, `ListByFingerprint` and `ListByTier` all read
+   through that fold (`summed`) and `MonthlyUsage` exposes no bot at all —
+   the reporting outage `docID`'s own comment describes, in the lax
+   direction. `ListByRepo` keeps its per-repository rows and folds the bots
+   inside each. A repo's share of a reservation resolves against **that
    reservation's** consumption. Enforcement of the new dimension is armed
    only on a fleet **verified** to write it, by decision 10's predicate. A
    fleet that is not cleared keeps the pre-dimension reading — the
    repository's **total** — never the bot-attributed subset, because the
    subset is the lax direction: money leaks and nothing alerts (finding 6).
 8. **Policy unavailable is not policy absent.** The resolver keeps its
-   process-local TTL cache, and the gate stops reading an unreadable policy
-   as "no reservations" — but the two arms differ, and only one of them has
-   a last-known value to hold a reserve on. A WARM cache already serves
-   one: the resolver warns "settings read failed — serving last-known
-   values" and returns the cached record, so the reserve is held on it and
-   the conservative concurrency rule stands in while the ledger is
-   unreachable. A COLD start that never resolved has NO policy: `cached`
-   stays nil, `ready` stays false, and `Get` returns a bare `*T`, so today
+   process-local TTL cache, and BOTH readers of that record stop reading an
+   unreadable policy as "no reservations": `budgetFloorPolicy` at the launch
+   gate and `capPolicyFor` at the credential walk each map a nil record to
+   the zero policy today, so fixing the gate alone would leave the window
+   axis silently un-reserved on the very same cold start. One readiness
+   accessor serves both. The two arms differ, and only one of them has a
+   last-known value to hold a reserve on. A WARM cache already serves one:
+   the resolver warns "settings read failed — serving last-known values" and
+   returns the cached record, so the reserve is held on it and the
+   conservative concurrency rule stands in while the ledger is unreachable.
+   A COLD start that never resolved has NO policy: `cached` stays nil,
+   `ready` stays false, and `Get` returns a bare `*T`, so today
    `budgetFloorPolicy` maps nil to the zero policy and cannot tell "nothing
    written" from "never read". Unit 10 exposes that distinction —
    `Resolver.ready` becomes readable — and takes the **admit** direction:
-   refusing every launch on a deployment that may have configured no
-   reserve at all is the worse failure (philosophy 1), so the launch is
-   admitted with no allocation and the fact is logged AND counted under its
-   own reason detail. Fail-open stays the doctrine for a degraded store
-   read — `gateLaunch`'s doc comment owns it — made observable instead of
-   silent.
+   refusing every launch on a deployment that may have configured no reserve
+   at all is the worse failure (philosophy 1), so the launch is admitted
+   with no allocation and the fact is logged AND counted under its own
+   reason detail. Fail-open stays the doctrine for a degraded store read —
+   `gateLaunch`'s doc comment owns it — made observable instead of silent.
 9. **Execution capacity is reservable per pool.** `RunnerPool` gains an
    in-flight ceiling that overrides `cfg.MaxAckPending` for that pool's
    consumer (`poolConsumerConfig` is the seam; `0` inherits
@@ -307,18 +346,24 @@ second half stays open by decision, in the consequences.
     one rule rather than carrying a guard each. **Cleared** is a predicate,
     not a helper: at least one runner build observed inside
     `engineFloorLookback`, every observed build orderable, and all of them
-    at or above the release that ships the field. `s.engineFloor` does NOT
-    answer it — with no observer wired, on an `ObservedRunnerBuilds` error
-    and on an EMPTY observation it returns this server's OWN build as the
-    floor, which on a current server reads as cleared; the evidence of those
-    arms is in its `sources`, not in its build — and its one existing
-    consumer PASSES an unorderable floor with a warning
-    (`requiresFloorGap`'s `EngineUnknown` arm), the polarity this gate
-    inverts. So the unit owes a readiness accessor beside `engineFloor`,
-    with each unverified arm witnessed. An unverified fleet is a WARNING and
-    never a refusal (philosophy 1), and the conservative reading it falls
-    back to is logged and counted, so a rollout is observable rather than
-    silent.
+    at or above the release that ships the field — EXCEPT where the engine
+    executes in this very process (`cfg.Mode != "cloud"`, the marker the
+    server already keys local mode on): there the writer IS the reader,
+    `appinfo` answers for both halves, and the arm is CLEARED. Reading "no
+    observer wired" as unverified would unarm decision 7 forever on the one
+    topology that knows its own build with certainty. `s.engineFloor` does
+    NOT answer the predicate — with no observer wired, on an
+    `ObservedRunnerBuilds` error and on an EMPTY observation it returns this
+    server's OWN build as the floor, which on a current server reads as
+    cleared, and `sources` does not separate those three either: each
+    returns `["server <self>"]` byte-identically, so it tells observed from
+    not-observed and nothing finer. Its one existing consumer PASSES an
+    unorderable floor with a warning (`requiresFloorGap`'s `EngineUnknown`
+    arm), the polarity this gate inverts. So the unit owes a readiness
+    accessor beside `engineFloor` that carries the ARM itself, with each
+    unverified one witnessed. An unverified fleet is a WARNING and never a
+    refusal (philosophy 1), and the conservative reading it falls back to is
+    logged and counted, so a rollout is observable rather than silent.
 
 ## Consequences
 
@@ -431,29 +476,37 @@ Nothing here is built. The first unit rebases on the landing of
    and not merely on its fallback: the run is judged on the deployment
    policy AND the fallback is logged and counted, and the mutation drops
    that counter — a test that asserted only the fallback would pin the leak
-   as intended behaviour. The other direction — a stamped message on a
-   runner too old to read it — cannot be exercised from inside the new
-   binary; it is decision 10's reading, owed by unit 6's arms, and this unit
-   only states that the reserve counts as unheld until the floor clears.
+   as intended behaviour. Plus the EMPTY-stamp row: a stamped but zero
+   policy on a runner whose own source caps leaves the run CAPPED, and the
+   mutation takes the stamp instead of the tighter of the two. The other
+   direction — a stamped message on a runner too old to read it — cannot be
+   exercised from inside the new binary; it is decision 10's reading, owed
+   by unit 6's arms, and this unit only states that the reserve counts as
+   unheld until the floor clears.
 5. **The pool as an arbitrated tier** (`pkg/budgetfloor`,
    `pkg/server/cloudpublisher`, the CLI, `pkg/server/platform_settings.go`,
    `docs/credential-pool.md`). Witness: a run holding a healthy credential
    whose reservation is pool-eligible receives a grant and the preview
-   reports the same tier; the mutation reverts the plan arm and the existing
-   preview-matches-the-walk test reddens. A second test pins the default:
-   no opt-in, no pool.
+   reports the same tier — the GRANT it receives, never the plan bit. Two
+   mutations: revert the plan arm; revert the tier BODY's guard, after which
+   the walk hands out nothing while the preview still reports the tier
+   active and `TestBudgetFloor_ThePreviewAnswersWhatTheWalkDoes` reddens. A
+   second test pins the default: no opt-in, no pool.
 6. **The meter carries the workload** (`pkg/credusage`, `pkg/runner`,
    `pkg/server`, `pkg/budgetfloor`, the studio's typed client). Witness: a
    repo capped at N% of `review-pr`'s reserve is NOT refused by
-   `feature-dev`'s spend; the conformance suite extended for both twins; and
-   the finding-6 case — an unverified fleet keeps the repository's total, so
-   a runner that writes no bot cannot make the share read unconsumed. The
-   mutation drops the engine-floor gate and the share reads as free — and
-   one row per unverified arm of decision 10 (no observer wired, an
-   `ObservedRunnerBuilds` error, an EMPTY observation), each of which must
-   keep the repository's total and emit the warning, and each of which reads
-   as CLEARED if the gate asks `engineFloor` for a build instead of asking
-   the readiness accessor.
+   `feature-dev`'s spend; a credential-month written under two bots reads as
+   ONE row through `List`, `ListByFingerprint` and `ListByTier`, the
+   mutation dropping the bot from the fold; the conformance suite extended
+   for both twins; and the finding-6 case — an unverified fleet keeps the
+   repository's total, so a runner that writes no bot cannot make the share
+   read unconsumed. The mutation drops the engine-floor gate and the share
+   reads as free — and one row per arm of decision 10: no observer wired in
+   CLOUD mode, an `ObservedRunnerBuilds` error and an EMPTY observation each
+   keep the repository's total and emit the warning, while the LOCAL row
+   (`cfg.Mode != "cloud"`) ARMS the dimension — and every unverified one
+   reads as CLEARED if the gate asks `engineFloor` for a build instead of
+   asking the readiness accessor.
 7. **Per-pool in-flight ceiling** (`pkg/queue/nats`, `pkg/config`,
    `pkg/platformcfg`). Witness: on a config whose global is **not** the
    compiled default (`MaxAckPending` set as
@@ -485,13 +538,14 @@ Nothing here is built. The first unit rebases on the landing of
    causes apart. A deliberately false assertion must fail first: a test
    never collected proves nothing.
 10. **Policy unavailable is not policy absent** (`pkg/platformcfg`,
-    `pkg/server`) — decision 8: the readiness accessor, and the gate's two
-    arms. Witness: one row per arm — a WARM cache whose next read fails
-    holds the reserve on the last-known policy; a COLD start that never
-    resolved admits with no allocation, logged and counted, and does NOT
-    read as "no reservations written". The mutation collapses the arms back
-    to one nil check, after which the cold-start row stops telling them
-    apart.
+    `pkg/server`, `pkg/server/cloudpublisher`) — decision 8: the readiness
+    accessor, and the two arms at BOTH readers. Witness: one row per arm — a
+    WARM cache whose next read fails holds the reserve on the last-known
+    policy; a COLD start that never resolved admits with no allocation,
+    logged and counted, and does NOT read as "no reservations written"; and
+    the same pair on `capPolicyFor`, whose nil arm hands every bot the
+    UNLOWERED ceiling. The mutation collapses the arms back to one nil
+    check, after which the cold-start row stops telling them apart.
 
 Units 4, 5 and 6 sequence after the branches that hold their files; unit 7
 and unit 8 sequence against #2029, whose revised plan targets the same NATS
