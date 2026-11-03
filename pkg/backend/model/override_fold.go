@@ -275,7 +275,7 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 		if inf, ok := n.(interface{ GetInteractionFields() *ir.InteractionFields }); ok {
 			if f := inf.GetInteractionFields(); f != nil && (f.Interaction == ir.InteractionLLM || f.Interaction == ir.InteractionLLMOrHuman) {
 				acc.backend = ""
-				acc.site = n.NodeID() + "#interaction"
+				acc.site = n.NodeID() + interactionSiteSuffix
 				acc.resolveDirect(v.field(f.InteractionModel), v.field(fields.Model))
 			}
 		}

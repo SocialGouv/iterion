@@ -661,3 +661,82 @@ func TestRecordPoolSpend_aRuntimeNodeTheWalkCannotSeeBooksTheWholeAttempt(t *tes
 		t.Fatalf("a fully-joined attempt logged %q, want silence", buf.String())
 	}
 }
+
+// interactionPlan is the plan for the fired-interaction shape: the impl
+// node's `interaction: llm` answers the delegate's questions with a direct
+// generation on the donor's lent subscription (its interaction model rides
+// anthropic), under the synthetic id `impl_interaction` every event of the
+// generation carries (model.ExecuteHumanLLMForInteraction). The walk reads
+// the generation at `impl#interaction`; the plan must key a row on the
+// runtime id or the fired interaction joins nothing.
+func interactionPlan(t *testing.T) map[string]string {
+	t.Helper()
+	wf := fineBookingWorkflow()
+	impl := wf.Nodes["impl"].(*ir.AgentNode)
+	impl.InteractionFields = ir.InteractionFields{Interaction: ir.InteractionLLM, InteractionModel: "anthropic/claude-opus-5"}
+	res := model.EffectiveProviders(model.RouteView{Workflow: wf}, planKnownProviders)
+	if !res.NarrowSafe {
+		t.Fatalf("the interaction walk widened — test premise broken: %+v", res)
+	}
+	plan := model.CredentialPlan(res, fineBookingBundle())
+	want := map[string]string{
+		"impl|anthropic":             donorFingerprint,
+		"impl_interaction|anthropic": donorFingerprint,
+		"review|openai":              "fp-own-openai",
+	}
+	if !maps.Equal(plan, want) {
+		t.Fatalf("plan = %v, want %v — the interaction keys under the runtime id, funded by the donor's lent subscription", plan, want)
+	}
+	return plan
+}
+
+// TestRecordPoolSpend_aFiredInteractionBooksTheDonorsSlice: the delegate
+// asked, `interaction: llm` answered on the donor's subscription, and every
+// event of that generation names `impl_interaction` — the interaction's
+// priced steps book the donor's slice through the plan's runtime-id row, the
+// table riding with no miss. Mutant guards: the derivation keying the
+// interaction on the asking node alone reds at interactionPlan's want-map
+// before any booking (in production the steps would miss and void the run's
+// fine table — the donor charged the team's own $8 too); the runtime id the
+// generation stamps is pinned against the plan in the model package
+// (TestExecuteHumanLLMForInteraction_stepsJoinThePlansRuntimeRow).
+func TestRecordPoolSpend_aFiredInteractionBooksTheDonorsSlice(t *testing.T) {
+	var buf bytes.Buffer
+	h := newPoolHarnessForRun(t, credpoolLimitsForFine(), "run-1")
+	h.runner.cfg.Logger = iterlog.New(iterlog.LevelWarn, &buf)
+	ctx := context.Background()
+
+	plan := interactionPlan(t)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
+	hooks := model.NewStoreEventHooks(
+		context.Background(), usage, "run-1", iterlog.New(iterlog.LevelError, nil), nil, nil,
+	)
+	hooks.OnDelegateFinished("impl", model.DelegateInfo{
+		BackendName: "claude_code", Provider: "anthropic", Tokens: 900, CostUSD: 2,
+	})
+	hooks.OnLLMRequest("impl_interaction", model.LLMRequestInfo{Model: "anthropic/claude-opus-5", WireModel: "claude-opus-5"})
+	hooks.OnLLMStepFinish("impl_interaction", model.LLMStepInfo{
+		Number: 1, InputTokens: 20000, OutputTokens: 2000, Provider: "anthropic",
+	})
+	hooks.OnDelegateFinished("review", model.DelegateInfo{
+		BackendName: "codex", Provider: "openai", Tokens: 100, CostUSD: 8,
+	})
+	whole, _, _, _ := usage.RunTotals()
+	slice := whole - 8
+	if slice <= 2 {
+		t.Fatalf("the interaction's step priced nothing (donor slice $%.4f) — the test premise (a priced interaction) broke", slice)
+	}
+
+	h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-1", CredPlan: plan}, usage, nil, false)
+	if buf.Len() != 0 {
+		t.Fatalf("the interaction's report logged %q, want silence — its steps join the runtime-id row, so the fine table rides", buf.String())
+	}
+	day, _, err := h.ledger.Usage(ctx, donorPledgeID(), time.Now().UTC())
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	// The ledger keeps money at milli-cent resolution (CostToMillis).
+	if math.Abs(day.CostUSD-slice) >= 1e-3 {
+		t.Fatalf("the donor's ledger = $%.6f, want $%.6f — impl's $2 and the interaction that ran on their subscription, never the team's own $8", day.CostUSD, slice)
+	}
+}

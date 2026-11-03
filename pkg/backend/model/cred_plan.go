@@ -50,14 +50,15 @@ const PlanKeySep = "|"
 // of the sealed bundle — the same strings the runner reads back from its
 // own credentials (RunBundle's fingerprint maps, mirrored into
 // Credentials.Fingerprints at claim) and the lease carries, so producer
-// and consumer meet in one space. A Verified Action's rung-4 recovery keys
-// a second row under the synthetic agent's runtime id
-// (`<tool>__recover`), the id the recovery dispatch's own events carry
-// (agentRecoveryPlanNode). The run-level fallback chain names its
-// providers on no node of its own (`run-fallback#<stage>` sites): the
-// derivation folds it onto EVERY node that has a site of its own — a
-// superset of where ir.ApplyRunFallback actually lands the chain (agent
-// nodes declaring no routes of their own; a judge, or an agent with
+// and consumer meet in one space. A site the runtime dispatches under a
+// synthetic id of its own keys a second row under that id, the one the
+// dispatch's own events carry (runtimePlanNode): a Verified Action's rung-4
+// recovery under `<tool>__recover`, an `interaction: llm|llm_or_human`
+// generation under `<node>_interaction`. The run-level fallback chain
+// names its providers on no node of its own (`run-fallback#<stage>`
+// sites): the derivation folds it onto EVERY node that has a site of its
+// own — a superset of where ir.ApplyRunFallback actually lands the chain
+// (agent nodes declaring no routes of their own; a judge, or an agent with
 // authored `fallbacks:`, never takes it). The extra rows stay inert: an
 // observation joins on the provider its serving element resolved, which a
 // node the chain never reached names only from its own routes, and a
@@ -79,12 +80,13 @@ func CredentialPlan(res ProviderResolution, bundle secrets.RunBundle) map[string
 			continue
 		}
 		nodeProvs[node] = append(nodeProvs[node], provs...)
-		// Rung 4 dispatches under the synthetic agent's runtime id, not the
-		// tool node's: the same providers key a second row there, or every
-		// fired recovery observation joins nothing — a miss that voids the
-		// run's fine table under real spend.
-		if rung := agentRecoveryPlanNode(site); rung != "" {
-			nodeProvs[rung] = append(nodeProvs[rung], provs...)
+		// A site the runtime dispatches under a synthetic id — rung 4's
+		// agent, an interaction generation's human node — keys the same
+		// providers a second time under that id, or every fired observation
+		// of the dispatch joins nothing: a miss that voids the run's fine
+		// table under real spend.
+		if runtimeID := runtimePlanNode(site); runtimeID != "" {
+			nodeProvs[runtimeID] = append(nodeProvs[runtimeID], provs...)
 		}
 	}
 	if len(nodeProvs) == 0 {
@@ -142,24 +144,43 @@ func siteNode(site string) (node string, isRunFallback bool) {
 // vocabulary the pins and the refusals read.
 const agentRecoverySiteSuffix = "#agent_recovery"
 
-// agentRecoveryPlanNode names the plan-key node half a rung-4 walk site
-// rows under — the synthetic agent's runtime id (agentRecoveryNodeID,
-// recoveryAgentNode), the id every event of a recovery dispatch carries —
-// and "" for any other site. The walk records the rung at
-// `<tool>#agent_recovery`; keying its rows on the tool node alone would
-// leave every fired recovery observation joining `<tool>__recover|…`, a key
-// the plan never stamped.
+// interactionSiteSuffix is the walk's site for an `interaction:
+// llm|llm_or_human` generation (override_fold's interaction arm) — the same
+// launch vocabulary.
+const interactionSiteSuffix = "#interaction"
+
+// runtimePlanNode names the plan-key node half a walk site ALSO rows under
+// when the runtime dispatches it under a synthetic id of its own — the id
+// every event of that dispatch carries — and "" for any other site:
 //
-// An authored fallback route whose author named it "agent_recovery" spells
-// the same site: its extra `<tool>__recover` rows stay inert (nothing
-// dispatches under that id on a run without the rung) and its own node rows
-// are unchanged — the duplication only ever adds, the same booking-safe
+//   - `<tool>#agent_recovery`, a Verified Action's rung 4: the synthetic
+//     agent `<tool>__recover` (agentRecoveryNodeID, recoveryAgentNode);
+//   - `<node>#interaction`, an interaction generation: the synthetic human
+//     node `<node>_interaction` (interactionNodeID,
+//     ExecuteHumanLLMForInteraction).
+//
+// Keying such a site's rows on the node half alone leaves every fired
+// observation of the dispatch joining `<runtime id>|…`, a key the plan never
+// stamped.
+//
+// The node-half rows stay beside the runtime-id ones: an authored fallback
+// route whose author named it "agent_recovery" or "interaction" spells the
+// same site, and its observations join under the node's own id. For a real
+// synthetic dispatch those node rows are inert — an observation under the
+// node names a provider only from the node's own routes, whose sites row the
+// same (node, provider) key with the same fingerprint (a row's value is its
+// provider's, never its site's) — and an authored route's extra runtime-id
+// rows are inert too (nothing dispatches under that id on a run without the
+// synthetic dispatch): the duplication only ever adds, the same booking-safe
 // over-claim the run-level chain's spread is.
-func agentRecoveryPlanNode(site string) string {
-	if !strings.HasSuffix(site, agentRecoverySiteSuffix) {
-		return ""
+func runtimePlanNode(site string) string {
+	switch {
+	case strings.HasSuffix(site, agentRecoverySiteSuffix):
+		return agentRecoveryNodeID(strings.TrimSuffix(site, agentRecoverySiteSuffix))
+	case strings.HasSuffix(site, interactionSiteSuffix):
+		return interactionNodeID(strings.TrimSuffix(site, interactionSiteSuffix))
 	}
-	return agentRecoveryNodeID(strings.TrimSuffix(site, agentRecoverySiteSuffix))
+	return ""
 }
 
 // containsProvider reports whether provs names p.
