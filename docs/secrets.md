@@ -152,6 +152,19 @@ script body: the single-quoted form the command path swaps is shell, and each
 interpreter's env read is its own expression, python's needing an import the
 body may not have). One form keeps the value in the text, by
 the author's own choice: the raw `{{!vars.x}}` form, whose quoting is theirs.
+The compiler says it first: `C331` warns on that reference at authoring time
+(`iterion validate`, the studio's badge), where the run would only refuse it
+mid-node, after the spend upstream — a warning and not a refusal, because the
+compiler reads the NAME while the run asks its guard, and a launch holding no
+grant renders the var's empty value and runs ([diagnostics](references/diagnostics.md)).
+Both the refusal and the warning key on the reference the AUTHOR wrote: a
+bearer that reaches the body through a data mapping — an edge's
+`-> b with { tok: "{{vars.forge_publish_token}}" }`, read back as
+`{{input.tok}}` — is a plain input by then (a mapping resolves the raw var,
+`resolveRef`), so it is neither refused nor warned and renders into the temp
+file in clear. That indirection is deliberate and shared with `command:`, and
+it is the author's to avoid: a body that reads the variable from its own
+environment needs no mapping.
 A preview — the dry run, any rendering without the run's guard behind it —
 resolves nothing either: it renders the placeholder, the indirection existing
 only where the materialiser that resolves it exists.
@@ -979,4 +992,5 @@ malformed egress host (Layer 2) · `C093` `{{secrets.X}}` references an
 undeclared secret · `C094` invalid file-secret declaration · `C095`
 invalid secret subfield reference (for example `.path` on a value
 secret) · `C322` invalid `sinks:` grant · `C323` a reference reaches a
-sink its secret does not grant.
+sink its secret does not grant · `C331` a `{{vars.x}}` naming a
+server-minted credential in a `script:` body, which the run refuses.
