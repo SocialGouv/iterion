@@ -118,8 +118,14 @@ func CredentialPlan(res ProviderResolution, bundle secrets.RunBundle) map[string
 // siteNode names the node a walk site belongs to, and whether the site is
 // the run-level fallback chain's (which belongs to every node at once).
 // An unsuffixed site is its own node — a supervisor site keeps its whole
-// id, and no event of the run ever carries it, which leaves its plan keys
-// inert rather than misattributed.
+// id, one no event of the run ever carries (a DSL node id never holds the
+// colon, so the event paths cannot join those keys). The keys it forms
+// are load-bearing, not inert: the supervisor's OnUsage sink books under
+// `supervisor:<name>` (meterSupervisorSpecs) and addRoute joins the plan
+// with the sink's source as the node half, so the keys carry each
+// evaluation's spend onto the credential the walk resolved for the
+// supervisor's site — dropping the rows would leave that spend booking
+// nobody, the under-booked slice the report warns about.
 func siteNode(site string) (node string, isRunFallback bool) {
 	if site == ir.RunFallbackName || strings.HasPrefix(site, ir.RunFallbackName+"#") {
 		return "", true
