@@ -5,6 +5,7 @@ package proc
 import (
 	"context"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"os/exec"
@@ -67,7 +68,7 @@ const premiseWait = 30 * time.Second
 // it calls it stuck: a premise no scan met by then, or a sweep that has not
 // ended by then, will not get there. A count, never a duration — what a sound
 // sweep logs does not grow with load: a quiet run of the empty-scan witness
-// logs 6 scans and one of the non-empty witness 8, and the only scans load
+// logs 7 scans and one of the non-empty witness 8, and the only scans load
 // adds are those a signalled process takes to die. A sweep that leaves a
 // staged member alive logs scans until this bound, since that member keeps
 // the session from going quiet. The only clock a multi-scan wait keeps is the
@@ -424,7 +425,16 @@ type nodeWorld struct {
 	// judge — the respawner's replacement when the sweep ended before it
 	// joined the session. They are stopped with the rest at cleanup: a
 	// `sleep 301` left on a developer's desktop is this test's litter.
-	strays         []int
+	strays []int
+	// pinned holds, for each pid this world read from a pid file — what a
+	// launcher left behind, no child of this process — its start time when
+	// the pid was read: stopAll signals that pid only while it is still that
+	// process.
+	pinned map[int]uint64
+	// joinStopped are the members the join stopped itself, the sweep having
+	// left them running: endedOfTerm names that end as the join's, never as a
+	// phase of the sweep.
+	joinStopped    map[int]bool
 	afterGuardScan func([]SessionProcess)
 }
 
@@ -435,12 +445,14 @@ func newNodeWorld(t *testing.T) *nodeWorld {
 		t.Fatal(err)
 	}
 	w := &nodeWorld{
-		t:        t,
-		token:    NewNodeSessionToken(),
-		since:    since,
-		dir:      t.TempDir(),
-		marked:   map[string]int{},
-		controls: map[string]int{},
+		t:           t,
+		token:       NewNodeSessionToken(),
+		since:       since,
+		dir:         t.TempDir(),
+		marked:      map[string]int{},
+		controls:    map[string]int{},
+		pinned:      map[int]uint64{},
+		joinStopped: map[int]bool{},
 	}
 	t.Cleanup(w.stopAll)
 	return w
@@ -484,6 +496,12 @@ func (w *nodeWorld) waitPid(name, pidFile string) int {
 			pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
 			if err != nil {
 				w.t.Fatalf("%s: unreadable pid file %q", name, b)
+			}
+			// A launcher writes the pid of what it has just started, which
+			// runs until something stops it: its start time now is the
+			// identity stopAll checks before it signals that pid.
+			if st, ok := readStat("/proc/" + strconv.Itoa(pid)); ok {
+				w.pinned[pid] = st.start
 			}
 			return pid
 		}
@@ -677,9 +695,12 @@ func (w *nodeWorld) check(r SweepReport, err error) {
 		// a `-json` run counts. Nothing reports it on the gate, which runs
 		// neither — and the skip census is a static read of the SITE in the
 		// source, never of whether it fired. The guarantee does not rest on
-		// this reading: the window it would judge is staged, not raced, by
-		// TestSweepStopsAProcessThatShowsAfterANonEmptyScan, so its absence
-		// costs no coverage.
+		// this reading: the window it would judge — a process that joins
+		// after a scan of the TERM phase found members, the next scan still
+		// the TERM phase's — is staged, not raced, by
+		// TestSweepStopsAProcessThatShowsAfterAnEmptyScan, whose
+		// `replacement` joins there and must be reported and end of TERM, so
+		// its absence here costs that window no coverage.
 		w.t.Run("respawner's replacement", func(t *testing.T) {
 			if !sighted[child] {
 				// The sweep ended before the replacement joined the session:
@@ -690,7 +711,7 @@ func (w *nodeWorld) check(r SweepReport, err error) {
 				// here would be a verdict on how fast this machine starts a
 				// process.
 				w.strays = append(w.strays, child)
-				t.Skipf("the sweep returned before the respawner's replacement (pid %d) joined the session: the window is judged by TestSweepStopsAProcessThatShowsAfterANonEmptyScan, which stages it instead of racing it", child)
+				t.Skipf("the sweep returned before the respawner's replacement (pid %d) joined the session: the window is judged by TestSweepStopsAProcessThatShowsAfterAnEmptyScan, whose `replacement` joins after a scan of the TERM phase that found members — staged instead of raced", child)
 			}
 			w.marked["respawner's replacement"] = child
 		})
@@ -743,15 +764,28 @@ func awaitGone(pid int) bool {
 	return true
 }
 
+// stopAll stops what this world started, once the test is over. A pid is
+// freed when its process is reaped and may name another process by then —
+// endedOfTerm reaps the members it judges, and whoever adopted what a launcher
+// left behind reaps it — so no pid is signalled on its number alone, the guard
+// stopMarked keeps. A recorded pid is signalled while a scan of the session
+// holds it, or while it is still the process pinned to it when its pid file
+// was read; a child of this process, through its own handle, which signals
+// nothing once Wait has reaped it.
 func (w *nodeWorld) stopAll() {
-	for _, pid := range w.strays {
-		_ = syscall.Kill(pid, syscall.SIGKILL)
+	held := map[int]bool{}
+	if found, err := FindNodeSession(w.token); err != nil {
+		w.t.Errorf("FindNodeSession, stopping this world: %v", err)
+	} else {
+		for _, p := range found {
+			held[p.PID] = true
+		}
 	}
-	for _, pid := range w.controls {
-		_ = syscall.Kill(pid, syscall.SIGKILL)
-	}
-	for _, pid := range w.marked {
-		_ = syscall.Kill(pid, syscall.SIGKILL)
+	recorded := slices.Concat(w.strays, slices.Collect(maps.Values(w.controls)), slices.Collect(maps.Values(w.marked)))
+	for _, pid := range recorded {
+		if start, ok := w.pinned[pid]; held[pid] || ok && sameProcess(pid, start) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
 	}
 	for _, cmd := range w.children {
 		_ = cmd.Process.Kill()
@@ -826,9 +860,10 @@ func (w *nodeWorld) sweepInBackground(s sweeper, win *scanWindow) func() (SweepR
 // kernel's own record of that end, its wait status. The empty-scan witness
 // stages its windows in the TERM phase, so a member that ended of anything
 // else was stopped by a phase after that one, which re-discovered for free
-// what TERM dropped: which phase stopped a member travels with the member,
-// where a scan log only shows how the sweep ended. A member still running is
-// check's to name.
+// what TERM dropped — or by the join, which stops what the sweep left running
+// and says so: which phase stopped a member travels with the member, where a
+// scan log only shows how the sweep ended. A member still running is check's
+// to name.
 func (w *nodeWorld) endedOfTerm(names ...string) {
 	w.t.Helper()
 	for _, name := range names {
@@ -844,7 +879,11 @@ func (w *nodeWorld) endedOfTerm(names ...string) {
 		cmd := w.children[i]
 		_ = cmd.Wait() // its end is the status read below, not an error
 		ws, ok := cmd.ProcessState.Sys().(syscall.WaitStatus)
-		if !ok || !ws.Signaled() || ws.Signal() != syscall.SIGTERM {
+		switch {
+		case ok && ws.Signaled() && ws.Signal() == syscall.SIGTERM:
+		case w.joinStopped[pid]:
+			w.t.Errorf("%s (pid %d) %v, by the join: no phase of the sweep stopped it, the join did, the sweep having left it running", name, pid, cmd.ProcessState)
+		default:
 			w.t.Errorf("%s (pid %d) %v, not of the TERM its window's phase sends: a later phase stopped it, re-discovering for free what TERM dropped", name, pid, cmd.ProcessState)
 		}
 	}
@@ -853,7 +892,8 @@ func (w *nodeWorld) endedOfTerm(names ...string) {
 // stopMarked stops what this world marked that the session still holds, and
 // names it: the join's last resort on a sweep that does not end. Only a pid a
 // scan of the session finds is signalled, so a pid freed and taken by another
-// process is never one.
+// process is never one. What it stops is recorded for endedOfTerm, whose
+// verdict on a member is then the join's and not a phase's.
 func (w *nodeWorld) stopMarked() []string {
 	w.t.Helper()
 	found, err := FindNodeSession(w.token)
@@ -869,6 +909,7 @@ func (w *nodeWorld) stopMarked() []string {
 	for name, pid := range w.marked {
 		if held[pid] {
 			stopped = append(stopped, fmt.Sprintf("%s (pid %d)", name, pid))
+			w.joinStopped[pid] = true
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 		}
 	}
@@ -1050,28 +1091,42 @@ func TestGuardFoundRefusesALiveIntruder(t *testing.T) {
 //
 // Staged TWICE, the second time at a later scan: a sweep that files the
 // members of its first scans and then stops re-discovering has a clean first
-// window, and this is the witness that sees it. A window witnesses that drop
-// only when the phase it is staged in is the phase that ENDS the sweep: a
-// member dropped in a phase that hands over to the next one is re-discovered
-// for free by that phase's own first scan. The TERM phase here is made that
-// phase: it has no deadline (sweepNoDeadline), so it ends only on two scans
-// in a row that find nothing and no KILL phase ever follows it — on any host,
-// however slow its scans. A sweep that drops the member a window staged leaves
-// it running, which is a session never quiet again: the sweep never ends, and
-// the join names that member as left running once the log passes scanBound,
-// then stops it. `endedQuiet` asserts the premise off the sweep's own log
-// rather than assuming it, and `endedOfTerm` asserts what no log shape can: a
-// sweep that handed over early — a TERM phase cut short by anything but its
-// two empty scans — lets KILL re-discover what TERM dropped and still ends
-// on two empty scans; its member then ends of KILL, which the kernel records.
-// The non-empty witness below stages its later windows in the phase that ends
-// ITS sweep — the KILL phase, which has no successor at all.
+// window, and this is the witness that sees it.
+//
+// Between the two sits the window the product opens on its own — the respawn
+// window: a supervisor forks its replacement because TERM reached it, so the
+// replacement shows only after a scan that found the supervisor, and the scan
+// that first finds it is the TERM phase's too while the grace lasts — a scan
+// that found members ends a phase only on its deadline, and this TERM phase
+// has none. So the sweep is also held at the scan that found `late`, before it
+// signals `late`, and `replacement` joins there: a sweep that signals what
+// such a scan's successor finds without filing it stops `replacement` and
+// never reports it. The respawner of
+// TestSweepStopsTheSessionAndNothingElse races that window, and a sweep that
+// never sighted its replacement exempts itself there (a SKIP); this stages it.
+//
+// A window witnesses that drop only when the phase it is staged in is the
+// phase that ENDS the sweep: a member dropped in a phase that hands over to
+// the next one is re-discovered for free by that phase's own first scan. The
+// TERM phase here is made that phase: it has no deadline (sweepNoDeadline), so
+// it ends only on two scans in a row that find nothing and no KILL phase ever
+// follows it — on any host, however slow its scans. A sweep that drops the
+// member a window staged leaves it running, which is a session never quiet
+// again: the sweep never ends, and the join names that member as left running
+// once the log passes scanBound, then stops it. `endedQuiet` asserts the
+// premise off the sweep's own log rather than assuming it, and `endedOfTerm`
+// asserts what no log shape can: a sweep that handed over early — a TERM phase
+// cut short by anything but its two empty scans — lets KILL re-discover what
+// TERM dropped and still ends on two empty scans; its member then ends of
+// KILL, which the kernel records. The non-empty witness below stages its later
+// windows in the phase that ends ITS sweep — the KILL phase, which has no
+// successor at all.
 //
 // Not parallel: the holds arm a package seam.
 func TestSweepStopsAProcessThatShowsAfterAnEmptyScan(t *testing.T) {
 	for _, s := range sweepers {
 		t.Run(s.name, func(t *testing.T) {
-			// Both windows are staged in the TERM phase, which only two empty
+			// Every window is staged in the TERM phase, which only two empty
 			// scans end; KILL never runs.
 			sweepBudget(t, sweepNoDeadline, sweepNoDeadline)
 			w := newNodeWorld(t)
@@ -1079,14 +1134,21 @@ func TestSweepStopsAProcessThatShowsAfterAnEmptyScan(t *testing.T) {
 			sweep := w.sweepInBackground(s, win)
 			empty := win.at(t, "found nothing, for a window to open after", func(_, found int) bool { return found == 0 })
 			w.stageInWindow(win, empty, "late")
-			// `late` is stopped at the scan after that window, so the next scan
-			// to find nothing is the third at the earliest: the window opens
-			// where a sweep that stopped re-discovering is still answering
-			// about the members of its first scans. That premise is one a
-			// sweep which left `late` running defeats — the session is never
-			// quiet again — so it goes through atAfterStaging, which adds the
-			// product's verdict on `late` to the premise's own red.
-			again := w.atAfterStaging(win, sweep, "found nothing again, at a later scan", func(index, found int) bool { return index > empty+1 && found == 0 })
+			// The respawn window: the scan that found `late`, held before the
+			// sweep signals it. A sweep that never finds `late` defeats this
+			// premise — it goes quiet without it — so it goes through
+			// atAfterStaging, which adds the product's verdict on `late` to
+			// the premise's own red.
+			busy := w.atAfterStaging(win, sweep, "found `late`, for a window to open after a scan that found members", func(index, found int) bool { return index > empty && found > 0 })
+			w.stageInWindow(win, busy, "replacement")
+			// `replacement` is stopped at the scan after that window, so the
+			// next scan to find nothing is the fourth at the earliest: the
+			// window opens where a sweep that stopped re-discovering is still
+			// answering about the members of its first scans. That premise is
+			// one a sweep which left `late` or `replacement` running defeats —
+			// the session is never quiet again — so it goes through
+			// atAfterStaging too.
+			again := w.atAfterStaging(win, sweep, "found nothing again, at a later scan", func(index, found int) bool { return index > busy+1 && found == 0 })
 			w.stageInWindow(win, again, "later")
 			report, err := sweep()
 			// What those windows staged is a verdict only about a sweep that
@@ -1095,25 +1157,25 @@ func TestSweepStopsAProcessThatShowsAfterAnEmptyScan(t *testing.T) {
 			// member, off the member's own end.
 			win.endedQuiet(t)
 			w.check(report, err)
-			w.endedOfTerm("late", "later")
+			w.endedOfTerm("late", "replacement", "later")
 		})
 	}
 }
 
-// The same guarantee at the window the product actually opens: a scan that
-// found MEMBERS, after which one more joins. This is the respawn window —
-// a supervisor forks its replacement because TERM reached it, so the
-// replacement can only ever show after a scan that found the supervisor — and
-// the witness above cannot stage it, because it asserts its held scan found
-// NOTHING. A sweep that files the members of its first non-empty scan and
-// stops re-discovering passes that witness, and the one the session's own
-// fixtures give (the respawner's replacement is judged only when the sweep
-// sighted it, so such a sweep exempts itself). Here the seed ignores TERM, so
-// the session is never empty and the first window is staged after a scan that
-// found the seed: `late` joins there and must be stopped, which
-// is the clause SweepNodeSession documents — "every scan finds the carriers of
-// the entry, the processes earlier scans found and that are still the same, and
-// every descendant of either".
+// The same guarantee where the session is never empty: a scan that found
+// MEMBERS, after which one more joins. Here the seed ignores TERM, so only
+// KILL empties the session, and the first window is staged after a scan that
+// found the seed: `late` joins there and must be stopped, which is the clause
+// SweepNodeSession documents — "every scan finds the carriers of the entry,
+// the processes earlier scans found and that are still the same, and every
+// descendant of either". That scan is the TERM phase's only one — a seed that
+// ignores TERM leaves that phase its deadline alone to end on, and this one is
+// past before the sweep starts — so the scan after the window is KILL's first,
+// which finds `late` whatever TERM would have done with it. The respawn window
+// proper, a scan of the TERM phase after one that found members, is the
+// empty-scan witness's `replacement`: a TERM phase that a seed ignoring TERM
+// keeps busy scans a second time only on a deadline long enough for it, and
+// that is a duration the host decides.
 //
 // Which scan found the seed is read from the sweep's own view and never bet on
 // the first one: the seed's own `exec` can still be running when the sweep
@@ -1138,11 +1200,12 @@ func TestSweepStopsAProcessThatShowsAfterAnEmptyScan(t *testing.T) {
 // the whole TERM phase passes this witness — measured, 3 of 3 arms. What that
 // window asserts is that `late` is STOPPED, by whichever phase reaches it.
 // The TERM indexes are held by the empty-scan witness above, which pins the
-// 2nd and 4th of its own and asserts the handover never happened — that its
-// members ended of TERM. No finite set of windows reaches
-// every index — a sweep that re-discovers through the first five scans of a
-// phase and stops there passes both witnesses — which is why the clause stays
-// a loop over every scan and not a case for the first ones. And an index is the
+// 2nd and 3rd of its own — the 3rd after a scan that found members — and a
+// later one, the 5th at rest, and asserts the handover never happened — that
+// its members ended of TERM. No finite set of windows reaches every index — a
+// sweep that re-discovers through the first five scans of a phase and stops
+// there passes both witnesses at rest — which is why the clause stays a loop
+// over every scan and not a case for the first ones. And an index is the
 // only axis these windows bound: at rest both witnesses reach their last window
 // within a second or two of the sweep's start, so a sweep that stops
 // re-discovering after a few seconds of ELAPSED time is invisible to them —

@@ -274,25 +274,59 @@ its burned budget. Under the 300 the old witness PASSED that mutant 2 of 2, its
 TERM phase handing `later` to KILL; the new one reddens on the join's verdict,
 after 53 scans and 321s. No log shape says WHICH phase stopped a member, so the
 witness also reads each member's own end, the kernel's wait status
-(`endedOfTerm`): `late` and `later` must die of the SIGTERM their phase sends.
-A mutant that drops members new from the TERM phase's 3rd scan AND hands over
-to KILL after its 5th ends on two empty scans in 7, every member stopped and
-reported — it passed the old witness 3 of 3 arms at rest, and reddens the new
-one 3 of 3 on `later (pid N) signal: killed, not of the TERM its window's phase
-sends`.
+(`endedOfTerm`): `late` and `later` — and `replacement`, below — must die of the
+SIGTERM their phase sends. A mutant that drops members new from the TERM phase's
+3rd scan AND hands over to KILL after its 5th ends on two empty scans in 7,
+every member stopped and reported — it passed the old witness 3 of 3 arms at
+rest, and reddened the witness as `f5de1b70f` had it 3 of 3 on `later (pid N)
+signal: killed, not of the TERM its window's phase sends`.
+
+**The respawn window, kept in the phase that ends the sweep.** A supervisor
+forks its replacement because TERM reached it, so the replacement shows only
+after a scan of the TERM phase that found the supervisor, and the scan that
+first finds it is that phase's too while the grace lasts — a scan that found
+members ends a phase only on its deadline. The non-empty witness staged that
+window while its TERM phase had a 1s budget; with a deadline already past, its
+TERM phase is one scan that hands over, its first window's member is first
+found by KILL's first scan, and no window of the package sat after a TERM scan
+that found members with another TERM scan to follow. Measured with a mutant that
+signals a member the TERM phase finds just after a scan that found members but
+never files it, Go and its sh twin: the witness as `9cdd04bae` had it reddens 3
+of 3 arms (`late (pid N) was stopped but not reported`); the package at
+`f5de1b70f` passed ENTIRELY, rc 0 — the respawner's replacement in
+`TestSweepStopsTheSessionAndNothingElse` is judged only when the sweep sighted
+it, which this sweep never does, so it SKIPPED on all three arms. The
+empty-scan witness now also holds the scan that found `late`, before the sweep
+signals it, and stages `replacement` there; its TERM phase has no deadline, so
+the scan that finds `replacement` is TERM's, and `endedOfTerm` reads that it
+ended of TERM. That mutant reddens it 3 of 3 arms on `replacement (pid N) was
+stopped but not reported` alone, its scan log the sound one, 7 scans:
+`[0 1 1 0 1 0 0]`; the respawner's subtests still SKIP. The third-scan drop still
+reddens all six arms of the two witnesses, the empty-scan one now on `left
+running [replacement (pid N)]`, and so does its variant that hands over after
+the TERM phase's 5th scan — `later` then lands at KILL's third scan and is
+dropped there (`left running [later (pid N)]`, 53 scans). A variant that drops
+only in the TERM phase and hands over after its 5th scan ends on two empty
+scans with every member reported (`[0 1 1 1 1 1 0 1 0 0]`) and reddens the
+empty-scan witness 3 of 3 on `endedOfTerm` alone: `replacement (pid N) signal:
+killed, not of the TERM its window's phase sends`. A member the join stopped
+itself is told apart (`… by the join: no phase of the sweep stopped it`),
+measured with a sweep stalled 35s after its 5th scan, 3 of 3 arms.
 
 **How far the windows reach.** A window's member is new to the scan AFTER it, so
 the two windows the non-empty witness stages in the KILL phase pin re-discovery
-at its 3rd and 5th scans, and the empty-scan one pins the 2nd and 4th of its
-own. Its FIRST window pins no index: that one sits in the TERM phase, which
-hands over in that witness, so KILL's own first scan re-discovers the member for
-free — a mutant that classifies no new member at all through the whole TERM
-phase, and one that drops them from its 2nd scan on, both pass it 3 of 3 arms,
-while reddening the empty-scan witness 3 of 3 on `endedQuiet`. What the first
-window asserts is that its member is STOPPED, by whichever phase reaches it; the
-TERM indexes are the empty-scan witness's to hold. Measured with mutants that
-drop a member first seen at the Kth scan of a phase: K=3 and K=4 redden both
-witnesses, K=5 the non-empty one, K=6 passes both. The third window is what K=4
+at its 3rd and 5th scans, and the empty-scan one pins the 2nd and 3rd of its
+own and, at rest, the 5th. The non-empty witness's FIRST window pins no index:
+that one sits in the TERM phase, which hands over in that witness, so KILL's own
+first scan re-discovers the member for free — a mutant that classifies no new
+member at all through the whole TERM phase, and one that drops them from its 2nd
+scan on, both pass it 3 of 3 arms, while reddening the empty-scan witness 3 of 3
+on `endedQuiet`. What the first window asserts is that its member is STOPPED, by
+whichever phase reaches it; the TERM indexes are the empty-scan witness's to
+hold. Measured with mutants that drop a member first seen at the Kth scan of a
+phase: K=3 and K=4 redden both witnesses, K=5 the non-empty one, K=6 passes
+both — and with the respawn window in place, K=5 reddens the empty-scan witness
+too (3 of 3), while K=6 still passes both at rest. The third window is what K=4
 and K=5 cost: with only two, K=4 and its sh twin passed the ENTIRE package, 69
 green and rc 0. No finite set of windows reaches every index, which is why the
 product's clause stays a loop over every scan, and why both witnesses say where
