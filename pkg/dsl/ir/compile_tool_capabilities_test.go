@@ -328,6 +328,30 @@ workflow main:
 			}
 		}
 	})
+	// The third case (review r3): the node declares a list that does NOT
+	// hold the capability and the workflow grants nothing either — the
+	// message is neither "nowhere" (the node DID declare) nor the override
+	// remedy (the workflow holds nothing to inherit).
+	t.Run("declared on the node, without the capability, workflow silent", func(t *testing.T) {
+		_, diags := compileSource(t, `
+tool plan:
+  action: board.issue.list
+  capabilities: [watch.subscribe]
+
+workflow main:
+  entry: plan
+  plan -> done
+`)
+		msg := diagText(diags, DiagNativeActionWithoutGrant)
+		if msg == "" {
+			t.Fatal("want C331")
+		}
+		for _, want := range []string{"does not grant either", "to the node's list"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("the node-declared case must say %q: %s", want, msg)
+			}
+		}
+	})
 }
 
 // diagText returns the first message carrying code, "" when absent.
