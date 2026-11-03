@@ -9,7 +9,7 @@ invariants. `iterion map find|impact|path` answer the exact questions.
 
 - `pkg/auth/` — Operator authentication primitives (SSO, session cookies, password reset) for cloud-mode endpoints. Mints the JWT carrying `(OrgID, OrgRole, TeamID, Role)`; `SwitchOrg`/`SwitchTeam` re-issue it (org-then-team validation).
 
-- `pkg/audit/` — Tenant + platform audit log (control-plane mutations; Mongo TTL store, `/api/teams/{id}/audit` + `/api/admin/audit`)
+- `pkg/audit/` — Tenant + platform audit log (control-plane mutations and sign-ins, [identity-data-lifecycle.md](identity-data-lifecycle.md); Mongo TTL store, `/api/{teams,orgs}/{id}/audit` + `/api/admin/audit`)
 
 - `pkg/orgusage/` — Per-org monthly run/cost counters (Mongo CAS) feeding the launch gate + usage views (see [docs/quotas-and-limits.md](../../quotas-and-limits.md))
 

@@ -614,7 +614,25 @@ update; until then, the step-by-step above is the operator path.
 
 ## 9. Audit log
 
-OAuth-forfait usage is logged at `INFO` on the publisher side:
+The audit log is a persistent, queryable collection
+([pkg/audit](../pkg/audit/audit.go), `audit_events`, Mongo TTL 400 days):
+every control-plane mutation (orgs, teams, members, invitations, secrets,
+bindings, webhooks, tokens, DLQ) and every **sign-in** — accepted or
+refused, every provider — as one row with actor, action, target, IP (the
+immediate peer's address and port: no deployment setting trusts a
+forwarded header yet, #2673 — behind an ingress, the ingress pod's),
+user-agent and a small `meta`. Two scopes: tenant rows
+(`GET /api/teams/{id}/audit` the team-keyed ones, team admins;
+`GET /api/orgs/{id}/audit` the org-keyed ones, sign-ins included, org
+admins) and platform rows
+(`GET /api/admin/audit`, super-admin), filterable by `action`, `actor`,
+`from`, `to`. The action tokens and the sign-in rules — an accepted sign-in
+is an org row of the account, a refused one a platform row carrying the
+attempted address only as a peppered digest, a refresh writes nothing — are
+in the [admin guide §1.5](cloud-admin-guide.md#15-audit-log) and
+[ADR-157](adr/157-authentication-events-join-the-audit-log.md).
+
+Beside it, OAuth-forfait usage is logged at `INFO` on the publisher side:
 
 ```
 "cloudpublisher: oauth-forfait used run=<id> user=<id> kind=claude_code"

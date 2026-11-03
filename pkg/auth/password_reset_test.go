@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -164,7 +165,7 @@ func TestChangePassword(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("wrong current rejected", func(t *testing.T) {
-		if _, err := svc.ChangePassword(ctx, "u1", "wrong", "new-password-456", "ua", "ip"); err != ErrInvalidCredentials {
+		if _, err := svc.ChangePassword(ctx, "u1", "wrong", "new-password-456", "ua", "ip"); !errors.Is(err, ErrInvalidCredentials) {
 			t.Fatalf("err = %v, want ErrInvalidCredentials", err)
 		}
 	})
