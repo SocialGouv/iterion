@@ -60,16 +60,21 @@ func IsPublicUnicast(ip net.IP) bool {
 
 // nonPublicPrefixes are refused whole, beside net.IP's own predicates. The
 // shared address space serves carrier NAT, overlay networks and cluster pod
-// ranges. The two IPv6 blocks carry an IPv4 address that a reader or a
-// translator delivers to at a place the address does not fix for every
-// reader: the deprecated IPv4-compatible form, which no host is written in,
-// and the NAT64 local-use prefix, whose operator picks the prefix length
-// and so where the IPv4 address sits.
+// ranges. The two IPv6 blocks carry an IPv4 address and are refused
+// whatever address they carry: the deprecated IPv4-compatible form, which
+// no host is written in and which a reader that maps it delivers to the
+// IPv4 address it carries, and the NAT64 local-use prefix, whose operator
+// picks the prefix length and so where the IPv4 address sits.
 var nonPublicPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("100.64.0.0/10"),  // shared address space, CGNAT (RFC 6598)
-	netip.MustParsePrefix("::/96"),          // IPv4-compatible (RFC 4291 §2.5.5.1, deprecated)
+	ipv4CompatiblePrefix,                    // IPv4-compatible (RFC 4291 §2.5.5.1, deprecated)
 	netip.MustParsePrefix("64:ff9b:1::/48"), // NAT64 local-use prefix (RFC 8215)
 }
+
+// ipv4CompatiblePrefix is the deprecated IPv4-compatible block (RFC 4291
+// §2.5.5.1); ResolvePublicHost refuses its addresses at every strictness
+// (checkAddress).
+var ipv4CompatiblePrefix = netip.MustParsePrefix("::/96")
 
 // v4Embeddings are the IPv6 prefixes whose every address carries, at a fixed
 // place, the IPv4 address a translator or a relay delivers to: such an
@@ -165,9 +170,9 @@ type HostResolver interface {
 // link-local/loopback/multicast/metadata hit (or a reserved cluster-internal
 // alias) refuses, wrapping ErrNotPublic. When non-strict, the first resolved
 // address is returned regardless (loopback-bound local mode embedding the
-// user's own dev servers). A name is judged without one trailing dot; a name
-// with an empty label is refused at every strictness. Resolution always
-// fails closed.
+// user's own dev servers). At every strictness a name with an empty label
+// and an IPv4-compatible address are refused (CheckHost). A name is judged
+// without one trailing dot. Resolution always fails closed.
 func ResolvePublicHost(ctx context.Context, host string, strict bool) (net.IP, error) {
 	return ResolvePublicHostWith(ctx, net.DefaultResolver, host, strict)
 }
@@ -176,28 +181,53 @@ func ResolvePublicHost(ctx context.Context, host string, strict bool) (net.IP, e
 // same guard, same fail-closed reading, one injected lookup. A nil res is a
 // caller bug and panics — pass net.DefaultResolver for the system resolver.
 func ResolvePublicHostWith(ctx context.Context, res HostResolver, host string, strict bool) (net.IP, error) {
-	if host == "" {
-		return nil, errors.New("httpdial: empty host")
+	if err := CheckHost(host, strict); err != nil {
+		return nil, err
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip, nil
 	}
 
-	// Already a numeric address: validate and return.
-	if ip := net.ParseIP(host); ip != nil {
-		if strict && !IsPublicUnicast(ip) {
-			return nil, notPublic("httpdial: address %s is not a public unicast IP", ip)
+	// The lookup keeps the caller's spelling: the dot is what keeps a
+	// search domain from rewriting the name asked.
+	addrs, err := res.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("httpdial: resolve %q: %w", host, err)
+	}
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("httpdial: resolve %q: no addresses", host)
+	}
+	for _, a := range addrs {
+		if err := checkAddress(a.IP, strict, "resolved address"); err != nil {
+			return nil, err
 		}
-		return ip, nil
+	}
+	return addrs[0].IP, nil
+}
+
+// CheckHost is the guard's verdict on host as far as it reaches without a
+// lookup — every refusal ResolvePublicHost makes before any DNS: an empty
+// host, a name with an empty label and an IPv4-compatible literal at every
+// strictness; under strict, a literal that is not public unicast and a name
+// reserved for cluster-internal services, wrapping ErrNotPublic. nil leaves
+// a name's answers to the lookup. A caller that vets an endpoint before it
+// dials runs it, so the vetting refuses what the dial refuses on sight.
+func CheckHost(host string, strict bool) error {
+	if host == "" {
+		return errors.New("httpdial: empty host")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return checkAddress(ip, strict, "address")
 	}
 
 	// A name is judged in one spelling: one trailing dot is the absolute
 	// form of the same name, cut before the alias checks so that
 	// "metadata.google.internal." meets the refusal of
 	// "metadata.google.internal"; what is left with an empty label ("a..b",
-	// a second trailing dot) is no DNS name, at any strictness. The lookup
-	// keeps the caller's spelling: the dot is what keeps a search domain
-	// from rewriting the name asked.
+	// a second trailing dot) is no DNS name, at any strictness.
 	name := strings.ToLower(strings.TrimSuffix(host, "."))
 	if name == "" || strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".") || strings.Contains(name, "..") {
-		return nil, fmt.Errorf("httpdial: hostname %q has an empty label", host)
+		return fmt.Errorf("httpdial: hostname %q has an empty label", host)
 	}
 
 	// Refuse cluster-internal aliases outright in strict mode regardless of DNS
@@ -207,23 +237,40 @@ func ResolvePublicHostWith(ctx context.Context, res HostResolver, host string, s
 			strings.HasSuffix(name, ".svc") ||
 			name == "kubernetes.default" ||
 			name == "metadata.google.internal" {
-			return nil, notPublic("httpdial: hostname %q is reserved for cluster-internal services", host)
+			return notPublic("httpdial: hostname %q is reserved for cluster-internal services", host)
 		}
 	}
+	return nil
+}
 
-	addrs, err := res.LookupIPAddr(ctx, host)
-	if err != nil {
-		return nil, fmt.Errorf("httpdial: resolve %q: %w", host, err)
+// checkAddress is the guard's verdict on one address — what names it in the
+// refusal, a literal "address" or a "resolved address". An IPv4-compatible
+// address is refused at every strictness, no hatch lifting it: no host is
+// written in that deprecated form, and a reader that maps it reaches the
+// IPv4 address it carries — ::127.0.0.1 is 127.0.0.1's loopback. Under
+// strict, an address that is not public unicast is refused, wrapping
+// ErrNotPublic.
+func checkAddress(ip net.IP, strict bool, what string) error {
+	if v4, ok := ipv4Compatible(ip); ok {
+		return fmt.Errorf("httpdial: %s %s is IPv4-compatible (it carries %s), a deprecated form refused at every strictness", what, ip, v4)
 	}
-	if len(addrs) == 0 {
-		return nil, fmt.Errorf("httpdial: resolve %q: no addresses", host)
+	if strict && !IsPublicUnicast(ip) {
+		return notPublic("httpdial: %s %s is not a public unicast IP", what, ip)
 	}
-	for _, a := range addrs {
-		if strict && !IsPublicUnicast(a.IP) {
-			return nil, notPublic("httpdial: resolved address %s is not a public unicast IP", a.IP)
-		}
+	return nil
+}
+
+// ipv4Compatible returns the IPv4 address an IPv4-compatible ip carries
+// (::a.b.c.d, RFC 4291 §2.5.5.1). The unspecified :: and the loopback ::1
+// sit in ::/96 and are no such address: they stay the IPv6 addresses they
+// are.
+func ipv4Compatible(ip net.IP) (net.IP, bool) {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok || !ipv4CompatiblePrefix.Contains(addr) || addr.IsUnspecified() || addr.IsLoopback() {
+		return nil, false
 	}
-	return addrs[0].IP, nil
+	b := addr.As16()
+	return net.IPv4(b[12], b[13], b[14], b[15]), true
 }
 
 // SafeTransport returns an *http.Transport whose DialContext resolves the

@@ -202,10 +202,44 @@ func TestResolvePublicHostWith_DNS64Answers(t *testing.T) {
 	}
 }
 
+// An IPv4-compatible address (::a.b.c.d, deprecated by RFC 4291) is refused
+// at every strictness: no host is written in that form, and a reader that
+// maps it reaches the IPv4 address it carries — ::127.0.0.1 is 127.0.0.1's
+// loopback. No hatch lifts it, so its refusal does not wrap ErrNotPublic. The
+// unspecified :: and the loopback ::1 sit in ::/96 and are no such address:
+// a lifted caller still reaches its own [::1].
+func TestResolvePublicHostWith_IPv4CompatibleRefusedAtEveryStrictness(t *testing.T) {
+	ctx := context.Background()
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	for _, strict := range []bool{true, false} {
+		for _, sample := range []string{"::127.0.0.1", "::10.0.0.1", "::8.8.8.8"} {
+			lit, litErr := ResolvePublicHostWith(ctx, answering(), sample, strict)
+			ans, ansErr := ResolvePublicHostWith(ctx, answering("203.0.113.7", sample), "gw.example.test", strict)
+			_, dialErr := SafeTransport(strict).DialContext(canceled, "tcp", net.JoinHostPort(sample, "443"))
+			for _, got := range []struct {
+				form string
+				ip   net.IP
+				err  error
+			}{{"literal", lit, litErr}, {"answer", ans, ansErr}, {"dial", nil, dialErr}} {
+				if got.err == nil || !strings.Contains(got.err.Error(), "IPv4-compatible") {
+					t.Errorf("strict=%v %s %s = %v, %v; want the IPv4-compatible refusal", strict, got.form, sample, got.ip, got.err)
+				} else if errors.Is(got.err, ErrNotPublic) {
+					t.Errorf("strict=%v %s %s = %v; no hatch lifts it, so it must not wrap ErrNotPublic", strict, got.form, sample, got.err)
+				}
+			}
+		}
+	}
+	if ip, err := ResolvePublicHostWith(ctx, answering(), "::1", false); err != nil || !ip.Equal(net.IPv6loopback) {
+		t.Errorf("non-strict ::1 = %v, %v; want the loopback a lifted caller reaches", ip, err)
+	}
+}
+
 // A caller's escape hatch is named on the refusals it lifts, so the fact
 // travels in the error: every strict refusal — a literal, a reserved name in
 // either spelling, a resolved answer — wraps ErrNotPublic, and a refusal no
-// hatch fixes (a malformed name, a failed or empty lookup) does not.
+// hatch fixes (a malformed name, a failed or empty lookup, an
+// IPv4-compatible address) does not.
 func TestResolvePublicHostWith_OnlyALiftableRefusalCarriesErrNotPublic(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range []struct {
@@ -231,6 +265,8 @@ func TestResolvePublicHostWith_OnlyALiftableRefusalCarriesErrNotPublic(t *testin
 		{"gw.svc..", answering("203.0.113.7")},
 		{"gw.example.test", answering()},
 		{"gw.example.test", failing{}},
+		{"::127.0.0.1", answering()},
+		{"gw.example.test", answering("203.0.113.7", "::127.0.0.1")},
 	} {
 		_, err := ResolvePublicHostWith(ctx, c.res, c.host, true)
 		if err == nil || errors.Is(err, ErrNotPublic) {
@@ -268,10 +304,10 @@ func (r *recordingResolver) LookupIPAddr(_ context.Context, host string) ([]net.
 	return addrs, nil
 }
 
-// The CGNAT, IPv4-compatible and NAT64 local-use classes, and a NAT64 or 6to4
-// address carrying a non-public IPv4 address (the samples carry loopback and
-// private ones), are refused under strict and admitted when a caller lifts
-// it — the private classes' treatment, so
+// The CGNAT and NAT64 local-use classes, and a NAT64 or 6to4 address carrying
+// a non-public IPv4 address (the samples carry loopback and private ones),
+// are refused under strict and admitted when a caller lifts it — the private
+// classes' treatment, so
 // each caller's own escape hatch is the one that lifts them. One row per
 // caller class and arm, with what sets the arm: refusing the classes is a
 // decision read caller by caller. Each arm drives the three ways a caller
@@ -280,7 +316,9 @@ func (r *recordingResolver) LookupIPAddr(_ context.Context, host string) ([]net.
 // SafeTransport. The gateway credential's write door judges IsPublicUnicast
 // alone, with no lift: its decision is TestIsPublicUnicast's rows.
 func TestNewClasses_EachCallersArmDecides(t *testing.T) {
-	samples := []string{"100.64.0.1", "::127.0.0.1", "64:ff9b::7f00:1", "64:ff9b:1::a00:1", "2002:7f00:1::"}
+	// The IPv4-compatible class is no sample: no hatch lifts it
+	// (TestResolvePublicHostWith_IPv4CompatibleRefusedAtEveryStrictness).
+	samples := []string{"100.64.0.1", "64:ff9b::7f00:1", "64:ff9b:1::a00:1", "2002:7f00:1::"}
 	arms := []struct {
 		caller string
 		strict bool

@@ -87,10 +87,12 @@ func checkGatewaySource(ctx context.Context, spec string, strict bool) error {
 			return fmt.Errorf("openai_compatible: %w", err)
 		}
 		if key != "" && baseURL != "" {
-			// Syntax at the seam; the address class for a LITERAL host —
-			// a private literal was refused at the seal, but the ctx
-			// credentials may be hand-built. A NAME resolves at dial time
-			// (PR-C'): the resolver's answer is the dial guard's to judge.
+			// Syntax and what the guard refuses at every strictness (an
+			// empty label, an IPv4-compatible literal) at the seam; the
+			// address class for a LITERAL host under strict — a private
+			// literal was refused at the seal, but the ctx credentials may
+			// be hand-built. A NAME resolves at dial time (PR-C'): the
+			// resolver's answer is the dial guard's to judge.
 			if err := (compatgw.Config{BaseURL: baseURL}).Validate(false); err != nil {
 				return err
 			}

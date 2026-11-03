@@ -778,7 +778,6 @@ func TestCheckGatewaySource_RunHeldPrivateURLRefusedAndLifted(t *testing.T) {
 	for _, base := range []string{
 		"https://10.0.0.7:8443",
 		"https://100.64.0.1:8443",
-		"https://[::127.0.0.1]:8443",
 		"https://[64:ff9b::7f00:1]:8443",
 		"https://[64:ff9b:1::a00:7]:8443",
 		"https://[2002:7f00:1::]:8443",
@@ -800,6 +799,23 @@ func TestCheckGatewaySource_RunHeldPrivateURLRefusedAndLifted(t *testing.T) {
 		t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
 		if err := checkGatewaySource(privatePair, "openai_compatible/m", false); err != nil {
 			t.Errorf("%s: the escape hatch must lift the private-address rule for a run-held URL: %v", base, err)
+		}
+	}
+	// An IPv4-compatible address is refused at every strictness, as the dial
+	// refuses it: no hatch lifts it, so its refusal names none.
+	compatible := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		AmbientRefused: true,
+		APIKeys:        map[secrets.Provider]string{secrets.ProviderOpenAICompatible: "sk-run-gw"},
+		APIBaseURLs:    map[secrets.Provider]string{secrets.ProviderOpenAICompatible: "https://[::127.0.0.1]:8443"},
+	})
+	for _, c := range []struct {
+		hatch  string
+		strict bool
+	}{{"", true}, {"1", false}} {
+		t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", c.hatch)
+		if err := checkGatewaySource(compatible, "openai_compatible/m", c.strict); err == nil ||
+			strings.Contains(err.Error(), "ITERION_LLM_ENDPOINT_ALLOW_PRIVATE") {
+			t.Errorf("strict=%v: a run-held IPv4-compatible loopback = %v; want a refusal that names no escape hatch", c.strict, err)
 		}
 	}
 }

@@ -78,7 +78,6 @@ func TestValidate(t *testing.T) {
 		// The shared space and the non-public IPv6 transition addresses,
 		// under the same hatch as the private ones (lifted below).
 		"cgnat strict":                     {BaseURL: "http://100.64.0.1:4000"},
-		"v4-compatible loopback strict":    {BaseURL: "http://[::127.0.0.1]:4000"},
 		"nat64 strict":                     {BaseURL: "http://[64:ff9b::7f00:1]:4000"},
 		"nat64 local-use strict":           {BaseURL: "http://[64:ff9b:1::a00:1]:4000"},
 		"6to4 strict":                      {BaseURL: "http://[2002:7f00:1::]:4000"},
@@ -107,9 +106,16 @@ func TestValidate(t *testing.T) {
 	if err := (Config{BaseURL: "http://gw..example.test/v1"}).Validate(true); err == nil || strings.Contains(err.Error(), "ITERION_LLM_ENDPOINT_ALLOW_PRIVATE") {
 		t.Errorf("Validate(true) on an empty-label host = %v; want a refusal that names no escape hatch", err)
 	}
+	// An IPv4-compatible address is refused at every strictness, as the dial
+	// refuses it: no hatch lifts it, so its refusal names none.
+	for _, strict := range []bool{true, false} {
+		if err := (Config{BaseURL: "http://[::127.0.0.1]:4000"}).Validate(strict); err == nil || strings.Contains(err.Error(), "ITERION_LLM_ENDPOINT_ALLOW_PRIVATE") {
+			t.Errorf("Validate(%v) on an IPv4-compatible loopback = %v; want a refusal that names no escape hatch", strict, err)
+		}
+	}
 	// The escape hatch lifts the address requirement — for a self-hosted
 	// gateway — and nothing else.
-	for _, addr := range []string{"http://127.0.0.1:4000", "http://10.0.0.9:4000", "http://100.64.0.1:4000", "http://[::127.0.0.1]:4000", "http://[64:ff9b::7f00:1]:4000", "http://[64:ff9b:1::a00:1]:4000", "http://[2002:7f00:1::]:4000"} {
+	for _, addr := range []string{"http://127.0.0.1:4000", "http://[::1]:4000", "http://10.0.0.9:4000", "http://100.64.0.1:4000", "http://[64:ff9b::7f00:1]:4000", "http://[64:ff9b:1::a00:1]:4000", "http://[2002:7f00:1::]:4000"} {
 		if err := (Config{BaseURL: addr}).Validate(false); err != nil {
 			t.Errorf("%s refused with the hatch lifted: %v", addr, err)
 		}

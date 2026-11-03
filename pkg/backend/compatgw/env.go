@@ -130,23 +130,29 @@ func plantedPairError() error {
 // judges the host as the strict dial-time guard does (judgeHost) — the
 // guard would refuse it anyway, and this says so before the sandbox is
 // built; the ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1 escape hatch lifts it for
-// a self-hosted gateway on private infrastructure.
+// a self-hosted gateway on private infrastructure, and what the guard
+// refuses at every strictness (a name with an empty label, an
+// IPv4-compatible address) stays refused under it, judged without a lookup.
 //
-// It resolves the host: call it at the dispatch seams, which re-read the
-// env fresh per attempt — never inside the registry factory, whose
-// per-key cache would keep a transient resolver failure for the process
-// life.
+// Under strict it resolves the host: call it at the dispatch seams, which
+// re-read the env fresh per attempt — never inside the registry factory,
+// whose per-key cache would keep a transient resolver failure for the
+// process life.
 func (c Config) Validate(strict bool) error {
 	if err := c.ValidateSyntax(); err != nil {
 		return err
 	}
-	if strict {
-		if err := judgeHost(c.url().Hostname()); err != nil {
-			if errors.Is(err, httpdial.ErrNotPublic) {
-				return RemedyPrivate(fmt.Errorf("%s host is not a public address", BaseURLEnv))
-			}
+	if !strict {
+		if err := httpdial.CheckHost(c.url().Hostname(), false); err != nil {
 			return fmt.Errorf("openai_compatible: %w", err)
 		}
+		return nil
+	}
+	if err := judgeHost(c.url().Hostname()); err != nil {
+		if errors.Is(err, httpdial.ErrNotPublic) {
+			return RemedyPrivate(fmt.Errorf("%s host is not a public address", BaseURLEnv))
+		}
+		return fmt.Errorf("openai_compatible: %w", err)
 	}
 	return nil
 }

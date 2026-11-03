@@ -250,8 +250,10 @@ func TestVetURL(t *testing.T) {
 		// the notifier's own allowPrivate.
 		{"cgnat blocked", "http://100.64.0.1/cb", false, true, false},
 		{"cgnat allowed", "http://100.64.0.1/cb", true, false, false},
+		// An IPv4-compatible address is refused whatever allowPrivate says:
+		// no hatch lifts it.
 		{"v4-compatible loopback blocked", "http://[::127.0.0.1]:9000/cb", false, true, false},
-		{"v4-compatible loopback allowed", "http://[::127.0.0.1]:9000/cb", true, false, false},
+		{"v4-compatible loopback blocked under allowPrivate", "http://[::127.0.0.1]:9000/cb", true, true, false},
 		{"nat64 blocked", "http://[64:ff9b::7f00:1]/cb", false, true, false},
 		{"6to4 blocked", "http://[2002:7f00:1::]/cb", false, true, false},
 	}
