@@ -23,6 +23,17 @@
 #   AUTO_MAINT_PR_SAMPLE  how many recent PRs to sample         (default: 20)
 #   AUTO_MAINT_PUSH_SAMPLE how many recent pushes to the default branch to
 #                         classify as conforming or bypass        (default: 20)
+#   AUTO_MAINT_RUN_SAMPLE how many recent runs of the dependency workflow to
+#                         look through for a completed one         (default: 20)
+#   AUTO_MAINT_LANE_WORKFLOW the path of the workflow that IS the dependency lane
+#                         (default: the recipe's .github/workflows/renovate.yml,
+#                         or a workflow named exactly "Renovate")
+#   AUTO_MAINT_LANE_MAX_AGE_DAYS how old the lane's last verdict, or the installed
+#                         App's newest pull request, may be before the lane
+#                         counts as stopped                         (default: 60)
+#   AUTO_MAINT_NOW        the instant that age is measured from, ISO-8601 UTC
+#                         (default: the wall clock; a replay or a witness pins it,
+#                         and a pinned clock is printed with the report)
 #   AUTO_MAINT_DELIVERY_APP the app_slug of iterion's own App     (default: iterion-forge-core)
 #   AUTO_MAINT_PAT        a classic PAT for the one read an OAuth token cannot do
 #                         (agreement 6; the value is used by reference, never printed)
@@ -45,6 +56,9 @@ set -euo pipefail
 GH="${AUTO_MAINT_GH:-gh}"
 PR_SAMPLE="${AUTO_MAINT_PR_SAMPLE:-20}"
 PUSH_SAMPLE="${AUTO_MAINT_PUSH_SAMPLE:-20}"
+RUN_SAMPLE="${AUTO_MAINT_RUN_SAMPLE:-20}"
+LANE_WORKFLOW="${AUTO_MAINT_LANE_WORKFLOW:-}"
+LANE_MAX_AGE_DAYS="${AUTO_MAINT_LANE_MAX_AGE_DAYS:-60}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BOTS_DIR="${AUTO_MAINT_BOTS_DIR:-$ROOT/bots}"
 
@@ -69,6 +83,9 @@ done
 [ -n "$REPO" ] || { usage >&2; exit 3; }
 case "$REPO" in */*) ;; *) printf 'expected owner/repo, got %s\n' "$REPO" >&2; exit 3 ;; esac
 ORG="${REPO%%/*}"
+case "$LANE_MAX_AGE_DAYS" in
+  ''|*[!0-9]*) printf 'AUTO_MAINT_LANE_MAX_AGE_DAYS must be a whole number of days, got %s\n' "$LANE_MAX_AGE_DAYS" >&2; exit 3 ;;
+esac
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -110,6 +127,17 @@ api_bounded() {
   jq -e . <"$dest" >/dev/null 2>&1 || fatal "$GH api $* did not answer valid JSON"
 }
 
+# sample_prs — the last N pull requests, read once for every agreement that
+# decides on them (3, 7 through sample_head_signals, and 10). The sample is
+# "the last N", so three sites spelling the same bounded URL would be three
+# chances for one of them to drift into a different window and answer a
+# different question.
+sample_prs() {
+  [ -f "$WORK/prs" ] && return 0
+  api_bounded "$WORK/prs" "repos/$REPO/pulls?state=all&per_page=$PR_SAMPLE&sort=created&direction=desc"
+  expect_array "$WORK/prs" "repos/$REPO/pulls"
+}
+
 # sample_head_signals — what ran on the sampled pull request heads, and WHO
 # posted each status the forge attributes.
 #
@@ -121,7 +149,7 @@ api_bounded() {
 # before needing it costs no API traffic.
 sample_head_signals() {
   [ -f "$WORK/seen" ] && return 0
-  [ -f "$WORK/prs" ] || api_bounded "$WORK/prs" "repos/$REPO/pulls?state=all&per_page=$PR_SAMPLE&sort=created&direction=desc"
+  sample_prs
   : >"$WORK/seen"
   : >"$WORK/producers"
   while read -r head; do
@@ -130,8 +158,10 @@ sample_head_signals() {
     # written against ONE page: check-runs pages are objects, statuses pages
     # are arrays.
     api "$WORK/cr-$head" "repos/$REPO/commits/$head/check-runs?per_page=100"
+    expect_list "$WORK/cr-$head" check_runs "repos/$REPO/commits/$head/check-runs"
     jq -r '.check_runs[]?.name' <"$WORK/cr-$head" >>"$WORK/seen"
     api "$WORK/st-$head" "repos/$REPO/commits/$head/statuses?per_page=100"
+    expect_array "$WORK/st-$head" "repos/$REPO/commits/$head/statuses"
     jq -r '.[]?.context' <"$WORK/st-$head" >>"$WORK/seen"
     # An attributed status only. A forge that reports no creator leaves the
     # producer UNOBSERVED, which agreement 2 says out loud rather than reading
@@ -152,6 +182,54 @@ expect_complete() {
   total="$(jq -s "$total_expr" <"$file")"
   [ "$total" = "null" ] && return 0
   [ "$got" = "$total" ] || fatal "$what: read $got of $total — pagination truncated"
+}
+
+# expect_list <file> <key> <what> — the endpoint contracts an OBJECT carrying
+# <key> as an array, on every page. Valid JSON is not that: `gh` prints an
+# error object with exit 0 on some paths, and `.<key>[]?` over an error object
+# yields nothing — a list that was never read, reading as an empty one, and
+# every verdict downstream becomes a statement about an absence nobody
+# measured. Every object-list read passes through here, so the next one cannot
+# forget to ask.
+expect_list() {
+  local file="$1" key="$2" what="$3"
+  jq -s -e --arg k "$key" 'all(.[]; type == "object" and has($k) and (.[$k] | type == "array"))' \
+    <"$file" >/dev/null 2>&1 \
+    || fatal "$what did not answer a JSON object per page carrying '$key' as a list (got $(head -c 200 "$file" | tr '\n' ' '))"
+}
+
+# expect_array <file> <what> — the same question for an endpoint that answers
+# a bare array: `.[]` over an error object walks its VALUES and `length`
+# counts its keys, so every count below would be a number about the wrong thing.
+expect_array() {
+  local file="$1" what="$2"
+  jq -s -e 'all(.[]; type == "array")' <"$file" >/dev/null 2>&1 \
+    || fatal "$what did not answer a JSON array per page (got $(head -c 200 "$file" | tr '\n' ' '))"
+}
+
+# expect_object <file> <key> <what> — the endpoint contracts ONE object, and
+# <key> is a field it cannot answer without. The error object `expect_list`
+# refuses is an object too, so `api`'s JSON check passes it, and `.rules[]?`
+# over it yields nothing: a ruleset the list just named as active then
+# requires nothing, and the operator is sent to re-add checks that exist. The
+# key asked for is one the error object never carries.
+expect_object() {
+  local file="$1" key="$2" what="$3"
+  jq -s -e --arg k "$key" 'length > 0 and all(.[]; type == "object" and has($k))' \
+    <"$file" >/dev/null 2>&1 \
+    || fatal "$what did not answer a JSON object carrying '$key' (got $(head -c 200 "$file" | tr '\n' ' '))"
+}
+
+# expect_file <file> — the contents endpoint answers ONE file as an object
+# carrying `content` as a string. A directory answers an array, a symlink or
+# a submodule entry an object with no content, and `gh` an error object with
+# exit 0 on some paths: `.content` over any of those is `null`, and `base64 -d`
+# turns the four characters of `null` into three bytes of nothing — a config
+# that demands nothing, and an agreement that vanishes from the report rather
+# than reddening. Returns rather than fatals: each such read decides ONE
+# agreement, and its caller owns the blind spot.
+expect_file() {
+  jq -e 'type == "object" and (.content | type) == "string"' <"$1" >/dev/null 2>&1
 }
 
 # ---------------------------------------------------------------------------
@@ -187,7 +265,32 @@ blind()    { LINES+=("blind|$1|$2"); BLIND=$((BLIND + 1));  printf '  \033[33m?\
 need_tool jq
 need_tool "$GH"
 
-printf '→ %s\n' "$REPO" >&3
+# The clock agreement 10's recency bound is measured from, resolved ONCE. "How
+# long ago" has two ends, and a replay or a witness that pins this one judges
+# the same payload the same way on any machine, on any day. The format is the
+# forge's own timestamp format, so the cut compares like with like; `10#`
+# keeps a zero-padded day count from being read as octal.
+if [ -n "${AUTO_MAINT_NOW:-}" ]; then
+  NOW_EPOCH="$(jq -rn --arg t "$AUTO_MAINT_NOW" '$t | try fromdateiso8601 catch empty')"
+  [ -n "$NOW_EPOCH" ] || { printf 'AUTO_MAINT_NOW must be an ISO-8601 UTC instant such as 2026-11-02T12:00:00Z, got %s\n' "$AUTO_MAINT_NOW" >&2; exit 3; }
+else
+  NOW_EPOCH="$(jq -rn 'now | floor')"
+fi
+LANE_CUTOFF=$(( NOW_EPOCH - 10#$LANE_MAX_AGE_DAYS * 86400 ))
+
+# A pinned clock is announced where the verdict is read, and travels in the
+# --json document: a replay variable left in a job's environment turns a dead
+# lane green, and every "within the last N days" below would hide which
+# instant it was measured from. Rendered from the one epoch every age is cut
+# against, so the line and the cut cannot disagree.
+NOW_ISO="$(jq -rn --argjson e "$NOW_EPOCH" '$e | todate')"
+NOW_PINNED=false
+if [ -n "${AUTO_MAINT_NOW:-}" ]; then
+  NOW_PINNED=true
+  printf '→ %s (ages measured from %s, pinned by AUTO_MAINT_NOW)\n' "$REPO" "$NOW_ISO" >&3
+else
+  printf '→ %s\n' "$REPO" >&3
+fi
 
 api "$WORK/repo" "repos/$REPO"
 DEFAULT_BRANCH="$(jq -r '.default_branch // empty' <"$WORK/repo")"
@@ -199,6 +302,7 @@ DEFAULT_BRANCH="$(jq -r '.default_branch // empty' <"$WORK/repo")"
 # `refs/heads/release/*` — dependency PRs target the default branch, so a check
 # required only elsewhere is a verdict nobody waits for where it matters.
 api "$WORK/rulesets" "repos/$REPO/rulesets"
+expect_array "$WORK/rulesets" "repos/$REPO/rulesets"
 : >"$WORK/required"
 : >"$WORK/bypass"
 
@@ -227,6 +331,9 @@ ruleset_covers_default() {
 while read -r rid; do
   [ -n "$rid" ] || continue
   api "$WORK/ruleset-$rid" "repos/$REPO/rulesets/$rid"
+  # `enforcement` is the key the list read selected this ruleset on; an
+  # answer without it is not the ruleset the list named.
+  expect_object "$WORK/ruleset-$rid" enforcement "repos/$REPO/rulesets/$rid"
   ruleset_covers_default "$WORK/ruleset-$rid" || continue
   # Three columns, and the third is not decoration. The SAME context can be
   # required by several active rulesets, each with its own pin — GitHub
@@ -251,6 +358,11 @@ if ! $ITERION_ARGV >"$WORK/repobots" 2>"$WORK/repobots.err"; then
   fatal "the repo-bots read ($ITERION_ARGV) did not answer: $(tr '\n' ' ' <"$WORK/repobots.err")"
 fi
 jq -e . <"$WORK/repobots" >/dev/null 2>&1 || fatal "the repo-bots read did not answer valid JSON"
+# The route answers `{"integrations": [...]}` and spells an empty tenant as
+# `[]` (pkg/server/forge_provisioning_routes.go); an error body is an object
+# too, and `.integrations[]?` over it would read as a repository nobody wired.
+jq -e 'type == "object" and (.integrations | type) == "array"' <"$WORK/repobots" >/dev/null 2>&1 \
+  || fatal "the repo-bots read ($ITERION_ARGV) did not answer a JSON object carrying 'integrations' as a list (got $(head -c 200 "$WORK/repobots" | tr '\n' ' '))"
 
 jq --arg r "$REPO" '[.integrations[]? | select(.repo_full_name == $r)]' \
   <"$WORK/repobots" >"$WORK/integrations"
@@ -259,6 +371,7 @@ INTEG_COUNT="$(jq 'length' <"$WORK/integrations")"
 # The org's App installations, read once: agreements 3, 4, 5 and 6 all decide
 # against them.
 api "$WORK/installs" "orgs/$ORG/installations?per_page=100"
+expect_list "$WORK/installs" installations "orgs/$ORG/installations"
 expect_complete "$WORK/installs" \
   '[.[].installations[]?]|length' '(.[0].total_count // null)' "orgs/$ORG/installations"
 
@@ -292,11 +405,16 @@ jq '(map(select(.repository_selection != "all"))) as $scoped
     | if ($scoped | length) > 0 then $scoped else . end' <"$WORK/ren-all.json" >"$WORK/ren.json"
 
 REN_COUNT="$(jq 'length' <"$WORK/ren.json")"
-REN=""; REN_SLUG=""; REN_ID=""
+REN=""; REN_SLUG=""; REN_ID=""; REN_AUTHOR=""
 if [ "$REN_COUNT" -gt 0 ]; then
   REN="$(jq -c '.[0]' <"$WORK/ren.json")"
   REN_SLUG="$(printf '%s' "$REN" | jq -r '.app_slug')"
   REN_ID="$(printf '%s' "$REN" | jq -r '.id')"
+  # The login the INSTALLED App authors its pull requests under, spelled once.
+  # Agreements 3 and 10 both decide on it, and the org carries a second
+  # renovate-matching App: a login assembled twice drifts into matching the
+  # other one, which is the conflation this whole preflight exists to catch.
+  REN_AUTHOR="${REN_SLUG}[bot]"
 fi
 
 # app_is_live <installation-json> <slug> <agreement> — a SUSPENDED installation
@@ -511,7 +629,7 @@ if awk -F'\t' '{ print $1 }' <"$WORK/posted" 2>/dev/null | grep -qx 'dep-update-
     }' "$VETTY_MANIFEST" | tr -d ' "')"
   [ -n "$ALLOW" ] || fatal "could not read author_allowlist from $VETTY_MANIFEST"
 
-  api_bounded "$WORK/prs" "repos/$REPO/pulls?state=all&per_page=$PR_SAMPLE&sort=created&direction=desc"
+  sample_prs
   jq -r '.[] | [.number, (.user.login // ""), (.user.type // "")] | @tsv' <"$WORK/prs" >"$WORK/pr-authors"
 
   # matches_allowlist <login> — "*" is a SUFFIX wildcard, the form the manifest
@@ -544,9 +662,16 @@ if awk -F'\t' '{ print $1 }' <"$WORK/posted" 2>/dev/null | grep -qx 'dep-update-
   # bot, a tap updater — and calling each of them a disagreement would bury the
   # one that matters under noise the operator cannot act on.
   : >"$WORK/expected-authors"
-  [ -n "$REN_SLUG" ] && printf '%s[bot]\tthe installed Renovate App\n' "$REN_SLUG" >>"$WORK/expected-authors"
-  if "$GH" api "repos/$REPO/contents/.github/dependabot.yml" --jq '.name' >/dev/null 2>&1; then
-    printf 'dependabot[bot]\t.github/dependabot.yml is present\n' >>"$WORK/expected-authors"
+  [ -n "$REN_AUTHOR" ] && printf '%s\tthe installed Renovate App\n' "$REN_AUTHOR" >>"$WORK/expected-authors"
+  # Read whole and shape-checked, like the Renovate config below: `--jq .name`
+  # over an error object prints `null` with exit 0, and Dependabot would be
+  # counted as present on a 404 body.
+  if "$GH" api "repos/$REPO/contents/.github/dependabot.yml" >"$WORK/dependabot-cfg" 2>"$WORK/dependabot-cfg.err"; then
+    if expect_file "$WORK/dependabot-cfg"; then
+      printf 'dependabot[bot]\t.github/dependabot.yml is present\n' >>"$WORK/expected-authors"
+    else
+      blind "3 author allowlist" "repos/$REPO/contents/.github/dependabot.yml did not answer a JSON file object carrying its content as a string (got $(head -c 200 "$WORK/dependabot-cfg" | tr '\n' ' ')) — whether Dependabot opens pull requests here is UNKNOWN, not no"
+    fi
   fi
 
   if [ ! -s "$WORK/expected-authors" ]; then
@@ -601,13 +726,21 @@ else
   RENOVATE_CFG_PATH=""
   for candidate in renovate.json renovate.json5 .github/renovate.json .github/renovate.json5 \
                    .renovaterc .renovaterc.json .renovaterc.json5; do
-    if "$GH" api "repos/$REPO/contents/$candidate" --jq '.content' >"$WORK/renovate.b64" 2>/dev/null; then
+    # A refusal (the 404 of a path with nothing at it) moves to the next
+    # path; an ANSWER is the config, and its shape is judged below rather than
+    # filtered through `--jq '.content'`, which prints `null` with exit 0 over
+    # an error object, a symlink or a submodule entry.
+    if "$GH" api "repos/$REPO/contents/$candidate" >"$WORK/renovate-cfg" 2>"$WORK/renovate-cfg.err"; then
       RENOVATE_CFG_PATH="$candidate"
       break
     fi
   done
-  if [ -n "$RENOVATE_CFG_PATH" ]; then
-    base64 -d <"$WORK/renovate.b64" >"$WORK/renovate.cfg" 2>/dev/null \
+  if [ -z "$RENOVATE_CFG_PATH" ]; then
+    disagree "4 renovate permissions" "$REPO carries no renovate config at any of the paths Renovate reads — Renovate has nothing to obey"
+  elif ! expect_file "$WORK/renovate-cfg"; then
+    blind "4 renovate permissions" "repos/$REPO/contents/$RENOVATE_CFG_PATH did not answer a JSON file object carrying its content as a string (got $(head -c 200 "$WORK/renovate-cfg" | tr '\n' ' ')) — what the config demands is UNKNOWN, not absent"
+  else
+    jq -r '.content' <"$WORK/renovate-cfg" | base64 -d >"$WORK/renovate.cfg" 2>/dev/null \
       || fatal "the renovate config at $RENOVATE_CFG_PATH on $REPO is not decodable base64"
     # GitHub answers `content: ""` for a blob over 1 MB. Decoding nothing
     # yields no demand, and no demand would read as "nothing to disagree
@@ -633,8 +766,6 @@ else
     grep -q '"config:best-practices"' "$WORK/renovate.cfg" \
       && printf 'workflows\twrite\tconfig:best-practices extends helpers:pinGitHubActionDigests\n' >>"$WORK/demands"
     sort -u "$WORK/demands" -o "$WORK/demands"
-  else
-    disagree "4 renovate permissions" "$REPO carries no renovate config at any of the paths Renovate reads — Renovate has nothing to obey"
   fi
   if [ -s "$WORK/demands" ]; then
     while IFS=$'\t' read -r perm level why; do
@@ -715,6 +846,7 @@ fi
 
 # The workflow's own inputs. Secret NAMES only — this never reads a value.
 api "$WORK/secrets" "repos/$REPO/actions/secrets?per_page=100"
+expect_list "$WORK/secrets" secrets "repos/$REPO/actions/secrets"
 expect_complete "$WORK/secrets" '[.[].secrets[]?]|length' '(.[0].total_count // null)' "repos/$REPO/actions/secrets"
 for s in RENOVATE_APP_ID RENOVATE_APP_PRIVATE_KEY; do
   if jq -se --arg n "$s" '[.[].secrets[]?.name] | index($n) != null' <"$WORK/secrets" >/dev/null; then
@@ -874,6 +1006,292 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Agreement 9 — the forge ALLOWS the auto-merge the integration is armed for
+#
+# `arm_automerge` is one half of a guarantee that lives in two systems. The
+# half it names is a launch var, read above; the gesture it authorises is a
+# GitHub mutation — `enablePullRequestAutoMerge` — which the forge REFUSES
+# while the repository's own `allow_auto_merge` is off. Asking only the launch
+# var reads an armed repository on a forge that forbids arming as fully
+# configured: exit 0, and a loop that merges nothing and says nothing. That is
+# the same shape as the gate-context rename, arrived at through the forge
+# setting instead of the name.
+#
+# The read is free. `allow_auto_merge` rides the `repos/<repo>` payload already
+# in hand, whose only other use is the default branch.
+# ---------------------------------------------------------------------------
+
+# `// empty` is wrong on a BOOLEAN field: jq's alternative operator treats
+# `false` as absent, so `allow_auto_merge: false` — the one value this
+# agreement exists to catch — would read as "the field is missing" and blind
+# where it must redden. `has` asks the question that tells the two apart, and
+# the `type` guard keeps a payload that is not an object from aborting the run
+# inside a jq error instead of this script's own wording.
+AUTOMERGE_ALLOWED="$(jq -r 'if type == "object" and has("allow_auto_merge")
+                            then (.allow_auto_merge | tostring) else "absent" end' <"$WORK/repo")"
+case "$AUTOMERGE_ALLOWED" in
+  absent|null)
+    blind "9 forge allows auto-merge" "repos/$REPO carries no allow_auto_merge — GitHub returns the merge settings only to a requester holding push on the repository, so this credential cannot see them; whether the forge would accept the arming gesture is UNKNOWN, and unknown is not permission. Re-run with a credential that holds push (or administration:read) rather than assuming it does" ;;
+  true)
+    if [ "$ARMED" = "true" ]; then
+      agree "9 forge allows auto-merge" "arm_automerge is on and $REPO has allow_auto_merge=true — the forge accepts enablePullRequestAutoMerge here"
+    else
+      agree "9 forge allows auto-merge" "$REPO has allow_auto_merge=true; arm_automerge is off, which is where the recipe starts rather than a disagreement"
+    fi ;;
+  *)
+    if [ "$ARMED" = "true" ]; then
+      disagree "9 forge allows auto-merge" "arm_automerge is on but $REPO has allow_auto_merge=$AUTOMERGE_ALLOWED — GitHub refuses enablePullRequestAutoMerge there, so the armed bot merges nothing and reports nothing to read"
+    else
+      agree "9 forge allows auto-merge" "$REPO has allow_auto_merge=$AUTOMERGE_ALLOWED and arm_automerge is off — turning the repository setting on is part of arming, not owed today"
+    fi ;;
+esac
+
+# ---------------------------------------------------------------------------
+# Agreement 10 — the dependency lane PRODUCED
+#
+# Every agreement above reads a SETTING. A repository whose settings all agree
+# still produces nothing when the lane itself is broken: the self-hosted
+# workflow fails on a secret it cannot mint, GitHub disables a scheduled
+# workflow after 60 days of repository inactivity, or a hosted service stops
+# org-wide while every PR it ever opened stays in the history. The result is
+# silence, and silence here is indistinguishable from a repository with no
+# dependency to bump — the failure mode that cost this org a whole hosted
+# Renovate service without anyone noticing.
+#
+# So this agreement reads the lane's own OUTCOME, and HOW LONG AGO: GitHub's
+# verdict on the last run of the lane that reached one, and that run's age
+# against a bound ($LANE_MAX_AGE_DAYS; GitHub's own inactivity number by
+# default). `.conclusion` is the verdict. `.status` only says the run finished,
+# and judging on it would call a failed run a success — the same trap as a
+# status-check rollup. A green verdict older than the bound is a lane that
+# stopped firing, whatever its colour: the workflow stays `active`, its last
+# run stays green, and nothing has run since.
+#
+# The blind spot is self-limiting, deliberately. A lane that runs forge-side
+# leaves no workflow in the repository, and there a pull request the INSTALLED
+# App actually opened WITHIN THE BOUND proves the production a workflow run
+# would have proven. Silence proves nothing, so silence blinds rather than
+# agreeing — and so does a pull request from years ago.
+# ---------------------------------------------------------------------------
+
+# lane_production_evidence <what-is-silent> — the one answer for every arm
+# where the workflow read says nothing: production where the App produced
+# WITHIN THE BOUND, a blind spot otherwise. One helper, because an arm
+# answering this on its own would be the arm that drifts into agreeing with
+# silence.
+#
+# The author is DERIVED from the installation under judgement ($REN_AUTHOR),
+# never a loose match: the org carries a second renovate-matching App, and a
+# pull request opened by that one proves nothing about this installation. The
+# PR named is the HIGHEST number rather than the first row, so which pull
+# request is quoted does not depend on the order the API happened to return.
+#
+# Recency is the point. The sample is "the last N pull requests ever opened",
+# so on a quiet repository a pull request from years ago never leaves it — and
+# a hosted service that stopped org-wide looks, through that window, exactly
+# like one that is producing. A pull request older than the bound is counted
+# and named, and proves nothing; one without a readable created_at is counted
+# and named, and proves nothing either, since an unread date is not a
+# measurement.
+lane_production_evidence() {
+  local silent="$1" tally="" fresh=0 stale=0 undated=0 newest="" stale_newest="" older=""
+  if [ -n "$REN_AUTHOR" ]; then
+    sample_prs
+    tally="$(jq -r --arg a "$REN_AUTHOR" --argjson cut "$LANE_CUTOFF" '
+      [.[] | select((.user.login // "") == $a)
+           | {number: (.number // 0), at: (.created_at // ""),
+              epoch: ((.created_at // "") | try fromdateiso8601 catch null)}] as $mine
+      | [$mine[] | select(.epoch != null and .epoch >= $cut)] as $fresh
+      | [$mine[] | select(.epoch != null and .epoch < $cut)] as $stale
+      | [$mine[] | select(.epoch == null)] as $undated
+      | def newest: max_by(.number) | "#\(.number) (\(.at))";
+        [ ($fresh | length), ($stale | length), ($undated | length),
+          (if ($fresh | length) > 0 then ($fresh | newest) else "" end),
+          (if ($stale | length) > 0 then ($stale | newest) else "" end) ] | @tsv' <"$WORK/prs")"
+    fresh="$(printf '%s' "$tally" | cut -f1)"
+    stale="$(printf '%s' "$tally" | cut -f2)"
+    undated="$(printf '%s' "$tally" | cut -f3)"
+    newest="$(printf '%s' "$tally" | cut -f4)"
+    stale_newest="$(printf '%s' "$tally" | cut -f5)"
+  fi
+  if [ "$fresh" -gt 0 ]; then
+    agree "10 the lane produced" "$silent, and $REN_AUTHOR opened $fresh of the last $PR_SAMPLE pull request(s) within the last $LANE_MAX_AGE_DAYS days (newest $newest) — the lane has produced, forge-side"
+  else
+    [ "$stale" -gt 0 ] && older="$older; its $stale older one(s), the newest $stale_newest, prove nothing about today"
+    [ "$undated" -gt 0 ] && older="$older; $undated carry no readable created_at"
+    blind "10 the lane produced" "$silent, and ${REN_AUTHOR:-no installed renovate App} opened no pull request within the last $LANE_MAX_AGE_DAYS days among the last $PR_SAMPLE$older — whether anything bumps dependencies here is UNKNOWN, not fine"
+  fi
+}
+
+# Not through api(): a repository with Actions disabled answers 403 here, and
+# that blinds ONE agreement rather than aborting the run. Paginated all the
+# same — the question is whether a Renovate workflow EXISTS, and a read that
+# stopped at page 1 would answer "no workflow" for one on page 2.
+if ! "$GH" api --paginate "repos/$REPO/actions/workflows?per_page=100" \
+     >"$WORK/workflows" 2>"$WORK/workflows.err"; then
+  blind "10 the lane produced" "repos/$REPO/actions/workflows is unreadable: $(tr '\n' ' ' <"$WORK/workflows.err") — whether the dependency lane ran is UNKNOWN, not fine"
+elif [ ! -s "$WORK/workflows" ]; then
+  fatal "repos/$REPO/actions/workflows answered with an empty body"
+else
+  expect_list "$WORK/workflows" workflows "repos/$REPO/actions/workflows"
+  expect_complete "$WORK/workflows" \
+    '[.[].workflows[]?]|length' '(.[0].total_count // null)' "repos/$REPO/actions/workflows"
+  # THE LANE is told apart from the workflows that merely mention it.
+  # Renovate's own docs recommend a config-validator workflow next to the
+  # lane, and a validator that reddens is not a lane that stopped producing —
+  # judging every workflow with "renovate" in its name rendered two
+  # contradictory verdicts under one label, and a green validator would have
+  # hidden a red lane. So the lane is the workflow at the recipe's path
+  # (`renovate.yml`, by basename, since the directory is GitHub's), or one
+  # named exactly "Renovate" on an otherwise named file; a path the operator
+  # names in AUTO_MAINT_LANE_WORKFLOW wins outright and is never second-
+  # guessed. Everything else that mentions Renovate is printed as inventory,
+  # so a lane under a spelling this rule does not know is visible rather than
+  # silently unjudged. Sorted by id so the report's order is a property of the
+  # data and not of the API.
+  jq -s -r --arg lane "$LANE_WORKFLOW" '
+    def is_lane:
+      if $lane != "" then (.path // "") == $lane
+      else ((.path // "") | ascii_downcase | test("(^|/)renovate\\.ya?ml$"))
+           or (((.name // "") | ascii_downcase | gsub("^\\s+|\\s+$"; "")) == "renovate")
+      end;
+    [.[] | .workflows[]? | select(is_lane or (((.path // "") + " " + (.name // "")) | test("renovate"; "i")))]
+    | sort_by(.id)[]
+    | [ (if is_lane then "lane" else "mention" end),
+        ((.id // 0)|tostring),
+        (if ((.path // "") | length) > 0 then .path else (.name // "?") end),
+        (if ((.state // "") | length) > 0 then .state else "unsaid" end) ] | @tsv' \
+    <"$WORK/workflows" >"$WORK/ren-candidates"
+  awk -F'\t' '$1 == "lane"' "$WORK/ren-candidates" | cut -f2- >"$WORK/ren-workflows"
+  awk -F'\t' '$1 == "mention"' "$WORK/ren-candidates" | cut -f2- >"$WORK/ren-mentions"
+
+  if [ -s "$WORK/ren-mentions" ]; then
+    printf '  · inventory — names Renovate but is not judged as the lane: %s (a config validator is the usual one; AUTO_MAINT_LANE_WORKFLOW=<path> names another workflow as the lane)\n' \
+      "$(cut -f2 "$WORK/ren-mentions" | paste -sd, -)" >&3
+  fi
+
+  if [ ! -s "$WORK/ren-workflows" ]; then
+    if [ -n "$LANE_WORKFLOW" ]; then
+      # An operator's explicit choice is honoured or contradicted, never
+      # quietly swapped for the default rule.
+      disagree "10 the lane produced" "AUTO_MAINT_LANE_WORKFLOW names $LANE_WORKFLOW and $REPO carries no workflow at that path — the lane the operator points at does not exist here"
+    else
+      lane_production_evidence "$REPO carries no workflow at the recipe's path (.github/workflows/renovate.yml) or named Renovate"
+    fi
+  else
+    while IFS=$'\t' read -r wf_id wf_path wf_state; do
+      [ -n "$wf_id" ] || continue
+      case "$wf_state" in
+        active) ;;
+        # A state the list did not carry is not a state this script measured,
+        # and "disabled" is a measurement. Unknown blinds, like everywhere else.
+        unsaid)
+          blind "10 the lane produced" "the workflow list carries no state for $wf_path — whether it still fires is UNKNOWN, not fine"
+          continue ;;
+        # GitHub disables a scheduled workflow by itself after 60 days without
+        # repository activity, and a disabled workflow never fires again. Its
+        # last run can be a perfectly green one, which is why the state is
+        # decided BEFORE the runs rather than after them.
+        *)
+          disagree "10 the lane produced" "$wf_path is state=$wf_state — a disabled workflow never fires again, so this lane opens no dependency PR whatever its last run says"
+          continue ;;
+      esac
+      # Bounded like every other sample: the question is "the last completed
+      # run", not "every run this workflow ever had". A workflow the list above
+      # just named must answer here, so a refusal is a forge inconsistency and
+      # fails closed rather than blinding one agreement twice — and so does an
+      # answer that is not a run list.
+      api_bounded "$WORK/runs-$wf_id" "repos/$REPO/actions/workflows/$wf_id/runs?per_page=$RUN_SAMPLE"
+      expect_list "$WORK/runs-$wf_id" workflow_runs "repos/$REPO/actions/workflows/$wf_id/runs"
+      # The last run that REACHED A VERDICT, by a STABLE KEY — run number, then
+      # attempt, then id — never the first row of the page: the API's order is
+      # not a fact this script reads a guarantee for. `cancelled` is what a
+      # `concurrency: cancel-in-progress` lane does to its own older run and
+      # `skipped` what a job-level `if:` does; neither says the lane produced
+      # or failed, so they are looked past, counted and named — and a sample
+      # made only of them is no verdict at all. Two verdict runs sharing a key
+      # and disagreeing are reported as unknown, because picking one of them
+      # would be the order deciding the verdict again.
+      # Every field is read through `tostring`: a payload whose timestamp or
+      # conclusion is not a string is still a payload this script answers for,
+      # with its own exit code — not a jq death on string concatenation. And
+      # what has NOT finished is counted (the sixth column, with the newer
+      # runs that reached no verdict): a lane dispatched a minute ago is a lane
+      # that fires, whatever its last verdict's age says.
+      verdict="$(jq -s -r '[.[] | .workflow_runs[]?] as $all
+        | [$all[] | select((.status // "") == "completed")] as $done
+        | [$done[] | select((.conclusion // "") | IN("success", "failure", "timed_out", "startup_failure", "action_required"))] as $judged
+        | ([$all[] | select((.status // "") != "completed")] | length) as $pending
+        | (if $pending > 0 then "; \($pending) run(s) not yet completed" else "" end) as $pending_note
+        | if ($done | length) == 0 then "none\t\t\t\t\t" + $pending_note
+          elif ($judged | length) == 0 then
+            "unjudged\t" + ([$done[] | (.conclusion // "unsaid" | tostring)] | unique | join(",")) + "\t"
+            + (($done | length) | tostring) + "\t\t\t" + $pending_note
+          else ($judged | max_by([(.run_number // 0), (.run_attempt // 1), (.id // 0)])) as $last
+          | ($judged
+             | map(select([(.run_number // 0), (.run_attempt // 1)]
+                          == [($last.run_number // 0), ($last.run_attempt // 1)]))
+             | map(.conclusion // "" | tostring) | unique) as $c
+          | [$done[] | select((.run_number // 0) > ($last.run_number // 0))] as $newer
+          | (($last.updated_at // $last.created_at // "") | tostring) as $when
+          | if ($c | length) > 1
+            then "ambiguous\t" + ($c | join(",")) + "\t\t\t\t"
+            else "last\t" + ($last.conclusion // "" | tostring) + "\t"
+                 + (($last.id // 0) | tostring) + "\t" + $when + "\t"
+                 + ($when | try (fromdateiso8601 | tostring) catch "") + "\t"
+                 + (if ($newer | length) > 0
+                    then "; \($newer | length) newer run(s) concluded \($newer | map(.conclusion // "unsaid" | tostring) | unique | join(","))"
+                    else "" end)
+                 + $pending_note
+            end
+          end' <"$WORK/runs-$wf_id")" \
+        || fatal "the run list of $wf_path did not read as workflow runs — the payload has a shape this script cannot judge"
+      kind="$(printf '%s' "$verdict" | cut -f1)"
+      concl="$(printf '%s' "$verdict" | cut -f2)"
+      run_id="$(printf '%s' "$verdict" | cut -f3)"
+      run_when="$(printf '%s' "$verdict" | cut -f4)"
+      run_epoch="$(printf '%s' "$verdict" | cut -f5)"
+      newer="$(printf '%s' "$verdict" | cut -f6)"
+      case "$kind" in
+        last)
+          # The AGE is decided before the colour: a green verdict from years
+          # ago is a lane that stopped firing, and a timestamp this read could
+          # not parse is not an age at all.
+          if [ -z "$run_epoch" ]; then
+            blind "10 the lane produced" "the last run of $wf_path with a verdict, $run_id, carries no readable timestamp (${run_when:-none}) — how long ago the lane last fired is UNKNOWN, not fine"
+          elif [ "$run_epoch" -lt "$LANE_CUTOFF" ]; then
+            # What fired SINCE that verdict travels with the red: newer runs
+            # that reached none, and runs not finished yet. Without them a
+            # lane that fires on every push and skips every run, or one the
+            # operator dispatched a minute ago, reads as one that died.
+            if [ -n "$newer" ]; then
+              disagree "10 the lane produced" "$wf_path last reached a verdict on run $run_id ($concl, $run_when), more than $LANE_MAX_AGE_DAYS days ago$newer — the lane fires and has reached no verdict within the bound, whatever that old verdict was"
+            else
+              disagree "10 the lane produced" "$wf_path last reached a verdict on run $run_id ($concl, $run_when), more than $LANE_MAX_AGE_DAYS days ago — the lane has stopped firing, whatever that verdict was"
+            fi
+          elif [ "$concl" = "success" ]; then
+            agree "10 the lane produced" "$wf_path concluded SUCCESS on its last completed run $run_id ($run_when$newer) — the dependency lane is producing"
+          else
+            disagree "10 the lane produced" "$wf_path concluded $concl on its last completed run $run_id ($run_when$newer) — the dependency lane produces nothing, and a scheduled run that fails on its own notifies nobody"
+          fi ;;
+        unjudged)
+          # For this kind the third column carries the count, not a run id.
+          # The workflow read says nothing here — a push-guarded lane skips a
+          # run on every push, and a busy week pushes the weekly verdict out
+          # of the bounded sample — so the answer is the shared one: a pull
+          # request the App opened within the bound is the production a
+          # verdict would have proven, and silence on both sides blinds.
+          lane_production_evidence "the $run_id completed run(s) of $wf_path among the last $RUN_SAMPLE all concluded $concl$newer — neither a production nor a failure (AUTO_MAINT_RUN_SAMPLE widens the sample)" ;;
+        ambiguous)
+          blind "10 the lane produced" "two completed runs of $wf_path share the same run number and attempt and disagree on their conclusion ($concl) — which one is the last is not decidable from this read" ;;
+        *)
+          lane_production_evidence "$wf_path has no completed run among the last $RUN_SAMPLE$newer" ;;
+      esac
+    done <"$WORK/ren-workflows"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Verdict
 # ---------------------------------------------------------------------------
 
@@ -882,8 +1300,9 @@ if [ "$JSON_OUT" = 1 ]; then
   # is an ordinary matrix job name, and splitting on every separator drops the
   # rest of the sentence in silence. Only the first two fields are structural.
   printf '%s\n' "${LINES[@]}" | jq -R -s \
-    --arg repo "$REPO" --argjson broken "$BROKEN" --argjson blind "$BLIND" '
-    {repo: $repo, broken: $broken, blind: $blind,
+    --arg repo "$REPO" --arg now "$NOW_ISO" --argjson pinned "$NOW_PINNED" \
+    --argjson broken "$BROKEN" --argjson blind "$BLIND" '
+    {repo: $repo, now: $now, now_pinned: $pinned, broken: $broken, blind: $blind,
      agreements: [ split("\n")[] | select(length > 0) | split("|")
                    | {state: .[0], agreement: .[1], detail: (.[2:] | join("|"))} ]}'
 fi
