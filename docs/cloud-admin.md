@@ -564,11 +564,15 @@ storage tracks:
 1. **API keys** (BYOK): per-team or per-user, optionally flagged
    `is_default`. Resolution order at run launch: per-run override →
    user-default → user-other → team-default → team-other → env.
-2. **OAuth-forfait**: per-user only, one record per kind (Claude Code,
-   Codex). The blob is the verbatim `credentials.json` / `auth.json`
-   the official CLI writes locally; iterion never reads its plaintext
-   except to refresh and to materialise it just-in-time in a per-run
-   `tmpfs` mount on the runner.
+2. **OAuth-forfait**: one record per kind (Claude Code, Codex) and per
+   owner — a user, a team, the org tier or the platform tier
+   ([secrets-reference.md](secrets-reference.md)). The blob is the
+   verbatim `credentials.json` / `auth.json` the official CLI writes
+   locally; iterion never reads its plaintext except to refresh and to
+   materialise it just-in-time in a per-run `tmpfs` mount on the runner.
+   A forfait is a **consumer subscription — an individual licence**; see
+   [oauth-forfait.md](oauth-forfait.md#what-a-forfait-is-and-is-not) before
+   lending one to a shared deployment.
 
 **Subscription-OAuth billing guard.** A Claude Pro/Max OAuth subscription
 *works* on API-direct backends when the token reaches them, but Anthropic bills
@@ -590,12 +594,48 @@ draws on the plan normally. Pinned by
 `pkg/secrets/subscription_oauth_test.go`; rationale in
 [ADR-085](adr/085-pi-as-execution-backend.md).
 
-If you want to disable OAuth-forfait entirely (e.g. you're operating
-in a jurisdiction where the legal team prefers the strict BYOK path),
-leave `oauthForfait.{anthropic,codex}.enabled=false` in your values
-file and don't set `ITERION_OAUTH_FORFAIT_*_CLIENT_ID`. The
-`/api/me/oauth/*` endpoints stay reachable but token refresh
-fails with `not configured` — users will re-paste blobs on expiry.
+**There is no global "disable OAuth-forfait" switch.** The chart has no
+`oauthForfait.*.enabled` key: `config.auth.oauthForfait.{anthropicClientId,codexClientId}`
+only set the client ids the server uses to *refresh* uploaded blobs and, for
+Anthropic, to run the browser connect flow; the Anthropic one is defaulted to
+the public Claude Code client when unset, so connect and refresh work whether
+or not you set it ([oauth-forfait.md](oauth-forfait.md#configuration)).
+Leaving the Codex id empty changes nothing either, as long as the Anthropic
+id is not cleared too: the refresh worker derives the client id from the
+uploaded `auth.json` itself (`pkg/secrets/oauth_refresh.go`), so an explicit
+`codexClientId` is only an operator override. (An explicit empty
+`anthropic_client_id` in a server config YAML clears the default; with both
+ids empty the periodic refresh sweep does not start, for either kind —
+`oauthRefreshWorker` in `pkg/server/server_lifecycle.go`. That refuses no
+forfait: blobs stay usable until they expire.) The `/api/me/oauth/*`, team, org and admin OAuth routes
+always stay reachable.
+
+What an operator who wants the strict BYOK path actually controls, lever by
+lever — each one covers a different delivery channel, and none of them
+reaches every backend:
+
+| Lever | Where | What it closes | What it leaves open |
+|---|---|---|---|
+| `secrets.forfait.enabled: false` (chart default) | `values.yaml` → runner `envFrom` | The **pod-level** forfait delivered through the `iterion-forfait` Secret: that `envFrom` is not rendered | A `CLAUDE_CODE_OAUTH_TOKEN` (or subscription `ANTHROPIC_AUTH_TOKEN`) key placed in the `iterion-llm` Secret — the runner mounts that Secret whenever `secrets.llm` names one, independently of the forfait flag — reaches the same ambient env (`charts/iterion/templates/runner-deployment.yaml`); and forfait blobs sealed in the DB (user, team, org, platform tier) are still resolved per run |
+| No platform-tier forfait blob | `iterion remote admin llm oauth` (list / `delete <kind>`), studio *Admin → LLM credentials* | The **deployment-wide** forfait every tenant with nothing of its own would inherit | Users and teams can still connect their own |
+| `ITERION_FORBID_SUBSCRIPTION_OAUTH=1` | runner env (`config.extraEnv`) | Spending a **Claude** subscription token on **`claw` and `pi`** — the per-run credential path (`secrets.GuardSubscriptionOAuth`) and the env path (`pkg/backend/model/registry.go`) — and the **ChatGPT** forfait on pi's `openai-codex` bridge; forwarded into the sandbox | **`claude_code` and `codex` are never affected**: they spawn the vendor's own CLI, which draws on the plan normally (`pkg/secrets/credentials.go`, `pkg/backend/detect`). A forfait that reaches a `claude_code` node is spent. `claw`'s ChatGPT forfait is not guarded by this flag — the next row governs it |
+| `ITERION_OPENAI_USE_OAUTH=0` or any `OPENAI_BASE_URL` | runner env (`config.extraEnv`), crosses into the sandbox | `claw`'s ChatGPT-forfait path (host `~/.codex` and the run's uploaded Codex blob); `1` forces it over an `OPENAI_API_KEY` | The `codex` backend, which reads its own `CODEX_HOME` seeded from the run's blob; pi's `openai-codex/*` provider |
+| Credential pool off, or kept to its default audience | per org: `iterion remote pool policy --enabled=false` (or the audience flags), studio *Team → Credential pool*; per donor: `iterion remote pool pause` / `withdraw` | Runs of **other people** drawing on a member's lent Claude or ChatGPT subscription — the pool tier and its fallback door ([credential-pool.md](credential-pool.md)). A pool ships disabled | An enabled pool serves any run in its audience that holds no credential of its own; `ITERION_FORBID_SUBSCRIPTION_OAUTH=1` does not disable it — a lent Claude forfait still runs on `claude_code` |
+
+So "no consumer subscription spends on this instance" is not one flag: it
+is the first two rows (no pod secret, no platform blob), a check that the
+`iterion-llm` Secret carries no subscription token, the credential pool
+off (or a policy for what it lends — a lent forfait is still its donor's
+individual licence, spent on someone else's run), plus a policy for the
+user-, team- and org-connected forfaits. The studio's team and platform
+OAuth pages carry a standing warning banner (plus a persistent toast at
+connect time), and the credential-pool tab carries its own; the org tier
+has no studio surface — it is connected from the CLI (`iterion remote orgs
+oauth set <kind>`) and carries no warning — and nothing refuses any of
+them. Rationale for the
+claw/pi guard in [ADR-085](adr/085-pi-as-execution-backend.md); the matrix
+of which backend consumes which credential is in
+[cloud-llm-credentials.md](cloud-llm-credentials.md).
 
 ## 8. Rotating the master key
 
@@ -633,14 +673,47 @@ in the [admin guide §1.5](cloud-admin-guide.md#15-audit-log) and
 [ADR-157](adr/157-authentication-events-join-the-audit-log.md).
 
 Beside it, OAuth-forfait usage is logged at `INFO` on the publisher side:
+Every run that seals credentials gets ONE `INFO` line on the publisher side
+naming each funded slot with its tier and fingerprint — never plaintext
+(`logGrantedCredentials` in `pkg/server/cloudpublisher/publisher.go`):
 
 ```
-"cloudpublisher: oauth-forfait used run=<id> user=<id> kind=claude_code"
+cloudpublisher: credentials GRANTED for run=<id> — <tier>(oauth:<claude_code|codex> fp=<fp>), <tier>(api_key:<provider> fp=<fp>), …
 ```
 
-Plumb it into your log aggregator (Loki, ELK, Datadog) and add a
-dashboard panel — useful both for cost attribution and as your
-defence-in-depth for the CGU guard discussed in §7.
+`<tier>` is the run's `credential_tiers` vocabulary: `oauth-forfait` (a
+user or team connect), `org`, `pool` (a contributor's lent subscription,
+including the pool's fallback door), `platform`, or `byok` for a tenant API
+key. A forfait slot is the one written `(oauth:<kind> …)`, whatever tier
+filled it — including a forfait restored after its usage window was skipped.
+The grep that catches every forfait-funded run, one line per run:
+
+```
+grep -E 'credentials GRANTED for run=.*\(oauth:(claude_code|codex) '
+```
+
+The per-tier lines stay as detail on *how* the walk chose: `oauth-forfait(<user|team>)
+used run=… owner=… kind=… fp=…`, `org credential used … slot=<kind>`,
+`platform credential used … slot=<kind>` (the last two shared with API
+keys), `run <id> runs on a pooled contributor credential (donor=…)`, and
+`window-closed forfait RESTORED for run=… kind=… fp=…`. None of them alone
+covers every tier; the `GRANTED` line does.
+
+One channel never reaches this log: a subscription token placed in the
+runner's own env (the `iterion-forfait` Secret, or a `CLAUDE_CODE_OAUTH_TOKEN`
+key in `iterion-llm`). The publisher does not see it; at most it warns
+`no credential resolved for run=… the runner falls back to its env` when it
+sealed nothing. That channel is proved closed by the Secrets' key names
+(§7), not by the log.
+
+Plumb the `GRANTED` line into your log aggregator (Loki, ELK, Datadog) and
+add a dashboard panel — useful for cost attribution, and it is the audit
+evidence of which runs a subscription actually paid for: since no lever in
+§7 refuses a forfait on `claude_code`, these lines (with the run's
+`credential_tiers`) are how an operator proves "no consumer subscription
+served production" rather than asserting it. The grep is pinned against
+the line the publisher writes by
+`pkg/server/cloudpublisher/forfait_audit_grep_test.go`.
 
 ## 10. Backup & restore
 

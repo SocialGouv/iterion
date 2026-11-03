@@ -1481,3 +1481,47 @@ func TestChartRenderQuota(t *testing.T) {
 			"--set", "quota.requestsCpu=8", "--set", "quota.requestsMemory=16Gi", "-f", f.Name())
 	})
 }
+
+// runnerSecretRefs lists the Secrets the runner's main container takes as
+// `envFrom`, keyed by name, with the rendered `optional` flag (nil when the
+// template did not set one).
+func runnerSecretRefs(t *testing.T, args ...string) map[string]any {
+	t.Helper()
+	docs := manifests(t, mustRender(t, args...))
+	container := dig(podSpec(t, docs, "Deployment", "iterion-runner"), "containers", "0")
+	refs := map[string]any{}
+	entries, _ := dig(container, "envFrom").([]any)
+	for _, e := range entries {
+		if name, ok := dig(e, "secretRef", "name").(string); ok {
+			refs[name] = dig(e, "secretRef", "optional")
+		}
+	}
+	return refs
+}
+
+// A pod-level forfait is a consumer subscription on the runner — an
+// individual licence, for development and testing (docs/oauth-forfait.md).
+// The example production values keep it off, and enabling it mounts the
+// Secret as optional so an absent Secret never blocks the runner.
+func TestChartRenderForfaitSecret(t *testing.T) {
+	t.Run("the production values mount no forfait secret", func(t *testing.T) {
+		refs := runnerSecretRefs(t, "-f", "values-prod.yaml")
+		if _, mounted := refs["iterion-forfait"]; mounted {
+			t.Fatalf("values-prod renders a secretRef on iterion-forfait: production runs on API keys, secrets.forfait.enabled must stay false there (got %v)", refs)
+		}
+		if _, mounted := refs["iterion-llm"]; !mounted {
+			t.Fatalf("values-prod renders no secretRef on iterion-llm: the API-key channel the forfait posture relies on is gone (got %v)", refs)
+		}
+	})
+
+	t.Run("enabling it mounts the secret as optional", func(t *testing.T) {
+		refs := runnerSecretRefs(t, "-f", "values-prod.yaml", "--set", "secrets.forfait.enabled=true")
+		optional, mounted := refs["iterion-forfait"]
+		if !mounted {
+			t.Fatalf("secrets.forfait.enabled=true renders no secretRef on iterion-forfait (got %v)", refs)
+		}
+		if optional != true {
+			t.Fatalf("iterion-forfait secretRef optional = %v, want true: a hand-managed Secret that is absent must not block the runner", optional)
+		}
+	})
+}

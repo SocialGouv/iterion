@@ -237,9 +237,14 @@ type AuthConfig struct {
 
 	OIDC OIDCConfig `yaml:"oidc"`
 
-	// OAuthForfait carries the per-deployment OAuth client ids used
-	// to refresh user-provided Claude Code / Codex subscription
-	// tokens. Empty disables refresh of the corresponding kind.
+	// OAuthForfait carries the per-deployment OAuth client ids used to
+	// connect (Anthropic) and refresh user-provided Claude Code / Codex
+	// subscription tokens. Both are overrides: an unset Anthropic id
+	// defaults to the public Claude Code client (an explicit empty YAML
+	// value clears it, which refuses the connect route and skips the
+	// claude_code refresh); an empty Codex id defers to the id the
+	// uploaded credential carries. With both ids empty the periodic
+	// refresh sweep does not start for either kind.
 	OAuthForfait OAuthForfaitConfig `yaml:"oauth_forfait"`
 }
 

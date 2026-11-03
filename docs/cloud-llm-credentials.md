@@ -49,8 +49,12 @@ form of the runner-pod env fallback (`ANTHROPIC_API_KEY`,
 secrets), which **remains the final backstop** below it. Since it serves
 every tenant that has nothing of its own, who may draw on it is now an
 explicit, **opt-in** audience — see
-[Gating the platform tier](#gating-the-platform-tier). The dedicated
-rotation section is at the end of this doc.
+[Gating the platform tier](#gating-the-platform-tier). A forfait at this
+tier — a sealed blob or the env backstop — lends one person's consumer
+subscription to every tenant the audience admits: it is a development and
+testing convenience, not a production credential
+([oauth-forfait.md](oauth-forfait.md#what-a-forfait-is-and-is-not)). The
+dedicated rotation section is at the end of this doc.
 
 ## Decision shortcut
 
@@ -91,7 +95,13 @@ path (it clears `ANTHROPIC_AUTH_TOKEN` when the value is a subscription token
 variable untouched), and it is forwarded into the sandbox so the refusal holds
 inside the container too.
 
-OpenAI's ChatGPT-forfait has never had an equivalent restriction.
+iterion applies no equivalent refusal to the ChatGPT-forfait on `claw`
+(`ITERION_OPENAI_USE_OAUTH=0` is an off switch, not a guard; pi's
+`openai-codex` bridge does honour `ITERION_FORBID_SUBSCRIPTION_OAUTH`). That
+absence is a statement about the code, not about OpenAI's consumer terms —
+a ChatGPT subscription is an individual licence like the Claude one, and
+whether it may serve automated runs is a reading of those terms the
+operator owns ([oauth-forfait.md](oauth-forfait.md#what-a-forfait-is-and-is-not)).
 
 ## Gotchas that cost real time
 
