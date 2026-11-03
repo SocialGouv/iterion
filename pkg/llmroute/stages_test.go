@@ -2,9 +2,10 @@ package llmroute
 
 import (
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // The default order enumerates the ADR's "then the rest": every slot a
@@ -221,22 +222,69 @@ func TestStageModelPairKeyed(t *testing.T) {
 }
 
 // The gateway pair is a seal-whitelist entry and never a ladder rung: the
-// order lists it so the whitelist can seal the gateway slot, and
-// StageModel has no case for it, so a stage naming it drops on every
-// node, whatever the node's model — the gateway's own spelling and a
-// vendor's alike. The absence of that case IS the guarantee.
+// order lists it — once, on claw — so the whitelist can seal the gateway
+// slot, and no arm of StageModel has a case for the slot, so a stage
+// naming it drops on every harness and every node, whatever the node's
+// model — the gateway's own spelling and a vendor's alike. The absence of
+// that case on every arm IS the guarantee.
 func TestStageModelNeverMapsTheGatewayPair(t *testing.T) {
-	gateway := Pair(HarnessClaw, "openai_compatible_key")
-	if !slices.Contains(DefaultPairOrder, gateway) || !SlotSealable(DefaultPairOrder, "openai_compatible_key") {
-		t.Fatalf("%s is not in DefaultPairOrder — the whitelist would never seal the gateway slot", gateway)
+	var listed []string
+	for _, pair := range DefaultPairOrder {
+		if _, c, err := ParsePair(pair); err == nil && c == "openai_compatible_key" {
+			listed = append(listed, pair)
+		}
 	}
-	for _, nodeModel := range []string{
-		"openai_compatible/scaleway/glm-5.3", "openai_compatible/glm-5.3",
-		"claude-opus-5-5", "anthropic/claude-opus-5-5", "openai/gpt-6-mini", "gpt-6-sol",
-	} {
-		got, ok, reason := StageModel(HarnessClaw, "openai_compatible_key", nodeModel, ResolveClasses(nil))
+	if want := []string{Pair(HarnessClaw, "openai_compatible_key")}; !reflect.DeepEqual(listed, want) {
+		t.Fatalf("DefaultPairOrder names the gateway slot as %v, want exactly %v — the whitelist seals the slot through claw's pair alone", listed, want)
+	}
+	for _, harness := range Harnesses {
+		for _, nodeModel := range []string{
+			"openai_compatible/scaleway/glm-5.3", "openai_compatible/glm-5.3",
+			"claude-opus-5-5", "anthropic/claude-opus-5-5", "openai/gpt-6-mini", "gpt-6-sol",
+		} {
+			got, ok, reason := StageModel(harness, "openai_compatible_key", nodeModel, ResolveClasses(nil))
+			if ok || reason != ReasonNoMapping {
+				t.Errorf("StageModel(%s+openai_compatible_key, %s) = %q, %v, %q — want a drop with %q: the gateway slot is never a rung", harness, nodeModel, got, ok, reason, ReasonNoMapping)
+			}
+		}
+	}
+}
+
+// claude_code maps exactly the slots its delegate spends — the
+// anthropic-wire slots, secrets.AnthropicWireSlotOrder (the OAuth kind is
+// the Claude forfait). A pair naming any other slot hands the delegate a
+// provider hint it does not route on: the session would spend the wire's
+// default precedence (the forfait, the Anthropic key) under that pair's
+// name, and the fallback door would ask a donor for a credential the rung
+// never spends. Every slot of the vocabulary is asked, the gateway's
+// included.
+func TestStageModelClaudeCodeMapsTheSlotsItSpends(t *testing.T) {
+	spends := map[string]bool{}
+	for _, slot := range secrets.AnthropicWireSlotOrder {
+		if slot == string(secrets.OAuthKindClaudeCode) {
+			slot = CredClaudeForfait
+		} else {
+			slot += "_key"
+		}
+		if !validCredential(slot) {
+			t.Errorf("secrets.AnthropicWireSlotOrder names %q, a slot the policy vocabulary does not know", slot)
+		}
+		spends[slot] = true
+	}
+	slots := []string{CredClaudeForfait, CredChatGPTForfait}
+	for _, p := range ProviderHints {
+		slots = append(slots, p+"_key")
+	}
+	for _, slot := range slots {
+		got, ok, reason := StageModel(HarnessClaudeCode, slot, "claude-opus-5-5", ResolveClasses(nil))
+		if spends[slot] {
+			if !ok || got != "claude-opus-5-5" {
+				t.Errorf("StageModel(claude_code+%s, claude-opus-5-5) = %q, %v — the delegate spends this slot, want the node's id", slot, got, ok)
+			}
+			continue
+		}
 		if ok || reason != ReasonNoMapping {
-			t.Errorf("StageModel(%s, %s) = %q, %v, %q — want a drop with %q: the gateway pair is never a rung", gateway, nodeModel, got, ok, reason, ReasonNoMapping)
+			t.Errorf("StageModel(claude_code+%s, claude-opus-5-5) = %q, %v, %q — the delegate never spends this slot, want a drop with %q", slot, got, ok, reason, ReasonNoMapping)
 		}
 	}
 }

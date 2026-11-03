@@ -351,6 +351,15 @@ func ValidEffort(e string) bool {
 // to dispatch's modelroute.OpenAICompatible).
 const ProviderOpenAICompatible = "openai_compatible"
 
+// gatewaySlot is the gateway's credential slot, which pairs with claw alone
+// (ADR-131 §9: a gateway key unlocks claw only). No other harness spends a
+// gateway key, so Validate refuses the slot on every other harness. The
+// other key slots stay accepted on every harness because stored records
+// already carry them, and StageModel drops the pairs a harness cannot
+// spend. The gateway slot is new to the vocabulary, so its refusal breaks
+// no stored record.
+const gatewaySlot = ProviderOpenAICompatible + "_key"
+
 // ProviderHints is the closed provider vocabulary of an override's provider
 // chain and of the providers allowlist: the <provider>_key slots' wire
 // identifiers (validKeyProvider), the gateway's included.
@@ -628,6 +637,9 @@ func Validate(p Policy) error {
 		}
 		if !validCredential(c) {
 			return fmt.Errorf("llmroute: pair_order %q — unknown credential %q (want claude_forfait, chatgpt_forfait, pool, or <provider>_key like anthropic_key)", pair, c)
+		}
+		if c == gatewaySlot && h != HarnessClaw {
+			return fmt.Errorf("llmroute: pair_order %q — %s pairs with claw only: no other harness spends a gateway key, so this pair could never act (write %q)", pair, gatewaySlot, Pair(HarnessClaw, gatewaySlot))
 		}
 		if seenPair[pair] {
 			return fmt.Errorf("llmroute: pair_order names %q twice — a repeated pair is an ordering mistake", pair)

@@ -38,9 +38,11 @@ import (
 // exactly where it crossed before.
 //
 // The rules:
-//   - claude_code serves anthropic-wire credential families and reads the
-//     node's model BARE (it strips only an `anthropic/` prefix); an
-//     openai-family node model is not servable — no mapping.
+//   - claude_code serves the anthropic-wire credential slots its delegate
+//     spends (claudeCodeSpends: the Claude forfait, anthropic_key and the
+//     facade keys) and reads the node's model BARE (it strips only an
+//     `anthropic/` prefix). An openai-family node model is not servable,
+//     and a pair naming any other slot has no mapping.
 //   - codex serves the openai family: an openai-family node model rides
 //     (a `codex/` prefix strips); a foreign model crosses to its CLASS's
 //     openai rendering (codex's catalog is disjoint from every other
@@ -52,10 +54,13 @@ import (
 //     facade); openai_key serves openai-family ids (`openai/` + the bare
 //     id) and crosses a foreign model to `openai/` + the class's openai
 //     rendering; moonshot_key and the remaining key providers have no
-//     mapping. openai_compatible_key has none by design: the gateway pair
-//     is in the order for the seal whitelist alone, a gateway route is the
-//     node's own spec and never a crossing's target, and a case here
-//     would make the pair a ladder rung.
+//     mapping.
+//
+// No arm has a case for openai_compatible_key, by design: the gateway pair
+// (claw's, the only one Validate admits) is in the order for the seal
+// whitelist alone, a gateway route is the node's own spec and never a
+// crossing's target, and a case on any arm would make the pair a ladder
+// rung.
 func StageModel(harness, credential, nodeModel string, classes ClassTable) (model string, ok bool, reason string) {
 	if classes.forward == nil {
 		classes = ResolveClasses(nil)
@@ -66,7 +71,7 @@ func StageModel(harness, credential, nodeModel string, classes ClassTable) (mode
 	family, bare := modelFamily(nodeModel)
 	switch harness {
 	case HarnessClaudeCode:
-		if family != familyAnthropicWire {
+		if !claudeCodeSpends(credential) || family != familyAnthropicWire {
 			return "", false, ReasonNoMapping
 		}
 		return bare, true, ""
@@ -106,6 +111,21 @@ func StageModel(harness, credential, nodeModel string, classes ClassTable) (mode
 		}
 	}
 	return "", false, ReasonNoMapping
+}
+
+// claudeCodeSpends reports whether the claude_code delegate spends the
+// slot. Those are the anthropic-wire slots of its precedence,
+// secrets.AnthropicWireSlotOrder (held equal by test): the facade keys, the
+// Anthropic key and the Claude forfait. The delegate routes on no other
+// provider hint. A pair naming another slot would run the session on the
+// wire's default precedence under that pair's name, and the fallback door
+// would ask a donor for a credential the rung never spends.
+func claudeCodeSpends(credential string) bool {
+	switch credential {
+	case CredClaudeForfait, "anthropic_key", "zai_key", "moonshot_key":
+		return true
+	}
+	return false
 }
 
 // crossToClass renders the node model's CLASS on the target family — the

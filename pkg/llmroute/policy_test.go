@@ -201,11 +201,12 @@ func TestNormalize_ExplicitEmptyTriggersSurvive(t *testing.T) {
 }
 
 func TestValidate_PairOrder(t *testing.T) {
-	tests := []struct {
+	type pairOrderCase struct {
 		name  string
 		pairs []string
 		want  string // substring of the expected error; "" = valid
-	}{
+	}
+	tests := []pairOrderCase{
 		{"arbitrary default order", DefaultPairOrder, ""},
 		{"every known provider key", providerKeyPairs(), ""},
 		{"the gateway slot on claw", []string{Pair(HarnessClaw, "openai_compatible_key")}, ""},
@@ -215,6 +216,13 @@ func TestValidate_PairOrder(t *testing.T) {
 		{"unknown credential", []string{Pair(HarnessClaw, "forfait_claude")}, `unknown credential "forfait_claude"`},
 		{"duplicate", []string{Pair(HarnessClaw, "anthropic_key"), Pair(HarnessClaw, "anthropic_key")}, "twice"},
 		{"explicitly empty", []string{}, "pair_order is empty"},
+	}
+	// The gateway slot pairs with claw alone: no other harness spends a
+	// gateway key, so every other harness naming it is refused.
+	for _, h := range Harnesses {
+		if h != HarnessClaw {
+			tests = append(tests, pairOrderCase{"the gateway slot on " + h, []string{Pair(h, "openai_compatible_key")}, "pairs with claw only"})
+		}
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
