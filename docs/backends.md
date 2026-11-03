@@ -1506,19 +1506,67 @@ when a call's usage never arrives — as for any unpriced route.
 proves `openai_compatible/…` specs in the cloud model catalog
 (`GET /api/models`, credential source `OPENAI_COMPATIBLE_API_KEY`) through
 **claw only** — pi and claude_code never light up on it — and recommends no
-model: the id is the gateway's own naming. The team's default gateway model
-is a routing decision, not a field of the key: one override cell of the
-team's routing policy, selector `*` and model
-`openai_compatible/<provider>/<model>` with the gateway's id verbatim
-(ADR-122), written per team by operator tooling through
-`PUT /api/teams/{id}/routing-policy`:
+model: the id is the gateway's own naming. A key restricted to bots or
+repositories proves nothing there ([models.md](models.md)).
+
+The team's default gateway model is a routing decision, not a field of the
+key: an override cell on selector `*` pinning
+`openai_compatible/<provider>/<model>`, the gateway's id verbatim (ADR-122):
 
 ```json
-{"routing": {"overrides": [{"selector": "*", "model": "openai_compatible/scaleway/glm-5.3"}]}}
+{"selector": "*", "model": "openai_compatible/scaleway/glm-5.3"}
 ```
 
-A more specific level still pins its own model over it: a repository
-integration's `routing`, or the launch's own model overrides.
+It belongs in the routing record whose launches the key funds, and no wider
+one:
+
+- a key with no `bots` or `repos` audience: the team's routing policy
+  (`GET`/`PUT /api/teams/{id}/routing-policy`), which every launch of every
+  bot of the team folds;
+- a key restricted to repositories: the `routing` block of each repository
+  integration it serves (`GET /api/teams/{id}/forge/repo-bots`,
+  `PATCH /api/teams/{id}/forge/repo-bots/{integration_id}`; a block the
+  PATCH carries parks for the org's approval where the org requires one);
+  a key restricted to bots: an integration that enables only those bots.
+
+On the team's policy, a restricted key's cell would also route launches the
+key cannot fund onto the gateway — the team's other repositories or bots,
+and for a repository restriction the scheduled, board and pipeline lanes,
+which name no repository (ADR-131 §3) — and under `llm_fallback=none` such a
+launch is refused (§5). Until PR-R stamps the scheduled lane with its
+integration's repository, an integration's own schedules cannot spend a
+repository-restricted key either.
+
+The cell re-targets the `model:` of every LLM node the record reaches — not
+its `backend:` or `provider:`. A node whose backend resolves to claw (named,
+or picked by auto-detection) and that carries no vendor `provider:` hint
+runs the gateway on claw. Any other — pinned to a CLI backend by its own
+`backend:` or the workflow's `default_backend:`, or carrying a vendor hint —
+is refused the gateway model (the parity rule above) and walks to its own
+fallbacks: the gateway never serves it. A cell pinning `backend: claw` as
+well moves a node whose only obstacle is its CLI backend, and claw keeps
+only the tools the node declares. A node with both a CLI backend and a
+vendor hint — review-pr's claude slots and revi-converse's agent run
+`claude_code` with `provider: anthropic` by default — cannot be moved by
+cells at all: a cell never clears a hint, and a provider pinned beside
+`backend: claw` may only be `anthropic` (any other is refused at write when
+one cell holds both, at launch when two do). A bot with such nodes
+therefore takes cells narrower than `*`, naming the nodes the gateway can
+serve. The fold decides per selector and field
+([ADR-129](adr/129-per-integration-typed-routing-overrides.md)): a bot's own
+`routing:` cell or an integration's on the same selector wins over the
+team's, a more specific selector wins wherever it is written, and the
+launch's own model overrides win over every cell.
+
+Both writes REPLACE the record's whole routing policy (`null` clears it), so
+operator tooling reads, edits and writes back: GET the record; pin the model
+on a `*` cell of `overrides` — replacing the `*` model pin when there is one
+(a second is refused), appending the cell otherwise — and keep every other
+field and cell; then write the whole policy back. The team route takes
+`expected_updated_at`, the `updated_at` the GET returned (the zero time
+`0001-01-01T00:00:00Z` when it returned no policy), and answers a write that
+raced another with a 409: re-read and retry. The integration route carries
+no such stamp.
 
 ### What a gateway model costs and how big it is (ADR-122)
 
