@@ -911,11 +911,13 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 	}
 
 	// Hosted marketplace (Mongo-backed) — opt-in for cloud via
-	// ITERION_CLOUD_MARKETPLACE because the submit/install paths are
-	// local-mode only today (cloud is rejected pending a vetted submission
-	// flow — see pkg/server/marketplace_routes.go). When enabled it surfaces
-	// the read-only browse view + sets marketplace_enabled. Local self-host
-	// wires a JSONStore unconditionally in pkg/cli/studio.go.
+	// ITERION_CLOUD_MARKETPLACE. When enabled it serves the public browse
+	// view (account ids and moderation metadata projected away for
+	// non-owners — marketplace.ForViewer), authenticated submissions that
+	// land pending moderation, and the moderation queue; the install and
+	// uninstall paths stay local-only (see pkg/server/marketplace_routes.go).
+	// It also sets marketplace_enabled. Local self-host wires a JSONStore
+	// unconditionally in pkg/cli/studio.go.
 	marketplaceEnabled, _ := strconv.ParseBool(os.Getenv("ITERION_CLOUD_MARKETPLACE"))
 
 	schemas := []schemaEnsurer{

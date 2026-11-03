@@ -21,7 +21,7 @@ An "API key" is not a principal kind: `api_keys` rows are BYOK provider keys, a 
 | per-run forge publish grant — `X-Iterion-Run` | `injectForgePublishVars` at launch, into `forgePublishTokens` ([pkg/server/forge_publish.go](../../pkg/server/forge_publish.go)) | no identity: a `ForgePublishGrant` of team, connection, repo, bot and capabilities | no |
 | internal background actor, synthetic | three background paths ([webhooks_debounce.go](../../pkg/server/webhooks_debounce.go), [forge_gate_autofix.go](../../pkg/server/forge_gate_autofix.go), [forge_gate_relaunch.go](../../pkg/server/forge_gate_relaunch.go)) | the actor string, the webhook config's tenant or the team of the gating run's `ForgePublishGrant`, `RoleMember`, `Kind` webhook | no |
 | machine actor — `KindInternal` | `machineLaunchCtx` ([pkg/server/launch_gate.go](../../pkg/server/launch_gate.go)) | the metered tenant, the audited actor, `Kind` internal, and **no role at all** | never reaches one |
-| anonymous | nobody — `authMiddleware` returns before `requireAuth` for `isPublicPath`, an `OPTIONS` preflight, or a credential-less marketplace read unless `DisableAuth` | nothing; `auth.FromContext` answers `ok=false` | no |
+| anonymous | nobody — `authMiddleware` returns before `requireAuth` for `isPublicPath`, an `OPTIONS` preflight, or a credential-less marketplace read (public view: no account ids, see `marketplace.ForViewer`) unless `DisableAuth` | nothing; `auth.FromContext` answers `ok=false` | no |
 
 ## Roles
 

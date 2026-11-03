@@ -173,6 +173,8 @@ func (s *Server) handleMarketplaceModerationList(w http.ResponseWriter, r *http.
 	if entries == nil {
 		entries = []marketplace.Entry{}
 	}
+	// Moderators read entries whole (no ForViewer): the queue needs the
+	// submitter and the review trail to decide.
 	s.writeJSONFor(w, r, map[string]any{"bots": entries})
 }
 
@@ -250,5 +252,7 @@ func (s *Server) marketplaceModerate(w http.ResponseWriter, r *http.Request, nex
 	if refreshed == nil {
 		refreshed = entry
 	}
+	// The moderator who just decided reads the whole entry, review
+	// trail included (no ForViewer).
 	s.writeJSONFor(w, r, refreshed)
 }
