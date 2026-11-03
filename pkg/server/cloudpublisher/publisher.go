@@ -3530,7 +3530,7 @@ func (p *Publisher) acquireDoorGrant(
 	return grant, nil
 }
 
-func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview.LaunchSpec, wf *ir.Workflow, cs *runview.CompiledSource) (pos int, retErr error) {
+func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview.LaunchSpec, wf *ir.Workflow, cs *runview.CompiledSource) (sub runview.LaunchSubmission, retErr error) {
 	// 1. Build the run doc (status=queued + workflow_hash + file_path so
 	//    List endpoints see it instantly and Resume can reload the
 	//    workflow). It is PERSISTED only once everything the queue message
@@ -3566,7 +3566,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// provisioned bot.
 	if unknown := ir.UnknownInputNames(wf, inputs); len(unknown) > 0 && !spec.AllowUnknownInputs {
 		if _, refused := platformcfg.SplitEngineInjectedInputs(unknown); len(refused) > 0 {
-			return 0, fmt.Errorf("launch input %s names no var of the workflow (declared: %s)",
+			return runview.LaunchSubmission{}, fmt.Errorf("launch input %s names no var of the workflow (declared: %s)",
 				strings.Join(refused, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
 		}
 	}
@@ -3579,15 +3579,15 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// shared pool.
 	runnerPool, err := p.runnerPoolForTeam(ctx, tenantID)
 	if err != nil {
-		return 0, err
+		return runview.LaunchSubmission{}, err
 	}
 	if runnerPool != "" {
 		if err := p.poolRoutes(ctx, runnerPool); err != nil {
-			return 0, err
+			return runview.LaunchSubmission{}, err
 		}
 	}
 	if runnerPool != "" && !queue.ValidPoolName(runnerPool) {
-		return 0, fmt.Errorf("team %s is mapped to runner pool %q: invalid pool name (want 1–31 chars [a-z0-9-], starting alphanumeric)", tenantID, runnerPool)
+		return runview.LaunchSubmission{}, fmt.Errorf("team %s is mapped to runner pool %q: invalid pool name (want 1–31 chars [a-z0-9-], starting alphanumeric)", tenantID, runnerPool)
 	}
 	r := &store.Run{
 		FormatVersion: store.RunFormatVersion,
@@ -3750,7 +3750,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		}()
 	}
 	if err != nil {
-		return 0, err
+		return runview.LaunchSubmission{}, err
 	}
 	// The sealed credentials' audit identities ride the run document's
 	// single SaveRun below (never secrets): the per-key concurrency meter
@@ -3780,7 +3780,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 			r.Inputs = inputs
 		}
 		if inj, err := reviewtopology.InjectAll(wf, inputs, creds.families, spec.ReviewMode); err != nil {
-			return 0, fmt.Errorf("refusing to launch: %w", err)
+			return runview.LaunchSubmission{}, fmt.Errorf("refusing to launch: %w", err)
 		} else if inj.Summary() != "" {
 			p.logger.Info("cloudpublisher: run %s %s", runID, inj.Summary())
 		}
@@ -3793,7 +3793,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// runner's engine judges them again, and alone judges a value only its
 	// environment can read.
 	if err := runview.GateLaunchVars(wf, inputs); err != nil {
-		return 0, err
+		return runview.LaunchSubmission{}, err
 	}
 
 	// 2. Resolve what the RunMessage carries BEFORE the run row exists, so a
@@ -3804,14 +3804,14 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	//    IR.
 	body, err := marshalAttemptIR(wf, spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
-		return 0, err
+		return runview.LaunchSubmission{}, err
 	}
 	// Plugin/library skills resolved HERE, from this instance's iterion home:
 	// the runner pod's is empty, so an operator-installed plugin's skill would
 	// otherwise never reach the workspace (see resolveContributions).
 	contributions, err := resolveContributionsFor(ctx, wf, "", tenantID, runID, p.pluginSources, p.logger)
 	if err != nil {
-		return 0, err
+		return runview.LaunchSubmission{}, err
 	}
 
 	// 3. Persist the run — a single SaveRun (upsert). From here on a row
@@ -3849,25 +3849,25 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	//     the launch, never admits it.
 	refusal, err := p.admitCredSlots(ctx, runID, creds.credSlots)
 	if err != nil {
-		return 0, err
+		return runview.LaunchSubmission{}, err
 	}
 	if refusal != nil {
 		parkRunOnCredSlot(r, refusal)
 		if err := store.PersistLaunchRun(ctx, r, p.store.SaveRun); err != nil {
-			return 0, fmt.Errorf("cloudpublisher: save parked run: %w", err)
+			return runview.LaunchSubmission{}, fmt.Errorf("cloudpublisher: save parked run: %w", err)
 		}
 		persisted = true
 		// A parked row nothing wakes is a stuck run: an arming that fails
 		// leaves the deferred choke point above to mark the row
 		// LAUNCH_FAILED, which the caller re-does.
 		if err := p.armCredSlotRetry(ctx, r, refusal); err != nil {
-			return 0, err
+			return runview.LaunchSubmission{}, err
 		}
 		parked = true
 		if p.metrics != nil {
 			p.metrics.RunsCreatedTotal.WithLabelValues(string(store.RunStatusFailedResumable)).Inc()
 		}
-		return 0, nil
+		return runview.LaunchSubmission{Status: store.RunStatusFailedResumable, FailureCode: store.FailureCredSlotWait}, nil
 	}
 	// The slots are this launch's only once it publishes: every exit before
 	// that gives them back, or the key stays short of them for the grace the
@@ -3883,7 +3883,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// run as it stood before the first attempt, or it offers a version the
 	// rolled-back document never reached and refuses the launch.
 	if err := store.PersistLaunchRun(ctx, r, p.store.SaveRun); err != nil {
-		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)
+		return runview.LaunchSubmission{}, fmt.Errorf("cloudpublisher: save run: %w", err)
 	}
 	persisted = true
 
@@ -3893,7 +3893,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// silence. A promotion that fails fails the launch, and the rollback
 	// above marks the row LAUNCH_FAILED with its cause.
 	if err := runview.PromoteForHandoff(ctx, runID, spec.AttachmentPromote); err != nil {
-		return 0, fmt.Errorf("cloudpublisher: %w", err)
+		return runview.LaunchSubmission{}, fmt.Errorf("cloudpublisher: %w", err)
 	}
 
 	msg := &queue.RunMessage{
@@ -3985,7 +3985,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	}
 	if err := p.publish(ctx, msg); err != nil {
 		// The deferred choke point above flips the row to failed.
-		return 0, fmt.Errorf("cloudpublisher: publish: %w", err)
+		return runview.LaunchSubmission{}, fmt.Errorf("cloudpublisher: publish: %w", err)
 	}
 	launched = true
 	if p.metrics != nil {
@@ -3994,13 +3994,13 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 
 	// 4. Compute queue position: count of runs with status=queued
 	//    and created_at <= ours.
-	pos, err = p.queuePosition(ctx, runID)
+	pos, err := p.queuePosition(ctx, runID)
 	if err != nil {
 		// Non-fatal: the studio falls back to "Waiting on the queue"
 		// generic copy when queue_position is zero.
 		p.logger.Warn("cloudpublisher: queue position lookup: %v", err)
 	}
-	return pos, nil
+	return runview.LaunchSubmission{QueuePosition: pos, Status: store.RunStatusQueued}, nil
 }
 
 // CancelRun flips the Mongo doc to cancelled. Two effects:

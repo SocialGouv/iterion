@@ -52,15 +52,15 @@ type handoffPublisher struct {
 	runID      string
 }
 
-func (p *handoffPublisher) SubmitLaunch(ctx context.Context, runID string, spec runview.LaunchSpec, wf *ir.Workflow, cs *runview.CompiledSource) (int, error) {
+func (p *handoffPublisher) SubmitLaunch(ctx context.Context, runID string, spec runview.LaunchSpec, wf *ir.Workflow, cs *runview.CompiledSource) (runview.LaunchSubmission, error) {
 	p.tenantSeen, _ = store.TenantFromContext(ctx)
 	p.ownerSeen, _ = store.OwnerFromContext(ctx)
 	p.runID = runID
 	if _, err := p.rs.CreateRun(ctx, runID, wf.Name, nil); err != nil {
-		return 0, err
+		return runview.LaunchSubmission{}, err
 	}
 	if err := runview.PromoteForHandoff(ctx, runID, spec.AttachmentPromote); err != nil {
-		return 0, err
+		return runview.LaunchSubmission{}, err
 	}
 	return p.tierPublisher.SubmitLaunch(ctx, runID, spec, wf, cs)
 }

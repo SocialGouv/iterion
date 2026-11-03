@@ -927,13 +927,19 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	span.SetAttributes(attribute.String("iterion.run_id", res.RunID))
-	// A deferred launch (over the local concurrency cap) reports the queued
-	// status + position so the studio doesn't claim "running" for a
-	// pipeline still waiting for a slot. QueuePosition is 0 for the normal
-	// immediate-start path (and always 0 in cloud mode, which uses the
-	// NATS queue, not this local gate).
+	// The status the launch path persisted the run in wins when it reports
+	// one: the cloud publisher's queued, or the failed_resumable of a launch
+	// it PARKED before publishing (a sealed credential at its hard
+	// concurrency cap) — a CLI, a webhook or the studio must not be told the
+	// run runs while it waits for a slot. The local path reports none: its
+	// run starts in-process (running), or waits in the local pipeline-
+	// concurrency queue (queued + position, so the studio doesn't claim
+	// "running" for a pipeline still waiting for a slot).
 	status := store.RunStatusRunning
-	if res.QueuePosition > 0 {
+	switch {
+	case res.Status != "":
+		status = res.Status
+	case res.QueuePosition > 0:
 		status = store.RunStatusQueued
 	}
 	w.WriteHeader(http.StatusAccepted)

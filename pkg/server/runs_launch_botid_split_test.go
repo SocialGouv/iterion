@@ -42,11 +42,11 @@ type botidCapture struct {
 	specs []runview.LaunchSpec
 }
 
-func (c *botidCapture) SubmitLaunch(_ context.Context, _ string, spec runview.LaunchSpec, _ *ir.Workflow, _ *runview.CompiledSource) (int, error) {
+func (c *botidCapture) SubmitLaunch(_ context.Context, _ string, spec runview.LaunchSpec, _ *ir.Workflow, _ *runview.CompiledSource) (runview.LaunchSubmission, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.specs = append(c.specs, spec)
-	return 0, nil
+	return runview.LaunchSubmission{}, nil
 }
 
 func (*botidCapture) CancelRun(context.Context, string) error { return nil }

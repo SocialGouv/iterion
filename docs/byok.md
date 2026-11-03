@@ -153,10 +153,15 @@ A **full key parks the run instead of refusing it**: the row is written
 again every `cloudpublisher.CredSlotProbeInterval` (2 min) — free of
 attempts, since no ask reaches the provider — until a slot frees or the
 run's `max_wait` passes, at which point the run is abandoned naming the
-key. A webhook delivery has nobody to click again; a parked run keeps its
-place, its inputs and its pull request's pending check. An operator's
-`resume` of a parked run while the key is still full answers 429 and
-leaves the run parked.
+key. A run armed for a usage window whose resume finds its key full is
+deferred the same way, and its row is re-tagged `cred_slot` in that write:
+it waits for a slot now, and nothing reads it as the provider wall it no
+longer waits on. A webhook delivery has nobody to click again; a parked run
+keeps its place, its inputs and its pull request's pending check. An
+operator's `resume` of a parked run while the key is still full answers 429
+and leaves the run parked. The launch API answers such a park with
+`status: failed_resumable` (never `running` or `queued`); the run's
+`failure_code` says `CRED_SLOT_WAIT`.
 
 The ledger never becomes a second truth. Nothing releases a slot
 explicitly: a holder is free when its run stops counting under the three

@@ -38,6 +38,33 @@ type LaunchResult struct {
 	// QueuePosition is the 1-based position on the cloud queue at
 	// the moment of submission. Zero when launching in-process.
 	QueuePosition int
+	// Status is the status the run document was persisted in when the
+	// launch path knows it — the cloud publisher's queued, or the
+	// failed_resumable of a launch PARKED before publishing (a sealed
+	// credential at its hard concurrency cap, store.FailureCredSlotWait).
+	// Empty on the local path, whose run starts in-process. A caller that
+	// reports the launch must not call a parked run running or queued.
+	Status store.RunStatus
+	// FailureCode names why a parked launch waits; empty otherwise.
+	FailureCode store.FailureCode
+}
+
+// LaunchSubmission is what a LaunchPublisher's SubmitLaunch landed: the
+// status it persisted the run document in and, for a queued run, its
+// 1-based position on the queue. The park is a field of the result rather
+// than a sentinel position: the fact travels with the answer, never
+// reconstructed from a zero.
+type LaunchSubmission struct {
+	// Status is the status the run was persisted in: queued when its
+	// message is on the queue, failed_resumable when the launch was parked
+	// before publishing (store.FailureCredSlotWait).
+	Status store.RunStatus
+	// FailureCode names why a parked launch waits; empty otherwise.
+	FailureCode store.FailureCode
+	// QueuePosition is the 1-based position on the cloud queue at the
+	// moment of submission; zero when the lookup failed or the run was not
+	// queued.
+	QueuePosition int
 }
 
 // LaunchPublisher routes Launch / Resume / Cancel to the cloud
@@ -46,16 +73,17 @@ type LaunchResult struct {
 // becomes a "submit + return queue_position"; the runner pool drains
 // the queue separately. Plan §F (T-31, T-32, T-33).
 type LaunchPublisher interface {
-	// SubmitLaunch persists the run as queued in the cloud store
-	// and publishes a RunMessage. Returns the 1-based queue position
-	// at submission time.
+	// SubmitLaunch persists the run in the cloud store and publishes a
+	// RunMessage — or PARKS it before publishing when a credential it sealed
+	// is at its hard concurrency cap. The submission says which: the status
+	// the row was written in, and the 1-based queue position of a queued run.
 	//
 	// cs is what the launch COMPILED: its identity hash AND the unit's files.
 	// The files matter as much as the hash — the queue message carries the
 	// compiled IR and never the text, so a runner pod cannot record what it
 	// executed, and `rewind --auto` has nothing to diff against unless the
 	// publisher stamps the pair on the run document here.
-	SubmitLaunch(ctx context.Context, runID string, spec LaunchSpec, wf *ir.Workflow, cs *CompiledSource) (int, error)
+	SubmitLaunch(ctx context.Context, runID string, spec LaunchSpec, wf *ir.Workflow, cs *CompiledSource) (LaunchSubmission, error)
 	// CancelRun signals the runner pool to abort the run. Idempotent —
 	// flips the Mongo doc to cancelled regardless of whether a runner
 	// is currently holding the lease.
@@ -240,7 +268,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// publisher's PromoteForHandoff then lands them in the shared blob
 		// store the runner reads back.
 		s.composeBoundContexts(parent, runID, &spec, wf)
-		pos, err := s.publisher.SubmitLaunch(parent, runID, spec, wf, cs)
+		sub, err := s.publisher.SubmitLaunch(parent, runID, spec, wf, cs)
 		if err != nil {
 			return nil, err
 		}
@@ -249,7 +277,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// event stream the runner pod populates.
 		closed := make(chan struct{})
 		close(closed)
-		return &LaunchResult{RunID: runID, Done: closed, QueuePosition: pos}, nil
+		return &LaunchResult{RunID: runID, Done: closed, QueuePosition: sub.QueuePosition, Status: sub.Status, FailureCode: sub.FailureCode}, nil
 	}
 
 	// Usage cap, local path: a cap that stops runs mid-flight but lets new

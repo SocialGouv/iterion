@@ -187,6 +187,16 @@ func (f *cappedFixture) launch(t *testing.T, p *Publisher, runID string, overrid
 	return err
 }
 
+// launchSub is launch with the publisher's own word on where the run landed.
+func (f *cappedFixture) launchSub(t *testing.T, p *Publisher, runID string, overrides map[string]string) runview.LaunchSubmission {
+	t.Helper()
+	sub, err := p.SubmitLaunch(f.ctx, runID, launchSpec(overrides), cappedWorkflow(), &runview.CompiledSource{Hash: "hash"})
+	if err != nil {
+		t.Fatalf("launch %s: %v", runID, err)
+	}
+	return sub
+}
+
 func (f *cappedFixture) load(t *testing.T, runID string) *store.Run {
 	t.Helper()
 	r, err := f.spy.LoadRun(f.ctx, runID)
@@ -297,12 +307,16 @@ func runIDFor(i int) string { return "run-racer-" + string(rune('a'+i)) }
 func TestCredSlotAdmission_ASecondLaunchOnAFullKeyIsParked(t *testing.T) {
 	f := newCappedFixture(t, 1)
 	p := f.publisher()
-	if err := f.launch(t, p, "run-first", nil); err != nil {
-		t.Fatalf("first launch: %v", err)
+	if sub := f.launchSub(t, p, "run-first", nil); sub.Status != store.RunStatusQueued {
+		t.Fatalf("first launch submission = %+v, want status queued", sub)
 	}
 	f.assertQueued(t, "run-first")
-	if err := f.launch(t, p, "run-second", nil); err != nil {
-		t.Fatalf("second launch: %v — a full key parks the run, it does not refuse the launch", err)
+	// A full key parks the run, it does not refuse the launch — and the
+	// submission SAYS so: a park read off a zero queue position would be
+	// reported as a run that runs.
+	sub := f.launchSub(t, p, "run-second", nil)
+	if sub.Status != store.RunStatusFailedResumable || sub.FailureCode != store.FailureCredSlotWait {
+		t.Fatalf("second launch submission = %+v, want failed_resumable/%s — the park must travel with the answer", sub, store.FailureCredSlotWait)
 	}
 	f.assertParked(t, "run-second")
 	// The parked run holds no slot: a slot freed later goes to the next
