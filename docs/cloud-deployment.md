@@ -65,7 +65,13 @@ whether a slow install is called **Failed**. Nothing reads the values file
 itself: the render already applies what stands between a file and the field
 (go-yaml's reading of the file, the `--set` overrides, the `with` that skips
 an unset or `0` knob, the StatefulSet of `mode=local`), and a reader of the
-file would have to reimplement all of it. The helper refuses, naming the
+file would have to reimplement all of it. That render is the install's own
+while the templates the server Deployment renders through read no cluster or
+release state — `.Capabilities`, `lookup`, `.Release.IsInstall` /
+`.Release.IsUpgrade` / `.Release.Revision`, which `helm template` renders
+off-cluster as an install at revision 1; none is read today, and
+`TestChartKindWaitRenderReadsNoClusterState` (`charts/iterion`) refuses one on
+that path. The helper refuses, naming the
 cause: a render helm refuses, a render with no Deployment labelled
 `app.kubernetes.io/component=server` (`mode=local`), several such Deployments
 (the first in render order would be a guess), a Deployment that renders no

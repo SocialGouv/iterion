@@ -1,11 +1,13 @@
 package chart_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -657,4 +659,259 @@ func TestChartCloudE2EInstallSharesItsArgumentsWithTheHelper(t *testing.T) {
 	if job.TimeoutMinutes < helmCapMinutes+preambleBudgetMinutes {
 		t.Fatalf("cloud-e2e timeout-minutes = %d — below the %d m a verdict needs (%d m helm cap for the job's list + %d m preamble budget); a lower cap lets the runner kill replace helm's timeout with a silence", job.TimeoutMinutes, helmCapMinutes+preambleBudgetMinutes, helmCapMinutes, preambleBudgetMinutes)
 	}
+}
+
+// TestChartKindWaitToolchainPinsYq binds the helper's claim to the
+// toolchain. scripts/chart-kind-wait.sh and docs/cloud-deployment.md say
+// devbox provides yq-go, and `task chart:check` requires yq
+// (ITERION_CHART_RENDER_REQUIRE=1): the root devbox.json must pin yq-go —
+// mikefarah/yq, whose expressions the helper uses; nix's `yq` is the
+// python wrapper the helper refuses. Without the pin a devbox env composed
+// without the host PATH runs the chart gate red on a missing tool, and only
+// a yq the host happens to carry hides it. Runs everywhere.
+func TestChartKindWaitToolchainPinsYq(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "devbox.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var devbox struct {
+		Packages []string `json:"packages"`
+	}
+	if err := json.Unmarshal(raw, &devbox); err != nil {
+		t.Fatalf("devbox.json could not be read as JSON with a packages list: %v", err)
+	}
+	var pin string
+	for _, p := range devbox.Packages {
+		if p == "yq-go" || strings.HasPrefix(p, "yq-go@") {
+			pin = p
+		}
+	}
+	if pin == "" {
+		t.Fatalf("devbox.json pins no yq-go (packages: %s) — scripts/chart-kind-wait.sh reads the render with mikefarah/yq and `task chart:check` requires it: a devbox env without the host's yq runs the chart gate red", strings.Join(devbox.Packages, ", "))
+	}
+	script, err := os.ReadFile(kindWaitScript(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(script), "yq-go") {
+		t.Fatalf("scripts/chart-kind-wait.sh's missing-tool message must name the package devbox pins (%s)", pin)
+	}
+}
+
+// templateActions returns the actions of a Go template text — what stands
+// between {{ and }}, the whitespace markers trimmed — in source order,
+// comment actions left out.
+func templateActions(text string) []string {
+	var actions []string
+	for _, m := range regexp.MustCompile(`(?s)\{\{(.*?)\}\}`).FindAllStringSubmatch(text, -1) {
+		body := strings.TrimSpace(m[1])
+		body = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(body, "-"), "-"))
+		if strings.HasPrefix(body, "/*") {
+			continue
+		}
+		actions = append(actions, body)
+	}
+	return actions
+}
+
+// actionWord is the keyword an action opens with: if, with, range, define,
+// block, else, end — or the first word of a pipeline.
+func actionWord(action string) string {
+	if words := strings.Fields(action); len(words) > 0 {
+		return words[0]
+	}
+	return ""
+}
+
+// namedTemplates reads every define block of the .tpl files in dir: the
+// name → the actions of its body, define and end included. A define that
+// opens inside another, or one left open, is text/template's refusal,
+// named here rather than a body attributed to the wrong name.
+func namedTemplates(t *testing.T, dir string) map[string][]string {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(dir, "*.tpl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defs := map[string][]string{}
+	for _, file := range files {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		name, depth := "", 0
+		for _, action := range templateActions(string(raw)) {
+			word := actionWord(action)
+			if word == "define" || word == "block" {
+				if name != "" {
+					t.Fatalf("%s: `%s` opens inside the define %q — text/template refuses a nested define", file, action, name)
+				}
+				m := regexp.MustCompile(`^(?:define|block)\s+"([^"]+)"`).FindStringSubmatch(action)
+				if m == nil {
+					t.Fatalf("%s: the name of `%s` is not a quoted literal", file, action)
+				}
+				if _, dup := defs[m[1]]; dup {
+					t.Fatalf("%s: %q is defined twice", file, m[1])
+				}
+				name, depth = m[1], 1
+				defs[name] = []string{action}
+				continue
+			}
+			if name == "" {
+				continue
+			}
+			defs[name] = append(defs[name], action)
+			switch word {
+			case "if", "with", "range":
+				depth++
+			case "end":
+				if depth--; depth == 0 {
+					name = ""
+				}
+			}
+		}
+		if name != "" {
+			t.Fatalf("%s: the define %q is never closed", file, name)
+		}
+	}
+	return defs
+}
+
+// serverRenderPath returns the actions the server Deployment renders
+// through: templates/server-deployment.yaml and, transitively, every named
+// template it includes by a literal name, keyed by file or template name.
+// A computed include — `include (print $.Template.BasePath
+// "/configmap.yaml")`, the pod's checksum annotation — is a string hashed
+// into an annotation, not the kind, the labels or the deadline the helper
+// reads, and is not followed.
+func serverRenderPath(t *testing.T, dir string) map[string][]string {
+	t.Helper()
+	defs := namedTemplates(t, dir)
+	raw, err := os.ReadFile(filepath.Join(dir, "server-deployment.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := map[string][]string{"server-deployment.yaml": templateActions(string(raw))}
+	queue := []string{"server-deployment.yaml"}
+	ref := regexp.MustCompile(`\b(?:include|template)\s+"([^"]+)"`)
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, action := range path[cur] {
+			for _, m := range ref.FindAllStringSubmatch(action, -1) {
+				if _, seen := path[m[1]]; seen {
+					continue
+				}
+				body, ok := defs[m[1]]
+				if !ok {
+					t.Fatalf("%s includes %q, which no .tpl of %s defines", cur, m[1], dir)
+				}
+				path[m[1]] = body
+				queue = append(queue, m[1])
+			}
+		}
+	}
+	return path
+}
+
+// clusterStateRead matches what `helm template` cannot see: .Capabilities
+// (off-cluster, the client's defaults stand in for the cluster's version
+// and API set), lookup (empty off-cluster) and .Release.IsInstall /
+// .Release.IsUpgrade / .Release.Revision (a template render is always an
+// install at revision 1). .Release.Name, .Release.Namespace and
+// .Release.Service are the install's own arguments and render the same; a
+// values key spelled like one of these (.Values.lookup) is not a read.
+var clusterStateRead = regexp.MustCompile(`(?:^|[\s($|])(\.Capabilities\b|lookup\b|\.Release\.(?:IsInstall|IsUpgrade|Revision)\b)`)
+
+// clusterStateReads names every action of path that reads cluster or
+// release state, in a stable order: "<template>: `<action>` reads <what>".
+func clusterStateReads(path map[string][]string) []string {
+	names := make([]string, 0, len(path))
+	for name := range path {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	var reads []string
+	for _, name := range names {
+		for _, action := range path[name] {
+			for _, m := range clusterStateRead.FindAllStringSubmatch(action, -1) {
+				reads = append(reads, fmt.Sprintf("%s: `%s` reads %s", name, action, m[1]))
+			}
+		}
+	}
+	return reads
+}
+
+// TestChartKindWaitRenderReadsNoClusterState guards the helper's premise:
+// `helm template` is the install's own render only while the templates the
+// server Deployment renders through read nothing the client cannot see —
+// .Capabilities, lookup, .Release.IsInstall / IsUpgrade / Revision. None is
+// read today; a template author who reaches for one on that path reds
+// here with the drift named, instead of handing the install a wait sized
+// from a Deployment it does not apply. The path is server-deployment.yaml
+// and the named templates it includes, transitively; the other templates
+// may read what they like, the helper never reads them. Runs everywhere.
+func TestChartKindWaitRenderReadsNoClusterState(t *testing.T) {
+	t.Run("the chart's server path", func(t *testing.T) {
+		if reads := clusterStateReads(serverRenderPath(t, "templates")); len(reads) != 0 {
+			t.Fatalf("the server Deployment renders through a read `helm template` cannot see — scripts/chart-kind-wait.sh sizes the install's wait from that render, and the install would apply a different Deployment (the helper's header names the condition):\n  %s", strings.Join(reads, "\n  "))
+		}
+	})
+
+	// The guard on a scratch templates dir: a read on the path is named
+	// through two includes, and a read in a template the server Deployment
+	// never includes is not the helper's business.
+	t.Run("follows the includes and ignores a template off the path", func(t *testing.T) {
+		dir := t.TempDir()
+		write := func(name, text string) {
+			t.Helper()
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		write("server-deployment.yaml", "kind: Deployment\nmetadata:\n  name: {{ include \"scratch.name\" . }}\n  annotations:\n    checksum/config: {{ include (print $.Template.BasePath \"/configmap.yaml\") . | sha256sum }}\n")
+		write("_helpers.tpl", `{{/* the name, through a nested if */}}
+{{- define "scratch.name" -}}
+{{- if .Values.x -}}{{ include "scratch.deep" . }}{{- else -}}x{{- end -}}
+{{- end -}}
+{{- define "scratch.deep" -}}
+{{ (lookup "v1" "ConfigMap" .Release.Namespace "x").data.name }}
+{{- end -}}
+{{- define "scratch.aside" -}}
+{{ .Capabilities.KubeVersion.Major }}
+{{- end -}}
+`)
+		reads := clusterStateReads(serverRenderPath(t, dir))
+		if len(reads) != 1 || !strings.HasPrefix(reads[0], "scratch.deep: ") || !strings.HasSuffix(reads[0], " reads lookup") {
+			t.Fatalf("a lookup two includes deep must be the one read named, got %q", reads)
+		}
+	})
+
+	t.Run("each read is recognised, the install's own arguments are not", func(t *testing.T) {
+		for _, action := range []string{
+			`.Capabilities.KubeVersion.Major`,
+			`if $.Capabilities.APIVersions.Has "policy/v1"`,
+			`lookup "v1" "Secret" .Release.Namespace "x"`,
+			`$s := (lookup "v1" "Secret" "ns" "x").data`,
+			`if .Release.IsUpgrade`,
+			`if not .Release.IsInstall`,
+			`.Release.Revision`,
+		} {
+			if reads := clusterStateReads(map[string][]string{"t": {action}}); len(reads) != 1 {
+				t.Fatalf("`%s` must be one read, got %q", action, reads)
+			}
+		}
+		for _, action := range []string{
+			`.Release.Name`,
+			`$.Release.Namespace`,
+			`.Release.Service`,
+			`.Values.lookup`,
+			`.Values.Capabilities.enabled`,
+			`include (print $.Template.BasePath "/configmap.yaml") . | sha256sum`,
+		} {
+			if reads := clusterStateReads(map[string][]string{"t": {action}}); len(reads) != 0 {
+				t.Fatalf("`%s` renders the same off-cluster and must not be a read, got %q", action, reads)
+			}
+		}
+	})
 }

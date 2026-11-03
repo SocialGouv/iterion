@@ -22,6 +22,15 @@
 # app.kubernetes.io/component=server (the label the Service selects the
 # server pods with), read by yq (mikefarah/yq v4).
 #
+# That render is the install's own only while the templates the server
+# Deployment renders through read nothing the client cannot see: no
+# `.Capabilities` (off-cluster, the client's defaults stand in for the
+# cluster's version and API set), no `lookup` (empty off-cluster), no
+# `.Release.IsInstall` / `.Release.IsUpgrade` / `.Release.Revision` (a
+# template render is always an install at revision 1). None is read today;
+# TestChartKindWaitRenderReadsNoClusterState (charts/iterion) refuses one on
+# that path, naming the drift.
+#
 # Refusals are loud and name their cause: a render helm refuses; a render
 # with no server Deployment (mode=local renders a StatefulSet, which has no
 # such field); several candidate Deployments (the wait follows one deadline,
