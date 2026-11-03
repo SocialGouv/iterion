@@ -513,7 +513,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// declares the matching var). Mirrors the CLI so studio/API/dispatcher
 	// launches auto-detect providers too. The spec override (studio toggle)
 	// wins over a --var review_mode; both win over auto.
-	if inj, err := reviewtopology.InjectAll(wf, inputs, reviewtopology.FamiliesFromReport(detect.Detect(parent)), spec.ReviewMode); err != nil {
+	if inj, err := reviewtopology.InjectAll(wf, inputs, reviewtopology.InventoryFromReport(detect.Detect(parent)), spec.ReviewMode); err != nil {
 		s.dropRunLog(runID)
 		return nil, fmt.Errorf("refusing to launch: %w", err)
 	} else if inj.Summary() != "" {
@@ -857,7 +857,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// judges its own there; certifying a cloud resume against a host
 	// detection report would certify the wrong set entirely. And above every
 	// local write below, so a refused resume persists nothing.
-	if err := reviewtopology.RefuseFrozenPin(wf, r.Inputs, reviewtopology.FamiliesFromReport(detect.Detect(parent))); err != nil {
+	if err := reviewtopology.RefuseFrozenPin(wf, r.Inputs, reviewtopology.InventoryFromReport(detect.Detect(parent))); err != nil {
 		return nil, fmt.Errorf("refusing to resume: %w", err)
 	}
 

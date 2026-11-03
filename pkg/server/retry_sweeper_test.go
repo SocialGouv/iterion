@@ -777,7 +777,7 @@ func TestSweepDueRetries_AnUnservableFamilyAbandonsInsteadOfReArming(t *testing.
 	st := newFakeRetryStore()
 	st.claimWins["run-dead-pin"] = true
 	resumer := &fakeResumer{failing: fmt.Errorf("refusing to resume: %w", reviewtopology.RefusePinnedFamily(
-		reviewtopology.FamilyGPT, reviewtopology.FamilySet{reviewtopology.FamilyClaude: true}, reviewtopology.AtResume))}
+		reviewtopology.FamilyGPT, reviewtopology.InventoryFromCredentialNames([]string{"anthropic"}, nil), reviewtopology.AtResume))}
 	s := newRetrySweeperServer(t, st, resumer)
 
 	at := time.Now().UTC().Add(-time.Minute)

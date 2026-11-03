@@ -280,7 +280,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	// other moment that can still refuse. Read-only: the run's inputs stay
 	// the launch's, byte for byte. Before the answer attachments and the
 	// budget writes below, so a refused resume persists nothing.
-	if err := reviewtopology.RefuseFrozenPin(wf, r.Inputs, reviewtopology.FamiliesFromReport(detect.Detect(ctx))); err != nil {
+	if err := reviewtopology.RefuseFrozenPin(wf, r.Inputs, reviewtopology.InventoryFromReport(detect.Detect(ctx))); err != nil {
 		return fmt.Errorf("refusing to resume: %w", err)
 	}
 	// `--answer field=@./file.mp3` attaches a local file to the gate, the

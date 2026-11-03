@@ -21,6 +21,15 @@ func repB(backends ...detect.BackendStatus) detect.Report {
 	return detect.Report{Backends: backends}
 }
 
+// withClaudeCLI marks the claude_code CLI present on the fixture host (no
+// forfait implied): the claude slot's routes need the binary (#1221) — a
+// fixture for a claude-SERVABLE host carries it, or the route-aware
+// preference falls to a family the slot can actually run.
+func withClaudeCLI(r detect.Report) detect.Report {
+	r.Backends = append(r.Backends, detect.BackendStatus{Name: detect.BackendClaudeCode, BinaryFound: true})
+	return r
+}
+
 func backendSt(name string, avail bool) detect.BackendStatus {
 	return detect.BackendStatus{Name: name, Available: avail}
 }
@@ -77,14 +86,18 @@ func TestResolve(t *testing.T) {
 		wantFamily string
 	}{
 		// auto: two families → dual
-		{"auto both families → mono (dual is a deliberate spend)", rep(prov("anthropic", true), prov("openai", true)), "auto", ModeMono, FamilyClaude},
-		{"empty override both families → mono", rep(prov("anthropic", true), prov("openai", true)), "", ModeMono, FamilyClaude},
+		{"auto both families → mono (dual is a deliberate spend)", withClaudeCLI(rep(prov("anthropic", true), prov("openai", true))), "auto", ModeMono, FamilyClaude},
+		{"empty override both families → mono", withClaudeCLI(rep(prov("anthropic", true), prov("openai", true))), "", ModeMono, FamilyClaude},
 		// auto: single family → mono on that family
 		{"auto claude only", rep(prov("anthropic", true), prov("openai", false)), "auto", ModeMono, FamilyClaude},
 		{"auto gpt only", rep(prov("anthropic", false), prov("openai", true)), "auto", ModeMono, FamilyGPT},
 		// zai counts as the claude family (operator decision)
 		{"auto zai only → claude", rep(prov("zai", true)), "auto", ModeMono, FamilyClaude},
-		{"auto zai + openai → mono", rep(prov("zai", true), prov("openai", true)), "auto", ModeMono, FamilyClaude},
+		{"auto zai + openai → mono", withClaudeCLI(rep(prov("zai", true), prov("openai", true))), "auto", ModeMono, FamilyClaude},
+		// …but with no claude_code CLI the claude SLOT has no servable route:
+		// the route-aware preference serves the run on gpt instead of dying
+		// at the reviewer node (#1221).
+		{"auto zai + openai, no claude CLI → gpt (claude slot unservable)", rep(prov("zai", true), prov("openai", true)), "auto", ModeMono, FamilyGPT},
 		{"auto anthropic + zai is one family → mono claude", rep(prov("anthropic", true), prov("zai", true)), "auto", ModeMono, FamilyClaude},
 		// auto: no participating family → dual (fail normally on credential)
 		{"auto no providers", rep(), "auto", ModeDual, ""},
@@ -93,7 +106,7 @@ func TestResolve(t *testing.T) {
 		{"explicit dual with one family", rep(prov("anthropic", true)), "dual", ModeDual, ""},
 		{"explicit dual with none", rep(), "dual", ModeDual, ""},
 		// explicit mono picks preferred available family
-		{"explicit mono both → claude preferred", rep(prov("anthropic", true), prov("openai", true)), "mono", ModeMono, FamilyClaude},
+		{"explicit mono both → claude preferred", withClaudeCLI(rep(prov("anthropic", true), prov("openai", true))), "mono", ModeMono, FamilyClaude},
 		{"explicit mono gpt only", rep(prov("openai", true)), "mono", ModeMono, FamilyGPT},
 		{"explicit mono none → empty family", rep(), "mono", ModeMono, ""},
 		// unknown override collapses to auto behaviour
@@ -139,7 +152,7 @@ func TestInjectIfDeclared_autoDetectMono(t *testing.T) {
 	wf := wfWithVars(VarReviewMode, VarMonoFamily)
 	inputs := map[string]any{VarReviewMode: ModeAuto}
 	mode, family, injected, _ := InjectIfDeclared(wf, inputs,
-		rep(prov("anthropic", true), prov("openai", true)), "")
+		withClaudeCLI(rep(prov("anthropic", true), prov("openai", true))), "")
 	if !injected || mode != ModeMono || family != FamilyClaude {
 		t.Fatalf("got (%q,%q,injected=%v), want mono/claude/true", mode, family, injected)
 	}
@@ -153,7 +166,7 @@ func TestInjectIfDeclared_explicitDual(t *testing.T) {
 	wf := wfWithVars(VarReviewMode, VarMonoFamily)
 	inputs := map[string]any{VarReviewMode: ModeDual}
 	mode, family, injected, _ := InjectIfDeclared(wf, inputs,
-		rep(prov("anthropic", true), prov("openai", true)), "")
+		withClaudeCLI(rep(prov("anthropic", true), prov("openai", true))), "")
 	if !injected || mode != ModeDual || family != "" {
 		t.Fatalf("got (%q,%q,injected=%v), want dual/empty/true", mode, family, injected)
 	}
@@ -176,7 +189,7 @@ func TestInjectIfDeclared_flagOverrideWins(t *testing.T) {
 	// Two families available (auto would pick dual) but the flag forces mono.
 	inputs := map[string]any{VarReviewMode: ModeAuto}
 	mode, family, _, _ := InjectIfDeclared(wf, inputs,
-		rep(prov("anthropic", true), prov("openai", true)), "mono")
+		withClaudeCLI(rep(prov("anthropic", true), prov("openai", true))), "mono")
 	if mode != ModeMono || family != FamilyClaude {
 		t.Fatalf("got (%q,%q), want mono/claude (flag override)", mode, family)
 	}

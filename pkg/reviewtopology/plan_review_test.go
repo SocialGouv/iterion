@@ -7,18 +7,26 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 )
 
-func fams(names ...string) FamilySet {
-	f := FamilySet{}
+// fams builds an inventory whose named families are backed AND servable —
+// the tests sharing it predate the route publication (#1221) and judge the
+// family level; the route-level states get their own tests (routes_test.go).
+func fams(names ...string) FamilyInventory {
+	var f routeFacts
 	for _, n := range names {
-		f[n] = true
+		switch n {
+		case FamilyClaude:
+			f.claudeCodeCLI, f.claudeForfait = true, true
+		case FamilyGPT:
+			f.openaiCred = true
+		}
 	}
-	return f
+	return FamilyInventory{facts: f}
 }
 
 func TestResolvePlanReview(t *testing.T) {
 	cases := []struct {
 		name     string
-		fams     FamilySet
+		fams     FamilyInventory
 		override string
 		want     string
 	}{
@@ -31,7 +39,7 @@ func TestResolvePlanReview(t *testing.T) {
 		{"unknown override falls to auto", fams(FamilyClaude), "maybe", PlanReviewOff},
 	}
 	for _, tc := range cases {
-		if got := ResolvePlanReview(tc.fams, tc.override); got != tc.want {
+		if got := ResolvePlanReview(tc.fams.Families(), tc.override); got != tc.want {
 			t.Errorf("%s: ResolvePlanReview = %q, want %q", tc.name, got, tc.want)
 		}
 	}

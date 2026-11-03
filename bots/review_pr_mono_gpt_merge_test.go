@@ -35,11 +35,11 @@ func reviewPrWorkflow(t *testing.T) *ir.Workflow {
 // a mono-gpt run would be one that HOLDS a Claude credential, where moving
 // the merger off Opus buys nothing.
 func TestMonoGptMeansNoClaudeCredential(t *testing.T) {
-	both := reviewtopology.FamilySet{"claude": true, "gpt": true}
+	both := reviewtopology.InventoryFromCredentialNames([]string{"anthropic", "openai"}, nil)
 	if mode, family := reviewtopology.ResolveFamilies(both, "auto"); family != "claude" {
 		t.Errorf("a launch holding both families resolves %s/%q, want the claude family — review-pr's merge twin is justified by gpt meaning claude is ABSENT", mode, family)
 	}
-	gptOnly := reviewtopology.FamilySet{"gpt": true}
+	gptOnly := reviewtopology.InventoryFromCredentialNames([]string{"openai"}, nil)
 	if mode, family := reviewtopology.ResolveFamilies(gptOnly, "auto"); family != "gpt" {
 		t.Errorf("a gpt-only launch resolves %s/%q, want mono on gpt", mode, family)
 	}

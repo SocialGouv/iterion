@@ -1414,7 +1414,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	for kind := range bundle.OAuthCredentials {
 		oauthKinds = append(oauthKinds, kind)
 	}
-	res.families = reviewtopology.FamiliesFromCredentialNames(providers, oauthKinds)
+	res.families = reviewtopology.InventoryFromCredentialNames(providers, oauthKinds)
 	// Harvest the audit identity of every sealed credential the run can
 	// actually SPEND, for the run-doc stamp: API keys from the slot records
 	// above, OAuth from the bundle's own fingerprint map (each fill site
@@ -1640,7 +1640,7 @@ type credResolution struct {
 	// (reviewtopology), so the launch can resolve the credential-derived
 	// topology vars for a queued run. Empty = nothing resolved (env
 	// fallback), in which case no injection happens.
-	families reviewtopology.FamilySet
+	families reviewtopology.FamilyInventory
 	// fingerprints are the audit identities of every credential the
 	// bundle sealed — API keys and OAuth records alike, never secrets.
 	// The caller stamps them on the run document so the per-key
@@ -3746,7 +3746,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// bundle resolved at least one participating credential: an empty set
 	// means the run rides the runner's env fallback, which is unknowable
 	// here, and the bots' own "auto" defaults must survive untouched.
-	if len(creds.families) > 0 {
+	if len(creds.families.Families()) > 0 {
 		if inputs == nil {
 			inputs = map[string]any{}
 			r.Inputs = inputs
@@ -4310,7 +4310,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// runner's env fallback, which is unknowable from here, and refusing on
 	// "no family" facts about credentials we cannot see would ground every
 	// such resume.
-	if len(creds.families) > 0 {
+	if len(creds.families.Families()) > 0 {
 		if err := reviewtopology.RefuseFrozenPin(wf, prior.Inputs, creds.families); err != nil {
 			return fmt.Errorf("refusing to resume: %w", err)
 		}

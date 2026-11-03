@@ -18,7 +18,6 @@ package reviewtopology
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -69,41 +68,6 @@ const (
 	FamilyGPT    = "gpt"
 )
 
-// familyOf maps a detect provider name to its review family, or "" for
-// providers that don't participate in the mono/dual topology.
-func familyOf(provider string) string {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "anthropic", "zai":
-		return FamilyClaude
-	case "openai":
-		return FamilyGPT
-	default:
-		return ""
-	}
-}
-
-// familyOfBackend maps an available backend to the review family its
-// nodes run on, or "" for backends that don't imply a family. This is what
-// lets a *backend* credential back a family even when no provider-style key
-// is present: the claude_code forfait (OAuth in ~/.claude) is a backend
-// cred, not an anthropic provider key, yet the bots' claude-family nodes
-// (backend: claude_code) run on it. Without this, a forfait-only host detects
-// no "claude" family, so mono/auto route to gpt and running claude models on
-// the forfait needs a manual per-node backend override (see
-// docs/bot-runs/whole-improve-loop.md, 2026-07-02). codex→gpt is included for
-// symmetry (usually redundant with the openai provider probe). claw is
-// provider-routed, so it backs no family on its own.
-func familyOfBackend(backend string) string {
-	switch strings.ToLower(strings.TrimSpace(backend)) {
-	case detect.BackendClaudeCode:
-		return FamilyClaude
-	case detect.BackendCodex:
-		return FamilyGPT
-	default:
-		return ""
-	}
-}
-
 // monoPreference is the order a single family is picked in when resolving
 // mono: prefer claude, then gpt. (Parameterisable later if needed.)
 var monoPreference = []string{FamilyClaude, FamilyGPT}
@@ -120,31 +84,27 @@ type FamilySet map[string]bool
 // provider key (anthropic/zai→claude, openai→gpt) OR a usable backend whose
 // nodes run that family (claude_code→claude, codex→gpt). The union is what
 // makes a forfait-only host (claude_code OAuth, no anthropic key) resolve a
-// "claude" family, so mono picks claude and auto can go dual.
+// "claude" family, so mono picks claude and auto can go dual. Derived from
+// the route inventory (#1221), so the family set and the routes it judges
+// can never disagree.
 func FamiliesFromReport(rep detect.Report) FamilySet {
-	fams := make(FamilySet, 2)
-	for _, p := range rep.Providers {
-		if !p.Available {
-			continue
-		}
-		if f := familyOf(p.Name); f != "" {
-			fams[f] = true
-		}
-	}
-	for _, b := range rep.Backends {
-		if !b.Available {
-			continue
-		}
-		if f := familyOfBackend(b.Name); f != "" {
-			fams[f] = true
-		}
-	}
-	return fams
+	return InventoryFromReport(rep).Families()
 }
 
-// preferredFamily picks the mono family from the available set following
-// monoPreference. Returns "" when no participating family is available.
-func preferredFamily(fams FamilySet) string {
+// preferredFamily picks the mono family following monoPreference, but on
+// the ROUTES, not the folded names (#1221): the first family whose slot
+// has a servable route. A backed family name is not enough — on a
+// GLM-only host with no claude_code CLI, "claude" is backed by the z.ai
+// key and the slot still dies at its first node. When nothing is servable
+// the first BACKED family answers, so the launch refusal names the routes
+// that fail and why; "" when nothing is backed at all.
+func preferredFamily(inv FamilyInventory) string {
+	for _, f := range monoPreference {
+		if inv.Servable(f) {
+			return f
+		}
+	}
+	fams := inv.Families()
 	for _, f := range monoPreference {
 		if fams[f] {
 			return f
@@ -160,7 +120,8 @@ func preferredFamily(fams FamilySet) string {
 // auto):
 //   - "dual"      → always dual; monoFamily is "".
 //   - "mono"      → always mono; monoFamily is the preferred available
-//     family (claude first), or "" when none is detected (the run will
+//     family (claude first — servable at the ROUTE level, see
+//     preferredFamily), or "" when none is detected (the run will
 //     then fail loudly on the missing credential, same as today).
 //   - "auto"/""   → MONO on the preferred available family. Dual costs one
 //     full reviewer pass per family on every run, and auto is what every
@@ -173,19 +134,19 @@ func preferredFamily(fams FamilySet) string {
 //
 // The returned mode is always concrete ("mono" or "dual"), never "auto".
 func Resolve(rep detect.Report, override string) (mode string, monoFamily string) {
-	return ResolveFamilies(FamiliesFromReport(rep), override)
+	return ResolveFamilies(InventoryFromReport(rep), override)
 }
 
-// ResolveFamilies is Resolve on an already-assembled family set (see
-// FamilySet for who assembles one without a detection report).
-func ResolveFamilies(fams FamilySet, override string) (mode string, monoFamily string) {
+// ResolveFamilies is Resolve on an already-assembled inventory (see
+// FamilyInventory for who assembles one without a detection report).
+func ResolveFamilies(inv FamilyInventory, override string) (mode string, monoFamily string) {
 	switch strings.ToLower(strings.TrimSpace(override)) {
 	case ModeDual:
 		return ModeDual, ""
 	case ModeMono:
-		return ModeMono, preferredFamily(fams)
+		return ModeMono, preferredFamily(inv)
 	default: // auto / "" / unknown
-		if f := preferredFamily(fams); f != "" {
+		if f := preferredFamily(inv); f != "" {
 			return ModeMono, f
 		}
 		return ModeDual, ""
@@ -257,11 +218,11 @@ func declaresVar(wf *ir.Workflow, name string) bool {
 // logging by the caller), and the launch refusal of
 // InjectIfDeclaredFamilies.
 func InjectIfDeclared(wf *ir.Workflow, inputs map[string]any, rep detect.Report, flagOverride string) (mode, monoFamily string, injected bool, err error) {
-	return InjectIfDeclaredFamilies(wf, inputs, FamiliesFromReport(rep), flagOverride)
+	return InjectIfDeclaredFamilies(wf, inputs, InventoryFromReport(rep), flagOverride)
 }
 
 // InjectIfDeclaredFamilies is InjectIfDeclared on an already-assembled
-// family set (the cloud publisher derives one from the run's sealed
+// inventory (the cloud publisher derives one from the run's sealed
 // credential bundle, where no host detection report applies).
 //
 // An operator pin on mono_family naming a family the credential set cannot
@@ -269,19 +230,28 @@ func InjectIfDeclared(wf *ir.Workflow, inputs map[string]any, rep detect.Report,
 // not start, and the refusal names the family, the available ones and the
 // fix — the silent substitution this replaces sent a whole repo's review
 // gate dark while every run died at its first review node. A resolver-
-// chosen family never refuses: it comes from the set by construction.
-func InjectIfDeclaredFamilies(wf *ir.Workflow, inputs map[string]any, fams FamilySet, flagOverride string) (mode, monoFamily string, injected bool, err error) {
+// chosen family is judged on the same ROUTES (#1221): the route-aware
+// preference already picks a servable family when one exists, so a
+// refusal at that point means nothing can serve the slot.
+func InjectIfDeclaredFamilies(wf *ir.Workflow, inputs map[string]any, inv FamilyInventory, flagOverride string) (mode, monoFamily string, injected bool, err error) {
 	if !declaresVar(wf, VarReviewMode) {
 		return "", "", false, nil
 	}
+	fams := inv.Families()
 	override := strings.TrimSpace(flagOverride)
 	if override == "" {
 		override = inputOverride(inputs, VarReviewMode)
 	}
-	mode, monoFamily = ResolveFamilies(fams, override)
+	mode, monoFamily = ResolveFamilies(inv, override)
 	if mode == ModeMono {
 		ov := inputOverride(inputs, VarMonoFamily)
-		if err := RefusePinnedFamily(ov, fams, AtLaunch); err != nil {
+		if err := RefusePinnedFamily(ov, inv, AtLaunch); err != nil {
+			return mode, monoFamily, true, err
+		}
+		// The resolver's choice is judged on the same routes: a family it
+		// fell back to backed-but-unservable would die at the slot's first
+		// node — refuse here, with the per-route states named.
+		if err := judgeFamily(monoFamily, resolvedHead(monoFamily), inv, AtLaunch); err != nil {
 			return mode, monoFamily, true, err
 		}
 		// An operator's explicit --var mono_family wins over the resolver's
@@ -352,20 +322,18 @@ var (
 var ErrUnservableFamily = errors.New("unservable review family")
 
 // RefusePinnedFamily is the judgement every moment shares: a mono_family
-// naming a family no credential backs cannot run, and the refusal names the
-// pinned family, the families that ARE backed, and the fix for that moment.
-// An empty family names nothing and is always served.
+// naming a family no credential backs — or one a credential backs whose
+// slot has no servable route (#1221: the folded family name is not the
+// route) — cannot run, and the refusal names the pinned family, the
+// families that ARE backed, every candidate route with its launch state,
+// and the fix for that moment. An empty family names nothing and is always
+// served.
 //
 // Read-only, and that is the point: it writes nowhere, so the resume moment
 // can judge a run's FROZEN inputs — which it must not rewrite — with the
 // same predicate the launch applies.
-func RefusePinnedFamily(family string, fams FamilySet, when PinMoment) error {
-	name := strings.TrimSpace(family)
-	if name == "" || fams[strings.ToLower(name)] {
-		return nil
-	}
-	return fmt.Errorf("%w: mono_family %q is pinned but no credential serves that family %s (available: %s) — the review slot it routes to dies at its first node: %s",
-		ErrUnservableFamily, name, when.clause, familyList(fams), when.fix)
+func RefusePinnedFamily(family string, inv FamilyInventory, when PinMoment) error {
+	return judgeFamily(family, pinHead(strings.ToLower(strings.TrimSpace(family))), inv, when)
 }
 
 // RefuseFrozenPin judges the family a RESUMED run's frozen inputs name
@@ -384,14 +352,14 @@ func RefusePinnedFamily(family string, fams FamilySet, when PinMoment) error {
 // Silent on a DUAL run: the router fans out to both families there and
 // mono_family is meaningless (a dual launch deletes it). Silent too when
 // the workflow declares no review_mode — the var is not that bot's.
-func RefuseFrozenPin(wf *ir.Workflow, frozen map[string]any, fams FamilySet) error {
+func RefuseFrozenPin(wf *ir.Workflow, frozen map[string]any, inv FamilyInventory) error {
 	if !declaresVar(wf, VarReviewMode) {
 		return nil
 	}
 	if strings.EqualFold(inputOverride(frozen, VarReviewMode), ModeDual) {
 		return nil
 	}
-	return RefusePinnedFamily(inputOverride(frozen, VarMonoFamily), fams, AtResume)
+	return RefusePinnedFamily(inputOverride(frozen, VarMonoFamily), inv, AtResume)
 }
 
 // familyList renders the credential-backed families for a refusal:
@@ -429,10 +397,11 @@ const PlanReviewEnv = "ITERION_PLAN_REVIEW"
 // own default of "auto" triggers credential-based resolution.
 //
 // Returns the resolved mode and whether injection happened (for logging).
-func InjectPlanReviewIfDeclared(wf *ir.Workflow, inputs map[string]any, fams FamilySet) (mode string, injected bool) {
+func InjectPlanReviewIfDeclared(wf *ir.Workflow, inputs map[string]any, inv FamilyInventory) (mode string, injected bool) {
 	if !declaresVar(wf, VarPlanReview) {
 		return "", false
 	}
+	fams := inv.Families()
 	override := inputOverride(inputs, VarPlanReview)
 	if override == "" || strings.EqualFold(override, PlanReviewAuto) {
 		if env := strings.TrimSpace(os.Getenv(PlanReviewEnv)); env != "" {
@@ -462,10 +431,11 @@ func InjectPlanReviewIfDeclared(wf *ir.Workflow, inputs map[string]any, fams Fam
 // llm_families var. Unlike the role vars above there is nothing to resolve:
 // an operator has no reason to override a fact, so any pre-set value is
 // overwritten with the truth.
-func InjectLLMFamiliesIfDeclared(wf *ir.Workflow, inputs map[string]any, fams FamilySet) (list string, injected bool) {
+func InjectLLMFamiliesIfDeclared(wf *ir.Workflow, inputs map[string]any, inv FamilyInventory) (list string, injected bool) {
 	if !declaresVar(wf, VarLLMFamilies) {
 		return "", false
 	}
+	fams := inv.Families()
 	names := make([]string, 0, len(fams))
 	for f, ok := range fams {
 		if ok {
@@ -486,18 +456,7 @@ func InjectLLMFamiliesIfDeclared(wf *ir.Workflow, inputs map[string]any, fams Fa
 // The cloud publisher's counterpart of FamiliesFromReport — it knows what
 // sealed into a run's bundle, not what a host detection probe would see.
 func FamiliesFromCredentialNames(providers, backends []string) FamilySet {
-	fams := make(FamilySet, 2)
-	for _, p := range providers {
-		if f := familyOf(p); f != "" {
-			fams[f] = true
-		}
-	}
-	for _, b := range backends {
-		if f := familyOfBackend(b); f != "" {
-			fams[f] = true
-		}
-	}
-	return fams
+	return InventoryFromCredentialNames(providers, backends).Families()
 }
 
 // Injection summarises what InjectAll applied to a run's inputs. Zero-value
@@ -520,15 +479,15 @@ type Injection struct {
 //
 // A launch refusal (a pinned mono_family no credential serves) comes back
 // as the error: the run does not start.
-func InjectAll(wf *ir.Workflow, inputs map[string]any, fams FamilySet, reviewModeOverride string) (Injection, error) {
+func InjectAll(wf *ir.Workflow, inputs map[string]any, inv FamilyInventory, reviewModeOverride string) (Injection, error) {
 	var inj Injection
 	var err error
-	inj.ReviewMode, inj.MonoFamily, inj.ReviewModeInjected, err = InjectIfDeclaredFamilies(wf, inputs, fams, reviewModeOverride)
+	inj.ReviewMode, inj.MonoFamily, inj.ReviewModeInjected, err = InjectIfDeclaredFamilies(wf, inputs, inv, reviewModeOverride)
 	if err != nil {
 		return inj, err
 	}
-	inj.PlanReview, inj.PlanReviewInjected = InjectPlanReviewIfDeclared(wf, inputs, fams)
-	inj.LLMFamilies, inj.LLMFamiliesInjected = InjectLLMFamiliesIfDeclared(wf, inputs, fams)
+	inj.PlanReview, inj.PlanReviewInjected = InjectPlanReviewIfDeclared(wf, inputs, inv)
+	inj.LLMFamilies, inj.LLMFamiliesInjected = InjectLLMFamiliesIfDeclared(wf, inputs, inv)
 	return inj, nil
 }
 

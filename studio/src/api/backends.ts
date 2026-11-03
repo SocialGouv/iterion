@@ -6,6 +6,10 @@ import { request } from "./client";
 export interface BackendStatus {
   name: "claude_code" | "codex" | "claw" | "pi" | "kimi" | "grok" | "opencode";
   available: boolean;
+  // The CLI is on the host whatever the auth state (omitted when false);
+  // an API-key-only host reports available=false by design yet a pinned
+  // node still runs on the key (#1221's route judgement reads this).
+  binary_found?: boolean;
   auth: "oauth" | "api_key" | "none";
   // Go serialises nil slices as `null`, so the field may be missing or null.
   sources?: string[] | null;

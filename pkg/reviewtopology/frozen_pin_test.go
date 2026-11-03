@@ -51,7 +51,7 @@ func TestFrozenPinJudgementRewritesNothing(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		frozen map[string]any
-		fams   FamilySet
+		fams   FamilyInventory
 	}{
 		{"refused", map[string]any{VarReviewMode: ModeMono, VarMonoFamily: FamilyGPT}, fams(FamilyClaude)},
 		{"served", map[string]any{VarReviewMode: ModeMono, VarMonoFamily: FamilyGPT}, fams(FamilyGPT)},

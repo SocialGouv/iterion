@@ -58,11 +58,19 @@ type Report struct {
 
 // BackendStatus describes a single delegate backend.
 type BackendStatus struct {
-	Name      string   `json:"name"`
-	Available bool     `json:"available"`
-	Auth      string   `json:"auth"`
-	Sources   []string `json:"sources"`
-	Hints     []string `json:"hints,omitempty"`
+	Name      string `json:"name"`
+	Available bool   `json:"available"`
+	// BinaryFound reports whether the backend's CLI is on the host at all,
+	// whatever the auth state: an API-key-only host (no OAuth) reports
+	// Available=false BY DESIGN (claw serves that key in-process), yet a
+	// node PINNED to the backend still runs on the key — the launch-time
+	// route judgement (#1221, pkg/reviewtopology) needs the distinction to
+	// tell "unavailable" (no CLI) from "auth" (a CLI with nothing to
+	// spend). In-process backends (claw) report true.
+	BinaryFound bool     `json:"binary_found,omitempty"`
+	Auth        string   `json:"auth"`
+	Sources     []string `json:"sources"`
+	Hints       []string `json:"hints,omitempty"`
 }
 
 // ProviderStatus describes a claw-driven provider.
@@ -594,6 +602,7 @@ func detectOAuthCLI(
 		st.Hints = []string{binDesc + " not found in PATH or common locations"}
 		return st
 	}
+	st.BinaryFound = true
 	if dir := configDir(); dir != "" {
 		for _, credFile := range credFiles {
 			credPath := filepath.Join(dir, credFile)
@@ -624,7 +633,8 @@ func detectOAuthCLI(
 }
 
 func detectClaw(prov []ProviderStatus) BackendStatus {
-	st := BackendStatus{Name: BackendClaw}
+	// claw runs in this process: no binary to find, ever.
+	st := BackendStatus{Name: BackendClaw, BinaryFound: true}
 	var sources []string
 	for _, p := range prov {
 		if p.Available {
