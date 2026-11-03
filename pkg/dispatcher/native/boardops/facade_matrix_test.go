@@ -114,6 +114,15 @@ func TestFacadeExposedVerbsKeepTheToolsCapability(t *testing.T) {
 			t.Errorf("action %q: boardcaps.ActionCapability pins %q but the native tool gates on %q — C333 would name the wrong grant", actionID, cap, tool.Capability)
 		}
 	}
+	// And the loop BACK: a table entry naming no exposed action is a stale
+	// one — left behind by a verb the facade dropped — and C331 would then
+	// name a grant for an action nothing serves. The same discipline as the
+	// exemptions above: one table is one truth in BOTH directions.
+	for actionID := range boardcaps.ActionCapability {
+		if _, exposed := actionBindings[actionID]; !exposed {
+			t.Errorf("boardcaps.ActionCapability names %q, which the facade does not expose — a stale entry survives in silence and C331 warns for a verb that does not exist", actionID)
+		}
+	}
 }
 
 func TestActionTransportCall(t *testing.T) {

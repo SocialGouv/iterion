@@ -279,3 +279,63 @@ workflow main:
 		t.Errorf("timeout: on a native action must not warn — it is honoured: %s", strings.Join(codesOf(diags2), "\n"))
 	}
 }
+
+// C331's message must name the case the author is actually in (review r2):
+// "declared neither on the node nor on the workflow" is FALSE when the
+// workflow grants and the node's declared list overrode it — and the remedy
+// there is to drop the override, not to add a grant the workflow already
+// holds.
+func TestC331MessageDistinguishesAbsentFromOverridden(t *testing.T) {
+	t.Run("granted nowhere", func(t *testing.T) {
+		_, diags := compileSource(t, `
+tool plan:
+  action: board.issue.list
+
+workflow main:
+  entry: plan
+  plan -> done
+`)
+		msg := diagText(diags, DiagNativeActionWithoutGrant)
+		if msg == "" {
+			t.Fatal("want C331")
+		}
+		if !strings.Contains(msg, "neither on the node nor on the workflow") {
+			t.Errorf("the nowhere case must say so: %s", msg)
+		}
+	})
+	t.Run("a declared [] overrides a granting workflow", func(t *testing.T) {
+		_, diags := compileSource(t, `
+tool plan:
+  action: board.issue.list
+  capabilities: []
+
+workflow main:
+  capabilities: [board.read]
+  entry: plan
+  plan -> done
+`)
+		msg := diagText(diags, DiagNativeActionWithoutGrant)
+		if msg == "" {
+			t.Fatal("want C331 — a declared no-grant over a granting workflow IS the denied case")
+		}
+		if strings.Contains(msg, "neither on the node nor on the workflow") {
+			t.Errorf("the workflow DOES declare it — the message lies: %s", msg)
+		}
+		lower := strings.ToLower(msg)
+		for _, want := range []string{"replaces", "drop the node's"} {
+			if !strings.Contains(lower, want) {
+				t.Errorf("the override case must say the node's list %q and name the remedy (%q): %s", "replaces", want, msg)
+			}
+		}
+	})
+}
+
+// diagText returns the first message carrying code, "" when absent.
+func diagText(diags []Diagnostic, code DiagCode) string {
+	for _, d := range diags {
+		if d.Code == code {
+			return d.Message
+		}
+	}
+	return ""
+}

@@ -124,14 +124,31 @@ func (c *compiler) validateCapabilities(w *Workflow) {
 			// node is none of this check's business).
 			if nativeAction {
 				if want, known := boardcaps.ActionCapability[tn.Action]; known {
+					nodeDeclared := tn.Capabilities != nil
 					eff := tn.Capabilities
-					if eff == nil {
+					if !nodeDeclared {
 						eff = w.Capabilities
 					}
 					if !capSet(eff)[want] {
-						c.warnfAt(DiagNativeActionWithoutGrant, tn.ID, "",
-							"tool %q: `action: %s` needs the %q capability, declared neither on the node nor on the workflow — at run time the native transport refuses it (CAPABILITY_DENIED). Declare %q in the node's (or the workflow's) capabilities: list",
-							tn.ID, tn.Action, want, want)
+						// The message must name the case the author is IN:
+						// when the workflow grants and the node's declared
+						// list overrode it, "declared nowhere" is a lie and
+						// the remedy is to drop the override, not to add a
+						// grant the workflow already holds.
+						switch {
+						case nodeDeclared && capSet(w.Capabilities)[want]:
+							c.warnfAt(DiagNativeActionWithoutGrant, tn.ID, "",
+								"tool %q: `action: %s` needs the %q capability — the node's declared capabilities: list REPLACES the workflow's (#1801) and does not hold it, so at run time the native transport refuses the call (CAPABILITY_DENIED). Drop the node's line to inherit, or add %q to it",
+								tn.ID, tn.Action, want, want)
+						case nodeDeclared:
+							c.warnfAt(DiagNativeActionWithoutGrant, tn.ID, "",
+								"tool %q: `action: %s` needs the %q capability, which the node's declared capabilities: list does not hold (and the workflow's does not grant either — the node's list replaces it, #1801) — at run time the native transport refuses the call (CAPABILITY_DENIED). Add %q to the node's list",
+								tn.ID, tn.Action, want, want)
+						default:
+							c.warnfAt(DiagNativeActionWithoutGrant, tn.ID, "",
+								"tool %q: `action: %s` needs the %q capability, declared neither on the node nor on the workflow — at run time the native transport refuses it (CAPABILITY_DENIED). Declare %q in the node's (or the workflow's) capabilities: list",
+								tn.ID, tn.Action, want, want)
+						}
 					}
 				}
 			}
