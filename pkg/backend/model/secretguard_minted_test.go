@@ -412,6 +412,52 @@ func TestAScriptBodyRefusesAMintedVarReference(t *testing.T) {
 	}
 }
 
+// The escape hatch that makes #2875's refusal an override and not an
+// absolute, on a REAL guard: the raw `{{!vars.x}}` form is the author's own
+// text, quoting included, so a `script:` body that writes it renders the
+// bearer into the script's temp file. That leak is the documented cost of an
+// explicit, greppable choice — the only form that keeps the value in a
+// script body — and it is asserted, so a tightening that quietly turns the
+// refusal into an absolute reddens here instead of passing. The sibling
+// above pins the default form; the preview's reading of the same hatch is
+// TestAPreviewNeverRendersTheMintedGrant, which drives a nil guard.
+func TestAScriptBodyKeepsTheMintedGrantInTheRawForm(t *testing.T) {
+	blankHostCredentials(t)
+	tok := randomToken(t)
+	// The author's own quoting around the reference: the raw form renders
+	// the value as written, where the default render would wrap it in the
+	// language literal's quotes and the script would read those back.
+	script := "cat \"$0\" > body.txt\nprintf '%s' '{{!vars.forge_publish_token}}' > token.txt\n"
+	refs, err := ir.ParseRefs(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	wf := &ir.Workflow{Prompts: map[string]*ir.Prompt{}, Schemas: map[string]*ir.Schema{}}
+	guard := BuildSecretGuard(t.Context(), wf, map[string]string{store.ForgePublishTokenVar: tok}, nil)
+	e := newTestClawExecutor(NewRegistry(), wf, WithWorkDir(dir), WithSecretGuard(guard))
+	e.vars = map[string]any{store.ForgePublishTokenVar: tok}
+
+	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "publish"}, Script: script, Language: "sh", ScriptRefs: refs}
+	if _, err := e.Execute(context.Background(), node, nil); err != nil {
+		t.Fatalf("the raw form was refused — the author's own text has no override left: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "token.txt"))
+	if err != nil {
+		t.Fatalf("the script did not run: %v", err)
+	}
+	if string(got) != tok {
+		t.Errorf("the script received %d bytes, want the grant verbatim: the raw form renders the author's own text, quoting included", len(got))
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "body.txt"))
+	if err != nil {
+		t.Fatalf("the script did not read its own source back: %v", err)
+	}
+	if !strings.Contains(string(body), tok) {
+		t.Errorf("the script file carries no value for the raw reference (%d bytes): the override renders nothing, so it buys nothing", len(body))
+	}
+}
+
 // The catalog's call-site shape, unchanged by the fix: every bot writes
 // `NAME={{vars.forge_publish_token}} <program>` and reads NAME from its
 // environment. The three names the catalog uses must all still arrive — a

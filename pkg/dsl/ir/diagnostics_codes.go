@@ -470,4 +470,13 @@ const (
 	// reads. The pairing is refused at compile so the declaration either
 	// arms a landing or is not written.
 	DiagSubbotLandingWithoutAutoMerge DiagCode = "C330" // a subbot declares `merge_into:` or `merge_strategy:` without `auto_merge: true` — the value would be dropped in silence (error)
+
+	// A `{{vars.x}}` naming a credential the server mints for a run, in a
+	// tool node's `script:` body: the run refuses the reference before the
+	// script's temp file is written (a rendered bearer would rest in that
+	// file in clear), and no placeholder→env swap exists for a body in
+	// another language. A warning, because the compiler reads the NAME
+	// while the run asks its guard: a launch that holds no grant renders
+	// the empty value and is not refused.
+	DiagMintedVarInScriptBody DiagCode = "C331" // a `{{vars.x}}` naming a server-minted credential (the forge publish grant) in a tool node's `script:` body — refused at run before the temp file exists (warning)
 )

@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // ---------------------------------------------------------------------------
@@ -74,6 +75,16 @@ type refContext struct {
 	// edge condition) — those have their own refusals. A `{{secrets.X}}`
 	// reference is refused where its secret does not grant the sink.
 	Sink string
+	// InScriptBody is true for a reference in a tool node's `script:`
+	// body. Its Sink is the command sink, like a `command:`'s — one
+	// materialiser reads both — but what that materialiser can SWAP
+	// differs: the single-quoted placeholder the command path hands to
+	// MaterializeAuthoredShellEnv is shell, and a script body is a
+	// program in its own language, whose environment read is its own
+	// expression. So a reference the command path resolves through the
+	// child's environment has no swap here, which C331 reads to say at
+	// compile time what the run would only say mid-node.
+	InScriptBody bool
 	// Prompt names the prompt whose body holds the reference, when it is a
 	// prompt's: one prompt's references are read by every node that names
 	// it, and validating each reference once PER READER drew R × N
@@ -254,10 +265,11 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 			}
 			for _, ref := range t.ScriptRefs {
 				out = append(out, refContext{
-					Ref:      ref,
-					NodeID:   t.ID,
-					Location: fmt.Sprintf("tool node %q script", t.ID),
-					Sink:     secretsink.Command,
+					Ref:          ref,
+					NodeID:       t.ID,
+					Location:     fmt.Sprintf("tool node %q script", t.ID),
+					Sink:         secretsink.Command,
+					InScriptBody: true,
 				})
 			}
 			// The postcondition is rendered exactly as the command is
@@ -1059,7 +1071,40 @@ func (c *compiler) validateVarsRef(w *Workflow, rc refContext) {
 		c.refErrorf(rc, DiagUndeclaredVar,
 			"%s: reference %s targets undeclared variable %q",
 			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(varName))
+		return
 	}
+	c.warnMintedVarInScriptBody(rc, varName)
+}
+
+// warnMintedVarInScriptBody is C331: a `{{vars.x}}` naming a credential a
+// server mints for a run (store.ServerMintedSecretVars) in a tool node's
+// `script:` body. The run REFUSES that reference — before the script's
+// temp file is written, since the rendered bearer would rest in that file
+// in clear and a copy-based sandbox pushes it into the workspace
+// (refuseMintedScriptRef, pkg/backend/model) — while nothing said so at
+// authoring time: validation was clean and a preview rendered a tidy
+// placeholder, so the first word came mid-run, after the spend upstream.
+//
+// The condition mirrors the run's refusal — a top-level vars reference in
+// its default form — on the one term a compiler can read: the NAME. The
+// run asks its guard instead, which holds the credential env-only only
+// where a server minted it for THAT launch, so a run without the grant
+// (the var left at its empty default) renders the empty value and is not
+// refused. Hence a warning: the reference is a defect wherever the grant
+// is live, and the compiler cannot know that it is.
+func (c *compiler) warnMintedVarInScriptBody(rc refContext, varName string) {
+	if !rc.InScriptBody || len(rc.Ref.Path) != 1 || rc.Ref.Unquoted || !store.IsServerMintedSecretVar(varName) {
+		return
+	}
+	// Asked of the one derivation the guard registers and the compiler
+	// already refuses collisions on, never spelled here: the name the body
+	// must read IS the placeholder.
+	ph := secretsink.PlaceholderFor(varName)
+	c.refWarnf(rc, DiagMintedVarInScriptBody,
+		"%s: reference %s names a credential the server mints for the run, and a `script:` body resolves nothing of it — the run refuses the reference where it holds the grant, before the script's temp file is written, because the rendered bearer would rest in that file in clear. "+
+			"Read it from the interpreter's environment instead: the body names the variable itself (sh: \"$%s\", js: process.env.%s, python: os.environ.get(%q)) and the engine hands the value to the body that names it — "+
+			"or write the raw `{{!vars.%s}}` form to inline the value by your own choice",
+		rc.Location, expr.Excerpt(rc.Ref.Raw), ph, ph, ph, varName)
 }
 
 func (c *compiler) validateInputRef(w *Workflow, rc refContext) {
