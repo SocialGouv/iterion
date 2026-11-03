@@ -375,6 +375,26 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 		}
 	})
 
+	t.Run("a quote inside a plain value is the value's own", func(t *testing.T) {
+		// go-yaml reads a quote inside a plain scalar as a character of
+		// it: `6"00` is the string it spells, which helm renders verbatim
+		// and the API refuses. Only one pair of enclosing quotes is the
+		// quoted form the guard resolves: the single-quoted `'"600"'`
+		// keeps its inner quotes through the `{{ . }}` render and lands
+		// as `progressDeadlineSeconds: "600"`, a string the integer field
+		// refuses. A strip of every quote sizes 720 s for all three
+		// files the install refuses.
+		for _, form := range []string{`6"00`, `6'00`, `'"600"'`} {
+			_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: "+form+"\n"))
+			if err == nil {
+				t.Fatalf("chart-kind-wait sized the watch from %q as if it were 600 — go-yaml hands the string over and the API refuses the Deployment", form)
+			}
+			if !strings.Contains(stderr, "not an integer") {
+				t.Fatalf("refusal of %q does not name the non-integer — stderr: %s", form, strings.TrimSpace(stderr))
+			}
+		}
+	})
+
 	t.Run("negative deadline is refused", func(t *testing.T) {
 		_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: -600\n"))
 		if err == nil {

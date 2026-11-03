@@ -58,8 +58,12 @@
 # so it is refused here too. A quoted decimal is the one string form that
 # installs anyway: the templates print the scalar verbatim and the applied
 # manifest reads it back as the integer it spells (helm 4.1.1 renders
-# "600" byte-identical to 600), so it is accepted here. A negative
-# deadline is refused as well: it cannot budget the watch.
+# "600" byte-identical to 600), so it is accepted here. Only one pair of
+# enclosing quotes is that form: a quote inside a plain scalar is a
+# character of it (`6"00` is the string it spells), and a single-quoted
+# `'"600"'` keeps its inner quotes through the render, so both are
+# refused as the strings go-yaml hands over. A negative deadline is
+# refused as well: it cannot budget the watch.
 #
 # A `#` separated from the value by whitespace is a comment, and the
 # whitespace go-yaml tolerates around one (a tab separating key and
@@ -144,6 +148,17 @@ raw=$(awk '
   # with its optional indentation and chomping markers, and maybe a
   # trailing comment. bind records the indent of the opener so the
   # content lines can be told from the structure that follows the scalar.
+  # unquote strips one pair of matching enclosing quotes — the quoted
+  # scalar forms go-yaml reads — and leaves every other quote where it
+  # is: a quote inside a plain scalar is a character of it, so `6"00` is
+  # the string it spells, not 600.
+  function unquote(s,    q, n) {
+    q = sprintf("%c", 39)
+    n = length(s)
+    if (n >= 2 && ((substr(s, 1, 1) == "\"" && substr(s, n, 1) == "\"") || (substr(s, 1, 1) == q && substr(s, n, 1) == q)))
+      return substr(s, 2, n - 2)
+    return s
+  }
   function block_open(s,    t) {
     t = s
     sub(/[ \t]+#.*/, "", t)
@@ -182,7 +197,7 @@ raw=$(awk '
   # 4.1.1 renders no field for a knob the earlier block alone held), so
   # sizing the watch from it repeats the #2780 failure with the guard
   # green.
-  /^[^ \t#]/ { top = $1; sub(/:$/, "", top); gsub(/^["'"'"']+|["'"'"']+$/, "", top); ind = 0; if (top == "server") { if (sdoc == doc) v = ""; sdoc = doc } }
+  /^[^ \t#]/ { top = $1; sub(/:$/, "", top); top = unquote(top); ind = 0; if (top == "server") { if (sdoc == doc) v = ""; sdoc = doc } }
   top == "server" && ind == 0 && $0 ~ /^[ \t]+[^ \t#]/ { match($0, /^[ \t]+/); ind = RLENGTH }
   top == "server" && ind > 0 && $0 !~ /^[ \t]*#/ && match($0, /^[ \t]+/) && RLENGTH == ind {
     line = $0
@@ -190,14 +205,14 @@ raw=$(awk '
     sub(/^[ \t]+/, "", key)
     sub(/:.*/, "", key)
     sub(/[ \t]+$/, "", key)
-    gsub(/^["'"'"']+|["'"'"']+$/, "", key)
+    key = unquote(key)
     if (key == "progressDeadlineSeconds") {
       v = line
       sub(/^[ \t]+/, "", v)
       sub(/^[^:]*:[ \t]*/, "", v)
       sub(/[ \t]+#.*/, "", v)
-      gsub(/["'"'"']/, "", v)
       sub(/[ \t]+$/, "", v)
+      v = unquote(v)
       # A value resolving to one starting with `#` is null to go-yaml
       # (`key: # note`) or reads back empty in the applied manifest (a
       # quoted "#x" renders as `progressDeadlineSeconds: #x`, where the
