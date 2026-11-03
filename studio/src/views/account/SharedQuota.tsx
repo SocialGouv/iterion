@@ -463,8 +463,7 @@ function PledgeCard({
             when the fallback never fires. Only the spend that ran on <strong>your</strong>{' '}
             credential books against your ceilings — a rung the fallback never fired on books
             nothing. When iterion can't place every call of the run on its credential (a route
-            it can't read at launch, a sub-agent at run time), the attempt's whole spend books,
-            as on a whole-bundle run.
+            it can't read at launch, a sub-agent at run time), the attempt's whole spend books.
           </span>
         }
       />

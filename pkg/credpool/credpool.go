@@ -352,8 +352,9 @@ type Pledge struct {
 	// provider outside its vocabulary) stamps no plan, and a call the
 	// runner cannot place on a planned credential at run time (a claw
 	// sub-agent's loop, a model chosen mid-run) sends no table — either
-	// way the whole attempt books, the coarse whole-attempt booking, as on
-	// a whole-bundle run.
+	// way the whole attempt books, the coarse whole-attempt booking. A
+	// whole-bundle grant is sliced the same way: spend on a credential
+	// another tier sealed beside it stays off your ledger.
 	FallbackUse bool `bson:"fallback_use,omitempty" json:"fallback_use,omitempty"`
 	// CooldownUntil holds the pledge out of the pool until the provider's
 	// quota window resets. Set from ErrRateLimited.ResetAt.
