@@ -33,12 +33,18 @@ import (
 //
 // Cost: two short haiku sessions, ~$0.4 a run.
 func TestLive_Feat_ClaudeCodeBackgroundWork(t *testing.T) {
-	_ = liveledger.Track(t) // #1422: record last-green ledger row for this target on t.Cleanup
+	tracker := liveledger.Track(t) // #1422: record last-green ledger row for this target on t.Cleanup
+	// The test drives delegate.ClaudeCodeBackend directly — no executor, no
+	// engine — so neither the re-target nor the ceiling can reach the two
+	// sessions it pays for. Refused with the reason, as feat:schedule is,
+	// rather than spent on the pinned model while the operator believes the
+	// run moved; the funder knob still reaches the row below.
+	refuseRetargetWithoutSeam(t, "delegate.ClaudeCodeBackend.Execute")
 	cli := os.Getenv("ITERION_LIVE_CLAUDE_CLI")
 	if cli == "" {
 		p, err := exec.LookPath("claude")
 		if err != nil {
-			t.Skip("no claude CLI: set ITERION_LIVE_CLAUDE_CLI or put claude on PATH")
+			skipLive(t, "no claude CLI: set ITERION_LIVE_CLAUDE_CLI or put claude on PATH")
 		}
 		cli = p
 	}
@@ -46,6 +52,15 @@ func TestLive_Feat_ClaudeCodeBackgroundWork(t *testing.T) {
 	if model == "" {
 		model = "claude-haiku-4-5-20251001"
 	}
+
+	// What served and what it cost, read from the backend's own report: this
+	// test drives the delegate directly, so there is no event stream to read
+	// llm_request from. Guarded by a lock because the observer is fed from
+	// inside the subtests.
+	var provMu sync.Mutex
+	var served []string
+	var calls int
+	var cost float64
 
 	run := func(t *testing.T, lifecycle string) (answer string, phases []delegate.BackgroundPhase) {
 		// Subagents run in the foreground unless background work is asked
@@ -73,12 +88,21 @@ func TestLive_Feat_ClaudeCodeBackgroundWork(t *testing.T) {
 		b := &delegate.ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelInfo, io.Discard)}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
+		provMu.Lock()
+		calls++
+		provMu.Unlock()
 		res, err := b.Execute(ctx, task)
 		if err != nil {
 			// A failed call proves nothing either way — least of all the
 			// witness, which an error would otherwise turn green.
 			t.Fatalf("Execute (%s): %v", lifecycle, err)
 		}
+		provMu.Lock()
+		if res.EffectiveModel != "" {
+			served = append(served, res.EffectiveModel)
+		}
+		cost += res.CostUSD
+		provMu.Unlock()
 		a, _ := res.Output["answer"].(string)
 		t.Logf("lifecycle=%s answer=%q phases=%v cost=%v terminated=%v",
 			lifecycle, a, phases, res.Output["_cost_usd"], res.TerminatedBackgroundTasks)
@@ -99,4 +123,12 @@ func TestLive_Feat_ClaudeCodeBackgroundWork(t *testing.T) {
 			t.Fatalf("with the lifecycle off the answer still carried the agent's output (%q): the model waited in-turn, and the first half proves nothing", answer)
 		}
 	})
+
+	// Two sessions ran: a model the backend did not name is said as such
+	// (unobserved:<asked>), never left blank — blank is the column's word
+	// for a run with no LLM call at all.
+	provMu.Lock()
+	defer provMu.Unlock()
+	recordLiveProvenance(tracker, liveOverride(t), liveledger.ServedModelFor(served, calls, model), served)
+	tracker.SetCost(cost)
 }

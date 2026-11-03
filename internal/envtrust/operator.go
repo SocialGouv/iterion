@@ -355,6 +355,24 @@ var operatorInfraNames = map[string]bool{
 	"ITERION_DOTENV_ENDPOINTS": true,
 	"ITERION_SCHEDULE":         true,
 	"ITERION_SCHEDULE_BOT":     true,
+	// The live e2e harness's launch knobs (internal/liveenv). The line
+	// against their ITERION_LIVE_LEDGER_* siblings, which ARE bot vars:
+	// those decide where the harness RECORDS, while these four decide what
+	// a paid run spends, which credential route pays, and what the
+	// committed receipt claims served. _MODEL and _BACKEND wave the
+	// requireX credential guards (an override routes every LLM node away
+	// from a vendor, so the guard stops refusing), _MAX_COST_USD moves a
+	// run's spend ceiling, and _FUNDED_BY writes the funder into a
+	// committed file. Each is an operator's launch gesture; a stored
+	// record — or a project `.env` — must never forge one. A loader that
+	// asks here refuses the line it would plant; Task's root `dotenv:`
+	// plants the repo-root `.env` before any of them runs, so the live
+	// harness also refuses to run while that file assigns one
+	// (liveenv.DotEnvKnobs).
+	"ITERION_LIVE_MODEL":        true,
+	"ITERION_LIVE_BACKEND":      true,
+	"ITERION_LIVE_MAX_COST_USD": true,
+	"ITERION_LIVE_FUNDED_BY":    true,
 }
 
 // InfraGradeName reports whether name is one of the operator-grade config

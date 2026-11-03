@@ -23,7 +23,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/liveledger"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -68,7 +67,7 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 	loadDotEnv(t)
 	requireEnv(t, "ANTHROPIC_API_KEY")
 	requireBinaryInPath(t, "go")
-	liveledger.Track(t)
+	tracker := liveledger.Track(t)
 
 	// Build the stdio MCP test server so list_mcp_resources +
 	// read_mcp_resource have something real to discover.
@@ -266,14 +265,16 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 			return clawtools.Answer{FreeText: "iterion-ask-user-probe-answer"}, nil
 		},
 	}
+	// The children's cheap default — unless the run is re-targeted
+	// (liveSubagentDefault).
 	clawDefaults.Subagent = model.NewSubagentRunner(
-		reg, toolReg, hooks, nil, "anthropic/claude-haiku-4-5-20251001",
+		reg, toolReg, hooks, nil, liveSubagentDefault(t, "anthropic/claude-haiku-4-5-20251001"),
 	)
 	if err := tool.RegisterClawAll(toolReg, clawDefaults); err != nil {
 		t.Fatalf("RegisterClawAll: %v", err)
 	}
 
-	executor := model.NewClawExecutor(reg, wf,
+	executor := newLiveClawExecutor(t, reg, wf,
 		model.WithBackendRegistry(backendReg),
 		model.WithToolRegistry(toolReg),
 		model.WithMCPManager(mcpManager),
@@ -283,11 +284,13 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 	defer executor.Close()
 	executor.SetVars(map[string]any{"workspace_dir": workspaceDir})
 
-	eng := runtime.New(wf, s, executor)
+	eng := newLiveEngine(t, wf, s, executor)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	if runErr := eng.Run(ctx, runID, map[string]any{}); runErr != nil {
+	runErr := eng.Run(ctx, runID, map[string]any{})
+	feedLedgerCost(t, tracker, s, runID)
+	if runErr != nil {
 		t.Fatalf("Run error: %v", runErr)
 	}
 	r, _ := s.LoadRun(context.Background(), runID)

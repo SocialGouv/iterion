@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -100,6 +101,7 @@ func runBotLive(t *testing.T, spec liveSpec) liveResult {
 	// TestEveryLiveTestRecordsToTheLedger enforces it.
 	tracker := liveledger.Track(t)
 	tracker.SetStartedAt(time.Now().UTC())
+	override := liveOverride(t)
 	if spec.workspaceDir == "" {
 		t.Fatalf("runBotLive: workspaceDir must be set (seed it before calling)")
 	}
@@ -107,6 +109,10 @@ func runBotLive(t *testing.T, spec liveSpec) liveResult {
 		spec.timeout = 30 * time.Minute
 	}
 
+	// The launch knobs reach this run where they reach every other one: the
+	// executor below is built through newLiveClawExecutor, which arms the
+	// compiled workflow (re-target, ceiling, fundability) before the engine
+	// built by newLiveEngine runs it.
 	wf, bnd := compileLiveWorkflow(t, spec)
 
 	storeDir := resolveLiveStoreDir(t, spec.workspaceDir)
@@ -141,7 +147,7 @@ func runBotLive(t *testing.T, spec liveSpec) liveResult {
 		// bot's agents read them exactly as `iterion run <bundle>` would.
 		engOpts = append(engOpts, runtime.WithBundle(bnd))
 	}
-	eng := runtime.New(wf, s, executor, engOpts...)
+	eng := newLiveEngine(t, wf, s, executor, engOpts...)
 
 	ctx, cancel := context.WithTimeout(context.Background(), spec.timeout)
 	defer cancel()
@@ -170,8 +176,23 @@ func runBotLive(t *testing.T, spec liveSpec) liveResult {
 	// Skipping (never accepting) keeps it honest: the test does not claim
 	// to have verified anything.
 	if why := deadCredentialReason(runErr); why != "" {
-		t.Skipf("live prerequisite unavailable — %s (re-authenticate, then re-run)", why)
+		reason := fmt.Sprintf("live prerequisite unavailable — %s (re-authenticate, then re-run)", why)
+		// The row says WHY instead of leaving the target reading `never`:
+		// Track's cleanup turns a skip into a `skipped` row carrying this
+		// reason, and it never overwrites a verdict a real run recorded.
+		tracker.SetSkipReason(reason)
+		t.Skip(reason)
 	}
+
+	// What served is read BEFORE any verdict is taken: a run the
+	// acceptability check below refuses still answered on some model, and a
+	// `fail` row that cannot say which is the false receipt the column
+	// exists to prevent.
+	events, err := liveRunEvents(tracker, override, s, runID)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	feedLedgerProvenance(tracker, override, events)
 
 	acceptable, reason := liveRunResultAcceptable(runErr)
 	if spec.acceptPause && errors.Is(runErr, runtime.ErrRunPaused) {
@@ -185,10 +206,6 @@ func runBotLive(t *testing.T, spec liveSpec) liveResult {
 	run, err := s.LoadRun(context.Background(), runID)
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
-	}
-	events, err := s.LoadEvents(context.Background(), runID)
-	if err != nil {
-		t.Fatalf("LoadEvents: %v", err)
 	}
 
 	writeLiveTestReport(t, runID, spec.workspaceDir, storeDir, s, events)
@@ -213,9 +230,18 @@ func runBotLive(t *testing.T, spec liveSpec) liveResult {
 // ledger's cost column exists so "is this target worth re-running now?"
 // is answerable — and it is most expensive to answer exactly where this
 // matters. CollectMetrics failure is logged, never fatal: the row keeps
-// cost 0 rather than failing a run whose assertions held.
+// cost 0 rather than failing a run whose assertions held. What served is
+// read first, as in runBotLive, and an unreadable event stream fails the
+// test the same way — the row then says the run went unobserved, never
+// that no LLM node ran.
 func feedLedgerCost(t *testing.T, tr *liveledger.Tracker, s store.RunStore, runID string) {
 	t.Helper()
+	ov := liveOverride(t)
+	events, err := liveRunEvents(tr, ov, s, runID)
+	if err != nil {
+		t.Fatalf("[liveledger] %v", err)
+	}
+	feedLedgerProvenance(tr, ov, events)
 	rm, err := benchmark.CollectMetrics(context.Background(), s, runID, "", "")
 	if err != nil {
 		t.Logf("[liveledger] CollectMetrics failed (%v) — row keeps cost 0", err)
@@ -506,7 +532,7 @@ func requireDockerImage(t *testing.T, ref string) {
 	t.Helper()
 	requireBinaryInPath(t, "docker")
 	if err := exec.Command("docker", "image", "inspect", ref).Run(); err != nil {
-		t.Skipf("docker image %q not present locally — skipping (build/tag it first)", ref)
+		skipLive(t, "docker image %q not present locally — skipping (build/tag it first)", ref)
 	}
 }
 
@@ -515,13 +541,22 @@ func requireDockerImage(t *testing.T, ref string) {
 // is Anthropic-only and the ultracode orchestration half is 4.8-only.
 func requireOpus48(t *testing.T) {
 	t.Helper()
+	// Asked FIRST, before either credential probe: an override routes
+	// every LLM node away from anthropic, so neither the key nor the
+	// CLI's forfait is what pays — and the only caller runs
+	// requireCLI(t, "claude") beforehand, which means a LookPath-first
+	// order makes this branch unreachable in both machine states (CLI
+	// present: LookPath returns; CLI absent: requireCLI already skipped).
+	if overrideCoversProvider(t, "anthropic") {
+		return
+	}
 	if os.Getenv("ANTHROPIC_API_KEY") != "" {
 		return
 	}
 	if _, err := exec.LookPath("claude"); err == nil {
 		return
 	}
-	t.Skip("no Anthropic credential (ANTHROPIC_API_KEY or claude CLI) — skipping claude-opus-4-8 test")
+	skipLive(t, "no Anthropic credential (ANTHROPIC_API_KEY or claude CLI) — skipping claude-opus-4-8 test")
 }
 
 // ---------------------------------------------------------------------------

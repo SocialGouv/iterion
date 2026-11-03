@@ -33,7 +33,7 @@ func TestLive_VibeReviewAlternating(t *testing.T) {
 	requireCLI(t, "claude")
 	requireBinaryInPath(t, "docker")
 	requireOpenAI(t)
-	liveledger.Track(t)
+	tracker := liveledger.Track(t)
 
 	wf := compileFixture(t, "whole-improve-loop/main.bot")
 
@@ -96,7 +96,7 @@ func Multiply(a, b int) int {
 		"scope_notes":        "Two files at the repo root; one has an off-by-one in a loop bound.",
 	})
 
-	eng := runtime.New(wf, s, executor)
+	eng := newLiveEngine(t, wf, s, executor)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
 	inputs := map[string]any{
@@ -109,6 +109,7 @@ func Multiply(a, b int) int {
 	start := time.Now()
 	runErr := eng.Run(ctx, runID, inputs)
 	elapsed := time.Since(start)
+	feedLedgerCost(t, tracker, s, runID)
 	t.Logf("Run finished in %s", elapsed.Round(time.Second))
 
 	acceptable, reason := liveRunResultAcceptable(runErr)
@@ -195,7 +196,7 @@ func TestLive_VibeReviewAlternating_Real(t *testing.T) {
 		"scope_notes":        scopeNotes,
 	})
 
-	eng := runtime.New(wf, s, executor, runtime.WithWorkDir(workspaceDir), runtime.WithLogger(teeLogger))
+	eng := newLiveEngine(t, wf, s, executor, runtime.WithWorkDir(workspaceDir), runtime.WithLogger(teeLogger))
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
 	inputs := map[string]any{

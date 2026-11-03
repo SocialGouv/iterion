@@ -35,7 +35,7 @@ func TestLive_FeatureDev(t *testing.T) {
 	loadDotEnv(t)
 	requireCLI(t, "claude")
 	requireBinaryInPath(t, "docker")
-	liveledger.Track(t)
+	tracker := liveledger.Track(t)
 
 	wf := compileFixture(t, "feature-dev/main.bot")
 
@@ -63,7 +63,7 @@ func TestLive_FeatureDev(t *testing.T) {
 		"feature_prompt": "Add a function `Answer() int` returning 42 in answer.go at the repository root, plus a Go test in answer_test.go that asserts the return value. The repo currently has no Go files; create a minimal go.mod (`module iterion-live-fixture`, go 1.25) alongside.",
 	})
 
-	eng := runtime.New(wf, s, executor)
+	eng := newLiveEngine(t, wf, s, executor)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Minute)
 	defer cancel()
 	inputs := map[string]any{
@@ -75,6 +75,7 @@ func TestLive_FeatureDev(t *testing.T) {
 	start := time.Now()
 	runErr := eng.Run(ctx, runID, inputs)
 	elapsed := time.Since(start)
+	feedLedgerCost(t, tracker, s, runID)
 	t.Logf("Run finished in %s", elapsed.Round(time.Second))
 
 	acceptable, reason := liveRunResultAcceptable(runErr)
@@ -179,7 +180,7 @@ func TestLive_FeatureDev_Real(t *testing.T) {
 		"feature_prompt": featurePrompt,
 	})
 
-	eng := runtime.New(wf, s, executor, runtime.WithWorkDir(workspaceDir), runtime.WithLogger(teeLogger))
+	eng := newLiveEngine(t, wf, s, executor, runtime.WithWorkDir(workspaceDir), runtime.WithLogger(teeLogger))
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Minute)
 	defer cancel()
 	inputs := map[string]any{
