@@ -94,6 +94,47 @@ func TestExportRunFilesJoinsEveryDeclaredDirFailure(t *testing.T) {
 	}
 }
 
+// The teardown race the export measured applies to the drain too: a tool
+// appending to a deliverable while the pod's archiver reads makes tar warn
+// and exit 1 with the race stderr and nothing else. The drain carries the
+// export's discipline — that one failure is retried, the landed set is
+// the archive that finally succeeded, and the attempt count tells it.
+
+func TestExportRunFilesRetriesARacedArchive(t *testing.T) {
+	raced, settled := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(raced, "report.md"), []byte("# partial"), 0o600); err != nil {
+		t.Fatalf("write raced fixture: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(settled, "out"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(settled, "report.md"), []byte("# complete"), 0o600); err != nil {
+		t.Fatalf("write settled fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(settled, "out", "deep.bin"), []byte{9, 9}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hostDst := t.TempDir()
+	// Attempt 1 archives the mid-write tree and exits 1 on the measured
+	// race stderr; attempt 2 archives the settled tree.
+	kubectl, calls := exportShimSeq(t, []string{raced, settled}, 1, measuredRaceStderr)
+	r := drainRun([]sandbox.ReadBackDir{{ContainerPath: "/iterion/artifact-files", HostDir: hostDst}}, kubectl)
+
+	if err := r.ExportRunFiles(context.Background()); err != nil {
+		t.Fatalf("ExportRunFiles = %v, want the raced drain retried to success", err)
+	}
+	got, err := os.ReadFile(filepath.Join(hostDst, "report.md"))
+	if err != nil || string(got) != "# complete" {
+		t.Errorf("drained report.md = %q (%v), want attempt 2's settled archive as the landed set", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(hostDst, "out", "deep.bin")); err != nil || len(got) != 2 {
+		t.Errorf("drained out/deep.bin = %v (%v), want the settled tree's member landed", got, err)
+	}
+	if calls() != 2 {
+		t.Errorf("the drain archived the pod %d times, want the raced attempt retried once", calls())
+	}
+}
+
 // The meter: the cap is ADR-143's named and metered bound. Oversized
 // members are billed for what actually arrives and the drain fails rather
 // than truncating silently.

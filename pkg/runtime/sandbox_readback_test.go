@@ -140,6 +140,43 @@ func TestTheRunFilesDeclarationFollowsTheStorage(t *testing.T) {
 	})
 }
 
+// TestThePodRunSkipsItsOwnStorageWhenABotMountServesTheTarget: the
+// runtime's emptyDir is the run-files path's storage only when nothing
+// else keeps it. A bot's own kept mount at the target (a PVC mounted for
+// persistence) already serves the read-back path, and a second volumeMount
+// at the same mountPath is a pod the API server refuses — the runtime adds
+// nothing, and the declaration and the variable stand (the drain reads
+// whatever mount serves the path). A mount the driver will drop (a host
+// bind) serves nothing: the emptyDir is added.
+
+func TestThePodRunSkipsItsOwnStorageWhenABotMountServesTheTarget(t *testing.T) {
+	t.Run("a kept mount already serves the target: no second storage", func(t *testing.T) {
+		p := canaryParams(t)
+		p.Workflow.Sandbox.Mounts = []string{"type=pvc,source=persist,target=/iterion/artifact-files"}
+		spec := buildSandboxSpecFor(t, false, p)
+		for _, m := range spec.Mounts {
+			if strings.Contains(m, "type=emptydir") && strings.Contains(m, "target=/iterion/artifact-files") {
+				t.Errorf("the spec carries the runtime emptyDir %q beside the bot's own mount at the target — two volumeMounts at one mountPath build a pod the API server refuses (mounts: %v)", m, spec.Mounts)
+			}
+		}
+		if len(spec.ReadBackPaths) != 1 || spec.ReadBackPaths[0] != "/iterion/artifact-files" {
+			t.Errorf("spec.ReadBackPaths = %v, want the declared path — the bot's mount serves it, so the declaration stands", spec.ReadBackPaths)
+		}
+		if spec.Env[runFilesEnvVar] != "/iterion/artifact-files" {
+			t.Errorf("spec.Env[%s] = %q, want the variable naming the bot-served path", runFilesEnvVar, spec.Env[runFilesEnvVar])
+		}
+	})
+	t.Run("a host bind serves nothing here: the emptyDir stands", func(t *testing.T) {
+		p := canaryParams(t)
+		p.Workflow.Sandbox.Mounts = []string{"source=/host/persist,target=/iterion/artifact-files,type=bind"}
+		spec := buildSandboxSpecFor(t, false, p)
+		serving := mountServing(spec.Mounts, "/iterion/artifact-files")
+		if !strings.Contains(serving, "type=emptydir") {
+			t.Errorf("the serving mount is %q, want the runtime's emptyDir — a bind this driver drops serves nothing (mounts: %v)", serving, spec.Mounts)
+		}
+	})
+}
+
 // TestDrainRunFilesOnCleanupSurfacesAFailedDrain: the drain is the clause
 // that makes the variable legal on a pod, and a failed drain must be an
 // event — never an empty set (ADR-143 §4). A reader of the run has to

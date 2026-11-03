@@ -1452,8 +1452,10 @@ const (
 // exportRetrySettings reads the retry bounds, overridable by
 // ITERION_SANDBOX_EXPORT_ATTEMPTS (an integer >= 1) and
 // ITERION_SANDBOX_EXPORT_RETRY_PAUSE (a positive Go duration, the first
-// pause; each next one doubles). An unusable value is reported and the default
-// kept — the export is not the place to fail on a knob.
+// pause; each next one doubles). The workspace export and the run-files
+// drain — the same teardown window, the same race — read the same bounds.
+// An unusable value is reported and the default
+// kept — neither is the place to fail on a knob.
 func exportRetrySettings(logger *iterlog.Logger) (attempts int, pause time.Duration) {
 	attempts, pause = defaultExportAttempts, defaultExportRetryPause
 	if raw := strings.TrimSpace(os.Getenv("ITERION_SANDBOX_EXPORT_ATTEMPTS")); raw != "" {

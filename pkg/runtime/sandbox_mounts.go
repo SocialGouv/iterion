@@ -833,19 +833,12 @@ func homeNestedBindParents(homeDir string, mounts []string) []string {
 
 // mountTarget extracts the target= path from a docker --mount spec entry
 // of the form "source=…,target=…,type=bind[,readonly]". Returns "" when
-// the entry carries no target= field.
+// the entry carries no target= field. Parsing delegates to the sandbox
+// package's MountTargetOf — the one parser of the target grammar, shared
+// with the admission walk, so the next alias lands once and every reader
+// sees it.
 func mountTarget(entry string) string {
-	for _, field := range strings.Split(entry, ",") {
-		field = strings.TrimSpace(field)
-		// docker spells the target three ways; a bind dropped under one of
-		// them is dropped all the same.
-		for _, key := range []string{"target=", "dst=", "destination="} {
-			if v, ok := strings.CutPrefix(field, key); ok {
-				return v
-			}
-		}
-	}
-	return ""
+	return sandbox.MountTargetOf(entry)
 }
 
 // mountSource extracts the source= path from a docker --mount spec entry of
@@ -971,7 +964,7 @@ func specsOf(contribs []plugin.RewriterContribution) []plugin.RewriterSpec {
 // OAuth mount in its sandbox block) is meaningless there and would otherwise
 // hard-fail manifest building (the kubernetes driver rejects type=bind), so we
 // warn and drop it; the sandboxed agent gets its creds/config from env instead.
-// Non-bind mounts (pvc/configmap/secret) pass through untouched.
+// Non-bind mounts (pvc/configmap/secret/emptydir) pass through untouched.
 func dropHostBindMounts(mounts []string, logger *iterlog.Logger) []string {
 	if len(mounts) == 0 {
 		return mounts
@@ -980,7 +973,7 @@ func dropHostBindMounts(mounts []string, logger *iterlog.Logger) []string {
 	for _, m := range mounts {
 		if mountIsHostBind(m) {
 			if logger != nil {
-				logger.Warn("runtime: sandbox: dropping host bind mount %q — this driver has no host filesystem (type=bind unsupported); the sandboxed agent must get its creds/config from env or a pvc/configmap/secret mount", m)
+				logger.Warn("runtime: sandbox: dropping host bind mount %q — this driver has no host filesystem (type=bind unsupported); the sandboxed agent must get its creds/config from env or a pvc/configmap/secret/emptydir mount", m)
 			}
 			continue
 		}
@@ -1073,7 +1066,7 @@ func (d droppedBinds) payload(driver string) map[string]any {
 // before the oracle ran, and four lots read an oracle verdict out of an
 // environment failure. The rule is keyed on the mounts, not on who set the
 // variable: a target a dropped bind served is gone unless a mount the driver
-// honours (pvc, configmap, secret) still serves it, and a value naming a path
+// honours (pvc, configmap, secret, emptydir) still serves it, and a value naming a path
 // no bind ever served is a promise the runtime never made. botRunFilesDir is
 // the value the runtime overwrote when it added its bind: handed back when
 // the runtime's promise is withdrawn, unless it names a dropped target too.
@@ -1136,7 +1129,7 @@ func dropUnsupportedHostBinds(spec *sandbox.Spec, botRunFilesDir string, logger 
 
 // mountIsHostBind reports whether a docker-style mount string is a host bind
 // mount: an explicit type=bind, or — docker's default — a source= with no
-// explicit type. pvc/configmap/secret types are never host binds.
+// explicit type. pvc/configmap/secret/emptydir types are never host binds.
 func mountIsHostBind(mount string) bool {
 	var typ string
 	hasSource := false

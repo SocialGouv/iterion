@@ -56,6 +56,48 @@ func TestParseMount_SizeIsAnEmptydirKey(t *testing.T) {
 	}
 }
 
+// size= renders a Kubernetes quantity (an emptyDir sizeLimit): anything a
+// quantity never is stops at the mount line, not at the API server after
+// the pod was built.
+
+func TestParseMount_SizeMustBeAKubernetesQuantity(t *testing.T) {
+	cases := []struct {
+		name string
+		size string
+		ok   bool
+	}{
+		{"binary suffix", "256Mi", true},
+		{"decimal suffix", "500M", true},
+		{"bare bytes", "1024", true},
+		{"a fraction", "1.5Gi", true},
+		{"milli", "500m", true},
+		{"an exponent", "1e3", true},
+		{"words", "abc", false},
+		{"a typo'd binary suffix", "10Mib", false},
+		{"a suffix with no number", "Mi", false},
+		{"a spaced value", "1 Gi", false},
+		{"the capital the grammar never takes", "1K", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseMount("type=emptydir,target=/scratch,size=" + tc.size)
+			if tc.ok {
+				if err != nil {
+					t.Errorf("parseMount(size=%s) = %v, want a quantity the pod accepts", tc.size, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Errorf("parseMount(size=%s) = nil, want it refused at the mount line as a non-quantity", tc.size)
+				return
+			}
+			if !strings.Contains(err.Error(), "not a Kubernetes quantity") || !strings.Contains(err.Error(), tc.size) {
+				t.Errorf("error = %v, want the bad size %q named with its mount line", err, tc.size)
+			}
+		})
+	}
+}
+
 func TestTranslateMounts_RendersAnEmptyDirVolume(t *testing.T) {
 	volumes, mounts, err := translateMounts([]string{"type=emptydir,target=/iterion/artifact-files,size=256Mi"})
 	if err != nil {
@@ -80,5 +122,32 @@ func TestTranslateMounts_RendersAnEmptyDirVolume(t *testing.T) {
 	}
 	if got, _ := mounts[0]["name"].(string); got != volName {
 		t.Errorf("mount references %q, want its own volume %q", got, volName)
+	}
+}
+
+// One volumeMount per mountPath: two mounts at one target build a pod the
+// API server refuses, and the refusal names the mount lines here instead
+// of surfacing a raw API error after creation.
+
+func TestTranslateMounts_RefusesTwoMountsAtOneTarget(t *testing.T) {
+	_, _, err := translateMounts([]string{
+		"type=pvc,source=persist,target=/iterion/artifact-files",
+		"type=emptydir,target=/iterion/artifact-files",
+	})
+	if err == nil {
+		t.Fatal("translateMounts = nil, want two mounts at one path refused before a pod is built")
+	}
+	for _, want := range []string{"already served", "/iterion/artifact-files"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to name %q", err, want)
+		}
+	}
+	// Nested targets are a different shape — a mount inside another's
+	// tree — and stay the API server's own call.
+	if _, _, err := translateMounts([]string{
+		"type=pvc,source=big,target=/data",
+		"type=emptydir,target=/data/scratch",
+	}); err != nil {
+		t.Errorf("translateMounts = %v, want nested targets through", err)
 	}
 }

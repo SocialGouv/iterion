@@ -404,21 +404,24 @@ func (s *Spec) Validate() error {
 		// none — so a read-back path no mount serves refuses here instead
 		// of becoming the promise-about-a-directory-nobody-has defect the
 		// bind-dropping rule (#815) exists for.
-		if specMountServing(s.Mounts, p) == "" {
+		if MountServing(s.Mounts, p) == "" {
 			return fmt.Errorf("sandbox: read-back path %q is served by no mount — declare it only alongside the storage that serves it (ADR-143)", p)
 		}
 	}
 	return nil
 }
 
-// specMountServing returns the mount whose target is containerPath or a
-// parent of it, or "" when none does. The admission half of the read-back
-// contract: the declaration is asked of the mounts as they stand, not of
-// the driver's intentions.
-func specMountServing(mounts []string, containerPath string) string {
+// MountServing returns the mount whose target is containerPath or a
+// parent of it, or "" when none does. The one reading of "does a mount
+// serve this path": the admission half of the read-back contract (the
+// declaration is asked of the mounts as they stand, not of the driver's
+// intentions) and the runtime's decision to add or skip its own storage
+// at a declared path both ask it here — a serving predicate kept in two
+// places answers differently the day one copy stops matching the other.
+func MountServing(mounts []string, containerPath string) string {
 	want := path.Clean(containerPath)
 	for _, m := range mounts {
-		tgt := mountTargetOf(m)
+		tgt := MountTargetOf(m)
 		if tgt == "" {
 			continue
 		}
@@ -429,9 +432,13 @@ func specMountServing(mounts []string, containerPath string) string {
 	return ""
 }
 
-// mountTargetOf extracts a mount string's `target=` field ("dst" and
-// "destination" are the same key's aliases), "" when it names none.
-func mountTargetOf(m string) string {
+// MountTargetOf extracts a mount string's `target=` field ("dst" and
+// "destination" are the same key's aliases), "" when it names none. The
+// one parser of the mount-target grammar: admission and every runtime
+// mount reader parse through it, so an alias added here is visible to
+// all of them — a second parser reads the language the day it was
+// written and never hears about the next alias.
+func MountTargetOf(m string) string {
 	for _, part := range strings.Split(m, ",") {
 		k, v, ok := strings.Cut(strings.TrimSpace(part), "=")
 		if !ok {

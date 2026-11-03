@@ -639,7 +639,26 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 				// the node's ephemeral storage nor the drain's meter past
 				// one named figure. Kept by dropUnsupportedHostBinds (it is
 				// not a host bind), so the variable naming it survives.
-				spec.Mounts = append(spec.Mounts, fmt.Sprintf("type=emptydir,target=%s,size=%dMi", target, sandbox.ReadBackCapBytes>>20))
+				//
+				// Skipped when a mount this driver keeps already serves the
+				// target: the bot's own pvc/configmap/secret/emptydir at (or
+				// above) the path is the storage the read-back contract
+				// points at, and a second volumeMount at the same mountPath
+				// is a pod the API server refuses. Host binds are not kept
+				// here (the driver has no filesystem to bind from — they are
+				// dropped at finalizeMountsForDriver), so they never count as
+				// serving. The declaration and the variable stand either
+				// way: the drain reads whatever mount serves the path, and
+				// the bot's own storage carries the run's files.
+				kept := make([]string, 0, len(spec.Mounts))
+				for _, m := range spec.Mounts {
+					if !mountIsHostBind(m) {
+						kept = append(kept, m)
+					}
+				}
+				if sandbox.MountServing(kept, target) == "" {
+					spec.Mounts = append(spec.Mounts, fmt.Sprintf("type=emptydir,target=%s,size=%dMi", target, sandbox.ReadBackCapBytes>>20))
+				}
 				runFilesContainerPath = target
 			}
 			if runFilesContainerPath != "" {

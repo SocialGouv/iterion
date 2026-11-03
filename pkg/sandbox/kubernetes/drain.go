@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/internal/safepath"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -45,10 +46,48 @@ func (r *Run) ExportRunFiles(ctx context.Context) error {
 // streams the tree, the host extracts it under dir.HostDir with the path
 // guards the workspace export uses. The pod must still be up — the engine
 // calls this at teardown, before the sandbox is destroyed.
+//
+// A writer racing the archive makes tar warn and exit 1 exactly as it does
+// for the workspace export beside which this drain runs (the same teardown
+// window, the same measured race), so the drain carries the export's
+// discipline: onlyTarRaceWarnings names the one failure a retry can cure,
+// and the retry bounds are the export's (exportRetrySettings). A tree that
+// keeps changing keeps its last cause.
 func (r *Run) drainRunFilesDir(ctx context.Context, dir sandbox.ReadBackDir) error {
 	if err := os.MkdirAll(dir.HostDir, 0o775); err != nil {
 		return fmt.Errorf("kubernetes: drain %s: create host dir %s: %w", dir.ContainerPath, dir.HostDir, err)
 	}
+	attempts, pause := exportRetrySettings(r.driver.logger)
+	var last error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		retryable, err := r.drainOnce(ctx, dir)
+		if err == nil {
+			if attempt > 1 {
+				r.driver.logger.Warn("sandbox: run-files drain of %s succeeded on attempt %d/%d, after tar saw the tree change mid-archive", dir.ContainerPath, attempt, attempts)
+			}
+			return nil
+		}
+		if !retryable {
+			return err
+		}
+		last = err
+		r.driver.logger.Warn("sandbox: run-files drain of %s attempt %d/%d: tar saw the tree change mid-archive, retrying", dir.ContainerPath, attempt, attempts)
+		if attempt < attempts {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("kubernetes: drain %s: retry abandoned (%v): %w", dir.ContainerPath, ctx.Err(), last)
+			case <-time.After(pause):
+			}
+			pause *= 2
+		}
+	}
+	return fmt.Errorf("kubernetes: drain %s: the pod's run files kept changing under the drain after %d attempts: %w", dir.ContainerPath, attempts, last)
+}
+
+// drainOnce streams one archive of dir.ContainerPath and lands it under
+// dir.HostDir. retryable reports a failure onlyTarRaceWarnings accepts as
+// transient — the workspace export's own predicate.
+func (r *Run) drainOnce(ctx context.Context, dir sandbox.ReadBackDir) (retryable bool, err error) {
 	kubectlArgs := []string{"--namespace", r.namespace,
 		"exec", r.podName, "--container", "workload", "--",
 		"env", "LC_ALL=" + sandbox.TarLocale, "tar", "-C", dir.ContainerPath, "-cf", "-", "."}
@@ -56,13 +95,13 @@ func (r *Run) drainRunFilesDir(ctx context.Context, dir sandbox.ReadBackDir) err
 
 	pipe, err := podTar.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("kubernetes: drain %s: pod tar stdout pipe: %w", dir.ContainerPath, err)
+		return false, fmt.Errorf("kubernetes: drain %s: pod tar stdout pipe: %w", dir.ContainerPath, err)
 	}
 	var podErr bytes.Buffer
 	podTar.Stderr = &podErr
 
 	if err := podTar.Start(); err != nil {
-		return fmt.Errorf("kubernetes: drain %s: start the pod's archiver: %w", dir.ContainerPath, err)
+		return false, fmt.Errorf("kubernetes: drain %s: start the pod's archiver: %w", dir.ContainerPath, err)
 	}
 	drained, xerr := r.extractDrain(pipe, dir.HostDir)
 	if xerr != nil {
@@ -70,13 +109,13 @@ func (r *Run) drainRunFilesDir(ctx context.Context, dir sandbox.ReadBackDir) err
 		// rather than block on a full one, then report the extraction.
 		_, _ = io.Copy(io.Discard, pipe)
 		_ = podTar.Wait()
-		return fmt.Errorf("kubernetes: drain %s into %s: %w", dir.ContainerPath, dir.HostDir, xerr)
+		return false, fmt.Errorf("kubernetes: drain %s into %s: %w", dir.ContainerPath, dir.HostDir, xerr)
 	}
 	if err := podTar.Wait(); err != nil {
-		return fmt.Errorf("kubernetes: drain %s: in-pod tar: %w\n%s", dir.ContainerPath, err, strings.TrimSpace(podErr.String()))
+		return onlyTarRaceWarnings(err, podErr.String()), fmt.Errorf("kubernetes: drain %s: in-pod tar: %w\n%s", dir.ContainerPath, err, strings.TrimSpace(podErr.String()))
 	}
 	r.driver.logger.Info("sandbox: drained %d bytes of run files from pod %s:%s into %s", drained, r.podName, dir.ContainerPath, dir.HostDir)
-	return nil
+	return false, nil
 }
 
 // extractDrain writes the pod's archive under hostDst and returns the
@@ -134,9 +173,11 @@ func (r *Run) extractDrain(stream io.Reader, hostDst string) (int64, error) {
 				return drained, fmt.Errorf("the run's read-back set is over the %d MiB cap (ADR-143); the rest stays in the pod", sandbox.ReadBackCapBytes>>20)
 			}
 		case tar.TypeSymlink:
-			// The write is counted only when the link landed: a refused
-			// link (its target leaves the tree) is a member dropped with
-			// its reason, not a byte of the set.
+			// A link carries no bytes of the set — only the files it points
+			// into do, when their own member lands — so neither a landed
+			// link nor a refused one moves the meter: a refused link (its
+			// target leaves the tree) is a member dropped with its reason,
+			// and a landed one adds nothing to count.
 			if _, err := r.writeExportSymlink(root, abs, hdr); err != nil {
 				return drained, err
 			}

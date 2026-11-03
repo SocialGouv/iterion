@@ -196,20 +196,13 @@ func TestSandboxSpec_TheRunFilesPathIsNamedExactlyWhenAMountServesIt(t *testing.
 	}
 }
 
-// mountServing returns the kept mount whose target is containerPath or a
-// parent of it, or "" when none does.
+// mountServing answers "which mount serves this path" through the sandbox
+// package's one serving predicate — the admission walk and the runtime's
+// storage decision ask the same function this test reads, so a predicate
+// that drifts in production drifts here instead of passing under a private
+// re-implementation.
 func mountServing(mounts []string, containerPath string) string {
-	want := path.Clean(containerPath)
-	for _, m := range mounts {
-		tgt := mountTarget(m)
-		if tgt == "" {
-			continue
-		}
-		if c := path.Clean(tgt); want == c || strings.HasPrefix(want, c+"/") {
-			return m
-		}
-	}
-	return ""
+	return sandbox.MountServing(mounts, containerPath)
 }
 
 // droppedMountTargets returns the mount targets present in `all` and gone
