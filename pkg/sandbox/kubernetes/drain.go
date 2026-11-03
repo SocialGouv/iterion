@@ -60,7 +60,13 @@ func (r *Run) ExportRunFiles(ctx context.Context) error {
 // covers a type flip between attempts: a dir where the settled archive
 // carries a file or a link, or the mirror, is replaced by the extract — the
 // dir only where the before snapshot proves the drain wrote it
-// (dropRacedDrainDir).
+// (dropRacedDrainDir); a pre-drain tree there is not the drain's, and the
+// member is skipped like every other member the host declines.
+//
+// A tree that never settles is the one failure that leaves a STALE set:
+// no attempt succeeded, so no sweep runs, and the host dir holds the union
+// of every attempt's members — a superset of the pod's final tree. The
+// unsettled error says so, because the panel will serve it.
 //
 // Every failure travels typed (sandbox.ReadBackLoss): the reason the
 // runtime's event carries is read off the error, at the site that knows
@@ -106,7 +112,7 @@ func (r *Run) drainRunFilesDir(ctx context.Context, dir sandbox.ReadBackDir) err
 			pause *= 2
 		}
 	}
-	return lost(sandbox.ReadBackUnsettled, fmt.Errorf("kubernetes: drain %s: the pod's run files kept changing under the drain after %d attempts: %w", dir.ContainerPath, attempts, last))
+	return lost(sandbox.ReadBackUnsettled, fmt.Errorf("kubernetes: drain %s: the pod's run files kept changing under the drain after %d attempts — what the attempts landed stays and uploads as the union of every attempt's members, a stale superset of the pod's final tree (a file the run removed between attempts may be among them): %w", dir.ContainerPath, attempts, last))
 }
 
 // lost types one drain failure with the reason the runtime's event carries;
@@ -138,7 +144,7 @@ func (r *Run) drainOnce(ctx context.Context, dir sandbox.ReadBackDir, before, be
 	if err := podTar.Start(); err != nil {
 		return false, nil, lost(sandbox.ReadBackArchiver, fmt.Errorf("kubernetes: drain %s: start the pod's archiver: %w", dir.ContainerPath, err))
 	}
-	drained, landed, xerr := r.extractDrain(pipe, dir.HostDir, before, beforeDirs)
+	drained, landed, xerr := r.extractDrain(pipe, dir.HostDir, before, beforeDirs, dir.Cap())
 	if xerr != nil {
 		// Drain the pipe so the pod's archiver sees its reader go away
 		// rather than block on a full one, then report the extraction —
@@ -162,7 +168,8 @@ func (r *Run) drainOnce(ctx context.Context, dir sandbox.ReadBackDir, before, be
 // halves of the host dir's pre-drain state — files and links, and the
 // directories beside them: the proof a wrong-kind occupant at a member's
 // path is judged on (the drain's to replace when it wrote it, the store's
-// or the pod's when it did not).
+// or the pod's when it did not). capBytes is the figure this dir's set is
+// metered against (sandbox.ReadBackDir.Cap).
 //
 // The host reads the archive itself, like the workspace export does: the
 // member names are chosen in the sandbox, by an archiver the workflow's
@@ -170,9 +177,11 @@ func (r *Run) drainOnce(ctx context.Context, dir sandbox.ReadBackDir, before, be
 // on after every existing symlink in its parent chain is resolved. Unlike
 // the workspace export there are no name exclusions — a run file is the
 // run's product whatever it is named — and every refusal (a member that
-// cannot be made safe, a type the host does not write back) is skipped
-// and reported rather than written.
-func (r *Run) extractDrain(stream io.Reader, hostDst string, before, beforeDirs map[string]bool) (int64, map[string]bool, error) {
+// cannot be made safe, a type the host does not write back, a pre-drain
+// tree where the archive carries a file or a link) is skipped and
+// reported rather than written, and the members after it still land. Only
+// the host's own failure to write — and the cap — end the extract.
+func (r *Run) extractDrain(stream io.Reader, hostDst string, before, beforeDirs map[string]bool, capBytes int64) (int64, map[string]bool, error) {
 	root, err := filepath.Abs(hostDst)
 	if err != nil {
 		return 0, nil, fmt.Errorf("resolve drain destination %s: %w", hostDst, err)
@@ -226,11 +235,18 @@ func (r *Run) extractDrain(stream io.Reader, hostDst string, before, beforeDirs 
 		case tar.TypeReg:
 			// A directory where the archive carries a file is what a raced
 			// attempt's extract leaves behind; the file branch cannot write
-			// over it. Judged on the before snapshot, never taken blindly.
-			if err := r.dropRacedDrainDir(root, before, beforeDirs, abs); err != nil {
+			// over it. Judged on the before snapshot, never taken blindly:
+			// a pre-drain tree there is not the drain's, and the member is
+			// skipped — tr.Next skips its bytes — with the rest still to land.
+			kept, err := r.dropRacedDrainDir(root, before, beforeDirs, abs)
+			if err != nil {
 				return drained, landed, err
 			}
-			n, err := r.writeDrainFile(abs, clean, sandbox.ReadBackCapBytes-drained, hdr, tr)
+			if kept != "" {
+				r.driver.logger.Warn("sandbox: drain skipped %s: the pod's archive carries it as a file, but %s predates the drain — the tree there is not the drain's to replace", clean, kept)
+				continue
+			}
+			n, err := r.writeDrainFile(abs, clean, capBytes, capBytes-drained, hdr, tr)
 			drained += n
 			if err != nil {
 				return drained, landed, err
@@ -249,9 +265,15 @@ func (r *Run) extractDrain(stream io.Reader, hostDst string, before, beforeDirs 
 			}
 			// A directory where the archive carries a link is the same
 			// raced occupant the file branch cures — the link cannot be
-			// written over it — judged on the same before snapshot.
-			if err := r.dropRacedDrainDir(root, before, beforeDirs, abs); err != nil {
+			// written over it — judged on the same before snapshot, and
+			// skipped on the same witness.
+			kept, err := r.dropRacedDrainDir(root, before, beforeDirs, abs)
+			if err != nil {
 				return drained, landed, err
+			}
+			if kept != "" {
+				r.driver.logger.Warn("sandbox: drain skipped the link %s -> %s: %s predates the drain — the tree there is not the drain's to replace", clean, hdr.Linkname, kept)
+				continue
 			}
 			wrote, err := r.writeExportSymlink(root, abs, hdr)
 			if err != nil {
@@ -275,7 +297,8 @@ func (r *Run) extractDrain(stream io.Reader, hostDst string, before, beforeDirs 
 // HostDir-relative — and returns the bytes it copied, metered against the
 // remaining budget as it goes: an archive that declares one size and
 // carries another is billed for what actually arrived, and a member that
-// takes the set past the cap is the failure, named.
+// takes the set past the cap (capBytes, the dir's own figure, named in the
+// refusal) is the failure, named.
 //
 // The member is staged beside its path and renamed over it only once it is
 // whole and within the budget: a write the cap or the pod's stream cuts
@@ -285,7 +308,7 @@ func (r *Run) extractDrain(stream io.Reader, hostDst string, before, beforeDirs 
 // link the archive left there first — and a dir there was judged before
 // (dropRacedDrainDir). On every failure the staged bytes are removed, so
 // the bytes returned are the meter's, never a file's.
-func (r *Run) writeDrainFile(abs, member string, budget int64, hdr *tar.Header, src io.Reader) (int64, error) {
+func (r *Run) writeDrainFile(abs, member string, capBytes, budget int64, hdr *tar.Header, src io.Reader) (int64, error) {
 	parent := filepath.Dir(abs)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return 0, lost(sandbox.ReadBackRefused, fmt.Errorf("create %s: %w", parent, err))
@@ -313,7 +336,7 @@ func (r *Run) writeDrainFile(abs, member string, budget int64, hdr *tar.Header, 
 	if n > budget {
 		_ = staged.Close()
 		drop()
-		return n, lost(sandbox.ReadBackOverCap, fmt.Errorf("the run's read-back set is over the %d MiB cap (ADR-143) at %s: that member is dropped, what landed before it stays, and the rest stays in the pod", sandbox.ReadBackCapBytes>>20, member))
+		return n, lost(sandbox.ReadBackOverCap, fmt.Errorf("the run's read-back set is over its %s cap (ADR-143; the serving mount's size= or %s raises it) at %s: that member is dropped, what landed before it stays, and the rest stays in the pod", sandbox.ReadBackCapText(capBytes), sandbox.ReadBackCapEnv, member))
 	}
 	if err := staged.Chmod(exportFileMode(hdr.FileInfo().Mode())); err != nil {
 		_ = staged.Close()
@@ -339,20 +362,22 @@ func (r *Run) writeDrainFile(abs, member string, budget int64, hdr *tar.Header, 
 // entry under the tree — no file or link, and no directory either, a dir
 // the host already had being as untouchable as a file — or the tree
 // predates the drain (the store's, or the pod's own on a bind) and the
-// removal is refused with that entry named — a raced attempt never takes a
-// pre-drain tree.
-func (r *Run) dropRacedDrainDir(hostDir string, before, beforeDirs map[string]bool, abs string) error {
+// removal is declined with that entry returned as kept, HostDir-relative:
+// the caller skips the member, as it skips every member the host declines,
+// and the rest of the set still lands — a raced attempt never takes a
+// pre-drain tree, and one such collision never costs the members after it.
+// Only the host's own failure to read or remove is an error.
+func (r *Run) dropRacedDrainDir(hostDir string, before, beforeDirs map[string]bool, abs string) (kept string, err error) {
 	info, err := os.Lstat(abs)
 	if os.IsNotExist(err) {
-		return nil
+		return "", nil
 	}
 	if err != nil {
-		return lost(sandbox.ReadBackRefused, fmt.Errorf("read %s: %w", abs, err))
+		return "", lost(sandbox.ReadBackRefused, fmt.Errorf("read %s: %w", abs, err))
 	}
 	if !info.IsDir() {
-		return nil // the file and link branches replace a non-dir occupant themselves
+		return "", nil // the file and link branches replace a non-dir occupant themselves
 	}
-	var kept string
 	walkErr := filepath.WalkDir(abs, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -374,16 +399,16 @@ func (r *Run) dropRacedDrainDir(hostDir string, before, beforeDirs map[string]bo
 		return nil
 	})
 	if walkErr != nil {
-		return lost(sandbox.ReadBackRefused, fmt.Errorf("read %s: %w", abs, walkErr))
+		return "", lost(sandbox.ReadBackRefused, fmt.Errorf("read %s: %w", abs, walkErr))
 	}
 	if kept != "" {
-		return lost(sandbox.ReadBackRefused, fmt.Errorf("the settled archive carries %s as a file or a link, but %s predates the drain — not the drain's to remove", abs, kept))
+		return kept, nil
 	}
 	if err := os.RemoveAll(abs); err != nil {
-		return lost(sandbox.ReadBackRefused, fmt.Errorf("replace %s: %w", abs, err))
+		return "", lost(sandbox.ReadBackRefused, fmt.Errorf("replace %s: %w", abs, err))
 	}
 	r.driver.logger.Warn("sandbox: removed %s — a directory a raced drain attempt landed where the settled archive carries a file or a link", abs)
-	return nil
+	return "", nil
 }
 
 // readBackDirEntries lists the regular files and symlinks under dir,

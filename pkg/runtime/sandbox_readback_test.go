@@ -90,6 +90,78 @@ func TestThePodRunCarriesTheDrainManifest(t *testing.T) {
 	if dir.HostDir != hostScratch {
 		t.Errorf("drain host dir = %q, want the run file store's dir %s", dir.HostDir, hostScratch)
 	}
+	if dir.CapBytes != sandbox.ReadBackCapBytes {
+		t.Errorf("drain cap = %d, want the %d default carried on the entry — the drain meters on the manifest's figure", dir.CapBytes, sandbox.ReadBackCapBytes)
+	}
+}
+
+// TestTheDrainManifestCarriesTheServingMountsCap: the figure a dir is
+// metered against is the serving mount's to name (sandbox.ReadBackCapFor).
+// A bot that serves the run-files path with its own sized emptyDir chose
+// the figure; the manifest carries it, and the drain never cuts the
+// author's explicit choice down to the default. The deployment's override
+// stands in where the mount names none.
+func TestTheDrainManifestCarriesTheServingMountsCap(t *testing.T) {
+	t.Run("the bot's own sized emptyDir names the figure", func(t *testing.T) {
+		t.Setenv(sandbox.ReadBackCapEnv, "1Gi")
+		p := canaryParams(t)
+		p.RunFilesHostDir = t.TempDir()
+		p.Workflow.Sandbox.Mounts = []string{"type=emptydir,target=/iterion/artifact-files,size=2Gi"}
+		info := buildRunInfoFor(t, p)
+		if len(info.ReadBackDirs) != 1 {
+			t.Fatalf("RunInfo carries %d read-back dirs, want 1: %#v", len(info.ReadBackDirs), info.ReadBackDirs)
+		}
+		if got := info.ReadBackDirs[0].CapBytes; got != 2<<30 {
+			t.Errorf("drain cap = %d, want the bot's own 2 GiB — the author's explicit figure, over the override and the default", got)
+		}
+	})
+	t.Run("the override stands in where the mount names none", func(t *testing.T) {
+		t.Setenv(sandbox.ReadBackCapEnv, "1Gi")
+		p := canaryParams(t)
+		p.RunFilesHostDir = t.TempDir()
+		info := buildRunInfoFor(t, p)
+		if len(info.ReadBackDirs) != 1 {
+			t.Fatalf("RunInfo carries %d read-back dirs, want 1: %#v", len(info.ReadBackDirs), info.ReadBackDirs)
+		}
+		if got := info.ReadBackDirs[0].CapBytes; got != 1<<30 {
+			t.Errorf("drain cap = %d, want the 1 GiB override — the runtime's own emptyDir names no size, so the deployment's figure applies", got)
+		}
+	})
+	// The two guards on WHICH mount names the figure, one scenario each.
+	t.Run("nested mounts: the nearest one's volume holds the files", func(t *testing.T) {
+		t.Setenv(sandbox.ReadBackCapEnv, "")
+		p := canaryParams(t)
+		p.RunFilesHostDir = t.TempDir()
+		p.Workflow.Sandbox.Mounts = []string{
+			"type=emptydir,target=/iterion,size=1Gi",
+			"type=emptydir,target=/iterion/artifact-files,size=2Gi",
+		}
+		info := buildRunInfoFor(t, p)
+		if len(info.ReadBackDirs) != 1 {
+			t.Fatalf("RunInfo carries %d read-back dirs, want 1: %#v", len(info.ReadBackDirs), info.ReadBackDirs)
+		}
+		if got := info.ReadBackDirs[0].CapBytes; got != 2<<30 {
+			t.Errorf("drain cap = %d, want the 2 GiB of the run-files volume itself — not the 1 GiB of the parent it shadows", got)
+		}
+	})
+	t.Run("a host bind the driver drops names no figure", func(t *testing.T) {
+		t.Setenv(sandbox.ReadBackCapEnv, "")
+		p := canaryParams(t)
+		p.RunFilesHostDir = t.TempDir()
+		// The bind is how the bot serves the path on a host; on the pod it
+		// is dropped, and the sized emptyDir above the path holds the files.
+		p.Workflow.Sandbox.Mounts = []string{
+			"type=bind,source=/host/persist,target=/iterion/artifact-files",
+			"type=emptydir,target=/iterion,size=2Gi",
+		}
+		info := buildRunInfoFor(t, p)
+		if len(info.ReadBackDirs) != 1 {
+			t.Fatalf("RunInfo carries %d read-back dirs, want 1: %#v", len(info.ReadBackDirs), info.ReadBackDirs)
+		}
+		if got := info.ReadBackDirs[0].CapBytes; got != 2<<30 {
+			t.Errorf("drain cap = %d, want the 2 GiB of the emptyDir the pod keeps — a dropped bind serves nothing, so it names no figure", got)
+		}
+	})
 }
 
 // TestTheRunFilesDeclarationFollowsTheStorage: the spec declares the
@@ -111,8 +183,13 @@ func TestTheRunFilesDeclarationFollowsTheStorage(t *testing.T) {
 		if !strings.Contains(serving, "type=emptydir") {
 			t.Errorf("the serving mount is %q, want driver-owned storage (type=emptydir)", serving)
 		}
-		if !strings.Contains(serving, "size=") {
-			t.Errorf("the emptyDir carries no size cap: %q — the read-back set is named and metered (ADR-143)", serving)
+		// A sizeLimit is a kill switch, not a meter: the kubelet evicts
+		// the WHOLE pod when an emptyDir's usage passes it — no drain, no
+		// workspace export. The cap is the drain's meter on the host
+		// (ADR-143), which drops the member over the figure and keeps
+		// the rest; the pod side names no figure of its own.
+		if strings.Contains(serving, "size=") {
+			t.Errorf("the runtime's emptyDir carries a sizeLimit: %q — past it the kubelet evicts the run instead of the drain dropping a member", serving)
 		}
 		if len(spec.ReadBackPaths) != 1 || spec.ReadBackPaths[0] != "/iterion/artifact-files" {
 			t.Errorf("spec.ReadBackPaths = %v, want the declared path", spec.ReadBackPaths)

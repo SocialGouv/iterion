@@ -617,11 +617,11 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// The run-files path is a DECLARED read-back path (ADR-143): the
 	// runtime names it in spec.ReadBackPaths exactly when it also arranges
 	// the storage that serves it — the host bind on a driver with a
-	// filesystem, driver-owned storage (an emptyDir, capped) on a driver
-	// with none — and the spec is refused at admission if the pairing is
-	// broken. The value the bot gave the run-files variable before the
-	// runtime's own took its place; handed back if that promise is
-	// withdrawn (finalizeMountsForDriver).
+	// filesystem, driver-owned storage (an emptyDir, its drained set
+	// capped) on a driver with none — and the spec is refused at
+	// admission if the pairing is broken. The value the bot gave the
+	// run-files variable before the runtime's own took its place; handed
+	// back if that promise is withdrawn (finalizeMountsForDriver).
 	botRunFilesDir := ""
 	var readBackDirs []sandbox.ReadBackDir
 	if p.RunFilesHostDir != "" {
@@ -631,14 +631,24 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 				target = "/iterion/artifact-files"
 			}
 			var runFilesContainerPath string
+			// The mount whose storage holds the declared path on a driver
+			// that drains it — the source of the drain's figure. It stays
+			// empty on a bind driver, whose manifest entry nothing drains.
+			var servingMount string
 			if caps.SupportsHostBindMounts {
 				runFilesContainerPath = addOptionalBindMount(spec, p.RunFilesHostDir, target, target, "run-files", false, logger)
 			} else {
 				// Storage the driver keeps: an emptyDir at the declared
-				// path, sized to the read-back cap so a pod spends neither
-				// the node's ephemeral storage nor the drain's meter past
-				// one named figure. Kept by dropUnsupportedHostBinds (it is
-				// not a host bind), so the variable naming it survives.
+				// path. It carries NO sizeLimit: a kubelet evicts the WHOLE
+				// pod when an emptyDir's usage passes its sizeLimit — the
+				// run would die mid-flight, no drain, no workspace export,
+				// un-pushed work gone — where the read-back contract's cap
+				// (ADR-143) is the drain's meter on the host, which drops
+				// the member over the figure and keeps the rest
+				// (sandbox.ReadBackCapFor). The node's ephemeral storage is
+				// the cluster's to bound, as for everything else the pod
+				// writes. Kept by dropUnsupportedHostBinds (it is not a
+				// host bind), so the variable naming it survives.
 				//
 				// Skipped when a mount this driver keeps already serves the
 				// target: the bot's own pvc/configmap/secret/emptydir at (or
@@ -656,8 +666,10 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 						kept = append(kept, m)
 					}
 				}
-				if sandbox.MountServing(kept, target) == "" {
-					spec.Mounts = append(spec.Mounts, fmt.Sprintf("type=emptydir,target=%s,size=%dMi", target, sandbox.ReadBackCapBytes>>20))
+				servingMount = sandbox.MountServing(kept, target)
+				if servingMount == "" {
+					servingMount = "type=emptydir,target=" + target
+					spec.Mounts = append(spec.Mounts, servingMount)
 				}
 				runFilesContainerPath = target
 			}
@@ -675,9 +687,19 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 				botRunFilesDir = spec.Env[runFilesEnvVar]
 				spec.Env[runFilesEnvVar] = runFilesContainerPath
 				spec.ReadBackPaths = append(spec.ReadBackPaths, target)
+				// The dir's cap is the serving mount's to name: a bot that
+				// serves the path with its own sized emptyDir chose the
+				// figure, and the drain meters on it — never cut down to
+				// the default behind the author's back. Asked of the mounts
+				// the pod keeps, never of a host bind the driver drops.
 				readBackDirs = append(readBackDirs, sandbox.ReadBackDir{
 					ContainerPath: target,
 					HostDir:       p.RunFilesHostDir,
+					CapBytes: sandbox.ReadBackCapFor(servingMount, func(format string, args ...any) {
+						if logger != nil {
+							logger.Warn(format, args...)
+						}
+					}),
 				})
 			}
 		} else if !errors.Is(statErr, fs.ErrNotExist) && logger != nil {

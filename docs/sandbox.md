@@ -274,7 +274,7 @@ promise made on it must go with it. On the pod backend:
 
 | Promise | On docker | On kubernetes |
 |---|---|---|
-| `ITERION_ARTIFACT_FILES_DIR` (where an in-sandbox tool drops files for the artifact-files panel) | set, bind-mounted | set — the path is served by an **`emptyDir` the driver keeps** (ADR-143), capped at the read-back cap, and **drained at teardown** into the run file store, from where the panel and its downloads read |
+| `ITERION_ARTIFACT_FILES_DIR` (where an in-sandbox tool drops files for the artifact-files panel) | set, bind-mounted | set — the path is served by an **`emptyDir` the driver keeps** (ADR-143) and **drained at teardown** into the run file store, its set metered against the read-back cap, from where the panel and its downloads read |
 | `ITERION_ENGINE_BIN` (the engine's own iterion binary, for a bot script that re-enters the CLI; never resolved from the workspace) | set — the container path the bind mount or the image bakes | set — the container path, via per-exec env, so no bind to drop |
 | Attachments path handed to nodes | the container path | the container path — the directory is **copied in** at start (`RunInfo.SeedDirs`, an `emptyDir` per seed, the workspace's tar pipeline; `sandbox_attachments_copied` on the run's stream), its files read-only. A driver that can neither bind nor copy **refuses the run** that holds attachments: `ATTACHMENTS_UNDELIVERABLE`, `sandbox_skipped` with `refused: true` and the names — a run that goes on without what it was given is the worst of the three outcomes (#2086) |
 | The bot's bundle `devbox.json` | provisioned from the mount | provisioned — the config is **carried** into the sandbox by the install prologue, since the bundle itself cannot be read from in-container (see [devbox provisioning](#best-effort-never-silent)) |
@@ -309,8 +309,8 @@ oracle verdict out of an environment failure.
 contract [ADR-143](adr/143-sandbox-read-back-contract.md) wrote: a
 read-back path is **declared** (`spec.ReadBackPaths`, alongside the
 mounts, never inferred), **served by storage the driver owns** (an
-`emptyDir` at the container path, sized to the read-back cap — the mount
-type `type=emptydir,target=…[,size=…]` is available to bot
+`emptyDir` at the container path — the mount type
+`type=emptydir,target=…[,size=…]` is available to bot
 `sandbox.mounts:` on kubernetes too), and **drained at teardown**
 (`WorkspaceExporter.ExportRunFiles`, the export seam's second half)
 into the run file store's directory, from where the runner's upload
@@ -322,15 +322,37 @@ cloud deliverable disappear (#2668) — and the event carries a stable
 `reason` (`sandbox.ReadBackLossReason`: `over_cap`, `unsettled`,
 `archiver`, `refused`), read off the typed error the driver returns,
 so a cap reached is told from a tool still writing at teardown without
-parsing the prose. The set is capped, and the cap is
-named and metered (`sandbox.ReadBackCapBytes`): the emptyDir's
-sizeLimit spends it on the pod, the drain's meter enforces it on the
-host — a member that takes the set past the cap is dropped, never
-landed cut short, so what the panel serves is whole or absent. What
-the contract does not promise: a pod that dies before
-teardown takes its `emptyDir` with it — bytes that must survive an
-abrupt end are published as the run goes (`attachment=`), not left for
-the drain.
+parsing the prose. An `unsettled` drain leaves the **union** of its
+attempts' members on the host — a stale superset of the pod's final
+tree, so a file the run removed between attempts may still upload; the
+event's error says so. A member the host declines on principle (an
+unsafe name, a link that leaves the tree, a kind it does not write
+back, a pre-drain tree where the archive carries a file or a link) is
+skipped and logged, and the members after it still land — one
+collision never costs the rest of the set. Each declared dir's set is
+capped, and the cap is named and metered **on the host, in the
+drain**: the member that takes the set past the figure is dropped,
+never landed cut short, what landed before it stays and the rest stays
+in the pod, so what the panel serves is whole or absent. The figure is
+the serving mount's to name (`sandbox.ReadBackCapFor`) — the nearest
+mount the pod keeps at or above the path (`sandbox.MountServing`),
+never a host bind the driver drops: a bot that serves the path with its
+own
+`type=emptydir,target=/iterion/artifact-files,size=2Gi` is metered at
+2 GiB — the author's explicit choice, never cut down to the default —
+`ITERION_SANDBOX_READBACK_CAP` overrides the default for every dir
+whose mount names no size, and `sandbox.ReadBackCapBytes` (256 MiB)
+is the default. The runtime's own `emptyDir` carries **no
+`sizeLimit`**, deliberately: a kubelet **evicts the whole pod** once an
+emptyDir's usage passes its `sizeLimit` ("Usage of EmptyDir volume …
+exceeds the limit") — the run would die mid-flight, no drain, no
+workspace export, un-pushed work gone — so the pod-side storage is
+bounded by the cluster's own ephemeral-storage policy like everything
+else the pod writes, and a `size=` a bot writes on its own emptydir is
+that eviction, chosen. What the contract does not promise: a pod that
+dies before teardown takes its `emptyDir` with it — bytes that must
+survive an abrupt end are published as the run goes (`attachment=`),
+not left for the drain.
 `TestSandboxSpec_NoPromiseSurvivesTheBindThatServedIt` and
 `TestSandboxSpec_TheRunFilesPathIsNamedExactlyWhenAMountServesIt`
 ([pkg/runtime](../pkg/runtime/sandbox_bind_promise_canary_test.go)) walk
@@ -1470,6 +1492,12 @@ iterion sandbox doctor                 # report driver + capabilities
   driver's workspace copy AND of the git fixup that follows, each
   end-to-end. Unset → 15 min. See [setup phases and their
   timeouts](#setup-phases-and-their-timeouts).
+- `ITERION_SANDBOX_READBACK_CAP` — the figure the read-back drain
+  meters a declared dir's set against (a Kubernetes byte quantity:
+  `1Gi`, `500M`, `1073741824`), for every dir whose serving mount
+  names no `size=` of its own. Unset → 256 MiB. A value that is no byte
+  quantity is reported and the default kept. See [the read-back
+  contract](#a-promise-the-driver-drops-takes-its-variable-with-it).
 - `ITERION_SANDBOX_POST_CREATE_TIMEOUT` — budget of the `post_create`
   snippet on BOTH drivers. Unset → 30 min. Raise it for a devcontainer
   that installs a large toolchain.
@@ -2912,9 +2940,14 @@ V1 limitations (deferred to V2):
   alternative. PVCs must exist in the namespace before the run pod
   is admitted; iterion does not provision them. Secrets always
   mount with `defaultMode=0400`. `type=emptydir` names no source —
-  its storage is driver-owned, sized by the optional `size=`
-  quantity; without it the emptyDir is bounded only by the
-  kubelet's ephemeral-storage limits.
+  its storage is driver-owned; without a `size=` the emptyDir is
+  bounded only by the kubelet's ephemeral-storage limits. A `size=`
+  renders a `sizeLimit`, which the kubelet enforces by **evicting the
+  pod** once the volume's usage passes it — the run ends there, with
+  nothing drained or exported — so write one only where that is the
+  outcome wanted. On the run-files path (`/iterion/artifact-files`)
+  a `size=` also names the figure the drain meters that dir against
+  ([the read-back contract](#a-promise-the-driver-drops-takes-its-variable-with-it)).
 - **Image-pull secrets** for private registries beyond the
   runner's own image are not propagated; declare them on the
   pod's namespace ServiceAccount as `imagePullSecrets` and they

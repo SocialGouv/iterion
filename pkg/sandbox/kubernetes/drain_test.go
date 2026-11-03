@@ -115,6 +115,13 @@ func TestExportRunFilesReportsATreeThatNeverSettlesAsUnsettled(t *testing.T) {
 	if got := sandbox.ReadBackLossReasonOf(err); got != sandbox.ReadBackUnsettled {
 		t.Errorf("reason = %q, want %q", got, sandbox.ReadBackUnsettled)
 	}
+	// No attempt settled, so no sweep ran: the host dir holds the union
+	// of every attempt's members, and the panel will serve it. The error
+	// is the one place a reader learns the set is a stale superset, not
+	// the subset "partial" suggests.
+	if !strings.Contains(err.Error(), "stale superset") {
+		t.Errorf("error = %v, want the union of the attempts named as a stale superset of the pod's final tree", err)
+	}
 	if n := calls(); n != 3 {
 		t.Errorf("the drain archived the pod %d times, want exactly the 3 attempts the operator set", n)
 	}
@@ -344,7 +351,7 @@ func TestExportRunFilesCuresATypeFlipBetweenAttempts(t *testing.T) {
 			t.Errorf("the drain archived the pod %d times, want the raced attempt retried once", calls())
 		}
 	})
-	t.Run("a pre-drain file under the path is not the drain's to take", func(t *testing.T) {
+	t.Run("a pre-drain file under the path is not the drain's to take: the member is skipped, the rest lands", func(t *testing.T) {
 		hostDst := t.TempDir()
 		keep := filepath.Join(hostDst, "sub", "keep.md")
 		if err := os.MkdirAll(filepath.Dir(keep), 0o755); err != nil {
@@ -353,28 +360,30 @@ func TestExportRunFilesCuresATypeFlipBetweenAttempts(t *testing.T) {
 		if err := os.WriteFile(keep, []byte("the store held me before the drain"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		settled := podTree(t, map[string]string{"sub": "the pod settled on a file"})
+		settled := podTree(t, map[string]string{"sub": "the pod settled on a file", "report.md": "# complete"})
 		kubectl, calls := exportShim(t, settled, 0, "")
 		r := drainRun([]sandbox.ReadBackDir{{ContainerPath: "/iterion/artifact-files", HostDir: hostDst}}, kubectl)
 
-		err := r.ExportRunFiles(context.Background())
-		if err == nil {
-			t.Fatal("ExportRunFiles = nil, want the removal refused — a tree holding pre-drain state is not the drain's to take")
-		}
-		// The dir itself predates the drain, and the walk names it first —
-		// the strongest witness, found before any entry under it.
-		if !strings.Contains(err.Error(), "but sub predates the drain") {
-			t.Errorf("error = %v, want the pre-drain entry the proof found named in the cause", err)
-		}
-		if got := sandbox.ReadBackLossReasonOf(err); got != sandbox.ReadBackRefused {
-			t.Errorf("reason = %q, want %q — the host refused, the pod's archiver did nothing wrong", got, sandbox.ReadBackRefused)
+		// A member the host declines is skipped like an escaping link or
+		// a device: the collision is per member, and the rest of the set
+		// is not its price — a resumed run whose previous attempt drained
+		// `out/` and whose tool now writes `out` as a file keeps every
+		// other deliverable.
+		if err := r.ExportRunFiles(context.Background()); err != nil {
+			t.Fatalf("ExportRunFiles = %v, want the collision skipped and the drain to go on — one pre-drain tree must not cost the members after it", err)
 		}
 		got, readErr := os.ReadFile(keep)
 		if readErr != nil || string(got) != "the store held me before the drain" {
-			t.Errorf("pre-drain keep.md = %q (%v), want it intact under the refused removal", got, readErr)
+			t.Errorf("pre-drain keep.md = %q (%v), want it intact under the declined removal", got, readErr)
+		}
+		if info, statErr := os.Lstat(filepath.Join(hostDst, "sub")); statErr != nil || !info.IsDir() {
+			t.Errorf("sub = %v (%v), want the pre-drain tree still standing — the pod's file never replaces a tree the host already had", info, statErr)
+		}
+		if got, readErr := os.ReadFile(filepath.Join(hostDst, "report.md")); readErr != nil || string(got) != "# complete" {
+			t.Errorf("drained report.md = %q (%v), want the rest of the set landed past the skipped member", got, readErr)
 		}
 		if calls() != 1 {
-			t.Errorf("the drain archived the pod %d times, want the refusal to end it — no retry cures it", calls())
+			t.Errorf("the drain archived the pod %d times, want once — a skip is no race", calls())
 		}
 	})
 	t.Run("a pre-drain dir alone under the path is not the drain's to take", func(t *testing.T) {
@@ -387,16 +396,12 @@ func TestExportRunFilesCuresATypeFlipBetweenAttempts(t *testing.T) {
 		if err := os.MkdirAll(pre, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		settled := podTree(t, map[string]string{"sub": "the pod settled on a file"})
+		settled := podTree(t, map[string]string{"sub": "the pod settled on a file", "report.md": "# complete"})
 		kubectl, calls := exportShim(t, settled, 0, "")
 		r := drainRun([]sandbox.ReadBackDir{{ContainerPath: "/iterion/artifact-files", HostDir: hostDst}}, kubectl)
 
-		err := r.ExportRunFiles(context.Background())
-		if err == nil {
-			t.Fatal("ExportRunFiles = nil, want the removal refused — a dirs-only tree the host already had is not the drain's to take")
-		}
-		if !strings.Contains(err.Error(), "but sub predates the drain") {
-			t.Errorf("error = %v, want the pre-drain dir named in the cause", err)
+		if err := r.ExportRunFiles(context.Background()); err != nil {
+			t.Fatalf("ExportRunFiles = %v, want the collision skipped — a dirs-only tree the host already had is not the drain's to take, and not the rest of the set's price", err)
 		}
 		if info, statErr := os.Stat(filepath.Join(hostDst, "sub")); statErr != nil || !info.IsDir() {
 			t.Errorf("pre-drain sub = (%v, %v), want the dir the host already had intact", info, statErr)
@@ -404,8 +409,11 @@ func TestExportRunFilesCuresATypeFlipBetweenAttempts(t *testing.T) {
 		if _, statErr := os.Stat(pre); statErr != nil {
 			t.Errorf("pre-drain sub/keepdir = %v, want the whole pre-drain tree intact", statErr)
 		}
+		if got, readErr := os.ReadFile(filepath.Join(hostDst, "report.md")); readErr != nil || string(got) != "# complete" {
+			t.Errorf("drained report.md = %q (%v), want the rest of the set landed past the skipped member", got, readErr)
+		}
 		if calls() != 1 {
-			t.Errorf("the drain archived the pod %d times, want the refusal to end it — no retry cures it", calls())
+			t.Errorf("the drain archived the pod %d times, want once — a skip is no race", calls())
 		}
 	})
 	// The link half of the same flip: a dir a raced attempt built where the
@@ -456,21 +464,20 @@ func TestExportRunFilesCuresATypeFlipBetweenAttempts(t *testing.T) {
 		kubectl, calls := exportShim(t, settled, 0, "")
 		r := drainRun([]sandbox.ReadBackDir{{ContainerPath: "/iterion/artifact-files", HostDir: hostDst}}, kubectl)
 
-		err := r.ExportRunFiles(context.Background())
-		if err == nil {
-			t.Fatal("ExportRunFiles = nil, want the removal refused — a tree holding pre-drain state is not the drain's to take for a link either")
-		}
-		if !strings.Contains(err.Error(), "but sub predates the drain") {
-			t.Errorf("error = %v, want the pre-drain entry named in the cause", err)
-		}
-		if got := sandbox.ReadBackLossReasonOf(err); got != sandbox.ReadBackRefused {
-			t.Errorf("reason = %q, want %q", got, sandbox.ReadBackRefused)
+		if err := r.ExportRunFiles(context.Background()); err != nil {
+			t.Fatalf("ExportRunFiles = %v, want the link skipped — a tree holding pre-drain state is not the drain's to take for a link either, and the rest of the set still lands", err)
 		}
 		if got, readErr := os.ReadFile(keep); readErr != nil || string(got) != "the store held me before the drain" {
-			t.Errorf("pre-drain keep.md = %q (%v), want it intact under the refused removal", got, readErr)
+			t.Errorf("pre-drain keep.md = %q (%v), want it intact under the declined removal", got, readErr)
+		}
+		if info, statErr := os.Lstat(filepath.Join(hostDst, "sub")); statErr != nil || !info.IsDir() {
+			t.Errorf("sub = %v (%v), want the pre-drain tree still standing, no link in its place", info, statErr)
+		}
+		if got, readErr := os.ReadFile(filepath.Join(hostDst, "target.md")); readErr != nil || string(got) != "# the link's target" {
+			t.Errorf("drained target.md = %q (%v), want the rest of the set landed past the skipped link", got, readErr)
 		}
 		if calls() != 1 {
-			t.Errorf("the drain archived the pod %d times, want the refusal to end it", calls())
+			t.Errorf("the drain archived the pod %d times, want once", calls())
 		}
 	})
 	t.Run("a link that leaves the tree removes nothing, a pre-drain dir in its place included", func(t *testing.T) {
@@ -532,7 +539,7 @@ func TestDrainFileMeterStopsOneBytePastTheBudget(t *testing.T) {
 		hdr := &tar.Header{Name: "big.bin", Size: 10, Typeflag: tar.TypeReg, Mode: 0o600}
 		src := bytes.NewReader(bytes.Repeat([]byte{7}, 10))
 
-		n, err := r.writeDrainFile(target, "big.bin", 4, hdr, src)
+		n, err := r.writeDrainFile(target, "big.bin", 4, 4, hdr, src)
 		if err == nil {
 			t.Fatal("writeDrainFile = nil, want the over-cap refusal")
 		}
@@ -562,7 +569,7 @@ func TestDrainFileMeterStopsOneBytePastTheBudget(t *testing.T) {
 		hdr := &tar.Header{Name: "small.bin", Size: 4, Typeflag: tar.TypeReg, Mode: 0o640}
 		src := bytes.NewReader(bytes.Repeat([]byte{7}, 4))
 
-		n, err := r.writeDrainFile(target, "small.bin", 4, hdr, src)
+		n, err := r.writeDrainFile(target, "small.bin", 4, 4, hdr, src)
 		if err != nil {
 			t.Fatalf("writeDrainFile = %v, want a member of exactly the budget landed", err)
 		}
@@ -589,7 +596,7 @@ func TestDrainFileMeterStopsOneBytePastTheBudget(t *testing.T) {
 		r := drainRun(nil, "")
 		hdr := &tar.Header{Name: "report.md", Size: 7, Typeflag: tar.TypeReg, Mode: 0o644}
 
-		if _, err := r.writeDrainFile(target, "report.md", 100, hdr, strings.NewReader("# newer")); err != nil {
+		if _, err := r.writeDrainFile(target, "report.md", 100, 100, hdr, strings.NewReader("# newer")); err != nil {
 			t.Fatalf("writeDrainFile = %v, want the pod's member landed over the older copy", err)
 		}
 		if got, readErr := os.ReadFile(target); readErr != nil || string(got) != "# newer" {
@@ -621,7 +628,7 @@ func TestExtractDrainDropsAMemberThePodStreamCutShort(t *testing.T) {
 	// No tw.Close(), no padding: the stream ends 3072 bytes short of the
 	// member it declared.
 	r := drainRun(nil, "")
-	drained, landed, err := r.extractDrain(bytes.NewReader(archive.Bytes()), hostDst, nil, nil)
+	drained, landed, err := r.extractDrain(bytes.NewReader(archive.Bytes()), hostDst, nil, nil, sandbox.ReadBackCapBytes)
 	if err == nil {
 		t.Fatal("extractDrain = nil, want the cut stream reported")
 	}
@@ -643,14 +650,14 @@ func TestExtractDrainDropsAMemberThePodStreamCutShort(t *testing.T) {
 }
 
 func TestExtractDrainRefusesASetOverTheCap(t *testing.T) {
-	if testing.Short() {
-		t.Skip("the cap is 256 MiB — the fixture streams it")
-	}
 	hostDst := t.TempDir()
 	// One archive carrying one byte past the cap, streamed (never held in
 	// memory whole): the drain must fail with its own cause, not land a
-	// silently truncated set.
-	over := sandbox.ReadBackCapBytes + 1
+	// silently truncated set. The cap is the dir's own figure, handed in
+	// — a witness-sized one, far under the default, so a meter that read
+	// the default instead of the figure it was given lands the member.
+	const capBytes int64 = 4 << 10
+	over := capBytes + 1
 	pr, pw := io.Pipe()
 	go func() {
 		tw := tar.NewWriter(pw)
@@ -665,17 +672,20 @@ func TestExtractDrainRefusesASetOverTheCap(t *testing.T) {
 		pw.CloseWithError(tw.Close())
 	}()
 	r := drainRun(nil, "")
-	drained, _, err := r.extractDrain(pr, hostDst, nil, nil)
+	drained, _, err := r.extractDrain(pr, hostDst, nil, nil, capBytes)
 	if err == nil {
 		t.Fatal("extractDrain = nil, want the over-cap refusal")
 	}
-	if !strings.Contains(err.Error(), "cap") || !strings.Contains(err.Error(), "at big.bin") {
-		t.Errorf("error = %v, want the cap and the member it stopped on named", err)
+	if !strings.Contains(err.Error(), "4096 bytes cap") || !strings.Contains(err.Error(), "at big.bin") {
+		t.Errorf("error = %v, want the dir's own cap and the member it stopped on named", err)
+	}
+	if !strings.Contains(err.Error(), sandbox.ReadBackCapEnv) {
+		t.Errorf("error = %v, want the escape hatch named — a bound the operator cannot find is a bound with no override", err)
 	}
 	if got := sandbox.ReadBackLossReasonOf(err); got != sandbox.ReadBackOverCap {
 		t.Errorf("reason = %q, want %q", got, sandbox.ReadBackOverCap)
 	}
-	if drained <= sandbox.ReadBackCapBytes {
+	if drained <= capBytes {
 		t.Errorf("drained %d bytes, want the meter to have carried the evidence past the cap", drained)
 	}
 	// The disk, not the verdict: the member the cap stopped is not left
@@ -696,18 +706,16 @@ func TestExtractDrainRefusesASetOverTheCap(t *testing.T) {
 // carry. The budget of 0 reads as "nothing more fits", not as "one byte
 // more arrives": the whole dir must drain clean, every member landed.
 func TestExtractDrainAcceptsTheExactCapPlusATrailingZeroByteMember(t *testing.T) {
-	if testing.Short() {
-		t.Skip("the cap is 256 MiB — the fixture streams it")
-	}
 	hostDst := t.TempDir()
+	const capBytes int64 = 4 << 10
 	pr, pw := io.Pipe()
 	go func() {
 		tw := tar.NewWriter(pw)
-		if err := tw.WriteHeader(&tar.Header{Name: "big.bin", Size: sandbox.ReadBackCapBytes, Typeflag: tar.TypeReg, Mode: 0o600}); err != nil {
+		if err := tw.WriteHeader(&tar.Header{Name: "big.bin", Size: capBytes, Typeflag: tar.TypeReg, Mode: 0o600}); err != nil {
 			pw.CloseWithError(err)
 			return
 		}
-		if _, err := io.CopyN(tw, zeros{}, sandbox.ReadBackCapBytes); err != nil {
+		if _, err := io.CopyN(tw, zeros{}, capBytes); err != nil {
 			pw.CloseWithError(err)
 			return
 		}
@@ -718,11 +726,11 @@ func TestExtractDrainAcceptsTheExactCapPlusATrailingZeroByteMember(t *testing.T)
 		pw.CloseWithError(tw.Close())
 	}()
 	r := drainRun(nil, "")
-	drained, landed, err := r.extractDrain(pr, hostDst, nil, nil)
+	drained, landed, err := r.extractDrain(pr, hostDst, nil, nil, capBytes)
 	if err != nil {
 		t.Fatalf("extractDrain = %v, want the exact-cap set to drain clean", err)
 	}
-	if drained != sandbox.ReadBackCapBytes {
+	if drained != capBytes {
 		t.Errorf("drained %d bytes, want exactly the cap — the zero-byte member bills nothing", drained)
 	}
 	if !landed["empty.txt"] {
@@ -742,4 +750,92 @@ func (zeros) Read(p []byte) (int, error) {
 		p[i] = 0
 	}
 	return len(p), nil
+}
+
+// TestExtractDrainSkipsAPreDrainTreeAndLandsTheMembersAfterIt pins the
+// order the shim cannot: the member the host declines comes FIRST in the
+// stream, and the one after it must still land. With the refusal an error
+// again, after.md is lost with the rest of the set — the defect of a
+// resumed run whose previous attempt drained `out/` and whose tool now
+// writes `out` as a file, paying every later deliverable for one name.
+func TestExtractDrainSkipsAPreDrainTreeAndLandsTheMembersAfterIt(t *testing.T) {
+	hostDst := t.TempDir()
+	keep := filepath.Join(hostDst, "out", "keep.md")
+	if err := os.MkdirAll(filepath.Dir(keep), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keep, []byte("the previous attempt drained me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, beforeDirs, err := readBackDirEntries(hostDst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, m := range []struct{ name, body string }{{"out", "now a file"}, {"after.md", "# landed after the collision"}} {
+		if err := tw.WriteHeader(&tar.Header{Name: m.name, Size: int64(len(m.body)), Typeflag: tar.TypeReg, Mode: 0o644}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(m.body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r := drainRun(nil, "")
+	drained, landed, err := r.extractDrain(&buf, hostDst, before, beforeDirs, sandbox.ReadBackCapBytes)
+	if err != nil {
+		t.Fatalf("extractDrain = %v, want the declined member skipped and the extract to go on", err)
+	}
+	if got, readErr := os.ReadFile(filepath.Join(hostDst, "after.md")); readErr != nil || string(got) != "# landed after the collision" {
+		t.Errorf("after.md = %q (%v), want the member after the skipped one landed", got, readErr)
+	}
+	if !landed["after.md"] || landed["out"] {
+		t.Errorf("landed = %#v, want after.md recorded and out not — a skipped member is nothing the sweep keeps", landed)
+	}
+	if drained != int64(len("# landed after the collision")) {
+		t.Errorf("drained %d bytes, want the landed member's alone — a skipped member moves no meter", drained)
+	}
+	if got, readErr := os.ReadFile(keep); readErr != nil || string(got) != "the previous attempt drained me" {
+		t.Errorf("pre-drain out/keep.md = %q (%v), want it intact", got, readErr)
+	}
+}
+
+// TestExportRunFilesMetersOnTheDirsOwnCap: the figure is the manifest
+// entry's (ReadBackDir.Cap), carried from the mount that serves the path —
+// a bot that sized its own emptyDir is metered on its figure, not cut down
+// to the default. A drain that read the default instead of the entry's cap
+// would land the 17-byte member under a 16-byte cap.
+func TestExportRunFilesMetersOnTheDirsOwnCap(t *testing.T) {
+	const body = "seventeen bytes!!"
+	t.Run("one byte over the dir's cap is the failure", func(t *testing.T) {
+		hostDst := t.TempDir()
+		kubectl, calls := exportShim(t, podTree(t, map[string]string{"report.md": body}), 0, "")
+		r := drainRun([]sandbox.ReadBackDir{{ContainerPath: "/iterion/artifact-files", HostDir: hostDst, CapBytes: int64(len(body)) - 1}}, kubectl)
+		err := r.ExportRunFiles(context.Background())
+		if got := sandbox.ReadBackLossReasonOf(err); got != sandbox.ReadBackOverCap {
+			t.Fatalf("ExportRunFiles = %v (reason %q), want %q on the dir's own %d-byte cap", err, got, sandbox.ReadBackOverCap, len(body)-1)
+		}
+		if calls() != 1 {
+			t.Errorf("the drain archived the pod %d times, want once — the cap is no race", calls())
+		}
+	})
+	t.Run("exactly the dir's cap drains clean", func(t *testing.T) {
+		hostDst := t.TempDir()
+		kubectl, _ := exportShim(t, podTree(t, map[string]string{"report.md": body}), 0, "")
+		r := drainRun([]sandbox.ReadBackDir{{ContainerPath: "/iterion/artifact-files", HostDir: hostDst, CapBytes: int64(len(body))}}, kubectl)
+		if err := r.ExportRunFiles(context.Background()); err != nil {
+			t.Fatalf("ExportRunFiles = %v, want a set of exactly the cap landed", err)
+		}
+		if got, readErr := os.ReadFile(filepath.Join(hostDst, "report.md")); readErr != nil || string(got) != body {
+			t.Errorf("drained report.md = %q (%v), want the member whole", got, readErr)
+		}
+	})
+	t.Run("an entry naming no cap meters on the default", func(t *testing.T) {
+		if got := (sandbox.ReadBackDir{}).Cap(); got != sandbox.ReadBackCapBytes {
+			t.Errorf("Cap() = %d on an entry naming none, want the %d default", got, sandbox.ReadBackCapBytes)
+		}
+	})
 }

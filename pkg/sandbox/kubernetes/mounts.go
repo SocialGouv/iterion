@@ -43,8 +43,12 @@ const (
 	// on a pod (ADR-143 §2): the container writes a real directory for
 	// its whole life and the run drains it at teardown. Optional
 	// `size=<quantity>` renders an emptyDir sizeLimit (a Kubernetes
-	// quantity, e.g. `256Mi`); unwritten, the volume spends the node's
-	// ephemeral storage up to the pod's own limit.
+	// quantity, e.g. `256Mi`) — a bound the kubelet enforces by EVICTING
+	// the pod once the volume's usage passes it, which ends the run with
+	// nothing drained or exported; unwritten, the volume spends the
+	// node's ephemeral storage up to the pod's own limit. On a declared
+	// read-back path the size also names the figure the drain meters
+	// that dir against (sandbox.ReadBackCapFor).
 	//   type=emptydir,target=<container-path>[,size=<quantity>]
 	MountTypeEmptyDir MountType = "emptydir"
 

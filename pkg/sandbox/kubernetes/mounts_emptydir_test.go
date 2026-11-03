@@ -6,9 +6,10 @@ import (
 )
 
 // The emptydir mount type: how a declared read-back path is served on a
-// pod (ADR-143 §2) — storage the driver owns, sized to the read-back cap.
-// The parse and the render are pinned separately: the parse is what an
-// author writes, the render is what the pod runs.
+// pod (ADR-143 §2) — storage the driver owns, carrying a sizeLimit only
+// where the author writes `size=`. The parse and the render are pinned
+// separately: the parse is what an author writes, the render is what the
+// pod runs.
 
 func TestParseMount_EmptyDir(t *testing.T) {
 	got, err := parseMount("type=emptydir,target=/iterion/artifact-files,size=256Mi")

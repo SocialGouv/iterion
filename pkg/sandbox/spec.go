@@ -189,18 +189,11 @@ type Spec struct {
 	ReadBackPaths []string
 }
 
-// ReadBackCapBytes caps one run's read-back set (ADR-143: the cap is named
-// and metered, never "whatever the container wrote"). The runtime sizes the
-// serving emptyDir's sizeLimit with it and the drain meters extracted bytes
-// against it, so a run cannot spend a node's ephemeral storage or the run
-// file store past the same figure. Same class as the scratch bank's cap
-// (ADR-106): how big one run's by-product tree may be.
-const ReadBackCapBytes int64 = 256 << 20
-
 // ReadBackDir is one entry of the drain manifest: a declared read-back
-// container path and the host directory that receives its content at
-// teardown. The driver drains the path; the run file store owns the
-// directory (its write target), and the two meet only here.
+// container path, the host directory that receives its content at
+// teardown, and the figure its set is metered against. The driver drains
+// the path; the run file store owns the directory (its write target), and
+// the two meet only here.
 type ReadBackDir struct {
 	// ContainerPath is the declared path inside the container (absolute,
 	// clean — the same text Spec.ReadBackPaths carries).
@@ -209,6 +202,21 @@ type ReadBackDir struct {
 	// file store's own write target, so no consumer of the drained set
 	// needs to know it (ADR-143 — no consumer reads the set by host path).
 	HostDir string
+	// CapBytes is the figure THIS dir's set is metered against at the
+	// drain, resolved by [ReadBackCapFor] from the mount that serves the
+	// path — the mount's own size, the [ReadBackCapEnv] override, or
+	// [ReadBackCapBytes]. Zero reads as the default (Cap), so a manifest
+	// entry built without it meters on the named figure.
+	CapBytes int64
+}
+
+// Cap is the figure the drain meters this dir's set against: CapBytes, or
+// [ReadBackCapBytes] where the entry named none.
+func (d ReadBackDir) Cap() int64 {
+	if d.CapBytes > 0 {
+		return d.CapBytes
+	}
+	return ReadBackCapBytes
 }
 
 // BindSourceCheck is one bind source the driver must re-verify immediately
@@ -412,24 +420,30 @@ func (s *Spec) Validate() error {
 }
 
 // MountServing returns the mount whose target is containerPath or a
-// parent of it, or "" when none does. The one reading of "does a mount
-// serve this path": the admission half of the read-back contract (the
-// declaration is asked of the mounts as they stand, not of the driver's
-// intentions) and the runtime's decision to add or skip its own storage
-// at a declared path both ask it here — a serving predicate kept in two
-// places answers differently the day one copy stops matching the other.
+// parent of it, or "" when none does — the NEAREST such mount when they
+// nest (the deepest target, the first of equals), because a mount shadows
+// its parent's volume under its own target: the files at containerPath
+// live in its storage, and its `size=` is the figure that bounds them
+// (ReadBackCapFor). The one reading of "does a mount serve this path":
+// the admission half of the read-back contract (the declaration is asked
+// of the mounts as they stand, not of the driver's intentions), the
+// runtime's decision to add or skip its own storage at a declared path,
+// and the drain's figure all ask it here — a serving predicate kept in
+// two places answers differently the day one copy stops matching the
+// other.
 func MountServing(mounts []string, containerPath string) string {
 	want := path.Clean(containerPath)
+	serving, depth := "", -1
 	for _, m := range mounts {
 		tgt := MountTargetOf(m)
 		if tgt == "" {
 			continue
 		}
-		if c := path.Clean(tgt); want == c || strings.HasPrefix(want, c+"/") {
-			return m
+		if c := path.Clean(tgt); (want == c || strings.HasPrefix(want, c+"/")) && len(c) > depth {
+			serving, depth = m, len(c)
 		}
 	}
-	return ""
+	return serving
 }
 
 // MountTargetOf extracts a mount string's `target=` field ("dst" and

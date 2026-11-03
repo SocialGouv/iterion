@@ -95,7 +95,13 @@ needs the CONTENT afterwards, when the pod is gone.
 - **Unbounded size.** An emptyDir spends the node's ephemeral storage
   and the drain spends the store's: the read-back set is capped, and the
   cap is the slice's to name and to meter — never "whatever the pod
-  wrote".
+  wrote". The meter lives on the host, in the drain, per declared dir,
+  with the serving mount's own `size=` and `ITERION_SANDBOX_READBACK_CAP`
+  as its escape hatches. The pod side carries no `sizeLimit` for it: a
+  kubelet evicts the whole pod once an emptyDir's usage passes its
+  `sizeLimit`, which would end the run mid-flight with nothing drained
+  or exported, where the contract promises a dropped member and the rest
+  of the run. The node's ephemeral storage stays the cluster's to bound.
 - **Streaming.** The content is readable after teardown, not live
   during the run. A panel that wants progress watches events, which is
   what events are for.

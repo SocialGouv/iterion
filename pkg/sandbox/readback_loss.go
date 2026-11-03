@@ -12,20 +12,27 @@ import "errors"
 type ReadBackLossReason string
 
 const (
-	// ReadBackOverCap: the set outgrew ReadBackCapBytes. The member the
-	// meter stopped on is dropped, what landed before it stays, and the rest
-	// stays in the pod.
+	// ReadBackOverCap: the dir's set outgrew its cap (ReadBackDir.Cap). The
+	// member the meter stopped on is dropped, what landed before it stays,
+	// and the rest stays in the pod.
 	ReadBackOverCap ReadBackLossReason = "over_cap"
 	// ReadBackUnsettled: the tree kept changing under the pod's archiver
-	// past the retry budget — a tool was still writing at teardown.
+	// past the retry budget — a tool was still writing at teardown. What
+	// stays on the host is the UNION of every attempt's members (tar never
+	// deletes and no attempt settled for the sweep to keep against): a
+	// stale superset of the pod's final tree, so a file the run removed
+	// between attempts may be among what uploads.
 	ReadBackUnsettled ReadBackLossReason = "unsettled"
 	// ReadBackArchiver: the pod's archiver failed for a cause no retry
 	// cures — kubectl exec refused, tar died, the stream was cut or was no
 	// archive.
 	ReadBackArchiver ReadBackLossReason = "archiver"
-	// ReadBackRefused: the host refused to land the set — a pre-drain entry
-	// stood where the archive carries another kind, or the host directory
-	// could not be written.
+	// ReadBackRefused: the host could not land the set — the host directory
+	// could not be listed or written, a member could not be staged, landed
+	// or replaced. A member the host declines on principle (a name that
+	// cannot be made safe, a link that leaves the tree, a kind it does not
+	// write back, a pre-drain tree where the archive carries a file or a
+	// link) is not this: it is skipped and reported, and the drain goes on.
 	ReadBackRefused ReadBackLossReason = "refused"
 	// ReadBackMixed: the declared dirs were lost for different reasons; the
 	// joined error names each dir's own.
