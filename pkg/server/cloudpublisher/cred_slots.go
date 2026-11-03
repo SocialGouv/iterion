@@ -156,21 +156,28 @@ func (p *Publisher) releaseCredSlots(ctx context.Context, runID string, wants []
 // FailureCredSlotWait, with the refusal as the run's own words. The
 // continuation is promoted to retry_armed by the arming that follows
 // (armCredSlotRetry), never here — a row that says retry_armed with no retry
-// armed is a wait nothing ends.
-func parkRunOnCredSlot(r *store.Run, refusal *credSlotRefusal) {
+// armed is a wait nothing ends. The words follow the same store the arming
+// reads (retryStore): on a store with no durable retry nothing wakes the
+// run, and its row says so rather than promising a resume nothing performs.
+func parkRunOnCredSlot(r *store.Run, refusal *credSlotRefusal, retryStore store.RunRetryStore) {
 	r.Status = store.RunStatusFailedResumable
 	r.FailureCode = store.FailureCredSlotWait
-	r.Error = fmt.Sprintf("parked: %v — the run resumes by itself once a slot frees (checked every %s, up to the run's max_wait)", refusal, CredSlotProbeInterval)
+	if retryStore == nil {
+		r.Error = fmt.Sprintf("parked: %v — this run store hosts no durable retry, so nothing resumes the run by itself: resume it once a slot frees", refusal)
+	} else {
+		r.Error = fmt.Sprintf("parked: %v — the run resumes by itself once a slot frees (checked every %s, up to the run's max_wait)", refusal, CredSlotProbeInterval)
+	}
 	r.ContinuationState = ""
 }
 
-// armCredSlotRetry arms the parked run's durable retry: the first ask for a
+// armCredSlotRetry arms the parked run's durable retry on retryStore (the
+// store's store.RunRetryStore, nil when it has none): the first ask for a
 // slot, one probe interval out. The arming is paid (it is the one that
 // creates the retry row); every later ask is the sweeper's free deferral. A
 // store with no durable retry cannot wake the run — said loudly, and the run
-// stays parked for an operator's resume.
-func (p *Publisher) armCredSlotRetry(ctx context.Context, r *store.Run, refusal *credSlotRefusal) error {
-	retryStore := store.AsRunRetryStore(p.store)
+// stays parked for an operator's resume, its row saying as much
+// (parkRunOnCredSlot reads the same retryStore).
+func (p *Publisher) armCredSlotRetry(ctx context.Context, retryStore store.RunRetryStore, r *store.Run, refusal *credSlotRefusal) error {
 	if retryStore == nil {
 		p.logger.Warn("cloudpublisher: run %s parked (%v), and this run store hosts no durable retry (store.RunRetryStore): nothing resumes it by itself — resume it by hand once a slot frees", r.ID, refusal)
 		return nil

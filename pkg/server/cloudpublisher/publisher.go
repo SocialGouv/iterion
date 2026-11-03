@@ -3882,8 +3882,11 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	if err != nil {
 		return runview.LaunchSubmission{}, err
 	}
+	// One read of the durable retry for the park's words and its arming,
+	// so the row never promises a wake the store cannot arm.
+	retryStore := store.AsRunRetryStore(p.store)
 	if refusal != nil {
-		parkRunOnCredSlot(r, refusal)
+		parkRunOnCredSlot(r, refusal, retryStore)
 	} else {
 		heldSlots = creds.credSlots
 	}
@@ -3915,7 +3918,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// A parked row nothing wakes is a stuck run: an arming that fails
 		// leaves the deferred choke point above to mark the row
 		// LAUNCH_FAILED, which the caller re-does.
-		if err := p.armCredSlotRetry(ctx, r, refusal); err != nil {
+		if err := p.armCredSlotRetry(ctx, retryStore, r, refusal); err != nil {
 			return runview.LaunchSubmission{}, err
 		}
 		parked = true

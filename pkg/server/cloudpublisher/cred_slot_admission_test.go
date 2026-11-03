@@ -879,3 +879,25 @@ func TestCredSlotAdmission_AStoreErrorOnALaterKeyGivesBackTheEarlierSlot(t *test
 		t.Fatalf("the earlier key names %d holders after a launch refused on a store error, want none", n)
 	}
 }
+
+// A park on a store with no durable retry says so: nothing wakes the run,
+// and a row promising that it "resumes by itself" is a wait nobody ends.
+// Red when the words ignore the store the arming reads.
+func TestCredSlotAdmission_AParkNothingWakesSaysSo(t *testing.T) {
+	f := newCappedFixture(t, 1)
+	p := f.publisher()
+	if err := f.launch(t, p, "run-first", nil); err != nil {
+		t.Fatalf("first launch: %v", err)
+	}
+	// The filesystem store itself: the ledger and the queued flip, no
+	// store.RunRetryStore.
+	p.store = f.spy.RunStore
+	sub := f.launchSub(t, p, "run-parked", nil)
+	if sub.Status != store.RunStatusFailedResumable || sub.FailureCode != store.FailureCredSlotWait {
+		t.Fatalf("submission = %+v, want a park", sub)
+	}
+	r := f.load(t, "run-parked")
+	if strings.Contains(r.Error, "resumes by itself") || !strings.Contains(r.Error, "nothing resumes the run by itself") {
+		t.Fatalf("the parked row says %q — on a store with no durable retry it must say nothing wakes it", r.Error)
+	}
+}
