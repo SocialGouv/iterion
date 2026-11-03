@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
@@ -1095,49 +1096,943 @@ func teamGrantName(role identity.Role) string {
 	return string(role)
 }
 
-// clientIP picks the audit IP for an inbound request. The default
-// is r.RemoteAddr — the only field a client can't forge. We only
-// consult X-Forwarded-For / X-Real-IP when the immediate peer is in
-// s.cfg.TrustedProxyCIDRs, which the operator has explicitly
-// configured. Without this guard a client could spoof its audit IP
-// (and undermine any future IP-based throttling) just by sending an
-// X-Forwarded-For header.
+// clientIP names the client of an inbound request: the address audit
+// rows carry and the auth rate limiter keys on. Three rules make it an
+// identity rather than a connection:
+//
+//   - No port. r.RemoteAddr carries the ephemeral source port, so an
+//     identity built from it changes on every TCP connection and a fresh
+//     rate-limit bucket comes free with each one (#2673).
+//   - Forwarded addresses only from a trusted peer. X-Forwarded-For,
+//     Forwarded and X-Real-IP are all client-writable, so they are read
+//     only when the immediate peer is inside s.cfg.TrustedProxyCIDRs,
+//     which the operator configures for the proxy actually in front.
+//     Without that guard a client spoofs its audit IP, and buys a fresh
+//     bucket per forged value, just by sending a header.
+//   - One spelling per host, and nothing that is not an address.
+//     "2001:DB8::17", "2001:0db8::17" and "::ffff:203.0.113.5" are one
+//     host each however they are written, so cycling spellings buys no
+//     buckets; a value that is not an address at all never becomes the
+//     audit IP (see canonicalIP).
+//
+// This is the identity, which is ONE address: the rate limiter charges
+// the GROUP an IPv6 address belongs to instead, because a client holding
+// a prefix is not one address (rateBucketIP). An audit row names the
+// client that acted, a bucket groups the clients one of them can speak
+// for.
+//
+// Behind a proxy whose range is NOT configured every request carries the
+// proxy's own address, so the whole instance shares one bucket: the
+// ranges are what makes the limiter per-client, and
+// docs/environment-variables.md says so next to the variable.
 func (s *Server) clientIP(r *http.Request) string {
+	ip, named := s.forwardedClientIP(r)
+	if ip != "" {
+		s.warnIdentityIsOurs(r, ip)
+		return ip
+	}
+	s.warnForwardedNotRead(r, named)
+	host := addrHost(r.RemoteAddr)
+	if ip := canonicalIP(host); ip != "" {
+		s.warnIdentityIsOurs(r, ip)
+		return ip
+	}
+	if host == "" {
+		// No peer address at all. net/http's listener always sets one, so
+		// this is an embedder's own transport or a handler called
+		// directly — and the empty string would be a key every such
+		// caller shares, one bucket and one blank audit row for all of
+		// them. A name that is not an address says what happened and
+		// collides with no client.
+		return unknownPeer
+	}
+	// A peer address that is not an IP — a unix socket, a test's own
+	// spelling — is what the kernel reported rather than what a header
+	// claims, so it stays the identity. It is not per-client, and cannot
+	// be: a unix listener spells every peer that bound no name as "@",
+	// and an ordinary client binds none, so everything behind such a
+	// listener shares the one bucket "@" by construction. No server path
+	// listens on one today; an embedder that does gets the limiter a
+	// unix socket can have.
+	return host
+}
+
+// unknownPeer is the identity of a request whose transport reported no
+// peer address: a name, so the rows and buckets of such requests are
+// legible instead of blank, and one no address can be confused with.
+const unknownPeer = "unknown-peer"
+
+// forwardedClientIP returns the client a TRUSTED peer named, or "" when
+// none did and the caller must fall back to the socket — and beside it,
+// how many ADDRESSES the walk read before it stopped. The second answer
+// is the diagnosis's, not the identity's: "" is the answer both when the
+// hops we account for named no address at all and when they named only
+// hops of our own, fewer than the declared bound — a chain SHORTER than
+// the count with every entry in-range, or one whose front end named no
+// client — and the two want different lines (warnForwardedNotRead).
+//
+// The chain is read RIGHT TO LEFT and the answer is the entry the
+// OUTERMOST hop we can account for wrote — trustedProxyHops entries in
+// from the right. A proxy that appends rather than replaces
+// (ingress-nginx with `use-forwarded-headers` AND
+// `compute-full-forwarded-for` on — the first alone makes it resolve
+// the client and write that one address — writes "<whatever the client
+// sent>, <the address it saw>") leaves the client's own forgeries on
+// the LEFT, so everything left of that entry is attacker-controlled in
+// exactly the deployment the ranges are configured for, and a client
+// can only make the chain LONGER — never move the hop its proxy
+// appended.
+//
+// The COUNT is what bounds the walk, not the trust of what it reads.
+// Skipping every entry that happens to be inside the ranges would walk
+// straight back into the client's half of the chain whenever the client
+// itself holds an in-range address: with the chart default — all of
+// private space — that is every LAN client of a self-hosted instance and
+// every in-cluster pod the NetworkPolicy admits, and such a client would
+// buy a fresh bucket per forged value again by writing one
+// OUT-of-range entry of its own (#2673's own defect, through this
+// header). An entry inside the ranges is therefore skipped only while
+// fewer than trustedProxyHops of them have been, and the entry that
+// reaches the bound is the answer whether it is in-range or not.
+//
+// What that entry is worth depends on who wrote it. Behind a trusted
+// proxy that APPENDED, with trustedProxyHops set to the number of
+// appending proxies actually in front, it is an address one of them
+// really saw and no header moves it. A peer that reaches the port
+// DIRECTLY wrote the whole chain itself, so its rightmost entry is
+// client-chosen too: it names any address it likes, including an
+// in-range victim's, and rotating the value moves the key. That is the
+// same residual as the sentence below — trusting a range means trusting
+// what every address inside it says — and the answer to both is to keep
+// the ranges to the proxy's own addresses, which values.yaml and
+// docs/environment-variables.md both say, not to second-guess a trusted
+// peer here. `networkPolicy.enabled` is what keeps the port out of
+// reach of everything but the ingress (#2804).
+//
+// What stays by construction, whatever the walk does: a peer inside the
+// ranges is a proxy the operator vouches for, so it can still name an
+// address OUTSIDE them and be believed.
+func (s *Server) forwardedClientIP(r *http.Request) (string, int) {
 	if !s.peerIsTrusted(r) {
-		return r.RemoteAddr
+		return "", 0
 	}
-	if h := r.Header.Get("X-Forwarded-For"); h != "" {
-		if i := strings.Index(h, ","); i > 0 {
-			return strings.TrimSpace(h[:i])
+	chain := s.forwardedChain(r)
+	hops := s.trustedProxyHops()
+	// One right-to-left pass. An entry that names no address is still a
+	// hop, and the one nothing beyond is accountable to: the proxy that
+	// wrote it — an RFC 7239 for=unknown or obfuscated identifier, an
+	// element with no for= at all, an X-Forwarded-For "unknown" — named
+	// no client, so every entry left of it is whatever the client wrote.
+	// Stepping over it would read the client's own forgery as its
+	// identity; the walk stops there and the caller falls back to the
+	// socket peer, the proxy's own address.
+	ours, named := 0, 0
+	for i := len(chain) - 1; i >= 0; i-- {
+		ip := canonicalIP(chain[i])
+		if ip == "" {
+			return "", named
 		}
-		return strings.TrimSpace(h)
+		named++
+		if !s.ipIsTrusted(ip) {
+			// No proxy of ours wrote this one, so nothing further left
+			// is accountable either: this is the furthest hop we can
+			// name. The bound did not arbitrate, so whether it COULD
+			// have is the operator's business.
+			s.warnHopsUnreachable(r, ours, hops)
+			return ip, named
+		}
+		ours++
+		if ours >= hops {
+			// The bound: the address the outermost proxy we are told to
+			// account for actually saw. Everything left of it is what
+			// whoever that proxy was talking to chose to write.
+			if i > 0 {
+				s.warnUndeclaredHop(r, chain[i-1], hops)
+			}
+			return ip, named
+		}
 	}
-	if h := r.Header.Get("X-Real-IP"); h != "" {
+	// "" hands the caller back to the socket peer, which is itself a
+	// trusted proxy here: an identity the kernel reports, not one a header
+	// claims. Reached when the chain names no address at all, when a hop
+	// within the bound names none (above), and when it is SHORTER than
+	// the declared bound and every entry is ours — an
+	// operator who declares more appending hops than are really in front
+	// gets the proxy's own address, which is less reach than the
+	// over-declaration asked for and never a client-written entry. The
+	// count tells the caller which of the two it was.
+	return "", named
+}
+
+// defaultTrustedProxyHops is how many APPENDING trusted proxies sit in
+// front when the operator says nothing: one, the shape the chart ships
+// (a single ingress controller) and the shape every reverse-proxy
+// quickstart describes.
+const defaultTrustedProxyHops = 1
+
+// trustedProxyHops is how many of the chain's rightmost entries our own
+// infrastructure wrote — the number of APPENDING trusted proxies between
+// a client and this server. It is the bound the right-to-left walk stops
+// at, so it is also how far a client's own forgeries can be pushed:
+// declaring MORE hops than are really in front walks the answer into the
+// client's half of the chain, which is why the default is the shipped
+// shape and raising it is the operator's explicit act.
+//
+// A chained front end needs it: a CDN edge that appends and an ingress
+// that appends behind it write TWO entries of their own, and the client
+// the operator wants is the second from the right. Set via
+// ITERION_AUTH_TRUSTED_PROXY_HOPS; pkg/config refuses a negative value
+// at boot. The walk is bounded by maxForwardedHops whatever the value:
+// a count larger than the chain reaches its leftmost address, or — when
+// every entry is inside the ranges — no entry at all, and the caller
+// falls back to the socket peer.
+func (s *Server) trustedProxyHops() int {
+	if s == nil || s.cfg.TrustedProxyHops < defaultTrustedProxyHops {
+		return defaultTrustedProxyHops
+	}
+	return s.cfg.TrustedProxyHops
+}
+
+// defaultForwardedHeader is the mechanism read when the operator names
+// none: the one every ingress controller and reverse proxy writes.
+const defaultForwardedHeader = "X-Forwarded-For"
+
+// forwardedHeaderCandidates are the mechanisms a proxy in front might be
+// writing instead of the declared one. They feed the diagnosis ONLY —
+// what is read is what the operator declared, never what a request
+// happens to carry.
+var forwardedHeaderCandidates = []string{"X-Forwarded-For", "Forwarded", "X-Real-IP"}
+
+// forwardedHeader is the ONE header a forwarded client address is read
+// from: the mechanism the OPERATOR declares, never the one the request
+// picks. Reading "the first mechanism that carries any" hands the choice
+// to the client: a proxy that computes the client into X-Real-IP (or
+// RFC 7239 Forwarded) and passes X-Forwarded-For through untouched — the
+// canonical hand-written nginx snippet, any HAProxy or CDN writing only
+// Forwarded — is then beaten by a header the client wrote, which names
+// its own identity, buys a fresh rate-limit bucket per value and lands a
+// chosen address in the audit row. The right-to-left walk cannot help
+// there: the whole chain is the client's.
+//
+// Any field name is accepted, not a closed set of three: a deployment
+// behind a CDN reads CF-Connecting-IP or True-Client-IP, and refusing
+// those would be a bound with no override. pkg/config refuses a value
+// that is not a single field name at boot, naming it. "Forwarded" is
+// read with the RFC 7239 grammar; anything else is a comma-separated
+// address list, which is the one entry of an X-Real-IP as much as the
+// chain of an X-Forwarded-For.
+func (s *Server) forwardedHeader() string {
+	if s == nil {
+		return defaultForwardedHeader
+	}
+	if h := strings.TrimSpace(s.cfg.ForwardedHeader); h != "" {
 		return h
 	}
-	return r.RemoteAddr
+	return defaultForwardedHeader
+}
+
+// maxForwardedHops bounds the entries the reader KEEPS — the hops an
+// identity can come from. A real chain is a handful of them, and the far
+// end of a chain longer than this is not accountable anyway; the ones
+// kept are those nearest us, so a client that pads its way past the
+// bound lands on its proxy's own bucket, which is less reach and not
+// more.
+//
+// It is NOT the cost bound. The header is client-writable up to the
+// server's MaxHeaderBytes (1 MiB by default) and this runs BEFORE the
+// limiter has a key to refuse the request with, so the work is bounded
+// on its own terms — maxForwardedLooks for the positions visited,
+// maxForwardedScans for the values opened, maxForwardedBytes for how far
+// a separator is hunted. Spending the hop budget on the cost would be
+// the conflation that lets a run of separators hide a hop.
+const maxForwardedHops = 32
+
+// maxAddrLen bounds how LONG an entry may be, the way maxForwardedHops
+// bounds how MANY there are. Both halves are needed, and the count alone
+// is not the cost: a client-writable header reaches MaxHeaderBytes
+// (1 MiB by default) as ONE entry as easily as a million, and
+// net.ParseIP walks every byte of whatever it is handed — measured on
+// the pre-limiter path, a 1 MiB single entry cost 1.8 ms of CPU per
+// request against 7 us for a full 32-hop chain.
+//
+// 53 bytes is the longest form canonicalIP can accept: an IPv4-mapped
+// IPv6 address written out, bracketed and ported
+// ("[0000:0000:0000:0000:0000:ffff:255.255.255.255]:65535"). 64 leaves
+// slack for a spelling net.ParseIP may learn while staying far under
+// anything a chain of real hops reaches.
+const maxAddrLen = 64
+
+// maxForwardedBytes is how much of a header value the reader LOOKS at:
+// the bytes nearest us, sized to hold maxForwardedHops entries of
+// maxAddrLen each with their separators. Nothing further away can be an
+// entry this reader would keep, so a separator further away is one it
+// never needs to find — and finding one is the last cost that grows
+// with a value the client chooses: measured on the pre-limiter path,
+// one memchr over a 1 MiB entry cost 315 us per request and the three
+// an RFC 7239 element needs cost 1.2 ms, against 4 us for a full chain.
+//
+// It bounds the WALK, as maxForwardedHops bounds the entries and
+// maxAddrLen their length; and like them it can only cost a client
+// reach: padding its way past the window pushes its own forgeries out
+// of it, leaving the hops nearest us — its proxy's own address, one
+// bucket for everything behind that proxy. The hop an appending proxy
+// writes is the LAST byte of the value, so no padding moves it out. An
+// RFC 7239 element the proxy itself wrote longer than the window — a
+// client-typed host="…" — is not one the reader can delimit, so it is
+// not read and the identity is the proxy's (lastEntries).
+const maxForwardedBytes = maxForwardedHops * (maxAddrLen + 1)
+
+// maxForwardedLooks bounds the entry POSITIONS one request's header is
+// worth visiting — a hop and an empty entry alike. It is the COST bound,
+// and it is deliberately slack against maxForwardedHops because an empty
+// entry is a malformed chain and not a hop: "203.0.113.5,,,,…" with
+// thirty-two commas after it would otherwise spend the hop budget on
+// nothing and bury the only address in the value. The slack also covers
+// the parameters an RFC 7239 element carries beside its for=, which are
+// looked at from the same purse.
+const maxForwardedLooks = 8 * maxForwardedHops
+
+// maxForwardedScans bounds the VALUES one request's header is worth
+// opening — its lines, and the RFC 7239 elements whose parameters are
+// read the same way. Each costs one scan of its window to find where an
+// entry begins, including a window with no separator anywhere in it,
+// which yields no entry at all: unbounded, five hundred such lines cost
+// five hundred scans before the limiter has a key to refuse the request
+// with. Twice the hop bound covers the lines of a value plus the
+// elements they yield, both already capped by the hop bound itself.
+//
+// The CPU ceiling is these constants times the window, never the
+// header: at most this many windows of maxForwardedBytes per pass, each
+// a few memory scans (IndexByte, LastIndexByte, TrimSpace), and the RFC
+// 7239 reader makes two passes from two purses (forwardedHeaderChain) —
+// a few hundred kilobytes of byte scanning per request at the very
+// worst, tens of microseconds, against under a microsecond for a real
+// chain. Bounded and paid before the limiter has a key, which is why it
+// is written down: the allocation witnesses cannot see it, a memory
+// scan allocates nothing.
+const maxForwardedScans = 2 * maxForwardedHops
+
+// forwardedBudget is what ONE read of a client-writable header is worth.
+// The bounds are held APART because conflating them lets a client spend
+// the one that matters on entries that are no hops at all — a run of
+// separators, an entry too long to be an address — and the hop a proxy
+// appended falls out of reach:
+//
+//   - keep bounds the entries a cut MATERIALISES: the hops an identity
+//     can come from.
+//   - looks and scans bound the WORK, and they are spent across every
+//     line, element and parameter of the request rather than per call:
+//     splitting a value must not multiply what reading it costs.
+//
+// A request that spends its work budget keeps the hops already
+// collected and reads no further. The entries nearest us are collected
+// FIRST, so what a padding client loses is its own forgeries: it lands
+// on its proxy's bucket, which is less reach and not more.
+type forwardedBudget struct {
+	keep  int
+	looks int
+	scans int
+}
+
+// newForwardedBudget is the budget of one request's header read, handed
+// to every cut that read makes.
+func newForwardedBudget() *forwardedBudget {
+	return &forwardedBudget{keep: maxForwardedHops, looks: maxForwardedLooks, scans: maxForwardedScans}
+}
+
+// forwardedChain returns the forwarded addresses as the proxies wrote
+// them — the client first, each hop appended — from the one header
+// forwardedHeader names, bounded to the maxForwardedHops entries nearest
+// this server and to the entries that could BE an address. Header.Values,
+// not Get: a client can send its own line and the proxy adds a second
+// one, and only the whole list is the chain.
+//
+// Every bound lives here, on the one path every forwarded entry takes to
+// an identity, so the readers below are handed entries whose number and
+// length nothing client-controlled decides. ONE budget serves the whole
+// read — its lines, its RFC 7239 elements and their parameters — so a
+// client cannot multiply the work by splitting its value across them.
+// What remains linear in the header is the cutting itself —
+// LastIndexByte and Cut are a memory scan, which no reader of a header
+// can be cheaper than.
+func (s *Server) forwardedChain(r *http.Request) []string {
+	name := s.forwardedHeader()
+	values := r.Header.Values(name)
+	budget := newForwardedBudget()
+	var entries []string
+	if strings.EqualFold(name, "Forwarded") {
+		entries = forwardedHeaderChain(values, budget)
+	} else {
+		entries = lastEntries(values, ',', maxAddrLen, plainCut, budget)
+	}
+	// An entry longer than any address names none. Measuring it here
+	// rather than letting canonicalIP answer "" on it is the difference
+	// between a memory scan and net.ParseIP's per-byte walk over a
+	// megabyte, on a path that runs BEFORE the limiter has a key to
+	// refuse the request with. The address list refuses one against the
+	// hop budget itself — no proxy writes such an entry, so it is the
+	// client's and never a hop; an RFC 7239 for= parameter cannot be
+	// refused that way — a parameter is legitimately longer than an
+	// address, and an obfuscated identifier has no length bound — so its
+	// value is measured here and its element stays a hop that names no
+	// address (forwardedClientIP stops on it). Both producers return a
+	// fresh slice of at most maxForwardedHops entries, so it is rewritten
+	// in place.
+	for i, entry := range entries {
+		if len(entry) > maxAddrLen {
+			entries[i] = unnamedHop
+		}
+	}
+	return entries
+}
+
+// unnamedHop stands in the chain for a hop that names no address — an
+// RFC 7239 element with no for=, an empty one, one too long to be an
+// address. It is the RFC's own spelling of "this hop names no client",
+// which canonicalIP refuses like every non-address.
+const unnamedHop = "unknown"
+
+// unreadableElement is what an RFC 7239 cut leaves in place of an
+// element its byte window cannot delimit: the RFC's own element for a
+// hop that names no client, so both cuts read it as one — the elements
+// cut as an element, the parameters cut as its for= — and the walk
+// stops on it (lastEntries).
+const unreadableElement = "for=" + unnamedHop
+
+// lastEntries returns the last entries of values cut on sep, in the
+// order the header spells them, trimmed and without the empty ones —
+// at most b.keep of them, and at most keepLen bytes each when keepLen is
+// not 0. The grammar says whether a sep inside a quoted-string cuts:
+// under quotedCut it is part of the entry (lastSep).
+//
+// It cuts from the RIGHT and stops, so the entries it MATERIALISES are
+// the ones kept and not every entry of the header: strings.Split cost
+// 10.8 MB of garbage and 3.5 ms of CPU per request on a 1 MiB
+// X-Forwarded-For, on the pre-auth path, enough for one unauthenticated
+// caller to saturate a 1-core pod before the limiter could refuse it.
+//
+// What stops it is the budget, and WHICH bound stops it is the point: an
+// empty entry and an entry too long to be an address are positions
+// LOOKED at, never hops KEPT, so no run of either can push the hop a
+// proxy appended out of a value. A line whose window holds no separator
+// is a scan spent and no entry read, which is what keeps five hundred of
+// them from costing five hundred scans.
+func lastEntries(values []string, sep byte, keepLen int, grammar cutGrammar, b *forwardedBudget) []string {
+	out := []string{}
+	for i := len(values) - 1; i >= 0 && len(out) < b.keep && b.looks > 0 && b.scans > 0; i-- {
+		b.scans--
+		v := values[i]
+		// The window opens wherever the arithmetic landed, which may be
+		// INSIDE an entry — half of "203.0.113.5" is "3.0.113.5", an
+		// address no proxy ever wrote — or inside a quoted-string, where
+		// a separator is part of a value and delimits nothing. Only the
+		// separators the cut below finds from OUR end, the one edge whose
+		// quoted state is known, delimit an entry; so the piece left of
+		// the last of them is a fragment no writer of the header
+		// delimited, and it is never read. A window with no such
+		// separator is the middle of one enormous entry: no hop of this
+		// line is reachable, and none is read.
+		//
+		// What the fragment WAS decides what comes after it. In an
+		// address list it is a piece of an entry the client wrote: every
+		// entry a proxy writes is one short address at the end of the
+		// value, read before any fragment, so the earlier lines are read
+		// on. Under quotedCut it may be the proxy's own RFC 7239 element,
+		// one whose client-typed host="…" outgrew the window — and every
+		// line before it is the client's. That fragment is a hop the
+		// reader cannot read, so it stands in the chain as one that
+		// names no client (unreadableElement) and the read ends there:
+		// the identity falls back to the socket peer, never to bytes
+		// inside the quotes nor to an earlier line.
+		truncated := len(v) > maxForwardedBytes
+		if truncated {
+			v = v[len(v)-maxForwardedBytes:]
+		}
+		for len(out) < b.keep && b.looks > 0 {
+			b.looks--
+			cut := lastSep(v, sep, grammar)
+			if cut < 0 && truncated {
+				if grammar == quotedCut {
+					out = append(out, unreadableElement)
+					slices.Reverse(out)
+					return out
+				}
+				break
+			}
+			if entry := strings.TrimSpace(v[cut+1:]); entry != "" && (keepLen == 0 || len(entry) <= keepLen) {
+				out = append(out, entry)
+			}
+			if cut < 0 {
+				break
+			}
+			v = v[:cut]
+		}
+	}
+	slices.Reverse(out)
+	return out
+}
+
+// cutGrammar says whether a separator inside a quoted-string delimits.
+// An address list has no quoting in its grammar, so every separator
+// cuts. RFC 7239's two cuts read values that may be quoted-strings —
+// for="[2001:db8::1]:443" is the RFC's own spelling of an IPv6 address
+// — and a proxy that writes the client's Host into host="…" hands the
+// reader whatever the client typed there, nginx's Host accepting ';',
+// ',' and '='. There a separator inside the quotes is part of the value.
+type cutGrammar bool
+
+const (
+	plainCut  cutGrammar = false
+	quotedCut cutGrammar = true
+)
+
+// lastSep is the index of the last sep of v that cuts, or -1. Under
+// quotedCut it reads from the RIGHT, a DQUOTE toggling the quoted state
+// unless an odd run of backslashes escapes it (an RFC 7230 quoted-pair),
+// so the value nearest us — the element a proxy appended, the parameter
+// it wrote last — is parsed from a known state whatever an unbalanced
+// quote further left does to what a client wrote there.
+//
+// It honours the quotes a writer balanced, and no reader can do more. A
+// proxy that interpolates client bytes into a quoted value without
+// escaping DQUOTE and backslash lets the client close the string and
+// write parameters or a whole element of its own, well-formed ones every
+// reader must believe, or leave the quotes unbalanced, which misreads
+// the rest of that element from this end. nginx's $host in a
+// hand-written Forwarded template is such a value on releases before
+// 1.29.4, which accept both characters in a Host; 1.29.4 validates the
+// Host as RFC 3986 host syntax and refuses them, leaving a client the
+// sub-delims (';', ',', '=') this cut honours. Where the Host still
+// carries a DQUOTE, the deployment is open whatever the reader does and
+// its remedy is the template: no client bytes in Forwarded, or
+// X-Forwarded-For or X-Real-IP from $remote_addr.
+func lastSep(v string, sep byte, grammar cutGrammar) int {
+	if grammar == plainCut {
+		return strings.LastIndexByte(v, sep)
+	}
+	quoted := false
+	for i := len(v) - 1; i >= 0; i-- {
+		switch v[i] {
+		case sep:
+			if !quoted {
+				return i
+			}
+		case '"':
+			if !escapedAt(v, i) {
+				quoted = !quoted
+			}
+		}
+	}
+	return -1
+}
+
+// escapedAt reports whether an odd run of backslashes precedes v[i]:
+// inside a quoted-string that is a quoted-pair, and the DQUOTE it
+// escapes neither opens nor closes the string.
+func escapedAt(v string, i int) bool {
+	run := 0
+	for j := i - 1; j >= 0 && v[j] == '\\'; j-- {
+		run++
+	}
+	return run%2 == 1
+}
+
+// forwardedHeaderChain reads the for= parameter of every element of an
+// RFC 7239 Forwarded header, in order. A quoted value carries a port, an
+// IPv6 address or both, and the quotes come off. The obfuscated forms the
+// RFC allows in place of an address ("unknown", "_hidden") name no
+// address, and neither does an element with no for= or an empty one —
+// but each is still the hop its proxy wrote, so it stays in the chain as
+// one that names no client (unnamedHop) and the walk stops on it.
+// Dropping it would hand the walk the element left of it, which is the
+// client's: `for=9.9.9.9, for=unknown` behind one appending proxy would
+// resolve to 9.9.9.9.
+//
+// Bounds: the elements nearest us, their last parameters, and the hops
+// nearest us of what that yields — the header is as client-writable as
+// X-Forwarded-For, and one element carrying a hundred thousand
+// parameters must cost no more than a chain of thirty-two.
+//
+// Two cuts, two purses. The grammar makes this reader two-pass —
+// elements on the comma, then each element's parameters on the
+// semicolon — and the passes spending ONE purse let a client starve the
+// second with the first: 255 empty elements left of the proxy's spent
+// every look, 63 empty lines spent every scan, and the proxy's element,
+// collected intact at the very first look, then yielded no for= at all.
+// The chain was empty, the identity fell to the socket peer, and the
+// socket peer is the trusted proxy — one bucket for everyone behind it
+// and the proxy's address in the audit row, at the client's choosing,
+// which is the collapse the chokepoint exists to refuse. So the
+// parameters are read from a purse of their own, and from the element
+// nearest us OUTWARD: the work stays bounded at twice the constants, and
+// what exhaustion costs is the client's far elements, never the one its
+// proxy appended. X-Forwarded-For is single-pass and was never exposed.
+//
+// Both cuts honour the quoted-string (quotedCut): a ';' or a ',' inside
+// one is part of the value and never cuts. A proxy that writes the
+// client's Host into host="…" puts client-typed bytes inside its OWN
+// element, and under plain cuts a ';' there ends that element with a
+// for= the client wrote — its chosen identity, a fresh bucket per value
+// — while a quoted run of parameters spends the keep bound before the
+// proxy's own for= is reached, so the element yields nothing and the
+// identity collapses onto the socket peer; a ',' does the same through
+// the elements cut. With the quotes honoured, pushing the proxy's for=
+// past the keep bound takes as many real parameters, which a client
+// cannot write inside a value its proxy escapes; a proxy that does not
+// escape is open to any reader (lastSep).
+func forwardedHeaderChain(values []string, b *forwardedBudget) []string {
+	out := []string{}
+	// No length bound on either cut: an element and a parameter are
+	// legitimately longer than an address, and forwardedChain measures
+	// what a for= finally names.
+	elements := lastEntries(values, ',', 0, quotedCut, b)
+	params := newForwardedBudget()
+	for i := len(elements) - 1; i >= 0 && len(out) < maxForwardedHops && params.looks > 0 && params.scans > 0; i-- {
+		// Nearest us first, so out fills from our end; reversed below
+		// into the order the header spells.
+		fors := lastEntries([]string{elements[i]}, ';', 0, quotedCut, params)
+		named := false
+		for j := len(fors) - 1; j >= 0; j-- {
+			key, value, found := strings.Cut(fors[j], "=")
+			if !found || !strings.EqualFold(strings.TrimSpace(key), "for") {
+				continue
+			}
+			named = true
+			value = strings.Trim(strings.TrimSpace(value), `"`)
+			if value == "" {
+				value = unnamedHop
+			}
+			out = append(out, value)
+		}
+		if !named {
+			out = append(out, unnamedHop)
+		}
+	}
+	slices.Reverse(out)
+	if len(out) > maxForwardedHops {
+		return out[len(out)-maxForwardedHops:]
+	}
+	return out
+}
+
+// canonicalIP turns a forwarded or socket address into one canonical
+// spelling of one IP, or "" when it is not an IP at all. Both halves
+// matter for an identity: "2001:DB8::17", "2001:0db8::17" and
+// "::ffff:203.0.113.5" are one host each however they are spelled, so
+// cycling spellings must not buy fresh rate-limit buckets; and a value
+// that is not an address at all ("unknown", or a string carrying CRLF)
+// must never become the audit IP or reach a log line.
+func canonicalIP(addr string) string {
+	ip := net.ParseIP(addrHost(addr))
+	if ip == nil {
+		return ""
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return v4.String()
+	}
+	return ip.String()
+}
+
+// addrHost drops the port from an address, the brackets from a bare
+// IPv6 literal and the zone from a scoped one. SplitHostPort refuses a
+// portless host and a bracketless IPv6 address, which is what a
+// forwarded entry and a portless RemoteAddr both are, so its failure is
+// the common case and not an error — and it allocates an error value for
+// it, which only a value that COULD carry a port is worth paying: one
+// colon, or a bracketed literal. Everything else goes straight to the
+// brackets.
+//
+// The zone comes off because the kernel puts it on: net's listener
+// spells a link-local peer "[fe80::1%eth0]:443", net.ParseIP refuses
+// the "%eth0", and an identity that is not an address is its own bucket
+// — so every address of fe80::/64, which any neighbour on the link can
+// mint from, was a fresh bucket: the class the /64 widening closes for
+// every other IPv6 client, open on the socket path. Stripped, the
+// address canonicalises and buckets like any other; the interface it
+// came in on is not what a bucket or an audit row is keyed on.
+func addrHost(addr string) string {
+	addr = strings.TrimSpace(addr)
+	host := addr
+	if strings.HasPrefix(addr, "[") || strings.Count(addr, ":") == 1 {
+		if h, _, err := net.SplitHostPort(addr); err == nil {
+			host = h
+		}
+	}
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	if strings.Contains(host, ":") {
+		host, _, _ = strings.Cut(host, "%")
+	}
+	return host
+}
+
+// warnForwardedNotRead says ONCE per cause why a deployment that IS
+// configured to read a forwarded client address did not read one. Its
+// premise is its one caller's branch: clientIP calls it only when
+// forwardedClientIP answered nothing, so NO forwarded address was read
+// from this request, whatever it carries; named is how many addresses
+// the declared header named on the way to that nothing. The
+// boot warning covers only an EMPTY list, and the outcome it exists to
+// announce — every request keyed on the proxy's own address, so the auth
+// rate limiter holds one bucket for the whole instance — is the same when
+// the list is non-empty but misses the real peer (a Service CIDR instead
+// of a pod CIDR, a node-SNAT shape, an Istio-style sidecar whose inbound
+// peer is 127.0.0.6), when the declared header is not the one the proxy
+// writes, and when the chain is every bit ours and shorter than the
+// hops declared. Those are the likelier operator errors now that the
+// chart ships a default to narrow, and they are the ones nothing in the
+// logs shows.
+//
+// Once per cause, naming the request that carried it: clientIP runs on
+// every audited action, every webhook and every rate-limited route, and
+// one line is a diagnosis while one per request is a flood.
+func (s *Server) warnForwardedNotRead(r *http.Request, named int) {
+	if s == nil || s.logger == nil || len(s.cfg.TrustedProxyCIDRs) == 0 {
+		return
+	}
+	declared := s.forwardedHeader()
+	if !s.peerIsTrusted(r) {
+		if !s.anyForwardedHeader(r) {
+			return
+		}
+		s.untrustedPeerOnce.Do(func() {
+			s.sharedBucketSaid.Store(true)
+			s.logger.Warn("server: forwarded addresses from %s are ignored — it is outside ITERION_AUTH_TRUSTED_PROXY_CIDRS (%s), so the client of a request is the socket address and the auth rate limiter is instance-wide for everything behind that peer. Expected when a client sends its own header; if that address IS the proxy in front, name its range", addrHost(r.RemoteAddr), strings.Join(s.cfg.TrustedProxyCIDRs, ","))
+		})
+		return
+	}
+	// READ, and every address it named was one of ours, fewer than the
+	// hops declared: the walk never reached a client and the identity is
+	// the peer's own. The shape of an in-cluster caller reaching the
+	// ingress directly on a chained deployment, of every request of a
+	// deployment whose front end does not append after all, and of a
+	// front end that named no client (an RFC 7239 for=unknown ahead of
+	// its own entry). It is NOT
+	// a header that names no address, which the branch below diagnoses:
+	// that line quotes a valid address and prescribes the one variable
+	// that cannot help here, and it stood the generic line down, so
+	// nothing in the process ever named the count.
+	if named > 0 {
+		s.chainShortOnce.Do(func() {
+			s.sharedBucketSaid.Store(true)
+			s.logger.Warn("server: the %s from %s names %d address(es) (%q), every one inside ITERION_AUTH_TRUSTED_PROXY_CIDRS (%s) and fewer than the %d hops ITERION_AUTH_TRUSTED_PROXY_HOPS declares — on this path the count exceeds the appending proxies really in front, or the front end named no client, so the client of a request is the peer's own address and every client behind it shares one auth rate-limit bucket and one audit IP. Expected when the caller really is in-cluster or on the LAN and reaches the proxy directly, and when the front end wrote no client address (an RFC 7239 for=unknown); otherwise set the count to the number of APPENDING proxies in front, never higher (docs/environment-variables.md)", declared, addrHost(r.RemoteAddr), named, logSample(strings.Join(r.Header.Values(declared), ", ")), strings.Join(s.cfg.TrustedProxyCIDRs, ","), s.trustedProxyHops())
+		})
+		return
+	}
+	// PRESENT is not READ. The declared header being there while this
+	// function runs means it named no address at all — the boot
+	// validation accepts any field name on purpose, so a non-"Forwarded"
+	// RFC 7239 name, a proxy writing a hostname, or a mistyped
+	// neighbour like X-Forwarded-Proto all pass it — and the outcome is
+	// the instance-wide bucket this function exists to announce, on
+	// EVERY request rather than on the rare forged one.
+	if values := r.Header.Values(declared); len(values) > 0 {
+		s.unusableHeaderOnce.Do(func() {
+			s.sharedBucketSaid.Store(true)
+			s.logger.Warn("server: the request from %s carries %s but it names no address (%q) — no client address is read, so every request is keyed on the proxy's own address and the auth rate limiter shares one bucket across the whole instance; ITERION_AUTH_FORWARDED_HEADER must name a header whose value is an address list (\"Forwarded\" is read with the RFC 7239 grammar, any other name as a comma-separated list — docs/environment-variables.md)", addrHost(r.RemoteAddr), declared, logSample(values[0]))
+		})
+		return
+	}
+	// Every other mechanism the request DOES carry, not the first of
+	// them: with two present, naming one would be a guess, and the
+	// operator needs the list to pick the header their proxy writes.
+	others := []string{}
+	for _, candidate := range forwardedHeaderCandidates {
+		if !strings.EqualFold(candidate, declared) && len(r.Header.Values(candidate)) > 0 {
+			others = append(others, candidate)
+		}
+	}
+	if len(others) == 0 {
+		return
+	}
+	s.undeclaredHeaderOnce.Do(func() {
+		s.sharedBucketSaid.Store(true)
+		s.logger.Warn("server: the request from %s carries %s but no %s, the header this server reads — only that one is read, so the client of a request is the proxy's own address and the auth rate limiter is instance-wide; set ITERION_AUTH_FORWARDED_HEADER to the header the proxy in front writes on every request (docs/environment-variables.md)", addrHost(r.RemoteAddr), strings.Join(others, " and "), declared)
+	})
+}
+
+// warnUndeclaredHop says ONCE when the entry just beyond the hop bound
+// is itself inside the trusted ranges — the shape of an APPENDING proxy
+// of the operator's own that the declared count does not reach.
+//
+// The bound exists because nothing in a chain's CONTENT tells a proxy's
+// entry from a client's: the two shapes are identical, so the count is
+// the only discriminator and the default is the one hop the chart ships.
+// A deployment with a second appending hop (a service mesh sidecar, an
+// internal L7 proxy, a CDN edge whose ranges the operator trusts) then
+// keys every client behind that hop on the hop's own address, and
+// nothing would say so.
+//
+// Ambiguous on purpose, and the line says both causes: a client that
+// writes an in-range address of its own produces the same shape, which
+// is precisely why it is not believed.
+func (s *Server) warnUndeclaredHop(r *http.Request, beyond string, hops int) {
+	if s == nil || s.logger == nil {
+		return
+	}
+	ip := canonicalIP(beyond)
+	if ip == "" || !s.ipIsTrusted(ip) {
+		return
+	}
+	s.undeclaredHopOnce.Do(func() {
+		s.sharedBucketSaid.Store(true)
+		s.logger.Warn("server: the forwarded chain from %s carries %s past the %d hop(s) ITERION_AUTH_TRUSTED_PROXY_HOPS declares, and that address is inside ITERION_AUTH_TRUSTED_PROXY_CIDRS (%s) — either another appending proxy of yours sits in front and is not declared, in which case every client behind it shares one rate-limit bucket and one audit IP, or a client is writing in-range addresses of its own, which is why they are not believed. Raise the count to the number of APPENDING proxies really in front, never higher (docs/environment-variables.md)", addrHost(r.RemoteAddr), ip, hops, strings.Join(s.cfg.TrustedProxyCIDRs, ","))
+	})
+}
+
+// warnIdentityIsOurs says ONCE when the identity a request finally
+// resolves to is itself inside the trusted ranges. It keys on the
+// ANSWER, not on the shape of the walk that found it, so every way of
+// keying an instance on its own infrastructure ends here: a chain whose
+// hop bound stops on a proxy of ours, a trusted peer that forwards
+// nothing, and the shape the chart's own default lands in — with the
+// Kubernetes-default `externalTrafficPolicy: Cluster` the Service SNATs
+// the client address to the node, so an ingress controller that
+// REPLACES the chain writes the node's address as the client, and one
+// that appends leaves what arrived one entry beyond the declared
+// bound. The whole internet then shares one bucket per node and one
+// audit IP.
+//
+// Ambiguous on purpose, and the line names both causes: a LAN client of
+// a self-hosted instance and an in-cluster pod the NetworkPolicy admits
+// are inside the ranges too, and for them the identity is the right one.
+// Nothing in a request tells the two apart — the chain, the peer and the
+// answer are identical — so the diagnosis is a question put to the
+// operator, once, with the variable and the remedy in it.
+//
+// It is the net UNDER the specific causes, not a second line beside
+// them: the four in warnForwardedNotRead and warnUndeclaredHop report
+// the same outcome with a cause and a remedy attached, and each of them
+// runs before this one on the request that shows it. The stand-down and
+// the announcement are one atomic step (CompareAndSwap inside the Once),
+// and what that step guarantees is two things: this line is written at
+// most once per process, and once a specific cause has stored the flag
+// no request that reaches the swap after it writes this line. It does
+// not order the log: two FIRST requests racing — one carrying a specific
+// cause, one healthy and keyed on our own address — may each get their
+// line, and the generic one may land after the specific one, since each
+// cause's Store and its Warn are two steps. At most once each is the
+// whole guarantee.
+func (s *Server) warnIdentityIsOurs(r *http.Request, identity string) {
+	if s == nil || s.logger == nil || s.sharedBucketSaid.Load() || !s.ipIsTrusted(identity) {
+		return
+	}
+	s.identityIsOursOnce.Do(func() {
+		if !s.sharedBucketSaid.CompareAndSwap(false, true) {
+			return
+		}
+		s.logger.Warn("server: the client of a request from %s resolves to %s, which is inside ITERION_AUTH_TRUSTED_PROXY_CIDRS (%s) — this instance is keyed on an address of its own infrastructure, so every client behind that address shares one auth rate-limit bucket and one audit IP. Expected when the caller really is in-cluster or on the LAN; otherwise the client's address never reaches this server — a Service with externalTrafficPolicy: Cluster replaces it with the node's, and the client is then either written as that node or left beyond the %d hop(s) ITERION_AUTH_TRUSTED_PROXY_HOPS declares (docs/cloud-deployment.md names the shapes that carry it through)", addrHost(r.RemoteAddr), identity, strings.Join(s.cfg.TrustedProxyCIDRs, ","), s.trustedProxyHops())
+	})
+}
+
+// warnHopsUnreachable says ONCE when the walk ran out of our own entries
+// before the declared bound could arbitrate: the chain cannot supply
+// trustedProxyHops hops, so the identity is read from wherever the first
+// entry outside the ranges happens to sit — a client's own forgery as
+// readily as a proxy's address.
+//
+// The test is hops-1 and not hops because of the designed shape's
+// arithmetic: N appending proxies write N entries, of which the leftmost
+// is the CLIENT's own address, so a correctly declared chain whose client
+// sits outside the ranges crosses exactly N-1 entries of ours before the
+// answer. Warning at `ours < hops` would fire on every legitimate
+// chained front end — the very configuration docs/cloud-deployment.md
+// asks for — and a line that fires on the healthy shape is one operators
+// learn to skip.
+//
+// What stays invisible is documented rather than guessed: an
+// over-declaration of exactly one hop whose client is itself in-range
+// crosses hops-1 entries too. Nothing in a chain's CONTENT tells a
+// proxy's entry from a client's, which is the premise of the bound
+// itself.
+func (s *Server) warnHopsUnreachable(r *http.Request, ours, hops int) {
+	if s == nil || s.logger == nil || ours >= hops-1 {
+		return
+	}
+	s.hopsUnreachableOnce.Do(func() {
+		s.logger.Warn("server: the forwarded chain from %s carries %d entries inside ITERION_AUTH_TRUSTED_PROXY_CIDRS (%s) where the %d hop(s) ITERION_AUTH_TRUSTED_PROXY_HOPS declares need at least %d — the bound never arbitrates, so the client address is read from the first entry outside the ranges, which is in the client's own half of the chain and moves with what it writes. Set the count to the number of APPENDING proxies really in front, never higher (docs/environment-variables.md)", addrHost(r.RemoteAddr), ours, strings.Join(s.cfg.TrustedProxyCIDRs, ","), hops, hops-1)
+	})
+}
+
+// logSample bounds and escapes a client-controlled value on its way to
+// a log line: the caller's %q turns the CRLF a header can carry into an
+// escape, and the cut keeps a megabyte of header out of the line. A
+// header value is diagnosed by its shape — a hostname, a scheme, an
+// RFC 7239 element — which the first bytes carry.
+func logSample(v string) string {
+	const max = 64
+	if len(v) > max {
+		return v[:max] + "..."
+	}
+	return v
+}
+
+// anyForwardedHeader answers whether the request carries a forwarded
+// mechanism at all — the premise of the untrusted-peer diagnosis, which
+// must stay silent for the requests that name no client.
+//
+// The DECLARED header counts first, before the three candidates: it is
+// the mechanism this server actually reads, and a deployment behind a
+// CDN declares one that is on no candidate list (CF-Connecting-IP,
+// True-Client-IP). Testing the candidates alone leaves the diagnosis
+// silent for exactly the operator who had to declare a header — the same
+// misconfiguration, the same instance-wide bucket, no line in the log.
+func (s *Server) anyForwardedHeader(r *http.Request) bool {
+	if len(r.Header.Values(s.forwardedHeader())) > 0 {
+		return true
+	}
+	for _, candidate := range forwardedHeaderCandidates {
+		if len(r.Header.Values(candidate)) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) peerIsTrusted(r *http.Request) bool {
-	if s == nil || len(s.cfg.TrustedProxyCIDRs) == 0 {
+	if s == nil {
 		return false
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
+	return s.ipIsTrusted(addrHost(r.RemoteAddr))
+}
+
+// ipIsTrusted answers whether an address is one of the operator's
+// proxies — the immediate peer, or a hop inside a forwarded chain.
+func (s *Server) ipIsTrusted(addr string) bool {
+	if s == nil {
+		return false
 	}
-	ip := net.ParseIP(host)
+	ip := net.ParseIP(addr)
 	if ip == nil {
 		return false
 	}
-	for _, cidr := range s.cfg.TrustedProxyCIDRs {
-		_, network, perr := net.ParseCIDR(cidr)
-		if perr != nil {
-			continue
-		}
+	for _, network := range s.trustedProxyNets() {
 		if network.Contains(ip) {
 			return true
 		}
 	}
 	return false
+}
+
+// trustedProxyNets parses the configured ranges once per server: they are
+// immutable for the process's life, and clientIP runs on every audited
+// action, every webhook and every rate-limited route.
+//
+// An entry that parses nowhere is skipped — it trusts no peer — and said
+// once in the log. pkg/config refuses it at boot, naming it; a Config
+// assembled by another embedder reaches here instead, and a range that
+// matches nothing must not pass for a configured one in silence.
+func (s *Server) trustedProxyNets() []*net.IPNet {
+	s.trustedProxyOnce.Do(func() {
+		for _, cidr := range s.cfg.TrustedProxyCIDRs {
+			_, network, err := net.ParseCIDR(cidr)
+			if err != nil {
+				if s.logger != nil {
+					s.logger.Warn("server: ITERION_AUTH_TRUSTED_PROXY_CIDRS entry %q is not a CIDR range (%v) — it is ignored, and no peer is trusted by it", cidr, err)
+				}
+				continue
+			}
+			s.trustedProxyParsed = append(s.trustedProxyParsed, network)
+		}
+	})
+	return s.trustedProxyParsed
 }

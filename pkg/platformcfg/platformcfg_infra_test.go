@@ -126,6 +126,11 @@ var guardNames = []string{
 	"ITERION_SLACK_WEBHOOK_URL",
 	// Covered by a namespace rather than by name.
 	"ITERION_AUTH_TRUSTED_AUTO_LINK_PROVIDERS", "ITERION_PLATFORM_FACADE_DEFAULT",
+	// Whose forwarded header names the client of a request — the audit IP
+	// and the auth rate-limit key both come from it (#2673). Covered by
+	// the ITERION_AUTH_ namespace, like its auto-link sibling above.
+	"ITERION_AUTH_TRUSTED_PROXY_CIDRS", "ITERION_AUTH_FORWARDED_HEADER",
+	"ITERION_AUTH_TRUSTED_PROXY_HOPS",
 }
 
 func TestGuardNamesAreNeverBotVars(t *testing.T) {

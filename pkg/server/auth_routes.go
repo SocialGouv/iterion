@@ -7,6 +7,17 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 )
 
+// loginRouteBucket, refreshRouteBucket and registerRouteBucket are the
+// shapes the routes a witness measures are wrapped with. Declared here,
+// next to the wrapping, and read by the tests rather than copied into
+// them: a measurement asserted against a copy survives the shape it
+// reports.
+var (
+	loginRouteBucket    = authBucketCfg{rate: 1.0 / 12.0, burst: 5} // 5/min sustained, burst 5
+	refreshRouteBucket  = authBucketCfg{rate: 1.0 / 2.0, burst: 30} // 30/min — normal under long sessions
+	registerRouteBucket = authBucketCfg{rate: 1.0 / 30.0, burst: 3} // 2/min sustained
+)
+
 // registerAuthRoutes wires every /api/auth/* and /api/teams/*
 // endpoint. Called from routes() when AuthService is non-nil.
 func (s *Server) registerAuthRoutes() {
@@ -17,7 +28,7 @@ func (s *Server) registerAuthRoutes() {
 	// so a legitimate user with sticky-keyboard / multiple devices
 	// isn't surprised, but distributed brute-force is throttled.
 	loginLimit := s.limitRoute(
-		authBucketCfg{rate: 1.0 / 12.0, burst: 5}, // 5/min sustained, burst 5
+		"login", loginRouteBucket,
 		func(r *http.Request) string {
 			// Second tier: rate-limit by email so distributed IPs
 			// hammering one account also throttle. Extracted as a
@@ -30,14 +41,8 @@ func (s *Server) registerAuthRoutes() {
 			return "email:" + strings.ToLower(email)
 		},
 	)
-	registerLimit := s.limitRoute(
-		authBucketCfg{rate: 1.0 / 30.0, burst: 3}, // 2/min sustained
-		nil,
-	)
-	refreshLimit := s.limitRoute(
-		authBucketCfg{rate: 1.0 / 2.0, burst: 30}, // 30/min — normal under long sessions
-		nil,
-	)
+	registerLimit := s.limitRoute("register", registerRouteBucket, nil)
+	refreshLimit := s.limitRoute("refresh", refreshRouteBucket, nil)
 	// Anonymous routes (public via isPublicPath).
 	s.mux.HandleFunc("POST /api/auth/login", loginLimit(s.handleLogin))
 	// Complete a forced password rotation for a pending_password_change
@@ -77,7 +82,7 @@ func (s *Server) registerAuthRoutes() {
 	// credential that must not mint gets no offline-speed oracle on the
 	// account password.
 	passwordProofLimit := s.limitRoute(
-		authBucketCfg{rate: 1.0 / 12.0, burst: 5}, // the login bucket's shape
+		"pwproof", loginRouteBucket, // the login bucket's shape
 		func(r *http.Request) string {
 			if id, ok := auth.FromContext(r.Context()); ok {
 				return "user:" + id.UserID

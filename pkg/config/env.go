@@ -174,6 +174,15 @@ func loadEnv(cfg *Config) error {
 	if v, ok := lookup("ITERION_AUTH_TRUSTED_AUTO_LINK_PROVIDERS"); ok {
 		cfg.Auth.TrustedAutoLinkProviders = splitCSV(v)
 	}
+	if v, ok := lookup("ITERION_AUTH_TRUSTED_PROXY_CIDRS"); ok {
+		cfg.Auth.TrustedProxyCIDRs = splitCSV(v)
+	}
+	if err := lookupInt("ITERION_AUTH_TRUSTED_PROXY_HOPS", &cfg.Auth.TrustedProxyHops); err != nil {
+		return err
+	}
+	if v, ok := lookup("ITERION_AUTH_FORWARDED_HEADER"); ok {
+		cfg.Auth.ForwardedHeader = strings.TrimSpace(v)
+	}
 
 	if err := lookupBool("ITERION_OIDC_GOOGLE_ENABLED", &cfg.Auth.OIDC.Google.Enabled); err != nil {
 		return err

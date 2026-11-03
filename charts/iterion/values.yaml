@@ -510,6 +510,102 @@ config:
     # the SPA is served from a different host than the API.
     cookieDomain: ""
     cookieSecure: true
+    # Whose forwarded client address the server believes: X-Forwarded-For,
+    # RFC 7239 Forwarded and X-Real-IP are read only from a peer inside one
+    # of these ranges. The default covers the private ranges a cluster's
+    # pod network comes from, so the ingress controller in front is trusted
+    # out of the box and the auth rate limiter keys on the address that
+    # ingress actually saw, rather than on one address for the whole
+    # instance. How far into the chain the server reads is
+    # `trustedProxyHops` below, and that count — not the ranges — is what
+    # keeps a client's own entries out of the identity.
+    #
+    # RESTRICT IT TO YOUR INGRESS CONTROLLER'S POD CIDR. Every address
+    # inside a trusted range is a proxy you vouch for: a workload that can
+    # dial the server port from there names any client it likes — a forged
+    # audit IP, and a victim's rate-limit bucket drained by naming the
+    # victim. `networkPolicy.enabled` (true in values-prod.yaml) is what
+    # keeps that reach to the controller namespaces and the release's own
+    # pods.
+    #
+    # Emptying it is supported and warned about at boot, never refused: it
+    # trusts no forwarded header at all, so the client of a request is the
+    # socket address — which behind an ingress is the controller's own, and
+    # the limiter then holds ONE bucket for the whole instance instead of
+    # one per client. Renders ITERION_AUTH_TRUSTED_PROXY_CIDRS when
+    # non-empty.
+    #
+    # The ranges make the identity unforgeable only for a header the proxy
+    # REWRITES or APPENDS on every request — name that header in
+    # `forwardedHeader` below. A proxy that passes the client's own
+    # header through untouched leaves the identity client-controlled, and
+    # narrowing the ranges does not change that: the ingress stays
+    # trusted, and the header is still the client's.
+    trustedProxyCidrs:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+      - fc00::/7
+    # How many APPENDING proxies of yours sit in front — the number of the
+    # forwarded chain's rightmost entries YOUR infrastructure wrote. 1 is
+    # this chart's shape: the one ingress controller its `ingress` block
+    # configures. 0 means the same (the server's own default).
+    #
+    # It is what tells a proxy's entry from a client's. The reader walks
+    # the chain right to left and stops here, so with the ranges above
+    # trusting all of private space — every LAN client, every in-cluster
+    # pod — a client that writes an entry of its own cannot push the
+    # identity past the hop its proxy appended. RAISING IT IS WHAT MOVES
+    # THAT LINE: declare more appending hops than are really in front and
+    # the entries a client wrote become the identity again, one fresh
+    # rate-limit bucket per value it invents. Raise it only for a chained
+    # front end — a CDN edge that appends with this chart's ingress
+    # appending behind it is 2, and the CDN's egress ranges go in
+    # `trustedProxyCidrs`. Renders ITERION_AUTH_TRUSTED_PROXY_HOPS when
+    # non-zero.
+    #
+    # 1 IS ONLY RIGHT WHEN THE CLIENT'S ADDRESS REACHES THE CONTROLLER.
+    # With the Kubernetes-default `externalTrafficPolicy: Cluster` on the
+    # LoadBalancer Service every packet is SNATed to the node that
+    # received it, so the controller sees a node address: a controller
+    # that replaces the chain writes that node as the client, one that
+    # appends leaves what arrived one entry beyond this bound, and
+    # either way the whole internet shares one bucket per node. No range
+    # and no count fixes it — `externalTrafficPolicy: Local` or the PROXY
+    # protocol do. `use-forwarded-headers: "true"` behind an L4 Service
+    # does NOT: nothing on that path writes the client into the header,
+    # so the one entry the controller writes is the client's own. It is
+    # for a managed L7 load balancer that writes the client ahead of the
+    # controller — then either `compute-full-forwarded-for: "true"`
+    # beside it, this count at 2 and, in `trustedProxyCidrs`, the range
+    # of the address the controller's TCP peer carries (the LB's egress
+    # range when the LB targets the pods directly, the NODE range — or
+    # `externalTrafficPolicy: Local` — behind a NodePort/instance
+    # target), or `proxy-real-ip-cidr` set to that same range with this
+    # count as shipped. The server says so once per process when the
+    # identity it reads is itself inside `trustedProxyCidrs`;
+    # docs/cloud-deployment.md has the shapes.
+    trustedProxyHops: 1
+    # The ONE header a trusted proxy names the client with. Empty is
+    # X-Forwarded-For, which every ingress controller writes — including
+    # the one this chart's `ingress` block configures.
+    #
+    # Name the header YOUR proxy writes on every request: the server reads
+    # that one and no other, so a client cannot pick the mechanism. A
+    # proxy that computes the client into X-Real-IP (the hand-written
+    # nginx `proxy_set_header X-Real-IP $remote_addr;` alone) or into
+    # RFC 7239 `Forwarded` (HAProxy, most CDNs) while passing the client's
+    # X-Forwarded-For through untouched needs this set, or the client's own
+    # header becomes its identity: a fresh rate-limit bucket per value it
+    # invents, and a chosen address in the audit row.
+    #
+    # `Forwarded` is read with the RFC 7239 grammar; any other field name
+    # is a comma-separated address list, so `X-Real-IP` and a CDN's
+    # `CF-Connecting-IP` or `True-Client-IP` work as themselves. A value
+    # that is not one field name is refused at boot, naming it. The server
+    # warns once when the header it is told to read is not the one the
+    # requests carry. Renders ITERION_AUTH_FORWARDED_HEADER when set.
+    forwardedHeader: ""
     # Access JWT lifetime. Refresh rotates on every use and lives
     # for refreshTtl.
     accessTtl: 15m

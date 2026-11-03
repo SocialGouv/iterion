@@ -5,6 +5,7 @@ import (
 	"container/list"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"sync"
@@ -158,35 +159,70 @@ func (r *authRateLimiter) refund(key string, cfg authBucketCfg) {
 	}
 }
 
-// limitRoute wraps an HTTP handler with per-IP rate limiting. The
-// `keyExtra` arg adds a per-route tier (e.g. login also rate-limits
-// by email so distributed attempts against one account get caught).
-// The per-IP bucket is the bare client IP, shared by every route wrapped
-// here: a bucket refills at its CALLER's rate, so only routes that spend
-// the same budget belong on it — a public read with a generous rate goes
-// through limitRouteScoped instead.
-func (s *Server) limitRoute(cfg authBucketCfg, keyExtra func(*http.Request) string) func(http.HandlerFunc) http.HandlerFunc {
-	return s.limitRouteScoped("", cfg, keyExtra)
+// rateBucketIPv6PrefixBits is how much of an IPv6 identity the limiter
+// charges. The /64 is the smallest prefix an address plan hands to a
+// single site — RFC 6177 and every residential, mobile and VPS
+// allocation — so it is the smallest unit one client cannot multiply.
+// Narrowing it hands the client its buckets back; widening it makes
+// neighbours pay for each other.
+const rateBucketIPv6PrefixBits = 64
+
+// rateBucketIP is the bucket an identity is charged to: the identity
+// itself for IPv4 and for anything that is not an address, its /64 for
+// IPv6.
+//
+// An IPv6 client is not one address. A residential or VPS client holds a
+// whole /64, and RFC 4941 privacy extensions rotate its source address
+// without it asking, so a /128 key is a bucket the client replaces for
+// free — register (2/min), refresh (30/min), the password-reset confirm
+// whose body names no account, the desktop exchange and the config-share
+// probe guard are all keyed on the IP alone, and all of them are
+// unlimited for anybody holding a prefix. Ten thousand addresses out of
+// one /64 also evict every other client's bucket from the limiter's LRU
+// (maxKeys). The /64 is the unit the client cannot multiply.
+//
+// The AUDIT row keeps the full address (clientIP): a bucket groups
+// clients on purpose, a row names the one client that acted.
+func rateBucketIP(identity string) string {
+	ip := net.ParseIP(identity)
+	if ip == nil || ip.To4() != nil {
+		// Not an address at all — a unix socket, the unknown-peer
+		// sentinel; a zone-scoped peer lost its zone in addrHost and is
+		// an address — or IPv4, whose single address is already a single
+		// client: both are their own bucket.
+		return identity
+	}
+	mask := net.CIDRMask(rateBucketIPv6PrefixBits, 8*net.IPv6len)
+	return (&net.IPNet{IP: ip.Mask(mask), Mask: mask}).String()
 }
 
-// limitRouteScoped is limitRoute with a per-IP bucket of its own, keyed
-// "<scope>:<ip>". The limiter refills a bucket at the rate of whichever
-// route calls it, so a generous route sharing the bare-IP bucket of the
-// login family would refill the login budget on every anonymous read; a
-// scope keeps the two budgets apart. An empty scope is the shared bare-IP
-// bucket.
-func (s *Server) limitRouteScoped(scope string, cfg authBucketCfg, keyExtra func(*http.Request) string) func(http.HandlerFunc) http.HandlerFunc {
+// rateBucket is the ONE way a request becomes a rate-limit key. Every
+// limiter call that keys on the client goes through it — limitRoute's
+// tiers and the config-share per-IP guard — so a new site cannot forget
+// the prefix the way it would forget a helper called at two places out
+// of three.
+func (s *Server) rateBucket(r *http.Request) string {
+	return rateBucketIP(s.clientIP(r))
+}
+
+// limitRoute wraps an HTTP handler with per-IP rate limiting. `tier`
+// namespaces the bucket, as every other caller of the limiter does
+// ("wh:", "csip:", "orglaunch:"): the client IP alone would make the
+// login, register, refresh and password-proof wrappers draw from ONE
+// bucket per client, and allow() clamps a bucket's tokens to the burst of
+// whichever route touched it last — so hammering the public refresh route
+// would lock every client behind that address out of login. The
+// `keyExtra` arg adds a second, already-namespaced tier (login also
+// rate-limits by email so distributed attempts against one account get
+// caught).
+func (s *Server) limitRoute(tier string, cfg authBucketCfg, keyExtra func(*http.Request) string) func(http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			if s.authLimiter == nil {
 				next(w, r)
 				return
 			}
-			ipKey := s.clientIP(r)
-			if scope != "" {
-				ipKey = scope + ":" + ipKey
-			}
-			keys := []string{ipKey}
+			keys := []string{tier + ":" + s.rateBucket(r)}
 			if keyExtra != nil {
 				if extra := keyExtra(r); extra != "" {
 					keys = append(keys, extra)

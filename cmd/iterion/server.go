@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -169,10 +170,47 @@ func orgLimitDefaultsFromEnv() server.OrgLimitDefaults {
 	return d
 }
 
-// forgeGitHubAppFromEnv reads the GitHub-App identity for the
-// installation-token connect mode. The PEM private key is loaded from a file
-// (the canonical k8s-secret mount), falling back to an inline env value.
-// Empty AppID → the App mode is unavailable (OAuth/PAT still work).
+// trustedProxyWarning names what a trusted-proxy list costs a deployment
+// when it is empty or when it trusts everything, or "" when the operator
+// has named ranges that mean something. Both ends are honoured, never
+// refused (philosophy 1) — and both are silent in the logs otherwise.
+//
+// Empty: the chart ships the private ranges, so emptying the list was
+// deliberate; with no trusted range the forwarded client address is
+// never read, so every request carries the proxy's own address and the
+// auth rate limiter holds ONE bucket for the whole instance instead of
+// one per client (#2673).
+//
+// A /0: the config refuses `10.42.0.7/16` for widening trust by a typo
+// to a whole /16, and `0.0.0.0/0` widens it to the internet — the
+// canonical footgun of this knob, nginx's own
+// `set_real_ip_from 0.0.0.0/0`. Every client is then a proxy the
+// operator vouches for, so the audit IP and the rate-limit key are
+// whatever the request's forwarded header says.
+func trustedProxyWarning(cidrs []string) string {
+	if len(cidrs) == 0 {
+		return "server: ITERION_AUTH_TRUSTED_PROXY_CIDRS is empty — no forwarded client address is trusted, so behind a proxy every request is keyed on the proxy's own address and the auth rate limiter shares one bucket across the whole instance; set it to the range of the ingress in front (docs/environment-variables.md)"
+	}
+	// Every /0 entry, not the first: with both 0.0.0.0/0 and ::/0 named,
+	// reporting one would leave the operator fixing half of it.
+	all := []string{}
+	for _, cidr := range cidrs {
+		// An entry that does not parse is refused by config.Validate,
+		// which Load runs before this: nothing to warn about here.
+		_, network, err := net.ParseCIDR(strings.TrimSpace(cidr))
+		if err != nil {
+			continue
+		}
+		if ones, _ := network.Mask.Size(); ones == 0 {
+			all = append(all, network.String())
+		}
+	}
+	if len(all) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("server: ITERION_AUTH_TRUSTED_PROXY_CIDRS contains %s — every client is then trusted to name its own address, so the audit IP and the auth rate-limit key are whatever the request's forwarded header says and one client can drain another's bucket; name the ingress controller's pod CIDR instead (docs/environment-variables.md)", strings.Join(all, " and "))
+}
+
 // forgeBrandAvatarDisabled reads ITERION_FORGE_BRAND_AVATAR: "off", "0",
 // "false" or "no" (the values every other falsy switch in the repo takes)
 // keeps iterion from uploading the iterion-bot avatar onto a bot identity at
@@ -185,6 +223,10 @@ func forgeBrandAvatarDisabled() bool {
 	return false
 }
 
+// forgeGitHubAppFromEnv reads the GitHub-App identity for the
+// installation-token connect mode. The PEM private key is loaded from a file
+// (the canonical k8s-secret mount), falling back to an inline env value.
+// Empty AppID → the App mode is unavailable (OAuth/PAT still work).
 func forgeGitHubAppFromEnv() server.ForgeGitHubAppConfig {
 	appID, _ := strconv.ParseInt(strings.TrimSpace(os.Getenv("ITERION_FORGE_GITHUB_APP_ID")), 10, 64)
 	key := strings.TrimSpace(os.Getenv("ITERION_FORGE_GITHUB_APP_PRIVATE_KEY"))
@@ -251,6 +293,14 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("server: load config: %w", err)
 	}
 
+	// Both modes of this command are deployment shapes behind a Service,
+	// so both owe the warning: a server that trusts no range keys every
+	// request on the proxy's own address.
+	logger := cfg.Log.NewLogger(cmd.ErrOrStderr())
+	if w := trustedProxyWarning(cfg.Auth.TrustedProxyCIDRs); w != "" {
+		logger.Warn("%s", w)
+	}
+
 	// Local mode: keep the existing studio handlers; only difference
 	// from `iterion studio` is the cloud-friendly --bind default.
 	if cfg.Mode == iterconfig.ModeLocal {
@@ -259,12 +309,15 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 		return cli.RunStudio(cmd.Context(), cli.StudioOptions{
-			Legal:     legalSurface,
-			Port:      serverOpts.port,
-			Bind:      serverOpts.bind,
-			Dir:       serverOpts.dir,
-			StoreDir:  serverOpts.storeDir,
-			NoBrowser: true,
+			Legal:             legalSurface,
+			Port:              serverOpts.port,
+			Bind:              serverOpts.bind,
+			Dir:               serverOpts.dir,
+			StoreDir:          serverOpts.storeDir,
+			NoBrowser:         true,
+			TrustedProxyCIDRs: cfg.Auth.TrustedProxyCIDRs,
+			TrustedProxyHops:  cfg.Auth.TrustedProxyHops,
+			ForwardedHeader:   cfg.Auth.ForwardedHeader,
 		}, newPrinter())
 	}
 
@@ -272,7 +325,6 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// directly. We bypass cli.RunStudio because it auto-discovers a
 	// filesystem store, which doesn't make sense when persistence
 	// lives in Mongo.
-	logger := cfg.Log.NewLogger(cmd.ErrOrStderr())
 	// The GC's memory limit tracks the pod's cgroup ceiling (#2693), so the
 	// collector works before the OOM-killer does. The operator's GOMEMLIMIT
 	// wins; ITERION_MEMLIMIT=off removes the derivation. Local mode above is
@@ -781,6 +833,9 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		SignupMode:                  cfg.Auth.SignupMode,
 		CookieDomain:                cfg.Auth.CookieDomain,
 		CookieSecure:                cfg.Auth.CookieSecure,
+		TrustedProxyCIDRs:           cfg.Auth.TrustedProxyCIDRs,
+		TrustedProxyHops:            cfg.Auth.TrustedProxyHops,
+		ForwardedHeader:             cfg.Auth.ForwardedHeader,
 		DisableAuth:                 disableAuth,
 		Metrics:                     mreg,
 		ModelPrefs:                  modelPrefStore,

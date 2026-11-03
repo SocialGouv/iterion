@@ -191,6 +191,9 @@ func newWorkspaceProjectServer(opts StudioOptions, project projects.Project, log
 		MaxUploadsPerRun:        opts.MaxUploadsPerRun,
 		AllowedUploadMIMEs:      opts.AllowUploadMime,
 		MaxConcurrentPipelines:  opts.MaxConcurrentPipelines,
+		TrustedProxyCIDRs:       opts.TrustedProxyCIDRs,
+		TrustedProxyHops:        opts.TrustedProxyHops,
+		ForwardedHeader:         opts.ForwardedHeader,
 		ShutdownDelay:           shutdownDelay,
 	}
 	if opts.DesktopAlertSink != nil && desktopAlertsEnabled() && cfg.Alerts != nil {

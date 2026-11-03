@@ -484,14 +484,48 @@ type Config struct {
 	// final durable rollout state for this process. Nil is the local-mode path.
 	ClaimRunnerEpoch func() (highWater uint64, superseded bool, err error)
 
-	// TrustedProxyCIDRs is the allowlist of CIDR ranges whose
-	// X-Forwarded-For headers we believe. Empty (the default) means
-	// we never trust forwarded headers — audit IPs come from
-	// r.RemoteAddr only, defeating spoofing by an unprivileged
-	// client that sends its own X-Forwarded-For. Set this only when
-	// the server sits behind a known L7 proxy/ingress and the proxy
-	// rewrites the header on every request.
+	// TrustedProxyCIDRs is the allowlist of CIDR ranges whose forwarded
+	// client address we believe — X-Forwarded-For, RFC 7239 Forwarded and
+	// X-Real-IP. Empty (the default) means no forwarded header is ever
+	// trusted: the client of a request is the socket address, which
+	// defeats spoofing by an unprivileged client that sends its own
+	// header. Set it only when the server sits behind a known L7
+	// proxy/ingress that rewrites the header on every request, and no
+	// wider than that proxy's own range.
+	//
+	// It is also what makes the auth rate limiter per-client behind such
+	// a proxy: left empty, every request carries the proxy's address and
+	// the whole instance shares one bucket (#2673). Filled from
+	// ITERION_AUTH_TRUSTED_PROXY_CIDRS (cmd/iterion/server.go); the local
+	// studio leaves it empty, nothing sitting in front of a loopback
+	// listener.
 	TrustedProxyCIDRs []string
+
+	// TrustedProxyHops is how many APPENDING proxies of the operator's own
+	// sit in front — the number of the forwarded chain's rightmost entries
+	// our infrastructure wrote. 0 is one, the shape the chart ships.
+	//
+	// It is the bound the right-to-left chain reader stops at, and so the
+	// bound on how far a client's own entries reach: a client inside a
+	// trusted range writes entries of its own, and only the count tells
+	// them from a proxy's (#2673). Filled from
+	// ITERION_AUTH_TRUSTED_PROXY_HOPS (cmd/iterion/server.go).
+	TrustedProxyHops int
+
+	// ForwardedHeader is the ONE header a trusted peer names the client
+	// with — the mechanism the OPERATOR declares, never the one a request
+	// picks. Empty is X-Forwarded-For, what every ingress controller
+	// writes. "Forwarded" is read with the RFC 7239 grammar; any other
+	// name is a comma-separated address list, so X-Real-IP and a CDN's
+	// CF-Connecting-IP or True-Client-IP work as themselves.
+	//
+	// Reading whichever mechanism a request happens to carry would hand
+	// the choice to the client: a proxy that computes the client into
+	// X-Real-IP and passes X-Forwarded-For through untouched loses to the
+	// header the client wrote (#2673). Filled from
+	// ITERION_AUTH_FORWARDED_HEADER (cmd/iterion/server.go), which
+	// pkg/config refuses at boot when it is not a single field name.
+	ForwardedHeader string
 
 	// Metrics, when non-nil, lets the server publish iterion_ws_connections
 	// gauge updates as run-console clients connect / disconnect. Other

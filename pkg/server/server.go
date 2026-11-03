@@ -67,6 +67,36 @@ type Server struct {
 	// mounted below a workspace host instead of owning a TCP listener.
 	embeddedOnce sync.Once
 	embeddedErr  error
+	// trustedProxyOnce guards trustedProxyParsed, the parsed form of
+	// cfg.TrustedProxyCIDRs (immutable for the process's life).
+	trustedProxyOnce   sync.Once
+	trustedProxyParsed []*net.IPNet
+	// untrustedPeerOnce, undeclaredHeaderOnce, unusableHeaderOnce and
+	// chainShortOnce keep each forwarded-trust diagnosis to one log line
+	// per process (warnForwardedNotRead): clientIP runs on every request.
+	untrustedPeerOnce    sync.Once
+	undeclaredHeaderOnce sync.Once
+	unusableHeaderOnce   sync.Once
+	chainShortOnce       sync.Once
+	// undeclaredHopOnce keeps the fourth diagnosis to one line too: a
+	// chain that carries another of our own ranges beyond the declared
+	// hop bound (warnUndeclaredHop).
+	undeclaredHopOnce sync.Once
+	// identityIsOursOnce and hopsUnreachableOnce guard the two
+	// diagnoses keyed on the OUTCOME of the read rather than on the
+	// shape of the chain: the identity landing inside our own ranges
+	// (warnIdentityIsOurs), and a declared hop bound the chain cannot
+	// reach (warnHopsUnreachable). One flag each — they have different
+	// causes and different remedies, so neither may silence the other.
+	identityIsOursOnce  sync.Once
+	hopsUnreachableOnce sync.Once
+	// sharedBucketSaid records that a diagnosis has already announced
+	// the instance-wide bucket, whatever its cause. The GENERAL one
+	// (warnIdentityIsOurs) stands down when a specific cause has
+	// spoken: they report the same outcome and the specific line is the
+	// one carrying the remedy. One-directional — a specific cause is
+	// never silenced by the general line.
+	sharedBucketSaid atomic.Bool
 	// stateMu guards the hot-swappable fields used by ProjectSwitcher
 	// (cfg.WorkDir, cfg.StoreDir, runs, watcher, localSecrets, statsCache).
 	// Acquired write-side

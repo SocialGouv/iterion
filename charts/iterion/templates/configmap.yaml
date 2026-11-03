@@ -8,6 +8,32 @@ data:
   ITERION_MODE: {{ .Values.mode | quote }}
   ITERION_LOG_FORMAT: {{ .Values.config.log.format | quote }}
   ITERION_LOG_LEVEL: {{ .Values.config.log.level | quote }}
+  {{- with .Values.config.auth.trustedProxyCidrs }}
+  # Whose forwarded client address the server believes. Restrict it to
+  # your ingress controller's pod CIDR: every address inside a trusted
+  # range can name any client it likes. Absent — the list emptied on
+  # purpose — trusts no forwarded header, so every request behind the
+  # ingress is keyed on the controller's own address and the auth rate
+  # limiter shares one bucket across the instance
+  # (docs/environment-variables.md).
+  ITERION_AUTH_TRUSTED_PROXY_CIDRS: {{ join "," . | quote }}
+  {{- end }}
+  {{- with .Values.config.auth.trustedProxyHops }}
+  # How many APPENDING proxies of the operator's own sit in front, so how
+  # many of the forwarded chain's rightmost entries are theirs rather than
+  # a client's. 1 is this chart's shape — one ingress controller. Raising
+  # it without that many appending hops really in front hands the identity
+  # back to whatever a client writes (docs/environment-variables.md).
+  ITERION_AUTH_TRUSTED_PROXY_HOPS: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.auth.forwardedHeader }}
+  # The ONE header a trusted proxy names the client with — the server
+  # reads that one and no other, so a client cannot pick the mechanism by
+  # sending a header the proxy does not rewrite. Absent is
+  # X-Forwarded-For, what every ingress controller writes
+  # (docs/environment-variables.md).
+  ITERION_AUTH_FORWARDED_HEADER: {{ . | quote }}
+  {{- end }}
   {{- if eq .Values.mode "cloud" }}
   ITERION_MONGO_URI: {{ include "iterion.mongo.uri" . | quote }}
   ITERION_MONGO_DB: {{ .Values.config.mongo.database | quote }}

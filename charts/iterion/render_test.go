@@ -1882,3 +1882,104 @@ func TestLegalPagesAreDeploymentConfiguration(t *testing.T) {
 		}
 	})
 }
+
+// The trusted proxy ranges are what makes the auth rate limiter
+// per-client behind the shipped ingress (#2673): without them every
+// request carries the controller's own address and the whole instance
+// shares one bucket. The chart ships the private ranges a pod network
+// comes from, so the controller in front is trusted out of the box; an
+// operator who narrows them to their own pod CIDR, or empties them, is
+// honoured either way.
+func TestChartRenderTrustedProxies(t *testing.T) {
+	// The default is a VALUE, not a convention: a render that stopped
+	// carrying it would silently put every user of the instance in one
+	// bucket at the next chart bump.
+	t.Run("the private ranges are trusted by default", func(t *testing.T) {
+		docs := manifests(t, mustRender(t, "-f", "values-prod.yaml"))
+		cm := must(t, docs, "ConfigMap", "iterion-config")
+		const want = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7"
+		if got := fmt.Sprint(dig(cm, "data", "ITERION_AUTH_TRUSTED_PROXY_CIDRS")); got != want {
+			t.Errorf("ITERION_AUTH_TRUSTED_PROXY_CIDRS = %q, want %q — the default is what makes the limiter per-client behind the ingress", got, want)
+		}
+	})
+
+	t.Run("the operator's ranges reach the server as the CSV the loader splits", func(t *testing.T) {
+		values := valuesFile(t, "config:\n  auth:\n    trustedProxyCidrs:\n      - 10.42.0.0/16\n      - 2001:db8::/32\n")
+		docs := manifests(t, mustRender(t, "-f", "values-prod.yaml", "-f", values))
+		cm := must(t, docs, "ConfigMap", "iterion-config")
+		if got := fmt.Sprint(dig(cm, "data", "ITERION_AUTH_TRUSTED_PROXY_CIDRS")); got != "10.42.0.0/16,2001:db8::/32" {
+			t.Errorf("ITERION_AUTH_TRUSTED_PROXY_CIDRS = %q, want the two ranges as one CSV value", got)
+		}
+	})
+
+	// Emptying the list is an operator choice the chart must not override:
+	// the key goes away, the server trusts no forwarded header and says so
+	// at boot (trustedProxyWarning).
+	t.Run("an emptied list renders no key rather than an empty allowlist", func(t *testing.T) {
+		values := valuesFile(t, "config:\n  auth:\n    trustedProxyCidrs: []\n")
+		docs := manifests(t, mustRender(t, "-f", "values-prod.yaml", "-f", values))
+		cm := must(t, docs, "ConfigMap", "iterion-config")
+		if got := dig(cm, "data", "ITERION_AUTH_TRUSTED_PROXY_CIDRS"); got != nil {
+			t.Errorf("ITERION_AUTH_TRUSTED_PROXY_CIDRS = %v, want absent: an empty value reads like a configured allowlist", got)
+		}
+	})
+
+	// `iterion server --mode local` is a shipped shape behind the same
+	// Service, and it honours the ranges: a key rendered only in cloud
+	// mode would drop the operator's value without a word.
+	t.Run("a local-mode deployment gets the key too", func(t *testing.T) {
+		values := valuesFile(t, "mode: local\nconfig:\n  auth:\n    trustedProxyCidrs:\n      - 10.42.0.0/16\n")
+		docs := manifests(t, mustRender(t, "-f", values))
+		cm := must(t, docs, "ConfigMap", "iterion-config")
+		if got := fmt.Sprint(dig(cm, "data", "ITERION_AUTH_TRUSTED_PROXY_CIDRS")); got != "10.42.0.0/16" {
+			t.Errorf("ITERION_AUTH_TRUSTED_PROXY_CIDRS = %q in a local-mode render, want 10.42.0.0/16", got)
+		}
+	})
+
+	// How many APPENDING hops of the operator's own sit in front is what
+	// tells a proxy's entry in the chain from an in-range client's — and
+	// the chart trusts all of private space, so an in-cluster pod writes
+	// entries too. The chart's own shape is ONE: the ingress controller
+	// its `ingress` block configures.
+	t.Run("one appending hop is declared by default", func(t *testing.T) {
+		docs := manifests(t, mustRender(t, "-f", "values-prod.yaml"))
+		cm := must(t, docs, "ConfigMap", "iterion-config")
+		if got := fmt.Sprint(dig(cm, "data", "ITERION_AUTH_TRUSTED_PROXY_HOPS")); got != "1" {
+			t.Errorf("ITERION_AUTH_TRUSTED_PROXY_HOPS = %q, want \"1\" — the one ingress controller in front, and the bound that keeps a client's own entries out of the identity", got)
+		}
+	})
+
+	// A chained front end is the operator's to declare: a CDN edge
+	// appending ahead of the ingress is 2.
+	t.Run("a chained front end reaches the server as written", func(t *testing.T) {
+		values := valuesFile(t, "config:\n  auth:\n    trustedProxyHops: 2\n")
+		docs := manifests(t, mustRender(t, "-f", "values-prod.yaml", "-f", values))
+		cm := must(t, docs, "ConfigMap", "iterion-config")
+		if got := fmt.Sprint(dig(cm, "data", "ITERION_AUTH_TRUSTED_PROXY_HOPS")); got != "2" {
+			t.Errorf("ITERION_AUTH_TRUSTED_PROXY_HOPS = %q, want \"2\"", got)
+		}
+	})
+
+	// WHICH header the trusted proxy names the client in is the operator's
+	// to declare: the server reads that one and no other, so a client
+	// cannot name itself by sending a mechanism the proxy leaves alone.
+	// The chart's own ingress writes X-Forwarded-For, which is the
+	// server's default — hence no key by default, and the operator's
+	// choice carried as written when they have one.
+	t.Run("no forwarded header is declared by default", func(t *testing.T) {
+		docs := manifests(t, mustRender(t, "-f", "values-prod.yaml"))
+		cm := must(t, docs, "ConfigMap", "iterion-config")
+		if got := dig(cm, "data", "ITERION_AUTH_FORWARDED_HEADER"); got != nil {
+			t.Errorf("ITERION_AUTH_FORWARDED_HEADER = %v, want absent: the server's own default is X-Forwarded-For", got)
+		}
+	})
+
+	t.Run("the declared header reaches the server as written", func(t *testing.T) {
+		values := valuesFile(t, "config:\n  auth:\n    forwardedHeader: X-Real-IP\n")
+		docs := manifests(t, mustRender(t, "-f", "values-prod.yaml", "-f", values))
+		cm := must(t, docs, "ConfigMap", "iterion-config")
+		if got := fmt.Sprint(dig(cm, "data", "ITERION_AUTH_FORWARDED_HEADER")); got != "X-Real-IP" {
+			t.Errorf("ITERION_AUTH_FORWARDED_HEADER = %q, want X-Real-IP", got)
+		}
+	})
+}

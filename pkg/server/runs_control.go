@@ -44,7 +44,7 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	// emitting a line per call site lets us tell the two apart without
 	// instrumenting the runtime itself.
 	if s.logger != nil {
-		s.logger.Info("server: cancel run %q via HTTP from %s", id, r.RemoteAddr)
+		s.logger.Info("server: cancel run %q via HTTP from %s", id, s.clientIP(r))
 	}
 	if err := s.runs.Cancel(id); err != nil {
 		// If the run is not currently active in this process, the
@@ -172,7 +172,7 @@ func (s *Server) handlePauseRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.logger != nil {
-		s.logger.Info("server: pause run %q via HTTP from %s", id, r.RemoteAddr)
+		s.logger.Info("server: pause run %q via HTTP from %s", id, s.clientIP(r))
 	}
 	if err := s.runs.Pause(id); err != nil {
 		if errors.Is(err, runview.ErrRunNotActive) {
@@ -230,7 +230,7 @@ func (s *Server) handleForkRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.logger != nil {
-		s.logger.Info("server: fork run %q at node %q from %s", id, req.NodeID, r.RemoteAddr)
+		s.logger.Info("server: fork run %q at node %q from %s", id, req.NodeID, s.clientIP(r))
 	}
 	result, err := s.runs.Fork(r.Context(), runview.ForkSpec{
 		RunID:      id,
@@ -349,7 +349,7 @@ func (s *Server) handleRewindRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.logger != nil {
-		s.logger.Info("server: rewind run %q to node %q (auto=%v) from %s", id, req.NodeID, req.Auto, r.RemoteAddr)
+		s.logger.Info("server: rewind run %q to node %q (auto=%v) from %s", id, req.NodeID, req.Auto, s.clientIP(r))
 	}
 	sourcePath := req.SourcePath
 	if sourcePath != "" {

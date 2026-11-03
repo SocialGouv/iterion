@@ -8,6 +8,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/mail"
 	"net/url"
 	"strings"
@@ -276,6 +277,51 @@ type AuthConfig struct {
 	// (Phase-3) per-row opt-in. Set via ITERION_AUTH_TRUSTED_AUTO_LINK_PROVIDERS
 	// (CSV).
 	TrustedAutoLinkProviders []string `yaml:"trusted_auto_link_providers"`
+
+	// TrustedProxyCIDRs is the operator allowlist of CIDR ranges whose
+	// forwarded client address the server believes: X-Forwarded-For,
+	// RFC 7239 Forwarded and X-Real-IP are read only when the immediate
+	// peer falls inside one of them. Empty (the default) = no forwarded
+	// header is ever trusted, so the client is the socket address.
+	//
+	// It is what makes the auth rate limiter per-client behind a proxy:
+	// without it every request carries the proxy's own address and the
+	// whole instance shares one bucket. Set it to the range of the
+	// proxy/ingress actually in front — never wider, since any workload
+	// inside the range can then name any client it likes. Set via
+	// ITERION_AUTH_TRUSTED_PROXY_CIDRS (CSV).
+	TrustedProxyCIDRs []string `yaml:"trusted_proxy_cidrs"`
+
+	// TrustedProxyHops is how many APPENDING proxies of the operator's own
+	// sit between a client and the server — the number of rightmost
+	// entries of the forwarded chain our infrastructure wrote. 0 (the
+	// default) is one: the shape the chart ships, a single ingress
+	// controller.
+	//
+	// It bounds how far right-to-left the reader may walk, which is also
+	// how far a client's own forgeries reach: a client holding an address
+	// inside a trusted range (with the chart's private-range default,
+	// every LAN client and every in-cluster pod) writes entries of its
+	// own, and only the count tells them apart from a proxy's. Declaring
+	// MORE hops than are really in front hands those entries the
+	// identity, so raise it only for a chained front end — a CDN edge
+	// that appends and an ingress that appends behind it is 2. Set via
+	// ITERION_AUTH_TRUSTED_PROXY_HOPS.
+	TrustedProxyHops int `yaml:"trusted_proxy_hops"`
+
+	// ForwardedHeader is the ONE header a trusted proxy names the client
+	// with. Empty (the default) is X-Forwarded-For, what every ingress
+	// controller writes; "Forwarded" is read with the RFC 7239 grammar,
+	// and any other field name — X-Real-IP, a CDN's CF-Connecting-IP or
+	// True-Client-IP — as a comma-separated address list.
+	//
+	// Declaring it is what keeps the CHOICE of mechanism away from the
+	// client: a server that read whichever header a request carried would
+	// let a client's own X-Forwarded-For beat the X-Real-IP its proxy
+	// computed. Name the header the proxy in front REWRITES or APPENDS on
+	// every request; the ranges above only make the identity unforgeable
+	// for that one. Set via ITERION_AUTH_FORWARDED_HEADER.
+	ForwardedHeader string `yaml:"forwarded_header"`
 
 	OIDC OIDCConfig `yaml:"oidc"`
 
@@ -643,6 +689,52 @@ func (c *Config) Validate() error {
 	if c.NATS.StreamReplicas < 0 {
 		return fmt.Errorf("ITERION_NATS_STREAM_REPLICAS %d invalid (want >= 0)", c.NATS.StreamReplicas)
 	}
+	// A range that parses nowhere is a trust entry that silently never
+	// matches, which reads at a glance like a configured proxy and is
+	// not one. Refused here, where the operator sees the name, rather
+	// than skipped per request.
+	for _, cidr := range c.Auth.TrustedProxyCIDRs {
+		ip, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			return fmt.Errorf("ITERION_AUTH_TRUSTED_PROXY_CIDRS entry %q invalid (want a CIDR range like 10.42.0.0/16 or 2001:db8::/32; a single address is /32 or /128): %w", cidr, err)
+		}
+		// ParseCIDR accepts host bits and hands back the masked network, so
+		// 10.42.0.7/16 would silently trust all of 10.42.0.0/16 — the "never
+		// wider" outcome, from the one typo the message above invites.
+		if !ip.Equal(network.IP) {
+			host := 128
+			if ip.To4() != nil {
+				host = 32
+			}
+			return fmt.Errorf("ITERION_AUTH_TRUSTED_PROXY_CIDRS entry %q has host bits set, so it would trust the whole of %s: write %s for that range, or %s/%d for the single address", cidr, network, network, ip, host)
+		}
+	}
+
+	// A negative count is not a shorter walk, it is no walk: the reader
+	// would answer with the proxy's own address on every request and the
+	// auth limiter would hold one bucket for the whole instance — the
+	// outcome the ranges exist to prevent, from a typo.
+	if c.Auth.TrustedProxyHops < 0 {
+		return fmt.Errorf("ITERION_AUTH_TRUSTED_PROXY_HOPS %d invalid (want >= 0; 0 or 1 is a single appending proxy such as an ingress controller, 2 a CDN edge appending in front of it)", c.Auth.TrustedProxyHops)
+	}
+
+	// Header.Values canonicalises a field name but looks up a list or a
+	// value as itself, finding nothing: the one outcome here — a client
+	// address silently never read — is what the declaration exists to
+	// prevent, so it is refused at boot where the operator sees the name.
+	if h := strings.TrimSpace(c.Auth.ForwardedHeader); h != "" && !isHTTPFieldName(h) {
+		return fmt.Errorf("ITERION_AUTH_FORWARDED_HEADER %q is not a single HTTP header name (want one field name like X-Forwarded-For, X-Real-IP, Forwarded or CF-Connecting-IP; no list, no spaces, no value)", c.Auth.ForwardedHeader)
+	}
+
+	// A credential-bearing header never carries an address list, so
+	// naming one reads no client — and the server's own diagnosis for
+	// that case quotes the value it could not parse, which would write
+	// the bearer token or the session cookie of every request that
+	// carries it into the log. Refused at boot, where the operator sees
+	// the name, rather than leaked once at runtime.
+	if h := strings.TrimSpace(c.Auth.ForwardedHeader); isCredentialFieldName(h) {
+		return fmt.Errorf("ITERION_AUTH_FORWARDED_HEADER %q names a credential-bearing header: it carries no client address, so no client would be read, and the server logs the value it could not parse — that credential. Name the header the proxy in front writes the client address into (X-Forwarded-For, X-Real-IP, Forwarded, or a CDN's CF-Connecting-IP)", c.Auth.ForwardedHeader)
+	}
 
 	if c.Mode == ModeCloud {
 		if c.NATS.URL == "" {
@@ -814,4 +906,41 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// credentialFieldNames are the request headers whose value IS a secret.
+// None of them can hold an address list, so one named as the forwarded
+// header is always an operator error — and the one the server would
+// report by quoting the value.
+var credentialFieldNames = []string{"Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie"}
+
+// isCredentialFieldName answers whether s names one of them, case-
+// insensitively the way an HTTP field name compares.
+func isCredentialFieldName(s string) bool {
+	for _, name := range credentialFieldNames {
+		if strings.EqualFold(s, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// isHTTPFieldName answers whether s is ONE HTTP field name — the RFC 9110
+// token grammar. A space, a comma, a colon or a quote means a list or a
+// value crept into ITERION_AUTH_FORWARDED_HEADER, and a header lookup for
+// that name matches no request.
+func isHTTPFieldName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9':
+		case strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0:
+		default:
+			return false
+		}
+	}
+	return true
 }

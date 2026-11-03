@@ -406,6 +406,97 @@ upgrade never breaks — and warns loudly: an
 `iterion.io/ingress-admit-all` annotation on the policy, a WARNING
 comment in the rendered manifest, and a note at install/upgrade.
 
+### Whose `X-Forwarded-For` the server believes
+
+The server-side half of the same question is `config.auth.trustedProxyCidrs`
+(`ITERION_AUTH_TRUSTED_PROXY_CIDRS`): the ranges whose forwarded client address
+the server reads instead of the socket address. It decides the audit IP and the
+auth rate-limit key, so it also decides whether the limiter holds one bucket
+per client or **one for the whole instance** — with no range configured every
+request behind the ingress carries the controller's own address, and login
+5/min, register 2/min and refresh 30/min become instance-wide. The server warns
+about that at boot, naming the variable; it never refuses to start.
+
+The chart defaults to the private ranges a pod network comes from
+(`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`), so the ingress
+in front is trusted without a gesture. **Narrow it to your controller's pod
+CIDR**: every address inside a trusted range is a proxy you vouch for, which is
+why the ingress scoping above matters — the two knobs cover one threat from
+both ends.
+
+```yaml
+config:
+  auth:
+    trustedProxyCidrs:
+      - 10.244.0.0/16   # your ingress controller's pod CIDR
+```
+
+An entry that is not a CIDR is refused at boot naming it, and so is one with
+host bits set (`10.42.0.7/16` would silently trust the whole `/16`). Emptying
+the list is honoured and warned about: the client becomes the socket address
+everywhere, unforgeable and instance-wide.
+
+The ranges say **who** may name the client and `config.auth.trustedProxyHops`
+(`ITERION_AUTH_TRUSTED_PROXY_HOPS`) says **how many** of the chain's rightmost
+entries are theirs: the chain is read right to left and stops there, one hop by
+default, which is this chart's shape. That count is what tells a proxy's entry
+from an in-range client's — with all of private space trusted, an in-cluster
+pod writes entries too — so raising it past the appending hops really in front
+makes a client's own entries the identity again. Raise it only for a chained
+front end (a CDN edge appending ahead of this chart's ingress is `2`, with the
+CDN's egress ranges added to the list above).
+
+#### The client's address has to reach the controller first
+
+`trustedProxyHops: 1` is right only when the address the ingress controller
+sees **is** the client's. With the Kubernetes-default `externalTrafficPolicy:
+Cluster` on the LoadBalancer Service, every packet is SNATed to the node that
+received it, so the controller sees a node address — and that is what lands in
+the chain. Nothing in the ranges or the count fixes it: the client is not in the
+request at all when the controller replaces the chain
+(`use-forwarded-headers: false`, ingress-nginx's default), and it is one entry
+beyond the bound when the controller appends behind a load balancer that wrote
+it. Either way the whole internet shares **one bucket per node** and one audit
+IP. The shapes that carry the client through:
+
+| shape | what reaches the server | settings |
+|---|---|---|
+| `externalTrafficPolicy: Local` on the Service, or PROXY protocol where the cloud LB speaks it (`use-proxy-protocol: "true"`) | the controller's socket peer IS the client | as shipped — `trustedProxyHops: 1` |
+| a managed L7 load balancer that writes `X-Forwarded-For` itself, the controller appending behind it: `use-forwarded-headers: "true"` **and** `compute-full-forwarded-for: "true"` | `<client>, <the controller's TCP peer>` | `trustedProxyHops: 2`, and in `trustedProxyCidrs` the range of the address the controller's TCP peer carries — the LB's egress range when the LB targets the pods directly (NEG / `ip` targets), the node range (or `externalTrafficPolicy: Local`) behind a NodePort / `instance` target |
+| the same load balancer, the controller resolving the client itself: `use-forwarded-headers: "true"` alone, with `proxy-real-ip-cidr` set to the range of the address the controller's TCP peer carries — the LB's egress range when the LB targets the pods directly, the node range (or `externalTrafficPolicy: Local`) behind a NodePort / `instance` target — never its `0.0.0.0/0` default | `<client>` | as shipped — `trustedProxyHops: 1` |
+
+`use-forwarded-headers` does two different things, and the rows differ by
+which: alone, ingress-nginx's realip module resolves the client from the
+incoming header and writes **one** entry, the resolved address; with
+`compute-full-forwarded-for` it appends its peer to the incoming header
+instead. Behind an L4 load balancer — a SNATing Service with nothing in front
+writing the header — turn it on for neither reason: nothing on that path puts
+the client into `X-Forwarded-For`, so the one entry the controller writes is
+whatever the client itself put leftmost in its own header (under the default
+`proxy-real-ip-cidr`), a fresh bucket per forged value and a chosen audit IP.
+Only `externalTrafficPolicy: Local` or the PROXY protocol carry the client
+through an L4 path; ingress-nginx's own documentation reserves
+`use-forwarded-headers` for a controller behind another L7 proxy.
+
+The server says so once per process. When it can name the cause it does — the
+declared header absent from the requests, present but naming no address, a
+chain of our own addresses shorter than the count declares, an in-range hop
+past it — and otherwise at the first request whose identity lands inside
+`trustedProxyCidrs`: *"the client of a request from … resolves to …, which is
+inside ITERION_AUTH_TRUSTED_PROXY_CIDRS"*. The lines are ambiguous on purpose
+— an in-cluster pod or a LAN client is inside those ranges too, and for them
+the identity is the right one. Nothing in a request tells the two apart, which
+is why each is a question and not a verdict.
+
+`config.auth.forwardedHeader`
+(`ITERION_AUTH_FORWARDED_HEADER`) says **where**, and the server reads that one
+header and no other. The default — `X-Forwarded-For`, which this chart's
+ingress writes — is right for the shipped shape. Name your own when the proxy
+in front computes the client into `X-Real-IP` or RFC 7239 `Forwarded` and
+leaves the client's `X-Forwarded-For` alone: without it the client's header is
+the identity, and no narrowing of the ranges changes that. The server warns
+once when the declared header is not the one its requests carry.
+
 ## NATS monitoring endpoint (KEDA)
 
 KEDA's NATS JetStream scaler scrapes `/jsz` on the **monitoring**
