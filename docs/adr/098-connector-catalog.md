@@ -534,9 +534,13 @@ connection (`connector_connection_id`) is served by the connector lane
 (`pkg/server/webhooks_connector.go`) — the delivery is verified by the
 webhook's own HMAC secret, believed on the connection's `trigger` grant, and
 matched against the package's declared events, reaching a bot run with the
-declared trigger's id. One connector (Forgejo), one event: the vertical proof
-and the seam the second one implements, not the framework. Filters, payload
-mapping and polling cursors stay deferred as stated above.
+declared trigger's id. A connection that is not usable (revoked, needs
+reauth) vouches for nothing — refused at bind time and at read time, the
+same refusal the action/agent chokepoint applies — and the webhook's own
+project/author allowlists and hold-label veto narrow what the package
+declared, as on the legacy lanes. One connector (Forgejo), one event: the
+vertical proof and the seam the second one implements, not the framework.
+Filters, payload mapping and polling cursors stay deferred as stated above.
 
 ## The execution profile — what schema v1 actually promises
 

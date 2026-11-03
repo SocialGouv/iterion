@@ -884,6 +884,14 @@ event is matched against what the connector **package** declares
 secret stays the webhook's own `hmac_secret_sealed`). Shipped on Forgejo;
 unbound webhooks run the legacy lane unchanged.
 
+Three properties hold on top, both when the binding is written and when each
+delivery is read: a connection that is not usable (revoked, needs reauth)
+vouches for nothing — binding one is a 400, and a delivery under one is
+filtered naming the status; the webhook's own `project_allowlist` and
+`author_allowlist` (the delivery's sender) still narrow what the package
+declared; and the hold-label veto applies, this being an auto-launch lane —
+a delivery whose issue carries a hold label is filtered, not launched.
+
 ## Matching: project + event + author allowlists, bot scope
 
 Every webhook carries four selection filters plus a bot-agnostic hold gate
