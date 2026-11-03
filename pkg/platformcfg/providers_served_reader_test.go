@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/printer"
 	"go/token"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -34,8 +35,15 @@ const providersServedField = "ProvidersServed"
 // own non-test Go. A reader there must land WITH the sentence it makes false
 // rewritten, here and in docs/sovereign-pools.md. The field's declaration is
 // an *ast.Field, not a selector, so the declaration itself is never an
-// offender; the coverage check below is what distinguishes "no reader" from
-// "this walk no longer matches the field".
+// offender.
+//
+// What distinguishes "no reader" from "this sweep no longer matches the
+// field" is the coverage check, and it asks the TYPE, not the module's text:
+// reflect over RunnerPool, in the package the field belongs to. A textual
+// count of fields named ProvidersServed anywhere in the module would be
+// satisfied by any other struct spelling that name, so a rename of the
+// guarded field would leave this guard inert AND green — the one failure it
+// exists to report, in the silent direction.
 //
 // The match keys on the field NAME, on any receiver, so a selector of that
 // name on an unrelated type is reported too: every site is printed with its
@@ -46,8 +54,11 @@ const providersServedField = "ProvidersServed"
 // the operator's JSON into the struct, so the field is written without any
 // file naming it. "Recorded" is exactly that write.
 func TestProvidersServedHasNoProductionReader(t *testing.T) {
+	if _, ok := reflect.TypeOf(RunnerPool{}).FieldByName(providersServedField); !ok {
+		t.Fatalf("RunnerPool has no field %s: the field was renamed or removed, so this guard is UNLOCKED rather than clean — the sweep below keys on that name. Rename the constant with the field, or retire the guard WITH the two sentences it holds (the field's doc comment and the residual list of docs/sovereign-pools.md)", providersServedField)
+	}
+
 	var readers []string
-	declarations := 0
 	sweepwalk.GoFiles(t, sweepwalk.ModuleRoot(t), func(rel, path string) {
 		// Test files may read it as a fixture; the claim is about production.
 		if strings.HasSuffix(rel, "_test.go") {
@@ -65,17 +76,8 @@ func TestProvidersServedHasNoProductionReader(t *testing.T) {
 			t.Fatalf("parse %s: %v", rel, err)
 		}
 		ast.Inspect(f, func(n ast.Node) bool {
-			switch node := n.(type) {
-			case *ast.SelectorExpr:
-				if node.Sel.Name == providersServedField {
-					readers = append(readers, fmt.Sprintf("%s:%d (%s)", rel, fset.Position(node.Sel.Pos()).Line, exprText(fset, node)))
-				}
-			case *ast.Field:
-				for _, name := range node.Names {
-					if name.Name == providersServedField {
-						declarations++
-					}
-				}
+			if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == providersServedField {
+				readers = append(readers, fmt.Sprintf("%s:%d (%s)", rel, fset.Position(sel.Sel.Pos()).Line, exprText(fset, sel)))
 			}
 			return true
 		})
@@ -86,9 +88,6 @@ func TestProvidersServedHasNoProductionReader(t *testing.T) {
 		t.Errorf("%d production site(s) now read .%s:\n  %s\n"+
 			"The field's doc comment and the residual list of docs/sovereign-pools.md both say RunnerPool.%s is recorded and read by nothing: say what the reader does in those two places. This guard holds no allowlist — the receiver is printed above because the sweep keys on the field name, and a site this guard must tolerate (that name on another type) is a change to its code.",
 			len(readers), providersServedField, strings.Join(readers, "\n  "), providersServedField)
-	}
-	if declarations == 0 {
-		t.Fatalf("no struct field named %s in the module's non-test Go: the field was renamed or removed, so this guard is UNLOCKED rather than clean — it reports readers only", providersServedField)
 	}
 }
 
