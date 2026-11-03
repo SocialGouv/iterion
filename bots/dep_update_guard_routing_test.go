@@ -46,12 +46,12 @@ func TestDepUpdateGuardVerdictRouting(t *testing.T) {
 	if decides == "" {
 		t.Fatal("commit_check does not compute did_commit")
 	}
-	for _, want := range []string{"outputs.commit.sha", "outputs.prepare.head_sha"} {
+	for _, want := range []string{"outputs.commit_probe.moved"} {
 		if !strings.Contains(decides, want) {
 			t.Errorf("did_commit does not read %s — it must be observed, not reported: %q", want, decides)
 		}
 	}
-	if strings.Contains(decides, "outputs.commit.committed") {
+	if strings.Contains(decides, "outputs.commit.") {
 		t.Errorf("did_commit trusts the commit agent's self-report: %q", decides)
 	}
 
@@ -72,7 +72,7 @@ func TestDepUpdateGuardVerdictRouting(t *testing.T) {
 	if !strings.Contains(lost, "outputs.align.applied") {
 		t.Errorf("alignment_lost does not read align's own claim, so it cannot detect a contradiction: %q", lost)
 	}
-	if !strings.Contains(lost, "outputs.commit.sha") || !strings.Contains(lost, "outputs.prepare.head_sha") {
+	if !strings.Contains(lost, "outputs.commit_probe.moved") {
 		t.Errorf("alignment_lost must be the CONTRADICTION between the claim and the shas, not the claim alone: %q", lost)
 	}
 
@@ -224,13 +224,12 @@ func TestDepUpdateGuardLostAlignmentPredicate(t *testing.T) {
 
 	// probe is align_probe's output, or nil for a run whose checkpoint
 	// predates the node and so carries no reading at all.
-	eval := func(t *testing.T, key string, applied bool, probe map[string]any, commitSHA, headSHA string) bool {
+	eval := func(t *testing.T, key string, applied bool, probe map[string]any, moved bool) bool {
 		t.Helper()
 		outputs := map[string]map[string]any{
-			"align":       {"applied": applied},
-			"align_probe": probe,
-			"commit":      {"sha": commitSHA},
-			"prepare":     {"head_sha": headSHA},
+			"align":        {"applied": applied},
+			"align_probe":  probe,
+			"commit_probe": {"moved": moved},
 		}
 		for _, e := range check.Exprs {
 			if e.Key != key {
@@ -260,8 +259,7 @@ func TestDepUpdateGuardLostAlignmentPredicate(t *testing.T) {
 		name       string
 		applied    bool
 		probe      map[string]any
-		commitSHA  string
-		headSHA    string
+		moved      bool
 		wantLost   bool
 		wantCommit bool
 	}{
@@ -276,13 +274,13 @@ func TestDepUpdateGuardLostAlignmentPredicate(t *testing.T) {
 			// from run 1 could never fire. align_probe tells the two apart:
 			// nothing pending, and the PR changes every file align claims.
 			name:    "align re-applied onto a head that already carries it: nothing lost",
-			applied: true, probe: reading(false, true), commitSHA: "", headSHA: "fb4a7353761a7e809173badc573712d99eec0208",
+			applied: true, probe: reading(false, true), moved: false,
 			wantLost: false, wantCommit: false,
 		},
 		{
 			// iterion#400. The one the gate has to start catching.
 			name:    "align applied, the workspace held it, head unmoved: the alignment vanished",
-			applied: true, probe: reading(true, false), commitSHA: "", headSHA: "ec2ff4b9e54e61f28f2cd43cd8281e18a5e0af0a",
+			applied: true, probe: reading(true, false), moved: false,
 			wantLost: true, wantCommit: false,
 		},
 		{
@@ -291,7 +289,7 @@ func TestDepUpdateGuardLostAlignmentPredicate(t *testing.T) {
 			// is gone, so nothing reads pending — but the fix's files are not
 			// ones the bump changes, so the claim is not carried.
 			name:    "the probe re-measured on a fresh clone after the edits were lost",
-			applied: true, probe: reading(false, false), commitSHA: "", headSHA: "ec2ff4b9e54e61f28f2cd43cd8281e18a5e0af0a",
+			applied: true, probe: reading(false, false), moved: false,
 			wantLost: true, wantCommit: false,
 		},
 		{
@@ -299,7 +297,7 @@ func TestDepUpdateGuardLostAlignmentPredicate(t *testing.T) {
 			// workspace is clean and matches the head, and the head is the bare
 			// bump. Read as "already in the head", this merged without the fix.
 			name:    "align claims edits that exist nowhere: not pending, not carried",
-			applied: true, probe: reading(false, false), commitSHA: "", headSHA: "086571ac3a6a62f62947ee0f53201b43210ae6cb",
+			applied: true, probe: reading(false, false), moved: false,
 			wantLost: true, wantCommit: false,
 		},
 		{
@@ -307,14 +305,14 @@ func TestDepUpdateGuardLostAlignmentPredicate(t *testing.T) {
 			// edits that never land: the claimed files are ones the PR already
 			// changes, but the workspace still holds what was never pushed.
 			name:    "a re-run on the bot's own alignment writes new edits that never land",
-			applied: true, probe: reading(true, true), commitSHA: "", headSHA: "fb4a7353761a7e809173badc573712d99eec0208",
+			applied: true, probe: reading(true, true), moved: false,
 			wantLost: true, wantCommit: false,
 		},
 		{
 			// A run resumed from a checkpoint older than align_probe has no
 			// reading at all: it must hold, never pass for a carried claim.
 			name:    "no align_probe reading at all: holds",
-			applied: true, probe: nil, commitSHA: "", headSHA: "ec2ff4b9e54e61f28f2cd43cd8281e18a5e0af0a",
+			applied: true, probe: nil, moved: false,
 			wantLost: true, wantCommit: false,
 		},
 		{
@@ -322,19 +320,19 @@ func TestDepUpdateGuardLostAlignmentPredicate(t *testing.T) {
 			// consuming code. Same unmoved head, opposite meaning — this one
 			// is genuinely green and must stay mergeable.
 			name:    "align applied nothing, head unmoved: the bump needed no alignment",
-			applied: false, probe: reading(false, false), commitSHA: "", headSHA: "086571ac3a6a62f62947ee0f53201b43210ae6cb",
+			applied: false, probe: reading(false, false), moved: false,
 			wantLost: false, wantCommit: false,
 		},
 		{
 			// The probe alone opens no hold: a file align made without claiming
 			// an alignment (a build dropping, say) is not an alignment lost.
 			name:    "align claimed nothing over a workspace holding a stray file: no alignment to lose",
-			applied: false, probe: reading(true, false), commitSHA: "", headSHA: "086571ac3a6a62f62947ee0f53201b43210ae6cb",
+			applied: false, probe: reading(true, false), moved: false,
 			wantLost: false, wantCommit: false,
 		},
 		{
 			name:    "align applied and the head moved: committed",
-			applied: true, probe: reading(true, false), commitSHA: "aaaa111122223333444455556666777788889999", headSHA: "ec2ff4b9e54e61f28f2cd43cd8281e18a5e0af0a",
+			applied: true, probe: reading(true, false), moved: true,
 			wantLost: false, wantCommit: true,
 		},
 		{
@@ -343,15 +341,15 @@ func TestDepUpdateGuardLostAlignmentPredicate(t *testing.T) {
 			// the two shas for this reason; alignment_lost must inherit it
 			// rather than settle for a non-empty sha.
 			name:    "align applied, agent echoes the unchanged head sha",
-			applied: true, probe: reading(true, false), commitSHA: "ec2ff4b9e54e61f28f2cd43cd8281e18a5e0af0a", headSHA: "ec2ff4b9e54e61f28f2cd43cd8281e18a5e0af0a",
+			applied: true, probe: reading(true, false), moved: false,
 			wantLost: true, wantCommit: false,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := eval(t, "alignment_lost", tc.applied, tc.probe, tc.commitSHA, tc.headSHA); got != tc.wantLost {
+			if got := eval(t, "alignment_lost", tc.applied, tc.probe, tc.moved); got != tc.wantLost {
 				t.Errorf("alignment_lost = %v, want %v", got, tc.wantLost)
 			}
-			if got := eval(t, "did_commit", tc.applied, tc.probe, tc.commitSHA, tc.headSHA); got != tc.wantCommit {
+			if got := eval(t, "did_commit", tc.applied, tc.probe, tc.moved); got != tc.wantCommit {
 				t.Errorf("did_commit = %v, want %v", got, tc.wantCommit)
 			}
 		})

@@ -769,9 +769,8 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		})
 	}
 
-	// The opposite half: when the head is demonstrably NOT the audited one, any
-	// standing commitment would land an unaudited revision. Leaving it is the
-	// expensive mistake, so these DO stand down — and say so.
+	// A failed gate on this run's own revision still stands down. A different
+	// head belongs to its newer run, even when this older run cannot vouch for it.
 	for _, tc := range []struct {
 		name  string
 		subs  map[string]string
@@ -780,7 +779,7 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 	}{
 		{"the branch moved after the gate", nil,
 			map[string]any{"headRefOid": "b33fb33fb33f", "autoMergeRequest": map[string]any{"enabledAt": "x"}},
-			"disablePullRequestAutoMerge"},
+			""},
 		{"the gate landed on a commit this run never audited",
 			map[string]string{"{{input.gate_sha}}": `"0ther5ha0000"`},
 			map[string]any{"autoMergeRequest": map[string]any{"enabledAt": "x"}},
@@ -789,12 +788,18 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		// null and a disarm is a no-op while the queue still merges the bump.
 		{"the branch moved and the PR is already queued", nil,
 			map[string]any{"headRefOid": "b33fb33fb33f", "mergeQueueEntry": map[string]any{"id": "MQE_1"}},
-			"dequeuePullRequest"},
+			""},
 	} {
-		t.Run("an unaudited head stands the commitment down: "+tc.name, func(t *testing.T) {
+		t.Run("a gate refusal stays within its revision: "+tc.name, func(t *testing.T) {
 			res, calls, _ := runWith(t, tc.subs, withState(tc.state), "", nil)
 			if res["armed"] != false {
 				t.Fatalf("want a refusal, got %v", res)
+			}
+			if tc.want == "" {
+				if len(mutations(calls)) != 0 {
+					t.Fatalf("a stale run touched a newer revision: %v", mutations(calls))
+				}
+				return
 			}
 			if !queried(calls, tc.want) {
 				t.Errorf("%s: %s was never sent — the forge still merges this PR the moment its checks go green (reason=%q)", tc.name, tc.want, res["reason"])
@@ -879,6 +884,26 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 			t.Errorf("a PR taken out of the queue must say so, got %q", reason)
 		}
 	})
+
+	// A run resumed after its push may hold against the old audited sha.
+	// It must not disarm or dequeue a newer run on the now-current head.
+	for _, verdict := range []string{"hold_lost_alignment", "hold_security", "committed"} {
+		for _, current := range []string{"d34db33f", "b33fb33fb33f", ""} {
+			t.Run("stand-down belongs to its revision/"+verdict+"/"+current, func(t *testing.T) {
+				res, calls, _ := runWith(t, map[string]string{"{{input.verdict}}": `"` + verdict + `"`, "{{input.gate_state}}": `"failure"`},
+					withState(map[string]any{"headRefOid": current, "autoMergeRequest": map[string]any{"enabledBy": map[string]any{"login": botLogin}}, "mergeQueueEntry": map[string]any{"id": "MQE_1"}}), "", nil)
+				wantTakeDown := current == "d34db33f"
+				for _, mutation := range []string{"disablePullRequestAutoMerge", "dequeuePullRequest"} {
+					if queried(calls, mutation) != wantTakeDown {
+						t.Fatalf("%s: old run changed the newer revision's commitment, or failed to stand down its own: %v", mutation, res)
+					}
+				}
+				if res["armed"] != false {
+					t.Fatalf("a refusal must not arm: %v", res)
+				}
+			})
+		}
+	}
 
 	// Off means no mandate, not "undo what someone else decided". The bot must
 	// not touch the forge at all.
