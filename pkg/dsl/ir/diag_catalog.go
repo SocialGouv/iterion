@@ -304,6 +304,8 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagSubbotLandingWithoutAutoMerge: {"Subbot landing fields without auto_merge", "A `merge_into:` / `merge_strategy:` on a subbot is read only when `auto_merge: true` arms the landing — either add the arming flag or drop the fields."},
 	DiagToolCapabilitiesInert:         {"Tool node capabilities nothing reads", "Give the node an `action:` whose native transport consumes the grant (a board.* action), or drop the list — on a command:/script: node or an HTTP action it is inert, which reads as configured."},
 	DiagActionConnectionOnNative:      {"Connection on a credential-free action", "Drop `connection:` — a native connector (board.*) holds no credential, so the alias authenticates nothing; it stays required for an HTTP connector."},
+	DiagNativeActionWithoutGrant:      {"Native board action without its capability", "Declare the capability the message names in the node's (or the workflow's) `capabilities:` list — without it the native transport refuses the call at run time (CAPABILITY_DENIED)."},
+	DiagActionRetryOnNative:           {"Retry on a native action", "Drop `retry:` — the retry ladder is the HTTP transport's (Retry-After, idempotency keys); a native action fails once, and the engine's recovery owns the longer wait."},
 }
 
 // HintFor returns the catalogue fix line for code, or "" when the code has

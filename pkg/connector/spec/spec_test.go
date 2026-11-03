@@ -111,6 +111,17 @@ func TestValidateRefusals(t *testing.T) {
 		wantMsg string
 	}{
 		{
+			// Prevents: a catalog package squatting a NATIVE connector id
+			// (ADR-151): where the transport is registered the engine's
+			// registry answers for the id and the package is silently
+			// hijacked; where it is not, the same action id is refused.
+			name: "a native connector id squatted",
+			mutate: func(p *spec.Package) {
+				p.Connector.ID = "board"
+			},
+			wantMsg: "reserved",
+		},
+		{
 			// Prevents: a request sent to a literally-templated URL.
 			name: "path placeholder with no parameter",
 			mutate: func(p *spec.Package) {

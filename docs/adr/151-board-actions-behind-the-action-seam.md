@@ -58,7 +58,8 @@ same tool-policy gate, `timeout:` and started/finish hooks. What a native
 action deliberately does **not** inherit is the retry ladder: its guards
 (`Retryable`, idempotency keys, ambiguous effects) are HTTP-answer
 semantics, and re-issuing a store refusal in a sleep loop is invented
-behaviour. `retry:` is inert on a native action; the DSL reference says so.
+behaviour. `retry:` is inert on a native action; [C334](../references/diagnostics.md)
+says so at compile time.
 One engine-level classification IS added: a refused grant is
 `CAPABILITY_DENIED`, typed by interface (`runtime.CapabilityDenial`, the
 `AmbiguousEffect` discipline — the engine never learns what the transport
@@ -88,10 +89,18 @@ second regime #78=A refuses. Consequences, both deliberate:
   "check-only by default, write by explicit opt-in" rule: nothing is
   granted by default beyond what the workflow already declares, and no
   mutating verb answers to a read grant.
-- A `capabilities:` list on a `command:`/`script:` tool node has no
-  consumer and warns ([C329](../references/diagnostics.md)) — an inert
-  grant reads as configured, which is how a node ends up looking authorized
-  for something nothing enforces.
+- A `capabilities:` list with no reader — a `command:`/`script:` recipe, or
+  an HTTP action whose authorization is the connection's credential — warns
+  ([C329](../references/diagnostics.md)) — an inert grant reads as
+  configured, which is how a node ends up looking authorized for something
+  nothing enforces.
+- The compiler also names the MISSING grant: a native board action whose
+  capability is declared neither on the node nor on the workflow warns at
+  compile time ([C333](../references/diagnostics.md), the C328 posture —
+  a warning with the remedy) what the runtime would refuse as
+  `CAPABILITY_DENIED`. The compile-time half reads
+  `boardcaps.ActionCapability`, held to the facade's bindings and the native
+  registry by the matrix test.
 
 ### 3. A native connector holds no credential — `connection:` is optional for it alone
 
@@ -99,10 +108,12 @@ The compiler knows the native ids through `ir.NativeConnectorIDs` — the
 registry's compile-time half, fed from the same vocabulary leaf
 (`boardcaps.ConnectorID`) so reading it links no dispatcher into a binary
 that compiles a `.bot` (#2857). For those ids, and only those, C261 does
-not fire; a `connection:` line written anyway warns ([C330](../references/diagnostics.md))
+not fire; a `connection:` line written anyway warns ([C332](../references/diagnostics.md))
 because the alias authenticates nothing. Every HTTP connector keeps the
 requirement — a connector call with no credential is not a call iterion
-can make. The three board transports then agree on authorization without
+can make. The id reservation runs the other way too: `spec.Validate`
+refuses a CATALOG package named `board`, which the registry would hijack
+where the transport is wired and refuse where it is not. The three board transports then agree on authorization without
 any of them holding a secret: the stdio child gates on its env grant, the
 HTTP handler on the minted per-run token, the action transport on the
 node's `capabilities:` — all three ending in the same `caps.Has`.

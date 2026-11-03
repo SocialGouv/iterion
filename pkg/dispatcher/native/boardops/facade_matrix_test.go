@@ -93,7 +93,9 @@ func TestFacadeEveryNativeToolIsExposedOrExemptedWithReason(t *testing.T) {
 
 // The facade's verbs gate on the SAME capability the tool names — the one
 // authorization surface #78=A decided: an action transport adds no second
-// regime beside the MCP ones.
+// regime beside the MCP ones. The compile-time half of that gate reads
+// boardcaps.ActionCapability (C333), so this test holds ALL THREE tables to
+// each other: binding, capability vocabulary, native registry.
 func TestFacadeExposedVerbsKeepTheToolsCapability(t *testing.T) {
 	for actionID, toolName := range actionBindings {
 		tool := toolByName[toolName]
@@ -102,6 +104,14 @@ func TestFacadeExposedVerbsKeepTheToolsCapability(t *testing.T) {
 		}
 		if boardcaps.ToolCapability[toolName] != tool.Capability {
 			t.Errorf("tool %q: boardcaps pins %q but allTools pins %q — the two halves of the vocabulary drifted", toolName, boardcaps.ToolCapability[toolName], tool.Capability)
+		}
+		cap, ok := boardcaps.ActionCapability[actionID]
+		if !ok {
+			t.Errorf("action %q has no entry in boardcaps.ActionCapability — the compiler cannot warn when its grant is missing (C333)", actionID)
+			continue
+		}
+		if cap != tool.Capability {
+			t.Errorf("action %q: boardcaps.ActionCapability pins %q but the native tool gates on %q — C333 would name the wrong grant", actionID, cap, tool.Capability)
 		}
 	}
 }

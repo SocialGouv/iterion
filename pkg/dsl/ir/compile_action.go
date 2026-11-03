@@ -117,6 +117,15 @@ func (c *compiler) compileToolAction(t *ast.ToolNodeDecl) []ActionParam {
 			"tool %q: `retry: %s` must be a number of extra attempts (e.g. `retry: 3`); "+
 				"the delay between them comes from the vendor's Retry-After, not from the workflow", t.Name, t.Retry)
 	}
+	if t.Retry != "" && native {
+		// The retry ladder's guards (Retry-After, idempotency keys, ambiguous
+		// effects) are HTTP-answer semantics; a native action's failure is a
+		// local refusal or a store error, never re-issued in a sleep loop
+		// (ADR-151). The property is therefore INERT here, and an inert
+		// property reads as configured — warn, don't refuse.
+		c.warnfAtProperty(DiagActionRetryOnNative, "tool", t.Name, "retry",
+			"tool %q: `retry: %s` has no effect on `action: %s` — the retry ladder is the HTTP transport's; a native action fails once", t.Name, t.Retry, t.Action)
+	}
 
 	seen := make(map[string]bool, len(t.Params))
 	out := make([]ActionParam, 0, len(t.Params))

@@ -148,3 +148,134 @@ workflow main:
 		t.Fatalf("malformed capability on a tool node: got %s, want C081", strings.Join(codesOf(diags), "\n"))
 	}
 }
+
+// C329's own sentence is the rule: the grant is read ONLY by the action
+// recipe's NATIVE transport. An HTTP action (a connection: authenticates it)
+// never reads node capabilities either, so capabilities: there is the same
+// inert grant reading as configured — the warning must cover it.
+func TestCapabilitiesOnAnHTTPActionWarnInert(t *testing.T) {
+	_, diags := compileSource(t, `
+tool comment:
+  action: forgejo.issue.comment
+  connection: forge_main
+  capabilities: [board.read]
+  params:
+    body: "done"
+
+workflow main:
+  entry: comment
+  comment -> done
+`)
+	if errs := errorsOnly(diags); len(errs) > 0 {
+		t.Fatalf("unexpected errors: %s", strings.Join(codesOf(errs), "\n"))
+	}
+	if !hasCode(diags, DiagToolCapabilitiesInert) {
+		t.Fatalf("capabilities: on an HTTP action: got %s, want C329 — the grant is inert there", strings.Join(codesOf(diags), "\n"))
+	}
+}
+
+// C331: a native board action whose grant is declared NOWHERE — not on the
+// node, not on the workflow — is refused CAPABILITY_DENIED at run time; the
+// compiler can say it earlier and name the capability (the C328 posture:
+// warn, with the remedy).
+func TestNativeBoardActionWithoutTheGrantAnywhere(t *testing.T) {
+	_, diags := compileSource(t, `
+tool plan:
+  action: board.issue.list
+
+workflow main:
+  entry: plan
+  plan -> done
+`)
+	if errs := errorsOnly(diags); len(errs) > 0 {
+		t.Fatalf("unexpected errors: %s", strings.Join(codesOf(errs), "\n"))
+	}
+	if !hasCode(diags, DiagNativeActionWithoutGrant) {
+		t.Fatalf("board.issue.list with no board.read anywhere: got %s, want C331", strings.Join(codesOf(diags), "\n"))
+	}
+}
+
+// The same action WITH the grant — on the node, or inherited from the
+// workflow — compiles without the warning.
+func TestNativeBoardActionWithTheGrantWarnsNot(t *testing.T) {
+	for name, src := range map[string]string{
+		"granted on the node": `
+tool plan:
+  action: board.issue.list
+  capabilities: [board.read]
+
+workflow main:
+  entry: plan
+  plan -> done
+`,
+		"inherited from the workflow": `
+tool plan:
+  action: board.issue.list
+
+workflow main:
+  capabilities: [board.read]
+  entry: plan
+  plan -> done
+`,
+		"a declared empty list is a DECLARED no-grant, not an inheritance": `
+tool plan:
+  action: board.issue.list
+  capabilities: []
+
+workflow main:
+  capabilities: [board.read]
+  entry: plan
+  plan -> done
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, diags := compileSource(t, src)
+			has := hasCode(diags, DiagNativeActionWithoutGrant)
+			if strings.Contains(name, "empty list") {
+				if !has {
+					t.Errorf("a declared capabilities: [] over a granting workflow must still warn — it is a no-grant (#1801), got %s", strings.Join(codesOf(diags), "\n"))
+				}
+				return
+			}
+			if has {
+				t.Errorf("the grant is in reach: got %s, want no C331", strings.Join(codesOf(diags), "\n"))
+			}
+		})
+	}
+}
+
+// C332: retry: is the HTTP ladder's — Retry-After, idempotency keys,
+// ambiguous effects. On a native action it is inert (a store refusal is not
+// re-issued in a sleep loop), and an inert property reads as configured.
+func TestRetryOnANativeActionWarns(t *testing.T) {
+	_, diags := compileSource(t, `
+tool plan:
+  action: board.issue.list
+  capabilities: [board.read]
+  retry: 3
+
+workflow main:
+  entry: plan
+  plan -> done
+`)
+	if errs := errorsOnly(diags); len(errs) > 0 {
+		t.Fatalf("unexpected errors: %s", strings.Join(codesOf(errs), "\n"))
+	}
+	if !hasCode(diags, DiagActionRetryOnNative) {
+		t.Fatalf("retry: on a native action: got %s, want C332", strings.Join(codesOf(diags), "\n"))
+	}
+	// timeout: IS honoured on a native action — no warning for it.
+	_, diags2 := compileSource(t, `
+tool plan:
+  action: board.issue.list
+  capabilities: [board.read]
+  timeout: 30s
+
+workflow main:
+  entry: plan
+  plan -> done
+`)
+	if hasCode(diags2, DiagActionRetryOnNative) {
+		t.Errorf("timeout: on a native action must not warn — it is honoured: %s", strings.Join(codesOf(diags2), "\n"))
+	}
+}

@@ -114,15 +114,18 @@ func cutActionConnector(action string) (string, bool) {
 // transport — the in-process counterpart of the HTTP path in this file.
 //
 // What is deliberately SHARED with the HTTP path: the policy gate, the
-// operation-usability check, the parameter rendering/coercion, the timeout,
-// the started/finish hooks and the output shape, so a `.bot` cannot tell
-// which transport served it by anything but the answer. What is deliberately
-// NOT shared: the retry ladder. Its guards (Retryable, idempotency keys,
-// ambiguous effects) are HTTP-answer semantics; a native call's failure is a
-// local refusal or a store error, and re-issuing it in a sleep loop would
-// invent the behaviour ADR-098's rounds six times refused to invent.
-// `retry:` is therefore inert on a native action — said in the docs and the
-// ADR rather than discovered on a dashboard.
+// operation-usability check, the parameter rendering/coercion, the timeout
+// and the started/finish hooks, so a `.bot` cannot tell which transport
+// served it by anything but the answer. The OUTPUT differs on purpose: the
+// HTTP shape carries `{status, pending}` (and `{items, complete}` when the
+// operation paginates) because a wire answer needs them; a native call has
+// no status to report and the facade does not paginate, so the node renders
+// `{data}` alone. What is deliberately NOT shared: the retry ladder. Its
+// guards (Retryable, idempotency keys, ambiguous effects) are HTTP-answer
+// semantics; a native call's failure is a local refusal or a store error,
+// and re-issuing it in a sleep loop would invent the behaviour ADR-098's
+// rounds six times refused to invent. `retry:` is therefore inert on a
+// native action — C334 says so at compile time, and the ADR says why.
 func (e *ClawExecutor) executeToolNodeNativeAction(ctx context.Context, node *ir.ToolNode, transport ActionTransport, input map[string]any) (map[string]any, error) {
 	pkg := transport.Package()
 	if pkg == nil {

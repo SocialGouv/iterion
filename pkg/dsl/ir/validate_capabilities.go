@@ -2,6 +2,7 @@ package ir
 
 import (
 	"regexp"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/boardcaps"
 	"github.com/SocialGouv/iterion/pkg/connection"
@@ -58,16 +59,14 @@ var capShapeRe = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)?$`)
 // engine executes itself rather than reaching over HTTP. Membership decides
 // one compile-time question — `connection:` is optional for these (C261 does
 // not fire) — and nothing else; the transport registry that executes them
-// lives in pkg/backend/model. A new native connector adds its id HERE as part
-// of its seam registration (G110: registration IS the seam — the compiler's
-// half of it), never an `if` at a call site.
+// lives in pkg/backend/model. A new native connector adds its id to the
+// vocabulary leaf as part of its seam registration (G110: registration IS
+// the seam — the compiler's half of it), never an `if` at a call site.
 //
-// The id strings come from the capability vocabulary leaf (iterion#2857):
-// reading them must not link the dispatcher into a binary that compiles a
-// .bot.
-var NativeConnectorIDs = map[string]bool{
-	boardcaps.ConnectorID: true,
-}
+// The set itself lives in pkg/boardcaps: the compiler AND the connector
+// validator read it, and reading it must not link the dispatcher into a
+// binary that compiles a .bot (iterion#2857).
+var NativeConnectorIDs = boardcaps.NativeConnectorIDs
 
 // validateCapabilities walks every agent/judge node in the workflow and
 // validates the shape and known-ness of each capability. Workflow-level
@@ -108,9 +107,33 @@ func (c *compiler) validateCapabilities(w *Workflow) {
 			for _, cap := range tn.Capabilities {
 				c.validateOneCapability(cap, tn.ID, "tool")
 			}
-			if len(tn.Capabilities) > 0 && tn.Action == "" {
+			// The grant has exactly ONE reader: the action recipe's NATIVE
+			// transport. A shell recipe has none — and neither does an HTTP
+			// action, whose authorization is the connection's credential:
+			// the warning's own sentence is the condition.
+			nativeAction := tn.Action != "" && NativeConnectorIDs[actionConnectorOf(tn.Action)]
+			if len(tn.Capabilities) > 0 && !nativeAction {
 				c.warnfAt(DiagToolCapabilitiesInert, tn.ID, "",
-					"tool %q declares `capabilities:` but its recipe is command:/script: — only the action: recipe's native transport reads the grant (ADR-151), so this list opens nothing", tn.ID)
+					"tool %q declares `capabilities:` but %s — only the action: recipe's native transport reads the grant (ADR-151), so this list opens nothing",
+					tn.ID, toolGrantReaderAbsent(tn))
+			}
+			// A native board action whose grant is declared NOWHERE is
+			// refused CAPABILITY_DENIED at run time; the compiler can say it
+			// earlier and name the capability (the C328 posture: a warning
+			// with the remedy, never a refusal — a hand-built catalog of one
+			// node is none of this check's business).
+			if nativeAction {
+				if want, known := boardcaps.ActionCapability[tn.Action]; known {
+					eff := tn.Capabilities
+					if eff == nil {
+						eff = w.Capabilities
+					}
+					if !capSet(eff)[want] {
+						c.warnfAt(DiagNativeActionWithoutGrant, tn.ID, "",
+							"tool %q: `action: %s` needs the %q capability, declared neither on the node nor on the workflow — at run time the native transport refuses it (CAPABILITY_DENIED). Declare %q in the node's (or the workflow's) capabilities: list",
+							tn.ID, tn.Action, want, want)
+					}
+				}
 			}
 			continue
 		}
@@ -152,6 +175,21 @@ func workflowSandboxRequiresHTTPBoard(w *Workflow) bool {
 // kanban capability (board.read, board.create, board.move, …).
 func isBoardCapability(cap string) bool {
 	return cap == "board" || (len(cap) > len("board.") && cap[:len("board.")] == "board.")
+}
+
+// actionConnectorOf splits the connector id off an action id.
+func actionConnectorOf(action string) string {
+	connector, _, _ := strings.Cut(action, ".")
+	return connector
+}
+
+// toolGrantReaderAbsent words WHY a tool node's grant has no reader, for
+// C329: the recipe decides, not the list.
+func toolGrantReaderAbsent(tn *ToolNode) string {
+	if tn.Action != "" {
+		return "its action: is served over HTTP, whose authorization is the connection's credential"
+	}
+	return "its recipe is command:/script:"
 }
 
 func (c *compiler) validateOneCapability(cap, nodeID, scope string) {

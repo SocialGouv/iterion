@@ -3606,9 +3606,18 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 			return zero, nil, fmt.Errorf("runner: workflow declares a native board action (board.*) but this runner resolves no tenant board (Config.BoardFor wired: %t, run tenant %q) — refusing rather than reading a pod-local board that is not the instance's",
 				r.cfg.BoardFor != nil, msg.TenantID)
 		}
-		if bt := runview.NativeBoardTransport(r.cfg.BoardFor(msg.TenantID), ""); bt != nil {
-			spec.ActionTransports = append(spec.ActionTransports, bt)
+		// BoardFor's contract INCLUDES answering nil (the grant names a board
+		// this process does not serve — hostmcp's 404 is the same answer one
+		// transport over). A wired resolver that answers nil for this tenant
+		// is the refusal's case exactly: resolve ONCE, here, and refuse
+		// rather than let the fs default in BuildExecutor read a pod-local
+		// board that is not the instance's.
+		board := r.cfg.BoardFor(msg.TenantID)
+		if board == nil {
+			return zero, nil, fmt.Errorf("runner: workflow declares a native board action (board.*) but the board resolver answered nil for tenant %q — the grant names a board this process does not serve; refusing rather than reading a pod-local board that is not the instance's",
+				msg.TenantID)
 		}
+		spec.ActionTransports = append(spec.ActionTransports, runview.NativeBoardTransport(board, ""))
 	}
 	// The sandboxed host-MCP transport (C082, #2632): mint a per-node token
 	// scoped to the node's capabilities and pinned to the run's tenant — the

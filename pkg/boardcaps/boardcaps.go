@@ -41,6 +41,31 @@ const (
 // every binary that compiles a .bot.
 const ConnectorID = "board"
 
+// NativeConnectorIDs is the set of connector ids a NATIVE action transport
+// owns (ADR-151): an in-process, credential-free connector the engine
+// executes itself rather than reaching over HTTP. Two readers, neither of
+// which may link the dispatcher: the DSL compiler (`connection:` optional
+// for these alone) and the connector-package validator (the id is RESERVED —
+// a catalog package squatting it would be hijacked where the transport is
+// registered and refused where it is not). A new native connector adds its
+// id HERE as part of its seam registration (G110: registration IS the seam),
+// never an `if` at a call site.
+var NativeConnectorIDs = map[string]bool{
+	ConnectorID: true,
+}
+
+// ActionCapability maps every action id the native board facade exposes to
+// the capability gating it — the compile-time half of the facade's grant:
+// the DSL compiler (C331) warns when a native board action's capability is
+// declared nowhere (neither the node nor the workflow), and the runtime
+// refusal it predicts is boardops' own caps.Has. boardops' matrix test holds
+// this table to the facade's bindings and to the native registry, in both
+// directions.
+var ActionCapability = map[string]string{
+	"board.issue.get":  BoardRead,
+	"board.issue.list": BoardRead,
+}
+
 var ToolCapability = map[string]string{
 	"add_labels":       BoardLabel,
 	"assign_issue":     BoardAssign,

@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/boardcaps"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 )
 
@@ -259,6 +260,15 @@ func (p *Package) ValidateGenerated() error {
 	}
 	if strings.TrimSpace(c.ID) == "" {
 		return fmt.Errorf("connector: missing id")
+	}
+	// A NATIVE connector id is owned by the engine's action-transport
+	// registry (ADR-151), never by a catalog package: where the transport
+	// is registered the registry answers for the id and the package is
+	// silently hijacked; where it is not, the same action id is refused.
+	// Refused here rather than at install so `connectors gen|validate`
+	// says it before a run does.
+	if boardcaps.NativeConnectorIDs[c.ID] {
+		return fmt.Errorf("connector %q: the id is reserved for a native in-process connector (ADR-151) — a catalog package cannot serve it", c.ID)
 	}
 	if strings.TrimSpace(c.Version) == "" {
 		return fmt.Errorf("connector %q: missing version", c.ID)
