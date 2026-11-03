@@ -2549,29 +2549,6 @@ tool arm_automerge:
   input: automerge_input
   output: automerge_output
 
-## Deterministic gate: only `safe` proceeds to alignment; suspicious /
-## malicious short-circuit to a HOLD comment (no code change).
-compute audit_gate:
-  input: audit_gate_input
-  output: audit_gate_output
-  expr:
-    safe: "input.verdict == 'safe'"
-    verdict: "input.verdict"
-
-## Deterministic gate on the escalation flag.
-compute align_gate:
-  input: align_gate_input
-  output: align_gate_output
-  expr:
-    needs_human: "input.needs_human"
-
-## Deterministic gate: a green DETERMINISTIC verify is the ONLY path to
-## commit (fail-closed: a missing verify.sh reports passed=false).
-compute validate_gate:
-  output: validate_gate_output
-  expr:
-    stable: "outputs.verify_run.passed"
-
 ## Did the commit step actually land anything? Answered from the shas, not
 ## from the agent's own account of its work: an agent that reports
 ## `committed: true` having pushed nothing would otherwise make every
@@ -2642,6 +2619,29 @@ tool commit_probe:
   language: py
   input: commit_probe_input
   output: commit_probe_output
+
+## Deterministic gate: only `safe` proceeds to alignment; suspicious /
+## malicious short-circuit to a HOLD comment (no code change).
+compute audit_gate:
+  input: audit_gate_input
+  output: audit_gate_output
+  expr:
+    safe: "input.verdict == 'safe'"
+    verdict: "input.verdict"
+
+## Deterministic gate on the escalation flag.
+compute align_gate:
+  input: align_gate_input
+  output: align_gate_output
+  expr:
+    needs_human: "input.needs_human"
+
+## Deterministic gate: a green DETERMINISTIC verify is the ONLY path to
+## commit (fail-closed: a missing verify.sh reports passed=false).
+compute validate_gate:
+  output: validate_gate_output
+  expr:
+    stable: "outputs.verify_run.passed"
 
 compute commit_check:
   output: commit_check_output
@@ -2867,6 +2867,7 @@ workflow dep_update_guard:
     sha: "{{outputs.commit.sha}}",
     head_sha: "{{outputs.prepare.head_sha}}",
   }
+
   commit_probe -> commit_check
 
   ## The verdict is what the comment, the badge and the required check all
