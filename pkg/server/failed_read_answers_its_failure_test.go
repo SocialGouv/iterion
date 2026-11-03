@@ -5,8 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -351,4 +357,263 @@ func TestGitHubOrgsStart_aFailedAuthorizeKeepsItsTextInTheLog(t *testing.T) {
 	if !strings.Contains(logged, "build the github orgs authorize URL") {
 		t.Errorf("the log does not name the failed operation: %q", logged)
 	}
+}
+
+// The sentinel's remaining consumers (#2655 R4b). resolveConnector is shared
+// by four routes, and only the two SSO ones classified its failure: the
+// GitHub-orgs routes answered every failure with "github (sign-in) is not
+// configured" — a CONFIGURATION fact — and logged nothing. The classification
+// now lives in ONE place for every JSON consumer (refuseConnector), the
+// callback keeping its own three-way banner split.
+//
+// Reachability, stated: with the fixed "github" slug those two routes cannot
+// reach ErrProviderUnavailable today — the per-org branch of the resolver
+// needs an "oidc-org-" slug (orgsso.ParseOIDCSlug), and the global registry
+// answers only ErrUnknownProvider. So the sentinel below is produced by the
+// REAL resolver on the slug that can carry it, and handed to the classifier
+// with each forge route's own refusal word.
+
+func TestGitHubOrgsRoutes_anUnreadableResolutionIsNotANotConfiguredAnswer(t *testing.T) {
+	s := newOrgSSOTestServer(t)
+	slug := seedEnabledOrgProvider(t, s)
+	s.orgSSO = failingProviderStore{Store: s.orgSSO, err: errStoreDown}
+	_, _, _, resolveErr := s.resolveConnector(context.Background(), slug)
+	if !errors.Is(resolveErr, oidc.ErrProviderUnavailable) {
+		t.Fatalf("the resolver answered %v, want the ErrProviderUnavailable the routes must classify", resolveErr)
+	}
+
+	for _, tc := range []struct{ name, msg string }{
+		{"the start route's word", "github sign-in is not configured on this server"},
+		{"the callback's word", "github not configured"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newServerErrorRecorder(s)
+			r := httptest.NewRequest("GET", "/api/forge/github/orgs/start", nil)
+			s.refuseConnector(w, r, "github", resolveErr, http.StatusBadRequest, tc.msg)
+
+			if w.Code != http.StatusInternalServerError {
+				t.Fatalf("code = %d body = %s, want 500: a resolution that FAILED is not the fact that github is not configured", w.Code, w.Body.String())
+			}
+			if body := w.Body.String(); strings.Contains(body, tc.msg) || strings.Contains(body, "p1") {
+				t.Errorf("the client read a configuration answer or the cause: %s", body)
+			}
+			logged := w.Diagnostic(t)
+			if !strings.Contains(logged, "p1") || !strings.Contains(logged, errStoreDown.Error()) {
+				t.Errorf("the cause did not survive in the log: %q, want the provider id and %q", logged, errStoreDown)
+			}
+		})
+	}
+}
+
+// TestGitHubOrgsStart_aConnectorThatIsNotThereKeepsItsRefusal is the mirror,
+// through the real route: a deployment with no github connector at all is the
+// fact the 400 exists for, and it must keep its word — and log nothing.
+func TestGitHubOrgsStart_aConnectorThatIsNotThereKeepsItsRefusal(t *testing.T) {
+	f := newAuthRouteFixture(t)
+	f.s.oidcRegistry = oidc.NewRegistry()
+	f.s.forgeStates = newForgeStateStore(time.Minute)
+	logs := captureFailureLogs(f.s)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/api/forge/github/orgs/start", nil)
+	r = r.WithContext(auth.WithIdentity(context.Background(), auth.Identity{UserID: f.user.User.ID}))
+	f.s.handleStartGitHubOrgs(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d body = %s, want 400 for a github connector this deployment does not have", w.Code, w.Body.String())
+	}
+	if body := w.Body.String(); !strings.Contains(body, "not configured") {
+		t.Errorf("body = %s, want the configuration refusal", body)
+	}
+	if logged := logs.String(); strings.Contains(logged, "resolve the SSO provider") {
+		t.Errorf("a provider nobody configured was logged as a failure: %q", logged)
+	}
+}
+
+// resolveConnectorConsumers pins the WIRING R4b closes, which the two
+// witnesses above cannot: they drive the classifier and the absent-connector
+// route, so a consumer that stops crossing refuseConnector — the exact defect
+// R4b removed from the two GitHub-orgs routes — lands with the suite green.
+// The sentinel is unreachable from those routes' fixed "github" slug (the
+// resolver's per-org branch needs an "oidc-org-" slug), so no end-to-end
+// request can witness their branch; what certifies it is the source they are
+// built from.
+//
+// Keyed by the enclosing function, valued by what its error branch must name:
+//
+//   - "refuseConnector" — the JSON consumers, which hand the branch to the one
+//     classifier: the sentinel owes the identity contract, anything else keeps
+//     the route's own word.
+//   - "ErrProviderUnavailable" — handleOIDCCallback, which answers a banner
+//     redirect and splits a third case (ErrProviderDisabled) the API routes
+//     have no word for, so it names the sentinel itself.
+var resolveConnectorConsumers = map[string]string{
+	"beginOIDCFlow":            "refuseConnector",
+	"handleStartGitHubOrgs":    "refuseConnector",
+	"handleGitHubOrgsCallback": "refuseConnector",
+	"handleOIDCCallback":       "ErrProviderUnavailable",
+}
+
+// resolveConnectorSite is one call of the resolver found in the package's
+// source, with what its error branch names.
+type resolveConnectorSite struct {
+	fn      string
+	file    string
+	line    int
+	guarded bool     // the call is followed by `if err != nil { … }`
+	names   []string // the identifiers that branch mentions
+}
+
+func TestResolveConnector_everyConsumerClassifiesAnUnavailableResolution(t *testing.T) {
+	sites, total := parseResolveConnectorSites(t)
+
+	// A consumer written in a shape the statement matcher below does not read
+	// (the call inside an if-init, or in a return) would be invisible to this
+	// guard while answering whatever it likes: the counts have to agree.
+	if len(sites) != total {
+		t.Fatalf("the package calls resolveConnector %d time(s) and this guard reads the error branch of %d of them: "+
+			"a call in a shape parseResolveConnectorSites does not match (an if-init, a return) is a consumer nothing "+
+			"certifies — teach the matcher that shape.", total, len(sites))
+	}
+	if len(sites) == 0 {
+		t.Fatal("no resolveConnector call found in the package source: the resolver was renamed or this guard is " +
+			"reading the wrong directory")
+	}
+
+	seen := map[string]bool{}
+	for _, st := range sites {
+		want, pinned := resolveConnectorConsumers[st.fn]
+		if !pinned {
+			t.Errorf("%s:%d: %s resolves a connector and is not in resolveConnectorConsumers — a new consumer owes the "+
+				"classification (refuseConnector for a JSON route) and a row here saying which.", st.file, st.line, st.fn)
+			continue
+		}
+		seen[st.fn] = true
+		if !st.guarded {
+			t.Errorf("%s:%d: %s does not test the resolver's error before using the connector", st.file, st.line, st.fn)
+			continue
+		}
+		if !slices.Contains(st.names, want) {
+			t.Errorf("%s:%d: the error branch of %s names %v, want %s — a resolution that FAILED is not the fact that "+
+				"the provider is absent, and this branch answers its route's word for \"absent\" to an unreachable "+
+				"provider store, with nothing logged for the operator.", st.file, st.line, st.fn, st.names, want)
+		}
+	}
+	for fn := range resolveConnectorConsumers {
+		if !seen[fn] {
+			t.Errorf("%s is pinned in resolveConnectorConsumers but resolves no connector in the package source: "+
+				"the row outlived its consumer.", fn)
+		}
+	}
+}
+
+// parseResolveConnectorSites reads every non-test file of the package once and
+// parses THAT text, so what it certifies is the source the package is built
+// from. It answers the sites it could read the error branch of, and the total
+// number of resolveConnector calls it saw.
+func parseResolveConnectorSites(t *testing.T) (sites []resolveConnectorSite, total int) {
+	t.Helper()
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read the package directory: %v", err)
+	}
+	fset := token.NewFileSet()
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		f, err := parser.ParseFile(fset, name, src, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			if c, ok := n.(*ast.CallExpr); ok && calleeName(c) == "resolveConnector" {
+				total++
+			}
+			return true
+		})
+		for _, decl := range f.Decls {
+			fd, ok := decl.(*ast.FuncDecl)
+			if !ok || fd.Body == nil {
+				continue
+			}
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				blk, ok := n.(*ast.BlockStmt)
+				if !ok {
+					return true
+				}
+				for i, st := range blk.List {
+					call := resolveConnectorAssign(st)
+					if call == nil {
+						continue
+					}
+					site := resolveConnectorSite{fn: fd.Name.Name, file: name, line: fset.Position(call.Pos()).Line}
+					if i+1 < len(blk.List) {
+						if ifs, ok := blk.List[i+1].(*ast.IfStmt); ok && isErrNotNil(ifs.Cond) {
+							site.guarded = true
+							site.names = identsIn(ifs.Body)
+						}
+					}
+					sites = append(sites, site)
+				}
+				return true
+			})
+		}
+	}
+	return sites, total
+}
+
+// resolveConnectorAssign answers the resolver call of a DIRECT assignment in a
+// statement list, so one call is read by its innermost block only.
+func resolveConnectorAssign(st ast.Stmt) *ast.CallExpr {
+	as, ok := st.(*ast.AssignStmt)
+	if !ok {
+		return nil
+	}
+	for _, rhs := range as.Rhs {
+		if c, ok := rhs.(*ast.CallExpr); ok && calleeName(c) == "resolveConnector" {
+			return c
+		}
+	}
+	return nil
+}
+
+func calleeName(c *ast.CallExpr) string {
+	switch fn := c.Fun.(type) {
+	case *ast.SelectorExpr:
+		return fn.Sel.Name
+	case *ast.Ident:
+		return fn.Name
+	}
+	return ""
+}
+
+func isErrNotNil(cond ast.Expr) bool {
+	be, ok := cond.(*ast.BinaryExpr)
+	if !ok || be.Op != token.NEQ {
+		return false
+	}
+	x, xok := be.X.(*ast.Ident)
+	y, yok := be.Y.(*ast.Ident)
+	return xok && yok && x.Name == "err" && y.Name == "nil"
+}
+
+// identsIn answers every identifier a branch mentions, selector tails
+// included, so a call (refuseConnector) and a sentinel reference
+// (oidc.ErrProviderUnavailable) are both found by name.
+func identsIn(n ast.Node) []string {
+	var out []string
+	ast.Inspect(n, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok {
+			out = append(out, id.Name)
+		}
+		return true
+	})
+	sort.Strings(out)
+	return slices.Compact(out)
 }

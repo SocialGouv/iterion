@@ -44,7 +44,9 @@ func (s *Server) handleStartGitHubOrgs(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	conn, _, _, err := s.resolveConnector(r.Context(), "github")
 	if err != nil {
-		httpError(w, http.StatusBadRequest, "github sign-in is not configured on this server")
+		// "not configured" is a fact only the resolver ANSWERED can state —
+		// the same split /start makes, through the same classifier.
+		s.refuseConnector(w, r, "github", err, http.StatusBadRequest, "github sign-in is not configured on this server")
 		return
 	}
 	state, _, _, err := oidc.GenerateStateAndPKCE()
@@ -101,7 +103,7 @@ func (s *Server) handleGitHubOrgsCallback(w http.ResponseWriter, r *http.Request
 	}
 	conn, _, _, err := s.resolveConnector(r.Context(), "github")
 	if err != nil {
-		httpError(w, http.StatusBadRequest, "github not configured")
+		s.refuseConnector(w, r, "github", err, http.StatusBadRequest, "github not configured")
 		return
 	}
 	ext, err := conn.ExchangeCode(r.Context(), code, s.githubOrgsRedirectURI(), "")

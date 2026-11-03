@@ -251,11 +251,7 @@ func (s *Server) beginOIDCFlow(w http.ResponseWriter, r *http.Request, name stri
 		// identity contract — 5xx, generic body, the cause in the log — so
 		// the operator sees an outage instead of users reading a 404 as a
 		// deleted SSO.
-		if errors.Is(err, oidc.ErrProviderUnavailable) {
-			s.identityFailure(w, r, fmt.Errorf("resolve the SSO provider %q: %w", name, err))
-			return
-		}
-		httpError(w, http.StatusNotFound, "unknown provider")
+		s.refuseConnector(w, r, name, err, http.StatusNotFound, "unknown provider")
 		return
 	}
 	state, verifier, _, err := oidc.GenerateStateAndPKCE()
