@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -65,8 +66,11 @@ func (r *Run) drainRunFilesDir(ctx context.Context, dir sandbox.ReadBackDir) err
 	}
 	// The sweep's anchor: the host dir's state BEFORE any archive landed.
 	// An entry it holds is the store's (or, on a bind, the pod's own) — a
-	// raced attempt is never allowed to take it.
-	before, err := readBackDirEntries(dir.HostDir)
+	// raced attempt is never allowed to take it. The directories are
+	// anchored beside the files: a raced extract builds dirs as readily as
+	// it writes files, and a dir the host already had is as untouchable as
+	// a file it already had.
+	before, beforeDirs, err := readBackDirEntries(dir.HostDir)
 	if err != nil {
 		return fmt.Errorf("kubernetes: drain %s: list host dir %s: %w", dir.ContainerPath, dir.HostDir, err)
 	}
@@ -77,7 +81,7 @@ func (r *Run) drainRunFilesDir(ctx context.Context, dir sandbox.ReadBackDir) err
 		if err == nil {
 			if attempt > 1 {
 				r.driver.logger.Warn("sandbox: run-files drain of %s succeeded on attempt %d/%d, after tar saw the tree change mid-archive", dir.ContainerPath, attempt, attempts)
-				if err := r.dropRacedDrainLeftovers(dir.HostDir, before, landed); err != nil {
+				if err := r.dropRacedDrainLeftovers(dir.HostDir, before, beforeDirs, landed); err != nil {
 					return err
 				}
 			}
@@ -197,6 +201,11 @@ func (r *Run) extractDrain(stream io.Reader, hostDst string, before map[string]b
 			if err := os.MkdirAll(abs, 0o755); err != nil {
 				return drained, landed, fmt.Errorf("create %s: %w", abs, err)
 			}
+			// A dir member is a member the extract wrote: the sweep keeps
+			// it — an empty dir the settled archive carries is content,
+			// not a raced leftover, and the sweep cannot tell the two
+			// apart except through this record.
+			landed[clean] = true
 		case tar.TypeReg:
 			// A directory where the archive carries a file is what a raced
 			// attempt's extract leaves behind; the file branch cannot write
@@ -320,44 +329,60 @@ func (r *Run) dropRacedDrainDir(hostDir string, before map[string]bool, abs stri
 }
 
 // readBackDirEntries lists the regular files and symlinks under dir,
-// relative to it and slash-separated — the two kinds the drain writes. The
-// drain only ever removes what it can prove it wrote, so this walk is the
-// host dir's state BEFORE any archive landed; an entry it already holds is
-// never a sweep candidate, whoever wrote it.
-func readBackDirEntries(dir string) (map[string]bool, error) {
-	entries := map[string]bool{}
-	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+// relative to it and slash-separated — the two kinds the drain writes —
+// and, beside them, the directories under it (never dir itself): a raced
+// extract builds directories as readily as it writes files, and the sweep
+// judges both kinds against the same pre-drain state. The drain only ever
+// removes what it can prove it wrote, so this walk is the host dir's state
+// BEFORE any archive landed; an entry it already holds is never a sweep
+// candidate, whoever wrote it.
+func readBackDirEntries(dir string) (files, dirs map[string]bool, err error) {
+	files = map[string]bool{}
+	dirs = map[string]bool{}
+	walkErr := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			if os.IsNotExist(err) && path == dir {
 				return filepath.SkipDir
 			}
 			return err
 		}
-		if d.Type().IsRegular() || d.Type()&os.ModeSymlink != 0 {
-			rel, relErr := filepath.Rel(dir, path)
-			if relErr != nil {
-				return relErr
+		rel, relErr := filepath.Rel(dir, path)
+		if relErr != nil {
+			return relErr
+		}
+		if d.IsDir() {
+			if rel == "." {
+				return nil
 			}
-			entries[filepath.ToSlash(rel)] = true
+			dirs[filepath.ToSlash(rel)] = true
+			return nil
+		}
+		if d.Type().IsRegular() || d.Type()&os.ModeSymlink != 0 {
+			files[filepath.ToSlash(rel)] = true
 		}
 		return nil
 	})
-	return entries, err
+	return files, dirs, walkErr
 }
 
 // dropRacedDrainLeftovers removes, after a retried drain, every regular
 // file or symlink under hostDir that was not there before the drain and
-// that the successful archive did not land: only a raced attempt can have
-// written it. tar never deletes, so without this sweep a file the pod
+// that the successful archive did not land — and every directory under
+// hostDir that neither the pre-drain state held nor the successful archive
+// carries, once it is empty: only a raced attempt can have built it, and
+// an empty shell of an attempt that failed is not the settled archive's
+// content. tar never deletes, so without this sweep a file or dir the pod
 // dropped between two attempts would survive in the run's collected set.
 // Candidates come from walking hostDir itself — never from names the pod
-// sent — and an entry the host already had is never touched.
-func (r *Run) dropRacedDrainLeftovers(hostDir string, before, landed map[string]bool) error {
-	now, err := readBackDirEntries(hostDir)
+// sent — and an entry the host already had is never touched. A candidate
+// dir that is not empty keeps what the settled archive (or the pre-drain
+// state) put under it and stands.
+func (r *Run) dropRacedDrainLeftovers(hostDir string, before, beforeDirs, landed map[string]bool) error {
+	nowFiles, nowDirs, err := readBackDirEntries(hostDir)
 	if err != nil {
 		return fmt.Errorf("list host dir after drain: %w", err)
 	}
-	for rel := range now {
+	for rel := range nowFiles {
 		if before[rel] || landed[rel] {
 			continue
 		}
@@ -375,6 +400,34 @@ func (r *Run) dropRacedDrainLeftovers(hostDir string, before, landed map[string]
 			return fmt.Errorf("remove raced leftover %s: %w", path, err)
 		}
 		r.driver.logger.Warn("sandbox: removed %s — landed by a raced drain attempt, absent from the one that succeeded", path)
+	}
+	// A child path sorts after its parent (the parent is a proper prefix),
+	// so the descending order removes nested raced dirs before the parents
+	// they empty — a whole raced subtree collapses in one pass.
+	racedDirs := make([]string, 0, len(nowDirs))
+	for rel := range nowDirs {
+		if beforeDirs[rel] || landed[rel] {
+			continue
+		}
+		racedDirs = append(racedDirs, rel)
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(racedDirs)))
+	for _, rel := range racedDirs {
+		path := filepath.Join(hostDir, filepath.FromSlash(rel))
+		entries, readErr := os.ReadDir(path)
+		if readErr != nil {
+			return fmt.Errorf("read raced dir %s: %w", path, readErr)
+		}
+		if len(entries) > 0 {
+			continue // holds landed or pre-drain content — not an empty shell
+		}
+		if back, backErr := filepath.Rel(hostDir, path); backErr != nil || back == ".." || strings.HasPrefix(back, ".."+string(os.PathSeparator)) {
+			return fmt.Errorf("refusing to remove %q: outside %s", path, hostDir)
+		}
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("remove raced dir %s: %w", path, err)
+		}
+		r.driver.logger.Warn("sandbox: removed %s — a directory a raced drain attempt built, absent from the one that succeeded", path)
 	}
 	return nil
 }

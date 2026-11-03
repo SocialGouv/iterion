@@ -216,6 +216,59 @@ func TestExportRunFilesSweepSurvivesATrailingSeparatorHostDir(t *testing.T) {
 	}
 }
 
+// TestExportRunFilesSweepsTheRacedAttemptEmptyDirs: a raced attempt's
+// extract builds directories as readily as it writes files — the archive's
+// dir members and the parents its file writes need. The file sweep empties
+// them; the dir sweep takes the emptied shells, while a dir the settled
+// archive carries (even a genuinely empty one) and a dir the host already
+// had stand.
+func TestExportRunFilesSweepsTheRacedAttemptEmptyDirs(t *testing.T) {
+	raced := podTree(t, map[string]string{
+		"report.md":            "# partial",
+		"stale/inner.md":       "raced into a dir the settled archive never carries",
+		"nested/deep/last.txt": "a raced file two dirs deep",
+	})
+	settled := podTree(t, map[string]string{"report.md": "# complete", "out/deep.bin": "\x09\x09"})
+	// The settled tree also carries a genuinely EMPTY dir member — content
+	// the settled archive names, whatever its file count.
+	if err := os.MkdirAll(filepath.Join(settled, "empty-member"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hostDst := t.TempDir()
+	// A dir the host already had predates the drain — never a candidate.
+	pre := filepath.Join(hostDst, "pre-drain")
+	if err := os.MkdirAll(pre, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Attempt 1 archives the mid-write tree and exits 1 on the measured
+	// race stderr; attempt 2 archives the tree the pod settled on.
+	kubectl, calls := exportShimSeq(t, []string{raced, settled}, 1, measuredRaceStderr)
+	r := drainRun([]sandbox.ReadBackDir{{ContainerPath: "/iterion/artifact-files", HostDir: hostDst}}, kubectl)
+
+	if err := r.ExportRunFiles(context.Background()); err != nil {
+		t.Fatalf("ExportRunFiles = %v, want the raced drain retried to success", err)
+	}
+	for _, gone := range []string{
+		"stale", "stale/inner.md",
+		"nested", "nested/deep", "nested/deep/last.txt",
+	} {
+		if _, err := os.Stat(filepath.Join(hostDst, filepath.FromSlash(gone))); err == nil {
+			t.Errorf("%s survived the retried drain — what only the raced attempt built is not the settled archive's content", gone)
+		}
+	}
+	for _, kept := range []string{
+		"report.md", "out", "out/deep.bin",
+		"empty-member", "pre-drain",
+	} {
+		if _, err := os.Stat(filepath.Join(hostDst, filepath.FromSlash(kept))); err != nil {
+			t.Errorf("%s is missing (%v) — the sweep took settled or pre-drain state", kept, err)
+		}
+	}
+	if calls() != 2 {
+		t.Errorf("the drain archived the pod %d times, want the raced attempt retried once", calls())
+	}
+}
+
 // TestExportRunFilesCuresATypeFlipBetweenAttempts: the same race the
 // retry exists for includes a path changing KIND between attempts — a
 // raced attempt's extract must not leave a member standing where the
