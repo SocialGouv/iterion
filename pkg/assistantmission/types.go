@@ -89,6 +89,12 @@ type DeliveryReceipt struct {
 	AttemptedAt *time.Time   `json:"attempted_at,omitempty" bson:"attempted_at,omitempty"`
 	CompletedAt *time.Time   `json:"completed_at,omitempty" bson:"completed_at,omitempty"`
 	Error       string       `json:"error,omitempty" bson:"error,omitempty"`
+	// WaitUntil holds a prepared receipt back until this instant: its last
+	// dispatch was refused, before anything was published, for a cause that
+	// clears by itself — a credential the resumed run sealed is at its
+	// concurrency cap — so it is asked again then instead of rejected. The
+	// mission's TTL bounds the wait.
+	WaitUntil *time.Time `json:"wait_until,omitempty" bson:"wait_until,omitempty"`
 }
 
 type ActionReceipt struct {
@@ -119,13 +125,18 @@ type ActionReceipt struct {
 	// version the pin named is gone and the apply resolved an older one
 	// instead — the substitution the receipt must never omit. 0 = the pin
 	// resolved as itself.
-	PinnedMissingFrom int              `json:"pinned_missing_from,omitempty" bson:"pinned_missing_from,omitempty"`
-	State             ReceiptState     `json:"state" bson:"state"`
-	CreatedAt         time.Time        `json:"created_at" bson:"created_at"`
-	UpdatedAt         time.Time        `json:"updated_at" bson:"updated_at"`
-	EventSeq          int64            `json:"event_seq,omitempty" bson:"event_seq,omitempty"`
-	Error             string           `json:"error,omitempty" bson:"error,omitempty"`
-	ResultDelivery    *DeliveryReceipt `json:"result_delivery,omitempty" bson:"result_delivery,omitempty"`
+	PinnedMissingFrom int          `json:"pinned_missing_from,omitempty" bson:"pinned_missing_from,omitempty"`
+	State             ReceiptState `json:"state" bson:"state"`
+	CreatedAt         time.Time    `json:"created_at" bson:"created_at"`
+	UpdatedAt         time.Time    `json:"updated_at" bson:"updated_at"`
+	EventSeq          int64        `json:"event_seq,omitempty" bson:"event_seq,omitempty"`
+	Error             string       `json:"error,omitempty" bson:"error,omitempty"`
+	// WaitUntil holds a prepared action back until this instant, on the
+	// terms of DeliveryReceipt.WaitUntil: a resume refused because the
+	// target's credential is at its concurrency cap is asked again, and
+	// spends none of the mission's action budget meanwhile.
+	WaitUntil      *time.Time       `json:"wait_until,omitempty" bson:"wait_until,omitempty"`
+	ResultDelivery *DeliveryReceipt `json:"result_delivery,omitempty" bson:"result_delivery,omitempty"`
 }
 
 type Mission struct {
