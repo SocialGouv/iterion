@@ -752,3 +752,55 @@ func TestCredSlotAdmission_ALaunchThatNeverPersistedGivesItsSlotBack(t *testing.
 	}
 	f.assertQueued(t, "run-next")
 }
+
+// unstampableStore loses every credential re-stamp.
+type unstampableStore struct{ store.RunStore }
+
+func (s *unstampableStore) Unwrap() store.RunStore { return s.RunStore }
+func (s *unstampableStore) SetRunCredStamp(context.Context, string, store.RunCredStamp) error {
+	return errors.New("cred stamp write lost")
+}
+
+// A resume whose re-stamp fails is refused when it would reserve a capped
+// key. The ledger's reconcile reads the run document's stamp: a run whose
+// key rotated since its launch, resumed on the new key with the stamp write
+// lost, holds a slot its document does not name — it reads as a run that
+// stopped spending the key, and the next launch's refusal evicts it while
+// it executes. The guarantee asserted is the cap's own: at most one run on
+// the key is alive. Red when the failed stamp is only logged.
+func TestCredSlotAdmission_AResumeWhoseReStampFailsHoldsNoSlot(t *testing.T) {
+	f := newCappedFixture(t, 1)
+	p := f.publisher()
+	if err := f.launch(t, p, "run-a", nil); err != nil {
+		t.Fatalf("launch run-a: %v", err)
+	}
+	f.park(t, "run-a")
+	// The key rotates: the record run-a launched on is replaced by a new
+	// one, with its own fingerprint and the same cap.
+	if err := f.keys.Delete(context.Background(), f.keyID); err != nil {
+		t.Fatalf("delete the launch's key: %v", err)
+	}
+	const rotatedFP = "fp-capped-rotated"
+	seedCappedKey(t, f.keys, f.sealer, cappedTeam, secrets.ProviderAnthropic, "sk-capped-rotated", rotatedFP, cappedKeyName, 1)
+	p.store = &unstampableStore{RunStore: f.spy}
+	resumeErr := f.resume(t, p, "run-a")
+	p.store = f.spy
+	if err := f.launch(t, p, "run-b", nil); err != nil {
+		t.Fatalf("launch run-b: %v", err)
+	}
+	var alive []string
+	for _, id := range []string{"run-a", "run-b"} {
+		if f.load(t, id).Status.HoldsCredentialSlot() {
+			alive = append(alive, id)
+		}
+	}
+	if len(alive) > 1 {
+		t.Fatalf("runs %v are alive on a key capped at one (resume err=%v): the resumed run held a slot its document did not name, and run-b's reconcile evicted it", alive, resumeErr)
+	}
+	if resumeErr == nil || !strings.Contains(resumeErr.Error(), "cred stamp write lost") {
+		t.Fatalf("resume err=%v, want the lost stamp named", resumeErr)
+	}
+	if r := f.load(t, "run-a"); r.Status != store.RunStatusFailedResumable {
+		t.Fatalf("run-a status=%s after a refused resume, want failed_resumable (rolled back)", r.Status)
+	}
+}

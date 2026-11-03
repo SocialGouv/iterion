@@ -4409,9 +4409,21 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// candidate refused with nothing to restore, env fallback) — and a
 	// stale stamp would hold a slot on a credential the run demonstrably
 	// no longer carries, for its whole remaining alive life. An empty
-	// re-resolution therefore CLEARS the stamp. Best-effort: a failed
-	// write degrades the ceiling toward uncapped, never the resume.
+	// re-resolution therefore CLEARS the stamp.
+	//
+	// Fail-closed when the resume reserves a capped key: the slot ledger's
+	// reconcile reads THIS stamp (store.CredSlotHolderStale), and a run
+	// whose document does not name a key it holds a slot of — a rotated
+	// key, a failed write — reads as a run that stopped spending it, so the
+	// next refusal on that key would evict it while it executes. With no
+	// capped key to reserve the write stays best-effort: a stale stamp then
+	// errs toward counting the run against a key it left (over-protection),
+	// never toward a cap held open.
 	if serr := p.store.SetRunCredStamp(secretsCtx, spec.RunID, creds.stamp()); serr != nil {
+		if len(creds.credSlots) > 0 {
+			w := creds.credSlots[0]
+			return fmt.Errorf("cloudpublisher: resume of run %s refused: re-stamp its credential fingerprints: %w — api-key(%s) %q carries max_concurrent_runs=%d, and a slot its run document does not name would be evicted while the run executes", spec.RunID, serr, w.provider, w.name, w.max)
+		}
 		p.logger.Warn("cloudpublisher: re-stamp cred fingerprints on run %s: %v", spec.RunID, serr)
 	}
 	// The review family this run FROZE at launch, judged against the
