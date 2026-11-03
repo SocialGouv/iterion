@@ -1,7 +1,47 @@
 name: product-docs
 display_name: Prody
 icon: 🧭
-version: 1.5.2
+version: 1.6.0
+## 1.6.0 — THE DELIVERY IS BOUNDED, not just the loop. `scope_check` is a
+## loop condition: a pass that never reverted its out-of-scope write and then
+## spent `max_passes` reached the PR tail anyway, and the push carried the
+## path — another product's tree, the editorial charter the product team
+## owns, or a `.github/workflows/**` file the App installation token refuses
+## with a raw 403 whose stderr names no grant. A new deterministic node,
+## `delivery_gate`, sits on the ONLY in-edge of `finalize_mr`, declares the
+## paths the delivery owns (the validated `product_dir` prefix, `.md` only,
+## never the editorial charter, never `.github/workflows/`, never a symlink) and ends
+## the run typed — `DELIVERY_PATHS_REFUSED`, every offending path named —
+## rather than pushing. Nothing is reverted and nothing is pushed: the page
+## commits stay on the run's branch. It fails CLOSED on every uncertainty, as
+## the scope gate does: no recorded base, no product directory, a tree it
+## cannot diff. The bound is the GRAPH's: an agent that chooses to push from
+## inside its own node is not bounded by a node. The engine's `.claude/`
+## mirror is skipped only while the run has not COMMITTED it — keyed on the
+## series rather than on tracked-ness, so the mirror's rewrite of a tracked
+## `.claude/` file no longer refuses a delivery on a path no pass can revert.
+## The refusal's path list is capped like the scope gate's, the count stays
+## honest, and its message says the page commits stay on the run's own branch
+## — a repo-targeted cloud run also banking them to `iterion/run-<id>` —
+## rather than claiming nothing was pushed.
+## The symlink term is read in BOTH windows, the worktree AND the committed
+## series: `git push HEAD:<branch>` delivers the series, so a link committed
+## and then removed from the worktree (or replaced by a regular file of the
+## same name) kept mode 120000 in the tree the push carries while the
+## worktree probe saw nothing — one `rm` disarmed the term. Both gates read
+## the series now, including `scope_check`, whose mirror skip is keyed on it
+## too: the delivery gate is the strict TAIL of the loop, and a path only one
+## of them refuses has no remediation route.
+## The refused forge tree narrows to `.github/workflows/`, the only subtree
+## the credential refuses (docs/auto-maintenance.md states the class rule),
+## and `scope_check` refuses it by name too, so a product directory covering
+## the forge tree is asked for the revert instead of converging on a
+## delivery the tail refuses. The symlink term is keyed on the DESTINATION
+## mode: a stale link the run removes is a cleanup the delivery carries, not
+## a refusal both nodes agree on for ever. `catalog_ingest` records git's
+## empty tree on an unborn HEAD — a freshly created docs repository the
+## engine runs in place — instead of no base, which failed the scope gate
+## closed on every pass and refused the delivery for ever.
 ## 1.5.2 — every body it posts on a forge ends with the run that wrote it:
 ## the evidence behind the text, and the way into the platform for a reader
 ## meeting it on their own repository (AGENTS.md, docs/agents/bots/run-link.md)

@@ -20,7 +20,7 @@ The bundles under `bots/`, then the skills they carry.
 | `copilot` | 💬 Copi | Conversational iterion assistant. | 0.2.14 |
 | `dep-update-guard` | 💂 Vetty | Reactive security + alignment guard for automated dependency-update PRs (Dependabot / Renovate). | 2.11.2 |
 | `devbox-setup` | 🧰 Devy | Bootstraps a reproducible dev environment for a repository. | 0.1.4 |
-| `docs-refresh` | 📚 Doki | Documentation alignment bot — one capable agent + a mission + truth gates only. | 3.7.2 |
+| `docs-refresh` | 📚 Doki | Documentation alignment bot — one capable agent + a mission + truth gates only. | 3.8.0 |
 | `e2e-coverage` | 🕸️ Endy | Autonomous end-to-end coverage completion — one capable agent, its natural flow, minimal framing. | 0.5.4 |
 | `evolve` | 🧬 Evoly | Strategic / architectural / visionary partner. | 0.1.5 |
 | `feature-dev` | 🛠️ Featurly | Autonomous end-to-end feature development — one capable agent, its natural flow, minimal framing. | 2.7.6 |
@@ -32,7 +32,7 @@ The bundles under `bots/`, then the skills they carry.
 | `issue-triage` | 🏷️ Triagy | Lightweight single-shot card triage. | 0.2.3 |
 | `modernize` | 🧱 Morphy | Carries a repository through a programme of modernisation LOTS — steps whose entry and exit are both deterministic gates — one… | 0.7.0 |
 | `prod-watch` | 👁️ Argus | Production watchdog for ONE deployed application (scheduled ticks, zero LLM in this slice — the compiled workflow contains no agent or… | 0.4.0 |
-| `product-docs` | 🧭 Prody | Functional documentation bot — one capable agent writes and maintains the BUSINESS-AUDIENCE documentation of a product ("what it does for… | 1.5.2 |
+| `product-docs` | 🧭 Prody | Functional documentation bot — one capable agent writes and maintains the BUSINESS-AUDIENCE documentation of a product ("what it does for… | 1.6.0 |
 | `revi-converse` | 💬 Revi (converse) | Conversational sibling of Revi (review-pr). | 0.1.6 |
 | `review-env` | 🌐 Envy | Deploys the CURRENT workspace's already-CI-published image to the operator-attached platform and hands back a LIVE https URL — a real… | 0.1.4 |
 | `review-pr` | 🔎 Revi | Read-only cross-family code reviewer. | 0.9.18 |

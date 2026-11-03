@@ -384,25 +384,48 @@ asked of the whole class rather than of a list, by
 [bots/forge_delivery_class_test.go](../bots/forge_delivery_class_test.go):
 every bundle that declares the `forge_token` secret **and** can deliver —
 a program of its own calling `git push`, a bundle shipping
-`skills/forge-mr-create.md`, or a `delivery_probe` already — owes one of two
-answers, and a bundle that joins the class owing neither reddens the suite.
+`skills/forge-mr-create.md`, or a `delivery_probe` already — owes one of three
+answers, and a bundle that joins the class owing none reddens the suite.
 
 | answer | who | what it buys |
 |---|---|---|
 | **probe the delivery** — ask the preflight above before pushing | `dep-update-guard`, `branch-improve-loop` | an answered denial becomes a typed hold; nothing unanswered ever does |
 | **own the paths delivered** — `DELIVERY_OWNED_PATHS` in the pushing program, which both stages and refuses from that tuple | `feed-watch`, `prod-watch`, `vuln-watch` (their state dir) | a `.github/workflows/**` path cannot be in the diff, so there is nothing to ask |
+| **gate the delivery** — the same declaration in a deterministic node standing on the only in-edge of the agent that pushes, exiting to a typed `fail` | `docs-refresh`, `product-docs` (their doc writeable-set) | the paths are refused BY NAME before the agent runs, so a run that would carry one ends on `DELIVERY_PATHS_REFUSED` instead of at the forge |
 
 The declaration is a name in the program, never a comment: the staging and the
 refusal read the tuple and nothing else, so narrowing it narrows the delivery —
 and a tuple widened to the repository root or `.github` is refused by the same
 guard, since a pathspec that can hold a workflow file buys the exemption while
-delivering exactly the diff the probe exists to refuse.
+delivering exactly the diff the probe exists to refuse. A gate earns the
+exemption on two further counts, both read off the compiled graph: it must
+**dominate** the delivery — cut its verdict edges and the delivery is
+unreachable, which is what a loop condition like a writeable-set gate never
+was — and its own exit must be a declared `fail` carrying a code, because an
+untyped refusal reads as the engine's generic `FAIL_NODE`.
 
-The pushers that still owe an answer are the ones where an agent writes the
-whole tree and opens the pull request itself, so there is no pull request for
-the preflight to be asked about yet. Each is named with that reason in
-`unprovenForgePushers`, and the guard refuses a stale entry as firmly as a
-missing one: the day one of them answers, the list has to lose it (#2437).
+A gate is the strict **tail** of the loop condition it stands behind, and
+owes it the same rule in the same **window**: the writeable-set gate is the
+only remediation route there is, so a path the gate refuses and the loop
+certifies has no cure at all — the campaign is never asked to revert it, the
+loop converges, and the run dies typed after the whole budget is spent, with
+nothing to widen. Same rule, different window is the same defect: both nodes
+are handed the base the entry node recorded, never one re-derived from the
+campaign's own commit messages, and both read it in one frame (the committed
+series and the worktree, `--no-renames`, `core.quotePath=false`). The two
+are therefore asserted EQUAL on one tree, bot by bot — the window included
+(`bots/delivery_gate_test.go`, `TestTheLoopGateAndTheDeliveryGateAgree`) —
+and what a gate refuses by name stays as narrow as the credential's own
+refusal: `.github/workflows/**`, not `.github/`.
+
+The pushers that still owe an answer are the ones whose delivery no pathspec
+can bound: an agent writes code across the whole tree and opens the pull
+request itself, so there is no pull request for the preflight to be asked
+about yet, and no narrow owned set to declare. Each is named with that reason
+in `unprovenForgePushers`, pointed at epic
+[#1409](https://github.com/SocialGouv/iterion/issues/1409) — the preflight
+widened to a (repo, credential) pair — and the guard refuses a stale entry as
+firmly as a missing one: the day one of them answers, the list has to lose it.
 
 ---
 
