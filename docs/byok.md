@@ -444,7 +444,13 @@ scheduler lanes already thread into the launch plan. The write validates
 against `trigger-spine` — the synthetic actor the spine resolves under —
 through the same `validateKeyOverrides`, so every arm above answers the
 subscription lane identically. On update, a request that omits the field
-keeps the stored pin; an empty map is the explicit clear.
+keeps the stored pin; an empty map is the explicit clear. Who may pin is the
+webhook lane's answer too: a team admin. The trigger routes' member rung
+admits automation work, and a pin is a credential decision — so a create
+that pins, and any edit but `enabled` of a subscription that holds a pin
+(the pins, or the bot, repo, vars, match or cadence the pinned credential is
+spent on), takes `canManageTeam`
+([REST surface](cloud-rest-api.md#triggers-event-driven-runs)).
 
 **A pin does not outlive its subject.** Deleting a pinned api key or stored
 secret sweeps every pin that names it — webhook configs and trigger

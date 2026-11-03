@@ -722,6 +722,18 @@ delete or generate one; `emit` additionally passes the launch gate, which
 enforces the rung a second time. The reads carry `requireAuth`; the
 subscription reads also scope by the request's tenant.
 
+**Credential pins take a team admin.** `key_overrides` / `secret_overrides`
+choose which stored api key or secret the platform spends on every fire —
+the decision a webhook's pins and the team's own keys and secrets already
+reserve to `canManageTeam` (team admin/owner, an admin of its org,
+super-admin). So a create that pins anything, and on a subscription that
+holds a pin any edit but `enabled` — the pins themselves (an add, a replace,
+a clear) or what the pinned credential is spent on (bot, repo, vars, match,
+cadence) — answers `403` to a member. A member still pauses, resumes and
+deletes a pinned subscription, and keeps every write on an unpinned one. An
+identity store that cannot judge the right answers `5xx`, never a `403`.
+Local mode, with no identity store, has no roles to read.
+
 **What a subscription reports.** The two reads are typed in the spec
 (`Subscription`, the list under `{"subscriptions": […]}`), so a generated
 client sees two different facts and not one: `last_error` / `last_error_at`

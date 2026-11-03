@@ -296,8 +296,8 @@ func uniquePinRecords(pins map[string]string) []string {
 // mayClearTenantPinsOrFail reports whether the identity may sweep a tenant's
 // credential pins — the right the delete routes already demand for the
 // record whose pins they sweep. The rows a sweep clears belong to the
-// tenant (its webhook configs and subscriptions, whose edit path is
-// canManageTeam); an org-tier tenant's rows answer to the org's admins;
+// tenant (its webhook configs and subscriptions, whose pins only
+// canManageTeam writes); an org-tier tenant's rows answer to the org's admins;
 // super-admins answer to every tenant, as on the record-scoped gate. The
 // record is gone — the tenant form is the only gate left, and it asks for
 // the same right creating a record there would. Only a refusal carries an
