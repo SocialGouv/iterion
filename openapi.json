@@ -371,6 +371,66 @@
         ],
         "type": "object"
       },
+      "BotSecretBinding": {
+        "properties": {
+          "allowed_hosts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "bot_id": {
+            "type": "string"
+          },
+          "context": {
+            "$ref": "#/components/schemas/ContextSource"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "degraded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "degraded_reason": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "secret_id": {
+            "type": "string"
+          },
+          "secret_name_for_workflow": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "bot_id",
+          "secret_id",
+          "secret_name_for_workflow",
+          "created_by",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
       "BotVars": {
         "properties": {
           "updated_at": {
@@ -949,6 +1009,28 @@
         "required": [
           "id",
           "kind"
+        ],
+        "type": "object"
+      },
+      "ContextSource": {
+        "properties": {
+          "git_url": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "secret_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "git_url",
+          "ref",
+          "path"
         ],
         "type": "object"
       },
@@ -4498,6 +4580,29 @@
           "number",
           "connection_id"
         ],
+        "type": "object"
+      },
+      "botBindingReq": {
+        "properties": {
+          "allowed_hosts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "context": {
+            "$ref": "#/components/schemas/ContextSource"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "secret_id": {
+            "type": "string"
+          },
+          "secret_name_for_workflow": {
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "botRolesSettingsView": {
@@ -13399,8 +13504,26 @@
       "get": {
         "operationId": "getTeamsByIdBotsByBotIdBindings",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "bindings": {
+                      "items": {
+                        "$ref": "#/components/schemas/BotSecretBinding"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "bindings"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/teams/{id}/bots/{bot_id}/bindings",
@@ -13427,10 +13550,40 @@
         }
       ],
       "post": {
+        "description": "Create a bot binding. One workflow name binds once per bot (secret or context alike). A context binding is refused 501 on a deployment that cannot materialise it.",
         "operationId": "postTeamsByIdBotsByBotIdBindings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/botBindingReq"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "default": {
-            "description": "Response"
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BotSecretBinding"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "400": {
+            "description": "the payload contradicts its kind (Validate), or secret_id / context.secret_id is not a team-scoped secret of this org"
+          },
+          "403": {
+            "description": "admin or owner required"
+          },
+          "409": {
+            "description": "a binding for this workflow name already exists on this bot"
+          },
+          "501": {
+            "description": "context_binding_not_materialised — a context binding on a deployment with no pinned-source fetcher wired would be an operator-visible no-op"
           }
         },
         "summary": "POST /api/teams/{id}/bots/{bot_id}/bindings",
@@ -13441,10 +13594,14 @@
     },
     "/api/teams/{id}/bots/{bot_id}/bindings/{binding_id}": {
       "delete": {
+        "description": "Delete a binding. 204 on success.",
         "operationId": "deleteTeamsByIdBotsByBotIdBindingsByBindingId",
         "responses": {
-          "default": {
-            "description": "Response"
+          "403": {
+            "description": "admin or owner required"
+          },
+          "404": {
+            "description": "no binding with this id on this bot"
           }
         },
         "summary": "DELETE /api/teams/{id}/bots/{bot_id}/bindings/{binding_id}",
@@ -13479,10 +13636,40 @@
         }
       ],
       "patch": {
+        "description": "Patch a binding's mutable payload (the name it resolves under, the secret or pinned source, the egress hosts). The merged record is re-validated against its kind. The degraded readout is the engine's — a PATCH neither sets nor clears it.",
         "operationId": "patchTeamsByIdBotsByBotIdBindingsByBindingId",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/botBindingReq"
+              }
+            }
+          },
+          "required": false
+        },
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BotSecretBinding"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "the merged record contradicts its kind, or the referenced credential is not bindable"
+          },
+          "403": {
+            "description": "admin or owner required"
+          },
+          "404": {
+            "description": "no binding with this id on this bot"
+          },
+          "409": {
+            "description": "the new name is already bound on this bot"
           }
         },
         "summary": "PATCH /api/teams/{id}/bots/{bot_id}/bindings/{binding_id}",

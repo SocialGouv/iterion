@@ -520,7 +520,11 @@ curl -X POST https://iterion.example.com/api/teams/$TEAM_ID/bots/review-pr/bindi
 
 UI path: **Integrations → Secrets** (`/integrations?tab=secrets`) → "Add
 team secret"; then **Integrations → Bot bindings** → pick review-pr →
-"Add binding" → pick the stored secret.
+"Add binding" → kind `secret` → pick the stored secret. The same dialog's
+`context` kind binds a pinned document instead (source repository, ref,
+path, optional read credential), and the bindings table shows each row's
+kind plus the engine's `degraded` flag when a launch could not
+materialise it.
 
 The full binding resolution chain (user > binding > team) and what
 `allowed_hosts` enforces is in
