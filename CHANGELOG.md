@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.4.1](https://github.com/SocialGouv/iterion/compare/v5.4.0...v5.4.1) (2026-11-03)
+
+### Bug Fixes
+
+* **claw:** the engine's in-process clients refuse the ambient header block ([#2244](https://github.com/SocialGouv/iterion/issues/2244)) ([7b4cded](https://github.com/SocialGouv/iterion/commit/7b4cded2a39afceff71596ad36a964e0c0a69019)), references [#1476](https://github.com/SocialGouv/iterion/issues/1476)
+
+    <details><summary>why</summary>
+
+    The sandbox crossing refuses an ambient credential header line since T10, but a non-sandboxed claw node resolved its clients in this process, where claw's own identity pass read ANTHROPIC_CUSTOM_HEADERS and CLAW_USER_AGENT from the operator's shell — a credential line in the block would authenticate the node's request in place of the credential the engine resolved, one backend away from the leak #1476 closed for claude_code.
+
+    </details>
+* **claw:** the UA chain's CLAW_USER_AGENT leg trims like claw's own read ([#2244](https://github.com/SocialGouv/iterion/issues/2244)) ([b618a13](https://github.com/SocialGouv/iterion/commit/b618a139e49a04ee08c32aba9b8a34d939f9b7ed))
+
+    <details><summary>why</summary>
+
+    engineClientUserAgent returned CLAW_USER_AGENT verbatim while claw's own read of the same variable (vendored identity.go ResolveIdentity) and the ITERION_LLM_USER_AGENT leg of the same function both trim: a padded value rode engine-resolved wires verbatim, and a whitespace-only one replaced claw's honest default instead of falling through to it.
+
+    </details>
+
 ## [5.4.0](https://github.com/SocialGouv/iterion/compare/v5.3.1...v5.4.0) (2026-11-02)
 
 ### Features
