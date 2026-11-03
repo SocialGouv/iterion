@@ -1,5 +1,6 @@
 // Shared a11y test helpers for the jsdom + axe-core suites (primitives.test +
 // views.test). NOT a test file — imported by them.
+import { within } from "@testing-library/dom";
 import axe from "axe-core";
 
 /**
@@ -92,9 +93,13 @@ export const AXE_BEST_PRACTICE_RULES = [
   // role="img" glyphs are out of its reach — this is the net for the brand
   // and avatar surfaces, not for them.
   "image-redundant-alt",
-  // #2591's own class: a control named only by title (or placeholder, which
-  // axe's `label` rule passes outright). This is the rule that makes the
-  // rendered net see what the source scan sees.
+  // Half of #2591's class: a control named only by `title` (or by
+  // `aria-describedby`). In axe 4.13 the rule is `none: ["title-only"]` over
+  // `!labelText && !!(title || ariaDescribedBy)` — it never reads
+  // `placeholder`, and `label`'s own `any` list accepts
+  // `non-empty-placeholder`, so a placeholder-only control passes BOTH rules
+  // outright. The rendered net therefore does not see what the source scan
+  // sees, and _interactive.ts is load-bearing rather than a belt on a brace.
   "label-title-only",
   // Two landmarks with the same role and no distinguishing name are one
   // landmark as far as navigation goes.
@@ -396,5 +401,398 @@ export async function expectNoViolationsStrict(
   }
   if (problems.length > 0) {
     throw new Error(`${label} has ${problems.join("\n\n")}`);
+  }
+}
+
+/**
+ * Two controls announcing the SAME accessible name — the repeated row action
+ * ("Delete", "Rotate", "Replay" on every row) that is #2591's class. axe has
+ * no rule for it at any level, so a colocated pin is the only thing that
+ * bites, and five suites hand-rolled the same sweep before this existed
+ * (Toolbar, Runs/detail, Runs/conversation, Runs/runList, ChatDock). They
+ * were not interchangeable copies: three enumerated their names, one read
+ * the candidate off the markup because the surface is too wide to enumerate,
+ * and one scoped itself to the controls that act on ONE row. The seam has to
+ * express all three or the copies stay.
+ *
+ * The discipline the copies earned, kept here: the name is READ off the
+ * element and then handed straight back to the real accessible-name
+ * algorithm (`getAllByRole`'s `name` option). A name this helper computed
+ * itself would prove nothing, and a candidate the algorithm does not answer
+ * to is a READING ERROR that throws — never a quiet pass.
+ */
+export interface UniqueNamesRole {
+  role: string;
+  /**
+   * The controls the sweep's ARITHMETIC claim (`expected`, `count`,
+   * `atLeast`) is about, for a surface whose other controls are not the
+   * author's subject: the row actions among a toolbar's buttons, say.
+   *
+   * It narrows what the count CLAIMS, never what the guard SEES — the
+   * collision verdict below judges every control the role sweep returned. A
+   * scope that also hid collisions would make this net blind to the one
+   * regression it exists for: a NEW repeated row action, whose name is by
+   * construction a name no existing scope mentions.
+   */
+  matching?: readonly RegExp[];
+  /**
+   * The names allowed to repeat, declared at the call site because the
+   * surface is the only thing that knows which of its controls act on one
+   * row: N identical controls all doing the same single thing (every row's
+   * bot-filter avatar) is not a defect. An entry that exempts nothing is
+   * reported — a waiver nobody can check is how a net like this rots.
+   */
+  repeatable?: readonly RegExp[];
+}
+
+/**
+ * The widget roles the COLLISION verdict sweeps whatever a call site
+ * declares. Every role here is one a user operates and whose name is
+ * therefore an announcement the surface owes to be distinct; a composite
+ * (`table`, `tablist`, `listbox`) is out, its items are in — judged among
+ * the items of their OWN composite ({@link COMPOSITE_OF}).
+ *
+ * `roles` stays required at the call site: it is the population the
+ * arithmetic claim is about, and a sweep with nothing declared could not
+ * state a count. This list is what stops that declaration from also deciding
+ * what the guard SEES.
+ */
+const SWEPT_WIDGET_ROLES = [
+  "button",
+  "link",
+  "checkbox",
+  "radio",
+  "switch",
+  "textbox",
+  "searchbox",
+  "combobox",
+  "spinbutton",
+  "slider",
+  "option",
+  "menuitem",
+  "menuitemcheckbox",
+  "menuitemradio",
+  "tab",
+] as const;
+
+/**
+ * The roles whose CONTENTS are part of their accessible name — the
+ * name-from-content step of the algorithm. A `textbox`, `combobox`,
+ * `spinbutton` or `slider` is named by nothing it contains: a `<select>`
+ * showing its options or a `role="combobox"` showing its value is as unnamed
+ * as an empty one, and a reader that offered their text would report a name
+ * nobody hears.
+ */
+const NAMED_BY_CONTENT = new Set([
+  "button",
+  "link",
+  "checkbox",
+  "radio",
+  "switch",
+  "option",
+  "tab",
+  "menuitem",
+  "menuitemcheckbox",
+  "menuitemradio",
+]);
+
+/**
+ * The composite an item's name is scoped by. A user reaches an option
+ * through its listbox, a radio through its group, a tab through its tablist
+ * and a menu item through its menu, so two "Overview" tabs in two tablists,
+ * two "global" options in two `<select>`s or two "Yes" radios in two groups
+ * are distinct announcements: the collision verdict judges such an item
+ * among the items of ITS composite, and an item outside any — a defect of
+ * its own, axe's — surface-wide. Native radios with no `radiogroup` form a
+ * group by `name` under one form owner.
+ */
+const COMPOSITE_OF: Record<string, string> = {
+  option: "select, datalist, [role=listbox]",
+  radio: "[role=radiogroup]",
+  tab: "[role=tablist]",
+  menuitem: "[role=menu], [role=menubar]",
+  menuitemcheckbox: "[role=menu], [role=menubar]",
+  menuitemradio: "[role=menu], [role=menubar]",
+};
+
+/** The scope a collision is judged in: a composite, a native radio group's key, or `null` for the whole surface. */
+function scopeOf(role: string, el: Element): Element | string | null {
+  const selector = COMPOSITE_OF[role];
+  if (!selector) return null;
+  const composite = el.closest(selector);
+  if (composite) return composite;
+  if (role === "radio" && el instanceof HTMLInputElement && el.name) {
+    const owner = el.form ? Array.from(el.ownerDocument.forms).indexOf(el.form) : -1;
+    return `radio\u0000${owner}\u0000${el.name}`;
+  }
+  return null;
+}
+
+export interface UniqueNamesScope {
+  /**
+   * The roles whose controls the sweep COUNTS, each judged on its own: a
+   * `button` and a `checkbox` carrying one name are two different
+   * announcements, and `getAllByRole(role, { name })` — the algorithm this
+   * helper defers to — is per-role by construction.
+   *
+   * It is the arithmetic claim's population, not the guard's eyes:
+   * {@link SWEPT_WIDGET_ROLES} is swept for collisions either way. An item
+   * of a composite (`option`, `radio`, `tab`, `menuitem*`) collides only
+   * with the items of its own composite ({@link COMPOSITE_OF}): a surface
+   * with two labelled `<select>`s sharing an option text needs no waiver.
+   */
+  roles: readonly (string | UniqueNamesRole)[];
+  /** Exactly these names, each read once: the enumerated form. */
+  expected?: readonly string[];
+  /** The exact number of controls the sweep must have read. */
+  count?: number;
+  /** A floor, for a surface too wide to enumerate. */
+  atLeast?: number;
+}
+
+/**
+ * The name this helper READS off an element, in the accessible-name
+ * algorithm's own precedence: `aria-labelledby`, then `aria-label`, then the
+ * control's `<label>`, then — for a role named by its content — its
+ * contents, then `title`.
+ *
+ * `aria-label ?? textContent` is what the copies used, and it is wrong in
+ * both directions on a generic sweep: a control named by `aria-labelledby`
+ * (RadioGroup's radiogroup, NavLinks, AdminNav) or by `title` alone — which
+ * axe's own `label` rule accepts as `non-empty-title` — reads back empty, so
+ * a correctly-named control would be reported as unnamed.
+ *
+ * Two deliberate departures from the algorithm, both of which surface as a
+ * loud failure rather than as a pass:
+ *  - `placeholder` is NOT read. The algorithm accepts it for an `<input>`
+ *    and that acceptance IS #2591 (axe's `label` rule passes a
+ *    placeholder-only control outright), so a control the placeholder alone
+ *    names reads back empty here and is reported.
+ *  - no stylesheet and no inline style is read, while the algorithm drops a
+ *    `display: none` descendant: a name this reader composes from text the
+ *    algorithm never sees comes back as a reading error.
+ */
+function readableName(el: Element, role: string): string {
+  const flat = (s: string | null | undefined): string => (s ?? "").replace(/\s+/g, " ").trim();
+  const labelledBy = el.getAttribute("aria-labelledby");
+  if (labelledBy) {
+    // accname recurses into each referenced element: its own aria-label
+    // wins over its contents there exactly as it does here, and an
+    // aria-hidden glyph inside it contributes nothing.
+    const parts = labelledBy
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((id) => {
+        const target = el.ownerDocument.getElementById(id);
+        return target ? flat(target.getAttribute("aria-label") || contentsOf(target)) : "";
+      })
+      .filter(Boolean);
+    if (parts.length > 0) return flat(parts.join(" "));
+  }
+  const ariaLabel = flat(el.getAttribute("aria-label"));
+  if (ariaLabel) return ariaLabel;
+  // Native association, the mechanism a form primitive's CONSUMER supplies
+  // (`<label htmlFor>` / an enclosing label), read as the algorithm reads
+  // a label's contents. `labels` is undefined on anything that is not a
+  // labelable control, which is the right answer for a button.
+  const labels = (el as HTMLInputElement).labels;
+  if (labels && labels.length > 0) {
+    const text = flat(Array.from(labels, (l) => contentsOf(l)).join(" "));
+    if (text) return text;
+  }
+  if (NAMED_BY_CONTENT.has(role)) {
+    const contents = flat(contentsOf(el));
+    if (contents) return contents;
+  }
+  return flat(el.getAttribute("title"));
+}
+
+/**
+ * The element's contents as the name-from-content traversal reads them:
+ * `aria-hidden` and `hidden` subtrees contribute nothing (an icon glyph in a
+ * span is not part of the button's name), a descendant carrying its own
+ * `aria-label` contributes that name instead of its text, and an `<img>`
+ * contributes its `alt`. Plain `textContent` disagrees with the algorithm on
+ * every icon-plus-text control the studio renders, and this reader's
+ * disagreements all come back as reading errors.
+ */
+function contentsOf(el: Element): string {
+  const parts: string[] = [];
+  const walk = (n: Node): void => {
+    if (n.nodeType === n.TEXT_NODE) {
+      parts.push(n.nodeValue ?? "");
+      return;
+    }
+    if (n.nodeType !== n.ELEMENT_NODE) return;
+    const e = n as Element;
+    if (e.getAttribute("aria-hidden") === "true" || e.hasAttribute("hidden")) return;
+    const own = (e.getAttribute("aria-label") ?? "").trim();
+    if (own) {
+      parts.push(` ${own} `);
+      return;
+    }
+    if (e.tagName === "IMG") {
+      parts.push(` ${(e.getAttribute("alt") ?? "").trim()} `);
+      return;
+    }
+    for (const child of Array.from(e.childNodes)) walk(child);
+  };
+  for (const child of Array.from(el.childNodes)) walk(child);
+  return parts.join("");
+}
+
+/** The element's own opening tag, for a failure a reader can act on. */
+function markerOf(el: Element): string {
+  return openingTag(el.outerHTML).replace(/\s+/g, " ").slice(0, 160);
+}
+
+/**
+ * Fail when two of `container`'s controls answer to one accessible name.
+ *
+ * `scope` must carry a non-vacuity claim that can FAIL on an empty surface:
+ * at least one role, and an `expected`, `count` or `atLeast` that asks for
+ * something. A sweep over a surface that rendered nothing finds no collision
+ * and says so, which is the one way this guard can be green while judging an
+ * empty tree — and a claim of zero (`expected: []`, `count: 0`, `atLeast: 0`)
+ * is that same sweep spelled as a declaration. An ABSENCE is asserted with
+ * `queryByRole`, never with this helper.
+ */
+export function expectUniqueAccessibleNames(
+  container: HTMLElement,
+  label: string,
+  scope: UniqueNamesScope,
+): void {
+  const claims = [
+    scope.expected === undefined ? undefined : scope.expected.length,
+    scope.count,
+    scope.atLeast,
+  ].filter((n): n is number => n !== undefined);
+  if (scope.roles.length === 0 || claims.length === 0 || claims.every((n) => n === 0)) {
+    throw new Error(
+      `${label}: a unique-names sweep declares a role and what it read (a non-empty expected, count or atLeast) — a claim of zero cannot fail on a surface that rendered nothing; assert an absence with queryByRole`,
+    );
+  }
+  const q = within(container);
+  const read: string[] = [];
+  const collisions = new Map<string, string>();
+  /** The `repeatable` entries that actually exempted a repeat, per role. */
+  const spent = new Set<string>();
+  const declaredRepeatable: { role: string; re: RegExp }[] = [];
+  const declaredRoles = new Set(
+    scope.roles.map((entry) => (typeof entry === "string" ? entry : entry.role)),
+  );
+  // The declared roles, then every OTHER widget role swept for collisions
+  // alone: a pin names the roles its author had in mind, and the control a
+  // later change adds is by construction one nobody declared — the five row
+  // surfaces #2591 qualified all declare `button`, so a repeated `checkbox`
+  // or `textbox` beside their buttons would answer to no sweep at all. This
+  // is the blindness `matching` already refuses, one level up.
+  const sweeps: { entry: string | UniqueNamesRole; counts: boolean }[] = [
+    ...scope.roles.map((entry) => ({ entry, counts: true })),
+    ...SWEPT_WIDGET_ROLES.filter((role) => !declaredRoles.has(role)).map((role) => ({
+      entry: role as string | UniqueNamesRole,
+      counts: false,
+    })),
+  ];
+  for (const { entry, counts } of sweeps) {
+    const role = typeof entry === "string" ? entry : entry.role;
+    const matching = typeof entry === "string" ? undefined : entry.matching;
+    const repeatable = typeof entry === "string" ? undefined : entry.repeatable;
+    for (const re of repeatable ?? []) declaredRepeatable.push({ role, re });
+    for (const el of q.queryAllByRole(role)) {
+      const name = readableName(el, role);
+      // Thrown BEFORE the arithmetic scope is applied: a control with no name
+      // under ANY mechanism is a defect of its own (axe `button-name`,
+      // `label`), and a scope that could hide one is the silent skip this net
+      // refuses.
+      //
+      // For a DECLARED role only: an unnamed control in a role the pin never
+      // asked about is that same defect, judged by axe's `label` /
+      // `button-name` in the entry beside this one and by the source scans.
+      // Reporting it here would make every pin its whole surface's auditor,
+      // and the collision verdict below is what the undeclared sweep is for.
+      if (!name) {
+        if (!counts) continue;
+        throw new Error(
+          `${label}: a ${role} carries no name to read — aria-labelledby, aria-label, its <label>, its contents (for a role named by them) and title are all empty, and a placeholder is not a name (#2591):\n  ${markerOf(el)}`,
+        );
+      }
+      const answering = q.queryAllByRole(role, { name });
+      if (!answering.includes(el)) {
+        // A DECLARED role's reading error is the author's to see. In an
+        // undeclared role it is a control this reader cannot judge, left to
+        // axe and the source scans exactly like an unnamed one.
+        if (!counts) continue;
+        throw new Error(
+          `${label}: the name read off a ${role} is not what the accessible-name algorithm computes — a reading error, never a pass:\n  read: ${JSON.stringify(name)}\n  ${markerOf(el)}`,
+        );
+      }
+      // Judged on EVERY control the role sweep returned, outside `matching`:
+      // the regression this net exists for is a new repeated row action, and
+      // its name is by construction one no existing scope mentions. An item
+      // of a composite is judged among the items of ITS composite.
+      const scope = scopeOf(role, el);
+      const peers =
+        scope === null ? answering : answering.filter((other) => scopeOf(role, other) === scope);
+      if (peers.length > 1) {
+        const exempt = (repeatable ?? []).filter((re) => re.test(name));
+        // Keyed by role and pattern SOURCE: one shared RegExp declared for
+        // two roles is live for the role whose name repeats, and dead for
+        // the other.
+        for (const re of exempt) spent.add(`${role}\u0000${re.source}`);
+        if (exempt.length === 0) {
+          const where =
+            scope instanceof Element
+              ? ` in one <${scope.tagName.toLowerCase()}${scope.getAttribute("role") ? ` role="${scope.getAttribute("role")}"` : ""}>`
+              : "";
+          // One entry per composite: two listboxes each repeating a name
+          // are two defects, reported apart.
+          const first = answering.findIndex((other) => scopeOf(role, other) === scope);
+          collisions.set(
+            `${role}\u0000${name}\u0000${first}`,
+            `  ${role} "${name}" — ${peers.length} controls answer to it${where}`,
+          );
+        }
+      }
+      // The arithmetic claim is about the DECLARED roles: a count that moved
+      // with every undeclared widget on the surface would be a number its
+      // author could not state.
+      if (!counts) continue;
+      if (matching && !matching.some((re) => re.test(name))) continue;
+      read.push(name);
+    }
+  }
+
+  const problems: string[] = [];
+  if (collisions.size > 0) {
+    problems.push(
+      `controls sharing one accessible name — qualify each with the row it acts on:\n${[...collisions.values()].join("\n")}`,
+    );
+  }
+  const dead = declaredRepeatable.filter(({ role, re }) => !spent.has(`${role}\u0000${re.source}`));
+  if (dead.length > 0) {
+    problems.push(
+      `repeatable patterns that exempted nothing — no name on this surface repeats under them, drop them:\n${dead
+        .map(({ role, re }) => `  ${role} ${re}`)
+        .join("\n")}`,
+    );
+  }
+  if (scope.expected !== undefined) {
+    const declared = [...scope.expected].sort();
+    const found = [...read].sort();
+    if (declared.join("\n") !== found.join("\n")) {
+      problems.push(
+        `the names read are not the ones declared:\n  declared: ${JSON.stringify(declared)}\n  read:     ${JSON.stringify(found)}`,
+      );
+    }
+  }
+  if (scope.count !== undefined && read.length !== scope.count) {
+    problems.push(`read ${read.length} control(s), not the ${scope.count} declared`);
+  }
+  if (scope.atLeast !== undefined && read.length < scope.atLeast) {
+    problems.push(`read ${read.length} control(s), fewer than the ${scope.atLeast} declared`);
+  }
+  if (problems.length > 0) {
+    throw new Error(`${label} — accessible names: ${problems.join("\n\n")}`);
   }
 }

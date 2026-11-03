@@ -2,7 +2,10 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { expectNoViolationsStrict } from "@/__tests__/a11y/axeHelpers";
+import {
+  expectNoViolationsStrict,
+  expectUniqueAccessibleNames,
+} from "@/__tests__/a11y/axeHelpers";
 
 import GateInboundPayload from "./GateInboundPayload";
 
@@ -40,14 +43,11 @@ describe("gate inbound payload naming", () => {
   });
 
   it("leaves no two controls sharing an accessible name", () => {
-    mountPayload();
-    // Matched by the real accessible-name algorithm, one button per name,
-    // and no other button on the surface.
-    const expected = ["Copy JSON of Review notes", "Copy JSON of Budget"];
-    for (const name of expected) {
-      expect(screen.getAllByRole("button", { name })).toHaveLength(1);
-    }
-    expect(screen.getAllByRole("button")).toHaveLength(expected.length);
+    const { container } = mountPayload();
+    expectUniqueAccessibleNames(container, "Runs · conversation gate payload", {
+      roles: ["button"],
+      expected: ["Copy JSON of Review notes", "Copy JSON of Budget"],
+    });
   });
 });
 

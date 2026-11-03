@@ -2,7 +2,10 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { expectNoViolationsStrict } from "@/__tests__/a11y/axeHelpers";
+import {
+  expectNoViolationsStrict,
+  expectUniqueAccessibleNames,
+} from "@/__tests__/a11y/axeHelpers";
 import {
   referenceForRoute,
   type TypedReference,
@@ -93,7 +96,7 @@ describe("assistant dock naming", () => {
   });
 
   it("separates two conversations of the same bot, tab and close alike", () => {
-    render(
+    const { container } = render(
       <main>
         <ConversationStrip
           conversations={SAME_BOT}
@@ -106,14 +109,18 @@ describe("assistant dock naming", () => {
         />
       </main>,
     );
-    for (const name of [
-      "Copi 1",
-      "Copi 2",
-      "Close Copi 1 conversation and stop its run",
-      "Close Copi 2 conversation and stop its run",
-    ]) {
-      expect(screen.getAllByRole("button", { name })).toHaveLength(1);
-    }
+    expectUniqueAccessibleNames(container, "ChatDock · conversation strip", {
+      roles: ["button"],
+      expected: [
+        "Copi 1",
+        "Copi 2",
+        "Close Copi 1 conversation and stop its run",
+        "Close Copi 2 conversation and stop its run",
+        // The strip's own affordance, which the hand-rolled loop swept past:
+        // an enumerated sweep says what the WHOLE surface renders.
+        "New conversation",
+      ],
+    });
     // The visible text is untouched: both tabs still read "Copi".
     expect(screen.getByRole("button", { name: "Copi 1" }).textContent).toBe("Copi");
   });

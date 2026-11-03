@@ -292,13 +292,29 @@ export default function DLQAdminPage() {
                           <div className="text-fg-subtle">{formatSize(m.size_bytes)}</div>
                         </Td>
                         <Td align="right" className="space-x-1 whitespace-nowrap">
-                          <Button size="sm" variant="ghost" onClick={() => void inspect(m.seq)}>
+                          {/* An incident console repeats three identical
+                              words per parked message: the accessible name
+                              carries the sequence number the control acts
+                              on, visible word first (SC 2.5.3), visible
+                              text untouched. The toggle's name follows its
+                              own label through both states. */}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            aria-label={
+                              openSeq === m.seq
+                                ? `Hide payload of message ${m.seq}`
+                                : `Inspect message ${m.seq}`
+                            }
+                            onClick={() => void inspect(m.seq)}
+                          >
                             {openSeq === m.seq ? "Hide payload" : "Inspect"}
                           </Button>
                           <Button
                             size="sm"
                             variant="ghost"
                             disabled={busy}
+                            aria-label={`Replay message ${m.seq}`}
                             onClick={() => void replay(m)}
                           >
                             Replay
@@ -308,6 +324,7 @@ export default function DLQAdminPage() {
                             variant="ghost"
                             className="text-danger"
                             disabled={busy}
+                            aria-label={`Delete message ${m.seq}`}
                             onClick={() => void discard(m)}
                           >
                             Delete

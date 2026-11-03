@@ -117,9 +117,14 @@ export default function RunningTable({
                   )}
                 </Td>
                 <Td align="right">
+                  {/* One "Cancel" per in-flight run: the accessible name
+                      carries the row's identifier — the first column, what
+                      the operator reads the row by — with the visible word
+                      first (SC 2.5.3). Visible text untouched. */}
                   <Button
                     variant="danger"
                     size="sm"
+                    aria-label={`Cancel ${r.identifier}`}
                     onClick={() => onCancel(r.issue_id)}
                   >
                     Cancel
