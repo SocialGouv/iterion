@@ -144,8 +144,9 @@ UI path: Admin → Organisations → Acme → toggle status.
 
 ### 1.5 Audit log
 
-Every control-plane mutation is recorded
-([pkg/audit/audit.go](../pkg/audit/audit.go)):
+Every control-plane mutation is recorded, and every sign-in — accepted or
+refused, every provider ([pkg/audit/audit.go](../pkg/audit/audit.go),
+[ADR-157](adr/157-authentication-events-join-the-audit-log.md)):
 
 ```bash
 # All platform-level actions (super-admin and org status changes).
@@ -174,12 +175,67 @@ call sites for the full list):
 > · `webhook.created` · `webhook.updated` · `webhook.rotated` · `webhook.deleted`
 > · `pat.created` · `pat.revoked`
 > · `dlq.replayed` · `dlq.discarded`
+> · `auth.login.succeeded` · `auth.login.failed`
 
-Two scopes: tenant rows (visible to the org's admins at
-`GET /api/teams/{id}/audit`) and platform rows (super-admin only at
-`/api/admin/audit`). Each carries the actor's IP + user-agent + a small
-`meta` blob (never secret material). Mongo TTL: **400 days**
+Two scopes: tenant rows and platform rows (super-admin only at
+`/api/admin/audit`). A tenant row is keyed on a team or on an org, and each
+route lists its own key: `GET /api/teams/{id}/audit` (team admins) the
+team-keyed rows, `GET /api/orgs/{id}/audit` (org admins) the org-keyed
+ones — the org mutations and every accepted sign-in. Each row carries the
+actor's IP + user-agent + a small `meta` blob (never secret material).
+Mongo TTL: **400 days**
 ([pkg/audit/audit.go:RetentionDays](../pkg/audit/audit.go)).
+
+Sign-ins follow their own rules. An accepted one (`auth.login.succeeded`)
+is a tenant row on the **org** the session is active in — read it at
+`GET /api/orgs/{id}/audit`, not on the team route — actor = the account,
+`meta.method` one of `password` `github` `google` `oidc` `org_sso`
+`desktop` (`oidc` is every deployment-wide connector but the two built-in
+ones, the one the deployment names `sso` included; `org_sso` is an org's
+own IdP), `meta.flow` when the session is the side effect of a
+registration, a password change or a reset, `meta.provider` the connector
+slug, `meta.team_id` the active team. A refused one (`auth.login.failed`)
+is a **platform** row with no tenant — a refusal names no org, and an org
+admin must not read attempts on addresses that are not their members —
+with `meta.reason` typed (`unknown_account`, `bad_password`, `locked`,
+`disabled`, `password_change_required`, `link_required`, `sso_restricted`,
+`ticket_invalid`, `reset_token_invalid`, `agent_binding`,
+`password_changed_sign_in`, `error`, …) and, where the attempt named an
+address, `meta.subject_hash`: a 16-hex **peppered** HMAC of the address
+under a key derived from the signing key, never the address itself and
+never a bare hash of it (reversible by dictionary). The digest lets you
+follow one campaign on one address:
+
+```bash
+curl "https://iterion.example.com/api/admin/audit?action=auth.login.failed&from=2026-11-01T00:00:00Z"
+```
+
+A refusal's `target_id` is the account only where the server resolved it
+(the self-service password change, a desktop ticket's account, a password
+change committed without a session — `password_changed_sign_in`, beside
+its `user.password_reset` / `user.password_changed` row); an attempt by
+address names the address only through the digest. A session refresh
+writes no row (the session lineage records it). An OIDC callback refused
+before an identity resolves — an expired or replayed state, a failed code
+exchange, an error the IdP returned — writes no row: it names no subject,
+and the server's `Warn` log is its trace; the login-CSRF guard
+(`agent_binding`) is the exception and is recorded.
+
+**What the recorded IP is, and what bounds a flood.** No deployment
+setting yet trusts a forwarded header: the server's trusted-proxy list is
+wired to no chart value or environment variable (#2673). The recorded IP
+is therefore the immediate peer's address **and port** — behind an
+ingress, the ingress pod's — and the per-IP rate-limit bucket is keyed on
+that same value, so it is per TCP connection rather than per client. What
+bounds the rows today, per route: `POST /api/auth/login` and
+`POST /api/auth/password/change` also limit per attempted address (burst
+5, 5/min), so one address cannot be hammered faster than that, but
+attempts spread over many addresses and fresh connections are not bounded;
+`POST /api/auth/password/reset/confirm` and
+`POST /api/auth/desktop/exchange` have the per-IP bucket only;
+`POST /api/auth/register` its own (burst 3); the OIDC callback has no
+limiter, and each of its rows costs a full IdP round trip. A request the
+limiter throttles (429) reaches no sign-in and writes no row.
 
 ### 1.6 User admin — force a password rotation
 

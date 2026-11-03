@@ -228,14 +228,14 @@ func (s *Service) RequestPasswordReset(ctx context.Context, email string) error 
 // revocation runs anyway and the link stays spent (commitUnconfirmed).
 func (s *Service) ConfirmPasswordReset(ctx context.Context, token, newPassword, userAgent, ip string) (LoginResult, error) {
 	if s.resets == nil {
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonResetUnavailable)
 	}
 	if len(newPassword) < MinPasswordLen {
 		return LoginResult{}, ErrPasswordWeak
 	}
 	rec, err := s.resets.GetByTokenHash(ctx, HashRefreshToken(token))
 	if errors.Is(err, ErrResetNotFound) {
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonResetTokenInvalid)
 	}
 	if err != nil {
 		return LoginResult{}, fmt.Errorf("auth: read the reset record: %w", err)
@@ -245,13 +245,16 @@ func (s *Service) ConfirmPasswordReset(ctx context.Context, token, newPassword, 
 	if now.After(rec.ExpiresAt) || rec.ConsumedAt != nil {
 		// A spent link refuses here, before anything below: a replay of an
 		// old link must not sign the account out everywhere.
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonResetTokenInvalid)
 	}
 	// Every read runs before the link is claimed: a read that fails is
 	// answered as the failure it is and leaves the link usable.
 	u, err := s.store.GetUser(ctx, rec.UserID)
-	if errors.Is(err, identity.ErrNotFound) || (err == nil && u.Status == identity.UserStatusDisabled) {
-		return LoginResult{}, ErrInvalidCredentials
+	if errors.Is(err, identity.ErrNotFound) {
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonUnknownAccount)
+	}
+	if err == nil && u.Status == identity.UserStatusDisabled {
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonDisabled)
 	}
 	if err != nil {
 		return LoginResult{}, fmt.Errorf("auth: read the account of reset %s: %w", rec.ID, err)
@@ -274,7 +277,8 @@ func (s *Service) ConfirmPasswordReset(ctx context.Context, token, newPassword, 
 		return LoginResult{}, fmt.Errorf("auth: consume reset %s: %w", rec.ID, err)
 	}
 	if !ok {
-		return LoginResult{}, ErrInvalidCredentials
+		// Another redemption of the same link claimed it first.
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonResetTokenInvalid)
 	}
 	// A reset means the old credential may be compromised: every live
 	// session ends before the new password lands.
@@ -296,7 +300,7 @@ func (s *Service) ConfirmPasswordReset(ctx context.Context, token, newPassword, 
 		IfNotStatus:  []identity.UserStatus{identity.UserStatusDisabled},
 	})
 	if errors.Is(err, identity.ErrUserStatusChanged) {
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonDisabled)
 	}
 	if err != nil {
 		return LoginResult{}, s.commitUnconfirmed(ctx, rec.UserID, err)
@@ -333,8 +337,11 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 		return LoginResult{}, ErrPasswordWeak
 	}
 	u, err := s.store.GetUser(ctx, userID)
-	if errors.Is(err, identity.ErrNotFound) || (err == nil && u.Status != identity.UserStatusActive) {
-		return LoginResult{}, ErrInvalidCredentials
+	if errors.Is(err, identity.ErrNotFound) {
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonUnknownAccount)
+	}
+	if err == nil && u.Status != identity.UserStatusActive {
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonWrongStatus)
 	}
 	if err != nil {
 		return LoginResult{}, fmt.Errorf("auth: read user %s: %w", userID, err)
@@ -344,15 +351,15 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 	// feeds the same brute-force counter the sign-in reads.
 	if passwordProofLocked(s.now(), u) {
 		_, _ = VerifyPassword(currentPassword, dummyHash)
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonLocked)
 	}
 	ok, err := VerifyPassword(currentPassword, u.PasswordHash)
 	if err != nil {
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonCorruptPasswordHash)
 	}
 	if !ok {
 		s.countPasswordProofFailure(ctx, u)
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonBadPassword)
 	}
 	hash, err := HashPassword(newPassword)
 	if err != nil {
@@ -368,7 +375,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 		return LoginResult{}, fmt.Errorf("auth: read user %s: %w", userID, err)
 	}
 	if u.Status != identity.UserStatusActive || u.PasswordHash != verified {
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonCredentialReplaced)
 	}
 	// The session's reads run before the change commits: a read that fails
 	// then leaves the password and every session as they were.
@@ -396,8 +403,11 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 		},
 		IfPasswordHash: &verified,
 	})
-	if errors.Is(err, identity.ErrUserStatusChanged) || errors.Is(err, identity.ErrUserPasswordChanged) {
-		return LoginResult{}, ErrInvalidCredentials
+	if errors.Is(err, identity.ErrUserPasswordChanged) {
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonCredentialReplaced)
+	}
+	if errors.Is(err, identity.ErrUserStatusChanged) {
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonWrongStatus)
 	}
 	if err != nil {
 		return LoginResult{}, s.commitUnconfirmed(ctx, userID, err)

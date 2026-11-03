@@ -25,15 +25,16 @@ const (
 )
 
 // Event is one audit row. Action is a stable dotted token
-// (e.g. "org.status_changed", "byok.created", "webhook.rotated") —
-// the queryable contract; Meta carries small action-specific details
-// (never secret material).
+// (e.g. "org.status_changed", "byok.created", "webhook.rotated",
+// "auth.login.failed") — the queryable contract; Meta carries small
+// action-specific details (never secret material, and never an
+// identifier a sign-in attempted in clear: its peppered digest).
 type Event struct {
 	ID        string         `bson:"_id" json:"id"`
 	Scope     Scope          `bson:"scope" json:"scope"`
 	TenantID  string         `bson:"tenant_id,omitempty" json:"tenant_id,omitempty"`
 	ActorID   string         `bson:"actor_id,omitempty" json:"actor_id,omitempty"`
-	ActorKind string         `bson:"actor_kind,omitempty" json:"actor_kind,omitempty"` // user|super_admin|webhook|system
+	ActorKind string         `bson:"actor_kind,omitempty" json:"actor_kind,omitempty"` // user|super_admin|webhook|system|anonymous (a refused sign-in)
 	Action    string         `bson:"action" json:"action"`
 	Target    string         `bson:"target,omitempty" json:"target,omitempty"` // kind of object acted on (org|user|webhook|secret|binding|byok|member|invitation|token)
 	TargetID  string         `bson:"target_id,omitempty" json:"target_id,omitempty"`
