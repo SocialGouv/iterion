@@ -1,6 +1,8 @@
 package server
 
 import (
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -74,6 +76,18 @@ func TestTheSpecCarriesTheBotBindingsSurface(t *testing.T) {
 	patchProps := schemas["botBindingPatchReq"].(map[string]any)["properties"].(map[string]any)
 	if _, exposed := patchProps["kind"]; exposed {
 		t.Errorf("the PATCH schema exposes kind as writable — the route ignores it: %v", patchProps)
+	}
+	// The exact writable set, pinned in BOTH directions: a dropped property
+	// teaches a generated client the field does not exist (a write it can no
+	// longer send), an extra one teaches a write the route ignores.
+	var got []string
+	for name := range patchProps {
+		got = append(got, name)
+	}
+	sort.Strings(got)
+	want := []string{"allowed_hosts", "context", "secret_id", "secret_name_for_workflow"}
+	if !slices.Equal(got, want) {
+		t.Errorf("botBindingPatchReq properties = %v, want exactly %v", got, want)
 	}
 
 	// The record the list serves: the kind discriminator, the context
