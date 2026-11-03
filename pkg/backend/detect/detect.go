@@ -179,6 +179,7 @@ func detectOpenCode(prov []ProviderStatus) BackendStatus {
 		st.Hints = []string{"opencode CLI not found on PATH"}
 		return st
 	}
+	st.BinaryFound = true
 
 	var sources []string
 	if openCodeOwnLoginPresent() {
@@ -321,6 +322,7 @@ func detectPi(prov []ProviderStatus) BackendStatus {
 		st.Hints = []string{"pi CLI not found on PATH"}
 		return st
 	}
+	st.BinaryFound = true
 
 	var sources []string
 	if kind := piOwnLoginKind(); kind != AuthNone {
@@ -519,10 +521,11 @@ func detectClaudeCode(ctx context.Context) BackendStatus {
 	// covers claude.ai web-auth on hosts where no file/keychain entry surfaced.
 	if claudeAuthStatusFn(ctx, binPath) {
 		return BackendStatus{
-			Name:      BackendClaudeCode,
-			Available: true,
-			Auth:      AuthOAuth,
-			Sources:   []string{"claude auth status (claude.ai OAuth)", "PATH:" + binPath},
+			Name:        BackendClaudeCode,
+			Available:   true,
+			BinaryFound: true, // this branch just RAN it
+			Auth:        AuthOAuth,
+			Sources:     []string{"claude auth status (claude.ai OAuth)", "PATH:" + binPath},
 		}
 	}
 	return st

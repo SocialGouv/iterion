@@ -152,3 +152,26 @@ func TestInventoryFamiliesKeepTheFolding(t *testing.T) {
 		t.Errorf("zai + codex forfait must back claude and gpt: %v", fams)
 	}
 }
+
+// The breakdown's TEXT is the refusal's value (#1221, review MEDIUM): a
+// claude pin on a host with the CLI but NO credential at all must name the
+// facade route in its auth state — neutralising the z.ai guard of the facade
+// route leaves every DECISION identical and only the text loses it.
+func TestClaudePinWithoutAnyCredentialNamesTheFacadeRouteAsAuth(t *testing.T) {
+	inv := InventoryFromReport(detect.Report{
+		Backends: []detect.BackendStatus{{Name: detect.BackendClaudeCode, BinaryFound: true}},
+	})
+	err := RefusePinnedFamily(FamilyClaude, inv, AtLaunch)
+	if err == nil {
+		t.Fatal("a claude pin with no credential at all must refuse")
+	}
+	msg := err.Error()
+	// The facade route is the one the z.ai key WOULD have served: its state
+	// line must say auth, next to the primary's own auth.
+	if !strings.Contains(msg, "z.ai facade pair") || !strings.Contains(msg, llmroute.TriggerAuth) {
+		t.Errorf("the refusal must name the facade route in its auth state: %v", msg)
+	}
+	if !strings.Contains(msg, "no z.ai credential") {
+		t.Errorf("the facade route's detail must name the missing z.ai credential: %v", msg)
+	}
+}

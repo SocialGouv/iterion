@@ -41,6 +41,11 @@ func TestFrozenPinNoCredentialServesRefusesTheResume(t *testing.T) {
 	if strings.Contains(err.Error(), "remove the pin") {
 		t.Errorf("the resume refusal offers the launch's remedy, which a resume cannot take: %v", err)
 	}
+	// Nor its PROVENANCE: at resume the frozen value is an operator's pin or
+	// the resolver's own choice, and the message cannot tell which.
+	if strings.Contains(err.Error(), "is pinned") {
+		t.Errorf("the resume refusal claims an operator pin it cannot know: %v", err)
+	}
 }
 
 // The run's FROZEN inputs are the launch's, byte for byte, after the

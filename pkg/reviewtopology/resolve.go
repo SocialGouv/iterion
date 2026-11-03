@@ -359,7 +359,8 @@ func RefuseFrozenPin(wf *ir.Workflow, frozen map[string]any, inv FamilyInventory
 	if strings.EqualFold(inputOverride(frozen, VarReviewMode), ModeDual) {
 		return nil
 	}
-	return RefusePinnedFamily(inputOverride(frozen, VarMonoFamily), inv, AtResume)
+	name := strings.ToLower(strings.TrimSpace(inputOverride(frozen, VarMonoFamily)))
+	return judgeFamily(name, frozenHead(name), inv, AtResume)
 }
 
 // familyList renders the credential-backed families for a refusal:

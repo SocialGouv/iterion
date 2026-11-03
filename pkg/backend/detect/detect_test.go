@@ -936,3 +936,24 @@ func TestProvidersIsDetectsProviderList(t *testing.T) {
 		t.Errorf("Providers() = %+v, want Detect's %+v", got, want)
 	}
 }
+
+// BinaryFound is the field the launch-time route judgement (#1221) reads to
+// tell "unavailable" (no CLI) from "auth" (a CLI with nothing to spend): it
+// must hold in EVERY branch that proves the binary — including step 3, where
+// the forfait is proven only by `claude auth status` (no credentials file,
+// no Keychain entry) and the probe just RAN the binary it would deny.
+func TestDetect_ClaudeCodeAuthStatusStepKeepsBinaryFound(t *testing.T) {
+	isolateEnv(t)
+	stubBinary(t, &findClaudeBinary, "/fake/claude")
+	// No credentials file, no Keychain entry: step 3 alone proves the login.
+	stubSource(t, &claudeKeychainOAuthSource, "")
+	stubClaudeAuthStatus(t, true)
+
+	st := findBackend(t, Detect(context.Background()), BackendClaudeCode)
+	if !st.Available {
+		t.Fatal("claude auth status proved the login: claude_code must be available")
+	}
+	if !st.BinaryFound {
+		t.Error("step 3 ran the binary and reports BinaryFound=false — a pinned node reads the slot as CLI-absent (#1221)")
+	}
+}

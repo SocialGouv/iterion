@@ -240,8 +240,15 @@ func judgeFamily(family, head string, inv FamilyInventory, when PinMoment) error
 }
 
 // pinHead / resolvedHead phrase the provenance of the judged family.
+// frozenHead is the resume's: the frozen value is pinned at launch BY
+// SOMEONE — an operator's --var or the resolver's own choice — and the
+// resume cannot tell which, so it names both rather than claim a pin.
 func pinHead(family string) string {
 	return fmt.Sprintf("mono_family %q is pinned", family)
+}
+
+func frozenHead(family string) string {
+	return fmt.Sprintf("mono_family %q is frozen in this run's inputs (an operator's pin or the resolver's own choice at launch)", family)
 }
 
 func resolvedHead(family string) string {
