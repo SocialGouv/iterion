@@ -118,7 +118,12 @@ any of them holding a secret: the stdio child gates on its env grant, the
 HTTP handler on the minted per-run token, the action transport on the
 node's `capabilities:` — all three ending in the same `caps.Has`.
 
-### 4. The facade publishes what filing and verifying need, read-only first
+### 4. The facade publishes what filing and verifying need — reads first, then the writes
+
+The first lot shipped the read verbs; the second (this ticket's other half,
+with #2388) adds the mutating ones, each gated by the capability the native
+tool already names. The bot's `capabilities:` declaration IS the opt-in; a
+node granted nothing reads nothing (A15's check-only stays the default).
 
 `boardops` publishes its facade as a `spec.Package` built **in code** —
 the operations this binary implements are not a file on disk, which would
@@ -130,9 +135,9 @@ resource/verb matrix of the offer:
 |---|---|---|---|---|---|
 | issue | list | `board.issue.list` | read | `board.read` | **exposed** |
 | issue | get | `board.issue.get` | read | `board.read` | **exposed** |
-| issue | create | `board.issue.create` | create | `board.create` | second lot |
-| issue | label | `board.issue.label` | update | `board.label` | second lot |
-| issue | transition | `board.issue.transition` | update | `board.move` | second lot |
+| issue | create | `board.issue.create` | create | `board.create` | **exposed** (second lot) |
+| issue | label | `board.issue.label` | update | `board.label` | **exposed** (second lot; the RELATIVE `add_labels`, never an absolute rewrite) |
+| issue | transition | `board.issue.transition` | update | `board.move` | **exposed** (second lot) |
 
 The genericity owes a **two-way test matrix** and has one
 (`facade_matrix_test.go`): every exposed action id maps to a native tool of
@@ -140,7 +145,15 @@ The genericity owes a **two-way test matrix** and has one
 exemption **with its reason** (`nativeExemptions`) — a catalog with
 invisible holes being the other way to be wrong. The read half of
 `list_labels` is exempted as out of the filing/verifying scope; the nine
-mutating tools are exempted as the second lot, each naming its capability.
+mutating tools the facade does not serve (close, comment, assign, the
+absolute set_labels, …) stay exempted, each naming its capability.
+
+The mutating verbs carry one structural guarantee, stated because the
+engine's generic recovery retries a failed node once: every facade operation
+validates all of its arguments before its one store mutation, and nothing
+fallible follows it — **a returned error means no effect**, so a retried
+call files exactly one card. The facade adds no idempotency machinery on top;
+the matrix test pins the property against a store that fails each mutation.
 
 Admission (`runview.admitConnectorActions`) learned the seam's shape: a
 native action with no registered transport is a **wiring** refusal (the

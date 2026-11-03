@@ -89,6 +89,11 @@ func rgaaBotScripts(t *testing.T) map[string]string {
 		if !ok {
 			continue
 		}
+		// An action node has no script: the native board transport executes
+		// it in the engine (ADR-151), and there is no js to extract.
+		if tn.Action != "" {
+			continue
+		}
 		if strings.TrimSpace(tn.Script) == "" || tn.Language != "js" {
 			t.Fatalf("tool node %s is not a js script (language %q): the bot's glue is JavaScript on purpose — the slim sandbox image has no python", id, tn.Language)
 		}
@@ -3160,19 +3165,23 @@ L.out({ ok: true, cases: out });
 		return
 	}
 
-	t.Run("publish_verify_holds_the_judge_s_report_to_the_plan", func(t *testing.T) {
+	t.Run("publish_verify_reads_the_board_not_a_report", func(t *testing.T) {
 		issues, _ := plan["issues"].([]any)
-		var titles []string
+		var board []any
 		for _, i := range issues {
-			titles = append(titles, fmt.Sprint(i.(map[string]any)["title"]))
+			board = append(board, map[string]any{"title": fmt.Sprint(i.(map[string]any)["title"])})
 		}
-		out := rgaaOK(t, "publish_verify", rgaaRunNode(t, scripts, "publish_verify", site, env, in(map[string]any{"input.issues": issues, "input.created": titles[:1], "input.existing": titles[1:], "input.failed": []string{}})))
-		if rgaaInt(out["created"]) != 1 || rgaaInt(out["existing"]) != 1 {
+		out := rgaaOK(t, "publish_verify", rgaaRunNode(t, scripts, "publish_verify", site, env, in(map[string]any{"input.issues": issues, "input.board": board})))
+		if rgaaInt(out["present"]) != len(board) || rgaaInt(out["planned"]) != len(board) {
 			t.Fatalf("verify: %v", out)
 		}
 		probe := rgaaRunCopy(t, run)
-		rgaaRefused(t, "publish_verify", rgaaRunNode(t, scripts, "publish_verify", site, env, in(map[string]any{"input.run_dir": probe, "input.issues": issues, "input.created": titles[:1], "input.existing": []string{}, "input.failed": []string{}})), "BOARD_PUBLISH_INCOMPLETE")
-		rgaaRefused(t, "publish_verify", rgaaRunNode(t, scripts, "publish_verify", site, env, in(map[string]any{"input.run_dir": probe, "input.issues": issues, "input.created": titles, "input.existing": []string{}, "input.failed": []string{"something"}})), "BOARD_PUBLISH_INCOMPLETE")
+		rgaaRefused(t, "publish_verify", rgaaRunNode(t, scripts, "publish_verify", site, env, in(map[string]any{"input.run_dir": probe, "input.issues": issues, "input.board": board[:1]})), "BOARD_PUBLISH_INCOMPLETE")
+		// A shared board legitimately carries cards the plan does not
+		// (earlier runs, a cap's held-back titles): the verifier reads
+		// coverage, not possession.
+		wider := append(append([]any{}, board...), map[string]any{"title": "[a11y] RGAA 9.9 — un titre que le plan ne contient pas"})
+		rgaaOK(t, "publish_verify", rgaaRunNode(t, scripts, "publish_verify", site, env, in(map[string]any{"input.run_dir": probe, "input.issues": issues, "input.board": wider})))
 	})
 
 	t.Run("every_node_that_reads_the_audit_refuses_a_document_edited_outside_the_engine", func(t *testing.T) {
@@ -3394,7 +3403,7 @@ func TestRgaaAuditDryRunWalksTheGraphOnTheFixtures(t *testing.T) {
 		t.Fatalf("the dry run is failing:\n%s", raw)
 	}
 	allowed := map[string]bool{}
-	for _, n := range []string{"adjudication_incomplete", "audit_integrity", "unexpected_refusal", "board_publish_foreign", "board_publish_incomplete", "empty_scope", "engine_hash_mismatch", "engine_unresolved", "grid_incomplete", "ledger_invalid", "refute_incomplete", "render", "render_unavailable", "report_integrity_failed"} {
+	for _, n := range []string{"adjudication_incomplete", "audit_integrity", "unexpected_refusal", "board_publish_incomplete", "empty_scope", "engine_hash_mismatch", "engine_unresolved", "grid_incomplete", "ledger_invalid", "refute_incomplete", "render", "render_unavailable", "report_integrity_failed"} {
 		allowed[n] = true
 	}
 	for _, n := range rep.UnvisitedNodes {
@@ -3532,7 +3541,7 @@ func TestRgaaAuditReviewGateReadsTheTrialOnBothPaths(t *testing.T) {
 // A tool node has no board action, so the judge's own report is all there is
 // to hold — and a report that covers the plan with rows nobody planned used
 // to pass, because only coverage was checked.
-func TestRgaaAuditPublishVerifyHoldsTheReportToThePlanBothWays(t *testing.T) {
+func TestRgaaAuditPublishVerifyReadsTheBoardNotAReport(t *testing.T) {
 	scripts := rgaaBotScripts(t)
 	site := t.TempDir()
 	planned := []any{
@@ -3544,6 +3553,13 @@ func TestRgaaAuditPublishVerifyHoldsTheReportToThePlanBothWays(t *testing.T) {
 		"[a11y] RGAA 2.1 — Chaque cadre a-t-il un titre de cadre ?",
 	}
 	const unplanned = "[a11y] RGAA 9.9 — un titre que le plan ne contient pas"
+	boardWith := func(ts ...string) []any {
+		var out []any
+		for _, title := range ts {
+			out = append(out, map[string]any{"title": title})
+		}
+		return out
+	}
 	// One run directory per case, carrying only prepare's helpers: this node
 	// reads no audit document and never runs the engine, so the engine entry
 	// rgaaInitReportRun records is never opened.
@@ -3553,77 +3569,48 @@ func TestRgaaAuditPublishVerifyHoldsTheReportToThePlanBothWays(t *testing.T) {
 		rgaaInitReportRun(t, dir, site, filepath.Join(site, "engine-never-run.mjs"), scripts)
 		v := map[string]any{
 			"input.run_dir": dir, "input.issues": planned,
-			"input.created": []string{}, "input.existing": []string{}, "input.failed": []string{},
+			"input.board": []any{},
 		}
 		maps.Copy(v, values)
 		return rgaaRunNode(t, scripts, "publish_verify", site, nil, v)
 	}
 
-	t.Run("the_plan_covered_and_nothing_else_is_ok", func(t *testing.T) {
-		out := rgaaOK(t, "publish_verify", verify(t, map[string]any{"input.created": titles[:1], "input.existing": titles[1:]}))
-		if rgaaInt(out["created"]) != 1 || rgaaInt(out["existing"]) != 1 {
+	t.Run("the_plan_on_the_board_is_ok", func(t *testing.T) {
+		out := rgaaOK(t, "publish_verify", verify(t, map[string]any{"input.board": boardWith(titles...)}))
+		if rgaaInt(out["planned"]) != 2 || rgaaInt(out["present"]) != 2 {
 			t.Fatalf("counts: %v", out)
 		}
 		if got := rgaaStrings(out["missing"]); len(got) != 0 {
 			t.Fatalf("missing on a covered plan: %v", got)
 		}
-		if got := rgaaStrings(out["foreign"]); len(got) != 0 {
-			t.Fatalf("foreign on a faithful report: %v", got)
+	})
+
+	t.Run("a_plan_title_absent_from_the_board_is_refused_by_name", func(t *testing.T) {
+		out := rgaaRefused(t, "publish_verify", verify(t, map[string]any{"input.board": boardWith(titles[0])}), "BOARD_PUBLISH_INCOMPLETE")
+		if got := rgaaStrings(out["missing"]); len(got) != 1 || got[0] != titles[1] {
+			t.Fatalf("the refusal does not carry the missing title: %v", out["missing"])
+		}
+		if reason := fmt.Sprint(out["reason"]); !strings.Contains(reason, titles[1]) {
+			t.Fatalf("the refusal does not NAME the missing title: %s", reason)
 		}
 	})
 
-	t.Run("a_reported_title_the_plan_does_not_contain_is_refused_by_name", func(t *testing.T) {
+	t.Run("an_untitled_plan_item_reads_as_untitled", func(t *testing.T) {
 		out := rgaaRefused(t, "publish_verify", verify(t, map[string]any{
-			"input.created": []string{titles[0], unplanned}, "input.existing": titles[1:],
-		}), "BOARD_PUBLISH_FOREIGN")
-		if got := rgaaStrings(out["foreign"]); len(got) != 1 || got[0] != unplanned {
-			t.Fatalf("the refusal does not carry the unplanned title: %v", out["foreign"])
-		}
-		if reason := fmt.Sprint(out["reason"]); !strings.Contains(reason, unplanned) {
-			t.Fatalf("the refusal does not NAME the unplanned title: %s", reason)
-		}
-		// The plan itself is covered: this is over-reach, not a gap, and the
-		// two must not be reported as the same incident.
-		if got := rgaaStrings(out["missing"]); len(got) != 0 {
-			t.Fatalf("over-reach reported as a gap: %v", got)
-		}
-	})
-
-	t.Run("an_untitled_claim_is_foreign_not_coverage", func(t *testing.T) {
-		out := rgaaRefused(t, "publish_verify", verify(t, map[string]any{
-			"input.created":  []any{map[string]any{"id": 42}},
-			"input.existing": titles,
-		}), "BOARD_PUBLISH_FOREIGN")
-		if got := rgaaStrings(out["foreign"]); len(got) != 1 || got[0] != "" {
-			t.Fatalf("an object with neither title nor name is not reported as an untitled claim: %v", out["foreign"])
-		}
-		if reason := fmt.Sprint(out["reason"]); !strings.Contains(reason, "(untitled)") {
-			t.Fatalf("the refusal does not name the untitled claim readably: %s", reason)
-		}
-	})
-
-	t.Run("an_incomplete_report_carries_the_foreign_titles_with_it", func(t *testing.T) {
-		// `refuse` exits, so a second refusal never runs: the gap is reported
-		// first (the deliverable failing) and the over-reach travels WITH it.
-		out := rgaaRefused(t, "publish_verify", verify(t, map[string]any{"input.created": []string{unplanned}}), "BOARD_PUBLISH_INCOMPLETE")
-		if got := rgaaStrings(out["missing"]); len(got) != 2 {
-			t.Fatalf("missing: %v", got)
-		}
-		if got := rgaaStrings(out["foreign"]); len(got) != 1 || got[0] != unplanned {
-			t.Fatalf("the incomplete refusal dropped the unplanned title: %v", out["foreign"])
-		}
-		if reason := fmt.Sprint(out["reason"]); !strings.Contains(reason, "2 planned issue(s)") || !strings.Contains(reason, "1 reported title(s) are not in the plan") {
-			t.Fatalf("the incomplete refusal says only one of the two halves: %s", reason)
-		}
-	})
-
-	t.Run("a_failed_title_is_incomplete_even_with_the_plan_covered", func(t *testing.T) {
-		out := rgaaRefused(t, "publish_verify", verify(t, map[string]any{
-			"input.created": titles, "input.failed": []string{titles[0]},
+			"input.issues": []any{map[string]any{"id": 42}},
+			"input.board":  boardWith(titles...),
 		}), "BOARD_PUBLISH_INCOMPLETE")
-		if reason := fmt.Sprint(out["reason"]); !strings.Contains(reason, "1 failed") {
-			t.Fatalf("a failed creation is not reported: %s", reason)
+		if reason := fmt.Sprint(out["reason"]); !strings.Contains(reason, "(untitled)") {
+			t.Fatalf("the refusal does not name the untitled item readably: %s", reason)
 		}
+	})
+
+	t.Run("a_board_carrying_what_the_plan_does_not_is_not_a_refusal", func(t *testing.T) {
+		// The instance's board is SHARED: an earlier run's cards, a cap's
+		// held-back titles, an operator's own card all carry the label and
+		// none of them is this run's to refuse. Coverage is the verdict,
+		// possession is not.
+		rgaaOK(t, "publish_verify", verify(t, map[string]any{"input.board": boardWith(titles[0], titles[1], unplanned)}))
 	})
 
 	t.Run("the_plan_still_verifies_when_the_mapping_carried_it_as_a_string", func(t *testing.T) {
@@ -3635,31 +3622,9 @@ func TestRgaaAuditPublishVerifyHoldsTheReportToThePlanBothWays(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		out := rgaaOK(t, "publish_verify", verify(t, map[string]any{"input.issues": string(raw), "input.created": titles}))
-		if rgaaInt(out["created"]) != 2 {
+		out := rgaaOK(t, "publish_verify", verify(t, map[string]any{"input.issues": string(raw), "input.board": boardWith(titles...)}))
+		if rgaaInt(out["present"]) != 2 {
 			t.Fatalf("counts: %v", out)
-		}
-	})
-
-	t.Run("the_prompt_scopes_the_report_to_what_the_verifier_refuses", func(t *testing.T) {
-		// A refusal the instructions do not announce is a trap, not a
-		// contract: STEP 3 used to say "titles already present", which a
-		// judge can read as "the board titles the label search found", while
-		// the verifier now refuses exactly that. The two are coupled on
-		// purpose — relax one and this reddens.
-		wf := compilePlanPhaseBot(t, "rgaa-audit")
-		judge, isJudge := wf.Nodes["publish"].(*ir.JudgeNode)
-		if !isJudge {
-			t.Fatalf("publish is not a judge node: %T", wf.Nodes["publish"])
-		}
-		prompt := wf.Prompts[judge.SystemPrompt]
-		if prompt == nil {
-			t.Fatalf("the publish judge names system prompt %q and the workflow holds no such prompt", judge.SystemPrompt)
-		}
-		for _, want := range []string{"ITEMS OF THE PLAN", "not under `existing`", "The verifier refuses a report carrying a title outside the plan"} {
-			if !strings.Contains(prompt.Body, want) {
-				t.Errorf("publish_system no longer tells the judge what the verifier refuses (missing %q)", want)
-			}
 		}
 	})
 
@@ -3686,9 +3651,8 @@ func TestRgaaAuditPublishVerifyHoldsTheReportToThePlanBothWays(t *testing.T) {
 			path   string
 			values map[string]any
 		}{
-			{"ok", map[string]any{"input.created": titles}},
-			{"incomplete", map[string]any{"input.created": []string{unplanned}}},
-			{"foreign", map[string]any{"input.created": []string{titles[0], titles[1], unplanned}}},
+			{"ok", map[string]any{"input.board": boardWith(titles...)}},
+			{"incomplete", map[string]any{"input.board": boardWith(titles[0])}},
 		} {
 			res := verify(t, c.values)
 			if res.Code != 0 {
@@ -3701,13 +3665,83 @@ func TestRgaaAuditPublishVerifyHoldsTheReportToThePlanBothWays(t *testing.T) {
 			}
 		}
 	})
+}
 
-	t.Run("a_judge_that_claims_the_whole_plan_as_existing_with_no_claim_outside_it_still_passes", func(t *testing.T) {
-		// The limit of a contract over a self-report, stated so the next
-		// reader does not mistake it for a board read: this is the case
-		// #2388 exists to close, and it cannot be closed here.
-		rgaaOK(t, "publish_verify", verify(t, map[string]any{"input.existing": titles}))
-	})
+// The publication chain carries NO model (#2388): filing and verifying are
+// native board actions on tool nodes, each holding exactly the capability
+// its verb needs — the bot's opt-in is the declaration (#78=A).
+func TestRgaaAuditPublishChainIsModelFree(t *testing.T) {
+	wf := compilePlanPhaseBot(t, "rgaa-audit")
+	if _, isJudge := wf.Nodes["publish"]; isJudge {
+		t.Fatal("a judge named publish survives — the transcription is deterministic now")
+	}
+	for name, want := range map[string]struct {
+		action string
+		grants []string
+	}{
+		"publish_list":        {"board.issue.list", []string{"board.read"}},
+		"publish_create":      {"board.issue.create", []string{"board.create"}},
+		"publish_verify_read": {"board.issue.list", []string{"board.read"}},
+	} {
+		node, isTool := wf.Nodes[name].(*ir.ToolNode)
+		if !isTool {
+			t.Fatalf("%s is not a tool node: %T", name, wf.Nodes[name])
+		}
+		if node.Action != want.action {
+			t.Errorf("%s: action = %q, want %q", name, node.Action, want.action)
+		}
+		for _, g := range want.grants {
+			found := false
+			for _, c := range node.Capabilities {
+				if c == g {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("%s: capabilities %v lack %q — the verb's grant is the node's declaration", name, node.Capabilities, g)
+			}
+		}
+	}
+	// And the fan-in re-reads the board AFTER the fan-out, and tolerates a
+	// failed branch rather than blocking the verdict on it.
+	read, ok := wf.Nodes["publish_verify_read"].(*ir.ToolNode)
+	if !ok {
+		t.Fatal("publish_verify_read is not a tool node")
+	}
+	if read.AwaitMode != ir.AwaitBestEffort {
+		t.Errorf("publish_verify_read: await = %q, want best_effort — a failed create must not block the board read that names it", read.AwaitMode)
+	}
+	// publish_create runs one branch per plan item, each writing exactly one
+	// card — without parallel_safe the fan-out's workspace guard refuses the
+	// run (WORKSPACE_SAFETY), a refusal the dry run never sees (proven by the
+	// local smoke that did).
+	if create, ok := wf.Nodes["publish_create"].(*ir.ToolNode); !ok {
+		t.Fatal("publish_create is not a tool node")
+	} else if !create.ParallelSafe {
+		t.Error("publish_create must declare parallel_safe: true — one branch writes one card, disjoint by item")
+	}
+	// And the verdict's inputs are the plan and the BOARD READ — no report
+	// of either from a writer.
+	verifyNode, ok := wf.Nodes["publish_verify"].(*ir.ToolNode)
+	if !ok {
+		t.Fatal("publish_verify is not a tool node")
+	}
+	schema := wf.Schemas[verifyNode.InputSchema]
+	if schema == nil {
+		t.Fatalf("publish_verify declares input schema %q and the workflow holds no such schema", verifyNode.InputSchema)
+	}
+	fields := map[string]bool{}
+	for _, f := range schema.Fields {
+		fields[f.Name] = true
+	}
+	if !fields["board"] || !fields["issues"] {
+		t.Errorf("publish_verify_input must carry the plan (issues) and the board read (board): %v", fields)
+	}
+	for _, gone := range []string{"created", "existing", "failed"} {
+		if fields[gone] {
+			t.Errorf("publish_verify_input still carries %q — a writer's self-report field", gone)
+		}
+	}
 }
 
 // #2675: the adjudicate and refute prompts spell the batch's own absolute

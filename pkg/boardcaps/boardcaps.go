@@ -62,8 +62,11 @@ var NativeConnectorIDs = map[string]bool{
 // this table to the facade's bindings and to the native registry, in both
 // directions.
 var ActionCapability = map[string]string{
-	"board.issue.get":  BoardRead,
-	"board.issue.list": BoardRead,
+	"board.issue.get":        BoardRead,
+	"board.issue.list":       BoardRead,
+	"board.issue.create":     BoardCreate,
+	"board.issue.label":      BoardLabel,
+	"board.issue.transition": BoardMove,
 }
 
 var ToolCapability = map[string]string{

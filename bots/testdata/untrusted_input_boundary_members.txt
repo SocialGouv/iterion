@@ -136,9 +136,6 @@ review-pr/reviewer_claude_glance	tools: bash
 review-pr/reviewer_gpt	tools: bash
 review-pr/reviewer_gpt_glance	tools: bash
 rgaa-audit/adjudicate	claude_code takes the `tools:` list as --disallowedTools over a closed native roster iterion does not own, so a declared list bounds nothing (#1652)
-rgaa-audit/publish	capability board.create
-rgaa-audit/publish	capability board.label
-rgaa-audit/publish	claude_code takes the `tools:` list as --disallowedTools over a closed native roster iterion does not own, so a declared list bounds nothing (#1652)
 rgaa-audit/refute	claude_code takes the `tools:` list as --disallowedTools over a closed native roster iterion does not own, so a declared list bounds nothing (#1652)
 scripts/adhoc/whats-next-prompts-review:review_prompts	tools: bash
 scripts/adhoc/whats-next-skills-gen:generate_skills	tools: bash, write_file

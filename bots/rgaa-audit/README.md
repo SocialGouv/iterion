@@ -21,8 +21,8 @@ The split is **who finds, who judges, who refuses**:
   lives in this bundle;
 - a **second reader** puts every stated non-conformity and every landed
   conformity on trial; an optional **human gate** approves or declares
-  criteria undecidable; a **transcription judge** with no tool but the board
-  files the plan verbatim, and a deterministic node checks it did.
+  criteria undecidable; the plan is then filed and verified **with no model
+  in the loop**, by native board actions on tool nodes (#2388).
 
 The engine is pinned by version **and** by the sha256 of its entry file
 (`ultra11y.pin`), fingerprinted before anything of it runs and before every
@@ -42,7 +42,8 @@ prepare ─► static_audit ─► bank_static ─► render_gate ─► [render
   ─► worklist ─► plan_batches ─► dispatch ⇒ adjudicate ─► write_fragment
   ─► merge_verdicts ─► fold_probe ⟲ (re-ask of the named refusals, once)
   ─► fold_final ─► draft_report ─► budget_gate ─► [refute ⇒ … ─► refute_apply]
-  ─► review_gate ─► [human_review] ─► final_report ─► deliver ─► [publish ─► publish_verify] ─► done
+  ─► review_gate ─► [human_review] ─► final_report ─► deliver ─► [publish_list
+  ─► publish_diff ─► publish_create (fan_out_each) ─► publish_verify] ─► done
 ```
 
 - `prepare` resolves the pinned engine (`$ULTRA11Y_BIN`, the global npm
@@ -95,13 +96,15 @@ prepare ─► static_audit ─► bank_static ─► render_gate ─► [render
   remain usable. `report_files` lists the source artifacts; historical
   outputs and issue plans are not swept into this export.
 - `deliver` builds the issue plan from the engine's own tickets (one per
-  criterion, severity-sorted, capped); `publish` files it when
-  `post_to_board` is true; `publish_verify` holds the judge's own report to
-  the plan in BOTH directions and fails typed when a planned title is neither
-  created nor found (`BOARD_PUBLISH_INCOMPLETE`) and when a reported title is
-  not in the plan (`BOARD_PUBLISH_FOREIGN`) — still a self-report: a tool node
-  has no board action to read the board with (#2388), so the contract over
-  that report is the whole guarantee.
+  criterion, severity-sorted, capped); when `post_to_board` is true the plan
+  is filed with **no model in the loop** (#2388): `publish_list` reads the
+  board through the native action transport (ADR-151), `publish_diff`
+  computes the titles to file (de-duplication by exact title), one
+  `board.issue.create` action per missing title files them verbatim, and
+  `publish_verify` **reads the board back** (`board.issue.list` again) and
+  refuses typed when a planned title is not on it
+  (`BOARD_PUBLISH_INCOMPLETE`). A card the plan does not contain is not a
+  refusal: the instance's board is shared, and coverage is the verdict.
 
 Every node that rewrites `audit-latest.json` records its hash in the run's
 `state/` directory and its own output; every later node refuses a document
@@ -112,7 +115,7 @@ Every refusal the bot makes is a typed `fail` node (`ENGINE_UNRESOLVED`,
 `ENGINE_HASH_MISMATCH`, `EMPTY_SCOPE`, `RENDER_UNAVAILABLE`,
 `LEDGER_INVALID`, `AUDIT_INTEGRITY`, `ADJUDICATION_INCOMPLETE`,
 `REFUTE_INCOMPLETE`, `HUMAN_REJECTED`, `REPORT_INTEGRITY_FAILED`,
-`GRID_INCOMPLETE`, `BOARD_PUBLISH_INCOMPLETE`, `BOARD_PUBLISH_FOREIGN`); an engine crash stays an
+`GRID_INCOMPLETE`, `BOARD_PUBLISH_INCOMPLETE`); an engine crash stays an
 untyped, resumable error — except on a committed ledger the engine cannot
 replay, which is `LEDGER_INVALID` with the engine's own message.
 
@@ -170,4 +173,6 @@ walks the whole graph without a model, a shell or a workspace.
 
 `rgaa-audit` (the playbook), `ultra11y-engine` (the engine from inside the
 bot), `adjudication-protocol`, `refutation-protocol`, `iterion-board` (the
-shared board skill).
+shared board skill — retained as the SOURCE of its sharing family; since
+the publication went deterministic (#2388) no node of this bot reads it,
+and the mirrors' reads are their own).

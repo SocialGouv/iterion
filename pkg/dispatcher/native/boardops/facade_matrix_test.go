@@ -2,6 +2,8 @@ package boardops
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -54,8 +56,25 @@ func TestFacadeEveryExposedActionMapsToANativeTool(t *testing.T) {
 		if !op.Effect.Known() {
 			t.Errorf("operation %q has unknown effect %q — the act ladder reads it as mutating, so a typo fails closed everywhere but here", op.ID, op.Effect)
 		}
-		if op.Effect.Mutating() {
-			t.Errorf("operation %q is exposed with mutating effect %q — the write verbs are the second lot, gated by the capability opt-in (#78=A)", op.ID, op.Effect)
+	}
+	// The act ladder, pinned per verb rather than derived: the retry and
+	// resume decisions read the effect, so a verb quietly reclassified is a
+	// behaviour change nobody reviewed.
+	wantEffects := map[string]spec.Effect{
+		"board.issue.get":        spec.EffectRead,
+		"board.issue.list":       spec.EffectRead,
+		"board.issue.create":     spec.EffectCreate,
+		"board.issue.label":      spec.EffectUpdate,
+		"board.issue.transition": spec.EffectUpdate,
+	}
+	for id, want := range wantEffects {
+		op, ok := pkg.Operation(id)
+		if !ok {
+			t.Errorf("the facade no longer exposes %q — a verb's removal is a facade Version bump and a matrix edit, not a silent diff", id)
+			continue
+		}
+		if op.Effect != want {
+			t.Errorf("%s: effect = %q, want %q", id, op.Effect, want)
 		}
 	}
 }
@@ -190,7 +209,7 @@ func TestActionTransportCall(t *testing.T) {
 	})
 
 	t.Run("an action id with no binding is told, not dispatched", func(t *testing.T) {
-		_, err := transport.Call(context.Background(), spec.Operation{ID: "board.issue.create"}, map[string]any{}, []string{CapBoardCreate})
+		_, err := transport.Call(context.Background(), spec.Operation{ID: "board.issue.nuke"}, map[string]any{}, []string{CapBoardCreate})
 		if err == nil || !strings.Contains(err.Error(), "no native binding") {
 			t.Fatalf("Call on an unbound id: err = %v", err)
 		}
@@ -202,6 +221,164 @@ func TestActionTransportCall(t *testing.T) {
 		_, err := bare.Call(context.Background(), op, map[string]any{}, []string{CapBoardRead})
 		if err == nil || !strings.Contains(err.Error(), "no store") {
 			t.Fatalf("Call on a store-less transport: err = %v", err)
+		}
+	})
+}
+
+// failStore wraps a real store and fails each mutating method on demand —
+// the witness of the facade's effect honesty: a RETURNED ERROR means NO
+// EFFECT, which is what makes the engine's one generic retry of a failed
+// native action safe against a duplicated card.
+type failStore struct {
+	native.BoardStore
+	failCreate, failSetState, failAdjust bool
+}
+
+func (f *failStore) Create(in native.Issue) (*native.Issue, error) {
+	if f.failCreate {
+		return nil, errors.New("injected store failure")
+	}
+	return f.BoardStore.Create(in)
+}
+
+func (f *failStore) SetState(id, newState string) (*native.Issue, error) {
+	if f.failSetState {
+		return nil, errors.New("injected store failure")
+	}
+	return f.BoardStore.SetState(id, newState)
+}
+
+func (f *failStore) AdjustLabels(id string, add, remove []string) (*native.Issue, bool, error) {
+	if f.failAdjust {
+		return nil, false, errors.New("injected store failure")
+	}
+	return f.BoardStore.AdjustLabels(id, add, remove)
+}
+
+// boardSnapshot is the board's content reduced to what a mutating verb can
+// change: the cards' ids, states and labels.
+func boardSnapshot(t *testing.T, store native.BoardStore) string {
+	t.Helper()
+	issues, err := store.List(native.ListFilter{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var b strings.Builder
+	for _, iss := range issues {
+		fmt.Fprintf(&b, "%s|%s|%v;", iss.ID, iss.State, iss.Labels)
+	}
+	return b.String()
+}
+
+func TestAFailedMutatingVerbHasNoEffect(t *testing.T) {
+	pkg := FacadePackage()
+	caps := []string{CapBoardRead, CapBoardCreate, CapBoardLabel, CapBoardMove}
+
+	t.Run("create", func(t *testing.T) {
+		base := newStore(t)
+		transport := NewActionTransport(&failStore{BoardStore: base, failCreate: true}, CallEnv{})
+		op, _ := pkg.Operation("board.issue.create")
+		_, err := transport.Call(context.Background(), op, map[string]any{"title": "never filed"}, caps)
+		if err == nil {
+			t.Fatal("want the store's failure")
+		}
+		if got := boardSnapshot(t, base); got != "" {
+			t.Fatalf("a failed create left an effect: %s", got)
+		}
+	})
+
+	t.Run("transition", func(t *testing.T) {
+		base := newStore(t)
+		iss, err := base.Create(native.Issue{Title: "stays put"})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		before := boardSnapshot(t, base)
+		transport := NewActionTransport(&failStore{BoardStore: base, failSetState: true}, CallEnv{})
+		op, _ := pkg.Operation("board.issue.transition")
+		_, err = transport.Call(context.Background(), op, map[string]any{"id": iss.ID, "to": "done"}, caps)
+		if err == nil {
+			t.Fatal("want the store's failure")
+		}
+		if got := boardSnapshot(t, base); got != before {
+			t.Fatalf("a failed transition moved the card: %s → %s", before, got)
+		}
+	})
+
+	t.Run("label", func(t *testing.T) {
+		base := newStore(t)
+		iss, err := base.Create(native.Issue{Title: "stays unlabeled"})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		before := boardSnapshot(t, base)
+		transport := NewActionTransport(&failStore{BoardStore: base, failAdjust: true}, CallEnv{})
+		op, _ := pkg.Operation("board.issue.label")
+		_, err = transport.Call(context.Background(), op, map[string]any{"id": iss.ID, "labels": []any{"never"}}, caps)
+		if err == nil {
+			t.Fatal("want the store's failure")
+		}
+		if got := boardSnapshot(t, base); got != before {
+			t.Fatalf("a failed label adjusted the card: %s → %s", before, got)
+		}
+	})
+}
+
+// And the happy path of each mutating verb through the facade: the capability
+// the verb names is the opt-in, and the call reaches the store verbatim.
+func TestMutatingVerbsThroughTheFacade(t *testing.T) {
+	base := newStore(t)
+	transport := NewActionTransport(base, CallEnv{})
+	pkg := FacadePackage()
+	ctx := context.Background()
+
+	t.Run("create then label then transition", func(t *testing.T) {
+		create, _ := pkg.Operation("board.issue.create")
+		data, err := transport.Call(ctx, create, map[string]any{
+			"title":  "Filed by the facade",
+			"body":   "the body",
+			"labels": []any{"source:rgaa-audit"},
+		}, []string{CapBoardCreate})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		card := data.(map[string]any)
+		id, _ := card["id"].(string)
+		if id == "" {
+			t.Fatalf("created card carries no id: %v", card)
+		}
+
+		label, _ := pkg.Operation("board.issue.label")
+		if _, err := transport.Call(ctx, label, map[string]any{"id": id, "labels": []any{"criterion:1.1"}}, []string{CapBoardLabel}); err != nil {
+			t.Fatalf("label: %v", err)
+		}
+
+		transition, _ := pkg.Operation("board.issue.transition")
+		if _, err := transport.Call(ctx, transition, map[string]any{"id": id, "to": "done"}, []string{CapBoardMove}); err != nil {
+			t.Fatalf("transition: %v", err)
+		}
+
+		got, err := base.Get(id)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.State != "done" {
+			t.Errorf("state = %q, want done", got.State)
+		}
+		labels := strings.Join(got.Labels, ",")
+		for _, want := range []string{"source:rgaa-audit", "criterion:1.1"} {
+			if !strings.Contains(labels, want) {
+				t.Errorf("labels %q miss %q", labels, want)
+			}
+		}
+	})
+
+	t.Run("each mutating verb is denied without its own capability", func(t *testing.T) {
+		// A15's check-only default: a read grant opens no write.
+		create, _ := pkg.Operation("board.issue.create")
+		if _, err := transport.Call(ctx, create, map[string]any{"title": "x"}, []string{CapBoardRead}); err == nil ||
+			!strings.Contains(err.Error(), "board.create") {
+			t.Fatalf("create under board.read: err = %v, want the denial naming board.create", err)
 		}
 	})
 }

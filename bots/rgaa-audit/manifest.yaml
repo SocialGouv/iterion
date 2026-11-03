@@ -1,7 +1,16 @@
 name: rgaa-audit
 display_name: Acci
 icon: ♿
-version: 3.1.1
+version: 3.2.0
+## 3.2.0 — the board publication is deterministic (#2388): the transcription
+## judge is gone, and with it the self-report publish_verify held it to. The
+## plan is filed by native board actions on tool nodes (ADR-151:
+## publish_list reads, publish_diff de-duplicates by exact title,
+## publish_create files each missing item with its labels verbatim) and
+## publish_verify reads the board BACK — the guarantee is a read, not a
+## report. BOARD_PUBLISH_FOREIGN goes with the judge: the instance's board
+## is shared, and coverage is the verdict. The manifest drops board.label,
+## which no node grants anymore (C220).
 ## 3.1.1 — rewind safety and honest batch accounting. A ledger copy found at
 ## ledger_replay's entry belongs to the current audit (static_audit drops it
 ## with every fresh audit it writes), so a run rewound before the fold
@@ -89,7 +98,7 @@ tags: [a11y, read-only]
 schema_version: 1
 triggers: [rgaa, wcag, accessibilité, accessibility, a11y, ultra11y]
 
-capabilities: [board.create, board.label, board.read]
+capabilities: [board.create, board.read]
 
 dispatch_vars:
   scope_notes: |-

@@ -128,7 +128,7 @@ func TestNativeActionAVerbTheFacadeDoesNotExpose(t *testing.T) {
 	e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
 		model.WithActionTransports(boardops.NewActionTransport(store, boardops.CallEnv{})))
 
-	_, err := e.Execute(context.Background(), boardActionNode("board.issue.create", []string{"board.create"}), nil)
+	_, err := e.Execute(context.Background(), boardActionNode("board.issue.close", []string{"board.close"}), nil)
 	if err == nil || !strings.Contains(err.Error(), "exposes no operation") {
 		t.Fatalf("Execute: err = %v, want the facade gap named", err)
 	}

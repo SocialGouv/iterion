@@ -229,16 +229,16 @@ func TestNativeAdmissionServedAndFacadeGap(t *testing.T) {
 		t.Fatalf("board.issue.get with its transport registered: %v", err)
 	}
 
-	future := &ir.ToolNode{Action: "board.issue.create"}
+	future := &ir.ToolNode{Action: "board.issue.close"}
 	future.ID = "file"
 	err := admitConnectorActions(
 		&ir.Workflow{Name: "canary", Nodes: map[string]ir.Node{"file": future}},
 		nil, []model.ActionTransport{transport})
 	var gap *FacadeOperationError
 	if !errors.As(err, &gap) {
-		t.Fatalf("board.issue.create: err = %T %v, want *FacadeOperationError", err, err)
+		t.Fatalf("board.issue.close: err = %T %v, want *FacadeOperationError", err, err)
 	}
-	for _, want := range []string{"board.issue.create", "board.issue.list", "board.issue.get"} {
+	for _, want := range []string{"board.issue.close", "board.issue.list", "board.issue.get"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the facade-gap refusal must name %q: %v", want, err)
 		}

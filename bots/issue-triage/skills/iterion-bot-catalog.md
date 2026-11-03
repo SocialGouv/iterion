@@ -433,7 +433,7 @@ re-grounds every entry and the stale ones go back to the agents.
 - **Triggers**: rgaa, wcag, accessibilité, accessibility, a11y, ultra11y
 - **Tags**: a11y, read-only
 - **Vars**: `batch_size` (int), `board_epic_label` (string), `board_state` (string), `browser_path` (string), `engine_sha256` (string), `engine_size` (int), `engine_version` (string), `exclude_globs` (string), `findings_cap` (int), `force_jsx` (bool), `html_report` (bool), `human_review` (bool), `ledger_path` (string), `max_files` (int), `max_reask` (int), `post_to_board` (bool), `refute_batch_size` (int), `refute_enabled` (bool), `refuter_budget_share` (float), `rendered` (string), `report_dir` (string), `require_complete` (bool), `run_dir` (string), `scope_globs` (string), `scope_notes` (string), `serve_command` (string), `serve_ready_url` (string), `serve_timeout_seconds` (int), `standard` (string), `undecidable_path` (string), `workspace_dir` (string)
-- **Capabilities**: board.create, board.label, board.read
+- **Capabilities**: board.create, board.read
 - **Path**: `bots/rgaa-audit/main.bot`
 
 ### `sec-audit-deps` — Depsy

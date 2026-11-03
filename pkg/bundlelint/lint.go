@@ -625,6 +625,13 @@ func checkCapabilities(diags *[]Diag, m *bundle.Manifest, w *ir.Workflow, fm *bu
 					granted[c] = true
 				}
 			}
+			// A tool node declares the same grant since ADR-151 (#78=A) —
+			// the native action transport reads it — so it answers C220 too.
+			if tn, ok := n.(*ir.ToolNode); ok {
+				for _, c := range tn.Capabilities {
+					granted[c] = true
+				}
+			}
 		}
 		for i, c := range m.Capabilities {
 			if !granted[c] {

@@ -19,13 +19,24 @@ import (
 // docs/adr/098-connector-catalog.md wrote, with this package as the facade
 // it named its template.
 //
-// READ-ONLY first: this lot exposes board.issue.list and board.issue.get.
-// The mutating verbs land with their authorization story (a tool node's
-// `capabilities:` is the grant, #78=A) — every native tool this facade does
-// NOT expose carries its reason in nativeExemptions, and the two-way matrix
-// test holds both tables to the registry: an exposed action that maps to no
-// native tool fails one way, a native tool neither exposed nor exempted
-// fails the other.
+// The filing/verifying surface (#2388): reads (list/get) and the mutating
+// verbs the filing half needs (create/label/transition), each gated by the
+// capability the native tool already names — the bot's explicit
+// `capabilities:` declaration IS the opt-in (#78=A), and A15's check-only
+// stays the default: a node granted nothing reads nothing.
+//
+// EFFECT HONESTY of the mutating verbs, stated because the engine's generic
+// recovery retries a failed node once: every operation below validates ALL
+// of its arguments before its one store mutation, and nothing fallible
+// follows the mutation (the marshalling of an in-memory card cannot
+// realistically fail) — so a RETURNED ERROR means NO EFFECT, and a retried
+// call files exactly one card. The facade adds no idempotency machinery on
+// top: the property is structural, and the matrix test pins it against a
+// failing store.
+//
+// The two-way matrix test holds the facade to the registry: every exposed
+// action maps to a native tool, and every native tool is exposed or exempted
+// WITH its reason in nativeExemptions — one hole either way fails.
 
 // ConnectorID is the id the facade and its transport answer to — the first
 // segment of `board.issue.list`. Re-exported from the vocabulary leaf like
@@ -36,8 +47,11 @@ const ConnectorID = boardcaps.ConnectorID
 // serves it. The ids follow the connector convention
 // `<connector>.<resource>.<verb>`; the tool names are allTools'.
 var actionBindings = map[string]string{
-	"board.issue.get":  "get_issue",
-	"board.issue.list": "list_issues",
+	"board.issue.get":        "get_issue",
+	"board.issue.list":       "list_issues",
+	"board.issue.create":     "create_issue",
+	"board.issue.label":      "add_labels",
+	"board.issue.transition": "transition_issue",
 }
 
 // nativeExemptions records why a native tool is NOT exposed as an action.
@@ -45,22 +59,18 @@ var actionBindings = map[string]string{
 // matrix test requires the text, because "not exposed" without the why is
 // exactly the catalog hole ADR-098's generation report exists to prevent.
 var nativeExemptions = map[string]string{
-	// The mutating verbs are #2834's second lot: the facade publishes them
-	// once the write half of the act ladder lands, each gated by the
-	// capability the tool already names. Until then a `.bot` that needs a
-	// write goes through the board MCP tools of an agent/judge node.
-	"create_issue":     "mutating (board.create) — the write verbs land in #2834's second lot, gated by the bot's explicit capability opt-in (#78=A)",
-	"add_labels":       "mutating (board.label) — second lot, see create_issue",
-	"remove_labels":    "mutating (board.label) — second lot, see create_issue",
-	"set_labels":       "mutating (board.label) — second lot, see create_issue",
-	"transition_issue": "mutating (board.move) — second lot, see create_issue",
-	"close_issue":      "mutating (board.close) — second lot, see create_issue",
-	"comment_issue":    "mutating (board.comment) — second lot, see create_issue",
-	"assign_issue":     "mutating (board.assign) — second lot, see create_issue",
-	"set_bot":          "mutating (board.assign) — second lot, see create_issue",
+	// The filing/verifying verbs (#2388) are exposed; what stays out is the
+	// board's administrative surface — a deterministic node transcribes a
+	// plan, it does not govern the board. Each lands the day a workflow
+	// asks for it, with its capability already named here.
+	"remove_labels": "outside the filing/verifying scope (#2388) — exposed on demand, not by default",
+	"set_labels":    "an ABSOLUTE label rewrite — the relative add_labels carries the facade's label verb; exposed on demand",
+	"close_issue":   "board.close — closing is a lifecycle act no filing workflow needs; exposed on demand",
+	"comment_issue": "board.comment — exposed on demand",
+	"assign_issue":  "board.assign — dispatch governance, not filing; exposed on demand",
+	"set_bot":       "board.assign — dispatch governance, not filing; exposed on demand",
 	// Read, but not part of the filing/verifying surface the facade exists
-	// for (#2388 names list/get/create/label/transition); exposing it costs
-	// one entry later if a workflow asks.
+	// for; exposing it costs one entry later if a workflow asks.
 	"list_labels": "read, but outside the facade's filing/verifying scope (#2388) — exposed on demand, not by default",
 }
 
@@ -74,6 +84,9 @@ var nativeExemptions = map[string]string{
 func FacadePackage() *spec.Package {
 	str := func(key, description string, required bool) spec.Param {
 		return spec.Param{Key: key, Name: key, In: spec.InQuery, Type: "string", Required: required, Description: description}
+	}
+	strs := func(key, description string, required bool) spec.Param {
+		return spec.Param{Key: key, Name: key, In: spec.InQuery, Type: "array", Items: "string", Required: required, Description: description}
 	}
 	ops := []spec.Operation{
 		{
@@ -100,6 +113,47 @@ func FacadePackage() *spec.Package {
 				str("assignee", "Only issues assigned to this handle.", false),
 			},
 		},
+		{
+			ID:            "board.issue.create",
+			Resource:      "issue",
+			Verb:          "create",
+			Summary:       "File one issue on the board",
+			Deterministic: true,
+			Effect:        spec.EffectCreate,
+			Anonymous:     true,
+			Params: []spec.Param{
+				str("title", "Short title.", true),
+				str("body", "Markdown body.", false),
+				str("state", "Initial state name (default: first state of the board).", false),
+				strs("labels", "Labels the card carries from creation.", false),
+			},
+		},
+		{
+			ID:            "board.issue.label",
+			Resource:      "issue",
+			Verb:          "label",
+			Summary:       "Add labels to an issue, leaving every label already on it in place",
+			Deterministic: true,
+			Effect:        spec.EffectUpdate,
+			Anonymous:     true,
+			Params: []spec.Param{
+				str("id", "Issue ID or unambiguous prefix.", true),
+				strs("labels", "Labels to add. At least one.", true),
+			},
+		},
+		{
+			ID:            "board.issue.transition",
+			Resource:      "issue",
+			Verb:          "transition",
+			Summary:       "Move an issue to a different state",
+			Deterministic: true,
+			Effect:        spec.EffectUpdate,
+			Anonymous:     true,
+			Params: []spec.Param{
+				str("id", "Issue ID or unambiguous prefix.", true),
+				str("to", "Target state name.", true),
+			},
+		},
 	}
 	return &spec.Package{
 		Connector: spec.Connector{
@@ -108,9 +162,9 @@ func FacadePackage() *spec.Package {
 			DisplayName:   "iterion native board",
 			Description:   "The instance's own kanban board, served in process — the connector facade's native transport.",
 			// Version tracks the FACADE, not the board: bumped when the
-			// exposed operation set changes (the mutating verbs' lot bumps
-			// it to 0.2.0).
-			Version:  "0.1.0",
+			// exposed operation set changes (0.2.0 = the mutating verbs,
+			// #2834's second lot).
+			Version:  "0.2.0",
 			Maturity: spec.MaturityQualified,
 		},
 		Ops: []spec.OpsFile{{

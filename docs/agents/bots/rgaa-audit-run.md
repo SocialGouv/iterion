@@ -158,18 +158,17 @@ the image until the bot declares the class.
   says the layer did not run. The `browser` class and the `rgaa` class
   both ship Chromium at `/usr/bin/chromium`, named to the bot through
   `ULTRA11Y_BROWSER_PATH`.
-- **Board filing works in the sandbox (since #2632 (b)).** `publish` /
-  `publish_verify` write through the board MCP transport
-  (`BoardHTTPEndpoint` + `BoardRunToken`,
-  `pkg/backend/delegate/claude_code_hooks.go`, `wireBoardMCP`). On the
-  cloud the runner pod serves it: the pod mints a per-node token scoped
-  to the node's `board.*` capabilities and pinned to the run's tenant
-  (`pkg/runner`, `executorSpec`), and the engine's per-run gateway
-  listener answers the sandbox at the runner pod IP, dispatching to the
-  tenant's Mongo board (`pkg/hostmcp`, resolved per grant — the server
-  side's twin is `boardMCPServiceOption` in `pkg/server/server.go`).
-  `post_to_board=true` can file from a sandboxed cloud run; with
-  `post_to_board=false` the issue plan stays a run artefact
+- **Board filing works on the cloud — and since #2388 it no longer
+  touches the sandbox at all.** The publication is deterministic
+  (`publish_list` / `publish_create` / `publish_verify_read` are native
+  `board.*` actions, ADR-151): the ENGINE executes them, in the runner
+  pod, against the tenant's Mongo board (resolved per grant through
+  `Config.BoardFor`, #2465). The `BoardHTTPEndpoint` + `BoardRunToken`
+  MCP transport that #2632 (b) built for the transcription judge is
+  simply off this path — no token, no endpoint, no model — and the
+  node's `capabilities:` (board.read / board.create on the tool nodes)
+  is the grant, per #78=A. `post_to_board=true` files from a cloud run;
+  with `post_to_board=false` the issue plan stays a run artefact
   (`issues-<date>.json`). The remaining cloud gap of the family: the
   `connectors` capability's facade is served by the server only, so a
   sandboxed cloud node declaring `connectors` gets no endpoint — the
