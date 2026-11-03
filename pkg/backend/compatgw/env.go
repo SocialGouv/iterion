@@ -127,10 +127,10 @@ func plantedPairError() error {
 
 // Validate refuses an endpoint that cannot be what the operator meant,
 // before a request or a credential goes anywhere. strict (the default)
-// requires a public-unicast host — the dial-time guard would refuse it
-// anyway, and this says so before the sandbox is built; the
-// ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1 escape hatch lifts it for a
-// self-hosted gateway on private infrastructure.
+// judges the host as the strict dial-time guard does (judgeHost) — the
+// guard would refuse it anyway, and this says so before the sandbox is
+// built; the ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1 escape hatch lifts it for
+// a self-hosted gateway on private infrastructure.
 //
 // It resolves the host: call it at the dispatch seams, which re-read the
 // env fresh per attempt — never inside the registry factory, whose
@@ -141,12 +141,11 @@ func (c Config) Validate(strict bool) error {
 		return err
 	}
 	if strict {
-		ip, err := resolveHost(c.url().Hostname())
-		if err != nil {
+		if err := judgeHost(c.url().Hostname()); err != nil {
+			if errors.Is(err, httpdial.ErrNotPublic) {
+				return RemedyPrivate(fmt.Errorf("%s host is not a public address", BaseURLEnv))
+			}
 			return fmt.Errorf("openai_compatible: %w", err)
-		}
-		if !httpdial.IsPublicUnicast(ip) {
-			return RemedyPrivate(fmt.Errorf("%s host is not a public address", BaseURLEnv))
 		}
 	}
 	return nil

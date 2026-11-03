@@ -433,9 +433,10 @@ func LocalHTTPClient() *http.Client {
 // `unknown_outcome` — terminal, un-retryable, off the auto-resume list — which
 // is right for a lost answer and exactly wrong for a request that was never
 // written. It recognises the ordinary shapes by type (a *net.DNSError, a
-// dial-stage *net.OpError), but the guard's own refusal is an opaque
-// `fmt.Errorf` string from httpdial, and matching it by text would break the
-// first time that wording changed.
+// dial-stage *net.OpError), but not the guard's own refusals — httpdial's
+// errors: httpdial.ErrNotPublic in a strict refusal's chain, a plain error
+// for a malformed name — and an executor that learned each of them would
+// miss the next one the guard grows.
 //
 // So the fact is attached where it is KNOWN. A dialer that returned an error
 // returned no connection, so nothing can have been written on it — and

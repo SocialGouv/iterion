@@ -772,22 +772,34 @@ func TestCheckGatewaySource_RunPairServesAndTheEnvIsNeverRead(t *testing.T) {
 // address rule at the seam, liftable by the operator's escape hatch, the
 // same treatment the env pair gets.
 func TestCheckGatewaySource_RunHeldPrivateURLRefusedAndLifted(t *testing.T) {
-	privatePair := secrets.WithCredentials(context.Background(), secrets.Credentials{
-		AmbientRefused: true,
-		APIKeys:        map[secrets.Provider]string{secrets.ProviderOpenAICompatible: "sk-run-gw"},
-		APIBaseURLs:    map[secrets.Provider]string{secrets.ProviderOpenAICompatible: "https://10.0.0.7:8443"},
-	})
-	if err := checkGatewaySource(privatePair, "openai_compatible/m", true); err == nil ||
-		!strings.Contains(err.Error(), "public address") {
-		t.Fatalf("err = %v, want the private-address refusal for a run-held URL", err)
-	}
-	// The operator's escape hatch lowers the strict the CALLER computes
-	// (strict = !ITERION_LLM_ENDPOINT_ALLOW_PRIVATE, the same expression
-	// the env pair's dispatch uses): with it set, the private gateway is
-	// served and nothing names an env variable.
-	t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
-	if err := checkGatewaySource(privatePair, "openai_compatible/m", false); err != nil {
-		t.Fatalf("the escape hatch must lift the private-address rule for a run-held URL: %v", err)
+	// The shared (CGNAT) and IPv4-embedding classes ride the private
+	// classes' rule: refused under strict, lifted by the same hatch.
+	for _, base := range []string{
+		"https://10.0.0.7:8443",
+		"https://100.64.0.1:8443",
+		"https://[::127.0.0.1]:8443",
+		"https://[64:ff9b::7f00:1]:8443",
+		"https://[64:ff9b:1::a00:7]:8443",
+		"https://[2002:7f00:1::]:8443",
+	} {
+		privatePair := secrets.WithCredentials(context.Background(), secrets.Credentials{
+			AmbientRefused: true,
+			APIKeys:        map[secrets.Provider]string{secrets.ProviderOpenAICompatible: "sk-run-gw"},
+			APIBaseURLs:    map[secrets.Provider]string{secrets.ProviderOpenAICompatible: base},
+		})
+		t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "")
+		if err := checkGatewaySource(privatePair, "openai_compatible/m", true); err == nil ||
+			!strings.Contains(err.Error(), "public address") {
+			t.Errorf("%s: err = %v, want the private-address refusal for a run-held URL", base, err)
+		}
+		// The operator's escape hatch lowers the strict the CALLER computes
+		// (strict = !ITERION_LLM_ENDPOINT_ALLOW_PRIVATE, the same expression
+		// the env pair's dispatch uses): with it set, the private gateway is
+		// served and nothing names an env variable.
+		t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
+		if err := checkGatewaySource(privatePair, "openai_compatible/m", false); err != nil {
+			t.Errorf("%s: the escape hatch must lift the private-address rule for a run-held URL: %v", base, err)
+		}
 	}
 }
 

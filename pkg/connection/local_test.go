@@ -90,8 +90,8 @@ func TestLocalHTTPClientDoesNotSuggestTheHatchForAnUnresolvableHost(t *testing.T
 // answer came back": `unknown_outcome`, no retry, AMBIGUOUS_EFFECT, a run
 // parked terminally and off the auto-resume list — on a call that never left
 // the machine. The executor recognises an ordinary DNS or dial failure by
-// type; the guard's own refusal is an opaque string, so the fact is attached
-// where it is known, in the dialer this client owns.
+// type, not the guard's own refusals (httpdial's errors), so the fact is
+// attached where it is known, in the dialer this client owns.
 //
 // Driven through LocalHTTPClient against a real loopback server, because a
 // client built by the test would not have the wrapper under test.

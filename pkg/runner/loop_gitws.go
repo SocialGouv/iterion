@@ -560,8 +560,8 @@ func (r *Runner) verifyFetchedCommit(ctx context.Context, dir string, msg *queue
 // After the transport/ref shape passes, the URL's host is run through the
 // shared SSRF guard (httpdial.ResolvePublicHost) so a holder of a per-org
 // `iwh_` webhook token cannot point the runner at an internal address
-// (loopback, RFC1918/ULA, link-local, cloud metadata, cluster aliases) to
-// probe the cloud network. Mirrors the completion-webhook guard in pkg/notify.
+// (loopback, RFC1918/ULA, CGNAT, link-local, cloud metadata, an IPv6 form
+// carrying an IPv4 address, cluster aliases) to probe the cloud network. Mirrors the completion-webhook guard in pkg/notify.
 // On-prem deployments with internal forges set
 // ITERION_RUNNER_CLONE_ALLOW_PRIVATE=1 to relax the strict mode.
 func validateRepoTarget(ctx context.Context, repoURL, repoSHA string) (net.IP, error) {

@@ -6,9 +6,11 @@
 // endpoints derived from an org-admin-supplied issuer URL.
 //
 // The guard blocks the conventional SSRF categories — loopback, private
-// (RFC1918 / ULA), link-local, multicast, unspecified — plus the cloud
-// metadata endpoints, and refuses conventional cluster-internal hostname
-// aliases that service meshes re-route even with no DNS record.
+// (RFC1918 / ULA), link-local, multicast, unspecified — plus the shared
+// (CGNAT) address space, the IPv6 forms that carry an IPv4 address a
+// translator or a tunnel delivers to (IPv4-compatible, NAT64, 6to4) and the
+// cloud metadata endpoints, and refuses conventional cluster-internal
+// hostname aliases that service meshes re-route even with no DNS record.
 package httpdial
 
 import (
@@ -17,13 +19,16 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 )
 
 // IsPublicUnicast reports whether ip is safe to dial from a cloud pod context.
 // The blocked set matches the typical SSRF blocklist plus AWS/GCP/Azure/Alibaba
-// metadata endpoints.
+// metadata endpoints, plus the ranges no public host sits in that net.IP's
+// own predicates leave out (nonPublicPrefixes). An IPv4-mapped address is
+// judged as the IPv4 address it maps.
 func IsPublicUnicast(ip net.IP) bool {
 	if ip == nil {
 		return false
@@ -33,14 +38,69 @@ func IsPublicUnicast(ip net.IP) bool {
 		ip.IsPrivate() || ip.IsInterfaceLocalMulticast() {
 		return false
 	}
-	// Cloud metadata services sit on top of the link-local range (already
-	// covered above); belt-and-suspenders string check for readability and to
-	// cover the IPv6 metadata aliases.
+	if inNonPublicPrefix(ip) {
+		return false
+	}
+	// Cloud metadata services sit on top of the link-local range and the
+	// shared address space (already covered above); belt-and-suspenders
+	// string check for readability and to cover the IPv6 metadata aliases.
 	switch ip.String() {
 	case "169.254.169.254", "100.100.100.200", "fd00:ec2::254", "fe80::a9fe:a9fe":
 		return false
 	}
 	return true
+}
+
+// nonPublicPrefixes are the ranges no public host sits in that net.IP's own
+// predicates do not name. The shared address space serves carrier NAT,
+// overlay networks and cluster pod ranges. Each IPv6 block carries an IPv4
+// address that a translator or a tunnel delivers to — loopback, private and
+// metadata alike — and is refused whole, whatever it embeds: no public host
+// is written in the deprecated IPv4-compatible or 6to4 forms, and a NAT64
+// prefix that reaches public IPv4-only hosts from an IPv6-only network is
+// what a caller's escape hatch (non-strict) is for.
+var nonPublicPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"),  // shared address space, CGNAT (RFC 6598)
+	netip.MustParsePrefix("::/96"),          // IPv4-compatible (RFC 4291 §2.5.5.1, deprecated)
+	netip.MustParsePrefix("64:ff9b::/96"),   // NAT64 well-known prefix (RFC 6052)
+	netip.MustParsePrefix("64:ff9b:1::/48"), // NAT64 local-use prefix (RFC 8215)
+	netip.MustParsePrefix("2002::/16"),      // 6to4 (RFC 3056, deprecated by RFC 7526)
+}
+
+// inNonPublicPrefix reports whether ip falls in nonPublicPrefixes, an
+// IPv4-mapped address judged as the IPv4 address it maps. A slice of no IP
+// address length is no destination, so it is not public either.
+func inNonPublicPrefix(ip net.IP) bool {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return true
+	}
+	addr = addr.Unmap()
+	for _, p := range nonPublicPrefixes {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+// ErrNotPublic is wrapped by every refusal strict mode makes and non-strict
+// mode lifts: an address that is not public unicast, a name reserved for
+// cluster-internal services. A caller holding an escape hatch names it on
+// this refusal alone — never on a failed lookup or a malformed name, which
+// no hatch fixes.
+var ErrNotPublic = errors.New("httpdial: not a public destination")
+
+// notPublicError is a strict-mode refusal: its own message, ErrNotPublic in
+// its chain.
+type notPublicError struct{ msg string }
+
+func (e *notPublicError) Error() string { return e.msg }
+
+func (e *notPublicError) Unwrap() error { return ErrNotPublic }
+
+func notPublic(format string, args ...any) error {
+	return &notPublicError{msg: fmt.Sprintf(format, args...)}
 }
 
 // IsLoopbackBind returns true when bind is one of the conventional loopback
@@ -65,11 +125,13 @@ type HostResolver interface {
 }
 
 // ResolvePublicHost resolves host and returns a single IP safe to dial. When
-// strict, every resolved IP must be public unicast — any private/link-local/
-// loopback/multicast/metadata hit (or a reserved cluster-internal alias)
-// refuses. When non-strict, the first resolved address is returned regardless
-// (loopback-bound local mode embedding the user's own dev servers). Resolution
-// always fails closed.
+// strict, every resolved IP must be public unicast — any private/shared/
+// link-local/loopback/multicast/metadata hit (or a reserved cluster-internal
+// alias) refuses, wrapping ErrNotPublic. When non-strict, the first resolved
+// address is returned regardless (loopback-bound local mode embedding the
+// user's own dev servers). A name is judged without one trailing dot; a name
+// with an empty label is refused at every strictness. Resolution always
+// fails closed.
 func ResolvePublicHost(ctx context.Context, host string, strict bool) (net.IP, error) {
 	return ResolvePublicHostWith(ctx, net.DefaultResolver, host, strict)
 }
@@ -85,20 +147,31 @@ func ResolvePublicHostWith(ctx context.Context, res HostResolver, host string, s
 	// Already a numeric address: validate and return.
 	if ip := net.ParseIP(host); ip != nil {
 		if strict && !IsPublicUnicast(ip) {
-			return nil, fmt.Errorf("httpdial: address %s is not a public unicast IP", ip)
+			return nil, notPublic("httpdial: address %s is not a public unicast IP", ip)
 		}
 		return ip, nil
+	}
+
+	// A name is judged in one spelling: one trailing dot is the absolute
+	// form of the same name, cut before the alias checks so that
+	// "metadata.google.internal." meets the refusal of
+	// "metadata.google.internal"; what is left with an empty label ("a..b",
+	// a second trailing dot) is no DNS name, at any strictness. The lookup
+	// keeps the caller's spelling: the dot is what keeps a search domain
+	// from rewriting the name asked.
+	name := strings.ToLower(strings.TrimSuffix(host, "."))
+	if name == "" || strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".") || strings.Contains(name, "..") {
+		return nil, fmt.Errorf("httpdial: hostname %q has an empty label", host)
 	}
 
 	// Refuse cluster-internal aliases outright in strict mode regardless of DNS
 	// — service meshes re-route these even when they don't resolve.
 	if strict {
-		lower := strings.ToLower(host)
-		if strings.HasSuffix(lower, ".svc.cluster.local") ||
-			strings.HasSuffix(lower, ".svc") ||
-			lower == "kubernetes.default" ||
-			lower == "metadata.google.internal" {
-			return nil, fmt.Errorf("httpdial: hostname %q is reserved for cluster-internal services", host)
+		if strings.HasSuffix(name, ".svc.cluster.local") ||
+			strings.HasSuffix(name, ".svc") ||
+			name == "kubernetes.default" ||
+			name == "metadata.google.internal" {
+			return nil, notPublic("httpdial: hostname %q is reserved for cluster-internal services", host)
 		}
 	}
 
@@ -111,7 +184,7 @@ func ResolvePublicHostWith(ctx context.Context, res HostResolver, host string, s
 	}
 	for _, a := range addrs {
 		if strict && !IsPublicUnicast(a.IP) {
-			return nil, fmt.Errorf("httpdial: resolved address %s is not a public unicast IP", a.IP)
+			return nil, notPublic("httpdial: resolved address %s is not a public unicast IP", a.IP)
 		}
 	}
 	return addrs[0].IP, nil
