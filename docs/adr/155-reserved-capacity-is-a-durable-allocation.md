@@ -69,14 +69,19 @@ What a preference cannot do, read on `70b5b1972`:
 D31 widened the ask past the credential budget: **execution capacity** —
 NATS `MaxAckPending`, the KEDA replica ceiling — is reservable too.
 
-The 2026-09-10 cross-family plan review (14 findings) is the other input.
-Closed on main: finding 1's variant (the walk's restore step handing a held
+The 2026-09-10 cross-family plan review (14 findings) is the other input,
+and the numbers below are the comment's own "Follow-ups recorded from the
+review" list — not its three verified-in-source bullets. Closed on main:
+the **first verified bullet** (the walk's restore step handing a held
 credential back — closed at the class in `skipped_creds.go`, keyed by
-fingerprint); finding 2's **first** half (an inline `source`'s bot label is
-warned about and ignored, and an unverified label is judged as naming no
-bot); finding 5 (accepted and documented as by-design on
-`forge.ProjectPathFromCloneURL`). Live, and decided below: findings 3, 4, 6,
-7, 8, and finding 2's second half.
+fingerprint), which is not follow-up 1; finding 2's **first** half (an
+inline `source`'s bot label is warned about and ignored, and an unverified
+label is judged as naming no bot); finding 5 (accepted and documented as
+by-design on `forge.ProjectPathFromCloneURL`). Live, each against what
+closes it: finding 1 — the pool does not participate in arbitration —
+decision 6 and unit 5; finding 3, decision 9; findings 4 and 6, decision 7;
+finding 7, decision 8; finding 8, unit 9; finding 2's second half stays
+open by decision, in the consequences.
 
 ## Options considered
 
@@ -171,17 +176,30 @@ bot); finding 5 (accepted and documented as by-design on
    against it, never a reporting counter. "Reserved" stops meaning "the
    others' ceiling is lower" and starts meaning "this much is held, and
    something holds it".
-2. **`pkg/capacityledger` is a new leaf package** (stdlib plus `pkg/clock`,
-   the rule `pkg/budgetfloor`, `pkg/credusage` and `pkg/modelspecs` follow):
-   `Reserve(subject, requested) → (allowance, AllocationID, DenyReason)`,
-   `Renew` (a resume re-checks spend without consuming a second unit, the
-   rule `credpool.Ledger.Renew` already states), `Settle(AllocationID,
-   actual)`, `Release(AllocationID)`, `Outstanding(subject)`,
-   `Expire(now, limit)`. One judgement function takes `requested` as a term.
-   A capped subject with nothing left **denies** rather than granting zero:
-   zero on the wire means "no ceiling". Memory and Mongo twins behind one
-   conformance suite, the pattern of `pkg/credusage`,
-   `pkg/usagecap` and `pkg/lease`.
+2. **`pkg/capacityledger` is a new leaf package** — leaf by its POSITION in
+   the graph, not by an empty dependency set. Its judgement core imports
+   stdlib plus `pkg/clock` and nothing else, the rule `pkg/budgetfloor`
+   holds literally (`context`, `fmt`, `sort`, `strings`, `time`), while the
+   Mongo twin beside it adds `pkg/internal/mongoutil` and the driver —
+   exactly what `pkg/credusage`, `pkg/orgusage`, `pkg/lease` and
+   `pkg/usagecap` already are. So the launch gate and the credential walk
+   import it without inverting the graph, and this decision does not
+   contradict the Mongo twin it asks for below.
+   `Reserve(subject, requested) → (allowance, AllocationID, DenyReason,
+   error)`, `Renew` (a resume re-checks spend without consuming a second
+   unit, the rule `credpool.Ledger.Renew` already states),
+   `Settle(AllocationID, actual)`, `Release(AllocationID)`,
+   `Outstanding(subject)`, `Expire(now, limit)`. One judgement function
+   takes `requested` as a term. The **error is the last value on every
+   call**, as on `credpool.Ledger.Reserve` and `orgusage.Counter.AllowRun`: an
+   unreachable ledger is an error, never a `DenyReason` — encoding it as a
+   refusal would invert decision 8's fail-open doctrine and is the silent
+   fallback the conventions forbid. A capped subject with nothing left
+   **denies** rather than granting zero: zero on the wire means "no
+   ceiling". Memory and Mongo twins behind one conformance suite, the
+   pattern of `pkg/credusage` (`NewMemoryCounter`/`NewMongoCounter`),
+   `pkg/usagecap` (`MemStore` in `store.go`, `MongoStore` in `mongo.go`, one
+   `runStoreConformance` over both) and `pkg/lease`.
 3. **The acquire is ONE conditional write whose own post-state yields the
    count**: `$inc` the subject's outstanding counter, read the
    post-increment document, roll the increment back on refusal — the shape
@@ -230,9 +248,12 @@ bot); finding 5 (accepted and documented as by-design on
    and a launch admitted with no allocation is logged as such.
 9. **Execution capacity is reservable per pool.** `RunnerPool` gains an
    in-flight ceiling that overrides `cfg.MaxAckPending` for that pool's
-   consumer (`poolConsumerConfig` is the seam; `0` keeps
-   `DefaultMaxAckPending`, and the historic pin of `1` that serialised the
-   whole fleet is the lesson this must not re-pay). The chart carries
+   consumer (`poolConsumerConfig` is the seam; `0` inherits
+   `cfg.MaxAckPending` — the operator's `ITERION_NATS_MAX_ACK_PENDING`,
+   which `applyDefaults` has already resolved to `DefaultMaxAckPending`
+   *only* when nothing was set, so no pool is re-capped below a global the
+   operator raised, and the historic pin of `1` that serialised the whole
+   fleet is the lesson this must not re-pay). The chart carries
    `ITERION_NATS_MAX_ACK_PENDING` and the per-pool value, and renders one
    `ScaledObject` per pool, gated on that pool's own `keda.enabled` so a
    cluster without KEDA still renders. **The prod numbers are the
@@ -313,7 +334,10 @@ Nothing here is built. The first unit rebases on the landing of
    admitted), and it is built in BOTH completion orders, because a test that
    can only redden in one order is flaky rather than a witness. Second
    mutation: drop the release from the rollback, and the slot stays
-   consumed. The four existing floor tests run unchanged.
+   consumed. The existing floor tests run unchanged
+   (`pkg/server/launch_gate_floor_test.go` on the gate's repo, concurrency
+   and monthly-dollar axes, `pkg/server/cloudpublisher/budget_floor_test.go`
+   on the credential walk's window reserve).
 3. **The reconcile sweep** (`pkg/server`, `pkg/capacityledger`) — every
    replica, per-item CAS, bounded batch, no invented spend. Witness: acquire,
    abandon the holder without settling, one pass returns the slot and
@@ -340,9 +364,17 @@ Nothing here is built. The first unit rebases on the landing of
    a runner that writes no bot cannot make the share read unconsumed. The
    mutation drops the engine-floor gate and the share reads as free.
 7. **Per-pool in-flight ceiling** (`pkg/queue/nats`, `pkg/config`,
-   `pkg/platformcfg`). Witness: two pools' consumer configs carry different
-   `MaxAckPending` while the shared consumer keeps the global, and `0` still
-   resolves to `DefaultMaxAckPending`; the mutation drops the override.
+   `pkg/platformcfg`). Witness: on a config whose global is **not** the
+   compiled default (`MaxAckPending` set well above `DefaultMaxAckPending`,
+   as `ITERION_NATS_MAX_ACK_PENDING` would), two pools' consumer configs
+   carry their own ceilings while the shared consumer *and* an override-less
+   pool both carry that configured global — asserting `DefaultMaxAckPending`
+   instead would pass under either reading and witness nothing.
+   `TestPoolConsumerConfig` already pins a non-default global
+   (`MaxAckPending: 42`): extend that shape rather than write a new one. Two
+   mutations: drop the override, and resolve an absent override to
+   `DefaultMaxAckPending` — the second reddens `TestPoolConsumerConfig`
+   today, which is why the spelling matters.
 8. **The chart exposes it** (`charts/iterion`, `docs/agents/ops/runbooks.md`)
    — the configmap key, the per-pool value, one `ScaledObject` per pool
    gated on its own `keda.enabled`. Witness: `helm lint` on dev and prod
