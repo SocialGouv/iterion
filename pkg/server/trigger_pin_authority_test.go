@@ -161,17 +161,22 @@ func TestTriggerCredentialPinsAreATeamAdminsDecision(t *testing.T) {
 // A right the identity store could not judge is an outage, not a refusal:
 // a 403 there would tell an admin they are not one over a Mongo blip, and
 // nothing would be logged. A healthy store that grants nothing is the 403.
+// Every outage shape runs: one where only an org read fails beside a
+// definitive "no grant" is the case a gate dropping the org read's failure
+// answers 403.
 func TestTriggerCredentialGateTellsAnOutageFromARefusal(t *testing.T) {
 	srv, org, _ := triggerPinServer(t)
 	body := `{"bot_id":"feature-dev","invocation":"board","mode":"board","match":{"sources":["board"]},"key_overrides":{"anthropic":"` + org.ID + `"}}`
-	for _, tc := range []struct {
+	type gateCase struct {
 		name  string
 		store identity.Store
 		want  int
-	}{
-		{"identity store outage", outageIdentityStore{}, http.StatusInternalServerError},
-		{"no grant", noGrantIdentityStore{}, http.StatusForbidden},
-	} {
+	}
+	cases := []gateCase{{"no grant", noGrantIdentityStore{}, http.StatusForbidden}}
+	for _, outage := range identityStoreOutages() {
+		cases = append(cases, gateCase{"identity store outage: " + outage.name, outage.store, http.StatusInternalServerError})
+	}
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			authSvc := &auth.Service{}
 			authSvc.SetStoreForTest(tc.store)

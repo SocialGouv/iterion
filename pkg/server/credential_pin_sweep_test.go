@@ -633,6 +633,51 @@ func (outageIdentityStore) GetOrgMembership(context.Context, string, string) (id
 	return identity.OrgMembership{}, errors.New("identity store unavailable")
 }
 
+// orgReadOutageIdentityStore answers the caller's team grant with a
+// definitive not-found and fails one read of the team's org lineage: the
+// team row itself (teamUnread), or the caller's standing in the org the
+// team belongs to. A grant that is NOT THERE is a fact, so the org read is
+// the only failure behind the "no" — the case the all-reads outage cannot
+// isolate: there the grant read fails first and carries the outage on its
+// own, whether or not the gate reports the org read's failure beside it.
+type orgReadOutageIdentityStore struct {
+	identity.Store
+	teamUnread bool
+}
+
+func (orgReadOutageIdentityStore) GetMembership(context.Context, string, string) (identity.Membership, error) {
+	return identity.Membership{}, identity.ErrNotFound
+}
+
+func (o orgReadOutageIdentityStore) GetTeam(_ context.Context, teamID string) (identity.Team, error) {
+	if o.teamUnread {
+		return identity.Team{}, errors.New("identity store unavailable: the team row")
+	}
+	return identity.Team{ID: teamID, OrgID: "org-of-" + teamID}, nil
+}
+
+func (orgReadOutageIdentityStore) GetOrgMembership(context.Context, string, string) (identity.OrgMembership, error) {
+	return identity.OrgMembership{}, errors.New("identity store unavailable: the org standing")
+}
+
+// identityStoreOutage is one shape of an identity store the team gate cannot
+// answer from, and the failure its refusal must surface.
+type identityStoreOutage struct {
+	name  string
+	store identity.Store
+	cause string
+}
+
+// identityStoreOutages is every such shape: every read failing, and each
+// read of the org lineage failing beside a definitive "no grant".
+func identityStoreOutages() []identityStoreOutage {
+	return []identityStoreOutage{
+		{"every read fails", outageIdentityStore{}, "identity store unavailable"},
+		{"the team row is unreadable beside no grant", orgReadOutageIdentityStore{teamUnread: true}, "the team row"},
+		{"the org standing is unreadable beside no grant", orgReadOutageIdentityStore{}, "the org standing"},
+	}
+}
+
 // TestDeleteRoutes_TheHealReportsAnIdentityStoreOutage: the 404 path's
 // gate reads the caller's standing from the identity store, and a read the
 // store cannot complete is an outage, not a "no". Folding it into a bool
@@ -640,45 +685,62 @@ func (outageIdentityStore) GetOrgMembership(context.Context, string, string) (id
 // may still stand — the untreated retry the heal exists to close, with no
 // trace. Both delete chokepoints answer their explicit 5xx instead, so the
 // next retry heals; the org-tier form of the gate surfaces the same
-// failure through the shared pass. A caller the gate REFUSES on a healthy
-// store keeps the bare 404 (TestDeleteApiKey_TheHealDemandsTheTenantRight).
+// failure through the shared pass. Each outage shape runs on its own: one
+// where only an org read fails beside a definitive "no grant" is the case
+// that dropping the org read's failure (the mutant) turns into a 404. A
+// caller the gate REFUSES on a healthy store keeps the bare 404
+// (TestDeleteApiKey_TheHealDemandsTheTenantRight).
 func TestDeleteRoutes_TheHealReportsAnIdentityStoreOutage(t *testing.T) {
-	srv, _, _, _ := newPinSweepServer(t)
-	authSvc := &auth.Service{}
-	authSvc.SetStoreForTest(outageIdentityStore{})
-	srv.authSvc = authSvc
-	caller := auth.Identity{UserID: "u9", TeamID: "team-a"}
+	for _, outage := range identityStoreOutages() {
+		t.Run(outage.name, func(t *testing.T) {
+			srv, _, _, _ := newPinSweepServer(t)
+			authSvc := &auth.Service{}
+			authSvc.SetStoreForTest(outage.store)
+			srv.authSvc = authSvc
+			caller := auth.Identity{UserID: "u9", TeamID: "team-a"}
 
-	t.Run("api key", func(t *testing.T) {
-		r := httptest.NewRequest(http.MethodDelete, "/api/teams/team-a/api-keys/key-gone", nil)
-		r.SetPathValue("id", "team-a")
-		r.SetPathValue("key_id", "key-gone")
-		r = r.WithContext(store.WithTenant(auth.WithIdentity(r.Context(), caller), "team-a"))
-		w := httptest.NewRecorder()
-		srv.handleDeleteApiKey(w, r)
-		if w.Code != http.StatusInternalServerError {
-			t.Fatalf("retry under an identity outage = %d body=%s, want 500 — a 404 here skips the heal in silence", w.Code, w.Body.String())
-		}
-	})
-	t.Run("secret", func(t *testing.T) {
-		r := httptest.NewRequest(http.MethodDelete, "/api/teams/team-a/secrets/sec-gone", nil)
-		r.SetPathValue("id", "team-a")
-		r.SetPathValue("secret_id", "sec-gone")
-		r = r.WithContext(store.WithTenant(auth.WithIdentity(r.Context(), caller), "team-a"))
-		w := httptest.NewRecorder()
-		srv.handleDeleteGenericSecret(w, r)
-		if w.Code != http.StatusInternalServerError {
-			t.Fatalf("retry under an identity outage = %d body=%s, want 500 — a 404 here skips the heal in silence", w.Code, w.Body.String())
-		}
-	})
-	t.Run("org tier", func(t *testing.T) {
-		r := httptest.NewRequest(http.MethodDelete, "/api/orgs/org-1/credentials/api-keys/key-gone", nil)
-		r = r.WithContext(auth.WithIdentity(r.Context(), caller))
-		_, err := srv.retryCredentialPinSweep(r, secrets.OrgTierTenantID("org-1"), "key-gone")
-		if err == nil || !strings.Contains(err.Error(), "identity store unavailable") {
-			t.Fatalf("org-tier heal under an identity outage err = %v, want the gate's read failure surfaced", err)
-		}
-	})
+			t.Run("api key", func(t *testing.T) {
+				r := httptest.NewRequest(http.MethodDelete, "/api/teams/team-a/api-keys/key-gone", nil)
+				r.SetPathValue("id", "team-a")
+				r.SetPathValue("key_id", "key-gone")
+				r = r.WithContext(store.WithTenant(auth.WithIdentity(r.Context(), caller), "team-a"))
+				w := httptest.NewRecorder()
+				srv.handleDeleteApiKey(w, r)
+				if w.Code != http.StatusInternalServerError {
+					t.Fatalf("retry under an identity outage = %d body=%s, want 500 — a 404 here skips the heal in silence", w.Code, w.Body.String())
+				}
+			})
+			t.Run("secret", func(t *testing.T) {
+				r := httptest.NewRequest(http.MethodDelete, "/api/teams/team-a/secrets/sec-gone", nil)
+				r.SetPathValue("id", "team-a")
+				r.SetPathValue("secret_id", "sec-gone")
+				r = r.WithContext(store.WithTenant(auth.WithIdentity(r.Context(), caller), "team-a"))
+				w := httptest.NewRecorder()
+				srv.handleDeleteGenericSecret(w, r)
+				if w.Code != http.StatusInternalServerError {
+					t.Fatalf("retry under an identity outage = %d body=%s, want 500 — a 404 here skips the heal in silence", w.Code, w.Body.String())
+				}
+			})
+			// The routes' 5xx body is opaque; the shared pass names the
+			// failure the heal reports, which must be this shape's own read.
+			t.Run("team tier cause", func(t *testing.T) {
+				r := httptest.NewRequest(http.MethodDelete, "/api/teams/team-a/api-keys/key-gone", nil)
+				r = r.WithContext(auth.WithIdentity(r.Context(), caller))
+				_, err := srv.retryCredentialPinSweep(r, "team-a", "key-gone")
+				if err == nil || !strings.Contains(err.Error(), outage.cause) {
+					t.Fatalf("team heal under an identity outage err = %v, want the failed read (%q) surfaced", err, outage.cause)
+				}
+			})
+			t.Run("org tier", func(t *testing.T) {
+				r := httptest.NewRequest(http.MethodDelete, "/api/orgs/org-1/credentials/api-keys/key-gone", nil)
+				r = r.WithContext(auth.WithIdentity(r.Context(), caller))
+				_, err := srv.retryCredentialPinSweep(r, secrets.OrgTierTenantID("org-1"), "key-gone")
+				if err == nil || !strings.Contains(err.Error(), "identity store unavailable") {
+					t.Fatalf("org-tier heal under an identity outage err = %v, want the gate's read failure surfaced", err)
+				}
+			})
+		})
+	}
 }
 
 // landingEditPinSweep performs an operator's pin edit INSIDE the sweep's
