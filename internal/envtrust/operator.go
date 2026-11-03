@@ -65,6 +65,10 @@ var operatorInfraPrefixes = []string{
 	// process, and the force-sweep list lifts the guard that keeps an org's
 	// Mongo rows while one of its runs could not be deleted.
 	"ITERION_ORG_PURGE_",
+	// The operator's legal pages: the documents directory, the contact address
+	// presented to every visitor and the accessibility status are the
+	// deployment's, never a bot's.
+	"ITERION_LEGAL_",
 	// Whether a leased net's term may end on the work failing: a knob over
 	// the election itself, which decides which REPLICA runs a net, not what
 	// a run does.

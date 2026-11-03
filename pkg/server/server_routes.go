@@ -88,6 +88,10 @@ func (s *Server) routes() {
 	// existing /board tracker and dispatcher semantics remain unchanged.
 	s.registerPipelineBoardRoutes()
 
+	// The operator's legal pages (ADR-160): public reads of the configured
+	// documents, every mode.
+	s.registerLegalRoutes()
+
 	// Hosted marketplace — curated registry of bot bundles published by
 	// repos. Each endpoint short-circuits to 404 when s.marketplace is
 	// nil so wiring is single-config (the studio gates its view on

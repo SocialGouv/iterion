@@ -436,6 +436,12 @@ func isPublicPath(path string) bool {
 	if strings.HasPrefix(path, "/api/auth/oidc/") {
 		return true
 	}
+	// The operator's legal documents (ADR-160): read by the sign-in page and
+	// the public catalogue before any session exists, and owed to every
+	// visitor by law. Only GET is registered under this prefix.
+	if strings.HasPrefix(path, "/api/legal/") {
+		return true
+	}
 	// The forge OAuth callback is a top-level GET navigation from the forge
 	// IdP carrying no operator JWT — it authenticates via the signed state +
 	// the per-flow agent-binding cookie, like the OIDC callback above.

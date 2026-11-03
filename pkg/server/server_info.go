@@ -137,6 +137,11 @@ type serverInfoResponse struct {
 	// (max/active/waiting) so the pipeline board can render the cap + how
 	// many pipelines wait for a slot. Enabled=false when no cap is set.
 	PipelineConcurrency runview.PipelineConcurrencyStatus `json:"pipeline_concurrency"`
+	// Legal is the operator's published legal surface (ADR-160): the
+	// configured documents (slug + title — the SPA links those and only
+	// those), the contact address and the accessibility declaration. Public
+	// by design: it is what every visitor is owed before signing in.
+	Legal legalInfoBlock `json:"legal"`
 }
 
 type serverLimitsBlock struct {
@@ -202,6 +207,7 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 	resp.SkillsEnabled = s.cfg.Mode != "cloud"
 	resp.RunShellEnabled = s.cfg.Mode != "cloud"
 	resp.AssistantEditorMaxSource = assistantEditorMaxSource()
+	resp.Legal = s.legalInfo()
 	// Surface whether the daily spend cap is active so the SPA knows to
 	// poll for live status. DailyCap() is nil when disabled.
 	if runsSvc != nil && runsSvc.DailyCap() != nil {

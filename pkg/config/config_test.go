@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/legal"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -969,6 +970,74 @@ func TestLoad_OAuthForfaitAnthropicClientIDDefault(t *testing.T) {
 			}
 			if got := cfg.Auth.OAuthForfait.AnthropicClientID; got != tc.want {
 				t.Fatalf("AnthropicClientID = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoad_LegalEnv(t *testing.T) {
+	clearITERION(t)
+	t.Setenv("ITERION_LEGAL_DOCUMENTS_DIR", "/etc/iterion/legal")
+	t.Setenv("ITERION_LEGAL_CONTACT_EMAIL", "contact@example.org")
+	t.Setenv("ITERION_LEGAL_ACCESSIBILITY_STATUS", "partially_compliant")
+	t.Setenv("ITERION_LEGAL_ACCESSIBILITY_DATE", "2026-11-03")
+	t.Setenv("ITERION_LEGAL_ACCESSIBILITY_RATE", "72.5")
+	cfg, err := Load(LoadOptions{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Legal.DocumentsDir != "/etc/iterion/legal" {
+		t.Errorf("DocumentsDir = %q", cfg.Legal.DocumentsDir)
+	}
+	if cfg.Legal.ContactEmail != "contact@example.org" {
+		t.Errorf("ContactEmail = %q", cfg.Legal.ContactEmail)
+	}
+	a := cfg.Legal.Accessibility()
+	if a.Status != legal.StatusPartiallyCompliant || a.Date != "2026-11-03" || a.Rate != "72.5" {
+		t.Errorf("Accessibility = %+v", a)
+	}
+}
+
+func TestLoad_LegalYAML(t *testing.T) {
+	clearITERION(t)
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	body := "legal:\n  documents_dir: /srv/legal\n  contact_email: dpo@example.org\n  accessibility_status: non_compliant\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(LoadOptions{YAMLPath: path})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Legal.DocumentsDir != "/srv/legal" || cfg.Legal.ContactEmail != "dpo@example.org" || cfg.Legal.AccessibilityStatus != "non_compliant" {
+		t.Errorf("Legal = %+v", cfg.Legal)
+	}
+}
+
+// The legal surface is validated in every mode: an unknown status, a rate
+// with no status, or a contact that is not an address is refused at
+// startup rather than published as a half-declaration.
+func TestLoad_LegalValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{"unknown status", map[string]string{"ITERION_LEGAL_ACCESSIBILITY_STATUS": "conforme"}, "ITERION_LEGAL_ACCESSIBILITY_*: accessibility status \"conforme\" invalid"},
+		{"rate without status", map[string]string{"ITERION_LEGAL_ACCESSIBILITY_RATE": "42"}, "without an accessibility status"},
+		{"bad contact", map[string]string{"ITERION_LEGAL_CONTACT_EMAIL": "not an address"}, "ITERION_LEGAL_CONTACT_EMAIL \"not an address\" invalid"},
+		{"display-name contact", map[string]string{"ITERION_LEGAL_CONTACT_EMAIL": "Iterion <contact@iterion.cloud>"}, "without a display name"},
+		{"rate contradicts status", map[string]string{"ITERION_LEGAL_ACCESSIBILITY_STATUS": "compliant", "ITERION_LEGAL_ACCESSIBILITY_RATE": "42"}, "contradicts status compliant"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			clearITERION(t)
+			for k, v := range c.env {
+				t.Setenv(k, v)
+			}
+			_, err := Load(LoadOptions{})
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("Load = %v, want %q", err, c.want)
 			}
 		})
 	}

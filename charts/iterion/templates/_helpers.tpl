@@ -336,3 +336,42 @@ every datastore alert at once.
 {{- fail (printf "%s carries a backslash PromQL cannot read (got %q): inside a PromQL string a regex escape is written twice (\\\\d), or as a class ([0-9])" .path $v) -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+iterion.legal.documents — the configured legal documents as a JSON object
+{slug: markdown}, keys with an empty text dropped. A key that names no
+document is refused: the server would refuse the file at startup anyway
+(pkg/legal.Load), and a misspelt slug is a text the operator meant to
+publish. Inline documents beside config.legal.existingConfigMap are refused
+too: the existing ConfigMap is what gets mounted, so the inline texts would
+vanish in silence. The slug list mirrors pkg/legal.Slugs.
+*/}}
+{{- define "iterion.legal.documents" -}}
+{{- $docs := dict -}}
+{{- range $slug, $body := ((.Values.config.legal).documents | default dict) -}}
+{{- if not (has $slug (list "mentions-legales" "confidentialite" "cgu" "accessibilite")) -}}
+{{- fail (printf "config.legal.documents.%s names no legal document (want mentions-legales, confidentialite, cgu or accessibilite)" $slug) -}}
+{{- end -}}
+{{- if $body -}}
+{{- $_ := set $docs $slug $body -}}
+{{- end -}}
+{{- end -}}
+{{- if and $docs ((.Values.config.legal).existingConfigMap) -}}
+{{- fail (printf "config.legal.existingConfigMap (%s) and inline config.legal.documents (%s) are both set — the existing ConfigMap is the one mounted, so the inline texts would never be published; keep one source" ((.Values.config.legal).existingConfigMap) (keys $docs | sortAlpha | join ", ")) -}}
+{{- end -}}
+{{- $docs | toJson -}}
+{{- end -}}
+
+{{/*
+iterion.legal.mounted — non-empty when the server pod mounts a legal
+documents ConfigMap: one the chart renders, or an existing one.
+*/}}
+{{- define "iterion.legal.mounted" -}}
+{{- if or ((.Values.config.legal).existingConfigMap) (ne (include "iterion.legal.documents" .) "{}") -}}true{{- end -}}
+{{- end -}}
+
+{{- define "iterion.legal.configMapName" -}}
+{{- default (printf "%s-legal" (include "iterion.fullname" .)) ((.Values.config.legal).existingConfigMap) -}}
+{{- end -}}
+
+{{- define "iterion.legal.mountPath" -}}/etc/iterion/legal{{- end -}}

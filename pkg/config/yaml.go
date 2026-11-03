@@ -43,6 +43,15 @@ type yamlConfig struct {
 	Log     *yamlLogConfig     `yaml:"log"`
 	Auth    *yamlAuthConfig    `yaml:"auth"`
 	Alerts  *yamlAlertsConfig  `yaml:"alerts"`
+	Legal   *yamlLegalConfig   `yaml:"legal"`
+}
+
+type yamlLegalConfig struct {
+	DocumentsDir        *string `yaml:"documents_dir"`
+	ContactEmail        *string `yaml:"contact_email"`
+	AccessibilityStatus *string `yaml:"accessibility_status"`
+	AccessibilityDate   *string `yaml:"accessibility_date"`
+	AccessibilityRate   *string `yaml:"accessibility_rate"`
 }
 
 type yamlAlertsConfig struct {
@@ -324,6 +333,13 @@ func (y *yamlConfig) applyTo(cfg *Config) error {
 			applyString(y.Auth.OAuthForfait.AnthropicClientID, &cfg.Auth.OAuthForfait.AnthropicClientID)
 			applyString(y.Auth.OAuthForfait.CodexClientID, &cfg.Auth.OAuthForfait.CodexClientID)
 		}
+	}
+	if y.Legal != nil {
+		applyString(y.Legal.DocumentsDir, &cfg.Legal.DocumentsDir)
+		applyString(y.Legal.ContactEmail, &cfg.Legal.ContactEmail)
+		applyString(y.Legal.AccessibilityStatus, &cfg.Legal.AccessibilityStatus)
+		applyString(y.Legal.AccessibilityDate, &cfg.Legal.AccessibilityDate)
+		applyString(y.Legal.AccessibilityRate, &cfg.Legal.AccessibilityRate)
 	}
 	if y.Sandbox != nil {
 		applyString(y.Sandbox.Default, &cfg.Sandbox.Default)

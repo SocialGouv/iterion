@@ -29,6 +29,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/lease"
+	"github.com/SocialGouv/iterion/pkg/legal"
 	"github.com/SocialGouv/iterion/pkg/marketplace"
 	"github.com/SocialGouv/iterion/pkg/modelprefs"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
@@ -137,6 +138,13 @@ type Config struct {
 	// other host to PublicURL. /api/ is never redirected, so webhooks, the
 	// CLI and the SDK keep answering on every host.
 	CanonicalRedirect bool
+
+	// Legal is the operator's published legal surface (ADR-160): the
+	// documents loaded at startup from ITERION_LEGAL_DOCUMENTS_DIR, the
+	// contact address and the accessibility declaration. Served public on
+	// GET /api/legal/{slug} and summarised in /api/server/info; the zero
+	// value publishes nothing (404, no link).
+	Legal legal.Surface
 
 	// SignupMode is "open" or "invite_only"; surfaced to the SPA.
 	SignupMode string

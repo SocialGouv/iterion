@@ -1,4 +1,5 @@
 import { errorMessage } from "@/lib/errorHints";
+import { LegalLinks } from "@/views/Legal/LegalLinks";
 import { useEffect, useState } from "react";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Button } from "@/components/ui/Button";
@@ -501,6 +502,10 @@ export function SignInCard() {
             </Button>
           )}
         </div>
+        {/* The legal links a visitor is owed BEFORE signing in (ADR-160);
+            inside the card so the plain Login page and the product home's
+            card both carry them. */}
+        <LegalLinks className="mt-6" />
       </div>
   );
 }

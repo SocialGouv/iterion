@@ -1311,6 +1311,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/legal/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * GET /api/legal/{slug}
+         * @description Public. One of the operator's legal documents (mentions-legales, confidentialite, cgu, accessibilite) as markdown, with the contact address and the accessibility declaration. 404 for a slug that names no document or one this deployment did not configure; /api/server/info lists the configured ones.
+         */
+        get: operations["getLegalBySlug"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/local/skills": {
         parameters: {
             query?: never;
@@ -6360,6 +6382,11 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        Accessibility: {
+            date?: string;
+            rate?: string;
+            status?: string;
+        };
         AdmissionDecision: {
             /** Format: date-time */
             checked_at: string;
@@ -8074,6 +8101,13 @@ export interface components {
             repo_full_name: string;
             sync_issues_enabled: boolean;
             web_url?: string;
+        };
+        legalDocumentView: {
+            accessibility: components["schemas"]["Accessibility"];
+            contact_email?: string;
+            markdown: string;
+            slug: string;
+            title: string;
         };
         loginReq: {
             email: string;
@@ -10986,6 +11020,42 @@ export interface operations {
         responses: {
             /** @description Response */
             default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getLegalBySlug: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["legalDocumentView"];
+                };
+            };
+            /** @description no such legal document, or not published on this deployment */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Rate limit exceeded; Retry-After says when */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

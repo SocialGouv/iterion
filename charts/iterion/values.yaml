@@ -566,6 +566,46 @@ config:
     monthlyCostCapUsd: 0
     maxConcurrentRuns: 0
     launchRatePerMin: 0
+  # --- Legal pages (every mode) -------------------------------------
+  # The operator's legal surface (docs/adr/160-legal-content-is-deployment-configuration.md):
+  # the texts a public service owes its visitors are DEPLOYMENT
+  # configuration — the same image serves every operator, so an editor, a
+  # DPO or a hosting provider never lives in the bundle, and a legal text
+  # changes through a reviewed commit, never through an admin console.
+  # Everything is optional: a document left empty has no page and no link.
+  # Templates to fill with the DPO: docs/legal-templates/ in the repository.
+  legal:
+    # mailto: contact the pages offer (legal, privacy and accessibility
+    # feedback). Empty = no contact link.
+    contactEmail: ""
+    # Published accessibility conformance status (décret 2019-768):
+    # "" (not published) | non_compliant | partially_compliant | compliant.
+    # Publish non_compliant until a full RGAA audit gives a rate.
+    accessibilityStatus: ""
+    # Date the statement was established, YYYY-MM-DD (optional).
+    accessibilityDate: ""
+    # Conformance rate in percent from a full audit (e.g. "72.5"); required
+    # for partially_compliant, and it must match the status: compliant =
+    # 100, partially_compliant = 50 to under 100, non_compliant = under 50
+    # (the server refuses a contradiction at startup).
+    accessibilityRate: ""
+    # The documents, as markdown, keyed by slug — the address segment under
+    # /legal/. Rendered into the <release>-legal ConfigMap and mounted on the
+    # server pod; a key left empty is not published. Use a values file with
+    # block scalars (mentions-legales: |) rather than --set.
+    documents:
+      mentions-legales: ""
+      confidentialite: ""
+      cgu: ""
+      accessibilite: ""
+    # An out-of-band ConfigMap holding <slug>.md keys (sealed, GitOps-
+    # managed, …). When set, the chart mounts it instead of rendering the
+    # documents above, which must then stay empty (refused otherwise). The
+    # server reads the documents once at startup and the chart cannot see
+    # this ConfigMap's content: a change needs a rollout you trigger (a
+    # checksum of your own in server.podAnnotations, or kubectl rollout
+    # restart).
+    existingConfigMap: ""
 
 # --- Secrets --------------------------------------------------------
 # Two opt-in patterns:

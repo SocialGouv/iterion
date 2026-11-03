@@ -39,6 +39,11 @@ spec:
         # an OIDC provider or the marketplace), so config-only updates don't
         # require a manual `kubectl rollout restart`.
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if include "iterion.legal.documents" . | fromJson }}
+        # The legal documents are read once at startup: a text change must
+        # roll the pod like any other config change.
+        checksum/legal: {{ include (print $.Template.BasePath "/configmap-legal.yaml") . | sha256sum }}
+        {{- end }}
         {{- with .Values.server.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -145,11 +150,25 @@ spec:
             failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
           resources:
             {{- toYaml .Values.server.resources | nindent 12 }}
-          {{- if eq .Values.mode "local" }}
+          {{- $legal := include "iterion.legal.mounted" . }}
+          {{- if or (eq .Values.mode "local") $legal }}
           volumeMounts:
+            {{- if eq .Values.mode "local" }}
             - name: iterion-state
               mountPath: /var/lib/iterion
+            {{- end }}
+            {{- if $legal }}
+            - name: legal
+              mountPath: {{ include "iterion.legal.mountPath" . }}
+              readOnly: true
+            {{- end }}
           {{- end }}
+      {{- if $legal }}
+      volumes:
+        - name: legal
+          configMap:
+            name: {{ include "iterion.legal.configMapName" . }}
+      {{- end }}
       {{- with .Values.server.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

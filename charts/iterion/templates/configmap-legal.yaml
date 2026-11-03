@@ -1,0 +1,22 @@
+{{- /*
+The operator's legal documents (ADR-160), one <slug>.md key per configured
+text, mounted read-only on the server pod at the path ITERION_LEGAL_DOCUMENTS_DIR
+names. Not rendered when every document is empty or when
+config.legal.existingConfigMap points at a ConfigMap managed elsewhere.
+Each text is written as a JSON string — a valid YAML scalar whatever its
+first line — so a document that opens on an indented line (a code block, a
+pasted quote) renders instead of breaking a block scalar.
+*/ -}}
+{{- $docs := include "iterion.legal.documents" . | fromJson -}}
+{{- if and $docs (not (.Values.config.legal).existingConfigMap) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "iterion.legal.configMapName" . }}
+  labels:
+    {{- include "iterion.labels" . | nindent 4 }}
+data:
+{{- range $slug, $body := $docs }}
+  {{ $slug }}.md: {{ $body | toJson }}
+{{- end }}
+{{- end }}

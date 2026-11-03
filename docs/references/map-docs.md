@@ -162,6 +162,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/adr/155-reserved-capacity-is-a-durable-allocation.md`](../adr/155-reserved-capacity-is-a-durable-allocation.md) | ADR-155: reserved capacity is a durable allocation — one ledger, one atomic acquire, a… | Status: accepted — the decisions are taken: the operator decided on 2026-11-03 that the shape stands as written and that a reservation's… | — |
 | [`docs/adr/156-bearer-token-hashing-doctrine.md`](../adr/156-bearer-token-hashing-doctrine.md) | ADR-156: Bearer tokens at rest — an unsalted SHA-256 digest; HMAC is reserved for… | Every long-lived bearer token iterion stores — refresh token, personal | Accepted — the operator decided it on 2026-11-03… |
 | [`docs/adr/157-authentication-events-join-the-audit-log.md`](../adr/157-authentication-events-join-the-audit-log.md) | ADR-157: Sign-ins join the audit log — platform-scoped refusals, a peppered subject, no… | The audit log (`pkg/audit`) records control-plane mutations — org and team | Accepted — the operator picked this option on 2026-11-03… |
+| [`docs/adr/160-legal-content-is-deployment-configuration.md`](../adr/160-legal-content-is-deployment-configuration.md) | ADR-160: Legal content is deployment configuration — never the bundle, never the… | A public online service in France owes its visitors four texts: a legal | Accepted — the operator picked this option on 2026-11-03… |
 | [`docs/adr/README.md`](../adr/README.md) | Architecture decision records | One decision per file, named `NNN-kebab-title.md`, where `NNN` is the next | — |
 | [`docs/agents/README.md`](../agents/README.md) | Agent instructions — the tree | Doctrine specific to this repository: what to know before touching iterion, | — |
 | [`docs/agents/backends/README.md`](../agents/backends/README.md) | Backends and execution — the domain | Who runs the prompt, with which tools, and what the node keeps of its | — |
@@ -374,6 +375,11 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/index.md`](../index.md) | — | The cloud onboarding, ready to paste: give the whole block below to a fresh | — |
 | [`docs/install.md`](../install.md) | 🖥️ Install | One Go core, delivered wherever you work — a scriptable CLI, a visual studio, a | — |
 | [`docs/layering.md`](../layering.md) | The layer map — package layers as an executable guard | The package layers are pinned by a test, not by prose: | — |
+| [`docs/legal-templates/README.md`](../legal-templates/README.md) | Legal page templates | The four markdown templates an operator fills in — with their DPO and | — |
+| [`docs/legal-templates/accessibilite.md`](../legal-templates/accessibilite.md) | État de conformité | à l'article 47 de la loi n° 2005-102 du 11 février 2005. | — |
+| [`docs/legal-templates/cgu.md`](../legal-templates/cgu.md) | Objet | Les présentes conditions générales d'utilisation (CGU) encadrent l'accès | — |
+| [`docs/legal-templates/confidentialite.md`](../legal-templates/confidentialite.md) | Responsable du traitement | Le responsable du traitement des données à caractère personnel collectées | — |
+| [`docs/legal-templates/mentions-legales.md`](../legal-templates/mentions-legales.md) | Éditeur | Le service <nom du service, p. | — |
 | [`docs/live-e2e-coverage.md`](../live-e2e-coverage.md) | Live e2e coverage + quality/value snapshots | iterion ships an **optional, real-LLM** end-to-end layer that exercises | — |
 | [`docs/mcp-server.md`](../mcp-server.md) | The iterion MCP server — `iterion mcp` | `iterion mcp` serves the **operator-facing MCP server** on stdio: any | — |
 | [`docs/memory-and-knowledge.md`](../memory-and-knowledge.md) | Memory and knowledge spaces | `memory_write` / `memory_list`), org admins enforcing a quota on | — |

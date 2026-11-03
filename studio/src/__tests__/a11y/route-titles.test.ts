@@ -24,6 +24,7 @@ const PUBLIC_ROUTES: { path: string; reason: string }[] = [
   { path: "/auth/reset", reason: "password door — authenticates on the URL token" },
   { path: "/invitations/accept", reason: "pre-auth invitation door" },
   { path: "/config/:id", reason: "shell-less config-share editor — self-authenticating" },
+  { path: "/legal/:slug", reason: "public legal page outside StudioShell — sets its own document.title" },
 ];
 
 // Table entries with no <Route> literal in App.tsx: the route exists, but a

@@ -71,13 +71,19 @@ var catalogHostAllowlist = map[string]string{
 	"api.github.com":                      "GitHub's public API",
 	"raw.githubusercontent.com":           "GitHub's public raw-content host",
 	"token.actions.githubusercontent.com": "GitHub Actions' public OIDC issuer — the certificate issuer `cosign verify` checks on a release image (docs/cloud-deployment.md)",
-	"codeload.github.com":                 "GitHub's archive download host — the ARC runner image bakes the pinned actions from it (ci/arc-runner/Dockerfile)",
-	"gitlab.com":                          "the public GitLab instance",
-	"codeberg.org":                        "a public forge",
-	"nixhub.io":                           "the public devbox package index, named in devbox locks",
-	"json.schemastore.org":                "the public JSON schema store",
-	"dl.min.io":                           "a public download host for an object-store client",
-	"api.moonshot.ai":                     "Moonshot's public API, documented in the backends guide",
+	// French public authorities a legal page must name as the recourse
+	// (docs/legal-templates): the accessibility statement's appeal to the
+	// Défenseur des droits, the privacy notice's complaint to the CNIL.
+	"www.defenseurdesdroits.fr":        "the Défenseur des droits, the recourse an accessibility statement must name",
+	"formulaire.defenseurdesdroits.fr": "the Défenseur des droits' public complaint form",
+	"www.cnil.fr":                      "the CNIL, the supervisory authority a privacy notice must name for complaints",
+	"codeload.github.com":              "GitHub's archive download host — the ARC runner image bakes the pinned actions from it (ci/arc-runner/Dockerfile)",
+	"gitlab.com":                       "the public GitLab instance",
+	"codeberg.org":                     "a public forge",
+	"nixhub.io":                        "the public devbox package index, named in devbox locks",
+	"json.schemastore.org":             "the public JSON schema store",
+	"dl.min.io":                        "a public download host for an object-store client",
+	"api.moonshot.ai":                  "Moonshot's public API, documented in the backends guide",
 	// Public vulnerability and standards sources the security bots read.
 	"api.osv.dev":         "the public OSV vulnerability API",
 	"nvd.nist.gov":        "the public national vulnerability database",

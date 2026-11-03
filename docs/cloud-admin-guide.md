@@ -418,7 +418,25 @@ When `ITERION_SMTP_HOST` is set, the boot log shows
 `email_enabled` so the SPA hides the forgot-password link when it's
 off.
 
-### 1.10 PrometheusRule + PodMonitor
+### 1.10 Legal pages
+
+The legal notice, privacy policy, terms of use and accessibility statement
+are deployment configuration ([ADR-160](adr/160-legal-content-is-deployment-configuration.md));
+the chart's `config.legal.*` block fills every variable below
+([cloud-admin.md](cloud-admin.md#legal-pages-configlegal)).
+
+| Env var | Required | Effect |
+|---|---|---|
+| `ITERION_LEGAL_DOCUMENTS_DIR` | no | Directory of `<slug>.md` markdown files (`mentions-legales`, `confidentialite`, `cgu`, `accessibilite`), read once at startup; a stray or empty file refuses the start |
+| `ITERION_LEGAL_CONTACT_EMAIL` | no | The `mailto:` contact every legal page offers |
+| `ITERION_LEGAL_ACCESSIBILITY_STATUS` | no | `non_compliant` \| `partially_compliant` \| `compliant`; empty = not published |
+| `ITERION_LEGAL_ACCESSIBILITY_DATE` | no | Date the statement was established, `YYYY-MM-DD` |
+| `ITERION_LEGAL_ACCESSIBILITY_RATE` | no | Conformance rate in percent from a full audit; refused without a status |
+
+`/api/server/info` carries a `legal` block (configured documents, contact,
+status) the SPA reads to decide which links to show.
+
+### 1.11 PrometheusRule + PodMonitor
 
 The chart's `metrics.podMonitor.enabled=true` deploys a PodMonitor that
 scrapes both server and runner `/metrics`; `metrics.prometheusRule.enabled=true`
