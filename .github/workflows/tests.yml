@@ -132,10 +132,9 @@ concurrency:
 # deliberately the mechanism rather than an edit to this file: repairing by
 # merging does not work when merging is what is broken. Unset means on.
 #
-# Three jobs carry a GitHub-hosted label whatever the ref: cloud-e2e and
-# desktop-vet-linux, each saying why at its own definition, and docs-links,
-# advisory and outside the queue. Every REQUIRED job routes through the
-# expression below. Measured 2026-09-08, on the six jobs routed self-hosted at
+# Two jobs carry a GitHub-hosted label whatever the ref: desktop-vet-linux
+# (the platform-specific build) and docs-links (advisory and outside the queue).
+# Every REQUIRED job routes through the expression below. Measured 2026-09-08, on the six jobs routed self-hosted at
 # the time: all six passed there, nine runner pods starting at once with no
 # queueing.
 #
@@ -861,10 +860,11 @@ jobs:
     # image and a Go compile error surfaces here too. The previous
     # `needs: test` was purely defensive and cost 3-4 min of
     # wall-clock per push.
-    # GitHub-hosted: kind comes up, kubectl cannot authenticate to it. The
-    # cause is NOT established — it is not the image's docker access, which a
-    # sibling job uses successfully. See #981.
-    runs-on: ubuntu-latest
+    # ARC kind + kubectl proven usable on 2026-11-03 (#981):
+    # https://github.com/SocialGouv/iterion/actions/runs/41671007928
+    # Keep the same fork/bot isolation and operator escape hatch as every
+    # other job using the scale set.
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 25
     env:
       KIND_CLUSTER: iterion-e2e

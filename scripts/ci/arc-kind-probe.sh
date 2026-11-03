@@ -1,20 +1,15 @@
 #!/usr/bin/env bash
-# Why `cloud-e2e` cannot run on the arc-runners scale set (#981) — measured on
-# a real ARC pod instead of hypothesised.
-#
-# Three of the nine Tests jobs used to be GitHub-hosted. Two moved on
-# 2026-09-29 (#1955): `race` once the scale set's image shipped gcc, and
-# `mongo-conformance` once it started its replica set with `docker run` on
-# 127.0.0.1 behind the dind sidecar's startupProbe. `cloud-e2e` stayed, and
-# the reason is the one thing nobody established: "kind comes up, kubectl
-# cannot authenticate to it". The first hypothesis — the image's user is not
-# in the docker group — is refuted by the tree itself: `nats-conformance` and
-# `mongo-conformance` reach the daemon from that same image.
+# Recheck kind + kubectl on a real ARC pod (#981).
+# The 2026-11-03 measurement found the old failure no longer reproducible:
+# kind succeeded, API requests answered 200, kubectl cluster-info succeeded.
+# https://github.com/SocialGouv/iterion/actions/runs/41671007928
+# cloud-e2e now uses the common guarded ARC routing expression; retain this
+# diagnostic for a recurrence of the former connectivity/authentication failure.
 #
 # This probe captures the facts that separate the live hypotheses, and names
 # which one the capture supports. It is driven by
 # .github/workflows/arc-kind-probe.yml, which brings a kind cluster up through
-# the SAME pinned action `cloud-e2e` uses, so the measured path is the failing
+# the SAME pinned action cloud-e2e uses, so the measured setup is the actual
 # path and not a re-implementation of it.
 #
 # The hypotheses, and what distinguishes them:
