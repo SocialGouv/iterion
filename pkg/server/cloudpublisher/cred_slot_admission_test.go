@@ -3,6 +3,7 @@ package cloudpublisher
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -473,5 +474,75 @@ func TestCredSlotAdmission_AStoreWithoutTheLedgerRefusesACappedKey(t *testing.T)
 	err := f.launch(t, p, "run-noledger", nil)
 	if err == nil || !strings.Contains(err.Error(), "CredSlotStore") {
 		t.Fatalf("launch err=%v, want a refusal naming the missing ledger", err)
+	}
+}
+
+// A launch that names staged uploads and lands on a full key promotes them
+// BEFORE it parks: the park's resume is the sweeper's, minutes to hours
+// later, when staging may be reaped, and the runner reads attachments off
+// the run document alone — a parked run resumed without the files its
+// launch named would run without them in silence. The promotion runs once the parked row
+// exists, since the store reflects attachments onto the run document. Red
+// when the park returns before the promotion.
+func TestCredSlotAdmission_AParkedLaunchPromotesItsAttachmentsFirst(t *testing.T) {
+	f := newCappedFixture(t, 1)
+	p := f.publisher()
+	if err := f.launch(t, p, "run-first", nil); err != nil {
+		t.Fatalf("first launch: %v", err)
+	}
+	var promotedFor []string
+	var rowAtPromotion store.RunStatus
+	spec := launchSpec(nil)
+	spec.AttachmentPromote = func(_ context.Context, runID string) error {
+		promotedFor = append(promotedFor, runID)
+		r, err := f.spy.LoadRun(f.ctx, runID)
+		if err != nil {
+			return fmt.Errorf("the run document must exist when its attachments are promoted: %w", err)
+		}
+		rowAtPromotion = r.Status
+		return nil
+	}
+	sub, err := p.SubmitLaunch(f.ctx, "run-parked", spec, cappedWorkflow(), &runview.CompiledSource{Hash: "hash"})
+	if err != nil {
+		t.Fatalf("launch on a full key: %v", err)
+	}
+	if sub.Status != store.RunStatusFailedResumable {
+		t.Fatalf("submission = %+v, want a park", sub)
+	}
+	f.assertParked(t, "run-parked")
+	if len(promotedFor) != 1 || promotedFor[0] != "run-parked" {
+		t.Fatalf("attachments promoted for %v, want the parked run exactly once — the sweeper's resume runs the bot without the files its launch named", promotedFor)
+	}
+	if rowAtPromotion != store.RunStatusFailedResumable {
+		t.Fatalf("the row read %q at promotion, want the parked row already persisted", rowAtPromotion)
+	}
+}
+
+// A promotion that fails fails the parked launch exactly like a queued one:
+// the row is LAUNCH_FAILED with the cause and no retry is armed on it — the
+// sweeper would otherwise resume a run whose attachments never landed.
+func TestCredSlotAdmission_AParkedLaunchWhosePromotionFailsIsLaunchFailed(t *testing.T) {
+	f := newCappedFixture(t, 1)
+	p := f.publisher()
+	if err := f.launch(t, p, "run-first", nil); err != nil {
+		t.Fatalf("first launch: %v", err)
+	}
+	spec := launchSpec(nil)
+	spec.AttachmentPromote = func(context.Context, string) error { return errors.New(`upload "u1" not found`) }
+	_, err := p.SubmitLaunch(f.ctx, "run-parked", spec, cappedWorkflow(), &runview.CompiledSource{Hash: "hash"})
+	if err == nil || !strings.Contains(err.Error(), `upload "u1" not found`) {
+		t.Fatalf("launch err=%v, want the promotion's own error", err)
+	}
+	r := f.load(t, "run-parked")
+	if r.Status != store.RunStatusFailed || r.FailureCode != store.FailureLaunchFailed {
+		t.Fatalf("run-parked: status=%s code=%s, want failed/%s — a park whose attachments never landed must not wait to be resumed", r.Status, r.FailureCode, store.FailureLaunchFailed)
+	}
+	if _, armed := f.spy.armedFor("run-parked"); armed {
+		t.Fatal("a retry was armed on a run whose promotion failed")
+	}
+	for _, id := range f.published.ids() {
+		if id == "run-parked" {
+			t.Fatal("a launch whose promotion failed was published")
+		}
 	}
 }

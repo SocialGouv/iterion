@@ -3853,10 +3853,40 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	}
 	if refusal != nil {
 		parkRunOnCredSlot(r, refusal)
-		if err := store.PersistLaunchRun(ctx, r, p.store.SaveRun); err != nil {
-			return runview.LaunchSubmission{}, fmt.Errorf("cloudpublisher: save parked run: %w", err)
-		}
-		persisted = true
+	} else {
+		// The slots are this launch's only once it publishes: every exit
+		// before that gives them back, or the key stays short of them for
+		// the grace the ledger's reconcile allows a missing run document.
+		defer func() {
+			if !launched {
+				p.releaseCredSlots(ctx, runID, creds.credSlots)
+			}
+		}()
+	}
+	// PersistLaunchRun, not a PersistLaunch closure over r: a scheduler's
+	// guard runs this write in a transaction the driver replays, and SaveRun
+	// advances r.CASVersion in place — so the replay has to start from the
+	// run as it stood before the first attempt, or it offers a version the
+	// rolled-back document never reached and refuses the launch.
+	if err := store.PersistLaunchRun(ctx, r, p.store.SaveRun); err != nil {
+		return runview.LaunchSubmission{}, fmt.Errorf("cloudpublisher: save run: %w", err)
+	}
+	persisted = true
+
+	// The staged uploads the launch names are promoted HERE, once the row
+	// exists and before the run is handed on — to the queue message, or to
+	// the park: the runner pod has no staging area to promote from, a run
+	// queued without its attachments would start without them in silence,
+	// and a parked run's resume — the retry sweeper's, minutes to hours
+	// later, when staging may be reaped — reads the attachments off the run
+	// document alone. A promotion that fails fails the launch, and the
+	// rollback above marks the row LAUNCH_FAILED with its cause — a parked
+	// row too, before any retry is armed on it.
+	if err := runview.PromoteForHandoff(ctx, runID, spec.AttachmentPromote); err != nil {
+		return runview.LaunchSubmission{}, fmt.Errorf("cloudpublisher: %w", err)
+	}
+
+	if refusal != nil {
 		// A parked row nothing wakes is a stuck run: an arming that fails
 		// leaves the deferred choke point above to mark the row
 		// LAUNCH_FAILED, which the caller re-does.
@@ -3868,32 +3898,6 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 			p.metrics.RunsCreatedTotal.WithLabelValues(string(store.RunStatusFailedResumable)).Inc()
 		}
 		return runview.LaunchSubmission{Status: store.RunStatusFailedResumable, FailureCode: store.FailureCredSlotWait}, nil
-	}
-	// The slots are this launch's only once it publishes: every exit before
-	// that gives them back, or the key stays short of them for the grace the
-	// ledger's reconcile allows a missing run document.
-	defer func() {
-		if !launched {
-			p.releaseCredSlots(ctx, runID, creds.credSlots)
-		}
-	}()
-	// PersistLaunchRun, not a PersistLaunch closure over r: a scheduler's
-	// guard runs this write in a transaction the driver replays, and SaveRun
-	// advances r.CASVersion in place — so the replay has to start from the
-	// run as it stood before the first attempt, or it offers a version the
-	// rolled-back document never reached and refuses the launch.
-	if err := store.PersistLaunchRun(ctx, r, p.store.SaveRun); err != nil {
-		return runview.LaunchSubmission{}, fmt.Errorf("cloudpublisher: save run: %w", err)
-	}
-	persisted = true
-
-	// The staged uploads the launch names are promoted HERE, between the row
-	// and the message: the runner pod has no staging area to promote from,
-	// and a run queued without its attachments would start without them in
-	// silence. A promotion that fails fails the launch, and the rollback
-	// above marks the row LAUNCH_FAILED with its cause.
-	if err := runview.PromoteForHandoff(ctx, runID, spec.AttachmentPromote); err != nil {
-		return runview.LaunchSubmission{}, fmt.Errorf("cloudpublisher: %w", err)
 	}
 
 	msg := &queue.RunMessage{
