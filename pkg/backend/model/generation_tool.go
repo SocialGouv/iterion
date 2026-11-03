@@ -183,8 +183,12 @@ type GenerationOptions struct {
 	// compaction's continuation turn alike — through ScreenModelText
 	// before the summariser reads them (screenedInjector), so the text a
 	// hook composes for the model crosses the boundary like every other;
-	// the history the callback hands back as it was is handed to the
-	// summariser as it is.
+	// "one of messages' own" is judged against a snapshot taken before the
+	// call, so a turn the callback rewrote in place takes the pass too.
+	// The history the callback hands back as it was is handed to the
+	// summariser as it is, and the screened turns land in a fresh slice,
+	// so the screen never writes the live history, even when the callback
+	// returns messages itself.
 	OnBeforeCompact func(messages []api.Message) []api.Message
 
 	// OnCompact is called once after each in-loop compaction round

@@ -122,3 +122,87 @@ func TestTheInjectedMemoryTurnCrossesTheBoundaryBeforeTheSummariser(t *testing.T
 		t.Fatal("the compacted history carries no placeholder: the summariser did not fold the injected turns in, so this test proves nothing")
 	}
 }
+
+// The wrap's contract holds beyond the installer's own injector. Two hook
+// shapes would slip past an identity-only rule, and each gets its own
+// witness: a hook that rewrites one of the history's turns IN PLACE (same
+// Content slice, same length, new text) hands the history's own slice back
+// carrying a text it never held — the wrap's snapshot of texts, not the
+// slice identity alone, screens it; and a hook that returns the input's
+// backing array would let a screened copy overwrite the caller's live
+// history. The caller's turn keeps what the HOOK wrote: the wrap screens
+// what it hands the summariser, it never writes through.
+
+func TestAHookRewritingAnInputTurnInPlaceCrossesTheBoundary(t *testing.T) {
+	const sentinel = "ghp-inplace-4f7a9c1d8e2b"
+	placeholder := secretguard.PlaceholderForName("api_token")
+	screen := func(s string) string { return strings.ReplaceAll(s, sentinel, placeholder) }
+
+	history := []api.Message{
+		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "turn one"}}},
+		{Role: "assistant", Content: []api.ContentBlock{{Type: "text", Text: "turn two"}}},
+	}
+	inject := func(msgs []api.Message) []api.Message {
+		// In place: same Content slice, same length, new text.
+		msgs[1].Content[0].Text = "rewritten with " + sentinel
+		return msgs
+	}
+	handed := screenedInjector(inject, screen)(history)
+
+	if len(handed) != len(history) {
+		t.Fatalf("the wrap returned %d turns, want the history's own length", len(handed))
+	}
+	if got := handed[1].Content[0].Text; strings.Contains(got, sentinel) || !strings.Contains(got, placeholder) {
+		t.Errorf("the in-place rewrite reached the summariser as %q; want the sentinel screened to %q", got, placeholder)
+	}
+	if got := history[1].Content[0].Text; got != "rewritten with "+sentinel {
+		t.Errorf("the wrap wrote the screened text through to the caller's history: the turn the hook rewrote now holds %q", got)
+	}
+}
+
+func TestAHookReturningTheInputsBackingLeavesTheCallersHistoryWhole(t *testing.T) {
+	const sentinel = "ghp-backing-9c2e7a1d4f83"
+	placeholder := secretguard.PlaceholderForName("api_token")
+	screen := func(s string) string { return strings.ReplaceAll(s, sentinel, placeholder) }
+
+	// Spare capacity: with len < cap the hook's append writes the added turn
+	// into the input's own backing array, so "returns the input's backing
+	// array" is the shape this witness actually builds.
+	history := make([]api.Message, 1, 2)
+	history[0] = api.Message{Role: "user", Content: []api.ContentBlock{
+		{Type: "tool_use", Name: "tool_" + sentinel, Text: "carries " + sentinel},
+	}}
+	inject := func(msgs []api.Message) []api.Message {
+		// Rewrite the history turn's tool Name in place (its Text keeps) AND
+		// add an unmarked turn carrying a tool_use block, returning the
+		// input's own backing array.
+		msgs[0].Content[0].Name = sentinel
+		return append(msgs, api.Message{Role: "user", Content: []api.ContentBlock{
+			{Type: "text", Text: "added " + sentinel},
+			{Type: "tool_use", Name: "tool_" + sentinel},
+		}})
+	}
+	handed := screenedInjector(inject, screen)(history)
+
+	if len(handed) != 2 {
+		t.Fatalf("the wrap returned %d turns, want 2", len(handed))
+	}
+	// The in-place Name rewrite is a changed turn (the snapshot reads Names),
+	// so the whole block takes the pass; the hook-added turn takes it marked
+	// or not, its tool Name included.
+	for i, want := range []string{"carries " + placeholder, "added " + placeholder} {
+		if got := handed[i].Content[0].Text; got != want {
+			t.Errorf("handed turn %d text is %q, want it screened to %q", i, got, want)
+		}
+	}
+	for i := range handed {
+		for j := range handed[i].Content {
+			if got := handed[i].Content[j].Name; strings.Contains(got, sentinel) {
+				t.Errorf("handed turn %d block %d carries the tool Name %q unscreened", i, j, got)
+			}
+		}
+	}
+	if got := history[0].Content[0].Name; got != sentinel {
+		t.Errorf("the wrap wrote the screened tool Name through the returned backing array: the caller's history now holds %q", got)
+	}
+}
