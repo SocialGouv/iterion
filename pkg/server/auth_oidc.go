@@ -485,6 +485,10 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		ckVal := s.sessionCookie(r, oidcAgentBindingCookie)
 		clearOIDCAgentBindingCookie(w, s.cfg.CookieDomain, s.cfg.CookieSecure)
 		if subtle.ConstantTimeCompare([]byte(ckVal), []byte(pending.AgentBinding)) != 1 {
+			// The login-CSRF guard firing is a refused sign-in: audited,
+			// though no identity has resolved yet — the flow, the
+			// connector and the client's address are what is known.
+			s.auditLoginFailed(r, callbackAttempt(pending, name), errAgentBindingMismatch)
 			redirectSSOError(w, r, ssoErrAgentBinding, provQ)
 			return
 		}
@@ -579,6 +583,9 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 			redirectCallbackError(w, r, pending, ssoErrExchangeFailed, provQ)
 			return
 		}
+		// A desktop sign-in refused here is audited here; one accepted is
+		// audited where its session is minted, at the ticket's redemption.
+		attempt := loginAttempt{method: loginMethodDesktop, provider: name, subject: ext.Email}
 		var d auth.DesktopLogin
 		if pending.TenantID != "" {
 			d, err = s.authSvc.LoginWithExternalForOrgDesktop(r.Context(), ext, pending.TenantID, pending.OrgProviderID, r.UserAgent(), s.clientIP(r))
@@ -586,6 +593,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 			d, err = s.authSvc.LoginWithExternalDesktop(r.Context(), ext, r.UserAgent(), s.clientIP(r))
 		}
 		if err != nil {
+			s.auditLoginFailed(r, attempt, err)
 			// The refusal reaches the desktop that is waiting for it:
 			// redirectCallbackError sends a desktop flow's sso_error to the
 			// loopback listener, so an account pending a password change (or
@@ -597,8 +605,11 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 			redirectCallbackError(w, r, pending, ssoErrorForAuth(err), provQ)
 			return
 		}
+		d.Provider = name
 		ticket, mintErr := s.desktopTickets.Mint(r.Context(), d)
 		if mintErr != nil {
+			attempt.account = d.UserID
+			s.auditLoginFailed(r, attempt, fmt.Errorf("mint the desktop ticket: %w", mintErr))
 			if s.logger != nil {
 				s.logger.Error("sso login via %s: mint the desktop ticket: %v", name, mintErr)
 			}
@@ -616,6 +627,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	// PendingAuth at /start (server-side, keyed by the IdP-echoed state) — NOT
 	// from the URL — so a slug presented at /callback cannot be coerced into
 	// another tenant's policy.
+	attempt := loginAttempt{method: ssoLoginMethod(name, pending.TenantID != ""), provider: name, subject: ext.Email}
 	var res auth.LoginResult
 	if pending.TenantID != "" {
 		res, err = s.authSvc.LoginWithExternalForOrg(r.Context(), ext, pending.TenantID, pending.OrgProviderID, r.UserAgent(), s.clientIP(r))
@@ -623,12 +635,14 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		res, err = s.authSvc.LoginWithExternal(r.Context(), ext, r.UserAgent(), s.clientIP(r))
 	}
 	if err != nil {
+		s.auditLoginFailed(r, attempt, err)
 		if s.logger != nil {
 			s.logger.Warn("sso login failed via %s: %v", name, err)
 		}
 		redirectSSOError(w, r, ssoErrorForAuth(err), provQ)
 		return
 	}
+	s.auditLoginSucceeded(r, attempt, res)
 	s.setAuthCookies(w, res.AccessToken, res.AccessExpires, res.RefreshToken, res.RefreshExpires)
 	target := pending.NextURL
 	if target == "" {

@@ -64,17 +64,25 @@ func (s *Server) handleDesktopExchange(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "missing ticket")
 		return
 	}
+	// The redemption is where a desktop sign-in's session is minted, so it
+	// is where the sign-in is audited; the callback audits only a refusal.
+	attempt := loginAttempt{method: loginMethodDesktop}
 	d, err := s.desktopTickets.Redeem(r.Context(), req.Ticket)
 	if errors.Is(err, desktopsso.ErrTicketNotFound) {
+		s.auditLoginFailed(r, attempt, err)
 		httpError(w, http.StatusUnauthorized, "invalid or expired ticket")
 		return
 	}
 	if err != nil {
 		// The ticket store failed: the ticket may be valid, and the desktop
 		// reads a 401 as "redo the sign-in".
+		s.auditLoginFailed(r, attempt, err)
 		s.identityFailure(w, r, fmt.Errorf("redeem the desktop ticket: %w", err))
 		return
 	}
+	// From here the ticket named its connector and its account: a refusal
+	// below concerns that account, and its row says so.
+	attempt.provider, attempt.account = d.Provider, d.UserID
 	// The login the ticket defers was resolved at the IdP callback, up to
 	// desktopTicketTTL ago: a sign-out, "sign out everywhere", a password
 	// change or a disable landing since refuses it — the redemption asks the
@@ -85,6 +93,7 @@ func (s *Server) handleDesktopExchange(w http.ResponseWriter, r *http.Request) {
 	// on, handed to the desktop, never stored.
 	res, err := s.authSvc.RedeemDesktopLogin(r.Context(), d, r.UserAgent(), s.clientIP(r))
 	if err != nil {
+		s.auditLoginFailed(r, attempt, err)
 		if mapAuthErrorStatus(err) >= http.StatusInternalServerError {
 			s.identityFailure(w, r, fmt.Errorf("mint the session a desktop ticket defers: %w", err))
 			return
@@ -92,6 +101,7 @@ func (s *Server) handleDesktopExchange(w http.ResponseWriter, r *http.Request) {
 		s.authError(w, r, err)
 		return
 	}
+	s.auditLoginSucceeded(r, attempt, res)
 	s.writeSession(w, r, loginSession(res))
 }
 

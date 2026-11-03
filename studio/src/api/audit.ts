@@ -9,7 +9,7 @@ export interface AuditEvent {
   scope: "tenant" | "platform";
   tenant_id?: string;
   actor_id?: string;
-  actor_kind?: "user" | "super_admin" | "webhook" | "system";
+  actor_kind?: "user" | "super_admin" | "webhook" | "system" | "anonymous";
   action: string;
   target?: string;
   target_id?: string;

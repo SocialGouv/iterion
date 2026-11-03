@@ -386,6 +386,10 @@ type DesktopLogin struct {
 	// (the per-org SSO landing, or the account's default): the redemption
 	// prefers it again when the account is still a member of it.
 	PreferredTeamID string `bson:"preferred_team,omitempty" json:"preferred_team,omitempty"`
+	// Provider is the connector slug the callback resolved the login
+	// through, for the audit row the redemption writes (never a display
+	// name, never an IdP subject). The caller of the callback sets it.
+	Provider string `bson:"provider,omitempty" json:"provider,omitempty"`
 }
 
 // Login authenticates with email + password. On success, issues an
@@ -397,7 +401,7 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, ip stri
 		// Spend the same time hashing a dummy password so we don't
 		// leak account existence via response timing.
 		_, _ = VerifyPassword(password, dummyHash)
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonUnknownAccount)
 	}
 	if err != nil {
 		return LoginResult{}, err
@@ -411,7 +415,7 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, ip stri
 		// password" by response timing. The LockoutDuration docstring
 		// promises this; the gate must honour it.
 		_, _ = VerifyPassword(password, dummyHash)
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonLocked)
 	}
 	ok, err := VerifyPassword(password, u.PasswordHash)
 	if err != nil {
@@ -424,7 +428,7 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, ip stri
 		if s.logger != nil {
 			s.logger.Error("auth: stored password hash for user %s is unparseable: %v", u.ID, err)
 		}
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonCorruptPasswordHash)
 	}
 	if !ok {
 		// Brute-force lockout: increment the failed counter and lock
@@ -439,7 +443,7 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, ip stri
 		// fact this path owns: a whole-row write would also restore the
 		// status, the privilege flag and the password hash it read.
 		s.countPasswordProofFailure(ctx, u)
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonBadPassword)
 	}
 
 	// Password verified — but a pending_password_change status must
@@ -516,7 +520,7 @@ func (s *Service) stampLogin(ctx context.Context, u identity.User, at time.Time,
 	if errors.Is(err, identity.ErrUserPasswordChanged) {
 		// The password the caller verified was replaced while it was being
 		// checked: it no longer signs the account in.
-		return identity.User{}, ErrInvalidCredentials
+		return identity.User{}, refused(ErrInvalidCredentials, ReasonCredentialReplaced)
 	}
 	if err != nil {
 		return u, err
@@ -562,7 +566,7 @@ func (s *Service) ChangePasswordPending(ctx context.Context, email, currentPassw
 		// network observer can't distinguish "no such account" from
 		// "wrong temp password" by response timing (matches Login).
 		_, _ = VerifyPassword(currentPassword, dummyHash)
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonUnknownAccount)
 	}
 	if err != nil {
 		return LoginResult{}, fmt.Errorf("auth: look up the account whose temporary password is changed: %w", err)
@@ -570,11 +574,14 @@ func (s *Service) ChangePasswordPending(ctx context.Context, email, currentPassw
 	if u.Status != identity.UserStatusPendingPasswordChange {
 		// Same timing-equalisation for the wrong-status branch.
 		_, _ = VerifyPassword(currentPassword, dummyHash)
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonWrongStatus)
 	}
 	ok, err := VerifyPassword(currentPassword, u.PasswordHash)
-	if err != nil || !ok {
-		return LoginResult{}, ErrInvalidCredentials
+	if err != nil {
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonCorruptPasswordHash)
+	}
+	if !ok {
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonBadPassword)
 	}
 	hash, err := HashPassword(newPassword)
 	if err != nil {
@@ -592,7 +599,7 @@ func (s *Service) ChangePasswordPending(ctx context.Context, email, currentPassw
 		return LoginResult{}, fmt.Errorf("auth: read the account whose temporary password is changed: %w", err)
 	}
 	if u.Status != identity.UserStatusPendingPasswordChange || u.PasswordHash != verified {
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonCredentialReplaced)
 	}
 	// The session's reads run before the rotation commits: a read that fails
 	// then leaves the temporary password the holder's to use again.
@@ -628,8 +635,11 @@ func (s *Service) ChangePasswordPending(ctx context.Context, email, currentPassw
 		},
 		IfPasswordHash: &verified,
 	})
-	if errors.Is(err, identity.ErrUserStatusChanged) || errors.Is(err, identity.ErrUserPasswordChanged) {
-		return LoginResult{}, ErrInvalidCredentials
+	if errors.Is(err, identity.ErrUserPasswordChanged) {
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonCredentialReplaced)
+	}
+	if errors.Is(err, identity.ErrUserStatusChanged) {
+		return LoginResult{}, refused(ErrInvalidCredentials, ReasonWrongStatus)
 	}
 	if err != nil {
 		return LoginResult{}, s.commitUnconfirmed(ctx, lc.user.ID, err)
@@ -672,8 +682,11 @@ func (s *Service) commitUnconfirmed(ctx context.Context, userID string, cause er
 // disabled, and a disable landing after the stamp records a raise above the
 // session's generation, which covers it. Every failure from here on is
 // ErrPasswordChangedSignIn: the password IS changed, and the caller signs in
-// with it.
+// with it. Such a failure answers the account whose password changed
+// (LoginResult.User, nothing else), so the caller can attribute the change
+// it cannot answer with a session.
 func (s *Service) openSessionAfterChange(ctx context.Context, lc loginContext, u identity.User, userAgent, ip string) (LoginResult, error) {
+	changed := LoginResult{User: u}
 	var generation int64
 	var err error
 	for attempt := 0; attempt < changeRevocationAttempts; attempt++ {
@@ -685,19 +698,19 @@ func (s *Service) openSessionAfterChange(ctx context.Context, lc loginContext, u
 		if s.logger != nil {
 			s.logger.Error("auth: the password of user %s is changed, but the revocation after the change failed %d times (last: %v): a sign-in with the old password during the change may survive it — sign the account out everywhere", u.ID, changeRevocationAttempts, err)
 		}
-		return LoginResult{}, passwordChangedSignIn(err)
+		return changed, passwordChangedSignIn(err)
 	}
 	if u, err = s.stampLogin(ctx, u, s.now().UTC(), identity.UserPatch{
 		IfNotStatus: []identity.UserStatus{identity.UserStatusPendingPasswordChange},
 	}); err != nil {
-		return LoginResult{}, passwordChangedSignIn(err)
+		return changed, passwordChangedSignIn(err)
 	}
 	if lc, err = s.signLogin(lc, RevokedAccountRoot(generation)); err != nil {
-		return LoginResult{}, passwordChangedSignIn(err)
+		return changed, passwordChangedSignIn(err)
 	}
 	res, err := s.commitLogin(ctx, lc, u, userAgent, ip)
 	if err != nil {
-		return LoginResult{}, passwordChangedSignIn(err)
+		return changed, passwordChangedSignIn(err)
 	}
 	return res, nil
 }

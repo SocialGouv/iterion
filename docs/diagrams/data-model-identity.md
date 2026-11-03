@@ -207,7 +207,7 @@ erDiagram
         string scope "tenant or platform"
         string tenant_id "POLYMORPHIC: team id | org id or empty"
         string actor_id "POLYMORPHIC: e.g. a users._id, a subsystem name, or empty"
-        string actor_kind "e.g. user, super_admin, webhook or system"
+        string actor_kind "e.g. user, super_admin, webhook, system or anonymous"
         string action "a dotted token: e.g. org.status_changed, member.added, pat.revoked"
         string target
         string ip
@@ -227,7 +227,7 @@ erDiagram
 ```
 
 - `tenant_id` on both org SSO collections is a TEAM id — the org's primary team — not an org id. Reading these rows by org id finds nothing.
-- `audit_events.tenant_id` is polymorphic and nothing in the document says which kind it holds: `auditTenant` and `auditSystem` write a team id (none on an `auditTenant` row a team-less caller writes from a `/api/me/` route), `auditOrg` an org id, all with `scope: tenant`. The partition is only "which id was written", which is why two dotted edges leave the SAME field for different collections — the store never joins it.
+- `audit_events.tenant_id` is polymorphic and nothing in the document says which kind it holds: `auditTenant` and `auditSystem` write a team id (none on an `auditTenant` row a team-less caller writes from a `/api/me/` route), `auditOrg` an org id, all with `scope: tenant`. The partition is only "which id was written", which is why two dotted edges leave the SAME field for different collections — the store never joins it. The sign-in rows (`auth.login.*`, ADR-157) key on the ORG: an accepted sign-in is a tenant row on the org the session is active in, a refused one a platform row with no tenant at all.
 - An unverified GitHub grant is stored but inert: it shows in `grants` and never in `github_team_keys`.
 - `verified_at` carries the whole value of `org_verified_domains`: an unproven row exists so the operator can read the TXT challenge. A verified domain is not enough to auto-link onto an existing account.
 
@@ -251,7 +251,7 @@ erDiagram
 | `ws_tickets` | `pkg/auth/wsticket` | none — `{_id, identity, expires_at}` built by `storekit.TicketMongo.Mint`; the payload is `auth.Identity` | none; `identity.teamid` is the minter's team, re-scoped to the run's team on a run-addressed WS path | TTL `expires_at` at 0s, 1 min as wired | memory-only |
 | `org_sso_providers` | `pkg/auth/orgsso` | `orgsso.OrgSSOProvider` | `tenant_id` — the org's primary TEAM id | `tenant_id` unique partial on `kind: github`; `{tenant_id, kind}`; `github_team_keys` partial on enabled github rows | none (cloud-only) |
 | `org_verified_domains` | `pkg/auth/orgsso` | `orgsso.VerifiedDomain` | `tenant_id` — the org's primary TEAM id | `{tenant_id, domain}` unique | none (cloud-only) |
-| `audit_events` | `pkg/audit` | `audit.Event` | `tenant_id` — a TEAM id on `auditTenant` and `auditSystem` rows (none on an `auditTenant` row a team-less caller writes from a `/api/me/` route), an ORG id on `auditOrg` rows, empty or either on `scope: platform` rows | TTL `created_at` at 400 days; `{tenant_id, created_at}`, `{scope, created_at}`, `{action, created_at}` | none (cloud-only) |
+| `audit_events` | `pkg/audit` | `audit.Event` | `tenant_id` — a TEAM id on `auditTenant` and `auditSystem` rows (none on an `auditTenant` row a team-less caller writes from a `/api/me/` route), an ORG id on `auditOrg` and `auth.login.succeeded` rows, empty or either on `scope: platform` rows (always empty on `auth.login.failed`) | TTL `created_at` at 400 days; `{tenant_id, created_at}`, `{scope, created_at}`, `{action, created_at}` | none (cloud-only) |
 | `"external: GitHub teams"` | not a collection — GitHub's own roster | — | — | — | n/a (external) |
 
 ## Related

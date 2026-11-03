@@ -198,8 +198,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "email and password required")
 		return
 	}
+	attempt := loginAttempt{method: loginMethodPassword, subject: req.Email}
 	res, err := s.authSvc.Login(r.Context(), req.Email, req.Password, r.UserAgent(), s.clientIP(r))
 	if err != nil {
+		// One audit row per refused attempt, whatever the wire answer
+		// collapses it to; the typed reason tells them apart there.
+		s.auditLoginFailed(r, attempt, err)
 		// Collapse "account disabled" and "invalid credentials" to the
 		// same wire message so an attacker can't enumerate which
 		// addresses correspond to disabled accounts. The detailed err
@@ -226,6 +230,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.markLogin("success")
+	s.auditLoginSucceeded(r, attempt, res)
 	s.writeSession(w, r, loginSession(res))
 }
 
@@ -251,11 +256,17 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "email, current_password and new_password required")
 		return
 	}
+	attempt := loginAttempt{method: loginMethodPassword, flow: loginFlowPasswordChange, subject: req.Email}
 	res, err := s.authSvc.ChangePasswordPending(r.Context(), req.Email, req.CurrentPassword, req.NewPassword, r.UserAgent(), s.clientIP(r))
 	if err != nil {
+		// A rotation committed without a session (ErrPasswordChangedSignIn)
+		// answers its account: the refusal row names it.
+		attempt.account = res.User.ID
+		s.auditLoginFailed(r, attempt, err)
 		s.credentialChangeError(w, r, err)
 		return
 	}
+	s.auditLoginSucceeded(r, attempt, res)
 	s.writeSession(w, r, loginSession(res))
 }
 
@@ -268,11 +279,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "email and password required")
 		return
 	}
+	// A registration mints the account's first session: it is a sign-in
+	// for the audit log, under the register flow.
+	attempt := loginAttempt{method: loginMethodPassword, flow: loginFlowRegister, subject: req.Email}
 	res, err := s.authSvc.Register(r.Context(), req.Email, req.Password, req.Name, req.Invitation, r.UserAgent(), s.clientIP(r))
 	if err != nil {
+		s.auditLoginFailed(r, attempt, err)
 		s.authError(w, r, err)
 		return
 	}
+	s.auditLoginSucceeded(r, attempt, res)
 	s.writeSession(w, r, loginSession(res))
 }
 
