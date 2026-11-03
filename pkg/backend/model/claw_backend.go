@@ -2173,7 +2173,9 @@ func (b *ClawBackend) runnerIOTask(task delegate.Task) delegate.IOTask {
 		rel := make(map[string]string, len(task.SkillAllowlist))
 		for name, p := range task.SkillAllowlist {
 			r, err := filepath.Rel(task.WorkDir, p)
-			if err != nil || strings.HasPrefix(r, "..") {
+			// The escape test names exactly "outside": ".." itself or its
+			// subtree — a legitimate "..foo" sibling is not an escape.
+			if err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
 				if b.logger != nil {
 					b.logger.Warn("[%s#%d/claw] skill allowlist entry %q (%q) is outside the workspace — crossing absolute, the runner cannot serve it", task.NodeID, task.Iteration, name, p)
 				}

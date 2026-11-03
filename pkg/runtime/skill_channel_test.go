@@ -139,3 +139,23 @@ func TestApplyMirroredSkills_ArmsTheChannelByTrust(t *testing.T) {
 		t.Errorf("no owned skills = (armed %v, %v), want armed with the empty set", rec.armed, rec.allowlist)
 	}
 }
+
+// A channel that cannot be BUILT arms the empty set: falling back to the
+// workspace walk on error is exactly the hole the pinned mode exists
+// against — an untrusted run whose channel root is unwritable must refuse
+// every skill, not read the checkout's.
+func TestChannelBuildErrorArmsEmpty(t *testing.T) {
+	workDir := t.TempDir()
+	// .claude as a REGULAR FILE: no channel root can be created under it.
+	if err := os.WriteFile(filepath.Join(workDir, ".claude"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := &recordingChannelExecutor{}
+	(&Engine{executor: rec, workDir: workDir, trust: store.RunTrustFork}).applyMirroredSkills(nil)
+	if !rec.armed || len(rec.allowlist) != 0 {
+		t.Errorf("a channel that cannot be built = (armed %v, %v), want armed with the EMPTY set", rec.armed, rec.allowlist)
+	}
+	if rec.channelRoot != "" {
+		t.Errorf("a failed channel still advertises a root %q — a backend would --add-dir a hole", rec.channelRoot)
+	}
+}

@@ -28,6 +28,11 @@ func TestSkillChannelAddDir(t *testing.T) {
 	if got, ok := skillChannelAddDir(Task{SkillChannelRoot: root}); !ok || got != root {
 		t.Errorf("a host run = (%q, %v), want the root", got, ok)
 	}
+	// The noop driver is a host passthrough: the channel reaches it, through
+	// the same Task.Hostless() reading every other caller makes.
+	if got, ok := skillChannelAddDir(Task{SkillChannelRoot: root, Sandbox: fakeSandboxRun{driver: "noop"}}); !ok || got != root {
+		t.Errorf("a noop-driver run = (%q, %v), want the root", got, ok)
+	}
 	if got, ok := skillChannelAddDir(Task{SkillChannelRoot: root, Sandbox: fakeSandboxRun{driver: "docker"}}); ok || got != "" {
 		t.Errorf("a container run = (%q, %v), want the channel withheld", got, ok)
 	}

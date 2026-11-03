@@ -1,6 +1,7 @@
 package model
 
 import (
+	"os"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -67,5 +68,17 @@ func TestRunnerIOTaskKeepsAnUnrelativizableSkillPinAbsolute(t *testing.T) {
 	}
 	if !ioTask.SkillAllowlistArmed {
 		t.Error("the armed bit did not cross")
+	}
+
+	// A sibling whose name merely BEGINS with ".." is not an escape: it
+	// relativizes and crosses relative like any in-workspace entry.
+	if err := os.MkdirAll(work+"/..foo", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e2 := nodeRulesExecutor(t, &ir.Workflow{}, WithWorkDir(work))
+	e2.SetSkillAllowlist(map[string]string{"edge": work + "/..foo/skill.md"})
+	ioTask2 := backend.runnerIOTask(buildNodeTask(t, e2, nodeRulesAgent(nil)))
+	if got := ioTask2.SkillAllowlist["edge"]; got != "..foo/skill.md" {
+		t.Errorf("a ..foo sibling = %q, want it relativized — it is inside the workspace", got)
 	}
 }

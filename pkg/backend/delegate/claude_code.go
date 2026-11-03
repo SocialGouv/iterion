@@ -2456,7 +2456,10 @@ func skillChannelAddDir(task Task) (string, bool) {
 	if task.SkillChannelRoot == "" {
 		return "", false
 	}
-	if task.Sandbox == nil || task.Sandbox.Driver() == "noop" {
+	// Hostless() is the ONE reading of "this spawn shares the launcher's
+	// filesystem" (no sandbox, or the noop passthrough) — two hand-rolled
+	// spellings of it already disagreed once (delegate.go, Task.Hostless).
+	if task.Hostless() {
 		return task.SkillChannelRoot, true
 	}
 	return "", false
