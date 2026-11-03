@@ -804,3 +804,78 @@ func TestCredSlotAdmission_AResumeWhoseReStampFailsHoldsNoSlot(t *testing.T) {
 		t.Fatalf("run-a status=%s after a refused resume, want failed_resumable (rolled back)", r.Status)
 	}
 }
+
+// cappedFPLater sorts after cappedFP: the admission reserves the stamp in
+// order, so a launch holding both keys asks this one second.
+const cappedFPLater = "fp-capped-z"
+
+// seedLaterCappedKey adds an openai key on a cap of one beside the fixture's
+// anthropic key, so every launch reserves both — the fixture's first.
+func (f *cappedFixture) seedLaterCappedKey(t *testing.T) {
+	t.Helper()
+	seedCappedKey(t, f.keys, f.sealer, cappedTeam, secrets.ProviderOpenAI, "sk-openai-capped", cappedFPLater, "openai-capped", 1)
+}
+
+// A refusal on a later key gives back the slot the admission took on the
+// earlier one: the parked run holds nothing, and the earlier key's slot is
+// the next run's. Counted without the reconcile, which would hide a slot
+// kept: the parked run's document no longer spends. Red when the partial
+// refusal keeps what it took.
+func TestCredSlotAdmission_ARefusalOnALaterKeyGivesBackTheEarlierSlot(t *testing.T) {
+	f := newCappedFixture(t, 2)
+	f.seedLaterCappedKey(t)
+	p := f.publisher()
+	if err := f.launch(t, p, "run-first", nil); err != nil {
+		t.Fatalf("launch run-first: %v", err)
+	}
+	f.assertQueued(t, "run-first")
+	if fps := f.load(t, "run-first").CredFingerprints; len(fps) != 2 || fps[0] != cappedFP || fps[1] != cappedFPLater {
+		t.Fatalf("precondition: run-first's stamp is %v, want both capped keys in reservation order", fps)
+	}
+	if err := f.launch(t, p, "run-second", nil); err != nil {
+		t.Fatalf("launch run-second: %v", err)
+	}
+	r := f.load(t, "run-second")
+	if r.Status != store.RunStatusFailedResumable || r.FailureCode != store.FailureCredSlotWait || !strings.Contains(r.Error, "openai-capped") {
+		t.Fatalf("run-second: status=%s code=%s err=%q, want parked on the openai key", r.Status, r.FailureCode, r.Error)
+	}
+	if n := f.ledgerHolders(t, cappedFP); n != 1 {
+		t.Fatalf("the earlier key names %d holders after the refusal on the later one, want run-first alone — the parked run kept the slot it took", n)
+	}
+}
+
+// failingKeyLedger answers the reservations of one fingerprint with a store
+// error and serves every other from the ledger it wraps.
+type failingKeyLedger struct {
+	store.RunStore
+	ledger store.CredSlotStore
+	failFP string
+}
+
+func (s *failingKeyLedger) Unwrap() store.RunStore { return s.RunStore }
+func (s *failingKeyLedger) ReserveCredSlot(ctx context.Context, fp, runID string, max int) (store.CredSlotAdmission, error) {
+	if fp == s.failFP {
+		return store.CredSlotAdmission{}, errors.New("ledger unavailable for " + fp)
+	}
+	return s.ledger.ReserveCredSlot(ctx, fp, runID, max)
+}
+func (s *failingKeyLedger) ReleaseCredSlot(ctx context.Context, fp, runID string) error {
+	return s.ledger.ReleaseCredSlot(ctx, fp, runID)
+}
+
+// A store error on a later key gives back the slot taken on the earlier
+// one, like a refusal: the launch is refused with nothing persisted, and a
+// slot kept for it would stand, with no run document, for the reconcile's
+// whole grace. Red when the error exit keeps what it took.
+func TestCredSlotAdmission_AStoreErrorOnALaterKeyGivesBackTheEarlierSlot(t *testing.T) {
+	f := newCappedFixture(t, 2)
+	f.seedLaterCappedKey(t)
+	p := f.publisher()
+	p.store = &failingKeyLedger{RunStore: f.spy, ledger: store.AsCredSlotStore(f.spy), failFP: cappedFPLater}
+	if err := f.launch(t, p, "run-blip", nil); err == nil || !strings.Contains(err.Error(), "ledger unavailable") {
+		t.Fatalf("launch err=%v, want the ledger error", err)
+	}
+	if n := f.ledgerHolders(t, cappedFP); n != 0 {
+		t.Fatalf("the earlier key names %d holders after a launch refused on a store error, want none", n)
+	}
+}
