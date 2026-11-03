@@ -5,11 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/stdiotest"
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -198,26 +198,7 @@ func TestRunModels_AGatewayIdLeavesItsFlagsUnknown(t *testing.T) {
 // logger, so the stream is the only place to read it.
 func capturedStderr(t *testing.T, fn func()) string {
 	t.Helper()
-	orig := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	os.Stderr = w
-	defer func() { os.Stderr = orig }()
-	fn()
-	os.Stderr = orig
-	if cerr := w.Close(); cerr != nil {
-		t.Fatalf("close: %v", cerr)
-	}
-	out, rerr := io.ReadAll(r)
-	if rerr != nil {
-		t.Fatalf("read: %v", rerr)
-	}
-	if cerr := r.Close(); cerr != nil {
-		t.Fatalf("close read side: %v", cerr)
-	}
-	return string(out)
+	return stdiotest.Run(t, &os.Stderr, fn)
 }
 
 // `iterion models` and GET /api/models share modelcatalog.Build, which

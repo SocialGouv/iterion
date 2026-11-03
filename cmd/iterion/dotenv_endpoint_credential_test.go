@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/iterion/internal/envtrust"
+	"github.com/SocialGouv/iterion/internal/stdiotest"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 )
 
@@ -49,25 +49,7 @@ func clearEnv(t *testing.T, name string) {
 // captureStderr runs fn with os.Stderr on a pipe and returns what it wrote.
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
-	orig := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	os.Stderr = w
-	fn()
-	os.Stderr = orig
-	if err := w.Close(); err != nil {
-		t.Fatalf("close the pipe: %v", err)
-	}
-	said, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("read the pipe: %v", err)
-	}
-	if err := r.Close(); err != nil {
-		t.Fatalf("close the read end: %v", err)
-	}
-	return string(said)
+	return stdiotest.Run(t, &os.Stderr, fn)
 }
 
 // writeDotEnv writes a `.env` in a temp repo and returns its directory.

@@ -2,13 +2,13 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/stdiotest"
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 )
 
@@ -86,23 +86,7 @@ func TestPrintChangelog_NamesAFlagFlipAndNothingElse(t *testing.T) {
 // the operator regenerating the snapshot — so the pipe is the only seam.
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	saved := os.Stdout
-	os.Stdout = w
-	done := make(chan string, 1)
-	go func() {
-		b, _ := io.ReadAll(r)
-		done <- string(b)
-	}()
-	fn()
-	os.Stdout = saved
-	if cerr := w.Close(); cerr != nil {
-		t.Fatalf("close: %v", cerr)
-	}
-	return <-done
+	return stdiotest.Run(t, &os.Stdout, fn)
 }
 
 func firstLine(s string) string {

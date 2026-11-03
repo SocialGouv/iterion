@@ -83,3 +83,30 @@ func TestSkipAnswersFromOneSet(t *testing.T) {
 		}
 	}
 }
+
+// The same compiled helper must judge the tree in which it RUNS. The foreign
+// module below has its own offender; the checkout which compiled this test
+// cannot contain it. A compile-time path mutant walks that checkout instead.
+func TestModuleRootJudgesTheExecutionTree(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "pkg", "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "execution_tree_only.go"), []byte("package nested\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(nested)
+	got := sweepwalk.ModuleRoot(t)
+	if got != root {
+		t.Fatalf("sweep root = %q; must judge execution tree %q", got, root)
+	}
+	var seen []string
+	sweepwalk.GoFiles(t, got, func(rel, _ string) { seen = append(seen, rel) })
+	if len(seen) != 1 || seen[0] != "pkg/nested/execution_tree_only.go" {
+		t.Fatalf("sweep judged %v, want only execution tree's marker", seen)
+	}
+}

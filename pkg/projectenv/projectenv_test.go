@@ -1,13 +1,13 @@
 package projectenv
 
 import (
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
+	"github.com/SocialGouv/iterion/internal/stdiotest"
 )
 
 func TestSnapshotExpandsWithoutAShellWithoutMutatingProcess(t *testing.T) {
@@ -242,25 +242,7 @@ func writeEnvFile(t *testing.T, lines ...string) string {
 // least of all one the file itself planted — reaches them.
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
-	orig := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	os.Stderr = w
-	fn()
-	os.Stderr = orig
-	if err := w.Close(); err != nil {
-		t.Fatalf("close the pipe: %v", err)
-	}
-	said, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("read the pipe: %v", err)
-	}
-	if err := r.Close(); err != nil {
-		t.Fatalf("close the read end: %v", err)
-	}
-	return string(said)
+	return stdiotest.Run(t, &os.Stderr, fn)
 }
 
 // envValue looks a key up in a returned environment slice.

@@ -54,6 +54,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/retryprobetest` | models the durable retry row the usage-window pull-forward probe acts on, so the real decision code of pkg/runner and pkg/server can be driven over… | — |
 | `internal/safepath` | turns a name taken from an archive — a string chosen by whoever wrote the archive — into a path that is safe to write under a root. | — |
 | `internal/skillshare` | the sharing primitive for skills a bundle does not own alone. | — |
+| `internal/stdiotest` | captures process stdout/stderr without depending on pipe capacity. | — |
 | `internal/subbottest` | shares source-level bundle fixtures across the four launch surfaces. | — |
 | `internal/sweepwalk` | the one walk every repository-wide AST sweep reads: the skip list and the nested-checkout rule below, and one visit per Go file they reach. | — |
 | `internal/testfs` | removes only scratch paths inside a test-owned root. | — |
