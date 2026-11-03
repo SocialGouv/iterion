@@ -1,6 +1,6 @@
 # ADR-154: The sovereign pool boundary is a namespace and an enforced proxy
 
-- **Status**: Proposed (2026-11-03) — D27 (the operator) decided the mechanism, an in-cluster enforced egress proxy per pool. The SHAPE below is this wave's default answer to fleet question #88, which the operator has not answered; the chart, proxy and broker slices wait on that verdict and nothing in them starts before it. The record becomes Accepted in the commit that lands the first SHAPE slice (decisions 1-4), which is after that verdict: items 1 to 4 of the owed list implement none of the decisions below and land under Proposed.
+- **Status**: Proposed (2026-11-03) — D27 (the operator) decided the mechanism, an in-cluster enforced egress proxy per pool. The SHAPE below is this wave's default answer to fleet question #97, the entry filed for this ticket on 2026-11-02, which the operator has not answered; the chart, proxy and broker slices wait on that verdict and nothing in them starts before it. The record becomes Accepted in the commit that lands the first SHAPE slice (decisions 1-4), which is after that verdict: none of the owed items 1 to 5 is a SHAPE slice — item 3 implements decision 8, item 5 decision 6, and items 1, 2 and 4 implement no decision at all — so all five land while this record is still Proposed.
 - **Date**: 2026-11-03
 - **Authors**: devthejo (session with Claude Opus 5), for [#2029](https://github.com/SocialGouv/iterion/issues/2029) P5
 - **Relates to**: [sovereign-pools.md](../sovereign-pools.md) (the twelve links of the chain that ship today) · [cloud-deployment.md](../cloud-deployment.md) (`runnerPools[]`, the bring-up) · [ADR-123](123-run-bundle-dek-in-envelope.md) (the per-run DEK: why a pool pod holds no key material) · [ADR-131](131-tenant-gateway-credential.md) (the tenant gateway credential, and the run's frozen content boundary) · [ADR-070](070-kubernetes-sandbox-orphan-gc.md) (the sandbox orphan GC the pool's Role must keep serving)
@@ -236,7 +236,15 @@ field would be the THIRD.
    accept the pool's runner pods and nothing else, the standing twin of
    the per-run `/32`; the proxy accepts the pool's runner pods only, which
    closes back the reach the egress half hands the siblings; the runner
-   pods accept the pool's own pods, for that same CONNECT-proxy hop. The
+   pods accept the pool's own pods, for that same CONNECT-proxy hop; the
+   runner pods' metrics port, which Prometheus scrapes from a namespace of
+   the operator's — its own rule, unscoped exactly as the release policy
+   keeps the metrics rule it already ships, or scoped by a
+   `namespaceSelector` list in the idiom of
+   `networkPolicy.ingress.controllerNamespaces`; and a per-pool ingress
+   `extraAllow`, the twin of the chart's
+   `networkPolicy.ingress.extraAllow`, as the egress half has — a pool
+   whose boundary lacks one inbound peer must not have to disable it. The
    kubelet's probes are host traffic no policy sees, as the chart's
    dev-store policy already records.
    The pool pod declares that the standing boundary exists, so the sandbox
@@ -294,6 +302,20 @@ field would be the THIRD.
   plus the kube-apiserver the sandbox driver shells `kubectl` at, must be
   in the list: a store it forgets is the time-out mode above, the pool pod
   holding its `ITERION_MONGO_URI` and never reaching the row.
+- **A pool in its own namespace leaves the release's PodMonitor behind.**
+  `charts/iterion/templates/prometheus-podmonitor.yaml` carries no
+  `namespaceSelector`, so prometheus-operator discovers pods in the
+  PodMonitor's own namespace. A pool pod is a target of it only while it
+  shares that namespace: it carries `iterion.selectorLabels`, which is the
+  PodMonitor's whole selector, and names its port `metrics` — and
+  `values-prod.yaml` ships `metrics.podMonitor.enabled: true`, so the day a
+  pool is activated there it is scraped. Decision 1 moves it out of reach
+  before any policy applies, so the chart slice owes the PodMonitor a
+  `namespaceSelector` over the pool namespaces, or one PodMonitor per pool
+  namespace; `metrics.podMonitor.namespace` names a single namespace and
+  does not answer N pools. Forgotten, this is the time-out mode in its
+  quietest form: the pool's series stop, its target reads down, and
+  nothing in iterion errors.
 - **A standing rule is coarser than the per-run rule it replaces, in both
   directions.** Outbound, the per-run policy pinned a sibling to its own
   runner pod by `/32`; a namespace-wide rule can only say "the pool's
@@ -404,7 +426,21 @@ field would be the THIRD.
    exactly two auth keys by `secretKeyRef`, and the env-pin union. Witness:
    `TestChartRenderRunnerPoolCarriesNoPlatformKeyMaterial`, after `helm
    dependency build`.
-5. **Then, after the operator's verdict**: the namespace + RBAC + standing
+5. **Decision 6's registry projection.** `platformcfg.RunnerPool` gains the
+   pool's gateway base URL and its forge hosts, written by the super-admin
+   registry route and validated by the pool-scoped shape check decided
+   above — which warns on a private or in-cluster host and never refuses
+   it. It waits on no verdict (registry data, not chart shape), and item 6
+   has no pool-keyed host to enforce without it. Witnesses:
+   `TestAdminPutRunnerPools_ValidatesTheGatewayHost` (an unparseable host
+   is a 422 naming the rule; an in-cluster host is accepted WITH the
+   warning; re-validation is idempotent) and
+   `TestPoolBootWarnsWhenItsGatewayDisagreesWithTheRegistry` — the pod is
+   the only place both facts are reachable, its own gateway variable and
+   the registry entry for its pool: disagreement warns and boot continues,
+   agreement is silent, an unreadable registry warns naming the read
+   error and never passes silently.
+6. **Then, after the operator's verdict**: the namespace + RBAC + standing
    policy render (witness: the pool Role carries `networkpolicies` `list`
    and neither `create` nor `delete`, the policy renders both
    policyTypes with exactly its allowed peers, `boundary.enforced: false`
@@ -414,6 +450,6 @@ field would be the THIRD.
    and the broker credential (witness: the credential reaches the client
    options; absent, today's connect is unchanged).
 
-The registry's gateway-host projection (decision 6) is the highest-leverage
-small slice of the list: it is also the input D27's by-name policy needs, and
-it closes a blocker recorded outside this ticket.
+Item 5, the registry's gateway-host projection, is the highest-leverage small
+slice of the list: it is also the input D27's by-name policy needs, and it
+closes a blocker recorded outside this ticket.
