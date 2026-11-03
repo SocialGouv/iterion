@@ -43,6 +43,20 @@ func (s *FilesystemRunStore) DeleteRun(_ context.Context, id string) error {
 	if err := sanitizePathComponent("run ID", id); err != nil {
 		return err
 	}
+	if err := s.deleteRunLocked(id); err != nil {
+		return err
+	}
+	// The credential-slot ledger (credslot_fs.go) names the run inside the
+	// holders of every key it was admitted on: pulled now, so a deleted run
+	// frees its slot at once rather than when a refusal's reconcile finds
+	// its document gone past CredSlotGrace. Outside mu: the ledger has its
+	// own lock, and nothing takes mu then it.
+	s.dropCredSlotHolder(id)
+	return nil
+}
+
+// deleteRunLocked writes the tombstone and removes the run's content under mu.
+func (s *FilesystemRunStore) deleteRunLocked(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	dir := filepath.Join(s.root, "runs", id)

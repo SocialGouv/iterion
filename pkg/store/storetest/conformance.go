@@ -4723,6 +4723,20 @@ func testCredSlotLedger(t *testing.T, s store.RunStore) {
 	if adm, err := ledger.ReserveCredSlot(ctx, fresh, "slot_h", 1); err != nil || adm.Granted {
 		t.Fatalf("a holder reserved moments ago with no document yet was evicted: %+v %v", adm, err)
 	}
+	// A deleted run is pulled from every row at once — not when a refusal's
+	// reconcile finds its document gone past the grace.
+	const gone = "fp-deleted"
+	mk("slot_del", store.RunStatusRunning, gone)
+	if adm, err := ledger.ReserveCredSlot(ctx, gone, "slot_del", 1); err != nil || !adm.Granted {
+		t.Fatalf("reserving for the run about to be deleted: %+v %v", adm, err)
+	}
+	if err := s.DeleteRun(ctx, "slot_del"); err != nil {
+		t.Fatalf("DeleteRun slot_del: %v", err)
+	}
+	mk("slot_i", store.RunStatusRunning, gone)
+	if adm, err := ledger.ReserveCredSlot(ctx, gone, "slot_i", 1); err != nil || !adm.Granted || adm.Held != 1 {
+		t.Fatalf("a deleted run kept its slot inside the grace: %+v %v — DeleteRun must pull it from the ledger", adm, err)
+	}
 	// Caller errors, never silent: an uncapped key reserves nothing, and a
 	// reservation must name a key.
 	if _, err := ledger.ReserveCredSlot(ctx, fp, "slot_a", 0); err == nil {

@@ -82,6 +82,24 @@ func (s *FilesystemRunStore) ReleaseCredSlot(_ context.Context, fingerprint, run
 	}
 	s.credSlotMu.Lock()
 	defer s.credSlotMu.Unlock()
+	s.pullCredSlotHolder(fingerprint, runID)
+	return nil
+}
+
+// dropCredSlotHolder pulls runID from every row of the ledger — what
+// DeleteRun owes the ledger, as the Mongo twin's DeleteRun pulls the run from
+// every cred_slots document at once.
+func (s *FilesystemRunStore) dropCredSlotHolder(runID string) {
+	s.credSlotMu.Lock()
+	defer s.credSlotMu.Unlock()
+	for fingerprint := range s.credSlots {
+		s.pullCredSlotHolder(fingerprint, runID)
+	}
+}
+
+// pullCredSlotHolder removes runID from one row, dropping the row once it
+// names nobody. Called under credSlotMu.
+func (s *FilesystemRunStore) pullCredSlotHolder(fingerprint, runID string) {
 	holders := s.credSlots[fingerprint]
 	kept := holders[:0:0]
 	for _, h := range holders {
@@ -91,8 +109,7 @@ func (s *FilesystemRunStore) ReleaseCredSlot(_ context.Context, fingerprint, run
 	}
 	if len(kept) == 0 {
 		delete(s.credSlots, fingerprint)
-		return nil
+		return
 	}
 	s.credSlots[fingerprint] = kept
-	return nil
 }
