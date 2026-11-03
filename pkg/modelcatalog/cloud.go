@@ -2,6 +2,7 @@ package modelcatalog
 
 import (
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -109,19 +110,18 @@ func ReportFromCloudPresence(p CloudPresence) detect.Report {
 
 	anthropicKey := false
 	anyProvider := false
-	// piProvider is set only by a row pi can spend — the PiReadsProvider
-	// question detect's local probe and the catalog's pi pairing ask, so
-	// one catalog's backend list and its model pairings agree. A team's
-	// gateway key unlocks claw alone (ADR-131 §9): pi resolves none of the
-	// OPENAI_COMPATIBLE_* variables, just as it reads no AWS or GCP
-	// credential for a bedrock or vertex row.
+	// piProvider is set only by a row whose key the cloud runner hands pi —
+	// the piSpends question the catalog's pi pairing asks on this surface
+	// too, so one catalog's backend list and its model pairings agree. A
+	// team's gateway key unlocks claw alone (ADR-131 §9), and so does an
+	// azure, bedrock or vertex key: the runner forwards pi none of them.
 	piProvider := false
 	for _, prov := range providers {
 		if !prov.Available {
 			continue
 		}
 		anyProvider = true
-		if detect.PiReadsProvider(prov.Name) {
+		if piSpends(ReachabilityCloud, prov.Name) {
 			piProvider = true
 		}
 		if prov.Name == "anthropic" {
@@ -175,6 +175,28 @@ func ReportFromCloudPresence(p CloudPresence) detect.Report {
 		Backends:        backends,
 		Providers:       providers,
 	}
+}
+
+// piSpends answers, on one credential surface, whether pi can spend the
+// credential a provider row stands for. On a host pi reads its own variables
+// (detect.PiReadsProvider, the question detect's local probe asks); a cloud
+// run hands pi only the keys the runner forwards it
+// (delegate.PiForwardsRunKey), so a row pi would read on a host — azure's —
+// funds no pi call in the cloud.
+func piSpends(surface, row string) bool {
+	if surface == ReachabilityCloud {
+		return delegate.PiForwardsRunKey(keyProviderOfRow(row))
+	}
+	return detect.PiReadsProvider(row)
+}
+
+// keyProviderOfRow is DetectProviderName read backwards: the stored key's
+// provider a cloud row stands for.
+func keyProviderOfRow(row string) secrets.Provider {
+	if row == DetectProviderName(secrets.ProviderAzure) {
+		return secrets.ProviderAzure
+	}
+	return secrets.Provider(row)
 }
 
 // cloudProviderSkeleton lists the provider rows a cloud presence can light,

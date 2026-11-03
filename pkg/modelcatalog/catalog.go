@@ -273,7 +273,7 @@ func Build(ctx context.Context, opts Options) (Catalog, error) {
 		if in, out, ok := cost.EffectiveRate(rc.Spec); ok {
 			e.InputCostPerM, e.OutputCostPerM, e.PriceKnown = in, out, true
 		}
-		e.Backends, e.CredentialSource, e.UnusableReason = availability(*report, e.Provider, e.Model, e.CredentialProvider)
+		e.Backends, e.CredentialSource, e.UnusableReason = availability(*report, scope, e.Provider, e.Model, e.CredentialProvider)
 		e.Usable = len(e.Backends) > 0
 		e.Reachability = scope
 		if opts.UnprovenIsUnknown && !e.Usable {
@@ -326,8 +326,10 @@ func UltracodeCapable(spec string) bool {
 
 // availability answers "can this host drive this spec right now", returning the
 // backends that can, the credential that would be used, and — when none can —
-// why not.
-func availability(report detect.Report, specProvider, modelID, credProvider string) (backends []string, credSource, reason string) {
+// why not. surface is the credential surface the report describes
+// (ReachabilityLocal or ReachabilityCloud): it decides which credentials pi
+// can spend.
+func availability(report detect.Report, surface, specProvider, modelID, credProvider string) (backends []string, credSource, reason string) {
 	prov, known := providerStatus(report, credProvider)
 	if known {
 		credSource = prov.Source
@@ -356,11 +358,13 @@ func availability(report detect.Report, specProvider, modelID, credProvider stri
 			}
 		case detect.BackendPi:
 			// pi resolves from the environment too, but only the providers
-			// it can actually read — the gateway row's OPENAI_COMPATIBLE_*
-			// variables are not among them, so pairing it would offer a
-			// model on a credential pi cannot spend (detect's own probe
-			// excludes the same set when it reports pi available).
-			if prov.Available && detect.PiReadsProvider(credProvider) {
+			// it can actually spend on this surface — on a host, the ones it
+			// reads (never the gateway row's OPENAI_COMPATIBLE_* variables);
+			// in the cloud, the keys the runner forwards it. Pairing it
+			// otherwise would offer a model on a credential pi cannot spend
+			// (detect's probe and the cloud report light pi on the same
+			// question).
+			if prov.Available && piSpends(surface, credProvider) {
 				backends = append(backends, name)
 			}
 		case detect.BackendOpenCode:
