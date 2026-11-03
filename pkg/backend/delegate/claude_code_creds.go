@@ -1488,7 +1488,9 @@ func AmbientSourceFingerprint(source string) (string, bool) {
 // carries none — its "Not logged in" a refusal — or a cloud-provider switch
 // answers instead. The runner keys its nothing-held default on it (the
 // fp'd ambient label AmbientSourceFingerprint parses), so the ledger the
-// pre-flight reads is the one the coming session writes.
+// pre-flight reads is the one the coming session writes. It is the claude_code
+// CLI's reading of the pod env: pi reads another channel set, in its own
+// order, and names its spend itself (PiAnthropicRouteSource).
 func AmbientCredentialFingerprint() string {
 	return ambientSourceFingerprint(nil, false)
 }

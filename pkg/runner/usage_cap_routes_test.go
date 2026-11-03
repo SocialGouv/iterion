@@ -18,7 +18,11 @@ import (
 // a route's resolution: the delegate reads them as the ambient fallback.
 // ANTHROPIC_CUSTOM_HEADERS goes too: an Authorization line in it is one of
 // the channels the ambient fingerprint digests, and a pod that exports one
-// must not hand these tests a different meter than a bare one.
+// must not hand these tests a different meter than a bare one. So do pi's own
+// channels — ANTHROPIC_OAUTH_TOKEN, and the store in its agent dir, pinned to
+// an empty one: pi resolves a stored credential before every variable, and a
+// host carrying a pi login must not decide a pi route's meter here. The
+// subscription switch is stated off; the rows that need it set it.
 func blankAnthropicWireEnv(t *testing.T) {
 	t.Helper()
 	for _, name := range []string{
@@ -27,9 +31,11 @@ func blankAnthropicWireEnv(t *testing.T) {
 		"ZAI_API_KEY", "MOONSHOT_API_KEY", "MOONSHOT_BASE_URL",
 		"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
 		"ANTHROPIC_CUSTOM_HEADERS",
+		"ANTHROPIC_OAUTH_TOKEN", "PI_CODING_AGENT_DIR", "ITERION_FORBID_SUBSCRIPTION_OAUTH",
 	} {
 		t.Setenv(name, "")
 	}
+	t.Setenv("ITERION_PI_AGENT_DIR", t.TempDir())
 }
 
 // forfaitBesidePinnedKeys is the bundle the platform tier seals under the
@@ -482,7 +488,10 @@ func TestUsageCapPreflight_ACappedSupervisorParksTheRun(t *testing.T) {
 		t.Errorf("parked a run whose supervisors are off: %v", err)
 	}
 	// Under ITERION_FORBID_SUBSCRIPTION_OAUTH the in-process factory declines
-	// the forfait: the supervisor spends the pod's ambient env instead.
+	// the forfait: the supervisor spends the pod's ambient env instead. The
+	// host's own Claude Code forfait is stated absent — the factory reads it
+	// last, and under the switch refuses it.
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "1")
 	if err := preflightWithSupervisors(t, caps, forfaitBesidePinnedZAI(), supervised(glm(), "anthropic/claude-opus-5-5"), ""); err != nil {
 		t.Errorf("parked a supervisor on the forfait the factory declines: %v", err)

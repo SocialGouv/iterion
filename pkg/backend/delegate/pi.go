@@ -2,15 +2,16 @@ package delegate
 
 import (
 	"context"
-
+	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/pisdk"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -149,18 +150,14 @@ type PiBackend struct {
 
 // Execute runs the task through the selected pi transport, recording a
 // rejected credential as meter evidence on the way out (see
-// piRecordAuthRefusal): both transports produce the typed error here, so
+// recordAuthRefusal): both transports produce the typed error here, so
 // this is the one place that sees every one of them.
 func (b *PiBackend) Execute(ctx context.Context, task Task) (Result, error) {
-	// The ambient half of the stamp doctrine (PiAnthropicAmbientSource): a
-	// session spending the pod's inherited account names that account, not the
-	// provider slug's slot label. Task and TaskHooks travel by value, so the
-	// wrap lives and dies with one Execute call.
-	if label := PiAnthropicAmbientSource(ctx, task.Model, task.ProviderHint); label != "" {
-		task.Hooks.OnUsageWindow = piStampAmbientSource(task.Hooks.OnUsageWindow, label)
-	}
+	// The credential a refusal indicts is named once, from the env this call
+	// hands pi, before the spawn reads that env (piRefusalSource).
+	source := piRefusalSource(ctx, task)
 	res, err := b.execute(ctx, task)
-	return res, b.recordAuthRefusal(task, err)
+	return res, b.recordAuthRefusal(task, source, err)
 }
 
 // recordAuthRefusal turns a credential the provider REJECTED into the same
@@ -174,11 +171,12 @@ func (b *PiBackend) Execute(ctx context.Context, task Task) (Result, error) {
 // a far higher-confidence signal than claude_code's text render — so a
 // workflow failure, a throttle or a blip never bench a credential.
 //
-// A refusal iterion cannot ATTRIBUTE is recorded nowhere: pi routes ~36
-// providers behind one process, and the runner's meter keys an unlabelled
-// reading by its own default precedence, which would charge an openai
-// rejection to a healthy Anthropic key. No evidence beats wrong evidence.
-func (b *PiBackend) recordAuthRefusal(task Task, err error) error {
+// A refusal iterion cannot ATTRIBUTE (source "", piRefusalSource) is recorded
+// nowhere: pi routes ~36 providers behind one process, and the runner's meter
+// keys an unlabelled reading by its own default precedence, which would charge
+// an openai rejection to a healthy Anthropic key. No evidence beats wrong
+// evidence.
+func (b *PiBackend) recordAuthRefusal(task Task, source string, err error) error {
 	if err == nil || task.Hooks.OnUsageWindow == nil {
 		return err
 	}
@@ -186,10 +184,9 @@ func (b *PiBackend) recordAuthRefusal(task Task, err error) error {
 	if !errors.As(err, &auth) {
 		return err
 	}
-	provider, _ := piResolveModel(task.Model, task.ProviderHint)
-	source := piUsageSource(provider)
 	if source == "" {
 		if b.Logger != nil {
+			provider, _ := piResolveModel(task.Model, task.ProviderHint)
 			b.Logger.Debug("[%s#%d/%s] credential rejected on provider %q — not recorded as meter evidence: iterion cannot say which credential it was",
 				task.NodeID, task.Iteration, BackendPi, provider)
 		}
@@ -204,10 +201,9 @@ func (b *PiBackend) recordAuthRefusal(task Task, err error) error {
 	return err
 }
 
-// PiUsageSourceDirect is the direct-anthropic label of the source vocabulary
-// piUsageSource mints: the run's own Anthropic API key, a SLOT of the run. A
-// session spending the pod's inherited account instead stamps
-// PiAnthropicAmbientSource's label over it (piStampAmbientSource).
+// PiUsageSourceDirect is the label a pi session on the Anthropic provider
+// stamps when the credential pi resolves is the Anthropic key iterion bound
+// for the run — a SLOT of the run (piAnthropicSpend says when).
 const PiUsageSourceDirect = "anthropic-direct"
 
 // The facade source labels a pi node emits. pi reaches these vendors through
@@ -229,11 +225,11 @@ const (
 // credential-skip evidence is claude_code-metered end to end
 // (UsageMeterBackendForProvider), so a reading on any other provider could
 // not be acted upon even if it were recorded — while a mislabelled one WOULD
-// be acted upon, against the wrong credential.
+// be acted upon, against the wrong credential. The Anthropic provider itself
+// is not a slug question: its slug says nothing of which of pi's credential
+// channels answered, which piAnthropicSpend resolves.
 func piUsageSource(provider string) string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "anthropic":
-		return PiUsageSourceDirect
 	case "zai":
 		return PiUsageSourceZAI
 	// pi's own id for Moonshot, which is what piResolveModel returns after
@@ -245,68 +241,177 @@ func piUsageSource(provider string) string {
 	return ""
 }
 
-// PiAnthropicAmbientSource names the usage-meter source a pi session whose
-// provider resolves to Anthropic stamps when the credential it spends is the
-// pod's inherited one: the fingerprinted ambient label (providerFingerprint's
-// ambient shape) the runner's meter keys on the platform account's meter — the
-// meter its nothing-held pre-flight reads for a pi route with an anthropic
-// hint (the route spends that account whatever backend serves it, so a wall
-// one pi run measures must reach every other borrower's pre-flight,
-// claude_code's readings included). The provider slug alone cannot say this:
-// its refusal label names the Anthropic API key as a SLOT OF THE RUN, and a
-// run holding none books its refusal on the fingerprint-less meter no
-// pre-flight of the shape ever reads — the split between the two sides of the
-// pi lane this label closes.
-//
-// "" when the spend is not the pod's inherited account: the run carries an
-// anthropic credential of its own (piResolveEnv or piRouteEnv put it in the
-// env, and the slot label is the right one), the run refused the pod env (the
-// ADR-131 stamp — its nothing-held default spends nothing of the pod's, and
-// its pre-flight reads the bare meter the slot label books on), or the pod
-// inherits no credential a direct call could spend — nothing at all ("Not
-// logged in" is a refusal, not an account) or a cloud-provider switch
-// answering instead.
-//
-// Task.ExtraEnv is not composed here, as AnthropicRouteSource documents: the
-// lanes that compose a run env run no meter pre-flight, so a lane that both
-// reads this and feeds an anthropic credential through pi's ExtraEnv must
-// compose those entries first.
-func PiAnthropicAmbientSource(ctx context.Context, model, hint string) string {
-	provider, _ := piResolveModel(model, hint)
-	if provider != "anthropic" {
+// piAnthropicProvider is pi's id for its Anthropic provider (piResolveModel's
+// answer for an `anthropic/…` spec or an anthropic hint).
+const piAnthropicProvider = "anthropic"
+
+// piAnthropicEnvChannels are the variables pi's Anthropic provider reads a
+// credential from, in pi's own precedence — the bearer, then the OAuth token,
+// then the API key — and the request carries the first live one ALONE
+// (@earendil-works/pi-ai providers/anthropic.ts, anthropicApiKeyAuth; the
+// client is built with that one credential and the provider's own base URL,
+// api/anthropic-messages.ts createClient). claude_code's reading of the
+// ambient env shares none of the rest: pi reads no CLAUDE_CODE_OAUTH_TOKEN, no
+// ANTHROPIC_CUSTOM_HEADERS, no ANTHROPIC_BASE_URL and no cloud-provider switch.
+var piAnthropicEnvChannels = []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"}
+
+// piRefusalSource names the credential an auth refusal of this session
+// indicts, in the source vocabulary the runner's meter keys on
+// (runCredKeys.forSource), or "" when iterion cannot say which credential it
+// was. The Anthropic provider is resolved against pi's own credential order
+// (piAnthropicSpend), every other provider by its slug (piUsageSource).
+func piRefusalSource(ctx context.Context, task Task) string {
+	provider, _ := piResolveModel(task.Model, task.ProviderHint)
+	if provider != piAnthropicProvider {
+		return piUsageSource(provider)
+	}
+	source, metered := piAnthropicSpend(ctx, task.Model, task.ProviderHint, task.ExtraEnv)
+	if !metered {
 		return ""
 	}
-	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
-		if creds.AmbientRefused {
-			return ""
-		}
-		if creds.APIKeyForRoute(secrets.ProviderAnthropic) != "" {
-			return ""
-		}
-	}
-	if fp := AmbientCredentialFingerprint(); fp != "" {
-		return ambientSourcePrefix + fp
-	}
-	return ""
+	return source
 }
 
-// piStampAmbientSource wraps an OnUsageWindow hook so a reading pi minted for
-// its Anthropic provider names the account that actually spent it — the
-// sibling of stampUsageSource, whose clamp is the empty label rather than the
-// slot one. pi derives its source from the provider slug (piUsageSource) and
-// cannot see which env funded it; the pod's ambient account is not a slot of
-// the run, so the wrap overrides exactly that label and lets every other
-// source pass untouched.
-func piStampAmbientSource(inner func(usagecap.Reading) error, label string) func(usagecap.Reading) error {
-	if inner == nil {
-		return nil
+// PiAnthropicRouteSource is the usage-meter source a pi session on route
+// (model, hint) stamps on its Anthropic-provider refusals, read the way the
+// session reads it (piAnthropicSpend) — the runner's pre-flight keys the
+// route on the meter this names, so both sides of the pi lane name one meter
+// by construction, whatever the account. anthropic=false when pi resolves
+// the route to another provider: the slug's facade label stands there
+// (piUsageSource) and the caller keeps its own reading. metered=false when no
+// meter iterion keeps names the spend: pi's own credential store answers, the
+// subscription switch refuses the session before it spawns, or the inherited
+// credential pi sends to api.anthropic.com is one the pod wires elsewhere.
+//
+// Task.ExtraEnv is not composed here, as AnthropicRouteSource documents for
+// claude_code: the runner lane that reads this installs no run env, so a lane
+// that both reads this and feeds an anthropic credential through pi's
+// ExtraEnv must compose those entries first.
+func PiAnthropicRouteSource(ctx context.Context, model, hint string) (source string, metered, anthropic bool) {
+	if provider, _ := piResolveModel(model, hint); provider != piAnthropicProvider {
+		return "", false, false
 	}
-	return func(r usagecap.Reading) error {
-		if r.Source == PiUsageSourceDirect {
-			r.Source = label
+	source, metered = piAnthropicSpend(ctx, model, hint, nil)
+	return source, metered, true
+}
+
+// piAnthropicSpend resolves the credential a pi session on its Anthropic
+// provider authenticates with — pi's own order, over the env this backend
+// hands it — and names it in the runner meter's vocabulary:
+//
+//   - the subscription switch refuses the session before it spawns
+//     (noticeSubscriptionOAuth): it spends nothing, metered=false;
+//   - a credential in pi's own store owns the provider before any variable is
+//     read (pi's resolveProviderAuth: "a stored credential owns the
+//     provider"): iterion neither handed it nor can name it, metered=false;
+//   - otherwise the first live channel of piAnthropicEnvChannels rides the
+//     request: the key iterion bound for the run is a slot of the run
+//     (PiUsageSourceDirect); none at all is the bare family label, a spend no
+//     credential names; any other value is an inherited account, named by
+//     its fingerprint (the ambient family's fingerprinted label — the meter
+//     claude_code's sessions share wherever the pod carries that one value
+//     alone) where the pod sends it where pi does. pi's provider calls
+//     api.anthropic.com whatever ANTHROPIC_BASE_URL says, so on a pod that
+//     wires its credentials to another destination — a gateway, z.ai's
+//     facade — the same value names another account there, and pi's refusal
+//     indicts the destination it was sent to rather than that account:
+//     metered=false.
+//
+// The env is the transports' own composition: piResolveEnv over the process
+// env, then the task's entries (extraEnv), then piRouteEnv's pin, which
+// execute appends last. These channels cross into a sandbox by name
+// (piCredentialEnvNames), so the host reading is the container's. The store
+// is read host-side (piStoreDir): a sandboxed spawn left on the container's
+// default agent dir reads a store this process cannot see, so a login baked
+// into the image is outside this reading.
+func piAnthropicSpend(ctx context.Context, model, hint string, extraEnv []string) (source string, metered bool) {
+	if secrets.GuardSubscriptionOAuth(ctx, secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode) != nil {
+		return "", false
+	}
+	env := piResolveEnv(ctx)
+	for _, kv := range extraEnv {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			env[k] = v
 		}
-		return inner(r)
 	}
+	for k, v := range piRouteEnv(ctx, Task{Model: model, ProviderHint: hint}) {
+		env[k] = v
+	}
+	if piStoreHolds(piStoreDir(env), piAnthropicProvider) {
+		return "", false
+	}
+	value := ""
+	for _, name := range piAnthropicEnvChannels {
+		if v := piEnvValue(env, name); v != "" {
+			value = v
+			break
+		}
+	}
+	creds, _ := secrets.CredentialsFromContext(ctx)
+	switch {
+	case value == "":
+		return ambientSourceFamily, true
+	case value == creds.APIKeyForRoute(secrets.ProviderAnthropic):
+		return PiUsageSourceDirect, true
+	case !secrets.AnthropicForfaitWireOK(piEnvValue(env, "ANTHROPIC_BASE_URL")):
+		return "", false
+	}
+	return ambientSourcePrefix + secrets.FingerprintSHA256(value), true
+}
+
+// piEnvValue is the value pi's process holds for name: the composed override
+// wherever it speaks — "" included, an unset on both the host and the sandbox
+// path — and the inherited one otherwise.
+func piEnvValue(env map[string]string, name string) string {
+	if v, ok := env[name]; ok {
+		return v
+	}
+	return os.Getenv(name)
+}
+
+// piStoreDir is the agent dir whose auth.json pi reads: PI_CODING_AGENT_DIR as
+// the composed env sets it — piResolveEnv's ITERION_PI_AGENT_DIR pin, a task's
+// own entry — else the one this process hands pi (piAgentDir). A leading "~"
+// expands to the home directory, as pi expands it (utils/paths.ts
+// normalizePath).
+func piStoreDir(env map[string]string) string {
+	dir := strings.TrimSpace(env["PI_CODING_AGENT_DIR"])
+	if dir == "" {
+		dir = piAgentDir()
+	}
+	if dir == "~" || strings.HasPrefix(dir, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			dir = filepath.Join(home, dir[1:])
+		}
+	}
+	return dir
+}
+
+// piStoreHolds reports whether pi's own credential store — auth.json in the
+// agent dir — carries an entry for provider: pi resolves that entry before
+// any environment variable and never falls back past it. Only the entry's
+// presence is read; the credential in it is neither used nor carried. A store
+// iterion cannot read as pi would (unreadable, not a JSON object) answers
+// true: what pi spends there is not something iterion can rule out, and a
+// reading withheld is evidence missing, never evidence wrong. No file is no
+// entry.
+func piStoreHolds(dir, provider string) bool {
+	if dir == "" {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "auth.json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	if err != nil {
+		return true
+	}
+	var entries map[string]json.RawMessage
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return true
+	}
+	entry, ok := entries[provider]
+	return ok && strings.TrimSpace(string(entry)) != "null"
 }
 
 func (b *PiBackend) execute(ctx context.Context, task Task) (Result, error) {
@@ -422,7 +527,7 @@ func (b *PiBackend) executePrint(ctx context.Context, task Task) (Result, error)
 // A user's own `pi` login in ~/.pi/agent/auth.json is their relationship with
 // the vendor: nothing is read or injected here.
 func (b *PiBackend) noticeSubscriptionOAuth(ctx context.Context, task Task) error {
-	if provider, _ := piResolveModel(task.Model, task.ProviderHint); provider != "anthropic" {
+	if provider, _ := piResolveModel(task.Model, task.ProviderHint); provider != piAnthropicProvider {
 		return nil
 	}
 	if err := secrets.GuardSubscriptionOAuth(ctx, secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode); err != nil {
@@ -763,7 +868,8 @@ func piSandboxEnv(ctx context.Context, task Task) map[string]string {
 // (RunBundle.PinnedAPIKeys). pi names its provider on its argv, so the pin is
 // the node's own and the key crosses for it alone — the zai or moonshot key a
 // Claude forfait keeps out of the run's default channel. A default key of the
-// same provider is the run's own and already set by piResolveEnv.
+// same provider is the run's own and already set by piResolveEnv. Both bind
+// through piBindKey, so the key is the one pi spends.
 func piRouteEnv(ctx context.Context, task Task) map[string]string {
 	creds, ok := secrets.CredentialsFromContext(ctx)
 	if !ok {
@@ -771,14 +877,36 @@ func piRouteEnv(ctx context.Context, task Task) map[string]string {
 	}
 	provider, _ := piResolveModel(task.Model, task.ProviderHint)
 	p := piSecretsProvider(provider)
-	envKey := piEnvKeys[p]
-	if envKey == "" || creds.APIKey(p) != "" {
+	if piEnvKeys[p] == "" || creds.APIKey(p) != "" {
 		return nil
 	}
 	if k := creds.PinnedAPIKey(p); k != "" {
-		return map[string]string{envKey: k}
+		env := map[string]string{}
+		piBindKey(env, p, k)
+		return env
 	}
 	return nil
+}
+
+// piBindKey hands pi a key iterion bound for provider p: the provider's
+// API-key variable carries it and, on the Anthropic provider — where pi reads
+// the bearer and the OAuth token BEFORE the API key (piAnthropicEnvChannels)
+// — the channels that would outrank it are cleared. A bound credential owns
+// its provider as a whole, claude_code's rule (anthropicCredRouteForTask):
+// left in place, an inherited bearer rides the request instead, the run's own
+// key is never spent and the pod's account pays for the run. An empty value
+// is an unset on both the host and the sandbox path.
+func piBindKey(env map[string]string, p secrets.Provider, key string) {
+	envKey := piEnvKeys[p]
+	env[envKey] = key
+	if p != secrets.ProviderAnthropic {
+		return
+	}
+	for _, name := range piAnthropicEnvChannels {
+		if name != envKey {
+			env[name] = ""
+		}
+	}
 }
 
 // piSecretsProvider maps a pi provider id back to the iterion provider whose
@@ -836,9 +964,9 @@ func piResolveEnv(ctx context.Context) map[string]string {
 	}
 
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
-		for provider, envKey := range piEnvKeys {
+		for provider := range piEnvKeys {
 			if key := creds.APIKey(provider); key != "" {
-				env[envKey] = key
+				piBindKey(env, provider, key)
 			}
 		}
 	}

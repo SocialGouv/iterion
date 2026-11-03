@@ -2,6 +2,8 @@ package runner
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -320,10 +322,13 @@ func TestThePiLaneNamesOneMeterOnBothSides(t *testing.T) {
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{})
 	keys := usageCapCredKeys(ctx, &queue.RunMessage{TenantID: "team-b"})
 
-	// The refusal pi stamps (the minter its Execute wraps the hook with — one
-	// decision, both sides) must parse as an account and book on the meter
-	// the pre-flight reads.
-	label := delegate.PiAnthropicAmbientSource(ctx, "claude-opus-5-5", "anthropic")
+	// The refusal pi stamps (the resolution its Execute names the refusal
+	// with — one decision, both sides) must parse as an account and book on
+	// the meter the pre-flight reads.
+	label, metered, anthropic := delegate.PiAnthropicRouteSource(ctx, "claude-opus-5-5", "anthropic")
+	if !anthropic || !metered {
+		t.Fatalf("the pi route answered anthropic=%v metered=%v, want a metered anthropic route", anthropic, metered)
+	}
 	if _, ok := delegate.AmbientSourceFingerprint(label); !ok {
 		t.Fatalf("the pi refusal stamps %q, which names no account at all", label)
 	}
@@ -477,5 +482,130 @@ func TestUsageCapPreflight_TheAmbientGatewayWallStopsAGLMSupervisor(t *testing.T
 	t.Setenv("ZAI_API_KEY", "zai-pod-e2e")
 	if err := preflightWithSupervisors(t, caps, ctx, supervised("anthropic/glm-5.3"), ""); err != nil {
 		t.Errorf("parked a GLM supervisor on the ambient wall with the pod's ZAI env live: %v — the synthesis funds the id from z.ai's account", err)
+	}
+}
+
+// The pi pre-flight reads the meter of the credential pi resolves — its own
+// channel set, in its own order — never claude_code's reading of the pod. On
+// the forfait pod (CLAUDE_CODE_OAUTH_TOKEN alone) pi holds nothing it can
+// spend, so the forfait's capped wall parks a claude_code route and not a pi
+// one; on a pod whose ANTHROPIC_OAUTH_TOKEN rides ahead of its API key, the
+// pi route is judged on the OAuth token's meter, not on the key's that
+// claude_code reads; and where pi's own store answers, no meter iterion keeps
+// names the spend.
+func TestThePiLaneReadsTheCredentialPiResolves(t *testing.T) {
+	blankAnthropicWireEnv(t)
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{})
+	piNode := func() ir.Node { return agentRoute("pi", delegate.BackendPi, "anthropic", "claude-opus-5-5") }
+	piRoute := model.WireRoute{NodeID: "pi", Backend: delegate.BackendPi, Hint: "anthropic", Model: "claude-opus-5-5", Readable: true}
+
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-forfait")
+	forfait := usagecap.NewMemStore()
+	weekCapped(t, forfait, platformKey(secrets.FingerprintSHA256("sk-ant-oat-forfait")), time.Now().UTC().Add(30*time.Hour))
+	if err := preflightFor(t, forfait, ctx, chainWorkflow(agentRoute("cc", delegate.BackendClaudeCode, "anthropic", "claude-opus-5-5"))); err == nil {
+		t.Fatal("bench: a claude_code route started on the capped forfait it spends")
+	}
+	if err := preflightFor(t, forfait, ctx, chainWorkflow(piNode())); err != nil {
+		t.Errorf("parked a pi route on the forfait's wall: %v — pi reads no CLAUDE_CODE_OAUTH_TOKEN", err)
+	}
+
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+	t.Setenv("ANTHROPIC_OAUTH_TOKEN", "oat-pod")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
+	keys := usageCapCredKeys(ctx, &queue.RunMessage{TenantID: "team-b"})
+	if key, metered := keys.routeKey(ctx, piRoute); !metered || key != platformKey(secrets.FingerprintSHA256("oat-pod")) {
+		t.Errorf("the pi route = %q metered=%v, want the OAuth token's meter — pi sends it ahead of the API key", key, metered)
+	}
+	keyWall := usagecap.NewMemStore()
+	weekCapped(t, keyWall, platformKey(secrets.FingerprintSHA256("sk-pod")), time.Now().UTC().Add(30*time.Hour))
+	if err := preflightFor(t, keyWall, ctx, chainWorkflow(piNode())); err != nil {
+		t.Errorf("parked a pi route on the API key's wall: %v — pi spends the OAuth token ahead of it", err)
+	}
+	tokenWall := usagecap.NewMemStore()
+	weekCapped(t, tokenWall, platformKey(secrets.FingerprintSHA256("oat-pod")), time.Now().UTC().Add(30*time.Hour))
+	if err := preflightFor(t, tokenWall, ctx, chainWorkflow(piNode())); err == nil {
+		t.Error("started a pi route on the capped OAuth token it spends")
+	}
+
+	store := filepath.Join(os.Getenv("ITERION_PI_AGENT_DIR"), "auth.json")
+	if err := os.WriteFile(store, []byte(`{"anthropic":{"type":"api_key","key":"sk-stored"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if key, metered := keys.routeKey(ctx, piRoute); metered {
+		t.Errorf("the pi route = %q metered — pi's own store answers before every variable, and no meter iterion keeps names it", key)
+	}
+}
+
+// Under ITERION_FORBID_SUBSCRIPTION_OAUTH the env factory refuses a walk that
+// lands on a subscription bearer outright: no client is built and no account
+// spends, so the nothing-held arms that mirror the factory — a supervisor
+// spec, a claw route, GLM or not — are not judged on the ambient account's
+// walls, and the typed refusal is their answer. A pod whose API key rides
+// ahead of the bearer is spent, not refused, and stays metered.
+func TestTheNothingHeldMeterSkipsAWalkTheSwitchRefuses(t *testing.T) {
+	blankAnthropicWireEnv(t)
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	t.Setenv("ANTHROPIC_BASE_URL", "https://llm-gw.example.test/anthropic")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "tok-pod-gateway")
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{})
+	msg := &queue.RunMessage{TenantID: "team-b"}
+	shapes := func(keys runCredKeys) map[string]func() (string, bool) {
+		return map[string]func() (string, bool){
+			"anthropic supervisor": func() (string, bool) { return keys.supervisorKey(ctx, "anthropic/claude-sonnet-4") },
+			"GLM supervisor":       func() (string, bool) { return keys.supervisorKey(ctx, "anthropic/glm-5.3") },
+			"claw anthropic route": func() (string, bool) {
+				return keys.routeKey(ctx, model.WireRoute{NodeID: "n1", Backend: delegate.BackendClaw, Model: "claude-sonnet-4", Readable: true})
+			},
+			"claw GLM route": func() (string, bool) {
+				return keys.routeKey(ctx, model.WireRoute{NodeID: "n2", Backend: delegate.BackendClaw, Model: "anthropic/glm-5.3", Readable: true})
+			},
+		}
+	}
+
+	ambient := platformKey(secrets.FingerprintSHA256("tok-pod-gateway"))
+	for name, key := range shapes(usageCapCredKeys(ctx, msg)) {
+		if k, metered := key(); !metered || k != ambient {
+			t.Errorf("switch off: the %s = %q metered=%v, want the ambient meter — the factory spends the pod's bearer", name, k, metered)
+		}
+	}
+
+	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "1")
+	for name, key := range shapes(usageCapCredKeys(ctx, msg)) {
+		if k, metered := key(); metered {
+			t.Errorf("switch on: the %s = %q metered — the factory refuses the bearer, no account spends", name, k)
+		}
+	}
+
+	t.Setenv("ANTHROPIC_API_KEY", "sk-pod-gateway")
+	keys := usageCapCredKeys(ctx, msg)
+	for name, key := range shapes(keys) {
+		if k, metered := key(); !metered || k != keys.nothingHeldKey() {
+			t.Errorf("switch on, an API key ahead: the %s = %q metered=%v, want the ambient meter — the factory spends the key, no refusal", name, k, metered)
+		}
+	}
+}
+
+// End to end: under the switch, a capped wall on the ambient account does not
+// park a run whose only spender on that account is a supervisor the factory
+// refuses — the supervisor's typed refusal surfaces when it evaluates — and
+// the same run parks once the switch is off and the supervisor spends it.
+func TestUsageCapPreflight_ARefusedSupervisorIsNotParkedOnTheAmbientWall(t *testing.T) {
+	blankAnthropicWireEnv(t)
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "sk-ant-oat-pod-e2e")
+	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
+	t.Setenv("ITERION_SUPERVISORS", "")
+	caps := usagecap.NewMemStore()
+	weekCapped(t, caps, platformKey(secrets.FingerprintSHA256("sk-ant-oat-pod-e2e")), time.Now().UTC().Add(30*time.Hour))
+	wf := chainWorkflow(agentRoute("impl", delegate.BackendOpenCode, "", "anthropic/claude-opus-5-5"))
+	wf.Supervisors = []*ir.Supervisor{{Name: "pacer", Model: "anthropic/claude-sonnet-4"}}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{})
+
+	if err := preflightWithSupervisors(t, caps, ctx, wf, ""); err == nil {
+		t.Fatal("bench: the switch off, a supervisor spending the capped ambient bearer started")
+	}
+	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "1")
+	if err := preflightWithSupervisors(t, caps, ctx, wf, ""); err != nil {
+		t.Errorf("parked a run on the ambient wall of a bearer the factory refuses: %v", err)
 	}
 }

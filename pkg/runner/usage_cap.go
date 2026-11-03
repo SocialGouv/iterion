@@ -315,22 +315,24 @@ func (k runCredKeys) keyForSlot(slot string) string {
 // it), so the pre-flight reads the ledger the session will write — a forfait,
 // the run's own key, a key pinned for the route or the pod's ambient env. A
 // route the delegate refuses before spawning (a facade hint with no key)
-// spends nothing and is not metered. pi's hint names the provider it spends,
-// over the model's prefix; kimi and grok spend their own config and are not
-// metered; other backends route on the spec, as the spend ledger books them
-// (credentialSlotForRoute). A slot off the anthropic wire is not what the cap
-// meters. A nothing-held answer keys the pod's ambient meter only where that
-// account is the route's next funder — the route names the ANTHROPIC provider
-// itself (a claw anthropic-wire spec with no GLM id detouring to z.ai's
-// synthesis, a pi route whose hint names anthropic): the spawn reaches the
-// pod's anthropic env, so the ambient account's own walls are the walls this
-// route crosses. Every other nothing-held shape funds elsewhere or is
-// unreadable — opencode resolves its own config, a gateway route the
-// deployment's gateway pair, a vendor id its own pod env, a GLM id z.ai's
-// synthesis — and the reading side books every one of those on nobody, so
-// keying it here would park the run on evidence no spend of its can raise.
-// A route the walk cannot read keeps the run's default credential —
-// defaultKey, the ledger the coming session writes.
+// spends nothing and is not metered. A pi route on its Anthropic provider asks
+// the delegate the same question (delegate.PiAnthropicRouteSource: pi's own
+// credential order, not claude_code's channel set); on any other provider
+// pi's hint names the provider it spends, over the model's prefix; kimi and
+// grok spend their own config and are not metered; other backends route on
+// the spec, as the spend ledger books them (credentialSlotForRoute). A slot
+// off the anthropic wire is not what the cap meters. A nothing-held answer
+// keys the pod's ambient meter only where that account is the route's next
+// funder — a claw anthropic-wire spec the env factory walks into the pod's
+// anthropic env, no GLM id detouring to z.ai's synthesis and no subscription
+// bearer the switch refuses (nothingHeldFundsTheAmbientAccount): the ambient
+// account's own walls are the walls this route crosses. Every other
+// nothing-held shape funds elsewhere or is unreadable — opencode resolves its
+// own config, a gateway route the deployment's gateway pair, a vendor id its
+// own pod env, a GLM id z.ai's synthesis — and the reading side books every
+// one of those on nobody, so keying it here would park the run on evidence no
+// spend of its can raise. A route the walk cannot read keeps the run's
+// default credential — defaultKey, the ledger the coming session writes.
 func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key string, metered bool) {
 	if !route.Readable {
 		return k.defaultKey(), true
@@ -348,6 +350,19 @@ func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key s
 		// Vendor CLIs paid by their own config: no credential of the run,
 		// and none of the pod's anthropic-wire ones.
 		return "", false
+	case delegate.BackendPi:
+		// pi on its Anthropic provider resolves its own credential order — its
+		// store, then its bearer, OAuth and API-key channels — so the delegate
+		// names the source the session will stamp, exactly as it does for
+		// claude_code above, and the pre-flight reads the meter that label
+		// keys: the run's key, an inherited account by its fingerprint, the
+		// bare meter, or nothing iterion keeps.
+		if source, metered, anthropic := delegate.PiAnthropicRouteSource(ctx, route.Model, hint); anthropic {
+			if !metered {
+				return "", false
+			}
+			return k.forSource(source), true
+		}
 	}
 	creds, _ := secrets.CredentialsFromContext(ctx)
 	var slot string
@@ -363,7 +378,7 @@ func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key s
 		return "", false
 	}
 	if slot == "" {
-		if nothingHeldFundsTheAmbientAccount(route, hint) {
+		if nothingHeldFundsTheAmbientAccount(route) {
 			return k.nothingHeldKey(), true
 		}
 		// The route's next funder is an account whose walls never land on
@@ -380,28 +395,25 @@ func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key s
 // carries the pod's anthropic env (inherited on the host, the forwarded
 // channels in a sandbox) — a GLM id included, unless a synthesis can fire it
 // or the factory drops the credential it would ride (model.AmbientEnvFundsGLM,
-// the factory's own order; z.ai's account is never a meter this cap keeps).
-// pi resolves providers from the env allowlist it is handed, the pod's
-// ANTHROPIC_API_KEY included, so an anthropic hint names the ambient account
-// too; a bare pi model names nothing. Every other backend funds from config
-// iterion does not read.
-func nothingHeldFundsTheAmbientAccount(route model.WireRoute, hint string) bool {
-	switch route.Backend {
-	case delegate.BackendClaw:
-		if wireForRoute(route.Backend, route.Model) != anthropicWire {
-			return false
-		}
-		// A GLM id rides the same ambient anthropic credential a non-GLM id
-		// does, wherever the factory walks it there instead of handing the
-		// id to a synthesis or to no credential at all.
-		return !model.GLMOnAnthropicWire(route.Model) || model.AmbientEnvFundsGLM()
-	case delegate.BackendPi:
-		if h := strings.ToLower(strings.TrimSpace(hint)); h != "" {
-			return h == string(secrets.ProviderAnthropic)
-		}
-		return providerFromModel(route.Model) == anthropicWire
+// the factory's own order; z.ai's account is never a meter this cap keeps) —
+// except where the factory refuses the walk outright: a subscription bearer
+// under ITERION_FORBID_SUBSCRIPTION_OAUTH (model.AmbientEnvRefused; the
+// switch crosses into the sandbox with the bearer) builds no client and spends
+// no account. A pi route on its Anthropic provider is answered before this —
+// the delegate names that spend itself (delegate.PiAnthropicRouteSource) — and
+// pi's other providers fund no ambient Anthropic account. Every other backend
+// funds from config iterion does not read.
+func nothingHeldFundsTheAmbientAccount(route model.WireRoute) bool {
+	if route.Backend != delegate.BackendClaw || wireForRoute(route.Backend, route.Model) != anthropicWire {
+		return false
 	}
-	return false
+	// A GLM id rides the same ambient anthropic credential a non-GLM id
+	// does, wherever the factory walks it there instead of handing the id to
+	// a synthesis or to no credential at all.
+	if model.GLMOnAnthropicWire(route.Model) {
+		return model.AmbientEnvFundsGLM()
+	}
+	return !model.AmbientEnvRefused(route.Model)
 }
 
 // firstHeld is the bundle-default precedence: the first slot of
@@ -935,13 +947,15 @@ func supervisorRouteID(name string, i int) string {
 // ANTHROPIC_BASE_URL — anthropicFromCtxForfait), else the pod's ambient env —
 // keyed on that env's own meter (nothingHeldKey, the account's fingerprinted
 // label), since a claw supervisor reports no readings of its own and the
-// account's refusals are the only evidence it produces. A GLM id there the
-// z.ai key where a synthesis can fire it — the run's held zai slot, or the
-// pod's ZAI_API_KEY — and the pod's ambient anthropic env exactly as a
-// non-GLM id spends it otherwise (model.AmbientEnvFundsGLM, the factory's
-// own order: the gateway credential rides, api.anthropic.com and a
-// credential-less pod refuse the id before any account wall), so the ambient
-// meter is its ledger where the ambient account is the next funder.
+// account's refusals are the only evidence it produces — unless the env
+// factory refuses that walk outright (a subscription bearer under the same
+// switch, model.AmbientEnvRefused): it spends nothing and is not metered. A
+// GLM id there the z.ai key where a synthesis can fire it — the run's held
+// zai slot, or the pod's ZAI_API_KEY — and the pod's ambient anthropic env
+// exactly as a non-GLM id spends it otherwise (model.AmbientEnvFundsGLM, the
+// factory's own order: the gateway credential rides, api.anthropic.com, a
+// credential-less pod and a refused bearer spend no account wall), so the
+// ambient meter is its ledger where the ambient account is the next funder.
 // `zai/…` and `moonshot/…` that provider's key, a gateway spec the run's
 // gateway pair; with none held the registry reads each provider's OWN pod
 // env (MOONSHOT_API_KEY, the OPENAI_COMPATIBLE pair) or refuses — never the
@@ -982,6 +996,12 @@ func (k runCredKeys) supervisorKey(ctx context.Context, spec string) (key string
 			slot = string(secrets.OAuthKindClaudeCode)
 		}
 		if slot == "" {
+			if model.AmbientEnvRefused(spec) {
+				// The env factory's walk lands on a subscription bearer the
+				// switch refuses: no client is built, no account spends, and
+				// the typed refusal is the supervisor's answer. Not metered.
+				return "", false
+			}
 			// Nothing the run holds funds this spec: the registry walks on
 			// into the pod's ambient env, and that env's own meter is where
 			// the account's evidence lives (nothingHeldKey).
