@@ -120,13 +120,29 @@ which the spec names because the agent has to honour all three.
 Checklist: the new node and its two edges; `schema family_reviews:` declares
 the lens's keys and `compute merge_reviews:` fills them, fallback included;
 `compute pr_gate:` and the verdict's own counts untouched; validating the
-unit adds no error and no warning to what it ships with (no error; C315 on
-each route field and tool body that reads the environment, ADR-132 stage 1, a
-count measured per build rather than pinned here; C251 on a build with no
-orderable version); the diff touches those four files and nothing else,
-and adds under 120 lines — a judge of the glance tier's size is ~25, its
-user prompt ~30, the schema and merge keys ~17, the edges ~6, and
-rendering the new block ~10.
+edited unit adds no error and no warning to what the unedited unit raises on
+the same build, both read by `iterion validate`; the diff touches those four
+files and nothing else, and adds under 120 lines — a judge of the glance
+tier's size is ~25, its user prompt ~30, the schema and merge keys ~17, the
+edges ~6, and rendering the new block ~10.
+
+What the unedited unit raises is partly held and partly measured. Its errors
+are held by two tests in `bots/`: `TestCatalogBotsParseAndCompileClean` fails
+on any error its parse or compile raises, and
+`TestCatalogBotsBundleConsistencyClean` on any diagnostic of its manifest
+cross-check, warnings included (its allowlist is empty; it hands the
+cross-check no build version, so C251 never fires there). Some compile
+warnings are held code by code — `TestCatalogBotsNoTypingRegressions` holds
+C107, C108 and C152 at zero, `TestCatalogHasNoBracedReadOfItsOwnAssignment`
+holds C188 — but no test counts C315, and the catalogue floor ADR-132 § 6
+plans against environment reads in a shipped bot is not in the tree. Measured
+on 2026-11-03 with `iterion validate` on the `bots/review-pr` unit, on a build
+whose code is that of commit 70b5b1972 (it differed from that commit in docs
+and one test file only): no error, 32 C315 (27 route fields and 5 tool
+command bodies that read the environment) and one C251 (the build carries no
+orderable version, so the manifest's `requires.iterion` is not compared).
+That count is dated, not standing; the checklist compares the build under
+test with itself.
 
 ### Spec 3 — repair from diagnostics
 
@@ -208,19 +224,21 @@ an `expr:`, C040 ×2, and inside a loop cap, C033 — D, the plan's own example)
 the capped one exhaustiveness (C012), a condition's field (C014) and
 `{{outputs.loop.iteration}}` for `{{loop.<name>.iteration}}` (C029 ×2 — the one
 rule the skill did not state; its line landed with #1336). Every one was fixed
-in one `validate` round with no further reading. Against the targets, by the
-classing of the rows above, the two runs miss on OPPOSITE axes: the standard
-run holds S (C010, one) and misses D (C040 ×2 and C033 — three against a
-target of zero); the capped run holds D (none) and misses S (C012, C029 ×2
-and C014 — four against at most two). Errors only: the two warnings each run
-carries (C145, an S; C137, an L) are counted apart, as their rows keep them.
-The standard draft's `--strict` dry run then refused deliberately at its entry
-gate on `vars.release_tag`, the gallery's idiom, with no way to hand it a
-value — which is why `validate --var` exists (#1332). The artifacts of both
-runs sit in the operator's probe dossier and are not attached to #1110: the
-comment of the day offers them on request.
+in one `validate` round with no further reading. The rows above list the codes
+alone; the per-code table of the comment of the day on #1110 tags each code L,
+K, S or D, and the page follows the table where the comment's prose differs (the
+prose counts C029 as a D). Against the targets, by those tags, the two runs miss
+on OPPOSITE axes: the standard run holds S (C010, one) and misses D (C040 ×2 and
+C033 — three against a target of zero); the capped run holds D (none) and misses
+S (C012, C029 ×2 and C014 — four against at most two). Errors only: the two
+warnings each run carries (C145, an S; C137, an L) are counted apart, as their
+rows keep them. The standard draft's `--strict` dry run then refused
+deliberately at its entry gate on `vars.release_tag`, the gallery's idiom, with
+no way to hand it a value — which is why `validate --var` exists (#1332). The
+artifacts of both runs sit in the operator's probe dossier and are not attached
+to #1110: the comment of the day offers them on request.
 
-### 2026-09-22 — the YAML twin against the `.bot`, on the prototype (lot 5, PR B)
+### 2026-09-22 — the YAML twin against the `.bot` on the prototype (lot 5, PR B)
 
 The bar, set before the measure (lot 5's plan, § 7): the twin is worth a
 surface if a mid-size model writing it does **not worse than the `.bot`** on
