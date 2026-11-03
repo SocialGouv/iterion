@@ -75,9 +75,10 @@ func TestSweepDueRetries_AUsageWindowRowRefusedOnTheCapIsRetaggedAsASlotWait(t *
 	}
 }
 
-// The wait is bounded by the run's own max_wait, measured from the first
-// arming: a key busy for days must not hold a parked run forever. Past it
-// the run is abandoned, naming the cap.
+// The wait is bounded by the run's own max_wait, measured from the park's
+// paid arming — the whole park, a provider wall the row waited on first
+// included: a key busy for days must not hold a parked run forever. Past it
+// the run is abandoned naming the bound and the instant it is measured from.
 func TestSweepDueRetries_ACredentialSlotWaitPastMaxWaitIsAbandoned(t *testing.T) {
 	st := newFakeRetryStore()
 	st.claimWins["run-slot"] = true
@@ -98,8 +99,8 @@ func TestSweepDueRetries_ACredentialSlotWaitPastMaxWaitIsAbandoned(t *testing.T)
 	s.sweepDueRetries(context.Background(), &fakeRetryLister{refs: []mongostore.RetryDueRef{ref}}, resumer, now)
 
 	reason, ok := st.abandoned["run-slot"]
-	if !ok || !strings.Contains(reason, "max_wait") {
-		t.Fatalf("a slot wait past max_wait was not abandoned naming the bound: %q (%v)", reason, ok)
+	if !ok || !strings.Contains(reason, "max_wait") || !strings.Contains(reason, scheduled.Format(time.RFC3339)) {
+		t.Fatalf("a slot wait past max_wait was not abandoned naming the bound and the arming it is measured from: %q (%v)", reason, ok)
 	}
 	if _, ok := st.rearmed["run-slot"]; ok {
 		t.Fatalf("a slot wait past max_wait was deferred again: %v", st.rearmed["run-slot"])

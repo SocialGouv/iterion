@@ -584,10 +584,16 @@ func (s *Server) infof(format string, args ...any) {
 // (cloudpublisher.ErrCredentialAtCapacity) to its next ask, one slot probe
 // interval out, without spending an attempt: the attempt budget prices work
 // that reaches the provider, and a refused reservation reached nothing. The
-// wait is bounded by the run's own max_wait, measured from the first arming
-// (RunRetryState.ScheduledAt, which DelayRunRetry preserves): past it the run
-// is abandoned with the key named, so a key busy for days does not hold a
-// parked run forever.
+// wait is bounded by the run's own max_wait, measured from the park's PAID
+// arming (RunRetryState.ScheduledAt): max_wait bounds the whole park, so a
+// usage-window row whose resume found its key full keeps the wall's anchor
+// and the slot wait spends what is left of the same horizon — the rule the
+// circuit deferral already follows, and the one ScheduledAt exists for. Past
+// it the run is abandoned naming the bound and its anchor, so a key busy for
+// days does not hold a parked run forever. A row armed before the anchor
+// existed has none until its first deferral pins it to the retry_after the
+// scan read (DelayRunRetry), which is the anchor computed here for that
+// deferral, so the horizon never moves with the row.
 //
 // The deferral re-tags the row as a slot wait (RetryReasonCredSlot): a run
 // armed for a usage window whose resume found its key full waits for a slot
@@ -610,7 +616,7 @@ func (s *Server) deferCredSlotRetry(ctx context.Context, retryStore store.RunRet
 		anchor = run.RetryState.ScheduledAt.UTC()
 	}
 	if !anchor.IsZero() && !now.Before(anchor.Add(pol.MaxWaitDuration())) {
-		s.abandonRetry(ctx, retryStore, ref, fmt.Sprintf("auto-retry abandoned: the run waited %s (max_wait) for a credential slot that never freed — %v", pol.MaxWaitDuration(), cause))
+		s.abandonRetry(ctx, retryStore, ref, fmt.Sprintf("auto-retry abandoned: the run's max_wait (%s, measured from its park at %s) passed while it still waited for a credential slot — %v", pol.MaxWaitDuration(), anchor.Format(time.RFC3339), cause))
 		return
 	}
 	at := now.Add(cloudpublisher.CredSlotProbeInterval)
