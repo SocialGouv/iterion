@@ -2,46 +2,29 @@ package runner
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	dslast "github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-const (
-	cloneCredTestToken = "ghs_live_installation_token"
-	cloneCredTestRepo  = "https://github.com/iterion-sandbox/appy-demo.git"
-)
-
-// clonedWorkspace reproduces prepareRepoWorkspace's own shape at the moment
-// the grant gate runs: a clone whose origin carried the token, with the
-// credential store installed from it.
-func clonedWorkspace(t *testing.T, r *Runner) string {
-	t.Helper()
-	ctx := context.Background()
-	dir := t.TempDir()
-	if err := r.runGit(ctx, dir, "", "init", "-q"); err != nil {
-		t.Fatalf("git init: %v", err)
-	}
-	if err := r.runGit(ctx, dir, "", "remote", "add", "origin", injectGitToken(cloneCredTestRepo, cloneCredTestToken)); err != nil {
-		t.Fatalf("add tokenized remote: %v", err)
-	}
-	if err := r.installGitCredentialStore(ctx, dir, cloneCredTestRepo, cloneCredTestToken); err != nil {
-		t.Fatalf("install credential store: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, ".git", gitCredentialFile)); err != nil {
-		t.Fatalf("fixture has no credential store to judge: %v", err)
-	}
-	return dir
-}
+const cloneCredTestToken = "ghs_live_installation_token"
 
 func cloneCredCtx(name string) context.Context {
 	return secrets.WithCredentials(context.Background(), secrets.Credentials{
@@ -53,33 +36,14 @@ func cloneCredCtx(name string) context.Context {
 // run's forge token into `<clone>/.git/iterion-credentials` — a file the
 // agent can read and the pod copy keeps — whatever the secret's `sinks:`
 // said. A declaration that withholds `file` asks for a credential this
-// channel cannot serve, so the run is refused before a node runs, typed,
-// and the credential is taken back from BOTH locations.
+// channel cannot serve, so the run is refused, typed, with a verdict that
+// names the secret, its grants and both remedies.
 func TestTheCloneCredentialRefusesASecretThatWithholdsTheFileSink(t *testing.T) {
-	r := &Runner{cfg: Config{Logger: iterlog.Nop()}}
-	dir := clonedWorkspace(t, r)
-	// The pod's copy of the clone exists on a copy-based driver: the
-	// teardown must reach it too, never half the credential.
-	fake := newWriteThroughRun()
-	r.registerSandboxRun("run-1", fake)
-	defer r.unregisterSandboxRun("run-1")
-
-	// A store write torn between its two steps leaves the credential line
-	// in the atomic-replace sibling: the teardown owes that location too.
-	tornSibling := filepath.Join(dir, ".git", gitCredentialFile+".tmp")
-	line, err := renderGitCredentialLine(cloneCredTestRepo, cloneCredTestToken)
-	if err != nil {
-		t.Fatalf("render the credential line: %v", err)
-	}
-	if err := os.WriteFile(tornSibling, []byte(line), 0o600); err != nil {
-		t.Fatalf("plant the torn-write sibling: %v", err)
-	}
-
 	wf := &ir.Workflow{Secrets: map[string]*ir.Secret{
 		"forge_token": {Name: "forge_token", Sinks: []string{secretsink.Prompt, secretsink.Egress}},
 	}}
 
-	err = r.refuseUngrantedCloneCredential(cloneCredCtx("forge_token"), wf, "run-1", dir)
+	err := refuseUngrantedCloneCredential(cloneCredCtx("forge_token"), wf, "run-1")
 	if err == nil {
 		t.Fatal("a forge_token granting [prompt, egress] must refuse the run: the clone credential is a file the workspace holds")
 	}
@@ -136,67 +100,15 @@ func TestTheCloneCredentialRefusesASecretThatWithholdsTheFileSink(t *testing.T) 
 		t.Error("the refusal carries the token itself")
 	}
 
-	// The clone keeps no credential: a refused run's workspace survives in
-	// the pod's workdir (executeRun arms its removal only once the clone is
-	// accepted), so the file would hold a live token for the pod's life.
-	if _, err := os.Stat(filepath.Join(dir, ".git", gitCredentialFile)); !os.IsNotExist(err) {
-		t.Errorf("the credential store survived the refusal (stat err = %v)", err)
-	}
-	if _, err := os.Stat(tornSibling); !os.IsNotExist(err) {
-		t.Errorf("the torn-write sibling survived the refusal (stat err = %v)", err)
-	}
-	// … and nowhere else in the clone either: .git/config (the tokenized
-	// origin the install detached), and any location a future writer adds.
-	if holders := filesHoldingToken(t, dir, cloneCredTestToken); len(holders) != 0 {
-		t.Errorf("files under the refused clone still hold the token: %v", holders)
-	}
-	// … and neither does the pod's copy: the seam writes, so the erase is
-	// an empty store, which resolves no credential.
-	copied, seen := fake.workspaceFiles[".git/"+gitCredentialFile]
-	if !seen {
-		t.Fatalf("the sandbox workspace copy was never touched: %+v", fake.workspaceFiles)
-	}
-	if len(copied) != 0 {
-		t.Errorf("the pod's credential copy = %q, want an empty store", copied)
-	}
-}
-
-// filesHoldingToken walks the clone and names every file whose bytes
-// contain token — the assertion that outlives the list of locations the
-// remover knows today.
-func filesHoldingToken(t *testing.T, root, token string) []string {
-	t.Helper()
-	var holders []string
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		b, rerr := os.ReadFile(path)
-		if rerr != nil {
-			return rerr
-		}
-		if strings.Contains(string(b), token) {
-			rel, _ := filepath.Rel(root, path)
-			holders = append(holders, rel)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk the clone: %v", err)
-	}
-	return holders
 }
 
 // The gate fails closed: a run that holds a clone credential and reaches
 // the gate with no compiled workflow has no grants to read. That shape is a
 // caller's programming error, never a legitimate run, and the answer is a
-// loud refusal with the credential taken back — not a silent pass that
-// keeps a credential whose declaration nobody read.
+// loud refusal — not a silent pass that writes a credential whose
+// declaration nobody read.
 func TestTheCloneCredentialIsRefusedWhenThereIsNoWorkflowToReadItsGrantsFrom(t *testing.T) {
-	r := &Runner{cfg: Config{Logger: iterlog.Nop()}}
-	dir := clonedWorkspace(t, r)
-
-	err := r.refuseUngrantedCloneCredential(cloneCredCtx("forge_token"), nil, "run-1", dir)
+	err := refuseUngrantedCloneCredential(cloneCredCtx("forge_token"), nil, "run-1")
 	if err == nil {
 		t.Fatal("a clone credential with no workflow to read its grants from must refuse the run, not pass it")
 	}
@@ -208,16 +120,12 @@ func TestTheCloneCredentialIsRefusedWhenThereIsNoWorkflowToReadItsGrantsFrom(t *
 	if strings.Contains(err.Error(), cloneCredTestToken) {
 		t.Error("the refusal carries the token itself")
 	}
-	if holders := filesHoldingToken(t, dir, cloneCredTestToken); len(holders) != 0 {
-		t.Errorf("files under the refused clone still hold the token: %v", holders)
-	}
 }
 
 // The other side of the gate: a declaration that grants `file`, one that
 // declares no `sinks:` at all (every sink — today's behaviour), a token
 // from a secret the workflow never declared, and a withheld declaration on
-// a secret this run did NOT clone with, all proceed with the credential
-// exactly where the runner put it.
+// a secret this run did NOT clone with, all proceed to the clone.
 func TestTheCloneCredentialIsKeptWhenFileIsGranted(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -254,34 +162,17 @@ func TestTheCloneCredentialIsKeptWhenFileIsGranted(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := &Runner{cfg: Config{Logger: iterlog.Nop()}}
-			dir := clonedWorkspace(t, r)
-			fake := newWriteThroughRun()
-			r.registerSandboxRun("run-1", fake)
-			defer r.unregisterSandboxRun("run-1")
-
-			if err := r.refuseUngrantedCloneCredential(cloneCredCtx(tc.cloned), &ir.Workflow{Secrets: tc.secrets}, "run-1", dir); err != nil {
+			if err := refuseUngrantedCloneCredential(cloneCredCtx(tc.cloned), &ir.Workflow{Secrets: tc.secrets}, "run-1"); err != nil {
 				t.Fatalf("the run must proceed, got %v", err)
-			}
-			got, rerr := os.ReadFile(filepath.Join(dir, ".git", gitCredentialFile))
-			if rerr != nil {
-				t.Fatalf("the credential store must survive: %v", rerr)
-			}
-			if want := "https://oauth2:" + cloneCredTestToken + "@github.com\n"; string(got) != want {
-				t.Errorf("credential line = %q, want %q", got, want)
-			}
-			if len(fake.workspaceFiles) != 0 {
-				t.Errorf("the pod's copy was rewritten on an accepted run: %+v", fake.workspaceFiles)
 			}
 		})
 	}
 	// A run with no forge token at all reads no declaration and refuses
 	// nothing (the clone ran credential-less).
-	r := &Runner{cfg: Config{Logger: iterlog.Nop()}}
 	wf := &ir.Workflow{Secrets: map[string]*ir.Secret{
 		"forge_token": {Name: "forge_token", Sinks: []string{secretsink.Prompt, secretsink.Egress}},
 	}}
-	if err := r.refuseUngrantedCloneCredential(context.Background(), wf, "run-1", t.TempDir()); err != nil {
+	if err := refuseUngrantedCloneCredential(context.Background(), wf, "run-1"); err != nil {
 		t.Fatalf("a run carrying no clone credential must proceed, got %v", err)
 	}
 }
@@ -377,4 +268,251 @@ func TestTheCloneCredentialRotationFollowsTheSecretTheCloneUsed(t *testing.T) {
 	if got := r.gitCredentialSecretRef(withCreds(nil, map[string]string{"forge_token": "id-forge"})); got != "" {
 		t.Errorf("rotation ref = %q, want \"\" for a run with no clone credential", got)
 	}
+}
+
+// standInForge stands in for the forge a repo-targeted run clones from, on
+// both transports the runner clones over. https reaches a loopback listener
+// that counts the connections it is offered and closes each one, so a clone
+// that reaches it fails fast, after being counted. ssh reaches a stand-in
+// ssh program (GIT_SSH_COMMAND) that records each invocation and serves the test's
+// own repository through `git upload-pack`, so an ssh clone succeeds.
+type standInForge struct {
+	ln     net.Listener
+	dials  atomic.Int64
+	sshLog string
+}
+
+func newStandInForge(t *testing.T) *standInForge {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	tmp := t.TempDir()
+	origin := filepath.Join(tmp, "origin.git")
+	gitOut(t, tmp, "init", "--quiet", "--bare", "--initial-branch=main", origin)
+	seed := filepath.Join(tmp, "seed")
+	gitOut(t, tmp, "clone", "--quiet", origin, seed)
+	gitOut(t, seed, "config", "user.email", "t@test.invalid")
+	gitOut(t, seed, "config", "user.name", "t")
+	gitOut(t, seed, "commit", "--quiet", "--allow-empty", "-m", "baseline")
+	gitOut(t, seed, "push", "--quiet", "origin", "HEAD:main")
+
+	f := &standInForge{sshLog: filepath.Join(tmp, "ssh.log")}
+	ssh := filepath.Join(tmp, "ssh")
+	script := fmt.Sprintf("#!/bin/sh\necho \"$*\" >> %s\nexec git upload-pack %s\n", strconv.Quote(f.sshLog), strconv.Quote(origin))
+	if err := os.WriteFile(ssh, []byte(script), 0o700); err != nil {
+		t.Fatalf("write the stand-in ssh: %v", err)
+	}
+	// GIT_SSH_COMMAND outranks GIT_SSH, so the stand-in takes that one; the
+	// variant keeps git from probing the program with `-G`.
+	t.Setenv("GIT_SSH_COMMAND", "'"+ssh+"'")
+	t.Setenv("GIT_SSH_VARIANT", "ssh")
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the stand-in forge: %v", err)
+	}
+	f.ln = ln
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			f.dials.Add(1)
+			_ = c.Close()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		<-done
+	})
+	return f
+}
+
+// url is the forge's clone URL over transport ("https" or "ssh").
+func (f *standInForge) url(transport string) string {
+	if transport == "ssh" {
+		return fmt.Sprintf("ssh://git@%s/o/r.git", f.ln.Addr())
+	}
+	return fmt.Sprintf("https://%s/o/r.git", f.ln.Addr())
+}
+
+// attempts is every clone or fetch the forge saw, on either transport.
+func (f *standInForge) attempts(t *testing.T) int64 {
+	t.Helper()
+	n := f.dials.Load()
+	b, err := os.ReadFile(f.sshLog)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read the stand-in ssh log: %v", err)
+	}
+	return n + int64(strings.Count(string(b), "\n"))
+}
+
+// forgeRunner is a runner that can reach the stand-in forge: the
+// private-forge escape hatch lets the transport checks and the clone-guard
+// proxy reach a loopback address, and the SSRF pin writes a hosts file this
+// test owns. It returns the runner's work dir, which holds every workspace
+// the runner prepares.
+func forgeRunner(t *testing.T) (*Runner, string) {
+	t.Helper()
+	t.Setenv("ITERION_RUNNER_CLONE_ALLOW_PRIVATE", "1")
+	t.Setenv("ITERION_SANDBOX_DEFAULT", "none")
+	hosts := filepath.Join(t.TempDir(), "hosts")
+	if err := os.WriteFile(hosts, []byte("127.0.0.1 localhost\n"), 0o600); err != nil {
+		t.Fatalf("write the test's hosts file: %v", err)
+	}
+	prevHosts := runnerHostsFile
+	runnerHostsFile = hosts
+	t.Cleanup(func() { runnerHostsFile = prevHosts })
+
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	workDir := t.TempDir()
+	return &Runner{cfg: Config{Store: st, WorkDir: workDir, Logger: iterlog.Nop()}}, workDir
+}
+
+// cloneCredWorkflow declares the run's forge_token with sinks (none: every
+// sink).
+func cloneCredWorkflow(sinks ...string) *ir.Workflow {
+	return &ir.Workflow{Secrets: map[string]*ir.Secret{
+		"forge_token": {Name: "forge_token", Sinks: sinks},
+	}}
+}
+
+const cloneGateRunID = "run-clone-gate"
+
+// The gate sits BEFORE the clone, on every transport: a run whose forge
+// secret withholds the `file` sink is refused with nothing spent on it — no
+// clone attempt, no workspace directory, so the token reaches neither the
+// clone URL git persists in .git/config nor the credential store. Driven
+// through prepareRepoWorkspace itself; each granted control proves the
+// stand-in forge sees a clone when one happens on that transport, so the
+// refused case's zero is a measurement, not a blind spot.
+func TestAWithheldCloneCredentialIsRefusedBeforeTheClone(t *testing.T) {
+	for _, transport := range []string{"https", "ssh"} {
+		t.Run(transport+"/withheld: refused with no clone spent", func(t *testing.T) {
+			forge := newStandInForge(t)
+			r, workDir := forgeRunner(t)
+			msg := &queue.RunMessage{RunID: cloneGateRunID, RepoURL: forge.url(transport), RepoSHA: "main"}
+			_, _, err := r.prepareRepoWorkspace(cloneCredCtx("forge_token"), cloneCredWorkflow(secretsink.Prompt, secretsink.Egress), msg)
+			if n := forge.attempts(t); n != 0 {
+				t.Errorf("the refused run reached the forge %d time(s) over %s: the grant gate runs after the clone", n, transport)
+			}
+			entries, rerr := os.ReadDir(workDir)
+			if rerr != nil {
+				t.Fatalf("read the work dir: %v", rerr)
+			}
+			if len(entries) != 0 {
+				t.Errorf("the refused run spent a workspace (%s holds %d entr(ies), first %q): the grant gate runs after the workspace is prepared", workDir, len(entries), entries[0].Name())
+			}
+			if _, ok := runtime.IsSecretGrantUnservable(err); !ok {
+				t.Fatalf("prepareRepoWorkspace = %v, want the typed grant refusal (cause runtime.SecretGrantUnservableError) the delivery path reads with errors.As", err)
+			}
+			if code := runtimeCodeOf(err); code != runtime.ErrCodeCapabilityUnsupported {
+				t.Errorf("runtime code = %q, want %q", code, runtime.ErrCodeCapabilityUnsupported)
+			}
+		})
+		t.Run(transport+"/granted: the clone reaches the forge", func(t *testing.T) {
+			forge := newStandInForge(t)
+			r, workDir := forgeRunner(t)
+			msg := &queue.RunMessage{RunID: cloneGateRunID, RepoURL: forge.url(transport), RepoSHA: "main"}
+			_, _, err := r.prepareRepoWorkspace(cloneCredCtx("forge_token"), cloneCredWorkflow(secretsink.Prompt, secretsink.File), msg)
+			if _, ok := runtime.IsSecretGrantUnservable(err); ok {
+				t.Fatalf("a forge_token granting `file` was refused by the grant gate: %v", err)
+			}
+			if n := forge.attempts(t); n == 0 {
+				t.Errorf("the granted run never reached the stand-in forge over %s (err = %v): the refused case's zero proves nothing", transport, err)
+			}
+			if _, serr := os.Stat(filepath.Join(workDir, "repos")); serr != nil {
+				t.Errorf("the granted run prepared no workspace parent under %s: %v", workDir, serr)
+			}
+		})
+	}
+}
+
+// The refusal reaches the delivery path typed: executeRun hands the gate's
+// verdict on with its cause reachable, so the delivery classifies it as a
+// deterministic failure and acks it — a redelivery would reach the same
+// bundle and the same verdict, and spend a pod to be told so. Driven
+// through executeRun from the run's compiled IR, the workflow the run
+// executes.
+func TestAWithheldCloneCredentialIsAckedByTheDeliveryNotRedelivered(t *testing.T) {
+	forge := newStandInForge(t)
+	r, workDir := forgeRunner(t)
+	pr := parsertest.Parse("main.bot", "secrets:\n  forge_token:\n    sinks: [prompt, egress]\n\nworkflow main:\n  entry: done\n")
+	body, err := dslast.MarshalFile(pr.File)
+	if err != nil {
+		t.Fatalf("marshal the workflow: %v", err)
+	}
+	ctx := secrets.WithCredentials(store.WithIdentity(context.Background(), "team-1", "u1"), secrets.Credentials{
+		Generic: map[string]string{"forge_token": cloneCredTestToken},
+	})
+	msg := &queue.RunMessage{RunID: cloneGateRunID, TenantID: "team-1", OwnerID: "u1", WorkflowName: "main", IRCompiled: body,
+		RepoURL: forge.url("https"), RepoSHA: "main"}
+	execErr := r.executeRun(ctx, msg, nil, nil)
+	if _, ok := runtime.IsSecretGrantUnservable(execErr); !ok {
+		t.Fatalf("executeRun = %v, want the typed grant refusal: its cause no longer reaches the delivery path", execErr)
+	}
+	if code := refusalCode(execErr); code != store.FailureCapabilityUnsupported {
+		t.Errorf("refusalCode = %q, want %q: the run's timeline would name no code", code, store.FailureCapabilityUnsupported)
+	}
+	if got := classifyExecResult(execErr, msg.RunID); got.action != actionAck || got.finalStatus != "deterministic_failure" {
+		t.Errorf("the delivery classifies the refusal as %s/%v, want deterministic_failure/ack: it would be redelivered", got.finalStatus, got.action)
+	}
+	if n := forge.attempts(t); n != 0 {
+		t.Errorf("the refused run reached the forge %d time(s)", n)
+	}
+	if _, serr := os.Stat(filepath.Join(workDir, "repos")); !os.IsNotExist(serr) {
+		t.Errorf("the refused run prepared a workspace under %s (stat: %v)", workDir, serr)
+	}
+}
+
+// Only an accepted workspace keeps the run's clone. A tree an earlier
+// attempt left on this pod is wiped before the verdict, so a refusal does
+// not leave it holding the credential it was cloned with; and a preparation
+// that fails after the clone removes the clone it made.
+func TestAFailedPreparationLeavesNoCloneBehind(t *testing.T) {
+	t.Run("a refused run wipes the tree an earlier attempt left", func(t *testing.T) {
+		forge := newStandInForge(t)
+		r, workDir := forgeRunner(t)
+		stale := filepath.Join(workDir, "repos", cloneGateRunID)
+		if err := os.MkdirAll(filepath.Join(stale, ".git"), 0o755); err != nil {
+			t.Fatalf("stage the earlier attempt's tree: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(stale, ".git", gitCredentialFile), []byte("https://oauth2:"+cloneCredTestToken+"@forge.invalid\n"), 0o600); err != nil {
+			t.Fatalf("stage the earlier attempt's credential store: %v", err)
+		}
+		msg := &queue.RunMessage{RunID: cloneGateRunID, RepoURL: forge.url("https"), RepoSHA: "main"}
+		_, _, err := r.prepareRepoWorkspace(cloneCredCtx("forge_token"), cloneCredWorkflow(secretsink.Prompt, secretsink.Egress), msg)
+		if _, ok := runtime.IsSecretGrantUnservable(err); !ok {
+			t.Fatalf("prepareRepoWorkspace = %v, want the typed grant refusal", err)
+		}
+		if _, serr := os.Stat(stale); !os.IsNotExist(serr) {
+			t.Errorf("the refused run left the earlier attempt's tree %s in place (stat: %v): its credential store keeps the token", stale, serr)
+		}
+	})
+	t.Run("a preparation that fails after the clone removes it", func(t *testing.T) {
+		forge := newStandInForge(t)
+		r, workDir := forgeRunner(t)
+		// The clone and the fetch succeed over ssh; the admitted commit is
+		// one the forge never served, so the preparation fails after both.
+		msg := &queue.RunMessage{RunID: cloneGateRunID, RepoURL: forge.url("ssh"), RepoSHA: "main",
+			RepoSHAExpected: strings.Repeat("de", 20)}
+		_, _, err := r.prepareRepoWorkspace(cloneCredCtx("forge_token"), cloneCredWorkflow(), msg)
+		if err == nil || !strings.Contains(err.Error(), "admitted for") {
+			t.Fatalf("prepareRepoWorkspace = %v, want the fetched-commit refusal that follows the clone", err)
+		}
+		if n := forge.attempts(t); n < 2 {
+			t.Fatalf("the stand-in forge served %d transfer(s), want the clone and the fetch: the failure is not after the clone", n)
+		}
+		clone := filepath.Join(workDir, "repos", cloneGateRunID)
+		if _, serr := os.Stat(clone); !os.IsNotExist(serr) {
+			t.Errorf("the failed preparation left its clone %s behind (stat: %v)", clone, serr)
+		}
+	})
 }

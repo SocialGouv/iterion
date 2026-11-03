@@ -230,9 +230,9 @@ would have to opt out by construction, which annuls the rule.
   / `github_token` the runner writes to the workspace's git credential
   store) is the runner's channel — the follow-up (iterion#2845) binds it to
   the `file` sink it spends: a declaration that withholds `file` fails the
-  run typed before the first node and the credential is taken back from the
-  clone's store (no sandbox is up yet, so no pod copy exists to erase; the
-  remover covers a live copy-based sandbox's copy too); and the model boundary
+  run typed before the clone, so a refused run spends no clone and its token
+  is never written to the workspace, and a preparation that fails after the
+  clone removes it; and the model boundary
   leaves the ambient name heuristic's values (`GIT_AUTHOR_EMAIL` matches
   `AUTH`) alone, since a placeholder in a prompt there breaks the commit the
   agent was asked for.

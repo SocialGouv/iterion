@@ -509,12 +509,14 @@ rewritten on every rotation) so the agent's late `git push` re-reads a live
 one. That store is a file the workspace holds, so the clone credential
 spends the `file` sink: a declaration that withholds it fails the run,
 typed (`CAPABILITY_UNSUPPORTED`, cause `runtime.SecretGrantUnservableError`)
-before the first node, naming the secret and both remedies — grant it
-`file`, or declare the withheld value under a name the runner never clones
-with. The refusal takes the credential back from the clone's store — its
-only location at that point: the run's sandbox has not started, so no pod
-copy exists yet (the remover covers a live copy-based sandbox's copy too, for
-any later caller) — and a refused run leaves no token in the tree. The
+before the clone, naming the secret and both remedies — grant it `file`, or
+declare the withheld value under a name the runner never clones with. The
+verdict reads the compiled workflow and the sealed bundle, both in hand
+before any workspace exists, so a refused run spends no clone, no workspace
+and no forge connection, and its token is never written anywhere. Only an
+accepted workspace keeps its clone: every other end of the preparation — a
+refusal, or a failure after the clone — removes the run's clone directory,
+so no failed run leaves a token-bearing tree in the runner's workdir. The
 secret the rotation refreshes is the one the clone authenticated with, never
 another name of the precedence. A secret with no `sinks:` grants every sink
 and is never refused here.

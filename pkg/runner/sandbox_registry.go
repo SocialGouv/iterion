@@ -137,45 +137,25 @@ func (r *Runner) sandboxRunObserver(ctx context.Context, o sandboxObserverOpts) 
 // only retry on the next server-side rotation, ~1h away) — retrying the
 // same value next tick is the recovery.
 func (r *Runner) writeThroughSandboxGitCredential(runID, repoURL, token string) error {
+	run := r.sandboxRunFor(runID)
+	if run == nil {
+		return nil
+	}
+	refresher, ok := run.(sandbox.WorkspaceFileRefresher)
+	if !ok {
+		return nil
+	}
 	line, err := renderGitCredentialLine(repoURL, token)
 	if err != nil {
 		return fmt.Errorf("sandbox git-credential write-through: %w", err)
 	}
-	wrote, err := r.refreshSandboxGitCredential(runID, []byte(line))
-	if err != nil {
-		return err
-	}
-	if wrote {
-		r.cfg.Logger.Info("runner: rotated git credential written through into the sandbox workspace")
-	}
-	return nil
-}
-
-// refreshSandboxGitCredential replaces the pod workspace's copy of the
-// clone credential store with payload, and reports whether a copy existed
-// to replace. The one write-through of that file: the rotation hands it a
-// fresh credential line, the grant refusal hands it nothing
-// (removeCloneCredential) — the seam writes, it never deletes, and an
-// empty store resolves no credential.
-//
-// A run with no live sandbox, or one whose driver shares the host inode
-// (docker's bind mount) or IS the host (the noop passthrough), is a clean
-// (false, nil).
-func (r *Runner) refreshSandboxGitCredential(runID string, payload []byte) (bool, error) {
-	run := r.sandboxRunFor(runID)
-	if run == nil {
-		return false, nil
-	}
-	refresher, ok := run.(sandbox.WorkspaceFileRefresher)
-	if !ok {
-		return false, nil
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), sandboxWriteThroughTimeout)
 	defer cancel()
-	if err := refresher.RefreshWorkspaceFile(ctx, ".git/"+gitCredentialFile, payload); err != nil {
-		return false, fmt.Errorf("sandbox git-credential write-through: %w", err)
+	if err := refresher.RefreshWorkspaceFile(ctx, ".git/"+gitCredentialFile, []byte(line)); err != nil {
+		return fmt.Errorf("sandbox git-credential write-through: %w", err)
 	}
-	return true, nil
+	r.cfg.Logger.Info("runner: rotated git credential written through into the sandbox workspace")
+	return nil
 }
 
 // propagateForfaitToSandbox pushes the just-refreshed Claude forfait
