@@ -21,6 +21,9 @@ func TestLive_Feat_Budget(t *testing.T) {
 		t.Skip("skipping live test in short mode")
 	}
 	loadDotEnv(t)
+	// The fixture's own $0.0001 cap is the subject: the operator's ceiling
+	// would replace it at the chokepoint and turn a healthy target red.
+	refuseCapOnBudgetSubject(t)
 	requireOpenAI(t)
 
 	workspaceDir, err := os.MkdirTemp("", "iterion-feat-budget-*")

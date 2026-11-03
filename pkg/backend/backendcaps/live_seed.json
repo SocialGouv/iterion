@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "rows": [
     {
       "target": "test:live",
@@ -211,8 +211,9 @@
     },
     {
       "target": "test:live:feat:rtk",
-      "last_run": "0001-01-01T00:00:00Z",
-      "verdict": "never"
+      "last_run": "2026-11-03T04:27:23.588448614Z",
+      "verdict": "pass",
+      "ref": "dfbba1daccaf"
     },
     {
       "target": "test:live:feat:sandbox-image-env",
@@ -224,7 +225,9 @@
     {
       "target": "test:live:feat:sandbox-net",
       "last_run": "0001-01-01T00:00:00Z",
-      "verdict": "never"
+      "verdict": "skipped",
+      "skipped_at": "2026-11-03T04:28:28.828849065Z",
+      "skip_reason": "docker image \"ghcr.io/socialgouv/iterion-sandbox-full:edge\" not present locally — skipping (build/tag it first)"
     },
     {
       "target": "test:live:feat:schedule",
@@ -263,8 +266,9 @@
     },
     {
       "target": "test:live:feat:worktree",
-      "last_run": "0001-01-01T00:00:00Z",
-      "verdict": "never"
+      "last_run": "2026-11-03T04:22:32.326740047Z",
+      "verdict": "pass",
+      "ref": "dfbba1daccaf"
     },
     {
       "target": "test:live:feats:all",
@@ -295,7 +299,9 @@
       "target": "test:live:openai-compatible",
       "last_run": "2026-10-28T20:22:47.615228641Z",
       "verdict": "fail",
-      "ref": "05c188cd5d9a"
+      "ref": "05c188cd5d9a",
+      "skipped_at": "2026-11-03T04:33:29.533562582Z",
+      "skip_reason": "OPENAI_COMPATIBLE_BASE_URL is not set — no gateway to prove against | docker image \"ghcr.io/socialgouv/iterion-sandbox-full:edge\" not present locally — skipping (build/tag it first)"
     },
     {
       "target": "test:live:review",

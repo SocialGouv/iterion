@@ -1,0 +1,20 @@
+## Fixture of the launch-knob chokepoint's free witness
+## (TestEveryLaunchKnobReachesEveryLiveTargetShape, e2e/live_knobs_reach_test.go).
+## One tool node and no LLM node: the run costs nothing and reaches no
+## network, while the engine still builds the run's budget from the workflow
+## it was handed — so the persisted run says which ceiling governed. The
+## shipped cap (1) differs from the probe's knob (7) on purpose.
+
+tool probe:
+  ## A shell recipe (a bare word would be read as a registered tool name).
+  command: "echo knob-probe"
+
+workflow live_knob_probe:
+  worktree: none
+  sandbox: none
+  entry: probe
+
+  budget:
+    max_cost_usd: 1
+
+  probe -> done

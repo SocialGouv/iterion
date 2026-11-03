@@ -298,14 +298,14 @@ func plantingBaseImage(t *testing.T) string {
 		"--filter", "reference=ghcr.io/socialgouv/iterion-sandbox-*",
 		"--format", "{{.Repository}}:{{.Tag}}").Output()
 	if err != nil {
-		t.Skipf("docker images: %v — skipping (the arm needs one local image to derive from)", err)
+		skipLive(t, "docker images: %v — skipping (the arm needs one local image to derive from)", err)
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		if ref := strings.TrimSpace(line); ref != "" && !strings.HasSuffix(ref, ":<none>") {
 			return ref
 		}
 	}
-	t.Skipf("no local ghcr.io/socialgouv/iterion-sandbox-* image — pull one, or name any local image in %s", envImageEnvBase)
+	skipLive(t, "no local ghcr.io/socialgouv/iterion-sandbox-* image — pull one, or name any local image in %s", envImageEnvBase)
 	return ""
 }
 

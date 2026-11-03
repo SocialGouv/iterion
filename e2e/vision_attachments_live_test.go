@@ -41,22 +41,34 @@ func TestLive_VisionAttachments(t *testing.T) {
 		t.Skip("skipping live test in short mode")
 	}
 	loadDotEnv(t)
+	tracker := liveledger.Track(t)
 	// Either provider is enough for this test — it validates the
 	// attachments pipeline (Run.Attachments populated, templates
 	// resolve, bytes flow into the prompt). The Anthropic vision
-	// path is exercised by separate tests.
-	if os.Getenv("ANTHROPIC_API_KEY") == "" && os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("ANTHROPIC_API_KEY or OPENAI_API_KEY is required")
+	// path is exercised by separate tests. The guard goes through the
+	// chokepoint: it asks the shared override helper (a re-targeted run
+	// reaches neither vendor, so neither key is on its path) and refuses
+	// through skipLive, which records WHY in the committed ledger.
+	if os.Getenv("ANTHROPIC_API_KEY") == "" && os.Getenv("OPENAI_API_KEY") == "" &&
+		!overrideCoversCredential(t, "ANTHROPIC_API_KEY") &&
+		!overrideCoversCredential(t, "OPENAI_API_KEY") {
+		skipLive(t, "neither ANTHROPIC_API_KEY nor OPENAI_API_KEY is set — the attachments pipeline needs one vision-capable vendor credential")
 	}
-	liveledger.Track(t)
 	// Pick a model based on which key is available so the test runs
 	// against either provider without manual configuration.
 	if os.Getenv("ITERION_VISION_MODEL") == "" {
-		switch {
+		switch ov := liveOverride(t); {
 		case os.Getenv("ANTHROPIC_API_KEY") != "":
 			t.Setenv("ITERION_VISION_MODEL", "anthropic/claude-haiku-4-5-20251001")
 		case os.Getenv("OPENAI_API_KEY") != "":
 			t.Setenv("ITERION_VISION_MODEL", "openai/gpt-5.4-mini")
+		case ov.Model != "":
+			// A re-targeted run reaches neither vendor, so neither key is
+			// set. The executor receives the "*" rule through
+			// newLiveClawExecutor, which outranks this value at execution;
+			// it is here so the fixture's `${ITERION_VISION_MODEL}` resolves
+			// at compile time instead of to an empty spec.
+			t.Setenv("ITERION_VISION_MODEL", ov.Model)
 		}
 	}
 
@@ -93,7 +105,7 @@ func TestLive_VisionAttachments(t *testing.T) {
 	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger, nil, nil)
 	backendReg := delegate.DefaultRegistry(logger)
 	backendReg.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{}))
-	executor := model.NewClawExecutor(reg, wf,
+	executor := newLiveClawExecutor(t, reg, wf,
 		model.WithBackendRegistry(backendReg),
 		model.WithToolRegistry(tool.NewRegistry()),
 		model.WithWorkDir(workspaceDir),
@@ -117,7 +129,7 @@ func TestLive_VisionAttachments(t *testing.T) {
 		}, bytes.NewReader(pngBytes))
 	}
 
-	eng := runtime.New(wf, s, executor,
+	eng := newLiveEngine(t, wf, s, executor,
 		runtime.WithAttachmentPromote(promote),
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -127,6 +139,7 @@ func TestLive_VisionAttachments(t *testing.T) {
 	start := time.Now()
 	runErr := eng.Run(ctx, runID, nil)
 	t.Logf("Run completed in %s", time.Since(start).Round(time.Second))
+	feedLedgerCost(t, tracker, s, runID)
 
 	if runErr != nil {
 		t.Fatalf("Unexpected run error: %v", runErr)

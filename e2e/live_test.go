@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
@@ -27,7 +27,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/benchmark"
 	"github.com/SocialGouv/iterion/pkg/cli"
-	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/liveledger"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -40,7 +39,16 @@ import (
 
 // loadDotEnv reads a .env file from the project root and sets each KEY=VALUE
 // pair via t.Setenv (automatically cleaned up after the test). Silently
-// returns if the file does not exist.
+// returns if the file does not exist. An operator-grade ITERION_ name is
+// refused with a log line, under the rule the engine's own dotenv loaders
+// apply to this same file (internal/envtrust): the harness's launch knobs
+// are in that inventory, and a planted ITERION_LIVE_MODEL would wave every
+// credential guard, move the spend ceiling and name the funder of a
+// committed receipt. TestTheDotEnvLoaderAsksTheOperatorInventory
+// (pkg/liveledger) holds this. The refusal covers a direct `go test`: under
+// `task`, the root `dotenv:` has planted the file before this loader runs,
+// which is why liveOverride also refuses to run while the file assigns a
+// launch knob at all.
 func loadDotEnv(t *testing.T) {
 	t.Helper()
 	path := filepath.Join("..", ".env")
@@ -60,98 +68,13 @@ func loadDotEnv(t *testing.T) {
 		if !ok {
 			continue
 		}
-		t.Setenv(strings.TrimSpace(k), strings.TrimSpace(v))
-	}
-}
-
-// liveExecutorOption configures newLiveExecutor for callers that need
-// to override defaults (currently: the logger, used by `_Real` tests
-// that tee to <storeDir>/runs/<runID>/run.log so the desktop app's
-// cross-store log pane shows live test output).
-type liveExecutorOption func(*liveExecutorConfig)
-
-type liveExecutorConfig struct {
-	logger *iterlog.Logger
-}
-
-// withLiveLogger overrides the default stderr-only logger. Pass a
-// tee'd logger (e.g. from prepareLiveRunLog) so the executor's
-// hooks + backend output land in run.log alongside stderr.
-func withLiveLogger(l *iterlog.Logger) liveExecutorOption {
-	return func(c *liveExecutorConfig) { c.logger = l }
-}
-
-// newLiveExecutor creates a ClawExecutor with all standard backends registered
-// AND the standard claw built-in tool set (bash, read_file, write_file,
-// file_edit, glob, grep, web_fetch, …) wired into a tool registry rooted at
-// workDir. Without the tool registration step, any workflow node that
-// declares `backend: claw` plus `tools: [bash, ...]` errors out at runtime
-// with "unknown tool 'bash'" — observed in whole_improve_loop run3.
-func newLiveExecutor(t *testing.T, wf *ir.Workflow, s store.RunStore, runID, workDir string, opts ...liveExecutorOption) *model.ClawExecutor {
-	t.Helper()
-	cfg := &liveExecutorConfig{}
-	for _, opt := range opts {
-		opt(cfg)
-	}
-	reg := model.NewRegistry()
-	logger := cfg.logger
-	if logger == nil {
-		logger = iterlog.New(iterlog.LevelDebug, os.Stderr)
-	}
-	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger, nil, nil)
-
-	backendReg := delegate.DefaultRegistry(logger)
-	backendReg.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{}))
-
-	toolReg := tool.NewRegistry()
-	if err := tool.RegisterClawBuiltins(toolReg, workDir); err != nil {
-		t.Fatalf("RegisterClawBuiltins: %v", err)
-	}
-	// `todo_write` is not optional here even though no fixture asks for it:
-	// the executor APPENDS it to every claw node that restricts `tools:`
-	// (executor_build_task.go — it keeps the run's Tasks tab populated), so
-	// a registry without it fails to resolve the node's own tool list and
-	// the run dies before its first turn. Production registers the full set
-	// via RegisterClawAll; this harness registered only the builtins, and
-	// that gap alone was enough to make a live test look like a broken
-	// feature.
-	if err := tool.RegisterClawTodo(toolReg); err != nil {
-		t.Fatalf("RegisterClawTodo: %v", err)
-	}
-	// Register ask_user with an auto-answer so claw-backed nodes that
-	// have interaction:human don't block the test waiting for a real
-	// human prompt. The default RegisterAskUser handler raises
-	// delegate.ErrAskUser → runtime pause; in a headless test that
-	// hangs indefinitely. The claude_code backend ships its own
-	// ask_user via the CLI; only claw needs explicit wiring here.
-	if err := tool.RegisterAskUser(toolReg, func(_ context.Context, q clawtools.Question) (clawtools.Answer, error) {
-		t.Logf("ask_user auto-answered: %s", q.Prompt)
-		return clawtools.Answer{
-			FreeText: "Auto-answer (live e2e test, no human available). Use your best judgment based on the available context, prioritise correctness over speed, and continue.",
-		}, nil
-	}); err != nil {
-		t.Fatalf("RegisterAskUser: %v", err)
-	}
-
-	// The `command` tool (model-invoked workspace slash commands, #1716):
-	// production registers it inside RegisterClawAll; this harness's
-	// builtins+todo+ask_user subset never did, so a node declaring
-	// `tools: [command]` could only die on "unknown tool" here
-	// (measured: TestLive_Feat_WorkspaceCommandNarrowing's first run).
-	// Same kill switch as the host: off drops the registration and the
-	// node fails loudly at dispatch, never half-lives.
-	if !model.SlashCommandsDisabled() {
-		if err := tool.RegisterClawCommandWithProvider(toolReg, func() string { return workDir }, model.SlashCommandMaxBytesForRegistry()); err != nil {
-			t.Fatalf("RegisterClawCommandWithProvider: %v", err)
+		k = strings.TrimSpace(k)
+		if envtrust.OperatorGradeRefused(k) {
+			t.Logf("[live] .env line %s ignored: an operator-grade name is exported by the operator, never planted by a project file (internal/envtrust)", k)
+			continue
 		}
+		t.Setenv(k, strings.TrimSpace(v))
 	}
-
-	return model.NewClawExecutor(reg, wf,
-		model.WithBackendRegistry(backendReg),
-		model.WithToolRegistry(toolReg),
-		model.WithWorkDir(workDir),
-		model.WithEventHooks(hooks),
-	)
 }
 
 // prepareLiveRunLog opens <storeDir>/runs/<runID>/run.log and returns
@@ -161,7 +84,7 @@ func newLiveExecutor(t *testing.T, wf *ir.Workflow, s store.RunStore, runID, wor
 // `runtime.WithLogger(logger)` so the executor's + engine's output
 // land on disk.
 //
-// Without this, runs launched directly via `runtime.New(...)` (live
+// Without this, runs launched directly via `newLiveEngine(...)` (live
 // e2e tests) never produce a run.log — the desktop app's cross-store
 // log pane then shows "No log captured." because the file the WS tail
 // expects simply doesn't exist. Best-effort: if the file can't be
@@ -206,10 +129,12 @@ func installValidateSyntax(t *testing.T, workspaceDir string) {
 }
 
 // requireCLI skips the test if the given CLI binary is not found in PATH.
+// A model override does NOT lift this guard: a missing CLI is a missing
+// tool, not a credential the run can be routed away from.
 func requireCLI(t *testing.T, name string) {
 	t.Helper()
 	if _, err := exec.LookPath(name); err != nil {
-		t.Skipf("%s CLI not found in PATH — skipping live delegation test", name)
+		skipLive(t, "%s CLI not found in PATH — skipping live delegation test", name)
 	}
 }
 
@@ -282,7 +207,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 	}
 	loadDotEnv(t)
 	requireCLI(t, "claude")
-	liveledger.Track(t)
+	tracker := liveledger.Track(t)
 
 	// Default model if not set via .env or environment.
 	if os.Getenv("CLAUDE_MODEL") == "" {
@@ -384,7 +309,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 		t.Logf("SNAPSHOT: %s -> %s (%d bytes)", nodeID, filepath.Base(dst), len(data))
 	}
 
-	eng := runtime.New(wf, s, executor, runtime.WithOnNodeFinished(onFinished))
+	eng := newLiveEngine(t, wf, s, executor, runtime.WithOnNodeFinished(onFinished))
 
 	// 5-hour timeout — planning + validation + implementation + review phases (ambitious criteria).
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Hour)
@@ -399,6 +324,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 	start := time.Now()
 	runErr := eng.Run(ctx, runID, inputs)
 	elapsed := time.Since(start)
+	feedLedgerCost(t, tracker, s, runID)
 	t.Logf("Run completed in %s", elapsed.Round(time.Second))
 
 	// Accept finished, budget-exceeded, loop-exhausted, and timeout-killed outcomes.
@@ -637,7 +563,7 @@ func TestLive_Lite_SessionContinuity_ReviewFix(t *testing.T) {
 	}
 	loadDotEnv(t)
 	requireCLI(t, "claude")
-	liveledger.Track(t)
+	tracker := liveledger.Track(t)
 
 	if os.Getenv("CLAUDE_MODEL") == "" {
 		t.Setenv("CLAUDE_MODEL", "openai/gpt-5.5")
@@ -727,7 +653,7 @@ func TestLive_Lite_SessionContinuity_ReviewFix(t *testing.T) {
 		t.Logf("SNAPSHOT: %s -> %s (%d bytes)", nodeID, filepath.Base(dst), len(data))
 	}
 
-	eng := runtime.New(wf, s, executor, runtime.WithOnNodeFinished(onFinished))
+	eng := newLiveEngine(t, wf, s, executor, runtime.WithOnNodeFinished(onFinished))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Hour)
 	defer cancel()
@@ -741,6 +667,7 @@ func TestLive_Lite_SessionContinuity_ReviewFix(t *testing.T) {
 	start := time.Now()
 	runErr := eng.Run(ctx, runID, inputs)
 	elapsed := time.Since(start)
+	feedLedgerCost(t, tracker, s, runID)
 	t.Logf("Run completed in %s", elapsed.Round(time.Second))
 
 	if runErr != nil {
@@ -908,7 +835,7 @@ func TestLive_Full_ExhaustiveDSLCoverage(t *testing.T) {
 	}
 	loadDotEnv(t)
 	requireCLI(t, "claude")
-	liveledger.Track(t)
+	tracker := liveledger.Track(t)
 
 	if os.Getenv("CLAUDE_MODEL") == "" {
 		t.Setenv("CLAUDE_MODEL", "openai/gpt-5.5")
@@ -945,7 +872,7 @@ func TestLive_Full_ExhaustiveDSLCoverage(t *testing.T) {
 		"workspace_dir": workspaceDir,
 	})
 
-	eng := runtime.New(wf, s, executor)
+	eng := newLiveEngine(t, wf, s, executor)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
@@ -958,6 +885,7 @@ func TestLive_Full_ExhaustiveDSLCoverage(t *testing.T) {
 	start := time.Now()
 	runErr := eng.Run(ctx, runID, inputs)
 	elapsed := time.Since(start)
+	feedLedgerCost(t, tracker, s, runID)
 	t.Logf("Run completed in %s", elapsed.Round(time.Second))
 
 	// Accept finished, budget-exceeded, loop-exhausted.
@@ -1242,7 +1170,7 @@ func TestLive_Lite_SessionInheritValidation(t *testing.T) {
 	}
 	loadDotEnv(t)
 	requireCLI(t, "claude")
-	liveledger.Track(t)
+	tracker := liveledger.Track(t)
 
 	if os.Getenv("CLAUDE_MODEL") == "" {
 		t.Setenv("CLAUDE_MODEL", "openai/gpt-5.5")
@@ -1277,7 +1205,7 @@ func TestLive_Lite_SessionInheritValidation(t *testing.T) {
 		"workspace_dir": workspaceDir,
 	})
 
-	eng := runtime.New(wf, s, executor)
+	eng := newLiveEngine(t, wf, s, executor)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
@@ -1291,6 +1219,7 @@ func TestLive_Lite_SessionInheritValidation(t *testing.T) {
 	start := time.Now()
 	runErr := eng.Run(ctx, runID, inputs)
 	elapsed := time.Since(start)
+	feedLedgerCost(t, tracker, s, runID)
 	t.Logf("Run completed in %s", elapsed.Round(time.Second))
 
 	if runErr != nil {
@@ -1417,7 +1346,7 @@ func TestLive_Lite_ClawComprehensive(t *testing.T) {
 	loadDotEnv(t)
 	requireOpenAI(t)
 	requireEnv(t, "ANTHROPIC_API_KEY")
-	liveledger.Track(t)
+	tracker := liveledger.Track(t)
 
 	wf := compileFixture(t, "claw_comprehensive_coverage.bot")
 
@@ -1462,7 +1391,7 @@ func TestLive_Lite_ClawComprehensive(t *testing.T) {
 	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger, nil, nil)
 	backendReg := delegate.DefaultRegistry(logger)
 	backendReg.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{}))
-	executor := model.NewClawExecutor(reg, wf,
+	executor := newLiveClawExecutor(t, reg, wf,
 		model.WithBackendRegistry(backendReg),
 		model.WithToolRegistry(toolReg),
 		model.WithWorkDir(workspaceDir),
@@ -1491,7 +1420,7 @@ func TestLive_Lite_ClawComprehensive(t *testing.T) {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 
-	eng := runtime.New(wf, s, executor)
+	eng := newLiveEngine(t, wf, s, executor)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
@@ -1512,6 +1441,7 @@ func TestLive_Lite_ClawComprehensive(t *testing.T) {
 	start := time.Now()
 	runErr := eng.Run(ctx, runID, inputs)
 	elapsed := time.Since(start)
+	feedLedgerCost(t, tracker, s, runID)
 	t.Logf("Run completed in %s", elapsed.Round(time.Second))
 
 	if runErr != nil {
@@ -1730,7 +1660,7 @@ func TestLive_Lite_ClawBuiltinTools(t *testing.T) {
 	loadDotEnv(t)
 	requireEnv(t, "ANTHROPIC_API_KEY")
 	requireBinaryInPath(t, "go")
-	liveledger.Track(t)
+	tracker := liveledger.Track(t)
 
 	wf := compileFixture(t, "claw_builtin_tools.bot")
 
@@ -1765,7 +1695,7 @@ func TestLive_Lite_ClawBuiltinTools(t *testing.T) {
 	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger, nil, nil)
 	backendReg := delegate.DefaultRegistry(logger)
 	backendReg.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{}))
-	executor := model.NewClawExecutor(reg, wf,
+	executor := newLiveClawExecutor(t, reg, wf,
 		model.WithBackendRegistry(backendReg),
 		model.WithToolRegistry(toolReg),
 		model.WithWorkDir(workspaceDir),
@@ -1780,7 +1710,7 @@ func TestLive_Lite_ClawBuiltinTools(t *testing.T) {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 
-	eng := runtime.New(wf, s, executor)
+	eng := newLiveEngine(t, wf, s, executor)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
@@ -1790,6 +1720,7 @@ func TestLive_Lite_ClawBuiltinTools(t *testing.T) {
 		"workspace_dir": workspaceDir,
 	})
 	elapsed := time.Since(start)
+	feedLedgerCost(t, tracker, s, runID)
 	t.Logf("Run completed in %s", elapsed.Round(time.Second))
 
 	if runErr != nil {
@@ -1894,7 +1825,7 @@ func TestLive_Lite_ClawReadImage(t *testing.T) {
 	}
 	loadDotEnv(t)
 	requireEnv(t, "ANTHROPIC_API_KEY")
-	liveledger.Track(t)
+	tracker := liveledger.Track(t)
 
 	wf := compileFixture(t, "claw_read_image.bot")
 
@@ -1940,7 +1871,7 @@ func TestLive_Lite_ClawReadImage(t *testing.T) {
 	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger, nil, nil)
 	backendReg := delegate.DefaultRegistry(logger)
 	backendReg.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{}))
-	executor := model.NewClawExecutor(reg, wf,
+	executor := newLiveClawExecutor(t, reg, wf,
 		model.WithBackendRegistry(backendReg),
 		model.WithToolRegistry(toolReg),
 		model.WithWorkDir(workspaceDir),
@@ -1955,7 +1886,7 @@ func TestLive_Lite_ClawReadImage(t *testing.T) {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 
-	eng := runtime.New(wf, s, executor)
+	eng := newLiveEngine(t, wf, s, executor)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -1965,6 +1896,7 @@ func TestLive_Lite_ClawReadImage(t *testing.T) {
 		"image_path": imagePath,
 	})
 	t.Logf("Run completed in %s", time.Since(start).Round(time.Second))
+	feedLedgerCost(t, tracker, s, runID)
 
 	if runErr != nil {
 		t.Fatalf("Unexpected run error: %v", runErr)
@@ -2069,7 +2001,7 @@ func TestLive_Lite_ClawReasoningEffort(t *testing.T) {
 	}
 	loadDotEnv(t)
 	requireOpenAI(t)
-	liveledger.Track(t)
+	tracker := liveledger.Track(t)
 
 	wf := compileFixture(t, "claw_reasoning_effort.bot")
 
@@ -2093,7 +2025,7 @@ func TestLive_Lite_ClawReasoningEffort(t *testing.T) {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 
-	eng := runtime.New(wf, s, executor)
+	eng := newLiveEngine(t, wf, s, executor)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -2106,6 +2038,7 @@ func TestLive_Lite_ClawReasoningEffort(t *testing.T) {
 	runErr := eng.Run(ctx, runID, map[string]any{
 		"question": "Briefly: why is the sky blue?",
 	})
+	feedLedgerCost(t, tracker, s, runID)
 	if runErr != nil {
 		t.Logf("note: run did not finish cleanly (%v) — checking propagation via events anyway", runErr)
 	}
@@ -2160,7 +2093,7 @@ func TestLive_Lite_ClawMCP(t *testing.T) {
 	loadDotEnv(t)
 	requireEnv(t, "ANTHROPIC_API_KEY")
 	requireBinaryInPath(t, "go")
-	liveledger.Track(t)
+	tracker := liveledger.Track(t)
 
 	// Build the stdio MCP server.
 	binPath := filepath.Join(t.TempDir(), "mcp_test_server")
@@ -2224,7 +2157,7 @@ func TestLive_Lite_ClawMCP(t *testing.T) {
 	// own server, and no CI job runs the live tags to say so.
 	mcpManager := mcp.NewManager(mcpCatalog, mcp.WithLogger(logger), mcp.WithStartPolicy(mcp.StartAllServers))
 
-	executor := model.NewClawExecutor(reg, wf,
+	executor := newLiveClawExecutor(t, reg, wf,
 		model.WithBackendRegistry(backendReg),
 		model.WithToolRegistry(tool.NewRegistry()),
 		model.WithMCPManager(mcpManager),
@@ -2236,11 +2169,13 @@ func TestLive_Lite_ClawMCP(t *testing.T) {
 		"workspace_dir": workspaceDir,
 	})
 
-	eng := runtime.New(wf, s, executor)
+	eng := newLiveEngine(t, wf, s, executor)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	if runErr := eng.Run(ctx, runID, map[string]any{}); runErr != nil {
+	runErr := eng.Run(ctx, runID, map[string]any{})
+	feedLedgerCost(t, tracker, s, runID)
+	if runErr != nil {
 		t.Fatalf("Run error: %v", runErr)
 	}
 	r, _ := s.LoadRun(context.Background(), runID)
@@ -2328,7 +2263,7 @@ func TestLive_Lite_ClawLongContext(t *testing.T) {
 	}
 	loadDotEnv(t)
 	requireEnv(t, "ANTHROPIC_API_KEY")
-	liveledger.Track(t)
+	tracker := liveledger.Track(t)
 
 	wf := compileFixture(t, "claw_long_context.bot")
 
@@ -2370,14 +2305,16 @@ func TestLive_Lite_ClawLongContext(t *testing.T) {
 	longText := sb.String()
 	t.Logf("Long input: %d bytes (~%d tokens estimate)", len(longText), len(longText)/4)
 
-	eng := runtime.New(wf, s, executor)
+	eng := newLiveEngine(t, wf, s, executor)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	start := time.Now()
-	if runErr := eng.Run(ctx, runID, map[string]any{
+	runErr := eng.Run(ctx, runID, map[string]any{
 		"text": longText,
-	}); runErr != nil {
+	})
+	feedLedgerCost(t, tracker, s, runID)
+	if runErr != nil {
 		t.Fatalf("Run error: %v", runErr)
 	}
 	t.Logf("Run completed in %s", time.Since(start).Round(time.Second))
@@ -2483,7 +2420,7 @@ func TestLive_Lite_ClawSubagents(t *testing.T) {
 	}
 	loadDotEnv(t)
 	requireEnv(t, "ANTHROPIC_API_KEY")
-	liveledger.Track(t)
+	tracker := liveledger.Track(t)
 
 	wf := compileFixture(t, "claw_subagents.bot")
 
@@ -2513,7 +2450,7 @@ func TestLive_Lite_ClawSubagents(t *testing.T) {
 	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger, nil, nil)
 	backendReg := delegate.DefaultRegistry(logger)
 	backendReg.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{}))
-	executor := model.NewClawExecutor(reg, wf,
+	executor := newLiveClawExecutor(t, reg, wf,
 		model.WithBackendRegistry(backendReg),
 		model.WithToolRegistry(toolReg),
 		model.WithWorkDir(workspaceDir),
@@ -2528,7 +2465,7 @@ func TestLive_Lite_ClawSubagents(t *testing.T) {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 
-	eng := runtime.New(wf, s, executor)
+	eng := newLiveEngine(t, wf, s, executor)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -2538,6 +2475,7 @@ func TestLive_Lite_ClawSubagents(t *testing.T) {
 		"topic": "Summarize Go interfaces in two lines",
 	})
 	t.Logf("Run completed in %s", time.Since(start).Round(time.Second))
+	feedLedgerCost(t, tracker, s, runID)
 
 	if runErr != nil {
 		t.Fatalf("Unexpected run error: %v", runErr)
@@ -2637,16 +2575,23 @@ func TestLive_Lite_ClawSubagents(t *testing.T) {
 func requireBinaryInPath(t *testing.T, name string) {
 	t.Helper()
 	if _, err := exec.LookPath(name); err != nil {
-		t.Skipf("%s not in PATH — skipping", name)
+		skipLive(t, "%s not in PATH — skipping", name)
 	}
 }
 
-// requireEnv skips the test if the named environment variable is not set.
+// requireEnv skips the test unless the named vendor credential is present
+// — or unless the run's model override routes every LLM node away from the
+// vendor that credential funds, which is what overrideCoversCredential
+// decides for every guard at once.
 func requireEnv(t *testing.T, name string) {
 	t.Helper()
-	if os.Getenv(name) == "" {
-		t.Skipf("%s not set — skipping live delegation test", name)
+	if os.Getenv(name) != "" {
+		return
 	}
+	if overrideCoversCredential(t, name) {
+		return
+	}
+	skipLive(t, "%s not set — skipping live delegation test", name)
 }
 
 // requireOpenAI skips the test unless an OpenAI credential is available
@@ -2665,7 +2610,10 @@ func requireOpenAI(t *testing.T) {
 			return
 		}
 	}
-	t.Skip("no OpenAI credential (OPENAI_API_KEY or ChatGPT-OAuth) — skipping live test")
+	if overrideCoversProvider(t, "openai") {
+		return
+	}
+	skipLive(t, "no OpenAI credential (OPENAI_API_KEY or ChatGPT-OAuth) — skipping live test")
 }
 
 // ---------------------------------------------------------------------------

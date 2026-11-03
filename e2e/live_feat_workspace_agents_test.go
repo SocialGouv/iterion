@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -141,7 +142,7 @@ func TestLive_Feat_ClawWorkspaceAgents(t *testing.T) {
 		t.Fatalf("RegisterClawAll: %v", err)
 	}
 
-	executor := model.NewClawExecutor(reg, wf,
+	executor := newLiveClawExecutor(t, reg, wf,
 		model.WithBackendRegistry(backendReg),
 		model.WithToolRegistry(toolReg),
 		model.WithWorkDir(workspaceDir),
@@ -149,7 +150,7 @@ func TestLive_Feat_ClawWorkspaceAgents(t *testing.T) {
 	)
 	defer executor.Close()
 
-	eng := runtime.New(wf, s, executor,
+	eng := newLiveEngine(t, wf, s, executor,
 		runtime.WithLogger(logger),
 		runtime.WithWorkDir(workspaceDir),
 	)
@@ -163,8 +164,13 @@ func TestLive_Feat_ClawWorkspaceAgents(t *testing.T) {
 	t.Logf("[live] finished in %s", time.Since(start).Round(time.Second))
 
 	// A dead credential is a missing prerequisite, not a failing feature.
+	// The row says WHY, exactly as runBotLive's own arm does: Track is
+	// already registered here, so the reason goes on the tracker and its
+	// cleanup turns the skip into a `skipped` row carrying it.
 	if why := deadCredentialReason(runErr); why != "" {
-		t.Skipf("live prerequisite unavailable — %s (re-authenticate, then re-run)", why)
+		reason := fmt.Sprintf("live prerequisite unavailable — %s (re-authenticate, then re-run)", why)
+		tracker.SetSkipReason(reason)
+		t.Skip(reason)
 	}
 	if runErr != nil {
 		t.Fatalf("Unexpected run error: %v", runErr)

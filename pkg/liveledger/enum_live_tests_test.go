@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
 )
 
 // TestEveryLiveTestRecordsToTheLedger enforces the class invariant of
@@ -281,23 +283,13 @@ func uniqueSorted(in []string) []string {
 	return out
 }
 
-// repoRoot walks up from the test's cwd until go.mod is found.
+// repoRoot is the module root of the tree the test process runs in,
+// resolved from the working directory (internal/sweepwalk) — never from
+// runtime.Caller, whose compile-time paths a shared build cache reuses
+// across checkouts, so a scan would read another worktree's e2e sources.
 func repoRoot(t *testing.T) string {
 	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("no go.mod on the way up")
-		}
-		dir = parent
-	}
+	return sweepwalk.ModuleRoot(t)
 }
 
 // classifyRunPattern's table, pinned: the shapes the real Taskfile
@@ -398,5 +390,162 @@ func TestLiveTaggedFuncsOutside(t *testing.T) {
 	}
 	if got["TestLive_Vendored"] {
 		t.Fatal("vendored trees must be skipped")
+	}
+}
+
+// TestEveryDirectTrackerFeedsProvenance closes the class behind the
+// served_model column. The column's reading — "" means no LLM node ran —
+// holds only if every row's writer was TOLD what served: runBotLive feeds
+// its tracker from the run's events, but a test that calls
+// liveledger.Track itself writes whatever its tracker was told, and a
+// tracker told nothing writes "" for a run that made three LLM calls.
+// Measured: four whole targets and two direct halves recorded no
+// provenance while the doc defined "" as a tool-only run.
+//
+// The rule: a function whose body calls liveledger.Track also feeds its
+// tracker — feedLedgerCost (which feeds provenance too),
+// feedLedgerProvenance, or SetProvenance for a test with no event stream
+// to read. runBotLive is in the set and satisfies it; the anti-vacuity
+// below pins that the scan sees it.
+func TestEveryDirectTrackerFeedsProvenance(t *testing.T) {
+	// The live harness only: the free witnesses of the knob chokepoint track
+	// scratch rows on purpose, and are not live targets.
+	sources := liveHarnessSources(t)
+	tracks := bodyScopedCalls(sources, isTrackCall)
+	feeds := bodyScopedCalls(sources, isProvenanceFeed)
+	if len(tracks) < 10 {
+		t.Fatalf("only %d function(s) call liveledger.Track — the scan is broken, and a small set would make the requirement below pass vacuously", len(tracks))
+	}
+	if !tracks["runBotLive"] {
+		t.Fatal("runBotLive is not seen calling liveledger.Track — the harness chokepoint the scan is calibrated on")
+	}
+	var missing []string
+	for fn := range tracks {
+		if !feeds[fn] {
+			missing = append(missing, fn)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		t.Fatalf("%d function(s) record a ledger row without feeding what served it — call feedLedgerCost(t, tracker, s, runID) right after the run (before any verdict is taken), or SetProvenance for a run with no event stream; otherwise the row writes served_model \"\", the column's word for a run with NO LLM node:\n  - %s",
+			len(missing), strings.Join(missing, "\n  - "))
+	}
+}
+
+// bodyScopedCalls parses every source and reports, per function, whether
+// ITS OWN body contains a call match accepts. Body-scoped like
+// bodyScopedHooks: a sibling's feed must not vouch for a function that
+// feeds nothing.
+func bodyScopedCalls(sources map[string]string, match func(*ast.CallExpr) bool) map[string]bool {
+	out := map[string]bool{}
+	for name, src := range sources {
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, name, src, parser.SkipObjectResolution)
+		if err != nil {
+			continue
+		}
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			found := false
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				if call, ok := n.(*ast.CallExpr); ok && match(call) {
+					found = true
+				}
+				return !found
+			})
+			if found {
+				out[fn.Name.Name] = true
+			}
+		}
+	}
+	return out
+}
+
+// isTrackCall matches `liveledger.Track(…)`.
+func isTrackCall(call *ast.CallExpr) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Track" {
+		return false
+	}
+	id, ok := sel.X.(*ast.Ident)
+	return ok && id.Name == "liveledger"
+}
+
+// isProvenanceFeed matches the ways a tracker is told what served: the
+// harness helpers by name, or a `<tracker>.SetProvenance(…)` — which the
+// knob chokepoint sweep confines to recordLiveProvenance.
+func isProvenanceFeed(call *ast.CallExpr) bool {
+	switch fun := call.Fun.(type) {
+	case *ast.Ident:
+		return fun.Name == "feedLedgerCost" || fun.Name == "feedLedgerProvenance" || fun.Name == "recordLiveProvenance"
+	case *ast.SelectorExpr:
+		return fun.Sel.Name == "SetProvenance"
+	}
+	return false
+}
+
+// The feed scan's own table: a tracked function that feeds through each
+// accepted form passes, one that feeds nothing is named, and a function
+// that never tracks is not in the set at all.
+func TestBodyScopedProvenanceFeeds(t *testing.T) {
+	src := `package e2e
+
+func TestLive_FedByCost(t *testing.T) {
+	tracker := liveledger.Track(t)
+	feedLedgerCost(t, tracker, s, runID)
+}
+
+func TestLive_FedDirectly(t *testing.T) {
+	tracker := liveledger.Track(t)
+	tracker.SetProvenance(liveledger.ServedModelFor(served, calls, model), "")
+}
+
+func TestLive_Unfed(t *testing.T) {
+	_ = liveledger.Track(t)
+}
+
+func TestLive_UnfedBusy(t *testing.T) {
+	tracker := liveledger.Track(t)
+	seedGitRepo(t, dir)
+	tracker.SetCost(1)
+}
+
+func TestLive_Untracked(t *testing.T) {
+	feedLedgerCost(t, tr, s, runID)
+}
+
+func runBotLive(t *testing.T, spec liveSpec) liveResult {
+	tracker := liveledger.Track(t)
+	feedLedgerProvenance(tracker, override, events)
+	return liveResult{}
+}
+`
+	sources := map[string]string{"probe_live_test.go": src}
+	tracks := bodyScopedCalls(sources, isTrackCall)
+	feeds := bodyScopedCalls(sources, isProvenanceFeed)
+	for _, fn := range []string{"TestLive_FedByCost", "TestLive_FedDirectly", "TestLive_Unfed", "TestLive_UnfedBusy", "runBotLive"} {
+		if !tracks[fn] {
+			t.Errorf("%s calls liveledger.Track and was not seen", fn)
+		}
+	}
+	if tracks["TestLive_Untracked"] {
+		t.Error("a function that never tracks was put in the tracked set")
+	}
+	for _, fn := range []string{"TestLive_FedByCost", "TestLive_FedDirectly", "runBotLive"} {
+		if !feeds[fn] {
+			t.Errorf("%s feeds its tracker and was not seen", fn)
+		}
+	}
+	if feeds["TestLive_Unfed"] {
+		t.Error("a function that feeds nothing was blessed — a sibling's feed vouched for it")
+	}
+	// Other calls in the body — a helper, a tracker setter that is not a
+	// feed — must not pass for one: a matcher that accepts any call makes
+	// the class scan vacuous.
+	if feeds["TestLive_UnfedBusy"] {
+		t.Error("a function whose only calls are a helper and SetCost was blessed as feeding provenance")
 	}
 }

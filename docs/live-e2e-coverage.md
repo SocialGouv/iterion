@@ -50,14 +50,46 @@ keyed by the `task test:live:*` target the operator invoked. The writer is
 the harness itself (`pkg/liveledger.Track`, hooked from `runBotLive`'s
 entry and from the tests that bypass it), registered at `t.Cleanup`, so a
 failure is recorded as a failure and the run's cost travels with the row.
-A **skipped** run (missing credential, `testing.Short`) records nothing —
-a skip never ran, so it claims neither pass nor fail. Aggregate targets
-(`test:live`, `test:live:bots:new`, …) run many test functions under one
-row: the functions' verdicts **merge fail-sticky** (any failure fails the
-row; duration and cost accumulate), so a suite that failed can never read
-as `pass` because its last member passed.
+A **skipped** run claims neither pass nor fail, but it is no longer
+silent: every prerequisite guard refuses through one chokepoint
+(`skipLive`), which records a `verdict: skipped` row naming the
+prerequisite in `skip_reason`. That is what stops `never` from meaning
+both "nobody has paid for this target" and "nobody could run it here" —
+two different asks of the operator. `TestEveryLiveSkipNamesItsPrerequisite`
+holds the class for free: inside a `live`-tagged test a `t.Skip` is legal
+only as the `testing.Short()` arm or with a reason-naming call
+(`liveledger.RecordSkip`, `<tracker>.SetSkipReason`) on the line before it,
+so the next guard cannot quietly skip without a row. **A skip is a WRITE
+to a committed file**: recording one leaves the tree dirty and the free
+gate red until `pkg/backend/backendcaps/live_seed.json` is re-copied from
+the ledger and the golden re-derived
+(`go test ./pkg/backend/backendcaps/ -args -update-backendcaps`) — the
+cost of attempting a target on a machine that cannot run it, which the
+writer logs as it happens (and only when the COMMITTED ledger moved: a
+scratch `ITERION_LIVE_LEDGER_PATH` moves nothing the gate compares, and
+an unset `ITERION_LIVE_LEDGER_TARGET` writes nothing). A skip NEVER erases what a run
+proved: over a recorded `pass`/`fail` the verdict, date, cost and
+provenance stand and only `skipped_at`/`skip_reason` are stamped, so a
+half-skipped target says which half — a `pass` carries the skipped half's
+missing prerequisite next to it, and a standing `fail` carries the reasons
+it could not be re-run since.
+Aggregate targets (`test:live`, `test:live:bots:new`, …) run many test
+functions under one row: the verdicts **merge fail-sticky**, then pass
+over skipped, then skipped over `never`; duration and cost accumulate and
+the provenance folds to a sorted set — the fold is commutative in every
+field, so a row never depends on the order the members finished in.
 The judge panel's snapshot store is a different, quality-only record and
 does not replace the ledger.
+
+Each row also names **what served it and who paid**: `served_model` is
+read from the run's persisted `llm_request` events — what ACTUALLY
+answered, not what the fixture asked for — and `funded_by` names the
+credential ROUTE, never a key. Without them a `pass` obtained on an
+overridden route is indistinguishable from a `pass` on the fixture's
+pinned model, which makes the row a false receipt. The pair arrived with
+**schema 2**: `liveledger.Load` refuses a ledger newer than the binary
+rather than dropping fields it cannot see, precisely so a stale reader
+cannot report an overridden run as a pinned one.
 
 The ledger carries one row per **recording** target — a target whose run
 reaches a Track call. The exceptions, classified in the enumeration
@@ -158,6 +190,144 @@ a row only means something if a run can be attributed to it:
 | `ITERION_LIVE_JUDGE_MODELS` | Comma-separated judge model specs (override the default cross-family pair). |
 | `ITERION_LIVE_QUALITY_DIR` | Override the snapshot history root (default `e2e/testdata/live/quality`). |
 | `ITERION_TEST_STORE_DIR` | Run store: default `~/.iterion` (visible in studio); `workspace` to isolate per-test. |
+| `ITERION_LIVE_MODEL` | Re-target EVERY LLM node of the run at one model spec (`openai_compatible/gpt-oss-120b`). |
+| `ITERION_LIVE_BACKEND` | Re-target every LLM node's backend the same way. |
+| `ITERION_LIVE_FUNDED_BY` | The credential ROUTE name the ledger's `funded_by` records (never a key — a length bound, the known key prefixes and a route-name charset refuse the obvious paste; a short name-shaped secret would pass, so the operator still owes a NAME). |
+| `ITERION_LIVE_MAX_COST_USD` | Per-target spend ceiling, applied at the knob chokepoint to the workflow of every run a live target launches. It REPLACES a bot's own `budget: max_cost_usd` in both directions — lower or higher — the precedence `iterion run --max-cost-usd` already has. A target that cannot honour it refuses with the reason (see below); the judge panel is not capped by it. |
+
+### Re-targeting a live run — the override knobs
+
+Most live fixtures pin a vendor model, so a target can only be re-proven
+on the credential that vendor needs. `ITERION_LIVE_MODEL` /
+`ITERION_LIVE_BACKEND` lift that: the harness folds them into a
+`model.ModelOverrides` rule under the **`"*"` selector** — every LLM node
+— documented to outrank the node's DSL `backend:`/`model:`
+([model_override.go](../pkg/backend/model/model_override.go)): an operator
+re-targeting a bot at launch is an explicit choice, and the engine never
+silently replaces it. A re-prove under an override re-targets the whole
+bot, never one node of it — a child a fixture pins to a cheap vendor
+default follows the override too (`liveSubagentDefault`).
+
+**One chokepoint carries every knob to every run**
+([`e2e/live_knobs_test.go`](../e2e/live_knobs_test.go)). `liveOverride` is
+the one reader of the knobs. `newLiveClawExecutor` is the one constructor
+of a live executor, and the `armLiveRun` it calls is the one function that
+applies a knob to a run: the re-target as the executor's `"*"` rule, the
+ceiling on the workflow the engine runs, the refusal of a re-target this
+machine cannot fund. `newLiveEngine` is the one constructor of a live
+engine, and refuses an executor that was not armed for the same workflow.
+`recordLiveProvenance` is the one place a row is told what served and who
+paid. That holds for `runBotLive` and for every test that wires its own
+registries, tool sets, MCP managers or second engine — the class the
+review rounds of #1423 found twice was a knob applied on the `runBotLive`
+path while the direct targets bypassed it.
+`TestEveryLiveRunIsArmedAtTheKnobChokepoint` (`pkg/liveledger`) sweeps the
+live harness source, build tag included, and refuses any other site that
+builds an executor or an engine, applies a budget, reads the knobs or feeds
+provenance. `TestEveryLaunchKnobReachesEveryLiveTargetShape` (e2e, free:
+the chokepoint file carries no build tag) drives each knob through each
+shape a target obtains its run in, on a tool-only run for $0, and reads the
+result back from the persisted run and the written row.
+
+Four targets cannot honour every knob, and refuse with the reason rather
+than spend without it. `feat:schedule` launches through
+`cli.RunScheduleRun` and `claude-bg` drives `delegate.ClaudeCodeBackend`
+directly: neither path has a seam for the re-target or the ceiling, so
+both refuse those (`refuseRetargetWithoutSeam`; the funder still reaches
+their row). `feat:budget` and `feat:budget-resume` assert on their
+fixture's own budget, which the ceiling would replace
+(`refuseCapOnBudgetSubject`; a re-target stays legal there). The sweep
+refuses a new launch outside the engine, or a new test asserting on
+`budget_exceeded`, that does not refuse the same way.
+
+The knobs are the operator's **shell** gesture: they are operator-grade
+names (`internal/envtrust`), refused from a project file by the harness's
+`.env` loader as by the engine's. Under `task` that loader is not enough:
+Task's root `dotenv: [".env"]` plants the repo-root `.env` into every
+`task test:live:*` process before the harness starts, where a value in the
+environment no longer says whether the shell or the file put it there. So
+the harness refuses to run while that file assigns a launch knob at all
+(`liveenv.DotEnvKnobs` — by name, no value of the file reaches the reason):
+remove the line and export the knob in the shell.
+
+These rules keep that honest, and they are the reason the knobs are safe
+to use on a committed receipt:
+
+- **the row says what served.** `served_model` comes from the run's
+  `llm_request` events, so an override that failed to reach the executor
+  is recorded as the pinned model that actually answered — not as the
+  override that was asked for. Honest scope: only the claw path emits
+  `llm_request` (in-process, and relayed from a claw inside a sandbox), so
+  a `claude_code` / `codex` / `pi` delegation names no model. The column is
+  a POSITIVE receipt and never a negative one, and it says which case a
+  reader is in (`liveledger.ServedModelFor`): empty means **no LLM node
+  ran** (a tool-only run — the `node_started` events carry each node's
+  kind, and a router's mode); `unobserved` means an agent, a judge or an
+  `llm` router ran and the backend named nothing — or that the run's events
+  could not be read at all, which fails the test too; `unobserved:<spec>`
+  means the same under a re-target that asked for `<spec>`, so an
+  overridden pass can never read as a pass on the pinned model.
+  `iterion-live-status` prints the sentinel in words. In a run that mixes a
+  claw node with a delegated one, the column names the claw spec alone: a
+  positive receipt of what was observed, never a claim that every node was.
+  That reading holds for every row the harness writes because every
+  recording path feeds the column: `runBotLive` reads the events BEFORE
+  it takes a verdict (a `fail` row says what answered too), and each test
+  that tracks its own row feeds it through `feedLedgerCost` right after
+  the run — or `recordLiveProvenance` from the backend's own report where
+  there is no event stream (`claude-bg`). `TestEveryDirectTrackerFeedsProvenance`
+  refuses a `Track` call with no feed beside it.
+- **`funded_by` names a credential the environment CARRIES.** The
+  operator's `ITERION_LIVE_FUNDED_BY` wins; otherwise the name is derived
+  only for a route served by a single credential variable AND only when
+  that variable is set. A gateway reached by network auth, or served
+  through the DB credential cascade, records nothing rather than naming an
+  unset variable as the funder of a committed receipt. The pair reaches
+  every row: `recordLiveProvenance` writes it on the engine paths and on
+  `claude-bg` alike.
+- **a re-targeted run does not skip on a key it no longer reaches.** The
+  credential guards (`requireEnv`, `requireOpenAI`, `requireOpus48`) ask
+  ONE helper — `overrideCoversProvider` over
+  `internal/liveenv` — whether the override routes every LLM node away
+  from the vendor they protect. A gateway run therefore needs no
+  `ANTHROPIC_API_KEY`; an override ONTO `anthropic` still does, and a
+  bare model id — or a slash prefix the model registry does not route on,
+  `scaleway/gpt-oss-120b` being a model id — waves nothing through (which
+  provider would serve it is a guess). Waving a guard moves the
+  prerequisite onto the re-target: a re-target whose own route this
+  machine cannot fund — read from the engine's availability report
+  (`detect.Detect`, the probe iterion resolves its routes with) — is a
+  `skipped` row naming that route, decided where the guards ask and again
+  where the run is armed (with the fixture's vendor key present, no guard
+  is asked at all). Waved anyway, the run would reach a provider it cannot
+  pay and record a `fail`, with a ref and a `served_model`, for a run that
+  never had a chance. The rule reads the override, not each node, and is
+  conservative where the report is: an `anthropic` route only the claude
+  CLI's forfait could serve reads as unfunded — set
+  `ITERION_LIVE_BACKEND=claude_code` and the CLI's own login decides. Tool guards (`requireCLI`, `requireDockerImage`) are
+  untouched: a missing binary is not a credential a run can be routed
+  around.
+- **the subject decides whether the verdict means anything.** Re-proving
+  an engine invariant (a budget cap firing, a fork, a schedule trigger,
+  skill mirroring) on another route proves the engine. Re-targeting a
+  test whose SUBJECT is the backend (`feat:backend-autodetect`,
+  `claude-bg`, `codex-web-search`, `permission-kimi`, `claw-*`,
+  `workspace-commands`, `ultracode`) proves the wrong thing — those stay
+  `never`, with the reason written down. The ceiling has its own subjects:
+  `feat:budget` and `feat:budget-resume` prove their fixture's own cap, so
+  they refuse it.
+
+The ceiling reaches the run through `ir.ApplyBudgetOverrides`, applied by
+`armLiveRun` to the workflow the engine then runs — the engine builds the
+run's budget from it at `Run`, and the persisted run's `budget` shows it.
+That path is per-field, non-zero wins, in BOTH directions. It
+can lower a shipped cap — the raise-only steering path
+(`SharedBudget.RaiseCaps`) cannot, so an authorised $20 would silently
+keep a bot's $100 — and it can RAISE one, which is what re-proving a
+target on a metered route the bot never budgeted for needs. It is not a
+clamp, and `TestTheEnvCeilingRaisesTheShippedBudgetToo` keeps it from
+becoming one quietly: clamping the operator's $120 back to a bot's
+shipped $5 would silently replace an explicit launch choice.
 
 ## Authoring a new bot/feature test
 
@@ -269,3 +439,21 @@ Full real-scenario runs are **expensive** ($ and hours). Never wire the
 panel adds a small, bounded cost (one structured call per judge) on top of
 each run. Per-test cost/time estimates live in each test's doc comment and
 in the Taskfile target `desc`.
+
+**The bill is the ledger, not this page.** `task test:live:status` prints
+every target with its verdict, date, duration, cost, `served_model`,
+`funded_by` and — for a target that could not run — the prerequisite it
+lacked. A second, hand-kept table of runs here would rot into a louder
+claim than the file it paraphrases, which is the one thing a cost receipt
+must not be.
+
+A **free tier** exists and is worth running before anything is spent:
+`test:live:feat:worktree` and `test:live:feat:rtk` are tool-only fixtures
+(git, `rtk`) with no LLM node — seconds and $0, no credential — and
+`test:live:feat:sandbox-net` / `test:live:feat:sandbox-image-env` need a
+docker image rather than a key. `task test:clilive` is a free real-CLI
+layer beside them: each proof skips when its CLI is absent and spends
+nothing. Set `ITERION_TEST_STORE_DIR=<writable abs path>` for any of them
+in a sandboxed shell: the store defaults to `$HOME/.iterion`, and a store
+the process cannot create is a fatal AFTER the ledger hook is registered,
+which stamps a `fail` on a target that is perfectly healthy.
