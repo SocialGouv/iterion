@@ -1,6 +1,6 @@
 # ADR-155: reserved capacity is a durable allocation — one ledger, one atomic acquire, a settle and a sweep
 
-Status: accepted (design — nothing below is built; the units are tracked under #950)
+Status: accepted — the decisions are taken: the operator decided on 2026-11-03 that the shape stands as written and that a reservation's identity is tier-qualified (decision 11). Design only — nothing below is built; the units are tracked under #950.
 Date: 2026-11-03
 Issue: SocialGouv/iterion#950
 
@@ -84,7 +84,7 @@ by-design on `forge.ProjectPathFromCloneURL`). Live, each against what
 closes it: finding 1 — the pool does not participate in arbitration —
 decision 6 and unit 5; finding 3, decision 9; findings 4 and 6, decisions 7
 and 10; finding 7, decision 8 and unit 10; finding 8, unit 9; finding 2's
-second half stays open by decision, in the consequences.
+second half, decision 11 and unit 11.
 
 ## Options considered
 
@@ -169,6 +169,27 @@ second half stays open by decision, in the consequences.
   Rejected.
 - *C — a policy flag.* A fifth dial on a surface that already has four axes,
   for a rule nobody wants to be wrong. Rejected.
+
+**What a reservation names** (finding 2's second half).
+
+- *A — keep the bare bot name as an accepted bound.* No migration, and the
+  escape hatch is the operator re-pointing the reservation. Rejected: the
+  name is chosen by whichever tenant registers it — botsource rows are
+  unique per `(tenant_id, slug)` (`tenant_slug_unique`), and resolution
+  serves a team's own row over the platform's by design — so re-pointing
+  moves the reservation to another name any team can register next.
+- *B — refuse a team bot whose name a reservation holds.* Closes the
+  homonym at registration, and takes away the fork the resolver is built to
+  serve (a team that forks a bot gets its fork on every launch surface), on
+  a deployment that may have configured no reserve worth the refusal.
+  Rejected (philosophy 1).
+- *C — qualify the identity with the tier that serves it, and resolve
+  before judging.* A reservation names the bot AND the tier; the gate
+  judges the identity the server's own resolution produced, never the
+  request's label. The vocabulary exists already: `launchBot.Tier()` maps
+  the resolution onto `store.BotSourceTier*`, which `RunMessage` and the run
+  document already carry (`Run.BotSourceTier`). **Chosen** by the operator
+  on 2026-11-03.
 
 ## Decision
 
@@ -290,9 +311,14 @@ second half stays open by decision, in the consequences.
    its third advisory shape: a reservation marked pool-eligible on a
    deployment where no enabled pool admits its tenant holds nothing.
 7. **The meter carries the workload.** `credusage.Key` and `Spend` gain
-   `BotID`, `docID` leaves an empty one out exactly as it does for `RepoID`,
-   and `aggregateRepos` becomes ONE fold over both additive dimensions — the
-   bot cleared beside the repo. The write half alone is not additive: it
+   `BotID` and, beside it, decision 11's reservation tier (`platform` or
+   `team`; a `team` tier's team is the key's own `TenantID`, because the
+   team tier serves a bot to the team that owns it alone) in a field of its
+   own — never `Key.Tier`, which already names the CREDENTIAL's resolution
+   tier and shares the words `team` and `platform`. `docID` leaves an empty
+   workload out exactly as it does for `RepoID`, and `aggregateRepos`
+   becomes ONE fold over both additive dimensions — the workload cleared
+   beside the repo. The write half alone is not additive: it
    splits a credential-month into rows no pre-dimension listing can tell
    apart, since `List`, `ListByFingerprint` and `ListByTier` all read
    through that fold (`summed`) and `MonthlyUsage` exposes no bot at all —
@@ -364,6 +390,60 @@ second half stays open by decision, in the consequences.
     unverified one witnessed. An unverified fleet is a WARNING and never a
     refusal (philosophy 1), and the conservative reading it falls back to is
     logged and counted, so a rollout is observable rather than silent.
+11. **A reservation's identity is tier-qualified, and the gate resolves the
+    bot before it judges.** This record first kept the bare name as an
+    accepted bound: `Reservation.BotID` carries no tier, `sameID` folds the
+    name only, and the launch handler's first `gateLaunch` takes the
+    request's label (`launchBotLabel`) before `resolveBotTiered` runs — so
+    a tenant that registers a team bot named `review-pr` is judged as the
+    reserved workload, and consumes or is refused on the platform bot's
+    band. The operator decided on 2026-11-03 to close it, and this decision
+    replaces the bound. A reservation names its tier beside the bot:
+    `platform` for the deployment's bot — served by a platform override or
+    the baked catalog, the two tiers the resolver falls to when the
+    launching team has no row of that name — and `team` for a team's bot,
+    which also names that team, because a team bot's name is unique only
+    inside its tenant. A stored reservation that names no tier is read as
+    `platform`: every reservation written before this decision protects the
+    deployment's bot, and that is the migration the operator decided.
+    `RepoQuota.ShareOfBot` names a reservation too, and is qualified by the
+    same rule, and `Policy.Validate`'s one-reservation-per-bot check, the
+    share's reservation lookup and `Policy.Bots()` key on the qualified
+    identity, so a platform reservation and a `team` one of the same name
+    coexist. The gate's subject is the RESOLVED identity — the canonical
+    name and the tier of the row that served (`launchBot.BotID`,
+    `launchBot.Tier()`) — and a continuation's is its run document's
+    (`Run.BotSourceTier`; empty before the stamp, it is read through
+    `BotSourceTenant`: `botsource.PlatformTenantID` is `platform`, any other
+    tenant is `team` for that tenant, empty is `platform`). Only the arms
+    that judge the LAUNCH against a reservation read that identity:
+    concurrency and the monthly dollars at the launch gate, and the window
+    reserve at the credential walk. The repository quota reads a
+    reservation too, but the quota's own: `gateRepoQuota` hands `RepoCap`
+    nothing but `subj.Repo`, and `RepoCap` resolves the quota's
+    `ShareOfBot` — qualified above — whatever is launching, so it never
+    reads the launch's identity. The record reads the operator's "before
+    it judges" as before it judges the bot — its reading, put to him when
+    #2980 is picked up: the arms that read no launch identity — the
+    maintenance fence, the teamless and member-rung refusals, the team read
+    and its suspend checks, the repository quota, and the launch-rate
+    token, which therefore moves ahead of concurrency — keep their place
+    ahead of the resolution, so a caller they refuse costs no resolution.
+    The rate token does not bound the work of a launch refused AFTER the
+    resolution: that refusal hands it back through
+    `launchAdmission.rollback`, as a monthly refusal does today (#1726,
+    pinned by `TestGateLaunch_RateTokenRefundedOnRollback` and the floor
+    test's "a monthly refusal refunds only its rate token"), and a
+    concurrency refusal never reached the token at all before this
+    decision. What bounds that work is what the reservation arms are fed:
+    the RAW resolution (`resolveBotTieredRaw` — the tier walk and, for a
+    stored row, its materialization, which the refusal's
+    `launchBot.Cleanup` removes), never the cloud snapshot:
+    `resolveBotTiered` is that call followed by `snapshotLaunchBot` in
+    cloud mode, and the snapshot runs only once the launch is admitted. The
+    same qualified identity is what the exact concurrency rule's per-bot
+    count and decision 7's workload dimension key on, so a team fork's runs
+    and spend never read as the reservation's own.
 
 ## Consequences
 
@@ -384,15 +464,13 @@ second half stays open by decision, in the consequences.
   is the meter's whole key, so two deployments' `acme/widgets` share one
   quota identity. The escape hatch is the one the derivation already names —
   a caller holding the forge's own project path must prefer it.
-- **A reservation's identity is still a bare bot NAME** (finding 2's second
-  half): `Reservation.BotID` carries no tier qualifier, `sameID` folds the
-  name only, and bot resolution keeps team-over-platform precedence by
-  design — so a tenant that registers a team bot named `review-pr` is judged
-  by the gate as the reserved workload. The gate's first call also takes the
-  RAW request label, before the resolution that would refuse an unknown one.
-  This record **does not close it**: it is an accepted bound with a
-  greppable escape hatch (the operator re-points the reservation), and
-  tier-qualifying the identity is its own unit under #950's net.
+- **A team's fork of a reserved bot is the team's workload** (decision 11):
+  launched under the reserved bot's name, it is judged as other work and
+  faces the ceiling the reservation lowers, while bot resolution keeps its
+  team-over-platform precedence unchanged. An operator who means to protect
+  a team's own bot writes a `team` reservation naming that team. A label
+  that resolves nowhere is refused before any arm judges it against a
+  reservation, so it never borrows a band on the way to its refusal.
 - **An opted-in workload that receives a pool grant loses the platform
   tier**: `poolGranted()` deactivates `credentialTierPlatform` in the same
   plan. That is the existing rule and it is not changed here — it is named
@@ -497,7 +575,10 @@ Nothing here is built. The first unit rebases on the landing of
    repo capped at N% of `review-pr`'s reserve is NOT refused by
    `feature-dev`'s spend; a credential-month written under two bots reads as
    ONE row through `List`, `ListByFingerprint` and `ListByTier`, the
-   mutation dropping the bot from the fold; the conformance suite extended
+   mutation dropping the bot from the fold; a platform `review-pr` and a
+   team's fork named `review-pr` stay two workloads in the share's
+   consumption, the mutation keying the dimension on the bare name; the
+   conformance suite extended
    for both twins; and the finding-6 case — an unverified fleet keeps the
    repository's total, so a runner that writes no bot cannot make the share
    read unconsumed. The mutation drops the engine-floor gate and the share
@@ -546,8 +627,54 @@ Nothing here is built. The first unit rebases on the landing of
     the same pair on `capPolicyFor`, whose nil arm hands every bot the
     UNLOWERED ceiling. The mutation collapses the arms back to one nil
     check, after which the cold-start row stops telling them apart.
+11. **The reservation's identity is tier-qualified** (#2980; `pkg/budgetfloor`,
+    `pkg/server`, `pkg/server/cloudpublisher`, the CLI,
+    `pkg/server/platform_settings.go`, `docs/quotas-and-limits.md`) —
+    numbered last so no other unit's number moves, and landing second,
+    right after unit 1. Decision 11: the
+    tier beside the bot on `Reservation` and `RepoQuota.ShareOfBot`, a match
+    that compares both, an untiered stored reservation read as `platform`,
+    `Policy.Validate`'s `seen`/`byBot` maps, its `ShareOfBot` lookup and
+    `Policy.Bots()` keyed on the qualified identity, and a gate whose
+    reservation arms judge the resolved identity on every launch surface —
+    the twelve `launchSubject` literals that name a bot at `70b5b1972` go
+    through ONE constructor fed by a `launchBot` or a run document, and a
+    static sweep in the shape of `bot_resolver_sweep_test.go` refuses a
+    literal outside it. The credential walk's window reserve takes the same
+    identity from the `LaunchSpec`'s `BotSourceTier`, or from the prior run
+    on a resume, threaded through `resolveAndSealCredentials` to
+    `capPolicyFor` — the walk runs before the `RunMessage` that carries the
+    tier is built. The operator doc moves with it in three places: the
+    gate's "six limits, in this exact order" puts the launch rate ahead of
+    concurrency; "The workload is a bot id" becomes a tier-qualified
+    identity, an untiered reservation read as `platform`; and "What is not
+    covered" says `POST /api/runs` is judged on its resolved bot, no longer
+    on the request's `bot_id`. Witness: a team bot homonymous with a reserved platform
+    bot, launched by its team through the REST launch, is NOT judged as the
+    reserved workload, and the same name launched by a team holding no row
+    of it IS — both directions, or a gate that refuses everything passes.
+    Two mutations: match on the folded name only, which reddens the homonym
+    row; judge the reservation arms on the request's label before the
+    resolution, which reddens whichever row the tierless label misreads —
+    both rows are owed. A policy holding a platform and a `team`
+    reservation of one name validates, and each matches only its own
+    launch; the mutation keys `Validate` on the folded name. A viewer, a
+    client out of launch-rate tokens and a launch over its repository quota
+    are refused with no resolver call; the mutation moves the whole gate
+    behind the resolution. A cloud launch refused on its concurrency arm
+    takes no snapshot and gets its rate token back; the mutation resolves
+    through `resolveBotTiered` ahead of the reservation arms. The migration's
+    witness is the existing surface tests that write an untiered reservation
+    on the baked catalog's `probe` bot and drive it through the resolution
+    (`TestHandleLaunchRun_CarriesTheRequestsBotToTheGate`,
+    `TestProcessBoardCard_CarriesTheCardsBotToTheGate`): they run unchanged,
+    and the mutation that reads an untiered reservation as naming no tier
+    reddens them.
 
 Units 4, 5 and 6 sequence after the branches that hold their files; unit 7
 and unit 8 sequence against #2029, whose revised plan targets the same NATS
 and chart surface. Unit 10 lands with unit 2 — the same gate's other arm,
-split out because its witness is the resolver's, not the ledger's.
+split out because its witness is the resolver's, not the ledger's. Unit 11
+lands ahead of unit 2 and unit 6: the per-bot count and the meter's workload
+dimension key on the identity it qualifies, and either one written under a
+bare name would carry the homonym into the ledger and the meter.
