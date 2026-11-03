@@ -4454,16 +4454,19 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// The HARD per-key concurrency cap, asked again on every resume
 	// (cred_slots.go): the slot this run held from a previous attempt is
 	// admitted again without taking a second one; a key full of OTHER runs
-	// keeps the run parked — the rollback above puts it back, and the retry
-	// sweeper asks again free of charge (ErrCredentialAtCapacity). Granted,
-	// the slots are the rollback's to give back, and only with a reverted
-	// flip (heldSlots).
+	// refuses the resume before anything is published, and the rollback
+	// above puts the run back as it was — a parked run stays parked with its
+	// retry armed, a paused one stays paused. Asking again is the caller's
+	// (ErrCredentialAtCapacity): the retry sweeper defers for free, the
+	// automations with a retry of their own wait on it, an operator is
+	// answered 429. Granted, the slots are the rollback's to give back, and
+	// only with a reverted flip (heldSlots).
 	held, refusal, admitErr := p.admitCredSlots(secretsCtx, spec.RunID, creds.credSlots)
 	if admitErr != nil {
 		return admitErr
 	}
 	if refusal != nil {
-		return fmt.Errorf("cloudpublisher: run %s stays parked: %w", spec.RunID, refusal)
+		return fmt.Errorf("cloudpublisher: resume of run %s refused before publishing, the run put back as it was: %w", spec.RunID, refusal)
 	}
 	heldSlots = held
 	// Re-resolved on resume too: the engine re-mirrors skills on every resume,

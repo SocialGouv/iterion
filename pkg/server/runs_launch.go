@@ -1213,10 +1213,12 @@ func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err er
 	case errors.Is(err, runview.ErrRunNotResumable):
 		status, code = http.StatusConflict, runNotResumableErrorCode
 	case errors.Is(err, cloudpublisher.ErrCredentialAtCapacity):
-		// The key the run sealed is full of other runs: the run stays
-		// parked and its sweeper asks again — the answer the launch gate
-		// gives a concurrency cap, with the same remedy (wait, or free a
-		// slot).
+		// The key the run sealed is full of other runs: the resume was
+		// refused before publishing and the run put back as it was — a
+		// parked run keeps its armed retry, which the sweeper asks again;
+		// any other is the caller's to resume once a slot frees. The answer
+		// the launch gate gives a concurrency cap, with the same remedy
+		// (wait, or free a slot).
 		status = http.StatusTooManyRequests
 	}
 	body := map[string]any{"error": fmt.Sprintf("resume: %v", err)}

@@ -21,7 +21,7 @@ import (
 func TestSweepDueRetries_ACredentialSlotWaitIsDeferredFreeOfCharge(t *testing.T) {
 	st := newFakeRetryStore()
 	st.claimWins["run-slot"] = true
-	resumer := &fakeResumer{failing: fmt.Errorf("cloudpublisher: run run-slot stays parked: %w", cloudpublisher.ErrCredentialAtCapacity)}
+	resumer := &fakeResumer{failing: fmt.Errorf("cloudpublisher: resume of run run-slot refused before publishing, the run put back as it was: %w", cloudpublisher.ErrCredentialAtCapacity)}
 	s := newRetrySweeperServer(t, st, resumer)
 
 	now := time.Now().UTC()
@@ -58,7 +58,7 @@ func TestSweepDueRetries_ACredentialSlotWaitIsDeferredFreeOfCharge(t *testing.T)
 func TestSweepDueRetries_AUsageWindowRowRefusedOnTheCapIsRetaggedAsASlotWait(t *testing.T) {
 	st := newFakeRetryStore()
 	st.claimWins["run-wall"] = true
-	resumer := &fakeResumer{failing: fmt.Errorf("cloudpublisher: run run-wall stays parked: %w", cloudpublisher.ErrCredentialAtCapacity)}
+	resumer := &fakeResumer{failing: fmt.Errorf("cloudpublisher: resume of run run-wall refused before publishing, the run put back as it was: %w", cloudpublisher.ErrCredentialAtCapacity)}
 	s := newRetrySweeperServer(t, st, resumer)
 
 	now := time.Now().UTC()
@@ -90,7 +90,7 @@ func TestSweepDueRetries_ACredentialSlotWaitPastMaxWaitIsAbandoned(t *testing.T)
 		RetryPolicy: &store.RunRetryPolicy{MaxWait: "1h"},
 		RetryState:  &store.RunRetryState{RetryAfter: &at, ScheduledAt: &scheduled, Reason: store.RetryReasonCredSlot},
 	}
-	resumer := &fakeResumer{failing: fmt.Errorf("cloudpublisher: run run-slot stays parked: %w", cloudpublisher.ErrCredentialAtCapacity)}
+	resumer := &fakeResumer{failing: fmt.Errorf("cloudpublisher: resume of run run-slot refused before publishing, the run put back as it was: %w", cloudpublisher.ErrCredentialAtCapacity)}
 	s := newRetrySweeperServer(t, st, resumer)
 
 	ref := dueRef("run-slot", at)
