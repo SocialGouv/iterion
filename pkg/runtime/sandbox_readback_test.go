@@ -1,12 +1,14 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os/exec"
 	"strings"
 	"testing"
 
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -217,6 +219,29 @@ func TestDrainRunFilesOnCleanupSurfacesAFailedDrain(t *testing.T) {
 			t.Fatalf("events = %+v, want none", events)
 		}
 	})
+}
+
+// TestAFailedDrainWarnsThePartialUploadNotAnEmptyPanel: a PARTIAL drain
+// leaves what it landed in the store's scratch dir, and the post-run
+// upload carries every file it finds — the panel reads partial, not
+// empty. The warn that says "empty" sends the operator to a panel state
+// that does not exist.
+func TestAFailedDrainWarnsThePartialUploadNotAnEmptyPanel(t *testing.T) {
+	var buf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelWarn, &buf)
+	run := &drainFakeRun{exportErr: errors.New("kubectl exec failed")}
+	drainRunFilesOnCleanup(run, logger, func(store.EventType, map[string]any) error { return nil })
+
+	out := buf.String()
+	if out == "" {
+		t.Fatal("a failed drain logged nothing — the failure must stay loud")
+	}
+	if !strings.Contains(out, "partial") {
+		t.Errorf("warn = %q, want the partial-upload truth: what landed before the failure still uploads", out)
+	}
+	if strings.Contains(out, "panel reads empty") {
+		t.Errorf("warn = %q, want no empty-panel claim — a partial drain leaves the panel partial", out)
+	}
 }
 
 // drainFakeRun implements the widened export seam and counts the drain

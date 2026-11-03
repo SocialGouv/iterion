@@ -2848,7 +2848,7 @@ func drainRunFilesOnCleanup(
 	defer cancel()
 	if err := exporter.ExportRunFiles(ctx); err != nil {
 		if logger != nil {
-			logger.Warn("runtime: sandbox run-files drain FAILED — the run's artifact files are not recoverable host-side and the panel reads empty (ADR-143): %v", err)
+			logger.Warn("runtime: sandbox run-files drain FAILED — what landed before the failure still uploads, so the panel may read partial rather than empty; the rest is lost with the sandbox (ADR-143): %v", err)
 		}
 		_ = emitEvent(store.EventSandboxRunFilesDrainFailed, map[string]any{
 			"driver": run.Driver(),

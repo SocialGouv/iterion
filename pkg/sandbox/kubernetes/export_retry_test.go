@@ -158,6 +158,32 @@ func TestExportWorkspace_RetriesATarThatRacedAWriter(t *testing.T) {
 	}
 }
 
+// TestExportWorkspace_ReplacesAFileTheArchiveCarriesAsADir: the archive's
+// view wins over one member, a dir included — the pod turned a host file
+// into a directory, and an extract that cannot build it fails the whole
+// export on MkdirAll instead of landing the run's work.
+func TestExportWorkspace_ReplacesAFileTheArchiveCarriesAsADir(t *testing.T) {
+	ws := exportTarget(t)
+	if err := os.WriteFile(filepath.Join(ws, "notes"), []byte("host file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pod := podTree(t, map[string]string{"notes/child.md": "pod made it a dir"})
+	kubectl, calls := exportShim(t, pod, 0, "")
+	if err := exportRun(ws, kubectl).ExportWorkspace(context.Background()); err != nil {
+		t.Fatalf("ExportWorkspace = %v, want the file-to-dir replacement landed", err)
+	}
+	info, err := os.Stat(filepath.Join(ws, "notes"))
+	if err != nil || !info.IsDir() {
+		t.Fatalf("exported notes is not the archive's dir (%v)", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(ws, "notes", "child.md")); err != nil || string(got) != "pod made it a dir" {
+		t.Errorf("exported child.md = %q (%v), want the archive's member under the rebuilt dir", got, err)
+	}
+	if n := calls(); n != 1 {
+		t.Errorf("pod tar ran %d time(s), want one clean archive", n)
+	}
+}
+
 // TestExportWorkspace_RefusesATreeThatKeepsChanging: the retry is bounded — a
 // workspace that never settles is still an export failure, never an archive
 // accepted half-written. The bound is the operator's to set.

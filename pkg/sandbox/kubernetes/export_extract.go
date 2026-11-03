@@ -54,6 +54,15 @@ func (r *Run) extractExport(stream io.Reader, hostDst string) (map[string]bool, 
 		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
+			// A file where the archive carries a dir is replaced — the
+			// mirror of writeExportFile's own replace: the archive's view
+			// wins over one member, pre-existing included, whatever the
+			// attempt that last touched the path wrote.
+			if info, err := os.Lstat(abs); err == nil && !info.IsDir() {
+				if err := os.Remove(abs); err != nil {
+					return nil, fmt.Errorf("replace %s: %w", abs, err)
+				}
+			}
 			if err := os.MkdirAll(abs, 0o755); err != nil {
 				return nil, fmt.Errorf("create %s: %w", abs, err)
 			}

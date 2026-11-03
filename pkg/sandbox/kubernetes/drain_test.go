@@ -176,6 +176,85 @@ func TestExportRunFilesDropsWhatOnlyTheRacedAttemptLanded(t *testing.T) {
 	}
 }
 
+// TestExportRunFilesCuresATypeFlipBetweenAttempts: the same race the
+// retry exists for includes a path changing KIND between attempts — a
+// raced attempt's extract must not leave a member standing where the
+// settled archive carries the other kind, and the retry must cure it
+// rather than fail hard on MkdirAll or OpenFile.
+func TestExportRunFilesCuresATypeFlipBetweenAttempts(t *testing.T) {
+	t.Run("a file the settled archive carries as a dir", func(t *testing.T) {
+		raced := podTree(t, map[string]string{"report.md": "# partial"})
+		settled := podTree(t, map[string]string{"report.md/child.md": "# settled"})
+		hostDst := t.TempDir()
+		kubectl, calls := exportShimSeq(t, []string{raced, settled}, 1, measuredRaceStderr)
+		r := drainRun([]sandbox.ReadBackDir{{ContainerPath: "/iterion/artifact-files", HostDir: hostDst}}, kubectl)
+
+		if err := r.ExportRunFiles(context.Background()); err != nil {
+			t.Fatalf("ExportRunFiles = %v, want the file-to-dir flip cured by the retry", err)
+		}
+		info, err := os.Stat(filepath.Join(hostDst, "report.md"))
+		if err != nil || !info.IsDir() {
+			t.Fatalf("drained report.md is not the settled archive's dir (%v)", err)
+		}
+		got, err := os.ReadFile(filepath.Join(hostDst, "report.md", "child.md"))
+		if err != nil || string(got) != "# settled" {
+			t.Errorf("drained child.md = %q (%v), want the settled member under the rebuilt dir", got, err)
+		}
+		if calls() != 2 {
+			t.Errorf("the drain archived the pod %d times, want the raced attempt retried once", calls())
+		}
+	})
+	t.Run("a dir the settled archive carries as a file", func(t *testing.T) {
+		raced := podTree(t, map[string]string{"sub/inner.md": "# raced"})
+		settled := podTree(t, map[string]string{"sub": "# settled as a file"})
+		hostDst := t.TempDir()
+		kubectl, calls := exportShimSeq(t, []string{raced, settled}, 1, measuredRaceStderr)
+		r := drainRun([]sandbox.ReadBackDir{{ContainerPath: "/iterion/artifact-files", HostDir: hostDst}}, kubectl)
+
+		if err := r.ExportRunFiles(context.Background()); err != nil {
+			t.Fatalf("ExportRunFiles = %v, want the dir-to-file flip cured by the retry", err)
+		}
+		got, err := os.ReadFile(filepath.Join(hostDst, "sub"))
+		if err != nil || string(got) != "# settled as a file" {
+			t.Errorf("drained sub = %q (%v), want the settled archive's regular file", got, err)
+		}
+		if info, statErr := os.Lstat(filepath.Join(hostDst, "sub")); statErr != nil || !info.Mode().IsRegular() {
+			t.Errorf("drained sub is not a regular file (%v) — the raced dir's tree survives where the settled archive carries a file", statErr)
+		}
+		if calls() != 2 {
+			t.Errorf("the drain archived the pod %d times, want the raced attempt retried once", calls())
+		}
+	})
+	t.Run("a pre-drain file under the path is not the drain's to take", func(t *testing.T) {
+		hostDst := t.TempDir()
+		keep := filepath.Join(hostDst, "sub", "keep.md")
+		if err := os.MkdirAll(filepath.Dir(keep), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(keep, []byte("the store held me before the drain"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		settled := podTree(t, map[string]string{"sub": "the pod settled on a file"})
+		kubectl, calls := exportShim(t, settled, 0, "")
+		r := drainRun([]sandbox.ReadBackDir{{ContainerPath: "/iterion/artifact-files", HostDir: hostDst}}, kubectl)
+
+		err := r.ExportRunFiles(context.Background())
+		if err == nil {
+			t.Fatal("ExportRunFiles = nil, want the removal refused — a tree holding pre-drain state is not the drain's to take")
+		}
+		if !strings.Contains(err.Error(), "keep.md") {
+			t.Errorf("error = %v, want the pre-drain entry the proof found named in the cause", err)
+		}
+		got, readErr := os.ReadFile(keep)
+		if readErr != nil || string(got) != "the store held me before the drain" {
+			t.Errorf("pre-drain keep.md = %q (%v), want it intact under the refused removal", got, readErr)
+		}
+		if calls() != 1 {
+			t.Errorf("the drain archived the pod %d times, want the refusal to end it — no retry cures it", calls())
+		}
+	})
+}
+
 // The meter: the cap is ADR-143's named and metered bound. Oversized
 // members are billed for what actually arrives and the drain fails rather
 // than truncating silently.
@@ -226,7 +305,7 @@ func TestExtractDrainRefusesASetOverTheCap(t *testing.T) {
 		pw.CloseWithError(tw.Close())
 	}()
 	r := drainRun(nil, "")
-	drained, _, err := r.extractDrain(pr, hostDst)
+	drained, _, err := r.extractDrain(pr, hostDst, nil)
 	if err == nil {
 		t.Fatal("extractDrain = nil, want the over-cap refusal")
 	}
