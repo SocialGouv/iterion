@@ -3,6 +3,7 @@ package chart_test
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"text/template/parse"
 
 	"gopkg.in/yaml.v3"
 )
@@ -117,10 +119,10 @@ func serverDeployment(name, deadline string) string {
 // TestChartKindWaitFollowsTheRenderedDeadline pins the derivation both
 // install sites share: the client wait is the deadline values-dev.yaml
 // renders into the server Deployment (1800 s) plus the helper's 120 s
-// margin, so the deadline — not pull time — decides the install's verdict.
-// Removing the knob from values-dev.yaml, or sizing the wait from anything
-// but the render, reds here: the client watch no longer covers the deadline
-// it installs.
+// margin, so the server's deadline — not pull time — decides the server
+// rollout's verdict. Removing the knob from values-dev.yaml, or sizing the
+// wait from anything but the render, reds here: the client watch no longer
+// covers the deadline it installs.
 func TestChartKindWaitFollowsTheRenderedDeadline(t *testing.T) {
 	if got, want := mustWait(t, "iterion", ".", "-f", "values-dev.yaml"), "1920s"; got != want {
 		t.Fatalf("chart-kind-wait iterion . -f values-dev.yaml = %q, want %q — the 1800 s deadline values-dev renders plus the 120 s margin; the client watch must cover the deadline it installs", got, want)
@@ -128,18 +130,33 @@ func TestChartKindWaitFollowsTheRenderedDeadline(t *testing.T) {
 }
 
 // TestChartKindWaitDerivesAndRefuses exercises the helper's contract: the
-// margin arithmetic on the render, a --set override the file never held,
-// the values forms a line reader of the file could not pair with their
-// key, and the refusals — a deadline the render leaves out (unset or 0), a
-// string or a float, a release with no server Deployment or several, a
-// render helm refuses, a 0, a negative, a leading zero, a sign, base prefix
-// or underscore, or an int32 overflow in the render: each spelling other
-// than plain decimal digits, whatever its readers make of it, and each
-// refusal judged on the cause it names.
+// margin arithmetic on the render, the server's deadline alone beside a
+// runner's that outlives it (the limit the helper's header states), a --set
+// override the file never held, the values forms a line reader of the file
+// could not pair with their key, and the refusals — a deadline the render
+// leaves out (unset or 0), a string or a float, a release with no server
+// Deployment or several, a render helm refuses, a 0, a negative, a leading
+// zero, a sign, base prefix or underscore, or an int32 overflow in the
+// render: each spelling other than plain decimal digits, whatever its
+// readers make of it, and each refusal judged on the cause it names.
 func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 	t.Run("deadline plus the 120s margin", func(t *testing.T) {
 		if got, want := mustWait(t, "iterion", ".", "-f", valuesFile(t, "mode: cloud\nserver:\n  progressDeadlineSeconds: 600\n")), "720s"; got != want {
 			t.Fatalf("chart-kind-wait = %q, want %q — deadline + 120 s margin", got, want)
+		}
+	})
+	t.Run("the wait follows the server alone, not a runner whose deadline outlives it", func(t *testing.T) {
+		// helm --wait watches the runner too, and its drain budget is not
+		// the wait's: the helper's header and docs/cloud-deployment.md
+		// state that limit. The render must carry that runner, or the 720 s
+		// proves nothing about following the server alone.
+		values := valuesFile(t, "mode: cloud\nserver:\n  progressDeadlineSeconds: 600\nrunner:\n  enabled: true\n  progressDeadlineSeconds: 30000\n")
+		runner := must(t, manifests(t, mustRender(t, "-f", values)), "Deployment", "iterion-runner")
+		if got := dig(runner, "spec", "progressDeadlineSeconds"); got != 30000 {
+			t.Fatalf("the runner Deployment renders progressDeadlineSeconds %v, want 30000 — the witness needs a runner whose deadline outlives the wait", got)
+		}
+		if got, want := mustWait(t, "iterion", ".", "-f", values), "720s"; got != want {
+			t.Fatalf("chart-kind-wait = %q, want %q — the wait follows the server Deployment's 600 s alone; the runner's 30000 s is the limit the header states, not a deadline the wait is sized from", got, want)
 		}
 	})
 	t.Run("a --set override is read from the render, not the file", func(t *testing.T) {
@@ -819,148 +836,238 @@ func TestChartKindWaitToolchainPinsYq(t *testing.T) {
 	}
 }
 
-// templateActions returns the actions of a Go template text — what stands
-// between {{ and }}, the whitespace markers trimmed — in source order,
-// comment actions left out.
-func templateActions(text string) []string {
-	var actions []string
-	for _, m := range regexp.MustCompile(`(?s)\{\{(.*?)\}\}`).FindAllStringSubmatch(text, -1) {
-		body := strings.TrimSpace(m[1])
-		body = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(body, "-"), "-"))
-		if strings.HasPrefix(body, "/*") {
-			continue
+// chartTemplates parses every file of a chart's templates directory with
+// text/template's own parser — the one helm loads them with — the function
+// names left unchecked (helm's and sprig's are not this package's to list),
+// and returns the trees by name: each file under its path relative to dir,
+// each define or block under the name it declares. A name defined twice is
+// the parser's own refusal.
+func chartTemplates(t *testing.T, dir string) map[string]*parse.Tree {
+	t.Helper()
+	trees := map[string]*parse.Tree{}
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
 		}
-		actions = append(actions, body)
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return parseTemplate(trees, filepath.ToSlash(rel), string(raw))
+	})
+	if err != nil {
+		t.Fatalf("parse the templates of %s: %v", dir, err)
 	}
-	return actions
+	return trees
 }
 
-// actionWord is the keyword an action opens with: if, with, range, define,
-// block, else, end — or the first word of a pipeline.
-func actionWord(action string) string {
-	if words := strings.Fields(action); len(words) > 0 {
-		return words[0]
+// parseTemplate parses one template text into trees under name, the
+// defines it holds beside it.
+func parseTemplate(trees map[string]*parse.Tree, name, text string) error {
+	tree := parse.New(name)
+	tree.Mode = parse.SkipFuncCheck
+	_, err := tree.Parse(text, "", "", trees)
+	return err
+}
+
+// walkTemplate calls visit on n and on every node beneath it, in source
+// order, with the pipeline each node sits in (nil outside one).
+func walkTemplate(n parse.Node, pipe *parse.PipeNode, visit func(parse.Node, *parse.PipeNode)) {
+	visit(n, pipe)
+	switch n := n.(type) {
+	case *parse.ListNode:
+		for _, c := range n.Nodes {
+			walkTemplate(c, nil, visit)
+		}
+	case *parse.ActionNode:
+		walkTemplate(n.Pipe, nil, visit)
+	case *parse.PipeNode:
+		for _, v := range n.Decl {
+			walkTemplate(v, n, visit)
+		}
+		for _, c := range n.Cmds {
+			walkTemplate(c, n, visit)
+		}
+	case *parse.CommandNode:
+		for _, a := range n.Args {
+			walkTemplate(a, pipe, visit)
+		}
+	case *parse.ChainNode:
+		walkTemplate(n.Node, pipe, visit)
+	case *parse.IfNode:
+		walkBranch(&n.BranchNode, visit)
+	case *parse.RangeNode:
+		walkBranch(&n.BranchNode, visit)
+	case *parse.WithNode:
+		walkBranch(&n.BranchNode, visit)
+	case *parse.TemplateNode:
+		if n.Pipe != nil {
+			walkTemplate(n.Pipe, nil, visit)
+		}
+	}
+}
+
+// walkBranch walks the pipeline and both lists of an if, range or with.
+func walkBranch(b *parse.BranchNode, visit func(parse.Node, *parse.PipeNode)) {
+	walkTemplate(b.Pipe, nil, visit)
+	walkTemplate(b.List, nil, visit)
+	if b.ElseList != nil {
+		walkTemplate(b.ElseList, nil, visit)
+	}
+}
+
+// stateFields maps each field `helm template` renders from the client's
+// stand-ins, not the cluster's, to what it reads: .Capabilities
+// (off-cluster, the client's defaults stand in for the cluster's version
+// and API set) and .Release.IsInstall / IsUpgrade / Revision (a template
+// render is always an install at revision 1). .Release.Name, .Namespace
+// and .Service are the install's own arguments and render the same.
+var stateFields = map[string]string{
+	"Capabilities": ".Capabilities",
+	"IsInstall":    ".Release.IsInstall",
+	"IsUpgrade":    ".Release.IsUpgrade",
+	"Revision":     ".Release.Revision",
+}
+
+// hashFuncs reduce what flows into them to a digest.
+var hashFuncs = map[string]bool{"sha256sum": true, "sha1sum": true, "adler32sum": true}
+
+// stateField judges the field names of one chain, whatever receiver it
+// starts from — dot, $, an alias of the root such as $root or .root, a
+// parenthesised pipeline: a state field anywhere in the chain is a read,
+// named, unless Values comes first, below which every key is the
+// operator's data whatever it is named.
+func stateField(fields []string) string {
+	for _, f := range fields {
+		if f == "Values" {
+			return ""
+		}
+		if read := stateFields[f]; read != "" {
+			return read
+		}
 	}
 	return ""
 }
 
-// namedTemplates reads every define block of the .tpl files in dir: the
-// name → the actions of its body, define and end included. A define that
-// opens inside another, or one left open, is text/template's refusal,
-// named here rather than a body attributed to the wrong name.
-func namedTemplates(t *testing.T, dir string) map[string][]string {
-	t.Helper()
-	files, err := filepath.Glob(filepath.Join(dir, "*.tpl"))
-	if err != nil {
-		t.Fatal(err)
+// hashedAfter reports whether a hash function follows cmd in its pipeline,
+// so what cmd renders lands in a digest.
+func hashedAfter(pipe *parse.PipeNode, cmd *parse.CommandNode) bool {
+	if pipe == nil {
+		return false
 	}
-	defs := map[string][]string{}
-	for _, file := range files {
-		raw, err := os.ReadFile(file)
-		if err != nil {
-			t.Fatal(err)
+	after := false
+	for _, c := range pipe.Cmds {
+		if c == cmd {
+			after = true
+			continue
 		}
-		name, depth := "", 0
-		for _, action := range templateActions(string(raw)) {
-			word := actionWord(action)
-			if word == "define" || word == "block" {
-				if name != "" {
-					t.Fatalf("%s: `%s` opens inside the define %q — text/template refuses a nested define", file, action, name)
-				}
-				m := regexp.MustCompile(`^(?:define|block)\s+"([^"]+)"`).FindStringSubmatch(action)
-				if m == nil {
-					t.Fatalf("%s: the name of `%s` is not a quoted literal", file, action)
-				}
-				if _, dup := defs[m[1]]; dup {
-					t.Fatalf("%s: %q is defined twice", file, m[1])
-				}
-				name, depth = m[1], 1
-				defs[name] = []string{action}
-				continue
-			}
-			if name == "" {
-				continue
-			}
-			defs[name] = append(defs[name], action)
-			switch word {
-			case "if", "with", "range":
-				depth++
-			case "end":
-				if depth--; depth == 0 {
-					name = ""
-				}
-			}
-		}
-		if name != "" {
-			t.Fatalf("%s: the define %q is never closed", file, name)
+		if fn, ok := c.Args[0].(*parse.IdentifierNode); after && ok && hashFuncs[fn.Ident] {
+			return true
 		}
 	}
-	return defs
+	return false
 }
 
-// serverRenderPath returns the actions the server Deployment renders
-// through: templates/server-deployment.yaml and, transitively, every named
-// template it includes by a literal name, keyed by file or template name.
-// A computed include — `include (print $.Template.BasePath
-// "/configmap.yaml")`, the pod's checksum annotation — is a string hashed
-// into an annotation, not the kind, the labels or the deadline the helper
-// reads, and is not followed.
-func serverRenderPath(t *testing.T, dir string) map[string][]string {
+// renderPathReads walks the render path of the template named root — that
+// tree and, transitively, every template it includes or calls by a literal
+// name — and names every read `helm template` cannot reproduce: a state
+// field through any receiver, a key spelled like one (index, get or dig on
+// the root reach it), a lookup (empty off-cluster), and what the walk
+// cannot follow — an include of a computed name, a tpl, whose text comes
+// from values — unless a hash function follows it in its pipeline (the
+// pod's checksum/config annotation: a digest of the ConfigMap, never the
+// kind, the labels or the deadline the helper reads). Each entry reads
+// "<file>:<line>:<col> (<template>): `<node>` <what>", sorted.
+func renderPathReads(t *testing.T, trees map[string]*parse.Tree, root string) []string {
 	t.Helper()
-	defs := namedTemplates(t, dir)
-	raw, err := os.ReadFile(filepath.Join(dir, "server-deployment.yaml"))
-	if err != nil {
-		t.Fatal(err)
+	if _, ok := trees[root]; !ok {
+		t.Fatalf("no template named %q to walk", root)
 	}
-	path := map[string][]string{"server-deployment.yaml": templateActions(string(raw))}
-	queue := []string{"server-deployment.yaml"}
-	ref := regexp.MustCompile(`\b(?:include|template)\s+"([^"]+)"`)
-	for len(queue) > 0 {
-		cur := queue[0]
-		queue = queue[1:]
-		for _, action := range path[cur] {
-			for _, m := range ref.FindAllStringSubmatch(action, -1) {
-				if _, seen := path[m[1]]; seen {
-					continue
-				}
-				body, ok := defs[m[1]]
-				if !ok {
-					t.Fatalf("%s includes %q, which no .tpl of %s defines", cur, m[1], dir)
-				}
-				path[m[1]] = body
-				queue = append(queue, m[1])
-			}
-		}
-	}
-	return path
-}
-
-// clusterStateRead matches what `helm template` cannot see: .Capabilities
-// (off-cluster, the client's defaults stand in for the cluster's version
-// and API set), lookup (empty off-cluster) and .Release.IsInstall /
-// .Release.IsUpgrade / .Release.Revision (a template render is always an
-// install at revision 1). .Release.Name, .Release.Namespace and
-// .Release.Service are the install's own arguments and render the same; a
-// values key spelled like one of these (.Values.lookup) is not a read.
-var clusterStateRead = regexp.MustCompile(`(?:^|[\s($|])(\.Capabilities\b|lookup\b|\.Release\.(?:IsInstall|IsUpgrade|Revision)\b)`)
-
-// clusterStateReads names every action of path that reads cluster or
-// release state, in a stable order: "<template>: `<action>` reads <what>".
-func clusterStateReads(path map[string][]string) []string {
-	names := make([]string, 0, len(path))
-	for name := range path {
-		names = append(names, name)
-	}
-	slices.Sort(names)
 	var reads []string
-	for _, name := range names {
-		for _, action := range path[name] {
-			for _, m := range clusterStateRead.FindAllStringSubmatch(action, -1) {
-				reads = append(reads, fmt.Sprintf("%s: `%s` reads %s", name, action, m[1]))
+	seen := map[string]bool{root: true}
+	queue := []string{root}
+	for len(queue) > 0 {
+		name := queue[0]
+		queue = queue[1:]
+		tree := trees[name]
+		note := func(n parse.Node, what string) {
+			loc, _ := tree.ErrorContext(n)
+			reads = append(reads, fmt.Sprintf("%s (%s): `%s` %s", loc, name, n, what))
+		}
+		follow := func(target string) {
+			if _, ok := trees[target]; !ok {
+				t.Fatalf("%s includes %q, which no template defines", name, target)
+			}
+			if !seen[target] {
+				seen[target] = true
+				queue = append(queue, target)
 			}
 		}
+		walkTemplate(tree.Root, nil, func(n parse.Node, pipe *parse.PipeNode) {
+			switch n := n.(type) {
+			case *parse.TemplateNode:
+				follow(n.Name)
+			case *parse.CommandNode:
+				fn, ok := n.Args[0].(*parse.IdentifierNode)
+				if !ok {
+					return
+				}
+				switch fn.Ident {
+				case "include":
+					if len(n.Args) > 1 {
+						if s, ok := n.Args[1].(*parse.StringNode); ok {
+							follow(s.Text)
+							return
+						}
+					}
+					if !hashedAfter(pipe, n) {
+						note(n, "includes a computed name, which this guard cannot follow")
+					}
+				case "tpl":
+					if !hashedAfter(pipe, n) {
+						note(n, "renders text through tpl, which this guard cannot read")
+					}
+				}
+			case *parse.IdentifierNode:
+				if n.Ident == "lookup" {
+					note(n, "reads lookup")
+				}
+			case *parse.FieldNode:
+				if read := stateField(n.Ident); read != "" {
+					note(n, "reads "+read)
+				}
+			case *parse.VariableNode:
+				if read := stateField(n.Ident[1:]); read != "" {
+					note(n, "reads "+read)
+				}
+			case *parse.ChainNode:
+				if read := stateField(n.Field); read != "" {
+					note(n, "reads "+read)
+				}
+			case *parse.StringNode:
+				if read := stateFields[n.Text]; read != "" {
+					note(n, "names "+read+" as a key")
+				}
+			}
+		})
 	}
+	slices.Sort(reads)
 	return reads
+}
+
+// textReads parses one template text as the server Deployment's own file
+// and returns what the guard names on it.
+func textReads(t *testing.T, text string) []string {
+	t.Helper()
+	trees := map[string]*parse.Tree{}
+	if err := parseTemplate(trees, "server-deployment.yaml", text); err != nil {
+		t.Fatalf("parse %q: %v", text, err)
+	}
+	return renderPathReads(t, trees, "server-deployment.yaml")
 }
 
 // TestChartKindWaitRenderReadsNoClusterState guards the helper's premise:
@@ -969,19 +1076,25 @@ func clusterStateReads(path map[string][]string) []string {
 // .Capabilities, lookup, .Release.IsInstall / IsUpgrade / Revision. None is
 // read today; a template author who reaches for one on that path reds
 // here with the drift named, instead of handing the install a wait sized
-// from a Deployment it does not apply. The path is server-deployment.yaml
-// and the named templates it includes, transitively; the other templates
-// may read what they like, the helper never reads them. Runs everywhere.
+// from a Deployment it does not apply. The templates are read through
+// text/template's own parser, so a read is found whatever its receiver —
+// the chart hands its root on as `(dict "root" $ …)`, and `$root.Release`
+// or `.root.Capabilities` is its idiom, not a corner — and what the walk
+// cannot follow (a computed include, a tpl) is named too, unless only its
+// digest renders. The path is server-deployment.yaml and the templates it
+// includes, transitively; the other templates may read what they like, the
+// helper never reads them. Runs everywhere.
 func TestChartKindWaitRenderReadsNoClusterState(t *testing.T) {
 	t.Run("the chart's server path", func(t *testing.T) {
-		if reads := clusterStateReads(serverRenderPath(t, "templates")); len(reads) != 0 {
+		if reads := renderPathReads(t, chartTemplates(t, "templates"), "server-deployment.yaml"); len(reads) != 0 {
 			t.Fatalf("the server Deployment renders through a read `helm template` cannot see — scripts/chart-kind-wait.sh sizes the install's wait from that render, and the install would apply a different Deployment (the helper's header names the condition):\n  %s", strings.Join(reads, "\n  "))
 		}
 	})
 
 	// The guard on a scratch templates dir: a read on the path is named
-	// through two includes, and a read in a template the server Deployment
-	// never includes is not the helper's business.
+	// through two includes and through the root handed on in a dict, and a
+	// read in a template the server Deployment never includes is not the
+	// helper's business.
 	t.Run("follows the includes and ignores a template off the path", func(t *testing.T) {
 		dir := t.TempDir()
 		write := func(name, text string) {
@@ -990,7 +1103,7 @@ func TestChartKindWaitRenderReadsNoClusterState(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		write("server-deployment.yaml", "kind: Deployment\nmetadata:\n  name: {{ include \"scratch.name\" . }}\n  annotations:\n    checksum/config: {{ include (print $.Template.BasePath \"/configmap.yaml\") . | sha256sum }}\n")
+		write("server-deployment.yaml", "kind: Deployment\nmetadata:\n  name: {{ include \"scratch.name\" . }}\n  annotations:\n    checksum/config: {{ include (print $.Template.BasePath \"/configmap.yaml\") . | sha256sum }}\nspec:\n  {{- with (include \"scratch.scheduling\" (dict \"root\" $ \"component\" \"server\")) }}\n  {{- . | nindent 2 }}\n  {{- end }}\n")
 		write("_helpers.tpl", `{{/* the name, through a nested if */}}
 {{- define "scratch.name" -}}
 {{- if .Values.x -}}{{ include "scratch.deep" . }}{{- else -}}x{{- end -}}
@@ -998,40 +1111,72 @@ func TestChartKindWaitRenderReadsNoClusterState(t *testing.T) {
 {{- define "scratch.deep" -}}
 {{ (lookup "v1" "ConfigMap" .Release.Namespace "x").data.name }}
 {{- end -}}
+{{- define "scratch.scheduling" -}}
+{{- $root := .root -}}
+{{- if $root.Release.IsUpgrade }}upgraded: true{{ end }}
+{{- end -}}
 {{- define "scratch.aside" -}}
 {{ .Capabilities.KubeVersion.Major }}
 {{- end -}}
 `)
-		reads := clusterStateReads(serverRenderPath(t, dir))
-		if len(reads) != 1 || !strings.HasPrefix(reads[0], "scratch.deep: ") || !strings.HasSuffix(reads[0], " reads lookup") {
-			t.Fatalf("a lookup two includes deep must be the one read named, got %q", reads)
+		reads := renderPathReads(t, chartTemplates(t, dir), "server-deployment.yaml")
+		want := []string{
+			" (scratch.deep): `lookup` reads lookup",
+			" (scratch.scheduling): `$root.Release.IsUpgrade` reads .Release.IsUpgrade",
+		}
+		if len(reads) != len(want) {
+			t.Fatalf("a lookup two includes deep and a $root.Release.IsUpgrade behind the dict the root is handed on in must be the two reads named, got %q", reads)
+		}
+		for _, w := range want {
+			if !slices.ContainsFunc(reads, func(r string) bool { return strings.HasSuffix(r, w) }) {
+				t.Fatalf("no read ends with %q — a lookup two includes deep and a $root.Release.IsUpgrade behind the dict the root is handed on in must both be named, got %q", w, reads)
+			}
 		}
 	})
 
-	t.Run("each read is recognised, the install's own arguments are not", func(t *testing.T) {
-		for _, action := range []string{
-			`.Capabilities.KubeVersion.Major`,
-			`if $.Capabilities.APIVersions.Has "policy/v1"`,
-			`lookup "v1" "Secret" .Release.Namespace "x"`,
-			`$s := (lookup "v1" "Secret" "ns" "x").data`,
-			`if .Release.IsUpgrade`,
-			`if not .Release.IsInstall`,
-			`.Release.Revision`,
+	t.Run("each read is recognised whatever its receiver, the install's own arguments are not", func(t *testing.T) {
+		for _, text := range []string{
+			`{{ .Capabilities.KubeVersion.Major }}`,
+			`{{ if $.Capabilities.APIVersions.Has "policy/v1" }}x{{ end }}`,
+			`{{ lookup "v1" "Secret" .Release.Namespace "x" }}`,
+			`{{ $s := (lookup "v1" "Secret" "ns" "x").data }}`,
+			`{{ if .Release.IsUpgrade }}x{{ end }}`,
+			`{{ if not .Release.IsInstall }}x{{ end }}`,
+			`{{ .Release.Revision }}`,
+			// The root reached through an alias: the chart's own idiom.
+			`{{ $root := . }}{{ $root.Release.IsUpgrade }}`,
+			`{{ .root.Capabilities.KubeVersion }}`,
+			`{{ $root := .root }}{{ if $root.Capabilities.APIVersions.Has "policy/v1" }}x{{ end }}`,
+			`{{ (index . "root").Capabilities.KubeVersion }}`,
+			`{{ $rel := .Release }}{{ $rel.Revision }}`,
+			`{{ with .Release }}{{ .IsUpgrade }}{{ end }}`,
+			// A key lookup on the root or the release.
+			`{{ index $ "Capabilities" }}`,
+			`{{ get .Release "IsInstall" }}`,
+			`{{ dig "Release" "Revision" 0 $ }}`,
+			// Text the walk cannot follow.
+			`{{ tpl .Values.server.extra . }}`,
+			`{{ include (printf "iterion.%s" .Values.x) . }}`,
+			`{{ $name := "x" }}{{ include $name . }}`,
 		} {
-			if reads := clusterStateReads(map[string][]string{"t": {action}}); len(reads) != 1 {
-				t.Fatalf("`%s` must be one read, got %q", action, reads)
+			if reads := textReads(t, text); len(reads) != 1 {
+				t.Fatalf("`%s` must be one read, got %q", text, reads)
 			}
 		}
-		for _, action := range []string{
-			`.Release.Name`,
-			`$.Release.Namespace`,
-			`.Release.Service`,
-			`.Values.lookup`,
-			`.Values.Capabilities.enabled`,
-			`include (print $.Template.BasePath "/configmap.yaml") . | sha256sum`,
+		for _, text := range []string{
+			`{{ .Release.Name }}`,
+			`{{ $.Release.Namespace }}`,
+			`{{ .Release.Service }}`,
+			`{{ $root := .root }}{{ $root.Release.Name }}`,
+			`{{ .Values.lookup }}`,
+			`{{ .Values.Capabilities.enabled }}`,
+			`{{ $.Values.Release.IsUpgrade }}`,
+			`{{ .root.Values.Revision }}`,
+			`{{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}`,
+			`{{ tpl .Values.server.extra . | sha256sum }}`,
 		} {
-			if reads := clusterStateReads(map[string][]string{"t": {action}}); len(reads) != 0 {
-				t.Fatalf("`%s` renders the same off-cluster and must not be a read, got %q", action, reads)
+			if reads := textReads(t, text); len(reads) != 0 {
+				t.Fatalf("`%s` renders the same off-cluster and must not be a read, got %q", text, reads)
 			}
 		}
 	})

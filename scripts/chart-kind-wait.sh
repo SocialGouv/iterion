@@ -1,12 +1,19 @@
 #!/usr/bin/env sh
 # Print the helm --timeout an install must watch: the progressDeadlineSeconds
 # the install's own render gives the server Deployment, plus a 120 s margin,
-# so the deadline — not a fixed client cap — decides whether a slow install
-# is called Failed. The kubelet serialises image pulls on a fresh node, so a
-# first install can spend many minutes before the server pod even starts
-# (measured on kind: 7m15 of pull time for the nats image, iterion#2780); a
-# client cap smaller than the deadline makes helm give up while the workload
-# is still Progressing.
+# so that deadline — not a fixed client cap — decides whether a slow server
+# rollout is called Failed. The kubelet serialises image pulls on a fresh
+# node, so a first install can spend many minutes before the server pod even
+# starts (measured on kind: 7m15 of pull time for the nats image,
+# iterion#2780); a client cap smaller than the deadline makes helm give up
+# while the server is still Progressing.
+#
+# The wait follows that one deadline. helm --wait watches every workload of
+# the release, and the others keep their own: a Deployment whose deadline
+# outlives the server's — values.yaml gives the runner 30000 s, a budget for
+# lame-duck drains that values-dev keeps — is cut by this cap, not by its
+# deadline, when it is still Progressing as the wait ends; a StatefulSet
+# (the NATS sub-chart's) has no deadline, only this cap.
 #
 # The deadline is read from the manifest helm renders for the install's own
 # arguments — `helm template <release> <chart> [-f …] [--set …]`, the very
@@ -29,7 +36,8 @@
 # `.Release.IsInstall` / `.Release.IsUpgrade` / `.Release.Revision` (a
 # template render is always an install at revision 1). None is read today;
 # TestChartKindWaitRenderReadsNoClusterState (charts/iterion) refuses one on
-# that path, naming the drift.
+# that path whatever its receiver (the chart hands its includes the root as
+# .root), naming the drift.
 #
 # Refusals are loud and name their cause: a render helm refuses; a render
 # with no server Deployment (mode=local renders a StatefulSet, which has no
@@ -164,9 +172,9 @@ if [ ${#deadline} -gt 10 ] || [ "$deadline" -gt 2147483647 ]; then
   exit 1
 fi
 
-# The deadline budgets the server Deployment alone; the wait also covers the
-# stores and the release plumbing, and helm needs a breath after the moment
-# the deadline can fire. Within int32 the sum stays exact in shell
-# arithmetic.
+# The margin keeps helm watching past the moment the server's deadline can
+# fire: the client never gives up on the server before Kubernetes could call
+# its rollout Failed. The other workloads' deadlines are not followed (the
+# header says which). Within int32 the sum stays exact in shell arithmetic.
 margin=120
 echo "$((deadline + margin))s"
