@@ -64,10 +64,13 @@ type SubscriptionStore interface {
 	// re-reads instead of writing the swept pin back — no update lane
 	// resurrects a swept pin. The one writer left that can store a pin
 	// naming a record deleted mid-request is a row BORN mid-delete (a
-	// create whose validation beat the revocation): the delete's retry
-	// sweep is what reaches it. A clear that removes nothing writes
-	// nothing. ErrSubscriptionNotFound when the row is gone — to the sweep,
-	// a row that died mid-flight has no pins left to clear.
+	// write whose validation beat the revocation and landed after the
+	// sweep's listing): the write route itself re-checks the records its
+	// landed pins name and calls this clear for a revoked one — the
+	// delete's listing never saw the row, so nothing on the delete side
+	// can. A clear that removes nothing writes nothing.
+	// ErrSubscriptionNotFound when the row is gone — to the sweep, a row
+	// that died mid-flight has no pins left to clear.
 	ClearCredentialPins(ctx context.Context, id, recordID string) (bool, error)
 
 	// ListByTenant returns every subscription owned by a tenant

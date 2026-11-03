@@ -466,15 +466,25 @@ still lived and lands after the sweep's listing, which therefore never
 sees it — and the write routes close that half themselves: every
 pin-landing write (both lanes' create and edit) re-checks the records its
 landed pins name, and one already revoked sweeps immediately under the
-same detached context as the delete's sweep; its receipt lands in the
-same audit line (`pins_cleared`). The sweep
+same detached context as the delete's sweep. The webhook routes carry that
+receipt in their audit line (`pins_cleared`); the trigger routes, which
+audit nothing today, log it. A re-check the store refuses splits by what a
+retry can mend: an edit answers 5xx — the edit is stored, nothing one-time
+is lost, and the retry re-reads and re-validates the very pins, a dead
+record refused by name; a create answers 201 with the row and
+`pins_unreconciled`, the record ids it could not vouch for, the cause in
+the server log under the row id — the row is already stored under a fresh
+id, a retry of a 5xx would mint a second one, and a webhook's token exists
+only in that one answer. The sweep
 runs detached from the request: a
 client hanging up mid-sweep must not cancel the clear half-way. A sweep the
 store refuses answers 5xx — the client body stays opaque, the logged cause
 names both halves: the deletion that happened and the pins still standing
 — and the delete's RETRY finishes the sweep before its 404: revocation is
 the irreversible half, so "not found" is exactly the shape of an
-interrupted sweep, and the retry is the reconciliation path. One stored
+interrupted sweep, and the retry is the reconciliation path; a retry whose
+right to sweep the identity store cannot judge (an outage, not a refusal)
+answers 5xx too, never a 404 over pins that may still stand. One stored
 shape the sweep's targeted writes cannot address at all is a pin name
 holding `.` or `$` (possible on rows written before the name guard): the
 Mongo clears rewrite that pin map's subdocument under a version CAS

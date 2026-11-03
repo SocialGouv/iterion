@@ -34,13 +34,14 @@ type ConfigStore interface {
 	// between the caller's list and this clear survives untouched, and a
 	// swept pin cannot resurrect through a writer that validates after the
 	// delete — the write-time validators refuse a dead record's id; a write
-	// that validated while the record lived can still land after the sweep,
-	// the race the delete's 404-heal pass re-sweeps. Each real removal bumps
-	// version, so an editor holding a pre-sweep snapshot conflicts and
-	// re-reads instead of writing the swept pin back; a clear that removes
-	// nothing writes nothing and moves no version. ErrNotFound when the
-	// config is gone; a config holding no such entry is a no-op, not an
-	// error.
+	// that validated while the record lived can still land after the
+	// sweep's listing, and that write's own route re-checks the records its
+	// landed pins name and calls this clear for a revoked one (the delete's
+	// listing never saw the row). Each real removal bumps version, so an
+	// editor holding a pre-sweep snapshot conflicts and re-reads instead of
+	// writing the swept pin back; a clear that removes nothing writes
+	// nothing and moves no version. ErrNotFound when the config is gone; a
+	// config holding no such entry is a no-op, not an error.
 	ClearCredentialPins(ctx context.Context, id, recordID string) (bool, error)
 	Delete(ctx context.Context, id string) error
 	ListByTenant(ctx context.Context, tenantID string) ([]Config, error)

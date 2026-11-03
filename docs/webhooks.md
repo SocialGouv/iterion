@@ -1232,6 +1232,13 @@ The `token` field is the **only** way to recover the plaintext — once
 the response is closed, only the unsalted SHA-256 hash remains. The studio shows
 it inside a "copy now, you won't see it again" affordance.
 
+An optional `pins_unreconciled` list beside them names the api keys or
+stored secrets that a `key_overrides` / `secret_overrides` pin names and
+that the route could not re-check once the row was stored
+([byok.md](byok.md#per-webhook-key-override)). The webhook exists and the
+token has no second copy, so the answer stays a 201: re-read those records
+and clear a pin naming a deleted one.
+
 ### `key_overrides` — pin a BYOK key per webhook
 
 `key_overrides` maps a provider name (`"anthropic"`, `"openai"`, …) to a
