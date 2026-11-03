@@ -3,7 +3,6 @@ package docker
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -169,18 +168,13 @@ func ValidateSpecMounts(spec sandbox.Spec) error {
 			return err
 		}
 	}
-	// Env vars are injected via `docker run --env K=V`; the same
-	// newline/NUL/`=`-in-key checks Driver.Start applies must hold here,
-	// else a malformed value — from the workflow's `sandbox.env:`, or a
-	// `${localEnv:…}` expansion of it — passes the doctor green but
-	// fails at container start. Sorted so the
-	// reported offender is deterministic across map iterations.
-	envKeys := make([]string, 0, len(spec.Env))
-	for k := range spec.Env {
-		envKeys = append(envKeys, k)
-	}
-	sort.Strings(envKeys)
-	for _, k := range envKeys {
+	// The container's creation env is injected via `docker run --env K=V`;
+	// the same newline/NUL/`=`-in-key checks Driver.Start applies must hold
+	// here, else a malformed value — from the workflow's `sandbox.env:`, or
+	// a `${localEnv:…}` expansion of it — passes the doctor green but fails
+	// at container start. Sorted ([sortedEnvKeys]) so the reported offender
+	// is deterministic across map iterations.
+	for _, k := range sortedEnvKeys(spec.Env) {
 		if err := validateEnvVar(k, spec.Env[k]); err != nil {
 			return fmt.Errorf("env %s: %w", k, err)
 		}

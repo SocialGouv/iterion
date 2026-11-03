@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -220,11 +221,7 @@ func (d *Driver) Prepare(ctx context.Context, spec sandbox.Spec) (sandbox.Prepar
 // value empty. That is the mechanism the image env screen neutralises a
 // repository-authored image's planted credentials with (#2317).
 func envArgs(env map[string]string) ([]string, error) {
-	keys := make([]string, 0, len(env))
-	for k := range env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := sortedEnvKeys(env)
 	args := make([]string, 0, 2*len(keys))
 	for _, k := range keys {
 		v := env[k]
@@ -236,18 +233,253 @@ func envArgs(env map[string]string) ([]string, error) {
 	return args, nil
 }
 
+// sortedEnvKeys returns an env map's names in sorted order, the one walk
+// every site that turns an env map into argv or into warnings takes: Go's
+// map iteration randomises order, which produced flaky tests when two env
+// vars were both invalid (the message would name whichever was visited
+// first) and would reorder the argv between two otherwise identical runs.
+func sortedEnvKeys(env map[string]string) []string {
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // validateEnvVar rejects an env var whose name or value contains
 // control characters that would break docker's --env arg parser.
 // docker's parser tokenises by whitespace, so a value containing
 // "\nDOCKER_HOST=tcp://attacker" would inject a second flag.
+//
+// It is the guard of the PAIR form `--env NAME=value`, where the value
+// reaches the argv too: the container's creation env ([envArgs]) and the
+// doctor's pre-flight over the same spec. The per-exec channel keeps the
+// value off the argv and asks [validateExecEnvVar] instead.
 func validateEnvVar(k, v string) error {
-	if strings.ContainsAny(k, "=\n\r\x00") {
-		return fmt.Errorf("invalid env var name (contains '=', newline, or NUL): %q", k)
+	if err := validateEnvName(k); err != nil {
+		return err
 	}
 	if strings.ContainsAny(v, "\n\r\x00") {
 		return fmt.Errorf("env var value contains a newline, carriage return, or NUL — refusing to inject")
 	}
 	return nil
+}
+
+// validateEnvName is the half every env form owes: the NAME rides the argv
+// whether or not its value does, so a '=' or a control character in it
+// would still split the argument and inject a flag of its own.
+func validateEnvName(k string) error {
+	if strings.ContainsAny(k, "=\n\r\x00") {
+		return fmt.Errorf("invalid env var name (contains '=', newline, or NUL): %q", k)
+	}
+	return nil
+}
+
+// validateExecEnvVar is [validateEnvVar] for the per-exec channel, whose
+// value travels in this process's own environment rather than on the argv
+// ([Run.Command]).
+//
+// The name keeps the argv's rule; the value is asked only for what a
+// process environment cannot carry at all — a NUL, which os/exec refuses
+// for the whole envp, so one bad name would otherwise fail the exec
+// instead of being skipped. A newline or carriage return in a value is a
+// legitimate secret there (a PEM key, a JSON blob) and no longer anything
+// docker's parser sees: refusing it would be an artificial limit on the
+// channel that exists to keep values off the command line.
+func validateExecEnvVar(k, v string) error {
+	if err := validateEnvName(k); err != nil {
+		return err
+	}
+	if strings.ContainsRune(v, 0) {
+		return fmt.Errorf("env var value contains a NUL, which no process environment can carry")
+	}
+	return nil
+}
+
+// runtimeClientEnvNames and [runtimeClientEnvPrefixes] are the names the
+// docker/podman CLI reads for ITSELF — where it finds its configuration,
+// which daemon it addresses and how it trusts it, what it executes, the
+// locale it speaks. The name-only channel of [Run.Command] works by putting
+// the pair in the CLIENT's own environment, so these names cannot take it:
+// a container-chosen HOME would decide which daemon receives the exec, and
+// the exec's whole environment with it.
+//
+// Measured on docker 29.9.2: with HOME pointing at a directory whose
+// `.docker/config.json` names a `currentContext` that is not there, the
+// client exits on `unable to resolve docker endpoint: context "…": context
+// not found` without reaching any daemon — and a HOME under a
+// world-writable /tmp (the claw runner's is
+// `/tmp/iterion-scratch/claw-runner-home-<hash>`, claw_backend.go) lets a
+// co-resident uid plant a context of its own and be handed the exec's env.
+//
+// Measured on podman 4.9.3, which needs no planted file at all: with
+// `CONTAINER_HOST=tcp://…` in the client's environment the client dials
+// that endpoint — no `--remote` flag, the variable enables it ("Set
+// default --url value to access Podman service. Also enabled --remote
+// option", podman(1)) — and POSTs `/libpod/containers/<id>/exec` there
+// with the whole `Env` array in the body, delivering the exec's credential
+// to the host the CONTAINER named, which then answers for the container
+// the engine believes it is driving.
+//
+// So they keep the pair form on the argv, the form the container's
+// creation env uses ([envArgs]): a process list shows the value, and only
+// the container consumes it. When such a name is credential-shaped the
+// exposure is warned at the call site rather than refused — refusing would
+// drop a value the operator asked the container to have.
+var runtimeClientEnvNames = map[string]bool{
+	// Its own configuration: `~/.docker` (docker), `~/.config/containers`
+	// and `~/.local/share/containers` (podman) hang off HOME; the XDG dirs
+	// move them, and rootless podman keys its socket off XDG_RUNTIME_DIR.
+	"HOME":            true,
+	"XDG_RUNTIME_DIR": true,
+	"XDG_CONFIG_HOME": true,
+	"XDG_DATA_HOME":   true,
+	"XDG_CACHE_HOME":  true,
+	// What it executes and where it writes: credential helpers
+	// (`docker-credential-*`) and CLI plugins come off PATH.
+	"PATH":   true,
+	"TMPDIR": true,
+	// How it trusts the daemon it dials, outside either CLI's namespace.
+	// (Which daemon, and how it addresses it, is the namespaces' —
+	// DOCKER_HOST and CONTAINER_HOST are covered there, as are the TLS
+	// and API-version switches of both.)
+	"SSL_CERT_FILE": true,
+	"SSL_CERT_DIR":  true,
+	// podman's registry credentials and its storage, the names its own
+	// ENVIRONMENT section spells outside its namespaces (podman(1)).
+	"REGISTRY_AUTH_FILE": true,
+	"STORAGE_DRIVER":     true,
+	"STORAGE_OPTS":       true,
+	// The locale its own messages come in, which the driver scrubs to C on
+	// every other runtime command ([runtimeCmdContext]) so stderr
+	// substrings stay stable across hosts: a per-exec LC_ALL — the tar of
+	// pkg/runtime/scratch_bank.go, whose stderr is read under
+	// sandbox.TarLocale — must not undo that for the client.
+	"LANG":     true,
+	"LANGUAGE": true,
+}
+
+// runtimeClientEnvPrefixes are the two CLIs' own configuration
+// NAMESPACES, and they are the membership test rather than a roll-call of
+// names: which subcommand of one binary reads which name is a version
+// detail this driver does not track, and a roll-call is what let podman's
+// endpoint family out — it held seven `DOCKER_` names and five
+// `CONTAINERS_` ones, one character away from the `CONTAINER_` that
+// redirects the client.
+//
+// A name in these namespaces is the client's own question whichever
+// runtime THIS host installed: [Detect] picks either and the driver
+// declares the subset bug-compatible, so a verdict that moved with the
+// installed CLI would be a verdict about the machine.
+var runtimeClientEnvPrefixes = []string{
+	// docker's: the endpoint, the context, the config dir, the TLS trio,
+	// the API version — and the names a roll-call ages out of,
+	// DOCKER_CONTENT_TRUST (which sends the client to a notary server of
+	// its own) and DOCKER_CUSTOM_HEADERS (headers on its daemon calls).
+	"DOCKER_",
+	// podman's, both spellings: `CONTAINERS_` are its configuration files,
+	// `CONTAINER_` its remote endpoint, named connection, ssh identity and
+	// ssh passphrase — the family measured above.
+	"CONTAINERS_",
+	"CONTAINER_",
+	// podman's own knobs beyond those, PODMAN_CONNECTIONS_CONF being the
+	// file its named connections live in.
+	"PODMAN_",
+}
+
+// execEnvKeepsThePairOnTheArgv reports whether a per-exec env NAME cannot
+// take [Run.Command]'s name-only channel and keeps the pair form on the
+// argv instead — the form the creation env uses, and the one this driver
+// used for every name before #2845.
+//
+// The question is the one the whole repository asks of a host-environment
+// name: does a process ITERION starts read it? Because the name-only
+// channel works by putting the pair in the CLIENT's own environment, a
+// name the client — or anything the client loads or runs — reads for
+// itself would let the container reconfigure the host side of the exec.
+// Those names keep the value on the argv, where a process list shows it
+// but only the container consumes it.
+//
+// Four answers, each a derivation rather than a list of names — a
+// roll-call is how podman's own endpoint family slipped out of the first
+// one:
+//
+//   - the runtime client's own configuration: [runtimeClientEnvNames] for
+//     the names outside any namespace of its own (HOME, PATH, the TLS
+//     roots, the locale), [runtimeClientEnvPrefixes] for the two CLIs'
+//     namespaces (`DOCKER_`, `CONTAINER_`, `CONTAINERS_`, `PODMAN_`).
+//   - the rest of the locale family, `LC_`.
+//   - the outbound proxies, `*_PROXY` in either case: Go's own net/http
+//     reads them for every request the client sends, so a container's
+//     value carries the exec conversation through a host it chose.
+//   - [envtrust.ExecutionGradeName], the repository's execution class —
+//     the generic names whose value makes a child of iterion LOAD,
+//     EXECUTE or TRUST what they name (LD_PRELOAD, GCONV_PATH, BASH_ENV,
+//     NODE_OPTIONS, the XDG family, …). The same inventory answers the
+//     three dotenv lanes (envtrust.DotenvPlantRefused), the bot-variable
+//     gate and pkg/sandbox/devcontainer's deny class; the runtime client
+//     belongs to its subject twice over, being dynamically linked and
+//     running credential helpers (`docker-credential-*`) and CLI plugins
+//     of its own off PATH.
+//
+// The residual is stated rather than narrowed away, and warned at the
+// call site by name: a name that answers here can hold a credential too
+// (`NPM_CONFIG__AUTH`, CONTAINER_PASSPHRASE, the proxy URL's own token),
+// and its value then rides the argv for the exec's life. The remedy is a
+// name the host side does not consume, or a file secret
+// (docs/secrets.md); the channel that would end the residual — a per-exec
+// `--env-file` the client reads, which is neither the argv nor the
+// client's environment — needs a file whose lifetime outlives this
+// function, since [Run.Command] returns a cmd it never starts
+// (docs/secrets.md names it as the open point).
+//
+// A glob-shaped name takes NEITHER form and is refused at the call site
+// ([Run.Command]): podman — a runtime this driver selects and declares
+// interchangeable ([Detect], [RuntimePodman]) — documents a name-only
+// `--env PREFIX*` as a HOST environment glob (`podman-exec(1)`, "if an
+// environment variable ending in * is specified without a value, Podman
+// searches the host environment for variables starting with the prefix and
+// adds those variables to the container"), and the pair form that would
+// set the one literal variable it names puts its value back on the argv
+// with no host-side reason to.
+func execEnvKeepsThePairOnTheArgv(k string) bool {
+	// Folded the way the PLATFORM folds, which is what
+	// [envtrust.CanonicalName] is: on Windows `docker_host` IS DOCKER_HOST
+	// to the client, on Unix it is a different variable the client never
+	// reads — folding unconditionally would exile to the argv a value no
+	// host-side reader asks for.
+	k = envtrust.CanonicalName(k)
+	if runtimeClientEnvNames[k] {
+		return true
+	}
+	for _, prefix := range runtimeClientEnvPrefixes {
+		if strings.HasPrefix(k, prefix) {
+			return true
+		}
+	}
+	// The locale family beyond LANG/LANGUAGE: LC_ALL, LC_MESSAGES, LC_CTYPE.
+	if strings.HasPrefix(k, "LC_") {
+		return true
+	}
+	// The outbound proxies, which Go's own net/http consults for every
+	// request this client sends. Measured on docker 29.9.2 against a
+	// `tcp://` daemon: a container-destined HTTP_PROXY in the client's
+	// environment carried the whole exec conversation — `GET /_ping`,
+	// `POST /containers/<id>/exec` with the `Env` array in its body — in
+	// absolute form through the host the container named. Both cases,
+	// whatever the platform: the reader itself reads both spellings, which
+	// is why [proxyEnvNames] carries them too.
+	//
+	// The value is the run's own proxy token, so the argv does expose a
+	// credential here — warned at the call site — but the container's own
+	// environment publishes the same URL by design ([hostNetworkArgs], and
+	// `docker inspect` shows it), where the name-only channel would hand
+	// the host client's transport to the container.
+	if strings.HasSuffix(strings.ToUpper(k), "_PROXY") {
+		return true
+	}
+	return envtrust.ExecutionGradeName(k)
 }
 
 // Start creates and starts a long-lived container holding the run for
@@ -788,10 +1020,26 @@ func (r *Run) RefreshSecretFile(_ context.Context, name string, value []byte) er
 // Cwd defaults to the workspace folder (the bind-mount target);
 // [ExecOpts.WorkDir] overrides per-call.
 //
-// Env vars are passed via `docker exec --env KEY=VAL` so the inner
-// process sees them — setting them on the returned [exec.Cmd.Env]
-// would only affect the host-side `docker exec` driver process, not
-// the inner program.
+// Env vars are passed NAME-ONLY (`docker exec --env KEY`) with their
+// values set on the returned [exec.Cmd.Env]: a name-only flag makes the
+// docker client read that name from its OWN environment and hand the pair
+// to the inner process, so the VALUE never reaches the host's process
+// list — where `ps` shows an argv to every uid on the machine for the
+// whole life of the exec, which for an agent node is the node's. What
+// rides this channel is exactly what must not be there: the provider
+// credential a sandboxed runner spends, and the materialised environment
+// of an authored command (`MaterializeAuthoredShellEnv`, docs/secrets.md).
+//
+// A name the HOST side reads keeps the pair form on the argv — see
+// [execEnvKeepsThePairOnTheArgv]: handing the client a container's HOME or
+// PATH would let the container choose which daemon receives the exec, and
+// handing it an execution-grade name (LD_PRELOAD, BASH_ENV, …) would run
+// the container's choice in the client itself. A glob-shaped name takes
+// neither form and is skipped with a warning.
+//
+// A caller may append to [exec.Cmd.Env] on the returned cmd; REPLACING it
+// takes the values with it, and the client then finds the names unset and
+// the inner process runs without them.
 //
 // When cmd is `["sh","-c", script]` and the script is larger than
 // [sandbox.MaxInlineArgBytes], the script is streamed through stdin via
@@ -817,18 +1065,60 @@ func (r *Run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) 
 		workDir = r.inContainerWorkspace
 	}
 	args = append(args, "--workdir", workDir)
-	for k, v := range opts.Env {
-		// Validate every per-call env var. Without this a newline (or
-		// other control char) embedded in a value — e.g. coming from
-		// an artifact field interpolated into a tool command — could
-		// split the argument and inject arbitrary `docker exec` flags.
-		// Driver.Start applies the same check at container-creation
-		// time; the per-exec path here needs it too.
-		if err := validateEnvVar(k, v); err != nil {
+	// The NAME alone on the argv, the pair in execEnv for the client's own
+	// environment below. Measured on docker 29.9.2: a name-only `--env K`
+	// takes K from the client's environment and sets it in the container; a
+	// name the client does not carry is simply not set there, which is why
+	// the pair below is not optional; a name set to the empty string
+	// arrives empty, keeping the "empty value overrides the image's" rule
+	// of the creation env ([envArgs]).
+	//
+	// Validated per name: without it a '=' or a control character in a name
+	// — e.g. coming from an artifact field interpolated into a tool command
+	// — could split the argument and inject arbitrary `docker exec` flags.
+	var execEnv []string
+	for _, k := range sortedEnvKeys(opts.Env) {
+		v := opts.Env[k]
+		if strings.ContainsRune(k, '*') {
+			// Neither form carries it: name-only is a host-environment
+			// glob to `podman exec` ([execEnvKeepsThePairOnTheArgv]), and
+			// the pair form would put the value in the host's process
+			// list for nothing — no host-side reader asks for a name no
+			// shell can even export. Warned by name, with the channel
+			// that does set a literal one: the container's creation env
+			// (`sandbox.env:`), whose argv is audited by the image env
+			// screen ([Driver.StartEnvNames]).
+			r.driver.logger.Warn("docker exec: skipping env %s: a '*' in the name is a host-environment glob to `podman --env` with no value, and the pair form would put the value on the host's command line; declare it in the container's creation env (sandbox.env) if the literal name is wanted", k)
+			continue
+		}
+		if execEnvKeepsThePairOnTheArgv(k) {
+			// The client's own environment is not this name's to set, so
+			// the pair rides the argv and the value keeps the argv's rule
+			// ([validateEnvVar]) with it.
+			if err := validateEnvVar(k, v); err != nil {
+				r.driver.logger.Warn("docker exec: skipping invalid env %s: %v", k, err)
+				continue
+			}
+			if v != "" && envtrust.CredentialShapedName(k) {
+				// #2845's residual, said where it happens rather than in a
+				// doc footnote: a name the HOST client reads cannot take
+				// the name-only channel, so its value is in every uid's
+				// reach for the exec's life. The names this reaches are
+				// the `*_PROXY` family, a CONTAINER_PASSPHRASE, an
+				// NPM_CONFIG__AUTH — each with a channel that crosses no
+				// command line. Warned, never dropped: the operator asked
+				// the container to have this value.
+				r.driver.logger.Warn("docker exec: env %s is read by the host's own container client, so its value rides the host's command line for the life of this exec and every uid on the machine can read it (`ps`, /proc/<pid>/cmdline); deliver a credential under a name the host side does not consume, or as a file secret (docs/secrets.md)", k)
+			}
+			args = append(args, "--env", k+"="+v)
+			continue
+		}
+		if err := validateExecEnvVar(k, v); err != nil {
 			r.driver.logger.Warn("docker exec: skipping invalid env %s: %v", k, err)
 			continue
 		}
-		args = append(args, "--env", k+"="+v)
+		args = append(args, "--env", k)
+		execEnv = append(execEnv, k+"="+v)
 	}
 	if r.prepared.spec.User != "" {
 		args = append(args, "--user", r.prepared.spec.User)
@@ -853,6 +1143,15 @@ func (r *Run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) 
 		c.Stdin = strings.NewReader(stdinScript)
 	}
 	proc.DetachProcessGroup(c)
+	if len(execEnv) > 0 {
+		// The client's own environment is what the name-only flags above
+		// read the values from, so it carries both what the client needs
+		// for itself (DOCKER_HOST, PATH, HOME, the LC_ALL of a
+		// locale-scrubbed parent) and the pairs. os/exec keeps the LAST
+		// entry of a repeated name, so a pair here outranks an ambient one
+		// — the precedence `--env NAME=value` had.
+		c.Env = append(c.Environ(), execEnv...)
+	}
 	return c
 }
 

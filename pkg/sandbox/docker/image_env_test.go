@@ -351,7 +351,7 @@ func TestNoEnvPairOfAStartedContainerIsBuiltOutsideTheDeclaredHelpers(t *testing
 		"hostNetworkArgs": "the proxy and NO_PROXY spellings, from proxyEnvNames/noProxyEnvNames, which StartEnvNames declares",
 		"caInjectionArgs": "the CA bundles and the truststore, from caBundleEnvNames/javaTrustEnvNames, which StartEnvNames declares",
 		"envArgs":         "the prepared spec's OWN env — the reviewed channel, which the screen reads from the spec itself",
-		"Command":         "`docker exec --env`: the per-command layer, not the env the container is CREATED with, and the screen's own docs name it as the second layer",
+		"Command":         "`docker exec --env`: the per-command layer, not the env the container is CREATED with, and the screen's own docs name it as the second layer. It names the variable and nothing else — the VALUE travels in the client's own environment, which TestNoExecShapeOfTheDockerDriverPutsAnEnvValueOnTheArgv holds — except for the names the HOST side reads, the two CLIs' own names and namespaces, the locale family, the `*_PROXY` family and the execution class of internal/envtrust (execEnvKeepsThePairOnTheArgv), which keep the pair because the client's environment is the one channel they may not use (TestTheExecEnvNeverReconfiguresTheRuntimeClient); a glob-shaped name takes neither form and is skipped (TestTheExecEnvChannelRefusesOnlyWhatItCannotCarry)",
 	}
 	found := envPairBuilders(t)
 	if len(found) < 3 {

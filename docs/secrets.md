@@ -262,6 +262,68 @@ form in every hook/log:
   compress — rtk typed by the agent, or run by an operator's own rtk hook —
   still gets it from its environment only, which the operator's shell rc or
   `BASH_ENV` can replace.
+- **A materialised environment never rides the container runtime's command
+  line.** `docker exec` is handed the NAME alone (`--env K`), with the value
+  in the docker client's own environment — where a name-only flag is read
+  from — so a host process list, world-readable for the whole life of the
+  exec (for an agent node, the node's), shows the names and nothing else.
+  The provider credential a sandboxed runner spends travels the same
+  channel. A value too multi-line for a command line is carried intact
+  there; only a NUL is refused, which no process environment holds.
+  The exception is a name the HOST side reads, because the client's own
+  environment is the one channel such a name may not use: a
+  container-chosen HOME decides which daemon receives the exec, and a
+  container-chosen `LD_PRELOAD` runs the container's code in the client
+  itself. Four answers, each a DERIVATION and not a roll-call of names,
+  because a roll-call is how podman's own endpoint family got out of the
+  first one: the two CLIs' exact names outside any namespace of their own (`runtimeClientEnvNames`: HOME, PATH, TMPDIR, the
+  TLS roots, REGISTRY_AUTH_FILE, the storage pair, LANG/LANGUAGE) and their
+  configuration NAMESPACES (`runtimeClientEnvPrefixes`: `DOCKER_`,
+  `CONTAINER_`, `CONTAINERS_`, `PODMAN_` — which subcommand of one binary
+  reads which name is a version detail iterion does not track); the rest of
+  the locale family, `LC_`; the `*_PROXY` family in either case, which Go's
+  own net/http consults for every request the client sends; and
+  `envtrust.ExecutionGradeName`, the repository's execution class, already
+  the subject of the dotenv plant gate, the bot-variable gate and the
+  devcontainer deny class. Measured, not reasoned: with
+  `CONTAINER_HOST=tcp://…` in its environment, podman 4.9.3 dials that
+  endpoint with no `--remote` flag and POSTs `/libpod/containers/<id>/exec`
+  there with the whole `Env` array in the body; with `HTTP_PROXY` in its
+  environment and a `tcp://` daemon, docker 29.9.2 sends the same
+  conversation in absolute form through the host named — so a
+  container-destined proxy name becomes the CLIENT's proxy, which is why
+  that family sits on this side of the channel and not, as it briefly did,
+  on the name-only one.
+  Those names keep the pair on the argv — the channel they had before
+  #2845 — and the residual is said out loud AND warned by name where it
+  happens: a name answering here can hold a credential too
+  (`NPM_CONFIG__AUTH`, `CONTAINER_PASSPHRASE`, the proxy URL's own per-run
+  token), and its value is then in every uid's reach for the exec's life.
+  Warned, never dropped — the operator asked the container to have it.
+  Deliver such a credential under a name the host side does not consume, or
+  as a file secret. Open point: the channel that would end the residual is
+  a per-exec `--env-file`, which the CLI reads and which is neither the
+  argv nor the client's environment (nothing in production parses the EXEC
+  argv's `--env`, unlike the creation argv the image env screen audits); it
+  needs a 0600 file outliving `Run.Command`, which returns a command it
+  never starts, so it is a shape decision rather than a patch.
+  A name holding a `*` takes NEITHER form — `podman exec --env NAME*` with
+  no value is a host-environment glob, and the pair form would put the
+  value on the argv with no host-side reader to serve — so it is skipped
+  with a warning naming it, and the container's creation env
+  (`sandbox.env:`) is where a literal `*` name is set.
+  The container's CREATION argv still carries values, for the length of that
+  one call, and each is driver- or operator-chosen: the spec's
+  `sandbox.env:` (paths, ids, the mount path of a file secret — no declared
+  secret value reaches it, the materialiser being a host closure, though a
+  `${localEnv:VAR}` in it resolves to the host value the operator named,
+  credential included, by `expandSandboxSpec`), the egress proxy's
+  `*_PROXY` pairs, whose endpoint URL holds the per-run proxy
+  token the container's own environment publishes anyway, and the JVM
+  truststore trio, whose password is a constant of iterion's own source
+  guarding a world-readable store that holds a public CA certificate. The
+  kubernetes driver still carries a per-exec value on the pod exec's own
+  argv, as an `env K=V` segment (#2845).
 - Both consume `delegate.Task.MaterializeSecrets` (a closure set by the
   executor), so `pkg/backend/delegate` stays decoupled from secretguard.
 - Its mirror, `delegate.Task.UnmaterializeSecrets` (`Guard.Unmaterialize`),
