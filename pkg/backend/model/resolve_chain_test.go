@@ -43,7 +43,7 @@ func TestResolveChain_AppendsFallbacksAfterProviderChain(t *testing.T) {
 // form the legacy parse folds its own field to — literal text and a
 // ${VAR} expansion alike. The credential plan keys the run on the walk's
 // folded words, so an unfolded element would serve, spend and stamp a
-// word the plan can never match: the observation books nobody.
+// word the plan can never match: the observation joins no row.
 func TestResolveChain_AuthoredFallbackJoinsTheChainFolded(t *testing.T) {
 	t.Setenv("ITERION_TEST_CREDPROV", "Moonshot")
 	e := &ClawExecutor{}

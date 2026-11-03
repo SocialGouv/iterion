@@ -389,12 +389,14 @@ type RunMessage struct {
 	// fingerprint strings the runner reads from its own credentials, so
 	// the fine table it reports keys in the lease's space. The publisher
 	// stamps it only when the routing walk is narrow-safe and a pool lease
-	// serves the run — a walk it cannot read may spend anything, and a
-	// partial plan would book the donor's share as zero. Nil (an older
-	// publisher, or a walk that widened) keeps the runner's coarse
-	// whole-attempt booking: the conservative-on-ignore direction, which
-	// is why the field needs no RunMessage version bump (the same doctrine
-	// as FallbackModelClasses above).
+	// serves the run — a walk it cannot read may spend anything, so no
+	// plan it could write is total. The runner holds the same line at run
+	// time: an observation the attempt paid for that joins none of the
+	// keys voids its table. Nil (an older publisher, or a walk that
+	// widened) keeps the runner's coarse whole-attempt booking: the
+	// conservative-on-ignore direction, which is why the field needs no
+	// RunMessage version bump (the same doctrine as FallbackModelClasses
+	// above).
 	CredPlan map[string]string `json:"cred_plan,omitempty"`
 	// ParentRunID is set on child runs spawned by a parent workflow
 	// (e.g. by `iterion __scan-shards`). Empty for root runs. When

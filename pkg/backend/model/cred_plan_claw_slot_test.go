@@ -274,7 +274,8 @@ func containsProviderName(list []string, s string) bool {
 // override cell whose provider hint decides the route still leaves claw's
 // SLOT on the model's prefix — the same registry reading the node-route arm
 // above serves. Without the prefix's row here, a hint-steered override
-// books nobody on exactly the nodes an operator re-pointed at launch.
+// joins no row — a miss that voids the run's fine table — on exactly the
+// nodes an operator re-pointed at launch.
 func TestEffectiveProviders_aClawProviderOverrideAlsoRecordsThePrefixSlot(t *testing.T) {
 	t.Parallel()
 
@@ -300,8 +301,8 @@ func TestEffectiveProviders_aClawProviderOverrideAlsoRecordsThePrefixSlot(t *tes
 // The rescue-route arm of the claw slot reading (revi round 3): an authored
 // `fallbacks:` route on claw reads through resolveRoute like the primary,
 // and its hint decides the route its model's prefix never does. Without the
-// prefix's row, the fired rescue books nobody — the donor's rung spent, the
-// plan silent.
+// prefix's row, the fired rescue joins no row — the donor's rung spent, and
+// the miss voids the run's fine table.
 func TestEffectiveProviders_aClawFallbackHintAlsoRecordsThePrefixSlot(t *testing.T) {
 	t.Parallel()
 
@@ -328,7 +329,7 @@ func TestEffectiveProviders_aClawFallbackHintAlsoRecordsThePrefixSlot(t *testing
 // The run-level chain's claw stage reads through the same rescue-route arm,
 // and its providers spread onto every node: the stage's hint names the
 // route claw walks, its model's prefix names the slot the registry funds.
-// Without the prefix in the chain's spread, the fired stage books nobody on
+// Without the prefix in the chain's spread, the fired stage joins no row on
 // every node it rescues.
 func TestCredentialPlan_aClawRunFallbackStagePlansItsPrefixSlot(t *testing.T) {
 	t.Parallel()
@@ -357,7 +358,7 @@ func TestCredentialPlan_aClawRunFallbackStagePlansItsPrefixSlot(t *testing.T) {
 // GenerationOptions.Provider from servingProvider before applyHooks copies
 // it onto every step — the chain the runner's plan join reads. A wiring
 // that drops the word leaves every step wordless while the unit tables
-// above stay green, and a hint-steered claw route then books nobody.
+// above stay green, and a hint-steered claw route then joins no row.
 func TestClawBackendExecute_stampsTheServingSlotOnEveryStep(t *testing.T) {
 	t.Parallel()
 

@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 
@@ -90,7 +91,8 @@ type metricsEmitter struct {
 	// the same observations byRoute carries, grouped by the CREDENTIAL
 	// that served them instead of the (backend, model, source) route.
 	// Filled only from the plan — an observation the plan names nothing
-	// for books nobody, never the donor by guess.
+	// for joins no row, never the donor's by guess, and counts in missed
+	// below.
 	byFingerprint map[string]credpool.FingerprintSpend
 
 	// sawAuthFailure records that the provider rejected this run's
@@ -103,18 +105,25 @@ type metricsEmitter struct {
 	// dead, pledge still "active").
 	sawAuthFailure bool
 
-	// missedPlan accumulates the observations a STAMPED plan named nothing
-	// for, on the routes a plan is supposed to answer. Env-funded spend is
+	// missed accumulates the observations a STAMPED plan named nothing for,
+	// on the routes a plan is supposed to answer. Env-funded spend is
 	// excluded — the openai_compatible gateway and a claude_code session
 	// riding the pod's ambient env are credentials the runner's environment
 	// holds, which no plan row ever names on purpose, so their empty joins
-	// are correct, not drift. The pool report reads this for the
-	// join-drift telltale: an empty fine table under spend is silent drift
-	// no other signal surfaces, and a partial one under-books the lease's
-	// slice invisibly while its other rows book.
-	missedPlanCost         float64
-	missedPlanTokens       int64
-	missedPlanObservations int64
+	// are correct, not drift. Any miss VOIDS the fine table at the pool
+	// report (fineFingerprintSpend): the unplaced slice may have run on the
+	// lease's own credential (a claw subagent of a donor-funded node, a
+	// served model whose prefix names no provider), and a table without it
+	// would book the donor short — the coarse whole-attempt booking stands.
+	missed planMiss
+}
+
+// planMiss is the spend a stamped plan's keys answered nothing for, on the
+// routes a plan is supposed to answer (env-funded routes excluded).
+type planMiss struct {
+	costUSD      float64
+	tokens       int64
+	observations int64
 }
 
 // modelRate is the per-token cost (USD) for a given model, derived
@@ -251,9 +260,10 @@ func (m *metricsEmitter) noteDeclinedRoute(k routeKey) (first bool) {
 //
 // The sink's observation joins the credential plan like an event's: the
 // source is the node half the walk recorded (a supervisor's
-// `supervisor:<name>` site), and an observation that books nobody is a
-// miss the report must count — a sink path that stayed outside the fine
-// table would book the lease $0 under real spend with the telltale quiet.
+// `supervisor:<name>` site), and an observation that joins no row is a
+// miss the report must count — a sink path that stayed outside the miss
+// accounting would send a table without its slice, booking the lease
+// short under real spend.
 func (m *metricsEmitter) addRoute(backend, modelName, source string, cost float64, in, out, aggregate int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -294,20 +304,19 @@ func (m *metricsEmitter) RouteTotals() map[routeKey]routeTotals {
 	return out
 }
 
-// FingerprintSpendTotals snapshots the fine table (#2288): the run's
-// consumption grouped by the CREDENTIAL that served each observation —
-// the fingerprints the publisher's plan named, the space the pool lease's
-// own stamp lives in. Empty on a publication that carried no plan (or one
-// whose observations named nothing): the report then sends no table and
-// the broker keeps the coarse whole-attempt booking.
-func (m *metricsEmitter) FingerprintSpendTotals() map[string]credpool.FingerprintSpend {
+// fineSnapshot reads the fine table (#2288) — the run's consumption grouped
+// by the CREDENTIAL that served each observation, the fingerprints the
+// publisher's plan named, the space the pool lease's own stamp lives in —
+// together with the join-miss accounting, in ONE critical section: the
+// report's verdict on the misses (send the table, or void it) judges
+// exactly the rows it would send. Both are empty on a publication that
+// carried no plan.
+func (m *metricsEmitter) fineSnapshot() (map[string]credpool.FingerprintSpend, planMiss) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make(map[string]credpool.FingerprintSpend, len(m.byFingerprint))
-	for k, v := range m.byFingerprint {
-		out[k] = v
-	}
-	return out
+	rows := make(map[string]credpool.FingerprintSpend, len(m.byFingerprint))
+	maps.Copy(rows, m.byFingerprint)
+	return rows, m.missed
 }
 
 // fingerprintFor resolves the credential fingerprint one observation books:
@@ -315,7 +324,8 @@ func (m *metricsEmitter) FingerprintSpendTotals() map[string]credpool.Fingerprin
 // the serving chain element resolved — the event's own `provider` word
 // when it stamps one, the claude_code label's slot and the model's prefix
 // when it does not. "" when the plan names nothing for it: the observation
-// books nobody in the fine table, never the donor by guess.
+// joins no row of the fine table, never the donor's by guess, and counts
+// as a miss (notePlanMissLocked).
 func (m *metricsEmitter) fingerprintFor(nodeID string, route routeKey, provider string) string {
 	if len(m.credPlan) == 0 || nodeID == "" {
 		return ""
@@ -358,7 +368,7 @@ func planRouteFundedByEnv(route routeKey) bool {
 }
 
 // notePlanMissLocked folds one observation the plan named nothing for into
-// the join-drift accounting. Called under m.mu, beside addFingerprintLocked
+// the join-miss accounting. Called under m.mu, beside addFingerprintLocked
 // — the same observation feeds both, and a guard that dropped one would
 // drop it from both. A spendless observation (no cost, no tokens) counts
 // nothing: a free call that joins nothing is not money the lease loses.
@@ -369,19 +379,9 @@ func (m *metricsEmitter) notePlanMissLocked(fp string, route routeKey, cost floa
 	if cost == 0 && tokens == 0 {
 		return
 	}
-	m.missedPlanCost += cost
-	m.missedPlanTokens += tokens
-	m.missedPlanObservations++
-}
-
-// MissedPlanSpend snapshots the join-drift accounting (#2288): the spend
-// the stamped plan's keys answered nothing for, on the routes a plan is
-// supposed to answer (env-funded routes excluded). Zero observations on a
-// plan-stamped run means every non-env observation joined a row.
-func (m *metricsEmitter) MissedPlanSpend() (costUSD float64, tokens int64, observations int64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.missedPlanCost, m.missedPlanTokens, m.missedPlanObservations
+	m.missed.costUSD += cost
+	m.missed.tokens += tokens
+	m.missed.observations++
 }
 
 // The executor writes through this emitter, but the ENGINE writes straight
@@ -512,7 +512,7 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		// The slot word the loop stamped — the same `provider` the delegate
 		// events carry — read FIRST in the fingerprint join: a hint-steered
 		// claw route can spend a slot the model spec's own prefix does not
-		// name, and a join re-derived from the spec books nobody on exactly
+		// name, and a join re-derived from the spec joins no row on exactly
 		// those routes. An event that carries no word (a container whose
 		// runner predates the stamp) falls back to the spec derivation.
 		provider, _ := evt.Data["provider"].(string)
@@ -886,7 +886,12 @@ func meterSupervisorSpecs(ctx context.Context, specs []supervise.Spec, usage *me
 			resolved = ""
 		}
 		specs[i].OnUsage = func(in, out int) {
-			usage.addRoute(delegate.BackendClaw, resolved, "supervisor:"+specs[i].Name, 0, int64(in), int64(out), int64(in)+int64(out))
+			// An evaluation reports an OBSERVED split: the two directions carry
+			// it and the aggregate stays zero. The three counters are disjoint
+			// on every table this observation feeds (credusage.Spend fills one
+			// or the other, credpool.Usage's true total is their sum), so the
+			// sum filed beside the split would count each token twice.
+			usage.addRoute(delegate.BackendClaw, resolved, "supervisor:"+specs[i].Name, 0, int64(in), int64(out), 0)
 		}
 	}
 }

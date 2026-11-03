@@ -24,7 +24,7 @@ func TestSupervisorUsageSink_IsRaceFreeAgainstTheEventStream(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 200; i++ {
-			m.addRoute(delegate.BackendClaw, "anthropic/claude-opus-5-5", "supervisor:pacer", 0, 1, 1, 2)
+			m.addRoute(delegate.BackendClaw, "anthropic/claude-opus-5-5", "supervisor:pacer", 0, 1, 1, 0)
 		}
 	}()
 	go func() {
@@ -56,7 +56,11 @@ func TestMeterSupervisorSpecs_TheSinkRidesTheSliceElement(t *testing.T) {
 	if !ok {
 		t.Fatalf("the sink booked no supervisor:pacer route; ledger: %v", m.byRoute)
 	}
-	if got.inputTokens != 10 || got.outputTokens != 5 || got.aggregateTokens != 15 {
-		t.Errorf("the sink booked (%d, %d, %d); want (10, 5, 15)", got.inputTokens, got.outputTokens, got.aggregateTokens)
+	// The evaluation's observed split, the aggregate left at zero: the
+	// route's counters are disjoint (credusage.Spend fills one or the
+	// other), so the in+out sum filed beside the split would meter every
+	// token twice on the per-credential ledger.
+	if got.inputTokens != 10 || got.outputTokens != 5 || got.aggregateTokens != 0 {
+		t.Errorf("the sink booked (%d, %d, %d); want (10, 5, 0)", got.inputTokens, got.outputTokens, got.aggregateTokens)
 	}
 }

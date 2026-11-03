@@ -694,10 +694,10 @@ func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, ov
 // slot, so the spend follows the prefix — a GLM id on the anthropic wire
 // rides z.ai (prefixOrWiden's reading). Without this second reading the
 // walk names only the hint's slot, and the credential plan keys the
-// node's spend on a slot the route never funds: every observation books
-// nobody (revi R30d246's $0 harm, on hint-steered claw routes), or —
-// before the event word was claw-true — the hint's credential for a
-// prefix spend.
+// node's spend on a slot the route never funds: every observation joins
+// no row (the fine booking lost on every hint-steered claw route, each
+// miss voiding the report's table), or — before the event word was
+// claw-true — the hint's credential for a prefix spend.
 //
 // A spec naming no `provider/` prefix reads nothing here. The element
 // build hands such a stage the node's baseline model (or the portability

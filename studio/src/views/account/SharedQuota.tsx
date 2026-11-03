@@ -462,8 +462,9 @@ function PledgeCard({
             runs/day unit and a concurrency slot on your pledge until the run publishes, even
             when the fallback never fires. Only the spend that ran on <strong>your</strong>{' '}
             credential books against your ceilings — a rung the fallback never fired on books
-            nothing. If the run's routes can't all be read, the attempt's whole spend books, as
-            on a whole-bundle run.
+            nothing. When iterion can't place every call of the run on its credential (a route
+            it can't read at launch, a sub-agent at run time), the attempt's whole spend books,
+            as on a whole-bundle run.
           </span>
         }
       />

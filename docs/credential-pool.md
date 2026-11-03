@@ -218,10 +218,16 @@ slice that ran on its own fingerprint — on a whole-bundle run every sealed
 credential is the pool's, so the whole attempt books as before; on a
 door-served run, spend on the team's own credentials stays off the donor's
 ledger, and a rung the fallback never fired on books nothing. The
-per-credential table rides only when the publisher could read every route
-the run may take — a walk that widened (a template it cannot resolve, a
-provider outside its vocabulary) stamps no plan, and the coarse
-whole-attempt booking stands. A resumed run that
+per-credential table rides only when it places every call the attempt paid
+for: a walk the publisher cannot read (a template it cannot resolve, a
+provider outside its vocabulary) stamps no plan, and a call the runner
+cannot place on a planned credential at run time (a claw sub-agent's loop,
+a model the agent tool names, a route that drifted from its launch reading)
+voids the table at the report, in one warning naming the run. Either way
+the coarse whole-attempt booking stands: a table missing a slice would book
+the donor short of whatever of it ran on their credential. Spend on the
+deployment's own env-funded routes (its gateway, a pod's ambient Claude
+env) is placed on nobody by design and voids nothing. A resumed run that
 **reported** *renews* its admission instead of taking a second one: it is
 the same run, and charging it again would let one flaky run that resumes a
 few times consume a contributor's whole day. Reporting is what earns the

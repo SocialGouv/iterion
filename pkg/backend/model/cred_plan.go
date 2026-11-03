@@ -30,10 +30,11 @@ const PlanKeySep = "|"
 // CredentialPlan derives the node-and-provider → credential-fingerprint
 // plan a publisher stamps on the RunMessage. Nil unless the walk is
 // NarrowSafe: a route it could not read may spend anything, so no per-node
-// statement this derivation could make is total, and a partial plan would
-// turn the runner's fine table into a silent under-booking of the donor
-// (spend on an unnamed node books nobody). With the walk narrow-safe every
-// route names its providers, and the plan covers the run's whole program.
+// statement this derivation could make is total — and the runner's report
+// catches only a MISS (an observation joining no key voids its fine table,
+// the coarse booking), never a row answering for a route the walk did not
+// read. With the walk narrow-safe every route names its providers, and the
+// plan covers the run's whole program.
 //
 // Nil also when a provider the plan would name is funded TWICE — a pinned
 // key beside its own forfait — on a walk that is not forfait-first for it:
@@ -80,8 +81,8 @@ func CredentialPlan(res ProviderResolution, bundle secrets.RunBundle) map[string
 		nodeProvs[node] = append(nodeProvs[node], provs...)
 		// Rung 4 dispatches under the synthetic agent's runtime id, not the
 		// tool node's: the same providers key a second row there, or every
-		// fired recovery observation joins nothing and books nobody under
-		// real spend.
+		// fired recovery observation joins nothing — a miss that voids the
+		// run's fine table under real spend.
 		if rung := agentRecoveryPlanNode(site); rung != "" {
 			nodeProvs[rung] = append(nodeProvs[rung], provs...)
 		}
@@ -124,8 +125,8 @@ func CredentialPlan(res ProviderResolution, bundle secrets.RunBundle) map[string
 // `supervisor:<name>` (meterSupervisorSpecs) and addRoute joins the plan
 // with the sink's source as the node half, so the keys carry each
 // evaluation's spend onto the credential the walk resolved for the
-// supervisor's site — dropping the rows would leave that spend booking
-// nobody, the under-booked slice the report warns about.
+// supervisor's site — dropping the rows would turn each evaluation into a
+// miss that voids the run's fine table.
 func siteNode(site string) (node string, isRunFallback bool) {
 	if site == ir.RunFallbackName || strings.HasPrefix(site, ir.RunFallbackName+"#") {
 		return "", true

@@ -19,6 +19,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/supervise"
 )
 
 // The fine door-lease booking, joined END TO END (#2288, revi R30d246's
@@ -217,14 +218,14 @@ func TestRecordPoolSpend_aPlanWhoseDoorNeverFiredBooksZero(t *testing.T) {
 // CLAW with a `provider: zai` hint over an `anthropic/…` spec. The hint
 // names a route claw never spends (the registry funds the prefix), so the
 // walk must carry the prefix's slot or every step observation the loop
-// produces joins a key the plan never stamped — the donor's $0 harm,
-// silent, on a plan the publisher DID stamp.
+// produces joins a key the plan never stamped — a miss on every step, the
+// fine booking lost on a plan the publisher DID stamp.
 func clawHintPlan(t *testing.T) map[string]string {
 	t.Helper()
 	wf := fineBookingWorkflow()
 	impl := wf.Nodes["impl"].(*ir.AgentNode)
-	impl.LLMFields.Backend = delegate.BackendClaw
-	impl.LLMFields.Provider = "zai"
+	impl.Backend = delegate.BackendClaw
+	impl.Provider = "zai"
 	res := model.EffectiveProviders(model.RouteView{Workflow: wf}, planKnownProviders)
 	if !res.NarrowSafe {
 		t.Fatalf("the hint-steered claw walk widened — test premise broken: %+v", res)
@@ -287,11 +288,11 @@ func clawStepUsage(t *testing.T, plan map[string]string) (*metricsEmitter, float
 // that red on it live in pkg/backend/model/cred_plan_claw_slot_test.go
 // (the servingProvider table and the Execute wiring witness). Mutants
 // this test does red: the walk dropping the prefix's slot (clawHintPlan's
-// Sites/plan assertions fail before any booking — in production the harm
-// is the donor's silent $0); the summarised guard lifting (the aggregate
-// double-books at the check in clawStepUsage); a fine-table join that
-// books the priced steps on any fingerprint but the lease's (the ledger
-// read-back misses).
+// Sites/plan assertions fail before any booking — in production the steps
+// would miss, void the fine table and book the donor the whole attempt);
+// the summarised guard lifting (the aggregate double-books at the check in
+// clawStepUsage); a fine-table join that books the priced steps on any
+// fingerprint but the lease's (the ledger read-back misses).
 func TestRecordPoolSpend_aHintSteeredClawLoopBooksTheDonorsSliceFromItsSteps(t *testing.T) {
 	h := newPoolHarnessForRun(t, credpoolLimitsForFine(), "run-1")
 	ctx := context.Background()
@@ -315,12 +316,19 @@ func TestRecordPoolSpend_aHintSteeredClawLoopBooksTheDonorsSliceFromItsSteps(t *
 	}
 }
 
-// TestRecordPoolSpend_anEmptyFineTableUnderSpendWarns: a stamped plan
-// whose fine table came back EMPTY while the attempt spent is a join
-// drift, and the broker's $0 booking would otherwise be silent — the
-// report carries one warn naming the run and the spend. A table with rows
-// and a plan-less publication (the coarse contract) stay quiet.
-func TestRecordPoolSpend_anEmptyFineTableUnderSpendWarns(t *testing.T) {
+// voidedTableWarn is the one line a report writes when a miss voids its
+// fine table.
+const voidedTableWarn = "no fine table rides, the lease books the whole attempt"
+
+// TestRecordPoolSpend_aWhollyUnjoinedAttemptBooksTheWholeAttempt: a stamped
+// plan whose keys answered nothing while the attempt spent is a join drift.
+// An empty table would book the lease $0 for spend that may have run on its
+// credential, so the report sends NO table — the coarse whole-attempt
+// booking, the donor charged the $3 — and one warn names the run. A table
+// every observation joined and a plan-less publication (the coarse
+// contract) stay quiet. Mutant guards: dropping the void reds the ledger
+// read ($0); dropping the warn reds the log assertion.
+func TestRecordPoolSpend_aWhollyUnjoinedAttemptBooksTheWholeAttempt(t *testing.T) {
 	var buf bytes.Buffer
 	newLoggedRunner := func(t *testing.T, runID string) *poolHarness {
 		t.Helper()
@@ -341,8 +349,15 @@ func TestRecordPoolSpend_anEmptyFineTableUnderSpendWarns(t *testing.T) {
 		BackendName: "claw", Provider: "anthropic", Tokens: 100, CostUSD: 3,
 	})
 	h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-1", CredPlan: plan}, usage, nil, false)
-	if !strings.Contains(buf.String(), "EMPTY fine table") || !strings.Contains(buf.String(), "run-1") {
-		t.Fatalf("the report logged %q, want the empty-table warn naming the run", buf.String())
+	if !strings.Contains(buf.String(), voidedTableWarn) || !strings.Contains(buf.String(), "run-1") {
+		t.Fatalf("the report logged %q, want the voided-table warn naming the run", buf.String())
+	}
+	day, _, err := h.ledger.Usage(context.Background(), donorPledgeID(), time.Now().UTC())
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if day.CostUSD != 3 {
+		t.Fatalf("the donor's ledger = $%.2f, want $3 — an attempt whose spend joined no plan key books whole, never $0 for spend that may have run on the lease's credential", day.CostUSD)
 	}
 
 	// Control 1: the table carries rows (the door fired, or the team's own
@@ -399,12 +414,16 @@ func recoveryRungPlan(t *testing.T) map[string]string {
 
 // TestRecordPoolSpend_aFiredAgentRecoveryBooksTheDonorsSlice: rung 4
 // dispatched, its delegate event carrying `heal__recover` — the recovery's
-// spend books the donor's slice through the plan's runtime-id row. Mutant
-// guards: the derivation dropping the runtime-id row reds (the join misses,
-// the donor books $0 under real spend and the empty-table telltale fires);
-// the site mapper keying the rung on the tool node alone reds the same way.
+// spend books the donor's slice through the plan's runtime-id row, the
+// table riding with no miss. Mutant guards: the derivation dropping the
+// runtime-id row, or the site mapper keying the rung on the tool node
+// alone, reds at recoveryRungPlan's want-map before any booking (in
+// production the join would miss and void the run's fine table); the warn
+// assertion below reds on any miss that slips past the want-map.
 func TestRecordPoolSpend_aFiredAgentRecoveryBooksTheDonorsSlice(t *testing.T) {
+	var buf bytes.Buffer
 	h := newPoolHarnessForRun(t, credpoolLimitsForFine(), "run-1")
+	h.runner.cfg.Logger = iterlog.New(iterlog.LevelWarn, &buf)
 	ctx := context.Background()
 
 	plan := recoveryRungPlan(t)
@@ -417,6 +436,9 @@ func TestRecordPoolSpend_aFiredAgentRecoveryBooksTheDonorsSlice(t *testing.T) {
 	})
 
 	h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-1", CredPlan: plan}, usage, nil, false)
+	if buf.Len() != 0 {
+		t.Fatalf("the recovery's report logged %q, want silence — its observation joins the runtime-id row, so the fine table rides", buf.String())
+	}
 
 	day, _, err := h.ledger.Usage(ctx, donorPledgeID(), time.Now().UTC())
 	if err != nil {
@@ -433,11 +455,13 @@ func TestRecordPoolSpend_aFiredAgentRecoveryBooksTheDonorsSlice(t *testing.T) {
 // TestRecordPoolSpend_gatewayFundedSpendKeepsTheEmptyTableQuiet: the whole
 // attempt's spend rode the openai_compatible gateway — a credential the
 // runner's environment holds, which no plan row ever names on purpose. The
-// empty table is CORRECT here, and the join-drift warn must stay silent or
-// every gateway-served lease run trains its reader to ignore the one warn
-// meant to surface real drift. Mutant guards: dropping the env-funded
-// exclusion reds (the gateway observation counts as a miss, the warn
-// fires); gating the warn on the whole-attempt cost alone reds the same.
+// empty table is CORRECT here: it rides, the donor books $0, and the warn
+// stays silent, or every gateway-served lease run books its whole attempt
+// on a donor whose credential never spent and trains its reader to ignore
+// the one warn meant to surface real drift. Mutant guards: dropping the
+// env-funded exclusion reds (the gateway observation counts as a miss, the
+// table is voided, the donor books $4 and the warn fires); voiding every
+// EMPTY table reds the ledger read the same way.
 func TestRecordPoolSpend_gatewayFundedSpendKeepsTheEmptyTableQuiet(t *testing.T) {
 	var buf bytes.Buffer
 	h := newPoolHarnessForRun(t, credpoolLimitsForFine(), "run-1")
@@ -457,6 +481,13 @@ func TestRecordPoolSpend_gatewayFundedSpendKeepsTheEmptyTableQuiet(t *testing.T)
 	if buf.Len() != 0 {
 		t.Fatalf("a gateway-funded attempt logged %q, want silence — the plan names no row for env-funded spend on purpose", buf.String())
 	}
+	day, _, err := h.ledger.Usage(context.Background(), donorPledgeID(), time.Now().UTC())
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if day.CostUSD != 0 {
+		t.Fatalf("the donor's ledger = $%.2f, want $0 — the gateway spend ran on the deployment's env, and the empty table rides", day.CostUSD)
+	}
 
 	// The other env-funded shape: a claude_code session that rode the pod's
 	// ambient anthropic env (its own label says so). Its credential is the
@@ -475,11 +506,19 @@ func TestRecordPoolSpend_gatewayFundedSpendKeepsTheEmptyTableQuiet(t *testing.T)
 	if buf.Len() != 0 {
 		t.Fatalf("an ambient-env attempt logged %q, want silence — the session's own label names no bundle credential", buf.String())
 	}
+	dayEnv, _, err := hEnv.ledger.Usage(context.Background(), donorPledgeID(), time.Now().UTC())
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if dayEnv.CostUSD != 0 {
+		t.Fatalf("the donor's ledger = $%.2f, want $0 — the session spent the pod's ambient env, and the empty table rides", dayEnv.CostUSD)
+	}
 
-	// The same shape on a route a plan is supposed to answer still warns:
-	// the exclusion is env-funded routes, not the warn itself. The impl
-	// node's route naming openai joins a key the plan never stamped for it
-	// (impl plans the donor's anthropic) — vendor-funded drift.
+	// The same shape on a route a plan is supposed to answer is drift: the
+	// exclusion is env-funded routes, not the void itself. The impl node's
+	// route naming openai joins a key the plan never stamped for it (impl
+	// plans the donor's anthropic) — vendor-funded drift, the table voided
+	// and the whole attempt booked.
 	buf.Reset()
 	h2 := newPoolHarnessForRun(t, credpoolLimitsForFine(), "run-2")
 	h2.runner.cfg.Logger = iterlog.New(iterlog.LevelWarn, &buf)
@@ -492,59 +531,83 @@ func TestRecordPoolSpend_gatewayFundedSpendKeepsTheEmptyTableQuiet(t *testing.T)
 		BackendName: "claw", Tokens: 900, CostUSD: 4,
 	})
 	h2.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-2", TenantID: "team-1", CredPlan: plan}, usage2, nil, false)
-	if !strings.Contains(buf.String(), "EMPTY fine table") {
-		t.Fatalf("a vendor-funded miss logged %q, want the empty-table warn — this one is drift", buf.String())
+	if !strings.Contains(buf.String(), voidedTableWarn) {
+		t.Fatalf("a vendor-funded miss logged %q, want the voided-table warn — this one is drift", buf.String())
+	}
+	day2, _, err := h2.ledger.Usage(context.Background(), donorPledgeID(), time.Now().UTC())
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if day2.CostUSD != 4 {
+		t.Fatalf("the donor's ledger = $%.2f, want $4 — a vendor-funded miss voids the table and books the whole attempt", day2.CostUSD)
 	}
 }
 
-// TestSupervisorUsageSink_JoinsThePlanLikeAnEvent: the OnUsage sink's
-// observation joins the credential plan the way the event paths do — the
-// source IS the node half the walk recorded (`supervisor:<name>`), so the
-// sink's spend books its row, and an observation the plan names nothing
-// for counts as a miss the report warns about. A sink path outside the
-// fine table would book the lease $0 under real spend with the telltale
-// quiet. Mutant guards: the fold dropped from addRoute reds both halves;
-// the plan join reading the sink's source as a label reds the first.
+// TestSupervisorUsageSink_JoinsThePlanLikeAnEvent: the PRODUCTION OnUsage
+// sink (meterSupervisorSpecs' closure) joins the credential plan the way
+// the event paths do — the source IS the node half the walk recorded
+// (`supervisor:<name>`), so an evaluation books its row, each token ONCE
+// (the observed split, the aggregate left at zero: the donor's counters are
+// disjoint and their true total is the sum), and an evaluation the plan
+// names nothing for counts as a miss, the one that voids the report's
+// table. Mutant guards: the fold dropped from addRoute reds both halves;
+// the plan join reading the sink's source as a label reds the first; the
+// sink filing the in+out sum beside the split reds the row's counters and
+// the miss's token total.
 func TestSupervisorUsageSink_JoinsThePlanLikeAnEvent(t *testing.T) {
+	sink := func(t *testing.T, plan map[string]string, pin string) (*metricsEmitter, func(in, out int)) {
+		t.Helper()
+		m := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
+		specs := []supervise.Spec{{Name: "pacer", Model: pin}}
+		meterSupervisorSpecs(context.Background(), specs, m)
+		if specs[0].OnUsage == nil {
+			t.Fatal("meterSupervisorSpecs left OnUsage nil — the test premise (the production sink) broke")
+		}
+		return m, specs[0].OnUsage
+	}
+
 	// The plan names the supervisor's site: its evaluation books the
 	// donor's slice, the same space the lease stamps.
 	plan := map[string]string{"supervisor:pacer|anthropic": donorFingerprint}
-	m := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
-	m.addRoute(delegate.BackendClaw, "anthropic/claude-opus-5", "supervisor:pacer", 0, 900, 100, 1000)
-	totals := m.FingerprintSpendTotals()
-	row, ok := totals[donorFingerprint]
+	m, evaluate := sink(t, plan, "anthropic/claude-opus-5")
+	evaluate(900, 100)
+	rows, miss := m.fineSnapshot()
+	row, ok := rows[donorFingerprint]
 	if !ok {
-		t.Fatalf("the sink booked no fine row; table: %v — a supervisor evaluation must join the plan like an event", totals)
+		t.Fatalf("the sink booked no fine row; table: %v — a supervisor evaluation must join the plan like an event", rows)
 	}
-	if row.AggregateTokens != 1000 {
-		t.Fatalf("the donor's fine row = %d aggregate tokens, want 1000", row.AggregateTokens)
+	if row.InputTokens != 900 || row.OutputTokens != 100 || row.AggregateTokens != 0 {
+		t.Fatalf("the donor's fine row = (in %d, out %d, aggregate %d), want (900, 100, 0) — the evaluation's 1000 tokens, each counted once",
+			row.InputTokens, row.OutputTokens, row.AggregateTokens)
 	}
-	if _, _, missObs := m.MissedPlanSpend(); missObs != 0 {
-		t.Fatalf("a joined observation counted %d miss(es), want 0", missObs)
+	if miss.observations != 0 {
+		t.Fatalf("a joined observation counted %d miss(es), want 0", miss.observations)
 	}
 
-	// The same sink naming a provider the plan carries no row for on the
-	// supervisor's site counts as a miss — the report's under-book warn
-	// reads it, the coarse booking keeps the donor honest. The miss carries
-	// the route table's own token total (the sink books both directions AND
-	// their sum, its convention since #2721).
-	m2 := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
-	m2.addRoute(delegate.BackendClaw, "openai/gpt-5", "supervisor:pacer", 0, 10, 5, 15)
-	if _, tokens, missObs := m2.MissedPlanSpend(); missObs != 1 || tokens != 30 {
-		t.Fatalf("an unjoined sink observation counted (misses=%d, tokens=%d), want (1, 30)", missObs, tokens)
+	// The same sink resolving a provider the plan carries no row for on the
+	// supervisor's site counts as a miss — the report voids its table on it,
+	// the coarse booking keeps the donor whole. The miss carries the
+	// evaluation's own token total, once.
+	m2, evaluate2 := sink(t, plan, "openai/gpt-5")
+	evaluate2(10, 5)
+	if _, miss2 := m2.fineSnapshot(); miss2.observations != 1 || miss2.tokens != 15 {
+		t.Fatalf("an unjoined sink observation counted (misses=%d, tokens=%d), want (1, 15)", miss2.observations, miss2.tokens)
 	}
 }
 
-// TestRecordPoolSpend_aRuntimeNodeTheWalkCannotSeeWarnsAndBooksNobody: a
+// TestRecordPoolSpend_aRuntimeNodeTheWalkCannotSeeBooksTheWholeAttempt: a
 // claw subagent loop's events carry the `subagent:<agent>` id the walk
-// never saw — runtime input the plan cannot cover — so its spend books
-// nobody even with the table's other rows full. The under-booking must
-// surface at the report (one warn naming the missed slice) while the
-// broker still books only the matched slices, never the donor by guess.
-// Mutant guards: dropping the miss accounting reds (no warn); dropping the
-// partial-miss branch reds (a non-empty table stays silent); booking the
-// missed slice on any row reds the ledger read.
-func TestRecordPoolSpend_aRuntimeNodeTheWalkCannotSeeWarnsAndBooksNobody(t *testing.T) {
+// never saw — runtime input the plan cannot cover. Here the subagent of the
+// donor-funded impl node spends the donor's own lent subscription (the
+// parent's anthropic route), the R30d246 harm through the Task tool: a
+// table with impl's row alone would book the donor $2 while their
+// credential paid for the subagent too, and any borrower could push spend
+// past MaxUSDPerDay through subagents. The miss voids the table: the lease
+// books the whole attempt, and one warn names the run. Mutant guards:
+// dropping the void (sending the partial table) reds the ledger read ($2);
+// dropping the miss accounting reds the same and the warn; dropping the
+// warn reds the log assertion.
+func TestRecordPoolSpend_aRuntimeNodeTheWalkCannotSeeBooksTheWholeAttempt(t *testing.T) {
 	var buf bytes.Buffer
 	newLoggedRunner := func(t *testing.T, runID string) *poolHarness {
 		t.Helper()
@@ -559,28 +622,33 @@ func TestRecordPoolSpend_aRuntimeNodeTheWalkCannotSeeWarnsAndBooksNobody(t *test
 	hooks := model.NewStoreEventHooks(
 		context.Background(), usage, "run-1", iterlog.New(iterlog.LevelError, nil), nil, nil,
 	)
-	// The door fired: the impl node booked the donor's slice ($2).
+	// The door fired: the impl node spent the donor's slice ($2).
 	hooks.OnDelegateFinished("impl", model.DelegateInfo{
 		BackendName: "claude_code", Provider: "anthropic", Tokens: 900, CostUSD: 2,
 	})
-	// A claw subagent spent on a provider the plan carries no row for on
-	// any node — the Task tool's runtime model arg, invisible at launch.
-	hooks.OnLLMRequest("subagent:auditor", model.LLMRequestInfo{Model: "openai/gpt-5", WireModel: "gpt-5"})
+	// A claw subagent of impl spent the SAME lent subscription — its events
+	// name `subagent:auditor`, a node the plan has no row for.
+	hooks.OnLLMRequest("subagent:auditor", model.LLMRequestInfo{Model: "anthropic/claude-opus-5", WireModel: "claude-opus-5"})
 	hooks.OnLLMStepFinish("subagent:auditor", model.LLMStepInfo{
-		Number: 1, InputTokens: 20000, OutputTokens: 2000, Provider: "openai",
+		Number: 1, InputTokens: 20000, OutputTokens: 2000, Provider: "anthropic",
 	})
+	whole, _, _, _ := usage.RunTotals()
+	if whole <= 2 {
+		t.Fatalf("the subagent's step priced nothing (attempt total $%.4f) — the test premise (a priced subagent slice) broke", whole)
+	}
 
 	h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-1", CredPlan: plan}, usage, nil, false)
-	if !strings.Contains(buf.String(), "under-books") || !strings.Contains(buf.String(), "run-1") {
-		t.Fatalf("the report logged %q, want the under-booked-slice warn naming the run", buf.String())
+	if !strings.Contains(buf.String(), voidedTableWarn) || !strings.Contains(buf.String(), "run-1") {
+		t.Fatalf("the report logged %q, want the voided-table warn naming the run", buf.String())
 	}
 
 	day, _, err := h.ledger.Usage(context.Background(), donorPledgeID(), time.Now().UTC())
 	if err != nil {
 		t.Fatalf("usage: %v", err)
 	}
-	if day.CostUSD != 2 {
-		t.Fatalf("the donor's ledger = $%.2f, want $2 — the missed slice books nobody, never the donor by guess", day.CostUSD)
+	// The ledger keeps money at milli-cent resolution (CostToMillis).
+	if math.Abs(day.CostUSD-whole) >= 1e-3 {
+		t.Fatalf("the donor's ledger = $%.6f, want the whole attempt's $%.6f — a slice the plan cannot place voids the fine table, never books the donor short", day.CostUSD, whole)
 	}
 
 	// Control: the same attempt without the runtime node — every

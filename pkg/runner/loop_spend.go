@@ -208,34 +208,22 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 	// a plan - an older publisher, or a routing walk the publisher could
 	// not read - reports no table and keeps the coarse whole-attempt
 	// booking, which is the conservative-on-ignore direction.
-	byFingerprint := fineFingerprintSpend(usage)
-	// A stamped plan whose keys answered nothing while the attempt spent
-	// real, env-unfunded money is a join drift, and the broker's booking of
-	// zero for the lease is then silent: the plan promised a per-credential
-	// answer for every node, yet no observation hit one (the loop's
-	// provider word absent on an old container, a spec whose prefix drifted
-	// from what served, a model no event named). One line at the report is
-	// the telltale every such shape surfaces through — without it the first
-	// evidence is a donor's ledger staying flat under real spend.
 	//
-	// The emptiness that is CORRECT stays quiet: the gateway and the
-	// claude_code ambient env fund spend from the runner's environment,
-	// which no plan row ever names on purpose, so the accounting counts
-	// only the routes a plan is supposed to answer. The same accounting
-	// names the PARTIAL misses — runtime nodes the walk cannot see (a claw
-	// subagent loop's `subagent:*` id, a model arg the Task tool carried) —
-	// whose slice the fine table under-books while its other rows book.
-	// One line per report, in either shape, is the whole alarm budget; a
-	// table with rows and no miss, or a plan-less publication (nil, the
-	// coarse contract), needs no line.
-	if byFingerprint != nil {
-		if missCost, missTokens, missObs := usage.MissedPlanSpend(); missObs > 0 {
-			if len(byFingerprint) == 0 {
-				r.cfg.Logger.Warn("runner: credential-pool report for run %s carries a stamped plan but an EMPTY fine table while %.6f USD / %d tokens of the attempt's spend joined none of its keys — the lease books $0 for this attempt", msg.RunID, missCost, missTokens)
-			} else {
-				r.cfg.Logger.Warn("runner: credential-pool report for run %s carries a stamped plan whose keys answered none of %d observation(s) totalling %.6f USD / %d tokens (a runtime node the walk cannot see — a subagent loop, a runtime model arg, a spec that drifted) — the fine table under-books that slice", msg.RunID, missObs, missCost, missTokens)
-			}
-		}
+	// The runner holds the same line at run time: a stamped plan whose keys
+	// answered nothing for some observation the attempt PAID for reports no
+	// table either (fineFingerprintSpend). A runtime node the walk cannot
+	// see (a claw subagent loop's `subagent:*` id, a model the agent tool
+	// named), a served model whose prefix names no provider, a spec that
+	// drifted from its launch reading — each slice may have run on the
+	// lease's own credential, and a table without it would book the donor
+	// short, letting spend past their MaxUSDPerDay ride the unplaced calls.
+	// One line at the report names the fall-back, so a run that keeps
+	// losing its fine booking is visible; a plan-less publication, or a
+	// plan every observation joined (env-funded routes are placed on nobody
+	// by design, never a miss), needs no line.
+	byFingerprint, miss := fineFingerprintSpend(usage)
+	if miss.observations > 0 {
+		r.cfg.Logger.Warn("runner: credential-pool report for run %s carries a stamped plan whose keys answered none of %d observation(s) totalling %.6f USD / %d tokens (a runtime node the walk cannot see — a subagent loop, a runtime model arg — or a route that drifted from its launch reading) — no fine table rides, the lease books the whole attempt", msg.RunID, miss.observations, miss.costUSD, miss.tokens)
 	}
 	if err := r.cfg.CredPool.ReportAttempt(bg, msg.RunID, publishedAt, credpool.Outcome{
 		CostUSD:         costUSD,
@@ -253,24 +241,31 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 
 // fineFingerprintSpend builds the report's per-credential table from the
 // emitter's plan-keyed grouping, in a stable order so two reports of the
-// same attempt carry the same rows. Nil when the publication carried no
-// plan — the nil-vs-empty distinction is the broker's contract (NIL keeps
-// the coarse whole-attempt booking; a present table books only the lease
-// credential's slice).
-func fineFingerprintSpend(usage *metricsEmitter) []credpool.FingerprintSpend {
+// same attempt carry the same rows. The nil-vs-present distinction is the
+// broker's contract: NIL keeps the coarse whole-attempt booking, a present
+// table — even an empty one — books only the lease credential's slice.
+//
+// Nil when the publication carried no plan, AND when any observation the
+// plan is supposed to answer joined none of its keys (the returned miss
+// says how much): a table is sent only when it places every call the
+// attempt paid for, the runtime twin of model.CredentialPlan refusing a
+// partial plan. A table missing a slice would book the lease short of
+// whatever of that slice ran on its credential, and nothing downstream
+// could tell.
+func fineFingerprintSpend(usage *metricsEmitter) ([]credpool.FingerprintSpend, planMiss) {
 	if usage == nil || len(usage.credPlan) == 0 {
-		return nil
+		return nil, planMiss{}
 	}
-	totals := usage.FingerprintSpendTotals()
-	if len(totals) == 0 {
-		return []credpool.FingerprintSpend{}
+	rows, miss := usage.fineSnapshot()
+	if miss.observations > 0 {
+		return nil, miss
 	}
-	out := make([]credpool.FingerprintSpend, 0, len(totals))
-	for fp := range totals {
-		out = append(out, totals[fp])
+	out := make([]credpool.FingerprintSpend, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Fingerprint < out[j].Fingerprint })
-	return out
+	return out, miss
 }
 
 // classifyPoolCondition maps a terminal execution error onto what it means

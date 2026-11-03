@@ -288,7 +288,7 @@ func TestCredentialPlan_theAgentRecoveryRungPlansUnderTheRuntimeID(t *testing.T)
 	// (recoveryAgentNode), and the recovery dispatch's events carry THAT id
 	// — the tool node never spends a token under its own. The plan must key
 	// the rung's rows where the runtime's observations join, or a fired
-	// recovery books nobody under real spend. The tool node's own row stays
+	// recovery joins no row under real spend. The tool node's own row stays
 	// (the launch vocabulary's reading, inert for a recipe-only node); the
 	// runtime-id row is the one the runner's join reads.
 	res := EffectiveProviders(RouteView{Workflow: recoveryRungWorkflow()}, knownForTest)
