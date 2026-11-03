@@ -451,7 +451,13 @@ secret sweeps every pin that names it — webhook configs and trigger
 subscriptions of the same tenant — at the delete route, instead of leaving
 a pin that resolves to nothing (the resolver drops an unresolvable pin id
 in silence and the walk seals the team's default, exactly the replacement
-the write-time guards refuse). Revocation never waits on a config edit:
+the write-time guards refuse). The forge orchestrator's own deletions run
+the same sweep: the managed secrets it mints (a project bot's token, a
+connection's token) are team-scoped and pinnable by any webhook or
+subscription of the tenant, and the store the server hands it sweeps on
+delete — a deprovision or a disconnect clears those pins too, and a
+sweep it cannot finish fails the deprovision until a retry does.
+Revocation never waits on a config edit:
 the delete's audit line lists the `pins_cleared` surfaces, and a launch
 after the sweep falls back exactly as an explicit clear would. The sweep
 judges each row as the store holds it at write time — a pin edit or a
@@ -466,7 +472,11 @@ still lived and lands after the sweep's listing, which therefore never
 sees it — and the write routes close that half themselves: every
 pin-landing write (both lanes' create and edit) re-checks the records its
 landed pins name, and one already revoked sweeps immediately under the
-same detached context as the delete's sweep. The webhook routes carry that
+same detached context as the delete's sweep. The one writer that copies
+pins without validating them — a re-provision migrating a repo to a new
+hook identity carries the operator's pins from the old config onto a row
+the old config's version does not guard — re-checks what they name once
+its row is stored and clears a revoked one from it. The webhook routes carry that
 receipt in their audit line (`pins_cleared`); the trigger routes, which
 audit nothing today, log it. A re-check the store refuses splits by what a
 retry can mend: an edit answers 5xx — the edit is stored, nothing one-time
@@ -486,7 +496,8 @@ interrupted sweep, and the retry is the reconciliation path; a retry whose
 right to sweep the identity store cannot judge (an outage, not a refusal)
 answers 5xx too, never a 404 over pins that may still stand. One stored
 shape the sweep's targeted writes cannot address at all is a pin name
-holding `.` or `$` (possible on rows written before the name guard): the
+holding `.` or `$`, or empty (possible on rows written before the name
+guard, when the validator checked the tenant alone): the
 Mongo clears rewrite that pin map's subdocument under a version CAS
 instead of `unset`-ing a path that would match nothing, so a legacy name
 cannot leave a dead pin standing behind a silent 204 either.
