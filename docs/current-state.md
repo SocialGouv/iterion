@@ -255,8 +255,11 @@ can evolve before a stable compatibility promise. In particular:
   Foundry are available through `claw` but are not claimed as equally tested.
 - Local and cloud stores share interfaces and run semantics, not a single
   physical persistence format.
-- Sandbox activation, restrictive egress, and the permission gate are opt-in;
-  operators must select the posture appropriate to their threat model.
+- The sandbox is on by default at the product entry points (see above);
+  restrictive egress is opt-in per workflow
+  (no deployment-level setting filters every run's egress) and the
+  permission gate is opt-in; operators must select the posture appropriate
+  to their threat model.
 - Kubernetes sandboxes cannot consume host state or build images at run time.
 
 Point-in-time ADRs, audits, plans, and bot-run bilans explain how the current

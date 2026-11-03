@@ -132,7 +132,8 @@ runnerPools:
 When `networkPolicy.egress` is active, allow the gateway host through
 `networkPolicy.egress.extraAllow` (the pool pods use the same policy;
 the sandbox runs' own egress is governed by each run's `network:`
-allowlist as for any runner).
+block as for any runner — open when the workflow declares none, unless
+the run is a repo-defined sandbox, see [below](#networkpolicy-egress)).
 
 Draining follows the shared runner contract (lame-duck
 `terminationGracePeriodSeconds`): scale the pool's Deployment down and
@@ -315,6 +316,34 @@ The chart synthesises a single egress block from the union of
 defaults + `egress.extraAllow`. There is no auto-detection of bundled
 sub-charts; if you run the dev stores (`devStack.*`), add the
 matching `egress.extraAllow` entry.
+
+**Sandbox pods are not selected by this policy.** It matches the
+release's `app.kubernetes.io/*` labels; a per-run sandbox pod carries
+`iterion.io/*` labels only. Its egress is the run's own
+`network:` policy ([sandbox](sandbox.md#network-policy)): open by
+default, and routed through the CONNECT proxy on the runner pod plus a
+per-run NetworkPolicy only when the workflow declares an `allowlist` or
+`denylist` `sandbox.network` mode, the run is a repo-defined sandbox,
+or the run carries secrets Layer 2 inspects / a gateway credential
+(then the proxy admits every public host the workflow's own `!host`
+exclusions do not refuse). Without the proxy the sandbox pod's egress
+is whatever the cluster allows. No chart value sets the egress mode for
+every run.
+
+**This policy and the sandbox proxy do not compose.** With
+`networkPolicy.enabled` on a CNI that enforces NetworkPolicy, the
+policy's Ingress rules admit only the server port and the metrics port
+on the runner pod, while the runner's CONNECT proxy (and the per-run
+MCP listeners) bind an ephemeral port
+(`pkg/sandbox/kubernetes/driver.go` `ProxyConfig`). A sandbox pod cannot
+reach that port, so a run that needs the proxy — an allowlist or
+denylist run, a repo-defined sandbox, a Layer 2 run, a run holding a
+gateway credential — fails at its first egress. No value opens it:
+`networkPolicy.ingress.extraAllow` widens the `from:` of the server
+port's rule only. On such a cluster, either keep `networkPolicy.enabled`
+off for the release that runs sandboxes, or run the sandbox with a
+no-proxy posture (`network: open`, no inspected secret, no gateway
+credential).
 
 The server port's ingress is scoped the same way (#2804): name your
 ingress controller's namespaces in `networkPolicy.ingress.controllerNamespaces`

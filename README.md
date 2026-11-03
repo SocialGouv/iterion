@@ -117,7 +117,7 @@ More than a DAG runner: Iterion is built for long, autonomous, multi-agent work 
 - 🎛️ **Live control and recovery** — Queue operator/supervisor messages, raise budgets, grant loop iterations, retry eligible failures, and resume from persisted checkpoints
 - 🛡️ **Tool-permission gate** — Shared `off` / `ask` / `deny` policy for `claude_code`, `claw`, and `pi`, with allow/ask/deny rule lists; restrictive modes are opt-in
 - 🌳 **Worktree finalization** — `worktree: auto` runs in a fresh Git worktree and protects committed results with a named branch; CLI or studio merge policy decides when and how it lands — see [docs/merge-policy.md](docs/merge-policy.md)
-- 🛡️ **Per-run sandbox** — Opt-in Docker/Podman/Kubernetes isolation. Local containers preserve the host worktree path by default; network mode is open unless the workflow selects an allowlist/denylist proxy — see [docs/sandbox.md](docs/sandbox.md)
+- 🛡️ **Per-run sandbox** — Default-on Docker/Podman/Kubernetes isolation (`sandbox: auto`; opt out with `sandbox: none`). Local containers preserve the host worktree path by default; network mode is open unless the workflow selects an allowlist/denylist proxy — see [docs/sandbox.md](docs/sandbox.md)
 - 🧰 **Reproducible bot tools** — A bot and its target repository can each declare a pinned `devbox.json`; Iterion composes both toolchains and exposes them to non-interactive nodes
 - 🔐 **Privacy filter** — Built-in Go-native `privacy_filter` / `privacy_unfilter` tools redact and restore PII (emails, phones, IBANs, credit cards, URLs, ~25 secret patterns) — see [docs/privacy_filter.md](docs/privacy_filter.md)
 

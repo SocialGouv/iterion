@@ -846,15 +846,16 @@ workflow isolated:
     user: "1000:1000"
     network:
       mode: allowlist                 # open (default) | allowlist | denylist
-      preset: "iterion-default"       # LLM + npm/pypi/golang + git hosts (the one built-in preset)
+      preset: "iterion-default"       # the LLM providers the engine routes to by name (z.ai/Moonshot included) + npm/PyPI/Go + github/gitlab/bitbucket + apt + Nix/devbox — verbatim list in docs/sandbox.md § Network policy
       inherit: append                 # node rules compose with the workflow's: omit = merge, or replace / append
       rules: ["registry.example.com", "!evil.site"]   # host globs, inline; `!` denies
 ```
 
 Sandbox top-level modes: `auto`, `none`, or the block form
-above. `network.preset: "iterion-default"` already covers LLM
-endpoints, npm/pypi/golang/cargo, github/gitlab/bitbucket
-and the Nix cache — only add `rules:` for private hosts.
+above. `network.preset: "iterion-default"` already covers the LLM
+endpoints, npm/PyPI/Go module registries, github/gitlab/bitbucket,
+Debian apt mirrors and the Nix/devbox hosts (no cargo/crates.io) —
+add `rules:` for private hosts and any other registry.
 
 ## When you really do need to author DSL
 

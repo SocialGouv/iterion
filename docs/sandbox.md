@@ -629,8 +629,18 @@ iterion-managed HTTP CONNECT proxy runs on the host (ephemeral port).
 The container receives the proxy URL via standard `HTTPS_PROXY` /
 `HTTP_PROXY` env vars and reaches it via the `host.docker.internal`
 alias under the docker driver, the runner pod's IP under kubernetes.
+The same proxy also runs under `open` when the run carries secrets
+Layer 2 inspects ([secrets](secrets.md#layer-2--tls-inspection-egress-default-on-for-sandboxed-runs))
+or a gateway credential: the policy then admits every public host the
+workflow's own `!host` exclusions do not refuse, and the proxy guards
+the secrets. Those exclusions bite only while the proxy runs — with no
+proxy, an open policy's rules are inert. In every mode the proxy's
+dialer refuses loopback, link-local and unspecified addresses (the
+SSRF guard), except the sanctioned `host.docker.internal` alias, which
+it dials to its own host's loopback — any port, unless the policy
+refuses the alias (under kubernetes, the runner pod's loopback).
 
-**Default mode is `open`** — no proxy, full egress — except on a
+**Default mode is `open`** — no host filtering, full egress — except on a
 repo-defined sandbox (mode `auto` with a found `devcontainer.json`)
 where the workflow declares no `network:` block: there the default is
 the `iterion-default` allowlist preset, because open egress on such a
@@ -648,15 +658,58 @@ sandbox:
     rules: ["internal.acme.dev"]     # an inline list, never `- item` lines
 ```
 
+**The workflow is the only seat of the egress policy.** No environment
+variable, chart value or platform setting sets the mode, the preset or
+the rules for a whole deployment: a deployment whose runs must all be
+filtered has every workflow declare `network:` with an `allowlist` or
+`denylist` mode (a block without `mode:` stays open, C312, except on a
+repo-defined sandbox, where it is completed to an allowlist), and a host the
+deployment refuses is refused per workflow by a `!host` exclusion
+written after the preset (last match wins) — never by editing the
+preset. The per-run NetworkPolicy of the kubernetes driver follows the
+proxy, and the chart's NetworkPolicy never selects a sandbox pod — on
+an enforcing CNI it closes the runner's proxy port to it instead
+([cloud](#cloud-iterion_modecloud)).
+
 The shipped **`iterion-default`** preset is the recommended
-starting point for allowlist mode: it covers the LLM endpoints
-(anthropic, openai and the ChatGPT forfait's chatgpt.com, xAI/Grok,
-openrouter, bedrock, googleapis, azure, mistral, and both published
-hosts of each Anthropic-wire facade — z.ai with Zhipu's
-open.bigmodel.cn, moonshot with its .cn gateway)
-plus package registries (npm, PyPI, golang proxy) plus code hosts
-(github, gitlab, bitbucket) plus apt mirrors. It is **not**
-applied implicitly to a workflow that
+starting point for allowlist mode. Its rules, verbatim from
+[`preset.go`](../pkg/sandbox/netproxy/preset.go) — a test keeps this
+list and the code equal. It names the hosts of the providers the engine
+routes to by name, z.ai (with Zhipu's open.bigmodel.cn) and Moonshot
+(with its mainland gateway) included: a product list, not a statement of where a deployment sends
+data:
+
+```text
+# LLM providers
+api.anthropic.com
+api.openai.com
+chatgpt.com                           # the ChatGPT forfait's backend
+openrouter.ai
+api.x.ai                              # xAI Grok
+bedrock-runtime.*.amazonaws.com       # AWS Bedrock, regional endpoints
+bedrock-runtime-fips.*.amazonaws.com
+bedrock.*.amazonaws.com
+**.googleapis.com                     # Gemini, Vertex AI
+**.openai.azure.com                   # Azure OpenAI
+api.mistral.ai
+api.z.ai                              # z.ai's Anthropic-compatible facade (GLM)
+open.bigmodel.cn                      # Zhipu's host of the same wire (mainland)
+api.moonshot.ai                       # Moonshot (Kimi) and its mainland gateway
+api.moonshot.cn
+# Package registries
+registry.npmjs.org, **.npmjs.org, pypi.org, files.pythonhosted.org
+proxy.golang.org, sum.golang.org
+# Code hosts
+github.com, **.github.com, codeload.github.com, objects.githubusercontent.com
+gitlab.com, **.gitlab.com, bitbucket.org, **.bitbucket.org
+# apt mirrors
+deb.debian.org, security.debian.org
+# Nix store / devbox (the iterion-sandbox-{slim,full} images)
+cache.nixos.org, channels.nixos.org, releases.nixos.org, nix-community.cachix.org
+devbox.sh, **.devbox.sh, get.jetify.com
+```
+
+The preset is **not** applied implicitly to a workflow that
 declares `network:` — operators name it explicitly so the
 default-open posture and the curated-allowlist posture are
 unambiguous from the YAML. Its one implicit application is the
@@ -708,7 +761,7 @@ Modes:
 | ----------- | ----------------------------------------- |
 | `allowlist` | deny                                      |
 | `denylist`  | allow                                     |
-| `open`      | accept everything (skips the proxy entirely; **the default**) |
+| `open`      | accept everything (**the default**; no proxy unless Layer 2 or a gateway credential needs one) |
 
 **IP literals are refused by default in allowlist mode** even when
 their hostname is allowed, which closes the cloud-metadata exfiltration
@@ -2775,14 +2828,32 @@ runner:
 
 V1 limitations (deferred to V2):
 
-- **Per-run NetworkPolicy** is now synthesised (V2-5): every sibling
-  pod gets a NetworkPolicy locking egress to the runner pod's IP
-  (proxy) plus DNS to `kube-system / k8s-app=kube-dns`. **Enforcement
-  requires a NetworkPolicy-aware CNI** — Calico, Cilium, weave-net,
-  kube-router. Default kindnetd / EKS VPC CNI without policy add-on
-  do **not** enforce; the resource still applies cleanly but is a
-  no-op. The CONNECT proxy continues to enforce hostname allowlist
+- **Per-run NetworkPolicy** is synthesised (V2-5) **when the run's
+  proxy runs** — a non-open `network:` policy, a Layer 2 rewriter
+  guarding the run's secrets, or a run gateway credential: the sibling
+  pod then gets a NetworkPolicy locking egress to the runner pod's IP
+  (proxy) plus DNS to `kube-system / k8s-app=kube-dns`. A run under
+  `open` with no proxy — the default for a workflow declaring no
+  `network:` — gets **no** per-run NetworkPolicy, and the chart's own
+  NetworkPolicy (`networkPolicy.enabled`) selects the release's app
+  pods by their `app.kubernetes.io/*` labels, never the
+  `iterion.io/*`-labelled sandbox pods: that pod's egress is whatever
+  the cluster allows, outside the chart's egress allowlist.
+  **Enforcement requires a NetworkPolicy-aware CNI** — Calico, Cilium,
+  weave-net, kube-router. Default kindnetd / EKS VPC CNI without policy
+  add-on do **not** enforce; the resource still applies cleanly but is
+  a no-op. The CONNECT proxy continues to enforce hostname allowlist
   at the application layer regardless of CNI.
+- **The chart's NetworkPolicy closes the proxy port.** With
+  `networkPolicy.enabled` on an enforcing CNI, the chart's Ingress
+  rules admit only the server and metrics ports on the runner pod,
+  while the runner's CONNECT proxy and per-run MCP listeners bind an
+  ephemeral port (`ProxyConfig` returns `0.0.0.0:0`). A sandbox pod
+  cannot reach the proxy, so a run that needs it — allowlist or
+  denylist, a repo-defined sandbox, Layer 2, a gateway credential —
+  fails at its first egress; `networkPolicy.ingress.extraAllow` widens
+  the server port's rule only. See
+  [cloud-deployment](cloud-deployment.md#networkpolicy-egress).
 - **`sandbox.build`** (Dockerfile-at-run-start) is **rejected in
   cloud mode** — see "BuildKit (local docker only)" below for the
   rationale and the cloud-side workaround.
@@ -2933,8 +3004,11 @@ of `claude_code` nodes run with `--backend '*=claw'` gets both.
 ### `network_blocked` events you don't expect
 
 This only happens when the workflow opted in to an `allowlist`
-(or `denylist`) `network:` block — `mode: open` is the default and
-skips the proxy entirely. Either the rule set you picked is too
+(or `denylist`) `network:` block, when a repo-defined sandbox got the
+`iterion-default` allowlist (a `sandbox_network_defaulted` event says
+so), or when a `!host` exclusion under `mode: open` bites while Layer 2
+or a gateway credential runs the proxy — `mode: open`, the default,
+filters no other host. Either the rule set you picked is too
 restrictive for your workflow (extend `network.rules` or drop back
 to `mode: open`), or the agent is genuinely talking to a domain
 you didn't intend to allow. Check `events.jsonl` for the host
