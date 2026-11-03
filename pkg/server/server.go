@@ -1094,6 +1094,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			// webhook or subscription of the tenant, and a plain store
 			// delete would leave those pins dead in silence.
 			Secrets:         s.pinSweepingSecrets(),
+			ApiKeys:         s.apiKeys,
 			Sealer:          s.sealer,
 			Bindings:        s.botBindings,
 			Bots:            s.forgeBotForge,

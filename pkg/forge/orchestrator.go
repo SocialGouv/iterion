@@ -111,6 +111,10 @@ type Orchestrator struct {
 	// pins naming the record (#2644) — this package holds no trigger store
 	// and cannot run that sweep itself.
 	Secrets secrets.GenericSecretStore
+	// ApiKeys, when set, lets a migration carry re-check the BYOK key pins
+	// it copies onto a new hook identity (reconcileCarriedPins); nil leaves
+	// key pins unjudged, as the routes do with no key store wired.
+	ApiKeys secrets.ApiKeyStore
 	Sealer  secrets.Sealer
 	// Bindings, when set, gets a bot-secret binding per enabled bot pinning
 	// the managed forge token under the bot's workflow-secret name (forge_token).
@@ -938,6 +942,16 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		wroteVersion: cfg.Version,
 		hasPrev:      currentErr == nil,
 		prev:         currentCfg,
+	}
+	// The migration carry copied prev's pins into a row whose write was no
+	// CAS on prev: now that the row is stored, re-check the records they
+	// name (reconcileCarriedPins). A clear bumps the row's version, and
+	// the undo must keep owning the version it checks.
+	if hasPrevCfg && prevCfg.ID != webhookID {
+		if err := o.reconcileCarriedPins(ctx, &cfg); err != nil {
+			return ProvisionResult{}, o.undoConfigWrite(ctx, written, false, err)
+		}
+		written.wroteVersion = cfg.Version
 	}
 
 	admin, err := o.AdminFor(ctx, conn)

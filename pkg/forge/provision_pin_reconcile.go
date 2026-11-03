@@ -1,0 +1,83 @@
+package forge
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/webhooks"
+)
+
+// reconcileCarriedPins closes the migration carry's half of the credential
+// pin window (#2644). carryOperatorWebhookSettings copies prev's key and
+// secret pins by value into the row of a NEW hook identity, and the write
+// that lands them commits against the candidate row's version, not prev's.
+// A record deleted while the provision ran — its delete's sweep listing the
+// tenant's rows before the new row existed — clears prev and never visits
+// the new row: the dead pin lands on a row nothing revisits, and the lane
+// seals the team default in silence. The same-identity path needs no
+// re-check: its Update is a CAS on prev itself, and a row the sweep's
+// listing saw is the sweep's to clear.
+//
+// So the migration write does what every pin-landing route does once its
+// row is stored: it re-reads every record the carried pins name, under the
+// tenant scope the pins validated against, and clears a revoked one from
+// THIS row with the store's value-scoped clear — the sweep's own primitive,
+// version bump included — then refreshes the written copy so the undo's
+// version check and the rest of the provision see the row as the store
+// holds it. A record store that cannot answer is an error the provision
+// reports; the retry re-provisions and re-checks, the mend a route's edit
+// asks of its client. A nil ApiKeys leaves key pins unjudged — the
+// tolerance the routes' validators and re-check apply to a store that is
+// not wired; the secret pins are always re-checked through Secrets.
+func (o *Orchestrator) reconcileCarriedPins(ctx context.Context, cfg *webhooks.Config) error {
+	tctx := store.WithTenant(ctx, cfg.TenantID)
+	var dead []string
+	if o.ApiKeys != nil {
+		for _, id := range pinnedRecordIDs(cfg.KeyOverrides) {
+			switch _, err := o.ApiKeys.Get(tctx, id); {
+			case errors.Is(err, secrets.ErrApiKeyNotFound):
+				dead = append(dead, id)
+			case err != nil:
+				return fmt.Errorf("forge: re-check api key %s pinned on webhook %s: %w", id, cfg.ID, err)
+			}
+		}
+	}
+	for _, id := range pinnedRecordIDs(cfg.SecretOverrides) {
+		switch _, err := o.Secrets.Get(tctx, id); {
+		case errors.Is(err, secrets.ErrGenericSecretNotFound):
+			dead = append(dead, id)
+		case err != nil:
+			return fmt.Errorf("forge: re-check stored secret %s pinned on webhook %s: %w", id, cfg.ID, err)
+		}
+	}
+	if len(dead) == 0 {
+		return nil
+	}
+	for _, id := range dead {
+		if _, err := o.Webhooks.ClearCredentialPins(ctx, cfg.ID, id); err != nil {
+			return fmt.Errorf("forge: clear the pins naming deleted record %s from webhook %s: %w", id, cfg.ID, err)
+		}
+	}
+	fresh, err := o.Webhooks.Get(ctx, cfg.ID)
+	if err != nil {
+		return fmt.Errorf("forge: re-read webhook %s after clearing its dead pins: %w", cfg.ID, err)
+	}
+	cfg.KeyOverrides, cfg.SecretOverrides, cfg.Version = fresh.KeyOverrides, fresh.SecretOverrides, fresh.Version
+	if o.LogWarn != nil {
+		o.LogWarn("forge: webhook %s carried pins naming records deleted mid-provision; cleared: %v", cfg.ID, dead)
+	}
+	return nil
+}
+
+// pinnedRecordIDs lists the record ids a pin map names, deduplicated and
+// sorted: two providers pinning one key cost one re-check.
+func pinnedRecordIDs(pins map[string]string) []string {
+	ids := make([]string, 0, len(pins))
+	for _, id := range pins {
+		ids = append(ids, id)
+	}
+	return dedupSorted(ids)
+}
