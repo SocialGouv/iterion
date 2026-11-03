@@ -1355,3 +1355,129 @@ func TestChartRenderServerProgressDeadline(t *testing.T) {
 		}
 	})
 }
+
+func TestChartRenderQuota(t *testing.T) {
+	t.Run("absent when disabled", func(t *testing.T) {
+		for _, values := range []string{"values-dev.yaml", "testdata/values-datastores.yaml"} {
+			for _, d := range manifests(t, mustRender(t, "-f", values)) {
+				if d["kind"] == "ResourceQuota" || d["kind"] == "LimitRange" {
+					t.Errorf("%s renders a %s with quota.enabled=false", values, d["kind"])
+				}
+			}
+		}
+	})
+
+	t.Run("prod shape carries the ceiling and the admission defaults", func(t *testing.T) {
+		docs := manifests(t, mustRender(t, "-f", "values-prod.yaml"))
+		rq := must(t, docs, "ResourceQuota", "iterion-quota")
+		hard := dig(rq, "spec", "hard")
+		for k, want := range map[string]any{"pods": "150", "requests.cpu": "64", "requests.memory": "160Gi"} {
+			if got := dig(hard, k); got != want {
+				t.Errorf("ResourceQuota hard[%q] = %v, want %q", k, got, want)
+			}
+		}
+		lr := must(t, docs, "LimitRange", "iterion-default-requests")
+		if got := dig(lr, "spec", "limits", "0", "type"); got != "Container" {
+			t.Errorf("LimitRange type = %v, want Container", got)
+		}
+		if got := dig(lr, "spec", "limits", "0", "defaultRequest", "cpu"); got != "100m" {
+			t.Errorf("LimitRange defaultRequest.cpu = %v, want 100m", got)
+		}
+		if got := dig(lr, "spec", "limits", "0", "default", "cpu"); got != nil {
+			t.Errorf("LimitRange sets a default cpu limit (%v) — the burstable contract (#732) forbids a chart-imposed CPU limit", got)
+		}
+	})
+
+	t.Run("enabled with explicit sizing on dev values", func(t *testing.T) {
+		docs := manifests(t, mustRender(t, "-f", "values-dev.yaml",
+			"--set", "quota.enabled=true",
+			"--set", "quota.requestsCpu=8", "--set", "quota.requestsMemory=16Gi", "--set", "quota.pods=40"))
+		rq := must(t, docs, "ResourceQuota", "iterion-quota")
+		if got := dig(rq, "spec", "hard", "requests.cpu"); got != "8" {
+			t.Errorf("requests.cpu = %v, want \"8\"", got)
+		}
+		if got := dig(rq, "spec", "hard", "requests.memory"); got != "16Gi" {
+			t.Errorf("requests.memory = %v, want \"16Gi\"", got)
+		}
+		if got := dig(rq, "spec", "hard", "pods"); got != "40" {
+			t.Errorf("pods = %v, want \"40\"", got)
+		}
+	})
+
+	t.Run("enabled without sizing is refused", func(t *testing.T) {
+		// The bare consumer path: defaults only. If values.yaml's defaults
+		// ever drifted to a filled value, this witness catches the drift.
+		mustRefuse(t, "quota.enabled=true requires", "-f", "values-dev.yaml",
+			"--set", "quota.enabled=true")
+		mustRefuse(t, "quota.enabled=true requires", "-f", "values-dev.yaml",
+			"--set", "quota.enabled=true",
+			"--set", "quota.requestsCpu=", "--set", "quota.requestsMemory=", "--set", "quota.pods=")
+	})
+
+	// A zero hard field is a VALID quantity that applies fine and forbids
+	// every pod in the namespace — self-immolating while reading as a sane
+	// ceiling, and ParseQuantity reads several orthographes as zero ("00",
+	// "0Gi", "0m", "0.0"). A unit-less memory is 160 BYTES, not 160 of
+	// anything useful (the exponent form "1e3" is bytes too). Both classes
+	// are refused at render time; a unit-less CPU is left alone (cores are
+	// meaningful) and fractional CPU like 0.5 (= 500m) stays legitimate.
+	t.Run("degenerate sizing is refused", func(t *testing.T) {
+		for _, degenerate := range []string{
+			"--set=quota.pods=0",
+			"--set=quota.requestsCpu=0",
+			"--set=quota.requestsMemory=0",
+			"--set=quota.pods=00",
+			"--set=quota.requestsCpu=0m",
+			"--set=quota.requestsCpu=0.0",
+			"--set=quota.requestsMemory=0Gi",
+			"--set=quota.requestsMemory=0.000",
+			"--set=quota.requestsCpu=0e-1",
+			"--set=quota.requestsMemory=0e-3",
+			// Leading-dot orthographies ParseQuantity also reads as zero.
+			"--set=quota.requestsMemory=.0",
+			"--set=quota.requestsMemory=.0Gi",
+			"--set=quota.requestsCpu=+.0",
+			"--set=quota.requestsMemory=-.000",
+		} {
+			args := append([]string{"-f", "values-dev.yaml", "--set", "quota.enabled=true",
+				"--set", "quota.requestsCpu=8", "--set", "quota.requestsMemory=16Gi", "--set", "quota.pods=40"}, degenerate)
+			mustRefuse(t, "must be at least 1", args...)
+		}
+		for _, unitless := range []string{"160", "2E5", "1e3", "2E+5", "128e-2", ".5", ".5e2"} {
+			args := []string{"-f", "values-dev.yaml", "--set", "quota.enabled=true",
+				"--set", "quota.requestsCpu=8", "--set", "quota.requestsMemory=" + unitless, "--set", "quota.pods=40"}
+			mustRefuse(t, "unit", args...)
+		}
+
+		// The legitimate neighbours of the refusals must keep rendering:
+		// fractional CPU (0.5 = 500m, and its leading-dot form .005 = 5m)
+		// and sub-1 fractional GiB (0.5Gi, .5Gi).
+		for _, legit := range []string{
+			"--set=quota.requestsCpu=0.5",
+			"--set=quota.requestsCpu=.005",
+			"--set=quota.requestsMemory=0.5Gi",
+			"--set=quota.requestsMemory=.5Gi",
+		} {
+			args := append([]string{"-f", "values-dev.yaml", "--set", "quota.enabled=true",
+				"--set", "quota.requestsCpu=8", "--set", "quota.pods=40", "--set", "quota.requestsMemory=16Gi"}, legit)
+			if _, err := render(t, args...); err != nil {
+				t.Errorf("legitimate sizing %q refused: %v", legit, err)
+			}
+		}
+
+		// A null hard field renders an empty `hard:` entry — admitted by the
+		// guard (toString(nil) is "<nil>", not "") yet rejected by the
+		// apiserver at apply. The empty guard must catch it at render time.
+		f, err := os.CreateTemp("", "quota-null-*.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer os.Remove(f.Name())
+		if _, err := f.WriteString("quota:\n  enabled: true\n  requestsCpu: \"8\"\n  requestsMemory: 16Gi\n  pods: null\n"); err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+		mustRefuse(t, "quota.enabled=true requires", "-f", "values-dev.yaml", "--set", "quota.enabled=true",
+			"--set", "quota.requestsCpu=8", "--set", "quota.requestsMemory=16Gi", "-f", f.Name())
+	})
+}

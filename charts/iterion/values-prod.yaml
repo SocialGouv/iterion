@@ -137,6 +137,23 @@ networkPolicy:
       #     - protocol: TCP
       #       port: 27017
 
+# Namespace compute ceiling — bounds the namespace's pod requests so a
+# campaign fan-out (subbots multiply sandbox pods past the runner pool) is
+# refused at admission instead of saturating the cluster's request pool.
+# Sizing: fixed infra + runner slots x sandbox request (2 CPU / 4 Gi each,
+# when sandbox.enabled) + fan-out headroom; the LimitRange defaults keep
+# request-less datastore sidecars admitted. The runner pool size is the
+# graceful lever, the quota is the backstop. At the ceiling, quota admission
+# is PriorityClass-blind: the server/runner surge pods are refused like any
+# other pod, so keep replica headroom or drain the fan-out before rolling.
+quota:
+  enabled: true
+  requestsCpu: "64"
+  requestsMemory: 160Gi
+  pods: "150"
+  defaultRequestCpu: 100m
+  defaultRequestMemory: 128Mi
+
 metrics:
   enabled: true
   podMonitor:

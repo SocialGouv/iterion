@@ -1,0 +1,67 @@
+{{- /*
+Namespace compute ceiling. When on, a ResourceQuota rejects pods that would
+push the namespace past its allocation — a campaign fan-out multiplies
+sandbox pods past the runner pool (subbots spawn their own sibling pods, 2
+CPU / 4 Gi requested each), and the overflow is refused at admission instead
+of saturating the cluster's request pool. The runner pool size stays the
+graceful concurrency lever; the quota is the backstop, not the queue.
+
+A LimitRange accompanies the quota: once compute quota is active, admission
+requires every container to carry a request, and datastore sidecars (mongod
+exporter, nats reloader, …) commonly ship none — the defaults keep their
+rollouts alive. CPU stays LIMIT-FREE by design (burstable workloads, the
+server/runner priorityClassName contract): `defaultRequest` only, never a
+`default` limit.
+*/ -}}
+{{- if .Values.quota.enabled }}
+{{- $q := .Values.quota -}}
+{{- /* toString on a null value renders "<nil>" — catch both the empty and
+      the null producer (a `-f` overlay with `pods: null` leaves an empty
+      `hard:` entry the apiserver only rejects at apply). */ -}}
+{{- if or (eq ($q.requestsCpu | toString) "") (eq ($q.requestsCpu | toString) "<nil>") (eq ($q.requestsMemory | toString) "") (eq ($q.requestsMemory | toString) "<nil>") (eq ($q.pods | toString) "") (eq ($q.pods | toString) "<nil>") -}}
+{{- fail "quota.enabled=true requires quota.requestsCpu, quota.requestsMemory and quota.pods — a ResourceQuota with an empty (or null) hard field bounds nothing while reading as if it did" -}}
+{{- end -}}
+{{- /* ParseQuantity reads a whole family of orthographies as zero: "00",
+      "0Gi", "0m", "0.0", "0e-3", ".0", ".0Gi", "+.0" — every one of them
+      applies cleanly and then refuses every pod in the namespace, the
+      release's own rollouts included. The guard matches the READER'S
+      grammar: a mantissa made only of zeros and dots (then optional signed
+      exponent, then optional alpha suffix) IS zero. Fractional non-zero
+      values ("0.5", ".005" cpu, "0.5Gi", ".5Gi") stay legitimate. */ -}}
+{{- if regexMatch "^[-+]?[0.]+([eE][-+]?[0-9]+)?([a-zA-Z]+)?$" ($q.pods | toString) -}}
+{{- fail "quota.pods must be at least 1 — a zero (in any orthography ParseQuantity accepts) is a VALID quantity that applies cleanly and then refuses every pod in the namespace" -}}
+{{- end -}}
+{{- if regexMatch "^[-+]?[0.]+([eE][-+]?[0-9]+)?([a-zA-Z]+)?$" ($q.requestsCpu | toString) -}}
+{{- fail "quota.requestsCpu must be at least 1m — a zero (in any orthography ParseQuantity accepts) applies cleanly and then refuses every pod in the namespace" -}}
+{{- end -}}
+{{- if regexMatch "^[-+]?[0.]+([eE][-+]?[0-9]+)?([a-zA-Z]+)?$" ($q.requestsMemory | toString) -}}
+{{- fail "quota.requestsMemory must be at least 1 byte — a zero (in any orthography ParseQuantity accepts) applies cleanly and then refuses every pod in the namespace" -}}
+{{- end -}}
+{{- if regexMatch "^[-+]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][-+]?[0-9]+)?$" ($q.requestsMemory | toString) -}}
+{{- fail (printf "quota.requestsMemory %q carries no unit — a bare number is BYTES, it bounds nothing while reading as a ceiling; write e.g. 16Gi" ($q.requestsMemory | toString)) -}}
+{{- end -}}
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ include "iterion.fullname" . }}-quota
+  labels:
+    {{- include "iterion.labels" . | nindent 4 }}
+spec:
+  hard:
+    pods: {{ $q.pods | quote }}
+    requests.cpu: {{ $q.requestsCpu | quote }}
+    requests.memory: {{ $q.requestsMemory | quote }}
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ include "iterion.fullname" . }}-default-requests
+  labels:
+    {{- include "iterion.labels" . | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: {{ $q.defaultRequestCpu | quote }}
+        memory: {{ $q.defaultRequestMemory | quote }}
+{{- end -}}
