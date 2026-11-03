@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.5.1](https://github.com/SocialGouv/iterion/compare/v5.5.0...v5.5.1) (2026-11-03)
+
+### Bug Fixes
+
+* drain captures, preserve compaction summaries and verify Vetty commits ([#3006](https://github.com/SocialGouv/iterion/issues/3006)) ([7ab0bcf](https://github.com/SocialGouv/iterion/commit/7ab0bcfb60e9593c656c2d302ee53521c8c34dfb)), references [#2989](https://github.com/SocialGouv/iterion/issues/2989) [#2916](https://github.com/SocialGouv/iterion/issues/2916) [#2981](https://github.com/SocialGouv/iterion/issues/2981) [#981](https://github.com/SocialGouv/iterion/issues/981) [#2996](https://github.com/SocialGouv/iterion/issues/2996) [#3011](https://github.com/SocialGouv/iterion/issues/3011)
+
+    <details><summary>why</summary>
+
+    Centralize the 15 stdout/stderr pipe captures in 11 files. Drain while writers run, restore on panic/Goexit, close both ends, and support repeated intervals. Prove repository sweeps select their execution checkout. Record the pressure/root mutation evidence and keep the flake register within its byte budget.
+
+    </details>
+
 ## [5.5.0](https://github.com/SocialGouv/iterion/compare/v5.4.1...v5.5.0) (2026-11-03)
 
 ### Features
