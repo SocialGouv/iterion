@@ -1,7 +1,9 @@
 package modelcatalog
 
 import (
+	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -65,6 +67,10 @@ func ProviderSourceLabel(p secrets.Provider) string {
 		return "AWS_REGION"
 	case secrets.ProviderVertex:
 		return "GOOGLE_CLOUD_PROJECT"
+	case secrets.ProviderOpenAICompatible:
+		// The key's variable, as detect's local gateway row reports it and
+		// as a sandboxed claw node receives the run's gateway key.
+		return compatgw.APIKeyEnv
 	default:
 		return string(p)
 	}
@@ -103,11 +109,21 @@ func ReportFromCloudPresence(p CloudPresence) detect.Report {
 
 	anthropicKey := false
 	anyProvider := false
+	// piProvider is set only by a row pi can spend — the PiReadsProvider
+	// question detect's local probe and the catalog's pi pairing ask, so
+	// one catalog's backend list and its model pairings agree. A team's
+	// gateway key unlocks claw alone (ADR-131 §9): pi resolves none of the
+	// OPENAI_COMPATIBLE_* variables, just as it reads no AWS or GCP
+	// credential for a bedrock or vertex row.
+	piProvider := false
 	for _, prov := range providers {
 		if !prov.Available {
 			continue
 		}
 		anyProvider = true
+		if detect.PiReadsProvider(prov.Name) {
+			piProvider = true
+		}
 		if prov.Name == "anthropic" {
 			anthropicKey = true
 		}
@@ -138,13 +154,16 @@ func ReportFromCloudPresence(p CloudPresence) detect.Report {
 	}
 	if anyProvider || p.ClaudeCodeOAuth {
 		claw.Available = true
-		pi.Available = true
+		claw.Auth = detect.AuthOAuth
 		if anyProvider {
 			claw.Auth = detect.AuthAPIKey
+		}
+	}
+	if piProvider || p.ClaudeCodeOAuth {
+		pi.Available = true
+		pi.Auth = detect.AuthOAuth
+		if piProvider {
 			pi.Auth = detect.AuthAPIKey
-		} else {
-			claw.Auth = detect.AuthOAuth
-			pi.Auth = detect.AuthOAuth
 		}
 	}
 
@@ -158,6 +177,15 @@ func ReportFromCloudPresence(p CloudPresence) detect.Report {
 	}
 }
 
+// cloudProviderSkeleton lists the provider rows a cloud presence can light,
+// each named as DetectProviderName names a stored key's provider.
+//
+// The gateway row carries no SuggestedModel, the rule detect's local
+// gateway row states: the model id is the deployment's own naming, so
+// nothing here can guess one, and an empty suggestion keeps the row out of
+// every "pick a default model" consumer. A team's default gateway model is
+// a routing decision — an override cell of its routing policy — never a
+// suggestion of this row.
 func cloudProviderSkeleton() []detect.ProviderStatus {
 	return []detect.ProviderStatus{
 		{Name: "anthropic", Source: "ANTHROPIC_API_KEY", SuggestedModel: "anthropic/claude-opus-5-5"},
@@ -169,5 +197,6 @@ func cloudProviderSkeleton() []detect.ProviderStatus {
 		{Name: "bedrock", Source: "AWS_REGION"},
 		{Name: "vertex", Source: "GOOGLE_CLOUD_PROJECT"},
 		{Name: "openrouter", Source: "OPENROUTER_API_KEY"},
+		{Name: modelroute.OpenAICompatible, Source: compatgw.APIKeyEnv},
 	}
 }

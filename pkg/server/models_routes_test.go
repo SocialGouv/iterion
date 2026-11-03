@@ -9,12 +9,14 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -474,6 +476,69 @@ func TestGetModels_CloudPlatformKeyIsProven(t *testing.T) {
 	grok, _ := cat.Find("xai/grok-3")
 	if !grok.Usable || grok.Reachability != modelcatalog.ReachabilityCloud {
 		t.Errorf("platform xAI key is injected into the run, so grok must be cloud-proven: %+v", grok)
+	}
+}
+
+// ADR-131 §9 through the real presence probe: a team's gateway key, stored
+// with its base URL as the key routes store one, proves a gateway spec for
+// the team's cloud runs through claw alone, and lights neither pi nor
+// claude_code in the backend list the picker offers.
+func TestGetModels_CloudTeamGatewayKeyUnlocksClawOnly(t *testing.T) {
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "")
+	srv, keys, _ := newCloudModelsServer(t, newFakeDLQQueue())
+	const gatewaySecret = "sk-team-gateway-never-on-the-server"
+	if err := keys.Create(context.Background(), secrets.ApiKey{
+		ID:           secrets.NewApiKeyID(),
+		TenantID:     "team-a",
+		ScopeTeamID:  "team-a",
+		Provider:     secrets.ProviderOpenAICompatible,
+		BaseURL:      "https://gw.example.com",
+		Name:         "gateway",
+		SealedSecret: []byte("sealed:" + gatewaySecret),
+		CreatedAt:    time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("gateway key: %v", err)
+	}
+
+	const spec = "openai_compatible/scaleway/glm-5.3"
+	rec, cat := getModels(t, srv, "?spec="+spec, cloudIdentity("team-a", "alice"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	glm, ok := cat.Find(spec)
+	if !ok {
+		t.Fatalf("missing %s: %v", spec, cat.SortedSpecs())
+	}
+	if !glm.Usable || glm.Reachability != modelcatalog.ReachabilityCloud {
+		t.Errorf("a team gateway key must make the gateway spec cloud-proven: %+v", glm)
+	}
+	if !slices.Equal(glm.Backends, []string{detect.BackendClaw}) {
+		t.Errorf("backends = %v, want [claw] — the gateway's only backend", glm.Backends)
+	}
+	if glm.CredentialSource != "OPENAI_COMPATIBLE_API_KEY" {
+		t.Errorf("credential_source = %q, want the env-var name", glm.CredentialSource)
+	}
+	for _, b := range cat.Backends {
+		switch b.Name {
+		case detect.BackendClaw:
+			if !b.Available {
+				t.Errorf("claw unavailable on a team gateway key: %+v", b)
+			}
+		case detect.BackendPi, detect.BackendClaudeCode:
+			if b.Available {
+				t.Errorf("%s lit by a team gateway key it cannot spend: %+v", b.Name, b)
+			}
+		}
+	}
+	if cat.ResolvedDefaultBackend != detect.BackendClaw {
+		t.Errorf("resolved default backend = %q, want claw", cat.ResolvedDefaultBackend)
+	}
+	if cat.RecommendedSpec != "" {
+		t.Errorf("recommended = %q — the gateway row suggests no model", cat.RecommendedSpec)
+	}
+	if contains(rec.Body.String(), gatewaySecret) {
+		t.Fatalf("response leaked the gateway key:\n%s", rec.Body.String())
 	}
 }
 

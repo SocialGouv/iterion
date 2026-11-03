@@ -1502,6 +1502,24 @@ when a call's usage never arrives — as for any unpriced route.
 > `sessionboard.ErrGatewayBoardNeedsPin`, the twin of the supervisors'
 > gate.)
 
+**A team's own gateway key** ([ADR-131](adr/131-tenant-gateway-credential.md))
+proves `openai_compatible/…` specs in the cloud model catalog
+(`GET /api/models`, credential source `OPENAI_COMPATIBLE_API_KEY`) through
+**claw only** — pi and claude_code never light up on it — and recommends no
+model: the id is the gateway's own naming. The team's default gateway model
+is a routing decision, not a field of the key: one override cell of the
+team's routing policy, selector `*` and model
+`openai_compatible/<provider>/<model>` with the gateway's id verbatim
+(ADR-122), written per team by operator tooling through
+`PUT /api/teams/{id}/routing-policy`:
+
+```json
+{"routing": {"overrides": [{"selector": "*", "model": "openai_compatible/scaleway/glm-5.3"}]}}
+```
+
+A more specific level still pins its own model over it: a repository
+integration's `routing`, or the launch's own model overrides.
+
 ### What a gateway model costs and how big it is (ADR-122)
 
 The catalog resolves a gateway id with whole-entry precedence — fields are
