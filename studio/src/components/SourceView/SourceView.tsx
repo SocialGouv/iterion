@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import Editor from "@/lib/monaco";
 import { newSourceSession, unreachableSourceBuffer, useDocumentStore, useDocumentStoreInstance, SOURCE_MERGED } from "@/store/document";
 import { useThemeStore } from "@/store/theme";
@@ -11,9 +11,11 @@ import { registerIterLanguage } from "@/lib/iterMonaco";
 import { applyParsedSource, readRefusalSentence } from "@/lib/salvage";
 import { fragmentParseWarning } from "@/lib/fragmentParse";
 import { useConfirm } from "@/hooks/useConfirm";
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
 import { InlineBanner } from "@/components/ui/InlineBanner";
+import { appliedFromDocument } from "./appliedFrom";
 
 /** The picker's entry for the whole program of a bot in several files —
  *  the store's SOURCE_MERGED under the name this view and its tests have
@@ -21,6 +23,65 @@ import { InlineBanner } from "@/components/ui/InlineBanner";
  *  can hold, and the offer that reads the selection (#1647) must not have
  *  to import this view. */
 export const MERGED = SOURCE_MERGED;
+
+/** What the header says while the text on screen was rendered from a document
+ *  the store has since replaced. The label is deliberately not a bound: Edit
+ *  stays offered and Apply stays enabled, `moved()` is the stop, and this
+ *  names the window rather than closing it.
+ *
+ *  The sentence is the sighted hover and the accessible DESCRIPTION of the
+ *  Edit (then Apply) button alike — see `hintProps`. The NAME of that button
+ *  is "Edit" and stays it, so the aria-label channel a text-less trigger
+ *  would use is not available here; an aria-live region would chatter, since
+ *  every canvas keystroke opens this window for the ~500 ms a re-render
+ *  takes. */
+const STALE_SOURCE_HINT =
+  "The document changed after this text was rendered from it, so applying this text is refused. An open editor keeps it until you apply or cancel; otherwise a fresh render replaces it.";
+
+/** Why Edit stands down while un-applied text is held for this file: entering
+ *  the mode would publish a fresh buffer over the held text, so the banner's
+ *  Restore or Discard comes first (#1735). */
+const HELD_TEXT_HINT = "Answer the held text above first — Restore or Discard";
+
+/** One reason a control in this header explains itself with, carried by an
+ *  element of its own so `aria-describedby` can reference it. */
+interface ControlHint {
+  id: string;
+  text: string;
+}
+
+/**
+ * The two channels a control's reasons travel on, from ONE list.
+ *
+ * `aria-describedby` REPLACES `title` in the accessible-description
+ * algorithm, so a control holding two reasons references both or the one left
+ * out is silent for assistive tech — and `title` is unreachable by keyboard
+ * and by touch, so it is the sighted channel alone. Spread onto the control
+ * and paired with `<HintCarriers>` for the same list: the hover and the
+ * description then say the same sentences in the same order by construction.
+ */
+function hintProps(hints: ControlHint[]) {
+  return {
+    "aria-describedby": hints.map((h) => h.id).join(" ") || undefined,
+    title: hints.map((h) => h.text).join(" — ") || undefined,
+  };
+}
+
+/** The referenced nodes for `hintProps`' ids — visually hidden, since the
+ *  sighted channel is the hover and, for the stale window, the badge. Each id
+ *  is rendered beside the control that references it, so a reference cannot
+ *  dangle and a sentence nothing references cannot be announced. */
+function HintCarriers({ hints }: { hints: ControlHint[] }) {
+  return (
+    <>
+      {hints.map((h) => (
+        <span key={h.id} id={h.id} className="sr-only">
+          {h.text}
+        </span>
+      ))}
+    </>
+  );
+}
 
 export default function SourceView() {
   const documentStore = useDocumentStoreInstance();
@@ -206,6 +267,17 @@ export default function SourceView() {
   // the author from edit mode on every canvas keystroke; what the document
   // decides is whether the buffer may be WRITTEN, which is moved()'s job.
   const stale = rendered?.key !== bufferKey;
+  // The document an Apply of this text presents as what it was written
+  // against — the chokepoint `handleApply` compares and the badge reports.
+  const appliedFrom = appliedFromDocument({ salvaged, document, rendered });
+  // The window this header labels: the text on screen came from a document
+  // the store has since replaced, so `moved()` refuses to write it. True
+  // exactly when that refusal would fire on its document term, because the
+  // same value decides both. `!stale` because the FILE axis has its own
+  // answer — there is no Edit over a render for another file to label.
+  const appliedFromMoved = !stale && appliedFrom !== document;
+  const staleHintId = useId();
+  const heldTextHintId = useId();
 
   // Adopt a buffer this view left behind. The pane is mounted and unmounted
   // by three nesting conditions it does not own (the view toggle, the canvas
@@ -358,11 +430,13 @@ export default function SourceView() {
     // as that file's whole content, reverting the change with no
     // diagnostic. While salvaged the buffer is the FILE's text, not a
     // render, and the confirm above already governs replacing the canvas.
+    // `appliedFrom` is that document, computed once above and read by the
+    // header's badge too, so the label and this refusal cannot disagree.
     const was = {
       path: currentFilePath,
       unit,
       salvaged,
-      document: salvaged ? document : (rendered?.doc ?? document),
+      document: appliedFrom,
     };
     const moved = () => {
       const now = documentStore.getState();
@@ -554,7 +628,7 @@ export default function SourceView() {
     selected,
     documentStore,
     document,
-    rendered,
+    appliedFrom,
     setSourceBuffer,
     setEditing,
   ]);
@@ -643,6 +717,20 @@ export default function SourceView() {
   const orphanRel = orphan ? heldBuffer.rel : null;
   const restorable = !!orphan && !!unit && !!orphanRel && !salvaged;
 
+  // What each control explains about itself. Two reasons can hold at once —
+  // Edit is disabled for the held text AND the text it would open is from a
+  // document the store has replaced — and both are additive here, so neither
+  // channel drops one. Order: the reason the button is disabled first, since
+  // it is what the author must answer.
+  const editHints: ControlHint[] = [];
+  if (orphan) editHints.push({ id: heldTextHintId, text: HELD_TEXT_HINT });
+  if (appliedFromMoved) editHints.push({ id: staleHintId, text: STALE_SOURCE_HINT });
+  // Apply is the control the badge is about once the mode is open: it is the
+  // one `moved()` refuses, and the held text has been answered by then.
+  const applyHints: ControlHint[] = appliedFromMoved
+    ? [{ id: staleHintId, text: STALE_SOURCE_HINT }]
+    : [];
+
   const discardOrphan = useCallback(() => {
     setSourceBuffer(null);
   }, [setSourceBuffer]);
@@ -728,6 +816,32 @@ export default function SourceView() {
         ) : (
           <span className="text-xs text-fg-subtle">.bot Source</span>
         )}
+        {/* The middle child of a `justify-between` row on purpose: the button
+            group keeps its right edge, so Edit and Apply do not move under
+            the pointer while the badge is shown — it comes and goes with
+            every canvas keystroke, for the ~500 ms a re-render takes, and a
+            control that moved then would be clicked by accident.
+            Gated on `editable` as well: the branches that are not editable
+            render a long read-only note in that group and offer no Edit and
+            no Apply, so there is nothing for this to warn about and it would
+            only take the note's width.
+            `shrink-0`: a Badge is `whitespace-nowrap`, and a nowrap child
+            that yields narrows its box without narrowing its text, which
+            then paints under the picker's `relative` wrapper. This row
+            decides per child who yields, and the three short labels beside
+            it are what gives — the long read-only notes it would compete
+            with are in the branches this is gated out of. */}
+        {editable && appliedFromMoved && (
+          <Badge
+            variant="warning"
+            size="sm"
+            className="shrink-0"
+            data-testid="source-view-stale-badge"
+            title={STALE_SOURCE_HINT}
+          >
+            Text may be stale
+          </Badge>
+        )}
         {/* `min-w-0` rather than `shrink-0`: the two read-only notes below are
             long (the salvage one runs to ~950 px), and a row that refuses to
             shrink them takes the picker's width instead — measured erasing it
@@ -777,24 +891,35 @@ export default function SourceView() {
               and ship the fragment here.
             </span>
           ) : !editable || stale ? null : !editing ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-accent-text hover:underline"
-              // One buffer per tab: entering the mode publishes a fresh buffer
-              // and would take the held text with it. The banner above is the
-              // way to answer that text first (#1735).
-              disabled={!!orphan}
-              title={orphan ? "Answer the held text above first — Restore or Discard" : undefined}
-              onClick={() => setEditing(true)}
-            >
-              Edit
-            </Button>
+            <>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-accent-text hover:underline"
+                // One buffer per tab: entering the mode publishes a fresh
+                // buffer and would take the held text with it. The banner
+                // above is the way to answer that text first (#1735).
+                disabled={!!orphan}
+                // The NAME stays the text — "Edit", which seven e2e sites
+                // assert — so every reason rides the DESCRIPTION instead.
+                {...hintProps(editHints)}
+                onClick={() => setEditing(true)}
+              >
+                Edit
+              </Button>
+              <HintCarriers hints={editHints} />
+            </>
           ) : (
             <>
-              <Button variant="primary" size="sm" onClick={handleApply}>
+              <Button
+                variant="primary"
+                size="sm"
+                {...hintProps(applyHints)}
+                onClick={handleApply}
+              >
                 Apply
               </Button>
+              <HintCarriers hints={applyHints} />
               <Button variant="secondary" size="sm" onClick={() => void handleCancel()}>
                 Cancel
               </Button>

@@ -3,7 +3,7 @@
 // The Source view is the way OUT of a salvage: the refusal on the three
 // write sites points here, so what it shows and what Apply does decide
 // whether an author can recover a file the parser could not read whole.
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({ parseSource: vi.fn(), unparse: vi.fn() }));
@@ -159,5 +159,38 @@ describe("the Source view of a salvaged file", () => {
     // textarea alone would pass before the sync ever ran.
     await new Promise((r) => setTimeout(r, 700));
     expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe(HALF_REPAIRED);
+  });
+
+  // The stale-content badge (#1662) reads the same `appliedFrom` as the Apply
+  // refusal, and while salvaged that is the document as it is: the text on
+  // screen is the FILE's, which no render's provenance speaks for, and
+  // replacing the canvas with it is governed by its own confirm. A predicate
+  // written `rendered?.doc !== document` would label the way OUT of a
+  // salvage on every canvas keystroke, over an Apply that is not refused.
+  it("never labels the file's own text stale when the canvas moves under it", async () => {
+    const store = salvagedStore();
+    render(
+      <DocumentStoreProvider store={store}>
+        <SourceView />
+      </DocumentStoreProvider>,
+    );
+
+    expect(await screen.findByRole("button", { name: "Edit" })).toBeTruthy();
+    await waitFor(() =>
+      expect((screen.getByLabelText("source") as HTMLTextAreaElement).value).toBe(FILE_TEXT),
+    );
+
+    // The canvas moved: a new document under the same file, which is what
+    // opens the window everywhere else.
+    act(() => {
+      store.getState().setDocument({ ...createEmptyDocument(), comments: [{ text: "canvas" }] });
+    });
+
+    // Synchronous: the salvage re-render is 500 ms away, so this reads the
+    // instant the badge would be wrong.
+    expect(screen.queryByTestId("source-view-stale-badge")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Edit" }).getAttribute("aria-describedby"),
+    ).toBeNull();
   });
 });
