@@ -347,7 +347,8 @@ func ValidEffort(e string) bool {
 // ProviderOpenAICompatible is the gateway's provider name: the wire
 // identifier of its key slot (openai_compatible_key), a provider an
 // override hint or a providers allowlist may speak, and the routing prefix
-// of a gateway model spec (`openai_compatible/<id>`, read by modelFamily).
+// of a gateway model spec (`openai_compatible/<id>`; a drift test pins it
+// to dispatch's modelroute.OpenAICompatible).
 const ProviderOpenAICompatible = "openai_compatible"
 
 // ProviderHints is the closed provider vocabulary of an override's provider

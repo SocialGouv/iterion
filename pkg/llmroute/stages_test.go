@@ -3,6 +3,7 @@ package llmroute
 import (
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -94,6 +95,29 @@ func TestStageModelPairKeyed(t *testing.T) {
 		{HarnessClaw, "zai_key", "scaleway/gpt-oss-120b", "", false},
 		{HarnessClaudeCode, "anthropic_key", "scaleway/gpt-oss-120b", "", false},
 		{HarnessClaw, "openai_key", "scaleway/gpt-oss-120b", "openai/gpt-6-sol", true},
+		// The class: dispatch reads the routing prefix at the FIRST slash and
+		// sends the rest verbatim, so a nested id belongs to its prefix's
+		// family, never to the bare-id reading. openai/ is the openai wire
+		// whatever id it carries (`qwen/qwen-max` behind an OpenAI-shaped
+		// endpoint): its rungs carry the node's own id.
+		{HarnessClaw, "openai_key", "openai/qwen/qwen-max", "openai/qwen/qwen-max", true},
+		{HarnessCodex, CredChatGPTForfait, "openai/qwen/qwen-max", "qwen/qwen-max", true},
+		{HarnessClaw, "anthropic_key", "openai/qwen/qwen-max", "", false},
+		{HarnessClaudeCode, CredClaudeForfait, "openai/qwen/qwen-max", "", false},
+		// anthropic/ is the anthropic wire, a region-prefixed id included:
+		// its prefix is stripped once, never doubled.
+		{HarnessClaw, "anthropic_key", "anthropic/eu/claude-opus-5", "anthropic/eu/claude-opus-5", true},
+		{HarnessClaudeCode, CredClaudeForfait, "anthropic/eu/claude-opus-5", "eu/claude-opus-5", true},
+		{HarnessClaw, "openai_key", "anthropic/eu/claude-opus-5", "openai/gpt-6-sol", true},
+		// Any other prefix is no family's, however deep its id: no
+		// same-family rung serves another vendor's route, and the crossing
+		// answers it as any foreign model.
+		{HarnessClaw, "anthropic_key", "moonshot/kimi-code/kimi-for-coding", "", false},
+		{HarnessClaw, "zai_key", "moonshot/kimi-code/kimi-for-coding", "", false},
+		{HarnessClaudeCode, CredClaudeForfait, "moonshot/kimi-code/kimi-for-coding", "", false},
+		{HarnessClaw, "openai_key", "moonshot/kimi-code/kimi-for-coding", "openai/gpt-6-sol", true},
+		{HarnessClaw, "anthropic_key", "xai/grok/grok-3-mini", "", false},
+		{HarnessClaudeCode, CredClaudeForfait, "openrouter/anthropic/claude-opus-5", "", false},
 		{"pi", CredClaudeForfait, "claude-opus-5-5", "", false},
 	}
 	for _, tt := range tests {
@@ -107,23 +131,55 @@ func TestStageModelPairKeyed(t *testing.T) {
 		}
 	}
 
-	// The two gateway spellings agree on every pair the default order
-	// lists, the crossings included: the nesting belongs to the gateway's
-	// id, never to a second family reading.
-	for _, pair := range DefaultPairOrder {
-		h, c, err := ParsePair(pair)
-		if err != nil {
-			t.Fatalf("default order entry %q: %v", pair, err)
-		}
-		oneModel, oneOK, oneReason := StageModel(h, c, "openai_compatible/glm-5.3", ResolveClasses(nil))
-		nestedModel, nestedOK, nestedReason := StageModel(h, c, "openai_compatible/scaleway/glm-5.3", ResolveClasses(nil))
-		if oneModel != nestedModel || oneOK != nestedOK || oneReason != nestedReason {
-			t.Errorf("%s: openai_compatible/glm-5.3 → (%q, %v, %q) but openai_compatible/scaleway/glm-5.3 → (%q, %v, %q) — the gateway spellings disagree", pair, oneModel, oneOK, oneReason, nestedModel, nestedOK, nestedReason)
+	// One reading per prefix: a nested id maps as its one-segment spelling
+	// on every pair the default order lists — same family, same refusal,
+	// same reason. The nesting belongs to the id, never to a second family
+	// reading. Where a family's rung re-prefixes the node's own id, the two
+	// models differ by that id (the rows above pin them); a prefix that is
+	// no family's maps both spellings to one answer, the crossing included.
+	spellings := []struct {
+		one, nested string
+		sameModel   bool
+	}{
+		{"openai_compatible/glm-5.3", "openai_compatible/scaleway/glm-5.3", true},
+		{"moonshot/kimi-k2", "moonshot/kimi-code/kimi-for-coding", true},
+		{"xai/grok-3-mini", "xai/grok/grok-3-mini", true},
+		{"openrouter/claude-opus-5", "openrouter/anthropic/claude-opus-5", true},
+		{"scaleway/gpt-oss-120b", "scaleway/oss/gpt-oss-120b", true},
+		{"openai/gpt-6-mini", "openai/qwen/qwen-max", false},
+		{"codex/gpt-6-mini", "codex/qwen/qwen-max", false},
+		{"anthropic/claude-opus-5", "anthropic/eu/claude-opus-5", false},
+	}
+	for _, sp := range spellings {
+		for _, pair := range DefaultPairOrder {
+			h, c, err := ParsePair(pair)
+			if err != nil {
+				t.Fatalf("default order entry %q: %v", pair, err)
+			}
+			oneModel, oneOK, oneReason := StageModel(h, c, sp.one, ResolveClasses(nil))
+			nestedModel, nestedOK, nestedReason := StageModel(h, c, sp.nested, ResolveClasses(nil))
+			if oneOK != nestedOK || oneReason != nestedReason || (sp.sameModel && oneModel != nestedModel) {
+				t.Errorf("%s: %s → (%q, %v, %q) but %s → (%q, %v, %q) — the two spellings of one prefix disagree", pair, sp.one, oneModel, oneOK, oneReason, sp.nested, nestedModel, nestedOK, nestedReason)
+			}
 		}
 	}
 	// A node with no model maps nothing: a modelless stage is never born.
 	if _, ok, _ := StageModel(HarnessClaw, "anthropic_key", "", ResolveClasses(nil)); ok {
 		t.Error("StageModel with an empty node model = ok — a modelless stage would be refused downstream")
+	}
+	// Nor does a prefix with nothing after its slash (`anthropic/`, a
+	// template whose variable expanded empty): it names no id, so no pair
+	// maps it to a modelless rung or re-prefixes the empty id.
+	for _, spec := range []string{"anthropic/", "openai/", "codex/"} {
+		for _, pair := range DefaultPairOrder {
+			h, c, err := ParsePair(pair)
+			if err != nil {
+				t.Fatalf("default order entry %q: %v", pair, err)
+			}
+			if got, ok, _ := StageModel(h, c, spec, ResolveClasses(nil)); ok && (got == "" || strings.HasSuffix(got, "/")) {
+				t.Errorf("StageModel(%s, %s) = %q — a rung with no model id", pair, spec, got)
+			}
+		}
 	}
 
 	// The class feature's FIRST payoff, named: the table's fast rung

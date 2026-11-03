@@ -138,47 +138,51 @@ const (
 	familyNone          = ""
 )
 
-// modelFamily classifies a model spec and strips ONE provider prefix:
-// `openai/…`, `gpt-*` and `codex/…` are the openai family; `anthropic/…`
-// and bare ids (claude-*, glm-*, anything else the anthropic-wire
-// endpoints answer) are the anthropic-wire family. The bare id is what
-// the per-credential spellings re-prefix.
+// modelFamily classifies a model spec and strips ONE provider prefix, read
+// the way dispatch reads it (modelroute.Parse, mirrored here because
+// llmroute is the zero-dependency leaf): the routing prefix is everything
+// before the FIRST slash, and the rest is the id verbatim, slashes
+// included. `openai/…` (`openai/qwen/qwen-max` is the openai wire serving
+// `qwen/qwen-max` behind an OpenAI-shaped endpoint), `codex/…` and bare
+// `gpt-*` ids are the openai family; `anthropic/…` (a region-prefixed
+// `anthropic/eu/claude-opus-5` included) and the other bare ids (claude-*,
+// glm-*, anything else the anthropic-wire endpoints answer) are the
+// anthropic-wire family. The bare id is what the per-credential spellings
+// re-prefix, so a same-family rung carries the node's own id.
 //
-// A gateway spec (`openai_compatible/<id>`) yields familyNone with the
-// WHOLE spec as the bare id, and its prefix is read before the
-// single-slash cut: a gateway id is whatever the gateway serves, often
-// provider-first (`openai_compatible/scaleway/glm-5.3`), and past the cut
-// that nested spelling would read as a bare anthropic-wire id, re-prefixed
-// into `anthropic/openai_compatible/…`. Any other UNRECOGNIZED
-// single-segment prefix (`scaleway/gpt-oss-120b`, a slash inside a model
-// id) yields familyNone too. The same-family mappings refuse familyNone
-// and the stage drops, named; the WHOLESALE crossings do NOT — familyNone
-// classifies standard and crosses to the class's openai rendering,
-// exactly as any foreign model (pinned by test) — a re-prefixed invalid
-// spec would dispatch nowhere, and the crossing at least spends a
-// servable credential saying so.
-//
-// The prefix is the in-package ProviderOpenAICompatible, the spelling
-// dispatch routes the gateway on (a drift test pins it to
-// modelroute.OpenAICompatible): llmroute stays the zero-dependency leaf.
+// Any other prefix yields familyNone with the WHOLE spec as the bare id,
+// however many slashes its id holds: the gateway's (`openai_compatible/…`,
+// whose ids are often provider-first: `openai_compatible/scaleway/glm-5.3`),
+// another vendor's route (`moonshot/kimi-code/kimi-for-coding`,
+// `xai/grok/grok-3-mini`), a slash inside a model id
+// (`scaleway/gpt-oss-120b`). Read as a bare anthropic-wire id, such a spec
+// would be re-prefixed into a route no endpoint serves
+// (`anthropic/moonshot/…`). The same-family mappings refuse familyNone and
+// the stage drops, named; the WHOLESALE crossings do NOT — familyNone
+// classifies standard and crosses to the class's openai rendering, exactly
+// as any foreign model (pinned by test) — a re-prefixed invalid spec would
+// dispatch nowhere, and the crossing at least spends a servable credential
+// saying so. A prefix with nothing after its slash (`anthropic/`, a
+// template whose variable expanded empty) names no id and is familyNone
+// too: a same-family rung would carry no model, and a harness given none
+// runs its own default.
 func modelFamily(spec string) (family, bare string) {
-	if strings.HasPrefix(spec, ProviderOpenAICompatible+"/") {
-		return familyNone, spec
+	prefix, id, routed := strings.Cut(spec, "/")
+	if !routed {
+		if strings.HasPrefix(spec, "gpt-") {
+			return familyOpenAI, spec
+		}
+		return familyAnthropicWire, spec
 	}
-	if before, after, found := strings.Cut(spec, "/"); found && !strings.Contains(after, "/") {
-		switch before {
+	if id != "" {
+		switch prefix {
 		case "openai", "codex":
-			return familyOpenAI, after
+			return familyOpenAI, id
 		case "anthropic":
-			return familyAnthropicWire, after
-		default:
-			return familyNone, spec
+			return familyAnthropicWire, id
 		}
 	}
-	if strings.HasPrefix(spec, "gpt-") {
-		return familyOpenAI, spec
-	}
-	return familyAnthropicWire, spec
+	return familyNone, spec
 }
 
 // SlotSealable reports whether any listed pair names the credential slot —

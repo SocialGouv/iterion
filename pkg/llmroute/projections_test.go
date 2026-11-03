@@ -88,10 +88,11 @@ func TestVocabulariesAgreeWithTheCodeThatReadsThem(t *testing.T) {
 	}
 }
 
-// The stage mapping reads the gateway prefix through the in-package
-// constant (llmroute imports no model package), so the constant must stay
-// the prefix dispatch routes the gateway on — the nested spelling
-// included, whose first segment alone names the route.
+// llmroute names the gateway through its own constant (it imports no
+// model package), so the constant must stay the prefix dispatch routes the
+// gateway on — the nested spelling included: dispatch reads the routing
+// prefix at the first slash alone, the reading the stage mapping mirrors
+// for every prefix.
 func TestGatewayPrefixIsTheDispatchRoutingPrefix(t *testing.T) {
 	if llmroute.ProviderOpenAICompatible != modelroute.OpenAICompatible {
 		t.Fatalf("llmroute.ProviderOpenAICompatible = %q, modelroute.OpenAICompatible = %q — the stage mapping and dispatch read different gateway prefixes", llmroute.ProviderOpenAICompatible, modelroute.OpenAICompatible)
