@@ -124,3 +124,13 @@ The audit clause is narrower in the code. Only the write pipeline records a
 client fails to resolve answers `502` before `ApplyEdit`, also without a row
 ([pkg/server/config_share_routes.go](../../pkg/server/config_share_routes.go)).
 The uniform `401` holds.
+
+## Addendum (2026-11-03) — erratum: the hash is unsalted
+
+The decision above says the `iws_` token is "stored only as a salted hash".
+The hash is, and always was, the **unsalted** hex SHA-256 of the plaintext
+(`auth.HashRefreshToken`, the same primitive as every other bearer token):
+the token is 32 bytes of `crypto/rand`, so a salt would defend nothing. The
+sentence stays as written — this record is dated — and the doctrine that
+makes the unsalted hash the deliberate choice is
+[ADR-156](156-bearer-token-hashing-doctrine.md).

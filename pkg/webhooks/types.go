@@ -3,9 +3,9 @@
 // CI, a script) and authorize it to launch a configured set of bots.
 //
 // It is the first long-lived-token concept in iterion (operator auth is
-// short-lived JWT + refresh). Tokens are shown once and stored only as a
-// salted hash + last4 + fingerprint, mirroring the invitation/session
-// token pattern in pkg/auth.
+// short-lived JWT + refresh). Tokens are shown once and stored only as an
+// unsalted SHA-256 hash (the token is 256 random bits; ADR-156) + last4 +
+// fingerprint, mirroring the invitation/session token pattern in pkg/auth.
 //
 // This package is provider-agnostic; the GitLab merge-request handler
 // that consumes it lives in pkg/webhooks/gitlab + the server route.

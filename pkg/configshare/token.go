@@ -10,7 +10,8 @@ import (
 )
 
 // TokenPrefix marks a config-share editor token in URLs / logs. The 32 random
-// bytes follow the prefix; only the salted hash + last4 + fingerprint persist.
+// bytes follow the prefix; only the unsalted SHA-256 hash (ADR-156) + last4 +
+// fingerprint persist.
 const TokenPrefix = "iws_"
 
 // MintToken returns a fresh share token and the values persisted on the record

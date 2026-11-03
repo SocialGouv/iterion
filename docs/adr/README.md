@@ -1,6 +1,7 @@
 # Architecture decision records
 
 - [138 — Forge provisioning identities](138-forge-provisioning-immutable-identities.md): immutable webhook epochs, optimistic activation, write redirects and the hybrid reconciler boundary.
+- [156 — Bearer token hashing doctrine](156-bearer-token-hashing-doctrine.md): a stored bearer token is its unsalted SHA-256 digest (CSPRNG ≥ 128 bits); HMAC under a derived key is for derivations, never for a human-chosen input.
 
 One decision per file, named `NNN-kebab-title.md`, where `NNN` is the next
 free number. The number is the record's **identifier**: it is cited from code

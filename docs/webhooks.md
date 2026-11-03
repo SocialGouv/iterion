@@ -43,8 +43,10 @@ Diagram: [Flow — webhook-to-run: the admission gates, every refusal, and the o
    - Generic → any HTTP client, header `X-Iterion-Webhook-Token: iwh_…`
 3. From then on, each delivery is admitted through the middleware,
    parsed by the provider, dispatched to a bot, and recorded as a
-   `Delivery` row. The token plaintext is **not** kept at rest — only a
-   salted hash, the last 4 chars, and a SHA-256 fingerprint
+   `Delivery` row. The token plaintext is **not** kept at rest — only its
+   unsalted SHA-256 hash (the token is 256 random bits, see
+   [ADR-156](adr/156-bearer-token-hashing-doctrine.md)), the last 4 chars,
+   and a SHA-256 fingerprint
    ([pkg/webhooks/types.go:Config](../pkg/webhooks/types.go)).
 
 Rotate or revoke at any time: `POST /api/teams/{id}/webhooks/{webhook_id}/rotate`
@@ -1227,7 +1229,7 @@ The `POST` create response shape:
 ```
 
 The `token` field is the **only** way to recover the plaintext — once
-the response is closed, only the salted hash remains. The studio shows
+the response is closed, only the unsalted SHA-256 hash remains. The studio shows
 it inside a "copy now, you won't see it again" affordance.
 
 ### `key_overrides` — pin a BYOK key per webhook

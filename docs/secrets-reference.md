@@ -199,14 +199,24 @@ only. The `codex` OAuth flow has no equivalent restriction.
 | `iwh_…` | Inbound webhook bearer | `webhook_configs.token_hash` | shown once at create / rotate |
 | `iap_…` | Personal access token | `pat.token_hash` | shown once at mint |
 | `iar_…` | Password-reset link | `password_resets.token_hash` | sent by email; 60-minute TTL |
-| (no prefix) | Refresh JWT | `sessions` (hashed) | the `__Host-iterion_refresh` cookie |
+| (no prefix) | Refresh token (opaque, 48 bytes: random at login, HMAC-derived at each rotation) | `sessions` (hashed) | the `__Host-iterion_refresh` cookie |
 | (no prefix) | Access JWT (HS256) | not stored — signed at issue | the `__Host-iterion_auth` cookie / `Authorization: Bearer` |
 
-All four `i…_` tokens use the same primitive
-([pkg/auth/password.go:GenerateRandomToken](../pkg/auth/password.go) +
-`HashRefreshToken`): 32 random bytes URL-safe-encoded, the prefix is
-recognisability for humans. The hash on disk is salted; verification is
-constant-time.
+The three `i…_` tokens above, the `iws_` config-share token
+([config-share.md](config-share.md)) and the refresh token use the same
+primitive ([pkg/auth/password.go:GenerateRandomToken](../pkg/auth/password.go)
++ `HashRefreshToken`): random bytes URL-safe-encoded — 32 for the prefixed
+tokens, 48 for the refresh token, whose rotation successors are HMAC-derived
+from the presented token rather than drawn
+([ADR-156](adr/156-bearer-token-hashing-doctrine.md), clause 3) — and the
+prefix is recognisability for humans. The hash on disk is the hex SHA-256 of
+the plaintext, **unsalted**: the token carries at least 256 bits an attacker
+cannot predict, so a salt (a defence for low-entropy inputs such as
+passwords, which use argon2id) adds nothing, and a dump of the hashes yields
+no token. PAT, webhook and config-share
+verification compares the hashes in constant time; refresh, reset and
+invitation resolve the row by its unique `token_hash` index. The doctrine
+and its scope are [ADR-156](adr/156-bearer-token-hashing-doctrine.md).
 
 The reset and PAT TTLs are platform-level: reset is hard-pinned at
 60 minutes

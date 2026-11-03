@@ -18,8 +18,9 @@ import (
 	"time"
 )
 
-// Share is one config-edit grant. The token is stored only as a salted hash
-// (+ last4/fingerprint for the operator UI); the plaintext is shown once at
+// Share is one config-edit grant. The token is stored only as an unsalted
+// SHA-256 hash — the token is 256 random bits, ADR-156 — (+ last4/fingerprint
+// for the operator UI); the plaintext is shown once at
 // create/rotate. Every field that shapes a write — RepoURL, RepoRef,
 // ConfigPath, AllowedPaths — is pinned here at mint time and never taken from
 // a request body, so a token holder can't retarget the file, branch or fields.

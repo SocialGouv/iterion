@@ -18,8 +18,9 @@ const TokenPrefix = "iwh_"
 
 // MintToken returns a fresh webhook token plaintext (shown to the
 // operator exactly once) plus the at-rest fields persisted on a Config:
-// a salted hash, the last 4 chars, and a fingerprint. Reuses the same
-// random-token + hash primitives as operator session/invitation tokens.
+// an unsalted SHA-256 hash (the token is 256 random bits; ADR-156), the
+// last 4 chars, and a fingerprint. Reuses the same random-token + hash
+// primitives as operator session/invitation tokens.
 //
 // A webhook token is a team token (auth.MintTeamToken): it outlives the
 // credential it is minted from, so the context must carry the derivation

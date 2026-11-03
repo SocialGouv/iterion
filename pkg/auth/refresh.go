@@ -271,8 +271,19 @@ var (
 // refreshTokenBytes is the entropy of a refresh token, random or derived.
 const refreshTokenBytes = 48
 
-// HashRefreshToken returns the hex SHA-256 of a plaintext refresh
-// token. Stored on the Session and consulted at refresh time.
+// HashRefreshToken returns the hex SHA-256 of a plaintext bearer token —
+// refresh, PAT, reset, invitation, webhook and config-share tokens all hash
+// through it. Stored on the record under a unique token_hash index: refresh,
+// reset, invitation and PAT resolve the row by that index, while webhook and
+// config-share fetch it by id and compare the digests in constant time.
+//
+// The hash is deliberately unsalted and unkeyed (ADR-156): every input is
+// either 32 to 48 bytes of crypto/rand or, for a refresh successor, 48 bytes
+// of HMAC output under a server key, so a preimage is infeasible and a salt
+// — a defence for guessable inputs — would only break the index lookup. Do
+// not feed it a human-chosen value (passwords are argon2id, HashPassword;
+// an enumerable identifier such as an e-mail takes a peppered HMAC or is not
+// stored).
 func HashRefreshToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
