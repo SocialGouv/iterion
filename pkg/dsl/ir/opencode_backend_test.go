@@ -53,15 +53,16 @@ func TestOpenCodeProviderHintIsDiagnosed(t *testing.T) {
 	})
 }
 
-// TestOpenCodeHasAReasoningEffortDial: opencode carries `--variant`, so the
-// "no reasoning-effort dial" warning on a route to it would be FALSE — and a
-// diagnostic that is wrong teaches authors to ignore it.
+// TestOpenCodeHasAReasoningEffortDial: opencode carries a reasoning dial —
+// the model reference's `#variant` on 2.x, `--variant` on the 1.x line — so
+// the "no reasoning-effort dial" warning on a route to it would be FALSE,
+// and a diagnostic that is wrong teaches authors to ignore it.
 func TestOpenCodeHasAReasoningEffortDial(t *testing.T) {
 	src := "agent a:\n  model: \"m\"\n  backend: \"claude_code\"\n  reasoning_effort: high\n" +
 		"  fallbacks:\n    backup:\n      backend: \"opencode\"\n      model: \"n\"\n" +
 		"workflow w:\n  entry: a\n  a -> done\n"
 	if got := countCode(compileFile(t, src), DiagCode("C177")); got != 0 {
-		t.Fatalf("C177 = %d, want 0 — opencode passes --variant: %+v", got, compileFile(t, src).Diagnostics)
+		t.Fatalf("C177 = %d, want 0 — opencode carries a variant dial: %+v", got, compileFile(t, src).Diagnostics)
 	}
 
 	// Control: a backend with no dial still warns, so the assertion above

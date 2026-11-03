@@ -263,25 +263,31 @@ func (s *Server) handleEffortCapabilities(w http.ResponseWriter, r *http.Request
 			Source:    "pi-thinking",
 		})
 	case "opencode":
-		// opencode's dial is `--variant`, and the accepted names are
-		// per-MODEL: it derives them from the model's own reasoning
-		// options, so there is no static set to look up. These are the
-		// levels iterion PASSES THROUGH verbatim (xhigh and ultracode
-		// collapse onto high before argv, so offering them here would
-		// promise a level the backend silently substitutes). Measured on
-		// opencode 1.1.19: a variant the model does not carry is dropped in
-		// silence, so offering a level is never a promise it took effect.
+		// opencode's dial is a VARIANT of the model, carried inside the model
+		// reference (`-m provider/model#variant`; the 1.x `--variant` flag is
+		// gone from the 2.x parser). The accepted names are per-MODEL — it
+		// derives them from the model's own reasoning options — so there is no
+		// static set to look up. These are the levels iterion PASSES THROUGH
+		// verbatim (xhigh and ultracode collapse onto high before argv, so
+		// offering them here would promise a level the backend substitutes).
 		// `none` is deliberately absent although opencodeMapEffort passes it
 		// through: whether a model carries a "none" variant is exactly the
-		// per-model fact iterion cannot enumerate, and the silent drop would
-		// turn the offer into an off-switch that quietly no-ops — the same
-		// caution that gates none to known carriers on the codex arm.
+		// per-model fact iterion cannot enumerate, and on 2.x an uncarried
+		// variant is a hard refusal (measured on 2.2.5: `Variant unavailable
+		// for scripted/m1: nonexistentvariant`, exit 1), so an offered
+		// off-switch would turn a legal workflow into a failed node on every
+		// model that does not carry one — the same caution that gates none to
+		// known carriers on the codex arm. (On 1.1.19 the same variant was
+		// dropped in SILENCE, which was the earlier reason for the same
+		// answer.)
 		writeJSON(w, effortCapabilitiesResponse{
 			Supported: []string{"low", "medium", "high", "max"},
-			// No documented default: with no --variant, the model's own
+			// No documented default: with no variant, the model's own
 			// setting applies and iterion has nothing to name.
 			Default: "",
-			Source:  "opencode-variant",
+			// A wire value studio clients already key on: the dial is still
+			// opencode's variant, so the source keeps its name.
+			Source: "opencode-variant",
 		})
 	case "grok":
 		// grok's dial is `--reasoning-effort`, passed through verbatim for

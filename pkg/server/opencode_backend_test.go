@@ -18,14 +18,15 @@ func TestOpenCodeEffortCapabilities(t *testing.T) {
 	}
 	// Only the levels iterion passes through verbatim. xhigh and ultracode
 	// collapse onto high before argv, so offering them would promise a level
-	// the backend silently substitutes. none is excluded just as
-	// deliberately: variants are per-model and dropped in silence when
-	// uncarried, so an offered off-switch would quietly no-op.
+	// the backend substitutes. none is excluded just as deliberately:
+	// variants are per-model, and on 2.x an uncarried one is a hard refusal
+	// (`Variant unavailable for …`, exit 1, measured on 2.2.5), so an offered
+	// off-switch would fail the node on every model that does not carry one.
 	assertEffortLevels(t, got.Supported,
 		[]string{"low", "medium", "high", "max"}, // required
 		[]string{"none", "xhigh", "ultracode"},   // forbidden
 	)
-	// opencode sends no --variant when none is set: the model's own default
+	// opencode gets no variant when none is set: the model's own default
 	// applies and iterion has nothing to name.
 	if got.Default != "" {
 		t.Errorf("Default=%q, want empty — no documented default", got.Default)

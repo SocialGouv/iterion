@@ -6,12 +6,10 @@
 // the variable in the 2.2.5 binary; the env-delivered config is
 // OPENCODE_CONFIG_CONTENT, highest user precedence since upstream #11628).
 //
-// It drives the CLI DIRECTLY, not through iterion's Execute: the backend's
-// 1.x argv (`opencode --format json -m … run`) is rejected by the 2.x parser,
-// which accepts those flags only after the `run` subcommand — a divergence
-// measured on this very host (TestCLILiveOpenCodeSessionResume cannot run
-// against the installed 2.2.5 for the same reason). What is measured here is
-// the policy engine, not iterion's argv.
+// It drives the CLI DIRECTLY, not through iterion's Execute: what is measured
+// here is the policy engine, which iterion does not wire, not iterion's argv
+// (TestCLILiveOpenCodeSessionResume proves that argv against the same 2.x
+// CLI).
 //
 // The model is a scripted OpenAI-compatible server on 127.0.0.1 whose one
 // agent turn calls `bash` with `touch <sentinel>`: the authority is the

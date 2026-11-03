@@ -40,7 +40,7 @@ into a 🟢, live in [state-of-the-art.md](state-of-the-art.md#backends--only-tw
 | `pi` | 🟠 | Supported, with iterion's permission gate. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). Permission gate, ask_user, board capabilities and workflow-declared MCP servers (all three transports — streamable http, legacy sse, stdio) work via an embedded extension, which loads on the **rpc transport only**: a node declaring `permission:` is refused under `ITERION_PI_MODE=print` rather than run ungated. | Explicit only. |
 | `kimi` | 🟠 | Supported through the generic CLI-agent protocol, with iterion's permission gate in **`deny` only** — an external `PreToolUse` hook can hard-block a call but cannot pause the run for `ask`, so `ask` is refused at compile time (C176). A gated node needs an unsandboxed run — `sandbox: none` on the workflow, or `--sandbox none` (C136 warns) — and session resume/fork is not wired. | Explicit only. |
 | `grok` | 🟠 | Same generic CLI-agent protocol, and the same **`deny`-only** gate, `sandbox: none` requirement and unwired session resume/fork. | Explicit only. |
-| `opencode` | 🟠 | Supported through the generic CLI-agent protocol (`opencode --format json [-m provider/model] [--variant <effort>] run`, prompt on stdin). Multi-provider, reports a provider-computed cost, and carries a reasoning-effort dial. **Cannot enforce iterion's permission gate at all** — neither `ask` nor `deny` — so a gated node is refused at compile time (C176) and typed (`CAPABILITY_UNSUPPORTED`) at dispatch; `interaction: async` is refused by C267 and a synchronous `interaction:` warned as inert (C271); session resume/fork is wired (`--session <id>` / `--fork=true`) but `session: persist` and MCP forwarding are not; and a workspace carrying `.opencode/plugin[s]/` is **refused** unless `ITERION_OPENCODE_TRUST_PROJECT=1`. | Explicit only. |
+| `opencode` | 🟠 | Supported through the generic CLI-agent protocol (`opencode run --format json [-m provider/model[#variant]]`, prompt on stdin). Multi-provider, reports a provider-computed cost, and carries a reasoning-effort dial. **Cannot enforce iterion's permission gate at all** — neither `ask` nor `deny` — so a gated node is refused at compile time (C176) and typed (`CAPABILITY_UNSUPPORTED`) at dispatch; `interaction: async` is refused by C267 and a synchronous `interaction:` warned as inert (C271); session resume/fork is wired (`--session <id>` / `--fork=true`) but `session: persist` and MCP forwarding are not; and a workspace carrying `.opencode/plugin[s]/` is **refused** unless `ITERION_OPENCODE_TRUST_PROJECT=1`. | Explicit only. |
 | `codex` | 🟠 | Supported Codex CLI backend. Uses Codex's native tool loop and sandbox; see its capability boundaries below. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
 
 ### Parity doctrine: `claw` ↔ `claude_code`
@@ -544,7 +544,10 @@ On a containerised run kimi reads the image's home, and iterion leaves it
 alone.
 
 **opencode, read from source** (1.19.0, the `opencode-ai` package, and
-2.0.26, `@opencode/cli`; no live measurement). opencode reads its global
+2.0.26, `@opencode/cli`), with one half now measured live on **2.2.5**: the
+WORKSPACE's own `AGENTS.md` reaches the prompt the CLI sends, and the project
+it reads is the one `PWD` names — see [the opencode section](#opencode). The
+operator-side reading below stays read-from-source. opencode reads its global
 `AGENTS.md` from its config directory, every file its global configuration
 lists under `instructions`, and — 2.x — every `AGENTS.md` from the working
 directory up to the home directory, past the repository root: nothing keeps
@@ -2895,15 +2898,40 @@ backend. That is **distinct** from calling the xAI HTTP API via
 mode is a **subcommand**, and iterion drives it as:
 
 ```
-opencode --format json [-m <provider/model>] [--variant <effort>] [--session <id> [--fork=true]] run
+opencode run --format json [-m <provider/model>[#<variant>]] [--session <id> [--fork=true]]
 ```
 
 with the composed prompt on **stdin**.
 
-> **This argv is the 1.x shape.** The 2.x line rejects every flag placed
-> before `run` (`Unrecognized flag: --format in command opencode`, measured
-> on 2.2.5 — which takes them only after the subcommand), so the wired
-> backend cannot run against a 2.x install at all: #2915.
+The subcommand **opens** argv: the 2.x parser resolves it before it knows any
+flag and refuses one that precedes it (`Unrecognized flag: --format in
+command opencode`, with its usage text on stdout, measured on 2.2.5).
+`ITERION_OPENCODE_ARGV=1` re-emits the 1.x argv — every flag first,
+`--variant <effort>`, `run` last — for a host still on that line.
+
+What else the 2.x line changed, each re-measured on **2.2.5** against the
+real CLI (#2915):
+
+- `--variant` exists nowhere, at the root or under `run`: the variant rides
+  the model reference, and an unknown one is now refused explicitly instead
+  of dropped in silence.
+- A failure the CLI encodes in its stream travels on **stdout**, with an
+  empty stderr (`{"type":"error",…,"error":{"type":"provider.no-route",
+  "message":"Model unavailable: …"}}`) — which is why the shared CLI-agent
+  path parses the stream on a non-zero exit too, instead of reporting
+  `exit status 1`.
+- It resolves its **project from `PWD`**, not from the process's working
+  directory, so the spawn now sets both: a node whose PWD still named the
+  engine's cwd read the engine's own checkout.
+- `run` talks to a **background service** on a port derived from the release
+  channel (49374 on `latest`), started on demand and reused. A run carrying
+  a BLANK `OPENCODE_*` variable fails to start it, and two homes fight over
+  the port — which is why the real-CLI tests unset those variables and
+  either pin a free port and stop what they started, or pass `run
+  --standalone`, which starts a private server for that one run.
+- One `text` event carries a whole streamed reply (so the parser's
+  concatenation cannot double-count), and an empty stdin is
+  `You must provide a message` rather than a default prompt.
 
 ```iter fragment
 prompt task:
@@ -2913,7 +2941,7 @@ agent implement:
   backend: "opencode"
   model: "anthropic/claude-sonnet-4-6"   # opencode's own -m format IS provider/model
   system: task                           # folded into the prompt: opencode has no system flag
-  reasoning_effort: high                 # optional; mapped to --variant
+  reasoning_effort: high                 # optional; rides the model as `-m provider/model#variant`
 ```
 
 #### What it brings
@@ -2925,25 +2953,32 @@ agent implement:
   `step-finish` parts (emitted as `step_finish`) rather than estimated. opencode reports `output`
   excluding reasoning and `input` excluding the cache halves; iterion adds
   both back so the figures mean what the rest of the engine means by them.
-- **A reasoning-effort dial** (`--variant`). The accepted variant names are
-  **per-model** — opencode derives them from each model's own reasoning
-  options — so iterion passes its level through verbatim and lets opencode
-  refuse an unknown one explicitly. `xhigh` and `ultracode` collapse onto
-  `high` before argv.
+- **A reasoning-effort dial**, carried INSIDE the model reference
+  (`-m provider/model#variant`; `--variant` exists nowhere on 2.x, at the
+  root or under `run`). The accepted variant names are **per-model** —
+  opencode derives them from each model's own reasoning options — so iterion
+  passes its level through verbatim and lets opencode refuse an unknown one
+  explicitly (`Variant unavailable for scripted/m1: nonexistentvariant`,
+  exit 1, measured on 2.2.5). `xhigh` and `ultracode` collapse onto `high`
+  before argv. A variant with no model is a hard refusal (`Invalid model
+  reference: #high`), so an effort on a node that names no model is dropped
+  with a warning naming it, never spelled into argv.
 - **Session resume and fork** for `session: inherit`, `inherit_if_available`
   and `fork`. Every event of the stream carries the session id; iterion hands
   it back as `--session <id>` (plus `--fork=true` for a fork, which opencode
-  branches into a new id — spelled with its value because a bare boolean
-  right before `run` makes the parser take `run` as that value and print its
-  help), and a schema re-ask continues the session it failed in rather than
-  restarting the turn. Proven against the real opencode 1.19.0 CLI by
-  `TestCLILiveOpenCodeSessionResume` (`task test:clilive`): the model is a
-  scripted server on `127.0.0.1`, and the authority is what the CLI sends it
-  — a resumed turn's request carries the earlier turn. An id opencode no
-  longer holds is version-dependent: 1.19 exits 1 with `Session not found`
-  (measured), so the call fails (and `inherit_if_available` degrades to a
-  fresh session, loudly); 2.x creates a session under that id instead (read
-  from its source), so there it resumes as an empty conversation.
+  branches into a new id — spelled with its value because under the 1.x
+  hatch a bare boolean right before `run` makes the parser take `run` as
+  that value and print its help), and a schema re-ask continues the session
+  it failed in rather than restarting the turn. Proven against the real
+  opencode **2.2.5** CLI by `TestCLILiveOpenCodeSessionResume`
+  (`task test:clilive`): the model is a scripted server on `127.0.0.1`, and
+  the authority is what the CLI sends it — a resumed turn's request carries
+  the earlier turn. An id opencode no longer holds is version-dependent, and
+  the test asserts the version it probes: 1.19 exits 1 with `Session not
+  found`, so the call fails (and `inherit_if_available` degrades to a fresh
+  session, loudly); 2.2.5 CREATES a session under that id, so there a resume
+  whose transcript is gone succeeds as an empty conversation and only the id
+  the stream reports says so (both measured).
 
 #### What it does NOT bring
 
@@ -3049,10 +3084,8 @@ iterion judges the whole line as one candidate.
 **Re-measured on 2.2.5** (`TestCLILiveOpenCodeConfigContentDeny`, scripted
 model, 0 USD — the delivery host now runs the 2.x line, where
 `OPENCODE_PERMISSION` no longer exists; the policy travels in
-`OPENCODE_CONFIG_CONTENT`, and the probe drives the CLI directly because
-iterion's 1.x argv — `opencode --format json -m … run` — is REJECTED by the
-2.x parser, which takes those flags only after `run`. That argv divergence
-blocks the wired backend itself on the 2.x line, ahead of any gate work):
+`OPENCODE_CONFIG_CONTENT`, and the probe drives the CLI directly: it measures
+opencode's policy engine, which iterion does not wire, not iterion's argv):
 
 | probe (2.2.5) | sentinel | reading |
 |---|---|---|
@@ -3070,8 +3103,8 @@ So on the 2.x line the env delivery closes exactly one of the four v1 holes
 in shape — a dedicated iterion-defined agent selected with `--agent` (the
 last row of the 1.19 table held on 1.x) plus positive confirmation the agent
 loaded, a marshalled policy, `ask` refused, the `list` → `ls` canonical row
-— and now carries the 2.x additions: re-measure the dedicated-agent row on
-2.x, and fix the 1.x argv divergence first.
+— and now carries one 2.x addition: re-measure the dedicated-agent row on
+2.x.
 
 #### ⚠️ The target repository runs as code
 
