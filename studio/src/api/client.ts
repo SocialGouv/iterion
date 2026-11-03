@@ -900,7 +900,7 @@ export async function unparseUnitFile(
     );
     return request("/unparse", {
       method: "POST",
-      body: JSON.stringify({ document, files: bundle.files ?? {}, main: bs.rel, file: rel, ...(unitFiles ? { unit_files: unitFiles } : {}) }),
+      body: JSON.stringify({ document, files: bundle.files ?? {}, main: bs.rel, file: rel, path: editorPath, ...(unitFiles ? { unit_files: unitFiles } : {}) }),
     });
   }
   return request("/unparse", {
@@ -930,7 +930,10 @@ export async function parseUnitFile(
     );
     return request("/parse", {
       method: "POST",
-      body: JSON.stringify({ files: bundle.files ?? {}, main: bs.rel, file: rel, source }),
+      // `path` is the bot's own editor path, which carries its team: the
+      // server resolves this bundle's declared `dependencies.fragments`
+      // through that team's tiers, and refuses to without it (ADR-145).
+      body: JSON.stringify({ files: bundle.files ?? {}, main: bs.rel, file: rel, source, path: editorPath }),
     });
   }
   return request("/parse", {
@@ -951,7 +954,7 @@ export function importsFragments(source: string): boolean {
 export async function parseUnit(
   files: Record<string, string>,
   main: string,
-  options?: { signal?: AbortSignal },
+  options?: { signal?: AbortSignal; path?: string },
 ): Promise<{
   document: IterDocument;
   diagnostics: string[];
@@ -967,7 +970,12 @@ export async function parseUnit(
 }> {
   return request("/parse", {
     method: "POST",
-    body: JSON.stringify({ files, main }),
+    // `path` is the bot's own editor path when it has one, which carries
+    // its team: the server resolves this bundle's declared
+    // `dependencies.fragments` through that team's tiers, and refuses to
+    // without it (ADR-145) — so the opened document holds what a declared
+    // fragment declares instead of blaming the author's own nodes for it.
+    body: JSON.stringify(options?.path ? { files, main, path: options.path } : { files, main }),
     signal: options?.signal,
   });
 }
@@ -984,10 +992,14 @@ export async function unparseUnit(
   main: string,
   revision: string,
   unitFiles?: UnitFileInfo[],
+  path?: string,
 ): Promise<{ source: string; files: Record<string, string>; revision?: string }> {
   const res = await request<{ source: string; files?: Record<string, string>; revision?: string }>("/unparse", {
     method: "POST",
-    body: JSON.stringify({ document, files, main, revision, ...(unitFiles ? { unit_files: unitFiles } : {}) }),
+    // The save reads the bundle the OPEN read — declared dependencies
+    // resolved in — so it compares the revision the open issued and
+    // refuses, by name, any write to a file a dependency provides.
+    body: JSON.stringify({ document, files, main, revision, ...(path ? { path } : {}), ...(unitFiles ? { unit_files: unitFiles } : {}) }),
   });
   return { source: res.source, files: res.files ?? {}, revision: res.revision };
 }
@@ -1189,7 +1201,7 @@ export async function openFile(
       // workflow of its own: the unit is parsed from the whole files map
       // with that file as its main, so the fragments its imports reach
       // are in the document.
-      const parsed = await parseUnit(bundle.files ?? {}, bs.rel, options);
+      const parsed = await parseUnit(bundle.files ?? {}, bs.rel, { ...options, path });
       // The server's verdict, not a hardcoded true: a unit that does not
       // LOAD stays writable — its write back is refused there, naming the
       // fragment — but a main that did not PARSE makes the merged document a
@@ -1259,7 +1271,7 @@ export async function saveFile(
       // silent overwrite. The file list the client holds (unit.files) goes
       // with it: a per-file edit may have changed a file's `import` lines
       // or its `dsl:` profile, which the document does not carry.
-      const rewritten = await unparseUnit(document, opened.files, bs.rel, options.revision, options.unitFiles);
+      const rewritten = await unparseUnit(document, opened.files, bs.rel, options.revision, options.unitFiles, path);
       const files = { ...opened.files, ...rewritten.files };
       const digests: Record<string, string> = {};
       for (const rel of Object.keys(rewritten.files)) {

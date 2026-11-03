@@ -171,6 +171,13 @@ export default function SourceView() {
   }, [unit, salvaged, currentFilePath, documentStore, setSelected]);
 
   const perFile = !!unit && !!selected && selected !== MERGED && !salvaged;
+  // The bundle a selected file comes FROM when it is not this bot's own: a
+  // shared fragment the manifest declares a dependency on, which the server
+  // resolved into the unit for this reading (ADR-145). No save writes it
+  // back — persisting it would make this bundle SHIP the fragment it
+  // declares a dependency on, which the launch refuses as a shadow — so the
+  // view offers no edit and says whose file it is.
+  const dependencyOf = perFile ? (unit?.files.find((f) => f.rel === selected)?.dependency ?? "") : "";
   // Which twin this tab is on. The control that repairs a main the canvas
   // cannot open differs between them: a local author edits the file where
   // it lives, a cloud author opens it as text from the bundle's files list
@@ -578,7 +585,7 @@ export default function SourceView() {
   // cannot be split back into the files it came from; not a file the
   // writer cannot reproduce, whose save is refused too; and not a salvaged
   // unit, which the render below says in its own words.
-  const editable = (!unit || perFile) && !refused;
+  const editable = (!unit || perFile) && !refused && !dependencyOf;
 
   // Leaving edit mode is not optional. `editing` is this component's own
   // state while `unit`, `salvaged` and the selection are the store's, which
@@ -705,6 +712,7 @@ export default function SourceView() {
                 <option key={f.rel} value={f.rel}>
                   {f.rel}
                   {f.rel === unit.main ? " (main)" : ""}
+                  {f.dependency ? ` (from ${f.dependency})` : ""}
                 </option>
               ))}
               {/* A restored orphan's rel is deliberately selectable even though
@@ -757,6 +765,16 @@ export default function SourceView() {
               data-testid="source-view-unit-note"
             >
               Read-only: the merged program is not a file. Pick a file above to edit it.
+            </span>
+          ) : dependencyOf ? (
+            <span
+              className="truncate text-xs text-fg-subtle"
+              title={`Read-only: ${selected} is provided by bundle ${dependencyOf}.`}
+              data-testid="source-view-dependency-note"
+            >
+              Read-only: this file is the shared fragment bundle {dependencyOf} provides for this
+              bot&apos;s declared dependency. Change it in {dependencyOf}, or drop the dependency
+              and ship the fragment here.
             </span>
           ) : !editable || stale ? null : !editing ? (
             <Button

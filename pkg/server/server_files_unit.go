@@ -89,6 +89,29 @@ type unitFileInfo struct {
 	// is the server's own reading of the file, never read from a request.
 	ParseErrors int    `json:"parse_errors,omitempty"`
 	ParseError  string `json:"parse_error,omitempty"`
+	// Dependency names the BUNDLE this file comes from when it is not this
+	// bot's own: a shared fragment the manifest's dependencies.fragments
+	// declares, resolved into the unit for this reading (ADR-145, #2865).
+	// The picker renders it read-only and no save writes it back — a
+	// persisted lib/<name>.bot is the shadow the launch refuses. Answered
+	// only, like the two verdicts above: it is the server's reading of where
+	// the file came from, never read from a request.
+	Dependency string `json:"dependency,omitempty"`
+}
+
+// markDependencyFiles names, on each file of the answer a resolution placed,
+// the bundle it came from. One pass over the answer rather than a flag the
+// view builder carries: unitInfoOf describes a LOAD, and which of its files
+// were resolved is what the request knows (unitRequest.placed).
+func markDependencyFiles(info *unitInfo, placed map[string]bundle.FragmentDependency) {
+	if info == nil || len(placed) == 0 {
+		return
+	}
+	for i, fi := range info.Files {
+		if dep, ok := placed[fi.Rel]; ok {
+			info.Files[i].Dependency = dep.From
+		}
+	}
 }
 
 // canonReason is a canon refusal without its sentinel prefix, for a message
@@ -169,7 +192,7 @@ func unitRootOf(reqPath, main string) string {
 // unitInfoOf is what an answer says of a load: read off its view
 // (unit.Salvage), whole or short — a whole unit is shown through the same
 // view (unit.Salvage(u, nil)).
-func unitInfoOf(u *unit.Salvaged, reqPath string) *unitInfo {
+func unitInfoOf(u *unit.Salvaged, reqPath string, fd fragmentDependencies) *unitInfo {
 	// Files is never nil: the picker of the Source view iterates it, and a
 	// JSON `null` would reach a TS `UnitFileInfo[]` that declares itself
 	// non-nullable.
@@ -184,10 +207,10 @@ func unitInfoOf(u *unit.Salvaged, reqPath string) *unitInfo {
 			digest = fileDigest(f.Source)
 		}
 		fi := unitFileInfo{Rel: f.Rel, Digest: digest, Profile: f.Profile, Imports: f.Imports}
-		fi.ParseErrors, fi.ParseError = errorVerdict(f.ParseErrors, f.ParseDiagnostics)
+		fi.ParseErrors, fi.ParseError = errorVerdict(f.ParseErrors, f.ParseDiagnostics, fd)
 		info.Files = append(info.Files, fi)
 	}
-	info.LoadErrors, info.LoadError = errorVerdict(u.ErrorCount(), u.Diagnostics())
+	info.LoadErrors, info.LoadError = errorVerdict(u.ErrorCount(), u.Diagnostics(), fd)
 	return info
 }
 
@@ -200,8 +223,8 @@ func unitInfoOf(u *unit.Salvaged, reqPath string) *unitInfo {
 // overlay's header newly imports is none of the stored unit's and keeps
 // what the overlay read of it, which stagedLoadFailure has already refused
 // if the parser could only salvage it.
-func storedUnitVerdict(info *unitInfo, stored *unit.Unit) {
-	info.LoadErrors, info.LoadError = errorVerdict(stored.ErrorCount(), stored.Diagnostics)
+func storedUnitVerdict(info *unitInfo, stored *unit.Unit, fd fragmentDependencies) {
+	info.LoadErrors, info.LoadError = errorVerdict(stored.ErrorCount(), stored.Diagnostics, fd)
 	// The fragments the answered verdict is about travel with it. The
 	// staged file list is no substitute: an apply that drops the broken
 	// `import` line leaves no file naming the fragment the stored load
@@ -210,7 +233,7 @@ func storedUnitVerdict(info *unitInfo, stored *unit.Unit) {
 	info.Unread = stored.Unread
 	for i, fi := range info.Files {
 		if f, ok := unitFile(stored, fi.Rel); ok {
-			info.Files[i].ParseErrors, info.Files[i].ParseError = errorVerdict(f.ParseErrorCount(), f.ParseDiagnostics)
+			info.Files[i].ParseErrors, info.Files[i].ParseError = errorVerdict(f.ParseErrorCount(), f.ParseDiagnostics, fd)
 		}
 	}
 }
@@ -225,8 +248,8 @@ func storedUnitVerdict(info *unitInfo, stored *unit.Unit) {
 // both have to be told. The unit's diagnostics are cut to the unit's
 // relative names before the answer is built, so neither name discloses the
 // workspace root (#1934).
-func errorVerdict(count int, diags []parser.Diagnostic) (int, string) {
-	return count, firstErrorDiagnostic(diags)
+func errorVerdict(count int, diags []parser.Diagnostic, fd fragmentDependencies) (int, string) {
+	return count, firstErrorDiagnostic(diags, fd)
 }
 
 // fileDigest is the content identity one file's claim carries back to the
@@ -679,15 +702,7 @@ func (s *Server) saveUnit(w http.ResponseWriter, r *http.Request, req saveFileRe
 	// diagnostic to the client: it names the fragment at fault by its
 	// unit-relative path (#1934).
 	relUnitDiagnostics(u)
-	declared := declaredFragmentPaths(nil, u.Root, u.Main)
-	for _, d := range u.Diagnostics {
-		if d.Severity != parser.SeverityError {
-			continue
-		}
-		msg := d.Error()
-		if dep, rel, ok := declaredFragmentMiss(d, declared); ok {
-			msg += " — " + fragmentDependencyNote(rel, dep)
-		}
+	if msg := firstErrorDiagnostic(u.Diagnostics, declaredFragments(nil, u.Root).asDiskLoadOf(u.Main)); msg != "" {
 		httpError(w, http.StatusUnprocessableEntity, "the bot's files do not load as one unit (%s): fix them on disk before saving from the studio", msg)
 		return
 	}
@@ -881,7 +896,7 @@ func siblingImportersStillCompile(root, main string, staged map[string][]byte) e
 		// The sibling was read from disk, and the refusal answers its
 		// diagnostic to the client — relative names (#1934).
 		relUnitDiagnostics(after)
-		if d := firstErrorDiagnostic(after.Diagnostics); d != "" {
+		if d := firstErrorDiagnostic(after.Diagnostics, declaredFragments(nil, root).asDiskLoadOf(name)); d != "" {
 			return fmt.Errorf("saving would break %s, which imports a rewritten fragment: %s", name, d)
 		}
 		if after.Merged == nil {
@@ -988,10 +1003,10 @@ func reachesStaged(rels []string, staged map[string][]byte, main string) bool {
 	return false
 }
 
-func firstErrorDiagnostic(diags []parser.Diagnostic) string {
+func firstErrorDiagnostic(diags []parser.Diagnostic, fd fragmentDependencies) string {
 	for _, d := range diags {
 		if d.Severity == parser.SeverityError {
-			return d.Error()
+			return fd.annotate(d)
 		}
 	}
 	return ""
@@ -1117,6 +1132,22 @@ func (s *Server) parseUnitFiles(w http.ResponseWriter, r *http.Request, req pars
 	// non-bindable, its refusal said, its revision another than any whole
 	// load's.
 	u := unit.Salvage(unit.LoadMap(req.Files, main))
+	// The bundle's declared dependencies.fragments, resolved into the files
+	// the document is built from (ADR-145, #2865): the opened document holds
+	// the dependency's declarations, or the canvas and every validate after
+	// it blame the author's own nodes for what a fragment declares. Lazily,
+	// after the load: a bundle with no declared miss reads no tier.
+	a := s.authoringFragmentsFor(r, req.Path)
+	fd := a.declaredFragments(req.Files)
+	res, err := a.resolve(r.Context(), req.Files, fd, fd.missed(u.Diagnostics()))
+	if err != nil {
+		unitRequestError(w, err, "the bot is not opened: its declared shared fragments are part of its program")
+		return
+	}
+	files := res.files
+	if len(res.placed) > 0 {
+		u = unit.Salvage(unit.LoadMap(files, main))
+	}
 	var diags []string
 	for _, d := range u.Diagnostics() {
 		diags = append(diags, d.Error())
@@ -1126,8 +1157,9 @@ func (s *Server) parseUnitFiles(w http.ResponseWriter, r *http.Request, req pars
 		httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 		return
 	}
-	info := unitInfoOf(u, main)
+	info := unitInfoOf(u, main, res.deps)
 	info.Root = ""
+	markDependencyFiles(info, res.placed)
 	// A unit stays writable even when it does not LOAD — the posture
 	// /api/files/open holds for a unit on disk. The write back goes through
 	// unparseUnitFiles, which refuses one that does not load and names the
@@ -1144,14 +1176,14 @@ func (s *Server) parseUnitFiles(w http.ResponseWriter, r *http.Request, req pars
 	// not read, and the budget that cut it short is the reader's, so no
 	// revision of the files tells a save that a later, larger budget reads
 	// them all.
-	mainParse, err := parser.Parse(main, req.Files[main])
+	mainParse, err := parser.Parse(main, files[main])
 	writeJSON(w, parseResponse{Document: json.RawMessage(docJSON), Diagnostics: diags, Unit: info, Bindable: err == nil && !parseHasErrors(mainParse.Diagnostics) && u.Whole(), ReadRefusal: unitReadRefusal(u)})
 }
 
 // unparseUnitFiles writes a document of a bot in several files back into
 // them, by provenance, and returns the files whose program changed — and
 // only those, so the caller patches them into the bundle it holds.
-func (s *Server) unparseUnitFiles(w http.ResponseWriter, req unparseRequest, doc *ast.File) {
+func (s *Server) unparseUnitFiles(w http.ResponseWriter, r *http.Request, req unparseRequest, doc *ast.File) {
 	main := req.Main
 	if main == "" {
 		main = "main.bot"
@@ -1160,12 +1192,17 @@ func (s *Server) unparseUnitFiles(w http.ResponseWriter, req unparseRequest, doc
 		httpError(w, http.StatusBadRequest, "main %q is not a workflow file: a unit is written back from a .bot", main)
 		return
 	}
-	u, err := unit.LoadMap(req.Files, main)
+	// Through the one chokepoint, so the save reads the bundle the open read
+	// — declared dependencies resolved in — and compares the revision the
+	// open issued. Resolved here and written back nowhere: the loop below
+	// refuses an edit to a dependency's file by name.
+	ur, err := s.resolveUnitRequest(r, req.Files, main, req.Path)
 	if err != nil {
-		httpError(w, http.StatusUnprocessableEntity, "%s", shortRefusal(err, "nothing is written back: a file the load did not read would come back without its declarations"))
+		unitRequestError(w, err, "nothing is written back: a file the load did not read would come back without its declarations")
 		return
 	}
-	if d := firstErrorDiagnostic(u.Diagnostics); d != "" {
+	u := ur.unit
+	if d := firstErrorDiagnostic(u.Diagnostics, ur.declaredFragments(main)); d != "" {
 		httpError(w, http.StatusUnprocessableEntity, "the bundle's files do not load as one unit (%s): fix them before saving", d)
 		return
 	}
@@ -1189,7 +1226,7 @@ func (s *Server) unparseUnitFiles(w http.ResponseWriter, req unparseRequest, doc
 		httpError(w, http.StatusUnprocessableEntity, "the document carries no provenance for a bot in several files: reopen the bot (an older client would fold every file into the main)")
 		return
 	}
-	target, headers, _, err := s.claimedTarget(u, unitRequest{files: req.Files, main: main}, req.UnitFiles, true)
+	target, headers, _, err := s.claimedTarget(u, ur, req.UnitFiles, true)
 	if err != nil {
 		var conflict claimConflict
 		if errors.As(err, &conflict) {
@@ -1210,6 +1247,18 @@ func (s *Server) unparseUnitFiles(w http.ResponseWriter, req unparseRequest, doc
 		if f.AST != nil && sameProgram(part, f.AST) {
 			continue
 		}
+		// A file a resolution PLACED is the producer bundle's, read into
+		// this unit and written back nowhere: persisting it would make the
+		// bundle ship the very lib/<name>.bot the launch refuses as a
+		// shadow (ADR-145 clause 2), so the edit is refused by name rather
+		// than silently dropped — a save that answered 200 and kept none of
+		// the change is the defect the other half of this route exists
+		// against. An UNCHANGED dependency file never reaches here: the
+		// sameProgram skip above is what every untouched file takes.
+		if dep, ok := ur.placed[f.Rel]; ok {
+			httpError(w, http.StatusUnprocessableEntity, "%s is the shared fragment bundle %q provides for this bot's `dependencies.fragments` entry %q: it is read here, never written — change it in %q, or drop the dependency and ship the fragment", f.Rel, dep.From, dep.Name, dep.From)
+			return
+		}
 		text, err := canon.Text(f.Rel, part, f.Source)
 		if err != nil {
 			if errors.Is(err, canon.ErrRefused) {
@@ -1221,14 +1270,16 @@ func (s *Server) unparseUnitFiles(w http.ResponseWriter, req unparseRequest, doc
 		}
 		out[f.Rel] = text
 	}
-	source := req.Files[main]
+	source := ur.files[main]
 	if t, ok := out[main]; ok {
 		source = t
 	}
 	// The revision the bundle has once the rewritten files are patched in:
-	// what the next save presents.
-	patched := make(map[string]string, len(req.Files))
-	for rel, text := range req.Files {
+	// what the next save presents. Over the files the OPEN read — the
+	// resolved dependencies among them — so the token the next save
+	// presents is the token the next open issues.
+	patched := make(map[string]string, len(ur.files))
+	for rel, text := range ur.files {
 		patched[rel] = text
 	}
 	for rel, text := range out {
@@ -1256,6 +1307,34 @@ type unitRequest struct {
 	main  string
 	abs   string // set for a unit on disk
 	root  string // the unit's directory on disk, "" for a files map
+	// deps is what this request knows of its bundle's declared
+	// dependencies.fragments, in the frame of its own reading, with the
+	// remedy its plane offers — computed once, where the request is
+	// resolved, so no site downstream re-reads the manifest or guesses the
+	// plane.
+	deps fragmentDependencies
+	// placed names each declared dependency a resolution put INTO files, by
+	// the path it materializes at. Those files are the unit's to read and no
+	// save's to write: a persisted lib/<name>.bot is the shadow the launch
+	// refuses (ADR-145 clause 2).
+	placed map[string]bundle.FragmentDependency
+}
+
+// declaredFragments is what this request knows of its bundle's declared
+// dependencies.fragments, in the frame of the reading mainRel starts: a
+// cloud bundle's manifest comes from the files map, whose keys are the
+// bundle's own, so its rels need no translation; a unit on disk is read
+// where it lives, and a load rooted beside a subdirectory entry declares
+// nothing (asDiskLoadOf). The two modes are told apart HERE and nowhere
+// else, for the reason resolveUnitRequest states.
+func (ur unitRequest) declaredFragments(mainRel string) fragmentDependencies {
+	if ur.files != nil {
+		// Read where the request was resolved, remedy included: a miss that
+		// survived a resolution is a producer no tier serves, and only the
+		// resolution knows that.
+		return ur.deps
+	}
+	return declaredFragments(nil, ur.root).asDiskLoadOf(mainRel)
 }
 
 // stage reloads the unit with rel's text replaced by source: a
@@ -1309,7 +1388,7 @@ func (s *Server) claimedTarget(u *unit.Unit, ur unitRequest, claimed []unitFileI
 	if err != nil {
 		return nil, nil, nil, errors.New(shortRefusal(err, "the files the document claims cannot be checked"))
 	}
-	return finishClaimed(u, probe, claimed, forWrite)
+	return finishClaimed(u, probe, claimed, forWrite, ur.declaredFragments(u.Main))
 }
 
 // claimedMatchesStored reports whether the claimed file list is the stored
@@ -1496,10 +1575,10 @@ func relUnitDiagnostics(u *unit.Unit) {
 // revision never covered them). headers maps every claimed file to the
 // header the split's skeleton must take: the claim's, not the stored
 // file's.
-func finishClaimed(stored, probe *unit.Unit, claimed []unitFileInfo, forWrite bool) (*unit.Unit, map[string]unitFileInfo, []unit.File, error) {
+func finishClaimed(stored, probe *unit.Unit, claimed []unitFileInfo, forWrite bool, fd fragmentDependencies) (*unit.Unit, map[string]unitFileInfo, []unit.File, error) {
 	citeStoredMainWorkflow(stored, probe)
 	relUnitDiagnostics(probe)
-	if d := firstErrorDiagnostic(probe.Diagnostics); d != "" {
+	if d := firstErrorDiagnostic(probe.Diagnostics, fd); d != "" {
 		return nil, nil, nil, fmt.Errorf("the files the document claims do not load as one unit: %s", d)
 	}
 	byRel := make(map[string]unitFileInfo, len(claimed))
@@ -1564,7 +1643,14 @@ func finishClaimed(stored, probe *unit.Unit, claimed []unitFileInfo, forWrite bo
 // workflowfile.IsWorkflowFile, like every other route that reads a bot. A
 // stored unit the read budget cuts short is answered as its
 // *unit.ShortError, before anything is asked of its files (unitRequestError).
-func (s *Server) resolveUnitRequest(files map[string]string, main, path string) (unitRequest, error) {
+//
+// It is also where a CLOUD bundle's declared dependencies.fragments are
+// resolved into its files (ADR-145, #2865), so no per-file route can forget
+// to: the load happens first, and only a load that actually missed a
+// declared path reads a tier. The disk mode resolves nothing — a working
+// tree's own `iterion bots sync` materializes the dependency, and a save
+// there writes the author's files.
+func (s *Server) resolveUnitRequest(r *http.Request, files map[string]string, main, path string) (unitRequest, error) {
 	if len(files) > 0 {
 		if main == "" {
 			main = "main.bot"
@@ -1576,7 +1662,21 @@ func (s *Server) resolveUnitRequest(files map[string]string, main, path string) 
 		if err != nil {
 			return unitRequest{}, err
 		}
-		return unitRequest{unit: u, files: files, main: main}, nil
+		a := s.authoringFragmentsFor(r, path)
+		fd := a.declaredFragments(files)
+		res, err := a.resolve(r.Context(), files, fd, fd.missed(u.Diagnostics))
+		if err != nil {
+			return unitRequest{}, err
+		}
+		if len(res.placed) > 0 {
+			// The unit as the install would have it: re-read, because a
+			// fragment is part of the compilation unit and every
+			// declaration of it has to be in the merged document.
+			if u, err = unit.LoadMap(res.files, main); err != nil {
+				return unitRequest{}, err
+			}
+		}
+		return unitRequest{unit: u, files: res.files, main: main, deps: res.deps, placed: res.placed}, nil
 	}
 	if path == "" {
 		return unitRequest{}, errors.New("a per-file request names no bot: give the bundle's files and its main, or the workspace path of the main")
@@ -1597,11 +1697,23 @@ func (s *Server) resolveUnitRequest(files map[string]string, main, path string) 
 
 // unitRequestError answers a failure of resolveUnitRequest: a stored unit
 // the read budget cut short is the load's refusal (422, what the route does
-// not do), anything else a request naming no bot it can read (400).
+// not do), a shared-fragment resolution that failed is the server's own
+// business — transient when a tier did not answer (503, retry: a store blip
+// must not retire a bot that resolves), the bundle's declaration otherwise
+// (422) — and anything else a request naming no bot it can read (400).
 func unitRequestError(w http.ResponseWriter, err error, what string) {
 	var short *unit.ShortError
 	if errors.As(err, &short) {
 		httpError(w, http.StatusUnprocessableEntity, "%s", shortRefusal(err, what))
+		return
+	}
+	var resolve fragmentResolveError
+	if errors.As(err, &resolve) {
+		if errors.Is(err, errBotSnapshotResolve) {
+			httpError(w, http.StatusServiceUnavailable, "%v", err)
+			return
+		}
+		httpError(w, http.StatusUnprocessableEntity, "%v", err)
 		return
 	}
 	httpError(w, http.StatusBadRequest, "%v", err)
@@ -1634,12 +1746,12 @@ func unitFile(u *unit.Unit, rel string) (unit.File, bool) {
 // the render writes nothing, and refusing it would strand the unsaved
 // header edit behind a verdict only a save needs — the save makes it, as
 // a conflict, when it runs.
-func (s *Server) unparseUnitPart(w http.ResponseWriter, req unparseRequest, doc *ast.File) {
+func (s *Server) unparseUnitPart(w http.ResponseWriter, r *http.Request, req unparseRequest, doc *ast.File) {
 	// A file the load did not read whole renders as nothing of it — the
 	// text it does not hold — and any other file of a bot read short is
 	// rendered from a document missing what was not read. The refusal is the
 	// load's, positioned, cut to the unit's names for the client.
-	ur, err := s.resolveUnitRequest(req.Files, req.Main, req.Path)
+	ur, err := s.resolveUnitRequest(r, req.Files, req.Main, req.Path)
 	if err != nil {
 		unitRequestError(w, err, req.File+" is not shown: its text would be rendered from what was read")
 		return
@@ -1738,7 +1850,7 @@ func (s *Server) parseUnitWithFile(w http.ResponseWriter, r *http.Request, req p
 	// for every file it names: a file past the cut is in no list of a load
 	// cut short, and "not a file of this bot" would blame the name for the
 	// budget.
-	ur, err := s.resolveUnitRequest(req.Files, req.Main, req.Path)
+	ur, err := s.resolveUnitRequest(r, req.Files, req.Main, req.Path)
 	if err != nil {
 		unitRequestError(w, err, req.File+" cannot be applied: the document would lack the declarations of what was not read, and a save of it would write them away")
 		return
@@ -1797,7 +1909,7 @@ func (s *Server) parseUnitWithFile(w http.ResponseWriter, r *http.Request, req p
 	// introduces in a file the bot already holds (a duplicate declaration,
 	// say) are surfaced as diagnostics and saved as ever: the save can
 	// carry both.
-	if msg := stagedLoadFailure(ur.unit, staged, req.File, declaredFragmentPaths(ur.files, ur.root, ur.unit.Main)); msg != "" {
+	if msg := stagedLoadFailure(ur.unit, staged, req.File, ur.declaredFragments(ur.unit.Main)); msg != "" {
 		httpError(w, http.StatusUnprocessableEntity, "%s", msg)
 		return
 	}
@@ -1817,10 +1929,12 @@ func (s *Server) parseUnitWithFile(w http.ResponseWriter, r *http.Request, req p
 		httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 		return
 	}
-	info := unitInfoOf(unit.Salvage(staged, nil), staged.Main)
+	fd := ur.declaredFragments(staged.Main)
+	info := unitInfoOf(unit.Salvage(staged, nil), staged.Main, fd)
 	info.Root = ""
 	info.Revision = ""
-	storedUnitVerdict(info, ur.unit)
+	storedUnitVerdict(info, ur.unit, fd)
+	markDependencyFiles(info, ur.placed)
 	mainSource := ""
 	if mf, ok := unitFile(staged, staged.Main); ok {
 		mainSource = string(mf.Source)
@@ -1886,7 +2000,13 @@ func (s *Server) openedText(w http.ResponseWriter, path string) ([]byte, bool) {
 // the refusal NAMES the dependency: the file was never this bundle's to
 // write (ADR-145 clause 3's wrong actor), and "fix the import" would send
 // the author to repair the one line that is right.
-func stagedLoadFailure(stored, staged *unit.Unit, file string, declared map[string]bundle.FragmentDependency) string {
+//
+// And when EVERY refused diagnostic is such a miss, the remedy that sends
+// the author to their own `lib/` is left OUT: there is no import of theirs
+// to fix, so a sentence telling them to fix one and then telling them the
+// file is a dependency's contradicts itself. One refused diagnostic that is
+// the author's own business brings the remedy back, for that one.
+func stagedLoadFailure(stored, staged *unit.Unit, file string, fd fragmentDependencies) string {
 	prev := make(map[string]bool, len(stored.Diagnostics))
 	for _, d := range stored.Diagnostics {
 		if d.Severity == parser.SeverityError {
@@ -1910,8 +2030,8 @@ func stagedLoadFailure(stored, staged *unit.Unit, file string, declared map[stri
 		switch d.Code {
 		case parser.DiagImportUnreadable, parser.DiagBadImportPath, parser.DiagImportCycle:
 			errs = append(errs, d.Error())
-			if dep, rel, ok := declaredFragmentMiss(d, declared); ok {
-				depNotes = append(depNotes, fragmentDependencyNote(rel, dep))
+			if dep, rel, ok := fd.miss(d); ok {
+				depNotes = append(depNotes, fd.note(rel, dep))
 			}
 		default:
 			// A parse error in a file the apply's imports NEWLY brought in:
@@ -1924,7 +2044,14 @@ func stagedLoadFailure(stored, staged *unit.Unit, file string, declared map[stri
 	if len(errs) == 0 {
 		return ""
 	}
-	msg := fmt.Sprintf("%s changes this bot's `import` lines, and with them the unit does not load: %s. A fragment an import names must exist under the bot's lib/ directory and parse whole — fix the import, or change it where this bot's files live and reopen the bot", file, strings.Join(errs, "; "))
+	msg := fmt.Sprintf("%s changes this bot's `import` lines, and with them the unit does not load: %s", file, strings.Join(errs, "; "))
+	// One note per refused diagnostic that is a declared dependency's, and
+	// never two for one: fewer notes than refusals means at least one
+	// import of this bundle's own is at fault, and that one's remedy is the
+	// author's `lib/`.
+	if len(depNotes) < len(errs) {
+		msg += ". A fragment an import names must exist under the bot's lib/ directory and parse whole — fix the import, or change it where this bot's files live and reopen the bot"
+	}
 	if len(depNotes) > 0 {
 		msg += ". " + strings.Join(depNotes, "; ")
 	}
@@ -1943,8 +2070,8 @@ func stagedLoadFailure(stored, staged *unit.Unit, file string, declared map[stri
 // resolved, which is the one case the merged view had nothing to be about.
 // It ANNOTATES a display; the writes are refused on their own, each
 // against the file it is about.
-func (s *Server) unitFoldReason(source string, files map[string]string, main, path string) string {
-	ur, err := s.resolveUnitRequest(files, main, path)
+func (s *Server) unitFoldReason(r *http.Request, source string, files map[string]string, main, path string) string {
+	ur, err := s.resolveUnitRequest(r, files, main, path)
 	var short *unit.ShortError
 	if errors.As(err, &short) {
 		short.RelDiagnostics()

@@ -266,7 +266,7 @@ func (s *Server) handleUnparse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.File != "" {
-		s.unparseUnitPart(w, req, f)
+		s.unparseUnitPart(w, r, req, f)
 		return
 	}
 	if req.Flatten {
@@ -280,11 +280,11 @@ func (s *Server) handleUnparse(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusUnprocessableEntity, "the document cannot be rendered as .bot source without changing it: %v", err)
 			return
 		}
-		writeJSON(w, unparseResponse{Source: source, Refused: s.unitFoldReason(source, req.Files, req.Main, req.Path)})
+		writeJSON(w, unparseResponse{Source: source, Refused: s.unitFoldReason(r, source, req.Files, req.Main, req.Path)})
 		return
 	}
 	if len(req.Files) > 0 {
-		s.unparseUnitFiles(w, req, f)
+		s.unparseUnitFiles(w, r, req, f)
 		return
 	}
 	if hasProvenance(f) {
@@ -830,7 +830,7 @@ func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data 
 				httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 				return
 			}
-			writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed, Unit: unitInfoOf(view, rel), Bindable: bindable, ReadRefusal: unitReadRefusal(view)})
+			writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed, Unit: unitInfoOf(view, rel, declaredFragments(nil, view.Root()).asDiskLoadOf(view.Main())), Bindable: bindable, ReadRefusal: unitReadRefusal(view)})
 			return
 		}
 		// Outside the working directory there is no path to open it by and
@@ -857,7 +857,7 @@ func (s *Server) serveDiskExample(w http.ResponseWriter, name, abs string, data 
 			httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
 			return
 		}
-		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed, Unit: unitInfoOf(view, rel), Bindable: true})
+		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: rel, ConfirmedDiskPath: confirmed, Unit: unitInfoOf(view, rel, declaredFragments(nil, view.Root()).asDiskLoadOf(view.Main())), Bindable: true})
 		return
 	}
 	// Read whole and loading without error: the unit the strict loader

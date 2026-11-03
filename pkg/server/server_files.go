@@ -711,7 +711,7 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 		// it did not read, and since the budget that cut it short is the
 		// reader's, no revision of the files tells a later save that a
 		// larger budget reads them all — binding it would write them away.
-		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: req.Path, ConfirmedDiskPath: confirmedDiskPath, Unit: unitInfoOf(view, req.Path), Bindable: !parseHasErrors(pr.Diagnostics) && view.Whole(), ReadRefusal: unitReadRefusal(view)})
+		writeJSON(w, unitOpenResponse{Source: string(data), Document: json.RawMessage(docJSON), Diagnostics: diags, Path: req.Path, ConfirmedDiskPath: confirmedDiskPath, Unit: unitInfoOf(view, req.Path, declaredFragments(nil, view.Root()).asDiskLoadOf(view.Main())), Bindable: !parseHasErrors(pr.Diagnostics) && view.Whole(), ReadRefusal: unitReadRefusal(view)})
 		return
 	}
 	docJSON, err := ast.MarshalFile(pr.File)

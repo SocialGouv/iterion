@@ -283,7 +283,12 @@ func (s *Server) putBotSourceFor(w http.ResponseWriter, r *http.Request, tenantI
 	if !foldsNothing {
 		return
 	}
-	if diags := validateBundleCompile(bs.Files); len(diags) > 0 {
+	diags, err := s.validateBundleCompileFor(r.Context(), s.authoringFragmentsForWrite(tenantID), bs.Files, nil)
+	if err != nil {
+		s.botSourceFragmentError(w, r, err)
+		return
+	}
+	if len(diags) > 0 {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bot does not compile: %s", strings.Join(diags, "; "))
 		return
 	}
@@ -457,7 +462,12 @@ func (s *Server) putBotSourceFileFor(w http.ResponseWriter, r *http.Request, ten
 		return
 	}
 	defer release()
-	if diags := validateBundleCompileSelected(bs.Files, []string{path}); len(diags) > 0 {
+	diags, err := s.validateBundleCompileFor(r.Context(), s.authoringFragmentsForWrite(tenantID), bs.Files, []string{path})
+	if err != nil {
+		s.botSourceFragmentError(w, r, err)
+		return
+	}
+	if len(diags) > 0 {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bot does not compile: %s", strings.Join(diags, "; "))
 		return
 	}
@@ -544,7 +554,13 @@ func (s *Server) deleteBotSourceFileFor(w http.ResponseWriter, r *http.Request, 
 	// still shed a file), one it draws only without the file is — a
 	// fragment an import reaches is load-bearing at parse time. And its
 	// manifest still declares the floor its sources need.
-	before := validateBundleCompileSelected(bs.Files, []string{path})
+	// A resolution FAILURE is scoped the same way, and that matters for one
+	// delete above all: the way out of a bundle whose declared dependency
+	// shadows a file it ships is to delete that file. A gate that refused on
+	// the BEFORE reading would wedge the author inside the state the delete
+	// repairs.
+	fragments := s.authoringFragmentsForWrite(tenantID)
+	before, beforeErr := s.validateBundleCompileFor(r.Context(), fragments, bs.Files, []string{path})
 	bs.Files = files
 	// Pinned to the version read above when the client presents none.
 	if version != 0 {
@@ -554,7 +570,15 @@ func (s *Server) deleteBotSourceFileFor(w http.ResponseWriter, r *http.Request, 
 		s.botSourceError(w, r, err)
 		return
 	}
-	if fresh := newDiagnostics(before, validateBundleCompileSelected(bs.Files, []string{path})); len(fresh) > 0 {
+	after, afterErr := s.validateBundleCompileFor(r.Context(), fragments, bs.Files, []string{path})
+	if fragmentFailureIntroduced(beforeErr, afterErr) {
+		// The delete itself made the declarations unresolvable — removing
+		// the bundle's record of what an install materialized, say, which
+		// turns its own fragment into the shadow the launch refuses.
+		s.botSourceFragmentError(w, r, afterErr)
+		return
+	}
+	if fresh := newDiagnostics(before, after); len(fresh) > 0 {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bot no longer compiles without %s: %s", path, strings.Join(fresh, "; "))
 		return
 	}
@@ -836,30 +860,132 @@ func (s *Server) catalogBundleFiles(botID string) (map[string]string, string, er
 	return files, botID, nil
 }
 
-// validateBundleCompile materializes a bundle to a temp dir and runs the same
-// parse → merge-bundle-prompts → compile path as `iterion validate`, returning
-// the SeverityError diagnostics (empty = compiles). This is the compilability
-// oracle the pure structural botsource.Validate deliberately leaves to the
-// route, where the full bundle context is available.
-func validateBundleCompile(files map[string]string) []string {
-	return validateBundleCompileSelected(files, nil)
+// validateBundleCompileSelected compiles main.bot plus every explicitly
+// modified companion .bot, resolving NOTHING: a bundle whose declared
+// dependencies.fragments are not materialized is refused, with the
+// dependency named. It is the gate for the planes that have no tier to
+// resolve through — a LOCAL authoring target, whose working tree
+// materializes the dependency itself — and the shape every test of the
+// compile rule itself exercises. Every plane that HAS the team resolves
+// first: validateBundleCompileFor, which the bot-source routes and the
+// assistant's cloud target go through.
+func validateBundleCompileSelected(files map[string]string, modified []string) []string {
+	diags, _ := compileBundleSelected(files, modified, declaredFragments(files, ""))
+	return diags
 }
 
-// validateBundleCompileSelected compiles main.bot plus every explicitly
-// modified companion .bot. A bundle may contain independently-invoked subbots;
-// compiling only main.bot would let an assistant batch persist a broken one.
-func validateBundleCompileSelected(files map[string]string, modified []string) []string {
+// validateBundleCompileFor is validateBundleCompileSelected with ADR-145's
+// resolution in front of it (#2865): a bundle may DECLARE a shared fragment
+// instead of shipping it, and the gate that refuses the import such a
+// declaration exists for refuses a bundle the launch resolves and runs. The
+// compile rule stays in one place (compileBundleSelected); what this adds is
+// the lazy resolution, which costs nothing until a compile has actually
+// missed a declared path.
+//
+// A dependency no tier serves is still refused, by the compile's own
+// diagnostic — recompiled so the refusal carries what the resolution of that
+// entry found, rather than a working tree the server has not got.
+//
+// It answers (diags, err): a resolution that FAILED is not a verdict about
+// the bundle's compilability, and flattening it into the diagnostic slice
+// cost the caller the one thing it has to tell apart — a tier blip to retry
+// from a declaration to change.
+func (s *Server) validateBundleCompileFor(ctx context.Context, a authoringFragments, files map[string]string, modified []string) ([]string, error) {
+	fd := a.declaredFragments(files)
+	diags, missed := compileBundleSelected(files, modified, fd)
+	// Always asked, and cheap when nothing missed: the resolution also
+	// holds the launch's no-shadow verdict, which is about the entries a
+	// miss cannot report, and reads no tier until a miss triggers one.
+	res, err := a.resolve(ctx, files, fd, missed)
+	if err != nil {
+		// Explicit, and NOT folded into the diagnostics: a tier that did
+		// not answer is not "the bundle does not compile" and is not
+		// silence either, and a shadow is the bundle's own declaration
+		// against its own files. The routes answer each as itself.
+		return nil, err
+	}
+	if !res.resolved {
+		return diags, nil
+	}
+	// The first pass's diagnostics are discarded whole: they were drawn
+	// before the dependencies were placed, and before the resolution knew
+	// why the rest are missing, so answering them would send a cloud author
+	// to the working tree remedy this plane cannot offer.
+	resolved, _ := compileBundleSelected(res.files, modified, res.deps)
+	return resolved, nil
+}
+
+// fragmentFailureIntroduced answers whether the resolution failure a mutated
+// bundle draws is one the MUTATION introduced — the scope rule the per-file
+// routes hold over the compile, held over the resolution too: a failure the
+// bundle already drew is not this edit's, and the way out of a bundle whose
+// declared dependency shadows a file it ships is to DELETE that file.
+//
+// The comparison reads the violating PATHS a refusal carries, never its
+// sentence: a no-shadow refusal met every declared entry, so a verdict read
+// off one message reads the walk order instead of the states, and a delete
+// that removed one of two shadows is refused while the same delete on the
+// other file is taken.
+func fragmentFailureIntroduced(before, after error) bool {
+	if after == nil {
+		return false
+	}
+	if before == nil {
+		return true
+	}
+	var afterShadow fragmentShadowRefusal
+	if !errors.As(after, &afterShadow) {
+		// Neither reading resolved, and not over the bundle's own files:
+		// the same tier is down for both readings, which is no verdict
+		// about this edit. A tier that fell over only AFTER the edit is
+		// still the same tier, and the edit did not push it.
+		return false
+	}
+	var beforeShadow fragmentShadowRefusal
+	if !errors.As(before, &beforeShadow) {
+		// The before reading failed at a tier, which happens AFTER the
+		// no-shadow verdict: there was no shadow then, so this one is the
+		// edit's.
+		return true
+	}
+	return !beforeShadow.covers(afterShadow.rels)
+}
+
+// botSourceFragmentError answers a failure of a write gate's OWN resolution
+// of a declared shared fragment: transient when a tier did not answer (503,
+// retry — a store blip must not read as a permanent refusal and retire a
+// bundle that resolves), the bundle's own declaration against its own files
+// otherwise (400, the sentence as its own, never dressed as "bot does not
+// compile"). It is the write plane's half of unitRequestError's rule, so one
+// class is answered one way on both planes.
+func (s *Server) botSourceFragmentError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, errBotSnapshotResolve) {
+		s.httpErrorFor(w, r, http.StatusServiceUnavailable, "%v", err)
+		return
+	}
+	s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
+}
+
+// compileBundleSelected is the compile rule: materialize the bundle to a temp
+// dir and run the same parse → merge-bundle-prompts → compile path as
+// `iterion validate`, returning the SeverityError diagnostics (empty =
+// compiles) and the declared dependencies.fragments entries the loads MISSED
+// — what a resolution is triggered by, and nothing else reads. This is the
+// compilability oracle the pure structural botsource.Validate deliberately
+// leaves to the route, where the full bundle context is available.
+func compileBundleSelected(files map[string]string, modified []string, fd fragmentDependencies) ([]string, map[string]bundle.FragmentDependency) {
 	dir, err := os.MkdirTemp("", "botsource-validate-*")
 	if err != nil {
-		return []string{"internal: " + err.Error()}
+		return []string{"internal: " + err.Error()}, nil
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 
 	if err := botsource.Materialize(dir, files); err != nil {
-		return []string{err.Error()}
+		return []string{err.Error()}, nil
 	}
 
 	var diags []string
+	var missed map[string]bundle.FragmentDependency
 	paths := []string{botsource.MainBotFile}
 	seen := map[string]bool{botsource.MainBotFile: true}
 	add := func(rel string) {
@@ -912,8 +1038,14 @@ func validateBundleCompileSelected(files map[string]string, modified []string) [
 				// The unit was read from a temporary directory the editor
 				// never sees: a diagnostic names the file as the bundle holds it.
 				msg := rel + ": " + strings.ReplaceAll(d.Error(), dir+string(os.PathSeparator), "")
-				if dep, depRel, ok := declaredFragmentMiss(d, declaredFragmentPaths(files, "", rel)); ok {
-					msg += " — " + fragmentDependencyNote(depRel, dep)
+				// Each workflow is loaded ROOTED BESIDE ITSELF, so its rels
+				// are read in its own frame, never the bundle's.
+				if dep, depRel, ok := fd.asDiskLoadOf(rel).miss(d); ok {
+					msg += " — " + fd.note(depRel, dep)
+					if missed == nil {
+						missed = make(map[string]bundle.FragmentDependency, len(fd.declared))
+					}
+					missed[depRel] = dep
 				}
 				diags = append(diags, msg)
 			}
@@ -932,7 +1064,7 @@ func validateBundleCompileSelected(files map[string]string, modified []string) [
 			}
 		}
 	}
-	return diags
+	return diags, missed
 }
 
 // newDiagnostics is what after reports that before did not.

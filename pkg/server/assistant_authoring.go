@@ -158,6 +158,13 @@ type authoringGitPublishResponse struct {
 }
 
 type authoringTarget struct {
+	// s is the server a CLOUD target's gate resolves through: the
+	// assistant's own authoring plane is a write gate like the bot-source
+	// routes, so a bundle that declares `dependencies.fragments` is held to
+	// the same rule there (validateBundleCompileFor). It is nil for a local
+	// target, which resolves nothing — a working tree's own `iterion bots
+	// sync` materializes the dependency.
+	s          *Server
 	editorPath string
 	// activeBundlePath is the normalized bundle-relative location of the
 	// editor file. It is empty for a workspace file or an authoring bootstrap.
@@ -509,7 +516,7 @@ func (s *Server) resolveAuthoringTarget(r *http.Request, editorPath string) (*au
 		if _, ok := bs.Files[activePath]; !ok {
 			return nil, errors.New("active editor file is absent from the bot source")
 		}
-		return &authoringTarget{editorPath: editorPath, activeBundlePath: activePath, manifest: m, teamID: teamID, slug: slug, version: bs.Version, id: bs.ID, files: bs.Files, userID: id.UserID}, nil
+		return &authoringTarget{s: s, editorPath: editorPath, activeBundlePath: activePath, manifest: m, teamID: teamID, slug: slug, version: bs.Version, id: bs.ID, files: bs.Files, userID: id.UserID}, nil
 	}
 	absEditor, err := s.safePath(editorPath)
 	if err != nil {
@@ -828,7 +835,15 @@ func (t *authoringTarget) validateCreateDestination(spec bundle.AuthoringEditabl
 	return nil
 }
 
-func (t *authoringTarget) validateChangedBots(previews []authoringPreviewFile) error {
+// validateChangedBots is the assistant's own compile gate. A CLOUD target
+// resolves its bundle's declared `dependencies.fragments` first, through the
+// same chokepoint the bot-source routes and the launch use: without it the
+// assistant could change no file of any bot whose bundle declares a shared
+// fragment — every preview refused with the E046 the declaration exists for —
+// while a human PUT of the same bytes is accepted and the launch runs it. A
+// LOCAL target resolves nothing: that plane has a working tree, and
+// validateBundleCompileSelected is the gate with no tier to resolve through.
+func (t *authoringTarget) validateChangedBots(ctx context.Context, previews []authoringPreviewFile) error {
 	var modified []string
 	if t.files != nil {
 		files := cloneAuthoringStringMap(t.files)
@@ -846,7 +861,11 @@ func (t *authoringTarget) validateChangedBots(previews []authoringPreviewFile) e
 		if len(modified) == 0 {
 			return nil
 		}
-		if diags := validateBundleCompileSelected(files, modified); len(diags) > 0 {
+		diags, err := t.s.validateBundleCompileFor(ctx, t.s.authoringFragmentsForWrite(t.teamID), files, modified)
+		if err != nil {
+			return err
+		}
+		if len(diags) > 0 {
 			return errors.New(strings.Join(diags, "; "))
 		}
 		return nil
@@ -935,7 +954,7 @@ func (t *authoringTarget) validateChanges(ctx context.Context, previews []author
 		Checks:          make([]authoringValidationCheck, 0, len(previews)),
 		BehavioralTests: "not_run",
 	}
-	if err := t.validateChangedBots(previews); err != nil {
+	if err := t.validateChangedBots(ctx, previews); err != nil {
 		return result, authoringValidationFailure{Code: "bot_compile_failed", Message: fmt.Sprintf("bot does not compile: %v", err)}
 	}
 	for _, preview := range previews {

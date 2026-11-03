@@ -123,6 +123,33 @@ property a bundle has to express — which three more facts constrain:
    thing in the repository and another after an install, which is the drift
    this record exists to end.
 
+   *Amended 2026-11-03 ([#2865](https://github.com/SocialGouv/iterion/issues/2865)),
+   with the discipline clause 4 states:* "every surface that reads the unit
+   … keeps reading what it reads now" holds for every surface that reads a
+   bundle **from a working tree an install has run in**, and for no surface
+   that reads one which never had that install. Two do not: the launch
+   freeze (clause 4's own amendment, 2026-10-29) and the **cloud editor**,
+   whose bundle lives in a store. There, "keeps reading what it reads now"
+   means reading an `import` the loader cannot follow, so the per-file
+   apply, the write-back, the bot-source write gate and the studio
+   assistant's gate refused the very import the declaration exists for — the
+   author could not even save it, and the state the launch resolves was
+   unreachable from the editor. **The cloud authoring surface therefore
+   RESOLVES a declared fragment too**, at the bundle-relative
+   `lib/<name>.bot` this clause defines and nowhere else, lazily (only once
+   a load or a compile has missed a declared path, and then over every
+   declared entry, the freeze's own shape), scoped to the team the bot's own
+   editor path names, and READ-ONLY: the resolved file is marked as the
+   producer's and refused by name by every save, because persisting it is
+   exactly the shadow this clause forbids — a verdict BOTH planes read over
+   every declared entry and only a WRITE refuses on: a READ leaves the
+   shadowed entry unresolved and opens on the author's own file, so a bundle
+   in that state still opens where it is fixed, with the file it has to drop
+   still editable. The three planes
+   share ONE producer rule, per clause 4's last sentence; what differs is
+   only what a MISS reads, and it is read PER ENTRY — the install names
+   `iterion bots sync`, the server names what resolving THAT entry found.
+
 3. **No new diagnostic code, because the refusal does not belong to the
    parser.** A dependency that cannot be resolved is a typed error at
    INSTALL, naming the bundle, the fragment and every layer looked in — the

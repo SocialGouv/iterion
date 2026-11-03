@@ -103,6 +103,14 @@ export interface UnitFileInfo {
    *  older server answers no verdict, as it answers no `bindable`. */
   parse_errors?: number;
   parse_error?: string;
+  /** The BUNDLE this file comes from when it is not this bot's own: a
+   *  shared fragment the manifest's `dependencies.fragments` declares,
+   *  which the server resolved into the unit for this reading (ADR-145).
+   *  It is read-only — the save refuses a write to it, and persisting it
+   *  would make the bundle ship the fragment it declares a dependency on —
+   *  so the picker shows it and offers no edit. Absent reads as "this
+   *  bot's own file". */
+  dependency?: string;
 }
 
 /** A declared terminal failure: `fail <name>:` with a typed code the run's

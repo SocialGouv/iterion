@@ -86,19 +86,54 @@ reads now. What that costs is written down rather than hidden:
 - **A miss is named where the dependency exists** — at the install, with the
   bundle, the fragment and every directory looked in. No new parse-time
   diagnostic: at parse time the file is simply there or absent.
-- **A bundle whose declared fragment is not materialized does not pass the
-  cloud editor's gates, and the refusal names the dependency.** Such a
-  bundle holds an `import` the loader cannot follow (`E046`), so the
-  per-file apply, the save and the bot-source write gate refuse it as "the
-  unit does not load" — but the refusal names the manifest's
-  `dependencies.fragments` entry the path belongs to, not the import line,
-  which is the one line that is right (ADR-145 clause 3's wrong actor).
-  Whether the authoring surface should instead RESOLVE or TOLERATE a
-  declared dependency's miss — letting the studio author save the import
-  the declaration exists for — is an open authoring-surface decision
-  ([#2865](https://github.com/SocialGouv/iterion/issues/2865)); the launch
-  plane's half is
-  [#2853](https://github.com/SocialGouv/iterion/issues/2853).
+- **The cloud authoring surface RESOLVES a declared fragment, it does not
+  merely tolerate the miss** ([#2865](https://github.com/SocialGouv/iterion/issues/2865),
+  the authoring half of
+  [#2853](https://github.com/SocialGouv/iterion/issues/2853)). A bundle
+  edited in the studio never carries what an install materialized, so the
+  cloud editor's open, its per-file apply, its write-back, the bot-source
+  write gate and the studio assistant's own gate resolve declared
+  `dependencies.fragments` entries through the same team-scoped tiers and
+  the same producer rules the launch freeze uses. Four properties make it
+  safe to rely on:
+  - **Lazy, then whole.** The load or the compile runs FIRST, and a tier is
+    read only once it has actually missed a declared path: a bundle with
+    nothing missing — including one pushed from a synced working tree, whose
+    fragment and record travel with it — costs nothing. Once a miss does
+    trigger it, EVERY declared entry is resolved, the freeze's own shape, or
+    a shared fragment that imports a second shared fragment would be
+    launchable and refused by the editor.
+  - **Team-scoped.** The team is the bot's own editor path
+    (`botsource://<team>/<slug>/<rel>`), and the caller must hold it, with
+    the right the bot-source routes require of a reader of a team's bots.
+    A caller that does not gets no resolution and no byte of the producer.
+  - **Read, never written.** A resolved fragment is marked as the producer
+    bundle's, rendered read-only in the Source view, and refused by name by
+    every save: persisting it would make the consumer SHIP the
+    `lib/<name>.bot` it declares a dependency on, which is the shadow the
+    launch refuses.
+  - **Both planes read the launch's no-shadow verdict; only a write refuses
+    on it.** It runs over every declared entry, missing or not — a declared
+    entry the bundle also ships is exactly the one a miss cannot report — so
+    no WRITE gate stores a bundle the launch refuses. A READ opens anyway, and
+    leaves that entry UNRESOLVED: the document is built on the author's own
+    file, which stays editable, so a bundle already in that state reaches the
+    screen where the manifest is fixed instead of being answered as another
+    bundle's content.
+
+  A declared dependency the tiers cannot serve is still refused, and the
+  refusal names the manifest entry, the producer bundle and what the
+  resolution of THAT entry found — the tiers searched when the producer is
+  nowhere, what the producer answered when it resolved and cannot serve the
+  id, and that this request read no tier at all when the caller holds no
+  authoring right on the team. Never `iterion bots sync`, which is no way
+  forward for a server with no working tree; never "publish the producer"
+  about a producer nothing looked for; and never the server's own filesystem
+  path. A tier that did
+  not ANSWER is answered as itself (503, retry), never as "the bundle does
+  not compile": one bad store minute must not retire a bundle that resolves.
+  A miss that is NOT a declared dependency's keeps the generic refusal and
+  its remedy: that import is the author's to fix.
 - **The cloud plane resolves at the launch freeze, before the parse.** A
   bundle that reaches the server never carries what an install materialized,
   so the launch resolves every declared fragment while it freezes the bot's
