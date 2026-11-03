@@ -27,11 +27,21 @@ import (
 // Not tenant-scoped, deliberately: a platform key serves every tenant on one
 // cap, and the run documents the reconcile reads are loaded team-blind for
 // the same reason.
+//
+// The reconcile is a read and a write on two collections, so it judges a
+// holder from a run document that can move before its $pull lands: a run
+// read paused, then flipped to queued and re-admitted by a resume on another
+// replica. The pull therefore names the exact entry it judged ({run_id,
+// at}), and a re-admission never leaves that entry in place — it moves the
+// entry's instant forward in a conditional write (refreshCredSlotHolder),
+// so the judged entry no longer exists when the pull lands. The filesystem
+// twin needs neither: one mutex holds its whole decision.
 
-// credSlotHolderDoc is one admitted run and the instant it was admitted —
-// what store.CredSlotGrace is measured from when its document is missing,
-// and the second half of the eviction's own CAS (a $pull names the entry it
-// judged, so a run that reserved again in between keeps its new entry).
+// credSlotHolderDoc is one admitted run and the instant of its latest
+// admission — what store.CredSlotGrace is measured from when its document is
+// missing, and the second half of the eviction's own CAS: a $pull names the
+// entry it judged, and a run admitted again since holds an entry with a
+// later instant, which the pull does not match.
 type credSlotHolderDoc struct {
 	RunID string    `bson:"run_id"`
 	At    time.Time `bson:"at"`
@@ -43,12 +53,18 @@ type credSlotDoc struct {
 }
 
 func (d credSlotDoc) holds(runID string) bool {
+	_, ok := d.holder(runID)
+	return ok
+}
+
+// holder returns runID's entry in the row, if it holds one.
+func (d credSlotDoc) holder(runID string) (credSlotHolderDoc, bool) {
 	for _, h := range d.Holders {
 		if h.RunID == runID {
-			return true
+			return h, true
 		}
 	}
-	return false
+	return credSlotHolderDoc{}, false
 }
 
 var _ store.CredSlotStore = (*Store)(nil)
@@ -70,7 +86,8 @@ func (s *Store) ReserveCredSlot(ctx context.Context, fingerprint, runID string, 
 		options.UpdateOne().SetUpsert(true)); err != nil {
 		return store.CredSlotAdmission{}, fmt.Errorf("store/mongo: cred slot row %s: %w", fingerprint, err)
 	}
-	for attempt := 0; ; attempt++ {
+	reconciled := false
+	for round := 0; round < credSlotReserveRounds; round++ {
 		var after credSlotDoc
 		err := s.credSlots.FindOneAndUpdate(ctx,
 			bson.M{
@@ -96,15 +113,28 @@ func (s *Store) ReserveCredSlot(ctx context.Context, fingerprint, runID string, 
 		if err := s.credSlots.FindOne(ctx, bson.M{"_id": fingerprint}).Decode(&current); err != nil {
 			return store.CredSlotAdmission{}, fmt.Errorf("store/mongo: read cred slot row %s: %w", fingerprint, err)
 		}
-		if current.holds(runID) {
-			return store.CredSlotAdmission{Granted: true, Held: len(current.Holders)}, nil
+		if held, ok := current.holder(runID); ok && len(current.Holders) <= max {
+			refreshed, err := s.refreshCredSlotHolder(ctx, fingerprint, held, max, now)
+			if err != nil {
+				return store.CredSlotAdmission{}, err
+			}
+			if refreshed {
+				return store.CredSlotAdmission{Granted: true, Held: len(current.Holders)}, nil
+			}
+			// The entry or the row moved since the read — pulled, admitted
+			// again by another call, or grown past this cap: decide again
+			// on a fresh read.
+			continue
 		}
-		if attempt > 0 {
+		// Full of other runs — or, under a cap lowered below its holders,
+		// over it with this run among them.
+		if reconciled {
 			return store.CredSlotAdmission{Granted: false, Held: len(current.Holders)}, nil
 		}
-		// Full. Once, re-read the holders against their run documents: a
-		// slot whose run is no longer spending is free, it just has not
-		// been given back yet.
+		reconciled = true
+		// Once, re-read the holders against their run documents: a slot
+		// whose run is no longer spending is free, it just has not been
+		// given back yet.
 		evicted, err := s.evictStaleCredSlotHolders(ctx, fingerprint, current.Holders, now)
 		if err != nil {
 			return store.CredSlotAdmission{}, err
@@ -113,6 +143,46 @@ func (s *Store) ReserveCredSlot(ctx context.Context, fingerprint, runID string, 
 			return store.CredSlotAdmission{Granted: false, Held: len(current.Holders)}, nil
 		}
 	}
+	return store.CredSlotAdmission{}, fmt.Errorf("store/mongo: reserve cred slot %s for run %s: the row moved under each of %d conditional writes — refused rather than spun on", fingerprint, runID, credSlotReserveRounds)
+}
+
+// credSlotReserveRounds bounds how many times one reservation decides again
+// on a fresh read. A round is spent without an answer only when the row
+// changed between the call's read and its conditional write — another
+// writer's pull, push or re-admission — so a reservation that spends every
+// round is contended far past any admission rate, or holds an entry its own
+// write cannot match: an error either way, never a loop without an end.
+const credSlotReserveRounds = 32
+
+// refreshCredSlotHolder re-admits a holder in place: one conditional write
+// that moves its entry's instant forward while the row still names that
+// exact entry and holds no more than max runs — a cap lowered below its
+// holders re-admits none of them. Reports whether the write landed.
+//
+// The new instant is what an eviction already in flight cannot match: its
+// $pull names the entry it judged, and the entry it would take is gone. The
+// instant is strictly later at the millisecond BSON keeps, or the refreshed
+// entry would be the judged one again.
+func (s *Store) refreshCredSlotHolder(ctx context.Context, fingerprint string, held credSlotHolderDoc, max int, now time.Time) (bool, error) {
+	at := now.Truncate(time.Millisecond)
+	if !at.After(held.At) {
+		at = held.At.Add(time.Millisecond)
+	}
+	judged := bson.M{"run_id": held.RunID, "at": held.At}
+	res, err := s.credSlots.UpdateOne(ctx,
+		bson.M{
+			"_id":     fingerprint,
+			"holders": bson.M{"$elemMatch": judged},
+			// At most max holders: the element at index max is absent.
+			fmt.Sprintf("holders.%d", max): bson.M{"$exists": false},
+		},
+		bson.M{"$set": bson.M{"holders.$[held].at": at, "updated_at": now}},
+		options.UpdateOne().SetArrayFilters([]any{bson.M{"held.run_id": held.RunID, "held.at": held.At}}),
+	)
+	if err != nil {
+		return false, fmt.Errorf("store/mongo: re-admit run %s to cred slot %s: %w", held.RunID, fingerprint, err)
+	}
+	return res.MatchedCount == 1, nil
 }
 
 // evictStaleCredSlotHolders pulls every holder whose run no longer spends
@@ -127,6 +197,9 @@ func (s *Store) evictStaleCredSlotHolders(ctx context.Context, fingerprint strin
 		run, err := s.LoadRun(blind, h.RunID)
 		if !store.CredSlotHolderStale(run, err, h.At, now, fingerprint) {
 			continue
+		}
+		if s.beforeCredSlotEvict != nil {
+			s.beforeCredSlotEvict(h.RunID)
 		}
 		res, perr := s.credSlots.UpdateOne(ctx, bson.M{"_id": fingerprint},
 			bson.M{"$pull": bson.M{"holders": bson.M{"run_id": h.RunID, "at": h.At}}, "$set": bson.M{"updated_at": now}})

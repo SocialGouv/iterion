@@ -13,8 +13,9 @@ import (
 // reconciles against, on the same admission and eviction rules as the Mongo
 // ledger (CredSlotHolderStale).
 
-// credSlotHolder is one admitted run and the instant it was admitted — the
-// instant CredSlotGrace is measured from when its document is missing.
+// credSlotHolder is one admitted run and the instant of its latest
+// admission — the instant CredSlotGrace is measured from when its document
+// is missing.
 type credSlotHolder struct {
 	runID string
 	at    time.Time
@@ -24,7 +25,10 @@ var _ CredSlotStore = (*FilesystemRunStore)(nil)
 
 // ReserveCredSlot implements CredSlotStore: one admission under the ledger
 // mutex, so concurrent callers of one process are serialized exactly as
-// Mongo serializes a conditional update.
+// Mongo serializes a conditional update. The mutex also spans the
+// reconcile's judgment and its eviction, so no re-admission can land between
+// the two — the window the Mongo twin closes by moving a re-admitted
+// holder's instant forward, which this twin does too, for one rule on both.
 func (s *FilesystemRunStore) ReserveCredSlot(ctx context.Context, fingerprint, runID string, max int) (CredSlotAdmission, error) {
 	if fingerprint == "" || runID == "" {
 		return CredSlotAdmission{}, fmt.Errorf("store: reserve cred slot: fingerprint and run id are required (fingerprint=%q run=%q)", fingerprint, runID)
@@ -40,18 +44,25 @@ func (s *FilesystemRunStore) ReserveCredSlot(ctx context.Context, fingerprint, r
 	now := time.Now().UTC()
 	for attempt := 0; ; attempt++ {
 		holders := s.credSlots[fingerprint]
-		for _, h := range holders {
+		held := -1
+		for i, h := range holders {
 			if h.runID == runID {
-				return CredSlotAdmission{Granted: true, Held: len(holders)}, nil
+				held = i
+				break
 			}
 		}
-		if len(holders) < max {
+		switch {
+		case held >= 0 && len(holders) <= max:
+			holders[held].at = now
+			return CredSlotAdmission{Granted: true, Held: len(holders)}, nil
+		case held < 0 && len(holders) < max:
 			s.credSlots[fingerprint] = append(holders, credSlotHolder{runID: runID, at: now})
 			return CredSlotAdmission{Granted: true, Held: len(holders) + 1}, nil
 		}
-		// Full. Once, re-read the holders against their run documents: a
-		// slot whose run is no longer spending is free, it just has not
-		// been given back yet.
+		// Full of other runs — or, under a cap lowered below its holders,
+		// over it with this run among them. Once, re-read the holders
+		// against their run documents: a slot whose run is no longer
+		// spending is free, it just has not been given back yet.
 		if attempt > 0 || s.evictStaleCredSlotHolders(ctx, fingerprint, now) == 0 {
 			return CredSlotAdmission{Granted: false, Held: len(holders)}, nil
 		}

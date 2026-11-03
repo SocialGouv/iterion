@@ -40,8 +40,12 @@ type CredSlotStore interface {
 	// ReserveCredSlot admits runID to hold one of max slots of fingerprint.
 	// Granted is false when the row is full of runs that still spend the
 	// credential; Held reports how many hold a slot after the call either
-	// way. A run already holding a slot is admitted again without taking a
-	// second one — a resume's re-resolution reserves what the run holds.
+	// way. A run already holding a slot is admitted again in place, without
+	// taking a second one — a resume's re-resolution reserves what the run
+	// holds — while the row is within max: under a cap lowered below its
+	// holders, a holder's re-admission waits like a newcomer's until enough
+	// of the others stop spending. Every admission moves the holder's
+	// instant forward, so an eviction judged before it misses the entry.
 	// max <= 0 is a caller error: an uncapped key reserves nothing.
 	ReserveCredSlot(ctx context.Context, fingerprint, runID string, max int) (CredSlotAdmission, error)
 	// ReleaseCredSlot gives back the slot runID holds under fingerprint, if

@@ -139,6 +139,12 @@ type Store struct {
 	// twin of the filesystem store's hook). Guarded by logPositionMu.
 	// nil disables stamping. See runlogs.go.
 	activeDurationFn store.ActiveDurationFn
+
+	// beforeCredSlotEvict is a test seam for the window between the slot
+	// ledger's judgment of a holder as stale and the $pull that evicts it —
+	// the window another replica's re-admission of that holder lands in
+	// (cred_slots.go). Nil in production.
+	beforeCredSlotEvict func(runID string)
 }
 
 // Registry returns the BSON codec registry the store's Mongo client is

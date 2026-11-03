@@ -185,3 +185,84 @@ func TestCredSlots_RacingReservationsAdmitExactlyTheCap(t *testing.T) {
 		t.Fatalf("%d of %d refused racers were granted the one freed slot: %v", len(again), len(refused), again)
 	}
 }
+
+// The window the eviction's CAS exists for, on the production ledger: a
+// launch's reconcile judges a paused holder stale, and before its $pull
+// lands another replica resumes that run — flips it to queued and admits it
+// again in place. The pull must miss the re-admitted entry: taken, the run
+// executes with no slot while the launch that evicted it takes the slot, two
+// runs on a cap of one. The interleaving is driven through the seam between
+// the judgment and the pull, so it is the same on every run. Red when the
+// re-admission leaves the entry as the reconcile judged it.
+func TestCredSlots_AnEvictionJudgedBeforeAReadmissionMissesTheReadmittedHolder(t *testing.T) {
+	uri := os.Getenv("ITERION_TEST_MONGO_URI")
+	if uri == "" {
+		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo cred-slot test")
+	}
+	ctx, cancel := mongotest.Ctx(t)
+	defer cancel()
+	s, err := New(ctx, Config{URI: uri, Database: "iterion_credslots_evict_" + bsonNonce(t), Blob: newInMemoryBlob()})
+	if err != nil {
+		t.Fatalf("mongo New: %v", err)
+	}
+	t.Cleanup(func() {
+		drop, dropCancel := mongotest.TeardownCtx()
+		defer dropCancel()
+		_ = s.db.Drop(drop)
+		_ = s.Close(drop)
+	})
+	const fp = "fp-evicted-in-flight"
+	tctx := store.WithIdentity(context.Background(), "_test", "_test")
+	for _, id := range []string{"run-a", "run-b"} {
+		if _, err := s.CreateRun(tctx, id, "demo", nil); err != nil {
+			t.Fatalf("CreateRun %s: %v", id, err)
+		}
+		if err := s.SetRunCredStamp(tctx, id, store.RunCredStamp{Fingerprints: []string{fp}}); err != nil {
+			t.Fatalf("SetRunCredStamp %s: %v", id, err)
+		}
+	}
+	if adm, err := s.ReserveCredSlot(tctx, fp, "run-a", 1); err != nil || !adm.Granted {
+		t.Fatalf("admitting run-a: %+v %v", adm, err)
+	}
+	// run-a pauses: it spends nothing, so any reconcile may judge it stale.
+	paused, err := s.LoadRun(tctx, "run-a")
+	if err != nil {
+		t.Fatalf("LoadRun run-a: %v", err)
+	}
+	paused.Status = store.RunStatusPausedWaitingHuman
+	if err := s.SaveRun(tctx, paused); err != nil {
+		t.Fatalf("pause run-a: %v", err)
+	}
+	resumed := false
+	s.beforeCredSlotEvict = func(runID string) {
+		if runID != "run-a" || resumed {
+			return
+		}
+		resumed = true
+		// Another replica resumes run-a between the judgment and the pull,
+		// the way SubmitResume does: the flip first, then the admission.
+		if _, ok, err := s.FlipToQueued(tctx, "run-a", store.RunStatusPausedWaitingHuman, time.Now()); err != nil || !ok {
+			t.Fatalf("resume run-a: flipped=%v err=%v", ok, err)
+		}
+		if adm, err := s.ReserveCredSlot(tctx, fp, "run-a", 1); err != nil || !adm.Granted {
+			t.Fatalf("re-admitting run-a on its own slot: %+v %v", adm, err)
+		}
+	}
+	adm, err := s.ReserveCredSlot(tctx, fp, "run-b", 1)
+	if err != nil {
+		t.Fatalf("ReserveCredSlot run-b: %v", err)
+	}
+	if !resumed {
+		t.Fatal("the reconcile never judged the paused run-a stale: the interleaving under test did not happen")
+	}
+	if adm.Granted {
+		t.Fatalf("run-b was admitted (%+v): the pull took run-a's re-admitted entry, and both runs execute on a cap of one", adm)
+	}
+	var row credSlotDoc
+	if err := s.credSlots.FindOne(ctx, bson.M{"_id": fp}).Decode(&row); err != nil {
+		t.Fatalf("read row: %v", err)
+	}
+	if len(row.Holders) != 1 || !row.holds("run-a") {
+		t.Fatalf("the row names %+v, want run-a alone", row.Holders)
+	}
+}

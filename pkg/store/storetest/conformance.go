@@ -4617,10 +4617,11 @@ func testAttachmentsMetaJSONFilename(t *testing.T, s store.RunStore) {
 
 // testCredSlotLedger exercises the credential-slot ledger behind the hard
 // per-key concurrency cap (store.CredSlotStore): the cap, the idempotent
-// re-admission of a holder, the release, and the reconcile that evicts a
-// holder whose run stopped spending the credential — terminal, model-idle,
-// re-stamped onto another key — before a refusal is final. Both twins, one
-// row: the publisher's admission reads whichever store the deployment has.
+// re-admission of a holder, the release, the reconcile that evicts a
+// holder whose run stopped spending the credential — terminal, or
+// re-stamped onto another key; never merely model-idle — before a refusal
+// is final, and a cap lowered below its holders. Both twins, one row: the
+// publisher's admission reads whichever store the deployment has.
 func testCredSlotLedger(t *testing.T, s store.RunStore) {
 	t.Helper()
 	ctx := testCtx()
@@ -4743,6 +4744,33 @@ func testCredSlotLedger(t *testing.T, s store.RunStore) {
 	mk("slot_i", store.RunStatusRunning, gone)
 	if adm, err := ledger.ReserveCredSlot(ctx, gone, "slot_i", 1); err != nil || !adm.Granted || adm.Held != 1 {
 		t.Fatalf("a deleted run kept its slot inside the grace: %+v %v — DeleteRun must pull it from the ledger", adm, err)
+	}
+	// A cap lowered below its holders re-admits none of them while the row
+	// is over it: a holder's resume waits like a newcomer's until enough of
+	// the others stop spending, then is admitted in place — never a row that
+	// stays over the operator's new cap for as long as its runs pause and
+	// resume.
+	const lowered = "fp-lowered"
+	for _, id := range []string{"low_a", "low_b", "low_c"} {
+		mk(id, store.RunStatusRunning, lowered)
+		if adm, err := ledger.ReserveCredSlot(ctx, lowered, id, 3); err != nil || !adm.Granted {
+			t.Fatalf("admitting %s on a cap of three: %+v %v", id, adm, err)
+		}
+	}
+	if adm, err := ledger.ReserveCredSlot(ctx, lowered, "low_a", 1); err != nil || adm.Granted || adm.Held != 3 {
+		t.Fatalf("a holder was re-admitted with the row over its lowered cap: %+v %v, want refused with 3 holders", adm, err)
+	}
+	flip("low_b", store.RunStatusFinished)
+	if adm, err := ledger.ReserveCredSlot(ctx, lowered, "low_a", 1); err != nil || adm.Granted || adm.Held != 2 {
+		t.Fatalf("two holders still spend on a lowered cap of one: %+v %v, want refused with 2 holders", adm, err)
+	}
+	flip("low_c", store.RunStatusFinished)
+	if adm, err := ledger.ReserveCredSlot(ctx, lowered, "low_a", 1); err != nil || !adm.Granted || adm.Held != 1 {
+		t.Fatalf("the other holders ended: %+v %v, want the holder admitted in place, alone", adm, err)
+	}
+	mk("low_d", store.RunStatusRunning, lowered)
+	if adm, err := ledger.ReserveCredSlot(ctx, lowered, "low_d", 1); err != nil || adm.Granted || adm.Held != 1 {
+		t.Fatalf("a newcomer was admitted past the lowered cap: %+v %v", adm, err)
 	}
 	// Caller errors, never silent: an uncapped key reserves nothing, and a
 	// reservation must name a key.
