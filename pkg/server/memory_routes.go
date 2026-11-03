@@ -20,18 +20,61 @@ func (s *Server) memoryStore() knowledge.MemoryStore {
 	return memory.DefaultFSStore()
 }
 
+// memoryWriteRungDetail is what a refused memory write is told. It names the
+// surface and a reason that holds on EVERY visibility the mount covers —
+// including the caller's own `user` space, which is not a team space.
+const memoryWriteRungDetail = "changing this workspace's knowledge takes at least the member role — a memory document is instruction the platform reads back into the runs that open its space, and launching such a run takes the same rung; ask a workspace admin to raise your role"
+
+// memoryWriteAuth is the wrapper every memory route mounts through — reads
+// included, where it is inert. It is the memory family's instance of the
+// member rung (mutatingRungAuth, board_cloud_routes.go), owed here for the
+// reason the REST reference already publishes (`member` on every row,
+// docs/cloud-rest-api.md): a document in a memory space is INSTRUCTION, read
+// back by every agent run that opens the space — the engine reads it under a
+// machine principal the rung exempts, so the authorization is owed where the
+// document is WRITTEN. Deleting one is a write too: a viewer must not be
+// able to empty a team's shared knowledge.
+//
+// EVERY visibility takes it, the caller's own `user` space included: that
+// axis keys on the CALLER (memoryRef hands ResolveSpaceRef the context
+// owner, never `?user=`), and a document there is instruction all the same —
+// read back into a run of theirs, which this very rung gates at launch
+// (gateLaunch). One rung for the whole family keeps the mount readable and
+// the decision single; the per-visibility arm that does exist
+// (requireMemoryWriteAuth) only ever raises the floor, never lowers it.
+//
+// The global space keeps that own, higher gate inside the handlers
+// (requireMemoryWriteAuth): instance-wide, so a super-admin whose platform
+// authority stands, and this rung is the floor underneath it.
+func (s *Server) memoryWriteAuth(next http.Handler) http.Handler {
+	return s.mutatingRungAuth(memoryWriteRungDetail)(next)
+}
+
+// memoryWriteDenial is the memory family's instance of the rung decision.
+func (s *Server) memoryWriteDenial(r *http.Request) *launchDenial {
+	return s.mutatingRungDenial(r, memoryWriteRungDetail)
+}
+
 // registerMemoryRoutes wires the shared-knowledge REST surface. Spaces
 // are addressed by query params; the tenant/user come from the auth
 // identity (never a query param) so a member can't read another org's
 // memory.
+//
+// All routes go through memoryWriteAuth: requireAuth, plus the member rung
+// on every state-changing method. The reads carry it too, where it is inert
+// — so every line of this registrar reads the same, and a route added with
+// requireAuth alone stands out. The class witness
+// (memory_write_rung_test.go) derives the family from this file's own
+// registration calls, so an eighth route mounted without the rung reddens
+// on the route that lacks it.
 func (s *Server) registerMemoryRoutes() {
-	s.mux.Handle("GET /api/memory/usage", s.requireAuth(http.HandlerFunc(s.handleMemoryUsage)))
-	s.mux.Handle("GET /api/memory/docs", s.requireAuth(http.HandlerFunc(s.handleMemoryListDocs)))
-	s.mux.Handle("GET /api/memory/doc", s.requireAuth(http.HandlerFunc(s.handleMemoryReadDoc)))
-	s.mux.Handle("PUT /api/memory/doc", s.requireAuth(http.HandlerFunc(s.handleMemoryWriteDoc)))
-	s.mux.Handle("DELETE /api/memory/doc", s.requireAuth(http.HandlerFunc(s.handleMemoryDeleteDoc)))
-	s.mux.Handle("GET /api/memory/export", s.requireAuth(http.HandlerFunc(s.handleMemoryExport)))
-	s.mux.Handle("POST /api/memory/import", s.requireAuth(http.HandlerFunc(s.handleMemoryImport)))
+	s.mux.Handle("GET /api/memory/usage", s.memoryWriteAuth(http.HandlerFunc(s.handleMemoryUsage)))
+	s.mux.Handle("GET /api/memory/docs", s.memoryWriteAuth(http.HandlerFunc(s.handleMemoryListDocs)))
+	s.mux.Handle("GET /api/memory/doc", s.memoryWriteAuth(http.HandlerFunc(s.handleMemoryReadDoc)))
+	s.mux.Handle("PUT /api/memory/doc", s.memoryWriteAuth(http.HandlerFunc(s.handleMemoryWriteDoc)))
+	s.mux.Handle("DELETE /api/memory/doc", s.memoryWriteAuth(http.HandlerFunc(s.handleMemoryDeleteDoc)))
+	s.mux.Handle("GET /api/memory/export", s.memoryWriteAuth(http.HandlerFunc(s.handleMemoryExport)))
+	s.mux.Handle("POST /api/memory/import", s.memoryWriteAuth(http.HandlerFunc(s.handleMemoryImport)))
 }
 
 func (s *Server) memoryRef(r *http.Request) (knowledge.SpaceRef, bool) {

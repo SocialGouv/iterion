@@ -42,14 +42,16 @@ schedule tick, trigger spine, retry sweeper). The rung is fail-closed: an
 identity carrying neither a `member` role nor one of those kinds is
 refused.
 
-The same rung guards the surfaces that FILL a queue a machine principal
-drains. The board's Ready column is one: the dispatcher drains it under a
-principal the gate exempts, so a card written ready is a launch its author
-asked the platform to perform. A trigger subscription is the other: the
-spine evaluates it against every matching event and launches under the
-same kind of exempt principal, so a stored subscription is a standing
-launch order. The rung is therefore taken at the mount, by every
-state-changing method of:
+The same rung guards the surfaces a machine principal CONSUMES. The
+board's Ready column is one: the dispatcher drains it under a principal
+the gate exempts, so a card written ready is a launch its author asked
+the platform to perform. A trigger subscription is another: the spine
+evaluates it against every matching event and launches under the same
+kind of exempt principal, so a stored subscription is a standing launch
+order. A team's memory space is the third: the engine reads its documents
+back into every agent run that opens the space, so a document written
+there is instruction the platform will follow. The rung is therefore
+taken at the mount, by every state-changing method of:
 
 - the three board registrars — `registerPipelineBoardRoutes`
   (`/api/v1/pipeline-board/…`), `registerCloudBoardRoutes` (the
@@ -57,7 +59,10 @@ state-changing method of:
   `registerBoardForgeRoutes` (the per-card push / pull-request / merge
   endpoints under the same `/api/v1/native/` prefix);
 - `registerTriggerRoutes` — `/api/v1/triggers` and
-  `/api/v1/bots/{name}/triggers/from-invocation`.
+  `/api/v1/bots/{name}/triggers/from-invocation`;
+- `registerMemoryRoutes` — the seven `/api/memory/*` routes, where the
+  write, the delete and the import take it (a global-space mutation then
+  takes platform authority on top, `requireMemoryWriteAuth`).
 
 Each answers the same `member_role_required` (403), with a detail naming
 what the caller was changing; `GET`/`HEAD` stay readable by a `viewer`.

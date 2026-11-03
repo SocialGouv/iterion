@@ -76,15 +76,31 @@ var localAliasRe = regexp.MustCompile(`(?m)^[ \t]*([a-z]\w*) :=\s*([A-Za-z_][\w.
 // route quoted in a comment is not a registration.
 var inventoryLineComments = regexp.MustCompile(`(?m)//.*$`)
 
+// writeRungWrapperHeads are the family wrappers that mount the member rung
+// (mutatingRungAuth, board_cloud_routes.go). ONE list, read by the
+// classifier below AND by authWrapperHeads, so a family cannot be a rung in
+// the code and a plain `session` on the published page. A new family is a
+// line here; the class gate of memory_write_rung_test.go holds this list
+// against every wrapper the package actually builds on mutatingRungAuth.
+var writeRungWrapperHeads = []string{"boardWriteAuth", "triggerWriteAuth", "memoryWriteAuth"}
+
+func isWriteRungWrapper(head string) bool {
+	for _, w := range writeRungWrapperHeads {
+		if strings.HasSuffix(head, w) {
+			return true
+		}
+	}
+	return false
+}
+
 // authWrapperHeads are the wrapper heads that carry an auth rung. A
 // registration hiding one of them behind a local variable is refused, not
 // classified: the rung is the one fact of a registration this annex exists
 // to publish, so it must be readable on the registration line itself.
-var authWrapperHeads = []string{
+var authWrapperHeads = append([]string{
 	"requireSuperAdmin", "requireAuth",
-	"boardWriteAuth", "triggerWriteAuth",
 	"webhookAuth", "configShareAuth",
-}
+}, writeRungWrapperHeads...)
 
 func isAuthWrapperHead(head string) bool {
 	for _, w := range authWrapperHeads {
@@ -231,7 +247,7 @@ func registrationRung(head, method, pattern string) string {
 	switch {
 	case strings.Contains(head, "requireSuperAdmin"):
 		return "platform admin"
-	case strings.HasSuffix(head, "boardWriteAuth") || strings.HasSuffix(head, "triggerWriteAuth"):
+	case isWriteRungWrapper(head):
 		return "session + write rung"
 	case strings.Contains(head, "requireAuth"):
 		return "session"
@@ -414,8 +430,12 @@ line itself (a rung hidden behind a local variable or a closure refuses
 the generation rather than print a wrong rung):
 
 - ` + "`platform admin`" + ` — an authenticated platform super-admin (` + "`requireSuperAdmin`" + `).
-- ` + "`session + write rung`" + ` — an authenticated member with the family's write rung
-  (` + "`boardWriteAuth`" + ` / ` + "`triggerWriteAuth`" + `).
+- ` + "`session + write rung`" + ` — the family's write-rung MOUNT
+  (` + "`boardWriteAuth`" + ` / ` + "`triggerWriteAuth`" + ` / ` + "`memoryWriteAuth`" + `): an
+  authenticated identity, and at least the member role on a state-changing
+  method. A whole family carries the mount so every line of its registrar
+  reads the same, so this rung also marks that family's ` + "`GET`" + ` rows, where
+  it is inert — what a READ requires is the curated page's prose.
 - ` + "`session`" + ` — any authenticated identity; the finer per-resource authorization
   is the curated page's prose.
 - ` + "`open`" + ` — the operator-JWT gate lets the request through: public bootstrap
