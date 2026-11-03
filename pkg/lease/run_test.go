@@ -117,17 +117,23 @@ func (c *stopClock) stopped() time.Time { return time.Unix(0, c.at.Load()) }
 
 // The point of the package: N replicas campaign, ONE serves, and it keeps
 // serving — renewals hold the lease across several TTLs, so the term never
-// changes hands while its holder is healthy.
+// changes hands while its holder is healthy. The scenario runs in a synctest
+// bubble: on the wall clock a scheduler stall longer than the step-down
+// margin ends the holder's term under a loaded -race shard, and a peer
+// takes the lease — the runner's red, not the lease's (the #2854 class).
 func TestRun_OneCandidateServesAndKeepsServing(t *testing.T) {
+	synctest.Test(t, testRunOneCandidateServesAndKeepsServing)
+}
+
+func testRunOneCandidateServesAndKeepsServing(t *testing.T) {
 	st := NewMemoryStore()
 	var tr terms
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	const candidates = 5
-	// Renewal every 1s against a 2.5s step-down: a scheduler stall under a
-	// loaded -race run has to exceed 1.5s to end the term. The stall budget
-	// is TTL/2 against a renewal pace of TTL/3, so the TTL itself is the
-	// margin — and the 3 TTLs of dead hold below are its price.
+	// Renewal every TTL/3 against a step-down at TTL·5/6: the stall budget is
+	// TTL/2. The clock is virtual, so no scheduler stall can spend it; the
+	// three TTLs of hold below cost nothing on the wall.
 	const leaseTTL = 3 * time.Second
 	for i := 0; i < candidates; i++ {
 		owner := fmt.Sprintf("replica-%d", i)
