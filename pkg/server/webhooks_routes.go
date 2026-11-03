@@ -147,9 +147,16 @@ func defaultSignMode(provider webhooks.Provider, req *string) (webhooks.Signatur
 	}
 }
 
+// webhookWithToken is the create and rotate answer: the row and the one
+// plaintext of its token. PinsUnreconciled names, on a create, the record
+// ids its landed pins name that the route could not re-check after the row
+// was stored (see reconcileLandedPins) — a receipt the client acts on by
+// re-reading those records and clearing a pin naming a dead one; absent
+// when every pin was vouched for.
 type webhookWithToken struct {
-	Config webhooks.Config `json:"config"`
-	Token  string          `json:"token"`
+	Config           webhooks.Config `json:"config"`
+	Token            string          `json:"token"`
+	PinsUnreconciled []string        `json:"pins_unreconciled,omitempty"`
 }
 
 // normalizeBotScope validates the bot-scope inputs: a wildcard scope
@@ -371,36 +378,31 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	// The pins just landed; close the born-mid-delete window before the
 	// answer — reconcileLandedPins sweeps a record revoked between this
 	// write's validation and its landing, the row the delete's sweep
-	// never listed (see credential_pin_sweep.go). Same posture as the
-	// delete chokepoint: the write happened, a failed clear answers 5xx
-	// instead of letting a dead pin stand unreported.
+	// never listed (see credential_pin_sweep.go). The row is stored and
+	// the token below is its only copy, so a failed re-check is a receipt
+	// on the 201 (pins_unreconciled, cause in the log), never a 5xx that
+	// would lose the token and send the retry minting a second webhook.
 	guardCtx, guardCancel := pinGuardCtx(r)
 	defer guardCancel()
-	pinsCleared, reconcileErr := s.reconcileLandedPins(guardCtx, teamID, cfg.KeyOverrides, cfg.SecretOverrides)
+	pins := s.reconcileLandedPins(guardCtx, teamID, cfg.KeyOverrides, cfg.SecretOverrides)
 	meta := map[string]any{"name": cfg.Name, "provider": string(cfg.Provider), "wildcard_bots": cfg.WildcardBots}
-	if len(pinsCleared) > 0 {
-		meta["pins_cleared"] = pinsCleared
+	if len(pins.Cleared) > 0 {
+		meta["pins_cleared"] = pins.Cleared
+	}
+	if pins.Err != nil {
+		meta["pins_unreconciled"] = pins.Unreconciled
+		s.logUnreconciledPins("webhook", cfg.ID, pins)
 	}
 	if wildcard && s.logger != nil {
 		s.logger.Warn("webhooks: org %s created a wildcard-bot webhook %s (by %s)", teamID, cfg.ID, id.UserID)
 	}
 	s.auditTenant(r, teamID, "webhook.created", "webhook", cfg.ID, meta)
-	if reconcileErr != nil {
-		httpError(w, http.StatusInternalServerError, "webhook %s created, but re-checking the records its pins name failed: %v — a pin may name a record deleted in flight and stand until it is cleared", cfg.ID, reconcileErr)
-		return
-	}
-	if len(pinsCleared) > 0 {
-		// The answer must not resell the swept pins — the honesty the
-		// delete's 204 owes: answer with the row as the store now holds it.
-		fresh, err := s.webhookConfigs.Get(r.Context(), cfg.ID)
-		if err != nil {
-			httpError(w, http.StatusInternalServerError, "webhook %s created, but reading back the swept row failed: %v", cfg.ID, err)
-			return
-		}
-		cfg = fresh
-	}
+	// The answer must not resell the swept pins — the honesty the delete's
+	// 204 owes: answer with the row as the store now holds it.
+	pins.strip(cfg.KeyOverrides)
+	pins.strip(cfg.SecretOverrides)
 	w.WriteHeader(http.StatusCreated)
-	writeJSON(w, webhookWithToken{Config: cfg, Token: plaintext})
+	writeJSON(w, webhookWithToken{Config: cfg, Token: plaintext, PinsUnreconciled: pins.Unreconciled})
 }
 
 // sealWebhookHMAC is the thin wrapper around webhooks.SealHMACSecret —
@@ -720,29 +722,29 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	// Same closure as the create route: the landed pins are re-checked
 	// against their records — a pin that validated while its record lived
 	// but landed after the record's delete sweep listed would otherwise
-	// stand unreconciled (see credential_pin_sweep.go).
+	// stand unreconciled (see credential_pin_sweep.go). Unlike the create,
+	// a failed re-check answers 5xx here: the edit is stored and nothing
+	// one-time is lost, and the client's retry re-reads the row and
+	// re-validates the very pins — a dead record is refused by name.
 	guardCtx, guardCancel := pinGuardCtx(r)
 	defer guardCancel()
-	pinsCleared, reconcileErr := s.reconcileLandedPins(guardCtx, teamID, cfg.KeyOverrides, cfg.SecretOverrides)
+	pins := s.reconcileLandedPins(guardCtx, teamID, cfg.KeyOverrides, cfg.SecretOverrides)
 	meta := map[string]any{"name": cfg.Name, "enabled": cfg.Enabled}
-	if len(pinsCleared) > 0 {
-		meta["pins_cleared"] = pinsCleared
+	if len(pins.Cleared) > 0 {
+		meta["pins_cleared"] = pins.Cleared
+	}
+	if pins.Err != nil {
+		meta["pins_unreconciled"] = pins.Unreconciled
 	}
 	s.auditTenant(r, teamID, "webhook.updated", "webhook", cfg.ID, meta)
-	if reconcileErr != nil {
-		httpError(w, http.StatusInternalServerError, "webhook %s updated, but re-checking the records its pins name failed: %v — a pin may name a record deleted in flight and stand until it is cleared", cfg.ID, reconcileErr)
+	if pins.Err != nil {
+		httpError(w, http.StatusInternalServerError, "webhook %s updated, but re-checking the records its pins name failed: %v — a pin may name a record deleted in flight and stand until it is cleared", cfg.ID, pins.Err)
 		return
 	}
-	if len(pinsCleared) > 0 {
-		// The answer must not resell the swept pins — the honesty the
-		// delete's 204 owes: answer with the row as the store now holds it.
-		fresh, err := s.webhookConfigs.Get(r.Context(), cfg.ID)
-		if err != nil {
-			httpError(w, http.StatusInternalServerError, "webhook %s updated, but reading back the swept row failed: %v", cfg.ID, err)
-			return
-		}
-		cfg = fresh
-	}
+	// The answer must not resell the swept pins — the honesty the delete's
+	// 204 owes: answer with the row as the store now holds it.
+	pins.strip(cfg.KeyOverrides)
+	pins.strip(cfg.SecretOverrides)
 	writeJSON(w, cfg)
 }
 

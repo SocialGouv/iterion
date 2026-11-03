@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/internal/storekit"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
@@ -130,10 +131,22 @@ func pinsName(pins map[string]string, recordID string) bool {
 // retry still carries. The pass runs detached (pinSweepTimeout): the caller
 // may be gone, the sweep must not. Scoped routes with no tenant in the path
 // (the /api/me deletes) sweep nothing: their user-scoped records are never
-// pinnable, and a tenant-less sweep would be unscoped.
+// pinnable, and a tenant-less sweep would be unscoped. A caller the gate
+// refuses sweeps nothing either and gets the route's bare 404 — the same
+// answer a caller with no standing gets for any record. A gate the identity
+// store cannot ANSWER (an outage, not a refusal) is an error the delete
+// route answers 5xx: a 404 there would be the silent skip the heal exists
+// to close, with the pins still standing and nothing logged.
 func (s *Server) retryCredentialPinSweep(r *http.Request, tenantID, recordID string) ([]string, error) {
+	if tenantID == "" {
+		return nil, nil
+	}
 	id, _ := auth.FromContext(r.Context())
-	if tenantID == "" || !s.mayClearTenantPins(r.Context(), id, tenantID) {
+	allowed, err := s.mayClearTenantPinsOrFail(r.Context(), id, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("judge the right to sweep the pins of %s: %w", tenantID, err)
+	}
+	if !allowed {
 		return nil, nil
 	}
 	ctx, cancel := pinGuardCtx(r)
@@ -147,6 +160,32 @@ func (s *Server) retryCredentialPinSweep(r *http.Request, tenantID, recordID str
 // pin that leaves standing seals the team's default with nobody watching.
 func pinGuardCtx(r *http.Request) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(r.Context()), pinSweepTimeout)
+}
+
+// landedPins is what a pin-landing write learns from reconcileLandedPins
+// once its row is stored. Cleared lists the surfaces the re-check swept
+// ("webhook <id>", "trigger <id>"), the receipt the audit line carries;
+// Swept the record ids found revoked whose sweep completed, the pins the
+// answer strips so it does not resell a pin the store no longer holds;
+// Unreconciled the record ids the re-check could not vouch for — a record
+// the store failed to read, or a dead one whose sweep failed — behind Err,
+// the joined causes for the server log.
+type landedPins struct {
+	Cleared      []string
+	Swept        []string
+	Unreconciled []string
+	Err          error
+}
+
+// strip drops from pins every entry naming a swept record — in place, the
+// row is the route's own copy — so the answer shows the row as the store
+// holds it. The two pin-bearing rows hide their version from JSON, and the
+// clear touches nothing else, so the stripped copy is byte-for-byte the
+// stored row's answer without a read-back that could fail after the write.
+func (p landedPins) strip(pins map[string]string) {
+	for _, dead := range p.Swept {
+		storekit.DropStringMapValues(&pins, dead)
+	}
 }
 
 // reconcileLandedPins closes the write-side twin of the sweep's window. A
@@ -163,36 +202,60 @@ func pinGuardCtx(r *http.Request) (context.Context, context.CancelFunc) {
 // listing began, which is exactly what the re-check reads. The Gets run
 // under the tenant scope, the same derivation the write-time validators
 // used, so another tenant's record cannot read as missing.
-func (s *Server) reconcileLandedPins(ctx context.Context, tenantID string, keyPins, secretPins map[string]string) ([]string, error) {
-	var swept []string
+//
+// What a route answers when Err is set depends on what a retry can mend.
+// An EDIT answers 5xx: the row holds the edit, the client's retry re-reads
+// and re-validates the very pins, and a dead record is refused by name. A
+// CREATE answers its row with Unreconciled beside it (`pins_unreconciled`)
+// and the cause in the log under the row id (logUnreconciledPins): the row
+// is already stored under a fresh id, so a retry of a 5xx mints a second
+// webhook or a second cron subscription, the 5xx body is opaque by
+// convention so the id could not even travel in it, and a webhook's
+// one-time token exists only in the 201 — a 5xx would reconcile nothing and
+// lose the only copy of the secret.
+func (s *Server) reconcileLandedPins(ctx context.Context, tenantID string, keyPins, secretPins map[string]string) landedPins {
+	var out landedPins
 	var errs []error
+	recheck := func(recordID string, err error, notFound error, what string) {
+		switch {
+		case errors.Is(err, notFound):
+			cleared, sweepErr := s.sweepCredentialPins(ctx, tenantID, recordID)
+			out.Cleared = append(out.Cleared, cleared...)
+			if sweepErr != nil {
+				out.Unreconciled = append(out.Unreconciled, recordID)
+				errs = append(errs, fmt.Errorf("%s %s is revoked, sweeping its pins: %w", what, recordID, sweepErr))
+				return
+			}
+			out.Swept = append(out.Swept, recordID)
+		case err != nil:
+			out.Unreconciled = append(out.Unreconciled, recordID)
+			errs = append(errs, fmt.Errorf("%s %s: %w", what, recordID, err))
+		}
+	}
 	if s.apiKeys != nil {
 		for _, keyID := range uniquePinRecords(keyPins) {
 			_, err := s.apiKeys.Get(store.WithTenant(ctx, tenantID), keyID)
-			switch {
-			case errors.Is(err, secrets.ErrApiKeyNotFound):
-				s2, sweepErr := s.sweepCredentialPins(ctx, tenantID, keyID)
-				swept = append(swept, s2...)
-				errs = append(errs, sweepErr)
-			case err != nil:
-				errs = append(errs, fmt.Errorf("api key %s: %w", keyID, err))
-			}
+			recheck(keyID, err, secrets.ErrApiKeyNotFound, "api key")
 		}
 	}
 	if s.genericSecrets != nil {
 		for _, secretID := range uniquePinRecords(secretPins) {
 			_, err := s.genericSecrets.Get(store.WithTenant(ctx, tenantID), secretID)
-			switch {
-			case errors.Is(err, secrets.ErrGenericSecretNotFound):
-				s2, sweepErr := s.sweepCredentialPins(ctx, tenantID, secretID)
-				swept = append(swept, s2...)
-				errs = append(errs, sweepErr)
-			case err != nil:
-				errs = append(errs, fmt.Errorf("stored secret %s: %w", secretID, err))
-			}
+			recheck(secretID, err, secrets.ErrGenericSecretNotFound, "stored secret")
 		}
 	}
-	return swept, errors.Join(errs...)
+	out.Err = errors.Join(errs...)
+	return out
+}
+
+// logUnreconciledPins is the create routes' half of a failed re-check: the
+// cause, under the row id, where the operator looks — the 201 beside it
+// carries the record ids only, never the store's error text.
+func (s *Server) logUnreconciledPins(surface, rowID string, pins landedPins) {
+	if s.logger == nil {
+		return
+	}
+	s.logger.Error("credential pins: %s %s is stored, but re-checking the records its pins name failed (unreconciled: %v): %v — a pin may name a record deleted in flight and stand until it is cleared", surface, rowID, pins.Unreconciled, pins.Err)
 }
 
 // uniquePinRecords dedups the record ids a pin map names, sorted for a
@@ -214,20 +277,23 @@ func uniquePinRecords(pins map[string]string) []string {
 	return ids
 }
 
-// mayClearTenantPins reports whether the identity may sweep a tenant's
+// mayClearTenantPinsOrFail reports whether the identity may sweep a tenant's
 // credential pins — the right the delete routes already demand for the
 // record whose pins they sweep. The rows a sweep clears belong to the
 // tenant (its webhook configs and subscriptions, whose edit path is
 // canManageTeam); an org-tier tenant's rows answer to the org's admins;
 // super-admins answer to every tenant, as on the record-scoped gate. The
 // record is gone — the tenant form is the only gate left, and it asks for
-// the same right creating a record there would.
-func (s *Server) mayClearTenantPins(ctx context.Context, id auth.Identity, tenantID string) bool {
+// the same right creating a record there would. Only a refusal carries an
+// error, and only when a read the store could not complete is what stopped
+// it (the OrFail forms): the caller tells an outage from a "no" instead of
+// skipping the heal over a blip.
+func (s *Server) mayClearTenantPinsOrFail(ctx context.Context, id auth.Identity, tenantID string) (bool, error) {
 	if id.IsSuperAdmin {
-		return true
+		return true, nil
 	}
 	if orgID, ok := secrets.OrgIDFromTierScope(tenantID); ok {
-		return s.canManageOrg(ctx, id, orgID)
+		return s.canManageOrgOrFail(ctx, id, orgID)
 	}
-	return s.canManageTeam(ctx, id, tenantID)
+	return s.canManageTeamOrFail(ctx, id, tenantID)
 }

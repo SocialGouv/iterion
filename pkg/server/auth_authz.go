@@ -108,21 +108,49 @@ func (s *Server) canEditBots(ctx context.Context, id auth.Identity, teamID strin
 	return s.canEditConfigShares(ctx, id, teamID)
 }
 
+// canManageTeam is canManageTeamOrFail's fail-closed form: a read it could
+// not complete grants nothing, and the caller is told nothing about it — what
+// a gate wants, and what every caller but the pin heal takes.
 func (s *Server) canManageTeam(ctx context.Context, id auth.Identity, teamID string) bool {
+	allowed, _ := s.canManageTeamOrFail(ctx, id, teamID)
+	return allowed
+}
+
+// canManageTeamOrFail resolves whether id may administer teamID (admin/owner
+// of the team, admin/owner of its org, super-admin) and reports the read that
+// stopped a "no", the way canViewTeamOrFail does: only a refusal carries the
+// error, a "yes" never does. A caller that acts on the refusal itself — the
+// delete retry's pin heal, which would otherwise answer 404 over pins still
+// standing because a Mongo blip read as "no right" — takes this form.
+func (s *Server) canManageTeamOrFail(ctx context.Context, id auth.Identity, teamID string) (bool, error) {
 	if id.IsSynthetic() {
-		return false
+		return false, nil
 	}
 	if id.PinRefusesTeam(teamID) {
-		return false
+		return false, nil
 	}
 	if id.IsSuperAdmin {
-		return true
+		return true, nil
 	}
-	if mb, err := s.authStore().GetMembership(ctx, id.UserID, teamID); err == nil && mb.Role.AtLeast(identity.RoleAdmin) {
-		return true
+	var unread error
+	mb, err := s.authStore().GetMembership(ctx, id.UserID, teamID)
+	switch {
+	case err == nil:
+		if mb.Role.AtLeast(identity.RoleAdmin) {
+			return true, nil
+		}
+	case !errors.Is(err, identity.ErrNotFound):
+		unread = fmt.Errorf("read the team grant of %s in %s: %w", id.UserID, teamID, err)
 	}
 	// An org admin/owner can manage every team in their org.
-	return s.orgAdminOfTeam(ctx, id, teamID)
+	allowed, oerr := s.orgAdminOfTeamOrFail(ctx, id, teamID)
+	if allowed {
+		return true, nil
+	}
+	if unread == nil {
+		unread = oerr
+	}
+	return false, unread
 }
 
 // orgAdminOfTeam reports whether the principal is an admin/owner of the

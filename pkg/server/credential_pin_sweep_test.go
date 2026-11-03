@@ -96,11 +96,19 @@ func deleteTeamSecret(srv *Server, secretID, team string) *httptest.ResponseReco
 }
 
 // sweptSurfaces waits for a delete's audit line that carries pins_cleared
-// and returns the list — best-effort and detached, so the poll is how a
-// test reads it at all. Events without the list (a delete whose sweep
-// failed and reported nothing cleared) are skipped: the caller wants a
-// receipt, not the first line with the action.
+// and returns the list.
 func sweptSurfaces(t *testing.T, auditStore *audit.MemoryStore, tenant, action string) []string {
+	t.Helper()
+	return auditPinReceipt(t, auditStore, tenant, action, "pins_cleared")
+}
+
+// auditPinReceipt waits for an audit line of the action that carries the
+// named pin receipt (pins_cleared, pins_unreconciled) and returns the list
+// — best-effort and detached, so the poll is how a test reads it at all.
+// Events without the list (a delete whose sweep failed and reported
+// nothing cleared) are skipped: the caller wants a receipt, not the first
+// line with the action.
+func auditPinReceipt(t *testing.T, auditStore *audit.MemoryStore, tenant, action, key string) []string {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
@@ -112,14 +120,14 @@ func sweptSurfaces(t *testing.T, auditStore *audit.MemoryStore, tenant, action s
 			if e.Action != action {
 				continue
 			}
-			cleared, _ := e.Meta["pins_cleared"].([]string)
-			if len(cleared) == 0 {
+			got, _ := e.Meta[key].([]string)
+			if len(got) == 0 {
 				continue
 			}
-			return cleared
+			return got
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no %s audit event with pins_cleared; got %+v", action, events)
+			t.Fatalf("no %s audit event with %s; got %+v", action, key, events)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -490,6 +498,73 @@ func (noGrantIdentityStore) GetMembership(context.Context, string, string) (iden
 
 func (noGrantIdentityStore) GetTeam(context.Context, string) (identity.Team, error) {
 	return identity.Team{}, identity.ErrNotFound
+}
+
+// outageIdentityStore refuses every read with a store failure — a Mongo
+// blip under the identity store, which the heal's gate must report as the
+// outage it is, never fold into "no right".
+type outageIdentityStore struct {
+	identity.Store
+}
+
+func (outageIdentityStore) GetMembership(context.Context, string, string) (identity.Membership, error) {
+	return identity.Membership{}, errors.New("identity store unavailable")
+}
+
+func (outageIdentityStore) GetTeam(context.Context, string) (identity.Team, error) {
+	return identity.Team{}, errors.New("identity store unavailable")
+}
+
+func (outageIdentityStore) GetOrgMembership(context.Context, string, string) (identity.OrgMembership, error) {
+	return identity.OrgMembership{}, errors.New("identity store unavailable")
+}
+
+// TestDeleteRoutes_TheHealReportsAnIdentityStoreOutage: the 404 path's
+// gate reads the caller's standing from the identity store, and a read the
+// store cannot complete is an outage, not a "no". Folding it into a bool
+// (the mutant) skips the heal in silence and answers 404 over pins that
+// may still stand — the untreated retry the heal exists to close, with no
+// trace. Both delete chokepoints answer their explicit 5xx instead, so the
+// next retry heals; the org-tier form of the gate surfaces the same
+// failure through the shared pass. A caller the gate REFUSES on a healthy
+// store keeps the bare 404 (TestDeleteApiKey_TheHealDemandsTheTenantRight).
+func TestDeleteRoutes_TheHealReportsAnIdentityStoreOutage(t *testing.T) {
+	srv, _, _, _ := newPinSweepServer(t)
+	authSvc := &auth.Service{}
+	authSvc.SetStoreForTest(outageIdentityStore{})
+	srv.authSvc = authSvc
+	caller := auth.Identity{UserID: "u9", TeamID: "team-a"}
+
+	t.Run("api key", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodDelete, "/api/teams/team-a/api-keys/key-gone", nil)
+		r.SetPathValue("id", "team-a")
+		r.SetPathValue("key_id", "key-gone")
+		r = r.WithContext(store.WithTenant(auth.WithIdentity(r.Context(), caller), "team-a"))
+		w := httptest.NewRecorder()
+		srv.handleDeleteApiKey(w, r)
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("retry under an identity outage = %d body=%s, want 500 — a 404 here skips the heal in silence", w.Code, w.Body.String())
+		}
+	})
+	t.Run("secret", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodDelete, "/api/teams/team-a/secrets/sec-gone", nil)
+		r.SetPathValue("id", "team-a")
+		r.SetPathValue("secret_id", "sec-gone")
+		r = r.WithContext(store.WithTenant(auth.WithIdentity(r.Context(), caller), "team-a"))
+		w := httptest.NewRecorder()
+		srv.handleDeleteGenericSecret(w, r)
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("retry under an identity outage = %d body=%s, want 500 — a 404 here skips the heal in silence", w.Code, w.Body.String())
+		}
+	})
+	t.Run("org tier", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodDelete, "/api/orgs/org-1/credentials/api-keys/key-gone", nil)
+		r = r.WithContext(auth.WithIdentity(r.Context(), caller))
+		_, err := srv.retryCredentialPinSweep(r, secrets.OrgTierTenantID("org-1"), "key-gone")
+		if err == nil || !strings.Contains(err.Error(), "identity store unavailable") {
+			t.Fatalf("org-tier heal under an identity outage err = %v, want the gate's read failure surfaced", err)
+		}
+	})
 }
 
 // landingEditPinSweep performs an operator's pin edit INSIDE the sweep's

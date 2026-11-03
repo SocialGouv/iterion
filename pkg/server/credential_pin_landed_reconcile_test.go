@@ -328,22 +328,178 @@ func TestCreateTrigger_KeepsAPinWhoseRecordSurvives(t *testing.T) {
 	}
 }
 
-// TestCreateTrigger_AnswersAnExplicitFailureWhenTheReconcileFails: a store
-// error in the re-check is not laundered into a success — the write
-// happened, and the answer says the pins are unreconciled, the delete
-// chokepoint's posture for its own sweep half.
-func TestCreateTrigger_AnswersAnExplicitFailureWhenTheReconcileFails(t *testing.T) {
+// A failed re-check after a CREATE is a receipt on the 201, never a 5xx:
+// the row is already stored under a fresh id, a client retrying a 5xx
+// mints a second subscription or a second webhook, the 5xx body is opaque
+// by convention so the id could not even travel in it, and a webhook's
+// token exists only in that one answer. The witnesses below read the
+// answer for the row and the `pins_unreconciled` receipt, the store for
+// the single row, and the log for the cause under the row id. The EDIT
+// routes keep the explicit 5xx: nothing one-time is lost there, and the
+// retry re-reads and re-validates the very pins.
+
+// TestCreateTrigger_AFailedReCheckAnswersTheRowWithAReceipt: the key store
+// blips on the re-check (the validator's Get passed). Answering 500 (the
+// mutant) loses the id behind an opaque body and sends the retry minting a
+// duplicate cron subscription.
+func TestCreateTrigger_AFailedReCheckAnswersTheRowWithAReceipt(t *testing.T) {
 	srv, org, _ := triggerPinServer(t)
+	var logs bytes.Buffer
+	srv.logger = iterlog.New(iterlog.LevelWarn, &logs)
 	srv.apiKeys = &getThenFailKeyStore{ApiKeyStore: srv.apiKeys, pass: 1}
 
 	body := `{"bot_id":"feature-dev","invocation":"board","mode":"board","match":{"sources":["board"]},
 		"key_overrides":{"anthropic":"` + org.ID + `"}}`
 	rec := httptest.NewRecorder()
 	srv.handleCreateTrigger(rec, teamTriggerReq(t, http.MethodPost, "/api/v1/triggers", "", body))
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("create = %d, want 500; body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create = %d, want 201 — the row is stored, a 5xx would hide its id and duplicate it on retry; body=%s", rec.Code, rec.Body.String())
 	}
-	// The 5xx body stays opaque by convention; the server log carries the
-	// cause ("re-checking the records its pins name failed: …"). What the
-	// operator must never get is a success over an unreconciled pin.
+	var created struct {
+		trigger.Subscription
+		PinsUnreconciled []string `json:"pins_unreconciled"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ID == "" {
+		t.Fatalf("the answer carries no id: %s", rec.Body.String())
+	}
+	if len(created.PinsUnreconciled) != 1 || created.PinsUnreconciled[0] != org.ID {
+		t.Fatalf("pins_unreconciled = %v, want [%s] — the client must learn which record it has to re-check", created.PinsUnreconciled, org.ID)
+	}
+	// The pin the route could not vouch for stays in the answer as stored:
+	// a receipt is not a clear.
+	if created.KeyOverrides["anthropic"] != org.ID {
+		t.Fatalf("the answer dropped an unreconciled pin: %v", created.KeyOverrides)
+	}
+	rows, err := srv.cfg.TriggerStore.ListByTenant(t.Context(), "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ID != created.ID {
+		t.Fatalf("stored rows = %+v, want exactly the answered one", rows)
+	}
+	if !strings.Contains(logs.String(), created.ID) || !strings.Contains(logs.String(), "store unavailable") {
+		t.Fatalf("the log must carry the cause under the row id: %q", logs.String())
+	}
+	// The receipt names ids only; the store's error text stays in the log.
+	if strings.Contains(rec.Body.String(), "store unavailable") {
+		t.Fatalf("the answer leaks the store error: %s", rec.Body.String())
+	}
+}
+
+// TestCreateWebhook_AFailedReCheckStillDeliversTheToken: the webhook lane's
+// create, where the 5xx (the mutant) would withhold the only copy of the
+// token for a row that exists — unknowable, unrecoverable short of a rotate
+// the client cannot address without the id.
+func TestCreateWebhook_AFailedReCheckStillDeliversTheToken(t *testing.T) {
+	srv, _, logs, auditStore := newPinSweepServer(t)
+	key := seedSweepKey(t, srv.apiKeys, "team-a", "key-live", secrets.ProviderAnthropic)
+	srv.apiKeys = &getThenFailKeyStore{ApiKeyStore: srv.apiKeys, pass: 1}
+
+	body := `{"name":"wh","provider":"gitlab","wildcard_bots":true,
+		"key_overrides":{"anthropic":"` + key.ID + `"}}`
+	r := httptest.NewRequest(http.MethodPost, "/api/teams/team-a/webhooks", strings.NewReader(body))
+	r.SetPathValue("id", "team-a")
+	ctx := testMintVerdictContext(store.WithTenant(auth.WithIdentity(r.Context(),
+		auth.Identity{UserID: "u1", IsSuperAdmin: true, TeamID: "team-a"}), "team-a"))
+	r = r.WithContext(ctx)
+	w := httptest.NewRecorder()
+	srv.handleCreateWebhook(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create = %d, want 201 — the row is stored and the token has no second copy; body=%s", w.Code, w.Body.String())
+	}
+	var created webhookWithToken
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Token == "" || created.Config.ID == "" {
+		t.Fatalf("the answer must carry the token and the id: %s", w.Body.String())
+	}
+	if len(created.PinsUnreconciled) != 1 || created.PinsUnreconciled[0] != key.ID {
+		t.Fatalf("pins_unreconciled = %v, want [%s]", created.PinsUnreconciled, key.ID)
+	}
+	if created.Config.KeyOverrides["anthropic"] != key.ID {
+		t.Fatalf("the answer dropped an unreconciled pin: %v", created.Config.KeyOverrides)
+	}
+	rows, err := srv.webhookConfigs.ListByTenant(context.Background(), "team-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ID != created.Config.ID {
+		t.Fatalf("stored rows = %+v, want exactly the answered one", rows)
+	}
+	// The audit line carries the receipt beside the create, and the log the
+	// cause under the row id.
+	if got := auditPinReceipt(t, auditStore, "team-a", "webhook.created", "pins_unreconciled"); len(got) != 1 || got[0] != key.ID {
+		t.Fatalf("audit pins_unreconciled = %v, want [%s]", got, key.ID)
+	}
+	if !strings.Contains(logs.String(), created.Config.ID) || !strings.Contains(logs.String(), "store unavailable") {
+		t.Fatalf("the log must carry the cause under the row id: %q", logs.String())
+	}
+}
+
+// TestUpdateTrigger_AFailedReCheckAnswersAnExplicitFailure: the edit lane
+// keeps the 5xx — the edit is stored, nothing one-time is lost, and the
+// retry re-reads and re-validates the very pins. A 200 over an unvouched
+// pin (the mutant) would be the silent-sealed-default the re-check exists
+// to close.
+func TestUpdateTrigger_AFailedReCheckAnswersAnExplicitFailure(t *testing.T) {
+	srv, org, _ := triggerPinServer(t)
+	rec := httptest.NewRecorder()
+	srv.handleCreateTrigger(rec, teamTriggerReq(t, http.MethodPost, "/api/v1/triggers", "",
+		`{"bot_id":"feature-dev","invocation":"board","mode":"board","match":{"sources":["board"]}}`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var created trigger.Subscription
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	srv.apiKeys = &getThenFailKeyStore{ApiKeyStore: srv.apiKeys, pass: 1}
+
+	repl := httptest.NewRecorder()
+	srv.handleUpdateTrigger(repl, teamTriggerReq(t, http.MethodPut, "/api/v1/triggers/"+created.ID, created.ID,
+		`{"bot_id":"feature-dev","invocation":"board","mode":"board","match":{"sources":["board"]},
+		"key_overrides":{"anthropic":"`+org.ID+`"}}`))
+	if repl.Code != http.StatusInternalServerError {
+		t.Fatalf("update = %d, want 500; body=%s", repl.Code, repl.Body.String())
+	}
+	got, err := srv.cfg.TriggerStore.Get(t.Context(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.KeyOverrides["anthropic"] != org.ID {
+		t.Fatalf("stored key_overrides = %v, want the edit — the 5xx reports the re-check, it does not undo the write", got.KeyOverrides)
+	}
+}
+
+// TestUpdateWebhook_AFailedReCheckAnswersAnExplicitFailure: the webhook
+// lane's edit, same posture.
+func TestUpdateWebhook_AFailedReCheckAnswersAnExplicitFailure(t *testing.T) {
+	srv, _, _, _ := newPinSweepServer(t)
+	key := seedSweepKey(t, srv.apiKeys, "team-a", "key-live", secrets.ProviderAnthropic)
+	seedSweepWebhook(t, srv.webhookConfigs, webhooks.Config{ID: "wh-1", TenantID: "team-a"})
+	srv.apiKeys = &getThenFailKeyStore{ApiKeyStore: srv.apiKeys, pass: 1}
+
+	body := `{"key_overrides":{"anthropic":"` + key.ID + `"}}`
+	r := httptest.NewRequest(http.MethodPut, "/api/teams/team-a/webhooks/wh-1", strings.NewReader(body))
+	r.SetPathValue("id", "team-a")
+	r.SetPathValue("webhook_id", "wh-1")
+	ctx := testMintVerdictContext(store.WithTenant(auth.WithIdentity(r.Context(),
+		auth.Identity{UserID: "u1", IsSuperAdmin: true, TeamID: "team-a"}), "team-a"))
+	r = r.WithContext(ctx)
+	w := httptest.NewRecorder()
+	srv.handleUpdateWebhook(w, r)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("update = %d, want 500; body=%s", w.Code, w.Body.String())
+	}
+	got, err := srv.webhookConfigs.Get(context.Background(), "wh-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.KeyOverrides["anthropic"] != key.ID {
+		t.Fatalf("stored key_overrides = %v, want the edit — the 5xx reports the re-check, it does not undo the write", got.KeyOverrides)
+	}
 }
