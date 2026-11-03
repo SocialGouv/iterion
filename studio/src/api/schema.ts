@@ -6391,6 +6391,7 @@ export interface components {
         BackendStatus: {
             auth: string;
             available: boolean;
+            binary_found?: boolean;
             hints?: string[];
             name: string;
             sources: string[];

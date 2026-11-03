@@ -132,6 +132,9 @@
           "available": {
             "type": "boolean"
           },
+          "binary_found": {
+            "type": "boolean"
+          },
           "hints": {
             "items": {
               "type": "string"
