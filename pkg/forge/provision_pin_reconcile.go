@@ -2,11 +2,9 @@ package forge
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/SocialGouv/iterion/pkg/secrets"
-	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
@@ -23,34 +21,25 @@ import (
 //
 // So the migration write does what every pin-landing route does once its
 // row is stored: it re-reads every record the carried pins name, under the
-// tenant scope the pins validated against, and clears a revoked one from
-// THIS row with the store's value-scoped clear — the sweep's own primitive,
-// version bump included — then refreshes the written copy so the undo's
-// version check and the rest of the provision see the row as the store
-// holds it. A record store that cannot answer is an error the provision
-// reports; the retry re-provisions and re-checks, the mend a route's edit
-// asks of its client. A nil ApiKeys leaves key pins unjudged — the
+// tenant scope the pins validated against (secrets.RecheckPinnedRecords,
+// the judgment the routes' reconciliation shares), and clears a revoked one
+// from THIS row with the store's value-scoped clear — the sweep's own
+// primitive, version bump included — then refreshes the written copy so the
+// undo's version check and the rest of the provision see the row as the
+// store holds it. A record store that cannot answer is an error the
+// provision reports; the retry re-provisions and re-checks, the same mend
+// as a route edit's retry. A nil ApiKeys leaves key pins unjudged — the
 // tolerance the routes' validators and re-check apply to a store that is
-// not wired; the secret pins are always re-checked through Secrets.
+// not wired; the secret pins are re-checked through Secrets, which the
+// provision cannot run without (it mints the managed token there).
 func (o *Orchestrator) reconcileCarriedPins(ctx context.Context, cfg *webhooks.Config) error {
-	tctx := store.WithTenant(ctx, cfg.TenantID)
 	var dead []string
-	if o.ApiKeys != nil {
-		for _, id := range pinnedRecordIDs(cfg.KeyOverrides) {
-			switch _, err := o.ApiKeys.Get(tctx, id); {
-			case errors.Is(err, secrets.ErrApiKeyNotFound):
-				dead = append(dead, id)
-			case err != nil:
-				return fmt.Errorf("forge: re-check api key %s pinned on webhook %s: %w", id, cfg.ID, err)
-			}
-		}
-	}
-	for _, id := range pinnedRecordIDs(cfg.SecretOverrides) {
-		switch _, err := o.Secrets.Get(tctx, id); {
-		case errors.Is(err, secrets.ErrGenericSecretNotFound):
-			dead = append(dead, id)
-		case err != nil:
-			return fmt.Errorf("forge: re-check stored secret %s pinned on webhook %s: %w", id, cfg.ID, err)
+	for _, rec := range secrets.RecheckPinnedRecords(ctx, o.ApiKeys, o.Secrets, cfg.TenantID, cfg.KeyOverrides, cfg.SecretOverrides) {
+		switch {
+		case rec.Err != nil:
+			return fmt.Errorf("forge: re-check %s %s pinned on webhook %s: %w", rec.Kind, rec.ID, cfg.ID, rec.Err)
+		case rec.Revoked:
+			dead = append(dead, rec.ID)
 		}
 	}
 	if len(dead) == 0 {
@@ -70,14 +59,4 @@ func (o *Orchestrator) reconcileCarriedPins(ctx context.Context, cfg *webhooks.C
 		o.LogWarn("forge: webhook %s carried pins naming records deleted mid-provision; cleared: %v", cfg.ID, dead)
 	}
 	return nil
-}
-
-// pinnedRecordIDs lists the record ids a pin map names, deduplicated and
-// sorted: two providers pinning one key cost one re-check.
-func pinnedRecordIDs(pins map[string]string) []string {
-	ids := make([]string, 0, len(pins))
-	for _, id := range pins {
-		ids = append(ids, id)
-	}
-	return dedupSorted(ids)
 }

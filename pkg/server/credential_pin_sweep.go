@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
@@ -215,9 +214,10 @@ func (p landedPins) strip(pins map[string]string) {
 // revoked sweeps immediately. The pair closes the window whatever the
 // interleaving — a write that lands before the sweep's listing is the
 // sweep's to clear; one that lands after names a record revoked before the
-// listing began, which is exactly what the re-check reads. The Gets run
-// under the tenant scope, the same derivation the write-time validators
-// used, so another tenant's record cannot read as missing.
+// listing began, which is exactly what the re-check reads. The re-check is
+// secrets.RecheckPinnedRecords — the judgment the forge migration carry
+// shares — under the tenant scope the write-time validators used, so a
+// record they admitted cannot read as missing.
 //
 // What a route answers when Err is set depends on what a retry can mend.
 // An EDIT answers 5xx: the row holds the edit, the client's retry re-reads
@@ -232,32 +232,20 @@ func (p landedPins) strip(pins map[string]string) {
 func (s *Server) reconcileLandedPins(ctx context.Context, tenantID string, keyPins, secretPins map[string]string) landedPins {
 	var out landedPins
 	var errs []error
-	recheck := func(recordID string, err error, notFound error, what string) {
+	for _, rec := range secrets.RecheckPinnedRecords(ctx, s.apiKeys, s.genericSecrets, tenantID, keyPins, secretPins) {
 		switch {
-		case errors.Is(err, notFound):
-			cleared, sweepErr := s.sweepCredentialPins(ctx, tenantID, recordID)
+		case rec.Revoked:
+			cleared, err := s.sweepCredentialPins(ctx, tenantID, rec.ID)
 			out.Cleared = append(out.Cleared, cleared...)
-			if sweepErr != nil {
-				out.Unreconciled = append(out.Unreconciled, recordID)
-				errs = append(errs, fmt.Errorf("%s %s is revoked, sweeping its pins: %w", what, recordID, sweepErr))
-				return
+			if err != nil {
+				out.Unreconciled = append(out.Unreconciled, rec.ID)
+				errs = append(errs, fmt.Errorf("%s %s is revoked, sweeping its pins: %w", rec.Kind, rec.ID, err))
+				continue
 			}
-			out.Swept = append(out.Swept, recordID)
-		case err != nil:
-			out.Unreconciled = append(out.Unreconciled, recordID)
-			errs = append(errs, fmt.Errorf("%s %s: %w", what, recordID, err))
-		}
-	}
-	if s.apiKeys != nil {
-		for _, keyID := range uniquePinRecords(keyPins) {
-			_, err := s.apiKeys.Get(store.WithTenant(ctx, tenantID), keyID)
-			recheck(keyID, err, secrets.ErrApiKeyNotFound, "api key")
-		}
-	}
-	if s.genericSecrets != nil {
-		for _, secretID := range uniquePinRecords(secretPins) {
-			_, err := s.genericSecrets.Get(store.WithTenant(ctx, tenantID), secretID)
-			recheck(secretID, err, secrets.ErrGenericSecretNotFound, "stored secret")
+			out.Swept = append(out.Swept, rec.ID)
+		case rec.Err != nil:
+			out.Unreconciled = append(out.Unreconciled, rec.ID)
+			errs = append(errs, fmt.Errorf("%s %s: %w", rec.Kind, rec.ID, rec.Err))
 		}
 	}
 	out.Err = errors.Join(errs...)
@@ -272,25 +260,6 @@ func (s *Server) logUnreconciledPins(surface, rowID string, pins landedPins) {
 		return
 	}
 	s.logger.Error("credential pins: %s %s is stored, but re-checking the records its pins name failed (unreconciled: %v): %v — a pin may name a record deleted in flight and stand until it is cleared", surface, rowID, pins.Unreconciled, pins.Err)
-}
-
-// uniquePinRecords dedups the record ids a pin map names, sorted for a
-// stable receipt: two providers pinning one key cost one re-check and one
-// sweep, not two.
-func uniquePinRecords(pins map[string]string) []string {
-	if len(pins) == 0 {
-		return nil
-	}
-	seen := make(map[string]bool, len(pins))
-	ids := make([]string, 0, len(pins))
-	for _, id := range pins {
-		if !seen[id] {
-			seen[id] = true
-			ids = append(ids, id)
-		}
-	}
-	slices.Sort(ids)
-	return ids
 }
 
 // mayClearTenantPinsOrFail reports whether the identity may sweep a tenant's
