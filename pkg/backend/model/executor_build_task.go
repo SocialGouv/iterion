@@ -150,6 +150,21 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 	}
 }
 
+// effectiveCapabilitiesOf is the ONE reading of the capability-inheritance
+// seam: a nil list inherits the workflow's; a DECLARED empty one
+// (`capabilities: []`, #1801) is an explicit no-grant and stays empty.
+//
+// buildTask, the EffectiveToolNames seam and the reserved-namespace grant
+// check (internalMCPToolGrant) all read it here, on the field
+// extractBackendFields produces, so no site can answer a different grant for
+// the same node.
+func effectiveCapabilitiesOf(declared, wfCapabilities []string) []string {
+	if declared == nil {
+		return wfCapabilities
+	}
+	return declared
+}
+
 // resolvePermissionPolicy builds the effective tool-permission policy for
 // a node — the ONE place a Policy is built from DSL and run inputs, which
 // is why every backend's gate (claude_code's PreToolUse hook, claw's
@@ -1360,12 +1375,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		resolvedModel = picked
 	}
 
-	// A nil list inherits the workflow's; a DECLARED empty one
-	// (`capabilities: []`, #1801) is an explicit no-grant and stays empty.
-	effectiveCaps := f.capabilities
-	if effectiveCaps == nil {
-		effectiveCaps = e.wfCapabilities
-	}
+	effectiveCaps := effectiveCapabilitiesOf(f.capabilities, e.wfCapabilities)
 
 	// Resolve node-level image inputs (templated paths) so the codex backend can
 	// forward them as `-i` for image-to-image. Empty/whitespace results (an

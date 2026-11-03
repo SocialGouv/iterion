@@ -641,19 +641,12 @@ func piMCPServers(task Task, logger *iterlog.Logger) []piMCPServerSpec {
 				warn("[%s#%d/%s] board capabilities granted but the iterion CLI binary could not be resolved; board disabled for this node",
 					task.NodeID, task.Iteration, BackendPi)
 			} else {
-				env := map[string]string{"ITERION_BOARD_CAPS": strings.Join(task.Capabilities, ",")}
-				if task.StoreDir != "" {
-					env["ITERION_STORE_DIR"] = task.StoreDir
-				}
-				if task.SourceIssueID != "" {
-					env["ITERION_SOURCE_ISSUE_ID"] = task.SourceIssueID
-				}
 				out = append(out, piMCPServerSpec{
 					Name:      boardMCPServerName,
 					Transport: "stdio",
 					Command:   selfPath,
 					Args:      []string{boardMCPSubcommand},
-					Env:       env,
+					Env:       BoardServerEnv(task),
 				})
 			}
 		default:

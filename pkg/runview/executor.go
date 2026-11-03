@@ -779,9 +779,12 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// the claude_code-FQN alias mcp__iterion_board__*). Without this
 	// the registry is empty for board tools and Resolve correctly
 	// returns "unknown tool" for any board call. We pass all known
-	// board capabilities so every tool registers; per-node access is
-	// gated downstream by the workflow's checkNodeToolAccess (which
-	// reads the node's `capabilities:` list).
+	// board capabilities so every tool registers, and each node is held to
+	// its OWN grant downstream, per tool: model.checkNodeToolAccess reads
+	// the capability ir.HostToolCapabilityInFamily maps the tool to, in the
+	// family that serves it. Iterion's own servers answer to that grant and
+	// not to the node's `mcp:` scope, which bounds the servers the host may
+	// START and can never name an in-process family.
 	if dispatcherStoreDir != "" {
 		ns, err := native.NewStore(dispatcherStoreDir)
 		if err != nil {
@@ -808,8 +811,8 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// Register the native-board WATCH tools so claw nodes that declare
 	// watch.subscribe / watch.unsubscribe can opt their run into the
 	// runtime watch fan-out (MVP3b). All known watch caps are registered;
-	// per-node access is gated downstream by checkNodeToolAccess via the
-	// node's `capabilities:` list, mirroring the board tools. The claw
+	// each node is held to its own watch grant downstream, per tool, by
+	// model.checkNodeToolAccess, mirroring the board tools. The claw
 	// executor is per-run, so spec.RunID binds every subscription to the
 	// correct run. spec.Store is the RunStore (it carries the
 	// AddWatchedIssues/RemoveWatchedIssues mutators); the type-assertion

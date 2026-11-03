@@ -477,9 +477,10 @@ schema commit_output:
 ## claw). Set FEED_WATCH_BACKEND=claw + FEED_WATCH_MODEL=openai/… to run
 ## on the OpenAI family instead (a metered key, or the ChatGPT-forfait
 ## via claw's codex OAuth path). No board capabilities: the digest's
-## sink is the chat webhook, and declaring board.* would require the
-## iterion_board MCP server active on every run (it is not on a cloud
-## runner), failing the node at setup even when unused.
+## sink is the chat webhook, and on the claw route a cloud run's board
+## tools write the runner pod's own store rather than the team board, so
+## a board.* grant would buy a card nobody reads. The grant alone opens
+## them — iterion's own MCP servers sit outside a node's `mcp:` scope.
 ##
 ## The gpt_forfait fallback keeps the digest deliverable when the
 ## Anthropic subscription window (or iterion's own usage cap on it) is

@@ -136,25 +136,88 @@ func (c *compiler) warnHostToolCap(nodeID, kind, toolName, surface string, caps 
 		kind, nodeID, surface, toolName, cap, cap, owner)
 }
 
+// hostToolFamilies maps each family of iterion's reserved MCP namespace — the
+// segment after `iterion_` in the server name — to the capability gating each
+// of ITS tools. One table, two readings: C328 looks a bare `tools:` entry up
+// across every family (an entry carries no server name), and the runtime looks
+// a qualified name up in the family that SERVES it
+// (HostToolCapabilityInFamily), so no family's capability can open another
+// family's tool.
+var hostToolFamilies = map[string]map[string]string{
+	"board": boardcaps.ToolCapability,
+	"watch": {
+		"subscribe":   CapWatchSubscribe,
+		"unsubscribe": CapWatchUnsubscribe,
+	},
+	"runs": {
+		"run_events": runops.CapRunsRead,
+		"run_get":    runops.CapRunsRead,
+		"runs_list":  runops.CapRunsRead,
+	},
+}
+
+// hostToolLeafCapability is hostToolFamilies flattened on the leaf name. The
+// flattening cannot pick a side: the families' leaf names are disjoint, which
+// TestTheHostToolFamiliesKeepDisjointLeafNames pins — a leaf two families
+// share makes a bare `tools:` entry genuinely ambiguous, which must be seen
+// rather than settled by map order.
+var hostToolLeafCapability = flattenHostToolFamilies()
+
+func flattenHostToolFamilies() map[string]string {
+	flat := make(map[string]string)
+	for _, leaves := range hostToolFamilies {
+		for leaf, capability := range leaves {
+			flat[leaf] = capability
+		}
+	}
+	return flat
+}
+
 // HostToolCapability maps a host tool reference — in any of the spellings the
 // runtimes accept in a `tools:` list (bare shorthand,
 // `mcp.iterion_<family>.<tool>`, `mcp__iterion_<family>__<tool>`) — to the
 // capability that opens it. The bool is false for a name that is no host
 // tool. Wildcards are not a name: expandHostToolEntry fans them out first.
+//
+// Family-BLIND by contract: a `tools:` entry may be a bare shorthand, so the
+// server is not knowable here. A caller that KNOWS the server — the runtime
+// resolving a qualified name against a registry — owes
+// HostToolCapabilityInFamily instead.
 func HostToolCapability(name string) (string, bool) {
-	bare := hostToolBareName(name)
-	if cap, ok := boardcaps.ToolCapability[bare]; ok {
-		return cap, true
+	capability, ok := hostToolLeafCapability[hostToolBareName(name)]
+	return capability, ok
+}
+
+// HostToolCapabilityInFamily is HostToolCapability for a tool whose SERVER is
+// known: the leaf must be one of that family's own tools. The namespace is
+// reserved as a whole (permission.IsReservedMCPServerName answers for the
+// entire `iterion*` prefix), so without the family the leaf-keyed reading
+// hands a fourth family's `get_issue` to a node holding board.read. Any
+// separator spelling of the server name is read (`iterion_board`,
+// `Iterion.Board`, `iterion__board`); false for a server outside the reserved
+// namespace and for a family no capability table describes.
+func HostToolCapabilityInFamily(server, name string) (string, bool) {
+	leaves, ok := hostToolFamilies[hostToolFamilyOf(server)]
+	if !ok {
+		return "", false
 	}
-	switch bare {
-	case "subscribe":
-		return CapWatchSubscribe, true
-	case "unsubscribe":
-		return CapWatchUnsubscribe, true
-	case "run_events", "run_get", "runs_list":
-		return runops.CapRunsRead, true
+	capability, ok := leaves[hostToolBareName(name)]
+	return capability, ok
+}
+
+// hostToolFamilyOf reads the family segment out of an MCP server name, "" for
+// a name outside iterion's reserved namespace.
+func hostToolFamilyOf(server string) string {
+	n := strings.ToLower(strings.TrimSpace(server))
+	n = strings.ReplaceAll(n, ".", "_")
+	for strings.Contains(n, "__") {
+		n = strings.ReplaceAll(n, "__", "_")
 	}
-	return "", false
+	family, found := strings.CutPrefix(n, "iterion_")
+	if !found {
+		return ""
+	}
+	return family
 }
 
 // hostToolBareName strips the MCP server qualification from a tools: entry.
@@ -181,10 +244,11 @@ func hostToolBareName(name string) string {
 
 // expandHostToolEntry fans a tools: entry out to the host tool names it
 // covers: a family wildcard (`mcp.iterion_board.*`, `mcp__iterion_board__*`)
-// expands to the whole family, anything else is itself. The family name
-// lists are the same literals HostToolCapability maps — the conformance test
-// in this package (TestC328_HostToolNamesMatchTheShorthandCatalog) pins both to
-// toolcatalog's shorthand set, itself pinned to the live registry.
+// expands to the whole family, anything else is itself. The family's tool
+// names are READ from hostToolFamilies, the same table HostToolCapability
+// answers from — the conformance test in this package
+// (TestC328_HostToolNamesMatchTheShorthandCatalog) pins it to toolcatalog's
+// shorthand set, itself pinned to the live registry.
 func expandHostToolEntry(entry string) []string {
 	entry = strings.TrimSpace(entry)
 	if !strings.HasSuffix(entry, "*") {
@@ -198,18 +262,13 @@ func expandHostToolEntry(entry string) []string {
 			break
 		}
 	}
-	var out []string
-	switch family {
-	case "board":
-		for name := range boardcaps.ToolCapability {
-			out = append(out, name)
-		}
-	case "watch":
-		out = []string{"subscribe", "unsubscribe"}
-	case "runs":
-		out = []string{"run_events", "run_get", "runs_list"}
-	default:
+	leaves, ok := hostToolFamilies[family]
+	if !ok {
 		return []string{entry}
+	}
+	out := make([]string, 0, len(leaves))
+	for name := range leaves {
+		out = append(out, name)
 	}
 	sort.Strings(out)
 	return out
