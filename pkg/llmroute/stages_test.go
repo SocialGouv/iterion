@@ -2,6 +2,7 @@ package llmroute
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -15,6 +16,7 @@ func TestDefaultPairOrderCoversEverySealableSlot(t *testing.T) {
 		CredClaudeForfait: true, CredChatGPTForfait: true,
 		"anthropic_key": true, "openai_key": true, "zai_key": true, "moonshot_key": true,
 		"bedrock_key": true, "vertex_key": true, "azure_key": true, "openrouter_key": true, "xai_key": true,
+		"openai_compatible_key": true,
 	}
 	listed := map[string]bool{}
 	for _, pair := range DefaultPairOrder {
@@ -160,6 +162,27 @@ func TestStageModelPairKeyed(t *testing.T) {
 		t.Fatalf("class-unresolved = %q, %v — want the named class+family reason", reason, ok)
 	}
 	_ = empty
+}
+
+// The gateway pair is a seal-whitelist entry and never a ladder rung: the
+// order lists it so the whitelist can seal the gateway slot, and
+// StageModel has no case for it, so a stage naming it drops on every
+// node, whatever the node's model — the gateway's own spelling and a
+// vendor's alike. The absence of that case IS the guarantee.
+func TestStageModelNeverMapsTheGatewayPair(t *testing.T) {
+	gateway := Pair(HarnessClaw, "openai_compatible_key")
+	if !slices.Contains(DefaultPairOrder, gateway) || !SlotSealable(DefaultPairOrder, "openai_compatible_key") {
+		t.Fatalf("%s is not in DefaultPairOrder — the whitelist would never seal the gateway slot", gateway)
+	}
+	for _, nodeModel := range []string{
+		"openai_compatible/scaleway/glm-5.3", "openai_compatible/glm-5.3",
+		"claude-opus-5-5", "anthropic/claude-opus-5-5", "openai/gpt-6-mini", "gpt-6-sol",
+	} {
+		got, ok, reason := StageModel(HarnessClaw, "openai_compatible_key", nodeModel, ResolveClasses(nil))
+		if ok || reason != ReasonNoMapping {
+			t.Errorf("StageModel(%s, %s) = %q, %v, %q — want a drop with %q: the gateway pair is never a rung", gateway, nodeModel, got, ok, reason, ReasonNoMapping)
+		}
+	}
 }
 
 // SlotSealable is the whitelist's granularity: a slot is sealable when ANY

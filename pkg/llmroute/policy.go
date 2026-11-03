@@ -139,6 +139,12 @@ var DefaultPairOrder = []string{
 	Pair(HarnessClaw, "azure_key"),
 	Pair(HarnessClaw, "openrouter_key"),
 	Pair(HarnessClaw, "xai_key"),
+	// The gateway slot closes the list: a seal-whitelist entry, never a
+	// ladder rung. StageModel has no case for it, so every stage naming it
+	// drops (a gateway route is the node's own spec, never a crossing's
+	// target) and its place orders no rung. Last keeps every other pair at
+	// its index: an order frozen without the entry is this list's prefix.
+	Pair(HarnessClaw, "openai_compatible_key"),
 }
 
 // Override is one per-node routing pin: the node selector (an exact node id,
@@ -338,13 +344,15 @@ func ValidEffort(e string) bool {
 	return false
 }
 
-// The provider names an override hint or a providers allowlist may speak.
-// The <provider>_key slots' wire identifiers (validKeyProvider) plus the
-// gateway, whose credential the runner's environment funds.
+// ProviderOpenAICompatible is the gateway's provider name: the wire
+// identifier of its key slot (openai_compatible_key), a provider an
+// override hint or a providers allowlist may speak, and the routing prefix
+// of a gateway model spec (`openai_compatible/<id>`, read by modelFamily).
 const ProviderOpenAICompatible = "openai_compatible"
 
 // ProviderHints is the closed provider vocabulary of an override's provider
-// chain and of the providers allowlist.
+// chain and of the providers allowlist: the <provider>_key slots' wire
+// identifiers (validKeyProvider), the gateway's included.
 var ProviderHints = append(append([]string(nil), "anthropic", "openai", "bedrock", "vertex", "azure", "openrouter", "xai", "zai", "moonshot"), ProviderOpenAICompatible)
 
 // ValidProviderHint reports whether p belongs to the provider vocabulary.
@@ -418,7 +426,7 @@ func validCredential(c string) bool {
 // agree.
 func validKeyProvider(p string) bool {
 	switch p {
-	case "anthropic", "openai", "bedrock", "vertex", "azure", "openrouter", "xai", "zai", "moonshot":
+	case "anthropic", "openai", "bedrock", "vertex", "azure", "openrouter", "xai", "zai", "moonshot", ProviderOpenAICompatible:
 		return true
 	}
 	return false

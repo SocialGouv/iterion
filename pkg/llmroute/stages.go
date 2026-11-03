@@ -52,7 +52,10 @@ import (
 //     facade); openai_key serves openai-family ids (`openai/` + the bare
 //     id) and crosses a foreign model to `openai/` + the class's openai
 //     rendering; moonshot_key and the remaining key providers have no
-//     mapping.
+//     mapping. openai_compatible_key has none by design: the gateway pair
+//     is in the order for the seal whitelist alone, a gateway route is the
+//     node's own spec and never a crossing's target, and a case here
+//     would make the pair a ladder rung.
 func StageModel(harness, credential, nodeModel string, classes ClassTable) (model string, ok bool, reason string) {
 	if classes.forward == nil {
 		classes = ResolveClasses(nil)

@@ -463,6 +463,19 @@ func TestProviderOfSlot_TotalOverThePairVocabulary(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParsePair(%q): %v", pair, err)
 		}
+		// The one named exception: the gateway slot is in the pair order
+		// for the seal whitelist while the walk vocabulary
+		// (allKnownProviders) does not name its provider, so no tier seals
+		// a gateway key and no allowlist has a gateway pair to drop. The
+		// exception lasts exactly as long as that state: once the walk
+		// names the provider, providerOfSlot maps the slot and this guard
+		// reds until the exception goes and the check below covers it.
+		if c == slotOfProvider(secrets.ProviderOpenAICompatible) {
+			if got := providerOfSlot(c); got != "" {
+				t.Errorf("providerOfSlot(%q) = %q — the walk vocabulary names the gateway: drop this exception so the totality check covers the slot", c, got)
+			}
+			continue
+		}
 		if providerOfSlot(c) == "" {
 			t.Errorf("providerOfSlot(%q) = \"\" — map the slot or name the exception; under an allowlist its pairs are dropped from ladder, door and seal in silence", c)
 		}
