@@ -28,6 +28,11 @@ import (
 //  3. the event is DECLARED — the package's triggers.yaml carries the
 //     vendor's event name, or the delivery is filtered with the package's own
 //     answer;
+//  2b. the connection is LIVE — a revoked or needs-reauth connection vouches
+//     for nothing (the same refusal the action/agent chokepoint applies);
+//  3b. the webhook's own narrowings still apply — event allowlist, project
+//     and author allowlists, the hold-label veto (this is an auto-launch
+//     lane);
 //  4. only then does the delivery dispatch, through the same tail every
 //     webhook lane shares (idempotency, quota, delivery record).
 //
@@ -54,6 +59,10 @@ type forgejoIssueComment struct {
 	Action string `json:"action"`
 	Issue  struct {
 		Number int64 `json:"number"`
+		// Labels carry the issue's label set for the hold-label veto.
+		Labels []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
 	} `json:"issue"`
 	Comment struct {
 		ID int64 `json:"id"`
@@ -65,6 +74,19 @@ type forgejoIssueComment struct {
 	Sender struct {
 		Login string `json:"login"`
 	} `json:"sender"`
+}
+
+// LabelNames flattens the issue's labels to their names, the shape the
+// hold-label veto reads.
+func (p forgejoIssueComment) LabelNames() []string {
+	if len(p.Issue.Labels) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(p.Issue.Labels))
+	for _, l := range p.Issue.Labels {
+		out = append(out, l.Name)
+	}
+	return out
 }
 
 // handleConnectorDelivery runs the connector lane for a delivery whose
@@ -112,6 +134,16 @@ func (s *Server) handleConnectorDelivery(ctx context.Context, w http.ResponseWri
 		filter(capErr.Error())
 		return
 	}
+	// A REVOKED (or otherwise unusable) connection vouches for nothing: the
+	// trigger grant rides on the record being live, exactly as the action/agent
+	// chokepoint refuses a non-usable connection (resolve.go). Revocation is
+	// the incident-response tool — a lane that never reads Status leaves it
+	// inoperant for inbound deliveries.
+	if !conn.Status.Usable() {
+		filter(fmt.Sprintf("the bound connection %q (%s) is %s — a revoked or reauth-pending connection vouches for no delivery; reconnect or re-bind",
+			conn.Alias, conn.ID, conn.Status))
+		return
+	}
 
 	// 3. The event is declared by the PACKAGE, not by an engine switch: a
 	// connector's second event costs a triggers.yaml line, not a code change.
@@ -156,6 +188,25 @@ func (s *Server) handleConnectorDelivery(ctx context.Context, w http.ResponseWri
 	if pl.Comment.ID != 0 {
 		meta.SubjectID = fmt.Sprintf("comment:%d", pl.Comment.ID)
 		meta.ParentSubjectID = fmt.Sprintf("issue:%d", pl.Issue.Number)
+	}
+
+	// The operator's narrowings, exactly as the legacy lanes apply them: the
+	// project allowlist (an org-level hook otherwise fires the bot on every
+	// repo of the org) and the author allowlist (the delivery's sender is the
+	// author of a comment event).
+	if !webhooks.MatchProject(cfg.ProjectAllowlist, pl.Repository.FullName) {
+		filter(fmt.Sprintf("project %q is outside this webhook's project allowlist", pl.Repository.FullName))
+		return
+	}
+	if !webhooks.MatchAuthor(cfg.AuthorAllowlist, pl.Sender.Login) {
+		filter(fmt.Sprintf("author %q is outside this webhook's author allowlist", pl.Sender.Login))
+		return
+	}
+	// The hold-label veto: this is an AUTO-launch lane (a vendor event, not a
+	// human command), so it honors the bot-agnostic pause like every other
+	// auto-launch lane (webhooks_common.go).
+	if s.suppressedByHoldLabel(ctx, w, cfg, meta, pl.LabelNames(), payloadHash, srcIP) {
+		return
 	}
 
 	botID := cfg.SelectBot()
@@ -217,6 +268,10 @@ func (s *Server) validateConnectorBinding(ctx context.Context, teamID string, pr
 	if !conn.Has(connection.CapTrigger) {
 		return fmt.Errorf("connection %q (%s) holds no `trigger` grant — an operator grants it deliberately (`iterion connections add --capabilities …,trigger`), which is what decides this vendor's events may be believed on its word",
 			connID, conn.Alias)
+	}
+	if !conn.Status.Usable() {
+		return fmt.Errorf("connection %q (%s) is %s — a revoked or reauth-pending connection vouches for no delivery; reconnect it first, then bind",
+			connID, conn.Alias, conn.Status)
 	}
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/connection"
+	"github.com/SocialGouv/iterion/pkg/connector/spec"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
@@ -180,6 +181,84 @@ func TestConnectorWebhook_TheBindingIsTenantScoped(t *testing.T) {
 	}
 }
 
+// A REVOKED connection vouches for no delivery (the HIGH of review r1): the
+// trigger grant rides on a LIVE record, as at the action/agent chokepoint.
+func TestConnectorWebhook_ARevokedConnectionVouchesForNothing(t *testing.T) {
+	s, cfg, pt := connectorBoundServer(t, []connection.Capability{connection.CapTrigger})
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		t.Fatal("a revoked connection must never dispatch")
+		return "", nil
+	}
+	conn, err := s.connectionStore.Get(context.Background(), "t1", "conn-fj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Status = connection.StatusRevoked
+	if err := s.connectionStore.Update(context.Background(), conn); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	s.handleForgejoWebhook(w, fjReq(gitlabCtx(cfg), fjComment, "X-Forgejo-Event", prforge.EventHeaderIssueComment, pt, "X-Forgejo-Signature"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	if body := w.Body.String(); !strings.Contains(body, "filtered") || !strings.Contains(body, "revoked") {
+		t.Fatalf("the refusal must name the revoked connection, got: %s", body)
+	}
+}
+
+// The project allowlist binds an org-level hook to the repos the operator
+// listed (r1 MEDIUM).
+func TestConnectorWebhook_TheProjectAllowlistStillNarrows(t *testing.T) {
+	s, cfg, pt := connectorBoundServer(t, []connection.Capability{connection.CapTrigger})
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		t.Fatal("a repo outside the project allowlist must never launch")
+		return "", nil
+	}
+	cfg.ProjectAllowlist = []string{"acme/other"}
+
+	w := httptest.NewRecorder()
+	s.handleForgejoWebhook(w, fjReq(gitlabCtx(cfg), fjComment, "X-Forgejo-Event", prforge.EventHeaderIssueComment, pt, "X-Forgejo-Signature"))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "project allowlist") {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// The author allowlist reads the delivery's sender, like the legacy lanes
+// (r1 MEDIUM).
+func TestConnectorWebhook_TheAuthorAllowlistStillNarrows(t *testing.T) {
+	s, cfg, pt := connectorBoundServer(t, []connection.Capability{connection.CapTrigger})
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		t.Fatal("an author outside the allowlist must never launch")
+		return "", nil
+	}
+	cfg.AuthorAllowlist = []string{"bob"}
+
+	w := httptest.NewRecorder()
+	s.handleForgejoWebhook(w, fjReq(gitlabCtx(cfg), fjComment, "X-Forgejo-Event", prforge.EventHeaderIssueComment, pt, "X-Forgejo-Signature"))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "author allowlist") {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// The hold-label veto pauses this auto-launch lane like every other (r1 LOW).
+func TestConnectorWebhook_AHoldLabelSuppressesTheLaunch(t *testing.T) {
+	s, cfg, pt := connectorBoundServer(t, []connection.Capability{connection.CapTrigger})
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		t.Fatal("a held subject must never launch")
+		return "", nil
+	}
+	cfg.HoldLabels = []string{"pause"}
+	body := strings.Replace(fjComment, `"issue": {"number": 7}`, `"issue": {"number": 7, "labels": [{"name": "pause"}]}`, 1)
+
+	w := httptest.NewRecorder()
+	s.handleForgejoWebhook(w, fjReq(gitlabCtx(cfg), body, "X-Forgejo-Event", prforge.EventHeaderIssueComment, pt, "X-Forgejo-Signature"))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "filtered") {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 // The CRUD half: the binding is validated when it is WRITTEN, not discovered
 // per delivery.
 func TestWebhookCRUD_ConnectorBindingIsValidatedAtWrite(t *testing.T) {
@@ -230,5 +309,115 @@ func TestWebhookCRUD_ConnectorBindingIsValidatedAtWrite(t *testing.T) {
 	}
 	if stored.ConnectorConnectionID != "" {
 		t.Fatalf("the clear did not land: %q", stored.ConnectorConnectionID)
+	}
+}
+
+// M4: a connection WITHOUT the trigger grant cannot be bound — the refusal
+// happens at write, with the fix named.
+func TestWebhookCRUD_BindingWithoutTheTriggerGrantIsRefused(t *testing.T) {
+	s, _, _ := connectorBoundServer(t, []connection.Capability{connection.CapAction})
+	ctx := superAdminCtx()
+
+	w := httptest.NewRecorder()
+	s.handleCreateWebhook(w, whReq(ctx, "POST", "/api/teams/t1/webhooks",
+		`{"name":"fj-nogrant","provider":"forgejo","bot_ids":["review-pr"],"connector_connection_id":"conn-fj"}`, "t1", ""))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "trigger") {
+		t.Fatalf("the refusal must name the missing grant, got: %s", w.Body.String())
+	}
+}
+
+// The HIGH's write half: a REVOKED connection cannot be bound either.
+func TestWebhookCRUD_BindingARevokedConnectionIsRefused(t *testing.T) {
+	s, _, _ := connectorBoundServer(t, []connection.Capability{connection.CapTrigger})
+	conn, err := s.connectionStore.Get(context.Background(), "t1", "conn-fj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Status = connection.StatusRevoked
+	if err := s.connectionStore.Update(context.Background(), conn); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	s.handleCreateWebhook(w, whReq(superAdminCtx(), "POST", "/api/teams/t1/webhooks",
+		`{"name":"fj-revoked","provider":"forgejo","bot_ids":["review-pr"],"connector_connection_id":"conn-fj"}`, "t1", ""))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "revoked") {
+		t.Fatalf("the refusal must name the status, got: %s", w.Body.String())
+	}
+}
+
+// M5: an INVALID binding on PATCH is refused and the stored binding stands.
+func TestWebhookCRUD_APatchWithAnInvalidBindingIsRefused(t *testing.T) {
+	s, _, _ := connectorBoundServer(t, []connection.Capability{connection.CapTrigger})
+	ctx := superAdminCtx()
+
+	w := httptest.NewRecorder()
+	s.handleCreateWebhook(w, whReq(ctx, "POST", "/api/teams/t1/webhooks",
+		`{"name":"fj-conn","provider":"forgejo","bot_ids":["review-pr"],"connector_connection_id":"conn-fj"}`, "t1", ""))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var created webhookWithToken
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	w = httptest.NewRecorder()
+	s.handleUpdateWebhook(w, whReq(ctx, "PATCH", "/api/teams/t1/webhooks/"+created.Config.ID,
+		`{"connector_connection_id":"nope"}`, "t1", created.Config.ID))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("patch with an unknown connection: code=%d body=%s", w.Code, w.Body.String())
+	}
+	stored, err := s.webhookConfigs.Get(context.Background(), created.Config.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.ConnectorConnectionID != "conn-fj" {
+		t.Fatalf("the refused patch must not move the stored binding, got %q", stored.ConnectorConnectionID)
+	}
+}
+
+// M6: a connection flipped to ANOTHER connector after the binding stops
+// vouching for this webhook's deliveries — the write-time validation is
+// re-checked at read, because the record may have changed since.
+func TestConnectorWebhook_AFlippedConnectorStopsVouching(t *testing.T) {
+	s, cfg, pt := connectorBoundServer(t, []connection.Capability{connection.CapTrigger})
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		t.Fatal("a connection flipped to another connector must never dispatch")
+		return "", nil
+	}
+	// A catalog serving BOTH connectors, each declaring the delivered event:
+	// without the connector match, the flipped connection's own package would
+	// happily vouch for the delivery — which is the confusion the match
+	// refuses. (The baked catalog holding only forgejo would catch the flip
+	// one arm later, and the match would go unpinned.)
+	s.connectorCatalog = connection.NewMemoryCatalog(
+		&spec.Package{Connector: spec.Connector{ID: "forgejo"},
+			Triggers: []spec.Trigger{{ID: "forgejo.issue.commented", Event: "issue_comment"}}},
+		&spec.Package{Connector: spec.Connector{ID: "gitlab"},
+			Triggers: []spec.Trigger{{ID: "gitlab.note.commented", Event: "issue_comment"}}},
+	)
+	conn, err := s.connectionStore.Get(context.Background(), "t1", "conn-fj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Connector = "gitlab"
+	if err := s.connectionStore.Update(context.Background(), conn); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	s.handleForgejoWebhook(w, fjReq(gitlabCtx(cfg), fjComment, "X-Forgejo-Event", prforge.EventHeaderIssueComment, pt, "X-Forgejo-Signature"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	if body := w.Body.String(); !strings.Contains(body, "filtered") || !strings.Contains(body, "gitlab") {
+		t.Fatalf("the refusal must name the connector mismatch, got: %s", body)
 	}
 }
