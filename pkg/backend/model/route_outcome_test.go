@@ -148,3 +148,89 @@ func TestSkip_ADegradedAttemptIsTheSpender(t *testing.T) {
 		t.Errorf("skip labelled %s/%s fp=%q tokens=%d, want claude_code/claude-opus-4-5 fp=anthropic-oauth tokens=4000", di.BackendName, di.RouteModel, di.Fingerprint, di.Tokens)
 	}
 }
+
+// Every outcome names the provider of the route it names — the last element
+// a failure or a cancel names, the spender a skip books on — the word the
+// runner's credential-plan join reads first (#2288). The codex primary here
+// runs a bare `gpt-*` id under `provider: openai`, which a join re-deriving
+// from the model names nothing for: a wordless failure or skip counts a plan
+// miss and voids the run's fine table, on every failed delegation that
+// spent. Red when a failure, cancel or skip exit drops the word, or takes
+// another element's.
+func TestChainOutcome_namesTheProviderOfTheRouteItBooksOn(t *testing.T) {
+	t.Parallel()
+	build := func(e *ClawExecutor) elementBuilder {
+		return e.newElementBuilder("review", delegate.BackendCodex, nil,
+			func(_ context.Context, bn string) (*delegate.Task, error) {
+				if bn == delegate.BackendClaw {
+					return &delegate.Task{NodeID: "review", Model: "anthropic/claude-opus-5"}, nil
+				}
+				return &delegate.Task{NodeID: "review", Model: "gpt-5.5"}, nil
+			})
+	}
+	primary := chainElement{Label: "primary", Provider: "openai"}
+	rescue := chainElement{Label: "api", Backend: delegate.BackendClaw, Model: "anthropic/claude-opus-5"}
+
+	failures := []struct {
+		name  string
+		chain []chainElement
+		want  string
+	}{
+		{"a single failed element", []chainElement{primary}, "openai"},
+		{"an exhausted chain names its last element", []chainElement{primary, rescue}, "anthropic"},
+	}
+	for _, tc := range failures {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := delegate.NewRegistry()
+			reg.Register(delegate.BackendCodex, &backendScriptedBackend{name: delegate.BackendCodex, fail: &delegate.ErrTransient{Reason: "boom"}, tokens: 10})
+			reg.Register(delegate.BackendClaw, &backendScriptedBackend{name: delegate.BackendClaw, fail: &delegate.ErrTransient{Reason: "boom2"}, tokens: 30})
+			var failed []DelegateInfo
+			e := newFallbackExecutor(reg, EventHooks{OnDelegateError: func(_ string, di DelegateInfo) { failed = append(failed, di) }})
+			if _, err := e.dispatchWithObservability(context.Background(), "review", delegate.BackendCodex, "model: node", tc.chain, "gpt-5.5", build(e), nil); err == nil {
+				t.Fatal("want an error")
+			}
+			if len(failed) != 1 || failed[0].Provider != tc.want {
+				t.Fatalf("delegate_error = %+v, want one naming provider %q", failed, tc.want)
+			}
+		})
+	}
+
+	t.Run("a cancel names the route it abandoned", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		reg := delegate.NewRegistry()
+		reg.Register(delegate.BackendCodex, &cancellingBackend{cancel: cancel})
+		var failed []DelegateInfo
+		e := newFallbackExecutor(reg, EventHooks{OnDelegateError: func(_ string, di DelegateInfo) { failed = append(failed, di) }})
+		if _, err := e.dispatchWithObservability(ctx, "review", delegate.BackendCodex, "model: node", []chainElement{primary, rescue}, "gpt-5.5", build(e), nil); err == nil {
+			t.Fatal("want an error")
+		}
+		if len(failed) != 1 || failed[0].Provider != "openai" {
+			t.Fatalf("delegate_error = %+v, want one naming provider openai", failed)
+		}
+	})
+
+	t.Run("a skip names its spender", func(t *testing.T) {
+		wall := func() error {
+			return &delegate.ErrRateLimited{Provider: "x", Kind: delegate.RateLimitKindUsageWindow, ResetAt: time.Now().Add(time.Hour)}
+		}
+		reg := delegate.NewRegistry()
+		reg.Register(delegate.BackendCodex, &sequencedBackend{seq: []scriptedCall{{res: delegate.Result{BackendName: delegate.BackendCodex, Tokens: 4000, CostUSD: 0.4}, err: wall()}}})
+		reg.Register(delegate.BackendClaw, &sequencedBackend{seq: []scriptedCall{{res: delegate.Result{BackendName: delegate.BackendClaw}, err: wall()}}})
+		var finished []DelegateInfo
+		e := newFallbackExecutor(reg, EventHooks{OnDelegateFinished: func(_ string, di DelegateInfo) { finished = append(finished, di) }})
+		uw := []delegate.FallbackCategory{delegate.FallbackUsageWindow}
+		guarded := rescue
+		guarded.On = uw
+		chain := []chainElement{primary, guarded, {Label: "give_up", Skip: true, On: uw}}
+		out, err := e.dispatchWithObservability(context.Background(), "review", delegate.BackendCodex, "model: node", chain, "gpt-5.5", build(e), nil)
+		if err != nil || !out.Skipped || len(finished) != 1 {
+			t.Fatalf("err=%v skipped=%v finished=%d, want one skip outcome", err, out.Skipped, len(finished))
+		}
+		// The rescue executed after the spender but spent nothing: the skip
+		// books on the codex primary, under ITS word — never the last
+		// element's, never none.
+		if di := finished[0]; di.RouteModel != "gpt-5.5" || di.Provider != "openai" {
+			t.Fatalf("skip labelled route %q provider %q, want gpt-5.5 / openai — the spender's route and word", di.RouteModel, di.Provider)
+		}
+	})
+}

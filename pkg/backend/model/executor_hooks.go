@@ -43,13 +43,17 @@ type DelegateInfo struct {
 	// called, OpenRouter's "anthropic/claude-sonnet-4.5" included. Empty
 	// when no element ran.
 	RouteModel string
-	// Provider is the provider of the route that SERVED — the serving chain
+	// Provider is the provider of the route RouteModel names — the chain
 	// element's resolved hint, or the spec prefix's pin on claw (zai for
-	// `anthropic/glm-*`). The selected route is provider AND model bound
-	// together (#2772): published here, on the delegate_finished event and
-	// on NodesServed, so the run's record names whose endpoint answered and
-	// never just the label it answered under. Empty when the route deferred
-	// to the wire's default precedence.
+	// `anthropic/glm-*`): the element that served, and on a skip, a failure
+	// or a schema re-ask the same element RouteModel names. The selected
+	// route is provider AND model bound together (#2772): published here,
+	// on the delegate_finished / delegate_error events and on NodesServed,
+	// so the run's record names whose endpoint answered (or was attempted)
+	// and never just the label it answered under — and the runner's
+	// credential-plan join reads it before any re-derivation from the model
+	// (#2288). Empty when the route deferred to the wire's default
+	// precedence.
 	Provider string
 	// ContextWindow is the effective model's context window in tokens.
 	// Zero when unknown.

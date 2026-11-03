@@ -665,3 +665,64 @@ func TestSchemaReask_TransportRetryInsideTheReaskCarriesTheMarker(t *testing.T) 
 		t.Fatalf("fixture produced no mid-re-ask transport retry: %+v", obs.retries)
 	}
 }
+
+// The re-ask runs on the element that served the first answer, and its own
+// delegate_finished / delegate_error name that element's provider the way
+// the first answer's event does — the word the runner's credential-plan join
+// reads first (#2288). A codex route under `provider: openai` serves a bare
+// `gpt-*` id, which a join re-deriving from the model names nothing for: a
+// wordless re-ask counts a plan miss and voids the run's fine table on every
+// schema re-ask. Red when emitReaskOutcome stops stamping the word, on
+// either outcome.
+func TestSchemaReask_namesTheServingProviderOnItsOwnEvents(t *testing.T) {
+	t.Parallel()
+	judge := &ir.JudgeNode{
+		BaseNode:     ir.BaseNode{ID: "judge"},
+		LLMFields:    ir.LLMFields{Backend: delegate.BackendCodex, Provider: "openai", Model: "gpt-5.5", UserPrompt: "ask"},
+		SchemaFields: ir.SchemaFields{OutputSchema: "verdict_schema"},
+	}
+	run := func(t *testing.T, backend delegate.Backend) *reaskObserver {
+		t.Helper()
+		reg := delegate.NewRegistry()
+		reg.Register(delegate.BackendCodex, backend)
+		obs := &reaskObserver{}
+		exec := NewClawExecutor(NewRegistry(), verdictWorkflow(),
+			WithBackendRegistry(reg),
+			WithEventHooks(obs.hooks()),
+			WithRetryPolicy(RetryPolicy{MaxAttempts: 1, BackoffBase: time.Millisecond}),
+		)
+		_, _ = exec.executeBackend(context.Background(), judge, map[string]any{})
+		return obs
+	}
+	// The first answer's own event names the serving element's word — the
+	// premise, and the value the re-ask must repeat.
+	servingWord := func(t *testing.T, obs *reaskObserver) string {
+		t.Helper()
+		first := withAttempt(obs.finished, 0)
+		if len(first) != 1 || first[0].Provider != "openai" {
+			t.Fatalf("the first answer's delegate_finished = %+v, want one naming provider openai — the premise broke", first)
+		}
+		return first[0].Provider
+	}
+
+	t.Run("the re-ask answers", func(t *testing.T) {
+		obs := run(t, &capturingBackend{results: []delegate.Result{
+			{Output: map[string]any{"verdict": true}, SessionID: "sess-1", BackendName: delegate.BackendCodex, Tokens: 10},
+			{Output: map[string]any{"verdict": true, "reason": "because"}, SessionID: "sess-1", BackendName: delegate.BackendCodex, Tokens: 5},
+		}})
+		want := servingWord(t, obs)
+		if f := withAttempt(obs.finished, 2); len(f) != 1 || f[0].Provider != want {
+			t.Fatalf("the re-ask's delegate_finished = %+v, want one naming the serving provider %q", f, want)
+		}
+	})
+	t.Run("the re-ask fails", func(t *testing.T) {
+		obs := run(t, &stubBackend{
+			results: []delegate.Result{{Output: map[string]any{"verdict": true}, SessionID: "sess-1", BackendName: delegate.BackendCodex, Tokens: 10}},
+			errors:  []error{nil, &delegate.ErrTransient{Reason: "boom"}},
+		})
+		want := servingWord(t, obs)
+		if f := withAttempt(obs.failed, 2); len(f) != 1 || f[0].Provider != want {
+			t.Fatalf("the re-ask's delegate_error = %+v, want one naming the serving provider %q", f, want)
+		}
+	})
+}
