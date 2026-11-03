@@ -76,11 +76,18 @@ func TestOpenCodeSessionArgv(t *testing.T) {
 // that word as its value — `--fork run` loses the subcommand and the real CLI
 // prints its help with exit status 1.
 //
+// The subcommand's POSITION is free, which is what the 1.x line measured:
+// flags parse before it and after it alike. The hatch emits them first
+// because that is the order the 1.x line was wired with; the dialect that
+// actually breaks here is the DIAL — 1.x spells it `--variant <effort>` and
+// has no syntax for 2.x's `-m provider/model#variant`.
+//
 // The answer is the whole conversation the CLI holds for the session, one
 // turn per prompt, so a caller can tell a rehydrated session from a fresh one.
-// Anything after `run` fails the call, which is what makes this fake refuse
-// the 2.x argv: under the hatch iterion keeps the subcommand last.
-func fakeOpenCodeSessions(t *testing.T) (bin, store string) {
+//
+// argv is recorded one line per invocation, so a test can assert what the CLI
+// actually received rather than what buildArgs returned.
+func fakeOpenCodeSessions(t *testing.T) (bin, store, argvLog string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake CLI is POSIX-only")
@@ -90,16 +97,14 @@ func fakeOpenCodeSessions(t *testing.T) (bin, store string) {
 	if err := os.Mkdir(store, 0o750); err != nil {
 		t.Fatal(err)
 	}
+	argvLog = filepath.Join(dir, "argv")
 	script := `#!/bin/sh
 store='` + store + `'
+printf '%s\n' "$*" >> '` + argvLog + `'
 session=''
 fork=0
 ran=0
 while [ $# -gt 0 ]; do
-	if [ "$ran" = 1 ]; then
-		echo "argv continues after run: $*" >&2
-		exit 2
-	fi
 	case "$1" in
 	--session) session="$2"; shift 2 ;;
 	--fork=true) fork=1; shift ;;
@@ -146,7 +151,7 @@ printf '{"type":"step_finish","sessionID":"%s","part":{"tokens":{"input":3,"outp
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil { // #nosec G306 — test fixture must be executable
 		t.Fatal(err)
 	}
-	return bin, store
+	return bin, store, argvLog
 }
 
 // fakeOpenCode2xSessions writes an `opencode` stand-in for the 2.x line,
@@ -245,9 +250,17 @@ printf '{"type":"step_finish","sessionID":"%s","part":{"tokens":{"input":3,"outp
 	return bin, store, argvLog
 }
 
-// TestOpenCodeArgvDialectReachesTheCLI is the end-to-end dialect proof: each
-// fake REFUSES the other dialect's argv the way its real CLI does, so a
-// backend that spoke the wrong one could not pass.
+// TestOpenCodeArgvDialectReachesTheCLI is the end-to-end dialect proof: what
+// each fake RECEIVES is the dialect its real CLI parses, so a backend that
+// spoke the wrong one could not pass.
+//
+// The two refusals it can assert are not symmetric, and the suite says only
+// what was measured: the 2.x parser REFUSES a flag before `run`
+// (`Unrecognized flag: --format in command opencode`, measured on 2.2.5),
+// while the 1.x parser took either position — so the 1.x side is proved by
+// the argv it receives, not by a refusal. What a 1.x host cannot parse is the
+// DIAL folded into the model reference, which is why the hatch spells it
+// `--variant <effort>` instead.
 func TestOpenCodeArgvDialectReachesTheCLI(t *testing.T) {
 	run := func(t *testing.T, bin string, task Task) (Result, error) {
 		t.Helper()
@@ -269,22 +282,16 @@ func TestOpenCodeArgvDialectReachesTheCLI(t *testing.T) {
 		}
 	})
 
-	t.Run("the 1.19 fake refuses the 2.x argv", func(t *testing.T) {
-		bin, _ := fakeOpenCodeSessions(t)
-		res, err := run(t, bin, Task{UserPrompt: "x"})
-		if err == nil {
-			t.Fatalf("the 1.19 fake accepted the 2.x argv: %v", res.Output)
-		}
-		if !strings.Contains(res.Stderr, "argv continues after run") {
-			t.Fatalf("Stderr = %q, want the 1.x parser's refusal", res.Stderr)
-		}
-	})
-
-	t.Run("the hatch re-emits the 1.x argv", func(t *testing.T) {
+	// The dial is the one spelling the two lines do not share: 2.x folds it
+	// into the model reference, which 1.x has no syntax for.
+	t.Run("the hatch re-emits the 1.x argv, dial on its own flag", func(t *testing.T) {
 		t.Setenv(openCodeLegacyArgvEnv, "1")
-		bin, _ := fakeOpenCodeSessions(t)
-		if _, err := run(t, bin, Task{UserPrompt: "x", Model: "scripted/m1", ReasoningEffort: "high"}); err != nil {
+		bin, _, argvLog := fakeOpenCodeSessions(t)
+		if _, err := run(t, bin, Task{UserPrompt: "x", Model: "scripted/m1", ReasoningEffort: "ultracode"}); err != nil {
 			t.Fatalf("the 1.19 fake refused the hatched argv: %v", err)
+		}
+		if got := strings.TrimSpace(readFileString(t, argvLog)); got != "--format json -m scripted/m1 --variant high run" {
+			t.Fatalf("the CLI received %q, want the 1.x argv with the dial on --variant", got)
 		}
 	})
 
@@ -463,7 +470,7 @@ func readFileString(t *testing.T, path string) string {
 // invocation answers from must be the earlier conversation.
 func TestOpenCodeSessionRoundTrip(t *testing.T) {
 	t.Setenv(openCodeLegacyArgvEnv, "1")
-	bin, store := fakeOpenCodeSessions(t)
+	bin, store, _ := fakeOpenCodeSessions(t)
 	ws := t.TempDir()
 	if err := os.Mkdir(filepath.Join(ws, ".git"), 0o750); err != nil {
 		t.Fatal(err)
@@ -525,7 +532,7 @@ func TestOpenCodeSessionRoundTrip(t *testing.T) {
 // conversation. The 2.x line answers the other way, which is its own test.
 func TestOpenCodeResumeOfAnUnknownSessionFails(t *testing.T) {
 	t.Setenv(openCodeLegacyArgvEnv, "1")
-	bin, _ := fakeOpenCodeSessions(t)
+	bin, _, _ := fakeOpenCodeSessions(t)
 	ws := t.TempDir()
 	if err := os.Mkdir(filepath.Join(ws, ".git"), 0o750); err != nil {
 		t.Fatal(err)
