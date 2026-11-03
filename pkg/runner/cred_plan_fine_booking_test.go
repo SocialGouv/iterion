@@ -872,3 +872,115 @@ func TestMetricsEmitter_aStepJoinsOnItsLoopsWordOverTheRecordedRoute(t *testing.
 		t.Fatalf("the team's row took the step (%+v) — the recorded route answered over the loop's word", own)
 	}
 }
+
+// TestRecordPoolSpend_onlyAnUnplacedObservationThatSpentVoidsTheTable: the
+// void answers spend the plan cannot place, so an unplaced observation that
+// spent nothing — no cost, no tokens: a claw sub-agent step whose provider
+// reported no usage — leaves the table riding, the donor booked their $2
+// slice and no warn. Voiding on it would charge them the team's own $5 too,
+// for a call that adds nothing to either booking. Each half of a spend still
+// voids on its own: a priced call that reported no tokens, and tokens no
+// price source knows — the whole attempt and the warn. One scenario per half
+// of the spendless exclusion, each isolated. Mutant guards: dropping the
+// exclusion reds the free step ($7 and the warn); narrowing it to its token
+// half (`tokens == 0`) reds the priced call ($2, no warn); narrowing it to
+// its cost half (`cost == 0`) reds the unpriced tokens ($2, no warn).
+func TestRecordPoolSpend_onlyAnUnplacedObservationThatSpentVoidsTheTable(t *testing.T) {
+	scenarios := []struct {
+		name     string
+		fire     func(hooks model.EventHooks)
+		want     float64
+		wantWarn bool
+		// reached proves the scenario's observation got to the booking: a
+		// riding table passes just as well on an event the emitter dropped.
+		// Nil where the warn the scenario wants proves it.
+		reached func(t *testing.T, usage *metricsEmitter)
+	}{
+		{
+			name: "a free sub-agent step leaves the table riding",
+			fire: func(hooks model.EventHooks) {
+				hooks.OnLLMRequest("subagent:auditor", model.LLMRequestInfo{Model: "anthropic/claude-opus-5", WireModel: "claude-opus-5"})
+				hooks.OnLLMStepFinish("subagent:auditor", model.LLMStepInfo{
+					Number: 1, Provider: "anthropic", UsageUnreported: true,
+				})
+			},
+			want: 2,
+			reached: func(t *testing.T, usage *metricsEmitter) {
+				t.Helper()
+				k := routeKey{backend: delegate.BackendClaw, model: "anthropic/claude-opus-5"}
+				if got := usage.RouteTotals()[k].unreportedCalls; got != 1 {
+					t.Fatalf("the sub-agent's route counted %d unreported call(s), want 1 — the free step never reached the booking, the test premise broke", got)
+				}
+			},
+		},
+		{
+			name: "a priced call without tokens voids the table",
+			fire: func(hooks model.EventHooks) {
+				hooks.OnDelegateFinished("ghost", model.DelegateInfo{
+					BackendName: "claude_code", Provider: "anthropic", CostUSD: 1,
+				})
+			},
+			want:     8,
+			wantWarn: true,
+		},
+		{
+			name: "tokens no price source knows void the table",
+			fire: func(hooks model.EventHooks) {
+				hooks.OnDelegateFinished("ghost", model.DelegateInfo{
+					BackendName: "claude_code", Provider: "anthropic", Tokens: 100,
+				})
+			},
+			want:     7,
+			wantWarn: true,
+		},
+	}
+	for _, sc := range scenarios {
+		t.Run(sc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			h := newPoolHarnessForRun(t, credpoolLimitsForFine(), "run-1")
+			h.runner.cfg.Logger = iterlog.New(iterlog.LevelWarn, &buf)
+			plan := finePlan(t)
+			usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
+			hooks := model.NewStoreEventHooks(
+				context.Background(), usage, "run-1", iterlog.New(iterlog.LevelError, nil), nil, nil,
+			)
+			// The door fired on the donor's subscription ($2) and the team's
+			// own key spent $5: the table places both.
+			hooks.OnDelegateFinished("impl", model.DelegateInfo{
+				BackendName: "claude_code", Provider: "anthropic", Tokens: 900, CostUSD: 2,
+			})
+			hooks.OnDelegateFinished("review", model.DelegateInfo{
+				BackendName: "codex", Provider: "openai", Tokens: 100, CostUSD: 5,
+			})
+			sc.fire(hooks)
+			if sc.reached != nil {
+				sc.reached(t, usage)
+			}
+
+			h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-1", CredPlan: plan}, usage, nil, false)
+			warned := strings.Contains(buf.String(), voidedTableWarn)
+			day, _, err := h.ledger.Usage(context.Background(), donorPledgeID(), time.Now().UTC())
+			if err != nil {
+				t.Fatalf("usage: %v", err)
+			}
+			if warned != sc.wantWarn || day.CostUSD != sc.want {
+				t.Fatalf("the donor's ledger = $%.2f with the voided-table warn %v, want $%.2f with %v; the report logged %q",
+					day.CostUSD, warned, sc.want, sc.wantWarn, buf.String())
+			}
+		})
+	}
+}
+
+// TestMetricsEmitter_aPlanlessEmitterCountsNoMiss: fineSnapshot answers both
+// halves empty on a publication that carried no plan — every observation of
+// a plan-less run joins nothing, and none is a miss: there is no plan to
+// miss. The report never reads a plan-less emitter's miss
+// (fineFingerprintSpend keeps the coarse booking first), so this is the one
+// witness of notePlanMissLocked's plan-less return. Mutant guard: dropping
+// that return counts the attempt's two priced delegations as misses.
+func TestMetricsEmitter_aPlanlessEmitterCountsNoMiss(t *testing.T) {
+	rows, miss := fineBookingUsage(t, nil).fineSnapshot()
+	if len(rows) != 0 || miss != (planMiss{}) {
+		t.Fatalf("a plan-less emitter holds fine rows %v and miss %+v, want neither — a run with no plan has no plan to miss", rows, miss)
+	}
+}
