@@ -316,7 +316,29 @@ func applyClaudeCodeSessionMeta(out *Result, rm *claudesdk.ResultMessage, sm ses
 // stuck in ep_poll without any propagated error). The aborted session
 // returns an error the runtime classifies as resumable, so the recovery
 // dispatcher retries automatically.
-func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task Task, opts []claudesdk.Option) (rm *claudesdk.ResultMessage, meta sessionMeta, err error) {
+func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task Task, opts []claudesdk.Option) (*claudesdk.ResultMessage, sessionMeta, error) {
+	return b.runSessionWithBackgroundTimer(ctx, prompt, task, opts, newBackgroundSessionTimer)
+}
+
+// backgroundSessionTimer keeps the lifecycle's actual timer observable without
+// replacing the CLI, the select loop, or any of the other watchdogs.
+type backgroundSessionTimer interface {
+	Reset(time.Duration) bool
+	Stop()
+	Ticks() <-chan time.Time
+}
+
+type liveBackgroundSessionTimer struct{ timer *time.Timer }
+
+func newBackgroundSessionTimer() backgroundSessionTimer {
+	return &liveBackgroundSessionTimer{timer: time.NewTimer(time.Hour)}
+}
+
+func (t *liveBackgroundSessionTimer) Reset(d time.Duration) bool { return t.timer.Reset(d) }
+func (t *liveBackgroundSessionTimer) Stop()                      { stopTimer(t.timer) }
+func (t *liveBackgroundSessionTimer) Ticks() <-chan time.Time    { return t.timer.C }
+
+func (b *ClaudeCodeBackend) runSessionWithBackgroundTimer(ctx context.Context, prompt string, task Task, opts []claudesdk.Option, newTimer func() backgroundSessionTimer) (rm *claudesdk.ResultMessage, meta sessionMeta, err error) {
 	// Background work (see claude_code_background.go): the tracker is fed on
 	// the SDK reader goroutine, ahead of this loop.
 	bgCfg := resolveBackgroundLifecycleConfig()
@@ -516,8 +538,8 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 	// The background lifecycle's own timer (see bgLifecycle.timer). While the
 	// parent idles on work that reports only when it is done, that timer
 	// governs and the generic silence / no-progress watchdogs rest.
-	bgTimer := time.NewTimer(time.Hour)
-	stopTimer(bgTimer)
+	bgTimer := newTimer()
+	bgTimer.Stop()
 	defer bgTimer.Stop()
 	var bgKind bgTimerKind
 	genericSuspended := false
@@ -563,7 +585,7 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 			genericSuspended = false
 			resetProgress()
 		}
-		stopTimer(bgTimer)
+		bgTimer.Stop()
 		if bgKind != bgTimerNone {
 			if bgD < 0 {
 				bgD = 0
@@ -762,7 +784,7 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 			// Advance the thinking-time anchor to this item's arrival so the
 			// next thinking-bearing turn measures only its own reasoning gap.
 			lastItemTime = time.Now()
-		case <-bgTimer.C:
+		case <-bgTimer.Ticks():
 			now := time.Now()
 			switch bgKind {
 			case bgTimerWait:

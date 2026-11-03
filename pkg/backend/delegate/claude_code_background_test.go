@@ -205,6 +205,10 @@ type bgRun struct {
 	startedAt time.Time
 	warns     []string
 	elapsed   time.Duration
+	// The real background timer's final Reset argument, independent of how
+	// long process startup or OS scheduling actually took.
+	bgTimerResets    int
+	lastBgTimerDelay time.Duration
 }
 
 func (r bgRun) phases() []BackgroundPhase {
@@ -438,7 +442,14 @@ func runBgSession(t *testing.T, script []string, env map[string]string, task Tas
 	ctx, cancel := context.WithTimeout(context.Background(), bgSessionSafetyNet(t, script, defaults))
 	defer cancel()
 	start := time.Now()
-	rm, meta, err := b.runSession(ctx, "do the work", task, opts)
+	var bgTimer *observedBackgroundTimer
+	rm, meta, err := b.runSessionWithBackgroundTimer(ctx, "do the work", task, opts, func() backgroundSessionTimer {
+		bgTimer = &observedBackgroundTimer{backgroundSessionTimer: newBackgroundSessionTimer()}
+		return bgTimer
+	})
+	if bgTimer != nil {
+		run.bgTimerResets, run.lastBgTimerDelay = bgTimer.resets, bgTimer.last
+	}
 	mu.Lock()
 	run.startedAt = start
 	mu.Unlock()
@@ -540,9 +551,7 @@ func TestBackground_WorkFinishedMidTurnEndsAtTheFirstResult(t *testing.T) {
 	if got := run.resultText(); got != "GOT: MANGO" {
 		t.Fatalf("final text = %q", got)
 	}
-	if run.elapsed > 3*time.Second {
-		t.Fatalf("session took %s: it waited for a turn that was never coming", run.elapsed)
-	}
+	assertBackgroundEndsAtIdle(t, script, run)
 }
 
 func TestBackground_ANotificationDuringTheLastRequestIsNotDelivered(t *testing.T) {
@@ -615,9 +624,7 @@ func TestBackground_SubagentNestedNotificationDoesNotHoldTheParent(t *testing.T)
 	if run.err != nil {
 		t.Fatalf("runSession: %v", run.err)
 	}
-	if run.elapsed > 3*time.Second {
-		t.Fatalf("session took %s: a subagent-owned notification held the parent", run.elapsed)
-	}
+	assertBackgroundEndsAtIdle(t, script, run)
 	if strings.Contains(run.stdin, "[iterion]") {
 		t.Fatalf("iterion nudged the parent for a subagent's notification:\n%s", run.stdin)
 	}
@@ -643,9 +650,7 @@ func TestBackground_ForegroundTaskNotificationDoesNotHoldTheParent(t *testing.T)
 	if run.err != nil {
 		t.Fatalf("runSession: %v", run.err)
 	}
-	if run.elapsed > 3*time.Second {
-		t.Fatalf("session took %s: a foreground task's notification held the parent", run.elapsed)
-	}
+	assertBackgroundEndsAtIdle(t, script, run)
 }
 
 func TestBackground_ErrorResultEndsTheLifecycleAndReportsTheLostWork(t *testing.T) {
@@ -660,9 +665,7 @@ func TestBackground_ErrorResultEndsTheLifecycleAndReportsTheLostWork(t *testing.
 	if run.rm == nil || run.rm.Subtype != claudesdk.ResultErrorMaxTurns {
 		t.Fatalf("the error result must be returned as is, got %+v", run.rm)
 	}
-	if run.elapsed > 3*time.Second {
-		t.Fatalf("session took %s: an error result must not wait for background work", run.elapsed)
-	}
+	assertBackgroundReturnsAtResult(t, script, script[len(script)-2])
 	if len(run.meta.terminatedBackground) != 1 || !strings.Contains(run.meta.terminatedBackground[0], "t1") {
 		t.Fatalf("terminated work = %v, want t1", run.meta.terminatedBackground)
 	}
@@ -1157,7 +1160,8 @@ func TestBackground_AmbientHousekeepingIsNotWorkTheAgentLaunched(t *testing.T) {
 	if run.err != nil {
 		t.Fatalf("runSession: %v", run.err)
 	}
-	if run.elapsed > 3*time.Second || len(run.phases()) != 0 || strings.Contains(run.stdin, "[iterion]") {
+	assertBackgroundReturnsAtResult(t, script, script[len(script)-2])
+	if len(run.phases()) != 0 || strings.Contains(run.stdin, "[iterion]") {
 		t.Fatalf("housekeeping held the session: elapsed=%s phases=%v stdin:\n%s", run.elapsed, run.phases(), run.stdin)
 	}
 	if len(run.meta.terminatedBackground) != 0 {
@@ -1194,7 +1198,8 @@ func TestBackground_AmbientSubagentsDoNotHoldTheSession(t *testing.T) {
 			if run.err != nil {
 				t.Fatalf("runSession: %v", run.err)
 			}
-			if run.elapsed > 3*time.Second || len(run.phases()) != 0 {
+			assertBackgroundReturnsAtResult(t, script, script[len(script)-2])
+			if len(run.phases()) != 0 {
 				t.Fatalf("an ambient worker held the session: elapsed=%s phases=%v", run.elapsed, run.phases())
 			}
 		})
@@ -1221,7 +1226,8 @@ func TestBackground_AnOpenEndedShellDoesNotHoldTheSession(t *testing.T) {
 	if run.err != nil {
 		t.Fatalf("runSession: %v", run.err)
 	}
-	if run.elapsed > 3*time.Second || strings.Contains(run.stdin, "[iterion]") {
+	assertBackgroundEndsAtIdle(t, script, run)
+	if strings.Contains(run.stdin, "[iterion]") {
 		t.Fatalf("a background server held the session: elapsed=%s stdin:\n%s", run.elapsed, run.stdin)
 	}
 	if so, _ := run.rm.StructuredOutput.(map[string]any); so["answer"] != "served" {
@@ -2102,9 +2108,7 @@ func TestBackground_NoAutoTurnGraceWithNothingLeftEndsAtOnce(t *testing.T) {
 	if run.err != nil || run.resultText() != "GOT t1: FINAL" {
 		t.Fatalf("err = %v, text = %q", run.err, run.resultText())
 	}
-	if run.elapsed > 4*time.Second {
-		t.Fatalf("session took %s: a parent at rest waited the silence watchdog out", run.elapsed)
-	}
+	assertBackgroundEndsAtIdle(t, script, run)
 }
 
 func TestBackground_ASecretInATaskDescriptionNeverLeavesTheBoundary(t *testing.T) {
@@ -2918,8 +2922,9 @@ func TestBackground_AnErrorResultMarkedSuccessStillEndsTheLifecycle(t *testing.T
 		"@drain",
 	)
 	run := runBgSession(t, script, map[string]string{"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "5s"}, Task{})
-	if run.elapsed > 3*time.Second {
-		t.Fatalf("session took %s: an error result waited for background work", run.elapsed)
+	assertBackgroundReturnsAtResult(t, script, script[len(script)-2])
+	if run.err != nil || run.rm == nil || !run.rm.IsError || run.rm.Subtype != claudesdk.ResultSuccess || run.resultText() != "API Error: 529 overloaded" {
+		t.Fatalf("err = %v, result = %+v: the original error result must end the real CLI session", run.err, run.rm)
 	}
 	if got := run.meta.terminatedBackground; len(got) != 1 || !strings.Contains(got[0], "t1") {
 		t.Fatalf("lost = %v, want t1", got)
@@ -4641,7 +4646,8 @@ func TestBackground_AShellLeavingTheSetIsNeverAwaited(t *testing.T) {
 		"@drain",
 	)
 	run := runBgSession(t, script, map[string]string{"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "1s"}, Task{})
-	if strings.Contains(run.stdin, backgroundAutoTurnNudge) || run.err != nil || run.resultText() != "GOT t1" || run.elapsed > 900*time.Millisecond {
+	assertBackgroundEndsAtIdle(t, script, run)
+	if strings.Contains(run.stdin, backgroundAutoTurnNudge) || run.err != nil || run.resultText() != "GOT t1" {
 		t.Fatalf("nudged = %v, err = %v, text = %q, elapsed = %s: a shell leaving the CLI's set held the session",
 			strings.Contains(run.stdin, backgroundAutoTurnNudge), run.err, run.resultText(), run.elapsed)
 	}
@@ -4677,7 +4683,8 @@ func TestBackground_ANestedAgentLeavingTheSetIsNeverAwaited(t *testing.T) {
 		"@drain",
 	}
 	run := runBgSession(t, script, map[string]string{"ITERION_CLAUDE_CODE_BACKGROUND_AUTOTURN_GRACE": "5s"}, Task{})
-	if run.err != nil || run.resultText() != "GOT t1" || run.elapsed > 1500*time.Millisecond {
+	assertBackgroundEndsAtIdle(t, script, run)
+	if run.err != nil || run.resultText() != "GOT t1" {
 		t.Fatalf("err = %v, text = %q, elapsed = %s: a nested agent leaving the set held the main agent's session",
 			run.err, run.resultText(), run.elapsed)
 	}
@@ -5609,7 +5616,8 @@ func TestBackground_AForegroundAgentAloneDoesNotEngage(t *testing.T) {
 		"@drain",
 	}
 	run := runBgSession(t, script, nil, Task{})
-	if run.err != nil || run.resultText() != "DONE" || run.elapsed > time.Second || len(run.events) != 0 || strings.Contains(run.stdin, "[iterion]") {
+	assertBackgroundReturnsAtResult(t, script, script[len(script)-2])
+	if run.err != nil || run.resultText() != "DONE" || len(run.events) != 0 || strings.Contains(run.stdin, "[iterion]") {
 		t.Fatalf("err = %v, text = %q, elapsed = %s, events = %v: a foreground agent engaged the lifecycle", run.err, run.resultText(), run.elapsed, run.phases())
 	}
 }
