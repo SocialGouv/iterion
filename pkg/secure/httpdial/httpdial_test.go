@@ -362,66 +362,46 @@ func (r *recordingResolver) LookupIPAddr(_ context.Context, host string) ([]net.
 
 // The CGNAT and NAT64 local-use classes, and a NAT64 or 6to4 address carrying
 // a non-public IPv4 address (the samples carry loopback and private ones),
-// are refused under strict and admitted when a caller lifts it — the private
-// classes' treatment, so
-// each caller's own escape hatch is the one that lifts them. One row per
-// caller class and arm, with what sets the arm: refusing the classes is a
-// decision read caller by caller. Each arm drives the three ways a caller
-// meets the guard: a literal host, a name whose answer holds the class
-// beside a public address (every answer is judged), and a dial through
-// SafeTransport. The gateway credential's write door judges IsPublicUnicast
-// alone, with no lift: its decision is TestIsPublicUnicast's rows.
-func TestNewClasses_EachCallersArmDecides(t *testing.T) {
-	// The IPv4-compatible class is no sample: no hatch lifts it
+// are the private classes' case: refused under strict, admitted lifted. This
+// is the guard's own verdict per strictness, through the three ways a caller
+// meets it: a literal host, a name whose answer holds the class beside a
+// public address (every answer is judged), and a dial through SafeTransport.
+// Which strictness each caller passes is witnessed in the caller's own
+// package, through its production constructor; the gateway credential's
+// write door judges IsPublicUnicast alone, with no lift.
+func TestNewClasses_RefusedStrictAdmittedLifted(t *testing.T) {
+	// The IPv4-compatible class is no sample: no strictness admits it
 	// (TestResolvePublicHostWith_IPv4CompatibleRefusedAtEveryStrictness).
 	samples := []string{"100.64.0.1", "64:ff9b::7f00:1", "64:ff9b:1::a00:1", "2002:7f00:1::"}
-	arms := []struct {
-		caller string
-		strict bool
-	}{
-		{"LLM gateway endpoint — compatgw Validate, dial and sandbox proxy, model dispatch, the run proxy's pin — ITERION_LLM_ENDPOINT_ALLOW_PRIVATE unset", true},
-		{"LLM gateway endpoint — ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1", false},
-		{"studio preview proxy, per-org OIDC connectors, forge clients — cloud, or local on a non-loopback bind", true},
-		{"studio preview proxy, per-org OIDC connectors, forge clients — local, loopback-bound", false},
-		{"completion webhooks", true},
-		{"completion webhooks — WithAllowPrivate", false},
-		{"runner clone guard — gitws pre-check and clone-guard proxy", true},
-		{"runner clone guard — ITERION_RUNNER_CLONE_ALLOW_PRIVATE=1", false},
-		{"connector calls, local tier", true},
-		{"connector calls, local tier — ITERION_CONNECTOR_ALLOW_PRIVATE=1", false},
-		{"connector calls, cloud tier — always strict, a tenant-supplied base URL", true},
-		{"connectors CLI description fetch — always strict", true},
-		{"alert webhook sink — never strict, an operator-pinned receiver", false},
-	}
 	ctx := context.Background()
 	// A canceled context stops the dial before any packet: an error that is
 	// not the guard's refusal is the dialer's cancellation.
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	for _, arm := range arms {
+	for _, strict := range []bool{true, false} {
 		for _, sample := range samples {
-			lit, litErr := ResolvePublicHostWith(ctx, answering(), sample, arm.strict)
-			_, ansErr := ResolvePublicHostWith(ctx, answering("203.0.113.7", sample), "gw.example.test", arm.strict)
-			_, dialErr := SafeTransport(arm.strict).DialContext(canceled, "tcp", net.JoinHostPort(sample, "443"))
-			if arm.strict {
+			lit, litErr := ResolvePublicHostWith(ctx, answering(), sample, strict)
+			_, ansErr := ResolvePublicHostWith(ctx, answering("203.0.113.7", sample), "gw.example.test", strict)
+			_, dialErr := SafeTransport(strict).DialContext(canceled, "tcp", net.JoinHostPort(sample, "443"))
+			if strict {
 				for _, got := range []struct {
 					form string
 					err  error
 				}{{"literal", litErr}, {"answer", ansErr}, {"dial", dialErr}} {
-					if got.err == nil || !strings.Contains(got.err.Error(), "not a public unicast IP") {
-						t.Errorf("%s: %s %s = %v, want refused as not public", arm.caller, got.form, sample, got.err)
+					if !errors.Is(got.err, ErrNotPublic) || !strings.Contains(got.err.Error(), "not a public unicast IP") {
+						t.Errorf("strict: %s %s = %v, want refused as not public", got.form, sample, got.err)
 					}
 				}
 				continue
 			}
 			if litErr != nil || !lit.Equal(net.ParseIP(sample)) {
-				t.Errorf("%s: literal %s = %v, %v; want it admitted", arm.caller, sample, lit, litErr)
+				t.Errorf("lifted: literal %s = %v, %v; want it admitted", sample, lit, litErr)
 			}
 			if ansErr != nil {
-				t.Errorf("%s: an answer holding %s refused: %v", arm.caller, sample, ansErr)
+				t.Errorf("lifted: an answer holding %s refused: %v", sample, ansErr)
 			}
 			if !errors.Is(dialErr, context.Canceled) {
-				t.Errorf("%s: dial %s = %v; want the dialer's cancellation, past the guard", arm.caller, sample, dialErr)
+				t.Errorf("lifted: dial %s = %v; want the dialer's cancellation, past the guard", sample, dialErr)
 			}
 		}
 	}

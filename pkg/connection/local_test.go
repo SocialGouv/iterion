@@ -189,3 +189,55 @@ func TestTheProductionClientIsFitToCarryAConnectorCall(t *testing.T) {
 		t.Error("LocalHTTPClient must mark the client it returns: an unmarked one is refused at the first call, and it is the only client a connector node has")
 	}
 }
+
+// The connector tiers' own verdicts on the classes the guard refuses beside
+// the private ones — the shared (CGNAT) space and a non-public IPv6
+// transition address: the cloud tier refuses them whatever the local hatch
+// says, the local tier until AllowPrivateHostsEnv lifts its guard. Driven
+// through the production constructors; the lift is read past the guard on
+// a dial whose context is already canceled, so no packet leaves.
+func TestConnectorTiersDecideTheSharedAndTransitionClasses(t *testing.T) {
+	targets := []string{"100.64.0.1:9", "[64:ff9b::7f00:1]:9"}
+	for _, hatch := range []string{"", "1"} {
+		t.Setenv(connection.AllowPrivateHostsEnv, hatch)
+		for _, target := range targets {
+			if _, err := connection.CloudHTTPClient().Get("http://" + target + "/v1"); !errors.Is(err, httpdial.ErrNotPublic) {
+				t.Errorf("cloud tier, %s=%q: %s = %v; want the guard's refusal", connection.AllowPrivateHostsEnv, hatch, target, err)
+			}
+		}
+	}
+	t.Setenv(connection.AllowPrivateHostsEnv, "")
+	for _, target := range targets {
+		if _, err := connection.LocalHTTPClient().Get("http://" + target + "/v1"); !errors.Is(err, httpdial.ErrNotPublic) {
+			t.Errorf("local tier: %s = %v; want the guard's refusal", target, err)
+		}
+	}
+	t.Setenv(connection.AllowPrivateHostsEnv, "1")
+	dial := innermostTransport(t, connection.LocalHTTPClient()).DialContext
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, target := range targets {
+		if _, err := dial(canceled, "tcp", target); !errors.Is(err, context.Canceled) || errors.Is(err, httpdial.ErrNotPublic) {
+			t.Errorf("local tier, %s=1: dial %s = %v; want the dialer's cancellation, past the guard", connection.AllowPrivateHostsEnv, target, err)
+		}
+	}
+}
+
+// innermostTransport walks a client's transport chain, wrapper by wrapper
+// (Unwrap), down to the *http.Transport that dials.
+func innermostTransport(t *testing.T, c *http.Client) *http.Transport {
+	t.Helper()
+	rt := c.Transport
+	for range 8 {
+		if tr, ok := rt.(*http.Transport); ok {
+			return tr
+		}
+		u, ok := rt.(interface{ Unwrap() http.RoundTripper })
+		if !ok {
+			break
+		}
+		rt = u.Unwrap()
+	}
+	t.Fatalf("no *http.Transport under %T", c.Transport)
+	return nil
+}
