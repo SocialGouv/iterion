@@ -133,6 +133,19 @@ func newLiveExecutor(t *testing.T, wf *ir.Workflow, s store.RunStore, runID, wor
 		t.Fatalf("RegisterAskUser: %v", err)
 	}
 
+	// The `command` tool (model-invoked workspace slash commands, #1716):
+	// production registers it inside RegisterClawAll; this harness's
+	// builtins+todo+ask_user subset never did, so a node declaring
+	// `tools: [command]` could only die on "unknown tool" here
+	// (measured: TestLive_Feat_WorkspaceCommandNarrowing's first run).
+	// Same kill switch as the host: off drops the registration and the
+	// node fails loudly at dispatch, never half-lives.
+	if !model.SlashCommandsDisabled() {
+		if err := tool.RegisterClawCommandWithProvider(toolReg, func() string { return workDir }, model.SlashCommandMaxBytesForRegistry()); err != nil {
+			t.Fatalf("RegisterClawCommandWithProvider: %v", err)
+		}
+	}
+
 	return model.NewClawExecutor(reg, wf,
 		model.WithBackendRegistry(backendReg),
 		model.WithToolRegistry(toolReg),

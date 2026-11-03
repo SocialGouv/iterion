@@ -72,7 +72,11 @@ func (s narrowedSet) allows(name string) bool {
 }
 
 // intersect keeps only what BOTH sets allow — the narrowing a second
-// command adds to the first.
+// command adds to the first. Membership answers cross shapes (#2905): a
+// NAME the other side's family covers survives it (`mcp__srv__*`
+// intersected with `mcp__srv__tool` keeps the member — intersecting to
+// empty would refuse a tool both sides allow), and a family survives a
+// family that covers it whole (the same one, or a broader prefix).
 func (s narrowedSet) intersect(other narrowedSet) narrowedSet {
 	out := narrowedSet{names: map[string]bool{}}
 	// A wildcard set accepts what the other accepts: X ∩ * = X.
@@ -83,16 +87,39 @@ func (s narrowedSet) intersect(other narrowedSet) narrowedSet {
 		return s
 	}
 	for name := range s.names {
-		if other.names[name] {
+		if other.allows(name) {
+			out.names[name] = true
+		}
+	}
+	for name := range other.names {
+		if s.allows(name) {
 			out.names[name] = true
 		}
 	}
 	for _, prefix := range s.families {
-		if slices.Contains(other.families, prefix) {
+		if familyCoveredBy(prefix, other.families) {
+			out.families = append(out.families, prefix)
+		}
+	}
+	for _, prefix := range other.families {
+		if familyCoveredBy(prefix, s.families) && !slices.Contains(out.families, prefix) {
 			out.families = append(out.families, prefix)
 		}
 	}
 	return out
+}
+
+// familyCoveredBy reports whether some family in the list covers prefix
+// whole: the family itself, or a broader one (a prefix of it — no shipped
+// shape produces nested server families, but the answer must stay correct
+// if one appears).
+func familyCoveredBy(prefix string, families []string) bool {
+	for _, f := range families {
+		if strings.HasPrefix(prefix, f) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildNarrowedSet folds an `allowed-tools:` list into a narrowedSet. The
@@ -128,12 +155,23 @@ func buildNarrowedSet(allowed []string) narrowedSet {
 // a node's tool SET (the prompt-path build-time intersection): the gate
 // exempts the trio on its own, but a set used to shrink an advertised list
 // must carry them or the narrowed node loses the meta-operations it needs
-// to recover.
+// to recover. It returns a COPY (#2905): maps are references, so adding
+// through the value receiver would write the trio into the caller's set —
+// harmless at the one call site today (CommandNarrowedSet builds a fresh
+// set), a silent widening the day a second caller reuses one.
 func (s narrowedSet) withAlwaysAllowed() narrowedSet {
-	for name := range alwaysAllowedCommandTools {
-		s.names[name] = true
+	out := narrowedSet{
+		names:    make(map[string]bool, len(s.names)+len(alwaysAllowedCommandTools)),
+		families: s.families,
+		wildcard: s.wildcard,
 	}
-	return s
+	for name := range s.names {
+		out.names[name] = true
+	}
+	for name := range alwaysAllowedCommandTools {
+		out.names[name] = true
+	}
+	return out
 }
 
 // alwaysAllowedCommandTools dispatch regardless of the active narrowing —

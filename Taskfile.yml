@@ -502,6 +502,11 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run 'TestLive_Feat_WorkspaceCommands$' -timeout 15m ./e2e/...
 
+  test:live:feat:workspace-command-narrowing:
+    desc: 'Live e2e for the allowed-tools narrowing a workspace command applies on claw (real cost).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_WorkspaceCommandNarrowing$' -timeout 10m ./e2e/...
+
   test:live:feat:board-caps:
     desc: 'Live e2e for the agent board.* capabilities feature (real cost).'
     cmds:

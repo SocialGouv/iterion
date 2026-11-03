@@ -1,0 +1,36 @@
+## feat_workspace_command_narrowing.bot — a workspace command's
+## `allowed-tools:` frontmatter bounds the generation that invoked it
+## (#1717, live witness for #2905).
+##
+## The node's prompt does NOT open with the invocation: the model must reach
+## for the command itself through the `command` tool. The command narrows to
+## [Read] and its body orders a `bash cat` of a file OUTSIDE the workspace —
+## read_file's containment cannot serve it, so if the narrowing holds the
+## token never reaches the model, and if it fails open the answer carries it.
+
+dsl: 2
+
+prompt sys:
+  You are a terse assistant. Follow instructions exactly.
+
+prompt go:
+  There is a workspace command named "narrowed-probe". Invoke it with the command tool now, then do exactly what its body says.
+
+schema answer:
+  text: string
+
+agent narrowed:
+  backend: claw
+  ## The model is a dial because the live credential that serves it is the
+  ## host's: the default rides the z.ai facade (ZAI_API_KEY — a metered,
+  ## cheap GLM), a ChatGPT-forfait-only host 400s on the non-codex mini ids
+  ## (measured 2026-11-03), so point the dial at what the host serves.
+  model: "${ITERION_E2E_NARROW_MODEL:-anthropic/glm-5.3}"
+  tools: [command, bash, read_file]
+  output: answer
+  system: sys
+  user: go
+
+workflow main:
+  entry: narrowed
+  narrowed -> done

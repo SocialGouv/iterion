@@ -132,6 +132,14 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 	messages := make([]api.Message, len(opts.Messages))
 	copy(messages, opts.Messages)
 
+	// A retry whose replay starts from the bare prompt, a resume whose
+	// checkpoint compaction summarised the invocation away, or a delegated
+	// child's fresh conversation leaves this generation bounded by a command
+	// its conversation never invoked — re-state the bound, or the next
+	// refusal names a command the model cannot place (#2905). No-op when
+	// the notice already rides the conversation.
+	messages = tool.EnsureNarrowingNotice(ctx, messages)
+
 	// Always-thinking models reject tool_choice:any. Keep the grounding
 	// contract in the executor: an announced, malformed or denied call is
 	// not an executed tool. Chain the observer rather than replacing it.

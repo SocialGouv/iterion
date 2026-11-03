@@ -203,6 +203,13 @@ The citations, per cell that is not self-evident from the table:
     continuations: the tool-use nudge and retries share the generation's
     scope, a pause (ask_user, permission gate) checkpoints it beside the
     conversation, and a delegated subagent's set is intersected with it.
+    Two refinement rules (#2905): an intersection keeps a member the other
+    side's family covers — `mcp__srv__*` ∩ `mcp__srv__tool` keeps the
+    member rather than intersecting to empty — and a generation whose
+    conversation no longer shows the invocation's notice (a retry
+    replaying from the bare prompt, a checkpoint compaction that folded
+    the turn away) gets the bound re-stated on its last user turn, so a
+    refusal never names a command the conversation cannot place.
     Three published value shapes fold with documented approximations:
     `Bash(git:*)` grants the WHOLE `bash` tool (iterion has no per-prefix
     granularity), `mcp__srv__tool` / `mcp__srv__*` fold to the sanitized
