@@ -3,6 +3,35 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.6.0](https://github.com/SocialGouv/iterion/compare/v5.5.1...v5.6.0) (2026-11-03)
+
+### Features
+
+* **chart:** opt-in namespace compute ceiling (ResourceQuota + LimitRange) ([d9bf151](https://github.com/SocialGouv/iterion/commit/d9bf1510085e8e31c3f24196fe4457bdad1892b2))
+
+    <details><summary>why</summary>
+
+    quota.enabled=true renders a ResourceQuota (requests.cpu/requests.memory/ pods) that rejects sandbox fan-out past the namespace's allocation at admission instead of saturating the cluster's request pool, plus the LimitRange that gives request-less sidecars a default request so quota admission stays open. The runner pool size stays the graceful concurrency lever; the quota is the backstop. CPU stays limit-free (defaultRequest only) — the burstable contract stands. At the ceiling quota admission…
+
+    </details>
+
+### Bug Fixes
+
+* **marketplace:** the public view of an entry carries no account ids ([#3002](https://github.com/SocialGouv/iterion/issues/3002)) ([4549270](https://github.com/SocialGouv/iterion/commit/45492706744c302b37c046440c3a378f189cf313))
+
+    <details><summary>why</summary>
+
+    The anonymous catalogue returned entries whole, including the submitter's and reviewer's account ids, the review timestamp and the reject reason. `marketplace.ForViewer` (and `ForViewerAll`) now project the public view on the browse routes — those four fields are cleared unless the viewer is the submitter, a super-admin, or the deployment runs local; the moderation queue keeps the whole entry, which is where the reviewer is needed. The input entry is never mutated. The studio's types say the…
+
+    </details>
+* **orgsweep:** the org purge deletes every run with its blobs, and tells the truth ([#3004](https://github.com/SocialGouv/iterion/issues/3004)) ([6fb1f12](https://github.com/SocialGouv/iterion/commit/6fb1f123ac0092e5fd6d4fb49c34277d12d190ba))
+
+    <details><summary>why</summary>
+
+    PurgeOrg deleted the org's Mongo rows and left every run's object-store data behind: with the runs gone, the six key spaces were orphaned and unreachable. It now deletes each run through the RunStore — blobs and collections, under the run's tenant — before any Mongo DeleteMany; a failed run delete withholds the sweep (the org stays pending and any replica retries, idempotently), `ITERION_ORG_PURGE_RUN_BATCH` paces the batch (0 = unbounded, a bad value refuses to start) and defers the rest to…
+
+    </details>
+
 ## [5.5.1](https://github.com/SocialGouv/iterion/compare/v5.5.0...v5.5.1) (2026-11-03)
 
 ### Bug Fixes
