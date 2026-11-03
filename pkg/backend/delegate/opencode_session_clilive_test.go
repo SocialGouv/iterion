@@ -156,7 +156,7 @@ func TestCLILiveOpenCodeSessionResume(t *testing.T) {
 	// as an EMPTY conversation and nothing distinguishes it from a fresh one.
 	const unknown = "ses_doesnotexist"
 	gone, goneErr := turn(t, "x", unknown, false)
-	if major := openCodeMajorVersion(t, cli); major >= 2 {
+	if major := openCodeMajorVersion(t, cli, nil); major >= 2 {
 		if goneErr != nil {
 			t.Fatalf("opencode %d.x creates a session under an unknown id, but the resume failed: %v (stderr %q)", major, goneErr, gone.Stderr)
 		}
@@ -185,28 +185,6 @@ func unsetEnvForTest(t *testing.T, name string) {
 	if err := os.Unsetenv(name); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// openCodeMajorVersion reads the CLI's own major version (`opencode v2.2.5`).
-// Measured, never assumed: a version-dependent assertion that guessed its
-// version would certify nothing.
-func openCodeMajorVersion(t *testing.T, cli string) int {
-	t.Helper()
-	out, err := exec.Command(cli, "--version").CombinedOutput() // #nosec G204 — the located CLI.
-	if err != nil {
-		t.Fatalf("opencode --version: %v: %s", err, out)
-	}
-	line := strings.TrimSpace(string(out))
-	start := strings.IndexFunc(line, func(r rune) bool { return r >= '0' && r <= '9' })
-	if start < 0 {
-		t.Fatalf("opencode --version printed %q, which carries no version", line)
-	}
-	major, _, _ := strings.Cut(line[start:], ".")
-	parsed, err := strconv.Atoi(major)
-	if err != nil {
-		t.Fatalf("opencode --version printed %q, whose major version does not parse: %v", line, err)
-	}
-	return parsed
 }
 
 // freeLocalPort reserves a loopback port the kernel reports free and hands it
