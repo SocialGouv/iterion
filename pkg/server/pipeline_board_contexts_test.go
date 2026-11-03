@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -138,7 +140,8 @@ func TestLaunchTicketNow_BoundContextsRideTheLaunch(t *testing.T) {
 	// (SpendableBy measures the owner; every other card lane stamps its own
 	// machine actor: board-dispatcher, trigger-spine, cloud-scheduler).
 	clickCtx := auth.WithIdentity(boundedCtx(t), auth.Identity{TeamID: "t1", UserID: "operator-alice", Kind: auth.KindUser})
-	if _, err := s.launchTicketNow(clickCtx, "t1", s.runs, board, card); err != nil {
+	click := httptest.NewRequest(http.MethodPost, "/api/v1/pipeline-board/tasks/"+card.ID+"/launch", nil).WithContext(clickCtx)
+	if _, err := s.launchTicketNow(clickCtx, "t1", requestLaunch(click), s.runs, board, card); err != nil {
 		t.Fatalf("launchTicketNow = %v, want nil", err)
 	}
 	// The mechanism: the launch ctx carries the store tenant stamp of the

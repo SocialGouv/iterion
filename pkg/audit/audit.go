@@ -36,7 +36,7 @@ type Event struct {
 	ActorID   string         `bson:"actor_id,omitempty" json:"actor_id,omitempty"`
 	ActorKind string         `bson:"actor_kind,omitempty" json:"actor_kind,omitempty"` // user|super_admin|webhook|system|anonymous (a refused sign-in)
 	Action    string         `bson:"action" json:"action"`
-	Target    string         `bson:"target,omitempty" json:"target,omitempty"` // kind of object acted on (org|user|webhook|secret|binding|byok|member|invitation|token)
+	Target    string         `bson:"target,omitempty" json:"target,omitempty"` // kind of object acted on (org|user|webhook|secret|binding|byok|member|invitation|token|run)
 	TargetID  string         `bson:"target_id,omitempty" json:"target_id,omitempty"`
 	Meta      map[string]any `bson:"meta,omitempty" json:"meta,omitempty"`
 	IP        string         `bson:"ip,omitempty" json:"ip,omitempty"`

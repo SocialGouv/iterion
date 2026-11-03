@@ -885,7 +885,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	// failure charges per attempt; release every error and a run that started
 	// gets refunded.
 	runMayExist = true
-	res, err := s.runs.Launch(ctx, spec)
+	res, err := s.launchRun(ctx, requestLaunch(r), spec)
 	if err != nil {
 		// The callee reports whether anything durable happened; the caller no
 		// longer infers it. Absent that marker nothing was persisted and no

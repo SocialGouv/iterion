@@ -2103,7 +2103,7 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 		s.revokeUnlaunchedGrant(minted)
 		return &launchRefusal{cardID: iss.ID, cause: deny.err()}
 	}
-	res, err := s.runs.Launch(ctx, spec)
+	res, err := s.launchRun(ctx, systemLaunch(boardDispatcherActor), spec)
 	if err != nil {
 		// The fact travels on the error (RunPersistedError, or a queue
 		// publish that landed and then reported failure — the publisher

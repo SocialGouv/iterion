@@ -726,7 +726,7 @@ func (s *Server) handlePipelineBoardTaskLaunch(w http.ResponseWriter, r *http.Re
 	// the fact travels on it (RunPersistedError / a publish that landed),
 	// never inferred from err != nil here.
 	runMayExist = true
-	runID, err := s.launchTicketNow(r.Context(), caller.TeamID, runs, boardStore, issue)
+	runID, err := s.launchTicketNow(r.Context(), caller.TeamID, requestLaunch(r), runs, boardStore, issue)
 	if err != nil {
 		if !runview.RunMayHaveStarted(err) {
 			runMayExist = false

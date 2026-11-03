@@ -226,6 +226,36 @@ call sites for the full list):
 > · `pat.created` · `pat.revoked`
 > · `dlq.replayed` · `dlq.discarded`
 > · `auth.login.succeeded` · `auth.login.failed`
+> · `run.launched` · `run.forked` · `run.deleted` · `run.retry.*`
+
+`run.launched` is one tenant row per launched run, whatever launched it,
+keyed by the run id (`target_id`). A launch that returns an error but may
+still have left a run behind — its run persisted before the failure, or a
+queue publish that reports failure after the message may have landed —
+writes its row too, with `meta.outcome: may_have_started`; a launch
+refused before anything could execute writes none. The actor is the principal the launch
+ran under: the signed-in user for a Studio, CLI or API launch — the
+operator's "launch now" on a pipeline card included (`actor_kind:
+user`), the webhook principal `webhook:<config-id>` for an inbound
+delivery (`actor_kind: webhook`), and a daemon of this process for the
+rest (`actor_kind: system` — `scheduler:<bot>`, `board-dispatcher`,
+`trigger-spine`; the local pipeline-admission loop is wired too but
+runs only outside cloud mode, where no audit store exists, so its actor
+never appears in a cloud log). `meta` names the bot, the workflow file,
+the repository, the `trigger` — the run's own provenance when it has one
+(`dispatcher` | `schedule` | `studio_chat` | `webhook`), else the client
+that asked (`studio` for a browser, `api` for the CLI or any other API
+client), absent for a daemon — and the `delivery_id` or `schedule_id`
+that caused it; never the launch vars. IP and user-agent are recorded
+when an HTTP request served the launch (a webhook row carries the
+delivery's source address), empty for a daemon. Every launch surface
+crosses one choke point
+([pkg/server/runs_launch_audit.go](../pkg/server/runs_launch_audit.go)),
+and a test keeps it the only one. A fork is a new run that crosses no
+launch: `POST /api/runs/{id}/fork` writes `run.forked` instead — the
+operator as actor, the child run as `target_id`, `meta.parent_run_id`
+naming the run it was forked from. A resume continues an existing run
+and writes no row.
 
 Two scopes: tenant rows and platform rows (super-admin only at
 `/api/admin/audit`). A tenant row is keyed on a team or on an org, and each

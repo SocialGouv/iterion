@@ -21,7 +21,10 @@ import (
 // would otherwise cycle). Board-mode subscriptions never reach here; they go
 // through NativeBoardEffect.Promote.
 type serviceLauncher struct {
-	runs   *runview.Service
+	// launch is the server's audited launch (Server.launchTriggered), bound
+	// rather than the run service itself: the launcher holds no *Server, and
+	// a raw run service here would be the one launch nobody audited.
+	launch func(ctx context.Context, spec runview.LaunchSpec) (*runview.LaunchResult, error)
 	logger *iterlog.Logger
 	// resolveRetry folds the plan's binding-level retry policy together
 	// with the bot manifest, the machine default and the platform ceiling.
@@ -55,7 +58,7 @@ const triggerSpineActor = "trigger-spine"
 // missing on the other.
 func (s *Server) triggerLauncher() *serviceLauncher {
 	return &serviceLauncher{
-		runs:         s.runs,
+		launch:       s.launchTriggered,
 		logger:       s.logger,
 		resolveRetry: s.resolveRunRetryPolicy,
 		resolveRoute: s.resolveRunLLMRoutePolicy,
@@ -65,7 +68,7 @@ func (s *Server) triggerLauncher() *serviceLauncher {
 }
 
 func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (string, error) {
-	if l.runs == nil {
+	if l.launch == nil {
 		return "", errors.New("trigger: no run service wired for direct launch")
 	}
 	routePolicy, routeErr := l.routePolicyFor(ctx, plan)
@@ -117,7 +120,7 @@ func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (
 	if deny != nil {
 		return "", deny.err()
 	}
-	res, err := l.runs.Launch(ctx, spec)
+	res, err := l.launch(ctx, spec)
 	if err != nil {
 		// The fact travels on the error, never inferred from err != nil:
 		// a cloud publish can report failure after the message LANDED (the
