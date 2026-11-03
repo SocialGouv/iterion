@@ -742,6 +742,20 @@ type Task struct {
 	// the agent only ever sees placeholders. Nil disables it.
 	UnmaterializeSecrets func(string) string
 
+	// ScreenModelText is the model boundary's own pass (ADR-146 axis 1a),
+	// carried on the task for the text a backend composes for ITSELF instead
+	// of from a Task field: the ambient instruction files it reads under
+	// WorkDir (pi's `project_context` block, claw's project-instructions
+	// block), the workspace-memory blocks a store hands it. The executor's
+	// field pass cannot reach those — they are not fields — so the backend
+	// applies the pass where it composes them, and the text an agent of an
+	// earlier node wrote into a CLAUDE.md reaches the next model as the
+	// placeholder. Set by the executor at the seam; nil is the identity, the
+	// same contract MaterializeSecrets carries — placeholders off by the
+	// operator's choice, or the in-container claw runner, whose IOTask cannot
+	// carry a closure (see io.go).
+	ScreenModelText func(string) string
+
 	// CursorFragments are resolved prompt-engineering cursor fragments
 	// to append to the system prompt under a "## Calibration" section.
 	// Each entry is one cursor activation, pre-formatted as
@@ -1491,6 +1505,19 @@ func (t Task) BuildSystemPrompt() string {
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+// ScreenedModelText applies the boundary pass the task carries
+// (ScreenModelText), nil-safe: a task built without one reads its own text
+// back. A composer that applies the pass inline routes through here rather
+// than the field, so the nil contract is stated once; a backend that carries
+// the pass further (claw, into the options its request builder reads) passes
+// the field itself, nil and all.
+func (t Task) ScreenedModelText(s string) string {
+	if t.ScreenModelText == nil {
+		return s
+	}
+	return t.ScreenModelText(s)
 }
 
 func secretFilesInstruction(files []SecretFileHint) string {

@@ -36,11 +36,18 @@ func (e *ClawExecutor) executeDelegate(ctx context.Context, backend delegate.Bac
 // as a task's prompts. TestEveryDirectGenerationOfTheExecutorCrossesTheModelBoundary
 // refuses a GenerateObjectDirect call of the executor whose options did not
 // come through here.
+//
+// The pass rides along as well, so the request builder these options reach
+// screens whatever it composes from them — no direct generation builds
+// system BLOCKS today, and the one that does will be covered rather than
+// needing a second guard. The pass is idempotent on a placeholder, so the
+// system text taking it twice costs a scan.
 func (e *ClawExecutor) generationForModel(opts GenerationOptions) GenerationOptions {
 	if e == nil || e.secretGuard == nil {
 		return opts
 	}
 	redact := e.secretGuard.RedactForModel
+	opts.ScreenModelText = redact
 	opts.System = redact(opts.System)
 	if len(opts.Messages) > 0 {
 		msgs := make([]api.Message, len(opts.Messages))
@@ -66,6 +73,25 @@ func (e *ClawExecutor) generationForModel(opts GenerationOptions) GenerationOpti
 // The operator's answer at a resume takes it too: the record keeps the
 // answer whole (the run needs it), the model reads it as every other text —
 // on claude_code, which carries it in the prompt, and on claw alike.
+//
+// The pass covers every field delegate.Task composes into text a model
+// reads, not only the two prompts: BuildSystemPrompt appends the auto-memory
+// section, the calibration fragments, the skill hints and the preset focus
+// AFTER this seam, and each of those carries text the run itself never
+// rendered — the agent's own MEMORY.md, the author's cursor fragments, the
+// workspace's SKILL.md frontmatter. TestEveryModelReadTextOfATaskCrossesTheBoundary
+// reads the composers and refuses a field this pass neither redacts nor
+// allowlists with its reason.
+//
+// A field pass cannot reach the text a backend composes for ITSELF — the
+// ambient instruction files it reads under the task's work dir, the
+// workspace-memory blocks a store hands it: no Task field holds them. Those
+// take the SAME pass through delegate.Task.ScreenModelText, which the task
+// carries from here to wherever the backend composes them (claw at the
+// request it builds, pi at its system-prompt suffix). The in-container claw
+// runner is the stated residual: a closure does not cross the IOTask wire
+// and the container builds no guard, so the block it composes from the
+// workspace there is screened by nothing (docs/secrets.md).
 func (e *ClawExecutor) taskForModel(task delegate.Task) delegate.Task {
 	if e == nil || e.secretGuard == nil {
 		return task
@@ -75,6 +101,8 @@ func (e *ClawExecutor) taskForModel(task delegate.Task) delegate.Task {
 	task.UserPrompt = redact(task.UserPrompt)
 	task.PresetFragment = redact(task.PresetFragment)
 	task.ResumeAnswer = redact(task.ResumeAnswer)
+	task.AutoMemoryPrompt = redact(task.AutoMemoryPrompt)
+	task.ScreenModelText = redact
 	if len(task.UserContent) > 0 {
 		blocks := make([]delegate.ContentBlock, len(task.UserContent))
 		copy(blocks, task.UserContent)
@@ -82,6 +110,26 @@ func (e *ClawExecutor) taskForModel(task delegate.Task) delegate.Task {
 			blocks[i].Text = redact(blocks[i].Text)
 		}
 		task.UserContent = blocks
+	}
+	if len(task.CursorFragments) > 0 {
+		frags := make([]string, len(task.CursorFragments))
+		for i, frag := range task.CursorFragments {
+			frags[i] = redact(frag)
+		}
+		task.CursorFragments = frags
+	}
+	// Both leaves of a skill hint: the name and the description come from
+	// the workspace's own .claude/skills/ — a checkout of the target repo —
+	// so neither is iterion's text. A known value can never legitimately BE
+	// a library skill's name, so the replacement only ever fires on a leak.
+	if len(task.SkillHints) > 0 {
+		hints := make([]delegate.SkillHint, len(task.SkillHints))
+		copy(hints, task.SkillHints)
+		for i := range hints {
+			hints[i].Name = redact(hints[i].Name)
+			hints[i].Description = redact(hints[i].Description)
+		}
+		task.SkillHints = hints
 	}
 	return task
 }

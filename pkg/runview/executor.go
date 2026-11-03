@@ -589,7 +589,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		}
 	}
 	if llmroute.CrossHarnessActive(spec.LLMRouteCrossHarness) {
-		handoff = model.NewHandoffRecorder(artifactDir)
+		handoff = model.NewHandoffRecorder(artifactDir, guard)
 	}
 	// The recorder rides INSIDE the hooks constructor: the capability
 	// detection must see the store's own interfaces, and the wrap lands

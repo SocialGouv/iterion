@@ -153,17 +153,32 @@ func buildRequest(opts GenerationOptions, messages []api.Message, extraTools []a
 	// Anthropic/Bedrock/Vertex prefer SystemBlocks, while the OpenAI and
 	// Foundry transports only consume System. Without the mirrored string,
 	// OpenAI Responses silently receives no authored instructions.
+	//
+	// Every system text crosses the model boundary HERE, the last point
+	// before the wire (ADR-146 axis 1a). The prompts arrive already passed
+	// at the task seam; the extra blocks do not — the ambient
+	// instruction files the backend read under the task's work dir, the
+	// workspace-memory index and autoload — because no Task field holds
+	// them, so no field pass can reach them. Screening at the request
+	// rather than at each append covers a block added later by
+	// construction. The options are left as the caller built them: the tool
+	// loop reuses them across turns, and the record of what the run
+	// composed is not the model's view of it.
+	screen := opts.screenModelText()
 	if len(opts.SystemBlocks) > 0 {
-		req.SystemBlocks = opts.SystemBlocks
-		systemTexts := make([]string, 0, len(opts.SystemBlocks))
-		for _, block := range opts.SystemBlocks {
-			if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
-				systemTexts = append(systemTexts, block.Text)
+		blocks := make([]api.ContentBlock, len(opts.SystemBlocks))
+		copy(blocks, opts.SystemBlocks)
+		systemTexts := make([]string, 0, len(blocks))
+		for i := range blocks {
+			blocks[i].Text = screen(blocks[i].Text)
+			if blocks[i].Type == "text" && strings.TrimSpace(blocks[i].Text) != "" {
+				systemTexts = append(systemTexts, blocks[i].Text)
 			}
 		}
+		req.SystemBlocks = blocks
 		req.System = strings.Join(systemTexts, "\n\n")
 	} else {
-		req.System = opts.System
+		req.System = screen(opts.System)
 	}
 
 	// Map provider-specific options.

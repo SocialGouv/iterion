@@ -11,6 +11,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
+	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -83,17 +85,27 @@ type HandoffRecorder struct {
 	created     bool             // this recorder made the directory (and only it may remove it)
 	closed      bool             // Cleanup ran: no further writes
 	now         func() time.Time // test seam
+	// guard applies the grant half of the model boundary to a sealed
+	// transcript; nil (no run guard) seals the rendered bytes unchanged.
+	guard *secretguard.Guard
 }
 
 // NewHandoffRecorder builds a recorder rooted at fallbackRoot (the run's
 // artifact files dir, possibly empty). SetRoot upgrades it to the shared
 // state dir when the sandbox driver provides one — always before the
 // first Execute, hence before any seal.
-func NewHandoffRecorder(fallbackRoot string) *HandoffRecorder {
+//
+// guard is the run's secret guard, taken here rather than set later
+// because a seal that happened before it arrived would hand the next
+// harness a transcript the grants never screened; nil is the no-secrets
+// run. A nil guard is honoured, not worked around: Seal's pass is
+// nil-safe and the file seals byte-identically.
+func NewHandoffRecorder(fallbackRoot string, guard *secretguard.Guard) *HandoffRecorder {
 	rec := &HandoffRecorder{
 		fallbackDir: fallbackRoot,
 		nodes:       map[string]*handoffNode{},
 		now:         time.Now,
+		guard:       guard,
 	}
 	if fallbackRoot != "" {
 		rec.dir = filepath.Join(fallbackRoot, "routing-handoff")
@@ -224,6 +236,17 @@ func (n *handoffNode) headBytes() int {
 // temp+rename — a rename needs only the directory, not write permission
 // on the sealed target. An empty buffer seals nothing: the caller stamps
 // the event "unavailable" instead of inventing an empty artifact.
+//
+// The rendered body takes the grant half of the model boundary before it
+// lands: the next harness splices this file into its own prompt
+// (delegate.Task.HandoffSection reads it INSIDE the backend, downstream of
+// taskForModel), so a placeholder whose secret withholds the `prompt` sink
+// must arrive in its redact-only form here — the same rule
+// Guard.RedactForModel applies to a rendered prompt. The values themselves
+// are already placeholders: the recorder observes post-redaction events
+// (the chain is redacting(handoff(store))), which is why only the grant
+// half is owed. Seal is the one pass because the fallback data arrives
+// here, not through Observe.
 func (r *HandoffRecorder) Seal(nodeID string, fallbackData map[string]any) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -239,7 +262,7 @@ func (r *HandoffRecorder) Seal(nodeID string, fallbackData map[string]any) strin
 	}
 	r.created = true
 	path := filepath.Join(r.dir, sanitizeNodeFile(nodeID)+".md")
-	body := renderHandoffFile(nodeID, n, fallbackData, r.now().UTC())
+	body := r.guard.DefuseUngranted(secretsink.Prompt, renderHandoffFile(nodeID, n, fallbackData, r.now().UTC()))
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, []byte(body), 0o600); err != nil {
 		return ""
