@@ -58,8 +58,8 @@ func nixVolumeNameFromID(id string) string {
 // nixStoreVolumeName resolves the image's content id via `image inspect` and
 // returns its persistent-/nix volume name, or "" if it can't be resolved
 // (the run then proceeds without the persistent store — non-fatal).
-func nixStoreVolumeName(ctx context.Context, rt Runtime, image string) string {
-	out, err := runtimeCmdContext(ctx, rt, "image", "inspect", "--format", "{{.Id}}", image).Output()
+func (c CLI) nixStoreVolumeName(ctx context.Context, image string) string {
+	out, err := c.cmdContext(ctx, "image", "inspect", "--format", "{{.Id}}", image).Output()
 	if err != nil {
 		return ""
 	}
@@ -84,11 +84,11 @@ func persistNixStore() bool {
 // install a real logger via [Driver.WithLogger] so sandbox events are
 // interleaved with the rest of the run.
 func New() (sandbox.Driver, error) {
-	rt, err := Detect()
+	cli, err := Detect()
 	if err != nil {
 		return nil, &sandbox.ErrUnavailable{Driver: "docker", Reason: err.Error()}
 	}
-	return &Driver{rt: rt, logger: iterlog.New(iterlog.LevelInfo, io.Discard)}, nil
+	return &Driver{cli: cli, logger: iterlog.New(iterlog.LevelInfo, io.Discard)}, nil
 }
 
 // Constructor is the [sandbox.DriverConstructor] hook for registration
@@ -99,7 +99,7 @@ func Constructor() (sandbox.Driver, error) { return New() }
 
 // Driver implements [sandbox.Driver] for the Docker / Podman runtimes.
 type Driver struct {
-	rt     Runtime
+	cli    CLI
 	logger *iterlog.Logger
 }
 
@@ -116,7 +116,7 @@ func (d *Driver) WithLogger(l *iterlog.Logger) *Driver {
 }
 
 // Name returns the underlying runtime ("docker" or "podman").
-func (d *Driver) Name() string { return string(d.rt) }
+func (d *Driver) Name() string { return d.cli.String() }
 
 // Compile-time guard: Driver satisfies the optional ProxyConfigurer
 // interface so the engine routes proxyAddressesForDriver to ProxyConfig
@@ -177,9 +177,9 @@ func (d *Driver) Prepare(ctx context.Context, spec sandbox.Spec) (sandbox.Prepar
 	// Pull is only meaningful when we have a pre-built image ref.
 	// Build-driven specs materialize the image at Build() time and
 	// always end up local — no pull required.
-	if spec.Image != "" && !imageExists(ctx, d.rt, spec.Image) {
-		d.logger.Info("sandbox: pulling image %s via %s", spec.Image, d.rt)
-		if err := pullImage(ctx, d.rt, spec.Image); err != nil {
+	if spec.Image != "" && !d.cli.imageExists(ctx, spec.Image) {
+		d.logger.Info("sandbox: pulling image %s via %s", spec.Image, d.cli)
+		if err := d.cli.pullImage(ctx, spec.Image); err != nil {
 			// The engine's version-pinned default can name a tag no
 			// release ever published (a binary built between releases,
 			// or a release whose sandbox image did not ship). Falling
@@ -191,8 +191,8 @@ func (d *Driver) Prepare(ctx context.Context, spec sandbox.Spec) (sandbox.Prepar
 			}
 			d.logger.Warn("sandbox: image %s is unavailable (%v) — falling back to %s. This build pins a sandbox tag that was never published; pass --sandbox-default-image to choose one yourself.",
 				spec.Image, err, spec.ImageFallback)
-			if !imageExists(ctx, d.rt, spec.ImageFallback) {
-				if ferr := pullImage(ctx, d.rt, spec.ImageFallback); ferr != nil {
+			if !d.cli.imageExists(ctx, spec.ImageFallback) {
+				if ferr := d.cli.pullImage(ctx, spec.ImageFallback); ferr != nil {
 					return nil, fmt.Errorf("%w (fallback %s also failed: %v)", err, spec.ImageFallback, ferr)
 				}
 			}
@@ -202,7 +202,7 @@ func (d *Driver) Prepare(ctx context.Context, spec sandbox.Spec) (sandbox.Prepar
 	return &Prepared{
 		spec:      spec,
 		workspace: workspace,
-		runtime:   d.rt,
+		cli:       d.cli,
 	}, nil
 }
 
@@ -746,7 +746,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	// would shadow the new image's /nix). Seeded store is consistent:
 	// `nix-store --verify` + devbox both succeed on it.
 	if persistNixStore() && p.spec.Image != "" {
-		if vol := nixStoreVolumeName(ctx, d.rt, p.spec.Image); vol != "" {
+		if vol := d.cli.nixStoreVolumeName(ctx, p.spec.Image); vol != "" {
 			args = append(args, "--mount", "type=volume,source="+vol+",target=/nix")
 		}
 	}
@@ -827,7 +827,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	// error message, and isContainerNameConflict, which matches the daemon's
 	// refusal — written on stderr.
 	createContainer := func() (string, string, error) {
-		cmd := runtimeCmdContext(ctx, d.rt, args...)
+		cmd := d.cli.cmdContext(ctx, args...)
 		var errOut bytes.Buffer
 		cmd.Stderr = &errOut
 		stdout, runErr := cmd.Output()
@@ -846,7 +846,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		// retry also fails, surface the original error chain so the
 		// operator sees the underlying cause.
 		d.logger.Warn("sandbox: container %q already exists from a prior run — force-removing and retrying", containerName)
-		if rmErr := forceRemoveContainer(ctx, d.rt, containerName); rmErr != nil {
+		if rmErr := d.cli.forceRemoveContainer(ctx, containerName); rmErr != nil {
 			return nil, fmt.Errorf("docker: run: %w\nstderr: %s\n(also tried force-remove of stale container: %v)", err, createStderr, rmErr)
 		}
 		out, createStderr, err = createContainer()
@@ -865,7 +865,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		inContainerWorkspace: inContainerWorkspace,
 		tempDirs:             tempDirs,
 		secretFiles:          secretLocs,
-		pidIsolated:          containerPIDIsolated(ctx, d.rt, containerID, d.logger),
+		pidIsolated:          d.cli.containerPIDIsolated(ctx, containerID, d.logger),
 	}
 
 	if p.spec.PostCreate != "" {
@@ -890,11 +890,11 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 type Prepared struct {
 	spec      sandbox.Spec
 	workspace string
-	runtime   Runtime
+	cli       CLI
 }
 
 // DriverName implements [sandbox.PreparedSpec].
-func (p *Prepared) DriverName() string { return string(p.runtime) }
+func (p *Prepared) DriverName() string { return p.cli.String() }
 
 // Spec returns the spec the prepared was built from. Useful for tests
 // and engine-side diagnostics.
@@ -938,7 +938,7 @@ type Run struct {
 }
 
 // Driver returns the runtime name — "docker" or "podman".
-func (r *Run) Driver() string { return string(r.driver.rt) }
+func (r *Run) Driver() string { return r.driver.cli.String() }
 
 // ProxyEndpoint returns the network-proxy URL injected into this sandbox's
 // container (RunInfo.ProxyEndpoint), empty when the run is policy-less.
@@ -1135,7 +1135,7 @@ func (r *Run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) 
 		args = append(args, cmd...)
 	}
 
-	c := exec.CommandContext(ctx, string(r.driver.rt), args...)
+	c := r.driver.cli.command(ctx, args...)
 	switch {
 	case opts.Stdin != nil:
 		c.Stdin = opts.Stdin
@@ -1178,7 +1178,7 @@ func (r *Run) stop(ctx context.Context) error {
 	// Give the container 5s to exit gracefully, then docker SIGKILLs.
 	stopCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	out, err := runtimeCmdContext(stopCtx, r.driver.rt, "stop", "--time", "5", r.containerID).CombinedOutput()
+	out, err := r.driver.cli.cmdContext(stopCtx, "stop", "--time", "5", r.containerID).CombinedOutput()
 	if err != nil {
 		// "no such container" means it already exited — treat as success.
 		if strings.Contains(string(out), "No such container") || strings.Contains(string(out), "no such container") {
@@ -1197,8 +1197,8 @@ func (r *Run) ProcessIsolated() bool { return r.pidIsolated }
 // in. Its own — "" (docker's default) or "private" — isolates it; "host",
 // which podman's containers.conf may make every container's default, or
 // another container's, does not. What cannot be read is not isolated.
-func containerPIDIsolated(ctx context.Context, rt Runtime, id string, logger *iterlog.Logger) bool {
-	out, err := runtimeCmdContext(ctx, rt, "inspect", "--format", "{{.HostConfig.PidMode}}", id).Output()
+func (c CLI) containerPIDIsolated(ctx context.Context, id string, logger *iterlog.Logger) bool {
+	out, err := c.cmdContext(ctx, "inspect", "--format", "{{.HostConfig.PidMode}}", id).Output()
 	if err != nil {
 		logger.Warn("sandbox: container %s: its process namespace could not be read (%v) — it is not treated as isolated", containerShortID(id), err)
 		return false
@@ -1242,7 +1242,7 @@ func (r *Run) Cleanup(ctx context.Context) error {
 	}
 	cleanupCtx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
-	out, err := runtimeCmdContext(cleanupCtx, r.driver.rt, "rm", "--force", r.containerID).CombinedOutput()
+	out, err := r.driver.cli.cmdContext(cleanupCtx, "rm", "--force", r.containerID).CombinedOutput()
 	if err != nil {
 		if strings.Contains(string(out), "No such container") || strings.Contains(string(out), "no such container") {
 			return nil
@@ -1451,8 +1451,8 @@ func isContainerNameConflict(stderr []byte) bool {
 // underlying error so the caller can decide whether to surface a
 // combined diagnostic. Idempotent — removing a missing container is
 // not treated as a hard error by the caller path.
-func forceRemoveContainer(ctx context.Context, rt Runtime, name string) error {
-	out, err := runtimeCmdContext(ctx, rt, "rm", "-f", name).CombinedOutput()
+func (c CLI) forceRemoveContainer(ctx context.Context, name string) error {
+	out, err := c.cmdContext(ctx, "rm", "-f", name).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("rm -f %s: %w (output: %s)", name, err, strings.TrimSpace(string(out)))
 	}

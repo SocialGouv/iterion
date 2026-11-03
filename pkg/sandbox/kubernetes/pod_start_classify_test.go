@@ -89,9 +89,11 @@ func TestClassifyPodStart(t *testing.T) {
 	}
 }
 
-// kubectlPodJSONShim puts a fake `kubectl` first on PATH whose `wait` times
-// out and whose `get pod` answers with the given pod JSON.
-func kubectlPodJSONShim(t *testing.T, podJSON string) {
+// kubectlPodJSONShim plants a fake `kubectl` whose `wait` times out and
+// whose `get pod` answers with the given pod JSON, and returns it BY PATH —
+// the way Detect hands the driver its binary. PATH still carries the shim's
+// directory because the shim's own `cat` needs it.
+func kubectlPodJSONShim(t *testing.T, podJSON string) Kubectl {
 	t.Helper()
 	isolateExecEnvironment(t)
 	dir := t.TempDir()
@@ -101,7 +103,8 @@ func kubectlPodJSONShim(t *testing.T, podJSON string) {
 		"  *\" get pod \"*) cat \"$ITERION_TEST_POD_JSON\"; exit 0 ;;\n" +
 		"esac\n" +
 		"exit 2\n"
-	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte(script), 0o755); err != nil {
+	bin := filepath.Join(dir, "kubectl")
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	podFile := filepath.Join(dir, "pod.json")
@@ -110,6 +113,7 @@ func kubectlPodJSONShim(t *testing.T, podJSON string) {
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("ITERION_TEST_POD_JSON", podFile)
+	return Kubectl(bin)
 }
 
 const unschedulablePodJSON = `{"status":{"phase":"Pending",
@@ -125,8 +129,8 @@ const badImagePodJSON = `{"status":{"phase":"Pending",
 // error must carry sandbox.ErrCapacity so the run parks failed_resumable
 // instead of dying terminal and losing an hourly sentinel's tick.
 func TestWaitForPodRunning_UnschedulableCarriesTheCapacitySentinel(t *testing.T) {
-	kubectlPodJSONShim(t, unschedulablePodJSON)
-	err := waitForPodRunning(context.Background(), "ns", "iterion-run-x", 1)
+	kubectl := kubectlPodJSONShim(t, unschedulablePodJSON)
+	err := kubectl.waitForPodRunning(context.Background(), "ns", "iterion-run-x", 1)
 	if err == nil {
 		t.Fatal("expected the wait to fail")
 	}
@@ -142,8 +146,8 @@ func TestWaitForPodRunning_UnschedulableCarriesTheCapacitySentinel(t *testing.T)
 // a broken image reference re-fails identically on every pod, so it must
 // stay terminal rather than burn the whole delivery budget.
 func TestWaitForPodRunning_BadImageStaysTerminal(t *testing.T) {
-	kubectlPodJSONShim(t, badImagePodJSON)
-	err := waitForPodRunning(context.Background(), "ns", "iterion-run-x", 1)
+	kubectl := kubectlPodJSONShim(t, badImagePodJSON)
+	err := kubectl.waitForPodRunning(context.Background(), "ns", "iterion-run-x", 1)
 	if err == nil {
 		t.Fatal("expected the wait to fail")
 	}

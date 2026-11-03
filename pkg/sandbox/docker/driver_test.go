@@ -13,7 +13,7 @@ import (
 )
 
 func TestCapabilitiesAdvertisedFeatures(t *testing.T) {
-	d := &Driver{rt: RuntimeDocker}
+	d := &Driver{cli: CLI{rt: RuntimeDocker}}
 	caps := d.Capabilities()
 
 	if !caps.SupportsImage {
@@ -38,7 +38,7 @@ func TestCapabilitiesAdvertisedFeatures(t *testing.T) {
 }
 
 func TestPrepareAcceptsBuild(t *testing.T) {
-	d := &Driver{rt: RuntimeDocker}
+	d := &Driver{cli: CLI{rt: RuntimeDocker}}
 	prepared, err := d.Prepare(context.Background(), sandbox.Spec{
 		Mode:  sandbox.ModeInline,
 		Build: &sandbox.Build{Dockerfile: "Dockerfile"},
@@ -53,7 +53,7 @@ func TestPrepareAcceptsBuild(t *testing.T) {
 }
 
 func TestPrepareRejectsMissingImage(t *testing.T) {
-	d := &Driver{rt: RuntimeDocker}
+	d := &Driver{cli: CLI{rt: RuntimeDocker}}
 	_, err := d.Prepare(context.Background(), sandbox.Spec{Mode: sandbox.ModeInline})
 	if err == nil {
 		t.Fatal("expected rejection of inline spec without image")
@@ -61,7 +61,7 @@ func TestPrepareRejectsMissingImage(t *testing.T) {
 }
 
 func TestPrepareValidatesSpec(t *testing.T) {
-	d := &Driver{rt: RuntimeDocker}
+	d := &Driver{cli: CLI{rt: RuntimeDocker}}
 	_, err := d.Prepare(context.Background(), sandbox.Spec{Mode: sandbox.Mode("nonsense")})
 	if err == nil {
 		t.Fatal("expected validation error for invalid mode")
@@ -106,7 +106,7 @@ func TestContainerShortIDPassesThroughShort(t *testing.T) {
 }
 
 func TestStartRejectsForeignPreparedSpec(t *testing.T) {
-	d := &Driver{rt: RuntimeDocker}
+	d := &Driver{cli: CLI{rt: RuntimeDocker}}
 	// Use a noop-shaped PreparedSpec — DriverName != docker, must reject.
 	_, err := d.Start(context.Background(), foreignPrepared{}, sandbox.RunInfo{})
 	if err == nil {
@@ -125,7 +125,7 @@ func (foreignPrepared) DriverName() string { return "not-docker" }
 // outbound HTTPS_PROXY connection in ECONNREFUSED, which surfaces in
 // claude as "API Error: Unable to connect to API (ConnectionRefused)".
 func TestProxyConfigBindsAllInterfaces(t *testing.T) {
-	d := &Driver{rt: RuntimeDocker}
+	d := &Driver{cli: CLI{rt: RuntimeDocker}}
 	bind, advertise, err := d.ProxyConfig()
 	if err != nil {
 		t.Fatalf("ProxyConfig: %v", err)
@@ -145,14 +145,14 @@ func TestProxyConfigBindsAllInterfaces(t *testing.T) {
 // flag, docker closes the child's stdin before the pipe is wired and
 // the in-container CLI exits silently with no result.
 func TestRunCommandKeepStdinOpenAddsInteractiveFlag(t *testing.T) {
-	d := &Driver{rt: RuntimeDocker}
+	d := &Driver{cli: CLI{rt: RuntimeDocker}}
 	r := &Run{
 		driver:      d,
 		containerID: "deadbeef",
 		prepared: &Prepared{
 			workspace: "/workspace",
 			spec:      sandbox.Spec{},
-			runtime:   RuntimeDocker,
+			cli:       CLI{rt: RuntimeDocker},
 		},
 	}
 
@@ -348,14 +348,14 @@ func secretMountArgs(args []string) []string {
 // historical argv shape so behavior is byte-for-byte unchanged for the
 // common case.
 func TestRunCommandRoutesOversizedScriptViaStdin(t *testing.T) {
-	d := &Driver{rt: RuntimeDocker}
+	d := &Driver{cli: CLI{rt: RuntimeDocker}}
 	r := &Run{
 		driver:      d,
 		containerID: "deadbeef",
 		prepared: &Prepared{
 			workspace: "/workspace",
 			spec:      sandbox.Spec{},
-			runtime:   RuntimeDocker,
+			cli:       CLI{rt: RuntimeDocker},
 		},
 		inContainerWorkspace: "/workspace",
 	}

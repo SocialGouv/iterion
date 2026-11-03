@@ -84,7 +84,7 @@ func TestPingDaemonStub(t *testing.T) {
 	defer func() { runDockerProbe = old }()
 
 	t.Run("daemon down", func(t *testing.T) {
-		runDockerProbe = func(ctx context.Context, rt Runtime, env []string, args ...string) ([]byte, error) {
+		runDockerProbe = func(ctx context.Context, cli CLI, env []string, args ...string) ([]byte, error) {
 			return []byte("Cannot connect to the Docker daemon at unix:///var/run/docker.sock."), errors.New("exit status 1")
 		}
 		_, err := PingDaemon(context.Background())
@@ -94,7 +94,7 @@ func TestPingDaemonStub(t *testing.T) {
 	})
 
 	t.Run("daemon up", func(t *testing.T) {
-		runDockerProbe = func(ctx context.Context, rt Runtime, env []string, args ...string) ([]byte, error) {
+		runDockerProbe = func(ctx context.Context, cli CLI, env []string, args ...string) ([]byte, error) {
 			return []byte("27.1.1\n"), nil
 		}
 		v, err := PingDaemon(context.Background())
@@ -107,7 +107,7 @@ func TestPingDaemonStub(t *testing.T) {
 	})
 
 	t.Run("empty version", func(t *testing.T) {
-		runDockerProbe = func(ctx context.Context, rt Runtime, env []string, args ...string) ([]byte, error) {
+		runDockerProbe = func(ctx context.Context, cli CLI, env []string, args ...string) ([]byte, error) {
 			return []byte("\n"), nil
 		}
 		if _, err := PingDaemon(context.Background()); err == nil {

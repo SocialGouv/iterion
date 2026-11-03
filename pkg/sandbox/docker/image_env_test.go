@@ -32,10 +32,10 @@ import (
 func discardLogger() *iterlog.Logger { return iterlog.New(iterlog.LevelInfo, io.Discard) }
 
 // fakeInspector writes a container-runtime stand-in whose `image inspect
-// --format {{json .Config.Env}}` answers with env, and returns it as a
-// [Runtime] (an absolute path, so no PATH is touched). exitCode != 0 makes
-// it fail the way an absent image does.
-func fakeInspector(t *testing.T, env string, exitCode int) Runtime {
+// --format {{json .Config.Env}}` answers with env, and returns the [CLI]
+// naming it by absolute path, so no PATH is touched. exitCode != 0 makes it
+// fail the way an absent image does.
+func fakeInspector(t *testing.T, env string, exitCode int) CLI {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("the stand-in runtime is a shell script")
@@ -51,15 +51,15 @@ func fakeInspector(t *testing.T, env string, exitCode int) Runtime {
 	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
 		t.Fatalf("writing the stand-in runtime: %v", err)
 	}
-	return Runtime(bin)
+	return CLI{rt: RuntimeDocker, path: bin}
 }
 
 // TestImageConfigEnvReadsWhatTheImageBakesIn is the read half of the screen:
 // the driver reports the image's own ENV entries, in the image's order.
 func TestImageConfigEnvReadsWhatTheImageBakesIn(t *testing.T) {
-	rt := fakeInspector(t, `["PATH=/usr/bin","CLAUDE_CODE_USE_BEDROCK=1","AWS_SECRET_ACCESS_KEY=planted"]`, 0)
-	d := &Driver{rt: rt, logger: discardLogger()}
-	prepared := &Prepared{spec: sandbox.Spec{Image: "ghcr.io/planter/dev:1"}, runtime: rt}
+	cli := fakeInspector(t, `["PATH=/usr/bin","CLAUDE_CODE_USE_BEDROCK=1","AWS_SECRET_ACCESS_KEY=planted"]`, 0)
+	d := &Driver{cli: cli, logger: discardLogger()}
+	prepared := &Prepared{spec: sandbox.Spec{Image: "ghcr.io/planter/dev:1"}, cli: cli}
 
 	env, err := d.ImageConfigEnv(context.Background(), prepared)
 	if err != nil {
@@ -75,9 +75,9 @@ func TestImageConfigEnvReadsWhatTheImageBakesIn(t *testing.T) {
 // not have is an ERROR, never an empty list — an empty list reads as a
 // clean image and would hand the run a guard it never had.
 func TestImageConfigEnvReportsAnUnreadableImage(t *testing.T) {
-	rt := fakeInspector(t, "", 1)
-	d := &Driver{rt: rt, logger: discardLogger()}
-	prepared := &Prepared{spec: sandbox.Spec{Image: "ghcr.io/planter/absent:1"}, runtime: rt}
+	cli := fakeInspector(t, "", 1)
+	d := &Driver{cli: cli, logger: discardLogger()}
+	prepared := &Prepared{spec: sandbox.Spec{Image: "ghcr.io/planter/absent:1"}, cli: cli}
 
 	env, err := d.ImageConfigEnv(context.Background(), prepared)
 	if err == nil {
@@ -95,9 +95,9 @@ func TestImageConfigEnvReportsAnUnreadableImage(t *testing.T) {
 // sets none inspects as the JSON literal null, which is an image setting
 // nothing — not a decoding failure.
 func TestImageConfigEnvAcceptsAnImageWithNoEnv(t *testing.T) {
-	rt := fakeInspector(t, "null", 0)
-	d := &Driver{rt: rt, logger: discardLogger()}
-	prepared := &Prepared{spec: sandbox.Spec{Image: "scratch:bare"}, runtime: rt}
+	cli := fakeInspector(t, "null", 0)
+	d := &Driver{cli: cli, logger: discardLogger()}
+	prepared := &Prepared{spec: sandbox.Spec{Image: "scratch:bare"}, cli: cli}
 
 	env, err := d.ImageConfigEnv(context.Background(), prepared)
 	if err != nil {
@@ -116,10 +116,10 @@ func TestImageConfigEnvAcceptsAnImageWithNoEnv(t *testing.T) {
 // It exercises [envArgs], the producer Start appends — not a re-reading of
 // the spec — so the claim is about the argv and not about the map.
 func TestNeutralizedImageEnvReachesTheRunArgv(t *testing.T) {
-	d := &Driver{rt: RuntimeDocker, logger: discardLogger()}
+	d := &Driver{cli: CLI{rt: RuntimeDocker}, logger: discardLogger()}
 	prepared := &Prepared{
-		spec:    sandbox.Spec{Image: "ghcr.io/planter/dev:1", Env: map[string]string{"KEPT": "value"}},
-		runtime: RuntimeDocker,
+		spec: sandbox.Spec{Image: "ghcr.io/planter/dev:1", Env: map[string]string{"KEPT": "value"}},
+		cli:  CLI{rt: RuntimeDocker},
 	}
 
 	screened, emptied, err := d.NeutralizeImageEnv(prepared, sandbox.RunInfo{}, []string{"CLAUDE_CODE_USE_BEDROCK", "AWS_SECRET_ACCESS_KEY"})
@@ -169,10 +169,10 @@ func TestNeutralizedImageEnvReachesTheRunArgv(t *testing.T) {
 // this is the measurement the runtime's doubles copy their skip rule
 // from, so an over-generous answer here is a false audit record there.
 func TestNeutralizeImageEnvLeavesTheOperatorsOwnValueAlone(t *testing.T) {
-	d := &Driver{rt: RuntimeDocker, logger: discardLogger()}
+	d := &Driver{cli: CLI{rt: RuntimeDocker}, logger: discardLogger()}
 	prepared := &Prepared{
-		spec:    sandbox.Spec{Image: "i:1", Env: map[string]string{"AWS_REGION": "eu-west-3"}},
-		runtime: RuntimeDocker,
+		spec: sandbox.Spec{Image: "i:1", Env: map[string]string{"AWS_REGION": "eu-west-3"}},
+		cli:  CLI{rt: RuntimeDocker},
 	}
 
 	screened, emptied, err := d.NeutralizeImageEnv(prepared, sandbox.RunInfo{}, []string{"AWS_REGION", "AWS_SECRET_ACCESS_KEY"})
@@ -207,8 +207,8 @@ func TestNeutralizeImageEnvLeavesTheOperatorsOwnValueAlone(t *testing.T) {
 // second docker flag, so it is refused at the screen rather than three
 // steps later in Start.
 func TestNeutralizeImageEnvRefusesAMalformedName(t *testing.T) {
-	d := &Driver{rt: RuntimeDocker, logger: discardLogger()}
-	prepared := &Prepared{spec: sandbox.Spec{Image: "i:1"}, runtime: RuntimeDocker}
+	d := &Driver{cli: CLI{rt: RuntimeDocker}, logger: discardLogger()}
+	prepared := &Prepared{spec: sandbox.Spec{Image: "i:1"}, cli: CLI{rt: RuntimeDocker}}
 
 	if _, _, err := d.NeutralizeImageEnv(prepared, sandbox.RunInfo{}, []string{"OK_TOKEN\nDOCKER_HOST=tcp://planter"}); err == nil {
 		t.Fatalf("NeutralizeImageEnv accepted a name carrying a newline")
@@ -243,8 +243,8 @@ func inspectedRunInfo() sandbox.RunInfo {
 // driver: with the pair in place `docker inspect` returned
 // `http://host.docker.internal:45321`, not "".
 func TestNeutralizeImageEnvLeavesTheNamesTheDriversOwnStartSetsAlone(t *testing.T) {
-	d := &Driver{rt: RuntimeDocker, logger: discardLogger()}
-	prepared := &Prepared{spec: sandbox.Spec{Image: "i:1"}, runtime: RuntimeDocker}
+	d := &Driver{cli: CLI{rt: RuntimeDocker}, logger: discardLogger()}
+	prepared := &Prepared{spec: sandbox.Spec{Image: "i:1"}, cli: CLI{rt: RuntimeDocker}}
 	info := inspectedRunInfo()
 
 	// The whole class the screen would decide on for this image: the four
@@ -289,7 +289,7 @@ func TestNeutralizeImageEnvLeavesTheNamesTheDriversOwnStartSetsAlone(t *testing.
 // whose Start would not set it is filed as "the driver's value" while the
 // container carries the image's — the mirror of the defect above.
 func TestTheDriverDeclaresEveryEnvNameItsOwnStartSets(t *testing.T) {
-	d := &Driver{rt: RuntimeDocker, logger: discardLogger()}
+	d := &Driver{cli: CLI{rt: RuntimeDocker}, logger: discardLogger()}
 	for _, tc := range []struct {
 		name string
 		info sandbox.RunInfo
@@ -562,7 +562,7 @@ func TestEveryJavaTrustPairCarriesItsOwnValue(t *testing.T) {
 // The happy path needs a daemon and is witnessed end to end against
 // `docker inspect` (pkg/runtime's TestLiveTheImageEnvEventAgreesWithDockerInspect).
 func TestStartedContainerEnvRefusesWhatItCannotRead(t *testing.T) {
-	d := &Driver{rt: RuntimeDocker, logger: discardLogger()}
+	d := &Driver{cli: CLI{rt: RuntimeDocker}, logger: discardLogger()}
 
 	t.Run("a run from another driver", func(t *testing.T) {
 		env, err := d.StartedContainerEnv(context.Background(), &foreignRun{})

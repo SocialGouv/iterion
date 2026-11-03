@@ -39,7 +39,7 @@ func preparedWithoutPrepare(t *testing.T, spec sandbox.Spec) *Prepared {
 	if err := spec.Validate(); err != nil {
 		t.Fatalf("the witness spec must validate: %v", err)
 	}
-	return &Prepared{spec: spec, runtime: RuntimeDocker}
+	return &Prepared{spec: spec, cli: CLI{rt: RuntimeDocker}}
 }
 
 // The swap, played by a run alive through the window: the leaf was a real
@@ -59,7 +59,7 @@ func TestABindSourceSwappedBetweenPlanAndCreationRefusesTheStart(t *testing.T) {
 		Mounts:           []string{fmt.Sprintf("source=%s,target=/tmp/iterion-scratch,type=bind", leaf)},
 		BindSourceChecks: []sandbox.BindSourceCheck{{Root: root, Path: leaf}},
 	}
-	d := &Driver{rt: RuntimeDocker}
+	d := &Driver{cli: CLI{rt: RuntimeDocker}}
 	prepared := preparedWithoutPrepare(t, spec)
 
 	// The swap.
@@ -102,7 +102,7 @@ func TestABindSourceStillRealReachesTheCreateCommand(t *testing.T) {
 		Mounts:           []string{fmt.Sprintf("source=%s,target=/tmp/iterion-scratch,type=bind", leaf)},
 		BindSourceChecks: []sandbox.BindSourceCheck{{Root: root, Path: leaf}},
 	}
-	d := &Driver{rt: RuntimeDocker}
+	d := &Driver{cli: CLI{rt: RuntimeDocker}}
 	prepared := preparedWithoutPrepare(t, spec)
 
 	_, err := d.Start(context.Background(), prepared, sandbox.RunInfo{
@@ -139,7 +139,7 @@ func TestTheEngineLaidWorkspaceSwappedBetweenPlanAndCreationRefusesTheStart(t *t
 			{Root: root, Path: wt, MustExist: true},
 		},
 	}
-	d := &Driver{rt: RuntimeDocker}
+	d := &Driver{cli: CLI{rt: RuntimeDocker}}
 	prepared := preparedWithoutPrepare(t, spec)
 
 	// The swap a run alive through the window plays on the next run's
@@ -186,7 +186,7 @@ func TestTheWorkspaceGoneSinceThePlanRefusesInsteadOfRecreating(t *testing.T) {
 			{Root: root, Path: wt, MustExist: true},
 		},
 	}
-	d := &Driver{rt: RuntimeDocker}
+	d := &Driver{cli: CLI{rt: RuntimeDocker}}
 	prepared := preparedWithoutPrepare(t, spec)
 
 	// Gone since the plan verified it.
@@ -226,7 +226,7 @@ func TestTheEngineLaidWorkspaceStillRealReachesTheCreateCommand(t *testing.T) {
 			{Root: root, Path: wt, MustExist: true},
 		},
 	}
-	d := &Driver{rt: RuntimeDocker}
+	d := &Driver{cli: CLI{rt: RuntimeDocker}}
 	prepared := preparedWithoutPrepare(t, spec)
 
 	_, err := d.Start(context.Background(), prepared, sandbox.RunInfo{
@@ -260,7 +260,7 @@ func TestAVerifiedFileSourceReachesTheCreateCommand(t *testing.T) {
 		WorkspaceFolder:  LegacyDefaultWorkspace,
 		BindSourceChecks: []sandbox.BindSourceCheck{{Root: root, Path: file}},
 	}
-	d := &Driver{rt: RuntimeDocker}
+	d := &Driver{cli: CLI{rt: RuntimeDocker}}
 	prepared := preparedWithoutPrepare(t, spec)
 
 	_, err := d.Start(context.Background(), prepared, sandbox.RunInfo{
@@ -291,7 +291,7 @@ func TestAFileSourceSwappedForASymlinkRefusesTheStart(t *testing.T) {
 		WorkspaceFolder:  LegacyDefaultWorkspace,
 		BindSourceChecks: []sandbox.BindSourceCheck{{Root: root, Path: file}},
 	}
-	d := &Driver{rt: RuntimeDocker}
+	d := &Driver{cli: CLI{rt: RuntimeDocker}}
 	prepared := preparedWithoutPrepare(t, spec)
 
 	// The swap.
@@ -333,7 +333,7 @@ func TestAFileSourceGoneSinceThePlanRefusesInsteadOfRecreatingADirectory(t *test
 		WorkspaceFolder:  LegacyDefaultWorkspace,
 		BindSourceChecks: []sandbox.BindSourceCheck{{Root: root, Path: file}},
 	}
-	d := &Driver{rt: RuntimeDocker}
+	d := &Driver{cli: CLI{rt: RuntimeDocker}}
 	prepared := preparedWithoutPrepare(t, spec)
 
 	if err := os.Remove(file); err != nil {
@@ -372,7 +372,7 @@ func TestADirectorySourceGoneSinceThePlanRefusesInsteadOfRecreating(t *testing.T
 		WorkspaceFolder:  LegacyDefaultWorkspace,
 		BindSourceChecks: []sandbox.BindSourceCheck{{Root: root, Path: leaf}},
 	}
-	d := &Driver{rt: RuntimeDocker}
+	d := &Driver{cli: CLI{rt: RuntimeDocker}}
 	prepared := preparedWithoutPrepare(t, spec)
 
 	if err := os.Remove(leaf); err != nil {

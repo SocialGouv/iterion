@@ -2,8 +2,8 @@ package delegate
 
 import (
 	"fmt"
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
@@ -64,8 +64,10 @@ func (e *ErrBackendCLIAbsent) Error() string {
 //   - a sandboxed dispatch (task.Sandbox live on a real driver) is the
 //     run-start admission's plane: the image is known there, the container's
 //     PATH is not readable from here.
-//   - LookPath resolving the binary ends the gate: the CLI is here, wherever
-//     it came from.
+//   - envtrust.LookPath resolving the binary ends the gate: the CLI is on the
+//     operator's own PATH. A PATH a project `.env` planted resolves nothing,
+//     so it cannot lift this refusal. The spawn that follows still runs the
+//     bare name (the implicit class #2988 tracks).
 //
 // The gate reads the same derived registry cells as the compile warning
 // (C321) and the run-start refusal, so the day an image bakes one of these
@@ -90,7 +92,7 @@ func refuseAbsentImageCLI(task Task, proto CLIAgentProtocol, backendName, binary
 	if !backendcaps.UnservedByPublishedImages(backendName) {
 		return nil
 	}
-	if _, err := exec.LookPath(binary); err == nil {
+	if _, err := envtrust.LookPath(binary); err == nil {
 		return nil
 	}
 	pin := "`command:` on the node"

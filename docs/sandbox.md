@@ -3093,7 +3093,7 @@ and forwarding decorator, are:
 
 Two more execs **bypass `Run.Exec`**: Kubernetes `populateWorkspace`
 (`driver.go:1175`, pod tar extraction) and `exportOnce` (`driver.go:1476`, pod
-tar archive). Both call `kubectlCmdContext` directly and wait for the client;
+tar archive). Both call `Kubectl.cmdContext` directly and wait for the client;
 archive validation does not prove the remote process ended. Completion must
 preserve binary/streamed stdout rather than insert a line into an archive.
 

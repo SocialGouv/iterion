@@ -30,14 +30,16 @@ func TestRunPostCreate_DockerStallIsBoundedAndTyped(t *testing.T) {
 	}
 	rt := Runtime("iterion-test-wedged-runtime")
 	shimDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(shimDir, string(rt)), []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+	cli := CLI{rt: rt, path: filepath.Join(shimDir, string(rt))}
+	if err := os.WriteFile(cli.path, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// PATH keeps the shim's directory: its own `sleep` is resolved by sh.
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv(sandbox.PostCreateTimeoutEnv, "300ms")
 
 	r := &Run{
-		driver:      &Driver{rt: rt, logger: iterlog.Nop()},
+		driver:      &Driver{cli: cli, logger: iterlog.Nop()},
 		containerID: "deadbeef",
 		prepared:    &Prepared{},
 	}

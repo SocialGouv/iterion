@@ -55,8 +55,8 @@ func parseManagedList(kind string, data []byte) ([]ManagedResource, error) {
 
 // listManagedResources returns every resource of the given kind labelled
 // iterion.io/managed=true in the namespace.
-func listManagedResources(ctx context.Context, namespace, kind string) ([]ManagedResource, error) {
-	cmd := kubectlCmdContext(ctx, "--namespace", namespace, "get", kind,
+func (k Kubectl) listManagedResources(ctx context.Context, namespace, kind string) ([]ManagedResource, error) {
+	cmd := k.cmdContext(ctx, "--namespace", namespace, "get", kind,
 		"-l", LabelManaged+"=true", "-o", "json")
 	out, err := cmd.Output()
 	if err != nil {
@@ -79,13 +79,17 @@ func listManagedResources(ctx context.Context, namespace, kind string) ([]Manage
 // runner-pod-deleted and idle-forever windows; this closes the rest —
 // including the plaintext-credential Secret, which has no TTL of its own.
 //
+// The receiver is the kubectl [Detect] resolved: the reaper force-deletes
+// resources, so the binary it shells out to is not a question the live PATH
+// answers.
+//
 // isTerminal receives the iterion.io/run-id label value (empty when the
 // label is missing — treat those as orphans too, a managed resource with
 // no run owner). MUST be gated by the caller on the store's
 // cross-process-lock authority so a server sharing a namespace with live
 // runners never reaps an in-flight run's sandbox (see the runview
 // wiring).
-func ReapOrphanResources(ctx context.Context, namespace string, isTerminal func(runID string) bool) ([]ManagedResource, error) {
+func (k Kubectl) ReapOrphanResources(ctx context.Context, namespace string, isTerminal func(runID string) bool) ([]ManagedResource, error) {
 	if namespace == "" {
 		return nil, fmt.Errorf("kubernetes: ReapOrphanResources: namespace is required")
 	}
@@ -95,7 +99,7 @@ func ReapOrphanResources(ctx context.Context, namespace string, isTerminal func(
 	var reaped []ManagedResource
 	var firstErr error
 	for _, kind := range reapKinds {
-		resources, err := listManagedResources(ctx, namespace, kind)
+		resources, err := k.listManagedResources(ctx, namespace, kind)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -106,7 +110,7 @@ func ReapOrphanResources(ctx context.Context, namespace string, isTerminal func(
 			if !isTerminal(r.RunID) {
 				continue
 			}
-			if delErr := deleteResource(ctx, namespace, kind, r.Name); delErr != nil {
+			if delErr := k.deleteResource(ctx, namespace, kind, r.Name); delErr != nil {
 				if firstErr == nil {
 					firstErr = fmt.Errorf("kubernetes: reap %s/%s: %w", kind, r.Name, delErr)
 				}
