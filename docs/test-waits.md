@@ -225,8 +225,10 @@ sits in the phase that ENDS the sweep: a member dropped in a phase that hands
 over to the next one is re-discovered for free by that phase's own first scan.
 The non-empty witness has that by construction — its later windows sit in the
 KILL phase, which has no successor, so a member dropped there is left running
-and unreported however the phase ends, on the product's own lines (`latest (pid
-N) belongs to the session and is still running`). Those lines come free only for
+and unreported, on the product's own lines (the join's `left running [latest
+(pid N)]`, then `latest (pid N) was stopped but not reported` — while that
+phase still had a deadline, `latest (pid N) belongs to the session and is still
+running`). Those lines come free only for
 the LAST window: a member left running is a session never quiet again, so when
 it is an earlier window's member the NEXT window's premise — a scan that found
 nothing — expires first, and a premise names the scans it waited through, not
@@ -237,24 +239,47 @@ whose dropped member is the SECOND window's: with the join, the red carries both
 `premise, within 30s: no scan of the sweep found nothing once more, two scans
 later` and `later (pid N) belongs to the session and is still running`, 3 of 3
 arms; without it, the same 3 arms carried the premise alone and no product line
-at all. The empty-scan witness cannot have any of this: its windows
+at all. The empty-scan witness could not have any of this: its windows
 sit in the TERM phase, which ends that sweep only while the session goes quiet,
-and the very mutants it hunts leave a member alive — the phase then
-burns its budget and hands it to KILL, which finds it. That is how the
+and the very mutants it hunts leave a member alive — with a 10s budget, the
+phase burned it and handed the member to KILL, which found it. That is how the
 third-scan mutant and its sh twin stayed green on it, 3 of 3 arms each at 10.1s,
 with the second window already in place.
 
-**A premise, not an assumption.** The empty-scan witness reads the sweep's own
-scan log once it has returned (`endedQuiet`): the log must end on the two empty
-scans a quiet phase returns on, and count at most a quarter of the scans the
-phase budget allows — 6 scans on each of 9 arms of sound code, against a ceiling
-of 50, where a phase that burned its 10s budget logged 201 scans in the go
-implementation and 160 to 191 in the program. A phase that handed over now FAILS
-this witness instead of saving the sweep, and a count is not a duration, so load
-costs the premise nothing; what no scan log can show is a deadline that expired
-while the sweep was HELD, which is what the wide budget below is for. The
-third-scan mutant and its sh twin redden the witness 3 of 3 arms each on that
-premise.
+**A premise, not an assumption — and no clock in it.** The empty-scan witness
+reads the sweep's own scan log once it has returned (`endedQuiet`): the log must
+end on the two empty scans a quiet phase returns on. It first did so against the
+10s budget, counting at most a quarter of the scans that budget allows — 6 scans
+on each of 9 arms of sound code, against a ceiling of 50, where a phase that
+burned the budget logged 201 scans in the go implementation and 160 to 191 in
+the program — on the claim that a count is not a duration. The budget was one.
+With 150 extra processes and 48 busy loops in the sandbox's PID namespace, one
+scan of the program without `grep -z` took 4.5s, so the 10s TERM phase ran out
+after its third scan and handed both windows to KILL. Traced, the log read
+`[0 1 0 1 0 0]`: KILL's first scan re-discovered `later` for free and its two
+empty scans read as a quiet end, the premise passing the very handover it exists
+to refuse. With 300, scans took up to 8s, KILL ran out too, and the premise
+reddened unchanged code 3 of 3 arms (`[0 1 0 1]`, `[0 1 0]`) — the shape seen
+locally at load 45 and 102 (`[0 1 0 1 0]`). The phases a window sits in now
+have no deadline (`sweepNoDeadline`), so that witness's TERM phase ends on two
+empty scans or not at all, on any host, and `endedQuiet` asks only that, within
+`scanBound` (50) scans. Under the 300: both witnesses green 3 of 3 on every arm,
+the empty-scan one's TERM phase ending quiet with no KILL phase at all (traced).
+The third-scan mutant and its sh twin keep the session from ever going quiet:
+the join names the member left running once the log passes the bound (`left
+running [later (pid N)]`) and stops it, and the premise reddens too —
+`endedQuiet` in the empty-scan witness, the third window's in the non-empty one
+— 6 of 6 arms at rest, where the old premise caught it after 77 to 186 scans of
+its burned budget. Under the 300 the old witness PASSED that mutant 2 of 2, its
+TERM phase handing `later` to KILL; the new one reddens on the join's verdict,
+after 53 scans and 321s. No log shape says WHICH phase stopped a member, so the
+witness also reads each member's own end, the kernel's wait status
+(`endedOfTerm`): `late` and `later` must die of the SIGTERM their phase sends.
+A mutant that drops members new from the TERM phase's 3rd scan AND hands over
+to KILL after its 5th ends on two empty scans in 7, every member stopped and
+reported — it passed the old witness 3 of 3 arms at rest, and reddens the new
+one 3 of 3 on `later (pid N) signal: killed, not of the TERM its window's phase
+sends`.
 
 **How far the windows reach.** A window's member is new to the scan AFTER it, so
 the two windows the non-empty witness stages in the KILL phase pin re-discovery
@@ -274,8 +299,9 @@ product's clause stays a loop over every scan, and why both witnesses say where
 their proof stops.
 
 The scan INDEX is also the only axis these windows bound, and that bound is
-load-free but not time-free: both witnesses compress their phases to a second or
-two where production gives them 5s and 3s, so a sweep that stops re-discovering
+load-free but not time-free: at rest both witnesses reach their last window
+within a second or two of the sweep's start, where production gives the phases
+5s and 3s, so a sweep that stops re-discovering
 after a few seconds of ELAPSED time is invisible to them. Measured, a mutant
 that classifies no new member more than 3s after the sweep started: the ENTIRE
 package green, 69 green and rc 0, both witnesses passing on all three of their
@@ -291,18 +317,27 @@ itself, naming the scans it waited through — and, since `atAfterStaging` joins
 the sweep on that failure, alongside the product's own verdict on the process it
 left running. The deadline witness still catches it only by that race, and that
 is no loss — when a sweep gives up is that
-witness's subject, re-discovery is not. The phase deadlines are set wide for these witnesses (`sweepBudget`):
-a phase that ends on its deadline skips the scan the window was staged for and
-reads as a verdict on how long this host took to start one process — when a
-sweep gives up is `TestSweepSignalsBeforeItsDeadline`'s subject, and it keeps
-the knob. The third window is what the non-empty witness's KILL budget pays for:
-that phase now owes 7 scans and 2 stagings instead of 5 and 1, so the budget is
-20s and not 10s — 1s + 20s of phases still under the join's own 30s ceiling. The
-margin is measured on the whole arm, which contains that stretch and more: over
-1056 arms of both witnesses, eight workers in parallel and two of them under
-`-race`, the non-empty arm ran 1.36s to 5.28s (median 2.32s) and the empty-scan
-one 0.29s to 1.97s, with 0 failures, 0 data races, and no sweep ever hitting the
-join's ceiling.
+witness's subject, re-discovery is not.
+
+**No deadline where a window sits, and every wait counted in scans.** A phase
+that ends on its deadline skips the scan a window was staged for and reads as a
+verdict on how long this host took to scan — when a sweep gives up is
+`TestSweepSignalsBeforeItsDeadline`'s subject, and it keeps the knob. Wide
+budgets were the first answer, and a wide budget is a bigger constant: the
+non-empty witness's KILL phase got 20s for its 7 scans and 2 stagings — measured
+then at most 5.28s an arm over 1056 arms, eight workers in parallel — and under
+the load above it ran out before the third window's scan, 2 of 2 arms
+(`premise, within 30s: … [1 2 0 1]`). So `sweepBudget` gives the phases the
+windows sit in `sweepNoDeadline`, and that witness's TERM phase — which only its
+deadline can end, the seed ignoring TERM — a deadline already past, one scan
+whatever the host. Every wait that spans scans is bounded by the sweep's
+progress, not the wait's age: `scanBound` scans in all, `premiseWait` with no
+new one (`atOrNot`, the join). A sweep that never ends is the product's verdict,
+named with what it left running; the join then stops that session itself, so
+the sweep comes back with a report to judge. The program's own net follows: a
+held program ends by its witness, and `shSweep` gives it the test binary's
+deadline, never less than `sweepProgramCeiling` — under that load the
+sh-without-grep-z arms took 43s to 57s, the go and sh ones 1.2s to 10.7s.
 
 Where the gate sits is what keeps the mutation honest. At the settle instead,
 the mutant that ends on the FIRST empty scan never settles, and the witness

@@ -5,6 +5,7 @@ package proc
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,10 +57,23 @@ var sweepers = []sweeper{
 	},
 }
 
-// premiseWait bounds how long a witness waits for a fact it needs before it
+// premiseWait bounds how long a witness waits for ONE fact it needs before it
 // gives up — a ceiling, not an expectation: every such wait ends the instant
-// the fact is true.
+// the fact is true. A wait that spans several scans of a sweep gets it per
+// scan, never for the whole wait: see scanBound.
 const premiseWait = 30 * time.Second
+
+// scanBound is how many scans a held sweep may log before the witness holding
+// it calls it stuck: a premise no scan met by then, or a sweep that has not
+// ended by then, will not get there. A count, never a duration — what a sound
+// sweep logs does not grow with load: a quiet run of the empty-scan witness
+// logs 6 scans and one of the non-empty witness 8, and the only scans load
+// adds are those a signalled process takes to die. A sweep that leaves a
+// staged member alive logs scans until this bound, since that member keeps
+// the session from going quiet. The only clock a multi-scan wait keeps is the
+// gap between two scans: premiseWait with no new scan is this machine
+// starving the sweep, or a sweep that will not scan again.
+const scanBound = 50
 
 // awaitPremise holds the test until the fact a witness needs is true, and ends
 // the test when it never comes: a premise that did not happen fails as itself,
@@ -151,29 +165,46 @@ func (win *scanWindow) at(t *testing.T, want string, accepts func(index, found i
 }
 
 // atOrNot is at without the verdict: the index of the scan accepts takes, or
-// false when premiseWait passes with no such scan. A witness whose premise can
-// be defeated by the very defect it hunts reads that false and says what the
-// product did before failing on the premise — see nodeWorld.atAfterStaging.
+// false when the sweep will not get there — its log passed scanBound scans
+// with none that accepts takes, or premiseWait went by with no new scan at
+// all. Both bounds read the sweep's progress, never the premise's age: a host
+// that scans ten times slower costs this wait time, not a verdict. A witness
+// whose premise can be defeated by the very defect it hunts reads that false
+// and says what the product did before failing on the premise — see
+// nodeWorld.atAfterStaging.
 func (win *scanWindow) atOrNot(accepts func(index, found int) bool) (int, bool) {
-	for deadline := time.Now().Add(premiseWait); ; time.Sleep(10 * time.Millisecond) {
+	seen, stalled := 0, time.Now().Add(premiseWait)
+	for ; ; time.Sleep(10 * time.Millisecond) {
 		scanned := win.scanned()
-		if n := len(scanned); n > 0 && win.left() < n {
+		n := len(scanned)
+		if n > seen {
+			seen, stalled = n, time.Now().Add(premiseWait)
+		}
+		if n > 0 && win.left() < n {
 			if accepts(n, scanned[n-1]) {
 				return n, true
 			}
+			if n >= scanBound {
+				return 0, false
+			}
 			win.release(n)
 		}
-		if time.Now().After(deadline) {
+		if n > scanBound || time.Now().After(stalled) {
 			return 0, false
 		}
 	}
 }
 
-// premiseUnmet words a premise that expired, from the scan log as it stands:
-// read it BEFORE joining the sweep, which lets the sweep scan on and would
-// report a log the premise never saw.
+// premiseUnmet words a premise the sweep never met, from the scan log as it
+// stands: read it BEFORE joining the sweep, which lets the sweep scan on and
+// would report a log the premise never saw.
 func (win *scanWindow) premiseUnmet(want string) string {
-	return fmt.Sprintf("premise, within %s: no scan of the sweep %s — what its scans found of the session, in order: %v", premiseWait, want, win.scanned())
+	scanned := win.scanned()
+	why := fmt.Sprintf("with no new scan for %s", premiseWait)
+	if len(scanned) >= scanBound {
+		why = fmt.Sprintf("within the %d scans a witness waits through", scanBound)
+	}
+	return fmt.Sprintf("premise, %s: no scan of the sweep %s — what its scans found of the session, in order: %v", why, want, scanned)
 }
 
 // heldAt reports whether the sweep is STILL held at the nth scan it reached:
@@ -182,35 +213,22 @@ func (win *scanWindow) heldAt(n int) bool { return win.left() < n }
 
 // endedQuiet asserts the premise a window staged in a phase that is not the
 // sweep's LAST one rests on: that the phase ENDED the sweep, on two scans that
-// found nothing, and did not run out its budget. A phase that burns its
-// deadline hands over to the next one, whose own first scan re-discovers for
-// free the member the window was staged to see dropped: the window then
-// witnesses nothing, and the sweep passes the very defect the witness exists
-// for — which is what a sweep that drops a late member DOES to this premise,
-// since a member it leaves running is a session that is never quiet again.
-// Both halves are read off the sweep's own scan log: it ends on the two empty
-// scans a quiet phase returns on, and it is far shorter than the log a phase
-// that ran to its deadline leaves, that phase scanning once per
-// NodeSessionSettle for the whole of its budget. A quarter of that count is
-// the ceiling, and both margins are wide: a quiet sweep of this shape logged 6
-// scans on each of 9 arms of both implementations, eight times under the 50 a
-// 10s budget allows — the only scans it can add are those a staged process
-// takes to die, the staging itself happening under the hold, where no scan
-// runs — while a phase that burned that budget logged 201 scans in the go
-// implementation and 160 to 191 in the program, three times over it. A count
-// is not a duration, so load costs this premise nothing: a host slow enough
-// to scan four times less often would cost it the mutant, never a false red.
-// What no scan log can show is a deadline that expired while the sweep was
-// HELD, no scan being taken then; keeping that out of reach is what the wide
-// budget of sweepBudget is for, an arm of this witness taking half a second at
-// rest against a budget of 10s.
-func (win *scanWindow) endedQuiet(t *testing.T, budget time.Duration) {
+// found nothing. A phase that hands over to the next one lets that phase's own
+// first scan re-discover for free the member the window was staged to see
+// dropped: the window then witnesses nothing, and the sweep passes the very
+// defect the witness exists for. So the phase such a window sits in takes
+// sweepNoDeadline, which leaves it one way to end — two empty scans in a row,
+// the sweep's own — and this reads that end off the sweep's own scan log,
+// within scanBound scans. Anything else is a sweep the witness had to stop
+// (its log passed the bound: the join names what it left running) or one that
+// ended on a scan that found members. Nothing here is read from a clock, so
+// load moves no part of it.
+func (win *scanWindow) endedQuiet(t *testing.T) {
 	t.Helper()
 	scanned := win.scanned()
-	ceiling := int(budget/NodeSessionSettle) / 4
 	n := len(scanned)
-	if n < 2 || scanned[n-1] != 0 || scanned[n-2] != 0 || n > ceiling {
-		t.Fatalf("premise: the sweep did not end on two empty scans of the phase its windows were staged in, within the %d scans a quarter of a %s phase budget allows — it scanned %d times, so a phase handed over and its successor re-discovered for free whatever was dropped in those windows. What its scans found of the session, in order: %v", ceiling, budget, n, scanned)
+	if n < 2 || scanned[n-1] != 0 || scanned[n-2] != 0 || n > scanBound {
+		t.Fatalf("premise: the sweep did not end on two empty scans of the phase its windows were staged in, within the %d scans a witness allows — it scanned %d times. What its scans found of the session, in order: %v", scanBound, n, scanned)
 	}
 }
 
@@ -321,12 +339,17 @@ func holdShSweep(t *testing.T, w *nodeWorld) *scanWindow {
 }
 
 // sweepProgramCeiling bounds how long a witness waits for the sweep PROGRAM
-// to come back — a ceiling, not an expectation: the program carries its own
-// bounds (sweepGrace, then sweepKillWait, both counted in whole seconds), so
-// fifteen times their sum is this machine starving it, not a sweep deciding
-// anything. Unbounded, ONE arm parks the WHOLE package until the test
-// binary's own timeout: a `panic: test timed out after 10m0s` in place of a
-// readable failure, and a landing gate spent on it.
+// to come back — a ceiling, not an expectation: a program nobody holds
+// carries its own bounds (sweepGrace, then sweepKillWait, both counted in
+// whole seconds), so fifteen times their sum is this machine starving it, not
+// a sweep deciding anything. Unbounded, ONE arm parks the WHOLE package until
+// the test binary's own timeout: a `panic: test timed out after 10m0s` in
+// place of a readable failure, and a landing gate spent on it. A HELD program
+// runs phases its witness gave no deadline and is ended by that witness, in
+// scans (scanBound, and the join's stop of the session): its net is the test
+// binary's own deadline, less premiseWait for the readable failure, and never
+// shorter than this — under load its 6 to 8 scans took 44s to 54s, and a
+// total for several scans is a duration the host decides.
 const sweepProgramCeiling = 2 * time.Minute
 
 // shSweep runs the sweep program the way the sandbox exec runs it — its own
@@ -337,11 +360,16 @@ func shSweep(t *testing.T, w *nodeWorld, env []string) (SweepReport, error) {
 	if err := os.WriteFile(sinceFile, []byte(strconv.FormatUint(uint64(w.since), 10)), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	held := sweepScanGateFile != ""
 	script, err := NodeSessionSweepScript(w.token, sinceFile)
 	if err != nil {
 		t.Fatalf("NodeSessionSweepScript: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), sweepProgramCeiling)
+	ceiling := sweepProgramCeiling
+	if dl, ok := t.Deadline(); ok && held {
+		ceiling = max(ceiling, time.Until(dl)-premiseWait)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), ceiling)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", script)
 	cmd.Env = append(os.Environ(), env...)
@@ -358,7 +386,7 @@ func shSweep(t *testing.T, w *nodeWorld, env []string) (SweepReport, error) {
 		// The fact travels with the result: check turns this into the test's
 		// verdict, on the test's own goroutine, and names the machine.
 		return SweepReport{}, fmt.Errorf("the sweep program did not come back within %s (its own bounds: %s grace, %s kill wait) — this machine starved it, and a witness cannot judge a sweep it never got back: %v\n%s",
-			sweepProgramCeiling, sweepGrace, sweepKillWait, err, out)
+			ceiling, sweepGrace, sweepKillWait, err, out)
 	}
 	if err != nil {
 		return SweepReport{}, fmt.Errorf("sweep program: %v\n%s", err, out)
@@ -735,6 +763,14 @@ func (w *nodeWorld) stopAll() {
 // must see. The returned function joins it and answers what it did; the join
 // also runs when the test ends, with the hold released, so a held sweep never
 // outlives the test holding it.
+//
+// The join waits as long as the sweep keeps scanning, within the bounds
+// atOrNot keeps — scanBound scans in all, premiseWait without a new one —
+// because the phases a witness holds have no deadline (sweepNoDeadline): the
+// sweep ends on two empty scans or not at all. One that does not end is the
+// product's verdict, named with what of the session it left running; the join
+// then stops that session itself — what stopAll would at cleanup, sent early —
+// so the sweep goes quiet and still comes back with a report to judge.
 func (w *nodeWorld) sweepInBackground(s sweeper, win *scanWindow) func() (SweepReport, error) {
 	w.t.Helper()
 	type outcome struct {
@@ -747,16 +783,97 @@ func (w *nodeWorld) sweepInBackground(s sweeper, win *scanWindow) func() (SweepR
 		done <- outcome{r, err}
 	}()
 	var got outcome
+	// returned reports whether the sweep came back before its log passed
+	// limit scans and before premiseWait went by with no new scan.
+	returned := func(limit int) bool {
+		seen, stalled := -1, time.Time{}
+		for {
+			select {
+			case got = <-done:
+				return true
+			case <-time.After(10 * time.Millisecond):
+			}
+			n := len(win.scanned())
+			if n != seen {
+				seen, stalled = n, time.Now().Add(premiseWait)
+			}
+			if n > limit || time.Now().After(stalled) {
+				return false
+			}
+		}
+	}
 	join := sync.OnceFunc(func() {
 		win.resume()
-		select {
-		case got = <-done:
-		case <-time.After(premiseWait):
-			w.t.Errorf("the sweep did not return within %s of its hold being released", premiseWait)
+		if returned(scanBound) {
+			return
+		}
+		scanned := win.scanned()
+		left := w.stopMarked()
+		w.t.Errorf("the sweep did not end within %d scans of its hold, nor with %s gone by without a new scan — it never found the session empty twice in a row, and left running %v. What its scans found of the session, in order: %v", scanBound, premiseWait, left, scanned)
+		// With the session stopped, a sound sweep ends on the scan in progress
+		// and the two empty ones after it; two more keep the bound off the
+		// scan the sweep returns on.
+		if !returned(len(win.scanned()) + 5) {
+			w.t.Errorf("the sweep did not end even once its session was stopped. What its scans found of the session, in order: %v", win.scanned())
 		}
 	})
 	w.t.Cleanup(join)
 	return func() (SweepReport, error) { join(); return got.r, got.err }
+}
+
+// endedOfTerm asserts that each process named here ended of SIGTERM — the
+// signal the TERM phase sends and the KILL phase never does — read from the
+// kernel's own record of that end, its wait status. The empty-scan witness
+// stages its windows in the TERM phase, so a member that ended of anything
+// else was stopped by a phase after that one, which re-discovered for free
+// what TERM dropped: which phase stopped a member travels with the member,
+// where a scan log only shows how the sweep ended. A member still running is
+// check's to name.
+func (w *nodeWorld) endedOfTerm(names ...string) {
+	w.t.Helper()
+	for _, name := range names {
+		pid := w.marked[name]
+		if isRunning(pid) {
+			continue
+		}
+		i := slices.IndexFunc(w.children, func(c *exec.Cmd) bool { return c.Process.Pid == pid })
+		if i < 0 {
+			w.t.Errorf("%s (pid %d) is no process this world started in the foreground", name, pid)
+			continue
+		}
+		cmd := w.children[i]
+		_ = cmd.Wait() // its end is the status read below, not an error
+		ws, ok := cmd.ProcessState.Sys().(syscall.WaitStatus)
+		if !ok || !ws.Signaled() || ws.Signal() != syscall.SIGTERM {
+			w.t.Errorf("%s (pid %d) %v, not of the TERM its window's phase sends: a later phase stopped it, re-discovering for free what TERM dropped", name, pid, cmd.ProcessState)
+		}
+	}
+}
+
+// stopMarked stops what this world marked that the session still holds, and
+// names it: the join's last resort on a sweep that does not end. Only a pid a
+// scan of the session finds is signalled, so a pid freed and taken by another
+// process is never one.
+func (w *nodeWorld) stopMarked() []string {
+	w.t.Helper()
+	found, err := FindNodeSession(w.token)
+	if err != nil {
+		w.t.Errorf("FindNodeSession: %v", err)
+		return nil
+	}
+	held := map[int]bool{}
+	for _, p := range found {
+		held[p.PID] = true
+	}
+	var stopped []string
+	for name, pid := range w.marked {
+		if held[pid] {
+			stopped = append(stopped, fmt.Sprintf("%s (pid %d)", name, pid))
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	}
+	slices.Sort(stopped)
+	return stopped
 }
 
 // stageInWindow starts a process of the session while the sweep is held at the
@@ -785,10 +902,10 @@ func (w *nodeWorld) stageInWindow(win *scanWindow, n int, name string) {
 // staged, and reports the PRODUCT's verdict when that scan never comes. Such a
 // premise is defeated by the very defect the witness hunts: a member an earlier
 // window staged and the sweep left running keeps the session from ever being
-// quiet again, so no later scan finds nothing and the premise expires — a
-// 30s red that names scans and not the process left alive, while the verdict
-// on that process is the product's own line ("later (pid N) belongs to the
-// session and is still running"). So the sweep is joined and judged too. The
+// quiet again, so no later scan finds nothing and the premise expires — a red
+// after scanBound scans that names scans and not the process left alive, while
+// the verdict on that process is the product's own ("left running [later (pid
+// N)]" from the join). So the sweep is joined and judged too. The
 // premise stays a failure either way, because what it reports ALONE is a sweep
 // that stopped everything staged and still never settled — and the premise is
 // worded before the join, from the scan log the premise actually waited on.
@@ -804,16 +921,26 @@ func (w *nodeWorld) atAfterStaging(win *scanWindow, sweep func() (SweepReport, e
 	return 0
 }
 
+// sweepNoDeadline is the budget of a phase a witness stages its windows in: a
+// deadline no sweep reaches, so that phase ends on two scans that find nothing
+// or not at all, and the witness bounds it in scans (scanBound). A deadline
+// is a duration, and what spends it is how long this host takes to scan
+// /proc: with 150 extra processes and 48 busy loops in the PID namespace, one
+// scan of the program without `grep -z` took 4.5s, so a 10s phase ran out
+// after its 3rd scan — it handed its windows to KILL, which re-discovered for
+// free what they staged, and the premise read `[0 1 0 1 0 0]` as a quiet end;
+// with 300, scans took up to 8s, KILL ran out as well, and the premise
+// reddened unchanged code.
+const sweepNoDeadline = time.Duration(math.MaxInt64)
+
 // sweepBudget gives a sweep's two phases the bounds a witness needs, and
 // restores them when the test ends. A witness of what a sweep DISCOVERS
-// between two scans is not arbitrated by when the sweep gives up: a phase that
-// ends on its deadline skips the scan a window was staged for, and reads as a
-// verdict on how long this host took to start one process. The two bounds
-// TOGETHER stay under the join's own ceiling — the widest pair a witness here
-// gives is 1s and 20s, against premiseWait's 30s — so a sweep that never ends
-// quiet still comes back with a report to judge. When a sweep gives up is
-// witnessed by TestSweepSignalsBeforeItsDeadline, which is where the deadlines
-// belong.
+// between two scans is never arbitrated by when the sweep gives up: a phase
+// that ends on its deadline skips the scan a window was staged for, and
+// reads as a verdict on how long this host took to scan. So the phases its
+// windows sit in take sweepNoDeadline, and the witness's join ends a sweep
+// that never goes quiet. When a sweep gives up is witnessed by
+// TestSweepSignalsBeforeItsDeadline, which is where the deadlines belong.
 func sweepBudget(t *testing.T, grace, killWait time.Duration) {
 	t.Helper()
 	wasGrace, wasKill := sweepGrace, sweepKillWait
@@ -926,25 +1053,27 @@ func TestGuardFoundRefusesALiveIntruder(t *testing.T) {
 // window, and this is the witness that sees it. A window witnesses that drop
 // only when the phase it is staged in is the phase that ENDS the sweep: a
 // member dropped in a phase that hands over to the next one is re-discovered
-// for free by that phase's own first scan. On sound code the TERM phase here
-// is that phase — the session starts empty and two scans in a row find
-// nothing, so no KILL phase follows — and a sweep that drops the member a
-// window staged leaves it running, which is a session never quiet again: the
-// phase burns its budget and hands the member to KILL, which finds it. So the
-// premise is asserted rather than assumed, by `endedQuiet`, and a sweep that
-// handed over fails this witness instead of hiding behind the handover. The
-// non-empty witness below stages its late window in the phase that ends ITS
-// sweep — the KILL phase, which has no successor at all.
+// for free by that phase's own first scan. The TERM phase here is made that
+// phase: it has no deadline (sweepNoDeadline), so it ends only on two scans
+// in a row that find nothing and no KILL phase ever follows it — on any host,
+// however slow its scans. A sweep that drops the member a window staged leaves
+// it running, which is a session never quiet again: the sweep never ends, and
+// the join names that member as left running once the log passes scanBound,
+// then stops it. `endedQuiet` asserts the premise off the sweep's own log
+// rather than assuming it, and `endedOfTerm` asserts what no log shape can: a
+// sweep that handed over early — a TERM phase cut short by anything but its
+// two empty scans — lets KILL re-discover what TERM dropped and still ends
+// on two empty scans; its member then ends of KILL, which the kernel records.
+// The non-empty witness below stages its later windows in the phase that ends
+// ITS sweep — the KILL phase, which has no successor at all.
 //
 // Not parallel: the holds arm a package seam.
 func TestSweepStopsAProcessThatShowsAfterAnEmptyScan(t *testing.T) {
 	for _, s := range sweepers {
 		t.Run(s.name, func(t *testing.T) {
-			// Both windows are staged in the TERM phase, and endedQuiet reads
-			// this same budget to tell a phase that ENDED the sweep from one
-			// that burned its deadline and handed over.
-			const phaseBudget = 10 * time.Second
-			sweepBudget(t, phaseBudget, phaseBudget)
+			// Both windows are staged in the TERM phase, which only two empty
+			// scans end; KILL never runs.
+			sweepBudget(t, sweepNoDeadline, sweepNoDeadline)
 			w := newNodeWorld(t)
 			win := s.hold(t, w)
 			sweep := w.sweepInBackground(s, win)
@@ -961,10 +1090,12 @@ func TestSweepStopsAProcessThatShowsAfterAnEmptyScan(t *testing.T) {
 			w.stageInWindow(win, again, "later")
 			report, err := sweep()
 			// What those windows staged is a verdict only about a sweep that
-			// ended in their phase: the premise comes first, and a sweep that
-			// handed over is this witness's failure.
-			win.endedQuiet(t, phaseBudget)
+			// ended in their phase: the premise comes first — how the sweep
+			// ended, off its own log — and then which phase stopped each
+			// member, off the member's own end.
+			win.endedQuiet(t)
 			w.check(report, err)
+			w.endedOfTerm("late", "later")
 		})
 	}
 }
@@ -978,8 +1109,8 @@ func TestSweepStopsAProcessThatShowsAfterAnEmptyScan(t *testing.T) {
 // stops re-discovering passes that witness, and the one the session's own
 // fixtures give (the respawner's replacement is judged only when the sweep
 // sighted it, so such a sweep exempts itself). Here the seed ignores TERM, so
-// the session is never empty and the first window is staged between two scans
-// of the TERM phase: `late` joins there and must be stopped, which
+// the session is never empty and the first window is staged after a scan that
+// found the seed: `late` joins there and must be stopped, which
 // is the clause SweepNodeSession documents — "every scan finds the carriers of
 // the entry, the processes earlier scans found and that are still the same, and
 // every descendant of either".
@@ -987,52 +1118,54 @@ func TestSweepStopsAProcessThatShowsAfterAnEmptyScan(t *testing.T) {
 // Which scan found the seed is read from the sweep's own view and never bet on
 // the first one: the seed's own `exec` can still be running when the sweep
 // takes it, and that bet reddened this witness on 2 of 40 runs of unchanged
-// code. The window is then staged once more, at the first scan to find
-// nothing — which only a scan of the KILL phase, after it killed the seed
-// that ignores TERM, ever is. That is the phase this sweep ENDS in, so a
-// member dropped there is a member nothing re-discovers; a member dropped in
-// the TERM phase would be handed to the KILL phase, which finds it again from
-// its own first scan. A third window follows two scans further into that same
-// KILL phase, which has no successor to re-discover anything: a member
-// dropped there is left running and unreported however the phase ends, so
-// this witness needs no premise about how its sweep ended, unlike the one
-// above.
+// code — the witness waits for that exec before the sweep starts, so the bet
+// is rarely lost, and never decides. The window is then staged once more, at
+// the first scan to find nothing — which only a scan of the KILL phase, after
+// it killed the seed that ignores TERM, ever is. That is the phase this sweep
+// ENDS in, so a member dropped there is a member nothing re-discovers; a
+// member dropped in the TERM phase would be handed to the KILL phase, which
+// finds it again from its own first scan. A third window follows two scans
+// further into that same KILL phase, which has no successor to re-discover
+// anything: a member dropped there is left running and unreported — the join
+// names it and stops it, that phase having no deadline to end it — so this
+// witness needs no premise about how its sweep ended, unlike the one above.
 //
 // How far the three windows reach, which is not every scan: a window's member
 // is new to the scan AFTER it, so the two staged in the KILL phase pin
 // re-discovery at its 3rd and 5th scans. The first window pins no index: it
-// sits in the TERM phase, which hands over here, so KILL's own first scan
-// re-discovers `late` for free and a sweep that drops it through the whole TERM
-// phase passes this witness — measured, 3 of 3 arms. What that window asserts
-// is that `late` is STOPPED, by whichever phase reaches it. The TERM indexes
-// are held by the empty-scan witness above, which pins the 2nd and 4th of its
-// own and asserts the handover never happened. No finite set of windows reaches
+// sits after the TERM phase's one scan, which hands over here, so KILL's own
+// first scan re-discovers `late` for free and a sweep that drops it through
+// the whole TERM phase passes this witness — measured, 3 of 3 arms. What that
+// window asserts is that `late` is STOPPED, by whichever phase reaches it.
+// The TERM indexes are held by the empty-scan witness above, which pins the
+// 2nd and 4th of its own and asserts the handover never happened — that its
+// members ended of TERM. No finite set of windows reaches
 // every index — a sweep that re-discovers through the first five scans of a
 // phase and stops there passes both witnesses — which is why the clause stays
 // a loop over every scan and not a case for the first ones. And an index is the
-// only axis these windows bound: both witnesses compress their phases to a
-// second or two, so a sweep that stops re-discovering after a few seconds of
-// ELAPSED time is invisible to them — measured, the whole package green.
+// only axis these windows bound: at rest both witnesses reach their last window
+// within a second or two of the sweep's start, so a sweep that stops
+// re-discovering after a few seconds of ELAPSED time is invisible to them —
+// measured, the whole package green.
 //
 // Not parallel: the holds arm a package seam.
 func TestSweepStopsAProcessThatShowsAfterANonEmptyScan(t *testing.T) {
 	for _, s := range sweepers {
 		t.Run(s.name, func(t *testing.T) {
-			// The TERM phase ends on its deadline here — the seed ignores
-			// TERM, so the session is never empty — and the KILL phase ends on
-			// two scans that find nothing. Its budget covers the 7 scans and 2
-			// stagings this witness asks of it, each staging a process start
-			// taken under the hold, where no scan runs: a phase that ran out
-			// instead would skip the scan a window was staged for and redden on
-			// how long this host took to start one process. The third window is
-			// what 20s buys over 10s: measured, the whole arm — which contains
-			// that stretch and more — ran at most 5.3s over 1056 arms of an
-			// eight-way campaign, and 1s + 20s of phases stays under the join's
-			// own 30s ceiling.
-			sweepBudget(t, time.Second, 20*time.Second)
+			// The seed ignores TERM, so the TERM phase can only end on its
+			// deadline, and this one is past before the sweep starts: the
+			// phase takes ONE scan, whatever the host's clock — the budget
+			// TestSweepSignalsBeforeItsDeadline gives. The KILL phase, where
+			// the later windows sit, has no deadline: it ends on two scans
+			// that find nothing, or the join ends it. A 20s KILL budget ran
+			// out under load before the third window's scan — up to 8s a
+			// scan of the program without `grep -z` — and the premise
+			// expired on unchanged code, 2 of 2 arms.
+			sweepBudget(t, -time.Second, sweepNoDeadline)
 			w := newNodeWorld(t)
 			w.marked["seed"] = w.sh("seed", []string{w.entry()}, true, false, `trap "" TERM; exec sleep 300`)
 			w.awaitSeeded()
+			awaitExeced(t, "seed", w.marked["seed"], "sleep")
 			win := s.hold(t, w)
 			sweep := w.sweepInBackground(s, win)
 			held := win.at(t, "found the seed, for a window to open after", func(_, found int) bool { return found > 0 })
