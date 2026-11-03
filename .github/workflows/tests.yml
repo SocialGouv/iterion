@@ -866,7 +866,8 @@ jobs:
     # other job using the scale set.
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     # 40 m keeps the job above the verdict it owes: the 32 m helm cap the
-    # install derives from values-dev's deadline (scripts/chart-kind-wait.sh)
+    # install derives from the deadline its own render gives the server
+    # Deployment (values-dev's 1800 s, read by scripts/chart-kind-wait.sh)
     # only fires after this job's preamble — checkout, image build, kind up,
     # image load, chart deps — measured at 4.0-4.7 m on success runs. Below
     # the 38 m floor (32 + 6, witnessed in charts/iterion/kind_wait_test.go)
@@ -909,6 +910,18 @@ jobs:
       - name: Set up Helm
         uses: Azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
+      # The wait helper reads the install's own render through yq
+      # (scripts/chart-kind-wait.sh). Pinned by version and digest
+      # (mikefarah/yq, the implementation its expressions are written for),
+      # not taken from the runner image's inventory.
+      - name: Install yq (pinned)
+        run: |
+          set -eu
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /tmp/yq" | sha256sum -c -
+          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+          yq --version
+
       - name: Build chart dependencies
         # The sub-charts declared in Chart.yaml are not vendored in git
         # (charts/iterion/charts/ is gitignored). Mirror what `task chart:kind`
@@ -918,23 +931,27 @@ jobs:
       - name: Helm install (values-dev.yaml)
         # CI-specific overrides on top of values-dev.yaml: the image built
         # above, metrics on, auth off. The dev stores (devStack.*) run on
-        # emptyDirs: no PVC binding to wait for. The client wait derives from
-        # the values file's own deadline (scripts/chart-kind-wait.sh), so a
-        # slow-registry day exhausts the deadline's budget instead of a fixed
-        # cap while the workload is still Progressing.
+        # emptyDirs: no PVC binding to wait for. One argument list feeds the
+        # wait helper and the install: the client wait derives from the
+        # deadline this install's own render gives the server Deployment
+        # (scripts/chart-kind-wait.sh runs `helm template` on the same
+        # arguments), so a slow-registry day exhausts the deadline's budget
+        # instead of a fixed cap while the workload is still Progressing.
         run: |
           set -euo pipefail
-          KIND_WAIT=$(sh scripts/chart-kind-wait.sh ./charts/iterion/values-dev.yaml)
+          install=(
+            "${RELEASE}" ./charts/iterion
+            --namespace "${NS}"
+            --values ./charts/iterion/values-dev.yaml
+            --set "image.repository=$(echo ${IMG} | cut -d: -f1)"
+            --set "image.tag=$(echo ${IMG} | cut -d: -f2)"
+            --set "image.pullPolicy=Never"
+            --set "metrics.enabled=true"
+            --set "config.disableAuth=true"
+          )
+          KIND_WAIT=$(sh scripts/chart-kind-wait.sh "${install[@]}")
           kubectl create namespace "${NS}"
-          helm install "${RELEASE}" ./charts/iterion \
-            --namespace "${NS}" \
-            --values ./charts/iterion/values-dev.yaml \
-            --set "image.repository=$(echo ${IMG} | cut -d: -f1)" \
-            --set "image.tag=$(echo ${IMG} | cut -d: -f2)" \
-            --set "image.pullPolicy=Never" \
-            --set "metrics.enabled=true" \
-            --set "config.disableAuth=true" \
-            --wait --timeout "${KIND_WAIT}"
+          helm install "${install[@]}" --wait --timeout "${KIND_WAIT}"
 
       - name: Wait for /readyz on server
         # `iterion.fullname` renders as `<release>-iterion` for the
@@ -1132,6 +1149,17 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
+      # The kind-wait witnesses run scripts/chart-kind-wait.sh, which reads
+      # the render through yq; without it on PATH they would SKIP, and the
+      # chart gate requires its tools here (REQUIRE=1 below). Pinned by
+      # version and digest (mikefarah/yq).
+      - name: Install yq (pinned)
+        run: |
+          set -eu
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /tmp/yq" | sha256sum -c -
+          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+          yq --version
       - name: chart render tests (dead selectors, backup and alert guards)
         # The Go half of `task chart:check`: renders the chart (dev, prod,
         # pools) and confronts every anti-affinity / spread / PDB selector with

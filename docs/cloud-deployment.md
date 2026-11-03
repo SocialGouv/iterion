@@ -53,25 +53,25 @@ install step hangs rather than reports. A `0` is not a way to remove the
 deadline — both templates render the key through a `with`, which skips a
 zero.
 
-The install clients follow the same knob: `task chart:kind` and the
-`cloud-e2e` CI job derive their `helm --timeout` from the values file's own
-`server.progressDeadlineSeconds` plus a 120 s margin
-(`scripts/chart-kind-wait.sh`), so the deadline — not a fixed client cap —
-decides whether a slow install is called **Failed**. The helper refuses every
-values file whose knob it cannot read as the positive integer go-yaml would
-hand the install, and names the cause: unset or zero (either would silently
-shrink the watch to Kubernetes' default 600 s — a `0` renders through a
-`with` that skips it anyway), negative, beyond the int32 the Deployment field
-holds, not a form the helper resolves (it reads a bare or quoted decimal and
-the integer spellings go-yaml does; a tag, an anchor or a block scalar may
-still render a deadline for helm, and the refusal says the helper proves
-nothing about them rather than claiming the API refuses them), content past a
-document boundary (helm 3 reads the first document alone, helm 4 merges them
-per key, and the two install sites pin no common helm), a tab in the
-indentation (go-yaml refuses it, so helm refuses the file), or a form a line
-reader cannot pair with its key — a flow mapping left open past its line, a
-scalar on the line after the key, a value continued onto a deeper line, a
-merge key.
+The install clients follow the same knob through the render: the wait
+follows the rendered deployment's `progressDeadlineSeconds`. `task chart:kind`
+and the `cloud-e2e` CI job build one argument list — release, chart, `-f`,
+`--set` — and hand it to both `scripts/chart-kind-wait.sh` and `helm install`;
+the helper runs `helm template` on that list, reads the server Deployment's
+`spec.progressDeadlineSeconds` from the render with yq (mikefarah/yq v4, in
+devbox as `yq-go`), and prints that deadline plus a 120 s margin as the
+client `--timeout`, so the deadline — not a fixed client cap — decides
+whether a slow install is called **Failed**. Nothing reads the values file
+itself: the render already applies what stands between a file and the field
+(go-yaml's reading of the file, the `--set` overrides, the `with` that skips
+an unset or `0` knob, the StatefulSet of `mode=local`), and a reader of the
+file would have to reimplement all of it. The helper refuses, naming the
+cause: a render helm refuses, a render with no Deployment labelled
+`app.kubernetes.io/component=server` (`mode=local`), several such Deployments
+(the first in render order would be a guess), a Deployment that renders no
+deadline (unset or `0` — the install would silently watch Kubernetes' default
+600 s), a value that is not a positive integer, and one beyond the int32 the
+field holds.
 
 ## Topology
 
@@ -994,9 +994,9 @@ devbox run -- task chart:kind
 ```
 
 Renders + lints the chart, checks `appVersion` matches `package.json`.
-The install watch derives from `values-dev.yaml`'s own
-`server.progressDeadlineSeconds` (1800 s + a 120 s margin, so 1920 s): a
-slow first pull exhausts the deadline's budget, never a fixed client cap.
+The install watch follows the rendered deployment's `progressDeadlineSeconds`
+(`values-dev.yaml` sets 1800 s; plus a 120 s margin, so 1920 s): a slow first
+pull exhausts the deadline's budget, never a fixed client cap.
 For a real install + workflow exec, see the `cloud-e2e` CI job in
 [.github/workflows/tests.yml](../.github/workflows/tests.yml).
 

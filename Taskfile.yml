@@ -1530,13 +1530,18 @@ tasks:
     deps: [chart:dep-update]
     cmds:
       - kind create cluster --name iterion-chart-test --wait 60s || true
-      # The client wait derives from the values file's own deadline
-      # (scripts/chart-kind-wait.sh): a fixed cap smaller than the deadline
-      # makes helm give up while the server pod is still Progressing — the
-      # deadline decides Failed, the client watches at least that long.
+      # One argument list feeds the wait helper and the install: the client
+      # wait derives from the deadline this install's own render gives the
+      # server Deployment (scripts/chart-kind-wait.sh runs `helm template`
+      # on the same arguments), so a fixed cap smaller than the deadline can
+      # no longer make helm give up while the server pod is still
+      # Progressing — the deadline decides Failed, the client watches at
+      # least that long — and the helper never reads a render the install
+      # does not apply.
       - |
-        KIND_WAIT=$(sh scripts/chart-kind-wait.sh charts/iterion/values-dev.yaml) || exit 1
-        helm upgrade --install iterion ./charts/iterion -f charts/iterion/values-dev.yaml --wait --timeout "$KIND_WAIT"
+        set -- iterion ./charts/iterion -f charts/iterion/values-dev.yaml
+        KIND_WAIT=$(sh scripts/chart-kind-wait.sh "$@") || exit 1
+        helm upgrade --install "$@" --wait --timeout "$KIND_WAIT"
       - helm test iterion
       - kind delete cluster --name iterion-chart-test
 

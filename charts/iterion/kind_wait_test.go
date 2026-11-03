@@ -13,21 +13,247 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// runKindWait runs scripts/chart-kind-wait.sh on a values file and returns
-// its stdout, its stderr and the command error, so a refusal is judged on
-// its message, not merely on its exit status.
-func runKindWait(t *testing.T, values string) (string, string, error) {
+// The kind-wait witnesses: scripts/chart-kind-wait.sh sizes the helm
+// --timeout of `task chart:kind` and the cloud-e2e job from the
+// progressDeadlineSeconds the install's own render gives the server
+// Deployment — `helm template` on the install's arguments, read with yq —
+// plus a 120 s margin. The helper runs need helm and yq like the render
+// tests need helm: `task chart:check` and the helm-lint CI job require
+// them (ITERION_CHART_RENDER_REQUIRE=1), a plain `go test ./...` without
+// them skips and says so. The wiring witnesses read Taskfile.yml and
+// tests.yml and run everywhere.
+
+// yqBinary is helmBinary for yq: the helper reads the render with
+// mikefarah/yq, so a machine without it skips the helper runs — and reds
+// them where the chart gate requires its tools.
+func yqBinary(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("yq"); err != nil {
+		if os.Getenv("ITERION_CHART_RENDER_REQUIRE") == "1" {
+			t.Fatalf("yq is required here (ITERION_CHART_RENDER_REQUIRE=1) and not in PATH: %v", err)
+		}
+		t.Skipf("yq not in PATH (%v) — the kind-wait helper runs under `task chart:check` and the helm-lint CI job", err)
+	}
+}
+
+func kindWaitScript(t *testing.T) string {
 	t.Helper()
 	script, err := filepath.Abs(filepath.Join("..", "..", "scripts", "chart-kind-wait.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	return script
+}
+
+// runKindWait runs scripts/chart-kind-wait.sh with the helm arguments given
+// — release, chart, then the -f/--set the install passes — and returns its
+// stdout, its stderr and the command error, so a refusal is judged on its
+// message, not merely on its exit status. Paths are relative to this
+// package's directory, where the tests run: the chart is ".".
+func runKindWait(t *testing.T, args ...string) (string, string, error) {
+	t.Helper()
+	helmBinary(t)
+	yqBinary(t)
 	var stdout, stderr strings.Builder
-	cmd := exec.Command("sh", script, values)
+	cmd := exec.Command("sh", append([]string{kindWaitScript(t)}, args...)...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err = cmd.Run()
+	err := cmd.Run()
 	return stdout.String(), stderr.String(), err
+}
+
+// mustWait runs the helper and returns what it printed, failing on a
+// refusal.
+func mustWait(t *testing.T, args ...string) string {
+	t.Helper()
+	stdout, stderr, err := runKindWait(t, args...)
+	if err != nil {
+		t.Fatalf("chart-kind-wait %s: %v — %s", strings.Join(args, " "), err, strings.TrimSpace(stderr))
+	}
+	return strings.TrimSpace(stdout)
+}
+
+// mustRefuseWait runs the helper, requires a refusal and returns its
+// message, which the caller judges: a refusal must name its cause.
+func mustRefuseWait(t *testing.T, args ...string) string {
+	t.Helper()
+	stdout, stderr, err := runKindWait(t, args...)
+	if err == nil {
+		t.Fatalf("chart-kind-wait %s printed %q — a refusal was owed, and the install would watch a wait sized from nothing", strings.Join(args, " "), strings.TrimSpace(stdout))
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Fatalf("chart-kind-wait %s refused and still printed %q — a caller reading stdout alone would install with it", strings.Join(args, " "), strings.TrimSpace(stdout))
+	}
+	return stderr
+}
+
+// scratchChart writes a chart whose single template is the manifests given,
+// verbatim, so the helper's reading of a render is exercised on shapes the
+// iterion chart never renders: two server Deployments, a rendered 0 or a
+// negative. It returns the chart's path.
+func scratchChart(t *testing.T, manifests string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Chart.yaml"), []byte("apiVersion: v2\nname: scratch\nversion: 0.1.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "templates"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "templates", "all.yaml"), []byte(manifests), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// serverDeployment is a Deployment the helper selects — labelled
+// component=server — with the deadline spelled as given.
+func serverDeployment(name, deadline string) string {
+	return "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: " + name + "\n  labels:\n    app.kubernetes.io/component: server\nspec:\n  progressDeadlineSeconds: " + deadline + "\n"
+}
+
+// TestChartKindWaitFollowsTheRenderedDeadline pins the derivation both
+// install sites share: the client wait is the deadline values-dev.yaml
+// renders into the server Deployment (1800 s) plus the helper's 120 s
+// margin, so the deadline — not pull time — decides the install's verdict.
+// Removing the knob from values-dev.yaml, or sizing the wait from anything
+// but the render, reds here: the client watch no longer covers the deadline
+// it installs.
+func TestChartKindWaitFollowsTheRenderedDeadline(t *testing.T) {
+	if got, want := mustWait(t, "iterion", ".", "-f", "values-dev.yaml"), "1920s"; got != want {
+		t.Fatalf("chart-kind-wait iterion . -f values-dev.yaml = %q, want %q — the 1800 s deadline values-dev renders plus the 120 s margin; the client watch must cover the deadline it installs", got, want)
+	}
+}
+
+// TestChartKindWaitDerivesAndRefuses exercises the helper's contract: the
+// margin arithmetic on the render, a --set override the file never held,
+// the values forms a line reader of the file could not pair with their
+// key, and the refusals — a deadline the render leaves out (unset or 0), a
+// string or a float, a release with no server Deployment or several, a
+// render helm refuses, a 0, a negative or an int32 overflow in the render.
+func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
+	t.Run("deadline plus the 120s margin", func(t *testing.T) {
+		if got, want := mustWait(t, "iterion", ".", "-f", valuesFile(t, "mode: cloud\nserver:\n  progressDeadlineSeconds: 600\n")), "720s"; got != want {
+			t.Fatalf("chart-kind-wait = %q, want %q — deadline + 120 s margin", got, want)
+		}
+	})
+	t.Run("a --set override is read from the render, not the file", func(t *testing.T) {
+		values := valuesFile(t, "mode: cloud\nserver:\n  progressDeadlineSeconds: 600\n")
+		if got, want := mustWait(t, "iterion", ".", "-f", values, "--set", "server.progressDeadlineSeconds=900"), "1020s"; got != want {
+			t.Fatalf("chart-kind-wait = %q, want %q — the install renders 900, so the wait follows 900; a reader of the values file would size 720 s for a deadline the install never runs with", got, want)
+		}
+	})
+	t.Run("the forms a line reader could not pair with their key render their deadline", func(t *testing.T) {
+		// A %YAML 1.1 directive and the explicit document start, the server
+		// block as a flow mapping that outlives its opening line, a literal
+		// block scalar entry holding a brace, a quoted key holding a colon:
+		// go-yaml reads them all, helm renders 1800, and the render is what
+		// the helper reads — no form of the file is its business.
+		values := valuesFile(t, "%YAML 1.1\n---\nmode: cloud\nserver: {\n  replicas: 1,\n  progressDeadlineSeconds: 1800 }\nrunner:\n  args:\n    - |\n      {not: a flow}\n    - \"x:y\"\n  \"quoted:key\": 1\n")
+		if got, want := mustWait(t, "iterion", ".", "-f", values), "1920s"; got != want {
+			t.Fatalf("chart-kind-wait = %q, want %q — helm renders this file with 1800, and the wait follows the render", got, want)
+		}
+	})
+	t.Run("a file helm refuses is refused with helm's cause", func(t *testing.T) {
+		// go-yaml reads no %YAML 1.2 document ("found incompatible YAML
+		// document"): the install never starts, and the helper says so
+		// instead of sizing a watch for it.
+		stderr := mustRefuseWait(t, "iterion", ".", "-f", valuesFile(t, "%YAML 1.2\n---\nmode: cloud\nserver:\n  progressDeadlineSeconds: 600\n"))
+		for _, want := range []string{"incompatible YAML document", "helm template", "failed"} {
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("the refusal does not carry %q — helm's own cause and the helper's reading of it are both owed:\n%s", want, stderr)
+			}
+		}
+	})
+	t.Run("an unset deadline is refused and named", func(t *testing.T) {
+		stderr := mustRefuseWait(t, "iterion", ".", "-f", valuesFile(t, "mode: cloud\n"))
+		if !strings.Contains(stderr, "renders no spec.progressDeadlineSeconds") || !strings.Contains(stderr, "600 s default") {
+			t.Fatalf("the refusal must name the rendered Deployment without the field and the 600 s default the install would watch:\n%s", stderr)
+		}
+	})
+	t.Run("a zero is skipped by the template and refused as unset", func(t *testing.T) {
+		stderr := mustRefuseWait(t, "iterion", ".", "-f", valuesFile(t, "mode: cloud\nserver:\n  progressDeadlineSeconds: 0\n"))
+		if !strings.Contains(stderr, "renders no spec.progressDeadlineSeconds") {
+			t.Fatalf("the template renders a 0 through a `with` that skips it, so the refusal is the unset one:\n%s", stderr)
+		}
+	})
+	t.Run("the runner's deadline is not the server's", func(t *testing.T) {
+		// values.yaml gives the runner Deployment a 30000 s deadline by
+		// default, and this file gives it 900: a selection reading any
+		// Deployment with the field would print 1020 s or 30120 s.
+		stderr := mustRefuseWait(t, "iterion", ".", "-f", valuesFile(t, "mode: cloud\nrunner:\n  progressDeadlineSeconds: 900\n"))
+		if !strings.Contains(stderr, "Deployment/iterion renders no spec.progressDeadlineSeconds") {
+			t.Fatalf("the refusal must name the server Deployment, not read the runner's:\n%s", stderr)
+		}
+	})
+	t.Run("a string deadline is refused as not an integer", func(t *testing.T) {
+		stderr := mustRefuseWait(t, "iterion", ".", "-f", valuesFile(t, "mode: cloud\nserver:\n  progressDeadlineSeconds: \"abc\"\n"))
+		if !strings.Contains(stderr, "progressDeadlineSeconds: abc (!!str)") || !strings.Contains(stderr, "not an integer") {
+			t.Fatalf("the refusal must name the rendered value, its tag and the cause:\n%s", stderr)
+		}
+	})
+	t.Run("a float deadline is refused as not an integer", func(t *testing.T) {
+		stderr := mustRefuseWait(t, "iterion", ".", "-f", valuesFile(t, "mode: cloud\nserver:\n  progressDeadlineSeconds: 600.5\n"))
+		if !strings.Contains(stderr, "(!!float)") || !strings.Contains(stderr, "not an integer") {
+			t.Fatalf("the refusal must name the float and the cause:\n%s", stderr)
+		}
+	})
+	t.Run("mode local renders no server Deployment", func(t *testing.T) {
+		stderr := mustRefuseWait(t, "iterion", ".", "-f", valuesFile(t, "mode: local\n"))
+		if !strings.Contains(stderr, "carries no Deployment labelled app.kubernetes.io/component=server") || !strings.Contains(stderr, "StatefulSet/iterion") {
+			t.Fatalf("the refusal must say no server Deployment rendered and name what carries the label instead:\n%s", stderr)
+		}
+	})
+	t.Run("several server Deployments are refused, never the first", func(t *testing.T) {
+		for _, order := range [][2]string{{"600", "900"}, {"900", "600"}} {
+			chart := scratchChart(t, serverDeployment("a", order[0])+"---\n"+serverDeployment("b", order[1]))
+			stderr := mustRefuseWait(t, "scratch", chart)
+			if !strings.Contains(stderr, "carries 2 Deployments labelled app.kubernetes.io/component=server (a, b)") {
+				t.Fatalf("the refusal must count and name the candidates (order %v):\n%s", order, stderr)
+			}
+		}
+	})
+	t.Run("a render with no server label at all is refused", func(t *testing.T) {
+		stderr := mustRefuseWait(t, "scratch", scratchChart(t, "kind: ConfigMap\nmetadata:\n  name: lone\n"))
+		if !strings.Contains(stderr, "carries no Deployment labelled app.kubernetes.io/component=server (the label is on: nothing)") {
+			t.Fatalf("the refusal must say nothing in the render carries the label:\n%s", stderr)
+		}
+	})
+	t.Run("a rendered 0 is refused", func(t *testing.T) {
+		stderr := mustRefuseWait(t, "scratch", scratchChart(t, serverDeployment("a", "0")))
+		if !strings.Contains(stderr, "progressDeadlineSeconds: 0") || !strings.Contains(stderr, "budgets no watch") {
+			t.Fatalf("the refusal must name the rendered 0:\n%s", stderr)
+		}
+	})
+	t.Run("a negative deadline is refused", func(t *testing.T) {
+		stderr := mustRefuseWait(t, "scratch", scratchChart(t, serverDeployment("a", "-5")))
+		if !strings.Contains(stderr, "progressDeadlineSeconds: -5") || !strings.Contains(stderr, "not a positive decimal integer") {
+			t.Fatalf("the refusal must name the negative value:\n%s", stderr)
+		}
+	})
+	t.Run("a deadline beyond int32 is refused", func(t *testing.T) {
+		for _, v := range []string{"2147483648", "99999999999"} {
+			stderr := mustRefuseWait(t, "scratch", scratchChart(t, serverDeployment("a", v)))
+			if !strings.Contains(stderr, "progressDeadlineSeconds: "+v) || !strings.Contains(stderr, "beyond the int32") {
+				t.Fatalf("the refusal must name %s and the int32 bound:\n%s", v, stderr)
+			}
+		}
+		if got, want := mustWait(t, "scratch", scratchChart(t, serverDeployment("a", "2147483647"))), "2147483767s"; got != want {
+			t.Fatalf("chart-kind-wait = %q, want %q — the largest int32 the field holds is a deadline, and its margin stays exact", got, want)
+		}
+	})
+	t.Run("a chart helm cannot read is refused with helm's cause", func(t *testing.T) {
+		stderr := mustRefuseWait(t, "iterion", filepath.Join(t.TempDir(), "nochart"))
+		if !strings.Contains(stderr, "not found") || !strings.Contains(stderr, "helm template") {
+			t.Fatalf("the refusal must carry helm's message and name the render that failed:\n%s", stderr)
+		}
+	})
+	t.Run("the usage is refused without a release and a chart", func(t *testing.T) {
+		stderr := mustRefuseWait(t, "iterion")
+		if !strings.Contains(stderr, "usage: chart-kind-wait.sh <release> <chart>") {
+			t.Fatalf("the usage must say what the helper reads:\n%s", stderr)
+		}
+	})
 }
 
 // uniqueMatch returns the index of the only candidate containing want, and
@@ -82,918 +308,85 @@ func soleTimeout(cmd, variable string) error {
 	return nil
 }
 
-// TestChartKindWaitFollowsTheValuesDeadline pins the derivation both
-// install sites share: the client wait is values-dev's own deadline
-// (1800 s) plus the helper's 120 s margin, so the deadline — not pull
-// time — decides the install's verdict. Removing the knob from
-// values-dev.yaml, or breaking the helper's parse, reds here: the client
-// watch no longer covers the deadline it installs.
-func TestChartKindWaitFollowsTheValuesDeadline(t *testing.T) {
-	stdout, stderr, err := runKindWait(t, filepath.Join("values-dev.yaml"))
-	if err != nil {
-		t.Fatalf("chart-kind-wait values-dev.yaml: %v — %s", err, strings.TrimSpace(stderr))
+// scriptLines splits a shell script into its trimmed lines, joining the
+// backslash continuations first so a command spread over several lines is
+// read as the one command the shell runs.
+func scriptLines(script string) []string {
+	joined := strings.ReplaceAll(script, "\\\n", " ")
+	var lines []string
+	for _, l := range strings.Split(joined, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
+		}
 	}
-	if got, want := strings.TrimSpace(stdout), "1920s"; got != want {
-		t.Fatalf("chart-kind-wait values-dev.yaml = %q, want %q — 1800 s deadline + 120 s margin; the client watch must cover the deadline it installs", got, want)
+	return lines
+}
+
+// installWiring is what a wiring witness reads off an install script: the
+// one argument list both commands expand, the helper call's arguments and
+// the install command's arguments after its verb.
+type installWiring struct {
+	list    string // the list's text, as declared
+	helper  string // what follows scripts/chart-kind-wait.sh, up to the closing )
+	install string // what follows the install verb
+}
+
+// sameArguments judges a wiring: the helper is called on the list's
+// expansion and nothing else, the install passes that same expansion first
+// and then only the wait flags, so the helper never reads a render the
+// install does not apply and the install never applies a -f or --set the
+// helper did not see. The list itself must carry the chart and values-dev.
+func sameArguments(t *testing.T, what string, w installWiring, expansion, timeoutVar string) {
+	t.Helper()
+	if !strings.Contains(w.list, "./charts/iterion") || !regexp.MustCompile(`(-f|--values) (\./)?charts/iterion/values-dev\.yaml`).MatchString(w.list) {
+		t.Fatalf("%s's shared argument list must carry the chart and values-dev.yaml, got: %s", what, w.list)
+	}
+	if strings.TrimSpace(w.helper) != expansion {
+		t.Fatalf("%s calls scripts/chart-kind-wait.sh on %q, want the list's expansion %q alone — the helper must render the install's own arguments, no more and no fewer", what, strings.TrimSpace(w.helper), expansion)
+	}
+	words := strings.Fields(w.install)
+	if len(words) == 0 || words[0] != expansion {
+		t.Fatalf("%s's install does not start with the list's expansion %q: %s", what, expansion, w.install)
+	}
+	allowed := map[string]bool{"--wait": true, "--timeout": true, `"` + timeoutVar + `"`: true, timeoutVar: true}
+	for _, word := range words[1:] {
+		if !allowed[word] {
+			t.Fatalf("%s's install carries %q outside the shared list — an argument the helper never saw changes the render the wait was sized from; add it to the list: %s", what, word, w.install)
+		}
+	}
+	if err := soleTimeout(w.install, timeoutVar); err != nil {
+		t.Fatalf("%s's install must pass the helper's output to --timeout and nothing else: %v — cmd: %s", what, err, w.install)
 	}
 }
 
-// TestChartKindWaitDerivesAndRefuses exercises the helper's contract on
-// scratch values files: the margin arithmetic, the two block orders
-// (runner's knob before or after the server's), the whitespace forms
-// go-yaml tolerates, and the refusals — an unset knob, a zero, a
-// non-integer, a second document, a tab in the indentation, a deadline
-// beyond the int32 the field holds, a missing file, and the runner's own
-// deadline, which is not the server's.
-func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
-	t.Run("deadline plus the 120s margin", func(t *testing.T) {
-		stdout, stderr, err := runKindWait(t, valuesFile(t, "mode: cloud\nserver:\n  progressDeadlineSeconds: 600\n"))
-		if err != nil {
-			t.Fatalf("chart-kind-wait: %v — %s", err, strings.TrimSpace(stderr))
-		}
-		if got, want := strings.TrimSpace(stdout), "720s"; got != want {
-			t.Fatalf("chart-kind-wait = %q, want %q — deadline + 120 s margin", got, want)
-		}
-	})
-
-	t.Run("server block after the runner block", func(t *testing.T) {
-		stdout, stderr, err := runKindWait(t, valuesFile(t, "runner:\n  progressDeadlineSeconds: 30000\nserver:\n  progressDeadlineSeconds: 600\n"))
-		if err != nil {
-			t.Fatalf("chart-kind-wait: %v — %s", err, strings.TrimSpace(stderr))
-		}
-		if got, want := strings.TrimSpace(stdout), "720s"; got != want {
-			t.Fatalf("chart-kind-wait = %q, want %q — the runner's knob must not be read as the server's", got, want)
-		}
-	})
-
-	t.Run("server block before the runner block", func(t *testing.T) {
-		stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: 600\nrunner:\n  progressDeadlineSeconds: 30000\n"))
-		if err != nil {
-			t.Fatalf("chart-kind-wait: %v — %s", err, strings.TrimSpace(stderr))
-		}
-		if got, want := strings.TrimSpace(stdout), "720s"; got != want {
-			t.Fatalf("chart-kind-wait = %q, want %q — the server's knob must win whichever block comes first", got, want)
-		}
-	})
-
-	t.Run("the last duplicate declaration wins", func(t *testing.T) {
-		// go-yaml — helm's values parser — replaces the whole server map
-		// when the block repeats inside a document (helm 3.20.2 and 4.1.1
-		// alike, through helm template): the later block's knob is the one
-		// that renders, and a continuation recorded under the earlier knob
-		// goes with the map it folded into (helm 3.20.2 renders 1200 for
-		// the third form, probe-measured). The watch must follow the
-		// declaration the install runs with — a block left at first-wins
-		// sizes the watch for a deadline the install does not have, the
-		// #2780 failure with every gate green — and a continuation the
-		// re-open dropped must not refuse a file helm installs. A second
-		// document is refused outright: the multi-document witness below.
-		for _, tc := range []struct{ name, content, want string }{
-			{"repeated block, 600 then 1200", "server:\n  progressDeadlineSeconds: 600\nserver:\n  progressDeadlineSeconds: 1200\n", "1320s"},
-			{"repeated block, 1200 then 600", "server:\n  progressDeadlineSeconds: 1200\nserver:\n  progressDeadlineSeconds: 600\n", "720s"},
-			{"repeated block, a continuation under the earlier knob", "server:\n  progressDeadlineSeconds: 600\n    0\nserver:\n  progressDeadlineSeconds: 1200\n", "1320s"},
-		} {
-			t.Run(tc.name, func(t *testing.T) {
-				stdout, stderr, err := runKindWait(t, valuesFile(t, tc.content))
-				if err != nil {
-					t.Fatalf("chart-kind-wait refused a duplicate form helm installs — %s", strings.TrimSpace(stderr))
-				}
-				if got, want := strings.TrimSpace(stdout), tc.want; got != want {
-					t.Fatalf("chart-kind-wait = %q, want %q — the watch must follow the declaration go-yaml leaves last", got, want)
-				}
-			})
-		}
-		t.Run("a block re-open drops the declaration the earlier block held", func(t *testing.T) {
-			// go-yaml replaces the whole server map when the block repeats
-			// inside one document: the knob only in the earlier block
-			// renders nothing and Kubernetes' 600 s default applies. The
-			// guard must refuse on the unset path — sizing the watch from
-			// the 600 it remembers is the #2780 failure with the guard
-			// green, and this is the shape rounds 1-6 missed.
-			_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: 600\nserver:\n  replicas: 1\n"))
-			if err == nil {
-				t.Fatalf("chart-kind-wait sized the watch from the earlier block's 600 — go-yaml replaces the whole server map on the re-open, no deadline renders and Kubernetes' default 600 s applies")
-			}
-			if !strings.Contains(stderr, "does not set server.progressDeadlineSeconds") {
-				t.Fatalf("refusal does not route to the unset path — stderr: %s", strings.TrimSpace(stderr))
-			}
-		})
-		t.Run("content past a document boundary is refused", func(t *testing.T) {
-			// helm 3.20.2 — the devbox pin — reads the first document of a
-			// values file alone (probe-measured: `600 --- 1200` renders 600,
-			// `1200 --- 600` renders 1200, a knob only in the second
-			// document renders nothing and Kubernetes' 600 s default
-			// applies), while helm 4.1.1 merges `---` documents per key, and
-			// CI's setup-helm pins no version. A guard that models either
-			// rule sizes the watch wrong on the other helm — the #2780
-			// failure with every witness green — so the content that follows
-			// a boundary is refused, naming both lines, for every marker
-			// form go-yaml reads as one: a column-0 `---` with nothing, a
-			// comment or trailing blanks after it, a column-0 `...`, and a
-			// `...` followed by a `---`.
-			for _, boundary := range []string{"---", "--- # c", "---  ", "---\t", "...", "... # end", "...\n---"} {
-				content := "server:\n  progressDeadlineSeconds: 600\n" + boundary + "\nserver:\n  replicas: 1\n"
-				stdout, stderr, err := runKindWait(t, valuesFile(t, content))
-				if err == nil {
-					t.Fatalf("chart-kind-wait printed %q across the %q document boundary — helm 3 reads the first document alone and helm 4 merges them, so no watch fits both", strings.TrimSpace(stdout), boundary)
-				}
-				contentLine := fmt.Sprintf("content at line %d", 4+strings.Count(boundary, "\n"))
-				for _, want := range []string{"more than one document", "boundary at line 3", contentLine} {
-					if !strings.Contains(stderr, want) {
-						t.Fatalf("refusal across %q does not name %q — stderr: %s", boundary, want, strings.TrimSpace(stderr))
-					}
-				}
-			}
-			// The first document helm 3.20.2 reads can be the empty one: two
-			// leading markers, or the knob declared only after a boundary,
-			// render no server deadline (probe-measured: the 1800 of the
-			// values-dev base shows through). Both are the same refusal, not
-			// a watch sized from a knob helm never reads.
-			for _, content := range []string{
-				"---\n---\nserver:\n  progressDeadlineSeconds: 600\n",
-				"--- # a\n---\nserver:\n  progressDeadlineSeconds: 600\n",
-				"server:\n  replicas: 1\n---\nserver:\n  progressDeadlineSeconds: 600\n",
-			} {
-				stdout, stderr, err := runKindWait(t, valuesFile(t, content))
-				if err == nil {
-					t.Fatalf("chart-kind-wait printed %q for %q — helm 3 reads the first document alone, which holds no knob", strings.TrimSpace(stdout), content)
-				}
-				if !strings.Contains(stderr, "more than one document") {
-					t.Fatalf("refusal of %q does not name the second document — stderr: %s", content, strings.TrimSpace(stderr))
-				}
-			}
-		})
-		t.Run("a boundary nothing reads past is not a second document", func(t *testing.T) {
-			// A column-0 `---` before any content is the explicit start of
-			// the first document, comment lines before it included, and a
-			// trailing marker that only blank or comment lines follow opens
-			// a document neither helm reads anything from: helm 3.20.2
-			// renders 600 for every form below (probe-measured), and a merge
-			// of nothing changes nothing on helm 4. A rule that refuses every
-			// marker refuses files both helms install.
-			for _, form := range []string{
-				"---\nserver:\n  progressDeadlineSeconds: 600\n",
-				"--- # a\nserver:\n  progressDeadlineSeconds: 600\n",
-				"# c\n---\nserver:\n  progressDeadlineSeconds: 600\n",
-				"server:\n  progressDeadlineSeconds: 600\n---\n",
-				"server:\n  progressDeadlineSeconds: 600\n--- # end\n",
-				"server:\n  progressDeadlineSeconds: 600\n---\n# only a comment\n",
-				"server:\n  progressDeadlineSeconds: 600\n...\n",
-				"server:\n  progressDeadlineSeconds: 600\n... # end\n# c\n",
-				"server:\n  progressDeadlineSeconds: 600\n...\n---\n",
-			} {
-				stdout, stderr, err := runKindWait(t, valuesFile(t, form))
-				if err != nil {
-					t.Fatalf("chart-kind-wait refused %q — no content follows the boundary, and both helms install the 600 it spells; stderr: %s", form, strings.TrimSpace(stderr))
-				}
-				if got, want := strings.TrimSpace(stdout), "720s"; got != want {
-					t.Fatalf("chart-kind-wait = %q, want %q on %q", got, want, form)
-				}
-			}
-		})
-		t.Run("a CRLF document boundary is the boundary too", func(t *testing.T) {
-			// A CRLF ending is the LF ending to go-yaml, so `---` followed
-			// by a CR is the same boundary: the content after it is the
-			// second document, refused like the LF form. A reader whose
-			// boundary pattern misses the CR reads the marker as a plain
-			// column-0 key, takes the re-open for a same-document repeat and
-			// refuses on the unset path instead; the mirror below keeps the
-			// same-document re-open on that path under CRLF.
-			_, stderr, err := runKindWait(t, valuesFile(t, "server:\r\n  progressDeadlineSeconds: 600\r\n---\r\nserver:\r\n  replicas: 1\r\n"))
-			if err == nil {
-				t.Fatalf("chart-kind-wait sized the watch across a CRLF document boundary — the second document is refused whatever the line ending")
-			}
-			if !strings.Contains(stderr, "more than one document") {
-				t.Fatalf("refusal does not name the second document — stderr: %s", strings.TrimSpace(stderr))
-			}
-			_, stderr, err = runKindWait(t, valuesFile(t, "server:\r\n  progressDeadlineSeconds: 600\r\nserver:\r\n  replicas: 1\r\n"))
-			if err == nil {
-				t.Fatalf("chart-kind-wait sized the watch from the earlier block's 600 under CRLF — the re-open drops it whatever the line ending")
-			}
-			if !strings.Contains(stderr, "does not set server.progressDeadlineSeconds") {
-				t.Fatalf("refusal does not route to the unset path — stderr: %s", strings.TrimSpace(stderr))
-			}
-		})
-		t.Run("a last zero hides the earlier deadline", func(t *testing.T) {
-			_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: 600\nserver:\n  progressDeadlineSeconds: 0\n"))
-			if err == nil {
-				t.Fatalf("chart-kind-wait sized the watch from the earlier 600 — go-yaml leaves the 0 last and the templates skip it")
-			}
-			if !strings.Contains(stderr, "600 s default") {
-				t.Fatalf("refusal does not name the 600 s default — stderr: %s", strings.TrimSpace(stderr))
-			}
-		})
-	})
-
-	t.Run("the block's own indent is read", func(t *testing.T) {
-		// YAML fixes no indent width: go-yaml accepts the server block at
-		// one, three, four or eight spaces, and an indented comment fixes
-		// nothing. A deeper key belongs to a nested block — its knob is a
-		// different key helm does not read as the deadline (both orders:
-		// which one comes first must not decide the verdict).
-		for _, form := range []string{
-			"server:\n progressDeadlineSeconds: 600\n",
-			"server:\n   progressDeadlineSeconds: 600\n",
-			"server:\n    progressDeadlineSeconds: 600\n",
-			"server:\n        progressDeadlineSeconds: 600\n",
-			"server:\n  # a comment at a foreign indent fixes nothing\n    progressDeadlineSeconds: 600\n",
-		} {
-			stdout, stderr, err := runKindWait(t, valuesFile(t, form))
-			if err != nil {
-				t.Fatalf("chart-kind-wait refused %q — go-yaml accepts the block at its own indent; stderr: %s", form, strings.TrimSpace(stderr))
-			}
-			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
-				t.Fatalf("chart-kind-wait = %q, want %q on %q", got, want, form)
-			}
-		}
-		for _, form := range []string{
-			"server:\n  hpa:\n    progressDeadlineSeconds: 900\n  progressDeadlineSeconds: 600\n",
-			"server:\n  progressDeadlineSeconds: 600\n  hpa:\n    progressDeadlineSeconds: 900\n",
-		} {
-			stdout, stderr, err := runKindWait(t, valuesFile(t, form))
-			if err != nil {
-				t.Fatalf("chart-kind-wait refused %q — the nested block's knob is not the server's deadline; stderr: %s", form, strings.TrimSpace(stderr))
-			}
-			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
-				t.Fatalf("chart-kind-wait = %q, want %q on %q — the deeper 900 belongs to hpa, not to the deadline", got, want, form)
-			}
-		}
-	})
-
-	t.Run("quoted keys and a space before the colon are not refused", func(t *testing.T) {
-		// YAML spells keys bare or quoted and allows space before the
-		// colon; go-yaml accepts each form and helm installs it (proven on
-		// helm 4.1.1: every form renders the 600 it spells).
-		for _, form := range []string{
-			"\"server\":\n  progressDeadlineSeconds: 600\n",
-			"'server':\n  progressDeadlineSeconds: 600\n",
-			"\"server\" :\n  progressDeadlineSeconds: 600\n",
-			"server :\n  progressDeadlineSeconds: 600\n",
-			"server:\n  \"progressDeadlineSeconds\": 600\n",
-			"server:\n  'progressDeadlineSeconds' : 600\n",
-		} {
-			stdout, stderr, err := runKindWait(t, valuesFile(t, form))
-			if err != nil {
-				t.Fatalf("chart-kind-wait refused %q — go-yaml accepts the key spelled that way; stderr: %s", form, strings.TrimSpace(stderr))
-			}
-			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
-				t.Fatalf("chart-kind-wait = %q, want %q on %q", got, want, form)
-			}
-		}
-	})
-
-	t.Run("a column-0 key go-yaml accepts closes the server block", func(t *testing.T) {
-		// go-yaml — helm's parser — accepts top-level keys starting with
-		// `_` or a digit; a block nested under one must not keep the
-		// previous top key, or the watch is sized from a knob that is not
-		// the server's while the install runs on Kubernetes' default.
-		stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\n  replicas: 1\n_helpers:\n  progressDeadlineSeconds: 300\n"))
-		if err == nil {
-			t.Fatalf("chart-kind-wait = %q — it sized the watch from _helpers's knob while the server block has no knob of its own; stderr: %s", strings.TrimSpace(stdout), strings.TrimSpace(stderr))
-		}
-		if !strings.Contains(stderr, "server.progressDeadlineSeconds") {
-			t.Fatalf("refusal does not name server.progressDeadlineSeconds — stderr: %s", strings.TrimSpace(stderr))
-		}
-		stdout, stderr, err = runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: 600\n2nd:\n  progressDeadlineSeconds: 300\n"))
-		if err != nil {
-			t.Fatalf("chart-kind-wait refused a server knob that precedes a digit-keyed block — %s", strings.TrimSpace(stderr))
-		}
-		if got, want := strings.TrimSpace(stdout), "720s"; got != want {
-			t.Fatalf("chart-kind-wait = %q, want %q — the server's own 600 s must win over the digit-keyed block that follows it", got, want)
-		}
-	})
-
-	t.Run("whitespace go-yaml tolerates is not refused", func(t *testing.T) {
-		// go-yaml — the parser helm reads values with — accepts trailing
-		// spaces and tabs after the value, a tab between key and value,
-		// a tab before a comment, and CRLF line endings; trimming them
-		// keeps the refusal path for values helm would refuse too.
-		for _, form := range []string{
-			"server:\n  progressDeadlineSeconds: 600   \n",
-			"server:\n  progressDeadlineSeconds: 600\t\n",
-			"server:\n  progressDeadlineSeconds:\t600\n",
-			"server:\n  progressDeadlineSeconds: 600\t# trailing comment\n",
-			// CRLF, on the value line, on the top-key anchor, and on
-			// both — CR is stripped where it lands, and a line ending
-			// helm accepts never leaves $1 as `server:\r`.
-			"server:\n  progressDeadlineSeconds: 600\r\n",
-			"server:\r\n  progressDeadlineSeconds: 600\n",
-			"server:\r\n  progressDeadlineSeconds: 600\r\n",
-		} {
-			stdout, stderr, err := runKindWait(t, valuesFile(t, form))
-			if err != nil {
-				t.Fatalf("chart-kind-wait refused %q — go-yaml accepts it, so helm installs it; stderr: %s", form, strings.TrimSpace(stderr))
-			}
-			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
-				t.Fatalf("chart-kind-wait = %q, want %q — deadline + 120 s margin on %q", got, want, form)
-			}
-		}
-	})
-
-	t.Run("integer forms go-yaml resolves are not refused", func(t *testing.T) {
-		// go-yaml — helm's values parser — resolves each form to the
-		// pinned value (verified live through helm template on the chart):
-		// refusing one would stop an install helm runs. 0600 is the trap —
-		// go-yaml reads a leading-0 form as octal — so the witness pins the
-		// converted value, not the decimal misread.
-		for _, tc := range []struct{ form, want string }{
-			{"+600", "720s"},
-			{"1_800", "1920s"},
-			{"0x2580", "9720s"},
-			{"0o754", "612s"},
-			{"0b101", "125s"},
-			{"0600", "504s"},
-			{"08", "128s"},
-			{"600.0", "720s"},
-			{"6e2", "720s"},
-		} {
-			stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: "+tc.form+"\n"))
-			if err != nil {
-				t.Fatalf("chart-kind-wait refused %q — go-yaml resolves it and helm installs it; stderr: %s", tc.form, strings.TrimSpace(stderr))
-			}
-			if got, want := strings.TrimSpace(stdout), tc.want; got != want {
-				t.Fatalf("chart-kind-wait %q = %q, want %q — the watch must follow the value go-yaml hands the install", tc.form, got, want)
-			}
-		}
-	})
-
-	t.Run("a quoted decimal installs like the bare integer", func(t *testing.T) {
-		// go-yaml hands "600" to the templates as the string "600", but
-		// the templates print the scalar verbatim, so the applied manifest
-		// holds the bare integer and installs like the unquoted form —
-		// helm 4.1.1 renders "600" byte-identical to 600. Refusing it
-		// would stop an install helm runs.
-		for _, form := range []string{`"600"`, `'600'`} {
-			stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: "+form+"\n"))
-			if err != nil {
-				t.Fatalf("chart-kind-wait refused %q — the manifest helm applies reads it as the integer it spells; stderr: %s", form, strings.TrimSpace(stderr))
-			}
-			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
-				t.Fatalf("chart-kind-wait %q = %q, want %q", form, got, want)
-			}
-		}
-	})
-
-	t.Run("a quote inside a plain value is the value's own", func(t *testing.T) {
-		// go-yaml reads a quote inside a plain scalar as a character of
-		// it: `6"00` is the string it spells, which helm renders verbatim
-		// and the API refuses. Only one pair of enclosing quotes is the
-		// quoted form the guard resolves: the single-quoted `'"600"'`
-		// keeps its inner quotes through the `{{ . }}` render and lands
-		// as `progressDeadlineSeconds: "600"`, a string the integer field
-		// refuses. A strip of every quote sizes 720 s for all three
-		// files the install refuses.
-		for _, form := range []string{`6"00`, `6'00`, `'"600"'`} {
-			_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: "+form+"\n"))
-			if err == nil {
-				t.Fatalf("chart-kind-wait sized the watch from %q as if it were 600 — go-yaml hands the string over and the API refuses the Deployment", form)
-			}
-			if !strings.Contains(stderr, "not an integer") {
-				t.Fatalf("refusal of %q does not name the non-integer — stderr: %s", form, strings.TrimSpace(stderr))
-			}
-		}
-	})
-
-	t.Run("negative deadline is refused", func(t *testing.T) {
-		_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: -600\n"))
-		if err == nil {
-			t.Fatalf("chart-kind-wait accepted a negative deadline — a negative deadline cannot budget the install watch")
-		}
-		if !strings.Contains(stderr, "negative") {
-			t.Fatalf("refusal does not name the negative deadline — stderr: %s", strings.TrimSpace(stderr))
-		}
-	})
-
-	t.Run("a deadline beyond the int32 the field holds is refused", func(t *testing.T) {
-		// The Deployment's progressDeadlineSeconds is an int32: 2147483648
-		// fits no install (helm 3.20.2 renders it as 2.147483648e+09, a
-		// number the field cannot hold), so the guard refuses it instead
-		// of printing 2147483768s for a watch the install never runs. The
-		// int32 bound also keeps the margin arithmetic exact in awk
-		// doubles, where a 2^53 bound on the deadline alone let
-		// 9007199254740991 print a rounded wait. 2147483647 is the last
-		// value accepted, so the bound is the field's, not one off it.
-		for _, form := range []string{"2147483648", "-2147483649", "9007199254740991", "123456789012345678901234567890"} {
-			stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: "+form+"\n"))
-			if err == nil {
-				t.Fatalf("chart-kind-wait printed %q for %q — beyond the int32 the Deployment field holds, no install carries it", strings.TrimSpace(stdout), form)
-			}
-			if !strings.Contains(stderr, "int32") {
-				t.Fatalf("refusal of %q does not name the int32 — stderr: %s", form, strings.TrimSpace(stderr))
-			}
-		}
-		stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: 2147483647\n"))
-		if err != nil {
-			t.Fatalf("chart-kind-wait refused the largest int32 — %s", strings.TrimSpace(stderr))
-		}
-		if got, want := strings.TrimSpace(stdout), "2147483767s"; got != want {
-			t.Fatalf("chart-kind-wait = %q, want %q — the largest int32 plus the 120 s margin, exact", got, want)
-		}
-	})
-
-	t.Run("unset knob is refused", func(t *testing.T) {
-		path := valuesFile(t, "server:\n  replicas: 1\n")
-		_, stderr, err := runKindWait(t, path)
-		if err == nil {
-			t.Fatalf("chart-kind-wait accepted %q — an unset knob means Kubernetes' 600 s default applies and the watch shrinks silently", path)
-		}
-		for _, want := range []string{"server.progressDeadlineSeconds", path} {
-			if !strings.Contains(stderr, want) {
-				t.Fatalf("refusal names neither %q nor the file — stderr: %s", want, strings.TrimSpace(stderr))
-			}
-		}
-	})
-
-	t.Run("zero is refused", func(t *testing.T) {
-		_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: 0\n"))
-		if err == nil {
-			t.Fatalf("chart-kind-wait accepted a zero — the templates render the key through a `with` that skips it, Kubernetes' 600 s default applies")
-		}
-		if !strings.Contains(stderr, "600 s default") {
-			t.Fatalf("refusal does not name the 600 s default — stderr: %s", strings.TrimSpace(stderr))
-		}
-	})
-
-	t.Run("non-integer is refused", func(t *testing.T) {
-		// 600.5 and 1:30 — base-60, which go-yaml hands over as a string —
-		// render verbatim and the API refuses the Deployment: same verdict
-		// here as at the install.
-		for _, form := range []string{"many", "600.5", "1:30"} {
-			_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: "+form+"\n"))
-			if err == nil {
-				t.Fatalf("chart-kind-wait accepted %q as a deadline — helm renders it verbatim and the API refuses it", form)
-			}
-			if !strings.Contains(stderr, "not an integer") {
-				t.Fatalf("refusal of %q does not name the bad value — stderr: %s", form, strings.TrimSpace(stderr))
-			}
-		}
-	})
-
-	t.Run("a form helm resolves that the guard does not is refused naming the guard's reach", func(t *testing.T) {
-		// helm 3.20.2 renders a deadline the install runs with from each
-		// form below (probe-measured: `&d 600` and `!!int 600` render 600,
-		// the literal block renders 600, `"600 # x"` renders `600 # x` and
-		// `" 600"` renders ` 600`, both read back as 600 in the applied
-		// manifest). A line reader resolves none of them, so the refusal
-		// stands, but its cause must be the guard's own reach: a message
-		// that claims go-yaml hands the value over verbatim and the API
-		// refuses the Deployment is false for every one of them.
-		for _, form := range []string{"&d 600", "!!int 600", "|\n    600", `"600 # x"`, `" 600"`} {
-			stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: "+form+"\n"))
-			if err == nil {
-				t.Fatalf("chart-kind-wait printed %q for %q — a line reader cannot resolve it, so it must refuse rather than guess", strings.TrimSpace(stdout), form)
-			}
-			if !strings.Contains(stderr, "not an integer this guard resolves") {
-				t.Fatalf("refusal of %q does not name the guard's reach — stderr: %s", form, strings.TrimSpace(stderr))
-			}
-			if strings.Contains(stderr, "API refuses") {
-				t.Fatalf("refusal of %q claims the API refuses the Deployment — helm renders a deadline the install runs with; stderr: %s", form, strings.TrimSpace(stderr))
-			}
-		}
-	})
-
-	t.Run("a colon glued to its value separates no key", func(t *testing.T) {
-		// go-yaml reads a block mapping separator only as a colon that
-		// whitespace or the line end follows: `progressDeadlineSeconds:600`
-		// is one plain scalar, so `server` is the string it spells and
-		// helm refuses the file (the values schema wants an object; with a
-		// key after it, "mapping values are not allowed in this context").
-		// A reader that cuts the key at any colon prints 720s for a file
-		// that never installs.
-		for _, form := range []string{
-			"server:\n  progressDeadlineSeconds:600\n",
-			"server:\n  progressDeadlineSeconds :600\n",
-			"server:\n  progressDeadlineSeconds:600\n  replicas: 1\n",
-			"server:\n  \"progressDeadlineSeconds\":600\n",
-		} {
-			stdout, stderr, err := runKindWait(t, valuesFile(t, form))
-			if err == nil {
-				t.Fatalf("chart-kind-wait printed %q for %q — the glued colon separates no key, and helm refuses the file", strings.TrimSpace(stdout), form)
-			}
-			if !strings.Contains(stderr, "does not set server.progressDeadlineSeconds") {
-				t.Fatalf("refusal of %q does not route to the unset path — stderr: %s", form, strings.TrimSpace(stderr))
-			}
-		}
-	})
-
-	t.Run("a tab in the indentation is refused at its line", func(t *testing.T) {
-		// go-yaml reads no tab as indentation — "found character that
-		// cannot start any token" on a key, a comment or a whitespace-only
-		// line, "found a tab character where an indentation space is
-		// expected" inside a block scalar short of its indent column — so
-		// helm refuses every file below (probe-measured on helm 3.20.2).
-		// The guard names the first such line instead of printing 720s for
-		// an install that never starts. A tab past the content column of a
-		// block scalar is a character of the string and the file installs:
-		// the mirror at the end.
-		for _, tc := range []struct{ content, line string }{
-			{"server:\n\tprogressDeadlineSeconds: 600\n", "line 2"},
-			{"server:\n \tprogressDeadlineSeconds: 600\n", "line 2"},
-			{"server:\n  progressDeadlineSeconds: 600\n\t0\n", "line 3"},
-			{"server:\n\t# c\n  progressDeadlineSeconds: 600\n", "line 2"},
-			{"server:\n  progressDeadlineSeconds: 600\n\t\n", "line 3"},
-			{"\tfoo: 1\nserver:\n  progressDeadlineSeconds: 600\n", "line 1"},
-			{"server:\n  notes: |\n    a\n\tb\n  progressDeadlineSeconds: 600\n", "line 4"},
-			{"server:\n  notes: |\n    \tb\n  progressDeadlineSeconds: 600\n", "line 3"},
-			{"server:\n  notes: |\n    a\n\t\n    b\n  progressDeadlineSeconds: 600\n", "line 4"},
-			{"server:\n  notes: |\n    a\n   \tb\n  progressDeadlineSeconds: 600\n", "line 4"},
-		} {
-			stdout, stderr, err := runKindWait(t, valuesFile(t, tc.content))
-			if err == nil {
-				t.Fatalf("chart-kind-wait printed %q for %q — go-yaml refuses the tab, so helm never installs the file", strings.TrimSpace(stdout), tc.content)
-			}
-			for _, want := range []string{"with a tab", tc.line} {
-				if !strings.Contains(stderr, want) {
-					t.Fatalf("refusal of %q does not name %q — stderr: %s", tc.content, want, strings.TrimSpace(stderr))
-				}
-			}
-		}
-		stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\n  notes: |\n    a\n    \tb\n  progressDeadlineSeconds: 600\n"))
-		if err != nil {
-			t.Fatalf("chart-kind-wait refused a tab past the block scalar's content column — a character of the string, and helm installs the file; stderr: %s", strings.TrimSpace(stderr))
-		}
-		if got, want := strings.TrimSpace(stdout), "720s"; got != want {
-			t.Fatalf("chart-kind-wait = %q, want %q — a tab inside the block scalar's content changes nothing", got, want)
-		}
-	})
-
-	t.Run("a scalar on the line after the key is refused", func(t *testing.T) {
-		// go-yaml accepts the scalar on its own, deeper line and renders
-		// it; a line reader cannot pair it with its key, so the guard
-		// refuses loudly — naming the one form it reads — instead of
-		// sizing the watch from a value it never saw.
-		stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds:\n    600\n"))
-		if err == nil {
-			t.Fatalf("chart-kind-wait printed %q — the scalar on the following line is not visible to a line reader", strings.TrimSpace(stdout))
-		}
-		for _, want := range []string{"server.progressDeadlineSeconds", "the only form this guard reads"} {
-			if !strings.Contains(stderr, want) {
-				t.Fatalf("refusal does not name %q — stderr: %s", want, strings.TrimSpace(stderr))
-			}
-		}
-	})
-
-	t.Run("a value continued onto a deeper line is refused", func(t *testing.T) {
-		// go-yaml (yaml.v3, probe-measured) folds a deeper line into the
-		// plain scalar above it — `600` then `0` is the string "600 0",
-		// and blank lines between them fold too — or refuses the file
-		// when the deeper line carries a `: ` (mapping values are not
-		// allowed in this context) or follows a comment (did not find
-		// expected key); helm renders the folded string verbatim and the
-		// API refuses the Deployment. A line reader sees the first line
-		// alone, so the guard refuses at the continuation, naming its
-		// line, instead of sizing 720 s from the 600 it read.
-		for _, tc := range []struct{ content, line string }{
-			{"server:\n  progressDeadlineSeconds: 600\n    0\n", "line 3"},
-			{"server:\n  progressDeadlineSeconds: 600\n\n    0\n", "line 4"},
-			{"server:\n  progressDeadlineSeconds: 600\n    foo: bar\n", "line 3"},
-			{"server:\n  progressDeadlineSeconds: 600\n    # c\n    0\n", "line 4"},
-			{"server:\n  progressDeadlineSeconds: 600\n    0\n  replicas: 1\n", "line 3"},
-		} {
-			stdout, stderr, err := runKindWait(t, valuesFile(t, tc.content))
-			if err == nil {
-				t.Fatalf("chart-kind-wait printed %q for %q — the deeper line folds into the value go-yaml hands over, so 600 is not the knob", strings.TrimSpace(stdout), tc.content)
-			}
-			for _, want := range []string{"continues the server.progressDeadlineSeconds value onto", tc.line} {
-				if !strings.Contains(stderr, want) {
-					t.Fatalf("refusal of %q does not name %q — stderr: %s", tc.content, want, strings.TrimSpace(stderr))
-				}
-			}
-		}
-		// A deeper comment line and a blank line before the next key are
-		// no continuation: go-yaml reads 600 (probe-measured), so the
-		// look-ahead must stay transparent to both.
-		for _, form := range []string{
-			"server:\n  progressDeadlineSeconds: 600\n    # a deeper comment folds nothing\n",
-			"server:\n  progressDeadlineSeconds: 600\n\n  replicas: 1\n",
-			"server:\n  progressDeadlineSeconds: 600\n    # note\n  replicas: 1\n",
-			"server:\n  progressDeadlineSeconds: 600\r\n\r\n  replicas: 1\r\n",
-		} {
-			stdout, stderr, err := runKindWait(t, valuesFile(t, form))
-			if err != nil {
-				t.Fatalf("chart-kind-wait refused %q — a deeper comment or a blank line continues no scalar; stderr: %s", form, strings.TrimSpace(stderr))
-			}
-			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
-				t.Fatalf("chart-kind-wait = %q, want %q on %q", got, want, form)
-			}
-		}
-	})
-
-	t.Run("missing file is refused", func(t *testing.T) {
-		_, _, err := runKindWait(t, filepath.Join(t.TempDir(), "absent.yaml"))
-		if err == nil {
-			t.Fatalf("chart-kind-wait accepted a values file that does not exist")
-		}
-	})
-
-	t.Run("runner knob alone is not the server knob", func(t *testing.T) {
-		path := valuesFile(t, "runner:\n  progressDeadlineSeconds: 30000\nserver:\n  replicas: 1\n")
-		_, stderr, err := runKindWait(t, path)
-		if err == nil {
-			t.Fatalf("chart-kind-wait read the runner's deadline out of %q — the server's knob is the one that budgets the server Deployment", path)
-		}
-		if !strings.Contains(stderr, "server.progressDeadlineSeconds") {
-			t.Fatalf("refusal does not name server.progressDeadlineSeconds — stderr: %s", strings.TrimSpace(stderr))
-		}
-	})
+// helperArguments extracts what a line passes to scripts/chart-kind-wait.sh:
+// the text after the script path up to the closing ) of the substitution.
+func helperArguments(t *testing.T, what, line string) string {
+	t.Helper()
+	m := regexp.MustCompile(`^KIND_WAIT=\$\(sh scripts/chart-kind-wait\.sh (.*)\)`).FindStringSubmatch(line)
+	if m == nil {
+		t.Fatalf("%s must capture the helper's output as KIND_WAIT=$(sh scripts/chart-kind-wait.sh …), got: %s", what, line)
+	}
+	return m[1]
 }
 
-// TestChartKindWaitRefusesFlowAndGluedComment pins the two forms go-yaml
-// does not read the way a line reader does. A flow collection open past
-// its opening line: go-yaml ignores indentation inside flow, so no line
-// reader can tell which key owns a later line — helm 4.1.1 renders the
-// mis-anchored file clean with no server deadline and Kubernetes' 600 s
-// default applies at install, while a watch sized from the interior
-// value makes helm give up while the server pod is still Progressing.
-// A `#` glued to the value: go-yaml starts a comment only at a `#`
-// preceded by whitespace, so `600#x` is the plain scalar "600#x" — helm
-// 4.1.1 renders it verbatim and the API refuses the Deployment — and
-// the guard refuses it with the value, not sized from its leading
-// digits. The same subtests pin what is NOT refused: the braces of a
-// plain value are its own, and braces quoted or commented away open
-// nothing.
-func TestChartKindWaitRefusesFlowAndGluedComment(t *testing.T) {
-	t.Run("a flow that stays open past its opening line is refused", func(t *testing.T) {
-		_, stderr, err := runKindWait(t, valuesFile(t, "metrics: {\n  enabled: true,\nserver: 2,\n  progressDeadlineSeconds: 100\n}\n"))
-		if err == nil {
-			t.Fatalf("chart-kind-wait sized the watch from a value inside a flow map — go-yaml puts it at metrics.progressDeadlineSeconds and the server's knob stays unset, so Kubernetes' 600 s default applies at install")
-		}
-		for _, want := range []string{"flow", "first at line 1"} {
-			if !strings.Contains(stderr, want) {
-				t.Fatalf("refusal does not name %q — stderr: %s", want, strings.TrimSpace(stderr))
-			}
-		}
-	})
-
-	t.Run("the opening line is named wherever it sits", func(t *testing.T) {
-		_, stderr, err := runKindWait(t, valuesFile(t, "mode: cloud\nreplicas: 1\nwait: {\n  for: 1\n}\n"))
-		if err == nil {
-			t.Fatalf("chart-kind-wait accepted a flow opened two lines down")
-		}
-		if !strings.Contains(stderr, "first at line 3") {
-			t.Fatalf("refusal does not name the opening line — stderr: %s", strings.TrimSpace(stderr))
-		}
-	})
-
-	t.Run("a flow under server is refused whichever entry holds the knob", func(t *testing.T) {
-		// The knob inside the nested map is not the server's deadline —
-		// helm 4.1.1 renders that file clean with no server deadline and
-		// Kubernetes' 600 s default applies. The layout that leaves the
-		// knob last reads the right value by accident of its line order,
-		// and the layout that leaves it interior sizes a watch the
-		// install does not have; a line reader cannot tell the shapes
-		// apart, so both are refused.
-		for _, form := range []string{
-			"server:\n  meta: {x: 1,\n  progressDeadlineSeconds: 100\n  }\n",
-			"server: {\n  progressDeadlineSeconds: 600\n}\n",
-		} {
-			_, stderr, err := runKindWait(t, valuesFile(t, form))
-			if err == nil {
-				t.Fatalf("chart-kind-wait sized the watch from %q — a flow under server is not a form this guard reads", form)
-			}
-			if !strings.Contains(stderr, "flow") {
-				t.Fatalf("refusal does not name the flow — stderr: %s", strings.TrimSpace(stderr))
-			}
-		}
-	})
-
-	t.Run("a flow opened after an entry indicator, a tag or an anchor is refused", func(t *testing.T) {
-		// A `{` or `[` opens a flow at every value start go-yaml knows,
-		// not only after `key: `: after a `- ` entry indicator (a nested
-		// `- - {` included), after a `!tag` or `&anchor` property, and
-		// after a `? ` explicit key. helm 3.20.2 reads each shape below
-		// as server.extra holding the flow — `server: 2` and the knob are
-		// keys of the flow, go-yaml ignoring indentation inside it — and
-		// renders no server deadline (probe-measured: the 1800 of the
-		// values-dev base shows through), while a scan that counts a `{`
-		// only after `key: ` sizes 220 s from the interior knob: the
-		// #2780 failure with the guard green. The `? {` key shape helm
-		// refuses outright (a mapping is no string key), so both sides
-		// refuse it.
-		for _, tc := range []struct{ content, line string }{
-			{"server:\n  extra:\n    - {name: a,\nserver: 2,\n  progressDeadlineSeconds: 100\n}\n", "line 3"},
-			{"server:\n  extra:\n    - [a,\nserver: 2,\n  progressDeadlineSeconds: 100\n]\n", "line 3"},
-			{"server:\n  extra:\n    - - {a: 1,\nserver: 2,\n  progressDeadlineSeconds: 100\n}\n", "line 3"},
-			{"server:\n  extra:\n    - !!map {a: 1,\nserver: 2,\n  progressDeadlineSeconds: 100\n}\n", "line 3"},
-			{"server:\n  extra: !!map {a: 1,\nserver: 2,\n  progressDeadlineSeconds: 100\n}\n", "line 2"},
-			{"server:\n  extra: ! {a: 1,\nserver: 2,\n  progressDeadlineSeconds: 100\n}\n", "line 2"},
-			{"server:\n  extra: &x {a: 1,\nserver: 2,\n  progressDeadlineSeconds: 100\n}\n", "line 2"},
-			{"server:\n  extra: !!map &x {a: 1,\nserver: 2,\n  progressDeadlineSeconds: 100\n}\n", "line 2"},
-			{"server:\n  extra: &x !!map {a: 1,\nserver: 2,\n  progressDeadlineSeconds: 100\n}\n", "line 2"},
-			{"server:\n  ? {a: 1,\nserver: 2,\n  progressDeadlineSeconds: 100\n}\n  : v\n", "line 2"},
-		} {
-			stdout, stderr, err := runKindWait(t, valuesFile(t, tc.content))
-			if err == nil {
-				t.Fatalf("chart-kind-wait printed %q for %q — the flow holds the knob, the server block has none, and Kubernetes' 600 s default applies at install", strings.TrimSpace(stdout), tc.content)
-			}
-			for _, want := range []string{"flow", "first at " + tc.line} {
-				if !strings.Contains(stderr, want) {
-					t.Fatalf("refusal of %q does not name %q — stderr: %s", tc.content, want, strings.TrimSpace(stderr))
-				}
-			}
-		}
-		// The indicator and the properties open nothing on their own: a
-		// dash or a `?` glued to its scalar, a flow that closes on its
-		// line, a brace inside a tagged or anchored plain scalar, and a
-		// `- `, `!` or `&` past the value start are read as go-yaml reads
-		// them (helm 3.20.2 renders the 600 of every form).
-		for _, form := range []string{
-			"server:\n  extra:\n    - -1\n    - {a: 1}\n    - - [1, 2]\n    - \"x{\"\n  progressDeadlineSeconds: 600\n",
-			"server:\n  note: a - {b\n  progressDeadlineSeconds: 600\n",
-			"server:\n  note: -{a\n  progressDeadlineSeconds: 600\n",
-			"server:\n  note: ?x\n  progressDeadlineSeconds: 600\n",
-			"server:\n  note: !!str a{b\n  progressDeadlineSeconds: 600\n",
-			"server:\n  note: &x a{b\n  progressDeadlineSeconds: 600\n",
-			"server:\n  note: a!b&c\n  progressDeadlineSeconds: 600\n",
-		} {
-			stdout, stderr, err := runKindWait(t, valuesFile(t, form))
-			if err != nil {
-				t.Fatalf("chart-kind-wait refused %q — no flow stays open there, and helm installs the file; stderr: %s", form, strings.TrimSpace(stderr))
-			}
-			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
-				t.Fatalf("chart-kind-wait = %q, want %q on %q", got, want, form)
-			}
-		}
-	})
-
-	t.Run("a comment that swallows the closing brace is refused", func(t *testing.T) {
-		// helm 4.1.1 refuses the file too — the flow never closes ("did
-		// not find expected ',' or '}'") — both sides refuse loudly.
-		_, stderr, err := runKindWait(t, valuesFile(t, "foo: {a: 1 # x}\n"))
-		if err == nil {
-			t.Fatalf("chart-kind-wait accepted a flow whose closing brace a comment swallows")
-		}
-		if !strings.Contains(stderr, "flow") {
-			t.Fatalf("refusal does not name the flow — stderr: %s", strings.TrimSpace(stderr))
-		}
-	})
-
-	t.Run("a single-line flow is refused as the invisible form it is", func(t *testing.T) {
-		_, stderr, err := runKindWait(t, valuesFile(t, "server: {progressDeadlineSeconds: 600}\n"))
-		if err == nil {
-			t.Fatalf("chart-kind-wait sized the watch from a single-line flow mapping")
-		}
-		for _, want := range []string{"server.progressDeadlineSeconds", "the only form this guard reads"} {
-			if !strings.Contains(stderr, want) {
-				t.Fatalf("refusal does not name %q — stderr: %s", want, strings.TrimSpace(stderr))
-			}
-		}
-	})
-
-	t.Run("the indented content of a block scalar is not flow", func(t *testing.T) {
-		// A literal or folded block scalar's content is raw text: go-yaml
-		// reads no key in it, so a `{` or `[` opening one of its lines is
-		// a character of the string, not a flow collection — helm 4.1.1
-		// installs the file (probe-measured on the nested blobs below,
-		// the shapes the values schema allows) and the watch must be
-		// sized, not refused. The scalar ends at the line no deeper than
-		// its opener, and reading resumes there.
-		for _, form := range []string{
-			"server:\n  progressDeadlineSeconds: 600\n  notes: |\n    {\n      \"a\": [1,\n        2]\n    }\n",
-			"nats:\n  blob: >\n    [1,\n     2]\nserver:\n  progressDeadlineSeconds: 600\n",
-			"server:\n  notes: |\n    {\n  progressDeadlineSeconds: 600\n",
-		} {
-			stdout, stderr, err := runKindWait(t, valuesFile(t, form))
-			if err != nil {
-				t.Fatalf("chart-kind-wait refused %q — block scalar content is a string, not flow, and helm installs it; stderr: %s", form, strings.TrimSpace(stderr))
-			}
-			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
-				t.Fatalf("chart-kind-wait = %q, want %q on %q", got, want, form)
-			}
-		}
-	})
-
-	t.Run("a comment-only value is refused as unset, not as a refused string", func(t *testing.T) {
-		// `progressDeadlineSeconds: # note` is null to go-yaml: helm
-		// renders no field (probe-measured: zero occurrences) and
-		// Kubernetes' 600 s default applies. The quoted "#x" form lands
-		// in the manifest as `progressDeadlineSeconds: #x`, where the
-		// whitespace before the # starts a comment and the field reads
-		// back empty — same verdict. The refusal routes to the unset
-		// path, not to an API refusal the install never sees.
-		for _, form := range []string{"# note", "#", `"#x"`} {
-			_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: "+form+"\n"))
-			if err == nil {
-				t.Fatalf("chart-kind-wait accepted the comment-only value %q — no deadline renders and Kubernetes' default 600 s applies", form)
-			}
-			if !strings.Contains(stderr, "does not set server.progressDeadlineSeconds") {
-				t.Fatalf("refusal of %q does not route to the unset path — stderr: %s", form, strings.TrimSpace(stderr))
-			}
-			if strings.Contains(stderr, "not an integer") {
-				t.Fatalf("refusal of %q still claims the API refuses the Deployment — helm renders no field to refuse", form)
-			}
-		}
-	})
-
-	t.Run("a null or a bare false spelling is refused as unset, not as a refused string", func(t *testing.T) {
-		// go-yaml resolves `~`, `null`, `Null` and `NULL` to null, and a
-		// bare `false` — with the YAML 1.1 `no`, `off` and `n` spellings
-		// helm's values parser reads as booleans — to false; the
-		// templates' `with` skips both, so helm renders no field
-		// (probe-measured on helm 3.20.2: zero occurrences) and
-		// Kubernetes' 600 s default applies. A quoted null spelling is
-		// the string go-yaml hands over, but it renders as
-		// `progressDeadlineSeconds: null`, which the applied manifest
-		// reads back as empty — same verdict. Each routes to the unset
-		// refusal, not to an API refusal the install never sees.
-		for _, form := range []string{"~", "null", "Null", "NULL", `"null"`, `'null'`, `'~'`, `"NULL"`, "false", "False", "FALSE", "no", "No", "NO", "off", "Off", "OFF", "n", "N"} {
-			_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: "+form+"\n"))
-			if err == nil {
-				t.Fatalf("chart-kind-wait accepted %q — no deadline renders and Kubernetes' default 600 s applies", form)
-			}
-			if !strings.Contains(stderr, "does not set server.progressDeadlineSeconds") {
-				t.Fatalf("refusal of %q does not route to the unset path — stderr: %s", form, strings.TrimSpace(stderr))
-			}
-			if strings.Contains(stderr, "not an integer") {
-				t.Fatalf("refusal of %q still claims the API refuses the Deployment — helm renders no deadline to refuse", form)
-			}
-		}
-		// A quoted false spelling and the true spellings render a boolean
-		// the integer field refuses (helm 3.20.2 renders `false`, `no`
-		// and `true`), so those keep the string refusal.
-		for _, form := range []string{`"false"`, `'no'`, "true", "yes", "on", "y"} {
-			_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: "+form+"\n"))
-			if err == nil {
-				t.Fatalf("chart-kind-wait accepted %q — helm renders a boolean and the API refuses the Deployment", form)
-			}
-			if !strings.Contains(stderr, "not an integer") {
-				t.Fatalf("refusal of %q does not name the non-integer — stderr: %s", form, strings.TrimSpace(stderr))
-			}
-		}
-	})
-
-	t.Run("a # glued to the value is the string go-yaml hands over", func(t *testing.T) {
-		_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: 600#x\n"))
-		if err == nil {
-			t.Fatalf("chart-kind-wait sized the watch from 600#x as if it were 600 — go-yaml hands the string over and the API refuses the Deployment")
-		}
-		if !strings.Contains(stderr, "not an integer") {
-			t.Fatalf("refusal does not name the non-integer — stderr: %s", strings.TrimSpace(stderr))
-		}
-	})
-
-	t.Run("a # separated by whitespace is still the comment", func(t *testing.T) {
-		stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: 600 # deadline\n"))
-		if err != nil {
-			t.Fatalf("chart-kind-wait refused a comment separated by whitespace — go-yaml strips it like the guard does; stderr: %s", strings.TrimSpace(stderr))
-		}
-		if got, want := strings.TrimSpace(stdout), "720s"; got != want {
-			t.Fatalf("chart-kind-wait = %q, want %q — the comment goes, the value stays", got, want)
-		}
-	})
-
-	t.Run("the braces of a plain value are its own, not a flow", func(t *testing.T) {
-		// In block context go-yaml reads each line as one plain scalar —
-		// flow indicators mid-scalar are the scalar's characters (helm
-		// 4.1.1 parses every form) — so none of them is refused as flow.
-		for _, form := range []string{
-			"note: a:{b\n",
-			"url: https://example.com/{id}\n",
-			"label: x}y\n",
-			"open: v{1\n",
-			"both: a}b{c\n",
-		} {
-			stdout, stderr, err := runKindWait(t, valuesFile(t, form+"server:\n  progressDeadlineSeconds: 600\n"))
-			if err != nil {
-				t.Fatalf("chart-kind-wait refused %q as flow — go-yaml reads it as one plain scalar; stderr: %s", form, strings.TrimSpace(stderr))
-			}
-			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
-				t.Fatalf("chart-kind-wait = %q, want %q on %q", got, want, form)
-			}
-		}
-	})
-
-	t.Run("braces quoted or commented away open no flow", func(t *testing.T) {
-		for _, form := range []string{
-			"quoted: \"a} b{ c\"\nserver:\n  progressDeadlineSeconds: 600\n",
-			"single: 'x[' # also not a flow\nserver:\n  progressDeadlineSeconds: 600\n",
-			"server:\n  progressDeadlineSeconds: 600 # { a brace in a comment\n",
-		} {
-			stdout, stderr, err := runKindWait(t, valuesFile(t, form))
-			if err != nil {
-				t.Fatalf("chart-kind-wait refused %q — braces inside a quoted scalar or a comment open nothing; stderr: %s", form, strings.TrimSpace(stderr))
-			}
-			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
-				t.Fatalf("chart-kind-wait = %q, want %q on %q", got, want, form)
-			}
-		}
-	})
-}
-
-// taskfileTasks mirrors the shape TestTheInlinedTasksMatchTheirTaskfileEntry
-// reads: task command entries are scalar nodes, block or plain.
+// taskfileTasks reads the piece of Taskfile.yml the chart:kind witness
+// needs: the commands of each task.
 type taskfileTasks struct {
 	Tasks map[string]struct {
 		Cmds []yaml.Node `yaml:"cmds"`
 	} `yaml:"tasks"`
 }
 
-// TestChartKindInstallDerivesItsWaitFromTheValuesFile is the wiring witness:
-// the smoke's install passes the helper's output to --timeout. Reverting the
-// task to a literal cap reds here on its own assertion — a fixed cap smaller
-// than values-dev's deadline makes helm give up while the server pod is
-// still Progressing.
-func TestChartKindInstallDerivesItsWaitFromTheValuesFile(t *testing.T) {
+// TestChartKindInstallSharesItsArgumentsWithTheHelper is the wiring
+// witness of the smoke: chart:kind declares its helm arguments once
+// (`set -- …`), runs the helper on "$@" and installs with "$@" plus the
+// derived --timeout — so the wait is sized from the render the install
+// applies. The list is then run through the helper here: values-dev
+// renders 1800, the task's install watches 1920 s. A literal cap, a second
+// -f on either command, or a helper call on a values file reds on its own
+// assertion.
+func TestChartKindInstallSharesItsArgumentsWithTheHelper(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join("..", "..", "Taskfile.yml"))
 	if err != nil {
 		t.Fatal(err)
@@ -1014,12 +407,55 @@ func TestChartKindInstallDerivesItsWaitFromTheValuesFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	install := cmds[idx]
-	if !strings.Contains(install, "scripts/chart-kind-wait.sh") {
-		t.Fatalf("chart:kind's install no longer calls scripts/chart-kind-wait.sh — the client wait drifts from the values deadline again; cmd: %s", install)
+	lines := scriptLines(cmds[idx])
+	var w installWiring
+	var setLine string
+	for _, line := range lines {
+		switch {
+		case strings.HasPrefix(line, "set -- "):
+			if setLine != "" {
+				t.Fatalf("chart:kind declares its argument list twice — which one the install reads depends on order: %q then %q", setLine, line)
+			}
+			setLine = line
+			w.list = strings.TrimPrefix(line, "set -- ")
+		case strings.Contains(line, "scripts/chart-kind-wait.sh"):
+			if w.helper != "" {
+				t.Fatalf("chart:kind calls scripts/chart-kind-wait.sh twice: %s", cmds[idx])
+			}
+			if setLine == "" {
+				t.Fatalf("chart:kind calls the helper before declaring the list it expands: %s", cmds[idx])
+			}
+			w.helper = helperArguments(t, "chart:kind", line)
+		case strings.HasPrefix(line, "helm upgrade --install "):
+			if w.helper == "" {
+				t.Fatalf("chart:kind installs before the helper sized the wait: %s", cmds[idx])
+			}
+			w.install = strings.TrimPrefix(line, "helm upgrade --install ")
+		default:
+			if strings.Contains(line, "values-dev") || strings.Contains(line, "--set") {
+				t.Fatalf("chart:kind carries helm arguments outside the shared list: %s", line)
+			}
+		}
 	}
-	if err := soleTimeout(install, `$KIND_WAIT`); err != nil {
-		t.Fatalf("chart:kind's install must pass the helper's output to --timeout and nothing else: %v — cmd: %s", err, install)
+	if setLine == "" || w.helper == "" || w.install == "" {
+		t.Fatalf("chart:kind must declare the list (set -- …), call the helper on it and install with it; cmd: %s", cmds[idx])
+	}
+	sameArguments(t, "chart:kind", w, `"$@"`, `$KIND_WAIT`)
+
+	// The list, run through the helper the task runs, from the repository
+	// root the task runs in: the wait the smoke installs with.
+	helmBinary(t)
+	yqBinary(t)
+	var stdout, stderr strings.Builder
+	cmd := exec.Command("sh", "-c", setLine+"\nexec sh \"$KIND_WAIT_SCRIPT\" \"$@\"")
+	cmd.Dir = filepath.Join("..", "..")
+	cmd.Env = append(os.Environ(), "KIND_WAIT_SCRIPT="+kindWaitScript(t))
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("the helper refused chart:kind's own list (%s): %v — %s", w.list, err, strings.TrimSpace(stderr.String()))
+	}
+	if got, want := strings.TrimSpace(stdout.String()), "1920s"; got != want {
+		t.Fatalf("chart:kind's list sizes the wait at %q, want %q — values-dev renders 1800 and the margin is 120 s", got, want)
 	}
 }
 
@@ -1102,7 +538,8 @@ func TestSoleTimeoutRefusesAnyLiteralTimeout(t *testing.T) {
 // workflowJobs reads the pieces of tests.yml the cloud-e2e witness needs.
 type workflowJobs struct {
 	Jobs map[string]struct {
-		TimeoutMinutes int `yaml:"timeout-minutes"`
+		TimeoutMinutes int               `yaml:"timeout-minutes"`
+		Env            map[string]string `yaml:"env"`
 		Steps          []struct {
 			Name string `yaml:"name"`
 			Run  string `yaml:"run"`
@@ -1110,13 +547,16 @@ type workflowJobs struct {
 	} `yaml:"jobs"`
 }
 
-// TestChartCloudE2EInstallDerivesItsWaitFromTheValuesFile witnesses the CI
-// install the same way: cloud-e2e derives its --timeout from values-dev's
-// deadline through the same helper, and its job cap outlives what the
-// verdict needs — the helm cap derived from values-dev.yaml on top of the
-// job's preamble — so helm's timeout, not the runner kill, reports a slow
-// install.
-func TestChartCloudE2EInstallDerivesItsWaitFromTheValuesFile(t *testing.T) {
+// TestChartCloudE2EInstallSharesItsArgumentsWithTheHelper witnesses the CI
+// install the same way: cloud-e2e declares its helm arguments once (a bash
+// array), runs the helper on "${install[@]}" and installs with it plus the
+// derived --timeout. The job's own list is then run through the helper
+// here, with the job's env, so the cap the floor below reads is the one
+// the job derives — a deadline bump in values-dev, or a --set on the list,
+// flows into the floor instead of leaving a stale constant behind. The job
+// cap must outlive that helm cap on top of the preamble, so helm's timeout,
+// not the runner kill, reports a slow install.
+func TestChartCloudE2EInstallSharesItsArgumentsWithTheHelper(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "tests.yml"))
 	if err != nil {
 		t.Fatal(err)
@@ -1137,33 +577,84 @@ func TestChartCloudE2EInstallDerivesItsWaitFromTheValuesFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	install := job.Steps[idx].Run
-	if !strings.Contains(install, "scripts/chart-kind-wait.sh") {
-		t.Fatalf("cloud-e2e's install no longer calls scripts/chart-kind-wait.sh — a fixed client cap decides the install again; run: %s", install)
+	run := job.Steps[idx].Run
+	lines := scriptLines(run)
+	var w installWiring
+	var listLines []string
+	inList := false
+	for _, line := range lines {
+		switch {
+		case line == "install=(":
+			if listLines != nil {
+				t.Fatalf("cloud-e2e declares its argument list twice: %s", run)
+			}
+			inList = true
+			listLines = []string{line}
+		case inList:
+			listLines = append(listLines, line)
+			if line == ")" {
+				inList = false
+				w.list = strings.Join(listLines[1:len(listLines)-1], " ")
+			}
+		case strings.Contains(line, "scripts/chart-kind-wait.sh"):
+			if w.helper != "" {
+				t.Fatalf("cloud-e2e calls scripts/chart-kind-wait.sh twice: %s", run)
+			}
+			if w.list == "" {
+				t.Fatalf("cloud-e2e calls the helper before declaring the list it expands: %s", run)
+			}
+			w.helper = helperArguments(t, "cloud-e2e", line)
+		case strings.HasPrefix(line, "helm install "):
+			if w.helper == "" {
+				t.Fatalf("cloud-e2e installs before the helper sized the wait: %s", run)
+			}
+			w.install = strings.TrimPrefix(line, "helm install ")
+		default:
+			if strings.Contains(line, "values-dev") || strings.Contains(line, "--set") {
+				t.Fatalf("cloud-e2e carries helm arguments outside the shared list: %s", line)
+			}
+		}
 	}
-	if err := soleTimeout(install, `${KIND_WAIT}`); err != nil {
-		t.Fatalf("cloud-e2e's install must pass the helper's output to --timeout and nothing else: %v — run: %s", err, install)
+	if w.list == "" || w.helper == "" || w.install == "" {
+		t.Fatalf("cloud-e2e must declare the list (install=( … )), call the helper on it and install with it; run: %s", run)
 	}
+	sameArguments(t, "cloud-e2e", w, `"${install[@]}"`, `${KIND_WAIT}`)
+
 	// The runner kill must not preempt helm's verdict: the derived cap is
-	// what the helper prints for values-dev.yaml — derived HERE by running
-	// the same helper the install runs, so a deadline bump in values-dev
-	// flows into this floor instead of leaving a stale constant behind —
-	// and the cap only fires after the job's preamble — checkout, image
-	// build, kind up, image load, chart deps — measured at 4.0-4.7 m on
-	// recent success runs. The floor sums both budgets, the cap rounded up
-	// to the whole minutes the field counts; tests.yml runs the job at
-	// 40 m, two above it.
-	stdout, stderr, err := runKindWait(t, filepath.Join("values-dev.yaml"))
-	if err != nil {
-		t.Fatalf("chart-kind-wait values-dev.yaml: %v — %s", err, strings.TrimSpace(stderr))
+	// what the helper prints for the job's own list, run here with the
+	// job's env from the repository root the job runs in, and the cap only
+	// fires after the job's preamble — checkout, image build, kind up,
+	// image load, chart deps — measured at 4.0-4.7 m on recent success
+	// runs. The floor sums both budgets, the cap rounded up to the whole
+	// minutes the field counts; tests.yml runs the job at 40 m, two above.
+	helmBinary(t)
+	yqBinary(t)
+	env := os.Environ()
+	for _, key := range []string{"IMG", "NS", "RELEASE"} {
+		value, ok := job.Env[key]
+		if !ok {
+			t.Fatalf("cloud-e2e's env no longer sets %s, which its argument list expands", key)
+		}
+		env = append(env, key+"="+value)
 	}
-	helmSeconds, err := strconv.Atoi(strings.TrimSuffix(strings.TrimSpace(stdout), "s"))
+	var stdout, stderr strings.Builder
+	cmd := exec.Command("bash", "-c", "set -euo pipefail\n"+strings.Join(listLines, "\n")+"\nexec sh \"$KIND_WAIT_SCRIPT\" \"${install[@]}\"")
+	cmd.Dir = filepath.Join("..", "..")
+	cmd.Env = append(env, "KIND_WAIT_SCRIPT="+kindWaitScript(t))
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("the helper refused cloud-e2e's own list (%s): %v — %s", w.list, err, strings.TrimSpace(stderr.String()))
+	}
+	helmSeconds, err := strconv.Atoi(strings.TrimSuffix(strings.TrimSpace(stdout.String()), "s"))
 	if err != nil {
-		t.Fatalf("chart-kind-wait values-dev.yaml printed %q — not a seconds count: %v", strings.TrimSpace(stdout), err)
+		t.Fatalf("chart-kind-wait printed %q for cloud-e2e's list — not a seconds count: %v", strings.TrimSpace(stdout.String()), err)
+	}
+	if got, want := helmSeconds, 1920; got != want {
+		t.Fatalf("cloud-e2e's list sizes the wait at %d s, want %d — values-dev renders 1800 and the margin is 120 s; a --set on the list that moves the deadline moves this witness too", got, want)
 	}
 	helmCapMinutes := (helmSeconds + 59) / 60 // round up: the field counts whole minutes
 	const preambleBudgetMinutes = 6
 	if job.TimeoutMinutes < helmCapMinutes+preambleBudgetMinutes {
-		t.Fatalf("cloud-e2e timeout-minutes = %d — below the %d m a verdict needs (%d m helm cap for values-dev.yaml + %d m preamble budget); a lower cap lets the runner kill replace helm's timeout with a silence", job.TimeoutMinutes, helmCapMinutes+preambleBudgetMinutes, helmCapMinutes, preambleBudgetMinutes)
+		t.Fatalf("cloud-e2e timeout-minutes = %d — below the %d m a verdict needs (%d m helm cap for the job's list + %d m preamble budget); a lower cap lets the runner kill replace helm's timeout with a silence", job.TimeoutMinutes, helmCapMinutes+preambleBudgetMinutes, helmCapMinutes, preambleBudgetMinutes)
 	}
 }
