@@ -86,9 +86,10 @@ func TestCredSlots_AHolderWithNoRunDocumentIsEvictedPastTheGrace(t *testing.T) {
 // connection each ran on. The filesystem twin proves this under one mutex;
 // here the conditional update itself — `holders.<max-1>` absent, `$push`
 // in the same write — is what decides, so this is the witness the deployed
-// guarantee rests on. Every racer has a stamped, queued run document, as a
-// launch's does once it persists, so no holder is evictable. Red when the
-// room check leaves the update's filter (every racer is granted).
+// guarantee rests on. No racer has a run document yet, as a launch reserves
+// before it persists: none is adopted by another's admission, and none is
+// evictable inside store.CredSlotGrace. Red when the room check leaves the
+// update's filter (every racer is granted).
 func TestCredSlots_RacingReservationsAdmitExactlyTheCap(t *testing.T) {
 	uri := os.Getenv("ITERION_TEST_MONGO_URI")
 	if uri == "" {
@@ -115,12 +116,6 @@ func TestCredSlots_RacingReservationsAdmitExactlyTheCap(t *testing.T) {
 	ids := make([]string, racers)
 	for i := range ids {
 		ids[i] = fmt.Sprintf("racer-%02d", i)
-		if _, err := s.CreateRun(tctx, ids[i], "demo", nil); err != nil {
-			t.Fatalf("CreateRun %s: %v", ids[i], err)
-		}
-		if err := s.SetRunCredStamp(tctx, ids[i], store.RunCredStamp{Fingerprints: []string{fp}}); err != nil {
-			t.Fatalf("SetRunCredStamp %s: %v", ids[i], err)
-		}
 	}
 	race := func(ids []string) (granted []string) {
 		var mu sync.Mutex
@@ -214,13 +209,13 @@ func TestCredSlots_AnEvictionJudgedBeforeAReadmissionMissesTheReadmittedHolder(t
 	})
 	const fp = "fp-evicted-in-flight"
 	tctx := store.WithIdentity(context.Background(), "_test", "_test")
-	for _, id := range []string{"run-a", "run-b"} {
-		if _, err := s.CreateRun(tctx, id, "demo", nil); err != nil {
-			t.Fatalf("CreateRun %s: %v", id, err)
-		}
-		if err := s.SetRunCredStamp(tctx, id, store.RunCredStamp{Fingerprints: []string{fp}}); err != nil {
-			t.Fatalf("SetRunCredStamp %s: %v", id, err)
-		}
+	// run-b is the launch whose reconcile judges: it reserves before it
+	// persists, so it has no run document yet.
+	if _, err := s.CreateRun(tctx, "run-a", "demo", nil); err != nil {
+		t.Fatalf("CreateRun run-a: %v", err)
+	}
+	if err := s.SetRunCredStamp(tctx, "run-a", store.RunCredStamp{Fingerprints: []string{fp}}); err != nil {
+		t.Fatalf("SetRunCredStamp run-a: %v", err)
 	}
 	if adm, err := s.ReserveCredSlot(tctx, fp, "run-a", 1); err != nil || !adm.Granted {
 		t.Fatalf("admitting run-a: %+v %v", adm, err)

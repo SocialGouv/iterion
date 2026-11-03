@@ -952,12 +952,24 @@ func TestCredSlotAdmission_AFailedResumesUndoLeavesALaterAdmissionsSlot(t *testi
 	if err := f.resume(t, p, "run-a"); err == nil {
 		t.Fatal("a resume whose publish failed returned nil")
 	}
-	if r := f.load(t, "run-a"); r.Status != store.RunStatusQueued {
-		t.Fatalf("run-a status=%s, want queued by the second resume", r.Status)
+	ranA := f.load(t, "run-a")
+	if ranA.Status != store.RunStatusQueued {
+		t.Fatalf("run-a status=%s, want queued by the second resume", ranA.Status)
 	}
+	// The ledger alone, read while run-a's document names another key: every
+	// admission — the probe's too — adopts a run that spends the key, so a
+	// read with run-a stamped would count it back whatever the undo took.
+	restamp := func(fps []string) {
+		t.Helper()
+		if err := f.spy.SetRunCredStamp(f.ctx, "run-a", store.RunCredStamp{Fingerprints: fps, Tiers: ranA.CredentialTiers}); err != nil {
+			t.Fatalf("re-stamp run-a: %v", err)
+		}
+	}
+	restamp([]string{"fp-elsewhere"})
 	if n := f.ledgerHolders(t, cappedFP); n != 1 {
 		t.Fatalf("the key names %d holders, want run-a's — the failed resume's undo took the slot the second resume holds", n)
 	}
+	restamp(ranA.CredFingerprints)
 	p.store = f.spy
 	p.publishRun = f.published.publish
 	if err := f.launch(t, p, "run-b", nil); err != nil {

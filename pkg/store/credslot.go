@@ -19,12 +19,18 @@ import (
 // has room or changes nothing, so of N concurrent admissions on a key with K
 // free slots exactly K succeed, whatever replica each ran on.
 //
-// The ledger never becomes a second truth. A slot is released by what
-// already releases one today — the run going terminal, parking, pausing, or
-// re-stamping onto another credential — and a refusal re-reads the row's
-// holders against the run documents before it is final
+// The ledger never becomes a second truth, in either direction. A slot is
+// released by what already releases one today — the run going terminal,
+// parking, pausing, or re-stamping onto another credential — and a refusal
+// re-reads the row's holders against the run documents before it is final
 // (CredSlotHolderStale): a holder whose run no longer spends the credential
-// is evicted and the admission retried once. A model-idle run
+// is evicted and the admission retried once. And a run whose document
+// spends the credential holds a slot whether or not the row names it: every
+// admission first ADOPTS the spenders the row does not name — runs alive
+// before the ledger existed, launched while the key had no cap, or whose
+// entry an undo took after another admission of the run landed — so a cap
+// set on a key in use counts the runs already on it, and a key over its new
+// cap refuses newcomers until enough of them end. A model-idle run
 // (Run.LLMIdleSince) KEEPS its slot: a slot lent out while the run executes
 // tool-only work has no path back when its next model node starts — nothing
 // in the runner can wait for the ledger at a node start — so a cap that
@@ -42,14 +48,19 @@ type CredSlotStore interface {
 	// ReserveCredSlot admits runID to hold one of max slots of fingerprint.
 	// Granted is false when the row is full of runs that still spend the
 	// credential; Held reports how many hold a slot after the call either
-	// way. A run already holding a slot is admitted again in place, without
-	// taking a second one — a resume's re-resolution reserves what the run
-	// holds — while the row is within max: under a cap lowered below its
-	// holders, a holder's re-admission waits like a newcomer's until enough
-	// of the others stop spending. Every admission writes the holder's entry
-	// at a new instant (NextCredSlotInstant), returned as the admission's
-	// At: the entry's identity, so an eviction or a release judged against
-	// an earlier admission misses it.
+	// way. Before deciding it adopts every other run that spends the
+	// credential (Run.SpendsCredential) and that the row does not name,
+	// outside the cap — a fact, not an admission; runID itself is left to
+	// its own admission, so a resume that re-stamped its run before asking
+	// is decided, never adopted. A run already holding a slot is admitted
+	// again in place, without taking a second one — a resume's
+	// re-resolution reserves what the run holds — while the row is within
+	// max: under a cap lowered below its holders, a holder's re-admission
+	// waits like a newcomer's until enough of the others stop spending.
+	// Every admission writes the holder's entry at a new instant
+	// (NextCredSlotInstant), returned as the admission's At: the entry's
+	// identity, so an eviction or a release judged against an earlier
+	// admission misses it.
 	// max <= 0 is a caller error: an uncapped key reserves nothing.
 	ReserveCredSlot(ctx context.Context, fingerprint, runID string, max int) (CredSlotAdmission, error)
 	// ReleaseCredSlot gives back the slot runID holds under fingerprint by

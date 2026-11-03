@@ -36,7 +36,9 @@ func credSlotRun(t *testing.T, s *FilesystemRunStore, id string, status RunStatu
 
 // Of N runs asking at once for K slots of one key, exactly K are admitted —
 // the property the walk's own count cannot give (it reads the run documents
-// before the run is written, so every racer reads the same count).
+// before the run is written, so every racer reads the same count). No racer
+// has a run document yet, as a launch reserves before it persists: none is
+// adopted by another's admission, and none is evictable inside the grace.
 func TestCredSlotLedger_ConcurrentReservationsAdmitExactlyTheCap(t *testing.T) {
 	s, err := New(t.TempDir())
 	if err != nil {
@@ -46,7 +48,6 @@ func TestCredSlotLedger_ConcurrentReservationsAdmitExactlyTheCap(t *testing.T) {
 	ids := make([]string, racers)
 	for i := range ids {
 		ids[i] = "racer-" + string(rune('a'+i%26)) + string(rune('a'+i/26))
-		credSlotRun(t, s, ids[i], RunStatusQueued, fp)
 	}
 	start := make(chan struct{})
 	var wg sync.WaitGroup

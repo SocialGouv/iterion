@@ -1138,6 +1138,18 @@ func (s *Store) CountAliveRunsWithCredFingerprint(ctx context.Context, fingerpri
 	if fingerprint == "" {
 		return 0, nil
 	}
+	n, err := s.runs.CountDocuments(ctx, spendsCredentialFilter(fingerprint, excludeRunID))
+	if err != nil {
+		return 0, fmt.Errorf("store/mongo: count runs by cred fingerprint: %w", err)
+	}
+	return int(n), nil
+}
+
+// spendsCredentialFilter selects the runs that spend the credential with this
+// fingerprint, excludeRunID aside: the query form of store.Run.SpendsCredential,
+// read by the alive-run count and by the slot ledger's adoption alike. No
+// tenant filter — a platform key serves every tenant on one cap.
+func spendsCredentialFilter(fingerprint, excludeRunID string) bson.M {
 	holding := make([]string, 0, 2)
 	for _, st := range store.AllRunStatuses {
 		if st.HoldsCredentialSlot() {
@@ -1151,11 +1163,7 @@ func (s *Store) CountAliveRunsWithCredFingerprint(ctx context.Context, fingerpri
 	if excludeRunID != "" {
 		filter["_id"] = bson.M{"$ne": excludeRunID}
 	}
-	n, err := s.runs.CountDocuments(ctx, filter)
-	if err != nil {
-		return 0, fmt.Errorf("store/mongo: count runs by cred fingerprint: %w", err)
-	}
-	return int(n), nil
+	return filter
 }
 
 func (s *Store) PatchRunSteering(ctx context.Context, id string, loopOverrides map[string]int, budgetRaises *store.RunBudgetRaises) error {

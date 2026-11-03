@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -10,8 +11,8 @@ import (
 // runtime is one process, and the cloud publisher — the ledger's only caller
 // — runs on this store in tests alone. The ledger therefore lives in memory
 // under its own mutex while the run documents on disk stay the truth it
-// reconciles against, on the same admission and eviction rules as the Mongo
-// ledger (CredSlotHolderStale).
+// reconciles against, on the same admission, adoption and eviction rules as
+// the Mongo ledger (Run.SpendsCredential, CredSlotHolderStale).
 
 // credSlotHolder is one admitted run and the instant of its latest
 // admission — the instant CredSlotGrace is measured from when its document
@@ -42,6 +43,9 @@ func (s *FilesystemRunStore) ReserveCredSlot(ctx context.Context, fingerprint, r
 		s.credSlots = map[string][]credSlotHolder{}
 	}
 	now := time.Now().UTC()
+	if err := s.adoptUnledgeredCredSlotHolders(ctx, fingerprint, runID, now); err != nil {
+		return CredSlotAdmission{}, err
+	}
 	for attempt := 0; ; attempt++ {
 		holders := s.credSlots[fingerprint]
 		held := -1
@@ -69,6 +73,31 @@ func (s *FilesystemRunStore) ReserveCredSlot(ctx context.Context, fingerprint, r
 			return CredSlotAdmission{Granted: false, Held: len(holders)}, nil
 		}
 	}
+}
+
+// adoptUnledgeredCredSlotHolders names in the row of fingerprint every run
+// other than runID whose document spends it (Run.SpendsCredential) and that
+// the row does not name — the adoption store.CredSlotStore's admission
+// performs before it decides, outside the cap. Called under credSlotMu; the
+// scan takes no store lock.
+func (s *FilesystemRunStore) adoptUnledgeredCredSlotHolders(ctx context.Context, fingerprint, runID string, now time.Time) error {
+	spenders, err := s.filterRunsSorted(ctx, func(r *Run) bool {
+		return r.ID != runID && r.SpendsCredential(fingerprint)
+	})
+	if err != nil {
+		return fmt.Errorf("store: reserve cred slot %s for run %s: list the runs that spend it: %w", fingerprint, runID, err)
+	}
+	holders := s.credSlots[fingerprint]
+	for _, id := range spenders {
+		if slices.ContainsFunc(holders, func(h credSlotHolder) bool { return h.runID == id }) {
+			continue
+		}
+		holders = append(holders, credSlotHolder{runID: id, at: NextCredSlotInstant(time.Time{}, now)})
+	}
+	if len(holders) > 0 {
+		s.credSlots[fingerprint] = holders
+	}
+	return nil
 }
 
 // evictStaleCredSlotHolders drops every holder of fingerprint whose run no

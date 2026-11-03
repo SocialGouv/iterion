@@ -25,8 +25,8 @@ import (
 // an update filter and reads the same on every server this store supports.
 //
 // Not tenant-scoped, deliberately: a platform key serves every tenant on one
-// cap, and the run documents the reconcile reads are loaded team-blind for
-// the same reason.
+// cap, and the run documents the reconcile and the adoption read are loaded
+// team-blind for the same reason.
 //
 // The reconcile is a read and a write on two collections, so it judges a
 // holder from a run document that can move before its $pull lands: a run
@@ -87,6 +87,9 @@ func (s *Store) ReserveCredSlot(ctx context.Context, fingerprint, runID string, 
 		bson.M{"$setOnInsert": bson.M{"holders": bson.A{}, "created_at": now}},
 		options.UpdateOne().SetUpsert(true)); err != nil {
 		return store.CredSlotAdmission{}, fmt.Errorf("store/mongo: cred slot row %s: %w", fingerprint, err)
+	}
+	if err := s.adoptUnledgeredCredSlotHolders(ctx, fingerprint, runID, now); err != nil {
+		return store.CredSlotAdmission{}, err
 	}
 	reconciled := false
 	for round := 0; round < credSlotReserveRounds; round++ {
@@ -186,6 +189,47 @@ func (s *Store) refreshCredSlotHolder(ctx context.Context, fingerprint string, h
 		return time.Time{}, false, fmt.Errorf("store/mongo: re-admit run %s to cred slot %s: %w", held.RunID, fingerprint, err)
 	}
 	return at, res.MatchedCount == 1, nil
+}
+
+// adoptUnledgeredCredSlotHolders names in the row every run other than
+// runID whose document spends the credential (spendsCredentialFilter, the
+// query form of store.Run.SpendsCredential) and that the row does not name —
+// the adoption store.CredSlotStore's admission performs before it decides.
+// Each push is conditional on the row still not naming the run, so two
+// admissions adopting at once write one entry, and it carries no room check:
+// the run already spends the key, and the row says so even past the cap.
+func (s *Store) adoptUnledgeredCredSlotHolders(ctx context.Context, fingerprint, runID string, now time.Time) error {
+	cur, err := s.runs.Find(ctx, spendsCredentialFilter(fingerprint, runID), options.Find().SetProjection(bson.M{"_id": 1}))
+	if err != nil {
+		return fmt.Errorf("store/mongo: reserve cred slot %s for run %s: list the runs that spend it: %w", fingerprint, runID, err)
+	}
+	var spenders []struct {
+		ID string `bson:"_id"`
+	}
+	if err := cur.All(ctx, &spenders); err != nil {
+		return fmt.Errorf("store/mongo: reserve cred slot %s for run %s: read the runs that spend it: %w", fingerprint, runID, err)
+	}
+	if len(spenders) == 0 {
+		return nil
+	}
+	var row credSlotDoc
+	if err := s.credSlots.FindOne(ctx, bson.M{"_id": fingerprint}).Decode(&row); err != nil {
+		return fmt.Errorf("store/mongo: read cred slot row %s: %w", fingerprint, err)
+	}
+	for _, sp := range spenders {
+		if row.holds(sp.ID) {
+			continue
+		}
+		if _, err := s.credSlots.UpdateOne(ctx,
+			bson.M{"_id": fingerprint, "holders.run_id": bson.M{"$ne": sp.ID}},
+			bson.M{
+				"$push": bson.M{"holders": credSlotHolderDoc{RunID: sp.ID, At: store.NextCredSlotInstant(time.Time{}, now)}},
+				"$set":  bson.M{"updated_at": now},
+			}); err != nil {
+			return fmt.Errorf("store/mongo: adopt run %s into cred slot %s: %w", sp.ID, fingerprint, err)
+		}
+	}
+	return nil
 }
 
 // evictStaleCredSlotHolders pulls every holder whose run no longer spends
