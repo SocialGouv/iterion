@@ -216,8 +216,7 @@ func (p *Publisher) fillFromOrg(
 						}
 						pinnedOnly := fillAPIKeySlotAs(bundle, taken, prov, string(r.Plaintext), r.BaseURL, r.Fingerprint, outcome)
 						bundle.OrgSourced[string(prov)] = true
-						apiKeyFPs[prov] = r.Fingerprint
-						wants.note(r.Fingerprint, r.MaxConcurrentRuns, prov, r.Name)
+						noteSealedAPIKey(apiKeyFPs, wants, prov, r.Fingerprint, r.MaxConcurrentRuns, r.Name)
 						usedIDs = append(usedIDs, r.KeyID)
 						if pinnedOnly {
 							p.logger.Info("cloudpublisher: org credential used run=%s org=%s slot=%s fp=%s (pinned route only — %s)", runID, orgID, prov, r.Fingerprint, routeOnlyWhy(familyTaken, policy))

@@ -191,3 +191,15 @@ func (p *Publisher) armCredSlotRetry(ctx context.Context, r *store.Run, refusal 
 		r.ID, refusal, at.Format(time.RFC3339), attempt, maxAttempts, CredSlotProbeInterval)
 	return nil
 }
+
+// noteSealedAPIKey is the one call every site that seals an API key makes:
+// it records the per-provider stamp the meters read (apiKeyFPs) and the
+// capped key the admission reserves (wants) together — a site that stamped
+// without noting would meter the key's runs and never admit them against
+// its cap. A lent key arrives with its donor record's cap
+// (credpool.Grant.KeyMaxConcurrentRuns), so one ledger row governs the key
+// whoever runs on it.
+func noteSealedAPIKey(apiKeyFPs map[secrets.Provider]string, wants credSlotWants, prov secrets.Provider, fingerprint string, max int, name string) {
+	apiKeyFPs[prov] = fingerprint
+	wants.note(fingerprint, max, prov, name)
+}

@@ -241,6 +241,15 @@ type Grant struct {
 	// runner stops following the record only when the donor re-connects it
 	// with another subscription.
 	RecordConnectedAt time.Time
+	// KeyMaxConcurrentRuns is the lent key's own HARD concurrency cap
+	// (secrets.ApiKey.MaxConcurrentRuns) and KeyName its label, read off the
+	// donor's record: the borrower's launch reserves a slot of the key on
+	// the same ledger row as the donor's own launches, so the cap holds
+	// whoever runs on the key. Zero and empty for an uncapped key or a
+	// subscription. The pledge's Limits.MaxConcurrentRuns is the donor's
+	// lending dial, enforced on the lease, on top.
+	KeyMaxConcurrentRuns int
+	KeyName              string
 	// RemainingUSD is what was left of the donor's tightest spend cap.
 	// Zero means the donor set no spend cap, NOT "nothing left" — callers
 	// clamping a run budget must treat zero as "no ceiling from the pool".
@@ -728,16 +737,18 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 	b.logger.Info("credpool: run %s served by donor %s (%s, allowance=$%.2f%s)",
 		req.RunID, p.UserID, p.Credential, remaining, meteredNote(p.Source))
 	return &Grant{
-		PledgeID:          p.ID,
-		DonorID:           p.UserID,
-		Credential:        p.Credential,
-		Payload:           cred.payload,
-		Fingerprint:       cred.fingerprint,
-		RecordID:          cred.recordID,
-		RecordConnectedAt: cred.connectedAt,
-		RemainingUSD:      remaining,
-		AcquiredAt:        lease.AcquiredAt,
-		releaseGuard:      &ReleaseGuard{lease: lease},
+		PledgeID:             p.ID,
+		DonorID:              p.UserID,
+		Credential:           p.Credential,
+		Payload:              cred.payload,
+		Fingerprint:          cred.fingerprint,
+		RecordID:             cred.recordID,
+		RecordConnectedAt:    cred.connectedAt,
+		KeyMaxConcurrentRuns: cred.maxConcurrentRuns,
+		KeyName:              cred.name,
+		RemainingUSD:         remaining,
+		AcquiredAt:           lease.AcquiredAt,
+		releaseGuard:         &ReleaseGuard{lease: lease},
 	}, "", nil
 }
 
@@ -756,6 +767,11 @@ type openedCredential struct {
 	fingerprint string
 	recordID    string
 	connectedAt time.Time
+	// maxConcurrentRuns and name are the lent key's own hard concurrency
+	// cap and label (Grant.KeyMaxConcurrentRuns, Grant.KeyName); zero and
+	// empty for a subscription.
+	maxConcurrentRuns int
+	name              string
 }
 
 // openCredential unseals whatever the pledge lends. It returns a non-empty
@@ -826,8 +842,10 @@ func (b *Broker) openCredential(ctx context.Context, p Pledge, now time.Time) (c
 		// it thinks to, and an empty grant fingerprint is what left the
 		// GRANTED line and the run-doc stamp naming a slot instead of the
 		// account paying for it. Empty on keys stored before stamping;
-		// the derivation from the plaintext stays the fallback.
-		return openedCredential{payload: pt, fingerprint: k.Fingerprint}, "", nil
+		// the derivation from the plaintext stays the fallback. The key's
+		// own concurrency cap rides with it: the borrower's launch is
+		// admitted against it like the donor's own.
+		return openedCredential{payload: pt, fingerprint: k.Fingerprint, maxConcurrentRuns: k.MaxConcurrentRuns, name: k.Name}, "", nil
 	}
 	return openedCredential{}, "", fmt.Errorf("credpool: unknown credential source %q", p.Source)
 }

@@ -794,8 +794,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 							continue
 						}
 						setAPIKey(&bundle, prov, string(r.Plaintext), r.BaseURL, r.Fingerprint, false)
-						apiKeyFPs[prov] = r.Fingerprint
-						wants.note(r.Fingerprint, r.MaxConcurrentRuns, prov, r.Name)
+						noteSealedAPIKey(apiKeyFPs, wants, prov, r.Fingerprint, r.MaxConcurrentRuns, r.Name)
 						usedIDs = append(usedIDs, r.KeyID)
 					}
 					p.warnRefusedPins(ctx, runID, tenantID, botID, overrides, resolved, withheld, allowed, pairRefusals, policy.sealableSlot)
@@ -1079,7 +1078,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 									fp = secrets.FingerprintSHA256(string(grant.Payload))
 								}
 								setAPIKey(&bundle, prov, string(grant.Payload), "", fp, false)
-								apiKeyFPs[prov] = fp
+								noteSealedAPIKey(apiKeyFPs, wants, prov, fp, grant.KeyMaxConcurrentRuns, grant.KeyName)
 								// The lent key's row lives in the DONOR's tenant: the
 								// runner's metering bump must reach it without the run's
 								// tenant filter.
@@ -1164,8 +1163,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					natives := map[restoreTier]*tierNative{restoreTierOrg: orgNative, restoreTierPlatform: platformNative}
 					restoreKey := func(prov secrets.Provider, sk skippedAPIKey, outcome sealOutcome) {
 						pinnedOnly := fillAPIKeySlotAs(&bundle, taken, prov, sk.plaintext, sk.baseURL, sk.fingerprint, outcome)
-						apiKeyFPs[prov] = sk.fingerprint
-						wants.note(sk.fingerprint, sk.maxConcurrentRuns, prov, sk.name)
+						noteSealedAPIKey(apiKeyFPs, wants, prov, sk.fingerprint, sk.maxConcurrentRuns, sk.name)
 						if sk.platform {
 							bundle.PlatformSourced[string(prov)] = true
 						}
@@ -1330,7 +1328,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// untouched: this runs only after it declined (res.grant == nil), and
 	// never on an env-funded run or an empty bundle (the pool tier's own
 	// condition — a run with nothing acquires through it, not the door).
-	doorGrantSealed, doorReleased := p.acquireDoorGrant(ctx, runID, orgID, tenantID, ownerID, botID, view, routePolicy, launchVars, &bundle, res.grant, envFunded, runnerPool != "" || sovereign, apiKeyFPs, policy.sealableSlot)
+	doorGrantSealed, doorReleased := p.acquireDoorGrant(ctx, runID, orgID, tenantID, ownerID, botID, view, routePolicy, launchVars, &bundle, res.grant, envFunded, runnerPool != "" || sovereign, apiKeyFPs, wants, policy.sealableSlot)
 	if doorReleased != nil {
 		res.releasedGrants = append(res.releasedGrants, doorReleased)
 	}
@@ -2101,8 +2099,7 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 						}
 						pinnedOnly := fillAPIKeySlotAs(bundle, taken, prov, string(r.Plaintext), r.BaseURL, r.Fingerprint, outcome)
 						bundle.PlatformSourced[string(prov)] = true
-						apiKeyFPs[prov] = r.Fingerprint
-						wants.note(r.Fingerprint, r.MaxConcurrentRuns, prov, r.Name)
+						noteSealedAPIKey(apiKeyFPs, wants, prov, r.Fingerprint, r.MaxConcurrentRuns, r.Name)
 						usedIDs = append(usedIDs, r.KeyID)
 						if pinnedOnly {
 							p.logger.Info("cloudpublisher: platform credential used run=%s slot=%s (pinned route only — %s)", runID, prov, routeOnlyWhy(familyTaken, policy))
@@ -3431,6 +3428,7 @@ func (p *Publisher) acquireDoorGrant(
 	envFunded bool,
 	sharedTiersBlocked bool,
 	apiKeyFPs map[secrets.Provider]string,
+	slotWants credSlotWants,
 	sealable func(slot string) bool,
 ) (*credpool.Grant, *credpool.Grant) {
 	if p.credPool == nil || routePolicy == nil || view.Workflow == nil || len(routePolicy.Triggers) == 0 || len(routePolicy.PairOrder) == 0 {
@@ -3511,7 +3509,7 @@ func (p *Publisher) acquireDoorGrant(
 				fp = secrets.FingerprintSHA256(string(grant.Payload))
 			}
 			setAPIKey(bundle, prov, string(grant.Payload), "", fp, false)
-			apiKeyFPs[prov] = fp
+			noteSealedAPIKey(apiKeyFPs, slotWants, prov, fp, grant.KeyMaxConcurrentRuns, grant.KeyName)
 			bundle.PoolSourced[string(prov)] = true
 			sealed = true
 		}

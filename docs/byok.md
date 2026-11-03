@@ -144,7 +144,11 @@ the cap:
   while the row has room — so of N concurrent admissions on a key with K
   free slots exactly K succeed, whatever replica each ran on. A pinned key,
   a restored key and a resumed run all pass through it; a resumed run's own
-  slot is admitted again without taking a second one. A store error
+  slot is admitted again without taking a second one. A key lent through
+  the [credential pool](credential-pool.md) is admitted on the same row by
+  the borrower's launch — the grant carries the donor key's cap, so one
+  ledger governs the key whoever runs on it; the pledge's own
+  `max_concurrent_runs` is the donor's lending dial on top. A store error
   refuses the launch, never admits it.
 
 A **full key parks the run instead of refusing it**: the row is written

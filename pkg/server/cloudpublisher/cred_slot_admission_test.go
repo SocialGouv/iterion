@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -582,4 +584,65 @@ func TestCredSlotAdmission_AResumeWhosePublishLandedKeepsItsSlot(t *testing.T) {
 		t.Fatalf("launch run-b: %v", err)
 	}
 	f.assertParked(t, "run-b")
+}
+
+// A key lent through the credential pool is admitted against ITS cap: the
+// grant carries the donor record's max_concurrent_runs and label, and the
+// walk notes the lent key exactly like a key of the tenant's own. Red when
+// the pool site stamps the fingerprint for the meter without noting it —
+// the donor's alive_runs would count the borrower's runs the ledger never
+// admitted.
+func TestCredSlotAdmission_APoolLentKeyIsNotedAgainstItsOwnCap(t *testing.T) {
+	ctx := context.Background()
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	apiKeys := secrets.NewMemoryApiKeyStore()
+	keyID := secrets.NewApiKeyID()
+	sealed, err := secrets.SealAPIKey(sealer, keyID, []byte("xai-donated-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lentFP := secrets.FingerprintSHA256("xai-donated-key")
+	if err := apiKeys.Create(store.WithTenant(ctx, "donor-team"), secrets.ApiKey{
+		ID: keyID, TenantID: "donor-team", ScopeTeamID: "donor-team", ScopeUserID: "donor",
+		Provider: secrets.ProviderXAI, Name: "lent-capped", SealedSecret: sealed, Fingerprint: lentFP,
+		MaxConcurrentRuns: 2,
+	}); err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	pools := credpool.NewMemoryPoolStore()
+	if err := pools.Upsert(ctx, credpool.Pool{ID: "pool-1", OrgID: poolOrg, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	pledges := credpool.NewMemoryPledgeStore()
+	if err := pledges.Upsert(ctx, credpool.Pledge{
+		ID: credpool.PledgeID("donor", credpool.SourceAPIKey, "xai"), PoolID: "pool-1", UserID: "donor",
+		Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: "xai", KeyID: keyID},
+		Enabled:    true, Health: credpool.HealthOK, Limits: credpool.Limits{MaxUSDPerDay: 5},
+	}); err != nil {
+		t.Fatalf("seed pledge: %v", err)
+	}
+	broker := credpool.NewBroker(credpool.BrokerConfig{
+		Pools: pools, Pledges: pledges, Leases: credpool.NewMemoryLeaseStore(), Ledger: credpool.NewMemoryLedger(),
+		OAuth: secrets.NewMemoryOAuthStore(), APIKeys: apiKeys, Sealer: sealer, Logger: testLogger(),
+	})
+	p := &Publisher{runSecrets: secrets.NewMemoryRunSecretsStore(), sealer: sealer, credPool: broker, logger: testLogger()}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{"a": &ir.AgentNode{
+		BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "xai", Model: "xai/grok-4"},
+	}}}
+	creds, err := p.resolveAndSealCredentials(store.WithTenant(ctx, poolTeam), "run-lent", poolOrg, poolTeam, "requester", "bot", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil)
+	if err != nil {
+		t.Fatalf("resolveAndSealCredentials: %v", err)
+	}
+	if creds.grant == nil || creds.grant.Source != credpool.SourceAPIKey {
+		t.Fatalf("want an api_key grant, got %+v", creds.grant)
+	}
+	if len(creds.credSlots) != 1 {
+		t.Fatalf("admission wants = %+v, want exactly the lent key", creds.credSlots)
+	}
+	if w := creds.credSlots[0]; w.fingerprint != lentFP || w.max != 2 || w.provider != secrets.ProviderXAI || w.name != "lent-capped" {
+		t.Fatalf("lent key noted as %+v, want fingerprint=%s max=2 provider=xai name=lent-capped — the donor record's own cap and label", w, lentFP)
+	}
 }
