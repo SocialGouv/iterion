@@ -24,8 +24,16 @@ import (
 // failed_resumable under FailureCredSlotWait with a durable retry armed — and
 // the retry sweeper re-asks for a slot on a short cadence until one frees or
 // the run's max_wait passes. A park, not a refusal: a webhook delivery has
-// nobody to click again, and a parked run keeps its place, its inputs and its
-// pull request's pending check.
+// nobody to click again, and a parked run keeps its inputs and its pull
+// request's pending check.
+//
+// It keeps no place in line. The ledger has no order: a slot frees when an
+// admission's reconcile evicts a holder that stopped spending, and that same
+// admission takes it — whoever asks first after a run ends. A parked run asks
+// only every CredSlotProbeInterval, so on a key under steady load a fresher
+// launch can take the slot it waited for, every time, until its max_wait
+// abandons it with the bound named. The levers are the operator's: raise
+// max_concurrent_runs, or give the provider another key the walk can choose.
 
 // ErrCredentialAtCapacity is the admission's refusal. SubmitResume wraps it
 // when a resumed run finds its key full, so the sweeper can tell a slot wait

@@ -108,7 +108,7 @@ One document per key, sealed at rest. [pkg/secrets/byok.go](../pkg/secrets/byok.
 | `last_used_at` | best-effort observability: bumped by id at resolution (`MarkUsed`, detached off the launch path) and by **fingerprint** at the START and END of every runner attempt (`MarkFingerprintUsed`). The start stamp lands once the run is ADMITTED, after the usage-cap pre-flight: a run parked on a ceiling never held the key and never dates it. Nothing moves it during a turn, so a long attempt shows its start until it ends. **Scope follows the key's tier**: a tenant's own key is bumped under the run's tenant only, so a different tenant that stored the byte-identical secret never reads its own key as "in use" (the studio shows this field as exactly that, before a rotate or delete); a platform-tier or pool-lent key (`RunBundle.PlatformSourced` / `PoolSourced`) is bumped across tenants, because its row lives under the platform sentinel or in the donor's tenant and it serves every tenant |
 | `alive_runs` (view only) | how many runs count against this key's ceiling right now — the same query the launch walk asks ([what counts](#concurrency-ceiling--what-counts)). Present whatever `max_concurrent_runs` is, so "is this key in use?" has an answer; absent (not zero) when there is nothing to count with (no fingerprint on a legacy row, no run store, a logged store error). The run side of the same audit is `cred_fingerprints` / `llm_idle_since` on `GET /api/runs/{id}` |
 | `refused_until` / `refused_reason` (view only) | set when the PROVIDER is currently turning this credential away — a dead token, a fair-usage refusal, a spent org ceiling, an exhausted window — folded from the shared usage ledger by `usagecap.RefusedUntil`, the same reading the launch walk acts on ([usage-caps.md](usage-caps.md)). Absent when nothing is refusing the key, and on a fingerprint-less row (which names a slot, not a credential). This is the only place a **pinned** refused key is visible: a webhook `key_overrides` pin bypasses the skip by design, so the walk leaves no skip log |
-| `max_concurrent_runs` | optional **hard** cap on how many alive runs may hold this key at once (`0` = uncapped) — the operator-side answer to providers whose fair-usage limits publish no numeric bound. Enforced by an atomic per-key reservation at launch and at every resume; a full key **parks** the run (`CRED_SLOT_WAIT`, resumed by itself when a slot frees) instead of refusing it. What counts, and how the cap is enforced, is defined in [Concurrency ceiling — what counts](#concurrency-ceiling--what-counts) |
+| `max_concurrent_runs` | optional **hard** cap on how many alive runs may hold this key at once (`0` = uncapped) — the operator-side answer to providers whose fair-usage limits publish no numeric bound. Enforced by an atomic per-key reservation at launch and at every resume; a full key **parks** a launch (`CRED_SLOT_WAIT`, asked again until a slot frees or its `max_wait` passes) instead of refusing it. What counts, and how the cap is enforced, is defined in [Concurrency ceiling — what counts](#concurrency-ceiling--what-counts) |
 | `bots` | optional **workload audience**: the bot ids whose runs may draw on this key. Empty admits every bot. See [Workload audience](#workload-audience--what-a-key-is-for) |
 | `expires_at` | optional |
 
@@ -167,11 +167,32 @@ reads it as the provider wall it no longer waits on. `max_wait` bounds the
 **whole** park, measured from its paid arming (`retry_state.scheduled_at`):
 such a row keeps the wall's anchor and the slot wait spends what is left of
 the same horizon, the way a circuit deferral does. A webhook delivery has
-nobody to click again; a parked run keeps its place, its inputs and its
-pull request's pending check. An operator's `resume` of a parked run while
-the key is still full answers 429 and leaves the run parked. The launch API
-answers such a park with `status: failed_resumable` (never `running` or
-`queued`); the run's `failure_code` says `CRED_SLOT_WAIT`.
+nobody to click again; a parked run keeps its inputs and its pull request's
+pending check. An operator's `resume` of a parked run while the key is
+still full answers 429 and leaves the run parked. The launch API answers
+such a park with `status: failed_resumable` (never `running` or `queued`);
+the run's `failure_code` says `CRED_SLOT_WAIT`.
+
+**A parked run keeps no place in line.** The ledger has no order: a slot
+frees when an admission's reconcile evicts a holder whose run stopped
+spending, and that same admission takes it — whoever asks first after a run
+ends. A parked run asks only every probe interval, so on a key under steady
+load a fresher launch can take the slot it waited for, every time, until its
+`max_wait` abandons it with the bound named. The levers are the operator's:
+raise `max_concurrent_runs`, or give the provider another key the walk can
+choose.
+
+**Every resume asks the ledger; only the sweeper parks.** A resume that
+finds a key full is refused before anything is published and the run is put
+back as it was — a parked run keeps its armed retry, a paused one stays
+paused — with `cloudpublisher.ErrCredentialAtCapacity` for its caller.
+Asking again is the caller's: the retry sweeper defers the parked run for
+free; the automations that keep a retry of their own wait on it — the run
+watch re-delivers its episode, the workspace hand-off backs off, and an
+assistant mission puts the refused activation, action resume or result
+delivery back to prepared and asks again one probe interval out
+(`wait_until` on the receipt), spending none of its action budget, up to its
+TTL; an operator is answered 429.
 
 The ledger never becomes a second truth. A holder is free when its run
 stops counting under the two rules below, and a refusal re-reads the row's
@@ -182,7 +203,17 @@ judged, and every admission moves its holder's instant forward, so a run
 resumed on another replica between the judgment and the eviction keeps its
 slot. A holder whose run document does not exist yet keeps its slot for
 `store.CredSlotGrace` (a launch reserves before it persists); a deleted run
-is pulled from every row at once, on both stores. The one explicit release
+is pulled from every row at once, on both stores. The other way round, a
+run whose document spends the key holds a slot whether or not the row names
+it: every admission first **adopts** those runs — alive before the ledger
+existed, launched while the key had no cap, or stripped of their entry by
+an undo another admission of the run outran — outside the cap, as the fact
+they are. **Setting `max_concurrent_runs` on a key in use** therefore counts
+the runs already on it at the first admission: a key with three runs alive
+and a new cap of two refuses (parks) every newcomer — pinned, restored or
+chosen — until two of the three end. The run an admission decides is never
+adopted by it: a resume that re-stamped its run before asking is decided by
+its own admission. The one explicit release
 is the undo of a launch or a resume that **provably** never handed the run
 on — no row persisted, or a rollback that ended or reverted the row it
 wrote — and it names the entry its own admission wrote, like the eviction:
