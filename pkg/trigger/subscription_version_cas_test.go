@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -124,6 +125,81 @@ func assertPinSweepConflictsAStaleEditor(t *testing.T, st SubscriptionStore, ctx
 	}
 }
 
+// assertUpdateKeepsTheHealthStamps pins the marks' survival of a
+// full-document write. MarkLaunchError and MarkRunOutcome are targeted
+// writes that bump no version — a keepalive firing every tick must not
+// conflict every operator edit — so a PUT whose read predates a fire passes
+// the CAS, and must re-stamp the health fields from the stored row instead
+// of writing its stale copy over them. Both directions: a stamp landed
+// after the read survives the write, and a stamp CLEARED after the read
+// stays cleared.
+func assertUpdateKeepsTheHealthStamps(t *testing.T, st SubscriptionStore, ctx context.Context) {
+	t.Helper()
+	if err := st.Create(ctx, Subscription{ID: "health", TenantID: "t1", BotID: "review-pr", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := st.Get(ctx, "health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t1 := time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC)
+	t2 := t1.Add(time.Minute)
+	if err := st.MarkLaunchError(ctx, "health", "gate refused", t1); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkRunOutcome(ctx, "health", "run-1", "failed", "boom", "E_BOOM", t2); err != nil {
+		t.Fatal(err)
+	}
+	stale.BotID = "edited"
+	if err := st.Update(ctx, stale); err != nil {
+		t.Fatalf("an edit read before the marks = %v, want nil — a health mark must not conflict an operator's edit", err)
+	}
+	got, err := st.Get(ctx, "health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BotID != "edited" {
+		t.Fatalf("the edit did not land: bot=%q", got.BotID)
+	}
+	if got.LastError != "gate refused" || got.LastErrorAt == nil || !got.LastErrorAt.Equal(t1) {
+		t.Fatalf("the launch verdict stamped after the edit's read was erased by the edit: last_error=%q at=%v", got.LastError, got.LastErrorAt)
+	}
+	if got.LastRunID != "run-1" || got.LastRunStatus != "failed" || got.LastRunError != "boom" || got.LastRunErrorCode != "E_BOOM" || got.LastRunAt == nil || !got.LastRunAt.Equal(t2) {
+		t.Fatalf("the run outcome stamped after the edit's read was erased by the edit: id=%q status=%q err=%q code=%q at=%v", got.LastRunID, got.LastRunStatus, got.LastRunError, got.LastRunErrorCode, got.LastRunAt)
+	}
+
+	// The other direction: a copy read while the failure stood, written
+	// after a success cleared it, must not resurrect the failure.
+	stale, err = st.Get(ctx, "health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t3 := t2.Add(time.Minute)
+	if err := st.MarkLaunchError(ctx, "health", "", t3); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkRunOutcome(ctx, "health", "run-2", "succeeded", "", "", t3); err != nil {
+		t.Fatal(err)
+	}
+	stale.Enabled = false
+	if err := st.Update(ctx, stale); err != nil {
+		t.Fatalf("an edit read before the clearing marks = %v, want nil", err)
+	}
+	got, err = st.Get(ctx, "health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Enabled {
+		t.Fatal("the edit did not land: still enabled")
+	}
+	if got.LastError != "" || got.LastErrorAt != nil {
+		t.Fatalf("the cleared launch verdict came back with the edit: last_error=%q at=%v", got.LastError, got.LastErrorAt)
+	}
+	if got.LastRunID != "run-2" || got.LastRunStatus != "succeeded" || got.LastRunError != "" || got.LastRunErrorCode != "" || got.LastRunAt == nil || !got.LastRunAt.Equal(t3) {
+		t.Fatalf("the cleared run failure came back with the edit: id=%q status=%q err=%q code=%q at=%v", got.LastRunID, got.LastRunStatus, got.LastRunError, got.LastRunErrorCode, got.LastRunAt)
+	}
+}
+
 // The version is the store's concurrency stamp, not API surface: it never
 // appears in a marshalled subscription, so the routes' answers and the
 // studio payloads stay unchanged.
@@ -144,6 +220,7 @@ func TestSubscriptionUpdateIsAVersionCAS(t *testing.T) {
 	ctx := context.Background()
 	assertUpdateIsAVersionCAS(t, NewMemorySubscriptionStore(), ctx)
 	assertPinSweepConflictsAStaleEditor(t, NewMemorySubscriptionStore(), ctx)
+	assertUpdateKeepsTheHealthStamps(t, NewMemorySubscriptionStore(), ctx)
 }
 
 func TestMongoSubscriptionStoreUpdateIsAVersionCAS(t *testing.T) {
@@ -170,6 +247,7 @@ func TestMongoSubscriptionStoreUpdateIsAVersionCAS(t *testing.T) {
 	}
 	assertUpdateIsAVersionCAS(t, st, ctx)
 	assertPinSweepConflictsAStaleEditor(t, st, ctx)
+	assertUpdateKeepsTheHealthStamps(t, st, ctx)
 
 	// A row written before the version field existed (a deployed document
 	// from an earlier release) stores no version: its first versioned write

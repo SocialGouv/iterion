@@ -53,13 +53,27 @@ func (s *MongoSubscriptionStore) Get(ctx context.Context, id string) (Subscripti
 	return mongoutil.FindOne[Subscription](ctx, s.coll, bson.M{"_id": id}, ErrSubscriptionNotFound, "trigger: get subscription")
 }
 
+// subscriptionHealthFields are the marks' fields (MarkLaunchError,
+// MarkRunOutcome): targeted writes that bump no version, so a full-document
+// Update re-stamps them from the stored row instead of writing its copy's
+// over them.
+var subscriptionHealthFields = []string{
+	"last_error", "last_error_at",
+	"last_run_id", "last_run_status", "last_run_error", "last_run_error_code", "last_run_at",
+}
+
 // Update replaces the row as a full document, committing only against the
 // version the caller's copy carries: a zero-match disambiguates — row gone
 // answers ErrSubscriptionNotFound, a row still there moved under the caller
 // and answers ErrSubscriptionConflict. The version-0 arm also matches a
 // document written before the field existed, so a deployed row's first
 // versioned write lands. The replace stamps the next version (the doc
-// carries it incremented), mirroring the memory twin's CAS.
+// carries it incremented), mirroring the memory twin's CAS. The health
+// stamps are not the copy's to write: the marks that set them bump no
+// version — a keepalive firing every tick must not conflict every operator
+// edit — so a copy read before a fire passes the CAS, and the replace keeps
+// the stored stamps (absent ones stay absent), as the webhooks twin keeps
+// last_used_at.
 func (s *MongoSubscriptionStore) Update(ctx context.Context, sub Subscription) error {
 	filter := bson.M{"_id": sub.ID, "version": sub.Version}
 	if sub.Version == 0 {
@@ -67,14 +81,29 @@ func (s *MongoSubscriptionStore) Update(ctx context.Context, sub Subscription) e
 		filter["$or"] = bson.A{bson.M{"version": 0}, bson.M{"version": bson.M{"$exists": false}}}
 	}
 	sub.Version++
-	if err := mongoutil.ReplaceOneChecked(ctx, s.coll, filter, sub, nil, ErrSubscriptionNotFound, "trigger: update subscription"); err != nil {
-		if errors.Is(err, ErrSubscriptionNotFound) {
-			if _, getErr := s.Get(ctx, sub.ID); getErr != nil {
-				return getErr
-			}
-			return ErrSubscriptionConflict
+	raw, err := bson.Marshal(sub)
+	if err != nil {
+		return fmt.Errorf("trigger: update subscription: %w", err)
+	}
+	var doc bson.M
+	if err := bson.Unmarshal(raw, &doc); err != nil {
+		return fmt.Errorf("trigger: update subscription: %w", err)
+	}
+	stored := bson.M{}
+	for _, field := range subscriptionHealthFields {
+		delete(doc, field)
+		stored[field] = "$" + field
+	}
+	pipeline := mongo.Pipeline{bson.D{{Key: "$replaceWith", Value: bson.M{"$mergeObjects": bson.A{stored, bson.M{"$literal": doc}}}}}}
+	res, err := s.coll.UpdateOne(ctx, filter, pipeline)
+	if err != nil {
+		return fmt.Errorf("trigger: update subscription: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		if _, getErr := s.Get(ctx, sub.ID); getErr != nil {
+			return getErr
 		}
-		return err
+		return ErrSubscriptionConflict
 	}
 	return nil
 }

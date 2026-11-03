@@ -28,7 +28,10 @@ type SubscriptionStore interface {
 	// version): ErrSubscriptionConflict when the row moved since — the
 	// caller re-reads and reapplies, never writes over what it did not see.
 	// A version-0 copy also matches a document written before the field
-	// existed, so a deployed row's first versioned write lands.
+	// existed, so a deployed row's first versioned write lands. The health
+	// stamps (LastError*, LastRun*) are the marks' and survive the write:
+	// the marks bump no version, so a copy read before a fire passes the
+	// CAS, and the store keeps the stored stamps over the copy's.
 	Update(ctx context.Context, s Subscription) error
 	Delete(ctx context.Context, id string) error
 

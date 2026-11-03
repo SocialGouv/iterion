@@ -58,6 +58,14 @@ func (m *MemorySubscriptionStore) Update(_ context.Context, s Subscription) erro
 		return ErrSubscriptionConflict
 	}
 	s.Version++
+	// The health stamps are the marks' (MarkLaunchError, MarkRunOutcome):
+	// targeted writes that bump no version — a keepalive firing every tick
+	// must not conflict every operator edit — so a copy read before a fire
+	// passes the CAS and would erase them. The stored stamps win, as the
+	// webhooks twin keeps LastUsedAt.
+	s.LastError, s.LastErrorAt = cur.LastError, cur.LastErrorAt
+	s.LastRunID, s.LastRunStatus, s.LastRunError, s.LastRunErrorCode, s.LastRunAt =
+		cur.LastRunID, cur.LastRunStatus, cur.LastRunError, cur.LastRunErrorCode, cur.LastRunAt
 	m.items[s.ID] = storekit.Snapshot(s)
 	return nil
 }
