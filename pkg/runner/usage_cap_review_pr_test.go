@@ -129,7 +129,7 @@ func TestUsageCapPreflight_MonoGPTOnTheReviewPrBot(t *testing.T) {
 	if len(sups) != 1 || sups[0].id != supervisorRouteIDPrefix+"pacer_gpt" {
 		t.Fatalf("the supervisor walk of a mono-gpt review is %v, want only supervisor:pacer_gpt — the claude pacer watches no node this run reaches", sups)
 	}
-	if _, metered := usageCapCredKeys(ctx, &queue.RunMessage{RunID: "run-sups"}).supervisorKey(ctx, sups[0].spec); metered {
+	if _, metered := usageCapCredKeys(ctx, &queue.RunMessage{RunID: "run-sups"}).supervisorKey(ctx, sups[0].spec, sups[0].hint); metered {
 		t.Errorf("pacer_gpt resolves to %q, which the cap meters — the gpt pacer must leave the Anthropic wire", sups[0].spec)
 	}
 

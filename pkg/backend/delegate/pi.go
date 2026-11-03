@@ -259,13 +259,15 @@ var piAnthropicEnvChannels = []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_T
 // indicts, in the source vocabulary the runner's meter keys on
 // (runCredKeys.forSource), or "" when iterion cannot say which credential it
 // was. The Anthropic provider is resolved against pi's own credential order
-// (piAnthropicSpend), every other provider by its slug (piUsageSource).
+// (piAnthropicSpend) — in the container when the spawn runs in one
+// (!Hostless, the transports' own test) — every other provider by its slug
+// (piUsageSource).
 func piRefusalSource(ctx context.Context, task Task) string {
 	provider, _ := piResolveModel(task.Model, task.ProviderHint)
 	if provider != piAnthropicProvider {
 		return piUsageSource(provider)
 	}
-	source, metered := piAnthropicSpend(ctx, task.Model, task.ProviderHint, task.ExtraEnv)
+	source, metered := piAnthropicSpend(ctx, task.Model, task.ProviderHint, task.ExtraEnv, !task.Hostless())
 	if !metered {
 		return ""
 	}
@@ -282,16 +284,18 @@ func piRefusalSource(ctx context.Context, task Task) string {
 // meter iterion keeps names the spend: pi's own credential store answers, the
 // subscription switch refuses the session before it spawns, or the inherited
 // credential pi sends to api.anthropic.com is one the pod wires elsewhere.
+// sandboxed says the session will run inside the run's container, whose agent
+// dir is not this host's (piStoreDir).
 //
 // Task.ExtraEnv is not composed here, as AnthropicRouteSource documents for
 // claude_code: the runner lane that reads this installs no run env, so a lane
 // that both reads this and feeds an anthropic credential through pi's
 // ExtraEnv must compose those entries first.
-func PiAnthropicRouteSource(ctx context.Context, model, hint string) (source string, metered, anthropic bool) {
+func PiAnthropicRouteSource(ctx context.Context, model, hint string, sandboxed bool) (source string, metered, anthropic bool) {
 	if provider, _ := piResolveModel(model, hint); provider != piAnthropicProvider {
 		return "", false, false
 	}
-	source, metered = piAnthropicSpend(ctx, model, hint, nil)
+	source, metered = piAnthropicSpend(ctx, model, hint, nil, sandboxed)
 	return source, metered, true
 }
 
@@ -321,10 +325,10 @@ func PiAnthropicRouteSource(ctx context.Context, model, hint string) (source str
 // env, then the task's entries (extraEnv), then piRouteEnv's pin, which
 // execute appends last. These channels cross into a sandbox by name
 // (piCredentialEnvNames), so the host reading is the container's. The store
-// is read host-side (piStoreDir): a sandboxed spawn left on the container's
-// default agent dir reads a store this process cannot see, so a login baked
-// into the image is outside this reading.
-func piAnthropicSpend(ctx context.Context, model, hint string, extraEnv []string) (source string, metered bool) {
+// is not: sandboxed says the spawn runs inside the run's container, which
+// reads its own agent dir rather than this host's (piStoreDir) — a login
+// baked into the image is outside this reading.
+func piAnthropicSpend(ctx context.Context, model, hint string, extraEnv []string, sandboxed bool) (source string, metered bool) {
 	if secrets.GuardSubscriptionOAuth(ctx, secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode) != nil {
 		return "", false
 	}
@@ -337,13 +341,13 @@ func piAnthropicSpend(ctx context.Context, model, hint string, extraEnv []string
 	for k, v := range piRouteEnv(ctx, Task{Model: model, ProviderHint: hint}) {
 		env[k] = v
 	}
-	if piStoreHolds(piStoreDir(env), piAnthropicProvider) {
+	if piStoreHolds(piStoreDir(env, sandboxed), piAnthropicProvider) {
 		return "", false
 	}
-	value := ""
+	channel, value := "", ""
 	for _, name := range piAnthropicEnvChannels {
 		if v := piEnvValue(env, name); v != "" {
-			value = v
+			channel, value = name, v
 			break
 		}
 	}
@@ -356,7 +360,7 @@ func piAnthropicSpend(ctx context.Context, model, hint string, extraEnv []string
 	case !secrets.AnthropicForfaitWireOK(piEnvValue(env, "ANTHROPIC_BASE_URL")):
 		return "", false
 	}
-	return ambientSourcePrefix + secrets.FingerprintSHA256(value), true
+	return ambientSourcePrefix + AmbientCredentialSetFingerprint(map[string]string{channel: value}), true
 }
 
 // piEnvValue is the value pi's process holds for name: the composed override
@@ -369,14 +373,29 @@ func piEnvValue(env map[string]string, name string) string {
 	return os.Getenv(name)
 }
 
-// piStoreDir is the agent dir whose auth.json pi reads: PI_CODING_AGENT_DIR as
-// the composed env sets it — piResolveEnv's ITERION_PI_AGENT_DIR pin, a task's
-// own entry — else the one this process hands pi (piAgentDir). A leading "~"
-// expands to the home directory, as pi expands it (utils/paths.ts
-// normalizePath).
-func piStoreDir(env map[string]string) string {
+// piStoreDir is the agent dir whose auth.json pi reads, as this process can
+// see it: PI_CODING_AGENT_DIR as the composed env sets it — piResolveEnv's
+// ITERION_PI_AGENT_DIR pin, a task's own entry — else, on the host, the one
+// this process hands pi (piAgentDir).
+//
+// A sandboxed spawn whose env names no dir reads pi's default under the
+// CONTAINER's home, and no host_state bind carries this host's ~/.pi there
+// (runtime's applyHostStateMounts binds no pi dir), so it answers "": no
+// store this process can name, and the channels piSandboxEnv forwards are
+// what pi spends. Reading the host's own login there would withhold the
+// evidence of every refusal the container's session takes. A dir the env
+// names is read at its path: the binds keep the path the container sees, and
+// where none carries it the host copy at most over-claims a store — a reading
+// withheld, never a wrong one.
+//
+// A leading "~" expands to the home directory, as pi expands it
+// (utils/paths.ts normalizePath).
+func piStoreDir(env map[string]string, sandboxed bool) string {
 	dir := strings.TrimSpace(env["PI_CODING_AGENT_DIR"])
 	if dir == "" {
+		if sandboxed {
+			return ""
+		}
 		dir = piAgentDir()
 	}
 	if dir == "~" || strings.HasPrefix(dir, "~/") {

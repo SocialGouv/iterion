@@ -82,7 +82,7 @@ var serialFamily = map[string]string{
 	"round3_tools_chain_test.go":        "Setenv",
 	"round6_chain_spend_test.go":        "Setenv",
 
-	"ambient_env_refused_test.go":              "Setenv",
+	"ambient_env_meter_test.go":                "Setenv",
 	"anthropic_forfait_ctx_test.go":            "SetCredentialsLookup, SetOAuthDirLookup, Setenv",
 	"async_backend_test.go":                    "Setenv",
 	"braced_env_reads_pin_test.go":             "Setenv",

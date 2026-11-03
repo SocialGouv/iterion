@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	anthropicprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/anthropic"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -142,20 +143,52 @@ func (r *Registry) resolveAnthropicDirect(ctx context.Context, modelID string) (
 	if ambientRefused(ctx) {
 		return nil, &ErrProviderHintUnfunded{Provider: "anthropic", Model: modelID}
 	}
+	w, err := anthropicDirectEnvCredentials(ctx, modelID)
+	if err != nil {
+		return nil, err
+	}
+	if w.oauth != "" {
+		claudeForfaitWarnOnce.Do(func() {
+			iterlog.NewFromEnv(os.Stderr).Warn("claw: %s",
+				secrets.SubscriptionOAuthNotice(secrets.ProviderAnthropic))
+		})
+		return p.NewClient(r.withClientIdentity(api.ProviderConfig{Model: modelID, OAuthToken: w.oauth}))
+	}
+	return p.NewClient(r.withClientIdentity(api.ProviderConfig{APIKey: w.apiKey, Model: modelID}))
+}
+
+// anthropicDirectEnvCredentials is the environment half of the direct path
+// (resolveAnthropicDirect), past the run's own credentials: the ambient
+// ANTHROPIC_API_KEY, then this host's Claude Code login on disk, both sent to
+// api.anthropic.com — the variables the hint skips (ANTHROPIC_BASE_URL,
+// ANTHROPIC_AUTH_TOKEN, the ZAI_API_KEY synthesis) are never read — else the
+// hint's typed refusal. The path and the usage-cap meter (AmbientEnvMeter)
+// share this one walk.
+func anthropicDirectEnvCredentials(ctx context.Context, modelID string) (anthropicEnvWalk, error) {
 	if k := envGetenv(ctx, "ANTHROPIC_API_KEY"); k != "" {
-		return p.NewClient(r.withClientIdentity(api.ProviderConfig{APIKey: k, Model: modelID}))
+		return anthropicEnvWalk{apiKey: k}, nil
 	}
 	if tok := secrets.AnthropicForfaitAccessTokenFromDisk(); tok != "" {
 		// Same guard as the env factory: the opt-out is enforced at the
 		// point the subscription token becomes the client's credential.
 		if secrets.ForbidSubscriptionOAuth() {
-			return nil, fmt.Errorf("claw: %w", secrets.ErrSubscriptionOAuthForbidden)
+			return anthropicEnvWalk{}, fmt.Errorf("claw: %w", secrets.ErrSubscriptionOAuthForbidden)
 		}
-		claudeForfaitWarnOnce.Do(func() {
-			iterlog.NewFromEnv(os.Stderr).Warn("claw: %s",
-				secrets.SubscriptionOAuthNotice(secrets.ProviderAnthropic))
-		})
-		return p.NewClient(r.withClientIdentity(api.ProviderConfig{Model: modelID, OAuthToken: tok}))
+		return anthropicEnvWalk{oauth: tok, diskForfait: true}, nil
 	}
-	return nil, &ErrProviderHintUnfunded{Provider: "anthropic", Model: modelID}
+	return anthropicEnvWalk{}, &ErrProviderHintUnfunded{Provider: "anthropic", Model: modelID}
+}
+
+// ForfaitWireBaseURL is the destination the run's Claude forfait is judged
+// against (secrets.AnthropicForfaitWireOK) when claw resolves spec under
+// hint: "" — the direct wire — for an id Anthropic serves under the
+// `provider: "anthropic"` hint, whose path skips ANTHROPIC_BASE_URL
+// (resolveAnthropicDirect → anthropicFromCtxForfaitOnWire), the env's
+// ANTHROPIC_BASE_URL on every other path (anthropicFromCtxForfait). A GLM id
+// is exempt from the hint branch and reads the env's.
+func ForfaitWireBaseURL(spec, hint string) string {
+	if HonoursProviderHintValue(delegate.BackendClaw, hint) && !GLMOnAnthropicWire(spec) {
+		return ""
+	}
+	return envGetenv(context.Background(), "ANTHROPIC_BASE_URL")
 }

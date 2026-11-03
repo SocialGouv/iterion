@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -312,7 +313,7 @@ func taskSandboxed(task Task) bool {
 // request the CLI builds, in ambientCredentialChannels' order with the
 // custom-header block last. ONE list serves both readers of the ambient
 // layer — the forwarder copying the process env into a sandboxed spawn and
-// the fingerprint keying the meter (ambientCredentialValue) — because a
+// the fingerprint keying the meter (ambientCredentialLive) — because a
 // channel one reads and the other does not puts the pre-flight and the
 // sandboxed session on two meters: the per-borrower split #2022 closes,
 // reopened by list drift. The cloud-provider switches are deliberately NOT
@@ -850,39 +851,73 @@ func ambientCredChannels(credEnv, selected map[string]string, sandboxed bool) []
 	return out
 }
 
-// ambientCredentialValue is the credential-set digest a spawn authenticates
-// with where the resolver bound no route of its own: the pod's inherited env
-// on a host spawn, the layer ambientAnthropicEnvForSandbox forwards on a
-// sandboxed one, a node's own ExtraEnv entry over either. The wire is not a
-// precedence: a key and a bearer both live go out together as x-api-key AND
-// Authorization (ambientCredChannels names the state), and an Authorization
-// line in ANTHROPIC_CUSTOM_HEADERS rides over every route's own auth — so
-// the digest names the SET, in ambientCredentialChannels' order with the
-// header credential last, and a channel appearing or leaving renders a
-// different meter. A single live channel digests its bare value, the shape
-// sessions already carry. "" when no inherited credential names the spend:
-// nothing inherited at all — its "Not logged in" is a refusal, not an
-// account — or a cloud mode answering instead.
-func ambientCredentialValue(env map[string]string, sandboxed bool) string {
+// ambientCredentialLive is the credential set a spawn authenticates with where
+// the resolver bound no route of its own — channel name to value, for every
+// channel the request carries: the pod's inherited env on a host spawn, the
+// layer ambientAnthropicEnvForSandbox forwards on a sandboxed one, a node's
+// own ExtraEnv entry over either. The wire is not a precedence: a key and a
+// bearer both live go out together as x-api-key AND Authorization
+// (ambientCredChannels names the state), and an Authorization line in
+// ANTHROPIC_CUSTOM_HEADERS rides over every route's own auth — so the set is
+// every live channel, the header credential under its block's name. Empty
+// when no inherited credential names the spend: nothing inherited at all —
+// its "Not logged in" is a refusal, not an account — or a cloud mode
+// answering instead.
+func ambientCredentialLive(env map[string]string, sandboxed bool) map[string]string {
 	if on, _ := spawnCloudProviderSwitches(env, sandboxed); len(on) > 0 {
-		return ""
+		return nil
 	}
-	pairs := make([][2]string, 0, len(ambientCredentialChannels)+1)
+	live := map[string]string{}
 	for _, k := range ambientCredentialChannels {
 		if v := spawnEnvValue(env, k, sandboxed); v != "" {
-			pairs = append(pairs, [2]string{k, v})
+			live[k] = v
 		}
 	}
 	if v, ok := ambientAuthorizationValue(env, sandboxed); ok {
-		pairs = append(pairs, [2]string{"ANTHROPIC_CUSTOM_HEADERS", v})
+		live["ANTHROPIC_CUSTOM_HEADERS"] = v
+	}
+	return live
+}
+
+// AmbientCredentialSetFingerprint is the meter identity of a live credential
+// set — channel name to value, for every channel a request carries: a single
+// credential digests its bare value, the shape sessions already carry; several
+// digest their length-prefixed rendering (ambientCredentialSet), in
+// ambientForwardedChannels' order with the header credential last — a channel
+// outside that list after them, by name — so a channel appearing or leaving
+// renders a different meter. "" for an empty set.
+//
+// It is the one digest of the ambient family's fingerprinted label, read by
+// every lane that names an inherited account: a claude_code session over the
+// set its spawn inherits (ambientSourceFingerprint), pi over the one channel
+// it sends (piAnthropicSpend), and claw's env factory over the credentials its
+// client carries (model.AmbientEnvMeter). Each lane reads its OWN channels;
+// where two send the same set they key one meter, and a set one of them does
+// not send is another account.
+func AmbientCredentialSetFingerprint(live map[string]string) string {
+	pairs := make([][2]string, 0, len(live))
+	for _, k := range ambientForwardedChannels {
+		if v := live[k]; v != "" {
+			pairs = append(pairs, [2]string{k, v})
+		}
+	}
+	var others []string
+	for k, v := range live {
+		if v != "" && !slices.Contains(ambientForwardedChannels, k) {
+			others = append(others, k)
+		}
+	}
+	sort.Strings(others)
+	for _, k := range others {
+		pairs = append(pairs, [2]string{k, live[k]})
 	}
 	switch len(pairs) {
 	case 0:
 		return ""
 	case 1:
-		return pairs[0][1]
+		return secrets.FingerprintSHA256(pairs[0][1])
 	default:
-		return ambientCredentialSet(pairs)
+		return secrets.FingerprintSHA256(ambientCredentialSet(pairs))
 	}
 }
 
@@ -913,10 +948,7 @@ func ambientCredentialSet(pairs [][2]string) string {
 // credential, hashed host-side so it can ride run records and meter keys
 // without the value itself ever leaving the process. "" when there is none.
 func ambientSourceFingerprint(env map[string]string, sandboxed bool) string {
-	if v := ambientCredentialValue(env, sandboxed); v != "" {
-		return secrets.FingerprintSHA256(v)
-	}
-	return ""
+	return AmbientCredentialSetFingerprint(ambientCredentialLive(env, sandboxed))
 }
 
 // cloudSwitchOn is the value a cloud-provider switch carries to enter its mode:
@@ -1482,15 +1514,16 @@ func AmbientSourceFingerprint(source string) (string, bool) {
 
 // AmbientCredentialFingerprint is the fingerprint of the credential THIS
 // process inherits — the pod's ambient channels read the way a host spawn
-// reads them (ambientCredentialValue over the process env), hashed the way
+// reads them (ambientCredentialLive over the process env), hashed the way
 // the session's own label hashes them. It is what a route with no credential
 // of the run spends when the pod carries the ambient one, and "" when the pod
 // carries none — its "Not logged in" a refusal — or a cloud-provider switch
 // answers instead. The runner keys its nothing-held default on it (the
 // fp'd ambient label AmbientSourceFingerprint parses), so the ledger the
 // pre-flight reads is the one the coming session writes. It is the claude_code
-// CLI's reading of the pod env: pi reads another channel set, in its own
-// order, and names its spend itself (PiAnthropicRouteSource).
+// CLI's reading of the pod env: pi and claw read other channel sets, in their
+// own orders, and name their spend themselves (PiAnthropicRouteSource,
+// model.AmbientEnvMeter).
 func AmbientCredentialFingerprint() string {
 	return ambientSourceFingerprint(nil, false)
 }

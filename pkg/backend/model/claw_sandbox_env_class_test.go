@@ -453,18 +453,19 @@ func assertRunnerHomeShape(t *testing.T, home, hostHome, workDir string) {
 // at a read of it. A road from anywhere else to a reader that also answers
 // from envStateConsults would go unseen.
 var crossingSpellings = map[string]string{
-	"var providerCredentialEnvVars":    "the forwarding list itself",
-	"var providerRoutingEnvVars":       "the routing subset, which forwardableProviderEnv forwards as explicit empties when the host leaves them unset",
-	"var clawSandboxCredentialEnvKeys": "the #1768 admission probe's own key list: ClawSandboxCredential reads the composed dispatch env through it (env[key] over the range), naming the first entry that carries a value",
-	"ClawSandboxCredential":            "reads the composed dispatch env over that range's keys, naming the first entry that carries a value — a map read the scan cannot see",
-	"var clawStreamTimeoutEnvVars":     "the watchdog knobs, which forwardableProviderEnv crosses as the host's planted-as-unset answer, explicit empty included",
-	"forwardableProviderEnv":           "sets the crossing: a refusal, the run's own credentials, the host's resolved values — and never a value envtrust.Planted reads as a workspace .env's: the forwarding loop crosses the explicit empty instead (named in crossingRefusals.planted), and the gateway branch reads envtrust.Inherited (consultsHandoffs), so a planted gateway route fails the node loudly, by name",
-	"forwardableToolEnv":               "sets the crossing for the tool names that cross as-is when the launcher sets them (#2802)",
-	"var byokEnvVar":                   "the variable a run's own key crosses as, which forwardableProviderEnv sets",
-	"anthropicWireShadowEnv":           "the ambient keys the crossing blanks, so the run's forfait outranks them",
-	"deliverHostCodexForfait":          "sets the crossing beside the host's forfait it wrote into the container, which a host-wide \"1\" orders",
-	"hostCodexForfait":                 "asks whether a project .env planted the switch, and names it in the refusal: a planted order ships nothing into the container",
-	"workspaceAgentMaxBytes":           "asks whether a project .env planted the ceiling override, and denies a planted value its authority — the host resolves the default, and forwardableProviderEnv's branch crosses the explicit empty in its place",
+	"var providerCredentialEnvVars":      "the forwarding list itself",
+	"var providerRoutingEnvVars":         "the routing subset, which forwardableProviderEnv forwards as explicit empties when the host leaves them unset",
+	"var clawSandboxCredentialEnvKeys":   "the #1768 admission probe's own key list: ClawSandboxCredential reads the composed dispatch env through it (env[key] over the range), naming the first entry that carries a value",
+	"ClawSandboxCredential":              "reads the composed dispatch env over that range's keys, naming the first entry that carries a value — a map read the scan cannot see",
+	"var clawStreamTimeoutEnvVars":       "the watchdog knobs, which forwardableProviderEnv crosses as the host's planted-as-unset answer, explicit empty included",
+	"forwardableProviderEnv":             "sets the crossing: a refusal, the run's own credentials, the host's resolved values — and never a value envtrust.Planted reads as a workspace .env's: the forwarding loop crosses the explicit empty instead (named in crossingRefusals.planted), and the gateway branch reads envtrust.Inherited (consultsHandoffs), so a planted gateway route fails the node loudly, by name",
+	"forwardableToolEnv":                 "sets the crossing for the tool names that cross as-is when the launcher sets them (#2802)",
+	"var byokEnvVar":                     "the variable a run's own key crosses as, which forwardableProviderEnv sets",
+	"anthropicWireShadowEnv":             "the ambient keys the crossing blanks, so the run's forfait outranks them",
+	"deliverHostCodexForfait":            "sets the crossing beside the host's forfait it wrote into the container, which a host-wide \"1\" orders",
+	"hostCodexForfait":                   "asks whether a project .env planted the switch, and names it in the refusal: a planted order ships nothing into the container",
+	"workspaceAgentMaxBytes":             "asks whether a project .env planted the ceiling override, and denies a planted value its authority — the host resolves the default, and forwardableProviderEnv's branch crosses the explicit empty in its place",
+	"(anthropicEnvWalk).liveCredentials": "names the env channel each credential of a built walk came from, as a map key the usage-cap meter digests (delegate.AmbientCredentialSetFingerprint) — no read: the walk's values were read where the factory reads them",
 }
 
 // envStateConsults answer for a name from state other than the process env,

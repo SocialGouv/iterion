@@ -21,13 +21,15 @@ import (
 // must not hand these tests a different meter than a bare one. So do pi's own
 // channels — ANTHROPIC_OAUTH_TOKEN, and the store in its agent dir, pinned to
 // an empty one: pi resolves a stored credential before every variable, and a
-// host carrying a pi login must not decide a pi route's meter here. The
-// subscription switch is stated off; the rows that need it set it.
+// host carrying a pi login must not decide a pi route's meter here. claw's
+// factories read this host's Claude Code login last, so the config dir they
+// read it from is pinned to an empty one as well. The subscription switch is
+// stated off; the rows that need it set it.
 func blankAnthropicWireEnv(t *testing.T) {
 	t.Helper()
 	for _, name := range []string{
 		"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
-		"CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR",
+		"CLAUDE_CODE_OAUTH_TOKEN",
 		"ZAI_API_KEY", "MOONSHOT_API_KEY", "MOONSHOT_BASE_URL",
 		"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
 		"ANTHROPIC_CUSTOM_HEADERS",
@@ -35,6 +37,7 @@ func blankAnthropicWireEnv(t *testing.T) {
 	} {
 		t.Setenv(name, "")
 	}
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	t.Setenv("ITERION_PI_AGENT_DIR", t.TempDir())
 }
 

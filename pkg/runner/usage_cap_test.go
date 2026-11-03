@@ -695,7 +695,7 @@ func TestSupervisorKey_GatewaySlotMetersOnTheHeldPair(t *testing.T) {
 		Fingerprints:   map[string]string{string(secrets.ProviderOpenAICompatible): "fp-gw-server"},
 	})
 	k := usageCapCredKeys(ctx, msg)
-	key, metered := k.supervisorKey(ctx, "openai_compatible/glm-5.3")
+	key, metered := k.supervisorKey(ctx, "openai_compatible/glm-5.3", "")
 	if !metered {
 		t.Fatal("a held gateway pair must meter its supervisor evaluations")
 	}
@@ -707,7 +707,7 @@ func TestSupervisorKey_GatewaySlotMetersOnTheHeldPair(t *testing.T) {
 	// fallback answers a typed refusal.
 	ctx = secrets.WithCredentials(context.Background(), secrets.Credentials{AmbientRefused: true})
 	k = usageCapCredKeys(ctx, msg)
-	key, metered = k.supervisorKey(ctx, "openai_compatible/glm-5.3")
+	key, metered = k.supervisorKey(ctx, "openai_compatible/glm-5.3", "")
 	if metered {
 		t.Fatalf("a run holding no gateway credential = %q metered=%v, want not metered — the deployment's env pair books on nobody", key, metered)
 	}

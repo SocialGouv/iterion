@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
@@ -354,6 +355,70 @@ func TestPiExecute_PisOwnStoreWithholdsTheReading(t *testing.T) {
 	})
 }
 
+// A sandboxed pi session reads the CONTAINER's agent dir: no host_state bind
+// carries this host's ~/.pi there, so a login in the host's default store
+// answers nothing in the container — the session spends the channels
+// piSandboxEnv forwards, and its refusal names that account; the pre-flight
+// reads the same one. On the host, and through the noop driver's host passthrough, the same
+// store answers first and the reading is withheld. A dir the env names is
+// read at its path either way: the binds keep the path the container sees.
+func TestPiExecute_TheSandboxedSessionReadsTheContainersStore(t *testing.T) {
+	ctx := context.Background()
+	blankPiAnthropicEnv(t)
+	t.Setenv("ITERION_PI_AGENT_DIR", "")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	hostStore := filepath.Join(home, ".pi", "agent")
+	if err := os.MkdirAll(hostStore, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hostStore, "auth.json"), []byte(`{"anthropic":{"type":"api_key","key":"sk-stored"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
+	refusals := func(t *testing.T, sb sandbox.Run) []usagecap.Reading {
+		t.Helper()
+		var got []usagecap.Reading
+		b := NewPiBackend(testLogger(), "pi")
+		b.rpc = piStubBackend{err: &ErrAuthFailed{Provider: BackendPi, Detail: "upstream 401"}}
+		task := piAuthTask(t, "claude-opus-5-5", &got)
+		task.ProviderHint = "anthropic"
+		task.Sandbox = sb
+		_, err := b.Execute(ctx, task)
+		var auth *ErrAuthFailed
+		if !errors.As(err, &auth) {
+			t.Fatalf("bench: Execute answered %v, not the transport's auth refusal", err)
+		}
+		return got
+	}
+
+	if got := refusals(t, nil); len(got) != 0 {
+		t.Fatalf("bench: the host session recorded %+v — the host store answers first", got)
+	}
+	if got := refusals(t, stubNoopSandbox{}); len(got) != 0 {
+		t.Errorf("the noop passthrough recorded %+v — it runs on the host, whose store answers first", got)
+	}
+	got := refusals(t, stubSandboxRun{})
+	if len(got) != 1 || got[0].Source != piAmbientLabel("sk-pod") {
+		t.Errorf("the sandboxed session recorded %+v, want one reading naming the forwarded key — the container never sees the host's store", got)
+	}
+	if source, metered, _ := PiAnthropicRouteSource(ctx, "claude-opus-5-5", "anthropic", true); !metered || source != piAmbientLabel("sk-pod") {
+		t.Errorf("the sandboxed pre-flight = %q metered=%v, want the forwarded key's label", source, metered)
+	}
+	if source, metered, _ := PiAnthropicRouteSource(ctx, "claude-opus-5-5", "anthropic", false); metered {
+		t.Errorf("the host pre-flight = %q metered — the host store answers first", source)
+	}
+
+	pinned := t.TempDir()
+	if err := os.WriteFile(filepath.Join(pinned, "auth.json"), []byte(`{"anthropic":{"type":"api_key","key":"sk-stored"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ITERION_PI_AGENT_DIR", pinned)
+	if got := refusals(t, stubSandboxRun{}); len(got) != 0 {
+		t.Errorf("a sandboxed session on a pinned agent dir recorded %+v — the store at that path answers", got)
+	}
+}
+
 // A key iterion binds for the run is the one pi spends. pi reads
 // ANTHROPIC_AUTH_TOKEN and ANTHROPIC_OAUTH_TOKEN BEFORE ANTHROPIC_API_KEY, so a
 // run key bound by its own variable alone left the pod's inherited bearer on
@@ -444,17 +509,17 @@ func TestPiAnthropicRouteSource_FollowsTheSubscriptionSwitch(t *testing.T) {
 	forfaitOnly := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): t.TempDir()},
 	})
-	if _, metered, anthropic := PiAnthropicRouteSource(forfaitOnly, "claude-opus-5-5", "anthropic"); !anthropic || metered {
+	if _, metered, anthropic := PiAnthropicRouteSource(forfaitOnly, "claude-opus-5-5", "anthropic", false); !anthropic || metered {
 		t.Errorf("a forfait-only run under the switch: anthropic=%v metered=%v, want an anthropic route no meter names — the session never spawns", anthropic, metered)
 	}
 
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "sk-ant-oat-pod")
 	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
-	if source, metered, _ := PiAnthropicRouteSource(context.Background(), "claude-opus-5-5", "anthropic"); !metered || source != piAmbientLabel("sk-pod") {
+	if source, metered, _ := PiAnthropicRouteSource(context.Background(), "claude-opus-5-5", "anthropic", false); !metered || source != piAmbientLabel("sk-pod") {
 		t.Errorf("a stripped subscription bearer: source=%q metered=%v, want the API key behind it, %q", source, metered, piAmbientLabel("sk-pod"))
 	}
 
-	if _, _, anthropic := PiAnthropicRouteSource(context.Background(), "glm-5.3", "zai"); anthropic {
+	if _, _, anthropic := PiAnthropicRouteSource(context.Background(), "glm-5.3", "zai", false); anthropic {
 		t.Error("a zai route answered as an anthropic one — its facade label is the slug's")
 	}
 }

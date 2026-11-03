@@ -31,6 +31,7 @@ import (
 	openaiprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/openai"
 	vertexprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/vertex"
 
+	"github.com/SocialGouv/iterion/internal/credheader"
 	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -112,21 +113,22 @@ func (r *Registry) registerDefaults() {
 	ctx := context.Background()
 	r.providers["anthropic"] = func(modelID string) (api.APIClient, error) {
 		p := anthropicprovider.New()
-		apiKey, baseURL, authToken, err := anthropicEnvCredentials(ctx, modelID)
+		w, err := anthropicEnvCredentials(ctx, modelID)
 		if err != nil {
 			return nil, err
 		}
 		cfg := api.ProviderConfig{
-			APIKey:  apiKey,
+			APIKey:  w.apiKey,
 			Model:   modelID,
-			BaseURL: baseURL,
+			BaseURL: w.baseURL,
 		}
 		// Claude Code subscription "forfait": when only ANTHROPIC_AUTH_TOKEN is
 		// set (the OAuth access token from ~/.claude/.credentials.json) against
 		// real api.anthropic.com — not a z.ai/bigmodel BYOK base URL, which uses
-		// the token as an x-api-key-style key — pass it as the OAuth bearer so
-		// claw sends `Authorization: Bearer` + the `anthropic-beta: oauth-2025-04-20`
-		// header the API requires (see claw client.go).
+		// the token as an x-api-key-style key — the walk hands it over as the
+		// OAuth bearer so claw sends `Authorization: Bearer` + the
+		// `anthropic-beta: oauth-2025-04-20` header the API requires (see claw
+		// client.go).
 		//
 		// BILLING NOTE. This path works. It used to be documented here as
 		// "effectively unusable" because a claw request 429'd immediately while
@@ -140,17 +142,10 @@ func (r *Registry) registerDefaults() {
 		//
 		// So the warning below is about COST, not viability: the operator is
 		// spending a different pot than the plan they may think they are using.
-		// ITERION_FORBID_SUBSCRIPTION_OAUTH=1 refuses this path outright
-		// (AmbientEnvRefused is the meter's reading of that refusal).
-		if subscriptionBearerArm(apiKey, authToken, baseURL) {
-			// The opt-out has to be enforced HERE, not only in the backend's
-			// ctx-credentials check: locally the token arrives through the
-			// environment, so there are no per-run credentials to inspect and
-			// secrets.GuardSubscriptionOAuth would see nothing to refuse.
-			if secrets.ForbidSubscriptionOAuth() {
-				return nil, fmt.Errorf("claw: %w", secrets.ErrSubscriptionOAuthForbidden)
-			}
-			cfg.OAuthToken = authToken
+		// ITERION_FORBID_SUBSCRIPTION_OAUTH=1 refuses this path outright, in the
+		// walk (AmbientEnvMeter reads the same refusal).
+		if w.oauth != "" {
+			cfg.OAuthToken = w.oauth
 			claudeForfaitWarnOnce.Do(func() {
 				iterlog.NewFromEnv(os.Stderr).Warn("claw: %s",
 					secrets.SubscriptionOAuthNotice(secrets.ProviderAnthropic))
@@ -654,11 +649,55 @@ func baseURLNamesZAI(baseURL string) bool {
 	return strings.Contains(lowBase, "z.ai") || strings.Contains(lowBase, "bigmodel")
 }
 
+// anthropicEnvWalk is one walk of an anthropic factory over the process env:
+// the credential the client is built from — its x-api-key, or the bearer it
+// sends as the OAuth token in the key's place — the destination, and which
+// arm of the walk supplied them. The factory builds its client from it and
+// the usage-cap meter (AmbientEnvMeter) reads the same walk, so the meter
+// cannot grow a second description of the order.
+type anthropicEnvWalk struct {
+	// apiKey is the client's x-api-key; "" sends none.
+	apiKey string
+	// oauth is the bearer the client sends as its OAuth token, the key's
+	// place; "" when the key rides.
+	oauth string
+	// baseURL is the destination; "" is api.anthropic.com.
+	baseURL string
+	// zai: the ZAI_API_KEY synthesis supplied the key — the request spends
+	// z.ai's account, whatever the id.
+	zai bool
+	// diskForfait: the bearer is this host's own Claude Code login, read from
+	// its config dir — no variable of the env carries it.
+	diskForfait bool
+}
+
+// liveCredentials is the credential set the client built from w sends, by
+// the env channel each value came from — the vocabulary
+// delegate.AmbientCredentialSetFingerprint digests: the bearer it sends as
+// its OAuth token, else its x-api-key, and authorization — the Authorization
+// line of ANTHROPIC_CUSTOM_HEADERS, "" when none rides — which claw's client
+// identity applies over both, last: it replaces the bearer's Authorization
+// header and rides beside the key. A bearer read from disk names no channel
+// of the env.
+func (w anthropicEnvWalk) liveCredentials(authorization string) map[string]string {
+	live := map[string]string{}
+	switch {
+	case w.oauth != "":
+		if !w.diskForfait && authorization == "" {
+			live["ANTHROPIC_AUTH_TOKEN"] = w.oauth
+		}
+	case w.apiKey != "":
+		live["ANTHROPIC_API_KEY"] = w.apiKey
+	}
+	if authorization != "" {
+		live["ANTHROPIC_CUSTOM_HEADERS"] = authorization
+	}
+	return live
+}
+
 // anthropicEnvCredentials is the anthropic env factory's credential walk for
-// modelID, in the factory's own order: the API key, base URL and bearer the
-// client is built from, or the synthesis's typed refusal. The factory and the
-// meter's reading of its refusal (AmbientEnvRefused) share this one walk, so
-// the meter cannot grow a second description of the order.
+// modelID, in the factory's own order (anthropicEnvWalk), or its typed
+// refusal: the synthesis's, or the subscription switch's.
 //
 // ANTHROPIC_BASE_URL forwards to claw the same redirect the Anthropic SDK and
 // the Claude Code CLI already honour. This is what enables `backend: claw`
@@ -673,17 +712,18 @@ func baseURLNamesZAI(baseURL string) bool {
 // anthropicCredOptsForCLI so `backend: claw` and `backend: claude_code`
 // behave the same way for desktop users who just dropped a ZAI_API_KEY line
 // in ~/.iterion/env.
-func anthropicEnvCredentials(ctx context.Context, modelID string) (apiKey, baseURL, authToken string, err error) {
-	apiKey = envGetenv(ctx, "ANTHROPIC_API_KEY")
-	baseURL = envGetenv(ctx, "ANTHROPIC_BASE_URL")
-	authToken = envGetenv(ctx, "ANTHROPIC_AUTH_TOKEN")
+func anthropicEnvCredentials(ctx context.Context, modelID string) (anthropicEnvWalk, error) {
+	apiKey := envGetenv(ctx, "ANTHROPIC_API_KEY")
+	baseURL := envGetenv(ctx, "ANTHROPIC_BASE_URL")
+	authToken := envGetenv(ctx, "ANTHROPIC_AUTH_TOKEN")
+	synthesised := false
 	// A GLM id is served by z.ai, never by api.anthropic.com: with
 	// ZAI_API_KEY at hand it goes there whatever Anthropic credential the
 	// env also carries — a sandboxed node receives the run's default keys
 	// beside the one its route is funded with — through glmBaseURL, the
 	// endpoint the in-process path (ResolveWithContext) picks too.
 	if zai := envGetenv(ctx, "ZAI_API_KEY"); zai != "" && modelServedByZAI(modelID) {
-		apiKey, authToken, baseURL = zai, "", glmBaseURL(baseURL)
+		apiKey, authToken, baseURL, synthesised = zai, "", glmBaseURL(baseURL), true
 	}
 	if apiKey == "" && authToken == "" {
 		if zai := envGetenv(ctx, "ZAI_API_KEY"); zai != "" {
@@ -701,14 +741,14 @@ func anthropicEnvCredentials(ctx context.Context, modelID string) (apiKey, baseU
 			// published ensemble (api.z.ai AND Zhipu's open.bigmodel.cn),
 			// not one spelling of it.
 			if !delegate.OperatorEndpointClaim(baseURL, string(secrets.ProviderZAI)) && !modelServedByZAI(modelID) {
-				return "", "", "", &delegate.ErrModelUnavailable{
+				return anthropicEnvWalk{}, &delegate.ErrModelUnavailable{
 					Provider: string(secrets.ProviderZAI),
 					Model:    modelID,
 					Detail: "the ZAI_API_KEY synthesis would send it to z.ai, which serves GLM under any label — " +
 						"route the node to a model z.ai serves (anthropic/glm-*), or fund the anthropic wire",
 				}
 			}
-			apiKey = zai
+			apiKey, synthesised = zai, true
 			if baseURL == "" {
 				baseURL = secrets.ZAIDefaultBaseURL
 			}
@@ -733,74 +773,101 @@ func anthropicEnvCredentials(ctx context.Context, modelID string) (apiKey, baseU
 	// studio/dispatcher keeps the token captured at first resolve. Claude
 	// Code rotates it on expiry; restart the daemon to pick up the new one.
 	// An already-expired token is skipped rather than baked in.
+	diskForfait := false
 	if apiKey == "" && authToken == "" && secrets.AnthropicForfaitWireOK(baseURL) {
 		authToken = secrets.AnthropicForfaitAccessTokenFromDisk()
+		diskForfait = authToken != ""
 	}
-	return apiKey, baseURL, authToken, nil
+	w := anthropicEnvWalk{apiKey: apiKey, baseURL: baseURL, zai: synthesised}
+	// The bearer rides as the client's OAuth token where no key precedes it
+	// and the destination is not z.ai's own ensemble — there the token is a
+	// vendor BYOK credential the factory does not send as a subscription
+	// bearer (baseURLNamesZAI), and it is dropped. A key ahead of it drops it
+	// too: the client sends the key alone.
+	if apiKey == "" && authToken != "" && !baseURLNamesZAI(baseURL) {
+		// ITERION_FORBID_SUBSCRIPTION_OAUTH refuses this arm outright, and the
+		// opt-out has to be enforced HERE, not only in the backend's
+		// ctx-credentials check: locally the token arrives through the
+		// environment, so there are no per-run credentials to inspect and
+		// secrets.GuardSubscriptionOAuth would see nothing to refuse.
+		if secrets.ForbidSubscriptionOAuth() {
+			return anthropicEnvWalk{}, fmt.Errorf("claw: %w", secrets.ErrSubscriptionOAuthForbidden)
+		}
+		w.oauth, w.diskForfait = authToken, diskForfait
+	}
+	return w, nil
 }
 
-// subscriptionBearerArm reports that the anthropic env factory hands bearer
-// to the client as the OAuth token: no API key precedes it, and the
-// destination is not z.ai's own ensemble, where the token is a vendor key the
-// factory does not send as one (baseURLNamesZAI). It is the arm
-// ITERION_FORBID_SUBSCRIPTION_OAUTH refuses outright.
-func subscriptionBearerArm(apiKey, bearer, baseURL string) bool {
-	return apiKey == "" && bearer != "" && !baseURLNamesZAI(baseURL)
-}
-
-// AmbientEnvRefused reports whether the anthropic env factory refuses a spec
-// on the anthropic wire (bare or `anthropic/…`) outright, nothing of the
-// run's held: ITERION_FORBID_SUBSCRIPTION_OAUTH is set and the factory's walk
-// (anthropicEnvCredentials) lands on its subscription-bearer arm — no API key
-// ahead of it, no z.ai synthesis, an ANTHROPIC_AUTH_TOKEN or this host's
-// Claude Code forfait bound for a destination that is not z.ai's. No client
-// is built and no account spends: the usage-cap pre-flight reads this so a
-// refused walk is not judged on the ambient account's walls, and the typed
-// refusal surfaces at resolution instead.
-func AmbientEnvRefused(spec string) bool {
-	if !secrets.ForbidSubscriptionOAuth() {
-		return false
-	}
+// AmbientEnvMeter is the usage-cap meter's reading of a claw call on the
+// anthropic wire (spec bare or `anthropic/…`) that nothing of the run's
+// funds — a claw node's route, a supervisor's spec — read off the walk claw's
+// own resolution takes from the process env: the `provider: "anthropic"`
+// direct path for an id Anthropic serves under that hint
+// (anthropicDirectEnvCredentials), the env factory otherwise
+// (anthropicEnvCredentials).
+//
+// fingerprint names the account the request spends, in the digest every
+// lane's ambient label keys on (delegate.AmbientCredentialSetFingerprint),
+// over the credentials claw's client carries (anthropicEnvWalk.liveCredentials):
+// its x-api-key or the bearer it sends in the key's place, and the
+// Authorization line of ANTHROPIC_CUSTOM_HEADERS applied over them. Those are
+// claw's channels, not the claude CLI's (delegate.AmbientCredentialFingerprint):
+// claw reads no CLAUDE_CODE_OAUTH_TOKEN, and where a key and a bearer both sit
+// in the env it sends the key alone.
+//
+// metered=false where no wall this cap keeps stands in the call's way:
+//   - the walk refuses before any client exists — the ZAI_API_KEY synthesis's
+//     typed refusal of an id z.ai does not serve, a subscription bearer under
+//     ITERION_FORBID_SUBSCRIPTION_OAUTH, the direct path with nothing to
+//     spend: no account spends, and the typed refusal is the call's answer;
+//   - the synthesis serves the call from z.ai's account, never a meter this
+//     cap keeps;
+//   - a GLM id bound for api.anthropic.com — no base URL, or that host named
+//     outright (secrets.AnthropicForfaitWireOK, the one reading of the real
+//     Anthropic wire) — which serves no GLM id: a provider refusal no account
+//     wall raised, whatever credential rides;
+//   - a GLM id whose request carries no credential at all, the bearer dropped
+//     on z.ai's own hostnames.
+//
+// metered=true with fingerprint "" where the client carries none of the env's
+// credentials: this host's Claude Code login read from disk, or — an id
+// Anthropic serves — no credential at all. No inherited variable names that
+// spend; it is the no-credential meter's.
+//
+// sandboxed reads the env a sandboxed claw node's in-container factory
+// rebuilds from (forwardableProviderEnv): the header block crosses without
+// its credential lines, so no Authorization line rides there. A supervisor
+// calls its model in process and is never sandboxed.
+func AmbientEnvMeter(spec, hint string, sandboxed bool) (fingerprint string, metered bool) {
 	id := strings.TrimSpace(spec)
 	if prefix, rest, cut := strings.Cut(id, "/"); cut && strings.EqualFold(strings.TrimSpace(prefix), string(secrets.ProviderAnthropic)) {
 		id = rest
 	}
-	apiKey, baseURL, bearer, err := anthropicEnvCredentials(context.Background(), id)
-	return err == nil && subscriptionBearerArm(apiKey, bearer, baseURL)
-}
-
-// AmbientEnvFundsGLM reports whether a GLM id on the anthropic wire, with
-// nothing held, walks the anthropic env factory into the pod's ambient
-// ANTHROPIC credential — the same walk a non-GLM id takes, so the ambient
-// account is its next funder and its walls are the id's. The factory's own
-// order decides each arm:
-//
-//   - ZAI_API_KEY set: the synthesis intercepts first and serves the id from
-//     z.ai's account — another vendor's, whose walls never land on the
-//     ambient meter. Not the ambient env.
-//   - ANTHROPIC_BASE_URL empty: the destination is api.anthropic.com, which
-//     does not serve the id — the request dies a provider refusal no account
-//     wall raised, whatever credential it carried. Not the ambient env.
-//   - ANTHROPIC_API_KEY set: the key rides as x-api-key to the gateway the
-//     operator named. The ambient env.
-//   - ANTHROPIC_AUTH_TOKEN set: the bearer rides only where the factory
-//     keeps it — a base URL that is not z.ai/bigmodel's; on the vendor's own
-//     hostnames the factory drops it and the client resolves credential-less.
-//     Under ITERION_FORBID_SUBSCRIPTION_OAUTH the factory refuses that arm
-//     outright (AmbientEnvRefused): no client, no account. Not the ambient env.
-//
-// The meter-side mirror of the factory's GLM walk (the usage-cap pre-flight
-// asks it where this factory would build the client): one reader here, beside
-// the factory, so the meter cannot grow a second description of the order.
-func AmbientEnvFundsGLM() bool {
-	if os.Getenv("ZAI_API_KEY") != "" || os.Getenv("ANTHROPIC_BASE_URL") == "" {
-		return false
+	glm := modelServedByZAI(id)
+	// The hint branch of ResolveWithContext, read with its own predicate: a
+	// GLM id is exempt from it, and where its funding check refuses one
+	// (ErrGLMHintUnfunded: no ZAI_API_KEY, no ANTHROPIC_AUTH_TOKEN, no base
+	// URL) the env walk sends it to api.anthropic.com — not metered either way.
+	walk := anthropicEnvCredentials
+	if !glm && HonoursProviderHintValue(delegate.BackendClaw, hint) {
+		walk = anthropicDirectEnvCredentials
 	}
-	if os.Getenv("ANTHROPIC_API_KEY") != "" {
-		return true
+	w, err := walk(context.Background(), id)
+	if err != nil || w.zai {
+		return "", false
 	}
-	return subscriptionBearerArm("", os.Getenv("ANTHROPIC_AUTH_TOKEN"), os.Getenv("ANTHROPIC_BASE_URL")) &&
-		!secrets.ForbidSubscriptionOAuth()
+	if glm && secrets.AnthropicForfaitWireOK(w.baseURL) {
+		return "", false
+	}
+	authorization := ""
+	if !sandboxed {
+		authorization, _ = credheader.LineValue(os.Getenv("ANTHROPIC_CUSTOM_HEADERS"), credheader.NameAuthorization)
+	}
+	live := w.liveCredentials(authorization)
+	if glm && len(live) == 0 {
+		return "", false
+	}
+	return delegate.AmbientCredentialSetFingerprint(live), true
 }
 
 // ResolveWithContext is the BYOK-aware variant of Resolve.
