@@ -188,11 +188,12 @@ field would be the THIRD.
    own runner pods, intra-namespace, for the sibling → CONNECT-proxy hop;
    the pool's egress-proxy Service; the forge, which git leaves the pod
    for directly — the clone guard is a loopback proxy that re-resolves
-   and dials the target itself, so it needs no cluster egress rule — and
-   which therefore enters the policy as operator CIDR data, decision 6's
-   host NAMES being enforceable only at a proxy; and a per-pool
-   `extraAllow`, the twin of the chart's `networkPolicy.egress.extraAllow`,
-   so a pool that needs one more peer never has to disable its boundary.
+   and dials the repo host itself rather than chaining to the pool's
+   proxy — and which therefore enters the policy as operator CIDR data,
+   decision 6's host NAMES being enforceable only at a proxy; and a
+   per-pool `extraAllow`, the twin of the chart's
+   `networkPolicy.egress.extraAllow`, so a pool that needs one more peer
+   never has to disable its boundary.
    The pool pod declares that the standing boundary exists, so the sandbox
    driver's fail-closed refusal keeps biting everywhere else.
 4. **The egress proxy is the Nth variant of an existing seam, not a new
