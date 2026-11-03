@@ -357,6 +357,51 @@ func TestExtractDrainRefusesASetOverTheCap(t *testing.T) {
 	}
 }
 
+// TestExtractDrainAcceptsTheExactCapPlusATrailingZeroByteMember pins the
+// cap's own boundary: a set totalling EXACTLY the cap leaves the meter at
+// the bound, where equality is allowed — and a trailing zero-byte member
+// bills nothing, because a copy cannot take a byte the member does not
+// carry. The budget of 0 reads as "nothing more fits", not as "one byte
+// more arrives": the whole dir must drain clean, every member landed.
+func TestExtractDrainAcceptsTheExactCapPlusATrailingZeroByteMember(t *testing.T) {
+	if testing.Short() {
+		t.Skip("the cap is 256 MiB — the fixture streams it")
+	}
+	hostDst := t.TempDir()
+	pr, pw := io.Pipe()
+	go func() {
+		tw := tar.NewWriter(pw)
+		if err := tw.WriteHeader(&tar.Header{Name: "big.bin", Size: sandbox.ReadBackCapBytes, Typeflag: tar.TypeReg, Mode: 0o600}); err != nil {
+			pw.CloseWithError(err)
+			return
+		}
+		if _, err := io.CopyN(tw, zeros{}, sandbox.ReadBackCapBytes); err != nil {
+			pw.CloseWithError(err)
+			return
+		}
+		if err := tw.WriteHeader(&tar.Header{Name: "empty.txt", Size: 0, Typeflag: tar.TypeReg, Mode: 0o600}); err != nil {
+			pw.CloseWithError(err)
+			return
+		}
+		pw.CloseWithError(tw.Close())
+	}()
+	r := drainRun(nil, "")
+	drained, landed, err := r.extractDrain(pr, hostDst, nil)
+	if err != nil {
+		t.Fatalf("extractDrain = %v, want the exact-cap set to drain clean", err)
+	}
+	if drained != sandbox.ReadBackCapBytes {
+		t.Errorf("drained %d bytes, want exactly the cap — the zero-byte member bills nothing", drained)
+	}
+	if !landed["empty.txt"] {
+		t.Errorf("landed = %#v, want the trailing zero-byte member among the landed set", landed)
+	}
+	info, err := os.Stat(filepath.Join(hostDst, "empty.txt"))
+	if err != nil || info.Size() != 0 {
+		t.Errorf("empty.txt on the host = (%v, %v), want the zero-byte member landed", info, err)
+	}
+}
+
 // zeros streams zero bytes without holding them.
 type zeros struct{}
 

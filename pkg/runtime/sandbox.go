@@ -940,9 +940,11 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		SeedDirs:           seeds,
 		// The drain manifest mirrors the declaration: the container path
 		// the runtime named and the run file store's scratch dir it will
-		// land in. Only a driver that carries the content between Start
-		// and teardown receives it — a bind-mount driver's declared path
-		// already lives on the host through its bind (ADR-143).
+		// land in. Every driver whose declared-path storage survived
+		// receives it — a bind-mount one too, though nothing there reads
+		// the manifest: the declared path already lives on the host
+		// through its bind, and only a WorkspaceExporter's drain consumes
+		// the entries (ADR-143).
 		ReadBackDirs: readBackDirs,
 	}
 

@@ -541,10 +541,13 @@ type RunInfo struct {
 	// ReadBackDirs is the drain manifest for the run's declared read-back
 	// paths ([Spec.ReadBackPaths], ADR-143): each entry pairs the
 	// container path whose content the run must recover with the host
-	// directory that receives it at teardown. Only a driver carrying that
-	// content (an exporter — the kubernetes Run) receives entries; a
-	// bind-mount driver's declared path already lives on the host through
-	// its bind, and a run that declared nothing drains nothing.
+	// directory that receives it at teardown. The runtime appends the
+	// entry whenever it arranges the declared path's storage, on every
+	// driver — a bind-mount one too. Nothing there consumes it: the path
+	// already lives on the host through the bind, and only a
+	// [WorkspaceExporter]'s drain reads this manifest, so the entry stays
+	// inert until a driver implements the seam (the kubernetes Run). A
+	// run that declared nothing carries no entry and drains nothing.
 	ReadBackDirs []ReadBackDir
 
 	// ProxyEndpoint, if non-empty, is the URL of the iterion network
