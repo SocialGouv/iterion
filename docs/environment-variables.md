@@ -447,6 +447,102 @@ non-ASCII letters Onigmo folds onto command names: GNU sed rejects
 |---|---|---|
 | `ITERION_FORGE_GITLAB_QUICK_ACTIONS` | `live` (any case) posts text as written, quick actions included — for an instance that drives GitLab through a bot's comments on purpose. Read as inherited: a project `.env` cannot set it. Any other value keeps the guard. | unset (guarded) |
 
+## Trusted proxies (server)
+
+Who may name the client of an inbound request. `X-Forwarded-For`, RFC 7239
+`Forwarded` and `X-Real-IP` are all client-writable, so the server reads them
+only when the immediate peer falls inside a configured range; otherwise the
+client is the socket address. That one address is the identity the audit rows
+carry and the one the webhook HMAC warnings name — and it never carries the
+ephemeral source port, which would make every TCP connection of one client a
+different client.
+
+The auth rate limiter keys its buckets on that identity widened to the **/64**
+for IPv6: a residential or VPS client holds a whole prefix and RFC 4941 privacy
+extensions rotate its address without being asked, so a per-address bucket is
+one the client replaces for free, and every tier keyed on the IP alone would be
+unlimited for anybody holding a prefix. An IPv4 address is its own bucket. The
+audit row keeps the full address either way — a bucket groups clients on
+purpose, a row names the one that acted.
+
+Behind a proxy whose range is **not** configured, every request carries the
+proxy's own address: the limiter then holds one bucket for the whole instance
+instead of one per client (login 5/min, register 2/min, refresh 30/min for
+everybody at once). Both modes of `iterion server` warn about exactly that at
+boot when the list is empty, naming the variable — and when an entry is a `/0`,
+which trusts every client to name its own address. Warned, never refused.
+
+**Restrict it to your ingress controller's pod CIDR.** Every address inside a
+trusted range is a proxy you vouch for, so a workload that can dial the server
+port from there names any client it likes: a forged audit IP, and a victim's
+rate-limit bucket drained by naming the victim. `networkPolicy.enabled` is what
+keeps that reach to the controller namespaces and the release's own pods
+([#2804](https://github.com/SocialGouv/iterion/issues/2804)); `values-prod.yaml`
+ships it on.
+
+**The ranges only make the identity unforgeable for a header the proxy
+rewrites or appends on every request.** They say WHO may name the client;
+`ITERION_AUTH_FORWARDED_HEADER` says WHERE, and the server reads that one
+header and no other — a client cannot pick the mechanism. A proxy that computes
+the client into `X-Real-IP` (the hand-written nginx `proxy_set_header X-Real-IP
+$remote_addr;` alone) or into RFC 7239 `Forwarded` (HAProxy, most CDNs) while
+passing the client's own `X-Forwarded-For` through untouched needs the variable
+set: left at its default the client's header is the identity it names itself,
+rotating it buys a fresh rate-limit bucket per value, and the audit row carries
+an address the client chose. Narrowing the ranges does not help — the ingress
+stays trusted and the header is still the client's. The server warns once, at
+the first request that shows it, when the header it is told to read is not the
+one the requests carry — once when that header IS there but carries no address
+(a proxy writing a hostname, a mistyped neighbour like `X-Forwarded-Proto`),
+which reads no client just the same — and once when the chain it carries is
+made of our own addresses only, fewer than the hops declared, which reads no
+client either: on that path the count exceeds the appending proxies in front,
+or the front end named no client.
+
+How the chain is read, when the peer is trusted: **right to left**, stopping at
+the hop `ITERION_AUTH_TRUSTED_PROXY_HOPS` entries in from the right — one by
+default. A proxy that appends rather than replaces (ingress-nginx with
+`use-forwarded-headers` **and** `compute-full-forwarded-for` — the first alone
+resolves the client and writes that one address —, Envoy, Istio, HAProxy
+`option forwardfor`) writes
+`<what the client sent>, <the address it saw>`, so the client's own forgeries
+arrive on the left, and a client can only make the chain *longer* — never move
+the hop its proxy appended. Behind one appending proxy the answer is therefore
+the rightmost entry, the address that proxy actually saw, and no header moves
+it.
+
+**The count is what bounds the walk, not the trust of what it reads.** Skipping
+every hop that happens to be inside the ranges would walk back into the
+client's half of the chain whenever the client itself holds an in-range address
+— which the chart default makes every LAN client and every in-cluster pod: such
+a client would buy a fresh bucket per forged value again just by writing one
+*out-of-range* entry of its own. So an in-range entry is skipped only while
+fewer than that many have been, and the entry that reaches the bound is the
+answer whether it is in-range or not. Raise the count only for a chained front
+end (a CDN edge appending in front of the ingress is 2, with the CDN's egress
+ranges in the list); declaring more appending hops than are really in front
+hands the identity back to what a client wrote. A peer that reaches the port
+*directly* wrote the whole chain itself, so it still names any address it
+likes, which is the reach the paragraph above asks you to keep to the ingress.
+
+Only the 32 hops nearest the server are read, and only within the ~2 KB of
+header nearest it: an entry longer than an address can be is no hop, a value
+that is not an address at all never becomes the identity nor counts against the
+hop bound, and a client that pads its header past those bounds pushes its own
+entries out of them — landing on its proxy's own bucket, which is less reach
+and not more.
+
+`iterion server --mode local` honours it like the cloud mode — it is a shipped
+deployment shape behind the same Service, so its auth limiter needs the same
+per-client key. The desktop studio (`iterion studio`) leaves it unset by
+design: nothing sits in front of a loopback listener.
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_AUTH_TRUSTED_PROXY_CIDRS` | Comma-separated CIDR ranges whose forwarded client address the server believes. An entry that is not a CIDR is refused at boot, naming it, and so is one with host bits set (`10.42.0.7/16` would trust the whole `/16`) — a single address is `/32` (or `/128`), never bare. | unset in the binary — no forwarded header is trusted. The chart renders it from `config.auth.trustedProxyCidrs`, which defaults to the private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`) so the ingress in front is trusted out of the box; narrow it to the controller's pod CIDR |
+| `ITERION_AUTH_TRUSTED_PROXY_HOPS` | How many APPENDING proxies of yours sit in front — the number of the chain's rightmost entries your infrastructure wrote, and the hop the right-to-left read stops at. It is what tells a proxy's entry from an in-range client's; raising it past the hops really in front makes a client's own entries the identity again. A negative value is refused at boot. | `0`, read as one appending proxy. The chart renders it from `config.auth.trustedProxyHops`, which ships `1` — the one ingress controller its `ingress` block configures |
+| `ITERION_AUTH_FORWARDED_HEADER` | The ONE header a trusted proxy names the client with — name the one your proxy rewrites or appends on every request. `Forwarded` is read with the RFC 7239 grammar; any other field name is a comma-separated address list, so `X-Real-IP` and a CDN's `CF-Connecting-IP` or `True-Client-IP` work as themselves. A value that is not one field name (a list, a header line, a name with a space) is refused at boot, naming it: a lookup for it would match no request and read no client address at all. So is a credential-bearing name (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`): none of them carries an address, and the diagnosis below quotes the value it could not parse. | unset — `X-Forwarded-For`, which every ingress controller writes, including the one the chart configures. The chart renders it from `config.auth.forwardedHeader` |
+
 ## Platform environment isolation (cloud)
 
 A cloud server or runner keeps its own credentials out of what the workflows

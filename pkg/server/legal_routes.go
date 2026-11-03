@@ -53,12 +53,13 @@ func (s *Server) legalInfo() legalInfoBlock {
 var legalReadLimit = authBucketCfg{rate: 1, burst: 60} // 60/min sustained, burst 60
 
 // registerLegalRoutes mounts the public legal surface (ADR-160). The route
-// is public by path (isPublicPath) and rate-limited per client IP in a
-// bucket of its own ("legal:<ip>"): its generous rate must not refill the
-// login family's bare-IP budget. It is registered in every mode, and
-// answers 404 for every slug when the deployment configured no document.
+// is public by path (isPublicPath) and rate-limited per client in a
+// bucket of its own ("legal:<bucket>", limitRoute's tier): its generous
+// rate must not refill the login family's budgets. It is registered in
+// every mode, and answers 404 for every slug when the deployment
+// configured no document.
 func (s *Server) registerLegalRoutes() {
-	legalLimit := s.limitRouteScoped("legal", legalReadLimit, nil)
+	legalLimit := s.limitRoute("legal", legalReadLimit, nil)
 	s.mux.HandleFunc("GET /api/legal/{slug}", legalLimit(s.handleLegalDocument))
 }
 

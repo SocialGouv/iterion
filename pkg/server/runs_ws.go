@@ -238,6 +238,7 @@ func (s *Server) handleRunWebSocket(w http.ResponseWriter, r *http.Request) {
 		s.cfg.Metrics.WSConnections.Inc()
 	}
 	rc := newRunConn(s, conn, runID)
+	rc.clientIP = s.clientIP(r)
 	rc.xStore = xStore
 	rc.xStorePath = xStorePath
 	// One store-agnostic streaming source per connection (ADR-053): a
@@ -294,6 +295,13 @@ type runConn struct {
 	// Both empty in DisableAuth dev mode.
 	tenantID string
 	userID   string
+
+	// clientIP snapshots the address clientIP named for the upgrade
+	// request: the WS has no *http.Request afterwards, and the kernel's
+	// peer address would make one operator read two identities for one
+	// client — the forwarded address in the audit row, the ingress pod
+	// and its source port in the run-control log (#2673).
+	clientIP string
 
 	// identity snapshots the full RBAC identity (TeamID + IsSuperAdmin)
 	// at upgrade time. The store tenant tag above does not carry it, so
@@ -803,7 +811,7 @@ func (c *runConn) handleCancel(env runWSEnvelope) {
 	// back to either an explicit user click (HTTP endpoint) or a WS
 	// envelope from a connected client.
 	if c.server.logger != nil {
-		c.server.logger.Info("server: cancel run %q via WS from %s", c.runID, c.conn.RemoteAddr())
+		c.server.logger.Info("server: cancel run %q via WS from %s", c.runID, c.clientIP)
 	}
 	err := c.server.runs.Cancel(c.runID)
 	if err != nil && errors.Is(err, runview.ErrRunNotActive) {
@@ -837,7 +845,7 @@ func (c *runConn) handlePause(env runWSEnvelope) {
 		return
 	}
 	if c.server.logger != nil {
-		c.server.logger.Info("server: pause run %q via WS from %s", c.runID, c.conn.RemoteAddr())
+		c.server.logger.Info("server: pause run %q via WS from %s", c.runID, c.clientIP)
 	}
 	if err := c.server.runs.Pause(c.runID); err != nil {
 		if errors.Is(err, runview.ErrRunNotActive) {

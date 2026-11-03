@@ -78,6 +78,29 @@ type StudioOptions struct {
 	MaxUploadsPerRun   int
 	AllowUploadMime    []string
 
+	// TrustedProxyCIDRs are the ranges whose forwarded client address the
+	// server believes (ITERION_AUTH_TRUSTED_PROXY_CIDRS). Empty for the
+	// desktop studio — nothing sits in front of a loopback listener — and
+	// filled by `iterion server --mode local`, which is a shipped
+	// deployment shape behind the same Service as the cloud one, so its
+	// auth limiter needs the same per-client key (#2673).
+	TrustedProxyCIDRs []string
+
+	// TrustedProxyHops is how many APPENDING proxies of the operator's own
+	// sit in front (ITERION_AUTH_TRUSTED_PROXY_HOPS); 0 is one. Threaded
+	// from `iterion server --mode local` with the ranges above: the ranges
+	// say WHO may name the client, the header says WHERE, and this says
+	// how many of the chain's rightmost entries are theirs rather than the
+	// client's.
+	TrustedProxyHops int
+
+	// ForwardedHeader is the ONE header a trusted proxy names the client
+	// with (ITERION_AUTH_FORWARDED_HEADER); empty is X-Forwarded-For.
+	// Threaded from `iterion server --mode local` with the ranges above:
+	// the ranges say WHO may name the client, this says WHERE they name
+	// it, and only the declared header is read.
+	ForwardedHeader string
+
 	// MaxConcurrentPipelines caps how many ROOT pipelines run at once
 	// (0 = unlimited). Over the cap, launches wait in the pipeline
 	// board's Todo lane. Threaded into server.Config →
@@ -269,6 +292,9 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 		MaxUploadsPerRun:       opts.MaxUploadsPerRun,
 		AllowedUploadMIMEs:     opts.AllowUploadMime,
 		MaxConcurrentPipelines: opts.MaxConcurrentPipelines,
+		TrustedProxyCIDRs:      opts.TrustedProxyCIDRs,
+		TrustedProxyHops:       opts.TrustedProxyHops,
+		ForwardedHeader:        opts.ForwardedHeader,
 		ShutdownDelay:          shutdownDelay,
 		// Local mode: the studio process is implicitly trusted to
 		// its TTY user. CSRF protection still gates write endpoints
