@@ -546,3 +546,40 @@ func TestCredSlotAdmission_AParkedLaunchWhosePromotionFailsIsLaunchFailed(t *tes
 		}
 	}
 }
+
+// A resume whose publish reports an error AFTER the message landed keeps its
+// slot: the runner claims and executes that attempt, the rollback's CAS finds
+// the run no longer queued and reverts nothing, and a slot given back under a
+// run that runs lets the next launch take it — the cap exceeded by one until
+// the run ends. Red when the release fires on every failed resume instead of
+// following the rollback's own verdict.
+func TestCredSlotAdmission_AResumeWhosePublishLandedKeepsItsSlot(t *testing.T) {
+	f := newCappedFixture(t, 1)
+	p := f.publisher()
+	if err := f.launch(t, p, "run-a", nil); err != nil {
+		t.Fatalf("launch run-a: %v", err)
+	}
+	f.park(t, "run-a")
+	// The message lands and the runner claims the attempt before the
+	// publisher hears back: the row is running when the error returns.
+	p.publishRun = func(_ context.Context, m *queue.RunMessage) error {
+		r := f.load(t, m.RunID)
+		r.Status = store.RunStatusRunning
+		if err := f.spy.SaveRun(f.ctx, r); err != nil {
+			t.Fatalf("claim %s: %v", m.RunID, err)
+		}
+		return errors.New("ack timeout after the broker accepted the message")
+	}
+	if err := f.resume(t, p, "run-a"); err == nil {
+		t.Fatal("a resume whose publish reported an error returned nil")
+	}
+	if r := f.load(t, "run-a"); r.Status != store.RunStatusRunning {
+		t.Fatalf("run-a status=%s after the publish error, want running — the rollback must not revert a claimed attempt", r.Status)
+	}
+	// The slot is still run-a's: the next launch on the key parks.
+	p.publishRun = f.published.publish
+	if err := f.launch(t, p, "run-b", nil); err != nil {
+		t.Fatalf("launch run-b: %v", err)
+	}
+	f.assertParked(t, "run-b")
+}

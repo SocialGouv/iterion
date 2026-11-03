@@ -4203,9 +4203,31 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// once the resolution returns: their acquisition superseded a previous
 	// lease, which the rollback reopens beside the sealed grant's.
 	var releasedGrants []*credpool.Grant
+	// heldSlots are the credential slots this resume's admission holds
+	// (cred_slots.go), set once it is granted. Given back by the rollback
+	// below ONLY when it reverted the flip: a publish can report an error
+	// after the message landed, the runner then claims and executes the
+	// attempt, and a slot released under a run that runs lets the next
+	// admission take it — the cap exceeded by one until the run ends. A
+	// flip the rollback could not revert keeps its slots: the ledger follows
+	// the run document, and a refusal's reconcile evicts the holder once
+	// the run stops holding one (store.CredSlotHolderStale).
+	var heldSlots []credSlotWant
 	defer func() {
 		if republished {
 			return
+		}
+		// What an undone flip gives back, in one place: the superseded pool
+		// leases and the slots.
+		undo := func(rollbackCtx context.Context) {
+			p.credPool.ReopenSuperseded(rollbackCtx, grant)
+			// A grant the walk released (refused unsealed) superseded the
+			// previous lease all the same: its acquisition is undone with
+			// the sealed grant's.
+			for _, g := range releasedGrants {
+				p.credPool.ReopenSuperseded(rollbackCtx, g)
+			}
+			p.releaseCredSlots(rollbackCtx, spec.RunID, heldSlots)
 		}
 		// The run goes back to the state it was in — its failure code, its
 		// episode, its continuation, the previous attempt's marker (only a
@@ -4224,10 +4246,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 				p.logger.Error("cloudpublisher: rollback %s after resume failure: %v", spec.RunID, rbErr)
 			}
 			if reverted {
-				p.credPool.ReopenSuperseded(rollbackCtx, grant)
-				for _, g := range releasedGrants {
-					p.credPool.ReopenSuperseded(rollbackCtx, g)
-				}
+				undo(rollbackCtx)
 			}
 			return
 		}
@@ -4241,18 +4260,13 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 			p.logger.Error("cloudpublisher: rollback %s after resume failure: %v", spec.RunID, rbErr)
 		}
 		if rolledBack {
-			p.credPool.ReopenSuperseded(rollbackCtx, grant)
-			// A grant the walk released (refused unsealed) superseded the
-			// previous lease all the same: its acquisition is undone with
-			// the sealed grant's. This branch RUNS under test — a flip-less
-			// store (retryStoreSpy) lands here — but with a nil grant and an
-			// empty releasedGrants, so the loop below is unasserted: PR-C'
-			// wires a credPool and a refused grant into that fixture, and
+			// This branch RUNS under test — a flip-less store
+			// (retryStoreSpy) lands here — but with a nil grant and an empty
+			// releasedGrants, so the reopen loop is unasserted: PR-C' wires
+			// a credPool and a refused grant into that fixture, and
 			// witnesses the door's append beside it (publisher.go's
 			// acquireDoorGrant call site).
-			for _, g := range releasedGrants {
-				p.credPool.ReopenSuperseded(rollbackCtx, g)
-			}
+			undo(rollbackCtx)
 		}
 		// The rewind baseline goes back with the status — and ONLY with it.
 		// The source is stamped just before the publish, so a publish that
@@ -4398,7 +4412,9 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// (cred_slots.go): the slot this run held from a previous attempt is
 	// admitted again without taking a second one; a key full of OTHER runs
 	// keeps the run parked — the rollback above puts it back, and the retry
-	// sweeper asks again free of charge (ErrCredentialAtCapacity).
+	// sweeper asks again free of charge (ErrCredentialAtCapacity). Granted,
+	// the slots are the rollback's to give back, and only with a reverted
+	// flip (heldSlots).
 	refusal, admitErr := p.admitCredSlots(secretsCtx, spec.RunID, creds.credSlots)
 	if admitErr != nil {
 		return admitErr
@@ -4406,11 +4422,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	if refusal != nil {
 		return fmt.Errorf("cloudpublisher: run %s stays parked: %w", spec.RunID, refusal)
 	}
-	defer func() {
-		if !republished {
-			p.releaseCredSlots(secretsCtx, spec.RunID, creds.credSlots)
-		}
-	}()
+	heldSlots = creds.credSlots
 	// Re-resolved on resume too: the engine re-mirrors skills on every resume,
 	// so a resumed run must carry the same payload a fresh launch would.
 	contributions, contribErr := resolveContributionsFor(ctx, wf, "", prior.TenantID, spec.RunID, p.pluginSources, p.logger)
