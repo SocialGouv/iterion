@@ -76,8 +76,14 @@ cause: a render helm refuses, a render with no Deployment labelled
 `app.kubernetes.io/component=server` (`mode=local`), several such Deployments
 (the first in render order would be a guess), a Deployment that renders no
 deadline (unset or `0` — the install would silently watch Kubernetes' default
-600 s), a value that is not a positive integer, and one beyond the int32 the
-field holds.
+600 s), a value other than plain decimal digits with no leading zero, and
+one beyond the int32 the field holds. helm hands the API the render as a
+YAML 1.1 decoder reads it: a string or a fraction is refused there, an
+integral float (`6e2`, or the `1e+06` helm prints for a values number of a
+million or more — quote such a number) and a signed, hex, octal, binary or
+underscored spelling are read as the integers they denote, and a leading
+zero makes octal digits octal (`010` is 8) where a YAML 1.2 reader such as
+yq reads 10 — so the helper sizes the wait from plain digits alone.
 
 ## Topology
 

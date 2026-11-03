@@ -250,8 +250,8 @@ jobs:
       - name: Install yq (pinned)
         run: |
           set -eu
-          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
-          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /tmp/yq" | sha256sum -c -
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          echo "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4  /tmp/yq" | sha256sum -c -
           sudo install -m 0755 /tmp/yq /usr/local/bin/yq
           yq --version
 
@@ -388,8 +388,8 @@ jobs:
       - name: Install yq (pinned)
         run: |
           set -eu
-          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
-          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /tmp/yq" | sha256sum -c -
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          echo "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4  /tmp/yq" | sha256sum -c -
           sudo install -m 0755 /tmp/yq /usr/local/bin/yq
           yq --version
 
@@ -617,8 +617,8 @@ jobs:
       - name: Install yq (pinned)
         run: |
           set -eu
-          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
-          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /tmp/yq" | sha256sum -c -
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          echo "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4  /tmp/yq" | sha256sum -c -
           sudo install -m 0755 /tmp/yq /usr/local/bin/yq
           yq --version
 
@@ -913,12 +913,14 @@ jobs:
       # The wait helper reads the install's own render through yq
       # (scripts/chart-kind-wait.sh). Pinned by version and digest
       # (mikefarah/yq, the implementation its expressions are written for),
-      # not taken from the runner image's inventory.
+      # not taken from the runner image's inventory, at the version the root
+      # devbox locks — every yq download of the workflows alike
+      # (TestChartKindWaitToolchainPinsYq reds on a drift).
       - name: Install yq (pinned)
         run: |
           set -eu
-          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
-          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /tmp/yq" | sha256sum -c -
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          echo "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4  /tmp/yq" | sha256sum -c -
           sudo install -m 0755 /tmp/yq /usr/local/bin/yq
           yq --version
 
@@ -1152,12 +1154,13 @@ jobs:
       # The kind-wait witnesses run scripts/chart-kind-wait.sh, which reads
       # the render through yq; without it on PATH they would SKIP, and the
       # chart gate requires its tools here (REQUIRE=1 below). Pinned by
-      # version and digest (mikefarah/yq).
+      # version and digest (mikefarah/yq), at the version the root devbox
+      # locks (TestChartKindWaitToolchainPinsYq reds on a drift).
       - name: Install yq (pinned)
         run: |
           set -eu
-          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
-          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /tmp/yq" | sha256sum -c -
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          echo "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4  /tmp/yq" | sha256sum -c -
           sudo install -m 0755 /tmp/yq /usr/local/bin/yq
           yq --version
       - name: chart render tests (dead selectors, backup and alert guards)

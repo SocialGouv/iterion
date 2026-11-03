@@ -36,9 +36,17 @@
 # such field); several candidate Deployments (the wait follows one deadline,
 # and the first in render order would be a guess); a Deployment that renders
 # no deadline (server.progressDeadlineSeconds unset or 0 — Kubernetes' 600 s
-# default would apply and silently shrink the watch); a value that is not a
-# positive integer (the API refuses the Deployment, or no watch can be
-# budgeted from it); a value beyond the int32 the field holds.
+# default would apply and silently shrink the watch); a value other than
+# plain decimal digits with no leading zero; a value beyond the int32 the
+# field holds. helm hands the API the render as a YAML 1.1 decoder reads it
+# (sigs.k8s.io/yaml, the one kubectl shares): a string or a fraction is
+# refused, an integral float is read as its integer (6e2 is 600), a
+# signed, hex, octal, binary or underscored spelling as the integer it
+# denotes (+600, 0x10, 0o10, 0b11, 1_000), and a leading zero makes octal
+# digits octal (010 is 8, 00 is 0) where a YAML 1.2 reader such as yq reads
+# decimal (010 is 10); the API refuses a 0 or a negative. The wait is sized
+# from plain digits alone, never from a spelling its readers could split
+# on.
 #
 # Usage: scripts/chart-kind-wait.sh <release> <chart> [helm args…]
 # The arguments are the install's own — release, chart, every -f/--values,
@@ -110,12 +118,15 @@ case $# in
 esac
 name=$1
 
-# The field as rendered: its YAML tag tells an integer from the string or
-# float a template prints verbatim, and a null is the field left out.
+# The field as rendered: its YAML tag tells an integer or a float from the
+# string a template prints verbatim, and a null is the field left out. A
+# number is then judged on its spelling, the text the API's decoder reads:
+# only plain decimal digits with no leading zero size a wait (the header
+# says what the decoder makes of the others).
 tag=$(read_render "[.] | map(select($server)) | .[0].spec.progressDeadlineSeconds | tag") || exit 1
 deadline=$(read_render "[.] | map(select($server)) | .[0].spec.progressDeadlineSeconds") || exit 1
 case $tag in
-  '!!int') ;;
+  '!!int'|'!!float') ;;
   '!!null')
     echo "chart-kind-wait: Deployment/$name renders no spec.progressDeadlineSeconds for \`helm template $args\` — server.progressDeadlineSeconds is unset or 0 in the values the install reads (the template renders the field through a \`with\` that skips both), so the install would silently watch Kubernetes' 600 s default; set a real deadline in the values the install reads" >&2
     exit 1
@@ -125,13 +136,26 @@ case $tag in
     exit 1
     ;;
 esac
+# A leading zero is judged before the float refusal: yq tags 010 an
+# integer and 08 a float, and both are the same misspelling.
 case $deadline in
-  ''|*[!0-9]*)
-    echo "chart-kind-wait: Deployment/$name renders spec.progressDeadlineSeconds: $deadline for \`helm template $args\` — not a positive decimal integer, so it budgets no watch (the API refuses a negative deadline); set a positive integer deadline" >&2
-    exit 1
-    ;;
   0)
     echo "chart-kind-wait: Deployment/$name renders spec.progressDeadlineSeconds: 0 for \`helm template $args\` — the API refuses a deadline that does not exceed minReadySeconds, and 0 budgets no watch; set a real deadline" >&2
+    exit 1
+    ;;
+  0*[!0-9]*) ;; # a base prefix or a fraction (0x10, 0.5), judged below
+  0*)
+    echo "chart-kind-wait: Deployment/$name renders spec.progressDeadlineSeconds: $deadline for \`helm template $args\` — not a positive decimal integer: a leading zero, which helm's YAML 1.1 decoding (the form the API receives) reads as octal where the digits allow (010 is 8, 00 is 0) and a YAML 1.2 reader such as yq as decimal (010 is 10), so no wait is sized from it; set the deadline without the leading zero" >&2
+    exit 1
+    ;;
+esac
+if [ "$tag" = '!!float' ]; then
+  echo "chart-kind-wait: Deployment/$name renders spec.progressDeadlineSeconds: $deadline (!!float) for \`helm template $args\` — not an integer spelling: helm's YAML 1.1 decoding (the form the API receives) reads an integral float as its integer (6e2 is 600) and a fraction is refused, but the wait is sized from plain decimal digits alone; helm prints a values number of a million or more as such a float (1e+06), so quote that number in the values, or set an integer deadline" >&2
+  exit 1
+fi
+case $deadline in
+  ''|*[!0-9]*)
+    echo "chart-kind-wait: Deployment/$name renders spec.progressDeadlineSeconds: $deadline for \`helm template $args\` — not a positive decimal integer: the API refuses a negative deadline, and helm's YAML 1.1 decoding (the form the API receives) reads a signed, hex, octal, binary or underscored spelling (+600, 0x10, 0o10, 0b11, 1_000) as the integer it denotes, which this helper does not reimplement; set the deadline as plain decimal digits" >&2
     exit 1
     ;;
 esac

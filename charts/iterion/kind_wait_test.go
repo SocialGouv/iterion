@@ -132,7 +132,10 @@ func TestChartKindWaitFollowsTheRenderedDeadline(t *testing.T) {
 // the values forms a line reader of the file could not pair with their
 // key, and the refusals — a deadline the render leaves out (unset or 0), a
 // string or a float, a release with no server Deployment or several, a
-// render helm refuses, a 0, a negative or an int32 overflow in the render.
+// render helm refuses, a 0, a negative, a leading zero, a sign, base prefix
+// or underscore, or an int32 overflow in the render: each spelling other
+// than plain decimal digits, whatever its readers make of it, and each
+// refusal judged on the cause it names.
 func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 	t.Run("deadline plus the 120s margin", func(t *testing.T) {
 		if got, want := mustWait(t, "iterion", ".", "-f", valuesFile(t, "mode: cloud\nserver:\n  progressDeadlineSeconds: 600\n")), "720s"; got != want {
@@ -231,6 +234,55 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 		stderr := mustRefuseWait(t, "scratch", scratchChart(t, serverDeployment("a", "-5")))
 		if !strings.Contains(stderr, "progressDeadlineSeconds: -5") || !strings.Contains(stderr, "not a positive decimal integer") {
 			t.Fatalf("the refusal must name the negative value:\n%s", stderr)
+		}
+	})
+	t.Run("a leading zero is refused whatever its readers make of it", func(t *testing.T) {
+		// helm's YAML 1.1 decoding, the form the API receives, reads 010 as
+		// octal 8 and 00 as 0; yq reads 010 as 10 and tags 08 a float. Shell
+		// arithmetic on the text would print 128s for 010 and 120s for 00 —
+		// a wait sized by accident — so the spelling is refused by name.
+		for _, v := range []string{"00", "000", "010", "0600", "08"} {
+			stderr := mustRefuseWait(t, "scratch", scratchChart(t, serverDeployment("a", v)))
+			if !strings.Contains(stderr, "progressDeadlineSeconds: "+v+" for") || !strings.Contains(stderr, "a leading zero") || !strings.Contains(stderr, "not a positive decimal integer") {
+				t.Fatalf("the refusal of %s must name the value, its leading zero and the plain-digits contract:\n%s", v, stderr)
+			}
+		}
+		// The chart renders one itself: helm keeps a --set value with a
+		// leading zero as the string it was given, and the template prints
+		// it bare.
+		for _, v := range []string{"010", "00"} {
+			stderr := mustRefuseWait(t, "iterion", ".", "--set", "mode=cloud", "--set", "server.progressDeadlineSeconds="+v)
+			if !strings.Contains(stderr, "progressDeadlineSeconds: "+v+" for") || !strings.Contains(stderr, "a leading zero") {
+				t.Fatalf("the chart renders --set server.progressDeadlineSeconds=%s bare, and the refusal must name it:\n%s", v, stderr)
+			}
+		}
+	})
+	t.Run("a sign, a base prefix or an underscore is refused", func(t *testing.T) {
+		// helm's YAML 1.1 decoding reads each as the integer it denotes
+		// (+600 is 600, 0x10 is 16, 0o10 is 8, 0b11 is 3, 1_000 is 1000);
+		// the helper does not reimplement that reading.
+		for _, v := range []string{"+600", "0x10", "0o10", "0b11", "1_000"} {
+			stderr := mustRefuseWait(t, "scratch", scratchChart(t, serverDeployment("a", v)))
+			if !strings.Contains(stderr, "progressDeadlineSeconds: "+v+" for") || !strings.Contains(stderr, "not a positive decimal integer") {
+				t.Fatalf("the refusal of %s must name the value and the plain-digits contract:\n%s", v, stderr)
+			}
+		}
+	})
+	t.Run("an integral float is refused as a spelling, not as a deadline the API refuses", func(t *testing.T) {
+		// helm prints a values number of a million or more in exponent
+		// form, which helm's YAML 1.1 decoding reads as the integer it
+		// denotes: the API would run 1000000. The refusal says so and names
+		// the remedy — the quoted number renders its digits, and the wait
+		// follows them.
+		stderr := mustRefuseWait(t, "iterion", ".", "-f", valuesFile(t, "mode: cloud\nserver:\n  progressDeadlineSeconds: 1000000\n"))
+		if !strings.Contains(stderr, "progressDeadlineSeconds: 1e+06 (!!float)") || !strings.Contains(stderr, "reads an integral float as its integer") || !strings.Contains(stderr, "quote that number") {
+			t.Fatalf("the refusal must name the exponent form helm printed, what the API reads of it and the quoting remedy:\n%s", stderr)
+		}
+		if strings.Contains(stderr, "the API refuses the Deployment") {
+			t.Fatalf("the API reads 1e+06 as 1000000 and runs it; the refusal must not claim the API refuses it:\n%s", stderr)
+		}
+		if got, want := mustWait(t, "iterion", ".", "-f", valuesFile(t, "mode: cloud\nserver:\n  progressDeadlineSeconds: \"1000000\"\n")), "1000120s"; got != want {
+			t.Fatalf("chart-kind-wait = %q, want %q — the quoted values number renders its digits, the remedy the refusal names", got, want)
 		}
 	})
 	t.Run("a deadline beyond int32 is refused", func(t *testing.T) {
@@ -661,16 +713,29 @@ func TestChartCloudE2EInstallSharesItsArgumentsWithTheHelper(t *testing.T) {
 	}
 }
 
+// yqRelease finds a workflow line that fetches a mikefarah/yq release;
+// yqDownload reads the version such a download pins.
+var (
+	yqRelease  = regexp.MustCompile(`mikefarah/yq/releases/`)
+	yqDownload = regexp.MustCompile(`mikefarah/yq/releases/download/v(\d+\.\d+\.\d+)/`)
+)
+
 // TestChartKindWaitToolchainPinsYq binds the helper's claim to the
-// toolchain. scripts/chart-kind-wait.sh and docs/cloud-deployment.md say
-// devbox provides yq-go, and `task chart:check` requires yq
-// (ITERION_CHART_RENDER_REQUIRE=1): the root devbox.json must pin yq-go —
-// mikefarah/yq, whose expressions the helper uses; nix's `yq` is the
-// python wrapper the helper refuses. Without the pin a devbox env composed
-// without the host PATH runs the chart gate red on a missing tool, and only
-// a yq the host happens to carry hides it. Runs everywhere.
+// toolchain, and the yq of the local gate to CI's. scripts/chart-kind-wait.sh
+// and docs/cloud-deployment.md say devbox provides yq-go, and `task
+// chart:check` requires yq (ITERION_CHART_RENDER_REQUIRE=1): the root
+// devbox.json must pin yq-go — mikefarah/yq, whose expressions the helper
+// uses; nix's `yq` is the python wrapper the helper refuses. Without the
+// pin a devbox env composed without the host PATH runs the chart gate red
+// on a missing tool, and only a yq the host happens to carry hides it.
+// devbox.lock must resolve that very pin, and every yq download of the CI
+// workflows must fetch the version the lock resolves: the helper's verdict
+// rides on yq's reading of the render (its tags), so a local gate and a CI
+// gate on two versions would each prove the helper for a different reader,
+// and nothing else reds on the drift. Runs everywhere.
 func TestChartKindWaitToolchainPinsYq(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", "devbox.json"))
+	root := filepath.Join("..", "..")
+	raw, err := os.ReadFile(filepath.Join(root, "devbox.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -695,6 +760,62 @@ func TestChartKindWaitToolchainPinsYq(t *testing.T) {
 	}
 	if !strings.Contains(string(script), "yq-go") {
 		t.Fatalf("scripts/chart-kind-wait.sh's missing-tool message must name the package devbox pins (%s)", pin)
+	}
+
+	// The lock: the version devbox installs for that pin; devbox locks an
+	// unversioned pin as @latest.
+	lockKey := pin
+	if !strings.Contains(lockKey, "@") {
+		lockKey += "@latest"
+	}
+	rawLock, err := os.ReadFile(filepath.Join(root, "devbox.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lock struct {
+		Packages map[string]struct {
+			Version string `json:"version"`
+		} `json:"packages"`
+	}
+	if err := json.Unmarshal(rawLock, &lock); err != nil {
+		t.Fatalf("devbox.lock could not be read as JSON with a packages map: %v", err)
+	}
+	locked := lock.Packages[lockKey].Version
+	if locked == "" {
+		t.Fatalf("devbox.json pins %s and devbox.lock resolves no version for %s — json and lock disagree, so the yq devbox installs is not the one devbox.json names; re-lock with devbox", pin, lockKey)
+	}
+
+	// Every yq download of the workflows: the version CI runs.
+	workflows, err := filepath.Glob(filepath.Join(root, ".github", "workflows", "*.y*ml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var downloads, drift []string
+	for _, wf := range workflows {
+		src, err := os.ReadFile(wf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			if !yqRelease.MatchString(line) {
+				continue
+			}
+			site := fmt.Sprintf("%s:%d", filepath.Base(wf), i+1)
+			m := yqDownload.FindStringSubmatch(line)
+			if m == nil {
+				t.Fatalf("%s fetches a mikefarah/yq release whose version this witness cannot read (latest, or a templated tag) — CI would run a yq nothing compares with the %s devbox locks: %s", site, locked, strings.TrimSpace(line))
+			}
+			downloads = append(downloads, site)
+			if m[1] != locked {
+				drift = append(drift, site+" v"+m[1])
+			}
+		}
+	}
+	if len(downloads) == 0 {
+		t.Fatalf("no workflow under .github/workflows downloads a mikefarah/yq release — the helm-lint job runs the kind-wait witnesses with ITERION_CHART_RENDER_REQUIRE=1 and installs one; a scan that reads nothing compares nothing")
+	}
+	if len(drift) > 0 {
+		t.Fatalf("devbox.lock resolves yq-go %s for the local gate and CI downloads another yq at %s — the helper's verdict rides on yq's reading of the render, so both gates run one version: move each download (version and digest) or the devbox pin", locked, strings.Join(drift, ", "))
 	}
 }
 
