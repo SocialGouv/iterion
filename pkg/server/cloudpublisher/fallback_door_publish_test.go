@@ -324,6 +324,45 @@ func TestFallbackDoorPreview_parity(t *testing.T) {
 	}
 }
 
+// The preview's door answers the launch's own gate — acquireDoorGrant's
+// sharedTiersBlocked, `runnerPool != "" || sovereign`: the door is the pool
+// tier wearing another coat, so a team mapped to a runner pool gets no grant
+// from it. A preview that knows only the sovereign half of that gate
+// announces what the door WOULD serve for a launch that opens no door, which
+// is the same divergence as a verdict computed on fills nothing acquires.
+func TestFallbackDoorPreview_shutForAPoolMappedTeam(t *testing.T) {
+	const pool = "pool-a"
+	f := newDoorPublishFixture(t, true)
+	f.pub.identity = &fakeTeamResolver{orgs: map[string]string{poolTeam: poolOrg}, runnerPool: map[string]string{poolTeam: pool}}
+	f.pub.pools = activeRegistry(pool)
+
+	preview, err := f.pub.PreviewCredentials(context.Background(), runview.CredentialPreviewSpec{
+		Context:        runview.CredentialPreviewContext{TeamID: poolTeam, BotID: "docs-refresh"},
+		OwnerID:        "requester",
+		Launch:         runview.LaunchSpec{BotID: "docs-refresh"},
+		LLMRoutePolicy: f.policy(),
+	}, f.wf())
+	if err != nil {
+		t.Fatalf("PreviewCredentials: %v", err)
+	}
+
+	// The live launch, same mapping, through SubmitLaunch — which reads the
+	// mapping itself: no door lease is taken for this run.
+	f.launch(t, "run-pooled-door")
+	open, err := f.leases.ListOpenByRun(context.Background(), "run-pooled-door")
+	if err != nil {
+		t.Fatalf("ListOpenByRun: %v", err)
+	}
+	if len(open) != 0 {
+		t.Fatalf("the launch took %d pool lease(s) for a pool-mapped team — the premise of this witness is that the door stays shut", len(open))
+	}
+
+	if len(preview.Pool.DoorWants) != 0 || preview.Pool.DoorReason != "" {
+		t.Fatalf("door_wants = %v, door_reason = %q — the preview describes a door the launch never opens for a team mapped to runner pool %q",
+			preview.Pool.DoorWants, preview.Pool.DoorReason, pool)
+	}
+}
+
 // The door's refused-gateway path is unreachable at v25 (the door's wants
 // map slots through allKnownProviders, which excludes the provider until
 // #2005 PR-C'): the released-grant carry is witnessed at the unit level

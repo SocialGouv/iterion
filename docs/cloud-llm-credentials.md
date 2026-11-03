@@ -604,10 +604,29 @@ and acquires no capacity. Actual materialization, a fresh provider observation
 or a concurrent admission can change the chosen credential. Runner environment
 credentials and workflow secrets remain outside this database observation.
 The selection rules are shared with the real publisher and checked against
-its sealed bundle in tests, with one divergence: the preview reads the
-team's `llm_fallback` but never its runner-pool mapping, so a pool-mapped
-team whose `llm_fallback` is unset previews org, pool and platform
-candidates its launches do not consult.
+its sealed bundle in tests, and the launch's refusals are observed BY NAME:
+the unfunded-provider refusal below through the producer the launch itself
+returns (`unfundedRefusalFor`), never a second sentence; the providers
+allowlist refusal through a sentence of the preview's own that names the
+same node, provider and level as the launch's. It judges the program the
+launch judges, routing policy composed (the launch's own
+`composePolicyLadder`, restored right after: a read model leaves the program
+it was handed as it was). Both postures that hold the shared tiers out of a
+run — the team's `llm_fallback` and its runner-pool mapping — are read
+through the launch's own readers, so a pool-mapped team previews neither the
+org, pool and platform candidates its launches do not consult nor a fallback
+door they do not open. Three limits are stated rather than hidden. A tier
+whose metadata could not be read (`selection is conditional`) under-predicts
+the fills, so the unfunded sentence is then qualified — "refuses unless a
+tier whose metadata was unavailable funds the routes named here" — instead
+of stated as the launch's verdict. A refusal the launch returns BEFORE its
+unfunded check (the allowlist's, or a failed `llm_fallback` or runner-pool
+read) is named beside the unfunded sentence, not instead of it: the launch
+returns the first, the preview names both. And the preview cannot predict a
+fallback-door GRANT — a consenting donor's credential the launch seals
+before the ladder, where the preview only reports what the pool WOULD serve
+— so under `ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL` a run the door would fund
+can still preview as refused (#2485).
 
 ## Activating the cross-model plan review (one credential, nothing else)
 
@@ -880,6 +899,19 @@ says — so:
   (`openai (named by verify)`), and the refusal is the typed
   `*cloudpublisher.UnfundedProvidersError` (`errors.As`) carrying both —
   no caller has to parse the sentence;
+- the set is read on the program the routing policy COMPOSED, after
+  `ApplyPolicyLadder` lands its rungs: a rung the walk cannot attribute
+  contributes no name instead of emptying the set, and a rung the run may
+  really spend — a held pair's own provider, at `node#run-fallback` —
+  counts for the knob's "every attributed provider is unfunded" rule;
+- the **credential preview** answers the same verdict, under the policy and
+  under the knob, for all THREE arms — the two named ones and the sovereign
+  refusal of a run no route of which the walk can attribute while the team
+  holds nothing of its own: it reads this decision through the launch's own
+  producer and prints the sentence the launch would return (`The live launch
+  refuses: …`), where it used to show candidates and a generic warning for
+  a launch refused by name, or say "runner environment availability is
+  unknown" about a run the publisher will not publish;
 - **behaviour change**: a launch that starts today is refused tomorrow if
   it mixes an unattributable route with a provider-pinned route the team
   (under `llm_fallback: none`) or the deployment (under the knob) funds

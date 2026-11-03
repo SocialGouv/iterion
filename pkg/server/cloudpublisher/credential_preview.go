@@ -92,9 +92,31 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 			x.warn("The team runs with llm_fallback=none: the shared tiers (org, pool, platform) are not consulted, and a route nothing of the team's own funds refuses the launch.")
 		}
 	}
+	// The team's runner-pool mapping, through the launch's own reader (D13):
+	// a pool team's launch consults NO shared tier — a pool pod would hold
+	// other tenants' credentials — so a preview blind to the mapping predicts
+	// fills the launch never acquires, and the verdict it mirrors below is
+	// computed on them. Read like the policy above: unconditionally, and a
+	// failed read warns instead of refusing, since the preview observes.
+	pooledPreview := false
+	runnerPool, perr := p.runnerPoolForTeam(ctx, spec.Context.TeamID)
+	switch {
+	case perr != nil:
+		x.warn("The team's runner-pool mapping could not be read; the live launch refuses on this error and this preview is conditional.")
+	case runnerPool != "":
+		pooledPreview = true
+	}
+	// The launch's own `runnerPool != "" || sovereign`: ONE expression for the
+	// two postures that block the shared tiers, read by every site below that
+	// mirrors one — the tier walk, the fallback door, and therefore the
+	// unfunded verdict those fills feed.
+	sharedTiersBlocked := sovereignPreview || pooledPreview
 	if envFunded {
 		x.out.Warnings = append(x.out.Warnings, "Every model route of this run rides the runner's openai_compatible gateway: no credential is acquired for it.")
 	} else {
+		if pooledPreview {
+			x.warn(fmt.Sprintf("The team is mapped to runner pool %q: the shared tiers (org, pool, platform) are not consulted — only the team's own credentials fund this run.", runnerPool))
+		}
 		tenantOwners := []string{spec.OwnerID}
 		if spec.Context.TeamID != "" {
 			tenantOwners = append(tenantOwners, secrets.OrgOwnerKey(spec.Context.TeamID))
@@ -151,8 +173,8 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 			x.oauthStage("user", spec.OwnerID, usagecap.TenantScope(spec.Context.TeamID), false, true)
 			x.oauthStage("team", secrets.OrgOwnerKey(spec.Context.TeamID), usagecap.TenantScope(spec.Context.TeamID), false, true)
 		case credentialTierOrg:
-			if sovereignPreview {
-				x.warn("Org tier not consulted: the team runs with llm_fallback=none.")
+			if sharedTiersBlocked {
+				x.warn("Org tier not consulted: " + blockedPosture(sovereignPreview, runnerPool) + ".")
 				return nil
 			}
 			if p.orgCredentialAudience(ctx, x.orgID, spec.Context.TeamID) {
@@ -163,15 +185,15 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 					x.oauthStage("org", secrets.OrgTierOwnerKey(x.orgID), usagecap.OrgScope(x.orgID), true, active)
 				}, func() {
 					if err := x.apiStage("org", secrets.OrgTierTenantID(x.orgID), "", usagecap.OrgScope(x.orgID), previewBotID, nil, true, active); err != nil {
-						x.warn("Org API-key metadata unavailable; selection is conditional.")
+						x.conditional("Org API-key metadata unavailable; selection is conditional.")
 					}
 				})
 			} else {
 				x.warn("Org tier not available to this team under the current audience or its metadata could not be read.")
 			}
 		case credentialTierPool:
-			if sovereignPreview {
-				x.warn("Pool not consulted: the team runs with llm_fallback=none.")
+			if sharedTiersBlocked {
+				x.warn("Pool not consulted: " + blockedPosture(sovereignPreview, runnerPool) + ".")
 				return nil
 			}
 			// The live walk's own filter: a provider a key sealed for its
@@ -191,7 +213,7 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 			pool, err := p.credPool.Preview(ctx, credpool.Request{OrgID: x.orgID, TenantID: spec.Context.TeamID, UserID: spec.OwnerID, BotID: spec.Context.BotID, Wants: poolWants})
 			if err != nil {
 				x.out.Pool.Reason = "unknown"
-				x.warn("Pool metadata unavailable; selection is conditional.")
+				x.conditional("Pool metadata unavailable; selection is conditional.")
 				break
 			}
 			if active {
@@ -214,8 +236,8 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 				}
 			}
 		case credentialTierPlatform:
-			if sovereignPreview {
-				x.warn("Platform tier not consulted: the team runs with llm_fallback=none.")
+			if sharedTiersBlocked {
+				x.warn("Platform tier not consulted: " + blockedPosture(sovereignPreview, runnerPool) + ".")
 				return nil
 			}
 			if p.platformAudienceAllows(ctx, "", x.orgID, spec.Context.TeamID) {
@@ -223,7 +245,7 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 					x.oauthStage("platform", secrets.PlatformOwnerKey, usagecap.ScopePlatform, true, active)
 				}, func() {
 					if err := x.apiStage("platform", secrets.PlatformTenantID, "", usagecap.ScopePlatform, previewBotID, nil, true, active); err != nil {
-						x.warn("Platform API-key metadata unavailable; selection is conditional.")
+						x.conditional("Platform API-key metadata unavailable; selection is conditional.")
 					}
 				})
 			} else {
@@ -338,6 +360,29 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	}); err != nil {
 		return runview.CredentialPreview{}, err
 	}
+	// The unfunded refusals are the live launch's, observed here BY NAME (the
+	// preview never refuses): the SAME arming, the SAME decision and the
+	// launch's own sentence, read on the fills this preview predicts instead
+	// of a sealed bundle — so an operator cannot preview a run that starts
+	// and launch one the publisher refuses for a provider nothing funds
+	// (#2485). Placed after the tier walk because the verdict needs those
+	// fills; the SET comes through attributedRoutes, the launch's own seam,
+	// so a provider family that stops being attributed stops being named on
+	// both surfaces at once. A set or a sentence rebuilt here is how a view
+	// starts contradicting the decision it observes.
+	//
+	// And the set is read on the program the launch JUDGES, not on the one
+	// its author wrote: the launch reads it AFTER the policy ladder landed
+	// its held rungs, and a rung's own provider is a route the run may really
+	// spend — which is exactly what the knob's rule counts. Composed through
+	// the launch's own composer over the fills predicted here, and RESTORED
+	// immediately: the live fallback door runs BEFORE the ladder, so the door
+	// block below must answer on the authored program, as it does live.
+	restoreRoutes := snapshotFallbackRoutes(wf)
+	composePolicyLadder(wf, previewView, spec.LLMRoutePolicy, model.AllowedProviderSet(previewView.AllowedProviders), spec.Launch.Vars, doorServesMetadata(x), nil)
+	previewAttributed, previewSites := attributedRoutes(previewView)
+	restoreRoutes()
+	refusal := unfundedRefusalFor(spec.Context.TeamID, previewAttributed, previewSites, metadataFunding(x), metadataHoldsNothing(x), p.unfundedPostureFor(wf, sovereignPreview, envFunded))
 	wires := map[string][]string{}
 	selectSlot := func(i int) {
 		c := &x.out.Candidates[i]
@@ -370,7 +415,21 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	for _, wire := range names {
 		x.out.Wires = append(x.out.Wires, runview.CredentialPreviewWire{Wire: wire, CandidateIDs: wires[wire]})
 	}
-	if len(wires) == 0 {
+	switch {
+	case refusal != nil:
+		// A refused launch publishes nothing, so whether the runner's
+		// environment could have funded it is a question the launch never
+		// asks: the verdict replaces the "unknown" line, it does not sit
+		// beside it. And the verdict is a FACT only on fills every tier
+		// answered for — a tier whose metadata could not be read may hold
+		// the very credential that funds a route named here, so the mirror
+		// then says what it could not see instead of stating the refusal.
+		if x.fillsConditional {
+			x.warn("The live launch refuses unless a tier whose metadata was unavailable funds the routes named here: " + refusal.Error())
+		} else {
+			x.warn("The live launch refuses: " + refusal.Error())
+		}
+	case len(wires) == 0:
 		x.warn("No database credential is predicted; runner environment availability is unknown.")
 	}
 	// The routing fallback door's state (ADR-121 § Delivery 2): computed
@@ -384,7 +443,7 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	// own credential, no whole-bundle grant predicted, not env-funded,
 	// and a policy whose ladder can dispatch a missing kind.
 	if !envFunded && len(x.api)+len(x.oauth) > 0 && !x.poolGranted &&
-		spec.LLMRoutePolicy != nil && len(spec.LLMRoutePolicy.Triggers) > 0 && len(spec.LLMRoutePolicy.PairOrder) > 0 && p.credPool != nil && !sovereignPreview {
+		spec.LLMRoutePolicy != nil && len(spec.LLMRoutePolicy.Triggers) > 0 && len(spec.LLMRoutePolicy.PairOrder) > 0 && p.credPool != nil && !sharedTiersBlocked {
 		wants, _, ok := doorWantsFor(spec.LLMRoutePolicy, previewView, spec.Launch.Vars, doorServesMetadata(x))
 		if !ok {
 			x.out.Pool.DoorReason = "no_dispatchable_wants"
@@ -411,6 +470,21 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	return x.out, nil
 }
 
+// blockedPosture names, for an operator's remedy, which of the two postures
+// keeps the shared tiers out of this run — they can hold at once, and they
+// are not remedied the same way: a policy is the team's to change, a pool
+// mapping the platform's.
+func blockedPosture(sovereign bool, runnerPool string) string {
+	reasons := make([]string, 0, 2)
+	if sovereign {
+		reasons = append(reasons, "the team runs with llm_fallback=none")
+	}
+	if runnerPool != "" {
+		reasons = append(reasons, fmt.Sprintf("the team is mapped to runner pool %q", runnerPool))
+	}
+	return strings.Join(reasons, ", and ")
+}
+
 // doorServesMetadata is the preview's answer to doorServes: the same
 // held-slot predicate over the metadata that assumes materialization.
 func doorServesMetadata(x *credentialPreview) func(_, credential string) bool {
@@ -432,6 +506,37 @@ func doorServesMetadata(x *credentialPreview) func(_, credential string) bool {
 		}
 		return false
 	}
+}
+
+// metadataHoldsNothing is `!holdsLLMCredential(bundle)` on the fills this
+// preview PREDICTS: the sovereign refusal of a run nothing of the team's
+// funds and no route of which the walk can attribute reads it, and it is the
+// same twinning as metadataFunding below — a different SOURCE for the same
+// question, never a different question.
+func metadataHoldsNothing(x *credentialPreview) bool {
+	return len(x.api)+len(x.pinnedAPI)+len(x.oauth) == 0
+}
+
+// metadataFunding is bundleFunding on the fills this preview PREDICTS: what
+// separates the two surfaces is the funding they can SEE (a sealed bundle
+// against predicted candidates, the doorServes / doorServesMetadata motif),
+// never a second reading of what funded means.
+func metadataFunding(x *credentialPreview) map[string]bool {
+	slots := make([]secrets.Provider, 0, len(x.api)+len(x.pinnedAPI))
+	for prov := range x.api {
+		slots = append(slots, prov)
+	}
+	// Pinned keys fund the routes that name their provider — the very routes
+	// the refusal is about — so they count here exactly as the launch counts
+	// them (fundedAPIKeySlots reads both maps).
+	for prov := range x.pinnedAPI {
+		slots = append(slots, prov)
+	}
+	kinds := make([]string, 0, len(x.oauth))
+	for kind := range x.oauth {
+		kinds = append(kinds, kind)
+	}
+	return fundedProviderSet(slots, kinds)
 }
 
 type credentialPreview struct {
@@ -473,9 +578,24 @@ type credentialPreview struct {
 	// usable, but spoken for by another workload. The live restore never
 	// hands one back (skipTracker.floorHeld), so the preview's must not either.
 	floorHeld map[int]bool
+	// fillsConditional records that a tier's metadata could not be read: the
+	// fills are then UNDER-predicted (a credential that tier holds is not
+	// among them), and the unfunded verdict computed on them is a guess the
+	// mirror must say is one.
+	fillsConditional bool
 }
 
 func (x *credentialPreview) warn(s string) { x.out.Warnings = append(x.out.Warnings, s) }
+
+// conditional is warn for a tier read that failed — ONE chokepoint for the
+// class, so every degraded fill reaches the mirror's qualifier. A site that
+// warned through warn alone would leave the mirror stating a definitive
+// refusal on fills it never saw whole. The fallback door's degraded read is
+// not of this class: it is consulted after the verdict and fills nothing.
+func (x *credentialPreview) conditional(s string) {
+	x.fillsConditional = true
+	x.warn(s)
+}
 func (x *credentialPreview) add(c runview.CredentialPreviewCandidate) int {
 	if c.Selection == "" {
 		c.Selection = "shadowed"
@@ -689,7 +809,7 @@ func (x *credentialPreview) oauthStage(tier, owner, meter string, byWire, active
 	}
 	records, err := x.p.oauthForfait.ListByUser(x.ctx, owner)
 	if err != nil {
-		x.warn(tier + " subscription metadata unavailable; selection is conditional.")
+		x.conditional(tier + " subscription metadata unavailable; selection is conditional.")
 		return
 	}
 	for _, rec := range records {

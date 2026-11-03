@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -42,25 +43,48 @@ func attributedRoutes(view model.RouteView) ([]string, map[string][]string) {
 	return res.Providers, res.Pins
 }
 
-// unfundedAmong lists the providers of provs the bundle funds nothing of,
-// sorted. The ONE funding reading, shared by both refusal arms: a second copy
-// of it is where the next arm would disagree about what "funded" means.
-func unfundedAmong(provs []string, bundle secrets.RunBundle) []string {
-	if len(provs) == 0 {
-		return nil
-	}
-	funded := make(map[string]bool, len(bundle.APIKeys)+len(bundle.OAuthCredentials))
-	// Both channels: a pinned key is exactly the case these gates must not
-	// refuse — every route pins one provider, a tier funded it for that pin,
-	// and reading APIKeys alone would fail the launch claiming no tier holds
-	// a credential for it while the key is sealed in this bundle.
-	for _, prov := range fundedAPIKeySlots(bundle) {
+// fundedProviderSet is what "funded" MEANS for the refusals below and for
+// every surface that observes them: ONE reading of the two channels a run can
+// be funded by — a provider key slot, and an OAuth forfait's provider.
+//
+// Both channels: a pinned key is exactly the case these gates must not refuse
+// — every route pins one provider, a tier funded it for that pin, and reading
+// the default slots alone would fail the launch claiming no tier holds a
+// credential for it while the key is sealed in this bundle.
+//
+// The SOURCE of the two channels differs per surface (the launch reads its
+// sealed bundle, the credential preview the fills it predicts — the
+// doorServes / doorServesMetadata motif), the reading does not: a second copy
+// of it is where one surface would start disagreeing with the other about
+// what a funded provider is.
+func fundedProviderSet(apiSlots []secrets.Provider, oauthKinds []string) map[string]bool {
+	funded := make(map[string]bool, len(apiSlots)+len(oauthKinds))
+	for _, prov := range apiSlots {
 		funded[strings.ToLower(string(prov))] = true
 	}
-	for kind := range bundle.OAuthCredentials {
+	for _, kind := range oauthKinds {
 		if prov := providerOfOAuthKind(kind); prov != "" {
 			funded[prov] = true
 		}
+	}
+	return funded
+}
+
+// bundleFunding is fundedProviderSet on a SEALED bundle: the launch's own
+// reading, the one its refusals are computed on.
+func bundleFunding(bundle secrets.RunBundle) map[string]bool {
+	kinds := make([]string, 0, len(bundle.OAuthCredentials))
+	for kind := range bundle.OAuthCredentials {
+		kinds = append(kinds, kind)
+	}
+	return fundedProviderSet(fundedAPIKeySlots(bundle), kinds)
+}
+
+// unfundedAmong lists the providers of provs that funding holds nothing for,
+// lowercased and sorted.
+func unfundedAmong(provs []string, funded map[string]bool) []string {
+	if len(provs) == 0 {
+		return nil
 	}
 	out := make([]string, 0, len(provs))
 	for _, prov := range provs {
@@ -70,6 +94,73 @@ func unfundedAmong(provs []string, bundle secrets.RunBundle) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// unfundedPosture is the ARMING of the two refusals, read once per surface:
+// the deployment knob (ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL) and the team's
+// sovereign `llm_fallback: none`. A run that cannot call a model spends
+// nothing, and an env-funded run acquires nothing and answers to no team
+// policy — so the arming, like the decision, has one producer.
+type unfundedPosture struct {
+	// Knob arms the deployment's refusal, permissive by design.
+	Knob bool
+	// Sovereign arms the team policy's, strict per provider.
+	Sovereign bool
+}
+
+func (p *Publisher) unfundedPostureFor(wf *ir.Workflow, sovereign, envFunded bool) unfundedPosture {
+	usesLLM := wf != nil && wf.UsesLLM()
+	return unfundedPosture{
+		Knob:      p.requireLLMCredential && usesLLM,
+		Sovereign: sovereign && !envFunded && usesLLM,
+	}
+}
+
+// unfundedRefusalFor is THE unfunded decision, all three arms of it: the
+// providers of attributed that funding holds nothing for, judged by the armed
+// postures in the launch's own order — the deployment knob first, then the
+// sovereign policy — and, where no NAME is left to refuse, the sovereign
+// policy's refusal of a run it can attribute nothing of while the team holds
+// nothing at all (holdsNothing: the launch's `!holdsLLMCredential(bundle)`,
+// the preview's metadata twin). The FIRST refusal answers for the run, nil
+// meaning "this run starts".
+//
+// The launch RETURNS it and the credential preview PRINTS it, through this
+// one producer and its one sentence: a surface that re-derived either would
+// be a second, weaker reading of a decision it only observes, free to warn
+// where the launch starts and to stay silent where it refuses (#2485). An arm
+// kept outside this producer is exactly that silence, for that arm alone.
+func unfundedRefusalFor(tenant string, attributed []string, sites map[string][]string, funded map[string]bool, holdsNothing bool, posture unfundedPosture) *UnfundedProvidersError {
+	unfunded := unfundedAmong(attributed, funded)
+	if len(unfunded) == 0 {
+		// The attribution compromise, stated on the attributed set: a
+		// workflow NO route of which the walk can read still refuses when the
+		// team holds nothing at all — the pod's platform env would be the
+		// only funding left, which is what the policy exists to make
+		// impossible. A team holding its own credentials keeps the knob's
+		// compromise for those routes; the ones the walk DID read are decided
+		// by name below, and this arm is reachable only where that decision
+		// found nothing to refuse — the launch's own order.
+		if posture.Sovereign && len(attributed) == 0 && holdsNothing {
+			return &UnfundedProvidersError{Tenant: tenant, Sovereign: true, Unattributable: true}
+		}
+		return nil
+	}
+	// The deployment knob stays permissive: one funded provider lets the run
+	// start — the other route's failure is the run's to report. Only a run
+	// whose EVERY attributed provider is unfunded cannot start at all.
+	if posture.Knob && len(unfunded) == len(attributed) {
+		return newUnfundedProvidersError(tenant, unfunded, sites, false)
+	}
+	// The sovereign policy arms the same refusal STRICTLY, without the
+	// deployment knob: under llm_fallback=none every provider a route names
+	// must hold a credential of the team's own — one funded provider does not
+	// excuse another pinned route, whose only remaining funding would be the
+	// runner pod's platform env.
+	if posture.Sovereign {
+		return newUnfundedProvidersError(tenant, unfunded, sites, true)
+	}
+	return nil
 }
 
 // UnfundedProvidersError is the typed refusal of a launch whose attributed
@@ -91,11 +182,21 @@ type UnfundedProvidersError struct {
 	// Sovereign marks the `llm_fallback: none` arm — the team's own
 	// credentials are the only funding — as opposed to the deployment knob.
 	Sovereign bool
+	// Unattributable marks the sovereign arm that names NO provider: the
+	// walk could attribute none of this workflow's routes and the team holds
+	// nothing of its own, so Providers and Sites are empty by construction.
+	Unattributable bool
 }
 
 func (e *UnfundedProvidersError) Unwrap() error { return runview.ErrNoLLMCredential }
 
 func (e *UnfundedProvidersError) Error() string {
+	// The arm that names NO provider: nothing to walk, and the remedy is a
+	// credential or a pinned route rather than a provider to provision.
+	if e.Unattributable {
+		return fmt.Sprintf("cloudpublisher: %v: tenant %s runs with llm_fallback=none and holds no credential of its own, and this workflow's model routes cannot be attributed to a provider — provision a team credential, or pin a model route the policy can check",
+			runview.ErrNoLLMCredential, e.Tenant)
+	}
 	named := make([]string, 0, len(e.Providers))
 	for _, prov := range e.Providers {
 		if sites := e.Sites[prov]; len(sites) > 0 {

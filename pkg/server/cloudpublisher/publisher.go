@@ -1331,87 +1331,26 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	}
 	res.doorGrant = doorGrantSealed
 
-	// The adaptive-routing ladder (ADR-121 §1, slice 3): the held pairs in
-	// policy order, materialized onto the program through the SAME screen
-	// ApplyRunFallback applies. The publisher's answer is ADVISORY — it
-	// feeds the derivations below, which read the node fallbacks this call
-	// lands; the runner re-applies the screen as the authority on its
-	// recompiled program (the publish serializes source, not IR). The
-	// computed stages ride the RunMessage beside the operator's chain
-	// (res.Ladder), flagged Policy so the preflight judges their spend.
-	// envFunded above already read the PRE-ladder program: what it decided
-	// (acquire nothing) is what makes the selection idle.
-	if routePolicy != nil && wf != nil && len(routePolicy.Triggers) > 0 {
-		// A CLAMPED-EMPTY trigger set is the "never switch" answer: no
-		// ladder at all. (The wire's On would otherwise round-trip empty
-		// into the chain DEFAULT set — the ceiling's forbidden triggers
-		// armed, the slice-3 review's M4.)
-		held := llmroute.HeldPairs(allowlistedPairs(routePolicy.PairOrder, allowed), doorServes(bundle))
-		if len(held) > 0 {
-			stages := make([]ir.PolicyLadderStage, 0, len(held))
-			for _, pair := range held {
-				if h, c, err := llmroute.ParsePair(pair); err == nil {
-					stages = append(stages, ir.PolicyLadderStage{Harness: h, Credential: c, On: routePolicy.Triggers, CrossHarness: routePolicy.CrossHarness})
-				}
-			}
-			// The OPERATOR chain lands first (the same screen the runner
-			// applies): the ladder's eligibility reads authored routes
-			// only, and the composed program is what the derivations below
-			// must see. Advisory like the ladder — the runner's answer is
-			// authoritative.
-			operatorIR := make([]ir.Fallback, 0, len(view.RunFallbacks))
-			for _, fb := range view.RunFallbacks {
-				operatorIR = append(operatorIR, ir.Fallback{Name: ir.RunFallbackName, Backend: fb.Backend, Model: fb.Model, Provider: fb.Provider})
-			}
-			// The publisher's sandbox reading is the workflow's own block
-			// only — the runner's CLI override and deployment default are
-			// invisible here, and so is the #1959 isolation floor: this
-			// screen has no resolved bot-source tier to judge (it is also
-			// reached from a credential PREVIEW, which runs before any
-			// source resolves). A team-authored `sandbox: none` therefore
-			// reads UNSANDBOXED here and sandboxed at the runner, which
-			// widens the same named asymmetry a CLI override already
-			// creates: this screen is advisory, and the runner's
-			// run_fallback_refused event is the authoritative one.
-			sandboxed := runtime.WorkflowSandboxActive(wf, "", "")
-			// The screens read the run's launch vars like the derivations
-			// read the view: one reading of the run, all of it — the
-			// publisher disagreeing with itself over a templated program is
-			// the parity the ADR-129 §4 twin owes (ADR-129 §7).
-			if opRefusals := ir.ApplyRunFallback(wf, operatorIR, sandboxed, launchVars, func(n ir.LLMNode) string {
-				ov := view.Overrides.ForNode(n.NodeID(), n.NodeKind())
-				return ov.Backend
-			}); len(opRefusals) > 0 && p.logger != nil {
-				for _, r := range opRefusals {
-					p.logger.Info("cloudpublisher: %s (run=%s)", r, runID)
-				}
-			}
-			if refusals := ir.ApplyPolicyLadder(wf, stages, sandboxed, launchVars, func(n ir.LLMNode) string {
-				ov := view.Overrides.ForNode(n.NodeID(), n.NodeKind())
-				if ov.Model != "" {
-					return ir.ExpandEnvWithDefault(ov.Model)
-				}
-				return ir.ExpandEnvWithDefault(n.GetLLMFields().Model)
-			}, func(n ir.LLMNode) string {
-				ov := view.Overrides.ForNode(n.NodeID(), n.NodeKind())
-				return ov.Backend
-			}, llmroute.ResolveClasses(routePolicy.ModelClasses)); len(refusals) > 0 && p.logger != nil {
-				for _, r := range refusals {
-					p.logger.Info("cloudpublisher: %s (run=%s)", r, runID)
-				}
-			}
-			for _, st := range stages {
-				res.Ladder = append(res.Ladder, queue.RunFallbackEntry{
-					Backend:      st.Harness,
-					Provider:     st.Credential,
-					On:           st.On,
-					Policy:       true,
-					CrossHarness: st.CrossHarness,
-				})
-			}
-			res.ModelClasses = routePolicy.ModelClasses
-
+	// The adaptive-routing ladder (ADR-121 §1, slice 3), composed by the
+	// producer the credential preview reads too (composePolicyLadder): the
+	// held pairs in policy order, landed on the program the derivations below
+	// judge. envFunded above already read the PRE-ladder program: what it
+	// decided (acquire nothing) is what makes the selection idle.
+	if stages := composePolicyLadder(wf, view, routePolicy, allowed, launchVars, doorServes(bundle), func(refusal string) {
+		if p.logger != nil {
+			p.logger.Info("cloudpublisher: %s (run=%s)", refusal, runID)
 		}
+	}); len(stages) > 0 {
+		for _, st := range stages {
+			res.Ladder = append(res.Ladder, queue.RunFallbackEntry{
+				Backend:      st.Harness,
+				Provider:     st.Credential,
+				On:           st.On,
+				Policy:       true,
+				CrossHarness: st.CrossHarness,
+			})
+		}
+		res.ModelClasses = routePolicy.ModelClasses
 	}
 
 	// Record which review families the resolved credentials back — every
@@ -1528,51 +1467,28 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// attribute may still be funded by the pod's env, so it is never
 	// refused. Returned WITH res: a pool grant acquired above must reach
 	// the caller's release.
-	// The ATTRIBUTED set, read once for both arms below and read AFTER the
+	// The ATTRIBUTED set, read once for every arm below and read AFTER the
 	// policy ladder landed its rungs: a rung the walk cannot attribute used
-	// to empty the set and disarm both refusals, where it now simply
-	// contributes no name of its own.
+	// to empty the set and disarm the refusals, where it now simply
+	// contributes no name of its own. The credential preview reads it at the
+	// same stage, through the same composer, or it judges a program this
+	// launch does not.
 	attributed, attributedSites := attributedRoutes(view)
-	if p.requireLLMCredential && wf != nil && wf.UsesLLM() {
-		unfunded := unfundedAmong(attributed, bundle)
-		// The deployment knob stays permissive: one funded provider lets the
-		// run start — the other route's failure is the run's to report. Only
-		// a run whose EVERY attributed provider is unfunded cannot start at
-		// all. What changed is the SET: computed on the attributed providers,
-		// an unattributable route no longer empties it.
-		if len(unfunded) > 0 && len(unfunded) == len(attributed) {
-			return res, newUnfundedProvidersError(tenantID, unfunded, attributedSites, false)
-		}
-	}
-	// The sovereign policy arms the same refusal STRICTLY, without the
-	// deployment knob: under llm_fallback=none every pinned provider must be
-	// funded by the team's own credentials — one funded provider does not
-	// excuse another pinned route, whose only remaining funding would be the
-	// runner pod's platform env. Env-funded runs acquire nothing and answer
-	// to no policy; an unattributable route stays unrefused (the same
-	// compromise the knob above makes).
-	if sovereign && !envFunded && wf != nil && wf.UsesLLM() {
-		if unfunded := unfundedAmong(attributed, bundle); len(unfunded) > 0 {
-			return res, newUnfundedProvidersError(tenantID, unfunded, attributedSites, true)
-		}
-		// The attribution compromise is narrower under the policy than under
-		// the knob: a workflow whose routes the walk cannot attribute still
-		// REFUSES when the team holds no credential at all — the pod's
-		// platform env would be the only funding left, which is what the
-		// policy exists to make impossible. A team that holds its own
-		// credentials keeps the knob's compromise: the run starts, and its
-		// routes spend the team's.
-		// The attribution compromise, now stated on the attributed set: a
-		// workflow NO route of which the walk can read still refuses when the
-		// team holds nothing at all — the pod's platform env would be the
-		// only funding left, which is what the policy exists to make
-		// impossible. A team holding its own credentials keeps the knob's
-		// compromise for those routes; the ones the walk DID read are decided
-		// above, by name.
-		if len(attributed) == 0 && noLLMCred {
-			return res, fmt.Errorf("cloudpublisher: %w: tenant %s runs with llm_fallback=none and holds no credential of its own, and this workflow's model routes cannot be attributed to a provider — provision a team credential, or pin a model route the policy can check",
-				runview.ErrNoLLMCredential, tenantID)
-		}
+	// ALL THREE arms through ONE producer (unfundedRefusalFor): the deployment
+	// knob stays permissive — one funded provider lets the run start, the
+	// other route's failure is the run's to report — the sovereign policy
+	// refuses every unfunded provider a route names, and it refuses a
+	// workflow the walk can attribute NOTHING of when the team holds nothing
+	// at all. Env-funded runs acquire nothing and answer to no team policy;
+	// an unattributable route stays unrefused, contributing no name. What
+	// #2485 changed is the SET the first two read: the attributed providers,
+	// which an unattributable route no longer empties. The credential preview
+	// reads this same producer, so the view it shows an operator cannot
+	// contradict the launch it describes — a refusal left outside it is a
+	// refusal no view mirrors.
+	posture := p.unfundedPostureFor(wf, sovereign, envFunded)
+	if refusal := unfundedRefusalFor(tenantID, attributed, attributedSites, bundleFunding(bundle), noLLMCred, posture); refusal != nil {
+		return res, refusal
 	}
 	if noLLMCred && len(bundle.GenericSecrets) == 0 {
 		return res, nil
