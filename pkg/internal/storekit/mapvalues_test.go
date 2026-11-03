@@ -23,7 +23,9 @@ func TestDropStringMapValues_DropsByValueAndReports(t *testing.T) {
 // routes' write-time guard share it, so a shape accepted here is a shape
 // the sweep can address. The table names the boundary, not examples: a dot
 // reads as a path separator, a $ anywhere names an operator or a field the
-// update operators refuse.
+// update operators refuse, and the empty name is an empty trailing path
+// component Mongo refuses — a row written before the name guard (the
+// validator once checked the tenant only) can hold it.
 func TestPinNameAddressable_IsTheShapeTargetedPinWritesAddress(t *testing.T) {
 	for _, c := range []struct {
 		name        string
@@ -31,7 +33,7 @@ func TestPinNameAddressable_IsTheShapeTargetedPinWritesAddress(t *testing.T) {
 	}{
 		{"forge_token", true},
 		{"anthropic", true},
-		{"", true}, // the empty name is the routes' required-name refusal, not an addressing one
+		{"", false}, // "<field>." has an empty trailing component; the $unset arm would error, not clear
 		{"dead.name", false},
 		{".leading", false},
 		{"trailing.", false},

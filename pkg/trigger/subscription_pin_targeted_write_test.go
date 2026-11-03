@@ -201,11 +201,13 @@ func TestMongoSubscriptionStoreClearCredentialPinsIsAValueGuardedWriteTimeClear(
 }
 
 // seedLegacyNamedSubscription writes one subscription whose secret pins
-// carry names a Mongo path cannot address — a '.' reads as a nested path
-// and a $ names an operator, so a targeted write addressing
-// "<field>.<name>" would match nothing stored under the literal key. New
-// names cannot hold those bytes (the routes' validators refuse them);
-// rows written before that guard existed can.
+// carry names a Mongo path cannot address — a '.' reads as a nested path,
+// a $ names an operator, and the empty name makes a path with an empty
+// trailing component the server refuses, so a targeted write addressing
+// "<field>.<name>" would match nothing stored under the literal key, or
+// error. New names cannot take those shapes (the routes' validators refuse
+// them); rows written before that guard existed can — the validator once
+// checked the tenant alone.
 func seedLegacyNamedSubscription(t *testing.T, st SubscriptionStore, ctx context.Context, id string) {
 	t.Helper()
 	if err := st.Create(ctx, Subscription{
@@ -214,6 +216,7 @@ func seedLegacyNamedSubscription(t *testing.T, st SubscriptionStore, ctx context
 		SecretOverrides: map[string]string{
 			"dead.name":   "rec-dead",
 			"$rooted":     "rec-dead",
+			"":            "rec-dead",
 			"forge_token": "rec-dead",
 			"mid$name":    "rec-alive",
 			"live":        "rec-alive",
@@ -242,7 +245,7 @@ func assertLegacyNamedPinsSwept(t *testing.T, st SubscriptionStore, ctx context.
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"dead.name", "$rooted", "forge_token"} {
+	for _, name := range []string{"dead.name", "$rooted", "", "forge_token"} {
 		if _, standing := got.SecretOverrides[name]; standing {
 			t.Fatalf("legacy-named pin %q survives the clear: %v — the $unset arm cannot address it and the dead pin stands while the delete answers 204", name, got.SecretOverrides)
 		}

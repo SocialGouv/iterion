@@ -199,6 +199,7 @@ func seedLegacyNamedConfig(t *testing.T, s ConfigStore) {
 		SecretOverrides: map[string]string{
 			"dead.name":   "rec-dead",
 			"$rooted":     "rec-dead",
+			"":            "rec-dead",
 			"forge_token": "rec-dead",
 			"mid$name":    "rec-alive",
 			"live":        "rec-alive",
@@ -227,7 +228,7 @@ func assertLegacyNamedPinsSwept(t *testing.T, s ConfigStore) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"dead.name", "$rooted", "forge_token"} {
+	for _, name := range []string{"dead.name", "$rooted", "", "forge_token"} {
 		if _, standing := got.SecretOverrides[name]; standing {
 			t.Fatalf("legacy-named pin %q survives the clear: %v — the $unset arm cannot address it and the dead pin stands while the delete answers 204", name, got.SecretOverrides)
 		}
