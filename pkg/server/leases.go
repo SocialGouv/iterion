@@ -19,6 +19,7 @@ const (
 	leaseBoardIssueSync      = "board-issue-sync"
 	leaseAssistantWatchSweep = "assistant-watch-sweep"
 	leaseForgeTokenRefresh   = "forge-token-refresh"
+	leaseOrgPurgeSweeper     = "org-purge-sweeper"
 )
 
 // leasedNets is every name above, with what runs on every replica while that
@@ -47,6 +48,7 @@ var leasedNets = []struct {
 	{leaseAssistantWatchSweep, "the assistant run-watch sweep, whose every pass loads each run watching a card, walks its targets and delivers the due episodes once per replica", (*Server).assistantWatchStarts},
 	{leaseBoardIssueSync, "the forge→board issue sync, whose every pass then lists EVERY sync-enabled repo's issue window once per replica", (*Server).boardIssueSyncStarts},
 	{leaseForgeTokenRefresh, "the forge token refresh sweep, whose every pass refreshes each due OAuth token once per replica — on a forge that rotates refresh tokens the loser ends needs_reauth and writes its stale copy over the winner's", (*Server).forgeTokenRefreshStarts},
+	{leaseOrgPurgeSweeper, "the nightly org purge, whose every pass lists and deletes the S3 objects of each run of every org past its grace once per replica — the run batch bounds one replica's pass, not the deployment's", (*Server).orgPurgeStarts},
 }
 
 // forgeTokenRefreshStarts is the forge token refresh sweep's start condition

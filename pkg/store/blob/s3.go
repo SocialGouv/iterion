@@ -579,19 +579,29 @@ func (c *S3Client) GetIRBlob(ctx context.Context, storageKey string) ([]byte, er
 	return body, nil
 }
 
-// DeleteRunIR removes the ir/<runID>.json blob. Idempotent, best-effort.
+// DeleteRunIR removes every IR object of the run: the ir/<runID>.json blob
+// and the bundle snapshots under ir/<runID>-bundle-. Both are attempted; the
+// failures come back joined. Idempotent.
 func (c *S3Client) DeleteRunIR(ctx context.Context, runID string) error {
 	key, err := irBlobKey(runID)
 	if err != nil {
 		return err
 	}
+	bundles, err := IRBundleSnapshotPrefix(runID)
+	if err != nil {
+		return err
+	}
+	var errs []error
 	if _, err := c.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(c.bucket),
 		Key:    aws.String(key),
 	}); err != nil {
-		return fmt.Errorf("blob: delete IR blob %s: %w", key, err)
+		errs = append(errs, fmt.Errorf("blob: delete IR blob %s: %w", key, err))
 	}
-	return nil
+	if err := c.deleteUnder(ctx, bundles, "IR bundle snapshot"); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 func (c *S3Client) PutBackendSession(ctx context.Context, runID, ref string, body []byte) error {

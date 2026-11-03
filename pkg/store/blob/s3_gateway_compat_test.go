@@ -614,11 +614,18 @@ func TestGatewayCompat_IRBlobAndBackendSession(t *testing.T) {
 	if !bytes.Equal(back, ir) {
 		t.Fatalf("IR round-trip: %q want %q", back, ir)
 	}
+	// A bundle snapshot the publisher parks under the run id.
+	if err := c.PutIRBlob(ctx, run+"-bundle-d1", ir); err != nil {
+		t.Fatalf("PutIRBlob (bundle snapshot): %v", err)
+	}
 	if err := c.DeleteRunIR(ctx, run); err != nil {
 		t.Fatalf("DeleteRunIR: %v", err)
 	}
 	if _, err := c.GetIRBlob(ctx, fmt.Sprintf("ir/%s.json", run)); !errors.Is(err, ErrArtifactNotFound) {
 		t.Fatalf("IR readable after delete: %v", err)
+	}
+	if _, err := c.GetIRBlob(ctx, fmt.Sprintf("ir/%s-bundle-d1.json", run)); !errors.Is(err, ErrArtifactNotFound) {
+		t.Fatalf("bundle snapshot readable after DeleteRunIR: %v", err)
 	}
 
 	sess := []byte(`{"session":"abc"}`)

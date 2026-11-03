@@ -61,6 +61,10 @@ var operatorInfraPrefixes = []string{
 	// The merge-gate sweep's cadence: the server's net under the lossy
 	// outcome event, and what it spends of the forge's request budget.
 	"ITERION_GATE_SWEEP_",
+	// The org purge's knobs: the run batch paces the nightly sweep of the
+	// process, and the force-sweep list lifts the guard that keeps an org's
+	// Mongo rows while one of its runs could not be deleted.
+	"ITERION_ORG_PURGE_",
 	// Whether a leased net's term may end on the work failing: a knob over
 	// the election itself, which decides which REPLICA runs a net, not what
 	// a run does.
