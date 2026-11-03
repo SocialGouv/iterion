@@ -3403,7 +3403,7 @@ func TestRgaaAuditDryRunWalksTheGraphOnTheFixtures(t *testing.T) {
 		t.Fatalf("the dry run is failing:\n%s", raw)
 	}
 	allowed := map[string]bool{}
-	for _, n := range []string{"adjudication_incomplete", "audit_integrity", "unexpected_refusal", "board_publish_incomplete", "empty_scope", "engine_hash_mismatch", "engine_unresolved", "grid_incomplete", "ledger_invalid", "refute_incomplete", "render", "render_unavailable", "report_integrity_failed"} {
+	for _, n := range []string{"adjudication_incomplete", "audit_integrity", "unexpected_refusal", "board_publish_incomplete", "publish_plan_duplicate", "empty_scope", "engine_hash_mismatch", "engine_unresolved", "grid_incomplete", "ledger_invalid", "refute_incomplete", "render", "render_unavailable", "report_integrity_failed"} {
 		allowed[n] = true
 	}
 	for _, n := range rep.UnvisitedNodes {
@@ -3665,6 +3665,41 @@ func TestRgaaAuditPublishVerifyReadsTheBoardNotAReport(t *testing.T) {
 			}
 		}
 	})
+}
+
+// A title declared TWICE in the plan is the filing key used twice: two
+// cards for one intent (review r2's probe filed both). publish_diff refuses
+// it by name — fail closed, because an under-filed plan that verifies clean
+// is the worse defect.
+func TestRgaaAuditPublishDiffRefusesADuplicatedPlanTitle(t *testing.T) {
+	scripts := rgaaBotScripts(t)
+	site := t.TempDir()
+	dup := []any{
+		map[string]any{"title": "[a11y] RGAA 1.1 — Chaque image porte-elle une alternative ?"},
+		map[string]any{"title": "[a11y] RGAA 1.1 — Chaque image porte-elle une alternative ?"},
+	}
+	dir := filepath.Join(t.TempDir(), "run")
+	rgaaInitReportRun(t, dir, site, filepath.Join(site, "engine-never-run.mjs"), scripts)
+	out := rgaaRefused(t, "publish_diff", rgaaRunNode(t, scripts, "publish_diff", site, nil, map[string]any{
+		"input.run_dir": dir, "input.issues": dup, "input.board": []any{},
+	}), "BOARD_PLAN_DUPLICATE_TITLES")
+	if reason := fmt.Sprint(out["reason"]); !strings.Contains(reason, "declared twice") || !strings.Contains(reason, "[a11y] RGAA 1.1") {
+		t.Fatalf("the refusal must name the duplicated title: %s", reason)
+	}
+	if got := rgaaStrings(out["duplicates"]); len(got) != 1 {
+		t.Fatalf("the refusal must carry the duplicated titles once each: %v", got)
+	}
+	// Distinct titles file normally — the check is not a net over the plan.
+	dir2 := filepath.Join(t.TempDir(), "run")
+	rgaaInitReportRun(t, dir2, site, filepath.Join(site, "engine-never-run.mjs"), scripts)
+	ok := rgaaOK(t, "publish_diff", rgaaRunNode(t, scripts, "publish_diff", site, nil, map[string]any{
+		"input.run_dir": dir2,
+		"input.issues":  []any{map[string]any{"title": "a"}, map[string]any{"title": "b"}},
+		"input.board":   []any{map[string]any{"title": "a"}},
+	}))
+	if rgaaInt(ok["to_file"]) != 1 {
+		t.Fatalf("to_file = %v, want 1 (b is not on the board)", ok)
+	}
 }
 
 // The publication chain carries NO model (#2388): filing and verifying are

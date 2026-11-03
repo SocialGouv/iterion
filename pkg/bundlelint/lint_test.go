@@ -189,6 +189,18 @@ func TestCheckConsistency(t *testing.T) {
 			},
 		},
 		{
+			// A TOOL node declares the same grant since ADR-151 (#78=A) —
+			// the native action transport reads it — so it covers the
+			// manifest's claim exactly like an agent's list. Deleting the
+			// ToolNode arm of checkCapabilities must redden this: the
+			// shipped rgaa-audit grants board.* on tool nodes alone.
+			name: "manifest cap granted by a TOOL node is clean",
+			in: bundlelint.Input{
+				Manifest: &bundle.Manifest{Name: "b", Capabilities: []string{"board.create"}},
+				Workflow: wf("b", nil, nil, nil, &ir.ToolNode{BaseNode: ir.BaseNode{ID: "file"}, Action: "board.issue.create", Capabilities: []string{"board.create"}}),
+			},
+		},
+		{
 			name: "manifest cap granted by workflow-level is clean",
 			in: bundlelint.Input{
 				Manifest: &bundle.Manifest{Name: "b", Capabilities: []string{"board.create"}},

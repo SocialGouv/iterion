@@ -814,6 +814,15 @@ schema publish_verify_output:
   planned: int
   present: int
 
+schema publish_diff_output:
+  ok: bool
+  fail_code: string
+  reason: string
+  missing: json
+  existing: json
+  to_file: int
+  duplicates: json
+
 ## ─── LLM nodes ────────────────────────────────────────────────────────
 
 ## The adjudicator: one read-only agent per batch of criteria, replayed in
@@ -866,6 +875,14 @@ router refute_dispatch:
   mode: fan_out_each
   over: "{{outputs.plan_refute.batches}}"
   as: rbatch
+
+## One action per issue to file: the plan is capped, so the fan-out is
+## bounded by construction, and the fan-in below tolerates a failed branch
+## (best_effort) — the verifier then names the titles that never landed.
+router publish_each:
+  mode: fan_out_each
+  over: "{{outputs.publish_diff.missing}}"
+  as: item
 
 human human_review:
   input: human_review_input
@@ -2090,18 +2107,12 @@ tool deliver:
 ## (#78=A). De-duplication is by exact title over the issues carrying the
 ## label `source:rgaa-audit` — every plan item carries it (deliver), so a
 ## re-run creates nothing twice.
-
 tool publish_list:
   action: board.issue.list
-  capabilities: [board.read]
   params:
     label: "source:rgaa-audit"
   timeout: 30s
-
-schema publish_diff_output:
-  missing: json
-  existing: json
-  to_file: int
+  capabilities: [board.read]
 
 tool publish_diff:
   script: |
@@ -2115,46 +2126,47 @@ tool publish_diff:
     // refusal.
     const items = (x) => { if (typeof x === "string") { try { x = JSON.parse(x); } catch (e) { x = []; } } if (!Array.isArray(x)) return []; return x; };
     const titleOf = (v) => typeof v === "string" ? v : String((v && (v.title || v.name)) || "");
+    const show = (t) => t === "" ? "(untitled)" : t;
     const plan = items({{input.issues}});
+    // The title is the de-duplication key, so a title declared TWICE in the
+    // plan would file the same card twice. Fail closed: the plan is the
+    // engine's and criterion-keyed in practice, but nothing enforces it —
+    // an under-filed plan that verifies clean is the worse defect.
+    const seen = new Set();
+    const dup = [];
+    for (const i of plan) { const t = titleOf(i); if (seen.has(t)) { if (!dup.includes(t)) dup.push(t); } else { seen.add(t); } }
+    if (dup.length) L.refuse("BOARD_PLAN_DUPLICATE_TITLES", dup.length + " plan title(s) declared twice (" + dup.slice(0, 5).map(show).join(" ; ") + (dup.length > 5 ? " …" : "") + ") — the title is the filing key, so a duplicate files the same card twice; fix the plan's titles", { duplicates: dup });
     const onBoard = new Set(items({{input.board}}).map(titleOf));
     const missing = plan.filter((i) => !onBoard.has(titleOf(i)));
     const existing = plan.map(titleOf).filter((t) => onBoard.has(t));
-    L.out({ missing: missing, existing: existing, to_file: missing.length });
+    L.out({ ok: true, fail_code: "", reason: "", missing: missing, existing: existing, to_file: missing.length, duplicates: [] });
   language: js
   input: publish_diff_input
   output: publish_diff_output
 
-## One action per issue to file: the plan is capped, so the fan-out is
-## bounded by construction, and the fan-in below tolerates a failed branch
-## (best_effort) — the verifier then names the titles that never landed.
-router publish_each:
-  mode: fan_out_each
-  over: "{{outputs.publish_diff.missing}}"
-  as: item
-
 tool publish_create:
   action: board.issue.create
-  capabilities: [board.create]
-  ## Each branch writes exactly ONE card, keyed by its plan item — disjoint,
-  ## item-keyed targets, which is what parallel_safe asserts (without it the
-  ## fan-out's workspace guard refuses the run, WORKSPACE_SAFETY).
-  parallel_safe: true
   params:
     title: "{{outputs.publish_each.item.title}}"
     body: "{{outputs.publish_each.item.body}}"
     state: "{{outputs.publish_each.item.state}}"
     labels: "{{outputs.publish_each.item.labels}}"
   timeout: 30s
+  capabilities: [board.create]
+  ## Each branch writes exactly ONE card, keyed by its plan item — disjoint,
+  ## item-keyed targets, which is what parallel_safe asserts (without it the
+  ## fan-out's workspace guard refuses the run, WORKSPACE_SAFETY).
+  parallel_safe: true
 
 ## The verify READS THE BOARD — not a report of it: the hole #2388 names
 ## was a transcription judge held to its own report.
 tool publish_verify_read:
   action: board.issue.list
-  capabilities: [board.read]
   params:
     label: "source:rgaa-audit"
   timeout: 30s
   await: best_effort
+  capabilities: [board.read]
 
 tool publish_verify:
   script: |
@@ -2286,6 +2298,11 @@ fail board_publish_incomplete:
   description: "the board does not carry every planned issue"
   code: BOARD_PUBLISH_INCOMPLETE
   message: "{{outputs.publish_verify.reason}}"
+
+fail publish_plan_duplicate:
+  description: "the issue plan declares a title twice — the title is the filing key, so a duplicate files the same card twice"
+  code: BOARD_PLAN_DUPLICATE_TITLES
+  message: "{{outputs.publish_diff.reason}}"
 
 ## ─── Workflow ─────────────────────────────────────────────────────────
 workflow rgaa_audit:
@@ -2622,7 +2639,11 @@ workflow rgaa_audit:
     board: "{{outputs.publish_list.data}}",
   }
 
-  publish_diff -> publish_each
+  publish_diff -> publish_each when ok
+
+  publish_diff -> publish_plan_duplicate when "outputs.publish_diff.fail_code == 'BOARD_PLAN_DUPLICATE_TITLES'"
+
+  publish_diff -> unexpected_refusal else
 
   publish_each -> publish_create
 

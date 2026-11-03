@@ -115,7 +115,7 @@ Every refusal the bot makes is a typed `fail` node (`ENGINE_UNRESOLVED`,
 `ENGINE_HASH_MISMATCH`, `EMPTY_SCOPE`, `RENDER_UNAVAILABLE`,
 `LEDGER_INVALID`, `AUDIT_INTEGRITY`, `ADJUDICATION_INCOMPLETE`,
 `REFUTE_INCOMPLETE`, `HUMAN_REJECTED`, `REPORT_INTEGRITY_FAILED`,
-`GRID_INCOMPLETE`, `BOARD_PUBLISH_INCOMPLETE`); an engine crash stays an
+`GRID_INCOMPLETE`, `BOARD_PUBLISH_INCOMPLETE`, `BOARD_PLAN_DUPLICATE_TITLES`); an engine crash stays an
 untyped, resumable error — except on a committed ledger the engine cannot
 replay, which is `LEDGER_INVALID` with the engine's own message.
 

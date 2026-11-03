@@ -321,6 +321,9 @@
     "data": []
   },
   "publish_diff": {
+    "ok": true,
+    "fail_code": "",
+    "reason": "",
     "missing": [
       {
         "title": "[a11y] RGAA 2.1 — Chaque cadre a-t-il un titre de cadre ?",
@@ -336,7 +339,8 @@
       }
     ],
     "existing": [],
-    "to_file": 1
+    "to_file": 1,
+    "duplicates": []
   },
   "publish_create": {
     "data": {
