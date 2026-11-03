@@ -498,8 +498,9 @@ func TestThePinLeavesEverythingElseAsItWas(t *testing.T) {
 	if got, want := dialed(), []string{"203.0.113.9:443", "other.test:443", "127.0.0.1:8080", "127.0.0.1:8081", "127.0.0.1:8082"}; strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("the dialer was asked for %q; want %q", got, want)
 	}
-	if got := res.asked(); len(got) != 1 || got[0] != gw {
-		t.Errorf("the pin's resolver was asked for %q; want [%s] only", got, gw)
+	// Strict, the pin asks the absolute name: no search domain completes it.
+	if got := res.asked(); len(got) != 1 || got[0] != gw+"." {
+		t.Errorf("the pin's resolver was asked for %q; want [%s.] only", got, gw)
 	}
 	if answer := connectVia(t, prx, "203.0.113.9:443"); !strings.HasPrefix(answer, "403") {
 		t.Errorf("CONNECT to the pinned host's address literal: %q; want the allowlist's 403", answer)
@@ -816,22 +817,41 @@ func TestAPinnedHostEntryThatCannotBeAHostFailsNew(t *testing.T) {
 	}
 }
 
-// Without an injected resolver the pin resolves through the process's own,
-// on the proxy's default dialer — the production configuration: a name that
-// resolves to the loopback is refused by the pin, as not public, before the
-// dialer's own refusal of the proxy host's addresses is reached.
+// Without an injected resolver the pin resolves through the process's own:
+// a lifted pin hands its dialer the address the system resolver gives for
+// localhost, never the name. On the proxy's default dialer — the production
+// configuration — a strict pin refuses that single label itself, as no
+// public host, before the dialer's own refusal of the proxy host's
+// addresses is reached.
 func TestAPinnedHostResolvesThroughTheSystemResolverByDefault(t *testing.T) {
-	if addrs, err := net.DefaultResolver.LookupIPAddr(context.Background(), "localhost"); err != nil || len(addrs) == 0 {
+	addrs, err := net.DefaultResolver.LookupIPAddr(context.Background(), "localhost")
+	if err != nil || len(addrs) == 0 {
 		t.Fatalf("scenario broken: localhost does not resolve here (%v)", err)
 	}
 	port, hits := localService(t)
+
+	dial, dialed := recordingDial(net.JoinHostPort("127.0.0.1", port))
+	lifted := startPinProxy(t, Options{PinnedHosts: []string{"localhost"}, PinAllowPrivate: true, Dial: dial})
+	if answer := connectVia(t, lifted, net.JoinHostPort("localhost", port)); !strings.HasPrefix(answer, "200") {
+		t.Errorf("CONNECT through the lifted pin: %q; want a tunnel", answer)
+	}
+	got := dialed()
+	resolved := false
+	for _, a := range addrs {
+		resolved = resolved || len(got) == 1 && got[0] == net.JoinHostPort(a.IP.String(), port)
+	}
+	if !resolved {
+		t.Errorf("the lifted pin asked its dialer for %q; want one address the system resolver gave for localhost (%v)", got, addrs)
+	}
+
+	before := hits.Load()
 	prx := startPinProxy(t, Options{PinnedHosts: []string{"localhost"}})
 	answer := connectVia(t, prx, net.JoinHostPort("localhost", port))
-	if !strings.HasPrefix(answer, "502") || !strings.Contains(answer, "is not a public unicast IP") {
+	if !strings.HasPrefix(answer, "502") || !strings.Contains(answer, "netproxy: pinned host") || !strings.Contains(answer, "names no public host") {
 		t.Errorf("CONNECT: %q; want the pin's refusal", answer)
 	}
-	if n := hits.Load(); n != 0 {
-		t.Errorf("the local service took %d connection(s); want none", n)
+	if n := hits.Load() - before; n != 0 {
+		t.Errorf("the local service took %d connection(s) through the strict pin; want none", n)
 	}
 }
 
@@ -851,12 +871,20 @@ func TestThePinMeetsTheSpellingsOnlyTheResolverParses(t *testing.T) {
 		"0177.0.0.1": {"127.0.0.1"},
 	}, count: map[string]int{}}
 	prx := startPinProxy(t, Options{PinnedHosts: []string{"[FD00::5%lo]", "10.1.2.3", "127.0.0.1"}, PinResolver: res, Dial: dial, OnBlocked: blocked.record})
+	// Each is refused by the pin for what it reaches; the one-part form is
+	// a single label too, which the strict guard refuses before any lookup.
+	refusals := map[string]string{
+		"[fd00::5]:443":  "is not a public unicast IP",
+		"0x0a.1.2.3:443": "is not a public unicast IP",
+		"167838211:443":  "names no public host",
+		"0177.0.0.1:443": "is not a public unicast IP",
+	}
 	targets := []string{
 		"[fd00::5]:443",
 		"0x0a.1.2.3:443", "167838211:443", "0177.0.0.1:443",
 	}
 	for _, target := range targets {
-		if answer := connectVia(t, prx, target); !strings.HasPrefix(answer, "502") || !strings.Contains(answer, "is not a public unicast IP") {
+		if answer := connectVia(t, prx, target); !strings.HasPrefix(answer, "502") || !strings.Contains(answer, refusals[target]) {
 			t.Errorf("CONNECT %s: %q; want the pin's refusal", target, answer)
 		}
 		if status := forwardVia(t, prx, target); status != http.StatusBadGateway {

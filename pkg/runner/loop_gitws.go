@@ -561,7 +561,8 @@ func (r *Runner) verifyFetchedCommit(ctx context.Context, dir string, msg *queue
 // shared SSRF guard (httpdial.ResolvePublicHost) so a holder of a per-org
 // `iwh_` webhook token cannot point the runner at an internal address
 // (loopback, RFC1918/ULA, CGNAT, link-local, cloud metadata, a non-public
-// IPv6 transition address, cluster aliases) to probe the cloud network.
+// IPv6 transition address, a name no public host carries) to probe the
+// cloud network.
 // Mirrors the completion-webhook guard in pkg/notify.
 // On-prem deployments with internal forges set
 // ITERION_RUNNER_CLONE_ALLOW_PRIVATE=1 to relax the strict mode.

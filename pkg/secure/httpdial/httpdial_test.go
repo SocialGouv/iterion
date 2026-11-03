@@ -185,6 +185,62 @@ func TestResolvePublicHost_Literals(t *testing.T) {
 	}
 }
 
+// Under strict the resolver is asked the absolute name, so no search domain
+// rewrites the name the guard judged into one it never judged: in a pod, a
+// relative "gw.ai" is Service gw of namespace ai, whose ClusterIP can sit in
+// address space the guard calls public. A lifted caller keeps the relative
+// name its search domains complete — a self-hosted Service named the
+// cluster's way.
+func TestResolvePublicHostWith_StrictAsksTheAbsoluteName(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct{ host, want string }{
+		{"gw.ai", "gw.ai."},
+		{"argocd-server.argocd", "argocd-server.argocd."},
+		{"GW.Example.Test", "GW.Example.Test."},
+		{"gw.example.test.", "gw.example.test."},
+	} {
+		res := answering("203.0.113.7")
+		if _, err := ResolvePublicHostWith(ctx, res, c.host, true); err != nil {
+			t.Errorf("strict %q = %v; want its public answer", c.host, err)
+		}
+		if len(res.asked) != 1 || res.asked[0] != c.want {
+			t.Errorf("strict %q asked the resolver %q; want [%q], the absolute name", c.host, res.asked, c.want)
+		}
+	}
+	res := answering("10.0.0.7")
+	if _, err := ResolvePublicHostWith(ctx, res, "litellm.pliage", false); err != nil || len(res.asked) != 1 || res.asked[0] != "litellm.pliage" {
+		t.Errorf("non-strict litellm.pliage asked %q (%v); want the relative name its search domains complete", res.asked, err)
+	}
+}
+
+// A name no public host carries is refused under strict before any lookup,
+// whatever it would resolve to — a cluster's Service range can be public
+// address space (GKE's default is 34.118.224.0/20), a pod's or a VM's a
+// range the guard calls public: a single label (an /etc/hosts alias, the
+// pod's own name, a Service the search domains expand), and the names a
+// cluster, a cloud, a container or a workstation reserves for itself — the
+// set the gateway credential's write door refuses (ReservedName). The
+// refusal wraps ErrNotPublic, and a lifted caller resolves the name.
+func TestResolvePublicHostWith_StrictRefusesReservedNames(t *testing.T) {
+	ctx := context.Background()
+	for _, host := range []string{
+		"kubernetes", "mongo", "localhost", "_gateway", "Metadata.",
+		"240-0-0-5.default.pod.cluster.local", "gw.svc.cluster.local", "vm-1.c.proj.internal", "metadata.google.internal",
+		"printer.local", "api.localhost", "localhost.localdomain", "db.localdomain", "gw.svc", "kubernetes.default",
+	} {
+		res := answering("34.118.224.1")
+		if ip, err := ResolvePublicHostWith(ctx, res, host, true); !errors.Is(err, ErrNotPublic) {
+			t.Errorf("strict %q = %v, %v; want a refusal wrapping ErrNotPublic", host, ip, err)
+		}
+		if len(res.asked) != 0 {
+			t.Errorf("strict %q was looked up (%q) — the refusal must not wait on DNS", host, res.asked)
+		}
+		if _, err := ResolvePublicHostWith(ctx, answering("34.118.224.1"), host, false); err != nil {
+			t.Errorf("non-strict %q = %v; want it resolved", host, err)
+		}
+	}
+}
+
 // An IPv6-only network with DNS64 answers an IPv4-only host with a
 // 64:ff9b::/96 address synthesized beside its A record: the strict guard
 // judges the synthesized address by the IPv4 address it carries, so a public

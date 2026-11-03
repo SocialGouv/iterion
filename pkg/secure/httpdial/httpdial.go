@@ -9,10 +9,12 @@
 // (RFC1918 / ULA), link-local, multicast, unspecified — plus the ranges it
 // lists (the shared CGNAT space, the deprecated IPv4-compatible block, the
 // NAT64 local-use prefix), a NAT64 well-known or 6to4 address whose
-// embedded IPv4 address it blocks, and the cloud metadata endpoints, and
-// refuses conventional cluster-internal hostname aliases that service
-// meshes re-route even with no DNS record. The set is these lists, not
-// every range IANA marks not globally reachable.
+// embedded IPv4 address it blocks, and the cloud metadata endpoints. Under
+// strict it refuses the names no public host carries (ReservedName: a single
+// label, the names a cluster, a cloud, a container or a workstation
+// reserves) before any lookup, and looks every other name up absolute. The
+// address set is these lists, not every range IANA marks not globally
+// reachable.
 package httpdial
 
 import (
@@ -126,8 +128,8 @@ func inNonPublicPrefix(ip net.IP) bool {
 }
 
 // ErrNotPublic is wrapped by every refusal strict mode makes and non-strict
-// mode lifts: an address that is not public unicast, a name reserved for
-// cluster-internal services. A caller holding an escape hatch names it on
+// mode lifts: an address that is not public unicast, a name no public host
+// carries (ReservedName). A caller holding an escape hatch names it on
 // this refusal alone — never on a failed lookup or a malformed name, which
 // no hatch fixes.
 var ErrNotPublic = errors.New("httpdial: not a public destination")
@@ -167,12 +169,13 @@ type HostResolver interface {
 
 // ResolvePublicHost resolves host and returns a single IP safe to dial. When
 // strict, every resolved IP must be public unicast — any private/shared/
-// link-local/loopback/multicast/metadata hit (or a reserved cluster-internal
-// alias) refuses, wrapping ErrNotPublic. When non-strict, the first resolved
-// address is returned regardless (loopback-bound local mode embedding the
-// user's own dev servers). At every strictness a name with an empty label
-// and an IPv4-compatible address are refused (CheckHost). A name is judged
-// without one trailing dot. Resolution always fails closed.
+// link-local/loopback/multicast/metadata hit (or a name no public host
+// carries, ReservedName) refuses, wrapping ErrNotPublic — and the name is
+// looked up absolute. When non-strict, the first resolved address is
+// returned regardless (loopback-bound local mode embedding the user's own
+// dev servers). At every strictness a name with an empty label and an
+// IPv4-compatible address are refused (CheckHost). A name is judged without
+// one trailing dot. Resolution always fails closed.
 func ResolvePublicHost(ctx context.Context, host string, strict bool) (net.IP, error) {
 	return ResolvePublicHostWith(ctx, net.DefaultResolver, host, strict)
 }
@@ -188,9 +191,16 @@ func ResolvePublicHostWith(ctx context.Context, res HostResolver, host string, s
 		return ip, nil
 	}
 
-	// The lookup keeps the caller's spelling: the dot is what keeps a
-	// search domain from rewriting the name asked.
-	addrs, err := res.LookupIPAddr(ctx, host)
+	// Under strict the lookup asks the absolute name — the caller's
+	// spelling with its root dot — so no search domain rewrites the name
+	// judged above into one never judged: in a pod, a relative "gw.ai" is
+	// Service gw of namespace ai. A lifted caller's relative name keeps its
+	// search domains, the way a self-hosted Service is named.
+	lookup := host
+	if strict && !strings.HasSuffix(host, ".") {
+		lookup = host + "."
+	}
+	addrs, err := res.LookupIPAddr(ctx, lookup)
 	if err != nil {
 		return nil, fmt.Errorf("httpdial: resolve %q: %w", host, err)
 	}
@@ -209,7 +219,7 @@ func ResolvePublicHostWith(ctx context.Context, res HostResolver, host string, s
 // lookup — every refusal ResolvePublicHost makes before any DNS: an empty
 // host, a name with an empty label and an IPv4-compatible literal at every
 // strictness; under strict, a literal that is not public unicast and a name
-// reserved for cluster-internal services, wrapping ErrNotPublic. nil leaves
+// no public host carries (ReservedName), wrapping ErrNotPublic. nil leaves
 // a name's answers to the lookup. A caller that vets an endpoint before it
 // dials runs it, so the vetting refuses what the dial refuses on sight.
 func CheckHost(host string, strict bool) error {
@@ -230,17 +240,53 @@ func CheckHost(host string, strict bool) error {
 		return fmt.Errorf("httpdial: hostname %q has an empty label", host)
 	}
 
-	// Refuse cluster-internal aliases outright in strict mode regardless of DNS
-	// — service meshes re-route these even when they don't resolve.
-	if strict {
-		if strings.HasSuffix(name, ".svc.cluster.local") ||
-			strings.HasSuffix(name, ".svc") ||
-			name == "kubernetes.default" ||
-			name == "metadata.google.internal" {
-			return notPublic("httpdial: hostname %q is reserved for cluster-internal services", host)
-		}
+	// Refuse the names no public host carries outright in strict mode,
+	// regardless of DNS — service meshes re-route the cluster's own even
+	// when they don't resolve, and what they do resolve to can sit in
+	// address space the guard calls public.
+	if strict && ReservedName(name) {
+		return notPublic("httpdial: hostname %q names no public host (a single label, or a name a cluster, a cloud, a container or a workstation reserves)", host)
 	}
 	return nil
+}
+
+// reservedNames and reservedSuffixes are the names a cluster, a cloud, a
+// container or a workstation resolves to itself (single-label aliases such
+// as localhost4 or ip6-localhost are refused as single labels).
+var (
+	reservedNames    = []string{"localhost.localdomain", "kubernetes.default"}
+	reservedSuffixes = []string{".localhost", ".localdomain", ".localdomain4", ".localdomain6", ".local", ".internal", ".svc", ".cluster.local"}
+)
+
+// ReservedName reports whether name — lower-case, without its trailing dot —
+// is one no public host carries: a single label (localhost and every
+// /etc/hosts alias, _gateway, instance-data, the pod's own name, a Service
+// the search domains expand) or a name a cluster, a cloud, a container or a
+// workstation reserves for itself (ReservedNames). The strict guard refuses
+// it before any lookup; the gateway credential's write door refuses it in a
+// stored base URL — one set, so the two never disagree.
+func ReservedName(name string) bool {
+	if !strings.Contains(name, ".") {
+		return true
+	}
+	for _, n := range reservedNames {
+		if name == n {
+			return true
+		}
+	}
+	for _, suffix := range reservedSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// ReservedNames lists the reserved multi-label names and suffixes as a
+// refusal names them: "localhost.localdomain, kubernetes.default,
+// *.localhost, …".
+func ReservedNames() string {
+	return strings.Join(reservedNames, ", ") + ", *" + strings.Join(reservedSuffixes, ", *")
 }
 
 // checkAddress is the guard's verdict on one address — what names it in the

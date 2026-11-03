@@ -470,8 +470,8 @@ func markDialFailuresAsNotSent(c *http.Client) {
 //
 // It is added on exactly the refusals the hatch lifts: the guard wraps
 // httpdial.ErrNotPublic around each of them (an address that is not public, a
-// name reserved for cluster-internal services, refused before any lookup),
-// and around nothing else. A host that does not resolve is a typo or a dead
+// name no public host carries, refused before any lookup), and around
+// nothing else. A host that does not resolve is a typo or a dead
 // DNS, a malformed name stays refused under the hatch, and telling their
 // author to open a security guard would be advice about the wrong problem.
 type privateHostHint struct{ base http.RoundTripper }

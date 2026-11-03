@@ -139,7 +139,7 @@ func sandboxProxyFunc(strict bool, proxyURL *url.URL) func(*http.Request) (*url.
 }
 
 // judgeHost judges a gateway HOST as the strict dial does — through httpdial
-// at strict: the reserved cluster-internal names in any spelling, then every
+// at strict: the names no public host carries in any spelling, then every
 // address the name resolves to — so Validate cannot pass a host the
 // transport refuses on the same answer. A refusal wraps httpdial.ErrNotPublic,
 // on which Validate names the escape hatch; a failed lookup or a malformed
