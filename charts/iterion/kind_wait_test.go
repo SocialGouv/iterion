@@ -178,16 +178,25 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 			}
 		})
 		t.Run("a document boundary keeps the declaration the earlier document held", func(t *testing.T) {
-			// helm merges --- documents per key: the knob from the earlier
-			// document renders (helm 4.1.1, probe-measured) — the mirror
+			// The knob from the earlier document renders across every
+			// marker go-yaml reads as a document boundary (helm 3.20.2,
+			// probe-measured: 600 for each form below) — the mirror
 			// witness that keeps the drop from overshooting onto every
-			// block open.
-			stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: 600\n---\nserver:\n  replicas: 1\n"))
-			if err != nil {
-				t.Fatalf("chart-kind-wait refused a knob helm keeps across the document boundary — %s", strings.TrimSpace(stderr))
-			}
-			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
-				t.Fatalf("chart-kind-wait = %q, want %q — the 600 from the earlier document survives the --- boundary", got, want)
+			// block open. A column-0 `---` is the boundary with nothing,
+			// a comment or trailing blanks after it; a column-0 `...`
+			// ends the document and the next line opens the next one,
+			// with or without a `---` of its own. A boundary rule pinned
+			// to a bare `---` reads the commented, blank-trailed or `...`
+			// forms as a same-document re-open and refuses a file helm
+			// installs with the 600 it spells.
+			for _, boundary := range []string{"---", "--- # c", "---  ", "---\t", "...", "... # end", "...\n---"} {
+				stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: 600\n"+boundary+"\nserver:\n  replicas: 1\n"))
+				if err != nil {
+					t.Fatalf("chart-kind-wait refused a knob helm keeps across the %q document boundary — %s", boundary, strings.TrimSpace(stderr))
+				}
+				if got, want := strings.TrimSpace(stdout), "720s"; got != want {
+					t.Fatalf("chart-kind-wait = %q, want %q — the 600 from the earlier document survives the %q boundary", got, want, boundary)
+				}
 			}
 		})
 		t.Run("a CRLF document boundary keeps it as well", func(t *testing.T) {
@@ -593,6 +602,65 @@ func TestChartKindWaitRefusesFlowAndGluedComment(t *testing.T) {
 		}
 	})
 
+	t.Run("a flow opened after an entry indicator, a tag or an anchor is refused", func(t *testing.T) {
+		// A `{` or `[` opens a flow at every value start go-yaml knows,
+		// not only after `key: `: after a `- ` entry indicator (a nested
+		// `- - {` included), after a `!tag` or `&anchor` property, and
+		// after a `? ` explicit key. helm 3.20.2 reads each shape below
+		// as server.extra holding the flow — `server: 2` and the knob are
+		// keys of the flow, go-yaml ignoring indentation inside it — and
+		// renders no server deadline (probe-measured: the 1800 of the
+		// values-dev base shows through), while a scan that counts a `{`
+		// only after `key: ` sizes 220 s from the interior knob: the
+		// #2780 failure with the guard green. The `? {` key shape helm
+		// refuses outright (a mapping is no string key), so both sides
+		// refuse it.
+		for _, tc := range []struct{ content, line string }{
+			{"server:\n  extra:\n    - {name: a,\nserver: 2,\n  progressDeadlineSeconds: 100\n}\n", "line 3"},
+			{"server:\n  extra:\n    - [a,\nserver: 2,\n  progressDeadlineSeconds: 100\n]\n", "line 3"},
+			{"server:\n  extra:\n    - - {a: 1,\nserver: 2,\n  progressDeadlineSeconds: 100\n}\n", "line 3"},
+			{"server:\n  extra:\n    - !!map {a: 1,\nserver: 2,\n  progressDeadlineSeconds: 100\n}\n", "line 3"},
+			{"server:\n  extra: !!map {a: 1,\nserver: 2,\n  progressDeadlineSeconds: 100\n}\n", "line 2"},
+			{"server:\n  extra: ! {a: 1,\nserver: 2,\n  progressDeadlineSeconds: 100\n}\n", "line 2"},
+			{"server:\n  extra: &x {a: 1,\nserver: 2,\n  progressDeadlineSeconds: 100\n}\n", "line 2"},
+			{"server:\n  extra: !!map &x {a: 1,\nserver: 2,\n  progressDeadlineSeconds: 100\n}\n", "line 2"},
+			{"server:\n  extra: &x !!map {a: 1,\nserver: 2,\n  progressDeadlineSeconds: 100\n}\n", "line 2"},
+			{"server:\n  ? {a: 1,\nserver: 2,\n  progressDeadlineSeconds: 100\n}\n  : v\n", "line 2"},
+		} {
+			stdout, stderr, err := runKindWait(t, valuesFile(t, tc.content))
+			if err == nil {
+				t.Fatalf("chart-kind-wait printed %q for %q — the flow holds the knob, the server block has none, and Kubernetes' 600 s default applies at install", strings.TrimSpace(stdout), tc.content)
+			}
+			for _, want := range []string{"flow", "first at " + tc.line} {
+				if !strings.Contains(stderr, want) {
+					t.Fatalf("refusal of %q does not name %q — stderr: %s", tc.content, want, strings.TrimSpace(stderr))
+				}
+			}
+		}
+		// The indicator and the properties open nothing on their own: a
+		// dash or a `?` glued to its scalar, a flow that closes on its
+		// line, a brace inside a tagged or anchored plain scalar, and a
+		// `- `, `!` or `&` past the value start are read as go-yaml reads
+		// them (helm 3.20.2 renders the 600 of every form).
+		for _, form := range []string{
+			"server:\n  extra:\n    - -1\n    - {a: 1}\n    - - [1, 2]\n    - \"x{\"\n  progressDeadlineSeconds: 600\n",
+			"server:\n  note: a - {b\n  progressDeadlineSeconds: 600\n",
+			"server:\n  note: -{a\n  progressDeadlineSeconds: 600\n",
+			"server:\n  note: ?x\n  progressDeadlineSeconds: 600\n",
+			"server:\n  note: !!str a{b\n  progressDeadlineSeconds: 600\n",
+			"server:\n  note: &x a{b\n  progressDeadlineSeconds: 600\n",
+			"server:\n  note: a!b&c\n  progressDeadlineSeconds: 600\n",
+		} {
+			stdout, stderr, err := runKindWait(t, valuesFile(t, form))
+			if err != nil {
+				t.Fatalf("chart-kind-wait refused %q — no flow stays open there, and helm installs the file; stderr: %s", form, strings.TrimSpace(stderr))
+			}
+			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
+				t.Fatalf("chart-kind-wait = %q, want %q on %q", got, want, form)
+			}
+		}
+	})
+
 	t.Run("a comment that swallows the closing brace is refused", func(t *testing.T) {
 		// helm 4.1.1 refuses the file too — the flow never closes ("did
 		// not find expected ',' or '}'") — both sides refuse loudly.
@@ -658,6 +726,43 @@ func TestChartKindWaitRefusesFlowAndGluedComment(t *testing.T) {
 			}
 			if strings.Contains(stderr, "not an integer") {
 				t.Fatalf("refusal of %q still claims the API refuses the Deployment — helm renders no field to refuse", form)
+			}
+		}
+	})
+
+	t.Run("a null or a bare false spelling is refused as unset, not as a refused string", func(t *testing.T) {
+		// go-yaml resolves `~`, `null`, `Null` and `NULL` to null, and a
+		// bare `false` — with the YAML 1.1 `no`, `off` and `n` spellings
+		// helm's values parser reads as booleans — to false; the
+		// templates' `with` skips both, so helm renders no field
+		// (probe-measured on helm 3.20.2: zero occurrences) and
+		// Kubernetes' 600 s default applies. A quoted null spelling is
+		// the string go-yaml hands over, but it renders as
+		// `progressDeadlineSeconds: null`, which the applied manifest
+		// reads back as empty — same verdict. Each routes to the unset
+		// refusal, not to an API refusal the install never sees.
+		for _, form := range []string{"~", "null", "Null", "NULL", `"null"`, `'null'`, `'~'`, `"NULL"`, "false", "False", "FALSE", "no", "No", "NO", "off", "Off", "OFF", "n", "N"} {
+			_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: "+form+"\n"))
+			if err == nil {
+				t.Fatalf("chart-kind-wait accepted %q — no deadline renders and Kubernetes' default 600 s applies", form)
+			}
+			if !strings.Contains(stderr, "does not set server.progressDeadlineSeconds") {
+				t.Fatalf("refusal of %q does not route to the unset path — stderr: %s", form, strings.TrimSpace(stderr))
+			}
+			if strings.Contains(stderr, "not an integer") {
+				t.Fatalf("refusal of %q still claims the API refuses the Deployment — helm renders no deadline to refuse", form)
+			}
+		}
+		// A quoted false spelling and the true spellings render a boolean
+		// the integer field refuses (helm 3.20.2 renders `false`, `no`
+		// and `true`), so those keep the string refusal.
+		for _, form := range []string{`"false"`, `'no'`, "true", "yes", "on", "y"} {
+			_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: "+form+"\n"))
+			if err == nil {
+				t.Fatalf("chart-kind-wait accepted %q — helm renders a boolean and the API refuses the Deployment", form)
+			}
+			if !strings.Contains(stderr, "not an integer") {
+				t.Fatalf("refusal of %q does not name the non-integer — stderr: %s", form, strings.TrimSpace(stderr))
 			}
 		}
 	})

@@ -19,7 +19,8 @@
 # default applies, while helm merges `---` documents per key, so a knob
 # from an earlier document survives a later one that does not repeat it.
 # The reader drops the knob when a column-0 `server:` line re-opens the
-# block in the same document and keeps it across a `---` boundary.
+# block in the same document and keeps it across a document boundary: a
+# column-0 `---`, or a `...` that ends the document before the next one.
 #
 # The extractor reads the plain block form: the knob nested under
 # `server:` at whatever uniform indent the block's keys use — the block's
@@ -79,7 +80,11 @@
 # `"#x"` renders as `progressDeadlineSeconds: #x`, where the whitespace
 # before the `#` makes the applied manifest read the field as empty —
 # Kubernetes' 600 s default applies either way, so both route to the
-# unset refusal instead of claiming an API refusal helm never sees.
+# unset refusal instead of claiming an API refusal helm never sees. So
+# do a null spelling (`~`, `null`, `Null`, `NULL` — bare, the `with`
+# skips it; quoted, it renders as a null the applied manifest reads back
+# as empty) and a bare false (`false`, `no`, `off` in any case: booleans
+# to helm's values parser, which the `with` skips as well).
 # Usage: scripts/chart-kind-wait.sh <values file>
 set -eu
 
@@ -106,14 +111,17 @@ raw=$(awk '
   # line after which a collection is still open. Braces inside a quoted
   # scalar or a comment do not count, and the braces of a plain value
   # are its own — in block context go-yaml reads `a:{b` and `https://…/{id}` as
-  # one scalar — so a `{` opens a flow only at a value start, right
-  # after the `key: ` separator.
-  function flow_scan(s,    n, i, c, nxt, vs, ins, ids, esc, prev, q) {
+  # one scalar — so a `{` opens a flow only at a value start: right
+  # after the `key: ` separator, after a `- ` entry or `? ` key
+  # indicator, or after a `!tag` or `&anchor` property standing at one.
+  function flow_scan(s,    n, i, c, nxt, ws, vs, ins, ids, esc, prev, q) {
     n = length(s)
     q = sprintf("%c", 39)
     vs = 1; ins = 0; ids = 0; esc = 0; prev = " "
     for (i = 1; i <= n; i++) {
       c = substr(s, i, 1)
+      nxt = substr(s, i + 1, 1)
+      ws = nxt == "" || nxt == " " || nxt == "\t"
       if (ids) {
         if (esc) esc = 0
         else if (c == "\\") esc = 1
@@ -136,8 +144,20 @@ raw=$(awk '
         if (depth > 0) depth--
         vs = 0
       } else if (c == ":") {
-        nxt = substr(s, i + 1, 1)
-        vs = nxt == "" || nxt == " " || nxt == "\t"
+        vs = ws
+      } else if (vs && (c == "-" || c == "?") && ws) {
+        # A `- ` entry or `? ` key indicator at a value start opens a
+        # nested node, so the value start carries over to what follows:
+        # `- {`, `- - [` and `? {` open a flow like a `{` after `key: `.
+        # Glued to its scalar (`-1`, `?x`) the character belongs to the scalar.
+        vs = 1
+      } else if (vs && (c == "!" || c == "&")) {
+        # A tag or an anchor at a value start is a property of the node
+        # that follows it: the token runs to the next whitespace and the
+        # value start survives it, so `!!map {` and `&x {` open a flow.
+        # Past a value start, `!` and `&` are characters of a plain scalar.
+        while (i < n && substr(s, i + 1, 1) != " " && substr(s, i + 1, 1) != "\t") i++
+        c = substr(s, i, 1)
       } else if (c != " " && c != "\t") {
         vs = 0
       }
@@ -202,10 +222,14 @@ raw=$(awk '
     if (block_open($0))
       in_block = 1
   }
-  # A column-0 --- starts a document: helm merges documents per key, so
-  # the knob survives a boundary; doc counts the boundaries so a block
-  # re-open is dropped only inside the document it repeats in.
-  /^---([ \t]|$)/ { doc++ }
+  # A column-0 --- starts a document and a column-0 ... ends one — the
+  # next line opens the next document, with or without a --- of its own
+  # — and the knob declared before either marker survives it (helm
+  # 3.20.2 renders it); doc counts the markers so a block re-open is
+  # dropped only inside the document it repeats in. A ... followed by a
+  # --- counts twice, which changes nothing: only equality with the
+  # document the block was declared in is ever read.
+  /^(---|\.\.\.)([ \t]|$)/ { doc++ }
   # A column-0 key closes the previous block for the reader. A column-0
   # server: line re-opening the block in the SAME document drops the
   # remembered knob: go-yaml replaces the whole map on the repeat (helm
@@ -227,6 +251,7 @@ raw=$(awk '
       sub(/^[^:]*:[ \t]*/, "", v)
       sub(/[ \t]+#.*/, "", v)
       sub(/[ \t]+$/, "", v)
+      quoted = (unquote(v) != v)
       v = unquote(v)
       # A value resolving to one starting with `#` is null to go-yaml
       # (`key: # note`) or reads back empty in the applied manifest (a
@@ -234,6 +259,17 @@ raw=$(awk '
       # whitespace before the # starts a comment): no deadline renders,
       # so it routes to the unset refusal, not the string one.
       if (substr(v, 1, 1) == "#") v = ""
+      # The same verdict for a null spelling: go-yaml resolves `~`,
+      # `null`, `Null` and `NULL` to null, which the `with` of the templates
+      # skips, and the quoted spelling renders as
+      # `progressDeadlineSeconds: null`, which the applied manifest reads
+      # back as empty (helm 3.20.2 renders both). A bare false — `false`,
+      # `False`, `FALSE`, and the YAML 1.1 spellings n, no and off in any
+      # case, booleans to the values parser of helm — is skipped by the `with`
+      # as well; quoted, it is a string that renders as a boolean the API
+      # refuses, so only the bare form routes to the unset refusal.
+      if (v ~ /^(~|null|Null|NULL)$/) v = ""
+      if (!quoted && v ~ /^(false|False|FALSE|n|N|no|No|NO|off|Off|OFF)$/) v = ""
       # A value on the knob line may continue below it: the next content
       # line decides (the continuation check above), so a knob read as
       # unset or null raises nothing.
