@@ -55,7 +55,7 @@ func TestDepUpdateGuardEveryFeedbackEdgePinsTheAuditedSHA(t *testing.T) {
 			}
 		}
 		if pin == "" {
-			t.Errorf("edge %s -> %s (%s) does not fill %q: its verdict would post UNPINNED and the gate would certify whatever head the forge reports at publish time — add %s: \"{{outputs.commit.sha}}\" on the edge that committed, \"{{outputs.prepare.head_sha}}\" on the ones that did not",
+			t.Errorf("edge %s -> %s (%s) does not fill %q: its verdict would post UNPINNED and the gate would certify whatever head the forge reports at publish time — add %s: \"{{outputs.commit_probe.sha}}\" on the edge that committed, \"{{outputs.prepare.head_sha}}\" on the ones that did not",
 				e.From, e.To, edgeGuard(e), pinField, pinField)
 			continue
 		}
@@ -74,7 +74,7 @@ func TestDepUpdateGuardEveryFeedbackEdgePinsTheAuditedSHA(t *testing.T) {
 		wantRef := "outputs.prepare.head_sha"
 		why := "this path pushed nothing, so the verdict covers the head the run read"
 		if e.Condition == "did_commit" && !e.Negated {
-			wantRef = "outputs.commit.sha"
+			wantRef = "outputs.commit_probe.sha"
 			why = "this is the one path where the alignment moved the branch"
 		}
 		if !strings.Contains(pin, wantRef) {

@@ -1,9 +1,10 @@
 package kubernetes
 
 import (
-	"io"
 	"os"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/stdiotest"
 )
 
 // captureStderr redirects os.Stderr to a pipe for the caller's scope,
@@ -13,37 +14,6 @@ import (
 // overrun) stderr-side signals.
 func captureStderr(t *testing.T) (read func() string, restore func()) {
 	t.Helper()
-	orig := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	os.Stderr = w
-	restored := false
-	restore = func() {
-		if restored {
-			return
-		}
-		restored = true
-		os.Stderr = orig
-		_ = w.Close()
-		_ = r.Close()
-	}
-	read = func() string {
-		// Close the write side so ReadAll sees EOF, then re-open a
-		// fresh pipe so the caller can drain multiple times without
-		// blocking. Order matters — close BEFORE reopening.
-		os.Stderr = orig
-		_ = w.Close()
-		buf, _ := io.ReadAll(r)
-		_ = r.Close()
-		// Prepare a fresh pipe so a subsequent read is possible.
-		nr, nw, perr := os.Pipe()
-		if perr == nil {
-			r, w = nr, nw
-			os.Stderr = w
-		}
-		return string(buf)
-	}
-	return read, restore
+	c := stdiotest.Start(t, &os.Stderr)
+	return c.Read, c.Close
 }

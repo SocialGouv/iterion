@@ -237,8 +237,10 @@ func memoryListTool(store knowledge.MemoryStore, ref knowledge.SpaceRef) Generat
 }
 
 // memoryPreCompactInjector re-reads the auto-index + autoload set
-// and prepends them as a synthetic user turn so claw's summariser
-// folds them into the surviving summary. Returns nil (no-op) when
+// and inserts them as a synthetic user turn near the start so claw's
+// summariser folds them into the surviving summary. The first message stays
+// first: only claw recognises whether it is a previous continuation summary.
+// Returns nil (no-op) when
 // the scope is empty.
 func memoryPreCompactInjector(ctx context.Context, store knowledge.MemoryStore, ref knowledge.SpaceRef, autoload []string) func(messages []api.Message) []api.Message {
 	return func(messages []api.Message) []api.Message {
@@ -269,8 +271,12 @@ func memoryPreCompactInjector(ctx context.Context, store knowledge.MemoryStore, 
 			Content:    []api.ContentBlock{{Type: "text", Text: text}},
 		}
 		out := make([]api.Message, 0, len(messages)+1)
+		// Preserve the compactor's leading-message slot without duplicating its
+		// continuation recogniser. An ordinary first turn stays in order too.
+		prefix := min(1, len(messages))
+		out = append(out, messages[:prefix]...)
 		out = append(out, injected)
-		out = append(out, messages...)
+		out = append(out, messages[prefix:]...)
 		return out
 	}
 }

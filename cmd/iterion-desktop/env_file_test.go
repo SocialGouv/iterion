@@ -1,13 +1,13 @@
 package main
 
 import (
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
+	"github.com/SocialGouv/iterion/internal/stdiotest"
 )
 
 // TestReloadIterionEnvFile_ClearsCommentedKey reproduces the dogfood
@@ -170,25 +170,7 @@ func TestTheDesktopEnvFileLeavesNoRoutingNameInTheEnvironment(t *testing.T) {
 // captureStderr runs fn with os.Stderr on a pipe and returns what it wrote.
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
-	orig := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	os.Stderr = w
-	fn()
-	os.Stderr = orig
-	if err := w.Close(); err != nil {
-		t.Fatalf("close the pipe: %v", err)
-	}
-	said, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("read the pipe: %v", err)
-	}
-	if err := r.Close(); err != nil {
-		t.Fatalf("close the read end: %v", err)
-	}
-	return string(said)
+	return stdiotest.Run(t, &os.Stderr, fn)
 }
 
 // The substitution refusal on the desktop lane, like on the CLI and studio
@@ -225,21 +207,7 @@ func TestTheDesktopEnvFileRunsNothingACommandSubstitutionSpells(t *testing.T) {
 		os.Unsetenv(name)
 	}
 
-	var said string
-	{
-		orig := os.Stderr
-		r, w, err := os.Pipe()
-		if err != nil {
-			t.Fatalf("pipe: %v", err)
-		}
-		os.Stderr = w
-		loadIterionEnvFile()
-		os.Stderr = orig
-		_ = w.Close()
-		b, _ := io.ReadAll(r)
-		_ = r.Close()
-		said = string(b)
-	}
+	said := captureStderr(t, loadIterionEnvFile)
 
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("the substitution marker exists: the file's command RAN (stat err %v)", err)

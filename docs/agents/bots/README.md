@@ -18,3 +18,5 @@ touch names:
 | [taxonomy.md](taxonomy.md) | The six-verb navigation spine: `category:` and `tags:`. |
 | [engine-bot-agnostic.md](engine-bot-agnostic.md) | Engine code about to name a bot. |
 | [toolchain-devbox.md](toolchain-devbox.md) | A bot needs a binary the sandbox lacks. |
+
+Vetty commit evidence and revision-owned auto-merge: [dep-update-guard](../../../bots/dep-update-guard/README.md).

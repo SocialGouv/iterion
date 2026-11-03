@@ -1,12 +1,13 @@
 package parser
 
 import (
-	"io"
 	"math"
 	"os"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/stdiotest"
 )
 
 // readBudgetEnv is the operator's hatch, spelled as the documentation spells
@@ -222,22 +223,7 @@ func TestBoundRefusalsCarryTheirOwnRemedy(t *testing.T) {
 // stderrOf is what f writes on the process's stderr.
 func stderrOf(t *testing.T, f func()) string {
 	t.Helper()
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	old := os.Stderr
-	os.Stderr = w
-	f()
-	os.Stderr = old
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
-	b, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
+	return stdiotest.Run(t, &os.Stderr, f)
 }
 
 // ITERION_DSL_READ_BUDGET reads as the documentation says: a count, 0 for

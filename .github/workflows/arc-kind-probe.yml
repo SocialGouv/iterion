@@ -1,12 +1,10 @@
-# Settles why `cloud-e2e` cannot run on the arc-runners scale set (#981).
-#
-# Six of the nine Tests jobs run on the scale set; `race` and
-# `mongo-conformance` joined them on 2026-09-29 (#1955). `cloud-e2e` is the
-# one left, and the reason has never been established: "kind comes up, kubectl
-# cannot authenticate to it". The first hypothesis (the image's user is not in
-# the docker group) is refuted by the tree — `nats-conformance` and
-# `mongo-conformance` reach the daemon from that same image — so the remaining
-# work on that ticket is a measurement, not an image change.
+# Rechecks whether kind can run on the arc-runners scale set (#981).
+# The old failure (kind starts but kubectl cannot reach it) was no longer
+# reproducible in the 2026-11-03 probe: kind succeeded, direct and ambient
+# API requests answered 200, kubectl cluster-info succeeded, verdict=usable.
+# Evidence: https://github.com/SocialGouv/iterion/actions/runs/41671007928
+# cloud-e2e consequently uses the common guarded ARC routing expression.
+# Keep this dispatch for an operator to diagnose a recurrence on a real pod.
 #
 # WHY A DISPATCH, not a job in tests.yml: the answer is needed once, from a
 # real pod, and a diagnostic job on every push and pull request would hold an

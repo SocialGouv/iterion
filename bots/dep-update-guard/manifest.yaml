@@ -1,7 +1,11 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.11.1
+version: 2.11.2
+## 2.11.2 — commit_probe resolves the agent's report through Git: only the
+## current local head, strictly descended from the audited revision, is a
+## new commit. Publication and arming use that full id. A stale run cannot
+## disarm or dequeue a PR whose observed head belongs to another revision.
 ## Arming ownership (#1634): `respect_human_arming` is declared in main.bot's
 ## vars, like `arm_automerge`, and defaults to true. Read enabledBy.login and
 ## the forge_token's viewer.login together; preserve another actor's arming

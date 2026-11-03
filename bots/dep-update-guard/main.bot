@@ -633,6 +633,17 @@ schema commit_input:
   files_changed: string[]
   breaking_summary: string
 
+schema commit_probe_input:
+  sha: string
+  head_sha: string
+
+schema commit_probe_output:
+  ## sha is the full commit id, only when the reported commit is the local
+  ## HEAD and a strict descendant of the commit prepare read.
+  sha: string
+  moved: bool
+  reason: string
+
 schema commit_check_output:
   ## did_commit: the branch head moved, and this run is what moved it.
   did_commit: bool
@@ -2314,7 +2325,7 @@ tool arm_automerge:
     # is perfectly reachable on unreviewed code.
     # The shas being compared come from three sources with different widths:
     # the forge always returns full 40-hex, `git rev-parse HEAD` does too, but
-    # committed_sha is reported by the commit AGENT, and the natural thing to
+    # old checkpoints carry the commit AGENT report; the natural thing to
     # read off `git commit` is the abbreviated form it prints. An exact compare
     # therefore refused the merge on the align-and-commit path — Vetty's
     # primary path — with a message ("something else pushed") that was simply
@@ -2349,9 +2360,9 @@ tool arm_automerge:
         # The two exits ABOVE are structural - the gate never ran, or this run
         # cannot name what it read - so the current head may well still be the
         # audited one and nothing is taken down. The two BELOW are the opposite:
-        # the head is demonstrably NOT what was audited, so any commitment
-        # standing on this PR would land an unaudited revision. Those stand
-        # down within the ownership policy (a human decision is preserved).
+        # this run cannot vouch for the head. stand_down acts only while
+        # that head is still this run's revision; a newer run may already have
+        # audited a different head and placed its own commitment there.
         if not same_commit(gated, mine):
             stand_down(pr)
             out(False, "the gate landed on " + gated[:12] + " but this run audited " +
@@ -2359,7 +2370,7 @@ tool arm_automerge:
         if head and not same_commit(head, gated):
             stand_down(pr)
             out(False, "the branch moved after the audit (gated " + gated[:12] +
-                       ", head is now " + head[:12] + ") - the new head has not been audited")
+                       ", head is now " + head[:12] + ") - this run did not audit the new head")
         return gated
 
     def merge_now(pr, why):
@@ -2427,6 +2438,12 @@ tool arm_automerge:
         state_note["disarmed"] = login
 
     def stand_down(pr):
+        # An old run has no mandate over a different revision. Apply this to
+        # every refusal path, including a failed gate and a moved-head check.
+        mine = s(committed_sha) or s(audited_sha)
+        if not same_commit(s(pr.get("headRefOid")), mine):
+            state_note["preserved"] = "commitment by " + (arming_owner(pr) or "(unknown owner)") + " preserved: the current head is not the revision this run audited"
+            return
         # ONE place that stands down commitments within our mandate:
         # the owned arming AND the queue entry. Two, because the forge nulls
         # autoMergeRequest once it moves an armed PR into the queue - taking
@@ -2532,29 +2549,6 @@ tool arm_automerge:
   input: automerge_input
   output: automerge_output
 
-## Deterministic gate: only `safe` proceeds to alignment; suspicious /
-## malicious short-circuit to a HOLD comment (no code change).
-compute audit_gate:
-  input: audit_gate_input
-  output: audit_gate_output
-  expr:
-    safe: "input.verdict == 'safe'"
-    verdict: "input.verdict"
-
-## Deterministic gate on the escalation flag.
-compute align_gate:
-  input: align_gate_input
-  output: align_gate_output
-  expr:
-    needs_human: "input.needs_human"
-
-## Deterministic gate: a green DETERMINISTIC verify is the ONLY path to
-## commit (fail-closed: a missing verify.sh reports passed=false).
-compute validate_gate:
-  output: validate_gate_output
-  expr:
-    stable: "outputs.verify_run.passed"
-
 ## Did the commit step actually land anything? Answered from the shas, not
 ## from the agent's own account of its work: an agent that reports
 ## `committed: true` having pushed nothing would otherwise make every
@@ -2585,11 +2579,75 @@ compute validate_gate:
 ## file align claims. `carried` is read negated on purpose: a reading that
 ## is missing — a run resumed from a checkpoint older than the probe — is
 ## not carried, so it holds. Who committed the head plays no part.
+## Resolve the commit agent's report against the actual repository. A short
+## echo of prepare.head_sha is still the same commit, never an alignment.
+tool commit_probe:
+  script: |
+    import json, os, re, subprocess
+    null = None; true = True; false = False
+    ws = {{vars.workspace_dir}}
+    reported = {{input.sha}}
+    prepared = {{input.head_sha}}
+    def text(value):
+        return value.strip().lower() if isinstance(value, str) else ""
+    def emit(sha, reason):
+        print(json.dumps({"sha": sha, "moved": bool(sha), "reason": reason}))
+        raise SystemExit(0)
+    reported, prepared = text(reported), text(prepared)
+    if not ws or not re.fullmatch(r"[0-9a-f]{7,64}", reported) or not re.fullmatch(r"[0-9a-f]{7,64}", prepared):
+        emit("", "no resolvable commit report or audited head")
+    # Match align_probe's repository/index/object-store isolation.
+    drop = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE",
+            "GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS",
+            "GIT_ICASE_PATHSPECS")
+    genv = {k: v for k, v in os.environ.items() if k not in drop}
+    def git(*args):
+        return subprocess.run(["git", "-C", ws, *args], capture_output=True, timeout=60, env=genv)
+    def resolve(value):
+        p = git("rev-parse", "--verify", "--end-of-options", value + "^{commit}")
+        return p.stdout.decode().strip() if p.returncode == 0 else ""
+    try:
+        candidate, base, tip = resolve(reported), resolve(prepared), resolve("HEAD")
+        if not candidate or not base or candidate != tip or candidate == base:
+            emit("", "the reported commit is not a new workspace head")
+        if git("merge-base", "--is-ancestor", base, candidate).returncode != 0:
+            emit("", "the reported head is not descended from the audited commit")
+        emit(candidate, "git confirms a new workspace head descended from the audited commit")
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        emit("", "git could not establish a new commit")
+  language: py
+  input: commit_probe_input
+  output: commit_probe_output
+
+## Deterministic gate: only `safe` proceeds to alignment; suspicious /
+## malicious short-circuit to a HOLD comment (no code change).
+compute audit_gate:
+  input: audit_gate_input
+  output: audit_gate_output
+  expr:
+    safe: "input.verdict == 'safe'"
+    verdict: "input.verdict"
+
+## Deterministic gate on the escalation flag.
+compute align_gate:
+  input: align_gate_input
+  output: align_gate_output
+  expr:
+    needs_human: "input.needs_human"
+
+## Deterministic gate: a green DETERMINISTIC verify is the ONLY path to
+## commit (fail-closed: a missing verify.sh reports passed=false).
+compute validate_gate:
+  output: validate_gate_output
+  expr:
+    stable: "outputs.verify_run.passed"
+
 compute commit_check:
   output: commit_check_output
   expr:
-    did_commit: "outputs.commit.sha != '' && outputs.commit.sha != outputs.prepare.head_sha"
-    alignment_lost: "outputs.align.applied && (outputs.align_probe.pending || !outputs.align_probe.carried) && !(outputs.commit.sha != '' && outputs.commit.sha != outputs.prepare.head_sha)"
+    did_commit: "outputs.commit_probe.moved"
+    alignment_lost: "outputs.align.applied && (outputs.align_probe.pending || !outputs.align_probe.carried) && !(outputs.commit_probe.moved)"
 
 ## preflight_standdown — the input `arm_automerge` needs on the one refusal
 ## path where the bot publishes no verdict of its own. A preflight that did
@@ -2805,7 +2863,12 @@ workflow dep_update_guard:
     audited_sha: "{{outputs.prepare.head_sha}}",
   }
 
-  commit -> commit_check
+  commit -> commit_probe with {
+    sha: "{{outputs.commit.sha}}",
+    head_sha: "{{outputs.prepare.head_sha}}",
+  }
+
+  commit_probe -> commit_check
 
   ## The verdict is what the comment, the badge and the required check all
   ## read, so it must name what happened: `committed` only when the branch
@@ -2848,7 +2911,7 @@ workflow dep_update_guard:
     commit_summary: "{{outputs.commit.summary}}",
     ## The ONE edge where the alignment moved the branch: the verdict covers
     ## the commit this run pushed, not the head it read.
-    audited_sha: "{{outputs.commit.sha}}",
+    audited_sha: "{{outputs.commit_probe.sha}}",
   }
 
   ## `clean` also covers the re-applied alignment: the head read already
@@ -2885,7 +2948,7 @@ workflow dep_update_guard:
     gate_state: "{{outputs.post_feedback.gate_state}}",
     gate_sha: "{{outputs.post_feedback.gate_sha}}",
     audited_sha: "{{outputs.prepare.head_sha}}",
-    committed_sha: "{{outputs.commit.sha}}",
+    committed_sha: "{{outputs.commit_probe.sha}}",
   }
 
   ## The delivery refusal is the one verdict that is also a RUN failure: every

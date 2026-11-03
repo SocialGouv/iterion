@@ -44,16 +44,4 @@ directory owned by `jo`, mode `0555`, and `rmdir /tmp/.git` refuses
 (`Device or resource busy`). Still red here; no recursive removal or forced
 unmount replaces the failed purge.
 
-## Worked example: an installed binary defeats an empty PATH
-
-`TestLaunchDetached_NamesTheDroppedOverrides` expects a detached launch to
-refuse after logging dropped overrides. An empty PATH cannot prove that: the
-resolver also searches fixed install paths, the operator's home among them. The
-fix supplies an empty install-candidate seam, an owned HOME and an empty
-ITERION_BIN; the production resolver and its sandbox caller share that seam — a
-second resolver would reopen the class.
-
-The mutation in `e40def071` disables the seam and drops the HOME pin on a
-machine with an installed binary: the test fails its own expected-refusal
-assertion (a process-leak warning only supports it). Re-check on a machine with
-the installation and on an isolated worker, recording SHA and elapsed time.
+Process capture, checkout-root and installed-binary witnesses: [process fixtures](process-fixtures.md).

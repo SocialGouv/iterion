@@ -13,7 +13,7 @@ invariants. The product view is [docs/architecture.md](../../architecture.md).
 | [http-failures.md](http-failures.md) | Generic HTTP failures, correlation, partial identity reads and quota propagation. |
 | [workspace-and-review-scope.md](workspace-and-review-scope.md) | Workspace capture/restore, review scope, sandbox wiring. |
 | [events-leases-and-schedules.md](events-leases-and-schedules.md) | The trigger spine, elections, queues, schedules, retries. |
-| [extensions-and-bot-sources.md](extensions-and-bot-sources.md) | Plugins, skills, memory, marketplace, bot sources. |
+| [extensions-and-bot-sources.md](extensions-and-bot-sources.md) | Plugins, skills, memory injection at compaction, marketplace, bot sources. |
 | [dsl-backend-execution.md](dsl-backend-execution.md) | The DSL pipeline, backends, runtime, store, server, forge. |
 | [dsl-and-runtime.md](dsl-and-runtime.md) | The compiled graph, explicit target capabilities and how a workflow executes. |
 | [dsl-quick-reference.md](dsl-quick-reference.md) | The exact syntax of the cross-cutting fields, one line each. |

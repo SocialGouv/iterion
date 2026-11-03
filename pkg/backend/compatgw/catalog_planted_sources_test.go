@@ -1,12 +1,12 @@
 package compatgw
 
 import (
-	"io"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
+	"github.com/SocialGouv/iterion/internal/stdiotest"
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 )
 
@@ -216,35 +216,6 @@ func TestResolveCatalogQuiet_APlantedTableEarnsNoLine(t *testing.T) {
 // so far and reopens, `restore` undoes the redirect.
 func captureStderr(t *testing.T) (read func() string, restore func()) {
 	t.Helper()
-	orig := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	os.Stderr = w
-	restored := false
-	restore = func() {
-		if restored {
-			return
-		}
-		restored = true
-		os.Stderr = orig
-		_ = w.Close()
-		_ = r.Close()
-	}
-	read = func() string {
-		// Close the write side so ReadAll sees EOF, then reopen a fresh pipe
-		// so the caller can drain more than once without blocking. Order
-		// matters — close BEFORE reopening.
-		os.Stderr = orig
-		_ = w.Close()
-		buf, _ := io.ReadAll(r)
-		_ = r.Close()
-		if nr, nw, perr := os.Pipe(); perr == nil {
-			r, w = nr, nw
-			os.Stderr = w
-		}
-		return string(buf)
-	}
-	return read, restore
+	c := stdiotest.Start(t, &os.Stderr)
+	return c.Read, c.Close
 }

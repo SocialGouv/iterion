@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
+	clawrt "github.com/SocialGouv/claw-code-go/pkg/runtime"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
@@ -79,7 +80,7 @@ func TestMemoryListTool_EmptyAndPopulated(t *testing.T) {
 	}
 }
 
-func TestMemoryPreCompactInjector_PrependsAutoload(t *testing.T) {
+func TestMemoryPreCompactInjector_KeepsTheFirstTurn(t *testing.T) {
 	store, ref, s := memTest(t, "session-continuity")
 	_ = s.Write("CONTEXT_BRIEF.md", []byte("brief body"))
 
@@ -89,14 +90,17 @@ func TestMemoryPreCompactInjector_PrependsAutoload(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("len=%d", len(got))
 	}
-	if !got[0].IsInjected || got[0].Role != "user" {
-		t.Fatalf("first msg shape: %+v", got[0])
+	if got[0].Content[0].Text != "orig" || original[0].Content[0].Text != "orig" {
+		t.Fatal("injection moved or mutated the original first turn")
 	}
-	if !strings.Contains(got[0].Content[0].Text, "brief body") {
-		t.Fatalf("missing content: %q", got[0].Content[0].Text)
+	if !got[1].IsInjected || got[1].Role != "user" {
+		t.Fatalf("injected msg shape: %+v", got[1])
 	}
-	if !strings.Contains(got[0].Content[0].Text, "<workspace_memory") {
-		t.Fatalf("missing tag wrapper: %q", got[0].Content[0].Text)
+	if !strings.Contains(got[1].Content[0].Text, "brief body") {
+		t.Fatalf("missing content: %q", got[1].Content[0].Text)
+	}
+	if !strings.Contains(got[1].Content[0].Text, "<workspace_memory") {
+		t.Fatalf("missing tag wrapper: %q", got[1].Content[0].Text)
 	}
 }
 
@@ -324,5 +328,70 @@ func TestMemoryAttribution(t *testing.T) {
 	}
 	if got := memoryAttribution(""); got != "" {
 		t.Fatalf("empty bot id should yield empty attribution, got %q", got)
+	}
+}
+
+// Drive the real between-iterations hook and compact again with a continuation
+// produced by claw itself. The old injector makes that summary an ordinary
+// user turn; its preamble crowds out the decision during re-summarisation.
+func TestMemoryPreCompactInjector_PreservesPreviousSummary(t *testing.T) {
+	for _, role := range []string{"user", "system"} {
+		t.Run(role, func(t *testing.T) {
+			store, ref, scope := memTest(t, "summary-retention")
+			if err := scope.Write("BRIEF.md", []byte("fresh memory")); err != nil {
+				t.Fatal(err)
+			}
+			msg := func(text string) api.Message {
+				return api.Message{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: text}}}
+			}
+			seed := clawrt.CompactMessages([]api.Message{msg("UNIQUE_EARLIER_DECISION must survive"), msg("first recent")}, clawrt.CompactionConfig{PreserveRecentMessages: 1, MaxEstimatedTokens: 1})
+			if seed == nil || !strings.Contains(seed.Summary, "UNIQUE_EARLIER_DECISION") {
+				t.Fatal("premise: initial summary lost decision")
+			}
+			// Legacy persisted sessions used a system-role continuation.
+			seed.CompactedMessages[0].Role = role
+			history := append(seed.CompactedMessages, bigTranscript()...)
+			before, err := json.Marshal(history)
+			if err != nil {
+				t.Fatal(err)
+			}
+			inject := memoryPreCompactInjector(context.Background(), store, ref, []string{"BRIEF.md"})
+			called := false
+			out := compactBetweenIterations(context.Background(), history, GenerationOptions{
+				Model: "test-only-unknown-model", CompactPreserveRecent: 2,
+				OnBeforeCompact: func(messages []api.Message) []api.Message { called = true; return inject(messages) },
+			})
+			if !called || len(out) >= len(history) {
+				t.Fatal("premise: memory hook and compaction must run")
+			}
+			raw, err := json.Marshal(out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(raw), "UNIQUE_EARLIER_DECISION") {
+				t.Fatalf("previous continuation re-summarized and lost its decision: %s", raw)
+			}
+			if !strings.Contains(out[0].Content[0].Text, "workspace_memory_index") {
+				t.Fatalf("memory injection is absent from the new summary: %s", out[0].Content[0].Text)
+			}
+			after, err := json.Marshal(history)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(before) != string(after) {
+				t.Fatal("compaction hook mutated the live history")
+			}
+		})
+	}
+}
+
+func TestMemoryPreCompactInjector_EmptyHistory(t *testing.T) {
+	store, ref, scope := memTest(t, "empty-history")
+	if err := scope.Write("BRIEF.md", []byte("fresh memory")); err != nil {
+		t.Fatal(err)
+	}
+	got := memoryPreCompactInjector(context.Background(), store, ref, []string{"BRIEF.md"})(nil)
+	if len(got) != 1 || !got[0].IsInjected || !strings.Contains(got[0].Content[0].Text, "fresh memory") {
+		t.Fatalf("empty history injection: %+v", got)
 	}
 }

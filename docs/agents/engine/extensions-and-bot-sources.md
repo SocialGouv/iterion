@@ -13,6 +13,8 @@ invariants. `iterion map find|impact|path` answer the exact questions.
 
 - `pkg/knowledge/` — Backend-agnostic `MemoryStore` contract for iterion's shared memory; adapters implement filesystem (`pkg/memory`) and cloud (Mongo) storage. Memory documents are treated as untrusted data, never instructions (the operating-posture/secret-handling clauses always outrank them). See [docs/memory-and-knowledge.md](../../memory-and-knowledge.md)
 
+- Claw's pre-compaction memory injector keeps the history's first message first: it may be a continuation summary which only claw recognises. Inject after that slot (or at the start of an empty history), so a later compaction merges the old summary instead of summarising its preamble as ordinary text. The injection feeds the summariser only; the live input history is unchanged. `TestMemoryPreCompactInjector_PreservesPreviousSummary` drives that hook with current and legacy continuations.
+
 - `pkg/memory/` — Filesystem `MemoryStore` adapter: the per-workspace tree at `~/.iterion/projects/<encoded-workdir>/memory/<scope>/`, indexed from Markdown frontmatter and space-quota'd
 
 - `pkg/marketplace/` — Curated hosted registry over `pkg/botinstall` for bot **and** plugin entries (repo URL, moderation status, visibility scope); backs `iterion marketplace`

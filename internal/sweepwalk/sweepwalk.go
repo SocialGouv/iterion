@@ -15,6 +15,10 @@
 // treeskip stays the generators' set; a name belongs to one of the two
 // packages when its reason does, and to both only by carrying both reasons.
 //
+// A sweep resolves its root with ModuleRoot or a relative walk from the test
+// process's working directory. Never use runtime.Caller or another compile-time
+// source path: a reused test binary can have been built in a different checkout.
+//
 // Every .go file the rules reach reaches visit, test files included:
 // whether a sweep judges test files is its own predicate's policy. The MCP
 // sweep parses tests because two of the sites it guards are `live` e2e

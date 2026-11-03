@@ -57,8 +57,9 @@ preflight_standdown (compute)         the one refusal that publishes nothing: no
                                       take a previous pass's arming down, run ends
                                       FORGE_PREFLIGHT_UNAVAILABLE
 commit         (agent)                commit + push the alignment onto the PR branch
-commit_check   (compute, GATE)        decides from the sha `commit` reports against
-                                      the head `prepare` read, and from align_probe's
+commit_probe   (tool, deterministic) git resolves the report to the full local HEAD;
+                                      it must descend from the head prepare read
+commit_check   (compute, GATE)        decides from commit_probe and align_probe's
                                       readings — never from the agents' summaries:
                                       committed | clean | hold_lost_alignment
 post_feedback  (tool, deterministic)  compose + POST the verdict comment (and the
@@ -67,6 +68,16 @@ feedback_health(tool, deterministic)  anti-façade check that the comment/gate l
 arm_automerge  (tool, deterministic)  opt-in; arm auto-merge, or merge the audited sha
 done
 ```
+
+A short or malformed commit report cannot certify an alignment: `commit_probe`
+reads Git with repository-redirection variables removed. It accepts only the
+actual workspace HEAD as a strict descendant of the audited revision; the
+published verdict and auto-merge pin use that full id. A failed proof counts as
+no commit, preserving the existing lost-alignment decision. A refusal can
+disarm or dequeue only while the PR head still matches this run's revision;
+a stale run leaves a newer revision's commitment in place. Forge takedowns
+have no atomic head precondition, so a head changing after this last read is
+still a race the forge API cannot close here.
 
 Code is committed **only** when the audit verdict is `safe` **and** the
 deterministic verify gate is green; a not-safe bump or a red build

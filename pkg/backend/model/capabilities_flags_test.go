@@ -3,11 +3,11 @@ package model
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/stdiotest"
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/llmtypes"
@@ -210,26 +210,7 @@ func TestCapabilitySourceSpellingsAgreeWithTheGateway(t *testing.T) {
 // place to read it.
 func capturedStderr(t *testing.T, fn func()) string {
 	t.Helper()
-	orig := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	os.Stderr = w
-	defer func() { os.Stderr = orig }()
-	fn()
-	os.Stderr = orig
-	if cerr := w.Close(); cerr != nil {
-		t.Fatalf("close: %v", cerr)
-	}
-	out, rerr := io.ReadAll(r)
-	if rerr != nil {
-		t.Fatalf("read: %v", rerr)
-	}
-	if cerr := r.Close(); cerr != nil {
-		t.Fatalf("close read side: %v", cerr)
-	}
-	return string(out)
+	return stdiotest.Run(t, &os.Stderr, fn)
 }
 
 // The capability READ path resolves an unknown gateway id QUIETLY: the
