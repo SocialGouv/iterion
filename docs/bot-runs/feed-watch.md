@@ -538,10 +538,14 @@ kubectl --context ovh-prod -n iterion exec <a runner or server pod> -- \
     queue → a duplicate digest next run. Each run touches a disjoint per-category
     subdir, so rebase auto-merges.
   - **#221** — dropped `capabilities: [board.create, board.read]` from
-    `synthesize`: a declared capability forces the `iterion_board` MCP server
-    active on every run; it is NOT active on a cloud runner, so the node failed
-    at setup even with `post_to_board=false`. The digest's sink is the chat
-    webhook; the speculative board-card path is removed.
+    `synthesize`: the node failed at setup on a cloud runner. The mechanism
+    believed at the time — that a declared capability forces the `iterion_board`
+    MCP server active — is wrong: the grant alone opens those tools, and
+    iterion's own MCP servers sit outside a node's `mcp:` scope. What makes the
+    grant worthless here is the transport: on the claw route a cloud run's board
+    tools write the runner pod's own dispatcher store, not the team board. The
+    digest's sink is the chat webhook; the speculative board-card path is
+    removed.
   - **#222** — pinned `backend: claude_code` (was auto-detected): on a cloud
     runner with a Claude Code OAuth-forfait credential, auto-detect picked
     `claw`, which refuses the forfait as a third-party-SDK CGU violation.

@@ -49,6 +49,27 @@ func BoardToolsFor(caps []string) []string {
 	return out
 }
 
+// BoardServerEnv is the environment the stdio board server (`iterion
+// __mcp-board`, cmd/iterion/mcp_board.go) reads its grant and its store from,
+// derived here once for every CLI backend that spawns it (claude_code's
+// wireBoardMCP, pi's spec builder). ITERION_BOARD_CAPS carries the TASK's
+// capabilities — the node's effective grant as buildTask resolved it — so the
+// server lists and answers exactly what the node holds, whatever the catalog
+// registered with; the store root and the owning ticket ride along only when
+// the task has them.
+func BoardServerEnv(task Task) map[string]string {
+	env := map[string]string{
+		"ITERION_BOARD_CAPS": strings.Join(task.Capabilities, ","),
+	}
+	if task.StoreDir != "" {
+		env["ITERION_STORE_DIR"] = task.StoreDir
+	}
+	if task.SourceIssueID != "" {
+		env["ITERION_SOURCE_ISSUE_ID"] = task.SourceIssueID
+	}
+	return env
+}
+
 // IsIterionMCPTool reports whether a tool FQN is served by one of iterion's
 // OWN MCP transports — the board, runs and connector-facade servers this
 // package registers for a node's `capabilities:` — as opposed to a tool the
