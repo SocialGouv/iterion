@@ -1,6 +1,6 @@
 # ADR-154: The sovereign pool boundary is a namespace and an enforced proxy
 
-- **Status**: Proposed (2026-11-03) — D27 (the operator) decided the mechanism, an in-cluster enforced egress proxy per pool. The SHAPE below is this wave's default answer to fleet question #88, which the operator has not answered; the chart, proxy and broker slices wait on that verdict and nothing in them starts before it. The record becomes Accepted in the commit that lands the first slice.
+- **Status**: Proposed (2026-11-03) — D27 (the operator) decided the mechanism, an in-cluster enforced egress proxy per pool. The SHAPE below is this wave's default answer to fleet question #88, which the operator has not answered; the chart, proxy and broker slices wait on that verdict and nothing in them starts before it. The record becomes Accepted in the commit that lands the first SHAPE slice (decisions 1-4), which is after that verdict: items 1 to 4 of the owed list implement none of the decisions below and land under Proposed.
 - **Date**: 2026-11-03
 - **Authors**: devthejo (session with Claude Opus 5), for [#2029](https://github.com/SocialGouv/iterion/issues/2029) P5
 - **Relates to**: [sovereign-pools.md](../sovereign-pools.md) (the twelve links of the chain that ship today) · [cloud-deployment.md](../cloud-deployment.md) (`runnerPools[]`, the bring-up) · [ADR-123](123-run-bundle-dek-in-envelope.md) (the per-run DEK: why a pool pod holds no key material) · [ADR-131](131-tenant-gateway-credential.md) (the tenant gateway credential, and the run's frozen content boundary) · [ADR-070](070-kubernetes-sandbox-orphan-gc.md) (the sandbox orphan GC the pool's Role must keep serving)
@@ -67,18 +67,20 @@ the code guarantees is tenant mediation on every blob read.
 
 - *A — a NAMESPACE per pool, rendered by the same release.* The runner's
   Role is namespace-bound (`kind: Role`, bound to `.Release.Namespace`), so
-  a pool's own Role simply does not carry `networkpolicies`, and the
-  standing policy in that namespace cannot be weakened by anything running
-  in it. The kubernetes sandbox driver needs no change to follow: it reads
-  its namespace from its own service-account mount
+  a pool's own Role simply does not carry `networkpolicies` `create` or
+  `delete`, and the standing policy in that namespace cannot be weakened
+  by anything running in it. The kubernetes sandbox driver needs no change
+  to follow: it reads its namespace from its own service-account mount
   (`pkg/sandbox/kubernetes.Detect`), so a pool pod places its sandbox
-  siblings in the pool's namespace by construction. Cost: cross-namespace
-  Service DNS for Mongo/NATS/S3, a second SA/Role/RoleBinding set, a
-  namespace template, and a release that now writes outside its own
-  namespace. **Chosen** — it is the only shape that answers an operator
-  audit asking "can the pod that holds this team's code widen its own
-  egress?" with *no*, on paper and in the cluster.
-- *B — keep the shared namespace, drop `networkpolicies` from a
+  siblings in the pool's namespace by construction. Cost: a second
+  SA/Role/RoleBinding set, a namespace template, a release that now writes
+  outside its own namespace, and reaching the stores from a second one —
+  cross-namespace Service DNS where a sub-chart bundles them, the same
+  external endpoints as today where they are managed. **Chosen** — it is
+  the only shape that answers an operator audit asking "can the pod that
+  holds this team's code widen its own egress?" with *no*, on paper and in
+  the cluster.
+- *B — keep the shared namespace, drop the authoring verbs from a
   pool-scoped Role.* Cheap: no DNS change, no namespace. Rejected: any
   OTHER pod of the namespace may still author an additive policy the CNI
   unions in, so the boundary stays weakenable from inside — it loses
@@ -91,24 +93,38 @@ the code guarantees is tenant mediation on every blob read.
 **The per-run NetworkPolicy the sandbox driver synthesises.**
 
 The driver locks each sandbox sibling's egress to its runner pod's CONNECT
-proxy plus kube-dns, and when it cannot (no pod IP) it REFUSES to start the
-run rather than downgrade isolation in silence. A pool pod that loses the
-verb would meet that refusal — or, worse, a tolerant version of it.
+proxy plus kube-dns, and its inbound to that same pod IP; when it cannot
+(no pod IP) it REFUSES to start the run rather than downgrade isolation in
+silence. A pool pod does NOT meet that refusal: the chart wires
+`ITERION_POD_IP` for a pool Deployment too, so the pod has the env and
+loses the authoring verbs instead — it fails one step later, as
+`kubernetes: apply netpolicy: … forbidden` at the manifest apply. Same
+direction, different error, and a remedy an operator reads as RBAC where
+the PodIP message names the Helm downward API. Which is why the shape below
+has the pool DECLARE the standing boundary rather than leave the driver to
+interpret a Forbidden.
 
-- *Keep the verb on a pool.* Rejected by the ticket's own promise.
-- *A standing namespace-wide default-deny egress policy, and a pool pod
-  that DECLARES it.* The standing policy covers the pool's pods and their
+- *Keep the authoring verbs on a pool.* Rejected by the ticket's own
+  promise.
+- *A standing namespace-wide default-deny policy, and a pool pod that
+  DECLARES it.* The standing policy covers the pool's pods and their
   sandbox siblings (same namespace), so it must itself carry what the
   per-run policy granted — a sibling reaching its runner pod's CONNECT
-  proxy, which the driver advertises as the runner's own pod IP — and the
-  per-run policy is then not owed there; the per-run `network:` allowlist
-  is enforced by the proxies, which is where a hostname rule can exist at
-  all. The declaration is load-bearing: without it the driver cannot tell
-  "no policy because RBAC refused" from "no policy needed", and continuing
-  silently is the exact footgun its fail-closed refusal exists to prevent.
-  **Chosen**, with its isolation delta recorded under Consequences: a
-  namespace-wide rule says "any runner pod of the pool" where the per-run
-  rule pinned one `/32`.
+  proxy, which the driver advertises as the runner's own pod IP — and what
+  the per-run policy DENIED, because `BuildNetworkPolicy` is two-sided:
+  `policyTypes: ["Egress", "Ingress"]`, and its one `from` is that runner
+  pod's `/32`. A standing object that keeps only the egress half would
+  leave every sandbox sibling — a pod running the run's untrusted code,
+  its per-run Secrets mounted — open to the whole cluster. So the standing
+  object carries both, and the per-run policy is then not owed there; the
+  per-run `network:` allowlist is enforced by the proxies, which is where a
+  hostname rule can exist at all. The declaration is load-bearing: without
+  it the driver cannot tell "no policy because RBAC refused" from "no
+  policy needed", and continuing silently is the exact footgun its
+  fail-closed refusal exists to prevent. **Chosen**, with its isolation
+  delta recorded under Consequences: in both directions a namespace-wide
+  rule says "the pool's runner pods" where the per-run rule pinned one
+  `/32`.
 - *A ValidatingAdmissionPolicy refusing NetworkPolicy from the pool's SA.*
   Same effect, one more cluster-scoped object the operator must install and
   keep. Rejected as the primary mechanism; it remains available as
@@ -175,25 +191,54 @@ field would be the THIRD.
    boundary is enforced, and the release renders it.
 2. **A pool has its own ServiceAccount and Role**, carrying what the sandbox
    driver and the orphan GC need (pods, exec, logs, status, the per-run
-   Secrets) and NOT `networkpolicies`.
-3. **A standing default-deny egress NetworkPolicy** lives in the pool's
-   namespace, and the road a pool run travels is named in it allowance by
-   allowance — the list belongs to the decision, because a missing
-   allowance is a time-out, not a refusal, which is what
+   Secrets) and, on `networkpolicies`, `list` alone — never `create`,
+   never `delete`. `create` is what widens the pod's own egress
+   (measurement 1) and `delete` would remove the standing policy itself,
+   while `list` is the orphan reaper's, exactly as `runner-rbac.yaml` and
+   [sandbox.md](../sandbox.md) already say of the Secrets: `reapKinds` in
+   `pkg/sandbox/kubernetes/orphans.go` sweeps pod, Secret AND
+   networkpolicy, a kind it cannot list is a returned error, and both
+   callers (`pkg/runner/reaper.go`, `pkg/runview/service_lifecycle.go`)
+   log it as a warning every pass — a permanent `Forbidden` line in the one
+   place an operator watches for the plaintext-credential Secret that
+   leaks when the sweep fails. Nothing else needs a verb there: a pool
+   namespace holds no per-run policy (decision 3), so the sweep's list
+   comes back empty, and the driver's teardown delete is gated on the
+   apply having happened (`networkPolicyApplied`, driver.go), so it is
+   never attempted either.
+3. **A standing default-deny NetworkPolicy, both directions**, lives in the
+   pool's namespace, and the road a pool run travels is named in it
+   allowance by allowance — the list belongs to the decision, because a
+   missing allowance is a time-out, not a refusal, which is what
    `charts/iterion/values-prod.yaml` already warns of the release-wide
-   policy. The allowances: kube-dns; the kube-apiserver the sandbox
-   driver's `kubectl` dials for every apply, exec, logs and delete (as an
-   endpoint `ipBlock` — a `podSelector` cannot name it where the control
-   plane is managed); the in-cluster stores (Mongo, NATS, S3); the pool's
-   own runner pods, intra-namespace, for the sibling → CONNECT-proxy hop;
-   the pool's egress-proxy Service; the forge, which git leaves the pod
-   for directly — the clone guard is a loopback proxy that re-resolves
+   policy. **Egress**: kube-dns; the kube-apiserver the sandbox driver's
+   `kubectl` dials for every apply, exec, logs and delete (as an endpoint
+   `ipBlock` — a `podSelector` cannot name it where the control plane is
+   managed); the stores — Mongo, NATS and S3 wherever the install puts
+   them, a `namespaceSelector` where a sub-chart bundles them and operator
+   CIDR or endpoint data where they are managed, which is what
+   `values-prod.yaml` ships (`nats.enabled: false`, external Mongo and
+   S3); the pool's own runner pods, intra-namespace, for the sibling →
+   CONNECT-proxy hop; the pool's egress-proxy Service; the PROXY's own
+   egress to the pool's gateway host, because a namespace-wide rule
+   selects every pod of the namespace, the proxy's included, and decision
+   6 treats that host as normally public — so it enters as operator CIDR
+   data, for the same reason as the forge; the forge, which git leaves the
+   pod for directly — the clone guard is a loopback proxy that re-resolves
    and dials the repo host itself rather than chaining to the pool's
    proxy — and which therefore enters the policy as operator CIDR data,
    decision 6's host NAMES being enforceable only at a proxy; and a
    per-pool `extraAllow`, the twin of the chart's
    `networkPolicy.egress.extraAllow`, so a pool that needs one more peer
-   never has to disable its boundary.
+   never has to disable its boundary. **Ingress**, the half the per-run
+   policy also carried: the sandbox siblings — selectable by the
+   `iterion.io/managed` label the driver stamps on every one of them —
+   accept the pool's runner pods and nothing else, the standing twin of
+   the per-run `/32`; the proxy accepts the pool's runner pods only, which
+   closes back the reach the egress half hands the siblings; the runner
+   pods accept the pool's own pods, for that same CONNECT-proxy hop. The
+   kubelet's probes are host traffic no policy sees, as the chart's
+   dev-store policy already records.
    The pool pod declares that the standing boundary exists, so the sandbox
    driver's fail-closed refusal keeps biting everywhere else.
 4. **The egress proxy is the Nth variant of an existing seam, not a new
@@ -203,8 +248,9 @@ field would be the THIRD.
    guard is variant 1 (a long-lived netproxy with a one-host allowlist and
    connect-time SSRF re-resolution). The pool's proxy is variant 2, with
    one difference that is the whole point: it runs OUT of the pod it
-   bounds. An in-pod loopback proxy is bypassable by the process it is
-   meant to bound.
+   bounds — its own Deployment, in the pool's namespace, which is why the
+   standing policy above selects it like any other pod there. An in-pod
+   loopback proxy is bypassable by the process it is meant to bound.
 5. **The denied-connection proof is produced by the proxy's refusal hook.**
    netproxy logs nothing of its own — it calls `OnBlocked(host, reason)`,
    and the per-run variant turns that into a typed run event
@@ -238,20 +284,29 @@ field would be the THIRD.
   [cloud-deployment.md](../cloud-deployment.md) repeats it under *Sovereign
   runner pools*. Both are TRUE today; the chart slice owns their rewrite,
   and this record is what they will point at.
-- **Cross-namespace reach becomes explicit.** The pool pod dials Mongo,
-  NATS and S3 by Service DNS across namespaces, plus the kube-apiserver
-  the sandbox driver shells `kubectl` at, and the standing policy must
-  name every one of them. An in-cluster store reached today by a short
-  name needs its fully qualified form.
-- **A standing rule is coarser than the per-run rule it replaces.** The
-  per-run policy pinned a sibling to its own runner pod by `/32`; a
-  namespace-wide rule can only say "the pool's runner pods", and the
-  pool's egress-proxy Service becomes reachable from the siblings too.
-  What separates two runs at that layer is then netproxy's token, fresh
-  per run — so the pool proxy MUST require its own, or a sibling crosses
-  the pool boundary without its run's `network:` allowlist. Where the
-  verb is still granted (a shared-namespace install), the per-run policy
-  stays the finer instrument and is still synthesised.
+- **Reaching the stores becomes explicit, and their address is the
+  install's.** Bundled by a sub-chart, Mongo, NATS and S3 are
+  cross-namespace Services: a store reached today by a short name needs
+  its fully qualified form, and the policy names them by selector.
+  Managed — what `values-prod.yaml` ships, on the `ovh-prod` target this
+  record names below — they sit outside the cluster and the policy can
+  only carry the operator's CIDR or endpoint data. Either way all three,
+  plus the kube-apiserver the sandbox driver shells `kubectl` at, must be
+  in the list: a store it forgets is the time-out mode above, the pool pod
+  holding its `ITERION_MONGO_URI` and never reaching the row.
+- **A standing rule is coarser than the per-run rule it replaces, in both
+  directions.** Outbound, the per-run policy pinned a sibling to its own
+  runner pod by `/32`; a namespace-wide rule can only say "the pool's
+  runner pods", and the pool's egress-proxy Service becomes addressable
+  from the siblings too — which the standing inbound rule closes back, the
+  proxy accepting the runner pods alone. Inbound, a sibling accepted its
+  own runner pod's `/32` and now accepts any runner pod of the pool. What
+  separates two runs at that layer is then netproxy's token, fresh per run
+  — so the pool proxy MUST require its own, or a sibling crosses the pool
+  boundary without its run's `network:` allowlist. Where the authoring
+  verbs are still granted (a shared-namespace install), the per-run policy
+  stays the finer instrument in both directions and is still
+  synthesised.
 - **Git stays outside the by-name rule until the clone guard chains.**
   The forge is an IP-layer allowance because the clone guard dials the
   repo host itself; teaching it to chain to the pool's proxy would put
@@ -350,10 +405,12 @@ field would be the THIRD.
    `TestChartRenderRunnerPoolCarriesNoPlatformKeyMaterial`, after `helm
    dependency build`.
 5. **Then, after the operator's verdict**: the namespace + RBAC + standing
-   policy render (witness: the pool Role lacks the verb, the policy renders
-   with exactly its allowed peers, `boundary.enforced: false` renders the
-   legacy shape and warns), the egress proxy (witness: a host outside the
-   policy is refused and the refusal is logged with the host and the pool),
+   policy render (witness: the pool Role carries `networkpolicies` `list`
+   and neither `create` nor `delete`, the policy renders both
+   policyTypes with exactly its allowed peers, `boundary.enforced: false`
+   renders the legacy shape and warns), the egress proxy (witness: a host
+   outside the policy is refused and the refusal is logged with the host
+   and the pool),
    and the broker credential (witness: the credential reaches the client
    options; absent, today's connect is unchanged).
 
