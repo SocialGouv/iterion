@@ -829,7 +829,7 @@ so a new id-addressed route cannot land unclassified:
 | `/api/v1/native/labels/{label}`, `/api/v1/native/board/…` | board vocabulary and config of the active team's store |
 | `/api/v1/bots/{name}…` | the dispatch catalog: a tiered namespace by design (team > platform > baked), not an authored-resource id |
 | `/api/assistant-watches/{watchID}` | fixed compatibility sibling of the run-addressed `DELETE /api/runs/{id}/assistant-watches/{watchID}`: the stop resolves the watch's target run under the caller's active team |
-| `/api/v1/marketplace/…` | public marketplace family (anonymous reads, repo-coordinate installs) |
+| `/api/v1/marketplace/…` | public marketplace family (anonymous reads, repo-coordinate installs); the browse routes serve a public view — the submitter and reviewer account ids, the review timestamp and the reject reason are only returned to the submitter and to super-admins (`marketplace.ForViewer`); the moderation queue stays whole |
 | `/api/v1/mcp/…` | per-run token over single-tenant store surfaces |
 | `/api/webhooks/…` | signature-authenticated deliveries |
 | `/api/examples/{name…}`, `/api/local/…`, `/api/projects/{id}`, `/api/v1/pipeline-board/workspace-images/{path…}`, `/api/v1/plugins/{name}…`, `/brand/{file}` | deployment-local or static surfaces with no tenant dimension (local registries, workdir files, the plugin tree, brand assets) |
