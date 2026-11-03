@@ -204,6 +204,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/agents/orientation/README.md`](../agents/orientation/README.md) | Orientation — the domain | Exact questions (where, impact, path) go to `iterion map` and the committed | — |
 | [`docs/agents/orientation/graphify.md`](../agents/orientation/graphify.md) | Knowledge graph — graphify | `graphify-out/` holds a queryable knowledge graph of this repository — Go/TS | — |
 | [`docs/agents/testing/README.md`](../agents/testing/README.md) | Testing — the domain | — | — |
+| [`docs/agents/testing/background-oracles.md`](../agents/testing/background-oracles.md) | Background sessions — prove the decision before measuring duration | The fake Claude CLI and the engine are separate processes. | — |
 | [`docs/agents/testing/engine-contracts.md`](../agents/testing/engine-contracts.md) | Engine contracts — testing an external CLI against the real pinned binary | for rgaa-audit today; deepsec for sec-audit-source was the counter-example), | — |
 | [`docs/agents/testing/flakes.md`](../agents/testing/flakes.md) | Machine-dependent tests — annotate, measure, re-check | A machine-dependent failure stays visible. | — |
 | [`docs/agents/testing/process-fixtures.md`](../agents/testing/process-fixtures.md) | Process fixtures — captures, corpus copies and host state | Evidence for the [test-author rules](../agents/testing/testing.md#testing-patterns), linked from the | — |
