@@ -215,11 +215,15 @@ func narrowingNotice(scope *CommandScope) string {
 // a resume whose checkpoint compaction summarised the turn away, or a
 // delegated child's fresh conversation all leave the generation bounded by a
 // command its conversation never invoked — the next refusal then names a
-// command the model cannot place. The re-statement rides the LAST user turn
-// (never a new message whose role flip would unpair a resumed tool_result's
-// turn), and is a no-op when no scope binds or the notice already rides the
+// command the model cannot place. The re-statement joins the LAST turn when
+// it is a user turn (a resumed generation's tail is its answering
+// tool_result, so no role flip ever unpairs it); a tail that is not a user
+// turn gets the notice as a fresh user message, which keeps the alternation
+// valid. No-op when no scope binds or the notice already rides the
 // conversation — including nested one block deep in the invocation's
-// tool_result.
+// tool_result (the depth api.ToolResult.ToContentBlock nests text at today;
+// a deeper future shape would only lose the dedupe, re-stating once too
+// often — noise, never a widened or a dropped bound).
 func EnsureNarrowingNotice(ctx context.Context, messages []api.Message) []api.Message {
 	scope := CommandScopeFrom(ctx)
 	if scope == nil || !scope.Active() {

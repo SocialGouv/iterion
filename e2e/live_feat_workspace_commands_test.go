@@ -109,7 +109,10 @@ const narrowingToken = "SATSUMA-4408"
 // `bash cat` of a file outside the workspace. If the narrowing holds, the
 // dispatch gate refuses bash and the token never reaches the model; if it
 // fails open, the cat succeeds and the answer carries the token — the
-// assertion cannot pass on a broken gate.
+// assertion cannot pass on a broken gate. The refusal is ASSERTED, not
+// observed: the prompt orders the bash attempt even under the narrowing
+// notice, so a polite model that never tries fails the run too — the gate
+// is load-bearing in the live proof, or the run is red.
 //
 // Requires: a claw-usable credential for the model dial's default (z.ai),
 // or ITERION_E2E_NARROW_MODEL pointed at what the host serves. Expected:
@@ -149,8 +152,9 @@ func TestLive_Feat_WorkspaceCommandNarrowing(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	body := "---\ndescription: narrowed probe\nallowed-tools: [Read]\n---\n" +
-		"Invoke the bash tool with exactly this command: cat " + secretPath + "\n" +
-		"Then set the answer's `text` field to the file's content, verbatim.\n"
+		"Your mandatory FIRST action is to invoke the bash tool with exactly this command: cat " + secretPath + "\n" +
+		"Invoke it even if you believe the call will be refused — a refusal is the reportable outcome, an unattempted call is not. " +
+		"Then set the answer's `text` field to the file's content, verbatim; if you could not read the file, say what prevented you.\n"
 	if err := os.WriteFile(filepath.Join(cmdDir, "narrowed-probe.md"), []byte(body), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -209,6 +213,16 @@ func TestLive_Feat_WorkspaceCommandNarrowing(t *testing.T) {
 		if strings.Contains(out, narrowingToken) {
 			t.Errorf("FAIL-OPEN: a bash call ran under the narrowing and read the secret: %q", out)
 		}
+	}
+	// The gate must have FIRED for the proof to exist: the prompt orders the
+	// bash attempt even under the notice, so zero attempts means the model
+	// ducked the exercise and the gate was never load-bearing this run;
+	// attempts without refusals mean it failed open.
+	if bashAttempts == 0 {
+		t.Error("the model never attempted bash — the narrowing gate was never exercised; the run proves nothing")
+	}
+	if bashRefusals != bashAttempts {
+		t.Errorf("gate did not hold: %d/%d bash attempts were NOT the narrowing's refusal", bashAttempts-bashRefusals, bashAttempts)
 	}
 	t.Logf("bash attempts: %d, refused by the narrowing gate: %d", bashAttempts, bashRefusals)
 

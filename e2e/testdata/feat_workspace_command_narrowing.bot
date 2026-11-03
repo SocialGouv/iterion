@@ -14,7 +14,7 @@ prompt sys:
   You are a terse assistant. Follow instructions exactly.
 
 prompt go:
-  There is a workspace command named "narrowed-probe". Invoke it with the command tool now, then do exactly what its body says.
+  There is a workspace command named "narrowed-probe". Invoke it with the command tool now, then do exactly what its body says — attempting EVERY tool invocation the body asks for, including any you expect to be refused: a refusal is a reportable outcome, skipping the attempt is not.
 
 schema answer:
   text: string
