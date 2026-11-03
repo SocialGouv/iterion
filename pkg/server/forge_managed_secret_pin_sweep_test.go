@@ -267,8 +267,11 @@ func TestPinSweepingSecrets_RevokesThenSweepsAndARetryFinishesAnInterruptedSweep
 	// The retry: the inner delete answers not-found, the sweep runs anyway
 	// and that verdict is what the caller gets back once the pins are gone.
 	// A context already cancelled must not cancel the clear: the sweep is
-	// detached, as on the routes.
-	s.webhookConfigs = wh
+	// detached, as on the routes. The webhook home refuses to list under a
+	// dead context (ctxCheckingPinSweep, a real store's shape) — on the bare
+	// memory store, which never reads its context, a sweep riding the
+	// caller's would pass here just the same.
+	s.webhookConfigs = ctxCheckingPinSweep{ConfigStore: wh}
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
 	if err := hooked.Delete(cancelled, "sec-1"); !errors.Is(err, secrets.ErrGenericSecretNotFound) {

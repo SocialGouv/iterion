@@ -782,11 +782,9 @@ func (s *Server) handleDeleteApiKeyIn(w http.ResponseWriter, r *http.Request, sc
 	// dead key seals the team's default in silence — the replacement the
 	// write-time validator exists to refuse. Revocation must not wait on a
 	// config edit, so the delete sweeps; the audit line carries the
-	// surfaces that lost a pin. The sweep runs detached from the request
-	// (pinSweepTimeout): a client hanging up mid-sweep must not cancel the
-	// clear half-way — the dead pin that leaves standing seals the team's
-	// default with nobody watching.
-	sweepCtx, sweepCancel := context.WithTimeout(context.WithoutCancel(r.Context()), pinSweepTimeout)
+	// surfaces that lost a pin. The sweep outlives the request
+	// (pinGuardCtx).
+	sweepCtx, sweepCancel := pinGuardCtx(r)
 	defer sweepCancel()
 	swept, sweepErr := s.sweepCredentialPins(sweepCtx, pinSweepTenant(ctx), key.ID)
 	meta := map[string]any{"name": key.Name, "provider": string(key.Provider)}

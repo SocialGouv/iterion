@@ -47,12 +47,9 @@ import (
 // sweep — a failed or hung-up first pass the delete's retry finishes —
 // not the born-mid-delete case.
 
-// pinSweepTimeout bounds a detached sweep. The delete answers on the
-// request's context; the sweep no longer does — a client that hangs up
-// mid-sweep must not cancel the clear half-way, because the dead pin it
-// leaves standing seals the team's default with nobody watching. Revocation
-// already happened (the irreversible half), so it is the sweep finishing
-// that makes the 204 true.
+// pinSweepTimeout bounds a pin guard detached from its caller
+// (detachedPinCtx): the guard outlives a caller that hangs up, not a store
+// that never answers.
 const pinSweepTimeout = time.Minute
 
 // sweepCredentialPins clears every pin of tenantID that names recordID and
@@ -127,7 +124,7 @@ func pinsName(pins map[string]string, recordID string) bool {
 //
 // The tenant is the route's read scope (pinSweepTenant) and the record id
 // the path's, the two facts a delete retry still carries. The pass runs
-// detached (pinSweepTimeout): the caller may be gone, the sweep must not.
+// detached (pinGuardCtx): the caller may be gone, the sweep must not.
 // A read scope with no tenant sweeps nothing — a tenant-less sweep would
 // be unscoped — and no cloud route reaches this pass without one: the
 // Mongo stores refuse a tenant-less read before any "not found". A caller
@@ -153,12 +150,24 @@ func (s *Server) retryCredentialPinSweep(r *http.Request, tenantID, recordID str
 	return s.sweepCredentialPins(ctx, tenantID, recordID)
 }
 
-// pinGuardCtx detaches a pin guard from the request's lifetime, bounded by
-// pinSweepTimeout: the caller may be gone, the guard must not — a client
-// that hangs up mid-clear must not cancel it half-way, because the dead
-// pin that leaves standing seals the team's default with nobody watching.
+// pinGuardCtx is detachedPinCtx for a route: the guard outlives the request
+// it runs for.
 func pinGuardCtx(r *http.Request) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(r.Context()), pinSweepTimeout)
+	return detachedPinCtx(r.Context())
+}
+
+// detachedPinCtx is the context every pin guard runs under — the delete
+// routes' sweep and its retry, the write routes' re-check, the forge hook's
+// sweep — so the detach and its bound are one policy: the caller's values
+// without its cancellation, bounded by pinSweepTimeout. The caller may be
+// gone, the guard must not: a client hanging up on a route, or a deprovision
+// cancelled under the forge hook, must not cancel a clear half-way, because
+// the dead pin it leaves standing goes on in silence with nobody watching —
+// a key pin sealing the team's default, a secret pin leaving its workflow
+// secret unfilled. On a delete, revocation already happened (the
+// irreversible half), so it is the sweep finishing that makes the 204 true.
+func detachedPinCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), pinSweepTimeout)
 }
 
 // pinSweepTenant names the tenant a delete sweeps pins under: the tenant

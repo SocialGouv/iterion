@@ -55,10 +55,8 @@ func (d pinSweepingSecrets) Delete(ctx context.Context, id string) error {
 	if err != nil && !errors.Is(err, secrets.ErrGenericSecretNotFound) {
 		return err
 	}
-	// Detached from the caller's lifetime (pinSweepTimeout): a cancelled
-	// deprovision must not cancel the clear half-way, exactly as a client
-	// hanging up on the route must not.
-	sweepCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pinSweepTimeout)
+	// The sweep outlives its caller, as on the routes (detachedPinCtx).
+	sweepCtx, cancel := detachedPinCtx(ctx)
 	defer cancel()
 	swept, sweepErr := d.srv.sweepCredentialPins(sweepCtx, pinSweepTenant(ctx), id)
 	if sweepErr != nil {

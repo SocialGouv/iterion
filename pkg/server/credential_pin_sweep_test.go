@@ -599,6 +599,42 @@ func TestDeleteGenericSecret_TheSweepOutlivesADisconnectedClient(t *testing.T) {
 	}
 }
 
+// TestDeleteApiKey_TheRetrySweepOutlivesADisconnectedClient: the retry's
+// heal is the one pass left that can clear the pins of an interrupted
+// delete, and it runs under the first pass's detach — a client hanging up
+// on the retry must not cancel it half-way. The heal is
+// retryCredentialPinSweep, which every delete route shares, so one route
+// witnesses its detach; the route wiring has its own witnesses
+// (TestDeleteApiKey_RetryFinishesAnInterruptedSweep and its twins).
+func TestDeleteApiKey_TheRetrySweepOutlivesADisconnectedClient(t *testing.T) {
+	srv, _, _, _ := newPinSweepServer(t)
+	mem := webhooks.NewMemoryConfigStore()
+	seedSweepWebhook(t, mem, webhooks.Config{ID: "wh-1", TenantID: "team-a",
+		KeyOverrides: map[string]string{"anthropic": "key-gone"}})
+	srv.webhookConfigs = ctxCheckingPinSweep{ConfigStore: mem}
+
+	r := httptest.NewRequest(http.MethodDelete, "/api/teams/team-a/api-keys/key-gone", nil)
+	r.SetPathValue("id", "team-a")
+	r.SetPathValue("key_id", "key-gone")
+	ctx, cancel := context.WithCancel(auth.WithIdentity(r.Context(), auth.Identity{UserID: "u1", IsSuperAdmin: true, TeamID: "team-a"}))
+	defer cancel()
+	r = r.WithContext(store.WithTenant(ctx, "team-a"))
+	cancel() // the client hung up on the retry
+
+	w := httptest.NewRecorder()
+	srv.handleDeleteApiKey(w, r)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("retry under a hung-up client = %d body=%s, want 404", w.Code, w.Body.String())
+	}
+	wh1, err := mem.Get(context.Background(), "wh-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wh1.KeyOverrides) != 0 {
+		t.Fatalf("the hung-up client left the pin standing behind the 404: %v — the retry's heal must not ride the request's context", wh1.KeyOverrides)
+	}
+}
+
 // noGrantIdentityStore answers every read with not-found: the shape of a
 // caller whose only standing is the session itself, wired so the
 // canManageTeam gate reads a refusal instead of a nil store.

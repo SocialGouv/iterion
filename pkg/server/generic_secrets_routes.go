@@ -237,11 +237,8 @@ func (s *Server) handleDeleteGenericSecret(w http.ResponseWriter, r *http.Reques
 	// The chokepoint's half of the pin guards (see handleDeleteApiKeyIn):
 	// a secret_overrides pin naming this record would outlive it and leave
 	// the workflow secret unfilled in silence — on every fire, forever, on
-	// a cron subscription. The sweep runs detached from the request
-	// (pinSweepTimeout): a client hanging up mid-sweep must not cancel the
-	// clear half-way — the dead pin that leaves standing seals the
-	// workflow secret's fill with nobody watching.
-	sweepCtx, sweepCancel := context.WithTimeout(context.WithoutCancel(r.Context()), pinSweepTimeout)
+	// a cron subscription. The sweep outlives the request (pinGuardCtx).
+	sweepCtx, sweepCancel := pinGuardCtx(r)
 	defer sweepCancel()
 	swept, sweepErr := s.sweepCredentialPins(sweepCtx, pinSweepTenant(ctx), rec.ID)
 	meta := map[string]any{"name": rec.Name}
