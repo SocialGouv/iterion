@@ -6,11 +6,13 @@
 // endpoints derived from an org-admin-supplied issuer URL.
 //
 // The guard blocks the conventional SSRF categories — loopback, private
-// (RFC1918 / ULA), link-local, multicast, unspecified — plus the shared
-// (CGNAT) address space, the IPv6 forms that carry an IPv4 address a
-// translator or a tunnel delivers to (IPv4-compatible, NAT64, 6to4) and the
-// cloud metadata endpoints, and refuses conventional cluster-internal
-// hostname aliases that service meshes re-route even with no DNS record.
+// (RFC1918 / ULA), link-local, multicast, unspecified — plus the ranges it
+// lists (the shared CGNAT space, the deprecated IPv4-compatible block, the
+// NAT64 local-use prefix), a NAT64 well-known or 6to4 address whose
+// embedded IPv4 address it blocks, and the cloud metadata endpoints, and
+// refuses conventional cluster-internal hostname aliases that service
+// meshes re-route even with no DNS record. The set is these lists, not
+// every range IANA marks not globally reachable.
 package httpdial
 
 import (
@@ -25,10 +27,12 @@ import (
 )
 
 // IsPublicUnicast reports whether ip is safe to dial from a cloud pod context.
-// The blocked set matches the typical SSRF blocklist plus AWS/GCP/Azure/Alibaba
-// metadata endpoints, plus the ranges no public host sits in that net.IP's
-// own predicates leave out (nonPublicPrefixes). An IPv4-mapped address is
-// judged as the IPv4 address it maps.
+// It refuses what net.IP's own predicates name (loopback, unspecified,
+// multicast, link-local, private), the ranges in nonPublicPrefixes, an
+// address of a v4Embeddings prefix whose embedded IPv4 address it refuses,
+// and the AWS/GCP/Azure/Alibaba metadata endpoints. An IPv4-mapped address
+// is judged as the IPv4 address it maps. The set is these lists, not every
+// range IANA marks not globally reachable.
 func IsPublicUnicast(ip net.IP) bool {
 	if ip == nil {
 		return false
@@ -41,6 +45,9 @@ func IsPublicUnicast(ip net.IP) bool {
 	if inNonPublicPrefix(ip) {
 		return false
 	}
+	if v4, ok := embeddedIPv4(ip); ok && !IsPublicUnicast(v4) {
+		return false
+	}
 	// Cloud metadata services sit on top of the link-local range and the
 	// shared address space (already covered above); belt-and-suspenders
 	// string check for readability and to cover the IPv6 metadata aliases.
@@ -51,20 +58,49 @@ func IsPublicUnicast(ip net.IP) bool {
 	return true
 }
 
-// nonPublicPrefixes are the ranges no public host sits in that net.IP's own
-// predicates do not name. The shared address space serves carrier NAT,
-// overlay networks and cluster pod ranges. Each IPv6 block carries an IPv4
-// address that a translator or a tunnel delivers to — loopback, private and
-// metadata alike — and is refused whole, whatever it embeds: no public host
-// is written in the deprecated IPv4-compatible or 6to4 forms, and a NAT64
-// prefix that reaches public IPv4-only hosts from an IPv6-only network is
-// what a caller's escape hatch (non-strict) is for.
+// nonPublicPrefixes are refused whole, beside net.IP's own predicates. The
+// shared address space serves carrier NAT, overlay networks and cluster pod
+// ranges. The two IPv6 blocks carry an IPv4 address that a reader or a
+// translator delivers to at a place the address does not fix for every
+// reader: the deprecated IPv4-compatible form, which no host is written in,
+// and the NAT64 local-use prefix, whose operator picks the prefix length
+// and so where the IPv4 address sits.
 var nonPublicPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("100.64.0.0/10"),  // shared address space, CGNAT (RFC 6598)
 	netip.MustParsePrefix("::/96"),          // IPv4-compatible (RFC 4291 §2.5.5.1, deprecated)
-	netip.MustParsePrefix("64:ff9b::/96"),   // NAT64 well-known prefix (RFC 6052)
 	netip.MustParsePrefix("64:ff9b:1::/48"), // NAT64 local-use prefix (RFC 8215)
-	netip.MustParsePrefix("2002::/16"),      // 6to4 (RFC 3056, deprecated by RFC 7526)
+}
+
+// v4Embeddings are the IPv6 prefixes whose every address carries, at a fixed
+// place, the IPv4 address a translator or a relay delivers to: such an
+// address is exactly as public as the IPv4 address it carries. An IPv6-only
+// network with DNS64 reaches an IPv4-only public host through the NAT64
+// well-known prefix (IANA marks it globally reachable), while the same
+// prefix carrying 10.0.0.5 or 169.254.169.254 reaches the translator's own
+// network.
+var v4Embeddings = []struct {
+	prefix netip.Prefix
+	at     int // byte offset of the IPv4 address in the IPv6 one
+}{
+	{netip.MustParsePrefix("64:ff9b::/96"), 12}, // NAT64 well-known prefix (RFC 6052 §2.2): bits 96-127
+	{netip.MustParsePrefix("2002::/16"), 2},     // 6to4 (RFC 3056 §2, deprecated by RFC 7526): bits 16-47
+}
+
+// embeddedIPv4 returns the IPv4 address ip carries when ip falls in a
+// v4Embeddings prefix.
+func embeddedIPv4(ip net.IP) (net.IP, bool) {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return nil, false
+	}
+	addr = addr.Unmap()
+	for _, e := range v4Embeddings {
+		if e.prefix.Contains(addr) {
+			b := addr.As16()
+			return net.IPv4(b[e.at], b[e.at+1], b[e.at+2], b[e.at+3]), true
+		}
+	}
+	return nil, false
 }
 
 // inNonPublicPrefix reports whether ip falls in nonPublicPrefixes, an

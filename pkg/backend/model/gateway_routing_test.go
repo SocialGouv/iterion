@@ -772,8 +772,9 @@ func TestCheckGatewaySource_RunPairServesAndTheEnvIsNeverRead(t *testing.T) {
 // address rule at the seam, liftable by the operator's escape hatch, the
 // same treatment the env pair gets.
 func TestCheckGatewaySource_RunHeldPrivateURLRefusedAndLifted(t *testing.T) {
-	// The shared (CGNAT) and IPv4-embedding classes ride the private
-	// classes' rule: refused under strict, lifted by the same hatch.
+	// The shared (CGNAT) space and the non-public IPv6 transition
+	// addresses ride the private classes' rule: refused under strict, lifted
+	// by the same hatch.
 	for _, base := range []string{
 		"https://10.0.0.7:8443",
 		"https://100.64.0.1:8443",

@@ -201,7 +201,7 @@ func TestFireForRun_SSRFGuardBlocksLoopback(t *testing.T) {
 // The default is TEST-NET-3 (203.0.113.10) — never routable, yet public
 // unicast per httpdial.IsPublicUnicast, which blocks the conventional SSRF
 // categories (loopback, private, link-local, multicast, unspecified), the
-// CGNAT space and the IPv6 forms carrying an IPv4 address, plus the cloud
+// CGNAT space and the non-public IPv6 transition addresses, plus the cloud
 // metadata endpoints.
 type stubResolver struct {
 	mu      sync.Mutex
@@ -245,8 +245,8 @@ func TestVetURL(t *testing.T) {
 		{"cluster alias blocked", "http://foo.svc.cluster.local/cb", false, true, false},
 		{"metadata alias blocked", "http://metadata.google.internal/cb", false, true, false},
 		{"dotted metadata alias blocked", "http://metadata.google.internal./cb", false, true, false},
-		// The shared (CGNAT) space and the IPv6 forms that carry an IPv4
-		// address are the private classes' case: blocked, and lifted by
+		// The shared (CGNAT) space and the non-public IPv6 transition
+		// addresses are the private classes' case: blocked, and lifted by
 		// the notifier's own allowPrivate.
 		{"cgnat blocked", "http://100.64.0.1/cb", false, true, false},
 		{"cgnat allowed", "http://100.64.0.1/cb", true, false, false},

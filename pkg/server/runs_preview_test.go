@@ -49,9 +49,9 @@ func TestHandlePreviewProxy_RejectsPrivateTargetStrict(t *testing.T) {
 			t.Fatalf("status = %d, want 403", got)
 		}
 	})
-	// The shared (CGNAT) space and the IPv6 forms that carry an IPv4
-	// address ride the private classes' rule: refused in strict mode, before
-	// any connection.
+	// The shared (CGNAT) space and the non-public IPv6 transition addresses
+	// ride the private classes' rule: refused in strict mode, before any
+	// connection.
 	for _, target := range []string{"http://100.64.0.1/", "http://[::127.0.0.1]:9/", "http://[64:ff9b::a9fe:a9fe]/latest/meta-data/", "http://[2002:a9fe:a9fe::1]/latest/meta-data/"} {
 		t.Run(target+" rejected (403)", func(t *testing.T) {
 			if got := get(t, "run-ssrf", target); got != http.StatusForbidden {

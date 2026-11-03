@@ -54,25 +54,34 @@ func TestIsPublicUnicast(t *testing.T) {
 		{"::ffff:127.0.0.1", false},
 		{"::ffff:8.8.8.8", true},
 
-		// NAT64 (well-known 64:ff9b::/96, RFC 6052; local-use 64:ff9b:1::/48,
-		// RFC 8215): a translator delivers to the IPv4 address the suffix
-		// carries — loopback, private and metadata alike — so the prefixes
-		// are refused whole, a public embedded address included. The row
-		// past the /96 pins the boundary: it is reserved space, not a host.
+		// The NAT64 well-known prefix 64:ff9b::/96 (RFC 6052): a translator
+		// delivers to the IPv4 address in bits 96-127, so the address is as
+		// public as the one it carries. An IPv6-only network with DNS64
+		// reaches an IPv4-only public host through it (IANA marks the prefix
+		// globally reachable); the same prefix carrying loopback, private,
+		// CGNAT or metadata reaches the translator's own network. The row
+		// past the /96 is no NAT64 address and is judged as itself: it pins
+		// the mask.
 		{"64:ff9b::7f00:1", false},    // 127.0.0.1
+		{"64:ff9b::a00:1", false},     // 10.0.0.1
+		{"64:ff9b::6440:1", false},    // 100.64.0.1
 		{"64:ff9b::a9fe:a9fe", false}, // 169.254.169.254
-		{"64:ff9b::808:808", false},   // 8.8.8.8
-		{"64:ff9b::ffff:ffff", false},
-		{"64:ff9b:1::a00:1", false},
+		{"64:ff9b::808:808", true},    // 8.8.8.8
+		{"64:ff9b::8c52:7003", true},  // 140.82.112.3
 		{"64:ff9b::1:0:0", true},
+		// The NAT64 local-use prefix 64:ff9b:1::/48 (RFC 8215) is refused
+		// whole: its operator picks the prefix length, so where the IPv4
+		// address sits is written nowhere in the address.
+		{"64:ff9b:1::a00:1", false},
 
 		// 6to4 2002::/16 (RFC 3056, deprecated by RFC 7526): a relay
-		// delivers to the IPv4 address in bits 16-47 — refused whole. The
-		// next /16 is allocated public space (the /16 below is the
-		// 2001:4860:: row above).
+		// delivers to the IPv4 address in bits 16-47, so the address is as
+		// public as the one it carries. The next /16 is allocated public
+		// space (the /16 below is the 2001:4860:: row above).
 		{"2002:7f00:1::", false},     // 127.0.0.1
+		{"2002:a00:1::", false},      // 10.0.0.1
 		{"2002:a9fe:a9fe::1", false}, // 169.254.169.254
-		{"2002:808:808::1", false},   // 8.8.8.8
+		{"2002:808:808::1", true},    // 8.8.8.8
 		{"2003::1", true},
 	}
 	for _, tc := range cases {
@@ -169,6 +178,23 @@ func TestResolvePublicHost_Literals(t *testing.T) {
 	}
 }
 
+// An IPv6-only network with DNS64 answers an IPv4-only host with a
+// 64:ff9b::/96 address synthesized beside its A record: the strict guard
+// judges the synthesized address by the IPv4 address it carries, so a public
+// host stays reachable and a private one stays refused.
+func TestResolvePublicHostWith_DNS64Answers(t *testing.T) {
+	ctx := context.Background()
+	if ip, err := ResolvePublicHostWith(ctx, answering("140.82.112.3", "64:ff9b::8c52:7003"), "github.com", true); err != nil || !ip.Equal(net.ParseIP("140.82.112.3")) {
+		t.Errorf("strict github.com answered with its DNS64 synthesis = %v, %v; want the public host admitted", ip, err)
+	}
+	if ip, err := ResolvePublicHostWith(ctx, answering("64:ff9b::8c52:7003"), "github.com", true); err != nil || !ip.Equal(net.ParseIP("64:ff9b::8c52:7003")) {
+		t.Errorf("strict github.com answered by DNS64 alone = %v, %v; want the synthesized address admitted", ip, err)
+	}
+	if _, err := ResolvePublicHostWith(ctx, answering("64:ff9b::a00:5"), "gw.example.test", true); !errors.Is(err, ErrNotPublic) {
+		t.Errorf("strict gw.example.test synthesized from 10.0.0.5 = %v; want a refusal wrapping ErrNotPublic", err)
+	}
+}
+
 // A caller's escape hatch is named on the refusals it lifts, so the fact
 // travels in the error: every strict refusal — a literal, a reserved name in
 // either spelling, a resolved answer — wraps ErrNotPublic, and a refusal no
@@ -235,8 +261,10 @@ func (r *recordingResolver) LookupIPAddr(_ context.Context, host string) ([]net.
 	return addrs, nil
 }
 
-// The CGNAT, IPv4-compatible, NAT64 and 6to4 classes are refused under strict
-// and admitted when a caller lifts it — the private classes' treatment, so
+// The CGNAT, IPv4-compatible and NAT64 local-use classes, and a NAT64 or 6to4
+// address carrying a non-public IPv4 address (the samples carry loopback and
+// private ones), are refused under strict and admitted when a caller lifts
+// it — the private classes' treatment, so
 // each caller's own escape hatch is the one that lifts them. One row per
 // caller class and arm, with what sets the arm: refusing the classes is a
 // decision read caller by caller. Each arm drives the three ways a caller

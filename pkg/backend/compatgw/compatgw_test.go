@@ -75,8 +75,8 @@ func TestValidate(t *testing.T) {
 		"private strict":  {BaseURL: "http://10.0.0.9:4000"},
 		"metadata strict": {BaseURL: "http://169.254.169.254"},
 		"cluster alias":   {BaseURL: "http://gw.default.svc.cluster.local:4000"},
-		// The shared and the IPv4-embedding classes, under the same hatch
-		// as the private ones (lifted below).
+		// The shared space and the non-public IPv6 transition addresses,
+		// under the same hatch as the private ones (lifted below).
 		"cgnat strict":                     {BaseURL: "http://100.64.0.1:4000"},
 		"v4-compatible loopback strict":    {BaseURL: "http://[::127.0.0.1]:4000"},
 		"nat64 strict":                     {BaseURL: "http://[64:ff9b::7f00:1]:4000"},

@@ -76,8 +76,9 @@ func TestValidateRepoTarget(t *testing.T) {
 // TestValidateRepoTargetHostGuard covers the SSRF host-allowlist layer added
 // on top of ValidateCloneSource/ValidateBranchName: a holder of a per-org
 // `iwh_` webhook token must not be able to point the cloud runner at an
-// internal host (loopback, RFC1918, CGNAT, link-local, cloud-metadata, an
-// IPv6 form carrying an IPv4 address) and use it as an SSRF probe. Uses IP literals so the test is hermetic (no DNS).
+// internal host (loopback, RFC1918, CGNAT, link-local, cloud-metadata, a
+// non-public IPv6 transition address) and use it as an SSRF probe. Uses IP
+// literals so the test is hermetic (no DNS).
 func TestValidateRepoTargetHostGuard(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {

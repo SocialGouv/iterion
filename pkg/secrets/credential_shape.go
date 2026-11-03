@@ -259,8 +259,8 @@ const maxGatewayBaseURLBytes = 2048
 // glued to the URL, an IPv6 zone), a value over maxGatewayBaseURLBytes, a
 // port outside 1–65535, a path with an empty, "." or ".." segment, a host
 // with an empty label, a literal address that is not public unicast
-// (loopback, private, CGNAT, link-local, metadata, an IPv6 form carrying an
-// IPv4 address — pkg/secure/httpdial's set),
+// (loopback, private, CGNAT, link-local, metadata, a non-public IPv6
+// transition address — pkg/secure/httpdial's set),
 // a single-label host (localhost and every /etc/hosts alias, _gateway,
 // instance-data, a Service name — a public gateway has a dot), the names a
 // cluster, a cloud or a container reserves for itself (reservedGatewayHosts
@@ -320,7 +320,7 @@ func ValidateGatewayBaseURL(raw string) (string, error) {
 	}
 	if ip != nil {
 		if !httpdial.IsPublicUnicast(ip) {
-			return "", &ShapeError{Field: "base_url", Reason: "names a non-public address (loopback, private, CGNAT, link-local, metadata, or an IPv6 form carrying an IPv4 address) — a gateway a run dials is a public host"}
+			return "", &ShapeError{Field: "base_url", Reason: "names a non-public address (loopback, private, CGNAT, link-local, metadata, or a non-public IPv6 transition address) — a gateway a run dials is a public host"}
 		}
 	} else if reservedGatewayHost(host) {
 		return "", &ShapeError{Field: "base_url", Reason: "names a host the cluster, the cloud or the container reserves (" + strings.Join(reservedGatewayHosts, ", ") + ", *" + strings.Join(reservedGatewaySuffixes, ", *") + ")"}
