@@ -1,6 +1,9 @@
 package sandbox
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The admission half of the read-back contract (ADR-143 §1): a declared
 // read-back path is refused when no mount serves it, whatever the driver —
@@ -17,7 +20,7 @@ func TestValidateReadBackPathWithoutAMountIsRefused(t *testing.T) {
 	if err == nil {
 		t.Fatal("Validate = nil, want a declared path no mount serves refused")
 	}
-	if !contains(err.Error(), "/iterion/artifact-files") {
+	if !strings.Contains(err.Error(), "/iterion/artifact-files") {
 		t.Errorf("error = %v, want it naming the declared path", err)
 	}
 }
@@ -65,18 +68,9 @@ func TestValidateReadBackPathShape(t *testing.T) {
 				ReadBackPaths: []string{tc.path},
 			}
 			err := spec.Validate()
-			if err == nil || !contains(err.Error(), tc.want) {
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("Validate = %v, want %q refused with %q", err, tc.path, tc.want)
 			}
 		})
 	}
-}
-
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }

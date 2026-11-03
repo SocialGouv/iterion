@@ -328,10 +328,14 @@ the drain.
 `TestSandboxSpec_NoPromiseSurvivesTheBindThatServedIt` and
 `TestSandboxSpec_TheRunFilesPathIsNamedExactlyWhenAMountServesIt`
 ([pkg/runtime](../pkg/runtime/sandbox_bind_promise_canary_test.go)) walk
-every `spec.Env` value, every path in `spec.PostCreate`, and the
-declared read-back paths against the mounts the driver keeps, so the
-next promise made on a dropped bind — or a variable naming a path no
-kept mount serves — fails in CI rather than in a campaign.
+every `spec.Env` value and every path in `spec.PostCreate` against the
+mounts the driver keeps, so the next promise made on a dropped bind —
+or a variable naming a path no kept mount serves — fails in CI rather
+than in a campaign. A declared read-back path has a different
+guardian: `Spec.Validate` refuses a path no mount serves at admission
+(named ⇒ served, ADR-143 §2; pinned by the `TestValidateReadBackPath*`
+tests in pkg/sandbox), so the declaration breaks the run before it
+starts instead of surfacing in a campaign.
 
 ### Host state mounts (`~/.iterion`, `~/.claude`)
 
@@ -2887,20 +2891,24 @@ V1 limitations (deferred to V2):
 - **`sandbox.build`** (Dockerfile-at-run-start) is **rejected in
   cloud mode** — see "BuildKit (local docker only)" below for the
   rationale and the cloud-side workaround.
-- ✅ **`sandbox.mounts`** now honours PVC / ConfigMap / Secret
-  entries (V2-7). Mount string format mirrors the docker driver
+- ✅ **`sandbox.mounts`** now honours PVC / ConfigMap / Secret /
+  EmptyDir entries (V2-7). Mount string format mirrors the docker driver
   with k8s-native types:
   ```
   mounts:
     - "type=pvc,source=cargo-cache,target=/cargo"
     - "type=configmap,source=app-cfg,target=/etc/app.json,key=app.json,readonly"
     - "type=secret,source=db-creds,target=/secrets"
+    - "type=emptydir,target=/work,size=1Gi"
   ```
   Bind mounts are explicitly rejected — pods have no host
   filesystem; the error message points authors at the PVC
   alternative. PVCs must exist in the namespace before the run pod
   is admitted; iterion does not provision them. Secrets always
-  mount with `defaultMode=0400`.
+  mount with `defaultMode=0400`. `type=emptydir` names no source —
+  its storage is driver-owned, sized by the optional `size=`
+  quantity; without it the emptyDir is bounded only by the
+  kubelet's ephemeral-storage limits.
 - **Image-pull secrets** for private registries beyond the
   runner's own image are not propagated; declare them on the
   pod's namespace ServiceAccount as `imagePullSecrets` and they

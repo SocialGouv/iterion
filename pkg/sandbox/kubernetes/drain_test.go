@@ -135,6 +135,47 @@ func TestExportRunFilesRetriesARacedArchive(t *testing.T) {
 	}
 }
 
+// TestExportRunFilesDropsWhatOnlyTheRacedAttemptLanded: tar never deletes,
+// so a retry that lands after a raced attempt keeps that attempt's writes —
+// a file the pod dropped between the two attempts would survive in the
+// run's collected set, and the landed set would be a union, not the archive
+// that finally succeeded. The sweep takes only what neither the host dir
+// held before the drain nor the successful archive brings.
+func TestExportRunFilesDropsWhatOnlyTheRacedAttemptLanded(t *testing.T) {
+	raced := podTree(t, map[string]string{
+		"report.md": "# partial",
+		"stale.txt": "the pod dropped me before the settled archive",
+	})
+	settled := podTree(t, map[string]string{"report.md": "# complete"})
+	hostDst := t.TempDir()
+	own := filepath.Join(hostDst, "host-own.txt")
+	if err := os.WriteFile(own, []byte("the host already had me"), 0o600); err != nil {
+		t.Fatalf("write the host's own file: %v", err)
+	}
+	// Attempt 1 archives the mid-write tree and exits 1 on the measured
+	// race stderr; attempt 2 archives the tree the pod settled on, which
+	// no longer carries stale.txt.
+	kubectl, calls := exportShimSeq(t, []string{raced, settled}, 1, measuredRaceStderr)
+	r := drainRun([]sandbox.ReadBackDir{{ContainerPath: "/iterion/artifact-files", HostDir: hostDst}}, kubectl)
+
+	if err := r.ExportRunFiles(context.Background()); err != nil {
+		t.Fatalf("ExportRunFiles = %v, want the raced drain retried to success", err)
+	}
+	if _, err := os.Stat(filepath.Join(hostDst, "stale.txt")); err == nil {
+		t.Fatal("a file the pod dropped between attempts survived the retried drain — the landed set is not the archive that finally succeeded")
+	}
+	got, err := os.ReadFile(filepath.Join(hostDst, "report.md"))
+	if err != nil || string(got) != "# complete" {
+		t.Errorf("drained report.md = %q (%v), want attempt 2's settled archive as the landed set", got, err)
+	}
+	if _, err := os.Stat(own); err != nil {
+		t.Fatalf("the sweep removed %s — a file the host already had is never touched: %v", own, err)
+	}
+	if calls() != 2 {
+		t.Errorf("the drain archived the pod %d times, want the raced attempt retried once", calls())
+	}
+}
+
 // The meter: the cap is ADR-143's named and metered bound. Oversized
 // members are billed for what actually arrives and the drain fails rather
 // than truncating silently.
@@ -185,7 +226,7 @@ func TestExtractDrainRefusesASetOverTheCap(t *testing.T) {
 		pw.CloseWithError(tw.Close())
 	}()
 	r := drainRun(nil, "")
-	drained, err := r.extractDrain(pr, hostDst)
+	drained, _, err := r.extractDrain(pr, hostDst)
 	if err == nil {
 		t.Fatal("extractDrain = nil, want the over-cap refusal")
 	}
