@@ -33,10 +33,10 @@ Nobody can reissue them, so they do not move:
 
 **The link preview's image is absolutised by the server.** `studio/index.html`
 ships `og:image` as a RELATIVE path, because the same bundle is served from
-iterion.cloud, from preprod and from every self-hosted deployment, and no
-build-time value is right for all three. OpenGraph specifies an absolute URL
-and LinkedIn in particular drops a relative one, so the preview would render
-text-only.
+iterion.cloud, from the ovh-dev development deployment and from every
+self-hosted deployment, and no build-time value is right for all three.
+OpenGraph specifies an absolute URL and LinkedIn in particular drops a
+relative one, so the preview would render text-only.
 
 The server is the first place that knows its own origin, so `serveIndex`
 rewrites `og:image` and `twitter:image` into `PublicURL` + the path when one is

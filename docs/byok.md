@@ -531,11 +531,11 @@ token, all repos" without crossing the tenant boundary.
 - **Proper model:** each org enters its keys via `POST /api/teams/{id}/api-keys`
   (sealed into Mongo, per-tenant). The publisher then resolves *that org's*
   keys per run.
-- **Bootstrap shortcut (what ovh-dev used first):** the `iterion-llm`
-  sealed Secret holds `ANTHROPIC_API_KEY` + `OPENAI_API_KEY` as pod env —
-  a single instance-wide fallback. Fine to start, but it is **not**
-  multi-tenant; once orgs bring their own keys it should shrink to (or be
-  removed in favour of) the per-org store. Reseal/rotate playbook for the
+- **Bootstrap shortcut (what the ovh-dev development cluster used first):**
+  the `iterion-llm` sealed Secret holds `ANTHROPIC_API_KEY` + `OPENAI_API_KEY`
+  as pod env — a single instance-wide fallback. Fine to start, but it is
+  **not** multi-tenant; once orgs bring their own keys it should shrink to (or
+  be removed in favour of) the per-org store. Reseal/rotate playbook for the
   fallback lives in the k8s-deploy notes.
 
 ## Security invariants
