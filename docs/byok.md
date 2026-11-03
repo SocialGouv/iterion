@@ -486,8 +486,11 @@ its row is stored and clears a revoked one from it. The webhook routes carry tha
 receipt in their audit line (`pins_cleared`); the trigger routes, which
 audit nothing today, log it. A re-check the store refuses splits by what a
 retry can mend: an edit answers 5xx — the edit is stored, nothing one-time
-is lost, and the retry re-reads and re-validates the very pins, a dead
-record refused by name; a create answers 201 with the row and
+is lost, and the retry lands on the same row and runs the re-check again
+over every pin the row holds, sweeping a record found revoked; re-validation
+is no part of that mend, since an edit validates only the pin maps its
+request names and the studio's trigger editor and toggle send none; a
+create answers 201 with the row and
 `pins_unreconciled`, the record ids it could not vouch for, the cause in
 the server log under the row id — the row is already stored under a fresh
 id, a retry of a 5xx would mint a second one, and a webhook's token exists

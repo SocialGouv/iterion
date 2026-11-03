@@ -668,10 +668,13 @@ func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 	// Same closure as the create route: the landed pins are re-checked
 	// against their records — a pin that validated while its record lived
 	// but landed after the record's delete sweep listed would otherwise
-	// stand unreconciled (see credential_pin_sweep.go). Unlike the create,
-	// a failed re-check answers 5xx here: the edit is stored and nothing
-	// one-time is lost, and the client's retry re-reads the row and
-	// re-validates the very pins — a dead record is refused by name.
+	// stand unreconciled (see credential_pin_sweep.go). The re-check reads
+	// every pin the stored row holds, the ones this request omitted (kept
+	// by the fold, never validated above) included. Unlike the create, a
+	// failed re-check answers 5xx here: the edit is stored and nothing
+	// one-time is lost, and the mend is the retry's own pass of this
+	// re-check, not a validation — the studio's editor and toggle send no
+	// pin map, so a retry from it validates nothing (reconcileLandedPins).
 	guardCtx, guardCancel := pinGuardCtx(r)
 	defer guardCancel()
 	pins := s.reconcileLandedPins(guardCtx, tenant, next.KeyOverrides, next.SecretOverrides)

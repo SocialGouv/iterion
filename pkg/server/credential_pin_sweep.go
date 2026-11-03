@@ -217,18 +217,25 @@ func (p landedPins) strip(pins map[string]string) {
 // listing began, which is exactly what the re-check reads. The re-check is
 // secrets.RecheckPinnedRecords — the judgment the forge migration carry
 // shares — under the tenant scope the write-time validators used, so a
-// record they admitted cannot read as missing.
+// record they admitted cannot read as missing. A route hands it the pins
+// its row holds once the write landed: on an edit, the stored pins the
+// request omitted as well as the ones it named.
 //
 // What a route answers when Err is set depends on what a retry can mend.
-// An EDIT answers 5xx: the row holds the edit, the client's retry re-reads
-// and re-validates the very pins, and a dead record is refused by name. A
-// CREATE answers its row with Unreconciled beside it (`pins_unreconciled`)
-// and the cause in the log under the row id (logUnreconciledPins): the row
-// is already stored under a fresh id, so a retry of a 5xx mints a second
-// webhook or a second cron subscription, the 5xx body is opaque by
-// convention so the id could not even travel in it, and a webhook's
-// one-time token exists only in the 201 — a 5xx would reconcile nothing and
-// lose the only copy of the secret.
+// An EDIT answers 5xx: the row holds the edit, nothing one-time is lost,
+// and the retry lands on the same row and runs this re-check again over
+// every pin it holds — a record found revoked then is swept. Re-validation
+// is no part of that mend: the edit routes validate only the pin maps a
+// request names, so a retry that omits them (the studio's trigger editor
+// and toggle never send them) keeps the stored pins unvalidated, this
+// re-check alone judging them, and a dead record is refused by name only
+// in a map the retry re-sends. A CREATE answers its row with Unreconciled
+// beside it (`pins_unreconciled`) and the cause in the log under the row
+// id (logUnreconciledPins): the row is already stored under a fresh id, so
+// a retry of a 5xx mints a second webhook or a second cron subscription,
+// the 5xx body is opaque by convention so the id could not even travel in
+// it, and a webhook's one-time token exists only in the 201 — a 5xx would
+// reconcile nothing and lose the only copy of the secret.
 func (s *Server) reconcileLandedPins(ctx context.Context, tenantID string, keyPins, secretPins map[string]string) landedPins {
 	var out landedPins
 	var errs []error

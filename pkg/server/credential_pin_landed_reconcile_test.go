@@ -336,7 +336,7 @@ func TestCreateTrigger_KeepsAPinWhoseRecordSurvives(t *testing.T) {
 // answer for the row and the `pins_unreconciled` receipt, the store for
 // the single row, and the log for the cause under the row id. The EDIT
 // routes keep the explicit 5xx: nothing one-time is lost there, and the
-// retry re-reads and re-validates the very pins.
+// retry's own re-check, over every pin the row holds, is the mend.
 
 // TestCreateTrigger_AFailedReCheckAnswersTheRowWithAReceipt: the key store
 // blips on the re-check (the validator's Get passed). Answering 500 (the
@@ -442,9 +442,10 @@ func TestCreateWebhook_AFailedReCheckStillDeliversTheToken(t *testing.T) {
 
 // TestUpdateTrigger_AFailedReCheckAnswersAnExplicitFailure: the edit lane
 // keeps the 5xx — the edit is stored, nothing one-time is lost, and the
-// retry re-reads and re-validates the very pins. A 200 over an unvouched
-// pin (the mutant) would be the silent-sealed-default the re-check exists
-// to close.
+// retry's own re-check is the mend
+// (TestUpdateTrigger_TheRetryOfAFailedReCheckSweepsTheStoredPin). A 200
+// over an unvouched pin (the mutant) would be the silent-sealed-default the
+// re-check exists to close.
 func TestUpdateTrigger_AFailedReCheckAnswersAnExplicitFailure(t *testing.T) {
 	srv, org, _ := triggerPinServer(t)
 	rec := httptest.NewRecorder()
@@ -501,5 +502,116 @@ func TestUpdateWebhook_AFailedReCheckAnswersAnExplicitFailure(t *testing.T) {
 	}
 	if got.KeyOverrides["anthropic"] != key.ID {
 		t.Fatalf("stored key_overrides = %v, want the edit — the 5xx reports the re-check, it does not undo the write", got.KeyOverrides)
+	}
+}
+
+// TestUpdateTrigger_TheRetryOfAFailedReCheckSweepsTheStoredPin: the mend
+// behind the edit's 5xx. The pinned key dies with no sweep behind it, and
+// the next edit — a pause, as the studio's toggle sends it, with no pin map,
+// so nothing is validated — meets a key store that cannot answer its
+// re-check: 5xx, the pause stored, the dead pin standing. The retry of the
+// same request lands on the same row, and its own re-check, which reads
+// every pin the row holds and not only the maps the request names, sweeps
+// the dead pin. A re-check bounded to the request's maps (the mutant)
+// re-checks nothing on either pass: the first answers 200 over the dead
+// pin.
+func TestUpdateTrigger_TheRetryOfAFailedReCheckSweepsTheStoredPin(t *testing.T) {
+	srv, org, _ := triggerPinServer(t)
+	rec := httptest.NewRecorder()
+	srv.handleCreateTrigger(rec, teamTriggerReq(t, http.MethodPost, "/api/v1/triggers", "",
+		`{"bot_id":"feature-dev","invocation":"board","mode":"board","match":{"sources":["board"]},
+		"key_overrides":{"anthropic":"`+org.ID+`"}}`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var created trigger.Subscription
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	keys := srv.apiKeys
+	if err := keys.Delete(store.WithTenant(t.Context(), "t1"), org.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	pause := `{"bot_id":"feature-dev","invocation":"board","mode":"board","match":{"sources":["board"]},"enabled":false}`
+	srv.apiKeys = &getThenFailKeyStore{ApiKeyStore: keys}
+	first := httptest.NewRecorder()
+	srv.handleUpdateTrigger(first, teamTriggerReq(t, http.MethodPut, "/api/v1/triggers/"+created.ID, created.ID, pause))
+	if first.Code != http.StatusInternalServerError {
+		t.Fatalf("a pause whose re-check meets the outage = %d, want 500 — the stored pin is the row's, and the re-check owes it a read; body=%s", first.Code, first.Body.String())
+	}
+	if got := getSub(t, srv.cfg.TriggerStore, created.ID); got.Enabled || got.KeyOverrides["anthropic"] != org.ID {
+		t.Fatalf("after the failed re-check: enabled=%v keys=%v, want the pause stored and the dead pin standing — the state the retry mends", got.Enabled, got.KeyOverrides)
+	}
+
+	srv.apiKeys = keys
+	retry := httptest.NewRecorder()
+	srv.handleUpdateTrigger(retry, teamTriggerReq(t, http.MethodPut, "/api/v1/triggers/"+created.ID, created.ID, pause))
+	if retry.Code != http.StatusOK {
+		t.Fatalf("the retry = %d, want 200; body=%s", retry.Code, retry.Body.String())
+	}
+	if got := getSub(t, srv.cfg.TriggerStore, created.ID); len(got.KeyOverrides) != 0 {
+		t.Fatalf("stored key_overrides after the retry = %v, want the dead pin swept — the retry validated nothing, so its re-check is the whole mend", got.KeyOverrides)
+	}
+	var answered trigger.Subscription
+	if err := json.Unmarshal(retry.Body.Bytes(), &answered); err != nil {
+		t.Fatal(err)
+	}
+	if _, kept := answered.KeyOverrides["anthropic"]; kept {
+		t.Fatalf("the retry's answer resells the swept pin: %v", answered.KeyOverrides)
+	}
+}
+
+// TestUpdateWebhook_TheRetryOfAFailedReCheckSweepsTheStoredPin is the
+// webhook lane's twin: a rename sends no pin map, so neither it nor its
+// retry validates the stored pin, and the retry's re-check over the row's
+// pins is what sweeps the dead one.
+func TestUpdateWebhook_TheRetryOfAFailedReCheckSweepsTheStoredPin(t *testing.T) {
+	srv, spy, _, _ := newPinSweepServer(t)
+	dead := seedSweepKey(t, spy, "team-a", "key-dead", secrets.ProviderAnthropic)
+	seedSweepWebhook(t, srv.webhookConfigs, webhooks.Config{ID: "wh-1", TenantID: "team-a",
+		KeyOverrides: map[string]string{"anthropic": dead.ID}})
+	if err := spy.Delete(store.WithTenant(t.Context(), "team-a"), dead.ID); err != nil {
+		t.Fatal(err)
+	}
+	rename := func(keys secrets.ApiKeyStore) *httptest.ResponseRecorder {
+		srv.apiKeys = keys
+		r := httptest.NewRequest(http.MethodPut, "/api/teams/team-a/webhooks/wh-1", strings.NewReader(`{"name":"renamed"}`))
+		r.SetPathValue("id", "team-a")
+		r.SetPathValue("webhook_id", "wh-1")
+		r = r.WithContext(testMintVerdictContext(store.WithTenant(auth.WithIdentity(r.Context(),
+			auth.Identity{UserID: "u1", IsSuperAdmin: true, TeamID: "team-a"}), "team-a")))
+		w := httptest.NewRecorder()
+		srv.handleUpdateWebhook(w, r)
+		return w
+	}
+
+	if w := rename(&getThenFailKeyStore{ApiKeyStore: spy}); w.Code != http.StatusInternalServerError {
+		t.Fatalf("a rename whose re-check meets the outage = %d, want 500; body=%s", w.Code, w.Body.String())
+	}
+	got, err := srv.webhookConfigs.Get(context.Background(), "wh-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "renamed" || got.KeyOverrides["anthropic"] != dead.ID {
+		t.Fatalf("after the failed re-check: name=%q keys=%v, want the rename stored and the dead pin standing — the state the retry mends", got.Name, got.KeyOverrides)
+	}
+
+	w := rename(spy)
+	if w.Code != http.StatusOK {
+		t.Fatalf("the retry = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if got, err = srv.webhookConfigs.Get(context.Background(), "wh-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.KeyOverrides) != 0 {
+		t.Fatalf("stored key_overrides after the retry = %v, want the dead pin swept — the retry validated nothing, so its re-check is the whole mend", got.KeyOverrides)
+	}
+	var answered webhooks.Config
+	if err := json.Unmarshal(w.Body.Bytes(), &answered); err != nil {
+		t.Fatal(err)
+	}
+	if _, kept := answered.KeyOverrides["anthropic"]; kept {
+		t.Fatalf("the retry's answer resells the swept pin: %v", answered.KeyOverrides)
 	}
 }
