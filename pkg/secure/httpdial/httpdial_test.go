@@ -71,8 +71,15 @@ func TestIsPublicUnicast(t *testing.T) {
 		{"64:ff9b::1:0:0", true},
 		// The NAT64 local-use prefix 64:ff9b:1::/48 (RFC 8215) is refused
 		// whole: its operator picks the prefix length, so where the IPv4
-		// address sits is written nowhere in the address.
+		// address sits is written nowhere in the address. A network-specific
+		// prefix may sit anywhere inside the /48, so the rows past its first
+		// /64 pin the mask's width: 169.254.169.254 under a /64 of its own,
+		// the same address in the RFC 6052 /48 format, the block's last
+		// address.
 		{"64:ff9b:1::a00:1", false},
+		{"64:ff9b:1:1::a9fe:a9fe", false},
+		{"64:ff9b:1:a9fe:a9:fe00::", false},
+		{"64:ff9b:1:ffff:ffff:ffff:ffff:ffff", false},
 
 		// 6to4 2002::/16 (RFC 3056, deprecated by RFC 7526): a relay
 		// delivers to the IPv4 address in bits 16-47, so the address is as
