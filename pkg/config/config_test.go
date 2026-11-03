@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // clearITERION removes any inherited ITERION_* env vars so a Load() call
@@ -929,5 +931,45 @@ func TestLoad_RefreshReuseGrace(t *testing.T) {
 	t.Setenv("ITERION_REFRESH_REUSE_GRACE", "59m")
 	if _, err := Load(LoadOptions{}); err != nil {
 		t.Fatalf("ITERION_REFRESH_REUSE_GRACE=59m on a 1h ITERION_REFRESH_TTL: %v", err)
+	}
+}
+
+// The Anthropic forfait client id is defaulted, so an operator who sets
+// nothing keeps the connect flow and the claude_code refresh; an empty env
+// var leaves the default, and only an explicit empty YAML value clears it.
+func TestLoad_OAuthForfaitAnthropicClientIDDefault(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		env  string
+		want string
+	}{
+		{"nothing set", "", "", secrets.DefaultAnthropicOAuthClientID},
+		{"empty env var", "", "set-empty", secrets.DefaultAnthropicOAuthClientID},
+		{"YAML section without the key", "auth:\n  oauth_forfait:\n    codex_client_id: codex-x\n", "", secrets.DefaultAnthropicOAuthClientID},
+		{"explicit empty YAML value", "auth:\n  oauth_forfait:\n    anthropic_client_id: \"\"\n", "", ""},
+		{"explicit YAML override", "auth:\n  oauth_forfait:\n    anthropic_client_id: custom-id\n", "", "custom-id"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clearITERION(t)
+			if tc.env == "set-empty" {
+				t.Setenv("ITERION_OAUTH_FORFAIT_ANTHROPIC_CLIENT_ID", "")
+			}
+			opts := LoadOptions{}
+			if tc.yaml != "" {
+				opts.YAMLPath = filepath.Join(t.TempDir(), "c.yaml")
+				if err := os.WriteFile(opts.YAMLPath, []byte(tc.yaml), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg, err := Load(opts)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := cfg.Auth.OAuthForfait.AnthropicClientID; got != tc.want {
+				t.Fatalf("AnthropicClientID = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
