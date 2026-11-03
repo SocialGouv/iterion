@@ -345,7 +345,7 @@ func TestGateReconcile_SyntheticMarker(t *testing.T) {
 		{gateDLQDescription, true},
 		{gateDLQDescriptionReplay, true},
 		{"no blocking findings (≥high); 4 total", false},
-		{"supply-chain audit clean; no alignment needed, build verified", false},
+		{"supply-chain audit clean; nothing left to align, build verified", false},
 		{"", false},
 	} {
 		if got := isSyntheticGateInterruption(tc.desc); got != tc.want {

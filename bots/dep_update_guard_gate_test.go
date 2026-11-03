@@ -187,7 +187,10 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 		if strings.Contains(got.Gate.Note, "alignment committed") {
 			t.Errorf("check claims a commit on the no-alignment verdict: %q", got.Gate.Note)
 		}
-		if !strings.Contains(got.Gate.Note, "no alignment needed") {
+		// "nothing left to align", not "no alignment needed": the same verdict
+		// closes the pass the alignment's own push relaunches, where the head
+		// already carries an alignment (buildkit-operator#50).
+		if !strings.Contains(got.Gate.Note, "nothing left to align") {
 			t.Errorf("note should say what actually happened, got %q", got.Gate.Note)
 		}
 		if strings.Contains(got.Summary, "Committed the alignment") ||
@@ -208,7 +211,7 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 		if got.Gate.BlockingCount == 0 {
 			t.Error("a bump whose alignment is missing must not be mergeable")
 		}
-		if strings.Contains(got.Gate.Note, "no alignment needed") {
+		if strings.Contains(got.Gate.Note, "nothing left to align") {
 			t.Errorf("the check reports a missing alignment as a bump that needed none: %q", got.Gate.Note)
 		}
 		if !strings.Contains(got.Gate.Note, "missing") {
