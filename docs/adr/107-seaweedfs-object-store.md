@@ -79,3 +79,24 @@ One property matters more than the call list: **what one pod writes, another pod
   Each fix was then made to fail again by putting the defect back.
 - **Silent bucket creation** by the default gateway flags was observed, and so was the refusal with `-autoCreateBucket=false`.
 - **Production figures** — object count, bytes, cutover timings, the post-cutover probe — are recorded on #1943.
+
+## Addendum (2026-11-03) — backup scope and recovery objectives
+
+The off-cluster backup this record left as a follow-up has its mechanics in the chart (`backup.*`, one rclone CronJob per tier, pinned image, fail-fast render, alerts — #2013) and its runbook in [docs/cloud-backup.md](../cloud-backup.md). What was still undecided is decided here, as the published scope of the backup and the objectives it commits to; the operator's deployment (SocialGouv/infra-apps) carries the enablement, the destination and the alert pack — see the runbook for what it must set.
+
+**Backed up, daily, on one cadence (02:30 UTC — the chart's `daily` tier default; the Mongo CronJob of the runbook is written on it, since the blob tier's default is the chart's and the dump's cron is the operator's):**
+
+- Mongo (runs, checkpoints, events, interactions, identity and RBAC, sealed secrets, audit) — `mongodump --oplog`, uploaded by rclone to the blob tiers' destination under `mongo/`; the chart does not render this CronJob, the runbook carries it as an operator template, and the RPO's Mongo half holds only once that CronJob runs green against the destination and a drill has restored its dump;
+- the artifact bucket — the chart's `daily` sync (deletions kept 7 days under `current-deleted/`), `weekly` (35 days) and `monthly` (400 days) snapshots, into a bucket of another region or another provider.
+
+**Not backed up, by decision:**
+
+- NATS JetStream — the run work queue (`MaxAge` 24 h), the dead-letter queue (7 days), the run leases (TTL 60 s) and the runner-generation mark. Mongo is the source of truth for every run; a stream restored from another epoch would re-offer runs the checkpoint already settled. The runbook carries the reseed procedure instead, and the orphan sweeper plus `iterion resume` re-drive the runs from their checkpoints.
+- SeaweedFS's own volumes and the Valkey store of its filer — the copy is taken through the S3 API, object by key, so a restore writes the objects back into any S3 store and the filer rebuilds its metadata from those writes; the consequence above ("the Valkey store is as critical as the volumes") is about the live cluster, not about the backup.
+- The application's Valkey (`pkg/valkey`: forge OAuth/CSRF state, board-MCP run tokens, rate-limit buckets) — ephemeral by construction; the editor's access tokens are stateless JWTs, while the session refresh tokens are in Mongo and in the dump.
+
+**Objectives:** RPO 24 hours (the daily cadence), RTO 8 hours (the restore drill on a fresh namespace, objects first then the base, measured end to end), a drill at least quarterly, logged in the runbook's drill log without bucket name or endpoint. The log is the witness: an objective with no row under it is published, not proven.
+
+**Erasures:** a backup keeps what was erased after it — an organisation purged, a token revoked or rotated, a member removed or demoted, a schedule or a run deleted — for as long as the backup is retained (400 days for the bucket's `monthly` tier; the dumps keep what the destination's lifecycle rule keeps). A restore therefore reads the live audit of both scopes after the backup's timestamp, by a rule on the action tokens (`*.deleted`, `*.removed`, `*.revoked`, `*.rotated`, `*.role_changed`, `*.status_changed`, password changes and resets, credential updates), and before the restored data plane serves anyone it redoes the removals, demotions and suspensions and, since a rotation cannot be replayed, revokes the stale credential and forces a password reset (runbook, restore drill step 6). The restored namespace runs with its egress locked down and its runners at 0 until then: the restored base holds real tenants' credentials and schedules. How long erased personal data may persist inside the backups is a data-lifecycle decision, not this record's.
+
+**Still a follow-up:** rendering the Mongo dump from the chart (`backup.mongo.*`, same guards, same destination and alerts as the blob tiers) instead of the hand-applied CronJob of the runbook, so the lock-step holds by construction.

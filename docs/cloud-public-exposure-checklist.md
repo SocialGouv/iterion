@@ -84,9 +84,9 @@ How to verify: `kubectl get scaledobject -n <ns> -o yaml | grep consumer` shows 
 ## 9. Backup + recovery
 
 - [ ] **Mongo** is a replica set with point-in-time recovery enabled (Atlas, MongoDB Cloud Manager, or in-cluster operator with continuous backup).
-- [ ] **S3 bucket** has versioning enabled and a cross-region replication policy if your RTO requires it.
+- [ ] **S3 bucket** has versioning enabled; the off-cluster copy (`backup.*` for the bucket, plus the Mongo dump CronJob) is what holds the published RPO 24 h / RTO 8 h ([cloud-backup.md § Recovery objectives](cloud-backup.md#recovery-objectives)).
 - [ ] **NATS JetStream** state is *not* the source of truth — runs and events are durable in Mongo. NATS reseed from scratch is acceptable; document the procedure.
-- [ ] **Disaster recovery drill** run at least once before public exposure. Restore a Mongo backup to a fresh cluster; verify a paused run resumes from the restored checkpoint.
+- [ ] **Disaster recovery drill** run at least once before public exposure, following [the restore drill](cloud-backup.md#restore-drill) (objects first, then the base, erasures replayed, a paused run resumed from the restored checkpoint) and logged in the [drill log](cloud-backup.md#drill-log).
 
 ## 10. Documentation + runbooks
 
