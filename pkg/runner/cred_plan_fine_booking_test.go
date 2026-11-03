@@ -281,10 +281,17 @@ func clawStepUsage(t *testing.T, plan map[string]string) (*metricsEmitter, float
 // the finding's shape, end to end. A claw loop whose steps were priced
 // leaves the STEPS as the only observations (the summarised guard skips
 // the aggregate), and those steps book the donor's slice through the
-// provider word the loop stamps. Mutants: the walk dropping the prefix's
-// slot reds (the join misses, the donor books $0 under real spend); the
-// loop stamping the hint's slot reds (the join hits an inert row, same
-// $0); the summarised guard lifting reds at the double-book above.
+// provider word the loop stamps. The observations hand-stamp that word
+// (clawStepUsage), so a mutant of the STAMPING itself — servingProvider's
+// claw prefix-over-hint reverted — leaves this test green; the guards
+// that red on it live in pkg/backend/model/cred_plan_claw_slot_test.go
+// (the servingProvider table and the Execute wiring witness). Mutants
+// this test does red: the walk dropping the prefix's slot (clawHintPlan's
+// Sites/plan assertions fail before any booking — in production the harm
+// is the donor's silent $0); the summarised guard lifting (the aggregate
+// double-books at the check in clawStepUsage); a fine-table join that
+// books the priced steps on any fingerprint but the lease's (the ledger
+// read-back misses).
 func TestRecordPoolSpend_aHintSteeredClawLoopBooksTheDonorsSliceFromItsSteps(t *testing.T) {
 	h := newPoolHarnessForRun(t, credpoolLimitsForFine(), "run-1")
 	ctx := context.Background()
